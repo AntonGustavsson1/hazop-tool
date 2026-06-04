@@ -107,24 +107,46 @@ CREATE TABLE IF NOT EXISTS equipment_catalog (
 );
 """
 
+# Frequency axis: F=-1..5 (7 levels, logarithmic events/year)
+# Consequence axis: C=1..5 (5 levels)
 DEFAULT_MATRIX = {
-    'rows': 5, 'cols': 5,
-    'x_axis': 'likelihood',
-    'x_labels': ['1-Osannolik', '2-Sällan', '3-Möjlig', '4-Trolig', '5-Nästan säker'],
-    'y_labels': ['1-Försumbar', '2-Liten', '3-Måttlig', '4-Allvarlig', '5-Katastrofal'],
+    'rows': 5,   # consequence rows, index 0 = C1 (lowest)
+    'cols': 7,   # frequency columns, index 0 = F-1 (lowest)
+    'x_axis': 'frequency',
+    'x_labels': [
+        'F-1 – Otänkbar (<1/100 000 år)',
+        'F0 – Extremt sällan (1/100 000 år)',
+        'F1 – Sällan (1/10 000 år)',
+        'F2 – Osannolik (1/1 000 år)',
+        'F3 – Möjlig (1/100 år)',
+        'F4 – Trolig (1–10 år)',
+        'F5 – Frekvent (>1/år)',
+    ],
+    'y_labels': [
+        'C1 – Försumbar',
+        'C2 – Liten',
+        'C3 – Måttlig',
+        'C4 – Allvarlig',
+        'C5 – Katastrofal',
+    ],
     'cell_colors': [
-        ['#27ae60', '#27ae60', '#27ae60', '#27ae60', '#f39c12'],
-        ['#27ae60', '#27ae60', '#f39c12', '#f39c12', '#e67e22'],
-        ['#27ae60', '#f39c12', '#f39c12', '#e67e22', '#e74c3c'],
-        ['#f39c12', '#f39c12', '#e67e22', '#e74c3c', '#e74c3c'],
-        ['#f39c12', '#e67e22', '#e74c3c', '#e74c3c', '#e74c3c'],
+        # C=1: F-1 → F5
+        ['#27ae60', '#27ae60', '#27ae60', '#27ae60', '#f39c12', '#e67e22', '#e74c3c'],
+        # C=2
+        ['#27ae60', '#27ae60', '#27ae60', '#f39c12', '#e67e22', '#e74c3c', '#e74c3c'],
+        # C=3
+        ['#27ae60', '#27ae60', '#f39c12', '#e67e22', '#e74c3c', '#e74c3c', '#e74c3c'],
+        # C=4
+        ['#27ae60', '#f39c12', '#e67e22', '#e74c3c', '#e74c3c', '#e74c3c', '#e74c3c'],
+        # C=5
+        ['#f39c12', '#e67e22', '#e74c3c', '#e74c3c', '#e74c3c', '#e74c3c', '#e74c3c'],
     ],
     'cell_labels': [
-        ['Låg', 'Låg', 'Låg', 'Låg', 'Medium'],
-        ['Låg', 'Låg', 'Medium', 'Medium', 'Hög'],
-        ['Låg', 'Medium', 'Medium', 'Hög', 'Kritisk'],
-        ['Medium', 'Medium', 'Hög', 'Kritisk', 'Kritisk'],
-        ['Medium', 'Hög', 'Kritisk', 'Kritisk', 'Kritisk'],
+        ['Låg',    'Låg',    'Låg',    'Låg',    'Medium', 'Hög',    'Kritisk'],
+        ['Låg',    'Låg',    'Låg',    'Medium', 'Hög',    'Kritisk','Kritisk'],
+        ['Låg',    'Låg',    'Medium', 'Hög',    'Kritisk','Kritisk','Kritisk'],
+        ['Låg',    'Medium', 'Hög',    'Kritisk','Kritisk','Kritisk','Kritisk'],
+        ['Medium', 'Hög',    'Kritisk','Kritisk','Kritisk','Kritisk','Kritisk'],
     ],
 }
 
@@ -141,33 +163,66 @@ def get_matrix():
     return _current_matrix or DEFAULT_MATRIX
 
 
-def risk_info(severity, likelihood):
-    cfg = get_matrix()
+def risk_info(frequency, consequence):
+    """Return (label, bg_color, fg_color) from matrix lookup.
+
+    frequency  : integer -1..5  (stored in causes.likelihood)
+    consequence: integer  1..5  (stored in consequences.severity)
+    No S×L — direct matrix cell lookup only.
+    """
+    cfg  = get_matrix()
     rows = cfg.get('rows', 5)
-    cols = cfg.get('cols', 5)
-    sev_idx = max(0, min(int(severity) - 1, rows - 1))
-    lik_idx = max(0, min(int(likelihood) - 1, cols - 1))
-    if cfg.get('x_axis', 'likelihood') == 'likelihood':
-        row_idx, col_idx = sev_idx, lik_idx
+    cols = cfg.get('cols', 7)
+    c_idx = max(0, min(int(consequence) - 1, rows - 1))
+    f_idx = max(0, min(int(frequency) + 1, cols - 1))   # F=-1 → col 0
+    if cfg.get('x_axis', 'frequency') == 'frequency':
+        row_idx, col_idx = c_idx, f_idx
     else:
-        row_idx, col_idx = lik_idx, sev_idx
+        row_idx, col_idx = f_idx, c_idx
     try:
         color = cfg['cell_colors'][row_idx][col_idx]
         label = cfg['cell_labels'][row_idx][col_idx]
     except (IndexError, KeyError):
         color, label = '#27ae60', 'Låg'
-    return int(severity) * int(likelihood), label, color, '#ffffff'
+    return label, color, '#ffffff'
 
 
-def effective_likelihood(base_likelihood, rrf):
+def effective_frequency(base_freq, rrf):
+    """Reduce frequency by floor(log10(rrf)) steps; minimum F=-1."""
     if rrf <= 1:
-        return base_likelihood
+        return base_freq
     reduction = int(math.log10(max(1, rrf)))
-    return max(1, base_likelihood - reduction)
+    return max(-1, base_freq - reduction)
 
 
-_LIKE_LABELS = ['1 – Osannolik', '2 – Sällan', '3 – Möjlig', '4 – Trolig', '5 – Nästan säker']
-_SEV_LABELS  = ['1 – Försumbar', '2 – Liten', '3 – Måttlig', '4 – Allvarlig', '5 – Katastrofal']
+# Keep old name as alias so any remaining callers don't crash immediately
+effective_likelihood = effective_frequency
+
+
+# Frequency F=-1..5, stored as integer in causes.likelihood
+_FREQ_VALUES = [-1, 0, 1, 2, 3, 4, 5]
+_FREQ_LABELS = [
+    'F-1 – Otänkbar',
+    'F0 – Extremt sällan',
+    'F1 – Sällan',
+    'F2 – Osannolik',
+    'F3 – Möjlig',
+    'F4 – Trolig',
+    'F5 – Frekvent',
+]
+
+def freq_to_idx(f: int) -> int:
+    """Frequency value (-1..5) → combo-box index (0..6)."""
+    return max(0, min(int(f) + 1, 6))
+
+def idx_to_freq(i: int) -> int:
+    """Combo-box index (0..6) → frequency value (-1..5)."""
+    return i - 1
+
+# Keep old alias so existing code that references _LIKE_LABELS doesn't crash
+_LIKE_LABELS = _FREQ_LABELS
+
+_SEV_LABELS  = ['C1 – Försumbar', 'C2 – Liten', 'C3 – Måttlig', 'C4 – Allvarlig', 'C5 – Katastrofal']
 _RRF_VALUES  = [1, 10, 100, 1000, 10000]
 _RRF_LABELS  = ['1 – Ingen', '10 – RRF10', '100 – RRF100', '1000 – RRF1000', '10000 – RRF10000']
 _RISK_ICON   = {'Låg': '🟢', 'Medium': '🟡', 'Hög': '🟠', 'Kritisk': '🔴'}
@@ -512,16 +567,18 @@ class Database:
                     sgs = [dict(s) for s in self.safeguards(cons['id'])]
                     acts = [dict(a) for a in self.actions(cons['id'])]
                     rows.append({
-                        'node_name':   node['name'],
-                        'node_pid':    node['pid_ref'] or '',
-                        'cause':       cause['description'],
-                        'likelihood':  cause['likelihood'],
-                        'consequence': cons['description'],
-                        'severity':    cons['severity'],
-                        'category':    cons['category'] or '',
-                        'safeguards':  sgs,
+                        'node_name':      node['name'],
+                        'node_pid':       node['pid_ref'] or '',
+                        'cause_id':       cause['id'],
+                        'cause':          cause['description'],
+                        'likelihood':     cause['likelihood'] if cause['likelihood'] is not None else 3,
+                        'consequence_id': cons['id'],
+                        'consequence':    cons['description'],
+                        'severity':       cons['severity'],
+                        'category':       cons['category'] or '',
+                        'safeguards':     sgs,
                         'safeguards_text': '; '.join(s['description'] for s in sgs),
-                        'actions':     acts,
+                        'actions':        acts,
                     })
         return rows
 
@@ -539,9 +596,9 @@ class RiskBadge(QLabel):
         self.setFont(f)
         self.update_risk(1, 1)
 
-    def update_risk(self, severity, likelihood):
-        score, label, bg, fg = risk_info(severity, likelihood)
-        self.setText(f"{label}  (S×L={score})")
+    def update_risk(self, frequency, consequence):
+        label, bg, fg = risk_info(frequency, consequence)
+        self.setText(f"{label}  F={frequency} C={consequence}")
         self.setStyleSheet(f"background:{bg}; color:{fg}; border-radius:5px; padding:2px 8px;")
 
 
@@ -609,9 +666,9 @@ class SafeguardEditor(QWidget):
                 lambda idx, s=sid, r=row: self._rrf_changed(s, r, idx))
             self.table.setCellWidget(row, 1, rrf_combo)
 
-            eff_l = effective_likelihood(self._parent_cause_likelihood, sg['rrf'])
+            eff_f = effective_frequency(self._parent_cause_likelihood, sg['rrf'])
             badge = RiskBadge()
-            badge.update_risk(severity, eff_l)
+            badge.update_risk(eff_f, severity)
             self.table.setCellWidget(row, 2, badge)
 
             del_btn = QPushButton("Ta bort")
@@ -843,10 +900,10 @@ class CausePanel(QWidget):
         self.desc_edit.focusOutEvent = lambda e: (self._save(), QTextEdit.focusOutEvent(self.desc_edit, e))
         form.addRow("Beskrivning:", self.desc_edit)
 
-        self.like_combo = QComboBox()
-        self.like_combo.addItems(_LIKE_LABELS)
-        self.like_combo.currentIndexChanged.connect(self._save)
-        form.addRow("Sannolikhet (L):", self.like_combo)
+        self.freq_combo = QComboBox()
+        self.freq_combo.addItems(_FREQ_LABELS)
+        self.freq_combo.currentIndexChanged.connect(self._save)
+        form.addRow("Frekvens (F):", self.freq_combo)
 
         layout.addLayout(form)
         layout.addStretch()
@@ -857,15 +914,16 @@ class CausePanel(QWidget):
         if row:
             self._loading = True
             self.desc_edit.setPlainText(row['description'])
-            self.like_combo.setCurrentIndex(max(0, (row['likelihood'] or 1) - 1))
+            freq = row['likelihood'] if row['likelihood'] is not None else 3
+            self.freq_combo.setCurrentIndex(freq_to_idx(freq))
             self._loading = False
 
     def _save(self):
         if self._loading or self.cause_id is None:
             return
         desc = self.desc_edit.toPlainText().strip() or 'Ny orsak'
-        like = self.like_combo.currentIndex() + 1
-        self.db.update_cause(self.cause_id, desc, like)
+        freq = idx_to_freq(self.freq_combo.currentIndex())
+        self.db.update_cause(self.cause_id, desc, freq)
         self.saved.emit(self.cause_id, desc)
 
 
@@ -951,14 +1009,14 @@ class ConsequencePanel(QWidget):
             self._loading = False
 
         cause_id = dict(row)['cause_id'] if row else None
-        like = 1
+        freq = 3
         if cause_id:
             cause = self.db.get_cause(cause_id)
             if cause:
-                like = cause['likelihood'] or 1
+                freq = cause['likelihood'] if cause['likelihood'] is not None else 3
         sev = (row['severity'] or 1) if row else 1
-        self.risk_badge.update_risk(sev, like)
-        self.sg_editor.load(consequence_id, like)
+        self.risk_badge.update_risk(freq, sev)
+        self.sg_editor.load(consequence_id, freq)
         self.act_editor.load(consequence_id)
 
     def _risk_changed(self):
@@ -1037,11 +1095,11 @@ class SafeguardPanel(QWidget):
         if not cons:
             return
         cause = self.db.get_cause(cons['cause_id'])
-        like = cause['likelihood'] if cause else 1
+        freq = cause['likelihood'] if cause and cause['likelihood'] is not None else 3
         sev = cons['severity'] or 1
         rrf = _RRF_VALUES[self.rrf_combo.currentIndex()]
-        eff_l = effective_likelihood(like, rrf)
-        self.risk_badge.update_risk(sev, eff_l)
+        eff_f = effective_frequency(freq, rrf)
+        self.risk_badge.update_risk(eff_f, sev)
 
     def _save(self):
         if self._loading or self.safeguard_id is None:
@@ -1139,7 +1197,7 @@ class TreePanel(QWidget):
                 if select_type == CAUSE_T and select_id == cause['id']: target = citem
 
                 for cons in self.db.consequences(cause['id']):
-                    _, level, _, _ = risk_info(cons['severity'], cause['likelihood'])
+                    level, _, _ = risk_info(cause['likelihood'], cons['severity'])
                     icon = _RISK_ICON.get(level, '⚪')
                     kitem = QTreeWidgetItem([f"    {icon}  {cons['description'][:40]}"])
                     kitem.setData(0, Qt.ItemDataRole.UserRole, cons['id'])
@@ -1331,11 +1389,11 @@ class EditableScenarioPanel(QWidget):
 
         like_combo = QComboBox()
         like_combo.addItems(_LIKE_LABELS)
-        like_combo.setCurrentIndex(max(0, (cause_d['likelihood'] or 1) - 1))
+        like_combo.setCurrentIndex(freq_to_idx(cause_d['likelihood'] if cause_d['likelihood'] is not None else 3))
         like_combo.currentIndexChanged.connect(
-            lambda idx, c=cid: (self.db.update_cause(c, likelihood=idx + 1),
+            lambda idx, c=cid: (self.db.update_cause(c, likelihood=idx_to_freq(idx)),
                                 self.data_changed.emit()))
-        cause_lay.addWidget(QLabel("L:"))
+        cause_lay.addWidget(QLabel("F:"))
         cause_lay.addWidget(like_combo, 2)
 
         add_cons_btn = QPushButton("+ Konsekvens")
@@ -1344,8 +1402,8 @@ class EditableScenarioPanel(QWidget):
         cause_lay.addWidget(add_cons_btn)
         self._content_layout.addWidget(cause_box)
 
-        # Consequence rows
-        like_val = (cause_d['likelihood'] or 1)
+        # Consequence rows — like_val is the actual frequency value (-1..5)
+        like_val = cause_d['likelihood'] if cause_d['likelihood'] is not None else 3
         for cons in self.db.consequences(self.cause_id):
             cons_d = dict(cons)
             self._add_consequence_row(cons_d, like_val)
@@ -1372,14 +1430,14 @@ class EditableScenarioPanel(QWidget):
         sev_combo.setCurrentIndex(max(0, sev_start - 1))
 
         badge = RiskBadge()
-        badge.update_risk(sev_start, like_val)
+        badge.update_risk(like_val, sev_start)
 
         def _save_cons():
             desc = cons_desc.text().strip() or 'Ny konsekvens'
             sev = sev_combo.currentIndex() + 1
             cat = cons_d.get('category', '')
             self.db.update_consequence(cons_id, desc, sev, cat)
-            badge.update_risk(sev, like_val)
+            badge.update_risk(like_val, sev)
             self.data_changed.emit()
 
         cons_desc.editingFinished.connect(_save_cons)
@@ -1417,15 +1475,15 @@ class EditableScenarioPanel(QWidget):
 
             eff_badge = RiskBadge()
             eff_badge.setFixedSize(120, 22)
-            eff_l = effective_likelihood(like_val, sg_d['rrf'])
-            eff_badge.update_risk(sev_start, eff_l)
+            eff_f = effective_frequency(like_val, sg_d['rrf'])
+            eff_badge.update_risk(eff_f, sev_start)
 
             def _save_sg(s=sg_id, dw=sg_desc, rw=rrf_combo, eb=eff_badge):
                 desc = dw.text().strip() or 'Ny safeguard'
                 rrf = _RRF_VALUES[rw.currentIndex()]
                 self.db.update_safeguard(s, desc, rrf)
-                eff = effective_likelihood(like_val, rrf)
-                eb.update_risk(sev_combo.currentIndex() + 1, eff)
+                eff = effective_frequency(like_val, rrf)
+                eb.update_risk(eff, sev_combo.currentIndex() + 1)
                 self.data_changed.emit()
 
             sg_desc.editingFinished.connect(_save_sg)
@@ -1464,17 +1522,174 @@ class EditableScenarioPanel(QWidget):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# HAZOP WORKSHEET
+# SCENARIO TABLE PANEL  (6-column bottom panel)
 # ══════════════════════════════════════════════════════════════════════════════
 
-class HAZOPWorksheet(QWidget):
-    _HEADERS    = ['Nod', 'P&ID', 'Orsak', 'L', 'Konsekvens', 'S', 'S×L', 'Risknivå',
-                   'Kategori', 'Safeguards', 'Åtgärder']
-    _COL_WIDTHS = [120, 60, 180, 28, 180, 28, 38, 75, 70, 180, 200]
+class ScenarioTablePanel(QWidget):
+    """6-column HAZOP scenario table: Nod|Orsak|Konsekvens|Risk före|Safeguards|Risk efter."""
+
+    _COLS = ['Nod', 'Orsak', 'Konsekvens', 'Risk före barriär', 'Safeguards', 'Risk efter barriär']
 
     def __init__(self, db: Database):
         super().__init__()
         self.db = db
+        self.cause_id = None
+        self.setMinimumHeight(160)
+        self.setMaximumHeight(340)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(4, 2, 4, 2)
+        outer.setSpacing(2)
+
+        hdr_row = QHBoxLayout()
+        self._hdr_lbl = QLabel("HAZOP Scenario")
+        f = QFont(); f.setBold(True); f.setPointSize(9)
+        self._hdr_lbl.setFont(f)
+        hdr_row.addWidget(self._hdr_lbl)
+        hdr_row.addStretch()
+        outer.addLayout(hdr_row)
+
+        self._table = QTableWidget(0, 6)
+        self._table.setHorizontalHeaderLabels(self._COLS)
+        h = self._table.horizontalHeader()
+        h.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        h.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        h.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        h.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        h.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
+        h.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
+        self._table.setColumnWidth(0, 80)
+        self._table.setColumnWidth(3, 150)
+        self._table.setColumnWidth(5, 150)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._table.setAlternatingRowColors(True)
+        self._table.setWordWrap(True)
+        self._table.setStyleSheet(
+            "QHeaderView::section{background:#1F4E79;color:#fff;font-weight:bold;padding:3px;}")
+        outer.addWidget(self._table)
+
+    def load_cause(self, cause_id):
+        self.cause_id = cause_id
+        self._rebuild()
+
+    def load_consequence(self, cons_id):
+        row = self.db.get_consequence(cons_id)
+        if row:
+            self.cause_id = dict(row)['cause_id']
+            self._rebuild()
+
+    def clear(self):
+        self.cause_id = None
+        self._table.setRowCount(0)
+        self._hdr_lbl.setText("HAZOP Scenario")
+
+    def _rebuild(self):
+        self._table.setRowCount(0)
+        if self.cause_id is None:
+            return
+
+        cause = self.db.get_cause(self.cause_id)
+        if not cause:
+            return
+        cause_d = dict(cause)
+        node    = self.db.get_node(cause_d['node_id'])
+        node_name = dict(node)['name'] if node else '?'
+        freq = cause_d['likelihood'] if cause_d['likelihood'] is not None else 3
+
+        self._hdr_lbl.setText(f"HAZOP Scenario — {node_name}")
+
+        freq_label = _FREQ_LABELS[freq_to_idx(freq)]
+
+        cons_list = [dict(c) for c in self.db.consequences(self.cause_id)]
+        if not cons_list:
+            r = self._table.rowCount()
+            self._table.insertRow(r)
+            self._table.setItem(r, 0, QTableWidgetItem(node_name))
+            self._table.setItem(r, 1, QTableWidgetItem(
+                f"{cause_d['description']}\n{freq_label}"))
+            for col in range(2, 6):
+                self._table.setItem(r, col, QTableWidgetItem('—'))
+            self._table.setRowHeight(r, 44)
+            return
+
+        for cons_d in cons_list:
+            sev = cons_d['severity'] or 1
+
+            # Safeguards + total RRF
+            sgs = [dict(s) for s in self.db.safeguards(cons_d['id'])]
+            total_rrf = 1
+            for sg in sgs:
+                total_rrf *= sg.get('rrf', 1)
+            eff_f = effective_frequency(freq, total_rrf)
+
+            level_b, bg_b, fg_b = risk_info(freq, sev)
+            level_a, bg_a, fg_a = risk_info(eff_f, sev)
+
+            sg_lines = [f"{sg['description']}" + (f"  RRF {sg['rrf']}" if sg.get('rrf', 1) > 1 else "")
+                        for sg in sgs]
+            if total_rrf > 1:
+                reduction = int(math.log10(total_rrf))
+                sg_lines.append(f"─── Total RRF {total_rrf:,}  (−{reduction} F-steg)")
+            sg_text = '\n'.join(sg_lines) or '—'
+
+            r = self._table.rowCount()
+            self._table.insertRow(r)
+
+            # Col 0: Nod
+            nod_item = QTableWidgetItem(node_name)
+            self._table.setItem(r, 0, nod_item)
+
+            # Col 1: Orsak
+            self._table.setItem(r, 1, QTableWidgetItem(
+                f"{cause_d['description']}\n{freq_label}"))
+
+            # Col 2: Konsekvens
+            sev_label = _SEV_LABELS[max(0, sev - 1)]
+            self._table.setItem(r, 2, QTableWidgetItem(
+                f"{cons_d['description']}\n{sev_label}"))
+
+            # Col 3: Risk före barriär
+            rb = QTableWidgetItem(f"{level_b}\nF={freq}  C={sev}")
+            rb.setBackground(QBrush(QColor(bg_b)))
+            rb.setForeground(QBrush(QColor(fg_b)))
+            rb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._table.setItem(r, 3, rb)
+
+            # Col 4: Safeguards
+            self._table.setItem(r, 4, QTableWidgetItem(sg_text))
+
+            # Col 5: Risk efter barriär
+            change = f"  (−{int(math.log10(total_rrf))} steg)" if total_rrf > 1 else ""
+            ra = QTableWidgetItem(f"{level_a}\nF={eff_f}  C={sev}{change}")
+            ra.setBackground(QBrush(QColor(bg_a)))
+            ra.setForeground(QBrush(QColor(fg_a)))
+            ra.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._table.setItem(r, 5, ra)
+
+            lines = max(2, sg_text.count('\n') + 1)
+            self._table.setRowHeight(r, max(50, min(130, lines * 18)))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HAZOP WORKSHEET
+# ══════════════════════════════════════════════════════════════════════════════
+
+class HAZOPWorksheet(QWidget):
+    # Columns: Nod | P&ID | Orsak | F | Konsekvens | C | Risk före | Safeguards | Risk efter | Kategori | Åtgärder
+    _HEADERS    = ['Nod', 'P&ID', 'Orsak', 'F', 'Konsekvens', 'C',
+                   'Risk före barriär', 'Safeguards', 'Risk efter barriär', 'Kategori', 'Åtgärder']
+    _COL_WIDTHS = [110, 55, 170, 38, 170, 38, 110, 170, 110, 65, 180]
+
+    # Column indices
+    _C_NOD, _C_PID, _C_ORS, _C_F, _C_KON, _C_C = 0, 1, 2, 3, 4, 5
+    _C_RFORE, _C_SG, _C_REFT, _C_KAT, _C_ATG   = 6, 7, 8, 9, 10
+
+    def __init__(self, db: Database):
+        super().__init__()
+        self.db = db
+        self._loading = False
+        self._row_meta = []   # [(cause_id, consequence_id), ...]
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -1484,6 +1699,9 @@ class HAZOPWorksheet(QWidget):
         f = QFont(); f.setBold(True); f.setPointSize(13)
         title.setFont(f)
         bar.addWidget(title); bar.addStretch()
+        note = QLabel("Klicka en cell i F- eller C-kolumnen för att redigera")
+        note.setStyleSheet("color:#888; font-size:11px;")
+        bar.addWidget(note)
         btn = QPushButton("🔄 Uppdatera")
         btn.clicked.connect(self.refresh)
         bar.addWidget(btn)
@@ -1498,7 +1716,6 @@ class HAZOPWorksheet(QWidget):
         hdr.setStretchLastSection(True)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.setWordWrap(True)
         self.table.setStyleSheet(
@@ -1506,53 +1723,121 @@ class HAZOPWorksheet(QWidget):
         layout.addWidget(self.table)
 
     def refresh(self):
+        self._loading = True
+        self.table.blockSignals(True)
         self.table.setRowCount(0)
+        self._row_meta = []
         prev_node = prev_cause = None
+
         for row in self.db.all_data():
-            score, level, bg_hex, fg_hex = risk_info(row['severity'], row['likelihood'])
-            sg_text  = '; '.join(
-                f"{s['description']} (RRF{s['rrf']})" if s['rrf'] > 1 else s['description']
-                for s in row['safeguards']) or '—'
+            freq = row['likelihood']   # stored in causes.likelihood, value -1..5
+            sev  = row['severity']     # stored in consequences.severity, value 1..5
+
+            # Risk before barriers
+            level_b, bg_b, fg_b = risk_info(freq, sev)
+
+            # Total RRF and risk after barriers
+            total_rrf = 1
+            for sg in row['safeguards']:
+                total_rrf *= sg.get('rrf', 1)
+            eff_f = effective_frequency(freq, total_rrf)
+            level_a, bg_a, fg_a = risk_info(eff_f, sev)
+
+            sg_lines = []
+            for sg in row['safeguards']:
+                rrf = sg.get('rrf', 1)
+                sg_lines.append(f"{sg['description']}" + (f"  RRF {rrf}" if rrf > 1 else ""))
+            if total_rrf > 1:
+                reduction = int(math.log10(total_rrf))
+                sg_lines.append(f"─── Total RRF {total_rrf:,}  (−{reduction} F-steg)")
+            sg_text = '\n'.join(sg_lines) or '—'
+
             act_text = '\n'.join(
                 f"• {a['description']} ({a['status']})" for a in row['actions']) or '—'
 
             r = self.table.rowCount()
             self.table.insertRow(r)
-
-            def _cell(text, center=False):
-                item = QTableWidgetItem(str(text))
-                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter if center else
-                                      Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-                return item
+            self._row_meta.append((row.get('cause_id'), row.get('consequence_id')))
 
             same_node  = row['node_name'] == prev_node
             same_cause = same_node and row['cause'] == prev_cause
 
-            self.table.setItem(r, 0, _cell('' if same_node  else row['node_name']))
-            self.table.setItem(r, 1, _cell('' if same_node  else row['node_pid']))
-            self.table.setItem(r, 2, _cell('' if same_cause else row['cause']))
-            self.table.setItem(r, 3, _cell('' if same_cause else row['likelihood'], True))
-            self.table.setItem(r, 4, _cell(row['consequence']))
-            self.table.setItem(r, 5, _cell(row['severity'], True))
-            self.table.setItem(r, 6, _cell(score, True))
+            def _ro(text, center=False):
+                item = QTableWidgetItem(str(text))
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter if center else
+                                      Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+                return item
 
-            risk_item = QTableWidgetItem(level)
-            risk_item.setBackground(QBrush(QColor(bg_hex)))
-            risk_item.setForeground(QBrush(QColor(fg_hex)))
-            risk_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(r, 7, risk_item)
+            self.table.setItem(r, self._C_NOD, _ro('' if same_node  else row['node_name']))
+            self.table.setItem(r, self._C_PID, _ro('' if same_node  else row['node_pid']))
+            self.table.setItem(r, self._C_ORS, _ro('' if same_cause else row['cause']))
 
-            self.table.setItem(r, 8,  _cell(row['category']))
-            self.table.setItem(r, 9,  _cell(sg_text))
-            self.table.setItem(r, 10, _cell(act_text))
+            # F — editable combo
+            f_combo = QComboBox()
+            f_combo.addItems(_FREQ_LABELS)
+            f_combo.setCurrentIndex(freq_to_idx(freq))
+            cause_id = row.get('cause_id')
+            f_combo.currentIndexChanged.connect(
+                lambda idx, cid=cause_id: self._freq_changed(cid, idx))
+            self.table.setCellWidget(r, self._C_F, f_combo)
 
-            lines = max(1, sg_text.count('\n') + 1, act_text.count('\n') + 1)
-            self.table.setRowHeight(r, max(32, min(100, lines * 18)))
+            self.table.setItem(r, self._C_KON, _ro(row['consequence']))
+
+            # C — editable combo
+            c_combo = QComboBox()
+            c_combo.addItems(_SEV_LABELS)
+            c_combo.setCurrentIndex(max(0, sev - 1))
+            cons_id = row.get('consequence_id')
+            c_combo.currentIndexChanged.connect(
+                lambda idx, cid=cons_id, cat=row['category']: self._sev_changed(cid, idx, cat))
+            self.table.setCellWidget(r, self._C_C, c_combo)
+
+            # Risk before
+            rb = QTableWidgetItem(f"{level_b}\nF={freq}  C={sev}")
+            rb.setBackground(QBrush(QColor(bg_b)))
+            rb.setForeground(QBrush(QColor(fg_b)))
+            rb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.table.setItem(r, self._C_RFORE, rb)
+
+            self.table.setItem(r, self._C_SG, _ro(sg_text))
+
+            # Risk after
+            ra = QTableWidgetItem(f"{level_a}\nF={eff_f}  C={sev}")
+            ra.setBackground(QBrush(QColor(bg_a)))
+            ra.setForeground(QBrush(QColor(fg_a)))
+            ra.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            ra.setFlags(ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.table.setItem(r, self._C_REFT, ra)
+
+            self.table.setItem(r, self._C_KAT, _ro(row['category']))
+            self.table.setItem(r, self._C_ATG, _ro(act_text))
+
+            lines = max(2, sg_text.count('\n') + 1, act_text.count('\n') + 1)
+            self.table.setRowHeight(r, max(44, min(120, lines * 18)))
 
             prev_node  = row['node_name']
             prev_cause = row['cause']
 
-        self.table.resizeRowsToContents()
+        self.table.blockSignals(False)
+        self._loading = False
+
+    def _freq_changed(self, cause_id, combo_idx):
+        if self._loading or not cause_id:
+            return
+        new_freq = idx_to_freq(combo_idx)
+        self.db.update_cause(cause_id, likelihood=new_freq)
+        self.refresh()
+
+    def _sev_changed(self, cons_id, combo_idx, category):
+        if self._loading or not cons_id:
+            return
+        new_sev = combo_idx + 1
+        cons = self.db.get_consequence(cons_id)
+        desc = dict(cons)['description'] if cons else ''
+        self.db.update_consequence(cons_id, desc, new_sev, category)
+        self.refresh()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1592,8 +1877,9 @@ class RiskScenarioWizard(QDialog):
         self._cause_desc.setFixedHeight(100)
         f1.addRow("Beskrivning:", self._cause_desc)
         self._cause_like = QComboBox()
-        self._cause_like.addItems(_LIKE_LABELS)
-        f1.addRow("Sannolikhet (L):", self._cause_like)
+        self._cause_like.addItems(_FREQ_LABELS)
+        self._cause_like.setCurrentIndex(freq_to_idx(3))
+        f1.addRow("Frekvens (F):", self._cause_like)
         self._stack.addWidget(p1)
 
         # Step 2: Consequence
@@ -1670,17 +1956,17 @@ class RiskScenarioWizard(QDialog):
 
     def _update_preview(self):
         sev  = self._cons_sev.currentIndex() + 1
-        like = self._cause_like.currentIndex() + 1
-        self._preview_badge.update_risk(sev, like)
-        rrf = _RRF_VALUES[self._sg_rrf.currentIndex()]
-        eff_l = effective_likelihood(like, rrf)
-        self._sg_badge.update_risk(sev, eff_l)
+        freq = idx_to_freq(self._cause_like.currentIndex())
+        self._preview_badge.update_risk(freq, sev)
+        rrf   = _RRF_VALUES[self._sg_rrf.currentIndex()]
+        eff_f = effective_frequency(freq, rrf)
+        self._sg_badge.update_risk(eff_f, sev)
 
     def _finish(self):
         cause_desc = self._cause_desc.toPlainText().strip() or 'Ny orsak'
-        like  = self._cause_like.currentIndex() + 1
+        freq  = idx_to_freq(self._cause_like.currentIndex())
         c_id  = self.db.add_cause(self.node_id)
-        self.db.update_cause(c_id, cause_desc, like)
+        self.db.update_cause(c_id, cause_desc, freq)
 
         cons_desc = self._cons_desc.toPlainText().strip() or 'Ny konsekvens'
         sev  = self._cons_sev.currentIndex() + 1
@@ -2019,7 +2305,7 @@ class AdminPanel(QWidget):
 
         self._table.setRowCount(0)
         for row in self.db.all_data():
-            score, level, bg, fg = risk_info(row['severity'], row['likelihood'])
+            level, bg, fg = risk_info(row['likelihood'], row['severity'])
             r = self._table.rowCount()
             self._table.insertRow(r)
 
@@ -2034,7 +2320,7 @@ class AdminPanel(QWidget):
             self._table.setItem(r, 2, _c(row['likelihood'], True))
             self._table.setItem(r, 3, _c(row['consequence']))
             self._table.setItem(r, 4, _c(row['severity'], True))
-            risk_item = QTableWidgetItem(f"{level} ({score})")
+            risk_item = QTableWidgetItem(f"{level}\nF={row['likelihood']} C={row['severity']}")
             risk_item.setBackground(QBrush(QColor(bg)))
             risk_item.setForeground(QBrush(QColor(fg)))
             risk_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -2062,9 +2348,9 @@ def export_excel(db: Database, filepath: str):
     ws = wb.active
     ws.title = "HAZOP"
 
-    HEADERS = ['Nod', 'P&ID', 'Orsak', 'L', 'Konsekvens', 'S', 'S×L', 'Risknivå',
+    HEADERS = ['Nod', 'P&ID', 'Orsak', 'F', 'Konsekvens', 'C', 'Risknivå',
                'Kategori', 'Safeguards', 'Åtgärder']
-    COL_WIDTHS = [20, 12, 32, 6, 32, 6, 8, 12, 12, 40, 42]
+    COL_WIDTHS = [20, 12, 32, 6, 32, 6, 14, 12, 40, 42]
     RISK_FILLS = {'Låg': 'C6EFCE', 'Medium': 'FFEB9C', 'Hög': 'FFC7CE', 'Kritisk': 'FF0000'}
 
     thin   = Side(border_style='thin', color='000000')
@@ -2083,7 +2369,7 @@ def export_excel(db: Database, filepath: str):
     ws.freeze_panes = 'A2'
 
     for r, row in enumerate(db.all_data(), 2):
-        score, level, _, _ = risk_info(row['severity'], row['likelihood'])
+        level, _, _ = risk_info(row['likelihood'], row['severity'])
         acts_str = '\n'.join(
             f"• {a['description']} | {a['responsible']} | {a['due_date']} | {a['status']}"
             for a in row['actions'])
@@ -2091,13 +2377,13 @@ def export_excel(db: Database, filepath: str):
             f"{s['description']} (RRF{s['rrf']})" if s['rrf'] > 1 else s['description']
             for s in row['safeguards'])
         values = [row['node_name'], row['node_pid'], row['cause'], row['likelihood'],
-                  row['consequence'], row['severity'], score, level,
+                  row['consequence'], row['severity'], level,
                   row['category'], sg_str, acts_str]
         for c, val in enumerate(values, 1):
             cell = ws.cell(row=r, column=c, value=val)
             cell.border = border
-            cell.alignment = center if c in (4, 6, 7) else wrap
-            if c == 8:
+            cell.alignment = center if c in (4, 6) else wrap
+            if c == 7:
                 fc = RISK_FILLS.get(level, 'FFFFFF')
                 cell.fill = PatternFill(start_color=fc, end_color=fc, fill_type='solid')
         ws.row_dimensions[r].height = 36
@@ -2138,7 +2424,7 @@ def export_pdf(db: Database, filepath: str):
     row_styles = []
 
     for i, row in enumerate(db.all_data(), 1):
-        score, level, _, _ = risk_info(row['severity'], row['likelihood'])
+        level, _, _ = risk_info(row['likelihood'], row['severity'])
         acts_str = '<br/>'.join(
             f"• {a['description']} ({a['status']})" for a in row['actions']) or '—'
         sg_str = '<br/>'.join(
@@ -2150,7 +2436,7 @@ def export_pdf(db: Database, filepath: str):
             Paragraph(str(row['likelihood']), cs),
             Paragraph(row['consequence'], cs),
             Paragraph(str(row['severity']), cs),
-            Paragraph(f"<b>{level}</b><br/>({score})", cs),
+            Paragraph(f"<b>{level}</b><br/>F={row['likelihood']} C={row['severity']}", cs),
             Paragraph(sg_str, cs),
             Paragraph(acts_str, cs),
         ])
@@ -2745,7 +3031,7 @@ class MainWindow(QMainWindow):
         h_splitter.setSizes([260, 650, 370])
         v_splitter.addWidget(h_splitter)
 
-        self.scenario_panel = EditableScenarioPanel(self.db)
+        self.scenario_panel = ScenarioTablePanel(self.db)
         v_splitter.addWidget(self.scenario_panel)
         v_splitter.setSizes([640, 220])
         self.view_stack.addWidget(pid_page)
@@ -2782,8 +3068,7 @@ class MainWindow(QMainWindow):
         self.sg_panel.saved.connect(
             lambda id_: self.tree_panel.refresh(SG_T, id_))
 
-        self.scenario_panel.data_changed.connect(
-            lambda: self.tree_panel.refresh())
+        # ScenarioTablePanel has no data_changed signal — edits go through panels above
 
         self.pid_panel.node_created.connect(
             lambda nid: (self.tree_panel.refresh(NODE_T, nid),
@@ -2858,7 +3143,8 @@ class MainWindow(QMainWindow):
         if self._cur_type == CONS_T and self._cur_id is not None:
             self.cons_panel.load(self._cur_id)
         self.tree_panel.refresh()
-        self.scenario_panel._rebuild()
+        if self._cur_type == CAUSE_T and self._cur_id:
+            self.scenario_panel.load_cause(self._cur_id)
 
     def _open_risk_scenario_wizard(self, node_id=None):
         if node_id is None or node_id == 0:
