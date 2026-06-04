@@ -785,14 +785,15 @@ class SafeguardEditor(QWidget):
 
             rrf_combo = QComboBox()
             rrf_combo.addItems(_RRF_LABELS)
-            rrf_idx = _RRF_VALUES.index(sg['rrf']) if sg['rrf'] in _RRF_VALUES else 0
+            sg_rrf_val = sg['rrf'] if sg['rrf'] is not None else 1
+            rrf_idx = _RRF_VALUES.index(sg_rrf_val) if sg_rrf_val in _RRF_VALUES else 0
             rrf_combo.setCurrentIndex(rrf_idx)
             sid = sg['id']
             rrf_combo.currentIndexChanged.connect(
                 lambda idx, s=sid, r=row: self._rrf_changed(s, r, idx))
             self.table.setCellWidget(row, 1, rrf_combo)
 
-            eff_f = effective_frequency(self._parent_cause_likelihood, sg['rrf'])
+            eff_f = effective_frequency(self._parent_cause_likelihood, sg['rrf'] or 1)
             badge = RiskBadge()
             badge.update_risk(eff_f, severity)
             self.table.setCellWidget(row, 2, badge)
@@ -1335,10 +1336,13 @@ class TreePanel(QWidget):
                     if select_type == CONS_T and select_id == cons['id']: target = kitem
 
                     for sg in self.db.safeguards(cons['id']):
-                        rrf = sg['rrf'] or 1
+                        rrf = (sg['rrf'] or 1) if sg['rrf'] is not None else 1
                         rrf_str = f"RRF{rrf}" if rrf > 1 else "—"
-                        linked = sg['source_id'] is not None if 'source_id' in sg.keys() else False
-                        icon   = "🔗🛡" if linked else "🛡"
+                        try:
+                            linked = bool(sg['source_id'])
+                        except (IndexError, KeyError):
+                            linked = False
+                        icon = "🔗🛡" if linked else "🛡"
                         sgitem = QTreeWidgetItem([f"       {icon}  {sg['description'][:35]}  [{rrf_str}]"])
                         sgitem.setData(0, Qt.ItemDataRole.UserRole, sg['id'])
                         sgitem.setData(0, Qt.ItemDataRole.UserRole + 1, SG_T)
@@ -1872,17 +1876,27 @@ class ScenarioTablePanel(QWidget):
     # ── Build ─────────────────────────────────────────────────────────────────
 
     def _rebuild(self):
-        try: self._table.cellChanged.disconnect()
-        except Exception: pass
+        if getattr(self, '_rebuilding', False):
+            return
+        self._rebuilding = True
+        try:
+            self._table.cellChanged.disconnect()
+        except Exception:
+            pass
+        self._table.blockSignals(True)
         self._table.setRowCount(0)
 
         if self.cause_id is None:
+            self._table.blockSignals(False)
             self._table.cellChanged.connect(self._on_cell_changed)
+            self._rebuilding = False
             return
 
         cause = self.db.get_cause(self.cause_id)
         if not cause:
+            self._table.blockSignals(False)
             self._table.cellChanged.connect(self._on_cell_changed)
+            self._rebuilding = False
             return
         cause_d   = dict(cause)
         node      = self.db.get_node(cause_d['node_id'])
@@ -1892,11 +1906,16 @@ class ScenarioTablePanel(QWidget):
         self._hdr_lbl.setText(f"HAZOP Scenario — {node_name}")
         freq_lbl = _FREQ_LABELS[freq_to_idx(freq)]
 
-        for cons in self.db.consequences(self.cause_id):
-            cons_d = dict(cons)
-            self._add_row(node_name, cause_d, freq, freq_lbl, cons_d)
-
-        self._table.cellChanged.connect(self._on_cell_changed)
+        try:
+            for cons in self.db.consequences(self.cause_id):
+                cons_d = dict(cons)
+                self._add_row(node_name, cause_d, freq, freq_lbl, cons_d)
+        except Exception as e:
+            QMessageBox.critical(None, "Fel i scenariopanel", str(e))
+        finally:
+            self._table.blockSignals(False)
+            self._table.cellChanged.connect(self._on_cell_changed)
+            self._rebuilding = False
 
     def _add_row(self, node_name, cause_d, freq, freq_lbl, cons_d):
         r    = self._table.rowCount()
@@ -1905,10 +1924,10 @@ class ScenarioTablePanel(QWidget):
         cid  = cons_d['id']
 
         # Safeguards
-        sgs       = [dict(s) for s in self.db.safeguards(cid)]
-        sg_rrf    = 1
+        sgs    = [dict(s) for s in self.db.safeguards(cid)]
+        sg_rrf = 1
         for sg in sgs:
-            sg_rrf *= sg.get('rrf', 1)
+            sg_rrf *= (sg.get('rrf') or 1)
 
         # Extra reduction factors
         rfs = [dict(rf) for rf in self.db.reduction_factors(cid)]
@@ -2010,6 +2029,12 @@ class ScenarioTablePanel(QWidget):
         self._rebuild()
 
     def _on_cell_changed(self, row, col):
+        try:
+            self._on_cell_changed_inner(row, col)
+        except Exception as e:
+            QMessageBox.critical(None, "Fel vid celländring (scenario)", str(e))
+
+    def _on_cell_changed_inner(self, row, col):
         item = self._table.item(row, col)
         if not item:
             return
@@ -3023,6 +3048,12 @@ class EquipmentPanel(QWidget):
     # ── Cell editing ──────────────────────────────────────────────────────────
 
     def _on_cell_changed(self, row, col):
+        try:
+            self._on_cell_changed_inner(row, col)
+        except Exception as e:
+            QMessageBox.critical(None, "Fel vid celländring (utrustning)", str(e))
+
+    def _on_cell_changed_inner(self, row, col):
         if self._loading:
             return
         chk = self._tbl.item(row, _EC_CHK)
