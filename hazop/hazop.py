@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QSpinBox, QColorDialog, QFrame, QListWidget, QListWidgetItem,
     QProgressDialog,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF, QTimer
 from PyQt6.QtGui import QFont, QColor, QAction, QBrush, QPen, QPainter
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1992,8 +1992,8 @@ class ScenarioTablePanel(QWidget):
 
     def _fa_widget(self, cons_id, active, rrf_val, field):
         """Return a widget with checkbox + RRF spinbox for FA or Ignition."""
-        label  = 'FA' if field == 'fa' else 'Antändning'
-        w      = QWidget()
+        label = 'FA' if field == 'fa' else 'Antändning'
+        w = QWidget()
         layout = QHBoxLayout(w)
         layout.setContentsMargins(4, 1, 4, 1)
         layout.setSpacing(3)
@@ -2008,22 +2008,25 @@ class ScenarioTablePanel(QWidget):
         spin.setEnabled(bool(active))
         spin.setFixedWidth(80)
 
-        def _save():
-            fa  = int(chk.isChecked())
-            rv  = spin.value()
+        def _save_to_db():
+            fa = int(chk.isChecked())
+            rv = spin.value()
             spin.setEnabled(bool(fa))
             if field == 'fa':
                 self.db.conn.execute(
-                    "UPDATE consequences SET fa_active=?,fa_rrf=? WHERE id=?", (fa, rv, cons_id))
+                    "UPDATE consequences SET fa_active=?,fa_rrf=? WHERE id=?",
+                    (fa, rv, cons_id))
             else:
                 self.db.conn.execute(
                     "UPDATE consequences SET ignition_active=?,ignition_rrf=? WHERE id=?",
                     (fa, rv, cons_id))
             self.db.conn.commit()
-            self._rebuild()
+            # Defer rebuild so current widget event finishes first
+            QTimer.singleShot(0, self._rebuild)
 
-        chk.toggled.connect(lambda _: _save())
-        spin.editingFinished.connect(_save)
+        # stateChanged fires after the checkbox has settled
+        chk.stateChanged.connect(lambda _state: _save_to_db())
+        spin.editingFinished.connect(_save_to_db)
 
         layout.addWidget(chk)
         layout.addWidget(spin)
