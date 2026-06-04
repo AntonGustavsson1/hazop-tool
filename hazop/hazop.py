@@ -973,7 +973,13 @@ class NodePanel(QWidget):
         self.desc_edit = QTextEdit()
         self.desc_edit.setPlaceholderText("Beskrivning av noden...")
         self.desc_edit.setFixedHeight(100)
-        self.desc_edit.focusOutEvent = lambda e: (self._save(), QTextEdit.focusOutEvent(self.desc_edit, e))
+        _orig_foe = QTextEdit.focusOutEvent
+        _w = self.desc_edit
+        _s = self._save
+        def _desc_foe(e, _w=_w, _s=_s, _orig=_orig_foe):
+            _s()
+            _orig(_w, e)
+        self.desc_edit.focusOutEvent = _desc_foe
         form.addRow("Beskrivning:", self.desc_edit)
 
         layout.addLayout(form)
@@ -1024,7 +1030,13 @@ class CausePanel(QWidget):
         self.desc_edit = QTextEdit()
         self.desc_edit.setPlaceholderText("Beskriv orsaken till avvikelsen / faran...")
         self.desc_edit.setFixedHeight(120)
-        self.desc_edit.focusOutEvent = lambda e: (self._save(), QTextEdit.focusOutEvent(self.desc_edit, e))
+        _orig_foe = QTextEdit.focusOutEvent
+        _w = self.desc_edit
+        _s = self._save
+        def _desc_foe(e, _w=_w, _s=_s, _orig=_orig_foe):
+            _s()
+            _orig(_w, e)
+        self.desc_edit.focusOutEvent = _desc_foe
         form.addRow("Beskrivning:", self.desc_edit)
 
         self.freq_combo = QComboBox()
@@ -1079,7 +1091,13 @@ class ConsequencePanel(QWidget):
         self.desc_edit = QTextEdit()
         self.desc_edit.setPlaceholderText("Beskriv konsekvensen...")
         self.desc_edit.setFixedHeight(80)
-        self.desc_edit.focusOutEvent = lambda e: (self._save(), QTextEdit.focusOutEvent(self.desc_edit, e))
+        _orig_foe = QTextEdit.focusOutEvent
+        _w = self.desc_edit
+        _s = self._save
+        def _desc_foe(e, _w=_w, _s=_s, _orig=_orig_foe):
+            _s()
+            _orig(_w, e)
+        self.desc_edit.focusOutEvent = _desc_foe
         desc_lay.addWidget(self.desc_edit)
         layout.addWidget(desc_box)
 
@@ -1187,7 +1205,13 @@ class SafeguardPanel(QWidget):
         self.desc_edit = QTextEdit()
         self.desc_edit.setPlaceholderText("Beskriv safeguarden...")
         self.desc_edit.setFixedHeight(100)
-        self.desc_edit.focusOutEvent = lambda e: (self._save(), QTextEdit.focusOutEvent(self.desc_edit, e))
+        _orig_foe = QTextEdit.focusOutEvent
+        _w = self.desc_edit
+        _s = self._save
+        def _desc_foe(e, _w=_w, _s=_s, _orig=_orig_foe):
+            _s()
+            _orig(_w, e)
+        self.desc_edit.focusOutEvent = _desc_foe
         form.addRow("Beskrivning:", self.desc_edit)
 
         self.rrf_combo = QComboBox()
