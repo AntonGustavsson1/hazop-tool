@@ -26,6 +26,12 @@ Syntax check without running the GUI:
 python -m py_compile hazop.py && python -m py_compile pid_viewer.py
 ```
 
+## Session context
+
+**Always read `NOTES.md` at the start of every session.** It contains decisions, deferred features, known limitations and user preferences that are not derivable from the code alone.
+
+**Always update `NOTES.md` at the end of every session** (or after each meaningful change) — add new decisions, move completed items into the implemented table, and record anything deferred. Commit it together with the changed source files.
+
 ## Git workflow
 
 After every meaningful change, commit and push so no work is ever lost:
