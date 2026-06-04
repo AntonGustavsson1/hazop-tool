@@ -1956,13 +1956,27 @@ class ScenarioTablePanel(QWidget):
         sg_item.setFlags(sg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         self._table.setItem(r, self._C_SG, sg_item)
 
-        # ── Col 5: FA widget ──────────────────────────────────────────────────
-        self._table.setCellWidget(r, self._C_FA,
-                                  self._fa_widget(cid, fa_active, fa_rrf, 'fa'))
+        # ── Col 5: FA — checkable item, text = RRF value ─────────────────────
+        fa_item = QTableWidgetItem(str(fa_rrf))
+        fa_item.setCheckState(
+            Qt.CheckState.Checked if fa_active else Qt.CheckState.Unchecked)
+        fa_item.setFlags(Qt.ItemFlag.ItemIsEnabled |
+                         Qt.ItemFlag.ItemIsUserCheckable |
+                         Qt.ItemFlag.ItemIsEditable)
+        fa_item.setData(Qt.ItemDataRole.UserRole, ('fa', cid))
+        fa_item.setToolTip("Kryssa i för FA-reduktion. Värdet = RRF (default 10).")
+        self._table.setItem(r, self._C_FA, fa_item)
 
-        # ── Col 6: Antändning widget ──────────────────────────────────────────
-        self._table.setCellWidget(r, self._C_IGN,
-                                  self._fa_widget(cid, ign_active, ign_rrf, 'ignition'))
+        # ── Col 6: Antändning — checkable item ───────────────────────────────
+        ign_item = QTableWidgetItem(str(ign_rrf))
+        ign_item.setCheckState(
+            Qt.CheckState.Checked if ign_active else Qt.CheckState.Unchecked)
+        ign_item.setFlags(Qt.ItemFlag.ItemIsEnabled |
+                          Qt.ItemFlag.ItemIsUserCheckable |
+                          Qt.ItemFlag.ItemIsEditable)
+        ign_item.setData(Qt.ItemDataRole.UserRole, ('ignition', cid))
+        ign_item.setToolTip("Kryssa i för antändningsreduktion. Värdet = RRF (default 10).")
+        self._table.setItem(r, self._C_IGN, ign_item)
 
         # ── Col 7: Övriga faktorer ────────────────────────────────────────────
         n_active = sum(1 for rf in rfs if rf.get('active'))
@@ -1990,48 +2004,6 @@ class ScenarioTablePanel(QWidget):
 
         self._table.setRowHeight(r, max(52, min(140, (len(sg_lines) + 2) * 18)))
 
-    def _fa_widget(self, cons_id, active, rrf_val, field):
-        """Return a widget with checkbox + RRF spinbox for FA or Ignition."""
-        label = 'FA' if field == 'fa' else 'Antändning'
-        w = QWidget()
-        layout = QHBoxLayout(w)
-        layout.setContentsMargins(4, 1, 4, 1)
-        layout.setSpacing(3)
-
-        chk = QCheckBox(label)
-        chk.setChecked(bool(active))
-
-        spin = QSpinBox()
-        spin.setRange(1, 1_000_000)
-        spin.setValue(int(rrf_val))
-        spin.setPrefix("RRF ")
-        spin.setEnabled(bool(active))
-        spin.setFixedWidth(80)
-
-        def _save_to_db():
-            fa = int(chk.isChecked())
-            rv = spin.value()
-            spin.setEnabled(bool(fa))
-            if field == 'fa':
-                self.db.conn.execute(
-                    "UPDATE consequences SET fa_active=?,fa_rrf=? WHERE id=?",
-                    (fa, rv, cons_id))
-            else:
-                self.db.conn.execute(
-                    "UPDATE consequences SET ignition_active=?,ignition_rrf=? WHERE id=?",
-                    (fa, rv, cons_id))
-            self.db.conn.commit()
-            # Defer rebuild so current widget event finishes first
-            QTimer.singleShot(0, self._rebuild)
-
-        # stateChanged fires after the checkbox has settled
-        chk.stateChanged.connect(lambda _state: _save_to_db())
-        spin.editingFinished.connect(_save_to_db)
-
-        layout.addWidget(chk)
-        layout.addWidget(spin)
-        return w
-
     def _edit_extra(self, cons_id):
         dlg = ReductionFactorsDialog(self.db, cons_id, self)
         dlg.exec()
@@ -2045,15 +2017,36 @@ class ScenarioTablePanel(QWidget):
         if not meta:
             return
         kind, id_ = meta
-        text = item.text()
-        # Only the first line is the description (second line = label)
-        desc = text.split('\n')[0].strip()
+        text = item.text().strip()
+
         if kind == 'cause':
+            desc = text.split('\n')[0].strip()
             self.db.update_cause(id_, desc)
+
         elif kind == 'consequence':
+            desc = text.split('\n')[0].strip()
             cons = self.db.get_consequence(id_)
             if cons:
                 self.db.update_consequence(id_, desc, cons['severity'], cons['category'] or '')
+
+        elif kind in ('fa', 'ignition'):
+            # Checkbox state + editable RRF value
+            active = (item.checkState() == Qt.CheckState.Checked)
+            try:
+                rrf = max(1, int(''.join(c for c in text if c.isdigit()) or '10'))
+            except (ValueError, TypeError):
+                rrf = 10
+            if kind == 'fa':
+                self.db.conn.execute(
+                    "UPDATE consequences SET fa_active=?,fa_rrf=? WHERE id=?",
+                    (int(active), rrf, id_))
+            else:
+                self.db.conn.execute(
+                    "UPDATE consequences SET ignition_active=?,ignition_rrf=? WHERE id=?",
+                    (int(active), rrf, id_))
+            self.db.conn.commit()
+            # Defer rebuild — do NOT call directly from cellChanged
+            QTimer.singleShot(0, self._rebuild)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
