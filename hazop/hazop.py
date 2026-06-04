@@ -65,7 +65,16 @@ CREATE TABLE IF NOT EXISTS safeguards (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     consequence_id  INTEGER NOT NULL REFERENCES consequences(id) ON DELETE CASCADE,
     description     TEXT NOT NULL DEFAULT '',
-    rrf             INTEGER NOT NULL DEFAULT 1
+    rrf             INTEGER NOT NULL DEFAULT 1,
+    source_id       INTEGER DEFAULT NULL
+);
+
+CREATE TABLE IF NOT EXISTS reduction_factors (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    consequence_id  INTEGER NOT NULL REFERENCES consequences(id) ON DELETE CASCADE,
+    description     TEXT NOT NULL DEFAULT '',
+    rrf             INTEGER NOT NULL DEFAULT 10,
+    active          INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS actions (
@@ -86,6 +95,14 @@ CREATE TABLE IF NOT EXISTS consequence_categories (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT NOT NULL,
     sort_order INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS reduction_factors (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    consequence_id  INTEGER NOT NULL REFERENCES consequences(id) ON DELETE CASCADE,
+    description     TEXT NOT NULL DEFAULT '',
+    rrf             INTEGER NOT NULL DEFAULT 10,
+    active          INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS equipment_types (
@@ -199,6 +216,26 @@ def effective_frequency(base_freq, rrf):
 effective_likelihood = effective_frequency
 
 
+def total_freq_reduction(base_freq: int, safeguard_rrf: int,
+                         fa_active: bool, fa_rrf: int,
+                         ignition_active: bool, ignition_rrf: int,
+                         extra_rfactors) -> tuple:
+    """Return (final_freq, total_rrf, step_reduction).
+
+    extra_rfactors: iterable of dicts with 'rrf' and 'active'.
+    """
+    total_rrf = safeguard_rrf
+    if fa_active and fa_rrf > 1:
+        total_rrf *= fa_rrf
+    if ignition_active and ignition_rrf > 1:
+        total_rrf *= ignition_rrf
+    for rf in extra_rfactors:
+        if rf.get('active') and rf.get('rrf', 1) > 1:
+            total_rrf *= rf['rrf']
+    reduction = int(math.log10(max(1, total_rrf)))
+    return max(-1, base_freq - reduction), total_rrf, reduction
+
+
 # Frequency F=-1..5, stored as integer in causes.likelihood
 _FREQ_VALUES = [-1, 0, 1, 2, 3, 4, 5]
 _FREQ_LABELS = [
@@ -244,8 +281,15 @@ class Database:
             "ALTER TABLE nodes ADD COLUMN markup_style TEXT DEFAULT ''",
             "ALTER TABLE nodes ADD COLUMN pid_page INTEGER DEFAULT 0",
             "ALTER TABLE causes ADD COLUMN likelihood INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE causes ADD COLUMN source_id INTEGER DEFAULT NULL",
             "ALTER TABLE safeguards ADD COLUMN rrf INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE safeguards ADD COLUMN source_id INTEGER DEFAULT NULL",
             "ALTER TABLE consequences ADD COLUMN category TEXT DEFAULT ''",
+            "ALTER TABLE consequences ADD COLUMN source_id INTEGER DEFAULT NULL",
+            "ALTER TABLE consequences ADD COLUMN fa_active INTEGER DEFAULT 0",
+            "ALTER TABLE consequences ADD COLUMN fa_rrf INTEGER DEFAULT 10",
+            "ALTER TABLE consequences ADD COLUMN ignition_active INTEGER DEFAULT 0",
+            "ALTER TABLE consequences ADD COLUMN ignition_rrf INTEGER DEFAULT 10",
             "ALTER TABLE cause_markers ADD COLUMN component_tag TEXT DEFAULT ''",
         ]:
             try:
@@ -261,6 +305,13 @@ class Database:
                 prefix         TEXT PRIMARY KEY,
                 equipment_type TEXT NOT NULL,
                 display_name   TEXT DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS reduction_factors (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                consequence_id  INTEGER NOT NULL REFERENCES consequences(id) ON DELETE CASCADE,
+                description     TEXT NOT NULL DEFAULT '',
+                rrf             INTEGER NOT NULL DEFAULT 10,
+                active          INTEGER NOT NULL DEFAULT 1
             );
             CREATE TABLE IF NOT EXISTS equipment_catalog (
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -548,6 +599,81 @@ class Database:
 
     def delete_action(self, id_):
         self.conn.execute("DELETE FROM actions WHERE id=?", (id_,)); self.conn.commit()
+
+    # ── Reduction factors ─────────────────────────────────────────────────────
+    def reduction_factors(self, consequence_id):
+        return self.conn.execute(
+            "SELECT * FROM reduction_factors WHERE consequence_id=? ORDER BY id",
+            (consequence_id,)).fetchall()
+
+    def add_reduction_factor(self, consequence_id, description='', rrf=10):
+        cur = self.conn.execute(
+            "INSERT INTO reduction_factors (consequence_id,description,rrf,active) VALUES (?,?,?,1)",
+            (consequence_id, description, rrf))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def update_reduction_factor(self, id_, description, rrf, active):
+        self.conn.execute(
+            "UPDATE reduction_factors SET description=?,rrf=?,active=? WHERE id=?",
+            (description, rrf, int(active), id_))
+        self.conn.commit()
+
+    def delete_reduction_factor(self, id_):
+        self.conn.execute("DELETE FROM reduction_factors WHERE id=?", (id_,))
+        self.conn.commit()
+
+    def update_consequence_factors(self, id_, fa_active, fa_rrf, ignition_active, ignition_rrf):
+        self.conn.execute(
+            "UPDATE consequences SET fa_active=?,fa_rrf=?,ignition_active=?,ignition_rrf=? WHERE id=?",
+            (int(fa_active), fa_rrf, int(ignition_active), ignition_rrf, id_))
+        self.conn.commit()
+
+    # ── Copy support ──────────────────────────────────────────────────────────
+    def copy_cause(self, cause_id, target_node_id):
+        orig = self.get_cause(cause_id)
+        if not orig:
+            return None
+        cur = self.conn.execute(
+            "INSERT INTO causes (node_id,description,likelihood,source_id) VALUES (?,?,?,?)",
+            (target_node_id, orig['description'], orig['likelihood'], cause_id))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def copy_consequence(self, cons_id, target_cause_id):
+        orig = self.get_consequence(cons_id)
+        if not orig:
+            return None
+        cur = self.conn.execute(
+            "INSERT INTO consequences (cause_id,description,severity,category,"
+            "fa_active,fa_rrf,ignition_active,ignition_rrf,source_id) VALUES (?,?,?,?,?,?,?,?,?)",
+            (target_cause_id, orig['description'], orig['severity'], orig['category'] or '',
+             orig['fa_active'] or 0, orig['fa_rrf'] or 10,
+             orig['ignition_active'] or 0, orig['ignition_rrf'] or 10, cons_id))
+        self.conn.commit()
+        new_id = cur.lastrowid
+        # Copy safeguards
+        for sg in self.safeguards(cons_id):
+            self.conn.execute(
+                "INSERT INTO safeguards (consequence_id,description,rrf,source_id) VALUES (?,?,?,?)",
+                (new_id, sg['description'], sg['rrf'], sg['id']))
+        # Copy reduction factors
+        for rf in self.reduction_factors(cons_id):
+            self.conn.execute(
+                "INSERT INTO reduction_factors (consequence_id,description,rrf,active) VALUES (?,?,?,?)",
+                (new_id, rf['description'], rf['rrf'], rf['active']))
+        self.conn.commit()
+        return new_id
+
+    def copy_safeguard(self, sg_id, target_cons_id):
+        orig = self.get_safeguard(sg_id)
+        if not orig:
+            return None
+        cur = self.conn.execute(
+            "INSERT INTO safeguards (consequence_id,description,rrf,source_id) VALUES (?,?,?,?)",
+            (target_cons_id, orig['description'], orig['rrf'], sg_id))
+        self.conn.commit()
+        return cur.lastrowid
 
     def stats(self):
         return {
@@ -1133,6 +1259,8 @@ class TreePanel(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
+        self._clipboard = None  # {'type': T, 'id': id}
+
         lbl = QLabel("HAZOP-träd")
         f = QFont(); f.setBold(True)
         lbl.setFont(f)
@@ -1209,7 +1337,9 @@ class TreePanel(QWidget):
                     for sg in self.db.safeguards(cons['id']):
                         rrf = sg['rrf'] or 1
                         rrf_str = f"RRF{rrf}" if rrf > 1 else "—"
-                        sgitem = QTreeWidgetItem([f"       🛡  {sg['description'][:35]}  [{rrf_str}]"])
+                        linked = sg['source_id'] is not None if 'source_id' in sg.keys() else False
+                        icon   = "🔗🛡" if linked else "🛡"
+                        sgitem = QTreeWidgetItem([f"       {icon}  {sg['description'][:35]}  [{rrf_str}]"])
                         sgitem.setData(0, Qt.ItemDataRole.UserRole, sg['id'])
                         sgitem.setData(0, Qt.ItemDataRole.UserRole + 1, SG_T)
                         kitem.addChild(sgitem)
@@ -1299,12 +1429,81 @@ class TreePanel(QWidget):
         item = self.tree.itemAt(pos)
         if item is None: return
         type_ = item.data(0, Qt.ItemDataRole.UserRole + 1)
-        menu = QMenu(self)
-        if type_ == NODE_T: menu.addAction("+ Lägg till Cause", self.add_cause)
-        elif type_ == CAUSE_T: menu.addAction("+ Lägg till Consequence", self.add_consequence)
+        id_   = item.data(0, Qt.ItemDataRole.UserRole)
+        menu  = QMenu(self)
+
+        if type_ == NODE_T:
+            menu.addAction("+ Lägg till Cause", self.add_cause)
+        elif type_ == CAUSE_T:
+            menu.addAction("+ Lägg till Consequence", self.add_consequence)
+        menu.addSeparator()
+
+        # Copy
+        copy_labels = {CAUSE_T: "📋 Kopiera Cause",
+                       CONS_T:  "📋 Kopiera Consequence",
+                       SG_T:    "📋 Kopiera Safeguard"}
+        if type_ in copy_labels:
+            menu.addAction(copy_labels[type_],
+                           lambda t=type_, i=id_: self._copy_item(t, i))
+
+        # Paste (only if clipboard is compatible with current target)
+        if self._clipboard:
+            ct = self._clipboard['type']
+            can_paste = (
+                (ct == CAUSE_T and type_ in (NODE_T, CAUSE_T, CONS_T, SG_T)) or
+                (ct == CONS_T  and type_ in (CAUSE_T, CONS_T, SG_T)) or
+                (ct == SG_T    and type_ in (CONS_T, SG_T))
+            )
+            if can_paste:
+                menu.addAction("📋 Klistra in här", self._paste_item)
+
         menu.addSeparator()
         menu.addAction("Ta bort", self.delete_selected)
         menu.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def _copy_item(self, type_, id_):
+        self._clipboard = {'type': type_, 'id': id_}
+
+    def _paste_item(self):
+        if not self._clipboard:
+            return
+        ct    = self._clipboard['type']
+        cid   = self._clipboard['id']
+        type_, id_ = self._current()
+
+        if ct == CAUSE_T:
+            node_id = self._resolve_node_id(type_, id_)
+            if not node_id:
+                return
+            new_id = self.db.copy_cause(cid, node_id)
+            if new_id:
+                self.refresh(CAUSE_T, new_id)
+                self.structure_changed.emit()
+
+        elif ct == CONS_T:
+            cause_id = self._resolve_cause_id(type_, id_)
+            if not cause_id:
+                return
+            new_id = self.db.copy_consequence(cid, cause_id)
+            if new_id:
+                self.refresh(CONS_T, new_id)
+                self.structure_changed.emit()
+
+        elif ct == SG_T:
+            # Resolve consequence
+            cons_id = None
+            if type_ == CONS_T:
+                cons_id = id_
+            elif type_ == SG_T:
+                sg = self.db.get_safeguard(id_)
+                if sg:
+                    cons_id = sg['consequence_id']
+            if not cons_id:
+                return
+            new_id = self.db.copy_safeguard(cid, cons_id)
+            if new_id:
+                self.refresh(SG_T, new_id)
+                self.structure_changed.emit()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1525,17 +1724,94 @@ class EditableScenarioPanel(QWidget):
 # SCENARIO TABLE PANEL  (6-column bottom panel)
 # ══════════════════════════════════════════════════════════════════════════════
 
-class ScenarioTablePanel(QWidget):
-    """6-column HAZOP scenario table: Nod|Orsak|Konsekvens|Risk före|Safeguards|Risk efter."""
+class ReductionFactorsDialog(QDialog):
+    """Edit the list of extra reduction factors for a consequence."""
 
-    _COLS = ['Nod', 'Orsak', 'Konsekvens', 'Risk före barriär', 'Safeguards', 'Risk efter barriär']
+    def __init__(self, db, consequence_id, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.consequence_id = consequence_id
+        self.setWindowTitle("Övriga reduktionsfaktorer")
+        self.setMinimumWidth(480)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Lägg till faktorer som reducerar slutkonsekvensfrekvensen:"))
+
+        self._tbl = QTableWidget(0, 3)
+        self._tbl.setHorizontalHeaderLabels(['Beskrivning', 'RRF', ''])
+        self._tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self._tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        self._tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self._tbl.setColumnWidth(1, 80); self._tbl.setColumnWidth(2, 64)
+        self._tbl.verticalHeader().setVisible(False)
+        self._tbl.cellChanged.connect(self._on_cell)
+        layout.addWidget(self._tbl)
+
+        add_btn = QPushButton("+ Lägg till faktor")
+        add_btn.clicked.connect(self._add)
+        layout.addWidget(add_btn)
+        layout.addWidget(QDialogButtonBox(QDialogButtonBox.StandardButton.Close,
+                                          accepted=self.accept, rejected=self.accept))
+        self._refresh()
+
+    def _refresh(self):
+        try: self._tbl.cellChanged.disconnect()
+        except Exception: pass
+        self._tbl.setRowCount(0)
+        for rf in self.db.reduction_factors(self.consequence_id):
+            r = self._tbl.rowCount(); self._tbl.insertRow(r)
+            desc = QTableWidgetItem(rf['description'])
+            desc.setData(Qt.ItemDataRole.UserRole, rf['id'])
+            self._tbl.setItem(r, 0, desc)
+            self._tbl.setItem(r, 1, QTableWidgetItem(str(rf['rrf'])))
+            del_btn = QPushButton("Ta bort")
+            del_btn.clicked.connect(lambda _, rid=rf['id']: (
+                self.db.delete_reduction_factor(rid), self._refresh()))
+            self._tbl.setCellWidget(r, 2, del_btn)
+            self._tbl.setRowHeight(r, 26)
+        self._tbl.cellChanged.connect(self._on_cell)
+
+    def _add(self):
+        new_id = self.db.add_reduction_factor(self.consequence_id, 'Ny faktor', 10)
+        self._refresh()
+
+    def _on_cell(self, row, col):
+        item = self._tbl.item(row, 0)
+        if not item: return
+        rf_id = item.data(Qt.ItemDataRole.UserRole)
+        desc = self._tbl.item(row, 0).text() if self._tbl.item(row, 0) else ''
+        try: rrf = int(self._tbl.item(row, 1).text()) if self._tbl.item(row, 1) else 10
+        except ValueError: rrf = 10
+        self.db.update_reduction_factor(rf_id, desc, rrf, 1)
+
+
+class ScenarioTablePanel(QWidget):
+    """Extended scenario table with FA, Antändning, Övriga faktorer and Slutkonsekvens."""
+
+    # Column indices
+    _C_NOD, _C_ORS, _C_KON, _C_RFORE = 0, 1, 2, 3
+    _C_SG, _C_FA, _C_IGN, _C_OVRIGA  = 4, 5, 6, 7
+    _C_REFT, _C_SLUT                   = 8, 9
+
+    _COLS = [
+        'Nod',
+        'Orsak  →',
+        'Konsekvens',
+        'Risk före barriär',
+        'Barriärer  →',
+        'FA ☑',
+        'Antändning ☑',
+        'Övriga faktorer',
+        'Risk efter barriärer',
+        'Slutkonsekvens',
+    ]
 
     def __init__(self, db: Database):
         super().__init__()
         self.db = db
         self.cause_id = None
         self.setMinimumHeight(160)
-        self.setMaximumHeight(340)
+        self.setMaximumHeight(380)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(4, 2, 4, 2)
@@ -1549,25 +1825,34 @@ class ScenarioTablePanel(QWidget):
         hdr_row.addStretch()
         outer.addLayout(hdr_row)
 
-        self._table = QTableWidget(0, 6)
+        self._table = QTableWidget(0, len(self._COLS))
         self._table.setHorizontalHeaderLabels(self._COLS)
         h = self._table.horizontalHeader()
-        h.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        h.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        h.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        h.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        h.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
-        h.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
-        self._table.setColumnWidth(0, 80)
-        self._table.setColumnWidth(3, 150)
-        self._table.setColumnWidth(5, 150)
+        resize_modes = {
+            self._C_NOD:   (QHeaderView.ResizeMode.Interactive, 70),
+            self._C_ORS:   (QHeaderView.ResizeMode.Stretch,     0),
+            self._C_KON:   (QHeaderView.ResizeMode.Stretch,     0),
+            self._C_RFORE: (QHeaderView.ResizeMode.Fixed,       130),
+            self._C_SG:    (QHeaderView.ResizeMode.Interactive, 160),
+            self._C_FA:    (QHeaderView.ResizeMode.Fixed,       140),
+            self._C_IGN:   (QHeaderView.ResizeMode.Fixed,       140),
+            self._C_OVRIGA:(QHeaderView.ResizeMode.Interactive, 120),
+            self._C_REFT:  (QHeaderView.ResizeMode.Fixed,       130),
+            self._C_SLUT:  (QHeaderView.ResizeMode.Fixed,       130),
+        }
+        for col, (mode, width) in resize_modes.items():
+            h.setSectionResizeMode(col, mode)
+            if width:
+                self._table.setColumnWidth(col, width)
         self._table.verticalHeader().setVisible(False)
-        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setAlternatingRowColors(True)
         self._table.setWordWrap(True)
         self._table.setStyleSheet(
             "QHeaderView::section{background:#1F4E79;color:#fff;font-weight:bold;padding:3px;}")
+        self._table.cellChanged.connect(self._on_cell_changed)
         outer.addWidget(self._table)
+
+    # ── Load ──────────────────────────────────────────────────────────────────
 
     def load_cause(self, cause_id):
         self.cause_id = cause_id
@@ -1584,91 +1869,188 @@ class ScenarioTablePanel(QWidget):
         self._table.setRowCount(0)
         self._hdr_lbl.setText("HAZOP Scenario")
 
+    # ── Build ─────────────────────────────────────────────────────────────────
+
     def _rebuild(self):
+        try: self._table.cellChanged.disconnect()
+        except Exception: pass
         self._table.setRowCount(0)
+
         if self.cause_id is None:
+            self._table.cellChanged.connect(self._on_cell_changed)
             return
 
         cause = self.db.get_cause(self.cause_id)
         if not cause:
+            self._table.cellChanged.connect(self._on_cell_changed)
             return
-        cause_d = dict(cause)
-        node    = self.db.get_node(cause_d['node_id'])
+        cause_d   = dict(cause)
+        node      = self.db.get_node(cause_d['node_id'])
         node_name = dict(node)['name'] if node else '?'
-        freq = cause_d['likelihood'] if cause_d['likelihood'] is not None else 3
+        freq      = cause_d['likelihood'] if cause_d['likelihood'] is not None else 3
 
         self._hdr_lbl.setText(f"HAZOP Scenario — {node_name}")
+        freq_lbl = _FREQ_LABELS[freq_to_idx(freq)]
 
-        freq_label = _FREQ_LABELS[freq_to_idx(freq)]
+        for cons in self.db.consequences(self.cause_id):
+            cons_d = dict(cons)
+            self._add_row(node_name, cause_d, freq, freq_lbl, cons_d)
 
-        cons_list = [dict(c) for c in self.db.consequences(self.cause_id)]
-        if not cons_list:
-            r = self._table.rowCount()
-            self._table.insertRow(r)
-            self._table.setItem(r, 0, QTableWidgetItem(node_name))
-            self._table.setItem(r, 1, QTableWidgetItem(
-                f"{cause_d['description']}\n{freq_label}"))
-            for col in range(2, 6):
-                self._table.setItem(r, col, QTableWidgetItem('—'))
-            self._table.setRowHeight(r, 44)
+        self._table.cellChanged.connect(self._on_cell_changed)
+
+    def _add_row(self, node_name, cause_d, freq, freq_lbl, cons_d):
+        r    = self._table.rowCount()
+        self._table.insertRow(r)
+        sev  = cons_d['severity'] or 1
+        cid  = cons_d['id']
+
+        # Safeguards
+        sgs       = [dict(s) for s in self.db.safeguards(cid)]
+        sg_rrf    = 1
+        for sg in sgs:
+            sg_rrf *= sg.get('rrf', 1)
+
+        # Extra reduction factors
+        rfs = [dict(rf) for rf in self.db.reduction_factors(cid)]
+        fa_active  = bool(cons_d.get('fa_active', 0))
+        fa_rrf     = cons_d.get('fa_rrf', 10) or 10
+        ign_active = bool(cons_d.get('ignition_active', 0))
+        ign_rrf    = cons_d.get('ignition_rrf', 10) or 10
+
+        final_f, total_rrf, total_steps = total_freq_reduction(
+            freq, sg_rrf, fa_active, fa_rrf, ign_active, ign_rrf, rfs)
+
+        level_b, bg_b, fg_b = risk_info(freq, sev)
+        level_a, bg_a, fg_a = risk_info(effective_frequency(freq, sg_rrf), sev)
+        level_s, bg_s, fg_s = risk_info(final_f, sev)
+
+        # ── Col 0: Nod ────────────────────────────────────────────────────────
+        nod = QTableWidgetItem(node_name)
+        nod.setFlags(nod.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self._table.setItem(r, self._C_NOD, nod)
+
+        # ── Col 1: Orsak (editable) ───────────────────────────────────────────
+        ors = QTableWidgetItem(f"{cause_d['description']}\n{freq_lbl}")
+        ors.setData(Qt.ItemDataRole.UserRole, ('cause', cause_d['id']))
+        self._table.setItem(r, self._C_ORS, ors)
+
+        # ── Col 2: Konsekvens (editable) ──────────────────────────────────────
+        sev_lbl = _SEV_LABELS[max(0, sev - 1)]
+        kon = QTableWidgetItem(f"{cons_d['description']}\n{sev_lbl}")
+        kon.setData(Qt.ItemDataRole.UserRole, ('consequence', cid))
+        self._table.setItem(r, self._C_KON, kon)
+
+        # ── Col 3: Risk före barriär ──────────────────────────────────────────
+        rb = QTableWidgetItem(f"{level_b}\nF={freq}  C={sev}")
+        rb.setBackground(QBrush(QColor(bg_b))); rb.setForeground(QBrush(QColor(fg_b)))
+        rb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self._table.setItem(r, self._C_RFORE, rb)
+
+        # ── Col 4: Safeguards (editable) ──────────────────────────────────────
+        sg_lines = [f"{sg['description']}" + (f"  RRF {sg['rrf']}" if sg.get('rrf', 1) > 1 else "")
+                    for sg in sgs]
+        if sg_rrf > 1:
+            sg_lines.append(f"─── RRF {sg_rrf:,}  (−{int(math.log10(sg_rrf))} steg)")
+        sg_item = QTableWidgetItem('\n'.join(sg_lines) or '—')
+        sg_item.setFlags(sg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self._table.setItem(r, self._C_SG, sg_item)
+
+        # ── Col 5: FA widget ──────────────────────────────────────────────────
+        self._table.setCellWidget(r, self._C_FA,
+                                  self._fa_widget(cid, fa_active, fa_rrf, 'fa'))
+
+        # ── Col 6: Antändning widget ──────────────────────────────────────────
+        self._table.setCellWidget(r, self._C_IGN,
+                                  self._fa_widget(cid, ign_active, ign_rrf, 'ignition'))
+
+        # ── Col 7: Övriga faktorer ────────────────────────────────────────────
+        n_active = sum(1 for rf in rfs if rf.get('active'))
+        extra_btn = QPushButton(
+            f"📋 {n_active} aktiv(a)" if n_active else "📋 Lägg till…")
+        extra_btn.setFlat(True)
+        extra_btn.clicked.connect(lambda _, c=cid: self._edit_extra(c))
+        self._table.setCellWidget(r, self._C_OVRIGA, extra_btn)
+
+        # ── Col 8: Risk efter barriärer ───────────────────────────────────────
+        f_eff = effective_frequency(freq, sg_rrf)
+        ra = QTableWidgetItem(f"{level_a}\nF={f_eff}  C={sev}")
+        ra.setBackground(QBrush(QColor(bg_a))); ra.setForeground(QBrush(QColor(fg_a)))
+        ra.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        ra.setFlags(ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self._table.setItem(r, self._C_REFT, ra)
+
+        # ── Col 9: Slutkonsekvens ─────────────────────────────────────────────
+        change = f"  (−{total_steps} tot.)" if total_steps > 0 else ""
+        rs = QTableWidgetItem(f"{level_s}\nF={final_f}  C={sev}{change}")
+        rs.setBackground(QBrush(QColor(bg_s))); rs.setForeground(QBrush(QColor(fg_s)))
+        rs.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self._table.setItem(r, self._C_SLUT, rs)
+
+        self._table.setRowHeight(r, max(52, min(140, (len(sg_lines) + 2) * 18)))
+
+    def _fa_widget(self, cons_id, active, rrf_val, field):
+        """Return a widget with checkbox + RRF spinbox for FA or Ignition."""
+        label  = 'FA' if field == 'fa' else 'Antändning'
+        w      = QWidget()
+        layout = QHBoxLayout(w)
+        layout.setContentsMargins(4, 1, 4, 1)
+        layout.setSpacing(3)
+
+        chk = QCheckBox(label)
+        chk.setChecked(bool(active))
+
+        spin = QSpinBox()
+        spin.setRange(1, 1_000_000)
+        spin.setValue(int(rrf_val))
+        spin.setPrefix("RRF ")
+        spin.setEnabled(bool(active))
+        spin.setFixedWidth(80)
+
+        def _save():
+            fa  = int(chk.isChecked())
+            rv  = spin.value()
+            spin.setEnabled(bool(fa))
+            if field == 'fa':
+                self.db.conn.execute(
+                    "UPDATE consequences SET fa_active=?,fa_rrf=? WHERE id=?", (fa, rv, cons_id))
+            else:
+                self.db.conn.execute(
+                    "UPDATE consequences SET ignition_active=?,ignition_rrf=? WHERE id=?",
+                    (fa, rv, cons_id))
+            self.db.conn.commit()
+            self._rebuild()
+
+        chk.toggled.connect(lambda _: _save())
+        spin.editingFinished.connect(_save)
+
+        layout.addWidget(chk)
+        layout.addWidget(spin)
+        return w
+
+    def _edit_extra(self, cons_id):
+        dlg = ReductionFactorsDialog(self.db, cons_id, self)
+        dlg.exec()
+        self._rebuild()
+
+    def _on_cell_changed(self, row, col):
+        item = self._table.item(row, col)
+        if not item:
             return
-
-        for cons_d in cons_list:
-            sev = cons_d['severity'] or 1
-
-            # Safeguards + total RRF
-            sgs = [dict(s) for s in self.db.safeguards(cons_d['id'])]
-            total_rrf = 1
-            for sg in sgs:
-                total_rrf *= sg.get('rrf', 1)
-            eff_f = effective_frequency(freq, total_rrf)
-
-            level_b, bg_b, fg_b = risk_info(freq, sev)
-            level_a, bg_a, fg_a = risk_info(eff_f, sev)
-
-            sg_lines = [f"{sg['description']}" + (f"  RRF {sg['rrf']}" if sg.get('rrf', 1) > 1 else "")
-                        for sg in sgs]
-            if total_rrf > 1:
-                reduction = int(math.log10(total_rrf))
-                sg_lines.append(f"─── Total RRF {total_rrf:,}  (−{reduction} F-steg)")
-            sg_text = '\n'.join(sg_lines) or '—'
-
-            r = self._table.rowCount()
-            self._table.insertRow(r)
-
-            # Col 0: Nod
-            nod_item = QTableWidgetItem(node_name)
-            self._table.setItem(r, 0, nod_item)
-
-            # Col 1: Orsak
-            self._table.setItem(r, 1, QTableWidgetItem(
-                f"{cause_d['description']}\n{freq_label}"))
-
-            # Col 2: Konsekvens
-            sev_label = _SEV_LABELS[max(0, sev - 1)]
-            self._table.setItem(r, 2, QTableWidgetItem(
-                f"{cons_d['description']}\n{sev_label}"))
-
-            # Col 3: Risk före barriär
-            rb = QTableWidgetItem(f"{level_b}\nF={freq}  C={sev}")
-            rb.setBackground(QBrush(QColor(bg_b)))
-            rb.setForeground(QBrush(QColor(fg_b)))
-            rb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._table.setItem(r, 3, rb)
-
-            # Col 4: Safeguards
-            self._table.setItem(r, 4, QTableWidgetItem(sg_text))
-
-            # Col 5: Risk efter barriär
-            change = f"  (−{int(math.log10(total_rrf))} steg)" if total_rrf > 1 else ""
-            ra = QTableWidgetItem(f"{level_a}\nF={eff_f}  C={sev}{change}")
-            ra.setBackground(QBrush(QColor(bg_a)))
-            ra.setForeground(QBrush(QColor(fg_a)))
-            ra.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._table.setItem(r, 5, ra)
-
-            lines = max(2, sg_text.count('\n') + 1)
-            self._table.setRowHeight(r, max(50, min(130, lines * 18)))
+        meta = item.data(Qt.ItemDataRole.UserRole)
+        if not meta:
+            return
+        kind, id_ = meta
+        text = item.text()
+        # Only the first line is the description (second line = label)
+        desc = text.split('\n')[0].strip()
+        if kind == 'cause':
+            self.db.update_cause(id_, desc)
+        elif kind == 'consequence':
+            cons = self.db.get_consequence(id_)
+            if cons:
+                self.db.update_consequence(id_, desc, cons['severity'], cons['category'] or '')
 
 
 # ══════════════════════════════════════════════════════════════════════════════
