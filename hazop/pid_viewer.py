@@ -768,19 +768,52 @@ def classify_pid_symbol(page, fitz_rect, tag: str = '') -> tuple:
     return best_comp, best_name, confidence
 
 
+def _collapse_spaces(text: str) -> str:
+    """Remove spaces between individual letters/digits — fixes OCR spacing.
+
+    'P C V - 1 0 1'  →  'PCV-101'
+    'F T 2 0 1 A'    →  'FT201A'   (then _parse_tag normalises to 'FT-201A')
+    Multi-word text is left alone (spaces between real words are kept).
+    """
+    # Only collapse if every token is 1-2 chars (= spaced-out tag, not words)
+    tokens = text.strip().split()
+    if not tokens:
+        return text
+    if all(len(t) <= 2 for t in tokens):
+        return ''.join(tokens)
+    # Also try just removing spaces around dashes and dots
+    collapsed = re.sub(r'\s*[-./]\s*', '-', text)
+    collapsed = re.sub(r'(?<=[A-Z0-9])\s+(?=[A-Z0-9])', '', collapsed)
+    return collapsed
+
+
 def _pick_best_tag(text: str) -> str:
     """Return the best equipment-tag match from arbitrary text, or ''."""
     if not text:
         return ''
     text = text.strip().upper()
-    # Try _FULL_TAG_RE (finds tags inside larger strings)
+
+    # First try on raw text
     matches = _FULL_TAG_RE.findall(text)
     if matches:
         prefix, suffix = matches[0]
         return f"{prefix}-{suffix}"
-    # Try the whole text as a standalone tag
     tag, _ = _parse_tag(text)
-    return tag or ''
+    if tag:
+        return tag
+
+    # Try after collapsing OCR-inserted spaces
+    collapsed = _collapse_spaces(text)
+    if collapsed != text:
+        matches = _FULL_TAG_RE.findall(collapsed)
+        if matches:
+            prefix, suffix = matches[0]
+            return f"{prefix}-{suffix}"
+        tag, _ = _parse_tag(collapsed)
+        if tag:
+            return tag
+
+    return ''
 
 
 def _extract_prefix(tag: str) -> str:
