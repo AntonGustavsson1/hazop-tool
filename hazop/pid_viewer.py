@@ -32,8 +32,15 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF
 from PyQt6.QtGui import (
     QColor, QPen, QBrush, QPainterPath, QPixmap, QImage, QFont,
-    QPainter,
+    QPainter, QPicture,
 )
+
+# Optional OpenGL for GPU-accelerated rendering
+try:
+    from PyQt6.QtOpenGLWidgets import QOpenGLWidget
+    HAS_OPENGL = True
+except ImportError:
+    HAS_OPENGL = False
 
 # Optional SVG vector rendering (preferred — stays sharp at any zoom)
 try:
@@ -628,36 +635,45 @@ def scan_pdf_for_equipment(pdf_doc, use_ocr: bool = False,
 
 
 class PDFVectorItem(QGraphicsItem):
-    """Renders a PDF page as pure vector via QSvgRenderer — crisp at any zoom.
+    """Renders a PDF page as pure vector — crisp at any zoom.
 
-    Performance notes:
-    - DeviceCoordinateCache: Qt caches the rendered pixels at screen resolution.
-      Panning reuses the cache (fast). Zooming triggers a re-render (one-time cost).
-    - ItemUsesExtendedStyleOption: exposes the exact dirty rect so we can clip.
+    Performance strategy (layered):
+    1. SVG is parsed ONCE into a QPicture at init (record draw commands).
+    2. Each paint call just replays the QPicture — far cheaper than re-parsing SVG.
+    3. DeviceCoordinateCache: Qt caches the QPicture replay as a screen-res pixmap.
+       Pan  → copy cached pixmap (near-zero cost).
+       Zoom → replay QPicture at new resolution (much faster than SVG parse).
     """
 
     def __init__(self, svg_bytes: bytes):
         super().__init__()
-        self._renderer = QSvgRenderer(svg_bytes)
-        vb = self._renderer.viewBoxF()
-        if vb.isValid() and vb.width() > 0:
-            self._rect = vb
-        else:
-            ds = self._renderer.defaultSize()
-            self._rect = QRectF(0, 0, ds.width(), ds.height())
+        renderer = QSvgRenderer(svg_bytes)
+        vb = renderer.viewBoxF()
+        self._rect = vb if (vb.isValid() and vb.width() > 0) \
+                     else QRectF(0, 0,
+                                 renderer.defaultSize().width(),
+                                 renderer.defaultSize().height())
+
+        # Pre-record SVG draw commands into QPicture (parse once, replay many)
+        self._picture = QPicture()
+        p = QPainter(self._picture)
+        renderer.render(p, self._rect)
+        p.end()
+        # Keep renderer only for fallback; picture is what we actually paint
+        del renderer
 
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemUsesExtendedStyleOption)
-        # Cache rendered pixels — panning uses cache, zoom re-renders once
+        # Qt caches QPicture replay at screen resolution:
+        # panning reuses cache; zooming replays QPicture (fast)
         self.setCacheMode(QGraphicsItem.CacheMode.DeviceCoordinateCache)
 
     def boundingRect(self):
         return self._rect
 
     def paint(self, painter, option, widget=None):
-        # Only repaint the exposed (dirty) region — big win on large P&IDs
         if option and option.exposedRect.isValid():
             painter.setClipRect(option.exposedRect)
-        self._renderer.render(painter, self._rect)
+        painter.drawPicture(QPointF(0, 0), self._picture)
 
     def page_width(self):
         return self._rect.width()
@@ -1688,12 +1704,25 @@ class PIDGraphicsView(QGraphicsView):
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         # White background — matches typical P&ID drawing background
         self.setBackgroundBrush(QBrush(QColor(255, 255, 255)))
-        # Only repaint the parts of the viewport that actually changed
-        self.setViewportUpdateMode(
-            QGraphicsView.ViewportUpdateMode.MinimalViewportUpdate)
+
+        # ── GPU-accelerated rendering (OpenGL) ────────────────────────────────
+        if HAS_OPENGL:
+            gl = QOpenGLWidget()
+            self.setViewport(gl)
+            # With OpenGL, full-viewport update is required (GPU composites all)
+            self.setViewportUpdateMode(
+                QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        else:
+            # CPU fallback: only repaint changed tiles
+            self.setViewportUpdateMode(
+                QGraphicsView.ViewportUpdateMode.MinimalViewportUpdate)
+
         # Avoid unnecessary bounding-rect adjustments during pan/zoom
         self.setOptimizationFlag(
             QGraphicsView.OptimizationFlag.DontAdjustForAntialiasing, True)
+        # Don't save/restore painter state per item — slight speedup
+        self.setOptimizationFlag(
+            QGraphicsView.OptimizationFlag.DontSavePainterState, True)
 
         self._press_pos  = None  # NAV mode: click vs drag detection
         self._rect_start = None  # rect-select mode: start scene point
@@ -2064,7 +2093,10 @@ class PIDGraphicsView(QGraphicsView):
 
             # ── 2. OCR fallback on the cropped region ─────────────────────────
             if HAS_PIL:
-                scale = 4.0   # fixed high DPI for OCR on small regions
+                # Adaptive OCR scale: smaller selection → higher scale for better accuracy
+                # Target at least 200px on the shortest dimension
+                min_dim = max(pdf_rect.width(), pdf_rect.height(), 10.0)
+                scale   = max(4.0, min(16.0, 300.0 / min_dim))
                 mat   = fitz.Matrix(scale, scale)
                 pix   = page.get_pixmap(matrix=mat, clip=frect, alpha=False)
                 pil   = _PILImage.frombytes("RGB", [pix.width, pix.height], pix.samples)
@@ -2233,7 +2265,19 @@ class PIDGraphicsView(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def wheelEvent(self, event):
-        factor = 1.15 if event.angleDelta().y() > 0 else (1.0 / 1.15)
+        # Smooth zoom: scale by a factor proportional to the wheel delta
+        # so trackpad pinch-zoom gives fine-grained control
+        delta = event.angleDelta().y()
+        if delta == 0:
+            event.accept(); return
+        # 1.001^delta gives ~1.15× per 120-unit tick (standard wheel notch)
+        factor = 1.001 ** delta
+        # Clamp to prevent extreme zoom
+        cur = self.transform().m11()
+        if cur * factor < 0.02:
+            factor = 0.02 / cur
+        elif cur * factor > 200:
+            factor = 200 / cur
         self.scale(factor, factor)
         event.accept()
 
