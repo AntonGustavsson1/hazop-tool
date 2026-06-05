@@ -1321,6 +1321,7 @@ class TargetPickerDialog(QDialog):
         self.target   = self.target_edit.text().strip()
         self.selected_chain = {k: chk.isChecked()
                                for k, chk in self._chain_checks.items()}
+        self.accept()
 
 
 class SafeguardPickerDialog(QDialog):
