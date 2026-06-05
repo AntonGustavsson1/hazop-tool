@@ -73,6 +73,15 @@ except ImportError:
     HAS_EASYOCR = False
 
 try:
+    from rapidocr_onnxruntime import RapidOCR as _RapidOCR
+    HAS_RAPIDOCR = True
+except ImportError:
+    _RapidOCR = None
+    HAS_RAPIDOCR = False
+
+_rapidocr_instance = None   # cached after first use
+
+try:
     from PIL import Image as _PILImage, ImageFilter, ImageEnhance, ImageOps
     HAS_PIL = True
 except ImportError:
@@ -93,8 +102,36 @@ def ocr_status() -> dict:
     return {
         'tesseract': HAS_TESSERACT,
         'easyocr':   HAS_EASYOCR,
+        'rapidocr':  HAS_RAPIDOCR,
         'pil':       HAS_PIL,
     }
+
+
+def _ocr_page_rapidocr(pil_image, scale: float):
+    """Run RapidOCR on a PIL image; return list of (text, x_pdf, y_pdf)."""
+    global _rapidocr_instance
+    if not HAS_RAPIDOCR:
+        return []
+    try:
+        import numpy as np
+        if _rapidocr_instance is None:
+            _rapidocr_instance = _RapidOCR()
+        result, _ = _rapidocr_instance(np.array(pil_image.convert('RGB')))
+        if not result:
+            return []
+        out = []
+        for item in result:
+            box, text, conf = item[0], item[1], item[2]
+            if not text or float(conf) < 0.3:
+                continue
+            xs = [p[0] for p in box]
+            ys = [p[1] for p in box]
+            cx = sum(xs) / len(xs) / scale
+            cy = sum(ys) / len(ys) / scale
+            out.append((text.strip().upper(), cx, cy))
+        return out
+    except Exception:
+        return []
 
 
 def _preprocess_for_ocr(pil_image):
@@ -232,9 +269,19 @@ def _ocr_page(fitz_page, scale: float = 3.0, engine: str = 'auto'):
     processed = _preprocess_for_ocr(pil_img)
 
     if engine == 'auto':
-        engine = 'tesseract' if HAS_TESSERACT else ('easyocr' if HAS_EASYOCR else None)
+        # Priority: RapidOCR (small, fast) > Tesseract > EasyOCR
+        if HAS_RAPIDOCR:
+            engine = 'rapidocr'
+        elif HAS_TESSERACT:
+            engine = 'tesseract'
+        elif HAS_EASYOCR:
+            engine = 'easyocr'
+        else:
+            engine = None
 
-    if engine == 'tesseract':
+    if engine == 'rapidocr':
+        return _ocr_page_rapidocr(pil_img, scale), 'rapidocr'
+    elif engine == 'tesseract':
         return _ocr_page_tesseract(processed, scale), 'tesseract'
     elif engine == 'easyocr':
         return _ocr_page_easyocr(processed, scale), 'easyocr'
@@ -257,14 +304,24 @@ class OCRInstallerDialog(QDialog):
         layout = QVBoxLayout(self)
 
         info = QLabel(
-            "<b>EasyOCR</b> behövs för att läsa text från P&ID-filer där texten "
-            "är lagrad som vektorgrafik (inte sökbar text).<br><br>"
-            "Nedladdning: <b>~500 MB</b> (AI-modeller, kräver internet).<br>"
-            "Installeras med: <code>pip install easyocr</code>")
+            "OCR behövs för att läsa text från P&ID-filer där texten är vektorgrafik.<br>"
+            "Välj motor att installera:")
         info.setWordWrap(True)
         info.setTextFormat(Qt.TextFormat.RichText)
-        info.setStyleSheet("padding:6px;")
         layout.addWidget(info)
+
+        # Engine selector
+        engine_box = QGroupBox("OCR-motor")
+        engine_lay = QVBoxLayout(engine_box)
+        from PyQt6.QtWidgets import QRadioButton
+        self._radio_rapid = QRadioButton(
+            "⭐ RapidOCR   (~25 MB)  — Rekommenderas  (snabb, liten nedladdning)")
+        self._radio_rapid.setChecked(True)
+        self._radio_easy  = QRadioButton(
+            "EasyOCR       (~500 MB) — Högre precision, stor nedladdning")
+        engine_lay.addWidget(self._radio_rapid)
+        engine_lay.addWidget(self._radio_easy)
+        layout.addWidget(engine_box)
 
         self._log = QTextEdit()
         self._log.setReadOnly(True)
@@ -277,7 +334,7 @@ class OCRInstallerDialog(QDialog):
         layout.addWidget(self._status)
 
         btn_row = QHBoxLayout()
-        self._install_btn = QPushButton("📥  Installera EasyOCR (~500 MB)")
+        self._install_btn = QPushButton("📥  Installera vald OCR-motor")
         self._install_btn.setStyleSheet(
             "background:#1F4E79; color:white; font-weight:bold;"
             "border:none; border-radius:4px; padding:6px 16px;")
@@ -300,10 +357,12 @@ class OCRInstallerDialog(QDialog):
 
     def _start_install(self):
         import sys
+        pkg = "rapidocr_onnxruntime" if self._radio_rapid.isChecked() else "easyocr"
         self._install_btn.setEnabled(False)
-        self._status.setText("⏳ Installerar — kan ta 5–15 minuter beroende på nätverkshastighet…")
+        size = "~25 MB" if pkg == "rapidocr_onnxruntime" else "~500 MB"
+        self._status.setText(f"⏳ Installerar {pkg} ({size}) — vänligen vänta…")
         self._log.clear()
-        self._proc.start(sys.executable, ["-m", "pip", "install", "easyocr"])
+        self._proc.start(sys.executable, ["-m", "pip", "install", pkg])
 
     def _append(self, text: str):
         self._log.append(text.rstrip())
@@ -333,10 +392,10 @@ class OCRInstallerDialog(QDialog):
 
 
 def ensure_ocr_available(parent=None) -> bool:
-    """Check if any OCR engine is available; offer to install EasyOCR if not."""
-    global HAS_EASYOCR, HAS_TESSERACT, _easyocr_module
+    """Check if any OCR engine is available; offer to install one if not."""
+    global HAS_EASYOCR, HAS_TESSERACT, HAS_RAPIDOCR, _easyocr_module, _RapidOCR, _rapidocr_instance
 
-    if HAS_TESSERACT or HAS_EASYOCR:
+    if HAS_TESSERACT or HAS_EASYOCR or HAS_RAPIDOCR:
         return True
 
     reply = QMessageBox.question(
@@ -356,9 +415,18 @@ def ensure_ocr_available(parent=None) -> bool:
     dlg.exec()
 
     if dlg.installed:
+        import importlib
+        importlib.invalidate_caches()
+        # Try RapidOCR first (likely what was installed)
         try:
-            import importlib
-            importlib.invalidate_caches()
+            from rapidocr_onnxruntime import RapidOCR as _RC
+            _RapidOCR = _RC
+            HAS_RAPIDOCR = True
+            return True
+        except Exception:
+            pass
+        # Fallback: EasyOCR
+        try:
             import easyocr as _ecr
             _easyocr_module = _ecr
             HAS_EASYOCR = True

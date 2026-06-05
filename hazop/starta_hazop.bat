@@ -9,6 +9,8 @@ if errorlevel 1 (
 
 echo Installerar/uppdaterar beroenden...
 pip install -q PyQt6 openpyxl reportlab PyMuPDF
+rem OCR for P&ID text recognition (optional, ~25 MB):
+rem pip install -q rapidocr_onnxruntime
 
 echo Startar HAZOP Tool...
 python "%~dp0hazop.py"
