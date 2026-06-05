@@ -245,8 +245,9 @@ def _normalise_matrix(cfg: dict) -> dict:
             result.append(row[:cols])
         return result
 
-    cfg['cell_colors'] = _pad_grid(cfg.get('cell_colors', []), '#27ae60')
-    cfg['cell_labels'] = _pad_grid(cfg.get('cell_labels', []), 'Låg')
+    cfg['cell_colors']    = _pad_grid(cfg.get('cell_colors', []), '#27ae60')
+    cfg['cell_labels']    = _pad_grid(cfg.get('cell_labels', []), 'Låg')
+    cfg['cell_fg_colors'] = _pad_grid(cfg.get('cell_fg_colors', []), '#ffffff')
     cfg['rows'] = rows
     cfg['cols'] = cols
     return cfg
@@ -285,7 +286,31 @@ def risk_info(frequency, consequence):
             label = 'Låg'
     except (IndexError, KeyError, TypeError):
         color, label = '#27ae60', 'Låg'
-    return label, color, '#ffffff'
+    try:
+        fg = cfg['cell_fg_colors'][c_idx][f_idx] or '#ffffff'
+    except (IndexError, KeyError, TypeError):
+        fg = '#ffffff'
+    return label, color, fg
+
+
+def freq_axis_label(f_val: int) -> str:
+    """Short configured label for a frequency value (-1..5). x_labels always stores freq labels."""
+    cfg  = get_matrix()
+    cols = cfg.get('cols', 7)
+    idx  = max(0, min(int(f_val) + 1, cols - 1))
+    lbls = cfg.get('x_labels', [])
+    full = lbls[idx] if idx < len(lbls) else f'F={f_val}'
+    return full.split()[0] if full.strip() else f'F={f_val}'
+
+
+def cons_axis_label(c_val: int) -> str:
+    """Short configured label for a consequence value (1..5). y_labels always stores cons labels."""
+    cfg  = get_matrix()
+    rows = cfg.get('rows', 5)
+    idx  = max(0, min(int(c_val) - 1, rows - 1))
+    lbls = cfg.get('y_labels', [])
+    full = lbls[idx] if idx < len(lbls) else f'C={c_val}'
+    return full.split()[0] if full.strip() else f'C={c_val}'
 
 
 def effective_frequency(base_freq, rrf):
@@ -590,10 +615,10 @@ class Database:
         self.conn.commit()
 
     _DEFAULT_PALETTE = [
-        {'name': 'Kritisk', 'color': '#e74c3c'},
-        {'name': 'Hög',     'color': '#e67e22'},
-        {'name': 'Medium',  'color': '#f39c12'},
-        {'name': 'Låg',     'color': '#27ae60'},
+        {'name': 'Kritisk', 'color': '#e74c3c', 'fg_color': '#ffffff'},
+        {'name': 'Hög',     'color': '#e67e22', 'fg_color': '#ffffff'},
+        {'name': 'Medium',  'color': '#f39c12', 'fg_color': '#000000'},
+        {'name': 'Låg',     'color': '#27ae60', 'fg_color': '#ffffff'},
     ]
 
     def get_color_palette(self):
@@ -2520,8 +2545,9 @@ class RiskMatrixPopup(QDialog):
         n_freq    = cfg.get('cols', 7)
         x_lbls    = cfg.get('x_labels', [f'F{c-1}' for c in range(n_freq)])
         y_lbls    = cfg.get('y_labels', [f'C{r+1}' for r in range(n_cons)])
-        colors    = cfg.get('cell_colors', [])
-        cell_lbl  = cfg.get('cell_labels', [])
+        colors         = cfg.get('cell_colors', [])
+        cell_lbl       = cfg.get('cell_labels', [])
+        cell_fg_colors = cfg.get('cell_fg_colors', [])
         freq_on_x = cfg.get('x_axis', 'frequency') == 'frequency'
         x_rev     = cfg.get('x_reversed', False)
         y_rev     = cfg.get('y_reversed', False)
@@ -2600,6 +2626,10 @@ class RiskMatrixPopup(QDialog):
                     lbl   = cell_lbl[cons_idx][freq_idx]
                 except (IndexError, KeyError):
                     color, lbl = '#27ae60', 'Låg'
+                try:
+                    fg = cell_fg_colors[cons_idx][freq_idx] or '#ffffff'
+                except (IndexError, KeyError, TypeError):
+                    fg = '#ffffff'
 
                 is_current = (freq_val == current_freq and cons_val == current_cons)
                 border = '3px solid #000' if is_current else '0px'
@@ -2608,7 +2638,7 @@ class RiskMatrixPopup(QDialog):
                 btn.setFixedSize(50, 32)
                 btn.setToolTip(f"F={freq_val}  C={cons_val}  →  {lbl}")
                 btn.setStyleSheet(
-                    f"QPushButton{{background:{color}; color:#fff;"
+                    f"QPushButton{{background:{color}; color:{fg};"
                     f"font-size:8px; font-weight:bold;"
                     f"border:{border}; border-radius:0px; margin:0px;}}"
                     f"QPushButton:hover{{border:2px solid #000;}}")
@@ -2983,7 +3013,7 @@ class ScenarioTablePanel(QWidget):
         self._table.setCellWidget(r, self._C_KON, kon_w)
 
         # ── Col 3: Risk före barriär — klickbar för att öppna riskmatris ────────
-        rb = QTableWidgetItem(f"{level_b}\nF={freq}  C={sev}")
+        rb = QTableWidgetItem(f"{level_b}\n{freq_axis_label(freq)}  {cons_axis_label(sev)}")
         rb.setBackground(QBrush(QColor(bg_b))); rb.setForeground(QBrush(QColor(fg_b)))
         rb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -3041,20 +3071,20 @@ class ScenarioTablePanel(QWidget):
         f_eff    = effective_frequency(freq, sg_rrf)
         sg_steps = int(math.log10(max(1, sg_rrf))) if sg_rrf > 1 else 0
         sg_step_str = f"  −{sg_steps} steg" if sg_steps > 0 else ""
-        ra = QTableWidgetItem(f"{level_a}{sg_step_str}\nF={f_eff}  C={sev}")
+        ra = QTableWidgetItem(f"{level_a}{sg_step_str}\n{freq_axis_label(f_eff)}  {cons_axis_label(sev)}")
         ra.setBackground(QBrush(QColor(bg_a))); ra.setForeground(QBrush(QColor(fg_a)))
         ra.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         ra.setFlags(ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        ra.setToolTip(f"F={f_eff}  C={sev}  (efter safeguards)")
+        ra.setToolTip(f"{freq_axis_label(f_eff)}  {cons_axis_label(sev)}  (efter safeguards)")
         self._table.setItem(r, self._C_REFT, ra)
 
         # ── Col 9: Slutkonsekvens (alla reduktioner) ──────────────────────────
         slut_step_str = f"  −{total_steps} steg" if total_steps > 0 else ""
-        rs = QTableWidgetItem(f"{level_s}{slut_step_str}\nF={final_f}  C={sev}")
+        rs = QTableWidgetItem(f"{level_s}{slut_step_str}\n{freq_axis_label(final_f)}  {cons_axis_label(sev)}")
         rs.setBackground(QBrush(QColor(bg_s))); rs.setForeground(QBrush(QColor(fg_s)))
         rs.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        rs.setToolTip(f"F={final_f}  C={sev}  (−{total_steps} steg totalt)")
+        rs.setToolTip(f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}  (−{total_steps} steg totalt)")
         self._table.setItem(r, self._C_SLUT, rs)
 
         self._table.setRowHeight(r, max(52, min(140, (len(sg_lines) + 2) * 18)))
@@ -3289,7 +3319,7 @@ class HAZOPWorksheet(QWidget):
             self.table.setCellWidget(r, self._C_C, c_combo)
 
             # Risk before
-            rb = QTableWidgetItem(f"{level_b}\nF={freq}  C={sev}")
+            rb = QTableWidgetItem(f"{level_b}\n{freq_axis_label(freq)}  {cons_axis_label(sev)}")
             rb.setBackground(QBrush(QColor(bg_b)))
             rb.setForeground(QBrush(QColor(fg_b)))
             rb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -3299,7 +3329,7 @@ class HAZOPWorksheet(QWidget):
             self.table.setItem(r, self._C_SG, _ro(sg_text))
 
             # Risk after
-            ra = QTableWidgetItem(f"{level_a}\nF={eff_f}  C={sev}")
+            ra = QTableWidgetItem(f"{level_a}\n{freq_axis_label(eff_f)}  {cons_axis_label(sev)}")
             ra.setBackground(QBrush(QColor(bg_a)))
             ra.setForeground(QBrush(QColor(fg_a)))
             ra.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -3994,38 +4024,41 @@ _PALETTE_MIME = 'application/x-hazop-palette-color'
 class DraggableColorSwatch(QLabel):
     """Draggable color swatch in the palette — drag onto a matrix cell."""
 
-    def __init__(self, name: str, color: str, parent=None):
+    def __init__(self, name: str, color: str, fg_color: str = None, parent=None):
         super().__init__(name, parent)
-        self._name  = name
-        self._color = color
+        self._name     = name
+        self._color    = color
+        self._fg_color = fg_color  # None = auto-calculated from luminance
         self.setFixedSize(76, 28)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self._refresh()
 
     def _refresh(self):
-        # Compute readable text colour
         r, g, b = int(self._color[1:3], 16), int(self._color[3:5], 16), int(self._color[5:7], 16)
         lum = 0.299 * r + 0.587 * g + 0.114 * b
-        txt = '#000' if lum > 160 else '#fff'
+        auto_txt = '#000' if lum > 160 else '#fff'
+        txt = self._fg_color if self._fg_color else auto_txt
         self.setStyleSheet(
             f"background:{self._color}; color:{txt}; font-weight:bold; font-size:10px;"
             f"border:1px solid #555; border-radius:4px;")
         self.setText(self._name)
 
-    def set_swatch(self, name: str, color: str):
-        self._name = name; self._color = color
+    def set_swatch(self, name: str, color: str, fg_color: str = None):
+        self._name = name; self._color = color; self._fg_color = fg_color
         self._refresh()
 
-    def name(self):  return self._name
-    def color(self): return self._color
+    def name(self):     return self._name
+    def color(self):    return self._color
+    def fg_color(self): return self._fg_color
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             drag = QDrag(self)
             mime = QMimeData()
             mime.setData(_PALETTE_MIME,
-                         json.dumps({'color': self._color, 'name': self._name}).encode())
+                         json.dumps({'color': self._color, 'name': self._name,
+                                     'fg_color': self._fg_color or '#ffffff'}).encode())
             drag.setMimeData(mime)
             drag.setPixmap(self.grab())
             drag.setHotSpot(event.position().toPoint())
@@ -4037,12 +4070,13 @@ class DraggableColorSwatch(QLabel):
 class MatrixCellButton(QPushButton):
     """Risk matrix cell — collapsed-border grid (no double-lines between cells)."""
 
-    def __init__(self, row, col, color, label,
+    def __init__(self, row, col, color, label, fg_color='#ffffff',
                  is_top_row=False, is_left_col=False, parent=None):
         super().__init__(label, parent)
         self.row = row
         self.col = col
         self._color    = color
+        self._fg_color = fg_color
         self._label    = label
         self._is_top   = is_top_row
         self._is_left  = is_left_col
@@ -4051,27 +4085,28 @@ class MatrixCellButton(QPushButton):
         self._apply_style()
 
     def _apply_style(self):
-        # Collapsed-border: every cell always draws bottom+right.
-        # Only the top display-row adds top; only the leftmost column adds left.
         top  = "border-top:1px solid #444;"  if self._is_top  else ""
         left = "border-left:1px solid #444;" if self._is_left else ""
         self.setStyleSheet(
             f"QPushButton{{"
-            f"background:{self._color}; color:white; font-weight:bold;"
+            f"background:{self._color}; color:{self._fg_color}; font-weight:bold;"
             f"border-bottom:1px solid #444; border-right:1px solid #444;"
             f"{top}{left}"
             f"border-radius:0px; margin:0px; padding:0px;}}"
             f"QPushButton:hover{{border:2px solid #000; margin:-1px;}}")
         self.setText(self._label)
 
-    def set_cell(self, color, label=None):
+    def set_cell(self, color, label=None, fg_color=None):
         self._color = color
         if label is not None:
             self._label = label
+        if fg_color is not None:
+            self._fg_color = fg_color
         self._apply_style()
 
-    def color(self): return self._color
-    def label(self): return self._label
+    def color(self):    return self._color
+    def label(self):    return self._label
+    def fg_color(self): return self._fg_color
 
     # ── Drag-and-drop ─────────────────────────────────────────────────────────
     def dragEnterEvent(self, event):
@@ -4090,7 +4125,7 @@ class MatrixCellButton(QPushButton):
         if event.mimeData().hasFormat(_PALETTE_MIME):
             data = json.loads(
                 event.mimeData().data(_PALETTE_MIME).data().decode())
-            self.set_cell(data['color'], data['name'])
+            self.set_cell(data['color'], data['name'], data.get('fg_color', '#ffffff'))
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -4309,7 +4344,7 @@ class SettingsPanel(QWidget):
         self._palette_swatches = []
         palette = self.db.get_color_palette()
         for entry in palette:
-            sw = DraggableColorSwatch(entry['name'], entry['color'])
+            sw = DraggableColorSwatch(entry['name'], entry['color'], entry.get('fg_color'))
             # Insert before the "Lägg till / Redigera / Ta bort" buttons
             insert_pos = self._palette_container.count() - 4
             self._palette_container.insertWidget(max(0, insert_pos), sw)
@@ -4319,11 +4354,16 @@ class SettingsPanel(QWidget):
         name, ok = QInputDialog.getText(self, "Ny palettefärg", "Namn (t.ex. Kritisk):")
         if not ok or not name.strip():
             return
-        color = QColorDialog.getColor(QColor('#e74c3c'), self, "Välj färg")
+        color = QColorDialog.getColor(QColor('#e74c3c'), self, "Välj bakgrundsfärg")
         if not color.isValid():
             return
+        # Auto-calculate fg and let user override
+        r, g, b = color.red(), color.green(), color.blue()
+        auto_fg = '#000000' if (0.299*r + 0.587*g + 0.114*b) > 160 else '#ffffff'
+        fg_color_obj = QColorDialog.getColor(QColor(auto_fg), self, "Välj textfärg (auto-föreslagen)")
+        fg = fg_color_obj.name() if fg_color_obj.isValid() else auto_fg
         palette = self.db.get_color_palette()
-        palette.append({'name': name.strip(), 'color': color.name()})
+        palette.append({'name': name.strip(), 'color': color.name(), 'fg_color': fg})
         self.db.set_color_palette(palette)
         self._load_palette_ui()
 
@@ -4342,7 +4382,11 @@ class SettingsPanel(QWidget):
         new_color = QColorDialog.getColor(QColor(palette[idx]['color']), self, "Välj färg")
         if not new_color.isValid():
             return
-        palette[idx] = {'name': new_name.strip() or chosen, 'color': new_color.name()}
+        # Ask for text color too
+        old_fg = palette[idx].get('fg_color', '#ffffff')
+        fg_color_obj = QColorDialog.getColor(QColor(old_fg), self, "Välj textfärg")
+        new_fg = fg_color_obj.name() if fg_color_obj.isValid() else old_fg
+        palette[idx] = {'name': new_name.strip() or chosen, 'color': new_color.name(), 'fg_color': new_fg}
         self.db.set_color_palette(palette)
         self._load_palette_ui()
 
@@ -4416,34 +4460,40 @@ class SettingsPanel(QWidget):
         cons_lbls = cons_lbls[:n_cons]
 
         # ── Cell data: current buttons override DB values ─────────────────────
-        colors = [['' for _ in range(n_freq)] for _ in range(n_cons)]
-        lbl2d  = [['' for _ in range(n_freq)] for _ in range(n_cons)]
+        colors    = [['' for _ in range(n_freq)] for _ in range(n_cons)]
+        lbl2d     = [['' for _ in range(n_freq)] for _ in range(n_cons)]
+        fg_colors = [['' for _ in range(n_freq)] for _ in range(n_cons)]
         # 1. Fill from DB
-        old_c = old.get('cell_colors', [])
-        old_l = old.get('cell_labels', [])
+        old_c  = old.get('cell_colors', [])
+        old_l  = old.get('cell_labels', [])
+        old_fg = old.get('cell_fg_colors', [])
         for ci in range(n_cons):
             for fi in range(n_freq):
-                try:    colors[ci][fi] = old_c[ci][fi] or '#27ae60'
-                except: colors[ci][fi] = '#27ae60'
-                try:    lbl2d[ci][fi]  = old_l[ci][fi] or 'Låg'
-                except: lbl2d[ci][fi]  = 'Låg'
+                try:    colors[ci][fi]    = old_c[ci][fi]  or '#27ae60'
+                except: colors[ci][fi]    = '#27ae60'
+                try:    lbl2d[ci][fi]     = old_l[ci][fi]  or 'Låg'
+                except: lbl2d[ci][fi]     = 'Låg'
+                try:    fg_colors[ci][fi] = old_fg[ci][fi] or '#ffffff'
+                except: fg_colors[ci][fi] = '#ffffff'
         # 2. Override with any user edits in the current buttons
         for _dr, row_btns in self._cell_buttons:
             for btn in row_btns:
                 ci, fi = btn.row, btn.col
                 if ci < n_cons and fi < n_freq:
-                    if btn.color(): colors[ci][fi] = btn.color()
-                    if btn.label(): lbl2d[ci][fi]  = btn.label()
+                    if btn.color():    colors[ci][fi]    = btn.color()
+                    if btn.label():    lbl2d[ci][fi]     = btn.label()
+                    if btn.fg_color(): fg_colors[ci][fi] = btn.fg_color()
 
         new_cfg = {
             'rows': n_cons, 'cols': n_freq,
-            'x_axis':      new_xaxis,
-            'x_reversed':  x_rev,
-            'y_reversed':  y_rev,
-            'x_labels':    freq_lbls,   # ALWAYS stores frequency labels
-            'y_labels':    cons_lbls,   # ALWAYS stores consequence labels
-            'cell_colors': colors,
-            'cell_labels': lbl2d,
+            'x_axis':         new_xaxis,
+            'x_reversed':     x_rev,
+            'y_reversed':     y_rev,
+            'x_labels':       freq_lbls,   # ALWAYS stores frequency labels
+            'y_labels':       cons_lbls,   # ALWAYS stores consequence labels
+            'cell_colors':    colors,
+            'cell_labels':    lbl2d,
+            'cell_fg_colors': fg_colors,
             'freq_boundaries': old.get('freq_boundaries', DEFAULT_FREQ_BOUNDARIES),
         }
         self._build_matrix_grid(new_cfg)
@@ -4464,8 +4514,9 @@ class SettingsPanel(QWidget):
         n_freq = cfg.get('cols', 7)    # frequency levels
         freq_labels = cfg.get('x_labels', [f'F{c-1}' for c in range(n_freq)])
         cons_labels = cfg.get('y_labels', [f'C{r+1}' for r in range(n_cons)])
-        colors      = cfg.get('cell_colors', [['#27ae60'] * n_freq] * n_cons)
-        cell_labels = cfg.get('cell_labels', [['Låg'] * n_freq] * n_cons)
+        colors          = cfg.get('cell_colors',    [['#27ae60'] * n_freq] * n_cons)
+        cell_labels     = cfg.get('cell_labels',    [['Låg']     * n_freq] * n_cons)
+        cell_fg_colors  = cfg.get('cell_fg_colors', [['#ffffff'] * n_freq] * n_cons)
         boundaries  = list(cfg.get('freq_boundaries', DEFAULT_FREQ_BOUNDARIES))
 
         x_axis    = cfg.get('x_axis', 'frequency')
@@ -4542,8 +4593,10 @@ class SettingsPanel(QWidget):
                 except (IndexError, KeyError): cc = '#27ae60'
                 try: cl = cell_labels[cons_idx][freq_idx]
                 except (IndexError, KeyError): cl = 'Låg'
+                try: cf = cell_fg_colors[cons_idx][freq_idx]
+                except (IndexError, KeyError): cf = '#ffffff'
 
-                btn = MatrixCellButton(cons_idx, freq_idx, cc, cl,
+                btn = MatrixCellButton(cons_idx, freq_idx, cc, cl, cf,
                                        is_top_row=(r == 0),
                                        is_left_col=(c == 0))
                 btn.clicked.connect(lambda _, b=btn: self._edit_cell(b))
@@ -4666,15 +4719,22 @@ class SettingsPanel(QWidget):
                     self._x_label_edits[affected_c].setText(new_lbl)
 
     def _edit_cell(self, btn):
-        """Click a cell → choose color AND label."""
-        color = QColorDialog.getColor(QColor(btn.color()), self, "Välj färg för cell")
+        """Click a cell → choose background color, label, and text color."""
+        color = QColorDialog.getColor(QColor(btn.color()), self, "Välj bakgrundsfärg för cell")
         if not color.isValid():
             return
         label, ok = QInputDialog.getText(
             self, "Celltext", "Risknivå-etikett (t.ex. Låg, Medium, Hög, Kritisk):",
             text=btn.label())
-        if ok:
-            btn.set_cell(color.name(), label.strip() or btn.label())
+        if not ok:
+            return
+        # Auto-suggest fg based on luminance; let user override
+        r, g, b = color.red(), color.green(), color.blue()
+        auto_fg = '#000000' if (0.299*r + 0.587*g + 0.114*b) > 160 else '#ffffff'
+        current_fg = btn.fg_color() if btn.fg_color() else auto_fg
+        fg_obj = QColorDialog.getColor(QColor(current_fg), self, "Välj textfärg")
+        fg = fg_obj.name() if fg_obj.isValid() else current_fg
+        btn.set_cell(color.name(), label.strip() or btn.label(), fg)
 
     def _save_matrix(self):
         n_cons = self._rows_spin.value()   # consequence levels (rows in data)
@@ -4683,14 +4743,16 @@ class SettingsPanel(QWidget):
         freq_on_x = (x_axis == 'frequency')
 
         # Cell buttons store (cons_idx, freq_idx) regardless of display orientation
-        colors = [['' for _ in range(n_freq)] for _ in range(n_cons)]
-        labels = [['' for _ in range(n_freq)] for _ in range(n_cons)]
+        colors    = [['' for _ in range(n_freq)] for _ in range(n_cons)]
+        labels    = [['' for _ in range(n_freq)] for _ in range(n_cons)]
+        fg_colors = [['' for _ in range(n_freq)] for _ in range(n_cons)]
         for _disp_r, row_btns in self._cell_buttons:
             for btn in row_btns:
                 cons_i, freq_i = btn.row, btn.col   # (cons_idx, freq_idx)
                 if cons_i < n_cons and freq_i < n_freq:
-                    colors[cons_i][freq_i] = btn.color()
-                    labels[cons_i][freq_i] = btn.label()
+                    colors[cons_i][freq_i]    = btn.color()
+                    labels[cons_i][freq_i]    = btn.label()
+                    fg_colors[cons_i][freq_i] = btn.fg_color()
 
         # Axis labels: _x_label_edits are the column headers (whatever axis),
         # _y_label_edits are the row headers (reversed, highest at top)
@@ -4719,8 +4781,9 @@ class SettingsPanel(QWidget):
             'y_reversed':  self._y_rev_chk.isChecked(),
             'x_labels':    x_labels,
             'y_labels':    y_labels,
-            'cell_colors': colors,
-            'cell_labels': labels,
+            'cell_colors':    colors,
+            'cell_labels':    labels,
+            'cell_fg_colors': fg_colors,
         }
         # Read frequency boundaries from editable row/column (display order)
         freq_boundaries = []
