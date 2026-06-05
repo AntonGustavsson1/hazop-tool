@@ -1092,14 +1092,18 @@ class EquipmentScanDialog(QDialog):
 
 
 class ComponentPickerDialog(QDialog):
-    def __init__(self, parent=None, suggested_tag='', component_types=None):
+    def __init__(self, parent=None, suggested_tag='',
+                 component_types=None, mode_freqs=None):
         super().__init__(parent)
         self.setWindowTitle("Välj komponent och felmod")
-        self.setMinimumWidth(420)
-        self.selected_type  = ''
-        self.selected_modes = []
-        self.selected_tag   = ''
-        self._comp_types = component_types or COMPONENT_TYPES
+        self.setMinimumWidth(440)
+        self.selected_type   = ''
+        self.selected_modes  = []
+        self.selected_tag    = ''
+        self.selected_freqs  = {}   # {mode_desc: freq_per_year or None}
+        self._comp_types     = component_types or COMPONENT_TYPES
+        # mode_freqs = {comp_type: {mode_desc: freq_per_year}}
+        self._mode_freqs     = mode_freqs or {}
 
         layout = QVBoxLayout(self)
         form   = QFormLayout()
@@ -1131,8 +1135,35 @@ class ComponentPickerDialog(QDialog):
 
     def _update_modes(self, type_name):
         self.mode_list.clear()
+        freqs = self._mode_freqs.get(type_name, {})
         for mode in self._comp_types.get(type_name, []):
-            self.mode_list.addItem(QListWidgetItem(mode))
+            freq = freqs.get(mode)
+            if freq is not None:
+                # Show frequency info alongside mode description
+                f_lbl = self._freq_label(freq)
+                display = f"{mode}  [{f_lbl}]"
+            else:
+                display = mode
+            item = QListWidgetItem(display)
+            item.setData(Qt.ItemDataRole.UserRole, mode)   # original desc without freq
+            if freq is not None:
+                item.setToolTip(f"Frekvens: {freq:.4g} händelser/år  →  {f_lbl}")
+            self.mode_list.addItem(item)
+
+    @staticmethod
+    def _freq_label(freq):
+        """Format a frequency value as a readable F-level string."""
+        if freq is None or freq <= 0:
+            return "—"
+        from math import floor, log10
+        # Compute F-level (same formula as freq_to_f_level in hazop.py)
+        boundaries = [1e-5, 1e-4, 1e-3, 0.01, 0.1, 1.0]
+        f_level = len(boundaries) - 1
+        for i, b in enumerate(boundaries):
+            if freq < b:
+                f_level = i - 1
+                break
+        return f"F={f_level}  ({freq:.3g}/år)"
 
     def _on_accept(self):
         self.selected_type = self.type_combo.currentText()
@@ -1141,7 +1172,14 @@ class ComponentPickerDialog(QDialog):
         if not selected and self.mode_list.count() > 0:
             self.mode_list.item(0).setSelected(True)
             selected = [self.mode_list.item(0)]
-        self.selected_modes = [item.text() for item in selected]
+        # Use UserRole (original desc) to strip the freq annotation added in display
+        self.selected_modes = [
+            item.data(Qt.ItemDataRole.UserRole) or item.text()
+            for item in selected
+        ]
+        # Collect freq_per_year for each selected mode
+        freqs = self._mode_freqs.get(self.selected_type, {})
+        self.selected_freqs = {mode: freqs.get(mode) for mode in self.selected_modes}
         self.accept()
 
 
@@ -1856,10 +1894,12 @@ class PIDPanel(QWidget):
             pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
             suggested_tag = find_tag_near_point(self.viewer.pdf_doc, page, pdf_x, pdf_y)
 
-        comp_data = (self.db.all_component_types_dict()
-                     if hasattr(self.db, 'all_component_types_dict') else None)
+        comp_data  = (self.db.all_component_types_dict()
+                      if hasattr(self.db, 'all_component_types_dict') else None)
+        mode_freqs = self._load_mode_freqs()
         dlg = ComponentPickerDialog(self, suggested_tag=suggested_tag,
-                                    component_types=comp_data)
+                                    component_types=comp_data,
+                                    mode_freqs=mode_freqs)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
@@ -1875,6 +1915,13 @@ class PIDPanel(QWidget):
             label    = f"{tag + ' — ' if tag else ''}{comp_type}: {mode}"
             cause_id = self.db.add_cause(self._active_node_id)
             self.db.update_cause(cause_id, label)
+
+            # Auto-set F-level from component failure frequency if defined
+            freq = dlg.selected_freqs.get(mode)
+            if freq is not None:
+                f_level = self._compute_f_level(freq)
+                self.db.update_cause(cause_id, likelihood=f_level)
+
             self.db.add_cause_marker(cause_id, page, pdf_x, pdf_y, comp_type, tag)
             self.viewer.add_cause_marker(cause_id, pdf_x, pdf_y, comp_type, mode, tag)
             last_cause_id = cause_id
@@ -2112,6 +2159,32 @@ class PIDPanel(QWidget):
 
         dlg = EquipmentScanDialog(result, self.db, self)
         dlg.exec()
+
+    def _load_mode_freqs(self):
+        """Return {comp_type: {mode_desc: freq_per_year}} from DB."""
+        if not hasattr(self.db, 'component_types'):
+            return {}
+        result = {}
+        for ct in self.db.component_types():
+            freqs = {}
+            for fm in self.db.failure_modes(ct['id']):
+                if fm['freq_per_year'] is not None:
+                    freqs[fm['description']] = fm['freq_per_year']
+            result[ct['name']] = freqs
+        return result
+
+    def _compute_f_level(self, freq_per_year):
+        """Convert frequency (events/year) to F-level using matrix boundaries."""
+        if not freq_per_year or freq_per_year <= 0:
+            return 3   # default
+        cfg        = self.db.get_risk_matrix() if hasattr(self.db, 'get_risk_matrix') else {}
+        boundaries = sorted(
+            float(b) for b in (cfg or {}).get('freq_boundaries',
+                                              [1e-5, 1e-4, 1e-3, 0.01, 0.1, 1.0]))
+        for i, b in enumerate(boundaries):
+            if float(freq_per_year) < b:
+                return i - 1
+        return len(boundaries) - 1
 
     def try_reload_pdf(self):
         path = self.db.get_pid_path()
