@@ -57,11 +57,12 @@ CREATE TABLE IF NOT EXISTS causes (
 );
 
 CREATE TABLE IF NOT EXISTS consequences (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    cause_id    INTEGER NOT NULL REFERENCES causes(id) ON DELETE CASCADE,
-    description TEXT NOT NULL DEFAULT 'Ny konsekvens',
-    severity    INTEGER NOT NULL DEFAULT 1,
-    category    TEXT DEFAULT ''
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    cause_id          INTEGER NOT NULL REFERENCES causes(id) ON DELETE CASCADE,
+    description       TEXT NOT NULL DEFAULT 'Ny konsekvens',
+    severity          INTEGER NOT NULL DEFAULT 1,
+    category          TEXT DEFAULT '',
+    consequence_chain TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS safeguards (
@@ -318,6 +319,49 @@ def total_freq_reduction(base_freq: int, safeguard_rrf: int,
     return max(-1, base_freq - total_steps), total_rrf, total_steps
 
 
+# ── Consequence chain definitions ────────────────────────────────────────────
+# Each entry: (key, display_label, group_header_or_None)
+_CHAIN_ITEMS = [
+    # Intermediate event
+    ('loc',           'LOC — Utsläpp / läcka',                    'Intermediär händelse'),
+    # Ignition outcomes
+    ('fire',          'Brand (pool fire / jet fire)',              'Antändning / explosion'),
+    ('flash_fire',    'Flash fire',                                None),
+    ('explosion',     'Explosion (VCE / BLEVE)',                   None),
+    # Toxic / environmental
+    ('toxic',         'Toxisk exponering',                         'Toxisk / miljö'),
+    ('environmental', 'Miljöutsläpp',                              None),
+    # Human / asset
+    ('personnel',     'Personskador',                              'Personell / tillgång'),
+    ('fatality',      'Dödsfall',                                  None),
+    ('equipment',     'Utrustningsskador',                         None),
+    ('production',    'Driftstopp / produktionsbortfall',          None),
+    # User-defined
+    ('custom',        'Övrigt (se text)',                          'Övrigt'),
+]
+_CHAIN_KEYS = [k for k, _, _ in _CHAIN_ITEMS]
+
+
+def build_consequence_text(base: str, chain: dict) -> str:
+    """Build full consequence description from base event + chain selections."""
+    parts = [base.strip()] if base.strip() else []
+    for key, label, _ in _CHAIN_ITEMS:
+        if chain.get(key):
+            # Use short label for the chain (without parenthetical detail)
+            short = label.split('(')[0].strip().split(' — ')[-1].strip()
+            parts.append(short)
+    return ' → '.join(parts)
+
+
+def parse_chain_from_json(raw: str) -> dict:
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {}
+
+
 # Frequency F=-1..5, stored as integer in causes.likelihood
 _FREQ_VALUES = [-1, 0, 1, 2, 3, 4, 5]
 _FREQ_LABELS = [
@@ -397,6 +441,7 @@ class Database:
             "ALTER TABLE safeguards ADD COLUMN rrf INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE safeguards ADD COLUMN source_id INTEGER DEFAULT NULL",
             "ALTER TABLE consequences ADD COLUMN category TEXT DEFAULT ''",
+            "ALTER TABLE consequences ADD COLUMN consequence_chain TEXT DEFAULT ''",
             "ALTER TABLE consequences ADD COLUMN source_id INTEGER DEFAULT NULL",
             "ALTER TABLE consequences ADD COLUMN fa_active INTEGER DEFAULT 0",
             "ALTER TABLE consequences ADD COLUMN fa_rrf INTEGER DEFAULT 10",
@@ -784,9 +829,12 @@ class Database:
             self.conn.execute(f"UPDATE causes SET {', '.join(sets)} WHERE id=?", vals)
             self.conn.commit()
 
-    def update_consequence(self, id_, description, severity, category=''):
-        self.conn.execute("UPDATE consequences SET description=?,severity=?,category=? WHERE id=?",
-                          (description, severity, category, id_))
+    def update_consequence(self, id_, description, severity, category='',
+                           consequence_chain=''):
+        self.conn.execute(
+            "UPDATE consequences SET description=?,severity=?,category=?,"
+            "consequence_chain=? WHERE id=?",
+            (description, severity, category, consequence_chain, id_))
         self.conn.commit()
 
     def update_safeguard(self, id_, description, rrf=1):
@@ -1368,10 +1416,12 @@ class ConsequencePanel(QWidget):
         self.db = db
         self.consequence_id = None
         self._loading = False
+        self._chain = {}       # current checkbox state {key: bool}
+        self._chain_checks = {}  # {key: QCheckBox}
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(10)
-        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(8)
+        layout.setContentsMargins(16, 12, 16, 12)
 
         title = QLabel("Konsekvens (Consequence)")
         f = QFont(); f.setPointSize(15); f.setBold(True)
@@ -1380,11 +1430,14 @@ class ConsequencePanel(QWidget):
         sep = QLabel(); sep.setFixedHeight(1); sep.setStyleSheet("background:#ddd;")
         layout.addWidget(sep)
 
-        desc_box = QGroupBox("Beskrivning")
+        # ── Beskrivning (bas-händelse) ─────────────────────────────────────────
+        desc_box = QGroupBox("Händelse / Direkt konsekvens")
         desc_lay = QVBoxLayout(desc_box)
+        desc_lay.setSpacing(4)
         self.desc_edit = QTextEdit()
-        self.desc_edit.setPlaceholderText("Beskriv konsekvensen...")
-        self.desc_edit.setFixedHeight(80)
+        self.desc_edit.setPlaceholderText(
+            "Beskriv den direkta händelsen, t.ex. 'Högt flöde till T-001'")
+        self.desc_edit.setFixedHeight(65)
         _orig_foe = QTextEdit.focusOutEvent
         _w = self.desc_edit
         _s = self._save
@@ -1392,26 +1445,78 @@ class ConsequencePanel(QWidget):
             _s()
             _orig(_w, e)
         self.desc_edit.focusOutEvent = _desc_foe
+        self.desc_edit.textChanged.connect(self._on_desc_changed)
         desc_lay.addWidget(self.desc_edit)
         layout.addWidget(desc_box)
 
+        # ── Konsekvenskedja ───────────────────────────────────────────────────
+        chain_box = QGroupBox("Konsekvenskedja  (kryssa i för att bygga kedjan)")
+        chain_lay = QVBoxLayout(chain_box)
+        chain_lay.setSpacing(4)
+
+        last_group = None
+        grid = QGridLayout(); grid.setSpacing(3)
+        col, row_idx = 0, 0
+
+        for key, label, group in _CHAIN_ITEMS:
+            if group and group != last_group:
+                if col > 0:
+                    row_idx += 1; col = 0
+                hdr = QLabel(group)
+                hdr.setStyleSheet("color:#1F4E79; font-weight:bold; font-size:10px; margin-top:4px;")
+                grid.addWidget(hdr, row_idx, 0, 1, 3)
+                row_idx += 1; col = 0
+                last_group = group
+
+            chk = QCheckBox(label)
+            chk.toggled.connect(self._on_chain_changed)
+            self._chain_checks[key] = chk
+            grid.addWidget(chk, row_idx, col)
+            col += 1
+            if col >= 3:
+                col = 0; row_idx += 1
+
+        chain_lay.addLayout(grid)
+
+        # Preview of generated text
+        sep_lbl = QLabel("Genererad text:")
+        sep_lbl.setStyleSheet("color:#555; font-size:10px; margin-top:4px;")
+        chain_lay.addWidget(sep_lbl)
+        self._chain_preview = QLabel("")
+        self._chain_preview.setStyleSheet(
+            "color:#1F4E79; font-weight:bold; font-size:11px;"
+            "background:#eef4fb; border:1px solid #bee3f8; border-radius:3px; padding:3px 6px;")
+        self._chain_preview.setWordWrap(True)
+        chain_lay.addWidget(self._chain_preview)
+
+        apply_btn = QPushButton("↑ Tillämpa genererad text i beskrivningsfältet")
+        apply_btn.setStyleSheet(
+            "font-size:10px; padding:2px 8px; background:#1F4E79; color:white;"
+            "border:none; border-radius:3px;")
+        apply_btn.clicked.connect(self._apply_chain_to_desc)
+        chain_lay.addWidget(apply_btn)
+
+        layout.addWidget(chain_box)
+
+        # ── Riskbedömning ─────────────────────────────────────────────────────
         risk_box = QGroupBox("Riskbedömning")
         risk_lay = QFormLayout(risk_box)
-        risk_lay.setSpacing(8)
+        risk_lay.setSpacing(6)
 
         self.sev_combo = QComboBox()
         self.sev_combo.addItems(_SEV_LABELS)
         self.sev_combo.currentIndexChanged.connect(self._risk_changed)
-        risk_lay.addRow("Konsekvens (S):", self.sev_combo)
+        risk_lay.addRow("Konsekvens (C):", self.sev_combo)
 
         self.cat_combo = QComboBox()
         self.cat_combo.currentIndexChanged.connect(self._save)
         risk_lay.addRow("Kategori:", self.cat_combo)
 
         self.risk_badge = RiskBadge()
-        risk_lay.addRow("Risknivå (S×L orsak):", self.risk_badge)
+        risk_lay.addRow("Risknivå:", self.risk_badge)
         layout.addWidget(risk_box)
 
+        # ── Safeguards + Åtgärder ─────────────────────────────────────────────
         sg_box = QGroupBox("Safeguards")
         sg_lay = QVBoxLayout(sg_box)
         self.sg_editor = SafeguardEditor(db)
@@ -1425,6 +1530,36 @@ class ConsequencePanel(QWidget):
         layout.addWidget(act_box)
 
         layout.addStretch()
+
+    # ── Chain helpers ─────────────────────────────────────────────────────────
+
+    def _rebuild_preview(self):
+        base = self.desc_edit.toPlainText().strip()
+        text = build_consequence_text(base, self._chain)
+        self._chain_preview.setText(text if text else "—")
+
+    def _on_desc_changed(self):
+        if not self._loading:
+            self._rebuild_preview()
+
+    def _on_chain_changed(self):
+        if self._loading:
+            return
+        self._chain = {k: chk.isChecked() for k, chk in self._chain_checks.items()}
+        self._rebuild_preview()
+        self._save()
+
+    def _apply_chain_to_desc(self):
+        """Copy generated text into the description field."""
+        text = build_consequence_text(
+            self.desc_edit.toPlainText().strip(), self._chain)
+        if text:
+            self._loading = True
+            self.desc_edit.setPlainText(text)
+            self._loading = False
+        self._save()
+
+    # ── Load / Save ───────────────────────────────────────────────────────────
 
     def _load_categories(self):
         self.cat_combo.blockSignals(True)
@@ -1445,7 +1580,14 @@ class ConsequencePanel(QWidget):
             cat = row['category'] or ''
             idx = self.cat_combo.findText(cat)
             self.cat_combo.setCurrentIndex(max(0, idx))
+            # Restore chain checkboxes
+            self._chain = parse_chain_from_json(
+                row['consequence_chain'] if 'consequence_chain' in row.keys() else '')
+            for key, chk in self._chain_checks.items():
+                chk.setChecked(bool(self._chain.get(key, False)))
             self._loading = False
+
+        self._rebuild_preview()
 
         cause_id = dict(row)['cause_id'] if row else None
         freq = 3
@@ -1465,10 +1607,11 @@ class ConsequencePanel(QWidget):
     def _save(self):
         if self._loading or self.consequence_id is None:
             return
-        sev  = self.sev_combo.currentIndex() + 1
-        desc = self.desc_edit.toPlainText().strip() or 'Ny konsekvens'
-        cat  = self.cat_combo.currentText()
-        self.db.update_consequence(self.consequence_id, desc, sev, cat)
+        sev   = self.sev_combo.currentIndex() + 1
+        desc  = self.desc_edit.toPlainText().strip() or 'Ny konsekvens'
+        cat   = self.cat_combo.currentText()
+        chain = json.dumps(self._chain)
+        self.db.update_consequence(self.consequence_id, desc, sev, cat, chain)
         self.saved.emit(self.consequence_id)
 
 
