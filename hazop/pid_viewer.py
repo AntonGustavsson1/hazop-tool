@@ -32,7 +32,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy, QMenu, QTableWidget, QTableWidgetItem, QHeaderView,
     QProgressDialog, QApplication, QGridLayout, QTextEdit,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF
+from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QThread
 from PyQt6.QtGui import (
     QColor, QPen, QBrush, QPainterPath, QPixmap, QImage, QFont,
     QPainter, QPicture,
@@ -1912,6 +1912,33 @@ class SafeguardPickerDialog(QDialog):
         self.accept()
 
 
+class _PageRenderer(QThread):
+    """Background thread that pre-renders PDF pages to raw pixel data for the page cache."""
+    page_ready = pyqtSignal(int, object, int, int, int)  # page_num, raw_bytes, w, h, stride
+
+    def __init__(self, pdf_path, pages, scale, parent=None):
+        super().__init__(parent)
+        self._path  = pdf_path
+        self._pages = pages
+        self._scale = scale
+
+    def run(self):
+        if not HAS_PYMUPDF:
+            return
+        try:
+            doc = fitz.open(self._path)
+            for pn in self._pages:
+                if self.isInterruptionRequested():
+                    break
+                page = doc.load_page(pn)
+                mat  = fitz.Matrix(self._scale, self._scale)
+                pix  = page.get_pixmap(matrix=mat, alpha=False)
+                self.page_ready.emit(pn, bytes(pix.samples), pix.width, pix.height, pix.stride)
+            doc.close()
+        except Exception:
+            pass
+
+
 class PIDGraphicsView(QGraphicsView):
     node_markup_finished  = pyqtSignal(list, int)
     # Third parameter = extracted tag text from drawn rectangle (may be empty)
@@ -1966,10 +1993,15 @@ class PIDGraphicsView(QGraphicsView):
         self.pdf_doc          = None
         self.current_page     = 0
         self.page_item        = None
-        self.render_scale     = 1.0   # 1:1 for SVG (scene coords = PDF coords)
+        self.render_scale     = 1.0
         self.page_rect_width  = 0.0
         self.page_rect_height = 0.0
-        self._use_vector      = HAS_SVG_RENDERER   # prefer vector over raster
+        self._RASTER_SCALE    = 3.0
+        self._pdf_path        = None
+        self._page_cache: dict = {}
+        self._cache_order: list = []
+        self._CACHE_SIZE      = 10
+        self._prefetch_thread = None
 
         self.draw_points        = []
         self.draw_pen           = QPen(QColor(255, 140, 0), 3)
@@ -2014,6 +2046,10 @@ class PIDGraphicsView(QGraphicsView):
         if self.pdf_doc.page_count == 0:
             self._show_placeholder("PDF saknar sidor.")
             return False
+        self._pdf_path = str(path)
+        self._page_cache.clear()
+        self._cache_order.clear()
+        self._cancel_prefetch()
         self.current_page = max(0, min(page, self.pdf_doc.page_count - 1))
         self._render_page()
         return True
@@ -2027,7 +2063,6 @@ class PIDGraphicsView(QGraphicsView):
         self.page_rect_width  = float(rect.width)
         self.page_rect_height = float(rect.height)
 
-        # Remove previous page item
         if self.page_item is not None:
             try:
                 self._scene.removeItem(self.page_item)
@@ -2035,41 +2070,68 @@ class PIDGraphicsView(QGraphicsView):
                 pass
             self.page_item = None
 
-        if self._use_vector:
-            # ── Vector SVG rendering — crisp at any zoom ──────────────────────
-            try:
-                # text_as_path=True converts text glyphs to path outlines so Qt's
-                # SVG renderer never needs to resolve <font> references (PyMuPDF ≥1.23).
-                # Fall back to the plain call for older PyMuPDF versions.
-                try:
-                    svg_str = page.get_svg_image(matrix=fitz.Identity, text_as_path=True)
-                except TypeError:
-                    svg_str = page.get_svg_image(matrix=fitz.Identity)
-                svg_bytes = svg_str.encode('utf-8') if isinstance(svg_str, str) else svg_str
-                self.page_item = PDFVectorItem(svg_bytes)
-                self.page_item.setZValue(Z_PAGE)
-                self._scene.addItem(self.page_item)
-                self._scene.setSceneRect(self.page_item.boundingRect())
-                # Scene coords = PDF coords (72 DPI points) — no scaling needed
-                self.render_scale = 1.0
-                return
-            except Exception as e:
-                # SVG failed — fall through to raster
-                self._use_vector = False
+        pn = self.current_page
+        if pn in self._page_cache:
+            pixmap = self._page_cache[pn]
+            self._update_lru(pn)
+        else:
+            mat = fitz.Matrix(self._RASTER_SCALE, self._RASTER_SCALE)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            img = QImage(pix.samples, pix.width, pix.height,
+                         pix.stride, QImage.Format.Format_RGB888)
+            pixmap = QPixmap.fromImage(img.copy())
+            self._add_to_cache(pn, pixmap)
 
-        # ── Raster fallback (pixmap) ──────────────────────────────────────────
-        raster_scale = 3.0  # 3× for raster fallback quality
-        mat  = fitz.Matrix(raster_scale, raster_scale)
-        pix  = page.get_pixmap(matrix=mat, alpha=False)
-        img  = QImage(pix.samples, pix.width, pix.height,
-                      pix.stride, QImage.Format.Format_RGB888)
-        pixmap = QPixmap.fromImage(img.copy())
         self.page_item = QGraphicsPixmapItem(pixmap)
         self.page_item.setZValue(Z_PAGE)
         self.page_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
         self._scene.addItem(self.page_item)
         self._scene.setSceneRect(QRectF(pixmap.rect()))
-        self.render_scale = raster_scale
+        self.render_scale = self._RASTER_SCALE
+
+        self._prefetch_adjacent()
+
+    def _cancel_prefetch(self):
+        if self._prefetch_thread and self._prefetch_thread.isRunning():
+            self._prefetch_thread.requestInterruption()
+            self._prefetch_thread.wait(300)
+
+    def _add_to_cache(self, pn, pixmap):
+        if pn in self._page_cache:
+            self._cache_order.remove(pn)
+        elif len(self._page_cache) >= self._CACHE_SIZE:
+            oldest = self._cache_order.pop(0)
+            del self._page_cache[oldest]
+        self._page_cache[pn] = pixmap
+        self._cache_order.append(pn)
+
+    def _update_lru(self, pn):
+        if pn in self._cache_order:
+            self._cache_order.remove(pn)
+            self._cache_order.append(pn)
+
+    def _prefetch_adjacent(self):
+        if not self._pdf_path or self.pdf_doc is None:
+            return
+        total = self.pdf_doc.page_count
+        to_fetch = []
+        for offset in (1, -1, 2, -2):
+            n = self.current_page + offset
+            if 0 <= n < total and n not in self._page_cache:
+                to_fetch.append(n)
+                if len(to_fetch) >= 2:
+                    break
+        if not to_fetch:
+            return
+        self._cancel_prefetch()
+        self._prefetch_thread = _PageRenderer(self._pdf_path, to_fetch, self._RASTER_SCALE)
+        self._prefetch_thread.page_ready.connect(self._on_page_prefetched)
+        self._prefetch_thread.start()
+
+    def _on_page_prefetched(self, pn, raw, width, height, stride):
+        if pn not in self._page_cache:
+            img = QImage(raw, width, height, stride, QImage.Format.Format_RGB888)
+            self._add_to_cache(pn, QPixmap.fromImage(img))
 
     def page_count(self):
         return self.pdf_doc.page_count if self.pdf_doc else 0
@@ -2642,6 +2704,7 @@ class PIDPanel(QWidget):
         self._pending_markup_pts    = None
         self._pending_markup_page   = None
         self._current_display_page  = 0
+        self._sheet_map: dict       = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -2906,6 +2969,10 @@ class PIDPanel(QWidget):
         db_path = Path(self.db.path)
         return db_path.with_name(db_path.stem + '_pid.pdf')
 
+    def _rebuild_sheet_map(self):
+        sheets = self.db.get_sheets()
+        self._sheet_map = {i: int(s['physical_page']) for i, s in enumerate(sheets)}
+
     def _open_pdf(self):
         if not HAS_PYMUPDF:
             QMessageBox.warning(self, "PyMuPDF saknas",
@@ -2998,6 +3065,7 @@ class PIDPanel(QWidget):
             self.db.ensure_sheets_initialized(self.viewer.page_count())
             self._current_display_page = 0
 
+        self._rebuild_sheet_map()
         self._update_page_label()
         self._load_overlays()
         self.analyze_btn.setEnabled(True)
@@ -3005,24 +3073,23 @@ class PIDPanel(QWidget):
     def _goto_page(self, display_n):
         if self.viewer.pdf_doc is None:
             return
-        total_display = self.db.get_display_page_count()
-        if total_display == 0:
-            # Sheets not initialised yet — fall back to raw page navigation
-            raw_total = self.viewer.page_count()
-            display_n = max(0, min(display_n, raw_total - 1))
-            self._current_display_page = display_n
-            self.viewer.goto_page(display_n)
+        total = len(self._sheet_map) if self._sheet_map else (
+            self.db.get_display_page_count() or self.viewer.page_count())
+        display_n = max(0, min(display_n, total - 1))
+        if self._sheet_map:
+            physical = self._sheet_map.get(display_n, display_n)
+        elif self.db.get_display_page_count() > 0:
+            physical = self.db.get_sheet_physical_page(display_n)
         else:
-            display_n = max(0, min(display_n, total_display - 1))
-            physical  = self.db.get_sheet_physical_page(display_n)
-            self._current_display_page = display_n
-            self.viewer.goto_page(physical)
+            physical = display_n
+        self._current_display_page = display_n
+        self.viewer.goto_page(physical)
         self._update_page_label()
         self._load_overlays()
 
     def _update_page_label(self):
-        total_display = self.db.get_display_page_count()
-        total = total_display if total_display > 0 else self.viewer.page_count()
+        total = len(self._sheet_map) if self._sheet_map else (
+            self.db.get_display_page_count() or self.viewer.page_count())
         if total > 0:
             self.page_label.setText(f"{self._current_display_page + 1} / {total}")
         else:
@@ -3670,6 +3737,7 @@ class PIDPanel(QWidget):
         if path and Path(path).exists() and HAS_PYMUPDF:
             if self.viewer.load_pdf(path, page=0):
                 self.db.ensure_sheets_initialized(self.viewer.page_count())
+                self._rebuild_sheet_map()
                 self._current_display_page = 0
                 self._update_page_label()
                 self._load_overlays()
