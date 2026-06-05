@@ -13,10 +13,8 @@ from pathlib import Path
 # These come from PyMuPDF's SVG output and are harmless display artefacts.
 from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
 
-_SVG_NOISE = ('qt.svg:', 'link #font', 'is undefined', 'path truncated')
-
 def _qt_msg_handler(mode, context, message):
-    if any(pat in message for pat in _SVG_NOISE):
+    if message.startswith('qt.svg:'):
         return
     import sys
     print(message, file=sys.stderr)
@@ -2040,7 +2038,13 @@ class PIDGraphicsView(QGraphicsView):
         if self._use_vector:
             # ── Vector SVG rendering — crisp at any zoom ──────────────────────
             try:
-                svg_str   = page.get_svg_image(matrix=fitz.Identity)
+                # text_as_path=True converts text glyphs to path outlines so Qt's
+                # SVG renderer never needs to resolve <font> references (PyMuPDF ≥1.23).
+                # Fall back to the plain call for older PyMuPDF versions.
+                try:
+                    svg_str = page.get_svg_image(matrix=fitz.Identity, text_as_path=True)
+                except TypeError:
+                    svg_str = page.get_svg_image(matrix=fitz.Identity)
                 svg_bytes = svg_str.encode('utf-8') if isinstance(svg_str, str) else svg_str
                 self.page_item = PDFVectorItem(svg_bytes)
                 self.page_item.setZValue(Z_PAGE)
