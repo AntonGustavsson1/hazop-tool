@@ -1642,7 +1642,7 @@ class PIDGraphicsView(QGraphicsView):
 
         if event.button() == Qt.MouseButton.RightButton and self.mode == MODE_NAV:
             menu = QMenu(self.viewport())
-            menu.addAction("⚙️ Hitta orsak",
+            menu.addAction("⚙️ Orsak",
                            lambda: self.context_action.emit('cause', sp, self.current_page))
             menu.addAction("⚠️ Konsekvens",
                            lambda: self.context_action.emit('consequence', sp, self.current_page))
@@ -1751,7 +1751,7 @@ class PIDPanel(QWidget):
         mode_defs = [
             (MODE_NAV,         "🔍 Navigera"),
             (MODE_NODE,        "✏️ Nodgräns"),
-            (MODE_CAUSE,       "⚙️ Hitta orsak"),
+            (MODE_CAUSE,       "⚙️ Orsak"),
             (MODE_CONSEQUENCE, "⚠️ Konsekvens"),
             (MODE_SAFEGUARD,   "🛡️ Safeguard"),
         ]
