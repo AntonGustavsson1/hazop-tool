@@ -1292,6 +1292,11 @@ class PIDGraphicsView(QGraphicsView):
     consequence_clicked   = pyqtSignal(object, int)
     safeguard_clicked     = pyqtSignal(object, int)
     context_action        = pyqtSignal(str, object, int)  # action, scene_pos, page
+    marker_clicked        = pyqtSignal(str, int)          # 'cause'|'consequence'|'safeguard', id
+
+    # Keys for QGraphicsItem.setData / .data
+    _DATA_TYPE = 0    # 'cause' | 'consequence' | 'safeguard'
+    _DATA_ID   = 1    # database id
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1302,6 +1307,8 @@ class PIDGraphicsView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.setBackgroundBrush(QBrush(QColor(180, 180, 180)))
+
+        self._press_pos = None   # tracks press position to distinguish click vs drag
 
         self.mode             = MODE_NAV
         self.pdf_doc          = None
@@ -1534,7 +1541,12 @@ class PIDGraphicsView(QGraphicsView):
         circle.setBrush(QBrush(QColor(231, 76, 60, 200)))
         circle.setZValue(Z_OVERLAY)
         tip = f"{tag + ': ' if tag else ''}{comp_type}" + (f"\n{label}" if label else '')
+        tip += "\n🖱 Klicka för att navigera i trädet"
         circle.setToolTip(tip)
+        circle.setData(self._DATA_TYPE, 'cause')
+        circle.setData(self._DATA_ID,   cause_id)
+        circle.setAcceptHoverEvents(True)
+        circle.setCursor(Qt.CursorShape.PointingHandCursor)
         self._scene.addItem(circle)
 
         display = tag if tag else comp_type[:3].upper()
@@ -1564,7 +1576,11 @@ class PIDGraphicsView(QGraphicsView):
         circle.setPen(QPen(QColor(180, 100, 0), 2))
         circle.setBrush(QBrush(QColor(243, 156, 18, 190)))
         circle.setZValue(Z_OVERLAY)
-        circle.setToolTip(target or '')
+        circle.setToolTip((target or '') + "\n🖱 Klicka för att navigera i trädet")
+        circle.setData(self._DATA_TYPE, 'consequence')
+        circle.setData(self._DATA_ID,   cons_id)
+        circle.setAcceptHoverEvents(True)
+        circle.setCursor(Qt.CursorShape.PointingHandCursor)
         self._scene.addItem(circle)
 
         inner = QGraphicsSimpleTextItem("K")
@@ -1582,7 +1598,12 @@ class PIDGraphicsView(QGraphicsView):
         circle.setPen(QPen(QColor(20, 120, 20), 2))
         circle.setBrush(QBrush(QColor(39, 174, 96, 200)))
         circle.setZValue(Z_OVERLAY)
-        circle.setToolTip(f"{tag + ': ' if tag else ''}{description}")
+        tip = f"{tag + ': ' if tag else ''}{description}\n🖱 Klicka för att navigera i trädet"
+        circle.setToolTip(tip)
+        circle.setData(self._DATA_TYPE, 'safeguard')
+        circle.setData(self._DATA_ID,   sg_id)
+        circle.setAcceptHoverEvents(True)
+        circle.setCursor(Qt.CursorShape.PointingHandCursor)
         self._scene.addItem(circle)
 
         display = tag if tag else 'SG'
@@ -1624,6 +1645,9 @@ class PIDGraphicsView(QGraphicsView):
             self._pending_path_item = None
 
     def mousePressEvent(self, event):
+        # Track press position to distinguish click vs drag in MODE_NAV
+        if self.mode == MODE_NAV:
+            self._press_pos = event.position()
         sp = self.mapToScene(event.position().toPoint())
         if self.mode == MODE_NODE:
             if event.button() == Qt.MouseButton.LeftButton:
@@ -1668,6 +1692,24 @@ class PIDGraphicsView(QGraphicsView):
             event.accept(); return
         super().mouseDoubleClickEvent(event)
 
+    def mouseReleaseEvent(self, event):
+        if (self.mode == MODE_NAV and
+                event.button() == Qt.MouseButton.LeftButton and
+                self._press_pos is not None):
+            p = event.position()
+            dx = p.x() - self._press_pos.x()
+            dy = p.y() - self._press_pos.y()
+            if dx * dx + dy * dy < 25:   # < 5 px movement → treat as click
+                sp = self.mapToScene(p.toPoint())
+                for item in self._scene.items(sp):
+                    itype = item.data(self._DATA_TYPE)
+                    iid   = item.data(self._DATA_ID)
+                    if itype in ('cause', 'consequence', 'safeguard') and iid is not None:
+                        self.marker_clicked.emit(itype, int(iid))
+                        break
+        self._press_pos = None
+        super().mouseReleaseEvent(event)
+
     def mouseMoveEvent(self, event):
         if self.mode == MODE_NODE and self.draw_points:
             self._update_rubber_band(self.mapToScene(event.position().toPoint()))
@@ -1700,6 +1742,7 @@ class PIDPanel(QWidget):
     consequence_created     = pyqtSignal(int)
     safeguard_created       = pyqtSignal(int)
     risk_scenario_requested = pyqtSignal(int, object, int)  # node_id, scene_pos, page
+    marker_navigated        = pyqtSignal(str, int)          # 'cause'|'consequence'|'safeguard', id
 
     def __init__(self, db, parent=None):
         super().__init__(parent)
@@ -1804,6 +1847,8 @@ class PIDPanel(QWidget):
         self.viewer.consequence_clicked.connect(self._on_consequence_click)
         self.viewer.safeguard_clicked.connect(self._on_safeguard_click)
         self.viewer.context_action.connect(self._on_context_action)
+        self.viewer.marker_clicked.connect(
+            lambda t, i: self.marker_navigated.emit(t, i))
         layout.addWidget(self.viewer)
 
         self._set_mode(MODE_NAV)

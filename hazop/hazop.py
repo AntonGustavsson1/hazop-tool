@@ -4501,6 +4501,7 @@ class MainWindow(QMainWindow):
                          self._on_selected(CONS_T, cid)))
         self.pid_panel.safeguard_created.connect(self._on_safeguard_created)
         self.pid_panel.risk_scenario_requested.connect(self._on_pid_risk_scenario)
+        self.pid_panel.marker_navigated.connect(self._on_marker_navigate)
 
         self._cur_type = None
         self._cur_id   = None
@@ -4552,6 +4553,15 @@ class MainWindow(QMainWindow):
         self._cur_id   = None
         self.stack.setCurrentWidget(self.welcome_panel)
         self.scenario_panel.clear()
+
+    def _on_marker_navigate(self, item_type: str, item_id: int):
+        """Navigate tree and detail panel when a P&ID marker is clicked."""
+        type_map = {'cause': CAUSE_T, 'consequence': CONS_T, 'safeguard': SG_T}
+        t = type_map.get(item_type)
+        if t is None:
+            return
+        self.tree_panel.refresh(t, item_id)
+        self._on_selected(t, item_id)
 
     def _on_safeguard_created(self, _sg_id):
         if self._cur_type == CONS_T and self._cur_id is not None:
