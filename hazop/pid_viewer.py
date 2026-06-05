@@ -22,6 +22,14 @@ from PyQt6.QtGui import (
     QPainter,
 )
 
+# Optional SVG vector rendering (preferred — stays sharp at any zoom)
+try:
+    from PyQt6.QtSvg import QSvgRenderer
+    HAS_SVG_RENDERER = True
+except ImportError:
+    QSvgRenderer = None
+    HAS_SVG_RENDERER = False
+
 try:
     import fitz
     HAS_PYMUPDF = True
@@ -604,6 +612,36 @@ def scan_pdf_for_equipment(pdf_doc, use_ocr: bool = False,
         'total_tags': sum(len(result[p]['tags']) for p in result if not p.startswith('_')),
     }
     return result
+
+
+class PDFVectorItem(QGraphicsItem):
+    """Renders a PDF page as pure vector via QSvgRenderer — crisp at any zoom."""
+
+    def __init__(self, svg_bytes: bytes):
+        super().__init__()
+        self._renderer = QSvgRenderer(svg_bytes)
+        vb = self._renderer.viewBoxF()
+        # Fall back to defaultSize if viewBox is missing
+        if vb.isValid() and vb.width() > 0:
+            self._rect = vb
+        else:
+            ds = self._renderer.defaultSize()
+            self._rect = QRectF(0, 0, ds.width(), ds.height())
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemUsesExtendedStyleOption)
+
+    def boundingRect(self):
+        return self._rect
+
+    def paint(self, painter, option, widget=None):
+        # Clip to the exposed rectangle for performance on large drawings
+        exposed = option.exposedRect if option else self._rect
+        self._renderer.render(painter, self._rect)
+
+    def page_width(self):
+        return self._rect.width()
+
+    def page_height(self):
+        return self._rect.height()
 
 
 def find_tag_near_point(pdf_doc, page_num, x_pdf, y_pdf, radius=50):
@@ -1636,9 +1674,10 @@ class PIDGraphicsView(QGraphicsView):
         self.pdf_doc          = None
         self.current_page     = 0
         self.page_item        = None
-        self.render_scale     = 3.0   # default: 3× = ~216 DPI — sharper for P&IDs
+        self.render_scale     = 1.0   # 1:1 for SVG (scene coords = PDF coords)
         self.page_rect_width  = 0.0
         self.page_rect_height = 0.0
+        self._use_vector      = HAS_SVG_RENDERER   # prefer vector over raster
 
         self.draw_points        = []
         self.draw_pen           = QPen(QColor(255, 140, 0), 3)
@@ -1696,12 +1735,7 @@ class PIDGraphicsView(QGraphicsView):
         self.page_rect_width  = float(rect.width)
         self.page_rect_height = float(rect.height)
 
-        mat = fitz.Matrix(self.render_scale, self.render_scale)
-        pix = page.get_pixmap(matrix=mat, alpha=False)
-        img = QImage(pix.samples, pix.width, pix.height,
-                     pix.stride, QImage.Format.Format_RGB888)
-        pixmap = QPixmap.fromImage(img.copy())
-
+        # Remove previous page item
         if self.page_item is not None:
             try:
                 self._scene.removeItem(self.page_item)
@@ -1709,17 +1743,35 @@ class PIDGraphicsView(QGraphicsView):
                 pass
             self.page_item = None
 
+        if self._use_vector:
+            # ── Vector SVG rendering — crisp at any zoom ──────────────────────
+            try:
+                svg_str   = page.get_svg_image(matrix=fitz.Identity)
+                svg_bytes = svg_str.encode('utf-8') if isinstance(svg_str, str) else svg_str
+                self.page_item = PDFVectorItem(svg_bytes)
+                self.page_item.setZValue(Z_PAGE)
+                self._scene.addItem(self.page_item)
+                self._scene.setSceneRect(self.page_item.boundingRect())
+                # Scene coords = PDF coords (72 DPI points) — no scaling needed
+                self.render_scale = 1.0
+                return
+            except Exception as e:
+                # SVG failed — fall through to raster
+                self._use_vector = False
+
+        # ── Raster fallback (pixmap) ──────────────────────────────────────────
+        raster_scale = 3.0  # 3× for raster fallback quality
+        mat  = fitz.Matrix(raster_scale, raster_scale)
+        pix  = page.get_pixmap(matrix=mat, alpha=False)
+        img  = QImage(pix.samples, pix.width, pix.height,
+                      pix.stride, QImage.Format.Format_RGB888)
+        pixmap = QPixmap.fromImage(img.copy())
         self.page_item = QGraphicsPixmapItem(pixmap)
         self.page_item.setZValue(Z_PAGE)
         self.page_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
         self._scene.addItem(self.page_item)
         self._scene.setSceneRect(QRectF(pixmap.rect()))
-
-    def set_render_scale(self, scale: float):
-        """Change render quality and re-render the current page."""
-        self.render_scale = float(scale)
-        if self.pdf_doc is not None:
-            self._render_page()
+        self.render_scale = raster_scale
 
     def page_count(self):
         return self.pdf_doc.page_count if self.pdf_doc else 0
@@ -1735,6 +1787,8 @@ class PIDGraphicsView(QGraphicsView):
         self._render_page()
 
     def scene_to_pdf(self, point):
+        # With SVG rendering: scene coords == PDF coords (render_scale=1.0)
+        # With raster fallback: apply the raster scale
         return (point.x() / self.render_scale, point.y() / self.render_scale)
 
     def pdf_to_scene(self, x, y):
@@ -1981,7 +2035,7 @@ class PIDGraphicsView(QGraphicsView):
 
             # ── 2. OCR fallback on the cropped region ─────────────────────────
             if HAS_PIL:
-                scale = max(self.render_scale * 2, 4.0)   # high DPI for small region
+                scale = 4.0   # fixed high DPI for OCR on small regions
                 mat   = fitz.Matrix(scale, scale)
                 pix   = page.get_pixmap(matrix=mat, clip=frect, alpha=False)
                 pil   = _PILImage.frombytes("RGB", [pix.width, pix.height], pix.samples)
@@ -2207,23 +2261,6 @@ class PIDPanel(QWidget):
 
         bar.addWidget(_vline())
 
-        # Render quality selector
-        bar.addWidget(QLabel("Kvalitet:"))
-        self._quality_combo = QComboBox()
-        self._quality_combo.setToolTip(
-            "Renderingskvalitet (högre = skarpare men mer minne).\n"
-            "Ändra om PDF:en ser suddig ut.")
-        for label, scale in [("2× Standard", 2.0),
-                              ("3× Hög",     3.0),
-                              ("4× Mycket hög", 4.0),
-                              ("6× Skarp",   6.0)]:
-            self._quality_combo.addItem(label, scale)
-        self._quality_combo.setCurrentIndex(1)   # default: 3×
-        self._quality_combo.currentIndexChanged.connect(self._on_quality_changed)
-        bar.addWidget(self._quality_combo)
-
-        bar.addWidget(_vline())
-
         self.prev_btn = QPushButton("◀")
         self.prev_btn.setFixedWidth(28)
         self.prev_btn.clicked.connect(lambda: self._goto_page(self.viewer.current_page - 1))
@@ -2374,12 +2411,6 @@ class PIDPanel(QWidget):
 
         self._set_mode(MODE_NAV)
         self._update_pen()
-
-    def _on_quality_changed(self):
-        scale = self._quality_combo.currentData()
-        if scale:
-            self.viewer.set_render_scale(scale)
-            self._load_overlays()
 
     def _refresh_color_btn(self):
         c = self._pen_color
