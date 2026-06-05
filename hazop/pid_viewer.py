@@ -2926,15 +2926,16 @@ class PIDPanel(QWidget):
                 self._current_display_page = 0
             else:
                 # Nya blad — merge new PDF pages into existing PDF
+                import tempfile, os, shutil
                 try:
-                    existing_doc     = fitz.open(existing_path)
-                    existing_pg_cnt  = existing_doc.page_count
-                    new_doc          = fitz.open(path)
-                    n_new            = new_doc.page_count
+                    existing_doc    = fitz.open(existing_path)
+                    existing_pg_cnt = existing_doc.page_count
+                    new_doc         = fitz.open(path)
+                    n_new           = new_doc.page_count
                     existing_doc.insert_pdf(new_doc)
                     new_doc.close()
 
-                    # Close viewer's handle before overwriting
+                    # Close viewer's handle before touching the file
                     if self.viewer.pdf_doc is not None:
                         try:
                             self.viewer.pdf_doc.close()
@@ -2942,8 +2943,14 @@ class PIDPanel(QWidget):
                             pass
                         self.viewer.pdf_doc = None
 
-                    existing_doc.save(existing_path, garbage=4, deflate=True)
+                    # fitz refuses save() to the same path it was opened from;
+                    # write to a temp file first, then atomically replace the original.
+                    tmp_fd, tmp_path = tempfile.mkstemp(suffix='.pdf',
+                                                        dir=str(Path(existing_path).parent))
+                    os.close(tmp_fd)
+                    existing_doc.save(tmp_path, garbage=4, deflate=True)
                     existing_doc.close()
+                    shutil.move(tmp_path, existing_path)
                 except Exception as e:
                     QMessageBox.critical(self, "Fel vid sammanslagning",
                                          f"Kunde inte sammanfoga PDF:\n{e}")
