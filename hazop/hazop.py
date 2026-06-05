@@ -4144,14 +4144,20 @@ class SettingsPanel(QWidget):
         scroll.setWidget(_wrap)
         ml.addWidget(scroll)
 
-        # Axis orientation
+        # Axis orientation + direction controls
         ax_row = QHBoxLayout()
-        ax_row.addWidget(QLabel("Axelriktning:"))
+        ax_row.addWidget(QLabel("Axlar:"))
         self._axis_combo = QComboBox()
-        self._axis_combo.addItem("Frekvens → X-axel,  Konsekvens → Y-axel  (standard)", 'frequency')
-        self._axis_combo.addItem("Konsekvens → X-axel,  Frekvens → Y-axel", 'consequence')
-        self._axis_combo.setToolTip("Väljer vilken variabel som visas längs X- respektive Y-axeln.")
+        self._axis_combo.addItem("Frekvens → X,  Konsekvens → Y  (standard)", 'frequency')
+        self._axis_combo.addItem("Konsekvens → X,  Frekvens → Y", 'consequence')
         ax_row.addWidget(self._axis_combo, 1)
+        ax_row.addWidget(QLabel("  Riktning:"))
+        self._x_rev_chk = QCheckBox("Vänd X ←")
+        self._x_rev_chk.setToolTip("Vänd X-axeln: hög värde till vänster")
+        self._y_rev_chk = QCheckBox("Vänd Y ↓")
+        self._y_rev_chk.setToolTip("Vänd Y-axeln: lägst upp, högst ner")
+        ax_row.addWidget(self._x_rev_chk)
+        ax_row.addWidget(self._y_rev_chk)
         ml.addLayout(ax_row)
 
         save_matrix_btn = QPushButton("💾 Spara riskmatris")
@@ -4289,11 +4295,12 @@ class SettingsPanel(QWidget):
         cfg = self.db.get_risk_matrix() or DEFAULT_MATRIX
         self._rows_spin.setValue(cfg.get('rows', 5))
         self._cols_spin.setValue(cfg.get('cols', 7))
-        # Restore axis orientation
         x_axis = cfg.get('x_axis', 'frequency')
         idx = self._axis_combo.findData(x_axis)
         if idx >= 0:
             self._axis_combo.setCurrentIndex(idx)
+        self._x_rev_chk.setChecked(bool(cfg.get('x_reversed', False)))
+        self._y_rev_chk.setChecked(bool(cfg.get('y_reversed', False)))
         self._build_matrix_grid(cfg)
 
     def _apply_size(self):
@@ -4343,8 +4350,10 @@ class SettingsPanel(QWidget):
         cell_labels = cfg.get('cell_labels', [['Låg'] * n_freq] * n_cons)
         boundaries  = list(cfg.get('freq_boundaries', DEFAULT_FREQ_BOUNDARIES))
 
-        x_axis = cfg.get('x_axis', 'frequency')
+        x_axis    = cfg.get('x_axis', 'frequency')
         freq_on_x = (x_axis == 'frequency')
+        x_rev     = cfg.get('x_reversed', False)   # True = high value on left/top of X
+        y_rev     = cfg.get('y_reversed', False)   # True = low value at top of Y
 
         # Determine display dimensions
         if freq_on_x:
@@ -4370,20 +4379,24 @@ class SettingsPanel(QWidget):
         corner.setStyleSheet("font-size:9px; color:#555;")
         self._matrix_grid.addWidget(corner, 0, 0)
 
-        # Column headers (editable, support multi-line / interval text)
+        # Column headers — apply x_rev: if reversed, col 0 shows the highest value
         for c in range(n_dcols):
-            txt = col_lbls[c] if c < len(col_lbls) else str(c)
+            data_c = (n_dcols - 1 - c) if x_rev else c
+            txt = col_lbls[data_c] if data_c < len(col_lbls) else str(data_c)
             e = QLineEdit(txt)
             e.setFixedSize(80, 28)
             e.setAlignment(Qt.AlignmentFlag.AlignCenter)
             e.setStyleSheet(_hdr_style)
-            e.setToolTip(col_tip)
+            e.setToolTip(col_tip + "\nEtiketten uppdateras automatiskt när du ändrar gränsvärdet.")
             self._matrix_grid.addWidget(e, 0, c + 1)
             self._x_label_edits.append(e)
 
-        # Rows
+        # Rows — apply y_rev: if NOT reversed, highest value is at top (default)
         for r in range(n_drows):
-            disp_r = n_drows - 1 - r   # highest value at top
+            if y_rev:
+                disp_r = r              # low at top (r=0 = lowest value)
+            else:
+                disp_r = n_drows - 1 - r  # high at top (default)
 
             # Row header
             txt = row_lbls[disp_r] if disp_r < len(row_lbls) else str(disp_r)
@@ -4397,13 +4410,15 @@ class SettingsPanel(QWidget):
 
             row_btns = []
             for c in range(n_dcols):
-                # Map display (r, c) → data (cons_idx, freq_idx)
+                # Resolve display column to data column (accounting for x_rev)
+                data_c = (n_dcols - 1 - c) if x_rev else c
+                # Map display → data (cons_idx, freq_idx)
                 if freq_on_x:
-                    cons_idx = disp_r   # row = consequence (high at top)
-                    freq_idx = c        # col = frequency
+                    cons_idx = disp_r
+                    freq_idx = data_c
                 else:
-                    freq_idx = disp_r   # row = frequency (high at top)
-                    cons_idx = c        # col = consequence
+                    freq_idx = disp_r
+                    cons_idx = data_c
 
                 try: cc = colors[cons_idx][freq_idx]
                 except (IndexError, KeyError): cc = '#27ae60'
@@ -4446,6 +4461,9 @@ class SettingsPanel(QWidget):
                         f"Exempel: 0.1 = en gång per 10 år")
                     self._matrix_grid.addWidget(e, n_drows + 1, c + 1)
                     self._freq_boundary_edits.append(e)
+                    # Connect boundary edit → auto-update adjacent axis labels
+                    e.editingFinished.connect(
+                        lambda _e=e, _c=c: self._sync_freq_label_from_boundary(_e, _c))
                 else:
                     lbl = QLabel(">allt")
                     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -4480,6 +4498,47 @@ class SettingsPanel(QWidget):
                     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
                     lbl.setStyleSheet("font-size:8px; color:#aaa;")
                     self._matrix_grid.addWidget(lbl, r + 1, n_dcols + 1)
+
+    def _sync_freq_label_from_boundary(self, boundary_edit, col_idx: int):
+        """Auto-update the frequency axis label(s) adjacent to the changed boundary."""
+        try:
+            val = float(boundary_edit.text().strip())
+        except ValueError:
+            return
+        if val <= 0:
+            return
+
+        def _fmt(v):
+            if v >= 1:       return f"{v:.3g}/år"
+            if v >= 0.001:   return f"{v:.3g}/år"
+            return f"{v:.2e}/år"
+
+        # Collect all boundary values to compute ranges
+        bvals = []
+        for e in self._freq_boundary_edits:
+            try:
+                bvals.append(float(e.text()))
+            except ValueError:
+                bvals.append(None)
+
+        def _label_for_col(c):
+            """Return an auto-generated interval label for display column c."""
+            left  = bvals[c-1] if c > 0 and c-1 < len(bvals) else None
+            right = bvals[c]   if c < len(bvals) else None
+            if left is None and right is not None:
+                return f"< {_fmt(right)}"
+            if left is not None and right is None:
+                return f"≥ {_fmt(left)}"
+            if left is not None and right is not None:
+                return f"{_fmt(left)} – {_fmt(right)}"
+            return ""
+
+        # Update the two adjacent column labels (col_idx and col_idx+1)
+        for affected_c in (col_idx, col_idx + 1):
+            if 0 <= affected_c < len(self._x_label_edits):
+                new_lbl = _label_for_col(affected_c)
+                if new_lbl:
+                    self._x_label_edits[affected_c].setText(new_lbl)
 
     def _edit_cell(self, btn):
         """Click a cell → choose color AND label."""
@@ -4530,9 +4589,11 @@ class SettingsPanel(QWidget):
 
         cfg = {
             'rows': n_cons, 'cols': n_freq,
-            'x_axis': x_axis,
-            'x_labels': x_labels,
-            'y_labels': y_labels,
+            'x_axis':      x_axis,
+            'x_reversed':  self._x_rev_chk.isChecked(),
+            'y_reversed':  self._y_rev_chk.isChecked(),
+            'x_labels':    x_labels,
+            'y_labels':    y_labels,
             'cell_colors': colors,
             'cell_labels': labels,
         }
