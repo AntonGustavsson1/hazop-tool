@@ -3611,5 +3611,5 @@ class PIDPanel(QWidget):
             if self.viewer.load_pdf(path, page=0):
                 self._update_page_label()
                 self._load_overlays()
-                self.scan_btn.setEnabled(True)
+                self.analyze_btn.setEnabled(True)
                 self.analyze_btn.setEnabled(True)
