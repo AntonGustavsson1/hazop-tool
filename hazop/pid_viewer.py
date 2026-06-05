@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QWidget, QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QComboBox, QListWidget, QListWidgetItem, QAbstractItemView,
     QLineEdit, QLabel, QPushButton, QDialogButtonBox,
-    QGraphicsView, QGraphicsScene,
+    QGraphicsView, QGraphicsScene, QGraphicsItem,
     QGraphicsPixmapItem, QGraphicsPathItem, QGraphicsEllipseItem,
     QGraphicsSimpleTextItem, QFrame, QSpinBox, QCheckBox, QGroupBox,
     QSlider, QColorDialog, QFileDialog, QMessageBox, QInputDialog,
