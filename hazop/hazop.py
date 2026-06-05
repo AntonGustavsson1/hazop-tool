@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QFileDialog, QGroupBox,
     QMenu, QToolBar, QStatusBar, QSizePolicy,
     QSpinBox, QColorDialog, QFrame, QListWidget, QListWidgetItem,
-    QProgressDialog,
+    QProgressDialog, QAbstractItemView, QToolTip,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF, QTimer
 from PyQt6.QtGui import QFont, QColor, QAction, QBrush, QPen, QPainter
@@ -675,6 +675,22 @@ class Database:
         self.conn.commit()
         return cur.lastrowid
 
+    # ── Move support ──────────────────────────────────────────────────────────
+    def move_cause(self, cause_id, target_node_id):
+        self.conn.execute("UPDATE causes SET node_id=? WHERE id=?",
+                          (target_node_id, cause_id))
+        self.conn.commit()
+
+    def move_consequence(self, cons_id, target_cause_id):
+        self.conn.execute("UPDATE consequences SET cause_id=? WHERE id=?",
+                          (target_cause_id, cons_id))
+        self.conn.commit()
+
+    def move_safeguard(self, sg_id, target_cons_id):
+        self.conn.execute("UPDATE safeguards SET consequence_id=? WHERE id=?",
+                          (target_cons_id, sg_id))
+        self.conn.commit()
+
     def stats(self):
         return {
             'nodes':        self.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0],
@@ -1272,6 +1288,94 @@ CONS_T = 3
 SG_T = 4
 
 
+class HAZOPTreeWidget(QTreeWidget):
+    """QTreeWidget with Ctrl+drag=copy, plain drag=move.
+
+    Emits item_drop_requested(drag_type, drag_id, drop_type, drop_id, is_copy)
+    instead of rearranging items internally.
+    """
+    item_drop_requested = pyqtSignal(int, int, int, int, bool)
+
+    _VALID_DROPS = {
+        CAUSE_T: (NODE_T, CAUSE_T),
+        CONS_T:  (CAUSE_T, CONS_T),
+        SG_T:    (CONS_T, SG_T),
+    }
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self._drag_item = None
+
+    def _item_type(self, item):
+        return item.data(0, Qt.ItemDataRole.UserRole + 1) if item else None
+
+    def _item_id(self, item):
+        return item.data(0, Qt.ItemDataRole.UserRole) if item else None
+
+    def _valid(self, drag_t, drop_t):
+        return drop_t in self._VALID_DROPS.get(drag_t, ())
+
+    def startDrag(self, supported_actions):
+        item = self.currentItem()
+        if item is None:
+            return
+        if self._item_type(item) == NODE_T:
+            return  # Nodes are not draggable
+        self._drag_item = item
+        super().startDrag(Qt.DropAction.MoveAction | Qt.DropAction.CopyAction)
+
+    def dragEnterEvent(self, event):
+        if self._drag_item is not None:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        target = self.itemAt(event.position().toPoint())
+        if target is None or self._drag_item is None or target is self._drag_item:
+            event.ignore()
+            return
+        drag_t = self._item_type(self._drag_item)
+        drop_t = self._item_type(target)
+        if self._valid(drag_t, drop_t):
+            is_copy = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            event.setDropAction(
+                Qt.DropAction.CopyAction if is_copy else Qt.DropAction.MoveAction)
+            event.accept()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        target = self.itemAt(event.position().toPoint())
+        source = self._drag_item
+        self._drag_item = None
+
+        if source is None or target is None or source is target:
+            event.ignore()
+            return
+
+        drag_t  = self._item_type(source)
+        drag_id = self._item_id(source)
+        drop_t  = self._item_type(target)
+        drop_id = self._item_id(target)
+
+        if not self._valid(drag_t, drop_t):
+            event.ignore()
+            return
+
+        is_copy = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+
+        # Suppress Qt's built-in item move — we manage the tree ourselves
+        event.setDropAction(Qt.DropAction.IgnoreAction)
+        event.accept()
+
+        self.item_drop_requested.emit(drag_t, drag_id, drop_t, drop_id, is_copy)
+
+
 class TreePanel(QWidget):
     item_selected    = pyqtSignal(int, int)
     structure_changed = pyqtSignal()
@@ -1752,6 +1856,111 @@ class EditableScenarioPanel(QWidget):
 # SCENARIO TABLE PANEL  (6-column bottom panel)
 # ══════════════════════════════════════════════════════════════════════════════
 
+class RiskMatrixPopup(QDialog):
+    """Small popup showing the risk matrix — click a cell to set F and C."""
+
+    selection_made = pyqtSignal(int, int)   # freq_value, cons_value
+
+    def __init__(self, current_freq: int, current_cons: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Välj risknivå")
+        self.setWindowFlags(
+            Qt.WindowType.Dialog |
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
+        cfg     = get_matrix()
+        n_rows  = cfg.get('rows', 5)
+        n_cols  = cfg.get('cols', 7)
+        x_lbls  = cfg.get('x_labels', [f'F{c-1}' for c in range(n_cols)])
+        y_lbls  = cfg.get('y_labels', [f'C{r+1}' for r in range(n_rows)])
+        colors  = cfg.get('cell_colors', [])
+        labels  = cfg.get('cell_labels', [])
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(6, 6, 6, 6)
+        outer.setSpacing(4)
+
+        hdr = QLabel("Klicka på en cell för att sätta F och C")
+        hdr.setStyleSheet("font-weight:bold; font-size:11px; padding:2px;")
+        outer.addWidget(hdr)
+
+        grid = QGridLayout()
+        grid.setSpacing(2)
+
+        # Corner label
+        corner = QLabel("C \\ F")
+        corner.setStyleSheet("font-size:9px; color:#666;")
+        corner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        grid.addWidget(corner, 0, 0)
+
+        # Column headers (frequency values, short labels)
+        for c in range(n_cols):
+            f_val = c - 1   # freq value: col 0 → F=-1, col 1 → F=0, …
+            short = f_val if f_val >= 0 else f_val   # just the number
+            lbl = QLabel(f"F{f_val}")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setFixedWidth(44)
+            lbl.setStyleSheet("font-size:9px; font-weight:bold;")
+            full = x_lbls[c] if c < len(x_lbls) else f'F{f_val}'
+            lbl.setToolTip(full)
+            grid.addWidget(lbl, 0, c + 1)
+
+        # Rows: highest consequence at top
+        for r in range(n_rows):
+            disp_r = n_rows - 1 - r     # consequence index (0 = C1)
+            c_val  = disp_r + 1         # consequence value 1..5
+
+            # Row header
+            rl = QLabel(f"C{c_val}")
+            rl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            rl.setStyleSheet("font-size:9px; font-weight:bold; padding-right:3px;")
+            rl.setToolTip(y_lbls[disp_r] if disp_r < len(y_lbls) else f'C{c_val}')
+            grid.addWidget(rl, r + 1, 0)
+
+            for c in range(n_cols):
+                f_val = c - 1
+                try:
+                    color = colors[disp_r][c]
+                    lbl   = labels[disp_r][c]
+                except (IndexError, KeyError):
+                    color, lbl = '#27ae60', 'Låg'
+
+                is_current = (f_val == current_freq and c_val == current_cons)
+                border = '3px solid #000' if is_current else '1px solid rgba(0,0,0,0.2)'
+
+                btn = QPushButton(lbl[:3])
+                btn.setFixedSize(44, 30)
+                btn.setToolTip(f"F={f_val}  C={c_val}  →  {lbl}")
+                btn.setStyleSheet(
+                    f"QPushButton{{"
+                    f"background:{color}; color:#fff; font-size:8px; font-weight:bold;"
+                    f"border:{border}; border-radius:2px;}}"
+                    f"QPushButton:hover{{border:2px solid #000; font-size:9px;}}")
+                btn.clicked.connect(
+                    lambda _, fv=f_val, cv=c_val: self._pick(fv, cv))
+                grid.addWidget(btn, r + 1, c + 1)
+
+        outer.addLayout(grid)
+
+        cancel_btn = QPushButton("Avbryt")
+        cancel_btn.clicked.connect(self.reject)
+        outer.addWidget(cancel_btn)
+
+        self.adjustSize()
+
+    def _pick(self, freq, cons):
+        self.selection_made.emit(freq, cons)
+        self.accept()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.reject()
+        else:
+            super().keyPressEvent(event)
+
+
 class ReductionFactorsDialog(QDialog):
     """Edit the list of extra reduction factors for a consequence."""
 
@@ -1878,6 +2087,7 @@ class ScenarioTablePanel(QWidget):
         self._table.setStyleSheet(
             "QHeaderView::section{background:#1F4E79;color:#fff;font-weight:bold;padding:3px;}")
         self._table.cellChanged.connect(self._on_cell_changed)
+        self._table.cellClicked.connect(self._on_cell_clicked)
         outer.addWidget(self._table)
 
     # ── Load ──────────────────────────────────────────────────────────────────
@@ -1983,11 +2193,14 @@ class ScenarioTablePanel(QWidget):
         kon.setData(Qt.ItemDataRole.UserRole, ('consequence', cid))
         self._table.setItem(r, self._C_KON, kon)
 
-        # ── Col 3: Risk före barriär ──────────────────────────────────────────
-        rb = QTableWidgetItem(f"{level_b}\nF={freq}  C={sev}")
+        # ── Col 3: Risk före barriär — klickbar för att öppna riskmatris ────────
+        rb = QTableWidgetItem(level_b)
         rb.setBackground(QBrush(QColor(bg_b))); rb.setForeground(QBrush(QColor(fg_b)))
         rb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        rb.setToolTip(f"F={freq}  C={sev}\n🖱 Klicka för att ändra i riskmatrisen")
+        # Store ids so cellClicked can open the matrix popup
+        rb.setData(Qt.ItemDataRole.UserRole, ('risk_click', cause_d['id'], cid, freq, sev))
         self._table.setItem(r, self._C_RFORE, rb)
 
         # ── Col 4: Safeguards (editable) ──────────────────────────────────────
@@ -2031,18 +2244,20 @@ class ScenarioTablePanel(QWidget):
 
         # ── Col 8: Risk efter barriärer ───────────────────────────────────────
         f_eff = effective_frequency(freq, sg_rrf)
-        ra = QTableWidgetItem(f"{level_a}\nF={f_eff}  C={sev}")
+        ra = QTableWidgetItem(level_a)
         ra.setBackground(QBrush(QColor(bg_a))); ra.setForeground(QBrush(QColor(fg_a)))
         ra.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         ra.setFlags(ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        ra.setToolTip(f"F={f_eff}  C={sev}")
         self._table.setItem(r, self._C_REFT, ra)
 
         # ── Col 9: Slutkonsekvens ─────────────────────────────────────────────
-        change = f"  (−{total_steps} tot.)" if total_steps > 0 else ""
-        rs = QTableWidgetItem(f"{level_s}\nF={final_f}  C={sev}{change}")
+        change_tip = f"−{total_steps} steg totalt" if total_steps > 0 else "Inga reduktioner"
+        rs = QTableWidgetItem(level_s)
         rs.setBackground(QBrush(QColor(bg_s))); rs.setForeground(QBrush(QColor(fg_s)))
         rs.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        rs.setToolTip(f"F={final_f}  C={sev}  ({change_tip})")
         self._table.setItem(r, self._C_SLUT, rs)
 
         self._table.setRowHeight(r, max(52, min(140, (len(sg_lines) + 2) * 18)))
@@ -2051,6 +2266,36 @@ class ScenarioTablePanel(QWidget):
         dlg = ReductionFactorsDialog(self.db, cons_id, self)
         dlg.exec()
         self._rebuild()
+
+    def _on_cell_clicked(self, row, col):
+        if col != self._C_RFORE:
+            return
+        item = self._table.item(row, col)
+        if not item:
+            return
+        meta = item.data(Qt.ItemDataRole.UserRole)
+        if not meta or meta[0] != 'risk_click':
+            return
+        _, cause_id, cons_id, cur_freq, cur_cons = meta
+
+        popup = RiskMatrixPopup(cur_freq, cur_cons, self)
+        popup.selection_made.connect(
+            lambda f, c, caid=cause_id, coid=cons_id:
+                self._apply_risk_from_matrix(caid, coid, f, c))
+
+        # Position popup below the clicked cell
+        cell_rect = self._table.visualItemRect(item)
+        global_pos = self._table.viewport().mapToGlobal(cell_rect.bottomLeft())
+        popup.move(global_pos)
+        popup.exec()
+
+    def _apply_risk_from_matrix(self, cause_id, cons_id, new_freq, new_cons):
+        self.db.update_cause(cause_id, likelihood=new_freq)
+        cons = self.db.get_consequence(cons_id)
+        if cons:
+            self.db.update_consequence(
+                cons_id, cons['description'], new_cons, cons['category'] or '')
+        QTimer.singleShot(0, self._rebuild)
 
     def _on_cell_changed(self, row, col):
         try:
