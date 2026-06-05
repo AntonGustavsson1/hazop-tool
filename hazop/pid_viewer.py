@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy, QMenu, QTableWidget, QTableWidgetItem, QHeaderView,
     QProgressDialog, QApplication, QGridLayout, QTextEdit,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QProcess
+from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF
 from PyQt6.QtGui import (
     QColor, QPen, QBrush, QPainterPath, QPixmap, QImage, QFont,
     QPainter, QPicture,
@@ -292,147 +292,16 @@ def _ocr_page(fitz_page, scale: float = 3.0, engine: str = 'auto'):
 # OCR AUTO-INSTALLER
 # ══════════════════════════════════════════════════════════════════════════════
 
-class OCRInstallerDialog(QDialog):
-    """Download and install EasyOCR via pip with live log output."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Installera OCR-motor — EasyOCR")
-        self.setMinimumSize(560, 400)
-        self.installed = False
-
-        layout = QVBoxLayout(self)
-
-        info = QLabel(
-            "OCR behövs för att läsa text från P&ID-filer där texten är vektorgrafik.<br>"
-            "Välj motor att installera:")
-        info.setWordWrap(True)
-        info.setTextFormat(Qt.TextFormat.RichText)
-        layout.addWidget(info)
-
-        # Engine selector
-        engine_box = QGroupBox("OCR-motor")
-        engine_lay = QVBoxLayout(engine_box)
-        from PyQt6.QtWidgets import QRadioButton
-        self._radio_rapid = QRadioButton(
-            "⭐ RapidOCR   (~25 MB)  — Rekommenderas  (snabb, liten nedladdning)")
-        self._radio_rapid.setChecked(True)
-        self._radio_easy  = QRadioButton(
-            "EasyOCR       (~500 MB) — Högre precision, stor nedladdning")
-        engine_lay.addWidget(self._radio_rapid)
-        engine_lay.addWidget(self._radio_easy)
-        layout.addWidget(engine_box)
-
-        self._log = QTextEdit()
-        self._log.setReadOnly(True)
-        self._log.setFixedHeight(190)
-        self._log.setStyleSheet("font-family:Courier; font-size:10px; background:#111; color:#eee;")
-        layout.addWidget(self._log)
-
-        self._status = QLabel("Tryck Installera för att börja.")
-        self._status.setStyleSheet("font-weight:bold; padding:4px;")
-        layout.addWidget(self._status)
-
-        btn_row = QHBoxLayout()
-        self._install_btn = QPushButton("📥  Installera vald OCR-motor")
-        self._install_btn.setStyleSheet(
-            "background:#1F4E79; color:white; font-weight:bold;"
-            "border:none; border-radius:4px; padding:6px 16px;")
-        self._install_btn.clicked.connect(self._start_install)
-        btn_row.addWidget(self._install_btn)
-        btn_row.addStretch()
-        cancel_btn = QPushButton("Avbryt")
-        cancel_btn.clicked.connect(self.reject)
-        self._close_btn = QPushButton("✓ Stäng")
-        self._close_btn.setEnabled(False)
-        self._close_btn.clicked.connect(self.accept)
-        btn_row.addWidget(cancel_btn)
-        btn_row.addWidget(self._close_btn)
-        layout.addLayout(btn_row)
-
-        self._proc = QProcess(self)
-        self._proc.readyReadStandardOutput.connect(self._on_stdout)
-        self._proc.readyReadStandardError.connect(self._on_stderr)
-        self._proc.finished.connect(self._on_finished)
-
-    def _start_install(self):
-        import sys
-        pkg = "rapidocr_onnxruntime" if self._radio_rapid.isChecked() else "easyocr"
-        self._install_btn.setEnabled(False)
-        size = "~25 MB" if pkg == "rapidocr_onnxruntime" else "~500 MB"
-        self._status.setText(f"⏳ Installerar {pkg} ({size}) — vänligen vänta…")
-        self._log.clear()
-        self._proc.start(sys.executable, ["-m", "pip", "install", pkg])
-
-    def _append(self, text: str):
-        self._log.append(text.rstrip())
-        sb = self._log.verticalScrollBar()
-        sb.setValue(sb.maximum())
-
-    def _on_stdout(self):
-        self._append(self._proc.readAllStandardOutput()
-                     .data().decode('utf-8', errors='replace'))
-
-    def _on_stderr(self):
-        self._append(self._proc.readAllStandardError()
-                     .data().decode('utf-8', errors='replace'))
-
-    def _on_finished(self, exit_code, _):
-        if exit_code == 0:
-            self._status.setText(
-                "✅  EasyOCR installerat!\n"
-                "OCR är nu aktivt — du behöver inte starta om.")
-            self._status.setStyleSheet("color:#27ae60; font-weight:bold; padding:4px;")
-            self.installed = True
-        else:
-            self._status.setText("❌  Installationen misslyckades. Kontrollera loggen.")
-            self._status.setStyleSheet("color:#c0392b; font-weight:bold; padding:4px;")
-            self._install_btn.setEnabled(True)
-        self._close_btn.setEnabled(True)
-
-
 def ensure_ocr_available(parent=None) -> bool:
-    """Check if any OCR engine is available; offer to install one if not."""
-    global HAS_EASYOCR, HAS_TESSERACT, HAS_RAPIDOCR, _easyocr_module, _RapidOCR, _rapidocr_instance
-
+    """Check if RapidOCR is available. Show hint to run starta_hazop.bat if not."""
     if HAS_TESSERACT or HAS_EASYOCR or HAS_RAPIDOCR:
         return True
-
-    reply = QMessageBox.question(
-        parent, "OCR-motor saknas",
-        "Ingen OCR-motor är installerad.\n\n"
-        "OCR behövs för att läsa text från P&ID-filer där texten är lagrad\n"
-        "som vektorgrafik (t.ex. ritningar från AutoCAD/Bluebeam).\n\n"
-        "Vill du ladda ner och installera EasyOCR nu?\n"
-        "(~500 MB, kräver internet)",
-        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        QMessageBox.StandardButton.Yes)
-
-    if reply != QMessageBox.StandardButton.Yes:
-        return False
-
-    dlg = OCRInstallerDialog(parent)
-    dlg.exec()
-
-    if dlg.installed:
-        import importlib
-        importlib.invalidate_caches()
-        # Try RapidOCR first (likely what was installed)
-        try:
-            from rapidocr_onnxruntime import RapidOCR as _RC
-            _RapidOCR = _RC
-            HAS_RAPIDOCR = True
-            return True
-        except Exception:
-            pass
-        # Fallback: EasyOCR
-        try:
-            import easyocr as _ecr
-            _easyocr_module = _ecr
-            HAS_EASYOCR = True
-            return True
-        except Exception:
-            pass
+    QMessageBox.information(
+        parent, "OCR saknas",
+        "RapidOCR är inte installerat.\n\n"
+        "Kör  starta_hazop.bat  en gång för att installera alla beroenden\n"
+        "(inkl. rapidocr_onnxruntime, ~25 MB).\n\n"
+        "Textextraktion ur PDF-filer med vektorgrafik fungerar inte utan OCR.")
     return False
 
 
