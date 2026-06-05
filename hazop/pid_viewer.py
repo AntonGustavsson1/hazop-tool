@@ -303,10 +303,11 @@ MODE_CAUSE       = 2
 MODE_CONSEQUENCE = 3
 MODE_SAFEGUARD   = 4
 
-Z_PAGE    = 0
-Z_CONNECT = 3
-Z_OVERLAY = 5
-Z_TEMP    = 10
+Z_PAGE      = 0
+Z_HIGHLIGHT = 1   # tag highlights between page and connections
+Z_CONNECT   = 3
+Z_OVERLAY   = 5
+Z_TEMP      = 10
 
 # Standalone tag: 1-6 letters, optional separator, 1-5 digits, 0-3 suffix letters
 # Examples: PCV-101, FT201A, V-1, ESDV-1001AB
@@ -2488,6 +2489,25 @@ class PIDGraphicsView(QGraphicsView):
             pass
         return '', '', ''
 
+    def add_tag_highlight(self, bbox: 'fitz.Rect', color: str, tooltip: str = ''):
+        """Draw a semi-transparent highlight rectangle at the tag's PDF position."""
+        r = QRectF(bbox.x0, bbox.y0, bbox.width, bbox.height)
+        pen = QPen(Qt.PenStyle.NoPen)
+        brush = QBrush(QColor(color))
+        item = self._scene.addRect(r, pen, brush)
+        item.setOpacity(0.35)
+        item.setZValue(Z_HIGHLIGHT)
+        if tooltip:
+            item.setToolTip(tooltip)
+        return item
+
+    def clear_highlights(self):
+        """Remove all tag highlights (Z_HIGHLIGHT items)."""
+        for item in list(self._scene.items()):
+            if item.zValue() == Z_HIGHLIGHT:
+                try: self._scene.removeItem(item)
+                except Exception: pass
+
     def add_connection_line(self, start: QPointF, end: QPointF, color: str, dashed=False):
         pen = QPen(QColor(color), 1.5)
         pen.setCosmetic(True)
@@ -3089,6 +3109,72 @@ class PIDPanel(QWidget):
             node_id = self._active_node_id or 0
             self.risk_scenario_requested.emit(node_id, pos, page)
 
+    def _draw_tag_highlights(self):
+        """Highlight recognized tags on the current PDF page.
+
+        Yellow  = tag in database but not yet a HAZOP cause.
+        Green   = tag has at least one defined HAZOP cause.
+        """
+        if not HAS_PYMUPDF or self.viewer.pdf_doc is None:
+            return
+        if not hasattr(self.db, 'all_active_tag_codes'):
+            return
+
+        # Check if smart database or any database is active
+        smart_on = self.db.tag_db_setting('smart_enabled', '0') == '1'
+        tag_codes = self.db.all_active_tag_codes()
+        if not tag_codes and not smart_on:
+            return
+
+        self.viewer.clear_highlights()
+        page_num = self.viewer.current_page
+        fitz_page = self.viewer.pdf_doc.load_page(page_num)
+
+        # Collect tags that already have HAZOP causes
+        used_tags: set = set()
+        try:
+            markers = self.db.cause_markers_for_page(page_num)
+            for m in markers:
+                tag = (m['component_tag'] or '').upper().strip()
+                if tag:
+                    used_tags.add(tag)
+            # Also check cause descriptions for tag numbers
+            for node in self.db.nodes():
+                for cause in self.db.causes(node['id']):
+                    from pid_viewer import _pick_best_tag
+                    t = _pick_best_tag(cause['description'])
+                    if t:
+                        used_tags.add(t.upper())
+        except Exception:
+            pass
+
+        # For smart mode: scan ALL text on page for tag patterns
+        if smart_on:
+            words = fitz_page.get_text("words")
+            for w in words:
+                txt = w[4].strip().upper()
+                from pid_viewer import _pick_best_tag, _collapse_spaces
+                tag = _pick_best_tag(txt) or _pick_best_tag(_collapse_spaces(txt))
+                if not tag:
+                    continue
+                color = '#90EE90' if tag in used_tags else '#FFFFE0'  # green or yellow
+                import fitz
+                bbox = fitz.Rect(w[0], w[1], w[2], w[3])
+                self.viewer.add_tag_highlight(bbox, color,
+                    f"{'✓ HAZOP-orsak definierad' if tag in used_tags else '○ Identifierad tagg'}: {tag}")
+        else:
+            # Database-driven: only highlight tags from active standard
+            for code in tag_codes:
+                try:
+                    hits = fitz_page.search_for(code, quads=False)
+                    for bbox in hits:
+                        # Check if any specific tag with this prefix is a cause
+                        color = '#90EE90' if any(code in t for t in used_tags) else '#FFFFE0'
+                        self.viewer.add_tag_highlight(bbox, color,
+                            f"{'✓ Definierad' if color == '#90EE90' else '○ Taggkod'}: {code}")
+                except Exception:
+                    continue
+
     def _load_overlays(self):
         self.viewer.clear_overlays()
         page = self.viewer.current_page
@@ -3147,6 +3233,9 @@ class PIDPanel(QWidget):
             s = self.db.get_safeguard(sid)
             if s and s['consequence_id'] in cons_pos:
                 self.viewer.add_connection_line(cons_pos[s['consequence_id']], spos, '#27ae60', dashed=True)
+
+        # Draw tag highlights (yellow = known, green = defined as cause)
+        self._draw_tag_highlights()
 
     def set_active_node(self, node_id):
         self._active_node_id        = node_id

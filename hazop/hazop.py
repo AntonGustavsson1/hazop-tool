@@ -129,6 +129,22 @@ CREATE TABLE IF NOT EXISTS equipment_types (
     display_name    TEXT DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS tag_database (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    tag_code    TEXT NOT NULL,
+    name_sv     TEXT DEFAULT '',
+    name_en     TEXT DEFAULT '',
+    category    TEXT DEFAULT '',
+    standard    TEXT DEFAULT '',
+    source      TEXT DEFAULT 'excel',
+    active      INTEGER DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS tag_database_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
 CREATE TABLE IF NOT EXISTS equipment_catalog (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     tag            TEXT NOT NULL,
@@ -463,6 +479,16 @@ class Database:
                 equipment_type TEXT NOT NULL,
                 display_name   TEXT DEFAULT ''
             );
+            CREATE TABLE IF NOT EXISTS tag_database (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tag_code TEXT NOT NULL, name_sv TEXT DEFAULT '',
+                name_en TEXT DEFAULT '', category TEXT DEFAULT '',
+                standard TEXT DEFAULT '', source TEXT DEFAULT 'excel',
+                active INTEGER DEFAULT 1
+            );
+            CREATE TABLE IF NOT EXISTS tag_database_settings (
+                key TEXT PRIMARY KEY, value TEXT
+            );
             CREATE TABLE IF NOT EXISTS reduction_factors (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 consequence_id  INTEGER NOT NULL REFERENCES consequences(id) ON DELETE CASCADE,
@@ -581,6 +607,125 @@ class Database:
 
     def set_risk_matrix(self, cfg):
         self.set_config('risk_matrix', json.dumps(cfg))
+
+    # ── Tag database ──────────────────────────────────────────────────────────
+    def tag_database_entries(self, standard=None):
+        if standard:
+            return self.conn.execute(
+                "SELECT * FROM tag_database WHERE standard=? AND active=1 ORDER BY tag_code",
+                (standard,)).fetchall()
+        return self.conn.execute(
+            "SELECT * FROM tag_database WHERE active=1 ORDER BY tag_code").fetchall()
+
+    def tag_database_standards(self):
+        return [r[0] for r in self.conn.execute(
+            "SELECT DISTINCT standard FROM tag_database WHERE standard!='' ORDER BY standard"
+        ).fetchall()]
+
+    def import_tag_database_excel(self, filepath: str):
+        """Import tag codes from all relevant sheets in the Excel file."""
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(filepath, data_only=True)
+        except Exception as e:
+            return 0, str(e)
+
+        # Sheet name → standard name mapping
+        SHEET_MAP = {
+            'ISA-5.1':          'ISA-5.1',
+            'SSG-5276':         'SSG-5276',
+            'ISO-10628_14617':  'ISO-10628',
+            'ISO-15519':        'ISO-15519',
+            'IEC-DIN_EN_62424': 'IEC-62424',
+            'DIN_19227_28000':  'DIN-19227',
+            'PIP_PIC001':       'PIP-PIC001',
+        }
+        imported = 0
+        for sheet_name, standard in SHEET_MAP.items():
+            if sheet_name not in wb.sheetnames:
+                continue
+            ws = wb[sheet_name]
+            # Find header row (look for 'Taggkod' / 'Tag code')
+            header_row = None
+            for r in ws.iter_rows(max_row=10, values_only=True):
+                for cell in r:
+                    if cell and 'taggkod' in str(cell).lower():
+                        header_row = r
+                        break
+                if header_row:
+                    break
+            if not header_row:
+                continue
+            # Map column indices
+            cols = {str(v).strip().lower(): i
+                    for i, v in enumerate(header_row) if v}
+            c_code = next((i for k, i in cols.items() if 'taggkod' in k or 'tag code' in k), 0)
+            c_sv   = next((i for k, i in cols.items() if 'svenska' in k or 'sv' in k or 'benom' in k), 3)
+            c_en   = next((i for k, i in cols.items() if 'english' in k or 'en' in k), 4)
+            c_cat  = next((i for k, i in cols.items() if 'kategori' in k or 'categ' in k), 5)
+
+            start_row = ws.max_row  # will be overridden
+            for i, row in enumerate(ws.iter_rows(values_only=True), 1):
+                if row and row[c_code] and str(row[c_code]).strip().lower() == \
+                        (header_row[c_code] or '').lower():
+                    start_row = i + 1
+                    break
+
+            for row in ws.iter_rows(min_row=start_row, values_only=True):
+                if not row or not row[c_code]:
+                    continue
+                code = str(row[c_code]).strip().upper()
+                if not code or len(code) > 10:
+                    continue
+                sv  = str(row[c_sv]).strip()  if c_sv < len(row) and row[c_sv] else ''
+                en  = str(row[c_en]).strip()  if c_en < len(row) and row[c_en] else ''
+                cat = str(row[c_cat]).strip() if c_cat < len(row) and row[c_cat] else ''
+                # Upsert
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO tag_database "
+                    "(tag_code,name_sv,name_en,category,standard,source,active) "
+                    "VALUES (?,?,?,?,?,'excel',1)",
+                    (code, sv, en, cat, standard))
+                imported += 1
+
+        self.conn.commit()
+        return imported, ''
+
+    def tag_db_setting(self, key, default=None):
+        r = self.conn.execute(
+            "SELECT value FROM tag_database_settings WHERE key=?", (key,)).fetchone()
+        return r['value'] if r else default
+
+    def set_tag_db_setting(self, key, value):
+        self.conn.execute(
+            "INSERT OR REPLACE INTO tag_database_settings (key,value) VALUES (?,?)",
+            (key, str(value)))
+        self.conn.commit()
+
+    def tag_code_lookup(self, prefix: str) -> dict:
+        """Look up a tag prefix in the active tag databases. Returns best match."""
+        active_std = self.tag_db_setting('active_standard', '')
+        if active_std:
+            rows = self.conn.execute(
+                "SELECT * FROM tag_database WHERE tag_code=? AND standard=? AND active=1",
+                (prefix.upper(), active_std)).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM tag_database WHERE tag_code=? AND active=1",
+                (prefix.upper(),)).fetchall()
+        return dict(rows[0]) if rows else {}
+
+    def all_active_tag_codes(self) -> list:
+        """Return list of all active tag codes for highlight scanning."""
+        active_std = self.tag_db_setting('active_standard', '')
+        if active_std:
+            rows = self.conn.execute(
+                "SELECT tag_code FROM tag_database WHERE standard=? AND active=1",
+                (active_std,)).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT tag_code FROM tag_database WHERE active=1").fetchall()
+        return [r[0] for r in rows]
 
     # ── Equipment catalog ─────────────────────────────────────────────────────
     def equipment_items(self):
@@ -3425,6 +3570,141 @@ class ComponentEditorPanel(QWidget):
             self._mode_table.blockSignals(False)
 
 
+class TagDatabasePanel(QWidget):
+    """Settings panel for managing the P&ID tag-code database."""
+
+    settings_changed = pyqtSignal()
+
+    def __init__(self, db: Database):
+        super().__init__()
+        self.db = db
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        title = QLabel("Tagdatabas — P&ID taggkodnycklar")
+        f = QFont(); f.setBold(True); f.setPointSize(13)
+        title.setFont(f)
+        layout.addWidget(title)
+
+        # ── Import section ────────────────────────────────────────────────────
+        import_box = QGroupBox("Importera Excel-databas")
+        imp_lay = QHBoxLayout(import_box)
+        self._excel_lbl = QLabel("Ingen fil vald")
+        self._excel_lbl.setStyleSheet("color:#555;")
+        imp_lay.addWidget(self._excel_lbl, 1)
+        imp_btn = QPushButton("📂 Välj Excel-fil…")
+        imp_btn.clicked.connect(self._import_excel)
+        imp_lay.addWidget(imp_btn)
+        layout.addWidget(import_box)
+
+        # ── Standard selection ────────────────────────────────────────────────
+        std_box = QGroupBox("Aktiv standard")
+        std_lay = QHBoxLayout(std_box)
+        std_lay.addWidget(QLabel("Följ standard:"))
+        self._std_combo = QComboBox()
+        self._std_combo.addItem("Alla standarder (union)")
+        self._std_combo.currentIndexChanged.connect(self._on_std_changed)
+        std_lay.addWidget(self._std_combo, 1)
+        layout.addWidget(std_box)
+
+        # ── Smart database ────────────────────────────────────────────────────
+        smart_box = QGroupBox("Smart databas")
+        smart_lay = QVBoxLayout(smart_box)
+        self._smart_chk = QCheckBox(
+            "Aktivera smart databas — skannar automatiskt inläst P&ID och "
+            "identifierar taggar (pump, ventil, instrument…)")
+        self._smart_chk.setChecked(
+            self.db.tag_db_setting('smart_enabled', '0') == '1')
+        self._smart_chk.toggled.connect(self._on_smart_toggled)
+        smart_lay.addWidget(self._smart_chk)
+        smart_note = QLabel(
+            "Identifierade taggar markeras med ljusgul bakgrund på P&ID:n.\n"
+            "Definierade orsaker (HAZOP) markeras med ljusgrön bakgrund.")
+        smart_note.setStyleSheet("color:#555; font-size:10px;")
+        smart_lay.addWidget(smart_note)
+        layout.addWidget(smart_box)
+
+        # ── Tag table ─────────────────────────────────────────────────────────
+        self._tbl = QTableWidget(0, 5)
+        self._tbl.setHorizontalHeaderLabels(
+            ['Taggkod', 'Svensk benämning', 'Engelsk benämning', 'Kategori', 'Standard'])
+        h = self._tbl.horizontalHeader()
+        h.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        h.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        h.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        h.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        h.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
+        self._tbl.setColumnWidth(0, 80)
+        self._tbl.setColumnWidth(3, 110)
+        self._tbl.setColumnWidth(4, 100)
+        self._tbl.verticalHeader().setVisible(False)
+        self._tbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._tbl.setAlternatingRowColors(True)
+        self._tbl.setStyleSheet(
+            "QHeaderView::section{background:#1F4E79;color:#fff;font-weight:bold;padding:3px;}")
+        layout.addWidget(self._tbl)
+
+        self._status = QLabel("")
+        self._status.setStyleSheet("color:#555; font-size:10px;")
+        layout.addWidget(self._status)
+
+        self._refresh()
+
+    def _refresh(self):
+        # Update standard combo
+        self._std_combo.blockSignals(True)
+        cur = self.db.tag_db_setting('active_standard', '')
+        self._std_combo.clear()
+        self._std_combo.addItem("Alla standarder (union)", '')
+        for std in self.db.tag_database_standards():
+            self._std_combo.addItem(std, std)
+        idx = self._std_combo.findData(cur)
+        if idx >= 0:
+            self._std_combo.setCurrentIndex(idx)
+        self._std_combo.blockSignals(False)
+
+        # Update table
+        entries = self.db.tag_database_entries()
+        self._tbl.setRowCount(0)
+        for e in entries:
+            r = self._tbl.rowCount(); self._tbl.insertRow(r)
+            for col, val in enumerate([
+                    e['tag_code'], e['name_sv'], e['name_en'],
+                    e['category'], e['standard']]):
+                self._tbl.setItem(r, col, QTableWidgetItem(val or ''))
+            self._tbl.setRowHeight(r, 22)
+
+        n = len(entries)
+        stds = self.db.tag_database_standards()
+        self._status.setText(
+            f"{n} taggkoder  |  {len(stds)} standarder: {', '.join(stds)}")
+
+    def _import_excel(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Välj Excel-databas", "", "Excel (*.xlsx *.xls)")
+        if not path:
+            return
+        n, err = self.db.import_tag_database_excel(path)
+        if err:
+            QMessageBox.critical(self, "Importfel", err)
+        else:
+            QMessageBox.information(self, "Importerat",
+                f"{n} taggkoder importerade från\n{path}")
+            self._excel_lbl.setText(path)
+            self._refresh()
+            self.settings_changed.emit()
+
+    def _on_std_changed(self):
+        std = self._std_combo.currentData() or ''
+        self.db.set_tag_db_setting('active_standard', std)
+        self.settings_changed.emit()
+
+    def _on_smart_toggled(self, checked):
+        self.db.set_tag_db_setting('smart_enabled', '1' if checked else '0')
+        self.settings_changed.emit()
+
+
 _PALETTE_MIME = 'application/x-hazop-palette-color'
 
 
@@ -3664,6 +3944,11 @@ class SettingsPanel(QWidget):
         # ── Tab: Komponenter ──────────────────────────────────────────────────
         self._comp_editor = ComponentEditorPanel(self.db)
         tabs.addTab(self._comp_editor, "Komponenter")
+
+        # ── Tab: Tagdatabas ───────────────────────────────────────────────────
+        self._tag_db_panel = TagDatabasePanel(self.db)
+        self._tag_db_panel.settings_changed.connect(self.matrix_changed.emit)
+        tabs.addTab(self._tag_db_panel, "Tagdatabas")
 
         self._load_all()
 
