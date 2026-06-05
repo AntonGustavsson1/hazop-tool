@@ -3,6 +3,7 @@
 
 import re
 import json
+import datetime
 from pathlib import Path
 
 # Suppress Qt SVG parser warnings (font references, path truncations)
@@ -21,7 +22,7 @@ qInstallMessageHandler(_qt_msg_handler)
 from PyQt6.QtWidgets import (
     QWidget, QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QComboBox, QListWidget, QListWidgetItem, QAbstractItemView,
-    QLineEdit, QLabel, QPushButton, QDialogButtonBox,
+    QLineEdit, QLabel, QPushButton, QDialogButtonBox, QRadioButton,
     QGraphicsView, QGraphicsScene, QGraphicsItem,
     QGraphicsPixmapItem, QGraphicsPathItem, QGraphicsEllipseItem,
     QGraphicsSimpleTextItem, QFrame, QSpinBox, QCheckBox, QGroupBox,
@@ -2562,6 +2563,57 @@ def _vline():
     return f
 
 
+class PIDImportDialog(QDialog):
+    """Dialog shown when opening a P&ID — choose Ny revision or Nya blad."""
+
+    def __init__(self, has_existing=True, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Importera P&ID")
+        self.setMinimumWidth(420)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        if has_existing:
+            layout.addWidget(QLabel("En P&ID är redan inläst. Vad vill du göra?"))
+            self._new_rev_btn    = QRadioButton("Ny revision — ersätt befintlig PDF")
+            self._new_sheets_btn = QRadioButton("Nya blad — sammanfoga och lägg till sidor sist")
+            self._new_rev_btn.setChecked(True)
+            layout.addWidget(self._new_rev_btn)
+            layout.addWidget(self._new_sheets_btn)
+        else:
+            layout.addWidget(QLabel("Importera P&ID-ritning:"))
+            self._new_rev_btn    = None
+            self._new_sheets_btn = None
+
+        form = QFormLayout()
+        form.setSpacing(8)
+        self._label_edit = QLineEdit()
+        self._label_edit.setPlaceholderText("t.ex. Rev A, 2024-01-15")
+        self._notes_edit = QLineEdit()
+        self._notes_edit.setPlaceholderText("Valfri beskrivning")
+        form.addRow("Revision/märkning:", self._label_edit)
+        form.addRow("Anteckningar:", self._notes_edit)
+        layout.addLayout(form)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+    def is_new_revision(self):
+        if self._new_rev_btn is None:
+            return True
+        return self._new_rev_btn.isChecked()
+
+    def label(self):
+        return self._label_edit.text().strip()
+
+    def notes(self):
+        return self._notes_edit.text().strip()
+
+
 class PIDPanel(QWidget):
     node_created            = pyqtSignal(int)
     cause_created           = pyqtSignal(int)
@@ -2581,6 +2633,7 @@ class PIDPanel(QWidget):
         self._active_consequence_id = None
         self._pending_markup_pts    = None
         self._pending_markup_page   = None
+        self._current_display_page  = 0
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -2604,7 +2657,7 @@ class PIDPanel(QWidget):
 
         self.prev_btn = QPushButton("◀")
         self.prev_btn.setFixedWidth(28)
-        self.prev_btn.clicked.connect(lambda: self._goto_page(self.viewer.current_page - 1))
+        self.prev_btn.clicked.connect(lambda: self._goto_page(self._current_display_page - 1))
         bar.addWidget(self.prev_btn)
 
         self.page_label = QLabel("—")
@@ -2614,7 +2667,7 @@ class PIDPanel(QWidget):
 
         self.next_btn = QPushButton("▶")
         self.next_btn.setFixedWidth(28)
-        self.next_btn.clicked.connect(lambda: self._goto_page(self.viewer.current_page + 1))
+        self.next_btn.clicked.connect(lambda: self._goto_page(self._current_display_page + 1))
         bar.addWidget(self.next_btn)
 
         bar.addWidget(_vline())
@@ -2849,25 +2902,107 @@ class PIDPanel(QWidget):
             self, "Öppna P&ID", "", "PDF-dokument (*.pdf);;Alla filer (*.*)")
         if not path:
             return
-        if not self.viewer.load_pdf(path, page=0):
-            QMessageBox.warning(self, "Fel", "Kunde inte öppna PDF-filen.")
-            return
-        self.db.set_pid_path(path)
+
+        existing_path = self.db.get_pid_path()
+        has_existing  = bool(existing_path and Path(existing_path).exists())
+        created_at    = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+
+        if has_existing:
+            dlg = PIDImportDialog(has_existing=True, parent=self)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            rev_label = dlg.label() or created_at
+            rev_notes = dlg.notes()
+
+            if dlg.is_new_revision():
+                # New revision — replace PDF and reset sheets
+                if not self.viewer.load_pdf(path, page=0):
+                    QMessageBox.warning(self, "Fel", "Kunde inte öppna PDF-filen.")
+                    return
+                self.db.set_pid_path(path)
+                self.db.clear_sheets()
+                self.db.add_revision(rev_label, rev_notes, path, created_at)
+                self.db.ensure_sheets_initialized(self.viewer.page_count())
+                self._current_display_page = 0
+            else:
+                # Nya blad — merge new PDF pages into existing PDF
+                try:
+                    existing_doc     = fitz.open(existing_path)
+                    existing_pg_cnt  = existing_doc.page_count
+                    new_doc          = fitz.open(path)
+                    n_new            = new_doc.page_count
+                    existing_doc.insert_pdf(new_doc)
+                    new_doc.close()
+
+                    # Close viewer's handle before overwriting
+                    if self.viewer.pdf_doc is not None:
+                        try:
+                            self.viewer.pdf_doc.close()
+                        except Exception:
+                            pass
+                        self.viewer.pdf_doc = None
+
+                    existing_doc.save(existing_path, garbage=4, deflate=True)
+                    existing_doc.close()
+                except Exception as e:
+                    QMessageBox.critical(self, "Fel vid sammanslagning",
+                                         f"Kunde inte sammanfoga PDF:\n{e}")
+                    return
+
+                # Reload merged PDF, stay on current display page
+                keep_phys = self.viewer.current_page
+                if not self.viewer.load_pdf(existing_path, page=keep_phys):
+                    QMessageBox.warning(self, "Fel", "Kunde inte öppna sammanfogad PDF.")
+                    return
+
+                # Ensure existing sheets are initialised before appending
+                if self.db.get_display_page_count() == 0:
+                    self.db.ensure_sheets_initialized(existing_pg_cnt)
+
+                rev_id = self.db.add_revision(rev_label, rev_notes, existing_path, created_at)
+                physical_pages = list(range(existing_pg_cnt, existing_pg_cnt + n_new))
+                sheet_names    = [f"Blad {existing_pg_cnt + i + 1}" for i in range(n_new)]
+                self.db.append_sheets(physical_pages, sheet_names, rev_id)
+        else:
+            # First import — no dialog needed
+            if not self.viewer.load_pdf(path, page=0):
+                QMessageBox.warning(self, "Fel", "Kunde inte öppna PDF-filen.")
+                return
+            self.db.set_pid_path(path)
+            self.db.clear_sheets()
+            self.db.add_revision(created_at, '', path, created_at)
+            self.db.ensure_sheets_initialized(self.viewer.page_count())
+            self._current_display_page = 0
+
         self._update_page_label()
         self._load_overlays()
         self.analyze_btn.setEnabled(True)
 
-    def _goto_page(self, n):
+    def _goto_page(self, display_n):
         if self.viewer.pdf_doc is None:
             return
-        self.viewer.goto_page(n)
+        total_display = self.db.get_display_page_count()
+        if total_display == 0:
+            # Sheets not initialised yet — fall back to raw page navigation
+            raw_total = self.viewer.page_count()
+            display_n = max(0, min(display_n, raw_total - 1))
+            self._current_display_page = display_n
+            self.viewer.goto_page(display_n)
+        else:
+            display_n = max(0, min(display_n, total_display - 1))
+            physical  = self.db.get_sheet_physical_page(display_n)
+            self._current_display_page = display_n
+            self.viewer.goto_page(physical)
         self._update_page_label()
         self._load_overlays()
 
     def _update_page_label(self):
-        total = self.viewer.page_count()
-        self.page_label.setText(
-            f"{self.viewer.current_page + 1} / {total}" if total > 0 else "—")
+        total_display = self.db.get_display_page_count()
+        total = total_display if total_display > 0 else self.viewer.page_count()
+        if total > 0:
+            self.page_label.setText(f"{self._current_display_page + 1} / {total}")
+        else:
+            self.page_label.setText("—")
 
     def _set_mode(self, mode):
         for m, btn in self.mode_buttons.items():
@@ -3510,7 +3645,8 @@ class PIDPanel(QWidget):
         path = self.db.get_pid_path()
         if path and Path(path).exists() and HAS_PYMUPDF:
             if self.viewer.load_pdf(path, page=0):
+                self.db.ensure_sheets_initialized(self.viewer.page_count())
+                self._current_display_page = 0
                 self._update_page_label()
                 self._load_overlays()
-                self.analyze_btn.setEnabled(True)
                 self.analyze_btn.setEnabled(True)

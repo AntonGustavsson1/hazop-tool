@@ -6,6 +6,7 @@ import re
 import json
 import sqlite3
 import math
+import datetime
 from pathlib import Path
 
 from pid_viewer import (
@@ -569,6 +570,20 @@ class Database:
                 pid_page INTEGER DEFAULT 0, x REAL DEFAULT 0, y REAL DEFAULT 0,
                 tag TEXT DEFAULT ''
             );
+            CREATE TABLE IF NOT EXISTS pid_revisions (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                revision    TEXT NOT NULL DEFAULT '',
+                notes       TEXT DEFAULT '',
+                created_at  TEXT DEFAULT '',
+                pdf_path    TEXT DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS pid_sheets (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                display_order INTEGER NOT NULL,
+                physical_page INTEGER NOT NULL,
+                sheet_name    TEXT DEFAULT '',
+                revision_id   INTEGER DEFAULT NULL
+            );
         """)
 
         if not self.conn.execute("SELECT COUNT(*) FROM consequence_categories").fetchone()[0]:
@@ -921,6 +936,68 @@ class Database:
     def set_pid_path(self, path):
         self.conn.execute(
             "INSERT OR REPLACE INTO pid_config (key,value) VALUES ('path',?)", (str(path),))
+        self.conn.commit()
+
+    # ── PID revisions & sheets ────────────────────────────────────────────────
+    def add_revision(self, revision, notes, pdf_path, created_at=''):
+        if not created_at:
+            created_at = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+        cur = self.conn.execute(
+            "INSERT INTO pid_revisions (revision,notes,created_at,pdf_path) VALUES (?,?,?,?)",
+            (revision, notes, created_at, str(pdf_path)))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def get_revisions(self):
+        return self.conn.execute(
+            "SELECT * FROM pid_revisions ORDER BY id DESC").fetchall()
+
+    def ensure_sheets_initialized(self, page_count):
+        existing = self.conn.execute("SELECT COUNT(*) FROM pid_sheets").fetchone()[0]
+        if existing == 0 and page_count > 0:
+            for i in range(page_count):
+                self.conn.execute(
+                    "INSERT INTO pid_sheets (display_order,physical_page,sheet_name) VALUES (?,?,?)",
+                    (i, i, f"Blad {i + 1}"))
+            self.conn.commit()
+
+    def get_sheets(self):
+        return self.conn.execute(
+            "SELECT * FROM pid_sheets ORDER BY display_order").fetchall()
+
+    def append_sheets(self, physical_pages, sheet_names, revision_id=None):
+        max_row = self.conn.execute(
+            "SELECT MAX(display_order) FROM pid_sheets").fetchone()[0]
+        start_order = (max_row + 1) if max_row is not None else 0
+        for i, (phys, name) in enumerate(zip(physical_pages, sheet_names)):
+            self.conn.execute(
+                "INSERT INTO pid_sheets (display_order,physical_page,sheet_name,revision_id) "
+                "VALUES (?,?,?,?)",
+                (start_order + i, phys, name, revision_id))
+        self.conn.commit()
+
+    def reorder_sheets(self, ordered_ids):
+        for disp_order, sheet_id in enumerate(ordered_ids):
+            self.conn.execute(
+                "UPDATE pid_sheets SET display_order=? WHERE id=?",
+                (disp_order, sheet_id))
+        self.conn.commit()
+
+    def update_sheet_name(self, id_, name):
+        self.conn.execute("UPDATE pid_sheets SET sheet_name=? WHERE id=?", (name, id_))
+        self.conn.commit()
+
+    def get_sheet_physical_page(self, display_index):
+        row = self.conn.execute(
+            "SELECT physical_page FROM pid_sheets ORDER BY display_order "
+            "LIMIT 1 OFFSET ?", (display_index,)).fetchone()
+        return row['physical_page'] if row else display_index
+
+    def get_display_page_count(self):
+        return self.conn.execute("SELECT COUNT(*) FROM pid_sheets").fetchone()[0]
+
+    def clear_sheets(self):
+        self.conn.execute("DELETE FROM pid_sheets")
         self.conn.commit()
 
     def add_node_with_markup(self, name, points, style, page):
@@ -4882,7 +4959,115 @@ class SettingsPanel(QWidget):
 # ADMIN PANEL
 # ══════════════════════════════════════════════════════════════════════════════
 
-class AdminPanel(QWidget):
+class PIDManagementPanel(QWidget):
+    """PID revision history and sheet reordering panel."""
+
+    def __init__(self, db: Database, parent=None):
+        super().__init__(parent)
+        self.db = db
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        tabs = QTabWidget()
+        layout.addWidget(tabs)
+
+        # ── Tab 0: Revision history ───────────────────────────────────────────
+        rev_widget = QWidget()
+        rev_layout = QVBoxLayout(rev_widget)
+        rev_layout.setContentsMargins(8, 8, 8, 8)
+        rev_layout.setSpacing(6)
+
+        rev_hdr = QHBoxLayout()
+        rev_hdr.addWidget(QLabel("Revisionshistorik:"))
+        rev_hdr.addStretch()
+        rev_layout.addLayout(rev_hdr)
+
+        self._rev_table = QTableWidget(0, 4)
+        self._rev_table.setHorizontalHeaderLabels(['Revision', 'Anteckningar', 'Datum', 'PDF-fil'])
+        self._rev_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        self._rev_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._rev_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        self._rev_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        self._rev_table.setColumnWidth(0, 120)
+        self._rev_table.setColumnWidth(2, 130)
+        self._rev_table.setColumnWidth(3, 180)
+        self._rev_table.verticalHeader().setVisible(False)
+        self._rev_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._rev_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._rev_table.setAlternatingRowColors(True)
+        self._rev_table.setStyleSheet(
+            "QHeaderView::section{background:#1F4E79;color:#fff;font-weight:bold;padding:4px;}")
+        rev_layout.addWidget(self._rev_table)
+        tabs.addTab(rev_widget, "Revisioner")
+
+        # ── Tab 1: Sheet management ───────────────────────────────────────────
+        sheets_widget = QWidget()
+        sheets_layout = QVBoxLayout(sheets_widget)
+        sheets_layout.setContentsMargins(8, 8, 8, 8)
+        sheets_layout.setSpacing(6)
+
+        sheet_hdr = QHBoxLayout()
+        sheet_hdr.addWidget(QLabel("Bladordning — dra för att ändra ordning:"))
+        sheet_hdr.addStretch()
+        rename_btn = QPushButton("✏️ Byt namn")
+        rename_btn.clicked.connect(self._rename_sheet)
+        sheet_hdr.addWidget(rename_btn)
+        sheets_layout.addLayout(sheet_hdr)
+
+        self._sheet_list = QListWidget()
+        self._sheet_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+        self._sheet_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self._sheet_list.model().rowsMoved.connect(self._on_sheets_reordered)
+        sheets_layout.addWidget(self._sheet_list)
+        tabs.addTab(sheets_widget, "Blad")
+
+        self.refresh()
+
+    def refresh(self):
+        self._rev_table.setRowCount(0)
+        for rev in self.db.get_revisions():
+            r = self._rev_table.rowCount()
+            self._rev_table.insertRow(r)
+            self._rev_table.setItem(r, 0, QTableWidgetItem(rev['revision'] or ''))
+            self._rev_table.setItem(r, 1, QTableWidgetItem(rev['notes'] or ''))
+            self._rev_table.setItem(r, 2, QTableWidgetItem(rev['created_at'] or ''))
+            fname = Path(rev['pdf_path']).name if rev['pdf_path'] else ''
+            self._rev_table.setItem(r, 3, QTableWidgetItem(fname))
+            self._rev_table.setRowHeight(r, 24)
+
+        self._sheet_list.clear()
+        for sheet in self.db.get_sheets():
+            item = QListWidgetItem(
+                f"{sheet['display_order'] + 1}. {sheet['sheet_name']}  "
+                f"(PDF-sida {sheet['physical_page'] + 1})")
+            item.setData(Qt.ItemDataRole.UserRole, sheet['id'])
+            self._sheet_list.addItem(item)
+
+    def _on_sheets_reordered(self, *_):
+        ids = [self._sheet_list.item(i).data(Qt.ItemDataRole.UserRole)
+               for i in range(self._sheet_list.count())]
+        self.db.reorder_sheets(ids)
+        self.refresh()
+
+    def _rename_sheet(self):
+        item = self._sheet_list.currentItem()
+        if not item:
+            return
+        sheet_id = item.data(Qt.ItemDataRole.UserRole)
+        current_name = ''
+        for s in self.db.get_sheets():
+            if s['id'] == sheet_id:
+                current_name = s['sheet_name']
+                break
+        name, ok = QInputDialog.getText(self, "Byt namn", "Bladnamn:", text=current_name)
+        if ok and name.strip():
+            self.db.update_sheet_name(sheet_id, name.strip())
+            self.refresh()
+
+
+class StudyManagementPanel(QWidget):
     def __init__(self, db: Database):
         super().__init__()
         self.db = db
@@ -4891,24 +5076,31 @@ class AdminPanel(QWidget):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
 
-        title = QLabel("Administration")
+        title = QLabel("Studiehantering")
         f = QFont(); f.setBold(True); f.setPointSize(14)
         title.setFont(f)
         layout.addWidget(title)
 
-        # Stats
+        tabs = QTabWidget()
+        layout.addWidget(tabs)
+
+        # ── Tab 0: Statistics ─────────────────────────────────────────────────
+        stats_widget = QWidget()
+        stats_layout = QVBoxLayout(stats_widget)
+        stats_layout.setContentsMargins(8, 8, 8, 8)
+        stats_layout.setSpacing(8)
+
         self._stats_lbl = QLabel()
         self._stats_lbl.setStyleSheet(
             "background:#f0f4f8; border:1px solid #ccc; border-radius:6px; padding:10px;")
-        layout.addWidget(self._stats_lbl)
+        stats_layout.addWidget(self._stats_lbl)
 
         bar = QHBoxLayout()
         refresh_btn = QPushButton("🔄 Uppdatera")
         refresh_btn.clicked.connect(self.refresh)
         bar.addWidget(refresh_btn); bar.addStretch()
-        layout.addLayout(bar)
+        stats_layout.addLayout(bar)
 
-        # Data table
         self._table = QTableWidget(0, 8)
         self._table.setHorizontalHeaderLabels(
             ['Nod', 'Orsak', 'L', 'Konsekvens', 'S', 'Risknivå', 'Kategori', 'Safeguards'])
@@ -4929,7 +5121,12 @@ class AdminPanel(QWidget):
         self._table.setAlternatingRowColors(True)
         self._table.setStyleSheet(
             "QHeaderView::section{background:#1F4E79;color:#fff;font-weight:bold;padding:4px;}")
-        layout.addWidget(self._table)
+        stats_layout.addWidget(self._table)
+        tabs.addTab(stats_widget, "Statistik")
+
+        # ── Tab 1: PID management ─────────────────────────────────────────────
+        self._pid_mgmt = PIDManagementPanel(db)
+        tabs.addTab(self._pid_mgmt, "PID-hantering")
 
         self.refresh()
 
@@ -4969,6 +5166,13 @@ class AdminPanel(QWidget):
                 for s in row['safeguards']) or '—'
             self._table.setItem(r, 7, _c(sg_text))
             self._table.setRowHeight(r, 28)
+
+    def refresh_pid(self):
+        self._pid_mgmt.refresh()
+
+
+# Keep old name as alias so any remaining references don't crash
+AdminPanel = StudyManagementPanel
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -5614,7 +5818,7 @@ class MainWindow(QMainWindow):
         self.btn_pid       = QPushButton("🗺  P&ID-vy")
         self.btn_sheet     = QPushButton("📋  Worksheet")
         self.btn_equip     = QPushButton("🔩  Utrustning")
-        self.btn_admin     = QPushButton("⚙️  Administration")
+        self.btn_admin     = QPushButton("⚙️  Studiehantering")
         self.btn_settings  = QPushButton("🔧  Inställningar")
 
         for btn in (self.btn_pid, self.btn_sheet, self.btn_equip,
@@ -5694,8 +5898,8 @@ class MainWindow(QMainWindow):
         self.equipment_panel = EquipmentPanel(self.db)
         self.view_stack.addWidget(self.equipment_panel)
 
-        # ── Page 3: Admin ─────────────────────────────────────────────────────
-        self.admin_panel = AdminPanel(self.db)
+        # ── Page 3: Study management ──────────────────────────────────────────
+        self.admin_panel = StudyManagementPanel(self.db)
         self.view_stack.addWidget(self.admin_panel)
 
         # ── Page 4: Settings ──────────────────────────────────────────────────
@@ -5751,7 +5955,9 @@ class MainWindow(QMainWindow):
         self.btn_settings.setChecked(page == 4)
         if page == 1: self.worksheet.refresh()
         if page == 2: self.equipment_panel.refresh()
-        if page == 3: self.admin_panel.refresh()
+        if page == 3:
+            self.admin_panel.refresh()
+            self.admin_panel.refresh_pid()
 
     def _on_selected(self, type_, id_):
         self._cur_type = type_
