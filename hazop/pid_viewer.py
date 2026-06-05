@@ -13,10 +13,11 @@ from pathlib import Path
 # These come from PyMuPDF's SVG output and are harmless display artefacts.
 from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
 
+_SVG_NOISE = ('qt.svg:', 'link #font', 'is undefined', 'path truncated')
+
 def _qt_msg_handler(mode, context, message):
-    if message.startswith('qt.svg:'):
-        return   # silently ignore SVG parser warnings
-    # Let everything else through to stderr
+    if any(pat in message for pat in _SVG_NOISE):
+        return
     import sys
     print(message, file=sys.stderr)
 
