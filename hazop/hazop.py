@@ -2727,32 +2727,39 @@ class DraggableColorSwatch(QLabel):
 
 
 class MatrixCellButton(QPushButton):
-    """A button representing one cell in the risk matrix.
+    """Risk matrix cell — collapsed-border grid (no double-lines between cells)."""
 
-    Accepts drops from DraggableColorSwatch to change color+label.
-    Click to open color/label dialog.
-    """
-
-    def __init__(self, row, col, color, label, parent=None):
+    def __init__(self, row, col, color, label,
+                 is_top_row=False, is_left_col=False, parent=None):
         super().__init__(label, parent)
         self.row = row
         self.col = col
-        self._color = color
-        self._label = label
+        self._color    = color
+        self._label    = label
+        self._is_top   = is_top_row
+        self._is_left  = is_left_col
         self.setFixedSize(80, 40)
         self.setAcceptDrops(True)
         self._apply_style()
 
     def _apply_style(self):
+        # Collapsed-border: every cell always draws bottom+right.
+        # Only the top display-row adds top; only the leftmost column adds left.
+        top  = "border-top:1px solid #444;"  if self._is_top  else ""
+        left = "border-left:1px solid #444;" if self._is_left else ""
         self.setStyleSheet(
-            f"QPushButton{{background:{self._color}; color:white; font-weight:bold;"
-            f" border:none; border-radius:0px; margin:0px;}}"
-            f"QPushButton:hover{{outline:2px solid #000;}}")
+            f"QPushButton{{"
+            f"background:{self._color}; color:white; font-weight:bold;"
+            f"border-bottom:1px solid #444; border-right:1px solid #444;"
+            f"{top}{left}"
+            f"border-radius:0px; margin:0px; padding:0px;}}"
+            f"QPushButton:hover{{border:2px solid #000; margin:-1px;}}")
         self.setText(self._label)
 
-    def set_cell(self, color, label):
+    def set_cell(self, color, label=None):
         self._color = color
-        self._label = label
+        if label is not None:
+            self._label = label
         self._apply_style()
 
     def color(self): return self._color
@@ -2844,10 +2851,9 @@ class SettingsPanel(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self._matrix_container = QWidget()
-        self._matrix_container.setStyleSheet("background:#555;")
         self._matrix_grid = QGridLayout(self._matrix_container)
-        self._matrix_grid.setSpacing(1)
-        self._matrix_grid.setContentsMargins(1, 1, 1, 1)
+        self._matrix_grid.setSpacing(0)
+        self._matrix_grid.setContentsMargins(0, 0, 0, 0)
         scroll.setWidget(self._matrix_container)
         ml.addWidget(scroll)
 
@@ -3060,7 +3066,9 @@ class SettingsPanel(QWidget):
                 except (IndexError, KeyError): cc = '#27ae60'
                 try: cl = labels[display_r][c]
                 except (IndexError, KeyError): cl = 'Låg'
-                btn = MatrixCellButton(display_r, c, cc, cl)
+                btn = MatrixCellButton(display_r, c, cc, cl,
+                                      is_top_row=(r == 0),
+                                      is_left_col=(c == 0))
                 btn.clicked.connect(lambda _, b=btn: self._edit_cell(b))
                 self._matrix_grid.addWidget(btn, r + 1, c + 1)
                 row_btns.append(btn)
