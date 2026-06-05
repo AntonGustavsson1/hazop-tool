@@ -2847,17 +2847,26 @@ class SettingsPanel(QWidget):
         ml.addWidget(pal_box)
 
         # ── Matrix grid ───────────────────────────────────────────────────────
-        # Wrap in a scroll area but prevent stretching: the matrix sits at
-        # natural size top-left, stretch below fills remaining space.
+        # Use a wrapper so matrix stays at natural size (top-left) while the
+        # scroll area fills remaining space with the stretch below it.
         scroll = QScrollArea()
-        scroll.setWidgetResizable(False)
+        scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+
+        _wrap = QWidget()
+        _wrap_lay = QVBoxLayout(_wrap)
+        _wrap_lay.setContentsMargins(0, 0, 0, 0)
+        _wrap_lay.setSpacing(0)
+
         self._matrix_container = QWidget()
         self._matrix_grid = QGridLayout(self._matrix_container)
         self._matrix_grid.setSpacing(0)
         self._matrix_grid.setContentsMargins(0, 0, 0, 0)
-        # No column or row stretching — fixed sizes only
-        scroll.setWidget(self._matrix_container)
+
+        _wrap_lay.addWidget(self._matrix_container,
+                            alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        _wrap_lay.addStretch(1)
+        scroll.setWidget(_wrap)
         ml.addWidget(scroll)
 
         save_matrix_btn = QPushButton("💾 Spara riskmatris")
@@ -3020,8 +3029,6 @@ class SettingsPanel(QWidget):
         self._cell_buttons  = []
         self._x_label_edits = []
         self._y_label_edits = []
-        self._matrix_container.setSizePolicy(
-            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
         rows     = cfg['rows']
         cols     = cfg['cols']
