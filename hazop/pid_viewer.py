@@ -5,6 +5,19 @@ import re
 import json
 from pathlib import Path
 
+# Suppress Qt SVG parser warnings (font references, path truncations)
+# These come from PyMuPDF's SVG output and are harmless display artefacts.
+from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
+
+def _qt_msg_handler(mode, context, message):
+    if message.startswith('qt.svg:'):
+        return   # silently ignore SVG parser warnings
+    # Let everything else through to stderr
+    import sys
+    print(message, file=sys.stderr)
+
+qInstallMessageHandler(_qt_msg_handler)
+
 from PyQt6.QtWidgets import (
     QWidget, QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QComboBox, QListWidget, QListWidgetItem, QAbstractItemView,
@@ -2503,9 +2516,15 @@ class PIDPanel(QWidget):
         self.node_created.emit(node_id)
 
     def _on_cause_click(self, scene_pos, page, suggested_tag=''):
-        if self._active_node_id is None:
+        # Validate node — might be None, 0, or deleted from DB
+        if not self._active_node_id:
             QMessageBox.information(self, "Välj nod",
                 "Välj en nod i trädet innan du placerar orsaker.")
+            return
+        if hasattr(self.db, 'get_node') and not self.db.get_node(self._active_node_id):
+            QMessageBox.information(self, "Ogiltig nod",
+                "Den valda noden finns inte längre. Välj en nod i trädet.")
+            self._active_node_id = None
             return
         # suggested_tag comes from the drawn rectangle's OCR/text extraction
 
@@ -2528,7 +2547,12 @@ class PIDPanel(QWidget):
         last_cause_id = None
         for mode in modes:
             label    = f"{tag + ' — ' if tag else ''}{comp_type}: {mode}"
-            cause_id = self.db.add_cause(self._active_node_id)
+            try:
+                cause_id = self.db.add_cause(self._active_node_id)
+            except Exception as e:
+                QMessageBox.critical(self, "Databasfel",
+                    f"Kunde inte skapa orsak:\n{e}\n\nKontrollera att noden finns i trädet.")
+                return
             self.db.update_cause(cause_id, label)
 
             # Auto-set F-level AND store base_freq from component failure frequency
