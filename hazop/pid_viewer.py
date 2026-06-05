@@ -1916,11 +1916,14 @@ class PIDPanel(QWidget):
             cause_id = self.db.add_cause(self._active_node_id)
             self.db.update_cause(cause_id, label)
 
-            # Auto-set F-level from component failure frequency if defined
+            # Auto-set F-level AND store base_freq from component failure frequency
             freq = dlg.selected_freqs.get(mode)
             if freq is not None:
                 f_level = self._compute_f_level(freq)
-                self.db.update_cause(cause_id, likelihood=f_level)
+                self.db.update_cause(cause_id, likelihood=f_level, base_freq=freq)
+            else:
+                # No frequency defined — store None so CausePanel shows empty
+                self.db.update_cause(cause_id, base_freq=None)
 
             self.db.add_cause_marker(cause_id, page, pdf_x, pdf_y, comp_type, tag)
             self.viewer.add_cause_marker(cause_id, pdf_x, pdf_y, comp_type, mode, tag)

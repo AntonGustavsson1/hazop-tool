@@ -387,6 +387,7 @@ class Database:
             "ALTER TABLE nodes ADD COLUMN pid_page INTEGER DEFAULT 0",
             "ALTER TABLE causes ADD COLUMN likelihood INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE causes ADD COLUMN source_id INTEGER DEFAULT NULL",
+            "ALTER TABLE causes ADD COLUMN base_freq REAL DEFAULT NULL",
             "ALTER TABLE safeguards ADD COLUMN rrf INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE safeguards ADD COLUMN source_id INTEGER DEFAULT NULL",
             "ALTER TABLE consequences ADD COLUMN category TEXT DEFAULT ''",
@@ -759,15 +760,20 @@ class Database:
                           (name, description, pid_ref, id_))
         self.conn.commit()
 
-    def update_cause(self, id_, description=None, likelihood=None):
-        if description is not None and likelihood is not None:
-            self.conn.execute("UPDATE causes SET description=?,likelihood=? WHERE id=?",
-                              (description, likelihood, id_))
-        elif description is not None:
-            self.conn.execute("UPDATE causes SET description=? WHERE id=?", (description, id_))
-        elif likelihood is not None:
-            self.conn.execute("UPDATE causes SET likelihood=? WHERE id=?", (likelihood, id_))
-        self.conn.commit()
+    _SENTINEL = object()
+
+    def update_cause(self, id_, description=None, likelihood=None, base_freq=_SENTINEL):
+        sets, vals = [], []
+        if description is not None:
+            sets.append("description=?"); vals.append(description)
+        if likelihood is not None:
+            sets.append("likelihood=?"); vals.append(likelihood)
+        if base_freq is not Database._SENTINEL:
+            sets.append("base_freq=?"); vals.append(base_freq)
+        if sets:
+            vals.append(id_)
+            self.conn.execute(f"UPDATE causes SET {', '.join(sets)} WHERE id=?", vals)
+            self.conn.commit()
 
     def update_consequence(self, id_, description, severity, category=''):
         self.conn.execute("UPDATE consequences SET description=?,severity=?,category=? WHERE id=?",
@@ -1256,10 +1262,22 @@ class CausePanel(QWidget):
         self.desc_edit.focusOutEvent = _desc_foe
         form.addRow("Beskrivning:", self.desc_edit)
 
+        # Row 1: value from component database (read-only)
+        self._db_freq_lbl = QLabel("—")
+        self._db_freq_lbl.setStyleSheet(
+            "color:#1F4E79; font-style:italic; padding:2px 4px;"
+            "background:#eef4fb; border:1px solid #bee3f8; border-radius:3px;")
+        self._db_freq_lbl.setToolTip(
+            "F-nivå beräknad från komponentens felfrekvens i Inställningar → Komponenter.\n"
+            "Tomt om ingen frekvens är definierad för denna felmod.")
+        form.addRow("Frekvens (komponent):", self._db_freq_lbl)
+
+        # Row 2: manual override
         self.freq_combo = QComboBox()
-        self.freq_combo.addItems(_FREQ_LABELS)
+        self.freq_combo.addItem("— (välj)")          # index 0 = "not set"
+        self.freq_combo.addItems(_FREQ_LABELS)         # index 1..7
         self.freq_combo.currentIndexChanged.connect(self._save)
-        form.addRow("Frekvens (F):", self.freq_combo)
+        form.addRow("Frekvens (manuell):", self.freq_combo)
 
         layout.addLayout(form)
         layout.addStretch()
@@ -1267,19 +1285,39 @@ class CausePanel(QWidget):
     def load(self, cause_id):
         self.cause_id = cause_id
         row = self.db.get_cause(cause_id)
-        if row:
-            self._loading = True
-            self.desc_edit.setPlainText(row['description'])
-            freq = row['likelihood'] if row['likelihood'] is not None else 3
-            self.freq_combo.setCurrentIndex(freq_to_idx(freq))
-            self._loading = False
+        if not row:
+            return
+        self._loading = True
+        self.desc_edit.setPlainText(row['description'])
+
+        # Field 1: component DB value (base_freq → F-level)
+        base_freq = row['base_freq'] if 'base_freq' in row.keys() else None
+        if base_freq is not None:
+            f_auto = freq_to_f_level(base_freq)
+            f_lbl  = _FREQ_LABELS[freq_to_idx(f_auto)] if freq_to_idx(f_auto) < len(_FREQ_LABELS) else f'F={f_auto}'
+            self._db_freq_lbl.setText(f"F={f_auto} — {base_freq:.4g}/år  →  {f_lbl}")
+        else:
+            self._db_freq_lbl.setText("—")
+
+        # Field 2: manual F-level (likelihood)
+        like = row['likelihood']
+        if like is not None:
+            self.freq_combo.setCurrentIndex(freq_to_idx(like) + 1)  # +1 for the "—" item
+        else:
+            self.freq_combo.setCurrentIndex(0)   # "— (välj)"
+        self._loading = False
 
     def _save(self):
         if self._loading or self.cause_id is None:
             return
         desc = self.desc_edit.toPlainText().strip() or 'Ny orsak'
-        freq = idx_to_freq(self.freq_combo.currentIndex())
-        self.db.update_cause(self.cause_id, desc, freq)
+        idx  = self.freq_combo.currentIndex()
+        if idx == 0:
+            # "— (välj)" — keep existing likelihood, just save description
+            self.db.update_cause(self.cause_id, description=desc)
+        else:
+            freq = idx_to_freq(idx - 1)   # -1 for the "—" item
+            self.db.update_cause(self.cause_id, desc, freq)
         self.saved.emit(self.cause_id, desc)
 
 
