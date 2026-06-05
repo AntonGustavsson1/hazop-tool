@@ -3016,8 +3016,8 @@ class ScenarioTablePanel(QWidget):
         # ── Col 8: Risk efter barriärer (safeguards only) ────────────────────
         f_eff    = effective_frequency(freq, sg_rrf)
         sg_steps = int(math.log10(max(1, sg_rrf))) if sg_rrf > 1 else 0
-        sg_step_str = f"\n−{sg_steps} steg" if sg_steps > 0 else ""
-        ra = QTableWidgetItem(f"{level_a}{sg_step_str}")
+        sg_step_str = f"  −{sg_steps} steg" if sg_steps > 0 else ""
+        ra = QTableWidgetItem(f"{level_a}{sg_step_str}\nF={f_eff}  C={sev}")
         ra.setBackground(QBrush(QColor(bg_a))); ra.setForeground(QBrush(QColor(fg_a)))
         ra.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         ra.setFlags(ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -3025,8 +3025,8 @@ class ScenarioTablePanel(QWidget):
         self._table.setItem(r, self._C_REFT, ra)
 
         # ── Col 9: Slutkonsekvens (alla reduktioner) ──────────────────────────
-        slut_step_str = f"\n−{total_steps} steg" if total_steps > 0 else ""
-        rs = QTableWidgetItem(f"{level_s}{slut_step_str}")
+        slut_step_str = f"  −{total_steps} steg" if total_steps > 0 else ""
+        rs = QTableWidgetItem(f"{level_s}{slut_step_str}\nF={final_f}  C={sev}")
         rs.setBackground(QBrush(QColor(bg_s))); rs.setForeground(QBrush(QColor(fg_s)))
         rs.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -4144,6 +4144,16 @@ class SettingsPanel(QWidget):
         scroll.setWidget(_wrap)
         ml.addWidget(scroll)
 
+        # Axis orientation
+        ax_row = QHBoxLayout()
+        ax_row.addWidget(QLabel("Axelriktning:"))
+        self._axis_combo = QComboBox()
+        self._axis_combo.addItem("Frekvens → X-axel,  Konsekvens → Y-axel  (standard)", 'frequency')
+        self._axis_combo.addItem("Konsekvens → X-axel,  Frekvens → Y-axel", 'consequence')
+        self._axis_combo.setToolTip("Väljer vilken variabel som visas längs X- respektive Y-axeln.")
+        ax_row.addWidget(self._axis_combo, 1)
+        ml.addLayout(ax_row)
+
         save_matrix_btn = QPushButton("💾 Spara riskmatris")
         save_matrix_btn.setStyleSheet(
             "background:#1F4E79; color:#fff; font-weight:bold; padding:4px 12px;")
@@ -4279,6 +4289,11 @@ class SettingsPanel(QWidget):
         cfg = self.db.get_risk_matrix() or DEFAULT_MATRIX
         self._rows_spin.setValue(cfg.get('rows', 5))
         self._cols_spin.setValue(cfg.get('cols', 7))
+        # Restore axis orientation
+        x_axis = cfg.get('x_axis', 'frequency')
+        idx = self._axis_combo.findData(x_axis)
+        if idx >= 0:
+            self._axis_combo.setCurrentIndex(idx)
         self._build_matrix_grid(cfg)
 
     def _apply_size(self):
@@ -4448,7 +4463,7 @@ class SettingsPanel(QWidget):
 
         cfg = {
             'rows': rows, 'cols': cols,
-            'x_axis': old.get('x_axis', 'frequency'),
+            'x_axis': self._axis_combo.currentData() or 'frequency',
             'x_labels': x_labels,
             'y_labels': y_labels,
             'cell_colors': colors,
