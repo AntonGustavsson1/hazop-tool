@@ -2708,8 +2708,9 @@ class PIDPanel(QWidget):
     cause_created           = pyqtSignal(int)
     consequence_created     = pyqtSignal(int)
     safeguard_created       = pyqtSignal(int)
-    risk_scenario_requested = pyqtSignal(int, object, int)  # node_id, scene_pos, page
-    marker_navigated        = pyqtSignal(str, int)          # 'cause'|'consequence'|'safeguard', id
+    risk_scenario_requested = pyqtSignal(int, object, int)
+    marker_navigated        = pyqtSignal(str, int)
+    pid_analysis_done       = pyqtSignal()   # emitted when scan finishes → open settings tab
 
     def __init__(self, db, parent=None):
         super().__init__(parent)
@@ -2737,6 +2738,14 @@ class PIDPanel(QWidget):
         self.scan_btn.clicked.connect(self._scan_equipment)
         self.scan_btn.setEnabled(False)
         bar.addWidget(self.scan_btn)
+
+        self.analyze_btn = QPushButton("📋 Analysera P&ID")
+        self.analyze_btn.setToolTip(
+            "Skannar hela P&ID:n, identifierar alla taggnummer-prefix\n"
+            "och skapar en nyckel i Inställningar → Identifierade objekt.")
+        self.analyze_btn.clicked.connect(self._analyze_pid)
+        self.analyze_btn.setEnabled(False)
+        bar.addWidget(self.analyze_btn)
 
         bar.addWidget(_vline())
 
@@ -2891,6 +2900,75 @@ class PIDPanel(QWidget):
         self._set_mode(MODE_NAV)
         self._update_pen()
 
+    def _analyze_pid(self):
+        """Scan all PDF pages, collect unique tag prefixes, cross-ref with database."""
+        if not HAS_PYMUPDF or self.viewer.pdf_doc is None:
+            QMessageBox.warning(self, "Ingen P&ID", "Öppna en P&ID-fil först.")
+            return
+
+        doc = self.viewer.pdf_doc
+        n   = doc.page_count
+        progress = QProgressDialog("Analyserar P&ID…", "Avbryt", 0, n, self)
+        progress.setWindowTitle("Analyserar")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+        QApplication.processEvents()
+
+        found = {}   # prefix → set of full tags
+        for pg in range(n):
+            if progress.wasCanceled():
+                break
+            progress.setValue(pg)
+            progress.setLabelText(f"Sida {pg+1}/{n}…")
+            QApplication.processEvents()
+            page = doc.load_page(pg)
+            for w in page.get_text("words"):
+                txt = w[4].strip().upper()
+                for candidate in _tag_candidates(txt):
+                    tag = _pick_best_tag(candidate)
+                    if not tag:
+                        continue
+                    m = re.match(r'^([A-Z]+)', tag)
+                    if m:
+                        found.setdefault(m.group(1), set()).add(tag)
+                    break
+        progress.setValue(n); progress.close()
+
+        if not found:
+            QMessageBox.information(self, "Inga taggar",
+                "Inga taggnummer hittades i P&ID:n."); return
+
+        # Cross-reference with tag database and symbol knowledge
+        _cat_map = {
+            'instrument': 'Instrument / Sensor', 'givare': 'Instrument / Sensor',
+            'reglerfunktion': 'Instrument / Sensor', 'larm': 'Instrument / Sensor',
+            'ventil': 'Ventil', 'reglerventil': 'Ventil',
+            'pump': 'Pump', 'kompressor': 'Kompressor',
+            'tank': 'Tank / Kärl', 'kärl': 'Tank / Kärl',
+            'värmeväxlare': 'Värmeväxlare',
+            'säkerhetsventil': 'Säkerhetsventil (PSV)',
+        }
+        for pfx, tags in found.items():
+            examples  = ', '.join(sorted(tags)[:6])
+            db_entry  = self.db.tag_code_lookup(pfx) if hasattr(self.db, 'tag_code_lookup') else {}
+            name_sv   = (db_entry or {}).get('name_sv', '')
+            comp_type = ''
+            if db_entry:
+                cat = str(db_entry.get('category', '')).lower()
+                for k, v in _cat_map.items():
+                    if k in cat:
+                        comp_type = v; break
+            if not comp_type and pfx in KNOWN_PREFIXES:
+                comp_type = KNOWN_PREFIXES[pfx][1]
+            self.db.upsert_pid_tag(pfx, examples, name_sv, comp_type)
+
+        QMessageBox.information(self, "Analys klar ✅",
+            f"Hittade {len(found)} unika prefix.\n\n"
+            "Öppna Inställningar → Identifierade objekt\n"
+            "för att bekräfta typerna och aktivera 'Använd'.")
+        self.pid_analysis_done.emit()
+
     def _refresh_color_btn(self):
         c = self._pen_color
         self.color_btn.setStyleSheet(
@@ -2919,6 +2997,7 @@ class PIDPanel(QWidget):
         self._update_page_label()
         self._load_overlays()
         self.scan_btn.setEnabled(True)
+        self.analyze_btn.setEnabled(True)
 
     def _goto_page(self, n):
         if self.viewer.pdf_doc is None:
@@ -3487,15 +3566,25 @@ class PIDPanel(QWidget):
         return ''
 
     def _db_comp_for_tag(self, tag: str) -> str:
-        """Look up the tag prefix in the active tag database and return comp type."""
-        if not tag or not hasattr(self.db, 'tag_code_lookup'):
+        """Look up the tag prefix in confirmed PID analysis, then tag database."""
+        if not tag:
             return ''
-        import re as _re
-        m = _re.match(r'^([A-Z]+)', tag.upper())
+        m = re.match(r'^([A-Z]+)', tag.upper())
         if not m:
             return ''
-        entry = self.db.tag_code_lookup(m.group(1))
-        return self._comp_from_db_entry(entry)
+        pfx = m.group(1)
+        # 1. Confirmed project-specific mapping (highest priority)
+        if hasattr(self.db, 'confirmed_comp_for_tag'):
+            confirmed = self.db.confirmed_comp_for_tag(pfx)
+            if confirmed:
+                return confirmed
+        # 2. Tag database lookup
+        if hasattr(self.db, 'tag_code_lookup'):
+            entry = self.db.tag_code_lookup(pfx)
+            result = self._comp_from_db_entry(entry)
+            if result:
+                return result
+        return ''
 
     def _load_mode_freqs(self):
         """Return {comp_type: {mode_desc: freq_per_year}} from DB."""
@@ -3530,3 +3619,4 @@ class PIDPanel(QWidget):
                 self._update_page_label()
                 self._load_overlays()
                 self.scan_btn.setEnabled(True)
+                self.analyze_btn.setEnabled(True)

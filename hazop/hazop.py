@@ -145,6 +145,16 @@ CREATE TABLE IF NOT EXISTS tag_database_settings (
     value TEXT
 );
 
+CREATE TABLE IF NOT EXISTS pid_identified_tags (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    tag_code     TEXT NOT NULL UNIQUE,
+    examples     TEXT DEFAULT '',
+    name_sv      TEXT DEFAULT '',
+    comp_type    TEXT DEFAULT '',
+    confirmed    INTEGER DEFAULT 0,
+    source       TEXT DEFAULT 'scan'
+);
+
 CREATE TABLE IF NOT EXISTS equipment_catalog (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     tag            TEXT NOT NULL,
@@ -479,6 +489,13 @@ class Database:
                 equipment_type TEXT NOT NULL,
                 display_name   TEXT DEFAULT ''
             );
+            CREATE TABLE IF NOT EXISTS pid_identified_tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tag_code TEXT NOT NULL UNIQUE,
+                examples TEXT DEFAULT '', name_sv TEXT DEFAULT '',
+                comp_type TEXT DEFAULT '', confirmed INTEGER DEFAULT 0,
+                source TEXT DEFAULT 'scan'
+            );
             CREATE TABLE IF NOT EXISTS tag_database (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 tag_code TEXT NOT NULL, name_sv TEXT DEFAULT '',
@@ -714,6 +731,42 @@ class Database:
                 "SELECT * FROM tag_database WHERE tag_code=? AND active=1",
                 (prefix.upper(),)).fetchall()
         return dict(rows[0]) if rows else {}
+
+    # ── PID identified tags ───────────────────────────────────────────────────
+    def pid_identified_tags(self):
+        return self.conn.execute(
+            "SELECT * FROM pid_identified_tags ORDER BY tag_code").fetchall()
+
+    def upsert_pid_tag(self, tag_code, examples, name_sv, comp_type):
+        """Insert or update a scanned tag entry (keeps existing confirmed status)."""
+        existing = self.conn.execute(
+            "SELECT confirmed FROM pid_identified_tags WHERE tag_code=?",
+            (tag_code,)).fetchone()
+        if existing:
+            self.conn.execute(
+                "UPDATE pid_identified_tags SET examples=?,name_sv=?,"
+                "comp_type=CASE WHEN confirmed=0 THEN ? ELSE comp_type END "
+                "WHERE tag_code=?",
+                (examples, name_sv, comp_type, tag_code))
+        else:
+            self.conn.execute(
+                "INSERT INTO pid_identified_tags "
+                "(tag_code,examples,name_sv,comp_type,confirmed) VALUES (?,?,?,?,0)",
+                (tag_code, examples, name_sv, comp_type))
+        self.conn.commit()
+
+    def confirm_pid_tag(self, tag_code, comp_type, confirmed):
+        self.conn.execute(
+            "UPDATE pid_identified_tags SET comp_type=?,confirmed=? WHERE tag_code=?",
+            (comp_type, int(confirmed), tag_code))
+        self.conn.commit()
+
+    def confirmed_comp_for_tag(self, prefix: str) -> str:
+        """Return confirmed component type for a tag prefix, or ''."""
+        r = self.conn.execute(
+            "SELECT comp_type FROM pid_identified_tags "
+            "WHERE tag_code=? AND confirmed=1", (prefix.upper(),)).fetchone()
+        return r['comp_type'] if r else ''
 
     def all_active_tag_codes(self) -> list:
         """Return list of all active tag codes for highlight scanning."""
@@ -3570,6 +3623,172 @@ class ComponentEditorPanel(QWidget):
             self._mode_table.blockSignals(False)
 
 
+class PIDAnalysisPanel(QWidget):
+    """Settings panel: shows all tag prefixes found in the P&ID with component-type mapping."""
+
+    # Component types available for selection
+    _COMP_TYPES = [
+        '', 'Ventil', 'Säkerhetsventil (PSV)', 'Pump', 'Kompressor',
+        'Tank / Kärl', 'Värmeväxlare', 'Instrument / Sensor',
+        'Rörledning', 'Övrigt',
+    ]
+
+    def __init__(self, db: Database):
+        super().__init__()
+        self.db = db
+        self._loading = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        hdr = QHBoxLayout()
+        title = QLabel("Identifierade objekt — P&ID-nyckel")
+        f = QFont(); f.setBold(True); f.setPointSize(13)
+        title.setFont(f)
+        hdr.addWidget(title)
+        hdr.addStretch()
+
+        note = QLabel(
+            "Kryssa i 'Använd' för att pre-fylla orsaksmenyn med rätt komponenttyp.")
+        note.setStyleSheet("color:#555; font-size:10px;")
+        layout.addWidget(title)
+        layout.addWidget(note)
+
+        # Table
+        self._tbl = QTableWidget(0, 5)
+        self._tbl.setHorizontalHeaderLabels(
+            ['Prefix', 'Exempeltaggar', 'Databas-förslag', 'Komponenttyp', 'Använd ✓'])
+        h = self._tbl.horizontalHeader()
+        h.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        h.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        h.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        h.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        h.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        self._tbl.setColumnWidth(0, 70)
+        self._tbl.setColumnWidth(2, 180)
+        self._tbl.setColumnWidth(3, 160)
+        self._tbl.setColumnWidth(4, 70)
+        self._tbl.verticalHeader().setVisible(False)
+        self._tbl.setAlternatingRowColors(True)
+        self._tbl.setStyleSheet(
+            "QHeaderView::section{background:#1F4E79;color:#fff;font-weight:bold;padding:3px;}")
+        layout.addWidget(self._tbl)
+
+        btn_row = QHBoxLayout()
+        sel_all = QPushButton("Välj alla")
+        sel_all.clicked.connect(lambda: self._bulk_confirm(True))
+        desel   = QPushButton("Avmarkera alla")
+        desel.clicked.connect(lambda: self._bulk_confirm(False))
+        btn_row.addWidget(sel_all); btn_row.addWidget(desel); btn_row.addStretch()
+        self._status = QLabel("")
+        self._status.setStyleSheet("color:#555; font-size:10px;")
+        btn_row.addWidget(self._status)
+        layout.addLayout(btn_row)
+
+        self.refresh()
+
+    def refresh(self):
+        self._loading = True
+        self._tbl.blockSignals(True)
+        self._tbl.setRowCount(0)
+
+        for entry in self.db.pid_identified_tags():
+            r = self._tbl.rowCount()
+            self._tbl.insertRow(r)
+
+            code_item = QTableWidgetItem(entry['tag_code'])
+            code_item.setFlags(code_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            code_item.setFont(QFont('Courier', 10))
+            self._tbl.setItem(r, 0, code_item)
+
+            ex_item = QTableWidgetItem(entry['examples'] or '')
+            ex_item.setFlags(ex_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            ex_item.setStyleSheet("color:#555;")
+            self._tbl.setItem(r, 1, ex_item)
+
+            # Database suggestion (read-only)
+            sugg = QTableWidgetItem(entry['name_sv'] or '—')
+            sugg.setFlags(sugg.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            sugg.setForeground(QBrush(QColor('#1F4E79')))
+            self._tbl.setItem(r, 2, sugg)
+
+            # Editable component type combo
+            combo = QComboBox()
+            for t in self._COMP_TYPES:
+                combo.addItem(t)
+            cur = entry['comp_type'] or ''
+            idx = combo.findText(cur)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+            code = entry['tag_code']
+            combo.currentTextChanged.connect(
+                lambda text, c=code: self._on_type_changed(c, text))
+            self._tbl.setCellWidget(r, 3, combo)
+
+            # "Använd" checkbox
+            chk = QTableWidgetItem()
+            chk.setCheckState(
+                Qt.CheckState.Checked if entry['confirmed'] else Qt.CheckState.Unchecked)
+            chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+            chk.setData(Qt.ItemDataRole.UserRole, entry['tag_code'])
+            chk.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._tbl.setItem(r, 4, chk)
+
+            self._tbl.setRowHeight(r, 28)
+
+        self._tbl.cellChanged.connect(self._on_cell_changed)
+        self._tbl.blockSignals(False)
+        self._loading = False
+        self._update_status()
+
+    def _on_type_changed(self, tag_code, comp_type):
+        if self._loading:
+            return
+        # Find confirmed state
+        for r in range(self._tbl.rowCount()):
+            item = self._tbl.item(r, 0)
+            if item and item.text() == tag_code:
+                chk = self._tbl.item(r, 4)
+                confirmed = chk and chk.checkState() == Qt.CheckState.Checked
+                self.db.confirm_pid_tag(tag_code, comp_type, confirmed)
+                break
+
+    def _on_cell_changed(self, row, col):
+        if self._loading or col != 4:
+            return
+        chk = self._tbl.item(row, 4)
+        if not chk:
+            return
+        tag_code = chk.data(Qt.ItemDataRole.UserRole)
+        confirmed = chk.checkState() == Qt.CheckState.Checked
+        combo = self._tbl.cellWidget(row, 3)
+        comp_type = combo.currentText() if combo else ''
+        self.db.confirm_pid_tag(tag_code, comp_type, confirmed)
+        self._update_status()
+
+    def _bulk_confirm(self, confirm: bool):
+        self._loading = True
+        state = Qt.CheckState.Checked if confirm else Qt.CheckState.Unchecked
+        for r in range(self._tbl.rowCount()):
+            chk = self._tbl.item(r, 4)
+            if chk:
+                chk.setCheckState(state)
+                tag_code = chk.data(Qt.ItemDataRole.UserRole)
+                combo = self._tbl.cellWidget(r, 3)
+                comp_type = combo.currentText() if combo else ''
+                self.db.confirm_pid_tag(tag_code, comp_type, confirm)
+        self._loading = False
+        self._update_status()
+
+    def _update_status(self):
+        total     = self._tbl.rowCount()
+        confirmed = sum(1 for r in range(total)
+                        if self._tbl.item(r, 4) and
+                        self._tbl.item(r, 4).checkState() == Qt.CheckState.Checked)
+        self._status.setText(f"{total} prefix hittade  |  {confirmed} bekräftade")
+
+
 class TagDatabasePanel(QWidget):
     """Settings panel for managing the P&ID tag-code database."""
 
@@ -3949,6 +4168,10 @@ class SettingsPanel(QWidget):
         self._tag_db_panel = TagDatabasePanel(self.db)
         self._tag_db_panel.settings_changed.connect(self.matrix_changed.emit)
         tabs.addTab(self._tag_db_panel, "Tagdatabas")
+
+        # ── Tab: Identifierade objekt ─────────────────────────────────────────
+        self.analysis_panel = PIDAnalysisPanel(self.db)
+        tabs.addTab(self.analysis_panel, "Identifierade objekt")
 
         self._load_all()
 
@@ -5097,6 +5320,7 @@ class MainWindow(QMainWindow):
         self.pid_panel.safeguard_created.connect(self._on_safeguard_created)
         self.pid_panel.risk_scenario_requested.connect(self._on_pid_risk_scenario)
         self.pid_panel.marker_navigated.connect(self._on_marker_navigate)
+        self.pid_panel.pid_analysis_done.connect(self._on_pid_analysis_done)
 
         self._cur_type = None
         self._cur_id   = None
@@ -5148,6 +5372,18 @@ class MainWindow(QMainWindow):
         self._cur_id   = None
         self.stack.setCurrentWidget(self.welcome_panel)
         self.scenario_panel.clear()
+
+    def _on_pid_analysis_done(self):
+        """Switch to Settings → Identifierade objekt after P&ID analysis."""
+        self._switch_view(4)   # Settings page
+        self.settings_panel.analysis_panel.refresh()
+        # Switch to the "Identifierade objekt" tab inside settings
+        tabs = self.settings_panel.findChild(QTabWidget)
+        if tabs:
+            for i in range(tabs.count()):
+                if "Identifierade" in tabs.tabText(i):
+                    tabs.setCurrentIndex(i)
+                    break
 
     def _on_marker_navigate(self, item_type: str, item_id: int):
         """Navigate tree and detail panel when a P&ID marker is clicked."""
