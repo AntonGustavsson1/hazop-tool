@@ -2182,23 +2182,23 @@ class ScenarioTablePanel(QWidget):
         nod.setFlags(nod.flags() & ~Qt.ItemFlag.ItemIsEditable)
         self._table.setItem(r, self._C_NOD, nod)
 
-        # ── Col 1: Orsak (editable) ───────────────────────────────────────────
-        ors = QTableWidgetItem(f"{cause_d['description']}\n{freq_lbl}")
+        # ── Col 1: Orsak (editable, description only) ────────────────────────
+        ors = QTableWidgetItem(cause_d['description'])
         ors.setData(Qt.ItemDataRole.UserRole, ('cause', cause_d['id']))
         self._table.setItem(r, self._C_ORS, ors)
 
-        # ── Col 2: Konsekvens (editable) ──────────────────────────────────────
+        # ── Col 2: Konsekvens (editable, description only) ───────────────────
         sev_lbl = _SEV_LABELS[max(0, sev - 1)]
-        kon = QTableWidgetItem(f"{cons_d['description']}\n{sev_lbl}")
+        kon = QTableWidgetItem(cons_d['description'])
         kon.setData(Qt.ItemDataRole.UserRole, ('consequence', cid))
         self._table.setItem(r, self._C_KON, kon)
 
         # ── Col 3: Risk före barriär — klickbar för att öppna riskmatris ────────
-        rb = QTableWidgetItem(level_b)
+        rb = QTableWidgetItem(f"{level_b}\nF={freq}  C={sev}")
         rb.setBackground(QBrush(QColor(bg_b))); rb.setForeground(QBrush(QColor(fg_b)))
         rb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        rb.setToolTip(f"F={freq}  C={sev}\n🖱 Klicka för att ändra i riskmatrisen")
+        rb.setToolTip("🖱 Klicka för att ändra i riskmatrisen")
         # Store ids so cellClicked can open the matrix popup
         rb.setData(Qt.ItemDataRole.UserRole, ('risk_click', cause_d['id'], cid, freq, sev))
         self._table.setItem(r, self._C_RFORE, rb)
