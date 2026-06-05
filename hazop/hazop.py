@@ -27,8 +27,8 @@ from PyQt6.QtWidgets import (
     QSpinBox, QColorDialog, QFrame, QListWidget, QListWidgetItem,
     QProgressDialog, QAbstractItemView, QToolTip,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF, QTimer
-from PyQt6.QtGui import QFont, QColor, QAction, QBrush, QPen, QPainter
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF, QTimer, QMimeData
+from PyQt6.QtGui import QFont, QColor, QAction, QBrush, QPen, QPainter, QDrag
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DATABASE
@@ -365,6 +365,25 @@ class Database:
     def set_config(self, key, value):
         self.conn.execute("INSERT OR REPLACE INTO app_config (key,value) VALUES (?,?)", (key, value))
         self.conn.commit()
+
+    _DEFAULT_PALETTE = [
+        {'name': 'Kritisk', 'color': '#e74c3c'},
+        {'name': 'Hög',     'color': '#e67e22'},
+        {'name': 'Medium',  'color': '#f39c12'},
+        {'name': 'Låg',     'color': '#27ae60'},
+    ]
+
+    def get_color_palette(self):
+        val = self.get_config('color_palette')
+        if val:
+            try:
+                return json.loads(val)
+            except Exception:
+                pass
+        return list(self._DEFAULT_PALETTE)
+
+    def set_color_palette(self, palette):
+        self.set_config('color_palette', json.dumps(palette))
 
     def get_risk_matrix(self):
         val = self.get_config('risk_matrix')
@@ -2661,7 +2680,59 @@ class RiskScenarioWizard(QDialog):
 # SETTINGS PANEL
 # ══════════════════════════════════════════════════════════════════════════════
 
+_PALETTE_MIME = 'application/x-hazop-palette-color'
+
+
+class DraggableColorSwatch(QLabel):
+    """Draggable color swatch in the palette — drag onto a matrix cell."""
+
+    def __init__(self, name: str, color: str, parent=None):
+        super().__init__(name, parent)
+        self._name  = name
+        self._color = color
+        self.setFixedSize(76, 28)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self._refresh()
+
+    def _refresh(self):
+        # Compute readable text colour
+        r, g, b = int(self._color[1:3], 16), int(self._color[3:5], 16), int(self._color[5:7], 16)
+        lum = 0.299 * r + 0.587 * g + 0.114 * b
+        txt = '#000' if lum > 160 else '#fff'
+        self.setStyleSheet(
+            f"background:{self._color}; color:{txt}; font-weight:bold; font-size:10px;"
+            f"border:1px solid #555; border-radius:4px;")
+        self.setText(self._name)
+
+    def set_swatch(self, name: str, color: str):
+        self._name = name; self._color = color
+        self._refresh()
+
+    def name(self):  return self._name
+    def color(self): return self._color
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            drag = QDrag(self)
+            mime = QMimeData()
+            mime.setData(_PALETTE_MIME,
+                         json.dumps({'color': self._color, 'name': self._name}).encode())
+            drag.setMimeData(mime)
+            drag.setPixmap(self.grab())
+            drag.setHotSpot(event.position().toPoint())
+            drag.exec(Qt.DropAction.CopyAction)
+        else:
+            super().mousePressEvent(event)
+
+
 class MatrixCellButton(QPushButton):
+    """A button representing one cell in the risk matrix.
+
+    Accepts drops from DraggableColorSwatch to change color+label.
+    Click to open color/label dialog.
+    """
+
     def __init__(self, row, col, color, label, parent=None):
         super().__init__(label, parent)
         self.row = row
@@ -2669,11 +2740,14 @@ class MatrixCellButton(QPushButton):
         self._color = color
         self._label = label
         self.setFixedSize(80, 40)
+        self.setAcceptDrops(True)
         self._apply_style()
 
     def _apply_style(self):
         self.setStyleSheet(
-            f"background:{self._color}; color:white; font-weight:bold; border:1px solid #888;")
+            f"QPushButton{{background:{self._color}; color:white; font-weight:bold;"
+            f" border:1px solid #888; border-radius:2px;}}"
+            f"QPushButton:hover{{border:2px solid #222;}}")
         self.setText(self._label)
 
     def set_cell(self, color, label):
@@ -2684,6 +2758,28 @@ class MatrixCellButton(QPushButton):
     def color(self): return self._color
     def label(self): return self._label
 
+    # ── Drag-and-drop ─────────────────────────────────────────────────────────
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(_PALETTE_MIME):
+            self.setStyleSheet(
+                f"background:{self._color}; color:white; font-weight:bold;"
+                f"border:3px dashed #000;")
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self._apply_style()
+
+    def dropEvent(self, event):
+        if event.mimeData().hasFormat(_PALETTE_MIME):
+            data = json.loads(
+                event.mimeData().data(_PALETTE_MIME).data().decode())
+            self.set_cell(data['color'], data['name'])
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
 
 class SettingsPanel(QWidget):
     matrix_changed = pyqtSignal()
@@ -2691,7 +2787,10 @@ class SettingsPanel(QWidget):
     def __init__(self, db: Database):
         super().__init__()
         self.db = db
-        self._cell_buttons = []
+        self._cell_buttons   = []
+        self._x_label_edits  = []   # QLineEdit per column
+        self._y_label_edits  = []   # QLineEdit per row (high→low)
+        self._palette_swatches = []
 
         tabs = QTabWidget()
         main = QVBoxLayout(self)
@@ -2700,13 +2799,15 @@ class SettingsPanel(QWidget):
         # ── Tab: Riskmatris ───────────────────────────────────────────────────
         matrix_tab = QWidget()
         ml = QVBoxLayout(matrix_tab)
+        ml.setSpacing(6)
 
+        # Size row
         size_row = QHBoxLayout()
         size_row.addWidget(QLabel("Rader (Konsekvens):"))
         self._rows_spin = QSpinBox(); self._rows_spin.setRange(2, 10); self._rows_spin.setValue(5)
         size_row.addWidget(self._rows_spin)
-        size_row.addWidget(QLabel("  Kolumner (Sannolikhet):"))
-        self._cols_spin = QSpinBox(); self._cols_spin.setRange(2, 10); self._cols_spin.setValue(5)
+        size_row.addWidget(QLabel("  Kolumner (Frekvens):"))
+        self._cols_spin = QSpinBox(); self._cols_spin.setRange(2, 10); self._cols_spin.setValue(7)
         size_row.addWidget(self._cols_spin)
         apply_size_btn = QPushButton("Tillämpa storlek")
         apply_size_btn.clicked.connect(self._apply_size)
@@ -2714,15 +2815,45 @@ class SettingsPanel(QWidget):
         size_row.addStretch()
         ml.addLayout(size_row)
 
+        # ── Colour palette ────────────────────────────────────────────────────
+        pal_box = QGroupBox("Färgpalett — dra en färg och släpp på en cell")
+        pal_lay = QHBoxLayout(pal_box)
+        pal_lay.setSpacing(4)
+        self._palette_container = pal_lay
+
+        add_col_btn = QPushButton("+ Lägg till")
+        add_col_btn.setFixedHeight(28)
+        add_col_btn.clicked.connect(self._palette_add)
+        pal_lay.addWidget(add_col_btn)
+
+        edit_col_btn = QPushButton("✎ Redigera")
+        edit_col_btn.setFixedHeight(28)
+        edit_col_btn.clicked.connect(self._palette_edit)
+        pal_lay.addWidget(edit_col_btn)
+
+        del_col_btn = QPushButton("✕ Ta bort")
+        del_col_btn.setFixedHeight(28)
+        del_col_btn.clicked.connect(self._palette_delete)
+        pal_lay.addWidget(del_col_btn)
+
+        pal_lay.addStretch()
+        ml.addWidget(pal_box)
+
+        # ── Matrix grid ───────────────────────────────────────────────────────
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self._matrix_container = QWidget()
         self._matrix_grid = QGridLayout(self._matrix_container)
-        self._matrix_grid.setSpacing(2)
-        ml.addWidget(self._matrix_container)
+        self._matrix_grid.setSpacing(3)
+        scroll.setWidget(self._matrix_container)
+        ml.addWidget(scroll)
 
         save_matrix_btn = QPushButton("💾 Spara riskmatris")
+        save_matrix_btn.setStyleSheet(
+            "background:#1F4E79; color:#fff; font-weight:bold; padding:4px 12px;")
         save_matrix_btn.clicked.connect(self._save_matrix)
         ml.addWidget(save_matrix_btn)
-        ml.addStretch()
         tabs.addTab(matrix_tab, "Riskmatris")
 
         # ── Tab: Kategorier ───────────────────────────────────────────────────
@@ -2769,35 +2900,97 @@ class SettingsPanel(QWidget):
 
     def _load_all(self):
         self._load_matrix_ui()
+        self._load_palette_ui()
         self._load_categories()
         self._proj_name.setText(self.db.get_config('project_name', ''))
         self._proj_date.setText(self.db.get_config('project_date', ''))
         self._proj_rev.setText(self.db.get_config('project_revision', ''))
 
+    # ── Palette ───────────────────────────────────────────────────────────────
+
+    def _load_palette_ui(self):
+        # Remove existing swatches (keep the 3 buttons at end)
+        for sw in self._palette_swatches:
+            self._palette_container.removeWidget(sw)
+            sw.deleteLater()
+        self._palette_swatches = []
+        palette = self.db.get_color_palette()
+        for entry in palette:
+            sw = DraggableColorSwatch(entry['name'], entry['color'])
+            # Insert before the "Lägg till / Redigera / Ta bort" buttons
+            insert_pos = self._palette_container.count() - 4
+            self._palette_container.insertWidget(max(0, insert_pos), sw)
+            self._palette_swatches.append(sw)
+
+    def _palette_add(self):
+        name, ok = QInputDialog.getText(self, "Ny palettefärg", "Namn (t.ex. Kritisk):")
+        if not ok or not name.strip():
+            return
+        color = QColorDialog.getColor(QColor('#e74c3c'), self, "Välj färg")
+        if not color.isValid():
+            return
+        palette = self.db.get_color_palette()
+        palette.append({'name': name.strip(), 'color': color.name()})
+        self.db.set_color_palette(palette)
+        self._load_palette_ui()
+
+    def _palette_edit(self):
+        palette = self.db.get_color_palette()
+        if not palette:
+            return
+        names = [e['name'] for e in palette]
+        chosen, ok = QInputDialog.getItem(self, "Redigera", "Välj färg:", names, 0, False)
+        if not ok:
+            return
+        idx = names.index(chosen)
+        new_name, ok2 = QInputDialog.getText(self, "Nytt namn", "Namn:", text=chosen)
+        if not ok2:
+            return
+        new_color = QColorDialog.getColor(QColor(palette[idx]['color']), self, "Välj färg")
+        if not new_color.isValid():
+            return
+        palette[idx] = {'name': new_name.strip() or chosen, 'color': new_color.name()}
+        self.db.set_color_palette(palette)
+        self._load_palette_ui()
+
+    def _palette_delete(self):
+        palette = self.db.get_color_palette()
+        if not palette:
+            return
+        names = [e['name'] for e in palette]
+        chosen, ok = QInputDialog.getItem(self, "Ta bort", "Välj färg att ta bort:", names, 0, False)
+        if not ok:
+            return
+        palette = [e for e in palette if e['name'] != chosen]
+        self.db.set_color_palette(palette)
+        self._load_palette_ui()
+
+    # ── Matrix ────────────────────────────────────────────────────────────────
+
     def _load_matrix_ui(self):
         cfg = self.db.get_risk_matrix() or DEFAULT_MATRIX
-        rows = cfg.get('rows', 5)
-        cols = cfg.get('cols', 5)
-        self._rows_spin.setValue(rows)
-        self._cols_spin.setValue(cols)
+        self._rows_spin.setValue(cfg.get('rows', 5))
+        self._cols_spin.setValue(cfg.get('cols', 7))
         self._build_matrix_grid(cfg)
 
     def _apply_size(self):
         rows = self._rows_spin.value()
         cols = self._cols_spin.value()
-        old_cfg = self.db.get_risk_matrix() or DEFAULT_MATRIX
+        old  = self.db.get_risk_matrix() or DEFAULT_MATRIX
+        # Read current label edits if available
+        cur_x = [e.text() for e in self._x_label_edits] if self._x_label_edits else old.get('x_labels', [])
+        cur_y = [e.text() for e in self._y_label_edits] if self._y_label_edits else old.get('y_labels', [])
         new_cfg = {
             'rows': rows, 'cols': cols,
-            'x_axis': old_cfg.get('x_axis', 'likelihood'),
-            'x_labels': (old_cfg.get('x_labels', []) + _LIKE_LABELS)[:cols],
-            'y_labels': (old_cfg.get('y_labels', []) + _SEV_LABELS)[:rows],
-            'cell_colors': [],
-            'cell_labels': [],
+            'x_axis': old.get('x_axis', 'frequency'),
+            'x_labels': (cur_x + _FREQ_LABELS)[:cols],
+            'y_labels': (cur_y + _SEV_LABELS)[:rows],
+            'cell_colors': [], 'cell_labels': [],
         }
-        old_colors = old_cfg.get('cell_colors', [])
-        old_labels = old_cfg.get('cell_labels', [])
+        old_colors = old.get('cell_colors', [])
+        old_labels = old.get('cell_labels', [])
         for r in range(rows):
-            crow = []; lrow = []
+            crow, lrow = [], []
             for c in range(cols):
                 try: crow.append(old_colors[r][c])
                 except (IndexError, KeyError): crow.append('#27ae60')
@@ -2808,57 +3001,84 @@ class SettingsPanel(QWidget):
         self._build_matrix_grid(new_cfg)
 
     def _build_matrix_grid(self, cfg):
+        # Clear old content
         while self._matrix_grid.count():
             item = self._matrix_grid.takeAt(0)
-            if item.widget(): item.widget().deleteLater()
-        self._cell_buttons = []
+            if item.widget():
+                item.widget().deleteLater()
+        self._cell_buttons  = []
+        self._x_label_edits = []
+        self._y_label_edits = []
 
-        rows = cfg['rows']
-        cols = cfg['cols']
-        x_labels = cfg.get('x_labels', [str(i+1) for i in range(cols)])
-        y_labels = cfg.get('y_labels', [str(i+1) for i in range(rows)])
-        colors   = cfg.get('cell_colors', [['#27ae60']*cols]*rows)
-        labels   = cfg.get('cell_labels', [['Låg']*cols]*rows)
+        rows     = cfg['rows']
+        cols     = cfg['cols']
+        x_labels = cfg.get('x_labels', [f'F{c-1}' for c in range(cols)])
+        y_labels = cfg.get('y_labels', [f'C{r+1}' for r in range(rows)])
+        colors   = cfg.get('cell_colors', [['#27ae60'] * cols] * rows)
+        labels   = cfg.get('cell_labels', [['Låg'] * cols] * rows)
 
-        # Column headers (likelihood)
-        self._matrix_grid.addWidget(QLabel("↑ S \\ L →"), 0, 0)
+        # Top-left corner
+        corner = QLabel("C \\ F")
+        corner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        corner.setStyleSheet("font-size:9px; color:#666;")
+        self._matrix_grid.addWidget(corner, 0, 0)
+
+        # Editable column headers (frequency / X-axis)
         for c in range(cols):
-            lbl = QLabel(x_labels[c] if c < len(x_labels) else str(c+1))
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setStyleSheet("font-weight:bold; font-size:9px;")
-            self._matrix_grid.addWidget(lbl, 0, c + 1)
+            edit = QLineEdit(x_labels[c] if c < len(x_labels) else f'F{c-1}')
+            edit.setFixedWidth(82)
+            edit.setFixedHeight(22)
+            edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            edit.setStyleSheet(
+                "font-size:9px; font-weight:bold; border:1px solid #ccc;"
+                "border-radius:2px; background:#f0f4f8;")
+            edit.setToolTip("Redigera frekvensetikett (X-axel)")
+            self._matrix_grid.addWidget(edit, 0, c + 1)
+            self._x_label_edits.append(edit)
 
+        # Rows: highest consequence at top
         for r in range(rows):
-            display_r = rows - 1 - r  # high severity at top
-            row_lbl = QLabel(y_labels[display_r] if display_r < len(y_labels) else str(display_r+1))
-            row_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            row_lbl.setStyleSheet("font-size:9px;")
-            self._matrix_grid.addWidget(row_lbl, r + 1, 0)
+            display_r = rows - 1 - r   # index 0 = C1 (lowest)
+
+            # Editable row header (consequence / Y-axis)
+            edit_y = QLineEdit(y_labels[display_r] if display_r < len(y_labels) else f'C{display_r+1}')
+            edit_y.setFixedWidth(90)
+            edit_y.setFixedHeight(40)
+            edit_y.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            edit_y.setStyleSheet(
+                "font-size:9px; font-weight:bold; border:1px solid #ccc;"
+                "border-radius:2px; background:#f0f4f8;")
+            edit_y.setToolTip("Redigera konsekvensnivå-etikett (Y-axel)")
+            self._matrix_grid.addWidget(edit_y, r + 1, 0)
+            self._y_label_edits.append(edit_y)   # index 0 = top row (highest)
+
             row_btns = []
             for c in range(cols):
-                try: cell_color = colors[display_r][c]
-                except (IndexError, KeyError): cell_color = '#27ae60'
-                try: cell_label = labels[display_r][c]
-                except (IndexError, KeyError): cell_label = 'Låg'
-                btn = MatrixCellButton(display_r, c, cell_color, cell_label)
+                try: cc = colors[display_r][c]
+                except (IndexError, KeyError): cc = '#27ae60'
+                try: cl = labels[display_r][c]
+                except (IndexError, KeyError): cl = 'Låg'
+                btn = MatrixCellButton(display_r, c, cc, cl)
                 btn.clicked.connect(lambda _, b=btn: self._edit_cell(b))
                 self._matrix_grid.addWidget(btn, r + 1, c + 1)
                 row_btns.append(btn)
             self._cell_buttons.append((display_r, row_btns))
 
     def _edit_cell(self, btn):
+        """Click a cell → choose color AND label."""
         color = QColorDialog.getColor(QColor(btn.color()), self, "Välj färg för cell")
         if not color.isValid():
             return
-        label, ok = __import__('PyQt6.QtWidgets', fromlist=['QInputDialog']).QInputDialog.getText(
-            self, "Celltext", "Risknivå (t.ex. Låg, Medium, Hög, Kritisk):", text=btn.label())
+        label, ok = QInputDialog.getText(
+            self, "Celltext", "Risknivå-etikett (t.ex. Låg, Medium, Hög, Kritisk):",
+            text=btn.label())
         if ok:
             btn.set_cell(color.name(), label.strip() or btn.label())
 
     def _save_matrix(self):
         rows = self._rows_spin.value()
         cols = self._cols_spin.value()
-        old_cfg = self.db.get_risk_matrix() or DEFAULT_MATRIX
+        old  = self.db.get_risk_matrix() or DEFAULT_MATRIX
 
         colors = [['' for _ in range(cols)] for _ in range(rows)]
         labels = [['' for _ in range(cols)] for _ in range(rows)]
@@ -2869,11 +3089,21 @@ class SettingsPanel(QWidget):
                     colors[r][c] = btn.color()
                     labels[r][c] = btn.label()
 
+        # Read axis labels from editable QLineEdits
+        # _x_label_edits: index 0 = leftmost column (lowest frequency)
+        x_labels = [e.text().strip() or f'F{i-1}'
+                    for i, e in enumerate(self._x_label_edits)]
+        # _y_label_edits: index 0 = top row (highest consequence)
+        # Reverse to store low→high (matching rows 0=lowest)
+        y_labels_top_down = [e.text().strip() or f'C{rows - i}'
+                             for i, e in enumerate(self._y_label_edits)]
+        y_labels = list(reversed(y_labels_top_down))   # low→high
+
         cfg = {
             'rows': rows, 'cols': cols,
-            'x_axis': old_cfg.get('x_axis', 'likelihood'),
-            'x_labels': old_cfg.get('x_labels', _LIKE_LABELS[:cols]),
-            'y_labels': old_cfg.get('y_labels', _SEV_LABELS[:rows]),
+            'x_axis': old.get('x_axis', 'frequency'),
+            'x_labels': x_labels,
+            'y_labels': y_labels,
             'cell_colors': colors,
             'cell_labels': labels,
         }
