@@ -261,24 +261,44 @@ def effective_frequency(base_freq, rrf):
 effective_likelihood = effective_frequency
 
 
-def total_freq_reduction(base_freq: int, safeguard_rrf: int,
-                         fa_active: bool, fa_rrf: int,
-                         ignition_active: bool, ignition_rrf: int,
-                         extra_rfactors) -> tuple:
-    """Return (final_freq, total_rrf, step_reduction).
+def prob_to_reduction(prob_pct) -> int:
+    """Convert probability % to frequency step reduction.
 
-    extra_rfactors: iterable of dicts with 'rrf' and 'active'.
+    10%  → 1 step  (≈ RRF 10)
+    1%   → 2 steps (≈ RRF 100)
+    0.1% → 3 steps (≈ RRF 1000)
+    ≥100% or ≤0% → 0 steps
     """
-    total_rrf = safeguard_rrf
-    if fa_active and fa_rrf > 1:
-        total_rrf *= fa_rrf
-    if ignition_active and ignition_rrf > 1:
-        total_rrf *= ignition_rrf
-    for rf in extra_rfactors:
-        if rf.get('active') and rf.get('rrf', 1) > 1:
-            total_rrf *= rf['rrf']
-    reduction = int(math.log10(max(1, total_rrf)))
-    return max(-1, base_freq - reduction), total_rrf, reduction
+    try:
+        p = float(prob_pct)
+    except (TypeError, ValueError):
+        return 0
+    if p <= 0 or p >= 100:
+        return 0
+    return int(math.floor(-math.log10(p / 100.0)))
+
+
+def total_freq_reduction(base_freq: int, safeguard_rrf: int,
+                         fa_active: bool, fa_prob,
+                         ignition_active: bool, ignition_prob,
+                         extra_rfactors) -> tuple:
+    """Return (final_freq, total_equivalent_rrf, total_steps).
+
+    fa_prob / ignition_prob: probability in % (10.0 = 10% = −1 step).
+    extra_rfactors: iterable of dicts with 'rrf' (also treated as %) and 'active'.
+    """
+    # Safeguards reduce by RRF steps
+    sg_steps    = int(math.log10(max(1, safeguard_rrf))) if safeguard_rrf > 1 else 0
+    fa_steps    = prob_to_reduction(fa_prob)    if fa_active    else 0
+    ign_steps   = prob_to_reduction(ignition_prob) if ignition_active else 0
+    extra_steps = sum(
+        prob_to_reduction(rf.get('rrf', 10))
+        for rf in extra_rfactors
+        if rf.get('active')
+    )
+    total_steps = sg_steps + fa_steps + ign_steps + extra_steps
+    total_rrf   = 10 ** total_steps if total_steps > 0 else 1
+    return max(-1, base_freq - total_steps), total_rrf, total_steps
 
 
 # Frequency F=-1..5, stored as integer in causes.likelihood
@@ -2278,26 +2298,32 @@ class ScenarioTablePanel(QWidget):
         sg_item.setFlags(sg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         self._table.setItem(r, self._C_SG, sg_item)
 
-        # ── Col 5: FA — checkable item, text = RRF value ─────────────────────
-        fa_item = QTableWidgetItem(str(fa_rrf))
+        # ── Col 5: FA — checkable, text = probability % ──────────────────────
+        fa_steps_txt = f"−{prob_to_reduction(fa_rrf)} steg" if fa_active else f"{fa_rrf}%"
+        fa_item = QTableWidgetItem(f"{fa_rrf}%")
         fa_item.setCheckState(
             Qt.CheckState.Checked if fa_active else Qt.CheckState.Unchecked)
         fa_item.setFlags(Qt.ItemFlag.ItemIsEnabled |
                          Qt.ItemFlag.ItemIsUserCheckable |
                          Qt.ItemFlag.ItemIsEditable)
         fa_item.setData(Qt.ItemDataRole.UserRole, ('fa', cid))
-        fa_item.setToolTip("Kryssa i för FA-reduktion. Värdet = RRF (default 10).")
+        fa_item.setToolTip(
+            f"Närvaro/FA-sannolikhet i %.\n"
+            f"10% = −1 steg, 1% = −2 steg, 0.1% = −3 steg\n"
+            f"Skriv ett nytt värde (t.ex. 10 eller 1) och tryck Enter.")
         self._table.setItem(r, self._C_FA, fa_item)
 
-        # ── Col 6: Antändning — checkable item ───────────────────────────────
-        ign_item = QTableWidgetItem(str(ign_rrf))
+        # ── Col 6: Antändning — checkable, text = probability % ──────────────
+        ign_item = QTableWidgetItem(f"{ign_rrf}%")
         ign_item.setCheckState(
             Qt.CheckState.Checked if ign_active else Qt.CheckState.Unchecked)
         ign_item.setFlags(Qt.ItemFlag.ItemIsEnabled |
                           Qt.ItemFlag.ItemIsUserCheckable |
                           Qt.ItemFlag.ItemIsEditable)
         ign_item.setData(Qt.ItemDataRole.UserRole, ('ignition', cid))
-        ign_item.setToolTip("Kryssa i för antändningsreduktion. Värdet = RRF (default 10).")
+        ign_item.setToolTip(
+            f"Antändningssannolikhet i %.\n"
+            f"10% = −1 steg, 1% = −2 steg, 0.1% = −3 steg")
         self._table.setItem(r, self._C_IGN, ign_item)
 
         # ── Col 7: Övriga faktorer ────────────────────────────────────────────
@@ -2308,22 +2334,24 @@ class ScenarioTablePanel(QWidget):
         extra_btn.clicked.connect(lambda _, c=cid: self._edit_extra(c))
         self._table.setCellWidget(r, self._C_OVRIGA, extra_btn)
 
-        # ── Col 8: Risk efter barriärer ───────────────────────────────────────
-        f_eff = effective_frequency(freq, sg_rrf)
-        ra = QTableWidgetItem(level_a)
+        # ── Col 8: Risk efter barriärer (safeguards only) ────────────────────
+        f_eff    = effective_frequency(freq, sg_rrf)
+        sg_steps = int(math.log10(max(1, sg_rrf))) if sg_rrf > 1 else 0
+        sg_step_str = f"\n−{sg_steps} steg" if sg_steps > 0 else ""
+        ra = QTableWidgetItem(f"{level_a}{sg_step_str}")
         ra.setBackground(QBrush(QColor(bg_a))); ra.setForeground(QBrush(QColor(fg_a)))
         ra.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         ra.setFlags(ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        ra.setToolTip(f"F={f_eff}  C={sev}")
+        ra.setToolTip(f"F={f_eff}  C={sev}  (efter safeguards)")
         self._table.setItem(r, self._C_REFT, ra)
 
-        # ── Col 9: Slutkonsekvens ─────────────────────────────────────────────
-        change_tip = f"−{total_steps} steg totalt" if total_steps > 0 else "Inga reduktioner"
-        rs = QTableWidgetItem(level_s)
+        # ── Col 9: Slutkonsekvens (alla reduktioner) ──────────────────────────
+        slut_step_str = f"\n−{total_steps} steg" if total_steps > 0 else ""
+        rs = QTableWidgetItem(f"{level_s}{slut_step_str}")
         rs.setBackground(QBrush(QColor(bg_s))); rs.setForeground(QBrush(QColor(fg_s)))
         rs.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        rs.setToolTip(f"F={final_f}  C={sev}  ({change_tip})")
+        rs.setToolTip(f"F={final_f}  C={sev}  (−{total_steps} steg totalt)")
         self._table.setItem(r, self._C_SLUT, rs)
 
         self._table.setRowHeight(r, max(52, min(140, (len(sg_lines) + 2) * 18)))
@@ -2390,22 +2418,24 @@ class ScenarioTablePanel(QWidget):
                 self.db.update_consequence(id_, desc, cons['severity'], cons['category'] or '')
 
         elif kind in ('fa', 'ignition'):
-            # Checkbox state + editable RRF value
+            # Checkbox state + editable probability % value
             active = (item.checkState() == Qt.CheckState.Checked)
             try:
-                rrf = max(1, int(''.join(c for c in text if c.isdigit()) or '10'))
+                # Strip '%' and any spaces, accept both "10" and "10%"
+                val_str = text.replace('%', '').strip()
+                prob = float(val_str) if val_str else 10.0
+                prob = max(0.001, min(99.9, prob))
             except (ValueError, TypeError):
-                rrf = 10
+                prob = 10.0
             if kind == 'fa':
                 self.db.conn.execute(
                     "UPDATE consequences SET fa_active=?,fa_rrf=? WHERE id=?",
-                    (int(active), rrf, id_))
+                    (int(active), prob, id_))
             else:
                 self.db.conn.execute(
                     "UPDATE consequences SET ignition_active=?,ignition_rrf=? WHERE id=?",
-                    (int(active), rrf, id_))
+                    (int(active), prob, id_))
             self.db.conn.commit()
-            # Defer rebuild — do NOT call directly from cellChanged
             QTimer.singleShot(0, self._rebuild)
 
 
