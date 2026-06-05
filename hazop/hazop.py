@@ -4204,6 +4204,31 @@ class SettingsPanel(QWidget):
         self._rows_spin.valueChanged.connect(self._apply_size)
         self._cols_spin.valueChanged.connect(self._apply_size)
 
+        # Frequency label presets
+        preset_row = QHBoxLayout()
+        preset_row.addWidget(QLabel("Frekvens-mall:"))
+        norsok_btn = QPushButton("NORSOK Z-013  (AAA – E)")
+        norsok_btn.setToolTip(
+            "Fyll frekvensaxeln med NORSOK Z-013-etiketter:\n"
+            "AAA (< 10⁻⁵/år)  →  E (> 1/år)\n"
+            "Gränsvärden sätts automatiskt.")
+        norsok_btn.clicked.connect(lambda: self._apply_freq_preset(
+            ['AAA', 'AA', 'A', 'B', 'C', 'D', 'E'],
+            [1e-5, 1e-4, 1e-3, 1e-2, 0.1, 1.0]))
+        fscale_btn = QPushButton("F-skala  (F-1 – F5)")
+        fscale_btn.setToolTip(
+            "Fyll frekvensaxeln med internt F-skaleetiketter:\n"
+            "F-1 (Otänkbar)  →  F5 (Frekvent > 1/år)\n"
+            "Gränsvärden sätts automatiskt.")
+        fscale_btn.clicked.connect(lambda: self._apply_freq_preset(
+            ['F-1 – Otänkbar', 'F0 – Extremt sällan', 'F1 – Sällan',
+             'F2 – Osannolik', 'F3 – Möjlig', 'F4 – Trolig', 'F5 – Frekvent'],
+            [1e-5, 1e-4, 1e-3, 1e-2, 0.1, 1.0]))
+        preset_row.addWidget(norsok_btn)
+        preset_row.addWidget(fscale_btn)
+        preset_row.addStretch()
+        ml.addLayout(preset_row)
+
         save_matrix_btn = QPushButton("💾 Spara riskmatris")
         save_matrix_btn.setStyleSheet(
             "background:#1F4E79; color:#fff; font-weight:bold; padding:4px 12px;")
@@ -4723,6 +4748,42 @@ class SettingsPanel(QWidget):
         load_matrix(self.db)
         QMessageBox.information(self, "Sparat", "Riskmatris sparad.")
         self.matrix_changed.emit()
+
+    def _apply_freq_preset(self, labels: list, bounds: list):
+        """Populate frequency axis headers and boundary edits from a preset.
+
+        labels: ordered lowest-to-highest frequency (data order).
+        bounds: n-1 boundary values (events/year), data order lowest first.
+        Accounts for current axis orientation (freq_on_x/y) and direction (x_rev/y_rev).
+        """
+        freq_on_x = (self._axis_combo.currentData() or 'frequency') == 'frequency'
+        x_rev     = self._x_rev_chk.isChecked()
+        y_rev     = self._y_rev_chk.isChecked()
+        n         = len(labels)
+
+        if freq_on_x:
+            # _x_label_edits[i] = display column i → data index (n-1-i if x_rev else i)
+            for i, e in enumerate(self._x_label_edits):
+                data_idx = (n - 1 - i) if x_rev else i
+                if 0 <= data_idx < n:
+                    e.setText(labels[data_idx])
+            # _freq_boundary_edits: edit[i] maps to bval_idx (n-1-(i+1) if x_rev else i)
+            for i, e in enumerate(self._freq_boundary_edits):
+                bi = (n - 2 - i) if x_rev else i
+                if 0 <= bi < len(bounds):
+                    e.setText(f"{bounds[bi]:.4g}")
+        else:
+            # _y_label_edits[0] = top row
+            # y_rev=False: top=highest freq → data index n-1-i; y_rev=True: top=lowest → i
+            for i, e in enumerate(self._y_label_edits):
+                data_idx = i if y_rev else (n - 1 - i)
+                if 0 <= data_idx < n:
+                    e.setText(labels[data_idx])
+            # _freq_boundary_edits for y case: edit[i] → bval_idx (i if y_rev else n-2-i)
+            for i, e in enumerate(self._freq_boundary_edits):
+                bi = i if y_rev else (n - 2 - i)
+                if 0 <= bi < len(bounds):
+                    e.setText(f"{bounds[bi]:.4g}")
 
     def _load_categories(self):
         self._cat_list.clear()
