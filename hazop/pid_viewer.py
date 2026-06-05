@@ -899,10 +899,10 @@ def _pick_best_tag(text: str) -> str:
     text = text.strip().upper()
 
     for candidate in _tag_candidates(text):
-        # 1. Extended tag with area prefix (preserves full tag string)
+        # 1. Extended tag with area prefix — return as-is (preserve original separators)
         m = _EXT_TAG_RE.search(candidate)
         if m:
-            return _normalise_tag(m.group(1))
+            return m.group(1)
         # 2. Simple tag (letter code + number)
         matches = _FULL_TAG_RE.findall(candidate)
         if matches:
@@ -911,11 +911,6 @@ def _pick_best_tag(text: str) -> str:
         if tag:
             return tag
     return ''
-
-
-def _normalise_tag(tag: str) -> str:
-    """Normalise separator chars to dashes and uppercase."""
-    return re.sub(r'[./]', '-', tag.upper())
 
 
 def _tag_candidates(text: str) -> list:
