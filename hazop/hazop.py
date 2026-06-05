@@ -97,6 +97,20 @@ CREATE TABLE IF NOT EXISTS consequence_categories (
     sort_order INTEGER DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS component_types (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,
+    sort_order INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS failure_modes (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    component_id INTEGER NOT NULL REFERENCES component_types(id) ON DELETE CASCADE,
+    description  TEXT NOT NULL DEFAULT '',
+    freq_per_year REAL DEFAULT NULL,
+    sort_order   INTEGER DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS reduction_factors (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     consequence_id  INTEGER NOT NULL REFERENCES consequences(id) ON DELETE CASCADE,
@@ -313,6 +327,32 @@ _FREQ_LABELS = [
     'F5 – Frekvent',
 ]
 
+# Default frequency boundaries (events/year) between each F-column.
+# 6 boundaries for 7 columns (F=-1..F5).
+# freq < boundaries[0]       → F=-1
+# boundaries[i] <= freq < boundaries[i+1] → F=i
+# freq >= boundaries[5]      → F=5
+DEFAULT_FREQ_BOUNDARIES = [1e-5, 1e-4, 1e-3, 1e-2, 0.1, 1.0]
+
+
+def freq_to_f_level(freq_per_year, boundaries=None) -> int:
+    """Convert numeric frequency (events/year) to F-level (-1..5).
+
+    0.05/year → F=3  (10-100 year interval)
+    0.5/year  → F=4  (1-10 year interval)
+    """
+    if boundaries is None:
+        cfg = get_matrix()
+        boundaries = cfg.get('freq_boundaries', DEFAULT_FREQ_BOUNDARIES)
+    boundaries = sorted(float(b) for b in boundaries)
+    if not freq_per_year or freq_per_year <= 0:
+        return -1
+    for i, b in enumerate(boundaries):
+        if float(freq_per_year) < b:
+            return i - 1
+    return len(boundaries) - 1   # above all → F=5
+
+
 def freq_to_idx(f: int) -> int:
     """Frequency value (-1..5) → combo-box index (0..6)."""
     return max(0, min(int(f) + 1, 6))
@@ -420,6 +460,34 @@ class Database:
             for i, name in enumerate(['Person', 'Miljö', 'Ekonomi', 'Anläggning', 'Rykte']):
                 self.conn.execute(
                     "INSERT INTO consequence_categories (name, sort_order) VALUES (?,?)", (name, i))
+
+        # Seed component types from hardcoded COMPONENT_TYPES if table is empty
+        if not self.conn.execute("SELECT COUNT(*) FROM component_types").fetchone()[0]:
+            from pid_viewer import COMPONENT_TYPES as _CT
+            for sort_i, (comp_name, modes) in enumerate(_CT.items()):
+                cur = self.conn.execute(
+                    "INSERT INTO component_types (name, sort_order) VALUES (?,?)",
+                    (comp_name, sort_i))
+                comp_id = cur.lastrowid
+                for mode_i, mode in enumerate(modes):
+                    self.conn.execute(
+                        "INSERT INTO failure_modes (component_id, description, sort_order)"
+                        " VALUES (?,?,?)", (comp_id, mode, mode_i))
+
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS component_types (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL, sort_order INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS failure_modes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                component_id INTEGER NOT NULL REFERENCES component_types(id) ON DELETE CASCADE,
+                description TEXT NOT NULL DEFAULT '',
+                freq_per_year REAL DEFAULT NULL,
+                sort_order INTEGER DEFAULT 0
+            );
+        """)
+
         self.conn.commit()
 
     # ── Config ────────────────────────────────────────────────────────────────
@@ -525,6 +593,55 @@ class Database:
     def delete_category(self, id_):
         self.conn.execute("DELETE FROM consequence_categories WHERE id=?", (id_,))
         self.conn.commit()
+
+    # ── Component types & failure modes ───────────────────────────────────────
+    def component_types(self):
+        return self.conn.execute(
+            "SELECT * FROM component_types ORDER BY sort_order, name").fetchall()
+
+    def failure_modes(self, component_id):
+        return self.conn.execute(
+            "SELECT * FROM failure_modes WHERE component_id=? ORDER BY sort_order, id",
+            (component_id,)).fetchall()
+
+    def add_component_type(self, name):
+        cur = self.conn.execute(
+            "INSERT INTO component_types (name) VALUES (?)", (name,))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def update_component_type(self, id_, name):
+        self.conn.execute("UPDATE component_types SET name=? WHERE id=?", (name, id_))
+        self.conn.commit()
+
+    def delete_component_type(self, id_):
+        self.conn.execute("DELETE FROM component_types WHERE id=?", (id_,))
+        self.conn.commit()
+
+    def add_failure_mode(self, component_id, description, freq=None):
+        cur = self.conn.execute(
+            "INSERT INTO failure_modes (component_id, description, freq_per_year) VALUES (?,?,?)",
+            (component_id, description, freq))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def update_failure_mode(self, id_, description, freq=None):
+        self.conn.execute(
+            "UPDATE failure_modes SET description=?, freq_per_year=? WHERE id=?",
+            (description, freq, id_))
+        self.conn.commit()
+
+    def delete_failure_mode(self, id_):
+        self.conn.execute("DELETE FROM failure_modes WHERE id=?", (id_,))
+        self.conn.commit()
+
+    def all_component_types_dict(self):
+        """Return dict {type_name: [mode_description, ...]} for ComponentPickerDialog."""
+        result = {}
+        for ct in self.component_types():
+            modes = [fm['description'] for fm in self.failure_modes(ct['id'])]
+            result[ct['name']] = modes
+        return result
 
     # ── P&ID helpers ──────────────────────────────────────────────────────────
     def get_pid_path(self):
@@ -2757,6 +2874,209 @@ class RiskScenarioWizard(QDialog):
 # SETTINGS PANEL
 # ══════════════════════════════════════════════════════════════════════════════
 
+class ComponentEditorPanel(QWidget):
+    """Settings panel for managing component types and failure modes."""
+
+    def __init__(self, db: Database):
+        super().__init__()
+        self.db = db
+        self._cur_comp_id = None
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(8)
+
+        # ── Left: component type list ─────────────────────────────────────────
+        left = QVBoxLayout()
+        left.addWidget(QLabel("Komponenttyper:"))
+        self._comp_list = QListWidget()
+        self._comp_list.currentItemChanged.connect(self._on_comp_selected)
+        left.addWidget(self._comp_list)
+
+        comp_btns = QHBoxLayout()
+        btn_add_c  = QPushButton("+ Lägg till")
+        btn_ren_c  = QPushButton("✎ Byt namn")
+        btn_del_c  = QPushButton("✕ Ta bort")
+        btn_add_c.clicked.connect(self._comp_add)
+        btn_ren_c.clicked.connect(self._comp_rename)
+        btn_del_c.clicked.connect(self._comp_delete)
+        for b in [btn_add_c, btn_ren_c, btn_del_c]:
+            comp_btns.addWidget(b)
+        left.addLayout(comp_btns)
+        layout.addLayout(left, 1)
+
+        # ── Right: failure modes table ────────────────────────────────────────
+        right = QVBoxLayout()
+        right.addWidget(QLabel("Felmoder för vald komponent:"))
+
+        self._mode_table = QTableWidget(0, 3)
+        self._mode_table.setHorizontalHeaderLabels(
+            ['Beskrivning', 'Frekvens (/år)', 'F-nivå (auto)'])
+        h = self._mode_table.horizontalHeader()
+        h.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        h.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        h.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self._mode_table.setColumnWidth(1, 110)
+        self._mode_table.setColumnWidth(2, 90)
+        self._mode_table.verticalHeader().setVisible(False)
+        self._mode_table.setStyleSheet(
+            "QHeaderView::section{background:#1F4E79;color:#fff;"
+            "font-weight:bold;padding:3px;}")
+        self._mode_table.cellChanged.connect(self._on_mode_cell)
+        right.addWidget(self._mode_table)
+
+        mode_btns = QHBoxLayout()
+        btn_add_m = QPushButton("+ Lägg till felmod")
+        btn_del_m = QPushButton("✕ Ta bort vald")
+        btn_add_m.clicked.connect(self._mode_add)
+        btn_del_m.clicked.connect(self._mode_delete)
+        mode_btns.addWidget(btn_add_m)
+        mode_btns.addWidget(btn_del_m)
+        mode_btns.addStretch()
+        right.addLayout(mode_btns)
+
+        freq_note = QLabel(
+            "Frekvens i händelser/år.  Exempel: 0.05/år = en gång per 20 år → F=3 (10-100 år)\n"
+            "F-nivån beräknas automatiskt från frekvensgränserna i riskmatrisen.")
+        freq_note.setStyleSheet("color:#666; font-size:10px;")
+        right.addWidget(freq_note)
+
+        layout.addLayout(right, 2)
+        self._refresh_comp_list()
+
+    # ── Component list ────────────────────────────────────────────────────────
+
+    def _refresh_comp_list(self):
+        self._comp_list.blockSignals(True)
+        self._comp_list.clear()
+        for ct in self.db.component_types():
+            item = QListWidgetItem(ct['name'])
+            item.setData(Qt.ItemDataRole.UserRole, ct['id'])
+            self._comp_list.addItem(item)
+        self._comp_list.blockSignals(False)
+        if self._cur_comp_id:
+            for i in range(self._comp_list.count()):
+                if self._comp_list.item(i).data(Qt.ItemDataRole.UserRole) == self._cur_comp_id:
+                    self._comp_list.setCurrentRow(i)
+                    break
+
+    def _on_comp_selected(self, current, _prev):
+        if current:
+            self._cur_comp_id = current.data(Qt.ItemDataRole.UserRole)
+            self._refresh_mode_table()
+        else:
+            self._cur_comp_id = None
+            self._mode_table.setRowCount(0)
+
+    def _comp_add(self):
+        name, ok = QInputDialog.getText(self, "Ny komponenttyp", "Namn:")
+        if ok and name.strip():
+            self._cur_comp_id = self.db.add_component_type(name.strip())
+            self._refresh_comp_list()
+
+    def _comp_rename(self):
+        item = self._comp_list.currentItem()
+        if not item: return
+        name, ok = QInputDialog.getText(self, "Byt namn", "Nytt namn:", text=item.text())
+        if ok and name.strip():
+            self.db.update_component_type(item.data(Qt.ItemDataRole.UserRole), name.strip())
+            self._refresh_comp_list()
+
+    def _comp_delete(self):
+        item = self._comp_list.currentItem()
+        if not item: return
+        reply = QMessageBox.question(self, "Ta bort",
+            f"Ta bort '{item.text()}' och alla dess felmoder?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            self.db.delete_component_type(item.data(Qt.ItemDataRole.UserRole))
+            self._cur_comp_id = None
+            self._refresh_comp_list()
+            self._mode_table.setRowCount(0)
+
+    # ── Failure modes table ───────────────────────────────────────────────────
+
+    def _refresh_mode_table(self):
+        try:
+            self._mode_table.cellChanged.disconnect()
+        except Exception:
+            pass
+        self._mode_table.setRowCount(0)
+        if not self._cur_comp_id:
+            self._mode_table.cellChanged.connect(self._on_mode_cell)
+            return
+
+        for fm in self.db.failure_modes(self._cur_comp_id):
+            r = self._mode_table.rowCount()
+            self._mode_table.insertRow(r)
+
+            desc = QTableWidgetItem(fm['description'])
+            desc.setData(Qt.ItemDataRole.UserRole, fm['id'])
+            self._mode_table.setItem(r, 0, desc)
+
+            freq = fm['freq_per_year']
+            freq_item = QTableWidgetItem(
+                f"{freq:.4g}" if freq is not None else "")
+            freq_item.setToolTip("Händelser per år, t.ex. 0.05 (en gång per 20 år)")
+            self._mode_table.setItem(r, 1, freq_item)
+
+            f_level = freq_to_f_level(freq) if freq else None
+            f_item = QTableWidgetItem(
+                f"F={f_level}" if f_level is not None else "—")
+            f_item.setFlags(f_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            if f_level is not None:
+                label, bg, _ = risk_info(f_level, 3)
+                f_item.setBackground(QBrush(QColor(bg)))
+                f_item.setForeground(QBrush(QColor('#fff')))
+                f_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._mode_table.setItem(r, 2, f_item)
+            self._mode_table.setRowHeight(r, 26)
+
+        self._mode_table.cellChanged.connect(self._on_mode_cell)
+
+    def _mode_add(self):
+        if not self._cur_comp_id:
+            QMessageBox.information(self, "Välj komponent",
+                "Välj en komponenttyp i listan till vänster.")
+            return
+        self.db.add_failure_mode(self._cur_comp_id, "Ny felmod")
+        self._refresh_mode_table()
+
+    def _mode_delete(self):
+        rows = {idx.row() for idx in self._mode_table.selectedIndexes()}
+        if not rows: return
+        for r in sorted(rows, reverse=True):
+            item = self._mode_table.item(r, 0)
+            if item:
+                self.db.delete_failure_mode(item.data(Qt.ItemDataRole.UserRole))
+        self._refresh_mode_table()
+
+    def _on_mode_cell(self, row, col):
+        item0 = self._mode_table.item(row, 0)
+        if not item0: return
+        fm_id = item0.data(Qt.ItemDataRole.UserRole)
+        desc  = item0.text().strip() or 'Ny felmod'
+        freq_item = self._mode_table.item(row, 1)
+        freq = None
+        if freq_item:
+            try:
+                freq = float(freq_item.text().strip()) if freq_item.text().strip() else None
+            except ValueError:
+                freq = None
+        self.db.update_failure_mode(fm_id, desc, freq)
+        # Update F-level cell
+        f_level = freq_to_f_level(freq) if freq else None
+        f_item = self._mode_table.item(row, 2)
+        if f_item:
+            self._mode_table.blockSignals(True)
+            f_item.setText(f"F={f_level}" if f_level is not None else "—")
+            if f_level is not None:
+                _, bg, _ = risk_info(f_level, 3)
+                f_item.setBackground(QBrush(QColor(bg)))
+                f_item.setForeground(QBrush(QColor('#fff')))
+            self._mode_table.blockSignals(False)
+
+
 _PALETTE_MIME = 'application/x-hazop-palette-color'
 
 
@@ -2993,6 +3313,10 @@ class SettingsPanel(QWidget):
         pl.addRow("Revision:", self._proj_rev)
         tabs.addTab(proj_tab, "Projekt")
 
+        # ── Tab: Komponenter ──────────────────────────────────────────────────
+        self._comp_editor = ComponentEditorPanel(self.db)
+        tabs.addTab(self._comp_editor, "Komponenter")
+
         self._load_all()
 
     def _load_all(self):
@@ -3163,6 +3487,43 @@ class SettingsPanel(QWidget):
                 row_btns.append(btn)
             self._cell_buttons.append((display_r, row_btns))
 
+        # ── Frequency boundary row (below cells) ──────────────────────────────
+        # One editable boundary per column-gap: N columns → N-1 boundaries
+        # Boundary[i] = upper limit of column i (events/year)
+        boundaries = list(cfg.get('freq_boundaries', DEFAULT_FREQ_BOUNDARIES))
+        while len(boundaries) < cols - 1:
+            boundaries.append(10 ** (len(boundaries) - 5))   # pad if short
+
+        bnd_lbl = QLabel("Gräns\n(/år)")
+        bnd_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        bnd_lbl.setStyleSheet("font-size:8px; color:#555; padding:0 3px;")
+        self._matrix_grid.addWidget(bnd_lbl, rows + 1, 0)
+
+        self._freq_boundary_edits = []
+        for c in range(cols):
+            if c < cols - 1:
+                bval = boundaries[c] if c < len(boundaries) else ''
+                btext = f"{float(bval):.4g}" if bval != '' else ''
+                e = QLineEdit(btext)
+                e.setPlaceholderText("—")
+                e.setFixedSize(80, 22)
+                e.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                e.setStyleSheet(
+                    "font-size:9px; border:1px solid #aaa; background:#fffde7;"
+                    "border-radius:0px;")
+                e.setToolTip(
+                    f"Övre gräns (händelser/år) för kolumn {c} (F={c-1}).\n"
+                    f"Frekvenser under detta värde tillhör denna kolumn.\n"
+                    f"Exempel: 0.1 = en gång per 10 år")
+                self._matrix_grid.addWidget(e, rows + 1, c + 1)
+                self._freq_boundary_edits.append(e)
+            else:
+                # Last column has no upper boundary
+                inf_lbl = QLabel(">allt")
+                inf_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                inf_lbl.setStyleSheet("font-size:8px; color:#aaa;")
+                self._matrix_grid.addWidget(inf_lbl, rows + 1, c + 1)
+
     def _edit_cell(self, btn):
         """Click a cell → choose color AND label."""
         color = QColorDialog.getColor(QColor(btn.color()), self, "Välj färg för cell")
@@ -3206,6 +3567,19 @@ class SettingsPanel(QWidget):
             'cell_colors': colors,
             'cell_labels': labels,
         }
+        # Read frequency boundaries from editable row
+        freq_boundaries = []
+        for e in getattr(self, '_freq_boundary_edits', []):
+            try:
+                v = float(e.text().strip())
+                if v > 0:
+                    freq_boundaries.append(v)
+            except ValueError:
+                pass
+        if not freq_boundaries:
+            freq_boundaries = list(DEFAULT_FREQ_BOUNDARIES)
+        cfg['freq_boundaries'] = freq_boundaries
+
         cfg = _normalise_matrix(cfg)   # ensure consistent before saving
         self.db.set_risk_matrix(cfg)
         load_matrix(self.db)

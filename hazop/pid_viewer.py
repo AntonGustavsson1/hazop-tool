@@ -1092,13 +1092,14 @@ class EquipmentScanDialog(QDialog):
 
 
 class ComponentPickerDialog(QDialog):
-    def __init__(self, parent=None, suggested_tag=''):
+    def __init__(self, parent=None, suggested_tag='', component_types=None):
         super().__init__(parent)
         self.setWindowTitle("Välj komponent och felmod")
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(420)
         self.selected_type  = ''
         self.selected_modes = []
         self.selected_tag   = ''
+        self._comp_types = component_types or COMPONENT_TYPES
 
         layout = QVBoxLayout(self)
         form   = QFormLayout()
@@ -1108,7 +1109,7 @@ class ComponentPickerDialog(QDialog):
         form.addRow("Komponent-ID:", self.tag_edit)
 
         self.type_combo = QComboBox()
-        self.type_combo.addItems(list(COMPONENT_TYPES.keys()))
+        self.type_combo.addItems(list(self._comp_types.keys()))
         self.type_combo.currentTextChanged.connect(self._update_modes)
         form.addRow("Komponenttyp:", self.type_combo)
         layout.addLayout(form)
@@ -1130,7 +1131,7 @@ class ComponentPickerDialog(QDialog):
 
     def _update_modes(self, type_name):
         self.mode_list.clear()
-        for mode in COMPONENT_TYPES.get(type_name, []):
+        for mode in self._comp_types.get(type_name, []):
             self.mode_list.addItem(QListWidgetItem(mode))
 
     def _on_accept(self):
@@ -1855,7 +1856,10 @@ class PIDPanel(QWidget):
             pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
             suggested_tag = find_tag_near_point(self.viewer.pdf_doc, page, pdf_x, pdf_y)
 
-        dlg = ComponentPickerDialog(self, suggested_tag=suggested_tag)
+        comp_data = (self.db.all_component_types_dict()
+                     if hasattr(self.db, 'all_component_types_dict') else None)
+        dlg = ComponentPickerDialog(self, suggested_tag=suggested_tag,
+                                    component_types=comp_data)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
