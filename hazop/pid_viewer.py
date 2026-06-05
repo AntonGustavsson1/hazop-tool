@@ -11,10 +11,10 @@ from PyQt6.QtWidgets import (
     QLineEdit, QLabel, QPushButton, QDialogButtonBox,
     QGraphicsView, QGraphicsScene,
     QGraphicsPixmapItem, QGraphicsPathItem, QGraphicsEllipseItem,
-    QGraphicsSimpleTextItem, QFrame, QSpinBox,
+    QGraphicsSimpleTextItem, QFrame, QSpinBox, QCheckBox, QGroupBox,
     QSlider, QColorDialog, QFileDialog, QMessageBox, QInputDialog,
     QSizePolicy, QMenu, QTableWidget, QTableWidgetItem, QHeaderView,
-    QProgressDialog, QApplication,
+    QProgressDialog, QApplication, QGridLayout,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF
 from PyQt6.QtGui import (
@@ -244,6 +244,30 @@ CONSEQUENCE_TEMPLATES = [
     'Toxisk exponering vid {}',
     'Miljöutsläpp från {}',
 ]
+
+# ── Consequence chain (mirrors hazop.py — no circular import) ────────────────
+_PID_CHAIN_ITEMS = [
+    ('loc',           'LOC — Utsläpp / läcka',            'Intermediär händelse'),
+    ('fire',          'Brand',                             'Antändning / explosion'),
+    ('flash_fire',    'Flash fire',                        None),
+    ('explosion',     'Explosion (VCE / BLEVE)',           None),
+    ('toxic',         'Toxisk exponering',                 'Toxisk / miljö'),
+    ('environmental', 'Miljöutsläpp',                     None),
+    ('personnel',     'Personskador',                      'Personell / tillgång'),
+    ('fatality',      'Dödsfall',                          None),
+    ('equipment',     'Utrustningsskador',                 None),
+    ('production',    'Driftstopp',                        None),
+]
+
+
+def _pid_build_chain_text(base: str, chain: dict) -> str:
+    parts = [base.strip()] if base.strip() else []
+    for key, label, _ in _PID_CHAIN_ITEMS:
+        if chain.get(key):
+            short = label.split('(')[0].strip().split(' — ')[-1].strip()
+            parts.append(short)
+    return ' → '.join(parts)
+
 
 MODE_NAV         = 0
 MODE_NODE        = 1
@@ -1187,14 +1211,18 @@ class TargetPickerDialog(QDialog):
     def __init__(self, parent=None, suggested_tag=''):
         super().__init__(parent)
         self.setWindowTitle("Välj konsekvens")
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(480)
         self.template = ''
         self.target   = ''
+        self.selected_chain = {}   # {key: bool} for consequence chain
 
         layout = QVBoxLayout(self)
+
+        # ── Template list ─────────────────────────────────────────────────────
         layout.addWidget(QLabel("Konsekvensmall:"))
         self.template_list = QListWidget()
         self.template_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.template_list.setMaximumHeight(130)
         for tpl in CONSEQUENCE_TEMPLATES:
             self.template_list.addItem(QListWidgetItem(tpl))
         self.template_list.setCurrentRow(0)
@@ -1208,8 +1236,40 @@ class TargetPickerDialog(QDialog):
         form.addRow("Målobjekt:", self.target_edit)
         layout.addLayout(form)
 
+        # ── Consequence chain ─────────────────────────────────────────────────
+        chain_box = QGroupBox("Konsekvenskedja  (valfritt)")
+        chain_grid = QGridLayout(chain_box)
+        chain_grid.setSpacing(3)
+        self._chain_checks: dict = {}
+        row_idx, col_idx, last_group = 0, 0, None
+
+        for key, label, group in _PID_CHAIN_ITEMS:
+            if group and group != last_group:
+                if col_idx > 0:
+                    row_idx += 1; col_idx = 0
+                hdr = QLabel(group)
+                hdr.setStyleSheet(
+                    "color:#1F4E79; font-weight:bold; font-size:10px; margin-top:3px;")
+                chain_grid.addWidget(hdr, row_idx, 0, 1, 3)
+                row_idx += 1; col_idx = 0
+                last_group = group
+            chk = QCheckBox(label)
+            chk.stateChanged.connect(self._update_preview)
+            self._chain_checks[key] = chk
+            chain_grid.addWidget(chk, row_idx, col_idx)
+            col_idx += 1
+            if col_idx >= 3:
+                col_idx = 0; row_idx += 1
+
+        layout.addWidget(chain_box)
+
+        # ── Full preview ──────────────────────────────────────────────────────
+        layout.addWidget(QLabel("Fullständig text:"))
         self.preview = QLabel()
-        self.preview.setStyleSheet("color:#1F4E79; font-weight:bold; padding:4px;")
+        self.preview.setWordWrap(True)
+        self.preview.setStyleSheet(
+            "color:#1F4E79; font-weight:bold; padding:4px;"
+            "background:#eef4fb; border:1px solid #bee3f8; border-radius:3px;")
         layout.addWidget(self.preview)
 
         buttons = QDialogButtonBox(
@@ -1228,18 +1288,24 @@ class TargetPickerDialog(QDialog):
         item = self.template_list.currentItem()
         return item.text() if item else (CONSEQUENCE_TEMPLATES[0] if CONSEQUENCE_TEMPLATES else '{}')
 
-    def _update_preview(self, *_):
+    def _base_text(self):
         tpl  = self._current_template()
         name = self.target_edit.text().strip() or '[okänt objekt]'
         try:
-            self.preview.setText('→ ' + tpl.format(name))
+            return tpl.format(name)
         except Exception:
-            self.preview.setText('→ ' + tpl.replace('{}', name))
+            return tpl.replace('{}', name)
+
+    def _update_preview(self, *_):
+        chain = {k: chk.isChecked() for k, chk in self._chain_checks.items()}
+        full  = _pid_build_chain_text(self._base_text(), chain)
+        self.preview.setText(full or self._base_text())
 
     def _on_accept(self):
         self.template = self._current_template()
         self.target   = self.target_edit.text().strip()
-        self.accept()
+        self.selected_chain = {k: chk.isChecked()
+                               for k, chk in self._chain_checks.items()}
 
 
 class SafeguardPickerDialog(QDialog):
@@ -2064,13 +2130,25 @@ class PIDPanel(QWidget):
 
         template    = dlg.template
         target      = dlg.target
-        description = template.format(target) if target else template.replace('{}', '[okänt objekt]')
+        chain       = dlg.selected_chain   # {key: bool}
+        base_desc   = template.format(target) if target else template.replace('{}', '[okänt objekt]')
+        # Build full description including chain
+        full_desc   = _pid_build_chain_text(base_desc, chain) or base_desc
 
         pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
         cons_id = self.db.add_consequence(self._active_cause_id)
-        self.db.update_consequence(cons_id, description, 1)
+
+        # Save description + chain JSON (update_consequence accepts chain as 5th arg)
+        import json as _json
+        chain_json = _json.dumps(chain) if chain else ''
+        try:
+            self.db.update_consequence(cons_id, full_desc, 1, '', chain_json)
+        except TypeError:
+            # Fallback if DB method doesn't support chain yet
+            self.db.update_consequence(cons_id, full_desc, 1)
+
         self.db.add_consequence_marker(cons_id, page, pdf_x, pdf_y, target)
-        self.viewer.add_consequence_marker(cons_id, pdf_x, pdf_y, description)
+        self.viewer.add_consequence_marker(cons_id, pdf_x, pdf_y, full_desc)
         self.consequence_created.emit(cons_id)
 
     def _on_safeguard_click(self, scene_pos, page):
