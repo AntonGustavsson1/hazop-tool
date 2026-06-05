@@ -268,22 +268,17 @@ def get_matrix():
 def risk_info(frequency, consequence):
     """Return (label, bg_color, fg_color) from matrix lookup.
 
-    frequency  : integer -1..5  (stored in causes.likelihood)
-    consequence: integer  1..5  (stored in consequences.severity)
-    No S×L — direct matrix cell lookup only.
+    Data is always stored as cell_colors[cons_idx][freq_idx].
+    x_axis only controls display orientation — not data access.
     """
-    cfg  = get_matrix()
-    rows = cfg.get('rows', 5)
-    cols = cfg.get('cols', 7)
-    c_idx = max(0, min(int(consequence) - 1, rows - 1))
-    f_idx = max(0, min(int(frequency) + 1, cols - 1))   # F=-1 → col 0
-    if cfg.get('x_axis', 'frequency') == 'frequency':
-        row_idx, col_idx = c_idx, f_idx
-    else:
-        row_idx, col_idx = f_idx, c_idx
+    cfg   = get_matrix()
+    rows  = cfg.get('rows', 5)   # consequence levels
+    cols  = cfg.get('cols', 7)   # frequency levels
+    c_idx = max(0, min(int(consequence) - 1, rows - 1))   # C=1 → 0
+    f_idx = max(0, min(int(frequency)  + 1, cols - 1))   # F=-1 → 0
     try:
-        color = cfg['cell_colors'][row_idx][col_idx]
-        label = cfg['cell_labels'][row_idx][col_idx]
+        color = cfg['cell_colors'][c_idx][f_idx]   # always [cons][freq]
+        label = cfg['cell_labels'][c_idx][f_idx]
         if not color:
             color = '#27ae60'
         if not label:
