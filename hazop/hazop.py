@@ -4537,9 +4537,19 @@ class SettingsPanel(QWidget):
             bnd_lbl.setStyleSheet("font-size:8px; color:#555; padding:0 3px;")
             self._matrix_grid.addWidget(bnd_lbl, n_drows + 1, 0)
 
+            # When x_rev, the highest-freq column is at c=0 (leftmost) — ">allt" moves there
+            # and the boundary values follow the reversed column order.
+            highest_col = 0 if x_rev else n_dcols - 1
             for c in range(n_dcols):
-                if c < n_dcols - 1:
-                    bval  = boundaries[c] if c < len(boundaries) else ''
+                if c == highest_col:
+                    lbl = QLabel(">allt")
+                    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    lbl.setStyleSheet("font-size:8px; color:#aaa;")
+                    self._matrix_grid.addWidget(lbl, n_drows + 1, c + 1)
+                else:
+                    # Map display col → data freq index to pick the correct boundary
+                    bval_idx = (n_dcols - 1 - c) if x_rev else c
+                    bval  = boundaries[bval_idx] if bval_idx < len(boundaries) else ''
                     btext = f"{float(bval):.4g}" if bval != '' else ''
                     e = QLineEdit(btext)
                     e.setPlaceholderText("—")
@@ -4557,11 +4567,6 @@ class SettingsPanel(QWidget):
                     # Connect boundary edit → auto-update adjacent axis labels
                     e.editingFinished.connect(
                         lambda _e=e, _c=c: self._sync_freq_label_from_boundary(_e, _c))
-                else:
-                    lbl = QLabel(">allt")
-                    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                    lbl.setStyleSheet("font-size:8px; color:#aaa;")
-                    self._matrix_grid.addWidget(lbl, n_drows + 1, c + 1)
         else:
             # When frequency on Y: add interval boundary column on the right
             bnd_lbl = QLabel("Gräns\n(/år)")
@@ -4572,10 +4577,17 @@ class SettingsPanel(QWidget):
             while len(boundaries) < n_freq - 1:
                 boundaries.append(10 ** (len(boundaries) - 5))
 
+            # Last row always gets ">allt" (the extreme bucket with no further boundary).
+            # bval_idx depends on y_rev: y_rev=False → high-at-top, reversed boundary order.
             for r in range(n_drows):
-                disp_r = n_drows - 1 - r
-                if disp_r > 0:   # lowest row has no lower boundary
-                    bval  = boundaries[disp_r - 1] if disp_r - 1 < len(boundaries) else ''
+                if r == n_drows - 1:
+                    lbl = QLabel(">allt")
+                    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    lbl.setStyleSheet("font-size:8px; color:#aaa;")
+                    self._matrix_grid.addWidget(lbl, r + 1, n_dcols + 1)
+                else:
+                    bval_idx = r if y_rev else (n_drows - 2 - r)
+                    bval  = boundaries[bval_idx] if bval_idx < len(boundaries) else ''
                     btext = f"{float(bval):.4g}" if bval != '' else ''
                     e = QLineEdit(btext)
                     e.setPlaceholderText("—")
@@ -4586,11 +4598,6 @@ class SettingsPanel(QWidget):
                         "border-radius:0px;")
                     self._matrix_grid.addWidget(e, r + 1, n_dcols + 1)
                     self._freq_boundary_edits.append(e)
-                else:
-                    lbl = QLabel(">allt")
-                    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                    lbl.setStyleSheet("font-size:8px; color:#aaa;")
-                    self._matrix_grid.addWidget(lbl, r + 1, n_dcols + 1)
 
     def _sync_freq_label_from_boundary(self, boundary_edit, col_idx: int):
         """Auto-update the frequency axis label(s) adjacent to the changed boundary."""
@@ -4690,7 +4697,7 @@ class SettingsPanel(QWidget):
             'cell_colors': colors,
             'cell_labels': labels,
         }
-        # Read frequency boundaries from editable row
+        # Read frequency boundaries from editable row/column (display order)
         freq_boundaries = []
         for e in getattr(self, '_freq_boundary_edits', []):
             try:
@@ -4701,6 +4708,14 @@ class SettingsPanel(QWidget):
                 pass
         if not freq_boundaries:
             freq_boundaries = list(DEFAULT_FREQ_BOUNDARIES)
+        # Boundary edits were laid out in display order; convert back to data order
+        # (lowest freq level first) by reversing when the display was reversed:
+        #   freq_on_x + x_rev: highest-freq col is leftmost → edits stored high-to-low
+        #   freq_on_y + NOT y_rev: highest-freq row is topmost → edits stored high-to-low
+        _is_reversed_display = (freq_on_x and self._x_rev_chk.isChecked()) or \
+                               (not freq_on_x and not self._y_rev_chk.isChecked())
+        if _is_reversed_display:
+            freq_boundaries = list(reversed(freq_boundaries))
         cfg['freq_boundaries'] = freq_boundaries
 
         cfg = _normalise_matrix(cfg)   # ensure consistent before saving
