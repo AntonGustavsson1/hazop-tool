@@ -447,6 +447,327 @@ KNOWN_PREFIXES = {
 }
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# P&ID SYMBOL DATABASE — ISA 5.1 / ISO 10628
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Each entry: (display_name, component_type_key, shape_classifier_fn)
+# shape_classifier_fn receives a feature dict and returns True if this
+# symbol type matches.  Features:
+#   circles, large_circles, small_circles, lines, curves, rectangles,
+#   triangles, total_paths, area_px2, aspect_ratio, filled_paths
+#
+# ISA 5.1 symbol shapes (simplified for robust detection):
+#   Pump          — circle + internal arc/curve (impeller) = curves >= 4
+#   Compressor    — circle OR diamond; similar to pump but larger
+#   Valve (gate)  — 2 triangles tip-to-tip (hourglass) — triangles >= 2
+#   Valve (globe) — circle + lines through centre
+#   Valve (ball)  — circle with line (tag prefix V/BV)
+#   Control valve — valve shape + circle on top = circles >= 2 AND triangles >= 2
+#   Safety valve  — valve + spring/zigzag = triangles >= 2 AND curves >= 1
+#   Check valve   — single triangle = triangles == 1
+#   Instrument    — single circle, small size
+#   Transmitter   — circle, medium size
+#   Tank/vessel   — tall/wide rectangle OR circle (pressure vessel)
+#   Heat exch.    — rectangle with internal parallel lines
+#   Filter        — rectangle with cross-hatching or diamond
+#   Agitator      — circle with propeller curves
+
+_SYMBOL_DB = [
+    # ── Pumpar ────────────────────────────────────────────────────────────────
+    {
+        'name': 'Centrifugalpump',
+        'comp': 'Pump',
+        'desc': 'Cirkel med impeller-båge — vanligaste pumpsymbolen (ISA 5.1)',
+        'prefixes': ('P', 'PP', 'CP'),
+        'check': lambda f: f['circles'] >= 1 and f['curves'] >= 4,
+    },
+    {
+        'name': 'Positivpump / kolvpump',
+        'comp': 'Pump',
+        'desc': 'Cirkel med intern linjär rörelse (kolvpump, kugghjulspump)',
+        'prefixes': ('P', 'DP', 'SP', 'VP'),
+        'check': lambda f: f['circles'] >= 1 and f['lines'] >= 4 and f['curves'] < 4,
+    },
+    # ── Kompressorer ──────────────────────────────────────────────────────────
+    {
+        'name': 'Kompressor / blåsmaskin',
+        'comp': 'Kompressor',
+        'desc': 'Cirkel (liknar pump) eller romb; ofta större än pump',
+        'prefixes': ('C', 'K', 'BL', 'COM'),
+        'check': lambda f: (f['circles'] >= 1 and f['curves'] >= 4 and f['area'] > 600)
+                           or (f['triangles'] >= 4),
+    },
+    # ── Ventiler — gate/globb/spjäll ─────────────────────────────────────────
+    {
+        'name': 'Ventil (spindel- / globventil)',
+        'comp': 'Ventil',
+        'desc': 'Två trianglar spets mot spets (timglas) — ISA 5.1 standardsymbol för ventil',
+        'prefixes': ('V', 'HV', 'SV', 'MOV', 'ROV'),
+        'check': lambda f: f['triangles'] >= 2 and f['circles'] == 0,
+    },
+    {
+        'name': 'Regulerventil / kontrollventil',
+        'comp': 'Ventil',
+        'desc': 'Ventilsymbol + cirkel ovanpå (ställdon) — ISA 5.1',
+        'prefixes': ('FCV', 'PCV', 'LCV', 'TCV', 'AV'),
+        'check': lambda f: f['triangles'] >= 2 and f['circles'] >= 1,
+    },
+    {
+        'name': 'Säkerhetsventil (PSV/PRV)',
+        'comp': 'Säkerhetsventil (PSV)',
+        'desc': 'Ventilsymbol + fjäder/vinkel (böjd linje) — ISA 5.1',
+        'prefixes': ('PSV', 'PRV', 'SRV', 'RV', 'TSV'),
+        'check': lambda f: f['triangles'] >= 2 and f['curves'] >= 1,
+    },
+    {
+        'name': 'Backventil (NRV/CV)',
+        'comp': 'Ventil',
+        'desc': 'En triangel = backventil (flöde tillåts åt ett håll)',
+        'prefixes': ('NRV', 'CV', 'BV'),
+        'check': lambda f: f['triangles'] == 1 and f['circles'] == 0,
+    },
+    {
+        'name': 'Kulventil / nålventil',
+        'comp': 'Ventil',
+        'desc': 'Cirkel med linje genom mitten — ISA 5.1 kulventil',
+        'prefixes': ('BV', 'IV', 'ON'),
+        'check': lambda f: f['circles'] == 1 and f['lines'] >= 2 and f['triangles'] == 0,
+    },
+    {
+        'name': 'Fjärilsventil / spjäll',
+        'comp': 'Ventil',
+        'desc': 'Ellips med linje — ISA 5.1 fjärilsventil',
+        'prefixes': ('BDV', 'SDV', 'ESDV', 'XV', 'ESV'),
+        'check': lambda f: f['circles'] >= 1 and f['lines'] == 1 and f['triangles'] == 0,
+    },
+    {
+        'name': 'Sprängskiva (Rupture Disk)',
+        'comp': 'Säkerhetsventil (PSV)',
+        'desc': 'Kort bågform utan triangel — ISA 5.1 RD-symbol',
+        'prefixes': ('RD',),
+        'check': lambda f: f['curves'] >= 1 and f['triangles'] == 0 and f['circles'] == 0
+                           and f['lines'] <= 2,
+    },
+    # ── Instrument / givare ───────────────────────────────────────────────────
+    {
+        'name': 'Fältinstrument / lokal givare',
+        'comp': 'Instrument / Sensor',
+        'desc': 'Enkel cirkel utan extra element — ISA 5.1 lokalt instrument',
+        'prefixes': ('PI', 'TI', 'FI', 'LI', 'AI', 'PDI'),
+        'check': lambda f: f['circles'] == 1 and f['rectangles'] == 0
+                           and f['triangles'] == 0 and f['area'] < 500,
+    },
+    {
+        'name': 'Transmitter / fältgivare',
+        'comp': 'Instrument / Sensor',
+        'desc': 'Cirkel (medelstor) — ISA 5.1 transmitter (PT, FT, LT, TT…)',
+        'prefixes': ('PT', 'FT', 'LT', 'TT', 'AT', 'PIT', 'FIT', 'LIT', 'TIT'),
+        'check': lambda f: f['circles'] == 1 and f['rectangles'] == 0
+                           and f['triangles'] == 0 and 200 < f['area'] < 2000,
+    },
+    {
+        'name': 'DCS / datoriserad funktion',
+        'comp': 'Instrument / Sensor',
+        'desc': 'Kvadrat/rektangel — ISA 5.1 shared-display eller beräknad funktion',
+        'prefixes': ('FIC', 'PIC', 'LIC', 'TIC', 'AIC'),
+        'check': lambda f: f['rectangles'] >= 1 and f['circles'] == 0,
+    },
+    {
+        'name': 'Differenstryckmätare',
+        'comp': 'Instrument / Sensor',
+        'desc': 'Cirkel + extra linjer — ISA 5.1 differenstryckgivare',
+        'prefixes': ('PDI', 'PDT', 'PDIT'),
+        'check': lambda f: f['circles'] == 1 and f['lines'] >= 2,
+    },
+    # ── Tankar och kärl ───────────────────────────────────────────────────────
+    {
+        'name': 'Tryckkärl / separator',
+        'comp': 'Tank / Kärl',
+        'desc': 'Vertikal oval eller cylinder — ISO 10628 tryckkärl',
+        'prefixes': ('V', 'D', 'SEP', 'S', 'KO'),
+        'check': lambda f: f['circles'] >= 1 and f['area'] > 2000,
+    },
+    {
+        'name': 'Öppen tank / behållare',
+        'comp': 'Tank / Kärl',
+        'desc': 'Rektangel med öppen topp — öppen tank/silo',
+        'prefixes': ('T', 'TK'),
+        'check': lambda f: f['rectangles'] >= 1 and f['area'] > 1500 and f['lines'] >= 3,
+    },
+    {
+        'name': 'Kolonn / torn',
+        'comp': 'Tank / Kärl',
+        'desc': 'Hög smal cylinder/rektangel — destillations-/absorptionskolonn',
+        'prefixes': ('COL', 'R'),
+        'check': lambda f: f['rectangles'] >= 1 and f['aspect'] < 0.5 and f['area'] > 2000,
+    },
+    # ── Värmeväxlare ──────────────────────────────────────────────────────────
+    {
+        'name': 'Värmeväxlare (shell & tube)',
+        'comp': 'Värmeväxlare',
+        'desc': 'Rektangel med inre horisontella linjer — ISO 10628',
+        'prefixes': ('E', 'HE', 'HX'),
+        'check': lambda f: f['rectangles'] >= 1 and f['lines'] >= 4,
+    },
+    {
+        'name': 'Luftkylare (fin-fan)',
+        'comp': 'Värmeväxlare',
+        'desc': 'Rektangel med fläktsymbol (triangel) — ISO 10628',
+        'prefixes': ('AHE', 'ACC'),
+        'check': lambda f: f['rectangles'] >= 1 and f['triangles'] >= 1,
+    },
+    {
+        'name': 'Kondensor / reboiler',
+        'comp': 'Värmeväxlare',
+        'desc': 'Rektangel med våglinjer eller böjda linjer',
+        'prefixes': ('CD', 'REB'),
+        'check': lambda f: f['rectangles'] >= 1 and f['curves'] >= 2,
+    },
+    # ── Filter / avskiljare ───────────────────────────────────────────────────
+    {
+        'name': 'Filter / sil (Y-strainer)',
+        'comp': 'Övrigt',
+        'desc': 'Romb/hexagon med inre linjer — filter/sil-symbol',
+        'prefixes': ('F', 'FL', 'STR', 'Y'),
+        'check': lambda f: f['triangles'] >= 3 or (f['lines'] >= 4 and f['circles'] == 0
+                                                     and f['rectangles'] == 0),
+    },
+    # ── Omrörare / agitator ───────────────────────────────────────────────────
+    {
+        'name': 'Omrörare / agitator',
+        'comp': 'Övrigt',
+        'desc': 'Cirkel med propeller-kurvor — ISO 10628 agitator',
+        'prefixes': ('AG', 'MX'),
+        'check': lambda f: f['circles'] >= 1 and f['curves'] >= 6,
+    },
+]
+
+# Prefix → component type (for tag-based override)
+_PREFIX_TO_COMP = {}
+for _e in _SYMBOL_DB:
+    for _pfx in _e.get('prefixes', ()):
+        _PREFIX_TO_COMP[_pfx] = _e['comp']
+
+
+def _extract_shape_features(drawings: list, clip_area: float) -> dict:
+    """Compute shape features from PyMuPDF page.get_drawings() output."""
+    circles     = 0
+    lines       = 0
+    curves      = 0
+    rectangles  = 0
+    triangles   = 0
+    filled      = 0
+    total_area  = 0.0
+
+    for d in drawings:
+        items   = d.get('items', [])
+        drect   = d.get('rect')
+        is_fill = bool(d.get('fill'))
+
+        if is_fill:
+            filled += 1
+
+        if drect:
+            w, h = drect[2] - drect[0], drect[3] - drect[1]
+            total_area += w * h
+
+        # Count item types
+        n_lines = sum(1 for it in items if it[0] == 'l')
+        n_curves = sum(1 for it in items if it[0] in ('c', 'qu'))
+        n_rects = sum(1 for it in items if it[0] == 're')
+
+        lines     += n_lines
+        curves    += n_curves
+        rectangles += n_rects
+
+        # Circle heuristic: 3+ curves + square-ish bounding box
+        if drect and n_curves >= 3:
+            w, h = drect[2] - drect[0], drect[3] - drect[1]
+            if w > 0 and h > 0 and abs(w - h) / max(w, h) < 0.3:
+                circles += 1
+
+        # Triangle heuristic: exactly 3 lines closed
+        if n_lines == 3 and n_curves == 0 and n_rects == 0:
+            triangles += 1
+
+    # Aspect ratio of entire clip
+    from math import sqrt
+    side = sqrt(max(clip_area, 1.0))
+    aspect = 1.0  # can't reliably compute without clip rect here
+
+    return {
+        'circles':     circles,
+        'lines':       lines,
+        'curves':      curves,
+        'rectangles':  rectangles,
+        'triangles':   triangles,
+        'filled':      filled,
+        'total_paths': len(drawings),
+        'area':        total_area,
+        'aspect':      aspect,
+    }
+
+
+def classify_pid_symbol(page, fitz_rect, tag: str = '') -> tuple:
+    """Classify the P&ID symbol inside fitz_rect.
+
+    Returns (comp_type: str, symbol_name: str, confidence: str)
+    e.g.  ('Ventil', 'Regulerventil / kontrollventil', 'high')
+    """
+    # 1. Tag-prefix override (most reliable)
+    if tag:
+        prefix = re.match(r'^([A-Z]+)', tag.upper())
+        if prefix:
+            pfx = prefix.group(1)
+            # Direct KNOWN_PREFIXES lookup
+            if pfx in KNOWN_PREFIXES:
+                comp = KNOWN_PREFIXES[pfx][1]
+                name = KNOWN_PREFIXES[pfx][0]
+                return comp, name, 'high'
+            if pfx in _PREFIX_TO_COMP:
+                comp = _PREFIX_TO_COMP[pfx]
+                return comp, pfx, 'medium'
+
+    # 2. Vector shape analysis
+    if not HAS_PYMUPDF:
+        return '', '', 'none'
+    try:
+        drawings = page.get_drawings(clip=fitz_rect)
+    except Exception:
+        return '', '', 'none'
+
+    if not drawings:
+        return '', '', 'none'
+
+    clip_area = (fitz_rect.width * fitz_rect.height)
+    feats = _extract_shape_features(drawings, clip_area)
+
+    # Score each symbol rule
+    best_name  = ''
+    best_comp  = ''
+    best_score = 0
+
+    for entry in _SYMBOL_DB:
+        try:
+            if entry['check'](feats):
+                # Simple scoring: prefer entries whose prefixes match tag
+                score = 1
+                if tag:
+                    pfx = re.match(r'^([A-Z]+)', tag.upper())
+                    if pfx and pfx.group(1) in entry.get('prefixes', ()):
+                        score = 3
+                if score > best_score:
+                    best_score = score
+                    best_name  = entry['name']
+                    best_comp  = entry['comp']
+        except Exception:
+            continue
+
+    confidence = 'medium' if best_score >= 3 else ('low' if best_comp else 'none')
+    return best_comp, best_name, confidence
+
+
 def _pick_best_tag(text: str) -> str:
     """Return the best equipment-tag match from arbitrary text, or ''."""
     if not text:
@@ -1208,19 +1529,27 @@ class EquipmentScanDialog(QDialog):
 
 class ComponentPickerDialog(QDialog):
     def __init__(self, parent=None, suggested_tag='',
-                 component_types=None, mode_freqs=None):
+                 component_types=None, mode_freqs=None, preselect_type=''):
         super().__init__(parent)
         self.setWindowTitle("Välj komponent och felmod")
-        self.setMinimumWidth(440)
+        self.setMinimumWidth(460)
         self.selected_type   = ''
         self.selected_modes  = []
         self.selected_tag    = ''
-        self.selected_freqs  = {}   # {mode_desc: freq_per_year or None}
+        self.selected_freqs  = {}
         self._comp_types     = component_types or COMPONENT_TYPES
-        # mode_freqs = {comp_type: {mode_desc: freq_per_year}}
         self._mode_freqs     = mode_freqs or {}
+        self._preselect_type = preselect_type  # auto-detected symbol type
 
         layout = QVBoxLayout(self)
+
+        # Show detected symbol type as a hint (if available)
+        if preselect_type:
+            hint = QLabel(f"🔍 Identifierad symboltyp: {preselect_type}")
+            hint.setStyleSheet(
+                "background:#e8f4fd; border:1px solid #bee3f8; border-radius:3px;"
+                "padding:4px 8px; color:#1F4E79; font-weight:bold; font-size:11px;")
+            layout.addWidget(hint)
         form   = QFormLayout()
 
         self.tag_edit = QLineEdit(suggested_tag)
@@ -1231,6 +1560,11 @@ class ComponentPickerDialog(QDialog):
         self.type_combo.addItems(list(self._comp_types.keys()))
         self.type_combo.currentTextChanged.connect(self._update_modes)
         form.addRow("Komponenttyp:", self.type_combo)
+        # Pre-select detected type from symbol classifier
+        if self._preselect_type:
+            idx = self.type_combo.findText(self._preselect_type)
+            if idx >= 0:
+                self.type_combo.setCurrentIndex(idx)
         layout.addLayout(form)
 
         layout.addWidget(QLabel("Felmod(er) — flerval möjligt:"))
@@ -1724,9 +2058,11 @@ class PIDGraphicsView(QGraphicsView):
         self.setOptimizationFlag(
             QGraphicsView.OptimizationFlag.DontSavePainterState, True)
 
-        self._press_pos  = None  # NAV mode: click vs drag detection
-        self._rect_start = None  # rect-select mode: start scene point
-        self._rect_item  = None  # temporary rubber-band QGraphicsRectItem
+        self._press_pos         = None  # NAV mode: click vs drag detection
+        self._rect_start        = None  # rect-select mode: start scene point
+        self._rect_item         = None  # temporary rubber-band QGraphicsRectItem
+        self._detected_comp_type = ''   # set by _extract_tag_from_rect after rect draw
+        self._detected_sym_name  = ''   # human-readable detected symbol name
 
         self.mode             = MODE_NAV
         self.pdf_doc          = None
@@ -2064,14 +2400,14 @@ class PIDGraphicsView(QGraphicsView):
             txt.setZValue(Z_OVERLAY + 1)
             self._scene.addItem(txt)
 
-    def _extract_tag_from_rect(self, pdf_rect: QRectF) -> str:
-        """Extract the most relevant tag text from a PDF rectangle.
+    def _extract_tag_from_rect(self, pdf_rect: QRectF) -> tuple:
+        """Extract tag text AND classify the P&ID symbol inside the rectangle.
 
-        Tries native text first; falls back to OCR if nothing found.
-        Returns the best tag string (e.g. 'V-101', 'PSV-201A') or ''.
+        Returns (tag: str, comp_type: str, symbol_name: str)
+        e.g. ('PSV-101', 'Säkerhetsventil (PSV)', 'Säkerhetsventil (PSV/PRV)')
         """
         if not HAS_PYMUPDF or self.pdf_doc is None:
-            return ''
+            return '', '', ''
         try:
             page  = self.pdf_doc.load_page(self.current_page)
             frect = fitz.Rect(pdf_rect.x(), pdf_rect.y(),
@@ -2081,31 +2417,21 @@ class PIDGraphicsView(QGraphicsView):
             # ── 1. Native text extraction ─────────────────────────────────────
             words = page.get_text("words", clip=frect)
             native_text = ' '.join(w[4].strip() for w in words if w[4].strip())
+            tag = _pick_best_tag(native_text) or native_text.strip()
 
-            # Look for tag patterns in native text
-            tag = _pick_best_tag(native_text)
-            if tag:
-                return tag
-
-            # If no native text at all, try simple all-words join
-            if native_text.strip():
-                return native_text.strip()
-
-            # ── 2. OCR fallback on the cropped region ─────────────────────────
-            if HAS_PIL:
-                # Adaptive OCR scale: smaller selection → higher scale for better accuracy
-                # Target at least 200px on the shortest dimension
-                min_dim = max(pdf_rect.width(), pdf_rect.height(), 10.0)
-                scale   = max(4.0, min(16.0, 300.0 / min_dim))
-                mat   = fitz.Matrix(scale, scale)
-                pix   = page.get_pixmap(matrix=mat, clip=frect, alpha=False)
-                pil   = _PILImage.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                pil   = _preprocess_for_ocr(pil)
-
+            # ── 2. OCR fallback ───────────────────────────────────────────────
+            if not tag and HAS_PIL:
+                min_dim  = max(pdf_rect.width(), pdf_rect.height(), 10.0)
+                scale    = max(4.0, min(16.0, 300.0 / min_dim))
+                mat      = fitz.Matrix(scale, scale)
+                pix      = page.get_pixmap(matrix=mat, clip=frect, alpha=False)
+                pil      = _PILImage.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                pil      = _preprocess_for_ocr(pil)
                 ocr_text = ''
                 if HAS_TESSERACT:
                     try:
-                        cfg = '--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.'
+                        cfg = ('--oem 3 --psm 7 '
+                               '-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.')
                         ocr_text = pytesseract.image_to_string(pil, config=cfg).strip()
                     except Exception:
                         pass
@@ -2118,16 +2444,16 @@ class PIDGraphicsView(QGraphicsView):
                             ocr_text = ' '.join(r[1] for r in results if r[2] > 0.3)
                     except Exception:
                         pass
+                tag = _pick_best_tag(ocr_text) or ocr_text.strip()
 
-                tag = _pick_best_tag(ocr_text)
-                if tag:
-                    return tag
-                if ocr_text.strip():
-                    return ocr_text.strip()
+            # ── 3. Symbol shape classification ───────────────────────────────
+            comp_type, sym_name, _conf = classify_pid_symbol(page, frect, tag)
+
+            return tag, comp_type, sym_name
 
         except Exception:
             pass
-        return ''
+        return '', '', ''
 
     def add_connection_line(self, start: QPointF, end: QPointF, color: str, dashed=False):
         pen = QPen(QColor(color), 1.5)
@@ -2214,8 +2540,11 @@ class PIDGraphicsView(QGraphicsView):
             pdf_rect = QRectF(rect.x() / rs, rect.y() / rs,
                                rect.width() / rs, rect.height() / rs)
 
-            # Extract tag text from the selected rectangle
-            suggested = self._extract_tag_from_rect(pdf_rect)
+            # Extract tag text + classify symbol from the selected rectangle
+            suggested, comp_type, sym_name = self._extract_tag_from_rect(pdf_rect)
+            # Store detected type so PIDPanel can pre-select in the dialog
+            self._detected_comp_type = comp_type
+            self._detected_sym_name  = sym_name
 
             center = rect.center()
             if self.mode == MODE_CAUSE:
@@ -2575,9 +2904,13 @@ class PIDPanel(QWidget):
         comp_data  = (self.db.all_component_types_dict()
                       if hasattr(self.db, 'all_component_types_dict') else None)
         mode_freqs = self._load_mode_freqs()
+        # Use symbol detector result to pre-select the component type in dialog
+        detected_type = self.viewer._detected_comp_type
+        detected_name = self.viewer._detected_sym_name
         dlg = ComponentPickerDialog(self, suggested_tag=suggested_tag,
                                     component_types=comp_data,
-                                    mode_freqs=mode_freqs)
+                                    mode_freqs=mode_freqs,
+                                    preselect_type=detected_type)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
