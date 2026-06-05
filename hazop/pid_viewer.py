@@ -615,26 +615,35 @@ def scan_pdf_for_equipment(pdf_doc, use_ocr: bool = False,
 
 
 class PDFVectorItem(QGraphicsItem):
-    """Renders a PDF page as pure vector via QSvgRenderer — crisp at any zoom."""
+    """Renders a PDF page as pure vector via QSvgRenderer — crisp at any zoom.
+
+    Performance notes:
+    - DeviceCoordinateCache: Qt caches the rendered pixels at screen resolution.
+      Panning reuses the cache (fast). Zooming triggers a re-render (one-time cost).
+    - ItemUsesExtendedStyleOption: exposes the exact dirty rect so we can clip.
+    """
 
     def __init__(self, svg_bytes: bytes):
         super().__init__()
         self._renderer = QSvgRenderer(svg_bytes)
         vb = self._renderer.viewBoxF()
-        # Fall back to defaultSize if viewBox is missing
         if vb.isValid() and vb.width() > 0:
             self._rect = vb
         else:
             ds = self._renderer.defaultSize()
             self._rect = QRectF(0, 0, ds.width(), ds.height())
+
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemUsesExtendedStyleOption)
+        # Cache rendered pixels — panning uses cache, zoom re-renders once
+        self.setCacheMode(QGraphicsItem.CacheMode.DeviceCoordinateCache)
 
     def boundingRect(self):
         return self._rect
 
     def paint(self, painter, option, widget=None):
-        # Clip to the exposed rectangle for performance on large drawings
-        exposed = option.exposedRect if option else self._rect
+        # Only repaint the exposed (dirty) region — big win on large P&IDs
+        if option and option.exposedRect.isValid():
+            painter.setClipRect(option.exposedRect)
         self._renderer.render(painter, self._rect)
 
     def page_width(self):
@@ -1664,7 +1673,14 @@ class PIDGraphicsView(QGraphicsView):
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
-        self.setBackgroundBrush(QBrush(QColor(180, 180, 180)))
+        # White background — matches typical P&ID drawing background
+        self.setBackgroundBrush(QBrush(QColor(255, 255, 255)))
+        # Only repaint the parts of the viewport that actually changed
+        self.setViewportUpdateMode(
+            QGraphicsView.ViewportUpdateMode.MinimalViewportUpdate)
+        # Avoid unnecessary bounding-rect adjustments during pan/zoom
+        self.setOptimizationFlag(
+            QGraphicsView.OptimizationFlag.DontAdjustForAntialiasing, True)
 
         self._press_pos  = None  # NAV mode: click vs drag detection
         self._rect_start = None  # rect-select mode: start scene point
