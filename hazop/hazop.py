@@ -4577,21 +4577,26 @@ class MainWindow(QMainWindow):
             self.scenario_panel.load_cause(self._cur_id)
 
     def _open_risk_scenario_wizard(self, node_id=None):
-        if node_id is None or node_id == 0:
+        """Start guided Risk Scenario mode using existing P&ID dialogs."""
+        # Resolve node from current selection if not supplied
+        if not node_id:
             if self._cur_type in (NODE_T, CAUSE_T, CONS_T, SG_T) and self._cur_id:
                 node_id = self.tree_panel._resolve_node_id(self._cur_type, self._cur_id)
         if not node_id:
             nodes = self.db.nodes()
             if not nodes:
                 QMessageBox.information(self, "Ingen nod",
-                    "Lägg till en nod först.")
+                    "Lägg till en nod i trädet innan du startar Risk Scenario.")
                 return
             node_id = nodes[0]['id']
-        dlg = RiskScenarioWizard(self.db, node_id, self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            self.tree_panel.refresh(CAUSE_T, dlg.created_cause_id)
-            self._on_selected(CAUSE_T, dlg.created_cause_id)
-            self.status_bar.showMessage("Risk scenario skapat.", 4000)
+
+        # Switch to P&ID view if not already there
+        self._switch_view(0)
+
+        # Start guided mode in PIDPanel
+        self.pid_panel.start_scenario_mode(node_id)
+        self.status_bar.showMessage(
+            "Risk Scenario startat — följ stegen i bannern ovan P&ID:n.", 5000)
 
     def _on_pid_risk_scenario(self, node_id, pos, page):
         self._open_risk_scenario_wizard(node_id)

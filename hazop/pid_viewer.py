@@ -1840,6 +1840,70 @@ class PIDPanel(QWidget):
         bar.addStretch()
         layout.addLayout(bar)
 
+        # ── Scenario guided-mode banner ───────────────────────────────────────
+        self._scenario_active = False
+        self._scenario_step   = 0   # 1=cause 2=consequence 3+=safeguard
+
+        self._scenario_banner = QFrame()
+        self._scenario_banner.setStyleSheet(
+            "QFrame{background:#1F4E79; border-radius:4px; padding:2px;}")
+        self._scenario_banner.setFixedHeight(46)
+        sb_lay = QVBoxLayout(self._scenario_banner)
+        sb_lay.setContentsMargins(8, 2, 8, 2)
+        sb_lay.setSpacing(2)
+
+        # Top row: step pills
+        pill_row = QHBoxLayout(); pill_row.setSpacing(4)
+        self._step_pills = []
+        _PILL_BASE = "border-radius:3px; padding:1px 6px; font-size:10px; font-weight:bold;"
+        for txt in ["1 ⚙️ Orsak", "2 ⚠️ Konsekvens", "3 🛡️ Safeguard"]:
+            lbl = QLabel(txt)
+            lbl.setStyleSheet(_PILL_BASE + "background:#3a6fa3; color:#aac;")
+            pill_row.addWidget(lbl)
+            self._step_pills.append(lbl)
+            if txt != "3 🛡️ Safeguard":
+                pill_row.addWidget(QLabel("→").setStyleSheet and QLabel("→"))
+                # (arrow is just cosmetic)
+        pill_row.addStretch()
+
+        self._sc_abort_btn = QPushButton("✕ Avbryt")
+        self._sc_abort_btn.setFixedHeight(20)
+        self._sc_abort_btn.setStyleSheet(
+            "background:#c0392b; color:white; border:none; border-radius:3px; padding:0 8px;")
+        self._sc_abort_btn.clicked.connect(self._scenario_abort)
+        pill_row.addWidget(self._sc_abort_btn)
+        sb_lay.addLayout(pill_row)
+
+        # Bottom row: instruction + action buttons
+        act_row = QHBoxLayout(); act_row.setSpacing(6)
+        self._sc_instr = QLabel("")
+        self._sc_instr.setStyleSheet("color:white; font-size:11px;")
+        act_row.addWidget(self._sc_instr)
+        act_row.addStretch()
+
+        self._sc_add_sg_btn = QPushButton("+ Fler safeguards")
+        self._sc_add_sg_btn.setFixedHeight(20)
+        self._sc_add_sg_btn.setStyleSheet(
+            "background:#27ae60; color:white; border:none; border-radius:3px; padding:0 8px;")
+        self._sc_add_sg_btn.setVisible(False)
+        self._sc_add_sg_btn.clicked.connect(
+            lambda: (self._set_mode(MODE_SAFEGUARD),
+                     self._sc_instr.setText("Klicka på nästa safeguard på P&ID:n")))
+        act_row.addWidget(self._sc_add_sg_btn)
+
+        self._sc_finish_btn = QPushButton("✓ Slutför")
+        self._sc_finish_btn.setFixedHeight(20)
+        self._sc_finish_btn.setStyleSheet(
+            "background:#2ecc71; color:white; border:none; border-radius:3px; padding:0 8px; font-weight:bold;")
+        self._sc_finish_btn.setVisible(False)
+        self._sc_finish_btn.clicked.connect(self._scenario_finish)
+        act_row.addWidget(self._sc_finish_btn)
+        sb_lay.addLayout(act_row)
+
+        self._scenario_banner.setVisible(False)
+        layout.addWidget(self._scenario_banner)
+
+        # ── Viewer ────────────────────────────────────────────────────────────
         self.viewer = PIDGraphicsView()
         self.viewer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.viewer.node_markup_finished.connect(self._on_markup_finished)
@@ -1849,6 +1913,12 @@ class PIDPanel(QWidget):
         self.viewer.context_action.connect(self._on_context_action)
         self.viewer.marker_clicked.connect(
             lambda t, i: self.marker_navigated.emit(t, i))
+
+        # Connect existing signals for scenario auto-progression
+        self.cause_created.connect(self._sc_on_cause)
+        self.consequence_created.connect(self._sc_on_consequence)
+        self.safeguard_created.connect(self._sc_on_safeguard)
+
         layout.addWidget(self.viewer)
 
         self._set_mode(MODE_NAV)
@@ -2207,6 +2277,85 @@ class PIDPanel(QWidget):
 
         dlg = EquipmentScanDialog(result, self.db, self)
         dlg.exec()
+
+    # ── Guided Risk Scenario mode ─────────────────────────────────────────────
+
+    def start_scenario_mode(self, node_id=None):
+        """Start guided Risk Scenario: Orsak → Konsekvens → Safeguard."""
+        if node_id:
+            self._active_node_id = node_id
+        if not self._active_node_id:
+            QMessageBox.information(None, "Välj nod",
+                "Välj en nod i trädet eller på P&ID:n innan du startar Risk Scenario.")
+            return
+        self._scenario_active = True
+        self._scenario_step   = 1
+        self._scenario_banner.setVisible(True)
+        self._sc_add_sg_btn.setVisible(False)
+        self._sc_finish_btn.setVisible(False)
+        self._update_scenario_ui()
+        self._set_mode(MODE_CAUSE)
+
+    def _update_scenario_ui(self):
+        step = self._scenario_step
+        _ACTIVE  = "border-radius:3px; padding:1px 6px; font-size:10px; font-weight:bold; background:#ffffff; color:#1F4E79;"
+        _DONE    = "border-radius:3px; padding:1px 6px; font-size:10px; font-weight:bold; background:#27ae60; color:white;"
+        _WAITING = "border-radius:3px; padding:1px 6px; font-size:10px; font-weight:bold; background:#3a6fa3; color:#aac;"
+
+        for i, pill in enumerate(self._step_pills):
+            s = i + 1
+            if s < step:
+                pill.setStyleSheet(_DONE)
+            elif s == step:
+                pill.setStyleSheet(_ACTIVE)
+            else:
+                pill.setStyleSheet(_WAITING)
+
+        instructions = {
+            1: "Klicka på orsak/utrustning på P&ID:n",
+            2: "Klicka på konsekvens/målobjekt på P&ID:n",
+            3: "Klicka på safeguard/barriär på P&ID:n",
+        }
+        self._sc_instr.setText(instructions.get(step, ""))
+
+    def _sc_on_cause(self, cause_id):
+        if not self._scenario_active:
+            return
+        self._scenario_step = 2
+        self.set_active_cause(cause_id)
+        self._update_scenario_ui()
+        self._set_mode(MODE_CONSEQUENCE)
+
+    def _sc_on_consequence(self, cons_id):
+        if not self._scenario_active:
+            return
+        self._scenario_step = 3
+        self.set_active_consequence(cons_id)
+        self._update_scenario_ui()
+        self._set_mode(MODE_SAFEGUARD)
+
+    def _sc_on_safeguard(self, _sg_id):
+        if not self._scenario_active:
+            return
+        # Show action buttons — stay in safeguard mode for adding more
+        self._sc_instr.setText("Safeguard markerad! Lägg till fler eller slutför.")
+        self._sc_add_sg_btn.setVisible(True)
+        self._sc_finish_btn.setVisible(True)
+        self._set_mode(MODE_SAFEGUARD)
+
+    def _scenario_finish(self):
+        self._scenario_active = False
+        self._scenario_banner.setVisible(False)
+        self._sc_add_sg_btn.setVisible(False)
+        self._sc_finish_btn.setVisible(False)
+        self._set_mode(MODE_NAV)
+
+    def _scenario_abort(self):
+        self._scenario_active = False
+        self._scenario_banner.setVisible(False)
+        self._sc_add_sg_btn.setVisible(False)
+        self._sc_finish_btn.setVisible(False)
+        self._set_mode(MODE_NAV)
 
     def _load_mode_freqs(self):
         """Return {comp_type: {mode_desc: freq_per_year}} from DB."""
