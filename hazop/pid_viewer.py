@@ -1370,12 +1370,12 @@ class ComponentPickerDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
-        # Show detected symbol type as a hint (if available)
+        # Show pre-selected type (learned from previous use)
         if preselect_type:
-            hint = QLabel(f"🔍 Identifierad symboltyp: {preselect_type}")
+            hint = QLabel(f"💡 Igenkänd typ (lärde mig): {preselect_type}")
             hint.setStyleSheet(
-                "background:#e8f4fd; border:1px solid #bee3f8; border-radius:3px;"
-                "padding:4px 8px; color:#1F4E79; font-weight:bold; font-size:11px;")
+                "background:#fff8e1; border:1px solid #ffe082; border-radius:3px;"
+                "padding:4px 8px; color:#795548; font-size:11px;")
             layout.addWidget(hint)
         form   = QFormLayout()
 
@@ -2841,6 +2841,9 @@ class PIDPanel(QWidget):
         if not modes:
             return
 
+        # ── Learn: remember this prefix → comp_type for future sessions ──────
+        self._learn_tag_type(suggested_tag or tag, comp_type)
+
         pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
         last_cause_id = None
         for mode in modes:
@@ -3328,6 +3331,24 @@ class PIDPanel(QWidget):
             if key in name:
                 return comp
         return ''
+
+    def _learn_tag_type(self, tag: str, comp_type: str):
+        """Implicitly learn prefix → comp_type from user's own selection.
+
+        Stored as a confirmed entry in pid_identified_tags so it's used
+        automatically next time the same prefix is encountered.
+        """
+        if not tag or not comp_type:
+            return
+        pfx = _equip_prefix_from_tag(tag)
+        if not pfx or len(pfx) < 2:
+            return
+        try:
+            if hasattr(self.db, 'upsert_pid_tag') and hasattr(self.db, 'confirm_pid_tag'):
+                self.db.upsert_pid_tag(pfx, tag, '', comp_type)
+                self.db.confirm_pid_tag(pfx, comp_type, True)
+        except Exception:
+            pass
 
     def _db_comp_for_tag(self, tag: str) -> str:
         """Look up the tag prefix in confirmed PID analysis, then tag database."""
