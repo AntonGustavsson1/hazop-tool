@@ -4735,6 +4735,8 @@ class EquipmentPanel(QWidget):
         tb = QHBoxLayout()
         self._scan_btn = QPushButton("🔍 Skanna P&ID")
         self._scan_btn.setToolTip("Skannar inläst P&ID-fil efter utrustningstaggar")
+        self._scan_btn.setStyleSheet(
+            "background:#1F4E79; color:white; border:none; border-radius:4px; padding:3px 10px;")
         self._scan_btn.clicked.connect(self._scan)
 
         add_btn = QPushButton("+ Lägg till")
@@ -4748,8 +4750,9 @@ class EquipmentPanel(QWidget):
         self._create_btn.setToolTip("Skapar en nod per ikryssad rad")
         self._create_btn.clicked.connect(self._create_nodes)
 
-        clear_btn = QPushButton("🗑 Rensa register")
-        clear_btn.setStyleSheet("color:#c0392b;")
+        clear_btn = QPushButton("🗑 Rensa utrustning")
+        clear_btn.setToolTip("Tar bort alla poster i utrustningsregistret")
+        clear_btn.setStyleSheet("color:#c0392b; font-weight:bold;")
         clear_btn.clicked.connect(self._clear)
 
         for btn in [self._scan_btn, add_btn, refresh_btn, self._create_btn, clear_btn]:
@@ -4998,11 +5001,14 @@ class EquipmentPanel(QWidget):
         self.refresh()
 
     def _clear(self):
+        n = len(self.db.equipment_items())
         reply = QMessageBox.question(
-            self, "Rensa register",
-            "Ta bort alla poster i utrustningsregistret?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if reply == QMessageBox.StandardButton.Yes:
+            self, "Rensa utrustning",
+            f"Ta bort alla {n} poster i utrustningsregistret?\n\n"
+            "Detta kan inte ångras.",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel)
+        if reply == QMessageBox.StandardButton.Ok:
             self.db.clear_equipment_catalog()
             self.refresh()
 

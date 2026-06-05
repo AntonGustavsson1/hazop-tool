@@ -2733,12 +2733,6 @@ class PIDPanel(QWidget):
         self.open_btn.clicked.connect(self._open_pdf)
         bar.addWidget(self.open_btn)
 
-        self.scan_btn = QPushButton("🔍 Skanna utrustning")
-        self.scan_btn.setToolTip("Identifiera utrustning från PDF och tilldela typer")
-        self.scan_btn.clicked.connect(self._scan_equipment)
-        self.scan_btn.setEnabled(False)
-        bar.addWidget(self.scan_btn)
-
         self.analyze_btn = QPushButton("📋 Analysera P&ID")
         self.analyze_btn.setToolTip(
             "Skannar hela P&ID:n, identifierar alla taggnummer-prefix\n"
@@ -2996,7 +2990,6 @@ class PIDPanel(QWidget):
         self.db.set_pid_path(path)
         self._update_page_label()
         self._load_overlays()
-        self.scan_btn.setEnabled(True)
         self.analyze_btn.setEnabled(True)
 
     def _goto_page(self, n):
