@@ -2507,7 +2507,7 @@ class EditableScenarioPanel(QWidget):
 # ══════════════════════════════════════════════════════════════════════════════
 
 class RiskMatrixPopup(QDialog):
-    """Small popup showing the risk matrix — click a cell to set F and C."""
+    """Popup risk matrix matching the configured format in Settings."""
 
     selection_made = pyqtSignal(int, int)   # freq_value, cons_value
 
@@ -2520,76 +2520,105 @@ class RiskMatrixPopup(QDialog):
             Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
-        cfg     = get_matrix()
-        n_rows  = cfg.get('rows', 5)
-        n_cols  = cfg.get('cols', 7)
-        x_lbls  = cfg.get('x_labels', [f'F{c-1}' for c in range(n_cols)])
-        y_lbls  = cfg.get('y_labels', [f'C{r+1}' for r in range(n_rows)])
-        colors  = cfg.get('cell_colors', [])
-        labels  = cfg.get('cell_labels', [])
+        cfg       = get_matrix()
+        n_cons    = cfg.get('rows', 5)
+        n_freq    = cfg.get('cols', 7)
+        x_lbls    = cfg.get('x_labels', [f'F{c-1}' for c in range(n_freq)])
+        y_lbls    = cfg.get('y_labels', [f'C{r+1}' for r in range(n_cons)])
+        colors    = cfg.get('cell_colors', [])
+        cell_lbl  = cfg.get('cell_labels', [])
+        freq_on_x = cfg.get('x_axis', 'frequency') == 'frequency'
+        x_rev     = cfg.get('x_reversed', False)
+        y_rev     = cfg.get('y_reversed', False)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(6, 6, 6, 6)
         outer.setSpacing(4)
 
-        hdr = QLabel("Klicka på en cell för att sätta F och C")
+        hdr = QLabel("Klicka på en cell för att sätta risknivå")
         hdr.setStyleSheet("font-weight:bold; font-size:11px; padding:2px;")
         outer.addWidget(hdr)
 
         grid = QGridLayout()
-        grid.setSpacing(2)
+        grid.setSpacing(0)
 
-        # Corner label
-        corner = QLabel("C \\ F")
+        # Determine display dimensions
+        if freq_on_x:
+            n_dcols, n_drows = n_freq, n_cons
+            col_lbls, row_lbls = x_lbls, y_lbls
+            corner_txt = "C \\ F"
+        else:
+            n_dcols, n_drows = n_cons, n_freq
+            col_lbls, row_lbls = y_lbls, x_lbls
+            corner_txt = "F \\ C"
+
+        # Corner
+        corner = QLabel(corner_txt)
         corner.setStyleSheet("font-size:9px; color:#666;")
         corner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        corner.setFixedWidth(50)
         grid.addWidget(corner, 0, 0)
 
-        # Column headers (frequency values, short labels)
-        for c in range(n_cols):
-            f_val = c - 1   # freq value: col 0 → F=-1, col 1 → F=0, …
-            short = f_val if f_val >= 0 else f_val   # just the number
-            lbl = QLabel(f"F{f_val}")
+        # Column headers — respect x_rev
+        for c in range(n_dcols):
+            data_c = (n_dcols - 1 - c) if x_rev else c
+            full   = col_lbls[data_c] if data_c < len(col_lbls) else str(data_c)
+            # Short label: take first token (e.g. "F3" from "F3 – Möjlig | 10-100 år")
+            short  = full.split()[0] if full.strip() else str(data_c)
+            lbl = QLabel(short)
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setFixedWidth(44)
-            lbl.setStyleSheet("font-size:9px; font-weight:bold;")
-            full = x_lbls[c] if c < len(x_lbls) else f'F{f_val}'
+            lbl.setFixedWidth(50)
+            lbl.setStyleSheet("font-size:9px; font-weight:bold; padding:1px;")
             lbl.setToolTip(full)
             grid.addWidget(lbl, 0, c + 1)
 
-        # Rows: highest consequence at top
-        for r in range(n_rows):
-            disp_r = n_rows - 1 - r     # consequence index (0 = C1)
-            c_val  = disp_r + 1         # consequence value 1..5
+        # Rows — respect y_rev
+        for r in range(n_drows):
+            if y_rev:
+                disp_r = r
+            else:
+                disp_r = n_drows - 1 - r
 
             # Row header
-            rl = QLabel(f"C{c_val}")
+            full_r = row_lbls[disp_r] if disp_r < len(row_lbls) else str(disp_r)
+            short_r = full_r.split()[0] if full_r.strip() else str(disp_r)
+            rl = QLabel(short_r)
             rl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            rl.setStyleSheet("font-size:9px; font-weight:bold; padding-right:3px;")
-            rl.setToolTip(y_lbls[disp_r] if disp_r < len(y_lbls) else f'C{c_val}')
+            rl.setStyleSheet("font-size:9px; font-weight:bold; padding-right:4px;")
+            rl.setToolTip(full_r)
+            rl.setFixedWidth(50)
             grid.addWidget(rl, r + 1, 0)
 
-            for c in range(n_cols):
-                f_val = c - 1
+            for c in range(n_dcols):
+                data_c = (n_dcols - 1 - c) if x_rev else c
+                # Map to (cons_idx, freq_idx)
+                if freq_on_x:
+                    cons_idx, freq_idx = disp_r, data_c
+                else:
+                    freq_idx, cons_idx = disp_r, data_c
+
+                freq_val = freq_idx - 1   # F=-1..5 (col 0 → F=-1)
+                cons_val = cons_idx + 1   # C=1..5
+
                 try:
-                    color = colors[disp_r][c]
-                    lbl   = labels[disp_r][c]
+                    color = colors[cons_idx][freq_idx]
+                    lbl   = cell_lbl[cons_idx][freq_idx]
                 except (IndexError, KeyError):
                     color, lbl = '#27ae60', 'Låg'
 
-                is_current = (f_val == current_freq and c_val == current_cons)
-                border = '3px solid #000' if is_current else '1px solid rgba(0,0,0,0.2)'
+                is_current = (freq_val == current_freq and cons_val == current_cons)
+                border = '3px solid #000' if is_current else '0px'
 
-                btn = QPushButton(lbl[:3])
-                btn.setFixedSize(44, 30)
-                btn.setToolTip(f"F={f_val}  C={c_val}  →  {lbl}")
+                btn = QPushButton(lbl[:4])
+                btn.setFixedSize(50, 32)
+                btn.setToolTip(f"F={freq_val}  C={cons_val}  →  {lbl}")
                 btn.setStyleSheet(
-                    f"QPushButton{{"
-                    f"background:{color}; color:#fff; font-size:8px; font-weight:bold;"
-                    f"border:{border}; border-radius:2px;}}"
-                    f"QPushButton:hover{{border:2px solid #000; font-size:9px;}}")
+                    f"QPushButton{{background:{color}; color:#fff;"
+                    f"font-size:8px; font-weight:bold;"
+                    f"border:{border}; border-radius:0px; margin:0px;}}"
+                    f"QPushButton:hover{{border:2px solid #000;}}")
                 btn.clicked.connect(
-                    lambda _, fv=f_val, cv=c_val: self._pick(fv, cv))
+                    lambda _, fv=freq_val, cv=cons_val: self._pick(fv, cv))
                 grid.addWidget(btn, r + 1, c + 1)
 
         outer.addLayout(grid)
@@ -3071,10 +3100,19 @@ class ScenarioTablePanel(QWidget):
             lambda f, c, caid=cause_id, coid=cons_id:
                 self._apply_risk_from_matrix(caid, coid, f, c))
 
-        # Position popup below the clicked cell
-        cell_rect = self._table.visualItemRect(item)
-        global_pos = self._table.viewport().mapToGlobal(cell_rect.bottomLeft())
-        popup.move(global_pos)
+        # Position popup: prefer above the cell, fall back to below if off-screen
+        popup.adjustSize()
+        cell_rect  = self._table.visualItemRect(item)
+        anchor     = self._table.viewport().mapToGlobal(cell_rect.topLeft())
+        screen     = QApplication.primaryScreen().availableGeometry()
+        ph         = popup.sizeHint().height()
+        pw         = popup.sizeHint().width()
+        # Try above first
+        y = anchor.y() - ph - 4
+        if y < screen.top():
+            y = anchor.y() + cell_rect.height() + 4   # fall back: below
+        x = max(screen.left(), min(anchor.x(), screen.right() - pw))
+        popup.move(x, y)
         popup.exec()
 
     def _apply_risk_from_matrix(self, cause_id, cons_id, new_freq, new_cons):
