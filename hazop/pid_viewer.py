@@ -1639,6 +1639,8 @@ class ComponentPickerDialog(QDialog):
         self._update_modes(self.type_combo.currentText())
 
     def _update_modes(self, type_name):
+        if not hasattr(self, 'mode_list'):
+            return   # called before mode_list is created (during __init__)
         self.mode_list.clear()
         freqs = self._mode_freqs.get(type_name, {})
         for mode in self._comp_types.get(type_name, []):
