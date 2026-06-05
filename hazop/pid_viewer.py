@@ -2371,7 +2371,7 @@ class PIDGraphicsView(QGraphicsView):
 
         except Exception:
             pass
-        return '', '', ''
+        return ''
 
     def add_tag_highlight(self, bbox: 'fitz.Rect', color: str, tooltip: str = ''):
         """Draw a semi-transparent highlight rectangle at the tag's PDF position."""
