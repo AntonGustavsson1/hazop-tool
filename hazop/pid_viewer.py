@@ -1417,7 +1417,7 @@ class PIDGraphicsView(QGraphicsView):
         self.pdf_doc          = None
         self.current_page     = 0
         self.page_item        = None
-        self.render_scale     = 2.0
+        self.render_scale     = 3.0   # default: 3× = ~216 DPI — sharper for P&IDs
         self.page_rect_width  = 0.0
         self.page_rect_height = 0.0
 
@@ -1495,6 +1495,12 @@ class PIDGraphicsView(QGraphicsView):
         self.page_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
         self._scene.addItem(self.page_item)
         self._scene.setSceneRect(QRectF(pixmap.rect()))
+
+    def set_render_scale(self, scale: float):
+        """Change render quality and re-render the current page."""
+        self.render_scale = float(scale)
+        if self.pdf_doc is not None:
+            self._render_page()
 
     def page_count(self):
         return self.pdf_doc.page_count if self.pdf_doc else 0
@@ -1982,6 +1988,23 @@ class PIDPanel(QWidget):
 
         bar.addWidget(_vline())
 
+        # Render quality selector
+        bar.addWidget(QLabel("Kvalitet:"))
+        self._quality_combo = QComboBox()
+        self._quality_combo.setToolTip(
+            "Renderingskvalitet (högre = skarpare men mer minne).\n"
+            "Ändra om PDF:en ser suddig ut.")
+        for label, scale in [("2× Standard", 2.0),
+                              ("3× Hög",     3.0),
+                              ("4× Mycket hög", 4.0),
+                              ("6× Skarp",   6.0)]:
+            self._quality_combo.addItem(label, scale)
+        self._quality_combo.setCurrentIndex(1)   # default: 3×
+        self._quality_combo.currentIndexChanged.connect(self._on_quality_changed)
+        bar.addWidget(self._quality_combo)
+
+        bar.addWidget(_vline())
+
         self.prev_btn = QPushButton("◀")
         self.prev_btn.setFixedWidth(28)
         self.prev_btn.clicked.connect(lambda: self._goto_page(self.viewer.current_page - 1))
@@ -2132,6 +2155,12 @@ class PIDPanel(QWidget):
 
         self._set_mode(MODE_NAV)
         self._update_pen()
+
+    def _on_quality_changed(self):
+        scale = self._quality_combo.currentData()
+        if scale:
+            self.viewer.set_render_scale(scale)
+            self._load_overlays()
 
     def _refresh_color_btn(self):
         c = self._pen_color
