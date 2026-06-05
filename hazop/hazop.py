@@ -1416,8 +1416,10 @@ class ConsequencePanel(QWidget):
         self.db = db
         self.consequence_id = None
         self._loading = False
-        self._chain = {}       # current checkbox state {key: bool}
-        self._chain_checks = {}  # {key: QCheckBox}
+        self._chain = {}
+        self._chain_checks = {}
+        # Initialise preview label early so _rebuild_preview is always safe
+        self._chain_preview = QLabel("—")
 
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
@@ -1441,11 +1443,12 @@ class ConsequencePanel(QWidget):
         _orig_foe = QTextEdit.focusOutEvent
         _w = self.desc_edit
         _s = self._save
-        def _desc_foe(e, _w=_w, _s=_s, _orig=_orig_foe):
+        _rb = self._rebuild_preview
+        def _desc_foe(e, _w=_w, _s=_s, _rb=_rb, _orig=_orig_foe):
+            _rb()
             _s()
             _orig(_w, e)
         self.desc_edit.focusOutEvent = _desc_foe
-        self.desc_edit.textChanged.connect(self._on_desc_changed)
         desc_lay.addWidget(self.desc_edit)
         layout.addWidget(desc_box)
 
@@ -1478,11 +1481,10 @@ class ConsequencePanel(QWidget):
 
         chain_lay.addLayout(grid)
 
-        # Preview of generated text
+        # Preview of generated text (widget was pre-created in __init__)
         sep_lbl = QLabel("Genererad text:")
         sep_lbl.setStyleSheet("color:#555; font-size:10px; margin-top:4px;")
         chain_lay.addWidget(sep_lbl)
-        self._chain_preview = QLabel("")
         self._chain_preview.setStyleSheet(
             "color:#1F4E79; font-weight:bold; font-size:11px;"
             "background:#eef4fb; border:1px solid #bee3f8; border-radius:3px; padding:3px 6px;")
@@ -1534,13 +1536,11 @@ class ConsequencePanel(QWidget):
     # ── Chain helpers ─────────────────────────────────────────────────────────
 
     def _rebuild_preview(self):
-        base = self.desc_edit.toPlainText().strip()
+        if not hasattr(self, '_chain_preview') or self._chain_preview is None:
+            return
+        base = self.desc_edit.toPlainText().strip() if hasattr(self, 'desc_edit') else ''
         text = build_consequence_text(base, self._chain)
         self._chain_preview.setText(text if text else "—")
-
-    def _on_desc_changed(self):
-        if not self._loading:
-            self._rebuild_preview()
 
     def _on_chain_changed(self):
         if self._loading:
