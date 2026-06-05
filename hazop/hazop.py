@@ -2746,8 +2746,8 @@ class MatrixCellButton(QPushButton):
     def _apply_style(self):
         self.setStyleSheet(
             f"QPushButton{{background:{self._color}; color:white; font-weight:bold;"
-            f" border:1px solid #888; border-radius:2px;}}"
-            f"QPushButton:hover{{border:2px solid #222;}}")
+            f" border:1px solid #555; border-radius:0px; margin:0px;}}"
+            f"QPushButton:hover{{border:2px solid #000;}}")
         self.setText(self._label)
 
     def set_cell(self, color, label):
@@ -2845,7 +2845,8 @@ class SettingsPanel(QWidget):
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self._matrix_container = QWidget()
         self._matrix_grid = QGridLayout(self._matrix_container)
-        self._matrix_grid.setSpacing(3)
+        self._matrix_grid.setSpacing(0)
+        self._matrix_grid.setContentsMargins(0, 0, 0, 0)
         scroll.setWidget(self._matrix_container)
         ml.addWidget(scroll)
 
