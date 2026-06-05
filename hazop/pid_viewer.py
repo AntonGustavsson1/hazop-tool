@@ -3,6 +3,9 @@
 
 import re
 import json
+import os
+import shutil
+import tempfile
 import datetime
 from pathlib import Path
 
@@ -2893,6 +2896,11 @@ class PIDPanel(QWidget):
             self._refresh_color_btn()
             self._update_pen()
 
+    def _working_pdf_path(self):
+        """Returns the project-local working copy path, e.g. hazop_project_pid.pdf."""
+        db_path = Path(self.db.path)
+        return db_path.with_name(db_path.stem + '_pid.pdf')
+
     def _open_pdf(self):
         if not HAS_PYMUPDF:
             QMessageBox.warning(self, "PyMuPDF saknas",
@@ -2903,9 +2911,9 @@ class PIDPanel(QWidget):
         if not path:
             return
 
-        existing_path = self.db.get_pid_path()
-        has_existing  = bool(existing_path and Path(existing_path).exists())
-        created_at    = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+        working    = self._working_pdf_path()
+        has_existing = working.exists()
+        created_at = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
 
         if has_existing:
             dlg = PIDImportDialog(has_existing=True, parent=self)
@@ -2915,27 +2923,31 @@ class PIDPanel(QWidget):
             rev_notes = dlg.notes()
 
             if dlg.is_new_revision():
-                # New revision — replace PDF and reset sheets
-                if not self.viewer.load_pdf(path, page=0):
+                # Copy source to working path and reset
+                try:
+                    shutil.copy2(path, working)
+                except Exception as e:
+                    QMessageBox.critical(self, "Fel", f"Kunde inte kopiera PDF:\n{e}")
+                    return
+                if not self.viewer.load_pdf(str(working), page=0):
                     QMessageBox.warning(self, "Fel", "Kunde inte öppna PDF-filen.")
                     return
-                self.db.set_pid_path(path)
+                self.db.set_pid_path(str(working))
                 self.db.clear_sheets()
-                self.db.add_revision(rev_label, rev_notes, path, created_at)
+                self.db.add_revision(rev_label, rev_notes, str(working), created_at)
                 self.db.ensure_sheets_initialized(self.viewer.page_count())
                 self._current_display_page = 0
             else:
-                # Nya blad — merge new PDF pages into existing PDF
-                import tempfile, os, shutil
+                # Nya blad — merge new pages into working copy via temp file
                 try:
-                    existing_doc    = fitz.open(existing_path)
+                    existing_doc    = fitz.open(str(working))
                     existing_pg_cnt = existing_doc.page_count
                     new_doc         = fitz.open(path)
                     n_new           = new_doc.page_count
                     existing_doc.insert_pdf(new_doc)
                     new_doc.close()
 
-                    # Close viewer's handle before touching the file
+                    # Close viewer before replacing the file
                     if self.viewer.pdf_doc is not None:
                         try:
                             self.viewer.pdf_doc.close()
@@ -2943,41 +2955,41 @@ class PIDPanel(QWidget):
                             pass
                         self.viewer.pdf_doc = None
 
-                    # fitz refuses save() to the same path it was opened from;
-                    # write to a temp file first, then atomically replace the original.
-                    tmp_fd, tmp_path = tempfile.mkstemp(suffix='.pdf',
-                                                        dir=str(Path(existing_path).parent))
+                    tmp_fd, tmp_path = tempfile.mkstemp(suffix='.pdf', dir=str(working.parent))
                     os.close(tmp_fd)
                     existing_doc.save(tmp_path, garbage=4, deflate=True)
                     existing_doc.close()
-                    shutil.move(tmp_path, existing_path)
+                    shutil.move(tmp_path, str(working))
                 except Exception as e:
                     QMessageBox.critical(self, "Fel vid sammanslagning",
                                          f"Kunde inte sammanfoga PDF:\n{e}")
                     return
 
-                # Reload merged PDF, stay on current display page
                 keep_phys = self.viewer.current_page
-                if not self.viewer.load_pdf(existing_path, page=keep_phys):
+                if not self.viewer.load_pdf(str(working), page=keep_phys):
                     QMessageBox.warning(self, "Fel", "Kunde inte öppna sammanfogad PDF.")
                     return
 
-                # Ensure existing sheets are initialised before appending
                 if self.db.get_display_page_count() == 0:
                     self.db.ensure_sheets_initialized(existing_pg_cnt)
 
-                rev_id = self.db.add_revision(rev_label, rev_notes, existing_path, created_at)
+                rev_id = self.db.add_revision(rev_label, rev_notes, str(working), created_at)
                 physical_pages = list(range(existing_pg_cnt, existing_pg_cnt + n_new))
                 sheet_names    = [f"Blad {existing_pg_cnt + i + 1}" for i in range(n_new)]
                 self.db.append_sheets(physical_pages, sheet_names, rev_id)
         else:
-            # First import — no dialog needed
-            if not self.viewer.load_pdf(path, page=0):
+            # First import — copy to working path, no dialog
+            try:
+                shutil.copy2(path, working)
+            except Exception as e:
+                QMessageBox.critical(self, "Fel", f"Kunde inte kopiera PDF:\n{e}")
+                return
+            if not self.viewer.load_pdf(str(working), page=0):
                 QMessageBox.warning(self, "Fel", "Kunde inte öppna PDF-filen.")
                 return
-            self.db.set_pid_path(path)
+            self.db.set_pid_path(str(working))
             self.db.clear_sheets()
-            self.db.add_revision(created_at, '', path, created_at)
+            self.db.add_revision(created_at, '', str(working), created_at)
             self.db.ensure_sheets_initialized(self.viewer.page_count())
             self._current_display_page = 0
 
