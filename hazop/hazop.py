@@ -2847,13 +2847,16 @@ class SettingsPanel(QWidget):
         ml.addWidget(pal_box)
 
         # ── Matrix grid ───────────────────────────────────────────────────────
+        # Wrap in a scroll area but prevent stretching: the matrix sits at
+        # natural size top-left, stretch below fills remaining space.
         scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
+        scroll.setWidgetResizable(False)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self._matrix_container = QWidget()
         self._matrix_grid = QGridLayout(self._matrix_container)
         self._matrix_grid.setSpacing(0)
         self._matrix_grid.setContentsMargins(0, 0, 0, 0)
+        # No column or row stretching — fixed sizes only
         scroll.setWidget(self._matrix_container)
         ml.addWidget(scroll)
 
@@ -3017,6 +3020,8 @@ class SettingsPanel(QWidget):
         self._cell_buttons  = []
         self._x_label_edits = []
         self._y_label_edits = []
+        self._matrix_container.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
         rows     = cfg['rows']
         cols     = cfg['cols']
@@ -3031,15 +3036,15 @@ class SettingsPanel(QWidget):
         corner.setStyleSheet("font-size:9px; color:#666;")
         self._matrix_grid.addWidget(corner, 0, 0)
 
-        # Editable column headers (frequency / X-axis)
+        # Editable column headers — fixed width matches cell width exactly
         for c in range(cols):
             edit = QLineEdit(x_labels[c] if c < len(x_labels) else f'F{c-1}')
-            edit.setFixedWidth(82)
-            edit.setFixedHeight(22)
+            edit.setFixedSize(80, 24)
             edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
             edit.setStyleSheet(
-                "font-size:9px; font-weight:bold; border:1px solid #ccc;"
-                "border-radius:2px; background:#f0f4f8;")
+                "font-size:8px; font-weight:bold;"
+                "border:1px solid #aaa; border-radius:0px;"
+                "background:#eef2f7; padding:0px;")
             edit.setToolTip("Redigera frekvensetikett (X-axel)")
             self._matrix_grid.addWidget(edit, 0, c + 1)
             self._x_label_edits.append(edit)
@@ -3048,14 +3053,14 @@ class SettingsPanel(QWidget):
         for r in range(rows):
             display_r = rows - 1 - r   # index 0 = C1 (lowest)
 
-            # Editable row header (consequence / Y-axis)
+            # Editable row header — fixed height matches cell height exactly
             edit_y = QLineEdit(y_labels[display_r] if display_r < len(y_labels) else f'C{display_r+1}')
-            edit_y.setFixedWidth(90)
-            edit_y.setFixedHeight(40)
+            edit_y.setFixedSize(90, 40)
             edit_y.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             edit_y.setStyleSheet(
-                "font-size:9px; font-weight:bold; border:1px solid #ccc;"
-                "border-radius:2px; background:#f0f4f8;")
+                "font-size:8px; font-weight:bold;"
+                "border:1px solid #aaa; border-radius:0px;"
+                "background:#eef2f7; padding:0 4px;")
             edit_y.setToolTip("Redigera konsekvensnivå-etikett (Y-axel)")
             self._matrix_grid.addWidget(edit_y, r + 1, 0)
             self._y_label_edits.append(edit_y)   # index 0 = top row (highest)
