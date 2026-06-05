@@ -1996,8 +1996,9 @@ class HAZOPTreeWidget(QTreeWidget):
 
 
 class TreePanel(QWidget):
-    item_selected    = pyqtSignal(int, int)
+    item_selected     = pyqtSignal(int, int)
     structure_changed = pyqtSignal()
+    visibility_changed = pyqtSignal(str, bool)   # marker_type, visible
 
     def __init__(self, db: Database):
         super().__init__()
@@ -2038,6 +2039,36 @@ class TreePanel(QWidget):
         self.btn_cause.clicked.connect(self.add_cause)
         self.btn_cons.clicked.connect(self.add_consequence)
         self.btn_del.clicked.connect(self.delete_selected)
+
+        # ── Visibility toggle buttons for P&ID markers ────────────────────────
+        vis_lbl = QLabel("Visa på P&ID:")
+        vis_lbl.setStyleSheet("color:#555; font-size:10px;")
+        layout.addWidget(vis_lbl)
+
+        vis_row = QHBoxLayout()
+        vis_row.setSpacing(4)
+
+        _VIS_BTNS = [
+            ('cause',        '⚙️ Orsaker',       '#e74c3c', '#fde8e8'),
+            ('consequence',  '⚠️ Konsekvenser',  '#e67e22', '#fef0e0'),
+            ('safeguard',    '🛡️ Safeguards',    '#27ae60', '#e8f8e8'),
+        ]
+        self._vis_btns = {}
+        for type_key, label, color_on, color_off in _VIS_BTNS:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setChecked(True)
+            btn.setFixedHeight(24)
+            btn.setStyleSheet(
+                f"QPushButton{{background:{color_on}; color:white; border:none;"
+                f" border-radius:3px; font-size:10px; font-weight:bold; padding:0 4px;}}"
+                f"QPushButton:!checked{{background:{color_off}; color:#aaa;}}")
+            btn.toggled.connect(
+                lambda checked, t=type_key: self.visibility_changed.emit(t, checked))
+            vis_row.addWidget(btn)
+            self._vis_btns[type_key] = btn
+
+        layout.addLayout(vis_row)
 
     def refresh(self, select_type=None, select_id=None):
         expanded = set()
@@ -5300,6 +5331,8 @@ class MainWindow(QMainWindow):
         # ── Wire signals ──────────────────────────────────────────────────────
         self.tree_panel.item_selected.connect(self._on_selected)
         self.tree_panel.structure_changed.connect(self._on_structure_changed)
+        self.tree_panel.visibility_changed.connect(
+            lambda t, v: self.pid_panel.viewer.set_marker_visibility(t, v))
 
         self.node_panel.saved.connect(
             lambda id_, name: self.tree_panel.refresh(NODE_T, id_))

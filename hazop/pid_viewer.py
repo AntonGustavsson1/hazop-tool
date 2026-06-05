@@ -1952,9 +1952,12 @@ class PIDGraphicsView(QGraphicsView):
         self.setOptimizationFlag(
             QGraphicsView.OptimizationFlag.DontSavePainterState, True)
 
-        self._press_pos  = None  # NAV mode: click vs drag detection
-        self._rect_start = None  # rect-select mode: start scene point
-        self._rect_item  = None  # temporary rubber-band QGraphicsRectItem
+        self._press_pos  = None
+        self._rect_start = None
+        self._rect_item  = None
+        # Per-type marker tracking for visibility toggle
+        self._type_items: dict = {'cause': [], 'consequence': [], 'safeguard': []}
+        self._type_visible: dict = {'cause': True, 'consequence': True, 'safeguard': True}
 
         self.mode             = MODE_NAV
         self.pdf_doc          = None
@@ -2201,6 +2204,22 @@ class PIDGraphicsView(QGraphicsView):
             txt.setZValue(Z_OVERLAY + 1)
             self._scene.addItem(txt)
 
+    def _add_tracked(self, item, marker_type: str):
+        """Add item to scene and track it for visibility toggling."""
+        self._scene.addItem(item)
+        self._type_items.setdefault(marker_type, []).append(item)
+        if not self._type_visible.get(marker_type, True):
+            item.setVisible(False)
+
+    def set_marker_visibility(self, marker_type: str, visible: bool):
+        """Show or hide all markers of a given type."""
+        self._type_visible[marker_type] = visible
+        for item in self._type_items.get(marker_type, []):
+            try:
+                item.setVisible(visible)
+            except Exception:
+                pass
+
     def add_cause_marker(self, cause_id, x_pdf, y_pdf, comp_type, label, tag=''):
         center = self.pdf_to_scene(x_pdf, y_pdf)
         r = 14.0
@@ -2215,7 +2234,7 @@ class PIDGraphicsView(QGraphicsView):
         circle.setData(self._DATA_ID,   cause_id)
         circle.setAcceptHoverEvents(True)
         circle.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._scene.addItem(circle)
+        self._add_tracked(circle, 'cause')
 
         display = tag if tag else comp_type[:3].upper()
         inner = QGraphicsSimpleTextItem(display)
@@ -2225,7 +2244,7 @@ class PIDGraphicsView(QGraphicsView):
         ibr = inner.boundingRect()
         inner.setPos(center.x() - ibr.width() / 2, center.y() - ibr.height() / 2)
         inner.setZValue(Z_OVERLAY + 1)
-        self._scene.addItem(inner)
+        self._add_tracked(inner, 'cause')
 
         if label:
             short = label[:30]
@@ -2235,7 +2254,7 @@ class PIDGraphicsView(QGraphicsView):
             txt.setBrush(QBrush(QColor(120, 0, 0)))
             txt.setPos(center.x() + r + 3, center.y() - 8)
             txt.setZValue(Z_OVERLAY + 1)
-            self._scene.addItem(txt)
+            self._add_tracked(txt, 'cause')
 
     def add_consequence_marker(self, cons_id, x_pdf, y_pdf, target):
         center = self.pdf_to_scene(x_pdf, y_pdf)
@@ -2249,7 +2268,7 @@ class PIDGraphicsView(QGraphicsView):
         circle.setData(self._DATA_ID,   cons_id)
         circle.setAcceptHoverEvents(True)
         circle.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._scene.addItem(circle)
+        self._add_tracked(circle, 'consequence')
 
         inner = QGraphicsSimpleTextItem("K")
         f = QFont(); f.setPointSize(8); f.setBold(True)
@@ -2257,7 +2276,7 @@ class PIDGraphicsView(QGraphicsView):
         ibr = inner.boundingRect()
         inner.setPos(center.x() - ibr.width() / 2, center.y() - ibr.height() / 2)
         inner.setZValue(Z_OVERLAY + 1)
-        self._scene.addItem(inner)
+        self._add_tracked(inner, 'consequence')
 
     def add_safeguard_marker(self, sg_id, x_pdf, y_pdf, tag, description):
         center = self.pdf_to_scene(x_pdf, y_pdf)
@@ -2272,7 +2291,7 @@ class PIDGraphicsView(QGraphicsView):
         circle.setData(self._DATA_ID,   sg_id)
         circle.setAcceptHoverEvents(True)
         circle.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._scene.addItem(circle)
+        self._add_tracked(circle, 'safeguard')
 
         display = tag if tag else 'SG'
         inner = QGraphicsSimpleTextItem(display[:4])
@@ -2281,7 +2300,7 @@ class PIDGraphicsView(QGraphicsView):
         ibr = inner.boundingRect()
         inner.setPos(center.x() - ibr.width() / 2, center.y() - ibr.height() / 2)
         inner.setZValue(Z_OVERLAY + 1)
-        self._scene.addItem(inner)
+        self._add_tracked(inner, 'safeguard')
 
         if description:
             txt = QGraphicsSimpleTextItem(description[:30])
@@ -2290,7 +2309,7 @@ class PIDGraphicsView(QGraphicsView):
             txt.setBrush(QBrush(QColor(20, 100, 20)))
             txt.setPos(center.x() + r + 3, center.y() - 8)
             txt.setZValue(Z_OVERLAY + 1)
-            self._scene.addItem(txt)
+            self._add_tracked(txt, 'safeguard')
 
     def _extract_tag_from_rect(self, pdf_rect: QRectF) -> tuple:
         """Extract tag text AND classify the P&ID symbol inside the rectangle.
@@ -2391,6 +2410,9 @@ class PIDGraphicsView(QGraphicsView):
             try: self._scene.removeItem(self._pending_path_item)
             except Exception: pass
             self._pending_path_item = None
+        # Clear per-type item lists (items are gone from scene)
+        for key in self._type_items:
+            self._type_items[key] = []
 
     def mousePressEvent(self, event):
         if self.mode == MODE_NAV:
