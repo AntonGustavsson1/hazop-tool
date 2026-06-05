@@ -43,7 +43,10 @@ CREATE TABLE IF NOT EXISTS nodes (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     name        TEXT NOT NULL DEFAULT 'Ny nod',
     description TEXT DEFAULT '',
-    pid_ref     TEXT DEFAULT ''
+    pid_ref     TEXT DEFAULT '',
+    media       TEXT DEFAULT '',
+    pressure    TEXT DEFAULT '',
+    temperature TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS causes (
@@ -385,6 +388,9 @@ class Database:
             "ALTER TABLE nodes ADD COLUMN markup_points TEXT DEFAULT ''",
             "ALTER TABLE nodes ADD COLUMN markup_style TEXT DEFAULT ''",
             "ALTER TABLE nodes ADD COLUMN pid_page INTEGER DEFAULT 0",
+            "ALTER TABLE nodes ADD COLUMN media TEXT DEFAULT ''",
+            "ALTER TABLE nodes ADD COLUMN pressure TEXT DEFAULT ''",
+            "ALTER TABLE nodes ADD COLUMN temperature TEXT DEFAULT ''",
             "ALTER TABLE causes ADD COLUMN likelihood INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE causes ADD COLUMN source_id INTEGER DEFAULT NULL",
             "ALTER TABLE causes ADD COLUMN base_freq REAL DEFAULT NULL",
@@ -755,9 +761,12 @@ class Database:
         return cur.lastrowid
 
     # ── Update ────────────────────────────────────────────────────────────────
-    def update_node(self, id_, name, description, pid_ref):
-        self.conn.execute("UPDATE nodes SET name=?,description=?,pid_ref=? WHERE id=?",
-                          (name, description, pid_ref, id_))
+    def update_node(self, id_, name, description, pid_ref,
+                    media='', pressure='', temperature=''):
+        self.conn.execute(
+            "UPDATE nodes SET name=?,description=?,pid_ref=?,"
+            "media=?,pressure=?,temperature=? WHERE id=?",
+            (name, description, pid_ref, media, pressure, temperature, id_))
         self.conn.commit()
 
     _SENTINEL = object()
@@ -1194,8 +1203,8 @@ class NodePanel(QWidget):
         form.addRow("P&ID-ref:", self.pid_edit)
 
         self.desc_edit = QTextEdit()
-        self.desc_edit.setPlaceholderText("Beskrivning av noden...")
-        self.desc_edit.setFixedHeight(100)
+        self.desc_edit.setPlaceholderText("Beskrivning av noden / systemgränsen...")
+        self.desc_edit.setFixedHeight(80)
         _orig_foe = QTextEdit.focusOutEvent
         _w = self.desc_edit
         _s = self._save
@@ -1204,6 +1213,27 @@ class NodePanel(QWidget):
             _orig(_w, e)
         self.desc_edit.focusOutEvent = _desc_foe
         form.addRow("Beskrivning:", self.desc_edit)
+
+        sep2 = QLabel("Processparametrar")
+        f2 = QFont(); f2.setBold(True); f2.setPointSize(10)
+        sep2.setFont(f2)
+        sep2.setStyleSheet("color:#1F4E79; margin-top:6px;")
+        form.addRow(sep2)
+
+        self.media_edit = QLineEdit()
+        self.media_edit.setPlaceholderText("t.ex. Vätgas (H₂), Vatten, Naturgas, Ammoniak")
+        self.media_edit.editingFinished.connect(self._save)
+        form.addRow("Media:", self.media_edit)
+
+        self.pressure_edit = QLineEdit()
+        self.pressure_edit.setPlaceholderText("t.ex. 10 bar g,  0–25 barg,  1.5 MPa")
+        self.pressure_edit.editingFinished.connect(self._save)
+        form.addRow("Tryck:", self.pressure_edit)
+
+        self.temperature_edit = QLineEdit()
+        self.temperature_edit.setPlaceholderText("t.ex. 150 °C,  −20 till 80 °C")
+        self.temperature_edit.editingFinished.connect(self._save)
+        form.addRow("Temperatur:", self.temperature_edit)
 
         layout.addLayout(form)
         layout.addStretch()
@@ -1216,13 +1246,22 @@ class NodePanel(QWidget):
             self.name_edit.setText(row['name'])
             self.pid_edit.setText(row['pid_ref'] or '')
             self.desc_edit.setPlainText(row['description'] or '')
+            self.media_edit.setText(row['media'] or '')
+            self.pressure_edit.setText(row['pressure'] or '')
+            self.temperature_edit.setText(row['temperature'] or '')
             self._loading = False
 
     def _save(self):
         if self._loading or self.node_id is None:
             return
         name = self.name_edit.text().strip() or 'Ny nod'
-        self.db.update_node(self.node_id, name, self.desc_edit.toPlainText(), self.pid_edit.text())
+        self.db.update_node(
+            self.node_id, name,
+            self.desc_edit.toPlainText(),
+            self.pid_edit.text(),
+            self.media_edit.text(),
+            self.pressure_edit.text(),
+            self.temperature_edit.text())
         self.saved.emit(self.node_id, name)
 
 
