@@ -4136,9 +4136,6 @@ class SettingsPanel(QWidget):
         self._cols_spin.setValue(7)
         self._cols_spin.setToolTip("Antal nivåer på frekvens-axeln (F-1…Fn)")
         size_row.addWidget(self._cols_spin)
-        apply_size_btn = QPushButton("Tillämpa storlek")
-        apply_size_btn.clicked.connect(self._apply_size)
-        size_row.addWidget(apply_size_btn)
         size_row.addStretch()
         ml.addLayout(size_row)
 
@@ -4204,6 +4201,13 @@ class SettingsPanel(QWidget):
         ax_row.addWidget(self._x_rev_chk)
         ax_row.addWidget(self._y_rev_chk)
         ml.addLayout(ax_row)
+
+        # Live update: rebuild grid immediately on any control change
+        self._axis_combo.currentIndexChanged.connect(self._apply_size)
+        self._x_rev_chk.toggled.connect(self._apply_size)
+        self._y_rev_chk.toggled.connect(self._apply_size)
+        self._rows_spin.valueChanged.connect(self._apply_size)
+        self._cols_spin.valueChanged.connect(self._apply_size)
 
         save_matrix_btn = QPushButton("💾 Spara riskmatris")
         save_matrix_btn.setStyleSheet(
