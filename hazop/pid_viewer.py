@@ -769,6 +769,22 @@ def classify_pid_symbol(page, fitz_rect, tag: str = '') -> tuple:
     return best_comp, best_name, confidence
 
 
+def _clean_for_tag(text: str) -> str:
+    """Strip OCR artefacts — keep only characters that can appear in P&ID tags.
+
+    '###HV#####'  →  'HV'
+    '##PSV-101##' →  'PSV-101'
+    'V - 101'     →  'V-101'
+    """
+    # Uppercase first
+    text = text.upper()
+    # Remove anything that can't be part of a tag (only A-Z, 0-9, -, ., /)
+    cleaned = re.sub(r'[^A-Z0-9\-./]', ' ', text)
+    # Collapse multiple spaces and strip
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned
+
+
 def _collapse_spaces(text: str) -> str:
     """Remove spaces between individual letters/digits — fixes OCR spacing.
 
@@ -794,27 +810,33 @@ def _pick_best_tag(text: str) -> str:
         return ''
     text = text.strip().upper()
 
-    # First try on raw text
-    matches = _FULL_TAG_RE.findall(text)
-    if matches:
-        prefix, suffix = matches[0]
-        return f"{prefix}-{suffix}"
-    tag, _ = _parse_tag(text)
-    if tag:
-        return tag
-
-    # Try after collapsing OCR-inserted spaces
-    collapsed = _collapse_spaces(text)
-    if collapsed != text:
-        matches = _FULL_TAG_RE.findall(collapsed)
+    for candidate in _tag_candidates(text):
+        matches = _FULL_TAG_RE.findall(candidate)
         if matches:
-            prefix, suffix = matches[0]
-            return f"{prefix}-{suffix}"
-        tag, _ = _parse_tag(collapsed)
+            return f"{matches[0][0]}-{matches[0][1]}"
+        tag, _ = _parse_tag(candidate)
         if tag:
             return tag
-
     return ''
+
+
+def _tag_candidates(text: str) -> list:
+    """Return a prioritised list of text variants to try when parsing a tag."""
+    candidates = [text]
+    # 1. Strip OCR artefacts (###HV### → HV)
+    cleaned = _clean_for_tag(text)
+    if cleaned and cleaned != text:
+        candidates.append(cleaned)
+    # 2. Collapse spaces (P C V - 1 0 1 → PCV-101)
+    collapsed = _collapse_spaces(text)
+    if collapsed and collapsed not in candidates:
+        candidates.append(collapsed)
+    # 3. Collapse spaces on already-cleaned text
+    if cleaned:
+        cc = _collapse_spaces(cleaned)
+        if cc and cc not in candidates:
+            candidates.append(cc)
+    return candidates
 
 
 def _extract_prefix(tag: str) -> str:
@@ -2957,9 +2979,10 @@ class PIDPanel(QWidget):
         comp_data  = (self.db.all_component_types_dict()
                       if hasattr(self.db, 'all_component_types_dict') else None)
         mode_freqs = self._load_mode_freqs()
-        # Use symbol detector result to pre-select the component type in dialog
-        detected_type = self.viewer._detected_comp_type
-        detected_name = self.viewer._detected_sym_name
+        # Priority: 1. Tag database lookup (most reliable)
+        #            2. Shape/prefix classifier (fallback)
+        detected_type = (self._db_comp_for_tag(suggested_tag)
+                         or self.viewer._detected_comp_type)
         dlg = ComponentPickerDialog(self, suggested_tag=suggested_tag,
                                     component_types=comp_data,
                                     mode_freqs=mode_freqs,
@@ -3416,6 +3439,61 @@ class PIDPanel(QWidget):
         self._sc_add_sg_btn.setVisible(False)
         self._sc_finish_btn.setVisible(False)
         self._set_mode(MODE_NAV)
+
+    # ── Tag-database component lookup ─────────────────────────────────────────
+
+    # Maps Excel category strings → component_type keys used in the app
+    _CAT_TO_COMP = {
+        'instrument':        'Instrument / Sensor',
+        'givare':            'Instrument / Sensor',
+        'reglerfunktion':    'Instrument / Sensor',
+        'larm':              'Instrument / Sensor',
+        'brytare':           'Instrument / Sensor',
+        'mätvärde':          'Instrument / Sensor',
+        'transmitter':       'Instrument / Sensor',
+        'reglerventil':      'Ventil',
+        'ventil':            'Ventil',
+        'pump':              'Pump',
+        'kompressor':        'Kompressor',
+        'blåsmaskin':        'Kompressor',
+        'tank':              'Tank / Kärl',
+        'kärl':              'Tank / Kärl',
+        'behållare':         'Tank / Kärl',
+        'kolonn':            'Tank / Kärl',
+        'värmeväxlare':      'Värmeväxlare',
+        'kylare':            'Värmeväxlare',
+        'kondensor':         'Värmeväxlare',
+        'filter':            'Övrigt',
+        'sil':               'Övrigt',
+        'säkerhetsventil':   'Säkerhetsventil (PSV)',
+        'avlastningsventil': 'Säkerhetsventil (PSV)',
+        'rörledning':        'Rörledning',
+    }
+
+    def _comp_from_db_entry(self, entry: dict) -> str:
+        """Map a tag_database entry's category to a component type string."""
+        if not entry:
+            return ''
+        cat = str(entry.get('category', '')).lower()
+        for key, comp in self._CAT_TO_COMP.items():
+            if key in cat:
+                return comp
+        name = str(entry.get('name_sv', '') + ' ' + entry.get('name_en', '')).lower()
+        for key, comp in self._CAT_TO_COMP.items():
+            if key in name:
+                return comp
+        return ''
+
+    def _db_comp_for_tag(self, tag: str) -> str:
+        """Look up the tag prefix in the active tag database and return comp type."""
+        if not tag or not hasattr(self.db, 'tag_code_lookup'):
+            return ''
+        import re as _re
+        m = _re.match(r'^([A-Z]+)', tag.upper())
+        if not m:
+            return ''
+        entry = self.db.tag_code_lookup(m.group(1))
+        return self._comp_from_db_entry(entry)
 
     def _load_mode_freqs(self):
         """Return {comp_type: {mode_desc: freq_per_year}} from DB."""
