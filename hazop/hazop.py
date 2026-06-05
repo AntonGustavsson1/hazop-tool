@@ -4123,11 +4123,18 @@ class SettingsPanel(QWidget):
 
         # Size row
         size_row = QHBoxLayout()
-        size_row.addWidget(QLabel("Rader (Konsekvens):"))
-        self._rows_spin = QSpinBox(); self._rows_spin.setRange(2, 10); self._rows_spin.setValue(5)
+        size_row.addWidget(QLabel("Konsekvens-fält:"))
+        self._rows_spin = QSpinBox()
+        self._rows_spin.setRange(2, 15)
+        self._rows_spin.setValue(5)
+        self._rows_spin.setToolTip("Antal nivåer på konsekvens-axeln (C1…Cn)")
         size_row.addWidget(self._rows_spin)
-        size_row.addWidget(QLabel("  Kolumner (Frekvens):"))
-        self._cols_spin = QSpinBox(); self._cols_spin.setRange(2, 10); self._cols_spin.setValue(7)
+
+        size_row.addWidget(QLabel("  Frekvens-fält:"))
+        self._cols_spin = QSpinBox()
+        self._cols_spin.setRange(2, 15)
+        self._cols_spin.setValue(7)
+        self._cols_spin.setToolTip("Antal nivåer på frekvens-axeln (F-1…Fn)")
         size_row.addWidget(self._cols_spin)
         apply_size_btn = QPushButton("Tillämpa storlek")
         apply_size_btn.clicked.connect(self._apply_size)
