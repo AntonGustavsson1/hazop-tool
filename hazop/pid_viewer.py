@@ -27,9 +27,9 @@ from PyQt6.QtWidgets import (
     QGraphicsSimpleTextItem, QFrame, QSpinBox, QCheckBox, QGroupBox,
     QSlider, QColorDialog, QFileDialog, QMessageBox, QInputDialog,
     QSizePolicy, QMenu, QTableWidget, QTableWidgetItem, QHeaderView,
-    QProgressDialog, QApplication, QGridLayout,
+    QProgressDialog, QApplication, QGridLayout, QTextEdit,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF
+from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QProcess
 from PyQt6.QtGui import (
     QColor, QPen, QBrush, QPainterPath, QPixmap, QImage, QFont,
     QPainter, QPicture,
@@ -239,6 +239,134 @@ def _ocr_page(fitz_page, scale: float = 3.0, engine: str = 'auto'):
     elif engine == 'easyocr':
         return _ocr_page_easyocr(processed, scale), 'easyocr'
     return [], None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OCR AUTO-INSTALLER
+# ══════════════════════════════════════════════════════════════════════════════
+
+class OCRInstallerDialog(QDialog):
+    """Download and install EasyOCR via pip with live log output."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Installera OCR-motor — EasyOCR")
+        self.setMinimumSize(560, 400)
+        self.installed = False
+
+        layout = QVBoxLayout(self)
+
+        info = QLabel(
+            "<b>EasyOCR</b> behövs för att läsa text från P&ID-filer där texten "
+            "är lagrad som vektorgrafik (inte sökbar text).<br><br>"
+            "Nedladdning: <b>~500 MB</b> (AI-modeller, kräver internet).<br>"
+            "Installeras med: <code>pip install easyocr</code>")
+        info.setWordWrap(True)
+        info.setTextFormat(Qt.TextFormat.RichText)
+        info.setStyleSheet("padding:6px;")
+        layout.addWidget(info)
+
+        self._log = QTextEdit()
+        self._log.setReadOnly(True)
+        self._log.setFixedHeight(190)
+        self._log.setStyleSheet("font-family:Courier; font-size:10px; background:#111; color:#eee;")
+        layout.addWidget(self._log)
+
+        self._status = QLabel("Tryck Installera för att börja.")
+        self._status.setStyleSheet("font-weight:bold; padding:4px;")
+        layout.addWidget(self._status)
+
+        btn_row = QHBoxLayout()
+        self._install_btn = QPushButton("📥  Installera EasyOCR (~500 MB)")
+        self._install_btn.setStyleSheet(
+            "background:#1F4E79; color:white; font-weight:bold;"
+            "border:none; border-radius:4px; padding:6px 16px;")
+        self._install_btn.clicked.connect(self._start_install)
+        btn_row.addWidget(self._install_btn)
+        btn_row.addStretch()
+        cancel_btn = QPushButton("Avbryt")
+        cancel_btn.clicked.connect(self.reject)
+        self._close_btn = QPushButton("✓ Stäng")
+        self._close_btn.setEnabled(False)
+        self._close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(self._close_btn)
+        layout.addLayout(btn_row)
+
+        self._proc = QProcess(self)
+        self._proc.readyReadStandardOutput.connect(self._on_stdout)
+        self._proc.readyReadStandardError.connect(self._on_stderr)
+        self._proc.finished.connect(self._on_finished)
+
+    def _start_install(self):
+        import sys
+        self._install_btn.setEnabled(False)
+        self._status.setText("⏳ Installerar — kan ta 5–15 minuter beroende på nätverkshastighet…")
+        self._log.clear()
+        self._proc.start(sys.executable, ["-m", "pip", "install", "easyocr"])
+
+    def _append(self, text: str):
+        self._log.append(text.rstrip())
+        sb = self._log.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _on_stdout(self):
+        self._append(self._proc.readAllStandardOutput()
+                     .data().decode('utf-8', errors='replace'))
+
+    def _on_stderr(self):
+        self._append(self._proc.readAllStandardError()
+                     .data().decode('utf-8', errors='replace'))
+
+    def _on_finished(self, exit_code, _):
+        if exit_code == 0:
+            self._status.setText(
+                "✅  EasyOCR installerat!\n"
+                "OCR är nu aktivt — du behöver inte starta om.")
+            self._status.setStyleSheet("color:#27ae60; font-weight:bold; padding:4px;")
+            self.installed = True
+        else:
+            self._status.setText("❌  Installationen misslyckades. Kontrollera loggen.")
+            self._status.setStyleSheet("color:#c0392b; font-weight:bold; padding:4px;")
+            self._install_btn.setEnabled(True)
+        self._close_btn.setEnabled(True)
+
+
+def ensure_ocr_available(parent=None) -> bool:
+    """Check if any OCR engine is available; offer to install EasyOCR if not."""
+    global HAS_EASYOCR, HAS_TESSERACT, _easyocr_module
+
+    if HAS_TESSERACT or HAS_EASYOCR:
+        return True
+
+    reply = QMessageBox.question(
+        parent, "OCR-motor saknas",
+        "Ingen OCR-motor är installerad.\n\n"
+        "OCR behövs för att läsa text från P&ID-filer där texten är lagrad\n"
+        "som vektorgrafik (t.ex. ritningar från AutoCAD/Bluebeam).\n\n"
+        "Vill du ladda ner och installera EasyOCR nu?\n"
+        "(~500 MB, kräver internet)",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.Yes)
+
+    if reply != QMessageBox.StandardButton.Yes:
+        return False
+
+    dlg = OCRInstallerDialog(parent)
+    dlg.exec()
+
+    if dlg.installed:
+        try:
+            import importlib
+            importlib.invalidate_caches()
+            import easyocr as _ecr
+            _easyocr_module = _ecr
+            HAS_EASYOCR = True
+            return True
+        except Exception:
+            pass
+    return False
+
 
 COMPONENT_TYPES = {
     'Ventil': ['Fullt öppen (fastnad)', 'Fullt stängd (fastnad)', 'Delvis öppen/stängd',
@@ -2672,6 +2800,11 @@ class PIDPanel(QWidget):
             QMessageBox.warning(self, "Ingen P&ID", "Öppna en P&ID-fil först.")
             return
 
+        # Offer OCR auto-install — needed for vector-only P&IDs
+        st = ocr_status()
+        if not st['tesseract'] and not st['easyocr']:
+            ensure_ocr_available(self)
+
         doc = self.viewer.pdf_doc
         n   = doc.page_count
         progress = QProgressDialog("Analyserar P&ID…", "Avbryt", 0, n, self)
@@ -3147,8 +3280,12 @@ class PIDPanel(QWidget):
             QMessageBox.warning(self, "Ingen PDF", "Öppna en P&ID-fil först.")
             return
 
-        # Ask about OCR
+        # Offer OCR auto-install if no engine is present
         status = ocr_status()
+        if not status['tesseract'] and not status['easyocr']:
+            ensure_ocr_available(self)
+            status = ocr_status()
+
         use_ocr   = False
         ocr_engine = 'auto'
 
