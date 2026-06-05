@@ -4353,30 +4353,79 @@ class SettingsPanel(QWidget):
         self._build_matrix_grid(cfg)
 
     def _apply_size(self):
-        rows = self._rows_spin.value()
-        cols = self._cols_spin.value()
-        old  = self.db.get_risk_matrix() or DEFAULT_MATRIX
-        # Read current label edits if available
-        cur_x = [e.text() for e in self._x_label_edits] if self._x_label_edits else old.get('x_labels', [])
-        cur_y = [e.text() for e in self._y_label_edits] if self._y_label_edits else old.get('y_labels', [])
+        """Rebuild the matrix grid. Handles axis swap without losing data."""
+        n_cons    = self._rows_spin.value()
+        n_freq    = self._cols_spin.value()
+        old       = self.db.get_risk_matrix() or DEFAULT_MATRIX
+        old_xaxis = old.get('x_axis', 'frequency')
+        new_xaxis = self._axis_combo.currentData() or 'frequency'
+        x_rev     = self._x_rev_chk.isChecked()
+        y_rev     = self._y_rev_chk.isChecked()
+
+        # ── Recover labels from the current display widgets ───────────────────
+        # _x_label_edits = column headers (display left→right)
+        # _y_label_edits = row headers    (display top→bottom)
+        if self._x_label_edits and self._y_label_edits:
+            col_lbls = [e.text().strip() for e in self._x_label_edits]
+            row_lbls = [e.text().strip() for e in self._y_label_edits]  # top→bottom
+
+            # Which semantic axis was on X/Y in the old display?
+            if old_xaxis == 'frequency':
+                # cols = freq (low→high or high→low depending on old x_rev)
+                freq_lbls = col_lbls if not old.get('x_reversed', False) \
+                            else list(reversed(col_lbls))
+                # rows = cons (high→low at top unless old y_rev)
+                cons_lbls = list(reversed(row_lbls)) if not old.get('y_reversed', False) \
+                            else row_lbls
+            else:
+                # cols = cons, rows = freq
+                cons_lbls = col_lbls if not old.get('x_reversed', False) \
+                            else list(reversed(col_lbls))
+                freq_lbls = list(reversed(row_lbls)) if not old.get('y_reversed', False) \
+                            else row_lbls
+        else:
+            freq_lbls = old.get('x_labels', _FREQ_LABELS[:n_freq])
+            cons_lbls = old.get('y_labels', _SEV_LABELS[:n_cons])
+
+        # Pad/trim to new dimensions
+        while len(freq_lbls) < n_freq:
+            freq_lbls.append(f'F{len(freq_lbls)-1}')
+        while len(cons_lbls) < n_cons:
+            cons_lbls.append(f'C{len(cons_lbls)+1}')
+        freq_lbls = freq_lbls[:n_freq]
+        cons_lbls = cons_lbls[:n_cons]
+
+        # ── Cell data: current buttons override DB values ─────────────────────
+        colors = [['' for _ in range(n_freq)] for _ in range(n_cons)]
+        lbl2d  = [['' for _ in range(n_freq)] for _ in range(n_cons)]
+        # 1. Fill from DB
+        old_c = old.get('cell_colors', [])
+        old_l = old.get('cell_labels', [])
+        for ci in range(n_cons):
+            for fi in range(n_freq):
+                try:    colors[ci][fi] = old_c[ci][fi] or '#27ae60'
+                except: colors[ci][fi] = '#27ae60'
+                try:    lbl2d[ci][fi]  = old_l[ci][fi] or 'Låg'
+                except: lbl2d[ci][fi]  = 'Låg'
+        # 2. Override with any user edits in the current buttons
+        for _dr, row_btns in self._cell_buttons:
+            for btn in row_btns:
+                ci, fi = btn.row, btn.col
+                if ci < n_cons and fi < n_freq:
+                    if btn.color(): colors[ci][fi] = btn.color()
+                    if btn.label(): lbl2d[ci][fi]  = btn.label()
+
         new_cfg = {
-            'rows': rows, 'cols': cols,
-            'x_axis': old.get('x_axis', 'frequency'),
-            'x_labels': (cur_x + _FREQ_LABELS)[:cols],
-            'y_labels': (cur_y + _SEV_LABELS)[:rows],
-            'cell_colors': [], 'cell_labels': [],
+            'rows': n_cons, 'cols': n_freq,
+            'x_axis':      new_xaxis,
+            'x_reversed':  x_rev,
+            'y_reversed':  y_rev,
+            'x_labels':    freq_lbls,   # ALWAYS stores frequency labels
+            'y_labels':    cons_lbls,   # ALWAYS stores consequence labels
+            'cell_colors': colors,
+            'cell_labels': lbl2d,
+            'freq_boundaries': old.get('freq_boundaries', DEFAULT_FREQ_BOUNDARIES),
         }
-        old_colors = old.get('cell_colors', [])
-        old_labels = old.get('cell_labels', [])
-        for r in range(rows):
-            crow, lrow = [], []
-            for c in range(cols):
-                try: crow.append(old_colors[r][c])
-                except (IndexError, KeyError): crow.append('#27ae60')
-                try: lrow.append(old_labels[r][c])
-                except (IndexError, KeyError): lrow.append('Låg')
-            new_cfg['cell_colors'].append(crow)
-            new_cfg['cell_labels'].append(lrow)
         self._build_matrix_grid(new_cfg)
 
     def _build_matrix_grid(self, cfg):
