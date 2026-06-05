@@ -4324,107 +4324,162 @@ class SettingsPanel(QWidget):
         self._build_matrix_grid(new_cfg)
 
     def _build_matrix_grid(self, cfg):
-        # Clear old content
+        """Build the matrix grid respecting axis orientation and intervals."""
         while self._matrix_grid.count():
             item = self._matrix_grid.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        self._cell_buttons  = []
-        self._x_label_edits = []
-        self._y_label_edits = []
+        self._cell_buttons       = []
+        self._x_label_edits      = []
+        self._y_label_edits      = []
+        self._freq_boundary_edits = []
 
-        rows     = cfg['rows']
-        cols     = cfg['cols']
-        x_labels = cfg.get('x_labels', [f'F{c-1}' for c in range(cols)])
-        y_labels = cfg.get('y_labels', [f'C{r+1}' for r in range(rows)])
-        colors   = cfg.get('cell_colors', [['#27ae60'] * cols] * rows)
-        labels   = cfg.get('cell_labels', [['Låg'] * cols] * rows)
+        # Data always stored as [consequence_idx][frequency_idx]
+        n_cons = cfg.get('rows', 5)    # consequence levels
+        n_freq = cfg.get('cols', 7)    # frequency levels
+        freq_labels = cfg.get('x_labels', [f'F{c-1}' for c in range(n_freq)])
+        cons_labels = cfg.get('y_labels', [f'C{r+1}' for r in range(n_cons)])
+        colors      = cfg.get('cell_colors', [['#27ae60'] * n_freq] * n_cons)
+        cell_labels = cfg.get('cell_labels', [['Låg'] * n_freq] * n_cons)
+        boundaries  = list(cfg.get('freq_boundaries', DEFAULT_FREQ_BOUNDARIES))
 
-        # Top-left corner
-        corner = QLabel("C \\ F")
+        x_axis = cfg.get('x_axis', 'frequency')
+        freq_on_x = (x_axis == 'frequency')
+
+        # Determine display dimensions
+        if freq_on_x:
+            n_dcols, n_drows = n_freq, n_cons   # cols=freq, rows=cons
+            col_lbls, row_lbls = freq_labels, cons_labels
+            corner_txt = "C \\ F"
+            col_tip = "Frekvensetikett (X-axel)\nExempel: F3 – Möjlig | 10-100 år"
+            row_tip = "Konsekvensnivå (Y-axel)\nExempel: C4 – Allvarlig"
+        else:
+            n_dcols, n_drows = n_cons, n_freq   # cols=cons, rows=freq
+            col_lbls, row_lbls = cons_labels, freq_labels
+            corner_txt = "F \\ C"
+            col_tip = "Konsekvensnivå (X-axel)\nExempel: C4 – Allvarlig"
+            row_tip = "Frekvensetikett (Y-axel)\nExempel: F3 – Möjlig | 10-100 år"
+
+        _hdr_style = ("font-size:8px; font-weight:bold;"
+                      "border:1px solid #aaa; border-radius:0px;"
+                      "background:#eef2f7; padding:0 3px;")
+
+        # Corner
+        corner = QLabel(corner_txt)
         corner.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        corner.setStyleSheet("font-size:9px; color:#666;")
+        corner.setStyleSheet("font-size:9px; color:#555;")
         self._matrix_grid.addWidget(corner, 0, 0)
 
-        # Editable column headers — fixed width matches cell width exactly
-        for c in range(cols):
-            edit = QLineEdit(x_labels[c] if c < len(x_labels) else f'F{c-1}')
-            edit.setFixedSize(80, 24)
-            edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            edit.setStyleSheet(
-                "font-size:8px; font-weight:bold;"
-                "border:1px solid #aaa; border-radius:0px;"
-                "background:#eef2f7; padding:0px;")
-            edit.setToolTip("Redigera frekvensetikett (X-axel)")
-            self._matrix_grid.addWidget(edit, 0, c + 1)
-            self._x_label_edits.append(edit)
+        # Column headers (editable, support multi-line / interval text)
+        for c in range(n_dcols):
+            txt = col_lbls[c] if c < len(col_lbls) else str(c)
+            e = QLineEdit(txt)
+            e.setFixedSize(80, 28)
+            e.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            e.setStyleSheet(_hdr_style)
+            e.setToolTip(col_tip)
+            self._matrix_grid.addWidget(e, 0, c + 1)
+            self._x_label_edits.append(e)
 
-        # Rows: highest consequence at top
-        for r in range(rows):
-            display_r = rows - 1 - r   # index 0 = C1 (lowest)
+        # Rows
+        for r in range(n_drows):
+            disp_r = n_drows - 1 - r   # highest value at top
 
-            # Editable row header — fixed height matches cell height exactly
-            edit_y = QLineEdit(y_labels[display_r] if display_r < len(y_labels) else f'C{display_r+1}')
-            edit_y.setFixedSize(90, 40)
-            edit_y.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            edit_y.setStyleSheet(
-                "font-size:8px; font-weight:bold;"
-                "border:1px solid #aaa; border-radius:0px;"
-                "background:#eef2f7; padding:0 4px;")
-            edit_y.setToolTip("Redigera konsekvensnivå-etikett (Y-axel)")
-            self._matrix_grid.addWidget(edit_y, r + 1, 0)
-            self._y_label_edits.append(edit_y)   # index 0 = top row (highest)
+            # Row header
+            txt = row_lbls[disp_r] if disp_r < len(row_lbls) else str(disp_r)
+            ey = QLineEdit(txt)
+            ey.setFixedSize(90, 40)
+            ey.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            ey.setStyleSheet(_hdr_style)
+            ey.setToolTip(row_tip)
+            self._matrix_grid.addWidget(ey, r + 1, 0)
+            self._y_label_edits.append(ey)   # index 0 = top row
 
             row_btns = []
-            for c in range(cols):
-                try: cc = colors[display_r][c]
+            for c in range(n_dcols):
+                # Map display (r, c) → data (cons_idx, freq_idx)
+                if freq_on_x:
+                    cons_idx = disp_r   # row = consequence (high at top)
+                    freq_idx = c        # col = frequency
+                else:
+                    freq_idx = disp_r   # row = frequency (high at top)
+                    cons_idx = c        # col = consequence
+
+                try: cc = colors[cons_idx][freq_idx]
                 except (IndexError, KeyError): cc = '#27ae60'
-                try: cl = labels[display_r][c]
+                try: cl = cell_labels[cons_idx][freq_idx]
                 except (IndexError, KeyError): cl = 'Låg'
-                btn = MatrixCellButton(display_r, c, cc, cl,
-                                      is_top_row=(r == 0),
-                                      is_left_col=(c == 0))
+
+                btn = MatrixCellButton(cons_idx, freq_idx, cc, cl,
+                                       is_top_row=(r == 0),
+                                       is_left_col=(c == 0))
                 btn.clicked.connect(lambda _, b=btn: self._edit_cell(b))
                 self._matrix_grid.addWidget(btn, r + 1, c + 1)
                 row_btns.append(btn)
-            self._cell_buttons.append((display_r, row_btns))
+            self._cell_buttons.append((disp_r, row_btns))
 
-        # ── Frequency boundary row (below cells) ──────────────────────────────
-        # One editable boundary per column-gap: N columns → N-1 boundaries
-        # Boundary[i] = upper limit of column i (events/year)
-        boundaries = list(cfg.get('freq_boundaries', DEFAULT_FREQ_BOUNDARIES))
-        while len(boundaries) < cols - 1:
-            boundaries.append(10 ** (len(boundaries) - 5))   # pad if short
+        # ── Interval / boundary row below cells ───────────────────────────────
+        # Only shown when frequency is on X-axis (boundaries are per-frequency-column)
+        if freq_on_x:
+            while len(boundaries) < n_freq - 1:
+                boundaries.append(10 ** (len(boundaries) - 5))
 
-        bnd_lbl = QLabel("Gräns\n(/år)")
-        bnd_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        bnd_lbl.setStyleSheet("font-size:8px; color:#555; padding:0 3px;")
-        self._matrix_grid.addWidget(bnd_lbl, rows + 1, 0)
+            bnd_lbl = QLabel("Gräns\n(/år)")
+            bnd_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            bnd_lbl.setStyleSheet("font-size:8px; color:#555; padding:0 3px;")
+            self._matrix_grid.addWidget(bnd_lbl, n_drows + 1, 0)
 
-        self._freq_boundary_edits = []
-        for c in range(cols):
-            if c < cols - 1:
-                bval = boundaries[c] if c < len(boundaries) else ''
-                btext = f"{float(bval):.4g}" if bval != '' else ''
-                e = QLineEdit(btext)
-                e.setPlaceholderText("—")
-                e.setFixedSize(80, 22)
-                e.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                e.setStyleSheet(
-                    "font-size:9px; border:1px solid #aaa; background:#fffde7;"
-                    "border-radius:0px;")
-                e.setToolTip(
-                    f"Övre gräns (händelser/år) för kolumn {c} (F={c-1}).\n"
-                    f"Frekvenser under detta värde tillhör denna kolumn.\n"
-                    f"Exempel: 0.1 = en gång per 10 år")
-                self._matrix_grid.addWidget(e, rows + 1, c + 1)
-                self._freq_boundary_edits.append(e)
-            else:
-                # Last column has no upper boundary
-                inf_lbl = QLabel(">allt")
-                inf_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                inf_lbl.setStyleSheet("font-size:8px; color:#aaa;")
-                self._matrix_grid.addWidget(inf_lbl, rows + 1, c + 1)
+            for c in range(n_dcols):
+                if c < n_dcols - 1:
+                    bval  = boundaries[c] if c < len(boundaries) else ''
+                    btext = f"{float(bval):.4g}" if bval != '' else ''
+                    e = QLineEdit(btext)
+                    e.setPlaceholderText("—")
+                    e.setFixedSize(80, 22)
+                    e.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    e.setStyleSheet(
+                        "font-size:9px; border:1px solid #aaa; background:#fffde7;"
+                        "border-radius:0px;")
+                    e.setToolTip(
+                        f"Övre gräns (händelser/år) för kolumn {c}.\n"
+                        f"Frekvenser under detta värde tillhör denna kolumn.\n"
+                        f"Exempel: 0.1 = en gång per 10 år")
+                    self._matrix_grid.addWidget(e, n_drows + 1, c + 1)
+                    self._freq_boundary_edits.append(e)
+                else:
+                    lbl = QLabel(">allt")
+                    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    lbl.setStyleSheet("font-size:8px; color:#aaa;")
+                    self._matrix_grid.addWidget(lbl, n_drows + 1, c + 1)
+        else:
+            # When frequency on Y: add interval boundary column on the right
+            bnd_lbl = QLabel("Gräns\n(/år)")
+            bnd_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            bnd_lbl.setStyleSheet("font-size:8px; color:#555;")
+            self._matrix_grid.addWidget(bnd_lbl, 0, n_dcols + 1)
+
+            while len(boundaries) < n_freq - 1:
+                boundaries.append(10 ** (len(boundaries) - 5))
+
+            for r in range(n_drows):
+                disp_r = n_drows - 1 - r
+                if disp_r > 0:   # lowest row has no lower boundary
+                    bval  = boundaries[disp_r - 1] if disp_r - 1 < len(boundaries) else ''
+                    btext = f"{float(bval):.4g}" if bval != '' else ''
+                    e = QLineEdit(btext)
+                    e.setPlaceholderText("—")
+                    e.setFixedSize(70, 40)
+                    e.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    e.setStyleSheet(
+                        "font-size:9px; border:1px solid #aaa; background:#fffde7;"
+                        "border-radius:0px;")
+                    self._matrix_grid.addWidget(e, r + 1, n_dcols + 1)
+                    self._freq_boundary_edits.append(e)
+                else:
+                    lbl = QLabel(">allt")
+                    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    lbl.setStyleSheet("font-size:8px; color:#aaa;")
+                    self._matrix_grid.addWidget(lbl, r + 1, n_dcols + 1)
 
     def _edit_cell(self, btn):
         """Click a cell → choose color AND label."""
@@ -4438,32 +4493,44 @@ class SettingsPanel(QWidget):
             btn.set_cell(color.name(), label.strip() or btn.label())
 
     def _save_matrix(self):
-        rows = self._rows_spin.value()
-        cols = self._cols_spin.value()
-        old  = self.db.get_risk_matrix() or DEFAULT_MATRIX
+        n_cons = self._rows_spin.value()   # consequence levels (rows in data)
+        n_freq = self._cols_spin.value()   # frequency levels  (cols in data)
+        x_axis = self._axis_combo.currentData() or 'frequency'
+        freq_on_x = (x_axis == 'frequency')
 
-        colors = [['' for _ in range(cols)] for _ in range(rows)]
-        labels = [['' for _ in range(cols)] for _ in range(rows)]
-        for display_r, row_btns in self._cell_buttons:
+        # Cell buttons store (cons_idx, freq_idx) regardless of display orientation
+        colors = [['' for _ in range(n_freq)] for _ in range(n_cons)]
+        labels = [['' for _ in range(n_freq)] for _ in range(n_cons)]
+        for _disp_r, row_btns in self._cell_buttons:
             for btn in row_btns:
-                r, c = btn.row, btn.col
-                if r < rows and c < cols:
-                    colors[r][c] = btn.color()
-                    labels[r][c] = btn.label()
+                cons_i, freq_i = btn.row, btn.col   # (cons_idx, freq_idx)
+                if cons_i < n_cons and freq_i < n_freq:
+                    colors[cons_i][freq_i] = btn.color()
+                    labels[cons_i][freq_i] = btn.label()
 
-        # Read axis labels from editable QLineEdits
-        # _x_label_edits: index 0 = leftmost column (lowest frequency)
-        x_labels = [e.text().strip() or f'F{i-1}'
-                    for i, e in enumerate(self._x_label_edits)]
-        # _y_label_edits: index 0 = top row (highest consequence)
-        # Reverse to store low→high (matching rows 0=lowest)
-        y_labels_top_down = [e.text().strip() or f'C{rows - i}'
-                             for i, e in enumerate(self._y_label_edits)]
-        y_labels = list(reversed(y_labels_top_down))   # low→high
+        # Axis labels: _x_label_edits are the column headers (whatever axis),
+        # _y_label_edits are the row headers (reversed, highest at top)
+        raw_col = [e.text().strip() for e in self._x_label_edits]
+        raw_row = list(reversed([e.text().strip() for e in self._y_label_edits]))  # low→high
+
+        if freq_on_x:
+            # X=freq columns, Y=cons rows
+            x_labels = raw_col or [f'F{i-1}' for i in range(n_freq)]
+            y_labels = raw_row or [f'C{i+1}' for i in range(n_cons)]
+        else:
+            # X=cons columns, Y=freq rows
+            y_labels = raw_col or [f'C{i+1}' for i in range(n_cons)]
+            x_labels = raw_row or [f'F{i-1}' for i in range(n_freq)]
+
+        # Pad/trim to correct lengths
+        while len(x_labels) < n_freq: x_labels.append(f'F{len(x_labels)-1}')
+        while len(y_labels) < n_cons: y_labels.append(f'C{len(y_labels)+1}')
+        x_labels = x_labels[:n_freq]
+        y_labels = y_labels[:n_cons]
 
         cfg = {
-            'rows': rows, 'cols': cols,
-            'x_axis': self._axis_combo.currentData() or 'frequency',
+            'rows': n_cons, 'cols': n_freq,
+            'x_axis': x_axis,
             'x_labels': x_labels,
             'y_labels': y_labels,
             'cell_colors': colors,
