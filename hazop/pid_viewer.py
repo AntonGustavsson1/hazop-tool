@@ -2684,6 +2684,45 @@ class PIDImportDialog(QDialog):
         return self._notes_edit.text().strip()
 
 
+# ── PDF-export helpers ─────────────────────────────────────────────────────────
+
+def _hex_to_fitz_rgb(hex_color):
+    """Convert '#rrggbb' string to (r, g, b) float tuple (0..1)."""
+    h = hex_color.lstrip('#')
+    if len(h) == 3:
+        h = ''.join(c * 2 for c in h)
+    return (int(h[0:2], 16) / 255, int(h[2:4], 16) / 255, int(h[4:6], 16) / 255)
+
+
+def _draw_pid_marker(page, x, y, rgb, letter, label):
+    """Draw a filled circle at (x, y) with a centred letter and an outside label.
+
+    Coordinates are in PyMuPDF page space (0,0 = top-left, y down).
+    """
+    R = 7.0
+    # Filled circle
+    shape = page.new_shape()
+    shape.draw_circle(fitz.Point(x, y), R)
+    try:
+        shape.finish(color=rgb, fill=rgb, width=0.5, fill_opacity=0.80)
+    except TypeError:
+        shape.finish(color=rgb, fill=rgb, width=0.5)
+    shape.commit()
+    # Centred letter in white (baseline ≈ circle-centre + cap_height/2 ≈ +3.5 pts)
+    try:
+        page.insert_text(fitz.Point(x - 2.5, y + 3.5), letter,
+                         fontsize=9, color=(1.0, 1.0, 1.0), fontname='helv')
+    except Exception:
+        pass
+    # Label to the right of the circle
+    if label:
+        try:
+            page.insert_text(fitz.Point(x + R + 3, y + 3.5),
+                             str(label)[:40], fontsize=7, color=rgb, fontname='helv')
+        except Exception:
+            pass
+
+
 class PIDPanel(QWidget):
     node_created            = pyqtSignal(int)
     cause_created           = pyqtSignal(int)
@@ -2723,6 +2762,14 @@ class PIDPanel(QWidget):
         self.analyze_btn.clicked.connect(self._analyze_pid)
         self.analyze_btn.setEnabled(False)
         bar.addWidget(self.analyze_btn)
+
+        self.export_btn = QPushButton("📤 Exportera PDF")
+        self.export_btn.setToolTip(
+            "Exportera P&ID med alla HAZOP-markeringar (nodgränser, orsaker,\n"
+            "konsekvenser, barriärer och kopplingslinjer) som en ny PDF-fil.")
+        self.export_btn.clicked.connect(self._export_pdf)
+        self.export_btn.setEnabled(False)
+        bar.addWidget(self.export_btn)
 
         bar.addWidget(_vline())
 
@@ -2973,6 +3020,158 @@ class PIDPanel(QWidget):
         sheets = self.db.get_sheets()
         self._sheet_map = {i: int(s['physical_page']) for i, s in enumerate(sheets)}
 
+    def _export_pdf(self):
+        if not HAS_PYMUPDF or self.viewer.pdf_doc is None:
+            QMessageBox.warning(self, "Export", "Öppna ett P&ID-dokument först.")
+            return
+        working = self._working_pdf_path()
+        if not working.exists():
+            QMessageBox.warning(self, "Export", "Ingen P&ID-fil att exportera.")
+            return
+
+        out_path, _ = QFileDialog.getSaveFileName(
+            self, "Exportera P&ID med markup", "", "PDF-dokument (*.pdf)")
+        if not out_path:
+            return
+        if not out_path.lower().endswith('.pdf'):
+            out_path += '.pdf'
+
+        sheets = self.db.get_sheets()
+        page_order = ([int(s['physical_page']) for s in sheets]
+                      if sheets else list(range(self.viewer.page_count())))
+
+        prog = QProgressDialog("Exporterar P&ID…", None, 0, len(page_order), self)
+        prog.setWindowTitle("Export")
+        prog.setMinimumDuration(0)
+        prog.setValue(0)
+        QApplication.processEvents()
+
+        try:
+            src_doc = fitz.open(str(working))
+        except Exception as e:
+            prog.close()
+            QMessageBox.critical(self, "Export misslyckades",
+                                 f"Kunde inte öppna PDF:\n{e}")
+            return
+
+        out_doc = fitz.open()
+        for phys in page_order:
+            out_doc.insert_pdf(src_doc, from_page=phys, to_page=phys)
+
+        for out_idx, phys_page in enumerate(page_order):
+            prog.setValue(out_idx)
+            QApplication.processEvents()
+            page = out_doc.load_page(out_idx)
+
+            # ── Node markup polygons ──────────────────────────────────────
+            for node in self.db.nodes():
+                nd = dict(node)
+                if int(nd.get('pid_page', 0) or 0) != phys_page:
+                    continue
+                raw_pts = nd.get('markup_points', '') or ''
+                if not raw_pts:
+                    continue
+                try:
+                    pts = [fitz.Point(float(p[0]), float(p[1]))
+                           for p in json.loads(raw_pts)]
+                    style = json.loads(nd.get('markup_style', '') or '{}')
+                except Exception:
+                    continue
+                if len(pts) < 2:
+                    continue
+                color = _hex_to_fitz_rgb(style.get('color', '#ff8c00'))
+                width = max(0.5, style.get('width', 2) * 0.4)
+                alpha = style.get('alpha', 120) / 255
+                close = len(pts) >= 3
+                shape = page.new_shape()
+                shape.draw_polyline(pts + [pts[0]] if close else pts)
+                try:
+                    shape.finish(color=color, width=width,
+                                 fill=color, fill_opacity=alpha * 0.35)
+                except TypeError:
+                    shape.finish(color=color, width=width)
+                name = nd.get('name', '')
+                if name and pts:
+                    cx = sum(p.x for p in pts) / len(pts)
+                    cy = sum(p.y for p in pts) / len(pts)
+                    try:
+                        shape.insert_text(
+                            fitz.Point(cx - len(name) * 2.5, cy + 3.5),
+                            name, fontsize=8, color=color, fontname='helv')
+                    except Exception:
+                        pass
+                shape.commit()
+
+            # ── Cause markers ─────────────────────────────────────────────
+            cause_pos = {}
+            for m in self.db.cause_markers_for_page(phys_page):
+                md = dict(m)
+                x, y = float(md['x']), float(md['y'])
+                cause_pos[md['cause_id']] = (x, y)
+                cause  = self.db.get_cause(md['cause_id'])
+                desc   = dict(cause).get('description', '') if cause else ''
+                tag    = md.get('component_tag', '') or md.get('component_type', '')
+                _draw_pid_marker(page, x, y, (0.75, 0.18, 0.09), 'C', tag or desc)
+
+            # ── Consequence markers ───────────────────────────────────────
+            cons_pos = {}
+            for m in self.db.consequence_markers_for_page(phys_page):
+                md = dict(m)
+                x, y = float(md['x']), float(md['y'])
+                cons_pos[md['consequence_id']] = (x, y)
+                cons = self.db.get_consequence(md['consequence_id'])
+                desc = dict(cons).get('description', '') if cons else ''
+                _draw_pid_marker(page, x, y, (0.87, 0.42, 0.06), 'K', desc)
+
+            # ── Safeguard markers ─────────────────────────────────────────
+            sg_pos = {}
+            for m in self.db.safeguard_markers_for_page(phys_page):
+                md = dict(m)
+                x, y = float(md['x']), float(md['y'])
+                sg_pos[md['safeguard_id']] = (x, y)
+                row = self.db.conn.execute(
+                    "SELECT description FROM safeguards WHERE id=?",
+                    (md['safeguard_id'],)).fetchone()
+                desc = row['description'] if row else ''
+                tag  = md.get('tag', '')
+                _draw_pid_marker(page, x, y, (0.15, 0.62, 0.27), 'S', tag or desc)
+
+            # ── Connection lines ──────────────────────────────────────────
+            shape = page.new_shape()
+            for cid, cpos in cons_pos.items():
+                c = self.db.get_consequence(cid)
+                if c and c['cause_id'] in cause_pos:
+                    shape.draw_line(fitz.Point(*cause_pos[c['cause_id']]),
+                                    fitz.Point(*cpos))
+                    shape.finish(color=(0.75, 0.18, 0.09), width=0.8)
+            for sid, spos in sg_pos.items():
+                s = self.db.get_safeguard(sid)
+                if s and s['consequence_id'] in cons_pos:
+                    shape.draw_line(fitz.Point(*cons_pos[s['consequence_id']]),
+                                    fitz.Point(*spos))
+                    try:
+                        shape.finish(color=(0.15, 0.62, 0.27), width=0.8,
+                                     dashes="[3 3] 0")
+                    except TypeError:
+                        shape.finish(color=(0.15, 0.62, 0.27), width=0.8)
+            shape.commit()
+
+        src_doc.close()
+        prog.setValue(len(page_order))
+        QApplication.processEvents()
+
+        try:
+            out_doc.save(out_path, garbage=4, deflate=True)
+            out_doc.close()
+            prog.close()
+            QMessageBox.information(self, "Export klar",
+                                    f"P&ID exporterat med markup till:\n{out_path}")
+        except Exception as e:
+            out_doc.close()
+            prog.close()
+            QMessageBox.critical(self, "Export misslyckades",
+                                 f"Kunde inte spara PDF:\n{e}")
+
     def _open_pdf(self):
         if not HAS_PYMUPDF:
             QMessageBox.warning(self, "PyMuPDF saknas",
@@ -3069,6 +3268,7 @@ class PIDPanel(QWidget):
         self._update_page_label()
         self._load_overlays()
         self.analyze_btn.setEnabled(True)
+        self.export_btn.setEnabled(True)
 
     def _goto_page(self, display_n):
         if self.viewer.pdf_doc is None:
@@ -3742,3 +3942,4 @@ class PIDPanel(QWidget):
                 self._update_page_label()
                 self._load_overlays()
                 self.analyze_btn.setEnabled(True)
+        self.export_btn.setEnabled(True)
