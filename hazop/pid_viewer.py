@@ -1311,10 +1311,11 @@ class TargetPickerDialog(QDialog):
 class SafeguardPickerDialog(QDialog):
     def __init__(self, parent=None, suggested_tag='', existing_safeguards=None):
         super().__init__(parent)
-        self.setWindowTitle("Markera safeguard")
-        self.setMinimumWidth(380)
+        self.setWindowTitle("Markera safeguard / barriär")
+        self.setMinimumWidth(400)
         self.tag         = ''
         self.description = ''
+        self.add_more    = False   # True when user clicks "Lägg till ytterligare"
 
         layout = QVBoxLayout(self)
         form   = QFormLayout()
@@ -1337,18 +1338,36 @@ class SafeguardPickerDialog(QDialog):
                 btn.clicked.connect(lambda _, s=sg_text: self.desc_edit.setText(s))
                 layout.addWidget(btn)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self._on_accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        # Buttons: OK | + Lägg till ytterligare | Avbryt
+        btn_row = QHBoxLayout()
 
-    def _on_accept(self):
+        ok_btn = QPushButton("✓ Spara")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(lambda: self._on_accept(add_more=False))
+        btn_row.addWidget(ok_btn)
+
+        add_btn = QPushButton("➕ Spara och lägg till ytterligare")
+        add_btn.setToolTip(
+            "Sparar denna safeguard och håller läget klart\n"
+            "för att lägga till ytterligare safeguard på kartan.")
+        add_btn.setStyleSheet(
+            "background:#1F4E79; color:white; border:none;"
+            "border-radius:4px; padding:4px 10px; font-weight:bold;")
+        add_btn.clicked.connect(lambda: self._on_accept(add_more=True))
+        btn_row.addWidget(add_btn)
+
+        cancel_btn = QPushButton("Avbryt")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+
+        layout.addLayout(btn_row)
+
+    def _on_accept(self, add_more=False):
         self.tag         = self.tag_edit.text().strip()
         self.description = self.desc_edit.text().strip()
         if not self.description:
             self.description = self.tag or 'Safeguard'
+        self.add_more = add_more
         self.accept()
 
 
@@ -2179,6 +2198,13 @@ class PIDPanel(QWidget):
         self.db.add_safeguard_marker(sg_id, page, pdf_x, pdf_y, tag)
         self.viewer.add_safeguard_marker(sg_id, pdf_x, pdf_y, tag, description)
         self.safeguard_created.emit(sg_id)
+
+        # "Lägg till ytterligare" — reset banner to ready state for next safeguard
+        if dlg.add_more and self._scenario_active:
+            self._sc_instr.setText("Klicka på nästa safeguard på P&ID:n")
+            self._sc_add_sg_btn.setVisible(False)
+            self._sc_finish_btn.setVisible(False)
+            self._set_mode(MODE_SAFEGUARD)
 
     def _on_context_action(self, action, pos, page):
         if action == 'cause':
