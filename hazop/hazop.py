@@ -2382,6 +2382,98 @@ class RiskMatrixPopup(QDialog):
             super().keyPressEvent(event)
 
 
+class ConsequenceChainDialog(QDialog):
+    """Popup chain editor with QCheckBoxes — safe because it's a QDialog, not a table cell."""
+
+    def __init__(self, db: Database, cons_id: int, parent=None):
+        super().__init__(parent)
+        self.db      = db
+        self.cons_id = cons_id
+        self.setWindowTitle("Konsekvenskedja")
+        self.setMinimumWidth(460)
+
+        row = db.get_consequence(cons_id)
+        self._chain = parse_chain_from_json(
+            row['consequence_chain'] if row and 'consequence_chain' in row.keys() else '')
+        raw_desc = row['description'] if row else ''
+
+        layout = QVBoxLayout(self)
+
+        # Base event text (editable)
+        form = QFormLayout(); form.setSpacing(8)
+        self._base_edit = QLineEdit(raw_desc)
+        self._base_edit.setPlaceholderText("Händelse / direkt konsekvens")
+        self._base_edit.textChanged.connect(self._update_preview)
+        form.addRow("Händelse:", self._base_edit)
+        layout.addLayout(form)
+
+        # Chain checkboxes — grouped, QCheckBox is safe here
+        chain_box = QGroupBox("Konsekvenskedja — välj eskalering")
+        chain_lay = QGridLayout(chain_box)
+        chain_lay.setSpacing(4)
+        self._checks: dict = {}
+        row_idx, col_idx, last_group = 0, 0, None
+
+        for key, label, group in _CHAIN_ITEMS:
+            if group and group != last_group:
+                if col_idx > 0:
+                    row_idx += 1; col_idx = 0
+                hdr = QLabel(group)
+                hdr.setStyleSheet(
+                    "color:#1F4E79; font-weight:bold; font-size:10px; margin-top:4px;")
+                chain_lay.addWidget(hdr, row_idx, 0, 1, 2)
+                row_idx += 1; col_idx = 0
+                last_group = group
+            chk = QCheckBox(label)
+            chk.setChecked(bool(self._chain.get(key, False)))
+            chk.stateChanged.connect(self._update_preview)
+            self._checks[key] = chk
+            chain_lay.addWidget(chk, row_idx, col_idx)
+            col_idx += 1
+            if col_idx >= 2:
+                col_idx = 0; row_idx += 1
+
+        layout.addWidget(chain_box)
+
+        # Generated chain preview
+        preview_lbl = QLabel("Genererad text:")
+        preview_lbl.setStyleSheet("color:#555; font-size:10px;")
+        layout.addWidget(preview_lbl)
+        self._preview = QLabel("—")
+        self._preview.setWordWrap(True)
+        self._preview.setStyleSheet(
+            "color:#1F4E79; font-weight:bold; font-size:11px;"
+            "background:#eef4fb; border:1px solid #bee3f8;"
+            "border-radius:3px; padding:4px 8px;")
+        layout.addWidget(self._preview)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self._save_and_accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+        self._update_preview()
+
+    def _update_preview(self):
+        chain = {k: chk.isChecked() for k, chk in self._checks.items()}
+        text  = build_consequence_text(self._base_edit.text().strip(), chain)
+        self._preview.setText(text or "—")
+
+    def _save_and_accept(self):
+        chain    = {k: chk.isChecked() for k, chk in self._checks.items()}
+        base     = self._base_edit.text().strip()
+        full     = build_consequence_text(base, chain) or base or 'Ny konsekvens'
+        cons     = self.db.get_consequence(self.cons_id)
+        if cons:
+            self.db.update_consequence(
+                self.cons_id, full,
+                cons['severity'] or 1,
+                cons['category'] or '',
+                json.dumps(chain))
+        self.accept()
+
+
 class ReductionFactorsDialog(QDialog):
     """Edit the list of extra reduction factors for a consequence."""
 
@@ -2609,12 +2701,33 @@ class ScenarioTablePanel(QWidget):
         ors.setData(Qt.ItemDataRole.UserRole, ('cause', cause_d['id']))
         self._table.setItem(r, self._C_ORS, ors)
 
-        # ── Col 2: Konsekvens (editable, description only) ───────────────────
-        _si = max(0, sev - 1)
-        sev_lbl = _SEV_LABELS[_si] if _si < len(_SEV_LABELS) else f'C{sev}'
-        kon = QTableWidgetItem(cons_d['description'])
-        kon.setData(Qt.ItemDataRole.UserRole, ('consequence', cid))
-        self._table.setItem(r, self._C_KON, kon)
+        # ── Col 2: Konsekvens — show chain text + ⛓ chain-editor button ─────
+        chain_data   = parse_chain_from_json(cons_d.get('consequence_chain', ''))
+        display_desc = (build_consequence_text(cons_d['description'], chain_data)
+                        or cons_d['description'])
+
+        kon_w   = QWidget()
+        kon_lay = QHBoxLayout(kon_w)
+        kon_lay.setContentsMargins(3, 1, 3, 1)
+        kon_lay.setSpacing(3)
+
+        kon_lbl = QLabel(display_desc)
+        kon_lbl.setWordWrap(True)
+        kon_lbl.setStyleSheet("font-size:10px;")
+        kon_lay.addWidget(kon_lbl, 1)
+
+        chain_btn = QPushButton("⛓")
+        chain_btn.setFixedSize(22, 22)
+        chain_btn.setFlat(True)
+        chain_btn.setToolTip("Redigera konsekvenskedja (LOC → Brand → Personskador …)")
+        chain_btn.setStyleSheet(
+            "QPushButton{font-size:12px; border:1px solid #aaa; border-radius:3px;}"
+            "QPushButton:hover{background:#eef4fb;}")
+        chain_btn.clicked.connect(
+            lambda _, c=cid, lbl=kon_lbl: self._open_chain_editor(c, lbl))
+        kon_lay.addWidget(chain_btn)
+
+        self._table.setCellWidget(r, self._C_KON, kon_w)
 
         # ── Col 3: Risk före barriär — klickbar för att öppna riskmatris ────────
         rb = QTableWidgetItem(f"{level_b}\nF={freq}  C={sev}")
@@ -2692,6 +2805,21 @@ class ScenarioTablePanel(QWidget):
         self._table.setItem(r, self._C_SLUT, rs)
 
         self._table.setRowHeight(r, max(52, min(140, (len(sg_lines) + 2) * 18)))
+
+    def _open_chain_editor(self, cons_id: int, label_widget=None):
+        """Open the consequence chain dialog; refresh the label on accept."""
+        dlg = ConsequenceChainDialog(self.db, cons_id, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            # Update the label in the cell without full rebuild
+            if label_widget is not None:
+                row = self.db.get_consequence(cons_id)
+                if row:
+                    chain = parse_chain_from_json(
+                        row['consequence_chain'] if 'consequence_chain' in row.keys() else '')
+                    text = build_consequence_text(row['description'], chain) or row['description']
+                    label_widget.setText(text)
+            # Rebuild risk cells (description changed)
+            QTimer.singleShot(0, self._rebuild)
 
     def _edit_extra(self, cons_id):
         dlg = ReductionFactorsDialog(self.db, cons_id, self)
