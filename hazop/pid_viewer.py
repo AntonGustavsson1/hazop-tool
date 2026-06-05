@@ -1223,15 +1223,29 @@ class ComponentPickerDialog(QDialog):
 
 
 class TargetPickerDialog(QDialog):
-    def __init__(self, parent=None, suggested_tag=''):
+    def __init__(self, parent=None, suggested_tag='', db=None):
         super().__init__(parent)
         self.setWindowTitle("Välj konsekvens")
-        self.setMinimumWidth(480)
-        self.template = ''
-        self.target   = ''
-        self.selected_chain = {}   # {key: bool} for consequence chain
+        self.setMinimumWidth(500)
+        self._db            = db
+        self.template       = ''
+        self.target         = ''
+        self.selected_chain = {}
+        self.link_to_id     = None   # set if user picks an existing consequence
 
         layout = QVBoxLayout(self)
+
+        # Link to existing button (when db is available)
+        if db is not None:
+            link_btn = QPushButton("🔗 Länka till befintlig konsekvens")
+            link_btn.setStyleSheet(
+                "background:#2c7bb6; color:white; border:none; border-radius:4px; padding:4px 10px;")
+            link_btn.clicked.connect(self._pick_existing)
+            layout.addWidget(link_btn)
+            sep = QLabel("— eller skapa ny konsekvens —")
+            sep.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            sep.setStyleSheet("color:#888; font-size:10px;")
+            layout.addWidget(sep)
 
         # ── Template list ─────────────────────────────────────────────────────
         layout.addWidget(QLabel("Konsekvensmall:"))
@@ -1316,6 +1330,14 @@ class TargetPickerDialog(QDialog):
         full  = _pid_build_chain_text(self._base_text(), chain)
         self.preview.setText(full or self._base_text())
 
+    def _pick_existing(self):
+        if self._db is None:
+            return
+        dlg = ExistingConsequencePicker(self._db, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_id:
+            self.link_to_id = dlg.selected_id
+            self.accept()
+
     def _on_accept(self):
         self.template = self._current_template()
         self.target   = self.target_edit.text().strip()
@@ -1324,16 +1346,203 @@ class TargetPickerDialog(QDialog):
         self.accept()
 
 
-class SafeguardPickerDialog(QDialog):
-    def __init__(self, parent=None, suggested_tag='', existing_safeguards=None):
+class ExistingConsequencePicker(QDialog):
+    """Pick an existing consequence from the project to link to the current cause."""
+
+    def __init__(self, db, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Markera safeguard / barriär")
-        self.setMinimumWidth(400)
-        self.tag         = ''
-        self.description = ''
-        self.add_more    = False   # True when user clicks "Lägg till ytterligare"
+        self.db = db
+        self.selected_id = None
+        self.setWindowTitle("Länka till befintlig konsekvens")
+        self.setMinimumSize(640, 380)
 
         layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Välj en befintlig konsekvens att länka den nya orsaken till:"))
+
+        # Search
+        self._filter = QLineEdit()
+        self._filter.setPlaceholderText("Filtrera…")
+        self._filter.textChanged.connect(self._apply_filter)
+        layout.addWidget(self._filter)
+
+        # Table
+        self._table = QTableWidget(0, 4)
+        self._table.setHorizontalHeaderLabels(['Nod', 'Orsak', 'Konsekvens', 'Risk'])
+        h = self._table.horizontalHeader()
+        h.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        h.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        h.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        h.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        self._table.setColumnWidth(0, 90)
+        self._table.setColumnWidth(3, 80)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._table.doubleClicked.connect(self._accept)
+        self._table.setStyleSheet(
+            "QHeaderView::section{background:#1F4E79;color:#fff;font-weight:bold;padding:3px;}")
+        layout.addWidget(self._table)
+
+        btns = QHBoxLayout()
+        ok_btn = QPushButton("🔗 Länka till markerad")
+        ok_btn.clicked.connect(self._accept)
+        cancel_btn = QPushButton("Avbryt")
+        cancel_btn.clicked.connect(self.reject)
+        btns.addWidget(ok_btn); btns.addStretch(); btns.addWidget(cancel_btn)
+        layout.addLayout(btns)
+
+        self._populate()
+
+    def _populate(self):
+        self._rows = []   # list of (cons_id, node_name, cause_desc, cons_desc, risk_label, bg)
+        try:
+            for node in self.db.nodes():
+                for cause in self.db.causes(node['id']):
+                    for cons in self.db.consequences(cause['id']):
+                        self._rows.append((
+                            cons['id'],
+                            node['name'],
+                            cause['description'],
+                            cons['description'],
+                        ))
+        except Exception:
+            pass
+        self._apply_filter()
+
+    def _apply_filter(self):
+        text = self._filter.text().lower()
+        self._table.setRowCount(0)
+        for cons_id, node, cause, cons_desc in self._rows:
+            if text and text not in (node + cause + cons_desc).lower():
+                continue
+            r = self._table.rowCount()
+            self._table.insertRow(r)
+            for col, val in enumerate([node, cause, cons_desc, '']):
+                item = QTableWidgetItem(val)
+                item.setData(Qt.ItemDataRole.UserRole, cons_id)
+                self._table.setItem(r, col, item)
+            self._table.setRowHeight(r, 24)
+
+    def _accept(self):
+        row = self._table.currentRow()
+        if row < 0:
+            return
+        item = self._table.item(row, 0)
+        if item:
+            self.selected_id = item.data(Qt.ItemDataRole.UserRole)
+            self.accept()
+
+
+class ExistingSafeguardPicker(QDialog):
+    """Pick an existing safeguard to link to the current consequence."""
+
+    def __init__(self, db, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.selected_id = None
+        self.setWindowTitle("Länka till befintlig safeguard")
+        self.setMinimumSize(600, 340)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Välj en befintlig safeguard att länka till denna konsekvens:"))
+
+        self._filter = QLineEdit()
+        self._filter.setPlaceholderText("Filtrera…")
+        self._filter.textChanged.connect(self._apply_filter)
+        layout.addWidget(self._filter)
+
+        self._table = QTableWidget(0, 3)
+        self._table.setHorizontalHeaderLabels(['Konsekvens', 'Safeguard', 'RRF'])
+        h = self._table.horizontalHeader()
+        h.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        h.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        h.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self._table.setColumnWidth(2, 70)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._table.doubleClicked.connect(self._accept)
+        self._table.setStyleSheet(
+            "QHeaderView::section{background:#1F4E79;color:#fff;font-weight:bold;padding:3px;}")
+        layout.addWidget(self._table)
+
+        btns = QHBoxLayout()
+        ok_btn = QPushButton("🔗 Länka till markerad")
+        ok_btn.clicked.connect(self._accept)
+        cancel_btn = QPushButton("Avbryt")
+        cancel_btn.clicked.connect(self.reject)
+        btns.addWidget(ok_btn); btns.addStretch(); btns.addWidget(cancel_btn)
+        layout.addLayout(btns)
+
+        self._populate()
+
+    def _populate(self):
+        self._rows = []
+        try:
+            for node in self.db.nodes():
+                for cause in self.db.causes(node['id']):
+                    for cons in self.db.consequences(cause['id']):
+                        for sg in self.db.safeguards(cons['id']):
+                            self._rows.append((
+                                sg['id'],
+                                cons['description'],
+                                sg['description'],
+                                sg['rrf'] or 1,
+                            ))
+        except Exception:
+            pass
+        self._apply_filter()
+
+    def _apply_filter(self):
+        text = self._filter.text().lower()
+        self._table.setRowCount(0)
+        for sg_id, cons_desc, sg_desc, rrf in self._rows:
+            if text and text not in (cons_desc + sg_desc).lower():
+                continue
+            r = self._table.rowCount()
+            self._table.insertRow(r)
+            for col, val in enumerate([cons_desc, sg_desc, f"RRF {rrf}" if rrf > 1 else "—"]):
+                item = QTableWidgetItem(val)
+                item.setData(Qt.ItemDataRole.UserRole, sg_id)
+                self._table.setItem(r, col, item)
+            self._table.setRowHeight(r, 24)
+
+    def _accept(self):
+        row = self._table.currentRow()
+        if row < 0:
+            return
+        item = self._table.item(row, 0)
+        if item:
+            self.selected_id = item.data(Qt.ItemDataRole.UserRole)
+            self.accept()
+
+
+class SafeguardPickerDialog(QDialog):
+    def __init__(self, parent=None, suggested_tag='', existing_safeguards=None, db=None):
+        super().__init__(parent)
+        self.setWindowTitle("Markera safeguard / barriär")
+        self.setMinimumWidth(420)
+        self._db         = db
+        self.tag         = ''
+        self.description = ''
+        self.add_more    = False
+        self.link_to_id  = None   # set if user chooses to link an existing safeguard
+
+        layout = QVBoxLayout(self)
+
+        # Link to existing button (shown when db is available)
+        if db is not None:
+            link_btn = QPushButton("🔗 Länka till befintlig safeguard")
+            link_btn.setStyleSheet(
+                "background:#2c7bb6; color:white; border:none; border-radius:4px; padding:4px 10px;")
+            link_btn.clicked.connect(self._pick_existing)
+            layout.addWidget(link_btn)
+
+            sep = QLabel("— eller skapa ny —")
+            sep.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            sep.setStyleSheet("color:#888; font-size:10px;")
+            layout.addWidget(sep)
+
         form   = QFormLayout()
 
         self.tag_edit = QLineEdit(suggested_tag)
@@ -1377,6 +1586,15 @@ class SafeguardPickerDialog(QDialog):
         btn_row.addWidget(cancel_btn)
 
         layout.addLayout(btn_row)
+
+    def _pick_existing(self):
+        if self._db is None:
+            return
+        dlg = ExistingSafeguardPicker(self._db, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_id:
+            self.link_to_id = dlg.selected_id
+            self.add_more   = False
+            self.accept()
 
     def _on_accept(self, add_more=False):
         self.tag         = self.tag_edit.text().strip()
@@ -2288,31 +2506,39 @@ class PIDPanel(QWidget):
                 "Välj en cause i trädet innan du placerar en konsekvens.")
             return
 
-        dlg = TargetPickerDialog(self, suggested_tag=suggested_tag)
+        dlg = TargetPickerDialog(self, suggested_tag=suggested_tag, db=self.db)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
-        template    = dlg.template
-        target      = dlg.target
-        chain       = dlg.selected_chain   # {key: bool}
-        base_desc   = template.format(target) if target else template.replace('{}', '[okänt objekt]')
-        # Build full description including chain
-        full_desc   = _pid_build_chain_text(base_desc, chain) or base_desc
-
         pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
-        cons_id = self.db.add_consequence(self._active_cause_id)
 
-        # Save description + chain JSON (update_consequence accepts chain as 5th arg)
-        import json as _json
-        chain_json = _json.dumps(chain) if chain else ''
-        try:
-            self.db.update_consequence(cons_id, full_desc, 1, '', chain_json)
-        except TypeError:
-            # Fallback if DB method doesn't support chain yet
-            self.db.update_consequence(cons_id, full_desc, 1)
+        if dlg.link_to_id:
+            # ── Link to existing consequence ──────────────────────────────────
+            cons_id = self.db.copy_consequence(dlg.link_to_id, self._active_cause_id)
+            if cons_id is None:
+                return
+            cons = self.db.get_consequence(cons_id)
+            display = cons['description'] if cons else '🔗 Länkad konsekvens'
+        else:
+            # ── Create new consequence ────────────────────────────────────────
+            template  = dlg.template
+            target    = dlg.target
+            chain     = dlg.selected_chain
+            base_desc = template.format(target) if target else template.replace('{}', '[okänt objekt]')
+            full_desc = _pid_build_chain_text(base_desc, chain) or base_desc
+            display   = full_desc
 
-        self.db.add_consequence_marker(cons_id, page, pdf_x, pdf_y, target)
-        self.viewer.add_consequence_marker(cons_id, pdf_x, pdf_y, full_desc)
+            import json as _json
+            chain_json = _json.dumps(chain) if chain else ''
+            cons_id = self.db.add_consequence(self._active_cause_id)
+            try:
+                self.db.update_consequence(cons_id, full_desc, 1, '', chain_json)
+            except TypeError:
+                self.db.update_consequence(cons_id, full_desc, 1)
+
+        self.db.add_consequence_marker(cons_id, page, pdf_x, pdf_y,
+                                       dlg.target if not dlg.link_to_id else '')
+        self.viewer.add_consequence_marker(cons_id, pdf_x, pdf_y, display)
         self.consequence_created.emit(cons_id)
 
     def _on_safeguard_click(self, scene_pos, page, suggested_tag=''):
@@ -2324,17 +2550,27 @@ class PIDPanel(QWidget):
         existing = [s['description'] for s in self.db.safeguards(self._active_consequence_id)]
 
         dlg = SafeguardPickerDialog(self, suggested_tag=suggested_tag,
-                                    existing_safeguards=existing)
+                                    existing_safeguards=existing, db=self.db)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
-        tag         = dlg.tag
-        description = dlg.description
-
-        sg_id = self.db.add_safeguard(self._active_consequence_id)
-        self.db.update_safeguard(sg_id, description)
-
         pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
+
+        if dlg.link_to_id:
+            # ── Link to existing safeguard ────────────────────────────────────
+            sg_id = self.db.copy_safeguard(dlg.link_to_id, self._active_consequence_id)
+            if sg_id is None:
+                return
+            sg = self.db.get_safeguard(sg_id)
+            tag         = ''
+            description = sg['description'] if sg else '🔗 Länkad safeguard'
+        else:
+            # ── Create new safeguard ──────────────────────────────────────────
+            tag         = dlg.tag
+            description = dlg.description
+            sg_id = self.db.add_safeguard(self._active_consequence_id)
+            self.db.update_safeguard(sg_id, description)
+
         self.db.add_safeguard_marker(sg_id, page, pdf_x, pdf_y, tag)
         self.viewer.add_safeguard_marker(sg_id, pdf_x, pdf_y, tag, description)
         self.safeguard_created.emit(sg_id)
