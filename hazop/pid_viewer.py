@@ -2981,70 +2981,80 @@ class PIDPanel(QWidget):
             self.risk_scenario_requested.emit(node_id, pos, page)
 
     def _draw_tag_highlights(self):
-        """Highlight recognized tags on the current PDF page.
+        """Highlight complete tag numbers found on the current PDF page.
 
-        Yellow  = tag in database but not yet a HAZOP cause.
+        Yellow  = tag recognised but not yet a HAZOP cause.
         Green   = tag has at least one defined HAZOP cause.
+        Only runs when smart database is enabled OR a tag database is loaded.
         """
         if not HAS_PYMUPDF or self.viewer.pdf_doc is None:
             return
-        if not hasattr(self.db, 'all_active_tag_codes'):
+        if not hasattr(self.db, 'tag_db_setting'):
             return
 
-        # Check if smart database or any database is active
-        smart_on = self.db.tag_db_setting('smart_enabled', '0') == '1'
-        tag_codes = self.db.all_active_tag_codes()
-        if not tag_codes and not smart_on:
+        smart_on  = self.db.tag_db_setting('smart_enabled', '0') == '1'
+        tag_codes = set(self.db.all_active_tag_codes()) \
+                    if hasattr(self.db, 'all_active_tag_codes') else set()
+
+        # Nothing to do if both sources are inactive
+        if not smart_on and not tag_codes:
             return
 
-        self.viewer.clear_highlights()
-        page_num = self.viewer.current_page
-        fitz_page = self.viewer.pdf_doc.load_page(page_num)
-
-        # Collect tags that already have HAZOP causes
-        used_tags: set = set()
         try:
-            markers = self.db.cause_markers_for_page(page_num)
-            for m in markers:
-                tag = (m['component_tag'] or '').upper().strip()
-                if tag:
-                    used_tags.add(tag)
-            # Also check cause descriptions for tag numbers
-            for node in self.db.nodes():
-                for cause in self.db.causes(node['id']):
-                    from pid_viewer import _pick_best_tag
-                    t = _pick_best_tag(cause['description'])
-                    if t:
-                        used_tags.add(t.upper())
-        except Exception:
-            pass
+            self.viewer.clear_highlights()
+            page_num  = self.viewer.current_page
+            fitz_page = self.viewer.pdf_doc.load_page(page_num)
 
-        # For smart mode: scan ALL text on page for tag patterns
-        if smart_on:
-            words = fitz_page.get_text("words")
-            for w in words:
-                txt = w[4].strip().upper()
-                from pid_viewer import _pick_best_tag, _collapse_spaces
-                tag = _pick_best_tag(txt) or _pick_best_tag(_collapse_spaces(txt))
-                if not tag:
+            # Tags already used as HAZOP causes (→ green)
+            used_tags: set = set()
+            try:
+                for m in self.db.cause_markers_for_page(page_num):
+                    t = (m['component_tag'] or '').upper().strip()
+                    if t:
+                        used_tags.add(t)
+                for node in self.db.nodes():
+                    for cause in self.db.causes(node['id']):
+                        t = _pick_best_tag(cause['description'])
+                        if t:
+                            used_tags.add(t.upper())
+            except Exception:
+                pass
+
+            # Scan page text for complete tag numbers using spatial combining
+            raw_words = fitz_page.get_text("words")
+            seen: set = set()
+
+            for candidate in _spatial_combine(raw_words, gap_limit=22.0):
+                tag = _pick_best_tag(candidate)
+                if not tag or tag in seen:
                     continue
-                color = '#90EE90' if tag in used_tags else '#FFFFE0'  # green or yellow
-                import fitz
-                bbox = fitz.Rect(w[0], w[1], w[2], w[3])
-                self.viewer.add_tag_highlight(bbox, color,
-                    f"{'✓ HAZOP-orsak definierad' if tag in used_tags else '○ Identifierad tagg'}: {tag}")
-        else:
-            # Database-driven: only highlight tags from active standard
-            for code in tag_codes:
+                pfx = _equip_prefix_from_tag(tag)
+                # Only highlight if prefix is known (in DB or confirmed mapping)
+                known = (smart_on or pfx in tag_codes or
+                         (hasattr(self.db, 'confirmed_comp_for_tag') and
+                          self.db.confirmed_comp_for_tag(pfx)))
+                if not known:
+                    continue
+                seen.add(tag)
+
+                # Find exact bounding box on the page
                 try:
-                    hits = fitz_page.search_for(code, quads=False)
+                    hits = fitz_page.search_for(tag)
+                    if not hits:
+                        # Try just the code part (e.g., PSV-101 from 20-PSV-101)
+                        simple = f"{pfx}-" + tag.split('-')[-1] if '-' in tag else tag
+                        hits = fitz_page.search_for(simple)
                     for bbox in hits:
-                        # Check if any specific tag with this prefix is a cause
-                        color = '#90EE90' if any(code in t for t in used_tags) else '#FFFFE0'
-                        self.viewer.add_tag_highlight(bbox, color,
-                            f"{'✓ Definierad' if color == '#90EE90' else '○ Taggkod'}: {code}")
+                        is_used = tag in used_tags or simple in used_tags \
+                                  if 'simple' in dir() else tag in used_tags
+                        color = '#90EE90' if is_used else '#FFFFE0'
+                        label = f"{'✓ HAZOP-orsak' if is_used else '○ Tagg'}: {tag}"
+                        self.viewer.add_tag_highlight(bbox, color, label)
                 except Exception:
                     continue
+
+        except Exception:
+            pass  # Never crash during highlight drawing
 
     def _load_overlays(self):
         self.viewer.clear_overlays()
