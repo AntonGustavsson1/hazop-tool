@@ -3704,7 +3704,7 @@ class PIDAnalysisPanel(QWidget):
 
             ex_item = QTableWidgetItem(entry['examples'] or '')
             ex_item.setFlags(ex_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            ex_item.setStyleSheet("color:#555;")
+            ex_item.setForeground(QBrush(QColor('#555555')))
             self._tbl.setItem(r, 1, ex_item)
 
             # Database suggestion (read-only)
