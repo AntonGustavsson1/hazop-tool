@@ -309,15 +309,46 @@ Z_CONNECT   = 3
 Z_OVERLAY   = 5
 Z_TEMP      = 10
 
-# Standalone tag: 1-6 letters, optional separator, 1-5 digits, 0-3 suffix letters
+# Simple tag: 1-6 letters + separator + 1-5 digits + 0-3 suffix
 # Examples: PCV-101, FT201A, V-1, ESDV-1001AB
 _TAG_RE = re.compile(r'^[A-Z]{1,6}[-./]?\d{1,5}[A-Z]{0,3}$')
 
-# Tag within continuous text (used for full-page text search)
+# Tag within continuous text
 _FULL_TAG_RE = re.compile(r'(?<![A-Z0-9])([A-Z]{1,6})[-./]?(\d{1,5}[A-Z]{0,3})(?![A-Z0-9])')
 
-# Area-prefixed: 20-PCV-101, 10FT201 — extract the tag part
+# Extended tag including area/facility/unit prefix:
+#   20-PCV-101,  K2.FT.201A,  A-20-HV-301,  HAV.PSV.101,  10.20.FT-201
+# Pattern: 1-3 prefix sections (digits or 1-4 letters) + equipment code + number
+_EXT_TAG_RE = re.compile(
+    r'(?<![A-Z0-9])'
+    # 1-3 area prefix sections: pure digits OR letter-led alphanumeric (K2, A1, HAV)
+    r'((?:(?:\d{1,4}|[A-Z][A-Z0-9]{0,3})[-./]){1,3}'
+    r'[A-Z]{1,6}[-./]?\d{1,5}[A-Z]{0,3})'       # equipment code + number
+    r'(?![A-Z0-9])',
+    re.IGNORECASE)
+
+# Simple area prefix stripping: 20-PCV-101 → PCV + 101
 _AREA_TAG_RE = re.compile(r'^\d{1,4}[-/]([A-Z]{1,6})[-./]?(\d{1,5}[A-Z]{0,3})$')
+
+
+def _equip_prefix_from_tag(tag: str) -> str:
+    """Extract the equipment letter code from a full/extended tag.
+
+    '20-PCV-101'  → 'PCV'
+    'K2.FT.201A'  → 'FT'
+    'A-20-HV-301' → 'HV'
+    'PSV-101'     → 'PSV'
+    """
+    parts = re.split(r'[-./]', tag.upper())
+    # Prefer known KNOWN_PREFIXES keys (longest match first)
+    for part in parts:
+        if re.match(r'^[A-Z]{2,6}$', part) and part in KNOWN_PREFIXES:
+            return part
+    # Fall back: first all-letter part of 2+ chars
+    for part in parts:
+        if re.match(r'^[A-Z]{2,6}$', part):
+            return part
+    return parts[0] if parts else tag
 
 # ── Equipment prefix knowledge base ──────────────────────────────────────────
 # Format: prefix → (swedish_display_name, COMPONENT_TYPES key)
@@ -769,6 +800,60 @@ def classify_pid_symbol(page, fitz_rect, tag: str = '') -> tuple:
     return best_comp, best_name, confidence
 
 
+def _spatial_combine(words: list, gap_limit: float = 18.0) -> list:
+    """Combine spatially adjacent word-tokens into candidate tag strings.
+
+    Words that lie on the same baseline and are separated by less than
+    `gap_limit` PDF units (or are single-char separators like '-' or '.')
+    are joined without space.  Yields combined strings for tag parsing.
+
+    words: list of (x0, y0, x1, y1, text) tuples from page.get_text("words")
+    """
+    if not words:
+        return []
+
+    # Sort in reading order: row (rounded), then x
+    sw = sorted(words, key=lambda w: (round((w[1] + w[3]) / 2 / 8) * 8, w[0]))
+
+    results = []
+    i = 0
+    while i < len(sw):
+        x0, y0, x1, y1, text = sw[i][:5]
+        group = [text]
+        grp_x1 = x1
+        y_mid = (y0 + y1) / 2
+
+        j = i + 1
+        while j < len(sw):
+            nx0, ny0, nx1, ny1, ntext = sw[j][:5]
+            ny_mid = (ny0 + ny1) / 2
+
+            # Must be on same line (within ~5 PDF units vertically)
+            if abs(y_mid - ny_mid) > 5:
+                break
+
+            gap = nx0 - grp_x1
+            is_sep = ntext.strip() in ('-', '.', '/', '_')
+
+            # Combine if gap is small OR token is a separator char
+            if gap <= gap_limit or is_sep:
+                group.append(ntext)
+                grp_x1 = nx1
+                j += 1
+            else:
+                break
+
+        combined = ''.join(group)
+        if combined and combined not in results:
+            results.append(combined)
+        # Also yield the first token alone (in case only part is a tag)
+        if text not in results:
+            results.append(text)
+        i = j if j > i + 1 else i + 1
+
+    return results
+
+
 def _clean_for_tag(text: str) -> str:
     """Strip OCR artefacts — keep only characters that can appear in P&ID tags.
 
@@ -805,12 +890,20 @@ def _collapse_spaces(text: str) -> str:
 
 
 def _pick_best_tag(text: str) -> str:
-    """Return the best equipment-tag match from arbitrary text, or ''."""
+    """Return the best equipment-tag match from arbitrary text, or ''.
+
+    Prefers full extended tags (with area prefix) over bare tags.
+    """
     if not text:
         return ''
     text = text.strip().upper()
 
     for candidate in _tag_candidates(text):
+        # 1. Extended tag with area prefix (preserves full tag string)
+        m = _EXT_TAG_RE.search(candidate)
+        if m:
+            return _normalise_tag(m.group(1))
+        # 2. Simple tag (letter code + number)
         matches = _FULL_TAG_RE.findall(candidate)
         if matches:
             return f"{matches[0][0]}-{matches[0][1]}"
@@ -818,6 +911,11 @@ def _pick_best_tag(text: str) -> str:
         if tag:
             return tag
     return ''
+
+
+def _normalise_tag(tag: str) -> str:
+    """Normalise separator chars to dashes and uppercase."""
+    return re.sub(r'[./]', '-', tag.upper())
 
 
 def _tag_candidates(text: str) -> list:
@@ -2472,10 +2570,19 @@ class PIDGraphicsView(QGraphicsView):
                                pdf_rect.x() + pdf_rect.width(),
                                pdf_rect.y() + pdf_rect.height())
 
-            # ── 1. Native text extraction ─────────────────────────────────────
-            words = page.get_text("words", clip=frect)
-            native_text = ' '.join(w[4].strip() for w in words if w[4].strip())
-            tag = _pick_best_tag(native_text) or native_text.strip()
+            # ── 1. Native text extraction with spatial combining ──────────────
+            raw_words = page.get_text("words", clip=frect)
+            # Try spatially-combined strings first (catches 20 - PCV - 101)
+            tag = ''
+            for candidate in _spatial_combine(raw_words):
+                t = _pick_best_tag(candidate)
+                if t:
+                    tag = t
+                    break
+            # Fallback: all words joined
+            if not tag:
+                native_text = ' '.join(w[4].strip() for w in raw_words if w[4].strip())
+                tag = _pick_best_tag(native_text) or native_text.strip()
 
             # ── 2. OCR fallback ───────────────────────────────────────────────
             if not tag and HAS_PIL:
@@ -2917,16 +3024,17 @@ class PIDPanel(QWidget):
             progress.setLabelText(f"Sida {pg+1}/{n}…")
             QApplication.processEvents()
             page = doc.load_page(pg)
-            for w in page.get_text("words"):
-                txt = w[4].strip().upper()
-                for candidate in _tag_candidates(txt):
-                    tag = _pick_best_tag(candidate)
-                    if not tag:
-                        continue
-                    m = re.match(r'^([A-Z]+)', tag)
-                    if m:
-                        found.setdefault(m.group(1), set()).add(tag)
-                    break
+            raw_words = page.get_text("words")
+            # Use spatial combining to catch extended tags (20-PCV-101, K2.FT.201)
+            seen_in_page = set()
+            for candidate in _spatial_combine(raw_words, gap_limit=22.0):
+                tag = _pick_best_tag(candidate)
+                if not tag or tag in seen_in_page:
+                    continue
+                seen_in_page.add(tag)
+                pfx = _equip_prefix_from_tag(tag)
+                if pfx:
+                    found.setdefault(pfx, set()).add(tag)
         progress.setValue(n); progress.close()
 
         if not found:
@@ -3562,10 +3670,13 @@ class PIDPanel(QWidget):
         """Look up the tag prefix in confirmed PID analysis, then tag database."""
         if not tag:
             return ''
-        m = re.match(r'^([A-Z]+)', tag.upper())
-        if not m:
-            return ''
-        pfx = m.group(1)
+        # For extended tags like 20-PCV-101, extract equipment prefix PCV
+        pfx = _equip_prefix_from_tag(tag)
+        if not pfx:
+            m = re.match(r'^([A-Z]+)', tag.upper())
+            if not m:
+                return ''
+            pfx = m.group(1)
         # 1. Confirmed project-specific mapping (highest priority)
         if hasattr(self.db, 'confirmed_comp_for_tag'):
             confirmed = self.db.confirmed_comp_for_tag(pfx)
