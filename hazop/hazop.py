@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QFileDialog, QGroupBox,
     QMenu, QToolBar, QStatusBar, QSizePolicy,
     QSpinBox, QColorDialog, QFrame, QListWidget, QListWidgetItem,
-    QProgressDialog, QAbstractItemView, QToolTip, QInputDialog,
+    QProgressDialog, QAbstractItemView, QToolTip, QInputDialog, QCheckBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF, QTimer, QMimeData
 from PyQt6.QtGui import QFont, QColor, QAction, QBrush, QPen, QPainter, QDrag
