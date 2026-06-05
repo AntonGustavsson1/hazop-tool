@@ -170,10 +170,51 @@ DEFAULT_MATRIX = {
 _current_matrix = None
 
 
+def _normalise_matrix(cfg: dict) -> dict:
+    """Ensure a stored matrix config is internally consistent.
+
+    Pads x_labels / y_labels and cell arrays to match rows/cols.
+    Used once on load so the rest of the code can trust the structure.
+    """
+    rows = int(cfg.get('rows', 5))
+    cols = int(cfg.get('cols', 7))
+
+    # Pad or trim x_labels
+    x = list(cfg.get('x_labels', []))
+    while len(x) < cols:
+        x.append(f'F{len(x) - 1}')
+    cfg['x_labels'] = x[:cols]
+
+    # Pad or trim y_labels
+    y = list(cfg.get('y_labels', []))
+    while len(y) < rows:
+        y.append(f'C{len(y) + 1}')
+    cfg['y_labels'] = y[:rows]
+
+    # Pad or trim cell_colors / cell_labels
+    def _pad_grid(grid, default_val):
+        result = []
+        for r in range(rows):
+            row = list(grid[r]) if r < len(grid) else []
+            while len(row) < cols:
+                row.append(default_val)
+            result.append(row[:cols])
+        return result
+
+    cfg['cell_colors'] = _pad_grid(cfg.get('cell_colors', []), '#27ae60')
+    cfg['cell_labels'] = _pad_grid(cfg.get('cell_labels', []), 'Låg')
+    cfg['rows'] = rows
+    cfg['cols'] = cols
+    return cfg
+
+
 def load_matrix(db):
     global _current_matrix
     cfg = db.get_risk_matrix()
-    _current_matrix = cfg if cfg else DEFAULT_MATRIX
+    if cfg:
+        _current_matrix = _normalise_matrix(cfg)
+    else:
+        _current_matrix = DEFAULT_MATRIX
 
 
 def get_matrix():
@@ -199,7 +240,11 @@ def risk_info(frequency, consequence):
     try:
         color = cfg['cell_colors'][row_idx][col_idx]
         label = cfg['cell_labels'][row_idx][col_idx]
-    except (IndexError, KeyError):
+        if not color:
+            color = '#27ae60'
+        if not label:
+            label = 'Låg'
+    except (IndexError, KeyError, TypeError):
         color, label = '#27ae60', 'Låg'
     return label, color, '#ffffff'
 
@@ -2157,7 +2202,8 @@ class ScenarioTablePanel(QWidget):
         freq      = cause_d['likelihood'] if cause_d['likelihood'] is not None else 3
 
         self._hdr_lbl.setText(f"HAZOP Scenario — {node_name}")
-        freq_lbl = _FREQ_LABELS[freq_to_idx(freq)]
+        _fi = freq_to_idx(freq)
+        freq_lbl = _FREQ_LABELS[_fi] if _fi < len(_FREQ_LABELS) else f'F{freq}'
 
         try:
             for cons in self.db.consequences(self.cause_id):
@@ -2207,7 +2253,8 @@ class ScenarioTablePanel(QWidget):
         self._table.setItem(r, self._C_ORS, ors)
 
         # ── Col 2: Konsekvens (editable, description only) ───────────────────
-        sev_lbl = _SEV_LABELS[max(0, sev - 1)]
+        _si = max(0, sev - 1)
+        sev_lbl = _SEV_LABELS[_si] if _si < len(_SEV_LABELS) else f'C{sev}'
         kon = QTableWidgetItem(cons_d['description'])
         kon.setData(Qt.ItemDataRole.UserRole, ('consequence', cid))
         self._table.setItem(r, self._C_KON, kon)
@@ -3129,6 +3176,7 @@ class SettingsPanel(QWidget):
             'cell_colors': colors,
             'cell_labels': labels,
         }
+        cfg = _normalise_matrix(cfg)   # ensure consistent before saving
         self.db.set_risk_matrix(cfg)
         load_matrix(self.db)
         QMessageBox.information(self, "Sparat", "Riskmatris sparad.")
