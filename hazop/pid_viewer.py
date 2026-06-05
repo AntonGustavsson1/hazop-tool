@@ -419,6 +419,21 @@ KNOWN_PREFIXES = {
 }
 
 
+def _pick_best_tag(text: str) -> str:
+    """Return the best equipment-tag match from arbitrary text, or ''."""
+    if not text:
+        return ''
+    text = text.strip().upper()
+    # Try _FULL_TAG_RE (finds tags inside larger strings)
+    matches = _FULL_TAG_RE.findall(text)
+    if matches:
+        prefix, suffix = matches[0]
+        return f"{prefix}-{suffix}"
+    # Try the whole text as a standalone tag
+    tag, _ = _parse_tag(text)
+    return tag or ''
+
+
 def _extract_prefix(tag: str) -> str:
     """Extract the letter prefix from an equipment tag like 'PCV-101' → 'PCV'."""
     m = re.match(r'^([A-Z]+)', tag)
@@ -1373,11 +1388,12 @@ class SafeguardPickerDialog(QDialog):
 
 class PIDGraphicsView(QGraphicsView):
     node_markup_finished  = pyqtSignal(list, int)
-    cause_clicked         = pyqtSignal(object, int)
-    consequence_clicked   = pyqtSignal(object, int)
-    safeguard_clicked     = pyqtSignal(object, int)
-    context_action        = pyqtSignal(str, object, int)  # action, scene_pos, page
-    marker_clicked        = pyqtSignal(str, int)          # 'cause'|'consequence'|'safeguard', id
+    # Third parameter = extracted tag text from drawn rectangle (may be empty)
+    cause_clicked         = pyqtSignal(object, int, str)
+    consequence_clicked   = pyqtSignal(object, int, str)
+    safeguard_clicked     = pyqtSignal(object, int, str)
+    context_action        = pyqtSignal(str, object, int)
+    marker_clicked        = pyqtSignal(str, int)
 
     # Keys for QGraphicsItem.setData / .data
     _DATA_TYPE = 0    # 'cause' | 'consequence' | 'safeguard'
@@ -1393,7 +1409,9 @@ class PIDGraphicsView(QGraphicsView):
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.setBackgroundBrush(QBrush(QColor(180, 180, 180)))
 
-        self._press_pos = None   # tracks press position to distinguish click vs drag
+        self._press_pos  = None  # NAV mode: click vs drag detection
+        self._rect_start = None  # rect-select mode: start scene point
+        self._rect_item  = None  # temporary rubber-band QGraphicsRectItem
 
         self.mode             = MODE_NAV
         self.pdf_doc          = None
@@ -1507,7 +1525,7 @@ class PIDGraphicsView(QGraphicsView):
             self.setCursor(Qt.CursorShape.CrossCursor)
         elif mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD):
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
-            self.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.setCursor(Qt.CursorShape.CrossCursor)  # cross = draw a rect
         if mode != MODE_NODE:
             self._cancel_drawing()
         self.setFocus()
@@ -1709,6 +1727,68 @@ class PIDGraphicsView(QGraphicsView):
             txt.setZValue(Z_OVERLAY + 1)
             self._scene.addItem(txt)
 
+    def _extract_tag_from_rect(self, pdf_rect: QRectF) -> str:
+        """Extract the most relevant tag text from a PDF rectangle.
+
+        Tries native text first; falls back to OCR if nothing found.
+        Returns the best tag string (e.g. 'V-101', 'PSV-201A') or ''.
+        """
+        if not HAS_PYMUPDF or self.pdf_doc is None:
+            return ''
+        try:
+            page  = self.pdf_doc.load_page(self.current_page)
+            frect = fitz.Rect(pdf_rect.x(), pdf_rect.y(),
+                               pdf_rect.x() + pdf_rect.width(),
+                               pdf_rect.y() + pdf_rect.height())
+
+            # ── 1. Native text extraction ─────────────────────────────────────
+            words = page.get_text("words", clip=frect)
+            native_text = ' '.join(w[4].strip() for w in words if w[4].strip())
+
+            # Look for tag patterns in native text
+            tag = _pick_best_tag(native_text)
+            if tag:
+                return tag
+
+            # If no native text at all, try simple all-words join
+            if native_text.strip():
+                return native_text.strip()
+
+            # ── 2. OCR fallback on the cropped region ─────────────────────────
+            if HAS_PIL:
+                scale = max(self.render_scale * 2, 4.0)   # high DPI for small region
+                mat   = fitz.Matrix(scale, scale)
+                pix   = page.get_pixmap(matrix=mat, clip=frect, alpha=False)
+                pil   = _PILImage.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                pil   = _preprocess_for_ocr(pil)
+
+                ocr_text = ''
+                if HAS_TESSERACT:
+                    try:
+                        cfg = '--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.'
+                        ocr_text = pytesseract.image_to_string(pil, config=cfg).strip()
+                    except Exception:
+                        pass
+                if not ocr_text and HAS_EASYOCR:
+                    try:
+                        import numpy as np
+                        reader = _get_easyocr_reader()
+                        if reader:
+                            results = reader.readtext(np.array(pil))
+                            ocr_text = ' '.join(r[1] for r in results if r[2] > 0.3)
+                    except Exception:
+                        pass
+
+                tag = _pick_best_tag(ocr_text)
+                if tag:
+                    return tag
+                if ocr_text.strip():
+                    return ocr_text.strip()
+
+        except Exception:
+            pass
+        return ''
+
     def add_connection_line(self, start: QPointF, end: QPointF, color: str, dashed=False):
         pen = QPen(QColor(color), 1.5)
         pen.setCosmetic(True)
@@ -1730,7 +1810,6 @@ class PIDGraphicsView(QGraphicsView):
             self._pending_path_item = None
 
     def mousePressEvent(self, event):
-        # Track press position to distinguish click vs drag in MODE_NAV
         if self.mode == MODE_NAV:
             self._press_pos = event.position()
         sp = self.mapToScene(event.position().toPoint())
@@ -1739,15 +1818,12 @@ class PIDGraphicsView(QGraphicsView):
                 self._add_draw_point(sp); event.accept(); return
             elif event.button() == Qt.MouseButton.RightButton:
                 self._cancel_drawing(); event.accept(); return
-        elif self.mode == MODE_CAUSE:
+        elif self.mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD):
             if event.button() == Qt.MouseButton.LeftButton:
-                self.cause_clicked.emit(sp, self.current_page); event.accept(); return
-        elif self.mode == MODE_CONSEQUENCE:
-            if event.button() == Qt.MouseButton.LeftButton:
-                self.consequence_clicked.emit(sp, self.current_page); event.accept(); return
-        elif self.mode == MODE_SAFEGUARD:
-            if event.button() == Qt.MouseButton.LeftButton:
-                self.safeguard_clicked.emit(sp, self.current_page); event.accept(); return
+                # Start rubber-band rectangle selection
+                self._rect_start = sp
+                self._rect_item  = None
+                event.accept(); return
 
         if event.button() == Qt.MouseButton.RightButton and self.mode == MODE_NAV:
             menu = QMenu(self.viewport())
@@ -1778,13 +1854,47 @@ class PIDGraphicsView(QGraphicsView):
         super().mouseDoubleClickEvent(event)
 
     def mouseReleaseEvent(self, event):
+        # ── Rect-select release for cause/consequence/safeguard ───────────────
+        if (event.button() == Qt.MouseButton.LeftButton and
+                self.mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD) and
+                self._rect_start is not None):
+
+            end_sp = self.mapToScene(event.position().toPoint())
+            rect   = QRectF(self._rect_start, end_sp).normalized()
+
+            # Remove rubber-band rect
+            if self._rect_item is not None:
+                try: self._scene.removeItem(self._rect_item)
+                except Exception: pass
+                self._rect_item = None
+            self._rect_start = None
+
+            # Convert to PDF coordinates
+            rs = self.render_scale
+            pdf_rect = QRectF(rect.x() / rs, rect.y() / rs,
+                               rect.width() / rs, rect.height() / rs)
+
+            # Extract tag text from the selected rectangle
+            suggested = self._extract_tag_from_rect(pdf_rect)
+
+            center = rect.center()
+            if self.mode == MODE_CAUSE:
+                self.cause_clicked.emit(center, self.current_page, suggested)
+            elif self.mode == MODE_CONSEQUENCE:
+                self.consequence_clicked.emit(center, self.current_page, suggested)
+            elif self.mode == MODE_SAFEGUARD:
+                self.safeguard_clicked.emit(center, self.current_page, suggested)
+            event.accept()
+            return
+
+        # ── NAV mode: click on marker navigates tree ──────────────────────────
         if (self.mode == MODE_NAV and
                 event.button() == Qt.MouseButton.LeftButton and
                 self._press_pos is not None):
-            p = event.position()
+            p  = event.position()
             dx = p.x() - self._press_pos.x()
             dy = p.y() - self._press_pos.y()
-            if dx * dx + dy * dy < 25:   # < 5 px movement → treat as click
+            if dx * dx + dy * dy < 25:
                 sp = self.mapToScene(p.toPoint())
                 for item in self._scene.items(sp):
                     itype = item.data(self._DATA_TYPE)
@@ -1798,6 +1908,20 @@ class PIDGraphicsView(QGraphicsView):
     def mouseMoveEvent(self, event):
         if self.mode == MODE_NODE and self.draw_points:
             self._update_rubber_band(self.mapToScene(event.position().toPoint()))
+        elif self.mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD) \
+                and self._rect_start is not None:
+            current = self.mapToScene(event.position().toPoint())
+            rect = QRectF(self._rect_start, current).normalized()
+            if self._rect_item is not None:
+                try: self._scene.removeItem(self._rect_item)
+                except Exception: pass
+            pen = QPen(QColor(0, 100, 220), 1.5)
+            pen.setStyle(Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            self._rect_item = self._scene.addRect(
+                rect, pen, QBrush(QColor(0, 100, 220, 30)))
+            self._rect_item.setZValue(Z_TEMP)
+            event.accept(); return
         super().mouseMoveEvent(event)
 
     def wheelEvent(self, event):
@@ -2083,16 +2207,12 @@ class PIDPanel(QWidget):
         self._load_overlays()
         self.node_created.emit(node_id)
 
-    def _on_cause_click(self, scene_pos, page):
+    def _on_cause_click(self, scene_pos, page, suggested_tag=''):
         if self._active_node_id is None:
             QMessageBox.information(self, "Välj nod",
                 "Välj en nod i trädet innan du placerar orsaker.")
             return
-
-        suggested_tag = ''
-        if self.viewer.pdf_doc is not None:
-            pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
-            suggested_tag = find_tag_near_point(self.viewer.pdf_doc, page, pdf_x, pdf_y)
+        # suggested_tag comes from the drawn rectangle's OCR/text extraction
 
         comp_data  = (self.db.all_component_types_dict()
                       if hasattr(self.db, 'all_component_types_dict') else None)
@@ -2132,16 +2252,11 @@ class PIDPanel(QWidget):
         if last_cause_id is not None:
             self.cause_created.emit(last_cause_id)
 
-    def _on_consequence_click(self, scene_pos, page):
+    def _on_consequence_click(self, scene_pos, page, suggested_tag=''):
         if self._active_cause_id is None:
             QMessageBox.information(self, "Välj orsak",
                 "Välj en cause i trädet innan du placerar en konsekvens.")
             return
-
-        suggested_tag = ''
-        if self.viewer.pdf_doc is not None:
-            px, py        = self.viewer.scene_to_pdf(scene_pos)
-            suggested_tag = find_tag_near_point(self.viewer.pdf_doc, page, px, py)
 
         dlg = TargetPickerDialog(self, suggested_tag=suggested_tag)
         if dlg.exec() != QDialog.DialogCode.Accepted:
@@ -2170,16 +2285,11 @@ class PIDPanel(QWidget):
         self.viewer.add_consequence_marker(cons_id, pdf_x, pdf_y, full_desc)
         self.consequence_created.emit(cons_id)
 
-    def _on_safeguard_click(self, scene_pos, page):
+    def _on_safeguard_click(self, scene_pos, page, suggested_tag=''):
         if self._active_consequence_id is None:
             QMessageBox.information(self, "Välj konsekvens",
                 "Välj en consequence i trädet innan du markerar en safeguard.")
             return
-
-        suggested_tag = ''
-        if self.viewer.pdf_doc is not None:
-            px, py        = self.viewer.scene_to_pdf(scene_pos)
-            suggested_tag = find_tag_near_point(self.viewer.pdf_doc, page, px, py)
 
         existing = [s['description'] for s in self.db.safeguards(self._active_consequence_id)]
 
@@ -2209,13 +2319,23 @@ class PIDPanel(QWidget):
     def _on_context_action(self, action, pos, page):
         if action == 'cause':
             self._set_mode(MODE_CAUSE)
-            self._on_cause_click(pos, page)
+            # Point click from context menu — extract tag the old way
+            tag = find_tag_near_point(self.viewer.pdf_doc, page,
+                                      *self.viewer.scene_to_pdf(pos)) \
+                  if self.viewer.pdf_doc else ''
+            self._on_cause_click(pos, page, tag)
         elif action == 'consequence':
             self._set_mode(MODE_CONSEQUENCE)
-            self._on_consequence_click(pos, page)
+            tag = find_tag_near_point(self.viewer.pdf_doc, page,
+                                      *self.viewer.scene_to_pdf(pos)) \
+                  if self.viewer.pdf_doc else ''
+            self._on_consequence_click(pos, page, tag)
         elif action == 'safeguard':
             self._set_mode(MODE_SAFEGUARD)
-            self._on_safeguard_click(pos, page)
+            tag = find_tag_near_point(self.viewer.pdf_doc, page,
+                                      *self.viewer.scene_to_pdf(pos)) \
+                  if self.viewer.pdf_doc else ''
+            self._on_safeguard_click(pos, page, tag)
         elif action == 'node':
             self._set_mode(MODE_NODE)
         elif action == 'risk_scenario':
