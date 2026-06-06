@@ -295,6 +295,13 @@ def risk_info(frequency, consequence):
     return label, color, fg
 
 
+def _contrast_fg(bg_hex):
+    """Return black or white text color for best contrast against bg_hex."""
+    c = QColor(bg_hex)
+    luminance = (0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue()) / 255
+    return '#000000' if luminance > 0.55 else '#ffffff'
+
+
 def freq_axis_label(f_val: int) -> str:
     """Short configured label for a frequency value (-1..5). x_labels always stores freq labels."""
     cfg  = get_matrix()
@@ -3239,7 +3246,7 @@ class ScenarioTablePanel(QWidget):
 
         # ── Col 3: Risk före barriär — klickbar för att öppna riskmatris ────────
         rb = QTableWidgetItem(f"{level_b}\n{freq_axis_label(freq)}  {cons_axis_label(sev)}")
-        rb.setBackground(QBrush(QColor(bg_b))); rb.setForeground(QBrush(QColor(fg_b)))
+        rb.setBackground(QBrush(QColor(bg_b))); rb.setForeground(QBrush(QColor(_contrast_fg(bg_b))))
         rb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
         rb.setToolTip("🖱 Klicka för att ändra i riskmatrisen")
@@ -3254,10 +3261,12 @@ class ScenarioTablePanel(QWidget):
             sg_item.setToolTip("Tryck Enter för att lägga till safeguard")
         else:
             rrf = sg.get('rrf', 1) or 1
-            rrf_str = f"  [RRF {rrf}]" if rrf > 1 else ""
-            sg_item = QTableWidgetItem(sg['description'])
+            sg_item = QTableWidgetItem()
+            display = sg['description'] + (f"\n[RRF {rrf}]" if rrf > 1 else "")
+            sg_item.setData(Qt.ItemDataRole.DisplayRole, display)
+            sg_item.setData(Qt.ItemDataRole.EditRole, sg['description'])
             sg_item.setData(Qt.ItemDataRole.UserRole, ('safeguard', sg['id']))
-            sg_item.setToolTip(f"Klicka för att redigera{rrf_str}")
+            sg_item.setToolTip("Klicka för att redigera" + (f"  [RRF {rrf}]" if rrf > 1 else ""))
         self._table.setItem(r, self._C_SG, sg_item)
 
         # ── Col 5: FA — checkable, text = probability % ──────────────────────
@@ -3301,7 +3310,7 @@ class ScenarioTablePanel(QWidget):
         sg_steps = int(math.log10(max(1, sg_rrf))) if sg_rrf > 1 else 0
         sg_step_str = f"  −{sg_steps} steg" if sg_steps > 0 else ""
         ra = QTableWidgetItem(f"{level_a}{sg_step_str}\n{freq_axis_label(f_eff)}  {cons_axis_label(sev)}")
-        ra.setBackground(QBrush(QColor(bg_a))); ra.setForeground(QBrush(QColor(fg_a)))
+        ra.setBackground(QBrush(QColor(bg_a))); ra.setForeground(QBrush(QColor(_contrast_fg(bg_a))))
         ra.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         ra.setFlags(ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
         ra.setToolTip(f"{freq_axis_label(f_eff)}  {cons_axis_label(sev)}  (efter safeguards)")
@@ -3310,7 +3319,7 @@ class ScenarioTablePanel(QWidget):
         # ── Col 9: Slutkonsekvens (alla reduktioner) ──────────────────────────
         slut_step_str = f"  −{total_steps} steg" if total_steps > 0 else ""
         rs = QTableWidgetItem(f"{level_s}{slut_step_str}\n{freq_axis_label(final_f)}  {cons_axis_label(sev)}")
-        rs.setBackground(QBrush(QColor(bg_s))); rs.setForeground(QBrush(QColor(fg_s)))
+        rs.setBackground(QBrush(QColor(bg_s))); rs.setForeground(QBrush(QColor(_contrast_fg(bg_s))))
         rs.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
         rs.setToolTip(f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}  (−{total_steps} steg totalt)")
@@ -3528,7 +3537,8 @@ class ScenarioTablePanel(QWidget):
             self.item_edited.emit(CONS_T, id_)
 
         elif kind == 'safeguard':
-            desc = text.split('\n')[0].strip() or 'Ny safeguard'
+            edit_val = item.data(Qt.ItemDataRole.EditRole)
+            desc = (str(edit_val).strip() if edit_val is not None else text.split('\n')[0].strip()) or 'Ny safeguard'
             sg = self.db.get_safeguard(id_)
             if sg:
                 self.db.update_safeguard(id_, desc, sg['rrf'] or 1)
@@ -3685,7 +3695,7 @@ class HAZOPWorksheet(QWidget):
             # Risk before
             rb = QTableWidgetItem(f"{level_b}\n{freq_axis_label(freq)}  {cons_axis_label(sev)}")
             rb.setBackground(QBrush(QColor(bg_b)))
-            rb.setForeground(QBrush(QColor(fg_b)))
+            rb.setForeground(QBrush(QColor(_contrast_fg(bg_b))))
             rb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(r, self._C_RFORE, rb)
@@ -3695,7 +3705,7 @@ class HAZOPWorksheet(QWidget):
             # Risk after
             ra = QTableWidgetItem(f"{level_a}\n{freq_axis_label(eff_f)}  {cons_axis_label(sev)}")
             ra.setBackground(QBrush(QColor(bg_a)))
-            ra.setForeground(QBrush(QColor(fg_a)))
+            ra.setForeground(QBrush(QColor(_contrast_fg(bg_a))))
             ra.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             ra.setFlags(ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(r, self._C_REFT, ra)
