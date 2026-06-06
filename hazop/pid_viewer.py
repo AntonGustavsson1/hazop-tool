@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (
     QGraphicsSimpleTextItem, QFrame, QSpinBox, QCheckBox, QGroupBox,
     QSlider, QColorDialog, QFileDialog, QMessageBox, QInputDialog,
     QSizePolicy, QMenu, QTableWidget, QTableWidgetItem, QHeaderView,
-    QProgressDialog, QApplication, QGridLayout, QTextEdit,
+    QProgressDialog, QApplication, QGridLayout, QTextEdit, QButtonGroup,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QThread
 from PyQt6.QtGui import (
