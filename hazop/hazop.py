@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (
     QStyledItemDelegate, QStyleOptionViewItem, QStyle,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF, QRect, QTimer, QMimeData, QEvent
-from PyQt6.QtGui import QFont, QColor, QAction, QBrush, QPen, QPainter, QDrag, QPainterPath
+from PyQt6.QtGui import QFont, QColor, QAction, QBrush, QPen, QPainter, QDrag, QPainterPath, QPixmap, QIcon
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DATABASE
@@ -2275,8 +2275,9 @@ class TreePanel(QWidget):
             if select_type == NODE_T and select_id == node['id']: target = nitem
 
             for cause in self.db.causes(node['id']):
-                pid_pin = " 📍" if cause['id'] in marked_causes else ""
-                citem = QTreeWidgetItem([f"  ⚙  {cause['description'][:50]}{pid_pin}"])
+                placed_c = cause['id'] in marked_causes
+                citem = QTreeWidgetItem([f"  ⚙  {cause['description'][:50]}"])
+                citem.setIcon(0, _make_pin_icon(placed_c))
                 citem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
                 citem.setData(0, Qt.ItemDataRole.UserRole + 1, CAUSE_T)
                 nitem.addChild(citem)
@@ -2285,9 +2286,10 @@ class TreePanel(QWidget):
 
                 for cons in self.db.consequences(cause['id']):
                     level, _, _ = risk_info(cause['likelihood'], cons['severity'])
-                    icon = _RISK_ICON.get(level, '⚪')
-                    pid_pin = " 📍" if cons['id'] in marked_consequences else ""
-                    kitem = QTreeWidgetItem([f"    {icon}  {cons['description'][:40]}{pid_pin}"])
+                    risk_icon = _RISK_ICON.get(level, '⚪')
+                    placed_k = cons['id'] in marked_consequences
+                    kitem = QTreeWidgetItem([f"    {risk_icon}  {cons['description'][:40]}"])
+                    kitem.setIcon(0, _make_pin_icon(placed_k))
                     kitem.setData(0, Qt.ItemDataRole.UserRole, cons['id'])
                     kitem.setData(0, Qt.ItemDataRole.UserRole + 1, CONS_T)
                     citem.addChild(kitem)
@@ -2301,9 +2303,10 @@ class TreePanel(QWidget):
                             linked = bool(sg['source_id'])
                         except (IndexError, KeyError):
                             linked = False
-                        icon = "🔗🛡" if linked else "🛡"
-                        pid_pin = " 📍" if sg['id'] in marked_safeguards else ""
-                        sgitem = QTreeWidgetItem([f"       {icon}  {sg['description'][:35]}  [{rrf_str}]{pid_pin}"])
+                        sg_icon = "🔗🛡" if linked else "🛡"
+                        placed_s = sg['id'] in marked_safeguards
+                        sgitem = QTreeWidgetItem([f"       {sg_icon}  {sg['description'][:35]}  [{rrf_str}]"])
+                        sgitem.setIcon(0, _make_pin_icon(placed_s))
                         sgitem.setData(0, Qt.ItemDataRole.UserRole, sg['id'])
                         sgitem.setData(0, Qt.ItemDataRole.UserRole + 1, SG_T)
                         kitem.addChild(sgitem)
@@ -3039,6 +3042,16 @@ def _draw_pid_pin(painter, rect, placed):
     painter.setPen(Qt.PenStyle.NoPen)
     painter.drawEllipse(QPointF(cx - r * 0.35, circle_cy - r * 0.35), dot_r, dot_r)
     painter.restore()
+
+
+def _make_pin_icon(placed, size=16):
+    """Return a QIcon with the needle pin rendered at the given size."""
+    px = QPixmap(size, size)
+    px.fill(Qt.GlobalColor.transparent)
+    p = QPainter(px)
+    _draw_pid_pin(p, QRect(0, 0, size, size), placed)
+    p.end()
+    return QIcon(px)
 
 
 class _PidDelegate(_ScenarioDelegate):
