@@ -27,9 +27,9 @@ from PyQt6.QtWidgets import (
     QMenu, QToolBar, QStatusBar, QSizePolicy,
     QSpinBox, QColorDialog, QFrame, QListWidget, QListWidgetItem,
     QProgressDialog, QAbstractItemView, QToolTip, QInputDialog, QCheckBox,
-    QStyledItemDelegate,
+    QStyledItemDelegate, QStyleOptionViewItem, QStyle,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF, QTimer, QMimeData, QEvent
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF, QRect, QTimer, QMimeData, QEvent
 from PyQt6.QtGui import QFont, QColor, QAction, QBrush, QPen, QPainter, QDrag
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2979,12 +2979,54 @@ class _ScenarioDelegate(QStyledItemDelegate):
         return editor
 
 
+_PID_ICON_W = 22          # pixels reserved on the left for the 📍/📌 symbol
+_PID_ICON_RE = re.compile(r'^[📍📌]\s*')   # strip prefix when reading back descriptions
+
+
+class _PidDelegate(_ScenarioDelegate):
+    """Draws a P&ID placement icon on the left of Orsak/Konsekvens/Barriär cells.
+    The editor always shows only the clean description (emoji stripped)."""
+
+    def createEditor(self, parent, option, index):
+        editor = super().createEditor(parent, option, index)
+        if editor is not None:
+            # Show only the clean description (EditRole is already clean)
+            raw = index.data(Qt.ItemDataRole.EditRole) or ''
+            editor.setText(_PID_ICON_RE.sub('', str(raw)))
+        return editor
+
+    def setModelData(self, editor, model, index):
+        clean = _PID_ICON_RE.sub('', editor.text().strip())
+        model.setData(index, clean, Qt.ItemDataRole.EditRole)
+
+    def paint(self, painter, option, index):
+        # Draw cell normally but shift content rect right to make room for icon
+        opt = QStyleOptionViewItem(option)
+        opt.rect = option.rect.adjusted(_PID_ICON_W, 0, 0, 0)
+        super().paint(painter, opt, index)
+        # Overlay the placement icon on the freed left strip
+        row, col = index.row(), index.column()
+        is_placed = self._panel._is_cell_placed(row, col)
+        icon_rect = QRect(option.rect.left(), option.rect.top(),
+                          _PID_ICON_W, option.rect.height())
+        # Fill icon strip with selection or alternating-row background
+        if option.state & QStyle.StateFlag.State_Selected:
+            painter.fillRect(icon_rect, option.palette.highlight())
+        elif index.row() % 2 == 1:
+            painter.fillRect(icon_rect, option.palette.alternateBase())
+        else:
+            painter.fillRect(icon_rect, option.palette.base())
+        painter.drawText(icon_rect, Qt.AlignmentFlag.AlignCenter,
+                         '📍' if is_placed else '📌')
+
+
 class ScenarioTablePanel(QWidget):
     """Extended scenario table with FA, Antändning, Övriga faktorer and Slutkonsekvens."""
 
     item_selected    = pyqtSignal(int, int)   # (type_, id_) — cell clicked → open right panel
     new_item_created = pyqtSignal(int, int)   # (type_, id_) — after quick-add via Enter menu
     item_edited      = pyqtSignal(int, int)   # (type_, id_) — cell edit committed → sync right panel
+    place_requested  = pyqtSignal(int, int)   # (type_, id_) — 📌 icon clicked → enter P&ID placement
 
     # Column indices
     _C_NOD, _C_ORS, _C_KON, _C_RFORE = 0, 1, 2, 3
@@ -3056,6 +3098,13 @@ class ScenarioTablePanel(QWidget):
         self._table.installEventFilter(self)
         self._delegate = _ScenarioDelegate(self)
         self._table.setItemDelegate(self._delegate)
+        self._pid_delegate = _PidDelegate(self)
+        for col in (self._C_ORS, self._C_KON, self._C_SG):
+            self._table.setItemDelegateForColumn(col, self._pid_delegate)
+        self._table.viewport().installEventFilter(self)
+        self._placed_causes       = set()
+        self._placed_consequences = set()
+        self._placed_safeguards   = set()
         outer.addWidget(self._table)
 
     # ── Load ──────────────────────────────────────────────────────────────────
@@ -3111,6 +3160,7 @@ class ScenarioTablePanel(QWidget):
         freq_lbl = _FREQ_LABELS[_fi] if _fi < len(_FREQ_LABELS) else f'F{freq}'
 
         try:
+            self.refresh_placed()
             for cons in self.db.consequences(self.cause_id):
                 cons_d = dict(cons)
                 sgs = [dict(s) for s in self.db.safeguards(cons_d['id'])]
@@ -3347,6 +3397,41 @@ class ScenarioTablePanel(QWidget):
         dlg.exec()
         self._rebuild()
 
+    # ── P&ID placement helpers ─────────────────────────────────────────────────
+
+    def refresh_placed(self):
+        """Reload which IDs are placed on the P&ID and repaint the table."""
+        try:
+            self._placed_causes       = set(self.db.marked_cause_ids())
+            self._placed_consequences = set(self.db.marked_consequence_ids())
+            self._placed_safeguards   = set(self.db.marked_safeguard_ids())
+        except Exception:
+            pass
+        self._table.viewport().update()
+
+    def _is_cell_placed(self, row, col):
+        if row >= len(self._row_meta):
+            return False
+        cause_id, cons_id, sg_id = self._row_meta[row]
+        if col == self._C_ORS:
+            return cause_id in self._placed_causes
+        if col == self._C_KON:
+            return cons_id in self._placed_consequences
+        if col == self._C_SG:
+            return sg_id is not None and sg_id in self._placed_safeguards
+        return False
+
+    def _place_from_table(self, row, col):
+        if row >= len(self._row_meta):
+            return
+        cause_id, cons_id, sg_id = self._row_meta[row]
+        if col == self._C_ORS and cause_id is not None:
+            self.place_requested.emit(CAUSE_T, cause_id)
+        elif col == self._C_KON and cons_id is not None:
+            self.place_requested.emit(CONS_T, cons_id)
+        elif col == self._C_SG and sg_id is not None:
+            self.place_requested.emit(SG_T, sg_id)
+
     def _on_cell_clicked(self, row, col):
         if col == self._C_ORS and row < len(self._row_meta):
             self.item_selected.emit(CAUSE_T, self._row_meta[row][0])
@@ -3415,6 +3500,18 @@ class ScenarioTablePanel(QWidget):
     def eventFilter(self, obj, event):
         ctrl = bool(event.type() == QEvent.Type.KeyPress and
                     event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+
+        # Viewport mouse: detect click in the 📍/📌 icon strip
+        if obj is self._table.viewport() and event.type() == QEvent.Type.MouseButtonPress:
+            pos = event.pos()
+            col = self._table.columnAt(pos.x())
+            row = self._table.rowAt(pos.y())
+            if row >= 0 and col in (self._C_ORS, self._C_KON, self._C_SG):
+                col_x = self._table.columnViewportPosition(col)
+                if pos.x() - col_x < _PID_ICON_W:
+                    if not self._is_cell_placed(row, col):
+                        self._place_from_table(row, col)
+                        return True  # consume click — do not start edit
 
         # Delegate inline editor (regular cell in edit mode)
         if (isinstance(obj, QLineEdit) and
@@ -6233,16 +6330,19 @@ class MainWindow(QMainWindow):
             lambda type_, id_: (self.tree_panel.refresh(type_, id_),
                                 self._on_selected(type_, id_)))
         self.scenario_panel.item_edited.connect(self._on_scenario_item_edited)
+        self.scenario_panel.place_requested.connect(self._on_scenario_place_requested)
 
         self.pid_panel.node_created.connect(
             lambda nid: (self.tree_panel.refresh(NODE_T, nid),
                          self._on_selected(NODE_T, nid)))
         self.pid_panel.cause_created.connect(
             lambda cid: (self.tree_panel.refresh(CAUSE_T, cid),
-                         self._on_selected(CAUSE_T, cid)))
+                         self._on_selected(CAUSE_T, cid),
+                         self.scenario_panel.refresh_placed()))
         self.pid_panel.consequence_created.connect(
             lambda cid: (self.tree_panel.refresh(CONS_T, cid),
-                         self._on_selected(CONS_T, cid)))
+                         self._on_selected(CONS_T, cid),
+                         self.scenario_panel.refresh_placed()))
         self.pid_panel.safeguard_created.connect(self._on_safeguard_created)
         self.pid_panel.risk_scenario_requested.connect(self._on_pid_risk_scenario)
         self.pid_panel.marker_navigated.connect(self._on_marker_navigate)
@@ -6340,6 +6440,18 @@ class MainWindow(QMainWindow):
             self.cons_panel.load(self._cur_id)
             self.scenario_panel.load_consequence(self._cur_id)
             self.tree_panel.refresh(CONS_T, self._cur_id)
+        self.scenario_panel.refresh_placed()
+
+    def _on_scenario_place_requested(self, type_, id_):
+        """User clicked the 📌 icon in the scenario table — activate that item and enter P&ID placement mode."""
+        self._on_selected(type_, id_)
+        self._switch_view(0)   # switch to P&ID page
+        if type_ == CAUSE_T:
+            self.pid_panel._set_mode(MODE_CAUSE)
+        elif type_ == CONS_T:
+            self.pid_panel._set_mode(MODE_CONSEQUENCE)
+        elif type_ == SG_T:
+            self.pid_panel._set_mode(MODE_SAFEGUARD)
 
     def _on_matrix_changed(self):
         if self._cur_type == CONS_T and self._cur_id is not None:
