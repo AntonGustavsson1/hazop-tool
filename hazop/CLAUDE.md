@@ -73,14 +73,15 @@ The application is split into two modules:
 - `MainWindow` — five-page `QStackedWidget`: P&ID view (0), Worksheet (1), Equipment (2), Administration (3), Settings (4). Toggle bar buttons select pages.
 - Risk matrix is stored as JSON in `app_config` table (key `'risk_matrix'`). Module-level `_current_matrix` is loaded at startup via `load_matrix(db)` and consumed by `risk_info(severity, likelihood)`.
 - `effective_likelihood(base, rrf)` — reduces likelihood by `floor(log10(rrf))` steps.
-- Tree types: `NODE_T=1`, `CAUSE_T=2`, `CONS_T=3`, `SG_T=4`.
+- Tree types: `NODE_T=1`, `CAUSE_T=2`, `CONS_T=3`, `SG_T=4`, `DEV_T=5` (Avvikelse — between Node and Cause).
 
 ## Database schema summary
 
 | Table | Key columns |
 |---|---|
 | `nodes` | `id`, `name`, `markup_points` (JSON), `markup_style` (JSON), `pid_page` |
-| `causes` | `id`, `node_id`, `description`, `likelihood` |
+| `deviations` | `id`, `node_id`, `description` — one per HAZOP deviation under a node |
+| `causes` | `id`, `node_id`, `deviation_id`, `description`, `likelihood` |
 | `consequences` | `id`, `cause_id`, `description`, `severity`, `category` |
 | `safeguards` | `id`, `consequence_id`, `description`, `rrf` |
 | `actions` | `id`, `consequence_id`, `description`, `responsible`, `due_date`, `status` |

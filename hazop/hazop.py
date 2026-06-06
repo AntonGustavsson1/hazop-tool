@@ -493,6 +493,7 @@ class Database:
             "ALTER TABLE causes ADD COLUMN likelihood INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE causes ADD COLUMN source_id INTEGER DEFAULT NULL",
             "ALTER TABLE causes ADD COLUMN base_freq REAL DEFAULT NULL",
+            "ALTER TABLE causes ADD COLUMN deviation_id INTEGER REFERENCES deviations(id)",
             "ALTER TABLE safeguards ADD COLUMN rrf INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE safeguards ADD COLUMN source_id INTEGER DEFAULT NULL",
             "ALTER TABLE consequences ADD COLUMN category TEXT DEFAULT ''",
@@ -560,6 +561,11 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL, sort_order INTEGER DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS deviations (
+                id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+                description TEXT NOT NULL DEFAULT 'Övrigt'
+            );
             CREATE TABLE IF NOT EXISTS cause_markers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 cause_id INTEGER NOT NULL REFERENCES causes(id) ON DELETE CASCADE,
@@ -625,6 +631,23 @@ class Database:
                 sort_order INTEGER DEFAULT 0
             );
         """)
+
+        # Seed missing deviation_id for existing causes
+        orphan_nodes = [r[0] for r in self.conn.execute(
+            "SELECT DISTINCT node_id FROM causes WHERE deviation_id IS NULL").fetchall()]
+        for nid in orphan_nodes:
+            row = self.conn.execute(
+                "SELECT id FROM deviations WHERE node_id=? AND description='Övrigt' LIMIT 1",
+                (nid,)).fetchone()
+            if row:
+                dev_id = row[0]
+            else:
+                cur = self.conn.execute(
+                    "INSERT INTO deviations (node_id, description) VALUES (?, 'Övrigt')", (nid,))
+                dev_id = cur.lastrowid
+            self.conn.execute(
+                "UPDATE causes SET deviation_id=? WHERE node_id=? AND deviation_id IS NULL",
+                (dev_id, nid))
 
         self.conn.commit()
 
@@ -1125,9 +1148,43 @@ class Database:
         self.conn.commit()
         return cur.lastrowid
 
-    def add_cause(self, node_id):
+    def deviations(self, node_id):
+        return self.conn.execute(
+            "SELECT * FROM deviations WHERE node_id=? ORDER BY id", (node_id,)).fetchall()
+
+    def get_deviation(self, id_):
+        return self.conn.execute("SELECT * FROM deviations WHERE id=?", (id_,)).fetchone()
+
+    def causes_for_deviation(self, deviation_id):
+        return self.conn.execute(
+            "SELECT * FROM causes WHERE deviation_id=? ORDER BY id", (deviation_id,)).fetchall()
+
+    def add_deviation(self, node_id, description="Övrigt"):
         cur = self.conn.execute(
-            "INSERT INTO causes (node_id,description,likelihood) VALUES (?,'Ny orsak',1)", (node_id,))
+            "INSERT INTO deviations (node_id, description) VALUES (?,?)", (node_id, description))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def update_deviation(self, id_, description):
+        self.conn.execute("UPDATE deviations SET description=? WHERE id=?", (description, id_))
+        self.conn.commit()
+
+    def delete_deviation(self, id_):
+        self.conn.execute("DELETE FROM deviations WHERE id=?", (id_,))
+        self.conn.commit()
+
+    def get_or_create_deviation(self, node_id, description="Övrigt"):
+        row = self.conn.execute(
+            "SELECT id FROM deviations WHERE node_id=? AND description=? ORDER BY id LIMIT 1",
+            (node_id, description)).fetchone()
+        return row[0] if row else self.add_deviation(node_id, description)
+
+    def add_cause(self, deviation_id):
+        dev = self.get_deviation(deviation_id)
+        node_id = dev['node_id'] if dev else None
+        cur = self.conn.execute(
+            "INSERT INTO causes (node_id,deviation_id,description,likelihood) VALUES (?,?,'Ny orsak',1)",
+            (node_id, deviation_id))
         self.conn.commit()
         return cur.lastrowid
 
@@ -1239,13 +1296,15 @@ class Database:
         self.conn.commit()
 
     # ── Copy support ──────────────────────────────────────────────────────────
-    def copy_cause(self, cause_id, target_node_id):
+    def copy_cause(self, cause_id, target_deviation_id):
         orig = self.get_cause(cause_id)
         if not orig:
             return None
+        dev = self.get_deviation(target_deviation_id)
+        node_id = dev['node_id'] if dev else orig['node_id']
         cur = self.conn.execute(
-            "INSERT INTO causes (node_id,description,likelihood,source_id) VALUES (?,?,?,?)",
-            (target_node_id, orig['description'], orig['likelihood'], cause_id))
+            "INSERT INTO causes (node_id,deviation_id,description,likelihood,source_id) VALUES (?,?,?,?,?)",
+            (node_id, target_deviation_id, orig['description'], orig['likelihood'], cause_id))
         self.conn.commit()
         return cur.lastrowid
 
@@ -1656,6 +1715,86 @@ class NodePanel(QWidget):
             self.pressure_edit.text(),
             self.temperature_edit.text())
         self.saved.emit(self.node_id, name)
+
+
+class DeviationPanel(QWidget):
+    saved        = pyqtSignal(int, str)   # (id_, description)
+    add_cause_requested = pyqtSignal(int) # (deviation_id)
+
+    def __init__(self, db: Database):
+        super().__init__()
+        self.db = db
+        self.deviation_id = None
+        self._loading = False
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        title = QLabel("Avvikelse")
+        f = QFont(); f.setPointSize(15); f.setBold(True)
+        title.setFont(f)
+        layout.addWidget(title)
+        sep = QLabel(); sep.setFixedHeight(1); sep.setStyleSheet("background:#ddd;")
+        layout.addWidget(sep)
+
+        form = QFormLayout()
+        form.setSpacing(10)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self.desc_edit = QLineEdit()
+        self.desc_edit.setPlaceholderText("T.ex. Högt flöde, Lågt tryck, Övrigt…")
+        self.desc_edit.editingFinished.connect(self._save)
+        form.addRow("Beskrivning:", self.desc_edit)
+        layout.addLayout(form)
+
+        lbl = QLabel("Välj standardavvikelse:")
+        lbl.setStyleSheet("color:#555; font-size:11px; margin-top:6px;")
+        layout.addWidget(lbl)
+
+        grid = QGridLayout()
+        grid.setSpacing(4)
+        for i, name in enumerate(_DEVIATION_TYPES):
+            btn = QPushButton(name)
+            btn.setStyleSheet(
+                "QPushButton{padding:4px 6px;font-size:10px;border:1px solid #ccc;border-radius:3px;}"
+                "QPushButton:hover{background:#e8f0fe;}")
+            btn.clicked.connect(lambda _, n=name: self._quick_set(n))
+            grid.addWidget(btn, i // 2, i % 2)
+        layout.addLayout(grid)
+
+        self._add_btn = QPushButton("⚙  Lägg till orsak")
+        self._add_btn.setEnabled(False)
+        self._add_btn.setStyleSheet(
+            "QPushButton{background:#1F4E79;color:white;border:none;"
+            "border-radius:4px;padding:7px;font-weight:bold;margin-top:8px;}"
+            "QPushButton:hover{background:#2563a8;}"
+            "QPushButton:disabled{background:#aaa;}")
+        self._add_btn.clicked.connect(
+            lambda: self.add_cause_requested.emit(self.deviation_id))
+        layout.addWidget(self._add_btn)
+        layout.addStretch()
+
+    def load(self, deviation_id):
+        self.deviation_id = deviation_id
+        self._add_btn.setEnabled(True)
+        dev = self.db.get_deviation(deviation_id)
+        if not dev:
+            return
+        self._loading = True
+        self.desc_edit.setText(dev['description'])
+        self._loading = False
+
+    def _quick_set(self, name):
+        self.desc_edit.setText(name)
+        self._save()
+
+    def _save(self):
+        if self._loading or self.deviation_id is None:
+            return
+        desc = self.desc_edit.text().strip() or 'Övrigt'
+        self.db.update_deviation(self.deviation_id, desc)
+        self.saved.emit(self.deviation_id, desc)
 
 
 class CausePanel(QWidget):
@@ -2090,6 +2229,51 @@ NODE_T = 1
 CAUSE_T = 2
 CONS_T = 3
 SG_T = 4
+DEV_T = 5
+
+_DEVIATION_TYPES = [
+    "Lågt flöde",
+    "Högt flöde",
+    "Missriktat flöde",
+    "Omvänt flöde",
+    "Högt tryck",
+    "Lågt tryck",
+    "Hög nivå",
+    "Låg nivå",
+    "Hög temperatur",
+    "Låg temperatur",
+    "Avvikande sammansättning",
+    "Bortfall av hjälpsystem",
+    "Drift",
+    "Underhåll",
+    "Start-up / Shut-down",
+    "Övrigt",
+]
+
+
+class _PickDeviationDialog(QDialog):
+    """Small dialog to pick/type a deviation description when adding a new deviation."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Lägg till avvikelse")
+        self.description = ""
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Välj eller skriv en avvikelse:"))
+        self.combo = QComboBox()
+        self.combo.addItems(_DEVIATION_TYPES)
+        self.combo.setEditable(True)
+        self.combo.setCurrentText(_DEVIATION_TYPES[0])
+        layout.addWidget(self.combo)
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self._accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+        self.resize(300, 100)
+
+    def _accept(self):
+        self.description = self.combo.currentText().strip() or "Övrigt"
+        self.accept()
 
 
 class HAZOPTreeWidget(QTreeWidget):
@@ -2286,43 +2470,53 @@ class TreePanel(QWidget):
             if (NODE_T, node['id']) in expanded: nitem.setExpanded(True)
             if select_type == NODE_T and select_id == node['id']: target = nitem
 
-            for cause in self.db.causes(node['id']):
-                placed_c = cause['id'] in marked_causes
-                citem = QTreeWidgetItem([f"  ⚙  {cause['description'][:50]}"])
-                citem.setIcon(0, _make_pin_icon(placed_c))
-                citem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
-                citem.setData(0, Qt.ItemDataRole.UserRole + 1, CAUSE_T)
-                nitem.addChild(citem)
-                if (CAUSE_T, cause['id']) in expanded: citem.setExpanded(True)
-                if select_type == CAUSE_T and select_id == cause['id']: target = citem
+            for dev in self.db.deviations(node['id']):
+                ditem = QTreeWidgetItem([f"  ⚠  {dev['description'][:55]}"])
+                ditem.setData(0, Qt.ItemDataRole.UserRole, dev['id'])
+                ditem.setData(0, Qt.ItemDataRole.UserRole + 1, DEV_T)
+                dev_font = QFont(); dev_font.setItalic(True)
+                ditem.setFont(0, dev_font)
+                nitem.addChild(ditem)
+                if (DEV_T, dev['id']) in expanded: ditem.setExpanded(True)
+                if select_type == DEV_T and select_id == dev['id']: target = ditem
 
-                for cons in self.db.consequences(cause['id']):
-                    level, _, _ = risk_info(cause['likelihood'], cons['severity'])
-                    risk_icon = _RISK_ICON.get(level, '⚪')
-                    placed_k = cons['id'] in marked_consequences
-                    kitem = QTreeWidgetItem([f"    {risk_icon}  {cons['description'][:40]}"])
-                    kitem.setIcon(0, _make_pin_icon(placed_k))
-                    kitem.setData(0, Qt.ItemDataRole.UserRole, cons['id'])
-                    kitem.setData(0, Qt.ItemDataRole.UserRole + 1, CONS_T)
-                    citem.addChild(kitem)
-                    if (CONS_T, cons['id']) in expanded: kitem.setExpanded(True)
-                    if select_type == CONS_T and select_id == cons['id']: target = kitem
+                for cause in self.db.causes_for_deviation(dev['id']):
+                    placed_c = cause['id'] in marked_causes
+                    citem = QTreeWidgetItem([f"    ⚙  {cause['description'][:50]}"])
+                    citem.setIcon(0, _make_pin_icon(placed_c))
+                    citem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
+                    citem.setData(0, Qt.ItemDataRole.UserRole + 1, CAUSE_T)
+                    ditem.addChild(citem)
+                    if (CAUSE_T, cause['id']) in expanded: citem.setExpanded(True)
+                    if select_type == CAUSE_T and select_id == cause['id']: target = citem
 
-                    for sg in self.db.safeguards(cons['id']):
-                        rrf = (sg['rrf'] or 1) if sg['rrf'] is not None else 1
-                        rrf_str = f"RRF{rrf}" if rrf > 1 else "—"
-                        try:
-                            linked = bool(sg['source_id'])
-                        except (IndexError, KeyError):
-                            linked = False
-                        sg_icon = "🔗🛡" if linked else "🛡"
-                        placed_s = sg['id'] in marked_safeguards
-                        sgitem = QTreeWidgetItem([f"       {sg_icon}  {sg['description'][:35]}  [{rrf_str}]"])
-                        sgitem.setIcon(0, _make_pin_icon(placed_s))
-                        sgitem.setData(0, Qt.ItemDataRole.UserRole, sg['id'])
-                        sgitem.setData(0, Qt.ItemDataRole.UserRole + 1, SG_T)
-                        kitem.addChild(sgitem)
-                        if select_type == SG_T and select_id == sg['id']: target = sgitem
+                    for cons in self.db.consequences(cause['id']):
+                        level, _, _ = risk_info(cause['likelihood'], cons['severity'])
+                        risk_icon = _RISK_ICON.get(level, '⚪')
+                        placed_k = cons['id'] in marked_consequences
+                        kitem = QTreeWidgetItem([f"      {risk_icon}  {cons['description'][:40]}"])
+                        kitem.setIcon(0, _make_pin_icon(placed_k))
+                        kitem.setData(0, Qt.ItemDataRole.UserRole, cons['id'])
+                        kitem.setData(0, Qt.ItemDataRole.UserRole + 1, CONS_T)
+                        citem.addChild(kitem)
+                        if (CONS_T, cons['id']) in expanded: kitem.setExpanded(True)
+                        if select_type == CONS_T and select_id == cons['id']: target = kitem
+
+                        for sg in self.db.safeguards(cons['id']):
+                            rrf = (sg['rrf'] or 1) if sg['rrf'] is not None else 1
+                            rrf_str = f"RRF{rrf}" if rrf > 1 else "—"
+                            try:
+                                linked = bool(sg['source_id'])
+                            except (IndexError, KeyError):
+                                linked = False
+                            sg_icon = "🔗🛡" if linked else "🛡"
+                            placed_s = sg['id'] in marked_safeguards
+                            sgitem = QTreeWidgetItem([f"         {sg_icon}  {sg['description'][:35]}  [{rrf_str}]"])
+                            sgitem.setIcon(0, _make_pin_icon(placed_s))
+                            sgitem.setData(0, Qt.ItemDataRole.UserRole, sg['id'])
+                            sgitem.setData(0, Qt.ItemDataRole.UserRole + 1, SG_T)
+                            kitem.addChild(sgitem)
+                            if select_type == SG_T and select_id == sg['id']: target = sgitem
 
         self.tree.blockSignals(False)
         if target:
@@ -2338,6 +2532,8 @@ class TreePanel(QWidget):
 
     def _resolve_node_id(self, type_, id_):
         if type_ == NODE_T: return id_
+        if type_ == DEV_T:
+            r = self.db.get_deviation(id_); return r['node_id'] if r else None
         if type_ == CAUSE_T:
             r = self.db.get_cause(id_); return r['node_id'] if r else None
         if type_ == CONS_T:
@@ -2350,6 +2546,24 @@ class TreePanel(QWidget):
                 c = self.db.get_consequence(r['consequence_id'])
                 if c:
                     ca = self.db.get_cause(c['cause_id']); return ca['node_id'] if ca else None
+        return None
+
+    def _resolve_deviation_id(self, type_, id_):
+        if type_ == DEV_T: return id_
+        if type_ == CAUSE_T:
+            r = self.db.get_cause(id_); return r['deviation_id'] if r else None
+        if type_ == CONS_T:
+            r = self.db.get_consequence(id_)
+            if r:
+                c = self.db.get_cause(r['cause_id'])
+                return c['deviation_id'] if c else None
+        if type_ == SG_T:
+            r = self.db.get_safeguard(id_)
+            if r:
+                c = self.db.get_consequence(r['consequence_id'])
+                if c:
+                    ca = self.db.get_cause(c['cause_id'])
+                    return ca['deviation_id'] if ca else None
         return None
 
     def _resolve_cause_id(self, type_, id_):
@@ -2367,12 +2581,24 @@ class TreePanel(QWidget):
         self.refresh(NODE_T, new_id)
         self.structure_changed.emit()
 
-    def add_cause(self):
+    def add_deviation(self):
         type_, id_ = self._current()
         node_id = self._resolve_node_id(type_, id_) if type_ else None
         if node_id is None:
             QMessageBox.information(self, "Välj nod", "Välj en nod i trädet."); return
-        new_id = self.db.add_cause(node_id)
+        dlg = _PickDeviationDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        new_id = self.db.add_deviation(node_id, dlg.description)
+        self.refresh(DEV_T, new_id)
+        self.structure_changed.emit()
+
+    def add_cause(self):
+        type_, id_ = self._current()
+        dev_id = self._resolve_deviation_id(type_, id_) if type_ else None
+        if dev_id is None:
+            QMessageBox.information(self, "Välj avvikelse", "Välj en avvikelse i trädet."); return
+        new_id = self.db.add_cause(dev_id)
         self.refresh(CAUSE_T, new_id)
         self.structure_changed.emit()
 
@@ -2388,13 +2614,17 @@ class TreePanel(QWidget):
     def delete_selected(self):
         type_, id_ = self._current()
         if type_ is None: return
-        names = {NODE_T: 'noden', CAUSE_T: 'causeen', CONS_T: 'konsekvensen', SG_T: 'safeguarden'}
+        names = {NODE_T: 'noden', DEV_T: 'avvikelsen', CAUSE_T: 'orsaken',
+                 CONS_T: 'konsekvensen', SG_T: 'safeguarden'}
         reply = QMessageBox.question(self, "Ta bort",
-            f"Ta bort {names[type_]} och allt under den?",
+            f"Ta bort {names.get(type_, 'objektet')} och allt under den?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply != QMessageBox.StandardButton.Yes: return
-        {NODE_T: self.db.delete_node, CAUSE_T: self.db.delete_cause,
-         CONS_T: self.db.delete_consequence, SG_T: self.db.delete_safeguard}[type_](id_)
+        deletors = {NODE_T: self.db.delete_node, DEV_T: self.db.delete_deviation,
+                    CAUSE_T: self.db.delete_cause, CONS_T: self.db.delete_consequence,
+                    SG_T: self.db.delete_safeguard}
+        if type_ in deletors:
+            deletors[type_](id_)
         self.refresh()
         self.structure_changed.emit()
 
@@ -2412,15 +2642,17 @@ class TreePanel(QWidget):
         menu  = QMenu(self)
 
         if type_ == NODE_T:
-            menu.addAction("+ Lägg till Cause", self.add_cause)
+            menu.addAction("+ Lägg till avvikelse", self.add_deviation)
+        elif type_ == DEV_T:
+            menu.addAction("+ Lägg till orsak", self.add_cause)
         elif type_ == CAUSE_T:
-            menu.addAction("+ Lägg till Consequence", self.add_consequence)
+            menu.addAction("+ Lägg till konsekvens", self.add_consequence)
         menu.addSeparator()
 
         # Copy
-        copy_labels = {CAUSE_T: "📋 Kopiera Cause",
-                       CONS_T:  "📋 Kopiera Consequence",
-                       SG_T:    "📋 Kopiera Safeguard"}
+        copy_labels = {CAUSE_T: "📋 Kopiera orsak",
+                       CONS_T:  "📋 Kopiera konsekvens",
+                       SG_T:    "📋 Kopiera safeguard"}
         if type_ in copy_labels:
             menu.addAction(copy_labels[type_],
                            lambda t=type_, i=id_: self._copy_item(t, i))
@@ -2429,7 +2661,7 @@ class TreePanel(QWidget):
         if self._clipboard:
             ct = self._clipboard['type']
             can_paste = (
-                (ct == CAUSE_T and type_ in (NODE_T, CAUSE_T, CONS_T, SG_T)) or
+                (ct == CAUSE_T and type_ in (NODE_T, DEV_T, CAUSE_T, CONS_T, SG_T)) or
                 (ct == CONS_T  and type_ in (CAUSE_T, CONS_T, SG_T)) or
                 (ct == SG_T    and type_ in (CONS_T, SG_T))
             )
@@ -2451,10 +2683,14 @@ class TreePanel(QWidget):
         type_, id_ = self._current()
 
         if ct == CAUSE_T:
-            node_id = self._resolve_node_id(type_, id_)
-            if not node_id:
-                return
-            new_id = self.db.copy_cause(cid, node_id)
+            dev_id = self._resolve_deviation_id(type_, id_)
+            if not dev_id:
+                # Fall back: get or create "Övrigt" deviation on the resolved node
+                node_id = self._resolve_node_id(type_, id_)
+                if not node_id:
+                    return
+                dev_id = self.db.get_or_create_deviation(node_id)
+            new_id = self.db.copy_cause(cid, dev_id)
             if new_id:
                 self.refresh(CAUSE_T, new_id)
                 self.structure_changed.emit()
@@ -3116,12 +3352,13 @@ class ScenarioTablePanel(QWidget):
     remove_requested = pyqtSignal(int, int)   # (type_, id_) — delete all markers
 
     # Column indices
-    _C_NOD, _C_ORS, _C_KON, _C_RFORE = 0, 1, 2, 3
-    _C_SG, _C_REFT, _C_FA, _C_IGN    = 4, 5, 6, 7
-    _C_OVRIGA, _C_SLUT                = 8, 9
+    _C_NOD, _C_DEV, _C_ORS, _C_KON, _C_RFORE = 0, 1, 2, 3, 4
+    _C_SG, _C_REFT, _C_FA, _C_IGN             = 5, 6, 7, 8
+    _C_OVRIGA, _C_SLUT                         = 9, 10
 
     _COLS = [
         'Nod',
+        'Avvikelse',
         'Orsak  →',
         'Konsekvens',
         'Risk före barriär',
@@ -3137,7 +3374,9 @@ class ScenarioTablePanel(QWidget):
         super().__init__()
         self.db = db
         self.cause_id = None
-        self._row_meta = []   # list of (cause_id, cons_id, [sg_ids]) per visible row
+        self._node_id = None
+        self._deviation_id = None
+        self._row_meta = []   # list of (dev_id, cause_id, cons_id, sg_id) per visible row
         self._enter_row = -1
         self._enter_col = -1
         self._last_enter_committed = False
@@ -3161,6 +3400,7 @@ class ScenarioTablePanel(QWidget):
         h = self._table.horizontalHeader()
         resize_modes = {
             self._C_NOD:   (QHeaderView.ResizeMode.Interactive, 70),
+            self._C_DEV:   (QHeaderView.ResizeMode.Interactive, 120),
             self._C_ORS:   (QHeaderView.ResizeMode.Stretch,     0),
             self._C_KON:   (QHeaderView.ResizeMode.Stretch,     0),
             self._C_RFORE: (QHeaderView.ResizeMode.Fixed,       130),
@@ -3198,17 +3438,36 @@ class ScenarioTablePanel(QWidget):
 
     # ── Load ──────────────────────────────────────────────────────────────────
 
+    def load_node(self, node_id):
+        self._node_id = node_id
+        self._deviation_id = None
+        self.cause_id = None
+        self._rebuild()
+
+    def load_deviation(self, deviation_id):
+        dev = self.db.get_deviation(deviation_id)
+        self._node_id = dev['node_id'] if dev else None
+        self._deviation_id = deviation_id
+        self.cause_id = None
+        self._rebuild()
+
     def load_cause(self, cause_id):
+        self._node_id = None
+        self._deviation_id = None
         self.cause_id = cause_id
         self._rebuild()
 
     def load_consequence(self, cons_id):
         row = self.db.get_consequence(cons_id)
         if row:
+            self._node_id = None
+            self._deviation_id = None
             self.cause_id = dict(row)['cause_id']
             self._rebuild()
 
     def clear(self):
+        self._node_id = None
+        self._deviation_id = None
         self.cause_id = None
         self._table.setRowCount(0)
         self._hdr_lbl.setText("HAZOP Scenario")
@@ -3227,39 +3486,63 @@ class ScenarioTablePanel(QWidget):
         self._table.setRowCount(0)
         self._row_meta = []
 
-        if self.cause_id is None:
+        # Build list of (cause_dict, deviation_dict) to display
+        causes_to_show = []
+        if self.cause_id is not None:
+            c = self.db.get_cause(self.cause_id)
+            if c:
+                c_d = dict(c)
+                dev = self.db.get_deviation(c_d.get('deviation_id'))
+                causes_to_show = [(c_d, dict(dev) if dev else {'id': None, 'description': '—'})]
+        elif self._deviation_id is not None:
+            dev = self.db.get_deviation(self._deviation_id)
+            dev_d = dict(dev) if dev else {'id': self._deviation_id, 'description': '—'}
+            for c in self.db.causes_for_deviation(self._deviation_id):
+                causes_to_show.append((dict(c), dev_d))
+        elif self._node_id is not None:
+            for dev in self.db.deviations(self._node_id):
+                dev_d = dict(dev)
+                for c in self.db.causes_for_deviation(dev['id']):
+                    causes_to_show.append((dict(c), dev_d))
+
+        if not causes_to_show:
             self._table.blockSignals(False)
             self._table.cellChanged.connect(self._on_cell_changed)
             self._rebuilding = False
             return
 
-        cause = self.db.get_cause(self.cause_id)
-        if not cause:
-            self._table.blockSignals(False)
-            self._table.cellChanged.connect(self._on_cell_changed)
-            self._rebuilding = False
-            return
-        cause_d   = dict(cause)
-        node      = self.db.get_node(cause_d['node_id'])
-        node_name = dict(node)['name'] if node else '?'
-        freq      = cause_d['likelihood'] if cause_d['likelihood'] is not None else 3
-
-        self._hdr_lbl.setText(f"HAZOP Scenario — {node_name}")
-        _fi = freq_to_idx(freq)
-        freq_lbl = _FREQ_LABELS[_fi] if _fi < len(_FREQ_LABELS) else f'F{freq}'
+        # Determine header title from first cause's node
+        first_cause = causes_to_show[0][0]
+        node = self.db.get_node(first_cause['node_id'])
+        node_name_hdr = node['name'] if node else '?'
+        if self._deviation_id is not None:
+            dev = self.db.get_deviation(self._deviation_id)
+            self._hdr_lbl.setText(
+                f"HAZOP Scenario — {node_name_hdr} / {dev['description'] if dev else ''}")
+        elif self._node_id is not None:
+            self._hdr_lbl.setText(f"HAZOP Scenario — {node_name_hdr}")
+        else:
+            self._hdr_lbl.setText(f"HAZOP Scenario — {node_name_hdr}")
 
         try:
             self.refresh_placed()
-            for cons in self.db.consequences(self.cause_id):
-                cons_d = dict(cons)
-                sgs = [dict(s) for s in self.db.safeguards(cons_d['id'])]
-                if sgs:
-                    for sg in sgs:
-                        self._add_row(node_name, cause_d, freq, freq_lbl, cons_d, sgs, sg)
-                else:
-                    self._add_row(node_name, cause_d, freq, freq_lbl, cons_d, [], None)
-            if self._table.rowCount() == 0:
-                self._add_empty_row(node_name, cause_d, freq, freq_lbl)
+            for cause_d, dev_d in causes_to_show:
+                node = self.db.get_node(cause_d['node_id'])
+                node_name = node['name'] if node else '?'
+                freq = cause_d['likelihood'] if cause_d['likelihood'] is not None else 3
+                _fi = freq_to_idx(freq)
+                freq_lbl = _FREQ_LABELS[_fi] if _fi < len(_FREQ_LABELS) else f'F{freq}'
+                first_row_for_cause = self._table.rowCount()
+                for cons in self.db.consequences(cause_d['id']):
+                    cons_d = dict(cons)
+                    sgs = [dict(s) for s in self.db.safeguards(cons_d['id'])]
+                    if sgs:
+                        for sg in sgs:
+                            self._add_row(node_name, dev_d, cause_d, freq, freq_lbl, cons_d, sgs, sg)
+                    else:
+                        self._add_row(node_name, dev_d, cause_d, freq, freq_lbl, cons_d, [], None)
+                if self._table.rowCount() == first_row_for_cause:
+                    self._add_empty_row(node_name, dev_d, cause_d, freq, freq_lbl)
             self._apply_spans()
         except Exception as e:
             QMessageBox.critical(None, "Fel i scenariopanel", str(e))
@@ -3297,19 +3580,23 @@ class ScenarioTablePanel(QWidget):
             self._table.item(r, self._C_NOD).data(Qt.ItemDataRole.UserRole)
             if self._table.item(r, self._C_NOD) else None))
 
-        # Orsak: group by cause_id
-        _span_col(self._C_ORS, lambda r: _meta(r, 0))
+        # Avvikelse: group by dev_id (index 0 in row_meta)
+        _span_col(self._C_DEV, lambda r: _meta(r, 0))
 
-        # Consequence-level columns: group by cons_id
+        # Orsak: group by cause_id (index 1)
+        _span_col(self._C_ORS, lambda r: _meta(r, 1))
+
+        # Consequence-level columns: group by cons_id (index 2)
         for col in (self._C_KON, self._C_RFORE, self._C_REFT,
                     self._C_FA, self._C_IGN, self._C_OVRIGA, self._C_SLUT):
-            _span_col(col, lambda r: _meta(r, 1))
+            _span_col(col, lambda r: _meta(r, 2))
 
-    def _add_empty_row(self, node_name, cause_d, freq, freq_lbl):
+    def _add_empty_row(self, node_name, dev_d, cause_d, freq, freq_lbl):
         """Placeholder row when a cause has no consequences yet."""
         r = self._table.rowCount()
         self._table.insertRow(r)
-        self._row_meta.append((cause_d['id'], None, None))
+        dev_id = dev_d['id'] if dev_d else None
+        self._row_meta.append((dev_id, cause_d['id'], None, None))
 
         def _ro(text=''):
             item = QTableWidgetItem(text)
@@ -3319,6 +3606,10 @@ class ScenarioTablePanel(QWidget):
         nod = _ro(node_name)
         nod.setData(Qt.ItemDataRole.UserRole, cause_d['node_id'])
         self._table.setItem(r, self._C_NOD, nod)
+
+        dev_item = _ro(dev_d['description'] if dev_d else '')
+        dev_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
+        self._table.setItem(r, self._C_DEV, dev_item)
 
         ors = QTableWidgetItem(cause_d['description'])
         ors.setData(Qt.ItemDataRole.UserRole, ('cause', cause_d['id']))
@@ -3334,15 +3625,16 @@ class ScenarioTablePanel(QWidget):
 
         self._table.setRowHeight(r, 52)
 
-    def _add_row(self, node_name, cause_d, freq, freq_lbl, cons_d, sgs, sg):
+    def _add_row(self, node_name, dev_d, cause_d, freq, freq_lbl, cons_d, sgs, sg):
         """One row per safeguard (sg=None when no safeguards exist yet).
         sgs = all safeguards for this consequence (used for combined risk calc)."""
         r   = self._table.rowCount()
         self._table.insertRow(r)
         sev = cons_d['severity'] or 1
         cid = cons_d['id']
+        dev_id = dev_d['id'] if dev_d else None
 
-        self._row_meta.append((cause_d['id'], cid, sg['id'] if sg else None))
+        self._row_meta.append((dev_id, cause_d['id'], cid, sg['id'] if sg else None))
         sg_rrf = 1
         for s in sgs:
             sg_rrf *= (s.get('rrf') or 1)
@@ -3367,7 +3659,13 @@ class ScenarioTablePanel(QWidget):
         nod.setData(Qt.ItemDataRole.UserRole, cause_d['node_id'])
         self._table.setItem(r, self._C_NOD, nod)
 
-        # ── Col 1: Orsak (editable, description only) ────────────────────────
+        # ── Col 1: Avvikelse ─────────────────────────────────────────────────
+        dev_item = QTableWidgetItem(dev_d['description'] if dev_d else '')
+        dev_item.setFlags(dev_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        dev_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
+        self._table.setItem(r, self._C_DEV, dev_item)
+
+        # ── Col 2: Orsak (editable, description only) ────────────────────────
         ors = QTableWidgetItem(cause_d['description'])
         ors.setData(Qt.ItemDataRole.UserRole, ('cause', cause_d['id']))
         self._table.setItem(r, self._C_ORS, ors)
@@ -3502,7 +3800,7 @@ class ScenarioTablePanel(QWidget):
         """Returns True only when the cell actually has a placeable item ID."""
         if row >= len(self._row_meta):
             return False
-        cause_id, cons_id, sg_id = self._row_meta[row]
+        _dev_id, cause_id, cons_id, sg_id = self._row_meta[row]
         if col == self._C_ORS:
             return cause_id is not None
         if col == self._C_KON:
@@ -3514,7 +3812,7 @@ class ScenarioTablePanel(QWidget):
     def _is_cell_placed(self, row, col):
         if row >= len(self._row_meta):
             return False
-        cause_id, cons_id, sg_id = self._row_meta[row]
+        _dev_id, cause_id, cons_id, sg_id = self._row_meta[row]
         if col == self._C_ORS:
             return cause_id in self._placed_causes
         if col == self._C_KON:
@@ -3526,7 +3824,7 @@ class ScenarioTablePanel(QWidget):
     def _place_from_table(self, row, col):
         if row >= len(self._row_meta):
             return
-        cause_id, cons_id, sg_id = self._row_meta[row]
+        _dev_id, cause_id, cons_id, sg_id = self._row_meta[row]
         if col == self._C_ORS and cause_id is not None:
             self.place_requested.emit(CAUSE_T, cause_id)
         elif col == self._C_KON and cons_id is not None:
@@ -3537,7 +3835,7 @@ class ScenarioTablePanel(QWidget):
     def _emit_navigate(self, row, col):
         if row >= len(self._row_meta):
             return
-        cause_id, cons_id, sg_id = self._row_meta[row]
+        _dev_id, cause_id, cons_id, sg_id = self._row_meta[row]
         if col == self._C_ORS and cause_id is not None:
             self.navigate_to_pid.emit(CAUSE_T, cause_id)
         elif col == self._C_KON and cons_id is not None:
@@ -3548,7 +3846,7 @@ class ScenarioTablePanel(QWidget):
     def _remove_from_pid(self, row, col):
         if row >= len(self._row_meta):
             return
-        cause_id, cons_id, sg_id = self._row_meta[row]
+        _dev_id, cause_id, cons_id, sg_id = self._row_meta[row]
         if col == self._C_ORS and cause_id is not None:
             self.remove_requested.emit(CAUSE_T, cause_id)
         elif col == self._C_KON and cons_id is not None:
@@ -3698,12 +3996,11 @@ class ScenarioTablePanel(QWidget):
         """Ctrl+Enter: immediately create a new sibling at the same hierarchy level."""
         if row < 0 or row >= len(self._row_meta):
             return
-        cause_id, cons_id, _sg_id = self._row_meta[row]
-        if col == self._C_ORS or col == self._C_NOD:
-            cause = self.db.get_cause(cause_id)
-            if cause:
-                self._quick_add_cause(cause['node_id'])
-        elif col == self._C_KON or col == self._C_RFORE:
+        dev_id, cause_id, cons_id, _sg_id = self._row_meta[row]
+        if col in (self._C_ORS, self._C_NOD, self._C_DEV):
+            if dev_id is not None:
+                self._quick_add_cause(dev_id)
+        elif col in (self._C_KON, self._C_RFORE):
             self._quick_add_consequence(cause_id)
         else:
             # SG, REFT, FA, IGN, OVRIGA, SLUT → new safeguard
@@ -3721,20 +4018,20 @@ class ScenarioTablePanel(QWidget):
         if is_editable and not self._last_enter_committed:
             return
         self._last_enter_committed = False
-        cause_id, cons_id, _sg_id = self._row_meta[row]
-        self._show_quick_add(row, cause_id, cons_id)
+        dev_id, cause_id, cons_id, _sg_id = self._row_meta[row]
+        self._show_quick_add(row, dev_id, cause_id, cons_id)
 
-    def _show_quick_add(self, row, cause_id, cons_id):
+    def _show_quick_add(self, row, dev_id, cause_id, cons_id):
         cause = self.db.get_cause(cause_id)
         if not cause:
             return
-        node = self.db.get_node(cause['node_id'])
-        node_name = node['name'] if node else '?'
+        dev = self.db.get_deviation(dev_id) if dev_id else None
+        dev_name = dev['description'] if dev else '?'
 
         menu = QMenu(self)
         menu.addSection("Lägg till i hierarkin")
-        menu.addAction(f'⚙  Ny orsak på nod  [{node_name}]',
-                       lambda: self._quick_add_cause(cause['node_id']))
+        menu.addAction(f'⚙  Ny orsak under avvikelse  [{dev_name}]',
+                       lambda: self._quick_add_cause(dev_id))
         menu.addAction("⚠  Ny konsekvens på denna orsak",
                        lambda: self._quick_add_consequence(cause_id))
         sg_action = menu.addAction("🛡  Ny safeguard på denna konsekvens",
@@ -3746,8 +4043,8 @@ class ScenarioTablePanel(QWidget):
         pos   = self._table.viewport().mapToGlobal(rect.bottomLeft())
         menu.exec(pos)
 
-    def _quick_add_cause(self, node_id):
-        new_id = self.db.add_cause(node_id)
+    def _quick_add_cause(self, deviation_id):
+        new_id = self.db.add_cause(deviation_id)
         self.new_item_created.emit(CAUSE_T, new_id)
 
     def _quick_add_consequence(self, cause_id):
@@ -4114,7 +4411,8 @@ class RiskScenarioWizard(QDialog):
     def _finish(self):
         cause_desc = self._cause_desc.toPlainText().strip() or 'Ny orsak'
         freq  = idx_to_freq(self._cause_like.currentIndex())
-        c_id  = self.db.add_cause(self.node_id)
+        dev_id = self.db.get_or_create_deviation(self.node_id, "Övrigt")
+        c_id  = self.db.add_cause(dev_id)
         self.db.update_cause(c_id, cause_desc, freq)
 
         cons_desc = self._cons_desc.toPlainText().strip() or 'Ny konsekvens'
@@ -6332,9 +6630,10 @@ class MainWindow(QMainWindow):
             a = QAction(label, self); a.setToolTip(tip); a.triggered.connect(slot)
             tb.addAction(a); return a
 
-        act("+ Nod",         "Lägg till ny nod",       lambda: self.tree_panel.add_node())
-        act("+ Cause",       "Lägg till cause",        lambda: self.tree_panel.add_cause())
-        act("+ Consequence", "Lägg till consequence",  lambda: self.tree_panel.add_consequence())
+        act("+ Nod",         "Lägg till ny nod",          lambda: self.tree_panel.add_node())
+        act("+ Avvikelse",   "Lägg till ny avvikelse",    lambda: self.tree_panel.add_deviation())
+        act("+ Orsak",       "Lägg till ny orsak",        lambda: self.tree_panel.add_cause())
+        act("+ Konsekvens",  "Lägg till ny konsekvens",   lambda: self.tree_panel.add_consequence())
         tb.addSeparator()
         act("Ta bort",       "Ta bort markerat",       lambda: self.tree_panel.delete_selected())
         tb.addSeparator()
@@ -6419,12 +6718,13 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self.stack = QStackedWidget()
-        self.welcome_panel = WelcomePanel()
-        self.node_panel    = NodePanel(self.db)
-        self.cause_panel   = CausePanel(self.db)
-        self.cons_panel    = ConsequencePanel(self.db)
-        self.sg_panel      = SafeguardPanel(self.db)
-        for panel in [self.welcome_panel, self.node_panel,
+        self.welcome_panel    = WelcomePanel()
+        self.node_panel       = NodePanel(self.db)
+        self.deviation_panel  = DeviationPanel(self.db)
+        self.cause_panel      = CausePanel(self.db)
+        self.cons_panel       = ConsequencePanel(self.db)
+        self.sg_panel         = SafeguardPanel(self.db)
+        for panel in [self.welcome_panel, self.node_panel, self.deviation_panel,
                       self.cause_panel, self.cons_panel, self.sg_panel]:
             self.stack.addWidget(panel)
         scroll.setWidget(self.stack)
@@ -6462,6 +6762,9 @@ class MainWindow(QMainWindow):
 
         self.node_panel.saved.connect(
             lambda id_, name: self.tree_panel.refresh(NODE_T, id_))
+        self.deviation_panel.saved.connect(
+            lambda id_, _: self.tree_panel.refresh(DEV_T, id_))
+        self.deviation_panel.add_cause_requested.connect(self._on_deviation_add_cause)
         self.cause_panel.saved.connect(
             lambda id_, _: (self.tree_panel.refresh(CAUSE_T, id_),
                             self.scenario_panel.load_cause(id_)))
@@ -6530,7 +6833,14 @@ class MainWindow(QMainWindow):
             self.node_panel.load(id_)
             self.stack.setCurrentWidget(self.node_panel)
             self.pid_panel.set_active_node(id_)
-            self.scenario_panel.clear()
+            self.scenario_panel.load_node(id_)
+        elif type_ == DEV_T:
+            self.deviation_panel.load(id_)
+            self.stack.setCurrentWidget(self.deviation_panel)
+            dev = self.db.get_deviation(id_)
+            if dev:
+                self.pid_panel.set_active_node(dev['node_id'])
+            self.scenario_panel.load_deviation(id_)
         elif type_ == CAUSE_T:
             self.cause_panel.load(id_)
             self.stack.setCurrentWidget(self.cause_panel)
@@ -6550,6 +6860,11 @@ class MainWindow(QMainWindow):
                 if cons:
                     self.pid_panel.set_active_consequence(cons['id'])
                     self.scenario_panel.load_consequence(cons['id'])
+
+    def _on_deviation_add_cause(self, dev_id):
+        new_id = self.db.add_cause(dev_id)
+        self.tree_panel.refresh(CAUSE_T, new_id)
+        self.tree_panel.structure_changed.emit()
 
     def _on_scenario_item_edited(self, type_, id_):
         """Scenario table committed an edit — sync the tree and the right panel."""
