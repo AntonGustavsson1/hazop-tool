@@ -497,8 +497,8 @@ _COMP_STD_CAUSES = {
             "Blindplatta kvar efter underhåll",
         ],
         "Instrument / Sensor": [
-            "Felar högt",
-            "Felar lågt",
+            "Signalfel högt",
+            "Signalfel lågt",
         ],
         "Tank / Kärl": [
             "Låg nivå i matningskärl",
@@ -524,8 +524,8 @@ _COMP_STD_CAUSES = {
             "Backventil saknas / defekt (backflöde adderas)",
         ],
         "Instrument / Sensor": [
-            "Felar högt",
-            "Felar lågt",
+            "Signalfel högt",
+            "Signalfel lågt",
         ],
     },
     "Omvänt flöde": {
@@ -569,8 +569,8 @@ _COMP_STD_CAUSES = {
             "Termisk expansion i avspärrat rörledningsavsnitt",
         ],
         "Instrument / Sensor": [
-            "Felar högt",
-            "Felar lågt",
+            "Signalfel högt",
+            "Signalfel lågt",
         ],
         "Tank / Kärl": [
             "Säkerhetsventil avspärrad (underhåll)",
@@ -591,8 +591,8 @@ _COMP_STD_CAUSES = {
             "Flanskläckage",
         ],
         "Instrument / Sensor": [
-            "Felar högt",
-            "Felar lågt",
+            "Signalfel högt",
+            "Signalfel lågt",
         ],
         "Tank / Kärl": [
             "Dräneringsventil öppen / läckande",
@@ -608,8 +608,8 @@ _COMP_STD_CAUSES = {
             "Inloppsventil öppen (okontrollerat)",
         ],
         "Instrument / Sensor": [
-            "Felar högt",
-            "Felar lågt",
+            "Signalfel högt",
+            "Signalfel lågt",
         ],
         "Tank / Kärl": [
             "Skumbildning (skenbar hög nivå)",
@@ -625,8 +625,8 @@ _COMP_STD_CAUSES = {
             "Dräneringsventil öppen / läckande",
         ],
         "Instrument / Sensor": [
-            "Felar högt",
-            "Felar lågt",
+            "Signalfel högt",
+            "Signalfel lågt",
         ],
         "Tank / Kärl": [
             "Yttre läcka från kärlet",
@@ -640,8 +640,8 @@ _COMP_STD_CAUSES = {
             "Kylventil fastnar stängd",
         ],
         "Instrument / Sensor": [
-            "Felar högt",
-            "Felar lågt",
+            "Signalfel högt",
+            "Signalfel lågt",
         ],
         "Tank / Kärl": [
             "Exoterm reaktion / okontrollerad kemisk process",
@@ -654,8 +654,8 @@ _COMP_STD_CAUSES = {
             "Värmeventil fastnar stängd",
         ],
         "Instrument / Sensor": [
-            "Felar högt",
-            "Felar lågt",
+            "Signalfel högt",
+            "Signalfel lågt",
         ],
         "Rörledning": [
             "Yttre kyla utan värmespårning — isbildning",
@@ -685,6 +685,16 @@ def _fix_instrument_causes_v2(conn):
                 "INSERT INTO standard_causes (deviation_id, description, sort_order, comp_type)"
                 " VALUES (?,?,?,?)",
                 (dev_id, desc, max_sort + 1 + i, 'Instrument / Sensor'))
+
+
+def _fix_instrument_causes_v3(conn):
+    """Rename 'Felar högt/lågt' back to 'Signalfel högt/lågt'."""
+    conn.execute(
+        "UPDATE standard_causes SET description='Signalfel högt' "
+        "WHERE comp_type='Instrument / Sensor' AND description='Felar högt'")
+    conn.execute(
+        "UPDATE standard_causes SET description='Signalfel lågt' "
+        "WHERE comp_type='Instrument / Sensor' AND description='Felar lågt'")
 
 
 def _seed_component_causes(conn):
@@ -961,6 +971,13 @@ class Database:
             _fix_instrument_causes_v2(self.conn)
             self.conn.execute(
                 "INSERT OR REPLACE INTO app_config (key,value) VALUES ('comp_causes_seeded_v2','1')")
+
+        # Rename "Felar högt/lågt" → "Signalfel högt/lågt"
+        if not self.conn.execute(
+                "SELECT value FROM app_config WHERE key='comp_causes_seeded_v3'").fetchone():
+            _fix_instrument_causes_v3(self.conn)
+            self.conn.execute(
+                "INSERT OR REPLACE INTO app_config (key,value) VALUES ('comp_causes_seeded_v3','1')")
 
         # Ensure every node has all standard deviations from template library
         std_devs = [r[0] for r in self.conn.execute(

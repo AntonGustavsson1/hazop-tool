@@ -2746,6 +2746,16 @@ _INSTR_SECONDARY_EFFECTS = [
     "Larm aktiveras (ingen automatisk åtgärd)",
 ]
 
+# Maps secondary effect description → component type for secondary marker
+_INSTR_SEC_COMP_TYPES = {
+    "Pump stoppar":           "Pump",
+    "Kompressor stoppar":     "Kompressor",
+    "Reglerventil stänger":   "Ventil",
+    "Reglerventil öppnar":    "Ventil",
+    "Spjäll stänger":         "Ventil",
+    "Spjäll öppnar":          "Ventil",
+}
+
 
 class TemplateCausePickerDialog(QDialog):
     """Shown after placing a cause marker — pick component, tag and cause from template.
@@ -2760,11 +2770,14 @@ class TemplateCausePickerDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(f"Orsak — {deviation_name}")
         self.setMinimumWidth(460)
-        self._all_causes = list(standard_causes)   # full list, each row has comp_type field
-        self._std_rbs    = []                       # dynamically created primary radio buttons
-        self._chosen     = None
-        self._comp_type  = ''
-        self._comp_tag   = ''
+        self._all_causes        = list(standard_causes)   # full list, each row has comp_type field
+        self._std_rbs           = []                       # dynamically created primary radio buttons
+        self._chosen            = None
+        self._comp_type         = ''
+        self._comp_tag          = ''
+        self._wants_secondary   = False
+        self._chosen_secondary  = ''    # secondary effect text (e.g. "Pump stoppar (P-101)")
+        self._sec_comp_type_out = ''    # comp_type for secondary marker
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(f"<b>Avvikelse:</b> {deviation_name}"))
@@ -2835,6 +2848,16 @@ class TemplateCausePickerDialog(QDialog):
         sec_form.addRow("Sekundär komponent-ID:", self._sec_tag_edit)
         instr_layout.addLayout(sec_form)
 
+        mark_btn = QPushButton("📍 Markera objekt på P&ID")
+        mark_btn.setToolTip(
+            "Spara orsaken och gå direkt till P&ID för att klicka på sekundärkomponenten")
+        mark_btn.setStyleSheet(
+            "QPushButton{background:#6c3483;color:white;border:none;"
+            "border-radius:4px;padding:5px 10px;font-weight:bold;}"
+            "QPushButton:hover{background:#8e44ad;}")
+        mark_btn.clicked.connect(self._accept_with_secondary)
+        instr_layout.addWidget(mark_btn)
+
         self._instr_group.setVisible(False)
         layout.addWidget(self._instr_group)
 
@@ -2901,6 +2924,10 @@ class TemplateCausePickerDialog(QDialog):
 
     # ── Accept ────────────────────────────────────────────────────────────────
 
+    def _accept_with_secondary(self):
+        self._wants_secondary = True
+        self._accept()
+
     def _accept(self):
         btn = self._group.checkedButton()
         if btn is None:
@@ -2913,7 +2940,7 @@ class TemplateCausePickerDialog(QDialog):
             QMessageBox.warning(self, "Tom orsak", "Ange en orsak.")
             return
 
-        # Instrument secondary: append "→ secondary (sec_tag)" to description
+        # Instrument secondary: build combined description + store secondary info
         comp_type = self._type_combo.currentText().strip()
         if 'Instrument' in comp_type and self._instr_group.isVisible():
             sec_btn = self._sec_group.checkedButton()
@@ -2924,7 +2951,9 @@ class TemplateCausePickerDialog(QDialog):
                 if sec_desc:
                     sec_tag = self._sec_tag_edit.text().strip()
                     suffix = f" ({sec_tag})" if sec_tag else ""
-                    desc = f"{desc} → {sec_desc}{suffix}"
+                    self._chosen_secondary  = f"{sec_desc}{suffix}"
+                    self._sec_comp_type_out = _INSTR_SEC_COMP_TYPES.get(sec_desc, '')
+                    desc = f"{desc} → {self._chosen_secondary}"
 
         self._chosen    = desc
         self._comp_type = comp_type
@@ -2943,6 +2972,24 @@ class TemplateCausePickerDialog(QDialog):
     def component_tag(self):
         return self._comp_tag
 
+    @property
+    def wants_secondary_placement(self):
+        return self._wants_secondary
+
+    @property
+    def secondary_description(self):
+        """Short text for the secondary effect, e.g. 'Pump stoppar (P-101)'."""
+        return self._chosen_secondary
+
+    @property
+    def secondary_comp_type(self):
+        """Component type for the secondary marker, e.g. 'Pump'."""
+        return self._sec_comp_type_out
+
+    @property
+    def secondary_component_tag(self):
+        return self._sec_tag_edit.text().strip()
+
 
 class PIDPanel(QWidget):
     node_created            = pyqtSignal(int)
@@ -2960,12 +3007,15 @@ class PIDPanel(QWidget):
         self.db = db
 
         self._pen_color             = QColor(255, 140, 0)
-        self._active_node_id        = None
-        self._active_cause_id       = None
-        self._active_consequence_id = None
-        self._active_deviation_id   = None   # set during MODE_CAUSE_TEMPLATE
-        self._pending_markup_pts    = None
-        self._pending_markup_page   = None
+        self._active_node_id              = None
+        self._active_cause_id             = None
+        self._active_consequence_id       = None
+        self._active_deviation_id         = None   # set during MODE_CAUSE_TEMPLATE
+        self._pending_markup_pts          = None
+        self._pending_markup_page         = None
+        self._pending_secondary_cause_id  = None   # set to queue secondary marker after instrument cause
+        self._pending_secondary_comp_type = ''
+        self._pending_secondary_tag       = ''
         self._current_display_page  = 0
         self._sheet_map: dict       = {}
 
@@ -3126,6 +3176,26 @@ class PIDPanel(QWidget):
 
         self._scenario_banner.setVisible(False)
         layout.addWidget(self._scenario_banner)
+
+        # ── Secondary placement banner ─────────────────────────────────────────
+        self._secondary_banner = QFrame()
+        self._secondary_banner.setStyleSheet(
+            "QFrame{background:#6c3483; border-radius:4px; padding:2px;}")
+        self._secondary_banner.setFixedHeight(34)
+        sb2_lay = QHBoxLayout(self._secondary_banner)
+        sb2_lay.setContentsMargins(8, 4, 8, 4)
+        self._secondary_lbl = QLabel("")
+        self._secondary_lbl.setStyleSheet("color:white; font-size:11px; font-weight:bold;")
+        sb2_lay.addWidget(self._secondary_lbl)
+        sb2_lay.addStretch()
+        sb2_cancel = QPushButton("✕ Avbryt")
+        sb2_cancel.setFixedHeight(20)
+        sb2_cancel.setStyleSheet(
+            "background:#c0392b; color:white; border:none; border-radius:3px; padding:0 8px;")
+        sb2_cancel.clicked.connect(self._cancel_secondary_placement)
+        sb2_lay.addWidget(sb2_cancel)
+        self._secondary_banner.setVisible(False)
+        layout.addWidget(self._secondary_banner)
 
         # ── Viewer ────────────────────────────────────────────────────────────
         self.viewer = PIDGraphicsView()
@@ -3588,6 +3658,8 @@ class PIDPanel(QWidget):
         self._load_overlays()
 
     def _set_mode(self, mode):
+        if mode != MODE_CAUSE_TEMPLATE:
+            self._cancel_secondary_placement()
         for m, btn in self.mode_buttons.items():
             btn.setChecked(m == mode)
         self.viewer.set_mode(mode)
@@ -3944,6 +4016,11 @@ class PIDPanel(QWidget):
         self._set_mode(MODE_CAUSE_TEMPLATE)
 
     def _on_cause_template_click(self, scene_pos, page, suggested_tag=''):
+        # If secondary placement is pending, place secondary marker instead of opening dialog
+        if self._pending_secondary_cause_id is not None:
+            self._place_secondary_marker(scene_pos, page, suggested_tag)
+            return
+
         dev_id = self._active_deviation_id
         if not dev_id:
             return
@@ -3992,6 +4069,35 @@ class PIDPanel(QWidget):
         self.viewer.add_cause_marker(cause_id, pdf_x, pdf_y, comp_type, label, tag)
         self._load_overlays()
         self.cause_template_created.emit(cause_id)
+
+        # If user clicked "Markera objekt på P&ID", queue secondary marker placement
+        if dlg.wants_secondary_placement and dlg.secondary_description:
+            self._pending_secondary_cause_id  = cause_id
+            self._pending_secondary_comp_type = dlg.secondary_comp_type
+            self._pending_secondary_tag       = dlg.secondary_component_tag
+            self._secondary_lbl.setText(
+                f"Klicka nu på sekundärkomponenten på P&ID:n  —  {dlg.secondary_description}")
+            self._secondary_banner.setVisible(True)
+
+    def _place_secondary_marker(self, scene_pos, page, suggested_tag=''):
+        """Place the queued secondary marker (e.g. pump that stops due to instrument failure)."""
+        cause_id  = self._pending_secondary_cause_id
+        comp_type = self._pending_secondary_comp_type
+        tag       = suggested_tag or self._pending_secondary_tag
+        self._cancel_secondary_placement()
+
+        pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
+        self.db.add_cause_marker(cause_id, page, pdf_x, pdf_y, comp_type, tag)
+        row = self.db.get_cause(cause_id)
+        label = row['description'] if row else ''
+        self.viewer.add_cause_marker(cause_id, pdf_x, pdf_y, comp_type, label, tag)
+        self._load_overlays()
+
+    def _cancel_secondary_placement(self):
+        self._pending_secondary_cause_id  = None
+        self._pending_secondary_comp_type = ''
+        self._pending_secondary_tag       = ''
+        self._secondary_banner.setVisible(False)
 
     def set_active_node(self, node_id):
         self._active_node_id        = node_id
