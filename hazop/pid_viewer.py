@@ -1948,7 +1948,7 @@ class PIDGraphicsView(QGraphicsView):
     consequence_clicked   = pyqtSignal(object, int, str)
     safeguard_clicked     = pyqtSignal(object, int, str)
     place_existing_clicked  = pyqtSignal(object, int)   # (center_scene_pos, page)
-    cause_template_clicked  = pyqtSignal(object, int)   # (center_scene_pos, page) — MODE_CAUSE_TEMPLATE
+    cause_template_clicked  = pyqtSignal(object, int, str)   # (center_scene_pos, page, suggested_tag)
     context_action          = pyqtSignal(str, object, int)
     marker_clicked          = pyqtSignal(str, int)
 
@@ -2570,7 +2570,7 @@ class PIDGraphicsView(QGraphicsView):
             elif self.mode == MODE_PLACE_EXISTING:
                 self.place_existing_clicked.emit(center, self.current_page)
             elif self.mode == MODE_CAUSE_TEMPLATE:
-                self.cause_template_clicked.emit(center, self.current_page)
+                self.cause_template_clicked.emit(center, self.current_page, suggested)
             event.accept()
             return
 
@@ -2735,18 +2735,38 @@ def _draw_pid_marker(page, x, y, rgb, letter, label):
 
 
 class TemplateCausePickerDialog(QDialog):
-    """Shown after placing a cause marker — pick from standard causes or type freely."""
+    """Shown after placing a cause marker — pick component, tag and cause from template."""
 
-    def __init__(self, deviation_name, standard_causes, parent=None):
+    def __init__(self, deviation_name, standard_causes,
+                 component_types=None, suggested_tag='', preselect_type='', parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Orsak — {deviation_name}")
-        self.setMinimumWidth(360)
+        self.setMinimumWidth(400)
         self._chosen = None
+        self._comp_type = ''
+        self._comp_tag  = ''
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(f"<b>Avvikelse:</b> {deviation_name}"))
+
+        # ── Component info ────────────────────────────────────────────────────
+        form = QFormLayout()
+        self._type_combo = QComboBox()
+        self._type_combo.addItem("")
+        for ct in (component_types or []):
+            self._type_combo.addItem(ct)
+        if preselect_type and preselect_type in (component_types or []):
+            self._type_combo.setCurrentText(preselect_type)
+        form.addRow("Komponenttyp:", self._type_combo)
+
+        self._tag_edit = QLineEdit(suggested_tag)
+        self._tag_edit.setPlaceholderText("t.ex. XV-101")
+        form.addRow("Komponent-ID:", self._tag_edit)
+        layout.addLayout(form)
+
         layout.addWidget(QLabel("Välj standardorsak eller ange fritext:"))
 
+        # ── Cause radio buttons ───────────────────────────────────────────────
         self._group = QButtonGroup(self)
         for i, c in enumerate(standard_causes):
             rb = QRadioButton(c['description'])
@@ -2756,7 +2776,6 @@ class TemplateCausePickerDialog(QDialog):
             if i == 0:
                 rb.setChecked(True)
 
-        # Free-text option
         rb_free = QRadioButton("Annan:")
         rb_free.setProperty('cause_desc', None)
         self._group.addButton(rb_free, len(standard_causes))
@@ -2786,12 +2805,22 @@ class TemplateCausePickerDialog(QDialog):
         if not desc:
             QMessageBox.warning(self, "Tom orsak", "Ange en orsak.")
             return
-        self._chosen = desc
+        self._chosen    = desc
+        self._comp_type = self._type_combo.currentText().strip()
+        self._comp_tag  = self._tag_edit.text().strip()
         self.accept()
 
     @property
     def chosen_description(self):
         return self._chosen
+
+    @property
+    def component_type(self):
+        return self._comp_type
+
+    @property
+    def component_tag(self):
+        return self._comp_tag
 
 
 class PIDPanel(QWidget):
@@ -3793,7 +3822,7 @@ class PIDPanel(QWidget):
         self._active_deviation_id = deviation_id
         self._set_mode(MODE_CAUSE_TEMPLATE)
 
-    def _on_cause_template_click(self, scene_pos, page):
+    def _on_cause_template_click(self, scene_pos, page, suggested_tag=''):
         dev_id = self._active_deviation_id
         if not dev_id:
             return
@@ -3801,27 +3830,45 @@ class PIDPanel(QWidget):
         if not dev:
             return
         dev_name = dev['description']
-        std_causes = self.db.standard_causes_for_name(dev_name) if hasattr(
-            self.db, 'standard_causes_for_name') else []
+        std_causes = (self.db.standard_causes_for_name(dev_name)
+                      if hasattr(self.db, 'standard_causes_for_name') else [])
 
-        dlg = TemplateCausePickerDialog(dev_name, std_causes, parent=self)
+        comp_data      = (self.db.all_component_types_dict()
+                          if hasattr(self.db, 'all_component_types_dict') else None)
+        comp_type_names = list(comp_data.keys()) if comp_data else []
+        detected_type   = self._db_comp_for_tag(suggested_tag) if suggested_tag else ''
+
+        dlg = TemplateCausePickerDialog(
+            dev_name, std_causes,
+            component_types=comp_type_names,
+            suggested_tag=suggested_tag,
+            preselect_type=detected_type,
+            parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
-        desc = dlg.chosen_description
-        if not desc:
+        cause_desc = dlg.chosen_description
+        comp_type  = dlg.component_type
+        tag        = dlg.component_tag
+        if not cause_desc:
             return
+
+        # Build label identical to normal cause flow
+        parts = []
+        if tag:       parts.append(tag)
+        if comp_type: parts.append(comp_type)
+        label = ((' — '.join(parts) + ': ') if parts else '') + cause_desc
 
         try:
             cause_id = self.db.add_cause(dev_id)
         except Exception as e:
             QMessageBox.critical(self, "Databasfel", f"Kunde inte skapa orsak:\n{e}")
             return
-        self.db.update_cause(cause_id, desc)
+        self.db.update_cause(cause_id, label)
 
         pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
-        self.db.add_cause_marker(cause_id, page, pdf_x, pdf_y, '', '')
-        self.viewer.add_cause_marker(cause_id, pdf_x, pdf_y, '', desc, '')
+        self.db.add_cause_marker(cause_id, page, pdf_x, pdf_y, comp_type, tag)
+        self.viewer.add_cause_marker(cause_id, pdf_x, pdf_y, comp_type, label, tag)
         self._load_overlays()
         self.cause_template_created.emit(cause_id)
 
