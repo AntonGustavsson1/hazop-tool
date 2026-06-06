@@ -3322,6 +3322,16 @@ class PIDPanel(QWidget):
         self._active_place_id   = id_
         self._set_mode(MODE_PLACE_EXISTING)
 
+    def remove_existing_marker(self, type_str, id_):
+        """Delete all P&ID markers for an existing item and refresh overlays."""
+        if type_str == 'cause':
+            self.db.remove_cause_marker(id_)
+        elif type_str == 'consequence':
+            self.db.remove_consequence_marker(id_)
+        elif type_str == 'safeguard':
+            self.db.remove_safeguard_marker(id_)
+        self._load_overlays()
+
     def _on_place_existing_click(self, scene_pos, page):
         """Place a marker for an existing item without creating anything new."""
         type_str = self._active_place_type

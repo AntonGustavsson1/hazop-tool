@@ -1057,6 +1057,18 @@ class Database:
         return {r[0] for r in self.conn.execute(
             "SELECT DISTINCT safeguard_id FROM safeguard_markers").fetchall()}
 
+    def remove_cause_marker(self, cause_id):
+        self.conn.execute("DELETE FROM cause_markers WHERE cause_id=?", (cause_id,))
+        self.conn.commit()
+
+    def remove_consequence_marker(self, consequence_id):
+        self.conn.execute("DELETE FROM consequence_markers WHERE consequence_id=?", (consequence_id,))
+        self.conn.commit()
+
+    def remove_safeguard_marker(self, safeguard_id):
+        self.conn.execute("DELETE FROM safeguard_markers WHERE safeguard_id=?", (safeguard_id,))
+        self.conn.commit()
+
     def get_cause_marker(self, cause_id):
         row = self.conn.execute(
             "SELECT pid_page, x, y FROM cause_markers WHERE cause_id=? LIMIT 1",
@@ -3096,8 +3108,9 @@ class ScenarioTablePanel(QWidget):
     item_selected    = pyqtSignal(int, int)   # (type_, id_) — cell clicked → open right panel
     new_item_created = pyqtSignal(int, int)   # (type_, id_) — after quick-add via Enter menu
     item_edited      = pyqtSignal(int, int)   # (type_, id_) — cell edit committed → sync right panel
-    place_requested  = pyqtSignal(int, int)   # (type_, id_) — 📌 icon clicked → enter P&ID placement
-    navigate_to_pid  = pyqtSignal(int, int)   # (type_, id_) — 🟢 icon clicked → navigate to marker
+    place_requested  = pyqtSignal(int, int)   # (type_, id_) — place/add marker
+    navigate_to_pid  = pyqtSignal(int, int)   # (type_, id_) — navigate to existing marker
+    remove_requested = pyqtSignal(int, int)   # (type_, id_) — delete all markers
 
     # Column indices
     _C_NOD, _C_ORS, _C_KON, _C_RFORE = 0, 1, 2, 3
@@ -3166,6 +3179,8 @@ class ScenarioTablePanel(QWidget):
             "QHeaderView::section{background:#1F4E79;color:#fff;font-weight:bold;padding:3px;}")
         self._table.cellChanged.connect(self._on_cell_changed)
         self._table.cellClicked.connect(self._on_cell_clicked)
+        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._on_table_context_menu)
         self._table.installEventFilter(self)
         self._delegate = _ScenarioDelegate(self)
         self._table.setItemDelegate(self._delegate)
@@ -3513,6 +3528,36 @@ class ScenarioTablePanel(QWidget):
             self.navigate_to_pid.emit(CONS_T, cons_id)
         elif col == self._C_SG and sg_id is not None:
             self.navigate_to_pid.emit(SG_T, sg_id)
+
+    def _remove_from_pid(self, row, col):
+        if row >= len(self._row_meta):
+            return
+        cause_id, cons_id, sg_id = self._row_meta[row]
+        if col == self._C_ORS and cause_id is not None:
+            self.remove_requested.emit(CAUSE_T, cause_id)
+        elif col == self._C_KON and cons_id is not None:
+            self.remove_requested.emit(CONS_T, cons_id)
+        elif col == self._C_SG and sg_id is not None:
+            self.remove_requested.emit(SG_T, sg_id)
+
+    def _on_table_context_menu(self, pos):
+        col = self._table.columnAt(pos.x())
+        row = self._table.rowAt(pos.y())
+        if row < 0 or row >= len(self._row_meta):
+            return
+        if col not in (self._C_ORS, self._C_KON, self._C_SG):
+            return
+        is_placed = self._is_cell_placed(row, col)
+        menu = QMenu(self)
+        if not is_placed:
+            a = menu.addAction("Lägg till på P&ID")
+            a.triggered.connect(lambda: self._place_from_table(row, col))
+        else:
+            a1 = menu.addAction("Lägg till ytterligare på P&ID")
+            a1.triggered.connect(lambda: self._place_from_table(row, col))
+            a2 = menu.addAction("Ta bort från P&ID")
+            a2.triggered.connect(lambda: self._remove_from_pid(row, col))
+        menu.exec(self._table.viewport().mapToGlobal(pos))
 
     def _on_cell_clicked(self, row, col):
         if col == self._C_ORS and row < len(self._row_meta):
@@ -6418,6 +6463,7 @@ class MainWindow(QMainWindow):
         self.scenario_panel.item_edited.connect(self._on_scenario_item_edited)
         self.scenario_panel.place_requested.connect(self._on_scenario_place_requested)
         self.scenario_panel.navigate_to_pid.connect(self._on_scenario_navigate_to_pid)
+        self.scenario_panel.remove_requested.connect(self._on_scenario_remove_from_pid)
 
         self.pid_panel.node_created.connect(
             lambda nid: (self.tree_panel.refresh(NODE_T, nid),
@@ -6530,15 +6576,23 @@ class MainWindow(QMainWindow):
         self.scenario_panel.refresh_placed()
 
     def _on_scenario_place_requested(self, type_, id_):
-        """User clicked 📌 — activate item, switch to P&ID and enter placement mode for that specific item."""
-        self._on_selected(type_, id_)
+        """User clicked red pin or context menu 'Lägg till på P&ID' — fast path, no panel reload."""
+        # Set only what the P&ID panel needs; skip full _on_selected to avoid heavy reloads
+        if type_ == CAUSE_T:
+            self.pid_panel.set_active_cause(id_)
+        elif type_ == CONS_T:
+            self.pid_panel.set_active_consequence(id_)
+        elif type_ == SG_T:
+            sg = self.db.get_safeguard(id_)
+            if sg:
+                self.pid_panel.set_active_consequence(sg['consequence_id'])
         self._switch_view(0)
         type_str = {CAUSE_T: 'cause', CONS_T: 'consequence', SG_T: 'safeguard'}.get(type_)
         if type_str:
             self.pid_panel.start_place_existing(type_str, id_)
 
     def _on_scenario_navigate_to_pid(self, type_, id_):
-        """User clicked 🟢 — switch to P&ID view and zoom to the marker."""
+        """User clicked green pin — switch to P&ID view and zoom to the marker."""
         marker = None
         if type_ == CAUSE_T:
             marker = self.db.get_cause_marker(id_)
@@ -6551,6 +6605,15 @@ class MainWindow(QMainWindow):
         self._on_selected(type_, id_)
         self._switch_view(0)
         self.pid_panel.navigate_to_marker(marker['pid_page'], marker['x'], marker['y'])
+
+    def _on_scenario_remove_from_pid(self, type_, id_):
+        """Context menu 'Ta bort från P&ID' — delete all markers for this item."""
+        type_str = {CAUSE_T: 'cause', CONS_T: 'consequence', SG_T: 'safeguard'}.get(type_)
+        if not type_str:
+            return
+        self.pid_panel.remove_existing_marker(type_str, id_)
+        self.scenario_panel.refresh_placed()
+        self.tree_panel.refresh()
 
     def _on_matrix_changed(self):
         if self._cur_type == CONS_T and self._cur_id is not None:
