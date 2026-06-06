@@ -2963,8 +2963,8 @@ class ScenarioTablePanel(QWidget):
 
     # Column indices
     _C_NOD, _C_ORS, _C_KON, _C_RFORE = 0, 1, 2, 3
-    _C_SG, _C_FA, _C_IGN, _C_OVRIGA  = 4, 5, 6, 7
-    _C_REFT, _C_SLUT                   = 8, 9
+    _C_SG, _C_REFT, _C_FA, _C_IGN    = 4, 5, 6, 7
+    _C_OVRIGA, _C_SLUT                = 8, 9
 
     _COLS = [
         'Nod',
@@ -2972,10 +2972,10 @@ class ScenarioTablePanel(QWidget):
         'Konsekvens',
         'Risk före barriär',
         'Barriärer  →',
+        'Risk efter barriärer',
         'FA ☑',
         'Antändning ☑',
         'Övriga faktorer',
-        'Risk efter barriärer',
         'Slutkonsekvens',
     ]
 
@@ -3087,12 +3087,42 @@ class ScenarioTablePanel(QWidget):
             for cons in self.db.consequences(self.cause_id):
                 cons_d = dict(cons)
                 self._add_row(node_name, cause_d, freq, freq_lbl, cons_d)
+            if self._table.rowCount() == 0:
+                self._add_empty_row(node_name, cause_d, freq, freq_lbl)
         except Exception as e:
             QMessageBox.critical(None, "Fel i scenariopanel", str(e))
         finally:
             self._table.blockSignals(False)
             self._table.cellChanged.connect(self._on_cell_changed)
             self._rebuilding = False
+
+    def _add_empty_row(self, node_name, cause_d, freq, freq_lbl):
+        """Placeholder row when a cause has no consequences yet."""
+        r = self._table.rowCount()
+        self._table.insertRow(r)
+        self._row_meta.append((cause_d['id'], None, []))
+
+        def _ro(text=''):
+            item = QTableWidgetItem(text)
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            return item
+
+        nod = _ro(node_name)
+        self._table.setItem(r, self._C_NOD, nod)
+
+        ors = QTableWidgetItem(cause_d['description'])
+        ors.setData(Qt.ItemDataRole.UserRole, ('cause', cause_d['id']))
+        self._table.setItem(r, self._C_ORS, ors)
+
+        kon = _ro()
+        kon.setToolTip("Tryck Enter för att lägga till konsekvens")
+        self._table.setItem(r, self._C_KON, kon)
+
+        for col in (self._C_RFORE, self._C_SG, self._C_REFT,
+                    self._C_FA, self._C_IGN, self._C_OVRIGA, self._C_SLUT):
+            self._table.setItem(r, col, _ro())
+
+        self._table.setRowHeight(r, 52)
 
     def _add_row(self, node_name, cause_d, freq, freq_lbl, cons_d):
         r    = self._table.rowCount()
@@ -3401,8 +3431,9 @@ class ScenarioTablePanel(QWidget):
                        lambda: self._quick_add_cause(cause['node_id']))
         menu.addAction("⚠  Ny konsekvens på denna orsak",
                        lambda: self._quick_add_consequence(cause_id))
-        menu.addAction("🛡  Ny safeguard på denna konsekvens",
+        sg_action = menu.addAction("🛡  Ny safeguard på denna konsekvens",
                        lambda: self._quick_add_safeguard(cons_id))
+        sg_action.setEnabled(cons_id is not None)
 
         idx   = self._table.model().index(row, self._C_ORS)
         rect  = self._table.visualRect(idx)
