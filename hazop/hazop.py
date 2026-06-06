@@ -3258,7 +3258,7 @@ class ScenarioTablePanel(QWidget):
         rs.setToolTip(f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}  (−{total_steps} steg totalt)")
         self._table.setItem(r, self._C_SLUT, rs)
 
-        self._table.setRowHeight(r, max(52, min(140, (len(sg_lines) + 2) * 18)))
+        self._table.setRowHeight(r, max(52, min(140, (len(sgs) + 2) * 18)))
 
     def _open_chain_editor(self, cons_id: int, label_widget=None):
         """Open the consequence chain dialog; refresh the label on accept."""
