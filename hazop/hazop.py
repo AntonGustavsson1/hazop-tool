@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
     QSpinBox, QColorDialog, QFrame, QListWidget, QListWidgetItem,
     QProgressDialog, QAbstractItemView, QToolTip, QInputDialog, QCheckBox,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF, QTimer, QMimeData
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF, QTimer, QMimeData, QEvent
 from PyQt6.QtGui import QFont, QColor, QAction, QBrush, QPen, QPainter, QDrag
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1037,6 +1037,18 @@ class Database:
         return self.conn.execute(
             "SELECT * FROM safeguard_markers WHERE pid_page=?", (page,)).fetchall()
 
+    def marked_cause_ids(self):
+        return {r[0] for r in self.conn.execute(
+            "SELECT DISTINCT cause_id FROM cause_markers").fetchall()}
+
+    def marked_consequence_ids(self):
+        return {r[0] for r in self.conn.execute(
+            "SELECT DISTINCT consequence_id FROM consequence_markers").fetchall()}
+
+    def marked_safeguard_ids(self):
+        return {r[0] for r in self.conn.execute(
+            "SELECT DISTINCT safeguard_id FROM safeguard_markers").fetchall()}
+
     # ── Queries ───────────────────────────────────────────────────────────────
     def nodes(self):
         return self.conn.execute("SELECT * FROM nodes ORDER BY id").fetchall()
@@ -1609,7 +1621,8 @@ class NodePanel(QWidget):
 
 
 class CausePanel(QWidget):
-    saved = pyqtSignal(int, str)
+    saved        = pyqtSignal(int, str)
+    place_on_pid = pyqtSignal()
 
     def __init__(self, db: Database):
         super().__init__()
@@ -1662,10 +1675,22 @@ class CausePanel(QWidget):
         form.addRow("Frekvens (manuell):", self.freq_combo)
 
         layout.addLayout(form)
+
+        self._pid_btn = QPushButton("📍 Lägg till på P&ID")
+        self._pid_btn.setEnabled(False)
+        self._pid_btn.setToolTip("Växla till P&ID-läge för att placera en orsaksmakör")
+        self._pid_btn.setStyleSheet(
+            "QPushButton{background:#1F4E79;color:white;border:none;"
+            "border-radius:4px;padding:7px;font-weight:bold;}"
+            "QPushButton:hover{background:#2563a8;}"
+            "QPushButton:disabled{background:#aaa;}")
+        self._pid_btn.clicked.connect(self.place_on_pid)
+        layout.addWidget(self._pid_btn)
         layout.addStretch()
 
     def load(self, cause_id):
         self.cause_id = cause_id
+        self._pid_btn.setEnabled(True)
         row = self.db.get_cause(cause_id)
         if not row:
             return
@@ -1704,7 +1729,8 @@ class CausePanel(QWidget):
 
 
 class ConsequencePanel(QWidget):
-    saved = pyqtSignal(int)
+    saved        = pyqtSignal(int)
+    place_on_pid = pyqtSignal()
 
     def __init__(self, db: Database):
         super().__init__()
@@ -1826,6 +1852,16 @@ class ConsequencePanel(QWidget):
         act_lay.addWidget(self.act_editor)
         layout.addWidget(act_box)
 
+        self._pid_btn = QPushButton("📍 Lägg till på P&ID")
+        self._pid_btn.setEnabled(False)
+        self._pid_btn.setToolTip("Växla till P&ID-läge för att placera en konsekvensmarkör")
+        self._pid_btn.setStyleSheet(
+            "QPushButton{background:#1F4E79;color:white;border:none;"
+            "border-radius:4px;padding:7px;font-weight:bold;}"
+            "QPushButton:hover{background:#2563a8;}"
+            "QPushButton:disabled{background:#aaa;}")
+        self._pid_btn.clicked.connect(self.place_on_pid)
+        layout.addWidget(self._pid_btn)
         layout.addStretch()
 
     # ── Chain helpers ─────────────────────────────────────────────────────────
@@ -1866,6 +1902,7 @@ class ConsequencePanel(QWidget):
 
     def load(self, consequence_id):
         self.consequence_id = consequence_id
+        self._pid_btn.setEnabled(True)
         self._load_categories()
         row = self.db.get_consequence(consequence_id)
         if row:
@@ -1911,7 +1948,8 @@ class ConsequencePanel(QWidget):
 
 
 class SafeguardPanel(QWidget):
-    saved = pyqtSignal(int)
+    saved        = pyqtSignal(int)
+    place_on_pid = pyqtSignal()
 
     def __init__(self, db: Database):
         super().__init__()
@@ -1955,10 +1993,22 @@ class SafeguardPanel(QWidget):
         form.addRow("Effektiv risk:", self.risk_badge)
 
         layout.addLayout(form)
+
+        self._pid_btn = QPushButton("📍 Lägg till på P&ID")
+        self._pid_btn.setEnabled(False)
+        self._pid_btn.setToolTip("Växla till P&ID-läge för att placera en safeguardmarkör")
+        self._pid_btn.setStyleSheet(
+            "QPushButton{background:#1F4E79;color:white;border:none;"
+            "border-radius:4px;padding:7px;font-weight:bold;}"
+            "QPushButton:hover{background:#2563a8;}"
+            "QPushButton:disabled{background:#aaa;}")
+        self._pid_btn.clicked.connect(self.place_on_pid)
+        layout.addWidget(self._pid_btn)
         layout.addStretch()
 
     def load(self, safeguard_id):
         self.safeguard_id = safeguard_id
+        self._pid_btn.setEnabled(True)
         sg = self.db.get_safeguard(safeguard_id)
         if not sg:
             return
@@ -2182,8 +2232,14 @@ class TreePanel(QWidget):
         target = None
         bold_font = QFont(); bold_font.setBold(True)
 
+        marked_causes = self.db.marked_cause_ids()
+        marked_consequences = self.db.marked_consequence_ids()
+        marked_safeguards = self.db.marked_safeguard_ids()
+
         for node in self.db.nodes():
-            nitem = QTreeWidgetItem([f"🏭  {node['name']}"])
+            node_on_pid = bool(node['markup_points'])
+            pid_pin = " 📍" if node_on_pid else ""
+            nitem = QTreeWidgetItem([f"🏭  {node['name']}{pid_pin}"])
             nitem.setData(0, Qt.ItemDataRole.UserRole, node['id'])
             nitem.setData(0, Qt.ItemDataRole.UserRole + 1, NODE_T)
             nitem.setFont(0, bold_font)
@@ -2193,7 +2249,8 @@ class TreePanel(QWidget):
             if select_type == NODE_T and select_id == node['id']: target = nitem
 
             for cause in self.db.causes(node['id']):
-                citem = QTreeWidgetItem([f"  ⚙  {cause['description'][:50]}"])
+                pid_pin = " 📍" if cause['id'] in marked_causes else ""
+                citem = QTreeWidgetItem([f"  ⚙  {cause['description'][:50]}{pid_pin}"])
                 citem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
                 citem.setData(0, Qt.ItemDataRole.UserRole + 1, CAUSE_T)
                 nitem.addChild(citem)
@@ -2203,7 +2260,8 @@ class TreePanel(QWidget):
                 for cons in self.db.consequences(cause['id']):
                     level, _, _ = risk_info(cause['likelihood'], cons['severity'])
                     icon = _RISK_ICON.get(level, '⚪')
-                    kitem = QTreeWidgetItem([f"    {icon}  {cons['description'][:40]}"])
+                    pid_pin = " 📍" if cons['id'] in marked_consequences else ""
+                    kitem = QTreeWidgetItem([f"    {icon}  {cons['description'][:40]}{pid_pin}"])
                     kitem.setData(0, Qt.ItemDataRole.UserRole, cons['id'])
                     kitem.setData(0, Qt.ItemDataRole.UserRole + 1, CONS_T)
                     citem.addChild(kitem)
@@ -2218,7 +2276,8 @@ class TreePanel(QWidget):
                         except (IndexError, KeyError):
                             linked = False
                         icon = "🔗🛡" if linked else "🛡"
-                        sgitem = QTreeWidgetItem([f"       {icon}  {sg['description'][:35]}  [{rrf_str}]"])
+                        pid_pin = " 📍" if sg['id'] in marked_safeguards else ""
+                        sgitem = QTreeWidgetItem([f"       {icon}  {sg['description'][:35]}  [{rrf_str}]{pid_pin}"])
                         sgitem.setData(0, Qt.ItemDataRole.UserRole, sg['id'])
                         sgitem.setData(0, Qt.ItemDataRole.UserRole + 1, SG_T)
                         kitem.addChild(sgitem)
@@ -2898,6 +2957,10 @@ class ReductionFactorsDialog(QDialog):
 class ScenarioTablePanel(QWidget):
     """Extended scenario table with FA, Antändning, Övriga faktorer and Slutkonsekvens."""
 
+    item_selected    = pyqtSignal(int, int)   # (type_, id_) — cell clicked → open right panel
+    new_item_created = pyqtSignal(int, int)   # (type_, id_) — after quick-add via Enter menu
+    item_edited      = pyqtSignal(int, int)   # (type_, id_) — cell edit committed → sync right panel
+
     # Column indices
     _C_NOD, _C_ORS, _C_KON, _C_RFORE = 0, 1, 2, 3
     _C_SG, _C_FA, _C_IGN, _C_OVRIGA  = 4, 5, 6, 7
@@ -2920,6 +2983,10 @@ class ScenarioTablePanel(QWidget):
         super().__init__()
         self.db = db
         self.cause_id = None
+        self._row_meta = []   # list of (cause_id, cons_id, [sg_ids]) per visible row
+        self._enter_row = -1
+        self._enter_col = -1
+        self._last_enter_committed = False
         self.setMinimumHeight(160)
         self.setMaximumHeight(380)
 
@@ -2961,6 +3028,7 @@ class ScenarioTablePanel(QWidget):
             "QHeaderView::section{background:#1F4E79;color:#fff;font-weight:bold;padding:3px;}")
         self._table.cellChanged.connect(self._on_cell_changed)
         self._table.cellClicked.connect(self._on_cell_clicked)
+        self._table.installEventFilter(self)
         outer.addWidget(self._table)
 
     # ── Load ──────────────────────────────────────────────────────────────────
@@ -2992,6 +3060,7 @@ class ScenarioTablePanel(QWidget):
             pass
         self._table.blockSignals(True)
         self._table.setRowCount(0)
+        self._row_meta = []
 
         if self.cause_id is None:
             self._table.blockSignals(False)
@@ -3033,6 +3102,7 @@ class ScenarioTablePanel(QWidget):
 
         # Safeguards
         sgs    = [dict(s) for s in self.db.safeguards(cid)]
+        self._row_meta.append((cause_d['id'], cid, [s['id'] for s in sgs]))
         sg_rrf = 1
         for sg in sgs:
             sg_rrf *= (sg.get('rrf') or 1)
@@ -3061,33 +3131,16 @@ class ScenarioTablePanel(QWidget):
         ors.setData(Qt.ItemDataRole.UserRole, ('cause', cause_d['id']))
         self._table.setItem(r, self._C_ORS, ors)
 
-        # ── Col 2: Konsekvens — show chain text + ⛓ chain-editor button ─────
+        # ── Col 2: Konsekvens (editable description) ─────────────────────────
         chain_data   = parse_chain_from_json(cons_d.get('consequence_chain', ''))
         display_desc = (build_consequence_text(cons_d['description'], chain_data)
                         or cons_d['description'])
 
-        kon_w   = QWidget()
-        kon_lay = QHBoxLayout(kon_w)
-        kon_lay.setContentsMargins(3, 1, 3, 1)
-        kon_lay.setSpacing(3)
-
-        kon_lbl = QLabel(display_desc)
-        kon_lbl.setWordWrap(True)
-        kon_lbl.setStyleSheet("font-size:10px;")
-        kon_lay.addWidget(kon_lbl, 1)
-
-        chain_btn = QPushButton("⛓")
-        chain_btn.setFixedSize(22, 22)
-        chain_btn.setFlat(True)
-        chain_btn.setToolTip("Redigera konsekvenskedja (LOC → Brand → Personskador …)")
-        chain_btn.setStyleSheet(
-            "QPushButton{font-size:12px; border:1px solid #aaa; border-radius:3px;}"
-            "QPushButton:hover{background:#eef4fb;}")
-        chain_btn.clicked.connect(
-            lambda _, c=cid, lbl=kon_lbl: self._open_chain_editor(c, lbl))
-        kon_lay.addWidget(chain_btn)
-
-        self._table.setCellWidget(r, self._C_KON, kon_w)
+        kon_item = QTableWidgetItem(cons_d['description'])
+        kon_item.setData(Qt.ItemDataRole.UserRole, ('consequence', cid))
+        if display_desc != cons_d['description']:
+            kon_item.setToolTip(f"Kedjetext: {display_desc}\n(Redigera kedja i höger panel)")
+        self._table.setItem(r, self._C_KON, kon_item)
 
         # ── Col 3: Risk före barriär — klickbar för att öppna riskmatris ────────
         rb = QTableWidgetItem(f"{level_b}\n{freq_axis_label(freq)}  {cons_axis_label(sev)}")
@@ -3099,14 +3152,55 @@ class ScenarioTablePanel(QWidget):
         rb.setData(Qt.ItemDataRole.UserRole, ('risk_click', cause_d['id'], cid, freq, sev))
         self._table.setItem(r, self._C_RFORE, rb)
 
-        # ── Col 4: Safeguards (editable) ──────────────────────────────────────
-        sg_lines = [f"{sg['description']}" + (f"  RRF {sg['rrf']}" if sg.get('rrf', 1) > 1 else "")
-                    for sg in sgs]
-        if sg_rrf > 1:
-            sg_lines.append(f"─── RRF {sg_rrf:,}  (−{int(math.log10(sg_rrf))} steg)")
-        sg_item = QTableWidgetItem('\n'.join(sg_lines) or '—')
-        sg_item.setFlags(sg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        self._table.setItem(r, self._C_SG, sg_item)
+        # ── Col 4: Safeguards ─────────────────────────────────────────────────
+        if not sgs:
+            sg_item = QTableWidgetItem('—')
+            sg_item.setFlags(sg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            sg_item.setToolTip("Tryck Enter för att lägga till safeguard")
+            self._table.setItem(r, self._C_SG, sg_item)
+        elif len(sgs) == 1:
+            sg_item = QTableWidgetItem(sgs[0]['description'])
+            sg_item.setData(Qt.ItemDataRole.UserRole, ('safeguard', sgs[0]['id']))
+            sg_item.setToolTip("Klicka för att redigera")
+            self._table.setItem(r, self._C_SG, sg_item)
+        else:
+            # Multiple safeguards: one QLineEdit per safeguard so each is individually editable
+            sg_w = QWidget()
+            sg_lay = QVBoxLayout(sg_w)
+            sg_lay.setContentsMargins(2, 2, 2, 2)
+            sg_lay.setSpacing(2)
+            for sg in sgs:
+                sg_id = sg['id']
+                rrf = sg.get('rrf', 1) or 1
+                le = QLineEdit(sg['description'])
+                le.setProperty('sg_id', sg_id)
+                le.setProperty('sg_row', r)
+                le.setStyleSheet(
+                    "QLineEdit{border:none;border-bottom:1px solid #e0e0e0;"
+                    "font-size:10px;padding:1px 2px;background:transparent;}"
+                    "QLineEdit:focus{border-bottom:1px solid #1F4E79;background:#eef4fb;}")
+                le.installEventFilter(self)
+                le.editingFinished.connect(lambda sid=sg_id, w=le: self._on_sg_le_commit(sid, w.text()))
+                if rrf > 1:
+                    row_w = QWidget()
+                    row_l = QHBoxLayout(row_w)
+                    row_l.setContentsMargins(0, 0, 0, 0)
+                    row_l.setSpacing(3)
+                    row_l.addWidget(le, 1)
+                    rrf_lbl = QLabel(f"RRF{rrf}")
+                    rrf_lbl.setStyleSheet("color:#888;font-size:9px;padding-right:2px;")
+                    row_l.addWidget(rrf_lbl)
+                    sg_lay.addWidget(row_w)
+                else:
+                    sg_lay.addWidget(le)
+            if sg_rrf > 1:
+                steps = int(math.log10(sg_rrf))
+                total_lbl = QLabel(f"─── RRF {sg_rrf:,}  (−{steps} steg)")
+                total_lbl.setStyleSheet("color:#888;font-size:9px;padding:1px 2px;")
+                sg_lay.addWidget(total_lbl)
+            sg_lay.addStretch()
+            self._table.setCellWidget(r, self._C_SG, sg_w)
+            self._table.resizeRowToContents(r)
 
         # ── Col 5: FA — checkable, text = probability % ──────────────────────
         fa_steps_txt = f"−{prob_to_reduction(fa_rrf)} steg" if fa_active else f"{fa_rrf}%"
@@ -3187,6 +3281,30 @@ class ScenarioTablePanel(QWidget):
         self._rebuild()
 
     def _on_cell_clicked(self, row, col):
+        if col == self._C_ORS and row < len(self._row_meta):
+            self.item_selected.emit(CAUSE_T, self._row_meta[row][0])
+            # Single-click starts editing immediately (deferred so right-panel load runs first)
+            QTimer.singleShot(0, lambda r=row, c=col: (
+                self._table.setFocus(),
+                self._table.edit(self._table.model().index(r, c))
+            ))
+            return
+        if col == self._C_KON and row < len(self._row_meta):
+            self.item_selected.emit(CONS_T, self._row_meta[row][1])
+            QTimer.singleShot(0, lambda r=row, c=col: (
+                self._table.setFocus(),
+                self._table.edit(self._table.model().index(r, c))
+            ))
+            return
+        if col == self._C_SG and row < len(self._row_meta):
+            sg_ids = self._row_meta[row][2]
+            if sg_ids:
+                self.item_selected.emit(SG_T, sg_ids[0])
+                QTimer.singleShot(0, lambda r=row, c=col: (
+                    self._table.setFocus(),
+                    self._table.edit(self._table.model().index(r, c))
+                ))
+            return
         if col != self._C_RFORE:
             return
         item = self._table.item(row, col)
@@ -3225,6 +3343,84 @@ class ScenarioTablePanel(QWidget):
                 cons_id, cons['description'], new_cons, cons['category'] or '')
         QTimer.singleShot(0, self._rebuild)
 
+    # ── Enter-tangent: snabblägg-till ─────────────────────────────────────────
+
+    def eventFilter(self, obj, event):
+        # QLineEdit in multi-safeguard widget cell
+        if isinstance(obj, QLineEdit) and obj.property('sg_id') is not None:
+            if event.type() == QEvent.Type.FocusIn:
+                self.item_selected.emit(SG_T, obj.property('sg_id'))
+            elif event.type() == QEvent.Type.KeyPress:
+                if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                    row = obj.property('sg_row')
+                    if row is not None:
+                        self._enter_row = row
+                        self._enter_col = self._C_SG
+                        self._last_enter_committed = True  # editingFinished fires synchronously before singleShot
+                        QTimer.singleShot(0, self._on_enter_after_edit)
+        # Table-level Enter key
+        if obj is self._table and event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self._enter_row = self._table.currentRow()
+                self._enter_col = self._table.currentColumn()
+                self._last_enter_committed = False
+                QTimer.singleShot(0, self._on_enter_after_edit)
+        return False
+
+    def _on_sg_le_commit(self, sg_id, text):
+        desc = text.strip() or 'Ny safeguard'
+        sg = self.db.get_safeguard(sg_id)
+        if sg:
+            self.db.update_safeguard(sg_id, desc, sg['rrf'] or 1)
+        self.item_edited.emit(SG_T, sg_id)
+
+    def _on_enter_after_edit(self):
+        row = self._enter_row
+        if row < 0 or row >= len(self._row_meta):
+            return
+        # Editable cells (Orsak): only show menu after a real commit, not when starting to type.
+        # Non-editable cells (Barriär) and widget cells (Konsekvens): always show menu.
+        item = self._table.item(row, self._enter_col)
+        is_editable = item is not None and bool(item.flags() & Qt.ItemFlag.ItemIsEditable)
+        if is_editable and not self._last_enter_committed:
+            return
+        self._last_enter_committed = False
+        cause_id, cons_id, sg_ids = self._row_meta[row]
+        self._show_quick_add(row, cause_id, cons_id)
+
+    def _show_quick_add(self, row, cause_id, cons_id):
+        cause = self.db.get_cause(cause_id)
+        if not cause:
+            return
+        node = self.db.get_node(cause['node_id'])
+        node_name = node['name'] if node else '?'
+
+        menu = QMenu(self)
+        menu.addSection("Lägg till i hierarkin")
+        menu.addAction(f'⚙  Ny orsak på nod  [{node_name}]',
+                       lambda: self._quick_add_cause(cause['node_id']))
+        menu.addAction("⚠  Ny konsekvens på denna orsak",
+                       lambda: self._quick_add_consequence(cause_id))
+        menu.addAction("🛡  Ny safeguard på denna konsekvens",
+                       lambda: self._quick_add_safeguard(cons_id))
+
+        idx   = self._table.model().index(row, self._C_ORS)
+        rect  = self._table.visualRect(idx)
+        pos   = self._table.viewport().mapToGlobal(rect.bottomLeft())
+        menu.exec(pos)
+
+    def _quick_add_cause(self, node_id):
+        new_id = self.db.add_cause(node_id)
+        self.new_item_created.emit(CAUSE_T, new_id)
+
+    def _quick_add_consequence(self, cause_id):
+        new_id = self.db.add_consequence(cause_id)
+        self.new_item_created.emit(CONS_T, new_id)
+
+    def _quick_add_safeguard(self, cons_id):
+        new_id = self.db.add_safeguard(cons_id)
+        self.new_item_created.emit(SG_T, new_id)
+
     def _on_cell_changed(self, row, col):
         try:
             self._on_cell_changed_inner(row, col)
@@ -3244,12 +3440,22 @@ class ScenarioTablePanel(QWidget):
         if kind == 'cause':
             desc = text.split('\n')[0].strip()
             self.db.update_cause(id_, desc)
+            self.item_edited.emit(CAUSE_T, id_)
 
         elif kind == 'consequence':
             desc = text.split('\n')[0].strip()
             cons = self.db.get_consequence(id_)
             if cons:
                 self.db.update_consequence(id_, desc, cons['severity'], cons['category'] or '')
+            self.item_edited.emit(CONS_T, id_)
+
+        elif kind == 'safeguard':
+            desc = text.split('\n')[0].strip() or 'Ny safeguard'
+            sg = self.db.get_safeguard(id_)
+            if sg:
+                self.db.update_safeguard(id_, desc, sg['rrf'] or 1)
+            self.item_edited.emit(SG_T, id_)
+            QTimer.singleShot(0, self._rebuild)
 
         elif kind in ('fa', 'ignition'):
             # Checkbox state + editable probability % value
@@ -3271,6 +3477,9 @@ class ScenarioTablePanel(QWidget):
                     (int(active), prob, id_))
             self.db.conn.commit()
             QTimer.singleShot(0, self._rebuild)
+
+        if (row, col) == (self._enter_row, self._enter_col):
+            self._last_enter_committed = True
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -5924,7 +6133,18 @@ class MainWindow(QMainWindow):
         self.sg_panel.saved.connect(
             lambda id_: self.tree_panel.refresh(SG_T, id_))
 
-        # ScenarioTablePanel has no data_changed signal — edits go through panels above
+        self.cause_panel.place_on_pid.connect(
+            lambda: self.pid_panel._set_mode(MODE_CAUSE))
+        self.cons_panel.place_on_pid.connect(
+            lambda: self.pid_panel._set_mode(MODE_CONSEQUENCE))
+        self.sg_panel.place_on_pid.connect(
+            lambda: self.pid_panel._set_mode(MODE_SAFEGUARD))
+
+        self.scenario_panel.item_selected.connect(self._on_selected)
+        self.scenario_panel.new_item_created.connect(
+            lambda type_, id_: (self.tree_panel.refresh(type_, id_),
+                                self._on_selected(type_, id_)))
+        self.scenario_panel.item_edited.connect(self._on_scenario_item_edited)
 
         self.pid_panel.node_created.connect(
             lambda nid: (self.tree_panel.refresh(NODE_T, nid),
@@ -5986,6 +6206,19 @@ class MainWindow(QMainWindow):
                 if cons:
                     self.pid_panel.set_active_consequence(cons['id'])
                     self.scenario_panel.load_consequence(cons['id'])
+
+    def _on_scenario_item_edited(self, type_, id_):
+        """Scenario table committed an edit — sync the tree and the right panel."""
+        self.tree_panel.refresh(type_, id_)
+        if type_ == CAUSE_T:
+            if self.cause_panel.cause_id == id_:
+                self.cause_panel.load(id_)
+        elif type_ == CONS_T:
+            if self.cons_panel.consequence_id == id_:
+                self.cons_panel.load(id_)
+        elif type_ == SG_T:
+            if self.sg_panel.safeguard_id == id_:
+                self.sg_panel.load(id_)
 
     def _on_structure_changed(self):
         self._cur_type = None
