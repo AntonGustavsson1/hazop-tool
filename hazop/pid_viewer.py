@@ -2496,9 +2496,9 @@ class PIDGraphicsView(QGraphicsView):
                 self._add_draw_point(sp); event.accept(); return
             elif event.button() == Qt.MouseButton.RightButton:
                 self._cancel_drawing(); event.accept(); return
-        elif self.mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD):
+        elif self.mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD, MODE_PLACE_EXISTING):
             if event.button() == Qt.MouseButton.LeftButton:
-                # Start rubber-band rectangle selection
+                # Start rubber-band rectangle selection (or simple click for PLACE_EXISTING)
                 self._rect_start = sp
                 self._rect_item  = None
                 event.accept(); return
@@ -2534,7 +2534,7 @@ class PIDGraphicsView(QGraphicsView):
     def mouseReleaseEvent(self, event):
         # ── Rect-select release for cause/consequence/safeguard ───────────────
         if (event.button() == Qt.MouseButton.LeftButton and
-                self.mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD) and
+                self.mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD, MODE_PLACE_EXISTING) and
                 self._rect_start is not None):
 
             end_sp = self.mapToScene(event.position().toPoint())

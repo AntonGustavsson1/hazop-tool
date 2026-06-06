@@ -3003,44 +3003,41 @@ _PID_ICON_RE = re.compile(r'^[🟢📌]\s*')   # strip any old emoji prefix
 
 
 def _draw_pid_pin(painter, rect, placed):
-    """Draw a teardrop map-pin inside rect. Green = placed, red = not placed."""
-    color   = QColor('#27ae60') if placed else QColor('#e74c3c')
-    outline = color.darker(140)
+    """Draw a needle pin (circle + stick) inside rect. Green=placed, red=not placed."""
+    color = QColor('#27ae60') if placed else QColor('#e74c3c')
+    dark  = color.darker(150)
 
-    pin_w = min(rect.width() - 6, 11)
-    pin_h = min(rect.height() - 4, int(pin_w * 1.75))
-    if pin_w < 4 or pin_h < 4:
-        return
+    r      = 4.5          # circle radius
+    stick  = 5.0          # stick length below circle
+    total  = r * 2 + stick
 
-    r  = pin_w / 2.0
-    cx = float(rect.center().x())
-    cy = float(rect.top()) + (rect.height() - pin_h) / 2.0   # pin top
+    cx  = float(rect.center().x())
+    top = float(rect.center().y()) - total / 2.0
 
-    circle_cy = cy + r
-    tip_y     = cy + pin_h
-
-    path = QPainterPath()
-    path.moveTo(cx, tip_y)
-    path.cubicTo(cx - r * 0.35, tip_y - pin_h * 0.22,
-                 cx - r,        circle_cy + r * 0.55,
-                 cx - r,        circle_cy)
-    path.arcTo(cx - r, circle_cy - r, pin_w, pin_w, 180, -180)
-    path.cubicTo(cx + r,        circle_cy + r * 0.55,
-                 cx + r * 0.35, tip_y - pin_h * 0.22,
-                 cx,            tip_y)
-    path.closeSubpath()
+    circle_cy = top + r
+    stick_top = top + r * 2
+    stick_bot = top + total
 
     painter.save()
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setBrush(QBrush(color))
-    painter.setPen(QPen(outline, 1.0))
-    painter.drawPath(path)
 
-    # White highlight dot (upper-left of head)
-    dot_r = r * 0.28
-    painter.setBrush(QBrush(QColor(255, 255, 255, 160)))
+    # Stick
+    pen = QPen(dark, 1.5)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawLine(QPointF(cx, stick_top), QPointF(cx, stick_bot))
+
+    # Circle head
+    painter.setBrush(QBrush(color))
+    painter.setPen(QPen(dark, 1.0))
+    painter.drawEllipse(QPointF(cx, circle_cy), r, r)
+
+    # White highlight dot
+    dot_r = r * 0.3
+    painter.setBrush(QBrush(QColor(255, 255, 255, 170)))
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.drawEllipse(QPointF(cx - r * 0.38, circle_cy - r * 0.38), dot_r, dot_r)
+    painter.drawEllipse(QPointF(cx - r * 0.35, circle_cy - r * 0.35), dot_r, dot_r)
     painter.restore()
 
 
