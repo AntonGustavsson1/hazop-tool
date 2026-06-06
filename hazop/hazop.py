@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
     QMenu, QToolBar, QStatusBar, QSizePolicy,
     QSpinBox, QColorDialog, QFrame, QListWidget, QListWidgetItem,
     QProgressDialog, QAbstractItemView, QToolTip, QInputDialog, QCheckBox,
+    QStyledItemDelegate,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF, QTimer, QMimeData, QEvent
 from PyQt6.QtGui import QFont, QColor, QAction, QBrush, QPen, QPainter, QDrag
@@ -2954,6 +2955,23 @@ class ReductionFactorsDialog(QDialog):
         self.db.update_reduction_factor(rf_id, desc, rrf, 1)
 
 
+class _ScenarioDelegate(QStyledItemDelegate):
+    """Delegates that installs the parent panel's eventFilter on every inline editor
+    so Ctrl+Enter works even while a cell is being edited."""
+
+    def __init__(self, panel):
+        super().__init__(panel)
+        self._panel = panel
+
+    def createEditor(self, parent, option, index):
+        editor = super().createEditor(parent, option, index)
+        if editor is not None:
+            editor.setProperty('editing_row', index.row())
+            editor.setProperty('editing_col', index.column())
+            editor.installEventFilter(self._panel)
+        return editor
+
+
 class ScenarioTablePanel(QWidget):
     """Extended scenario table with FA, Antändning, Övriga faktorer and Slutkonsekvens."""
 
@@ -3029,6 +3047,8 @@ class ScenarioTablePanel(QWidget):
         self._table.cellChanged.connect(self._on_cell_changed)
         self._table.cellClicked.connect(self._on_cell_clicked)
         self._table.installEventFilter(self)
+        self._delegate = _ScenarioDelegate(self)
+        self._table.setItemDelegate(self._delegate)
         outer.addWidget(self._table)
 
     # ── Load ──────────────────────────────────────────────────────────────────
@@ -3378,6 +3398,20 @@ class ScenarioTablePanel(QWidget):
     def eventFilter(self, obj, event):
         ctrl = bool(event.type() == QEvent.Type.KeyPress and
                     event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+
+        # Delegate inline editor (regular cell in edit mode)
+        if (isinstance(obj, QLineEdit) and
+                obj.property('editing_row') is not None and
+                obj.property('sg_id') is None):
+            if ctrl and event.type() == QEvent.Type.KeyPress:
+                if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                    row = obj.property('editing_row')
+                    col = obj.property('editing_col')
+                    # Commit the current edit first, then create sibling
+                    self._delegate.commitData.emit(obj)
+                    self._delegate.closeEditor.emit(obj, QStyledItemDelegate.EndEditHint.NoHint)
+                    self._ctrl_enter(row, col)
+                    return True
 
         # QLineEdit in multi-safeguard widget cell
         if isinstance(obj, QLineEdit) and obj.property('sg_id') is not None:
