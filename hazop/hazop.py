@@ -497,10 +497,8 @@ _COMP_STD_CAUSES = {
             "Blindplatta kvar efter underhåll",
         ],
         "Instrument / Sensor": [
-            "Signalfel högt",
-            "Signalfel lågt",
-            "Impulsledning igensatt",
-            "Kalibreringsdrift",
+            "Felar högt",
+            "Felar lågt",
         ],
         "Tank / Kärl": [
             "Låg nivå i matningskärl",
@@ -526,9 +524,8 @@ _COMP_STD_CAUSES = {
             "Backventil saknas / defekt (backflöde adderas)",
         ],
         "Instrument / Sensor": [
-            "Signalfel lågt",
-            "Signalfel högt",
-            "Styrsignal felar högt",
+            "Felar högt",
+            "Felar lågt",
         ],
     },
     "Omvänt flöde": {
@@ -572,8 +569,8 @@ _COMP_STD_CAUSES = {
             "Termisk expansion i avspärrat rörledningsavsnitt",
         ],
         "Instrument / Sensor": [
-            "Signalfel lågt (tryckventil stänger)",
-            "Tryckstyrd ventil felar stängd",
+            "Felar högt",
+            "Felar lågt",
         ],
         "Tank / Kärl": [
             "Säkerhetsventil avspärrad (underhåll)",
@@ -594,8 +591,8 @@ _COMP_STD_CAUSES = {
             "Flanskläckage",
         ],
         "Instrument / Sensor": [
-            "Signalfel högt (tryckventil öppnar)",
-            "Tryckventil fastnar öppen via felaktig styrsignal",
+            "Felar högt",
+            "Felar lågt",
         ],
         "Tank / Kärl": [
             "Dräneringsventil öppen / läckande",
@@ -611,8 +608,8 @@ _COMP_STD_CAUSES = {
             "Inloppsventil öppen (okontrollerat)",
         ],
         "Instrument / Sensor": [
-            "Signalfel lågt (LT felar lågt — inlopp öppnar)",
-            "Nivågivare impulsledning igensatt (visar låg nivå)",
+            "Felar högt",
+            "Felar lågt",
         ],
         "Tank / Kärl": [
             "Skumbildning (skenbar hög nivå)",
@@ -628,8 +625,8 @@ _COMP_STD_CAUSES = {
             "Dräneringsventil öppen / läckande",
         ],
         "Instrument / Sensor": [
-            "Signalfel högt (LT felar högt — utlopp öppnar)",
-            "Nivågivare igensatt (visar hög nivå)",
+            "Felar högt",
+            "Felar lågt",
         ],
         "Tank / Kärl": [
             "Yttre läcka från kärlet",
@@ -643,8 +640,8 @@ _COMP_STD_CAUSES = {
             "Kylventil fastnar stängd",
         ],
         "Instrument / Sensor": [
-            "Signalfel lågt (TT felar lågt — värme ökar)",
-            "Temperaturgivare felar",
+            "Felar högt",
+            "Felar lågt",
         ],
         "Tank / Kärl": [
             "Exoterm reaktion / okontrollerad kemisk process",
@@ -657,14 +654,37 @@ _COMP_STD_CAUSES = {
             "Värmeventil fastnar stängd",
         ],
         "Instrument / Sensor": [
-            "Signalfel högt (TT felar högt — kylning ökar)",
-            "Temperaturgivare felar",
+            "Felar högt",
+            "Felar lågt",
         ],
         "Rörledning": [
             "Yttre kyla utan värmespårning — isbildning",
         ],
     },
 }
+
+
+def _fix_instrument_causes_v2(conn):
+    """Replace verbose v1 instrument cause descriptions with 'Felar högt' / 'Felar lågt'."""
+    conn.execute("DELETE FROM standard_causes WHERE comp_type='Instrument / Sensor'")
+    instrument_devs = [
+        "Lågt flöde", "Högt flöde", "Högt tryck", "Lågt tryck",
+        "Hög nivå", "Låg nivå", "Hög temperatur", "Låg temperatur",
+    ]
+    for dev_name in instrument_devs:
+        row = conn.execute(
+            "SELECT id FROM standard_deviations WHERE description=?", (dev_name,)).fetchone()
+        if not row:
+            continue
+        dev_id = row[0]
+        max_sort = (conn.execute(
+            "SELECT COALESCE(MAX(sort_order),0) FROM standard_causes WHERE deviation_id=?",
+            (dev_id,)).fetchone()[0] or 0)
+        for i, desc in enumerate(["Felar högt", "Felar lågt"]):
+            conn.execute(
+                "INSERT INTO standard_causes (deviation_id, description, sort_order, comp_type)"
+                " VALUES (?,?,?,?)",
+                (dev_id, desc, max_sort + 1 + i, 'Instrument / Sensor'))
 
 
 def _seed_component_causes(conn):
@@ -934,6 +954,13 @@ class Database:
             _seed_component_causes(self.conn)
             self.conn.execute(
                 "INSERT OR REPLACE INTO app_config (key,value) VALUES ('comp_causes_seeded_v1','1')")
+
+        # Replace verbose v1 instrument causes with simple "Felar högt" / "Felar lågt"
+        if not self.conn.execute(
+                "SELECT value FROM app_config WHERE key='comp_causes_seeded_v2'").fetchone():
+            _fix_instrument_causes_v2(self.conn)
+            self.conn.execute(
+                "INSERT OR REPLACE INTO app_config (key,value) VALUES ('comp_causes_seeded_v2','1')")
 
         # Ensure every node has all standard deviations from template library
         std_devs = [r[0] for r in self.conn.execute(
