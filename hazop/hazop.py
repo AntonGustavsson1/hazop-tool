@@ -3109,12 +3109,43 @@ class ScenarioTablePanel(QWidget):
                 self._add_row(node_name, cause_d, freq, freq_lbl, cons_d)
             if self._table.rowCount() == 0:
                 self._add_empty_row(node_name, cause_d, freq, freq_lbl)
+            self._apply_spans()
         except Exception as e:
             QMessageBox.critical(None, "Fel i scenariopanel", str(e))
         finally:
             self._table.blockSignals(False)
             self._table.cellChanged.connect(self._on_cell_changed)
             self._rebuilding = False
+
+    def _apply_spans(self):
+        """Merge consecutive rows that share the same Nod or Orsak."""
+        n = self._table.rowCount()
+        if n < 2:
+            return
+
+        def _span_col(col, key_fn):
+            r = 0
+            while r < n:
+                k = key_fn(r)
+                span = 1
+                while r + span < n and key_fn(r + span) == k and k is not None:
+                    span += 1
+                if span > 1:
+                    self._table.setSpan(r, col, span, 1)
+                    item = self._table.item(r, col)
+                    if item:
+                        item.setTextAlignment(
+                            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
+                r += span
+
+        # Nod: group by node_id stored in UserRole
+        _span_col(self._C_NOD, lambda r: (
+            self._table.item(r, self._C_NOD).data(Qt.ItemDataRole.UserRole)
+            if self._table.item(r, self._C_NOD) else None))
+
+        # Orsak: group by cause_id from _row_meta
+        _span_col(self._C_ORS, lambda r: (
+            self._row_meta[r][0] if r < len(self._row_meta) else None))
 
     def _add_empty_row(self, node_name, cause_d, freq, freq_lbl):
         """Placeholder row when a cause has no consequences yet."""
@@ -3128,6 +3159,7 @@ class ScenarioTablePanel(QWidget):
             return item
 
         nod = _ro(node_name)
+        nod.setData(Qt.ItemDataRole.UserRole, cause_d['node_id'])
         self._table.setItem(r, self._C_NOD, nod)
 
         ors = QTableWidgetItem(cause_d['description'])
@@ -3174,6 +3206,7 @@ class ScenarioTablePanel(QWidget):
         # ── Col 0: Nod ────────────────────────────────────────────────────────
         nod = QTableWidgetItem(node_name)
         nod.setFlags(nod.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        nod.setData(Qt.ItemDataRole.UserRole, cause_d['node_id'])
         self._table.setItem(r, self._C_NOD, nod)
 
         # ── Col 1: Orsak (editable, description only) ────────────────────────
