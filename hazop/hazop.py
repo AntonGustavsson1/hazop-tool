@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (
     QStyledItemDelegate, QStyleOptionViewItem, QStyle,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF, QRect, QTimer, QMimeData, QEvent
-from PyQt6.QtGui import QFont, QColor, QAction, QBrush, QPen, QPainter, QDrag
+from PyQt6.QtGui import QFont, QColor, QAction, QBrush, QPen, QPainter, QDrag, QPainterPath
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DATABASE
@@ -2997,8 +2997,51 @@ class _ScenarioDelegate(QStyledItemDelegate):
         return editor
 
 
-_PID_ICON_W = 22          # pixels reserved on the left for the 🟢/📌 symbol
-_PID_ICON_RE = re.compile(r'^[🟢📌]\s*')   # strip prefix when reading back descriptions
+_PID_ICON_W = 22          # pixels reserved on the left for the pin icon
+
+_PID_ICON_RE = re.compile(r'^[🟢📌]\s*')   # strip any old emoji prefix
+
+
+def _draw_pid_pin(painter, rect, placed):
+    """Draw a teardrop map-pin inside rect. Green = placed, red = not placed."""
+    color   = QColor('#27ae60') if placed else QColor('#e74c3c')
+    outline = color.darker(140)
+
+    pin_w = min(rect.width() - 6, 11)
+    pin_h = min(rect.height() - 4, int(pin_w * 1.75))
+    if pin_w < 4 or pin_h < 4:
+        return
+
+    r  = pin_w / 2.0
+    cx = float(rect.center().x())
+    cy = float(rect.top()) + (rect.height() - pin_h) / 2.0   # pin top
+
+    circle_cy = cy + r
+    tip_y     = cy + pin_h
+
+    path = QPainterPath()
+    path.moveTo(cx, tip_y)
+    path.cubicTo(cx - r * 0.35, tip_y - pin_h * 0.22,
+                 cx - r,        circle_cy + r * 0.55,
+                 cx - r,        circle_cy)
+    path.arcTo(cx - r, circle_cy - r, pin_w, pin_w, 180, -180)
+    path.cubicTo(cx + r,        circle_cy + r * 0.55,
+                 cx + r * 0.35, tip_y - pin_h * 0.22,
+                 cx,            tip_y)
+    path.closeSubpath()
+
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setBrush(QBrush(color))
+    painter.setPen(QPen(outline, 1.0))
+    painter.drawPath(path)
+
+    # White highlight dot (upper-left of head)
+    dot_r = r * 0.28
+    painter.setBrush(QBrush(QColor(255, 255, 255, 160)))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.drawEllipse(QPointF(cx - r * 0.38, circle_cy - r * 0.38), dot_r, dot_r)
+    painter.restore()
 
 
 class _PidDelegate(_ScenarioDelegate):
@@ -3034,8 +3077,7 @@ class _PidDelegate(_ScenarioDelegate):
             painter.fillRect(icon_rect, option.palette.alternateBase())
         else:
             painter.fillRect(icon_rect, option.palette.base())
-        painter.drawText(icon_rect, Qt.AlignmentFlag.AlignCenter,
-                         '🟢' if is_placed else '📌')
+        _draw_pid_pin(painter, icon_rect, is_placed)
 
 
 class ScenarioTablePanel(QWidget):
