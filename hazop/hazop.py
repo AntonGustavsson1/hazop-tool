@@ -598,6 +598,17 @@ class Database:
                 sheet_name    TEXT DEFAULT '',
                 revision_id   INTEGER DEFAULT NULL
             );
+            CREATE TABLE IF NOT EXISTS standard_deviations (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                description TEXT NOT NULL,
+                sort_order  INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS standard_causes (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                deviation_id INTEGER NOT NULL REFERENCES standard_deviations(id) ON DELETE CASCADE,
+                description  TEXT NOT NULL,
+                sort_order   INTEGER DEFAULT 0
+            );
         """)
 
         if not self.conn.execute("SELECT COUNT(*) FROM consequence_categories").fetchone()[0]:
@@ -649,12 +660,62 @@ class Database:
                 "UPDATE causes SET deviation_id=? WHERE node_id=? AND deviation_id IS NULL",
                 (dev_id, nid))
 
-        # Ensure every node has all 16 standard deviations
+        # Seed standard_deviations template library if empty
+        if not self.conn.execute("SELECT COUNT(*) FROM standard_deviations").fetchone()[0]:
+            _STD_CAUSES = {
+                "Lågt flöde":    ["Stängd ventil", "Delvis stängd ventil", "Igensatt filter/sil",
+                                   "Stoppad pump", "Igensatt rör/ledning", "Läckage uppströms",
+                                   "Fel på reglerventil (ej öppnar)"],
+                "Högt flöde":    ["Felöppen ventil", "Fel på reglerventil (ej stänger)",
+                                   "Ökat drifttryck uppströms", "Ökad pumpkapacitet"],
+                "Missriktat flöde": ["Felaktig rörledningsdragning", "Fel rörkoppling",
+                                     "Backventil saknas / ur funktion"],
+                "Omvänt flöde":  ["Backventil saknas / ur funktion", "Pumpfel – flöde vänds",
+                                   "Tryckfall uppströms"],
+                "Högt tryck":    ["Stängd utloppsventil", "Blockerat utlopp",
+                                   "Ökat inflöde", "Övervärmd gas/vätska", "Felaktig tryckreglering"],
+                "Lågt tryck":    ["Läckage i system", "Otäta flänsar/koppling",
+                                   "Öppet/läckande utlopp", "Pumphaveri"],
+                "Hög nivå":      ["Öppet inlopp", "Stängd utloppsventil", "Felaktig nivåreglering",
+                                   "Läckage till kärl"],
+                "Låg nivå":      ["Läckage i botten/sida", "Felaktig nivåreglering",
+                                   "Stängd inloppsventil", "Pumphaveri"],
+                "Hög temperatur": ["Värmeväxlare ur funktion", "Övervärmd inkommande fluid",
+                                    "Felaktig temperaturreglering", "Exoterm reaktion"],
+                "Låg temperatur": ["Kylmedelfel", "Underkylning av inkommande fluid",
+                                    "Felaktig temperaturreglering"],
+                "Avvikande sammansättning": ["Fel råvara", "Förorenad råvara",
+                                              "Felaktig dosering", "Läckage av annat medium"],
+                "Bortfall av hjälpsystem": ["Strömavbrott", "Instrumentluftsfel",
+                                             "Kylarfel", "Automatikfel"],
+                "Drift":         ["Mänskligt fel vid drift", "Felaktig procedur",
+                                   "Kommunikationsfel"],
+                "Underhåll":     ["Arbete på trycksatt system", "Felaktig isolering",
+                                   "Verktyg kvar i system"],
+                "Start-up / Shut-down": ["Felaktig sekvens", "Valves i fel läge",
+                                          "Instrument ej kalibrerade"],
+                "Övrigt":        [],
+            }
+            for sort_i, dev_name in enumerate(_DEVIATION_TYPES):
+                cur = self.conn.execute(
+                    "INSERT INTO standard_deviations (description, sort_order) VALUES (?,?)",
+                    (dev_name, sort_i))
+                dev_tmpl_id = cur.lastrowid
+                for cause_i, c_desc in enumerate(_STD_CAUSES.get(dev_name, [])):
+                    self.conn.execute(
+                        "INSERT INTO standard_causes (deviation_id, description, sort_order)"
+                        " VALUES (?,?,?)", (dev_tmpl_id, c_desc, cause_i))
+
+        # Ensure every node has all standard deviations from template library
+        std_devs = [r[0] for r in self.conn.execute(
+            "SELECT description FROM standard_deviations ORDER BY sort_order").fetchall()]
+        if not std_devs:
+            std_devs = _DEVIATION_TYPES
         all_nodes = [r[0] for r in self.conn.execute("SELECT id FROM nodes").fetchall()]
         for nid in all_nodes:
             existing = {r[0] for r in self.conn.execute(
                 "SELECT description FROM deviations WHERE node_id=?", (nid,)).fetchall()}
-            for dev_type in _DEVIATION_TYPES:
+            for dev_type in std_devs:
                 if dev_type not in existing:
                     self.conn.execute(
                         "INSERT INTO deviations (node_id, description) VALUES (?,?)",
@@ -1157,7 +1218,9 @@ class Database:
     def add_node(self):
         cur = self.conn.execute("INSERT INTO nodes (name) VALUES ('Ny nod')")
         node_id = cur.lastrowid
-        for dev_type in _DEVIATION_TYPES:
+        std = [r[0] for r in self.conn.execute(
+            "SELECT description FROM standard_deviations ORDER BY sort_order").fetchall()]
+        for dev_type in (std or _DEVIATION_TYPES):
             self.conn.execute(
                 "INSERT INTO deviations (node_id, description) VALUES (?,?)",
                 (node_id, dev_type))
@@ -1196,6 +1259,73 @@ class Database:
             "SELECT id FROM deviations WHERE node_id=? AND description=? ORDER BY id LIMIT 1",
             (node_id, description)).fetchone()
         return row[0] if row else self.add_deviation(node_id, description)
+
+    # ── Standard deviation / cause template library ───────────────────────────
+    def standard_deviations(self):
+        return self.conn.execute(
+            "SELECT * FROM standard_deviations ORDER BY sort_order, id").fetchall()
+
+    def add_standard_deviation(self, description):
+        max_ord = self.conn.execute(
+            "SELECT COALESCE(MAX(sort_order),0) FROM standard_deviations").fetchone()[0]
+        cur = self.conn.execute(
+            "INSERT INTO standard_deviations (description, sort_order) VALUES (?,?)",
+            (description, max_ord + 1))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def update_standard_deviation(self, id_, description):
+        self.conn.execute(
+            "UPDATE standard_deviations SET description=? WHERE id=?", (description, id_))
+        self.conn.commit()
+
+    def delete_standard_deviation(self, id_):
+        self.conn.execute("DELETE FROM standard_deviations WHERE id=?", (id_,))
+        self.conn.commit()
+
+    def reorder_standard_deviations(self, ordered_ids):
+        for i, id_ in enumerate(ordered_ids):
+            self.conn.execute(
+                "UPDATE standard_deviations SET sort_order=? WHERE id=?", (i, id_))
+        self.conn.commit()
+
+    def standard_causes(self, deviation_id):
+        return self.conn.execute(
+            "SELECT * FROM standard_causes WHERE deviation_id=? ORDER BY sort_order, id",
+            (deviation_id,)).fetchall()
+
+    def standard_causes_for_name(self, deviation_name):
+        row = self.conn.execute(
+            "SELECT id FROM standard_deviations WHERE description=? LIMIT 1",
+            (deviation_name,)).fetchone()
+        if not row:
+            return []
+        return self.standard_causes(row[0])
+
+    def add_standard_cause(self, deviation_id, description):
+        max_ord = self.conn.execute(
+            "SELECT COALESCE(MAX(sort_order),0) FROM standard_causes WHERE deviation_id=?",
+            (deviation_id,)).fetchone()[0]
+        cur = self.conn.execute(
+            "INSERT INTO standard_causes (deviation_id, description, sort_order) VALUES (?,?,?)",
+            (deviation_id, description, max_ord + 1))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def update_standard_cause(self, id_, description):
+        self.conn.execute(
+            "UPDATE standard_causes SET description=? WHERE id=?", (description, id_))
+        self.conn.commit()
+
+    def delete_standard_cause(self, id_):
+        self.conn.execute("DELETE FROM standard_causes WHERE id=?", (id_,))
+        self.conn.commit()
+
+    def reorder_standard_causes(self, ordered_ids):
+        for i, id_ in enumerate(ordered_ids):
+            self.conn.execute(
+                "UPDATE standard_causes SET sort_order=? WHERE id=?", (i, id_))
+        self.conn.commit()
 
     def add_cause(self, deviation_id):
         dev = self.get_deviation(deviation_id)
@@ -2383,7 +2513,8 @@ class HAZOPTreeWidget(QTreeWidget):
 
 
 class TreePanel(QWidget):
-    item_selected     = pyqtSignal(int, int)
+    item_selected              = pyqtSignal(int, int)
+    add_causes_on_pid_requested = pyqtSignal(int)   # deviation_id
     structure_changed = pyqtSignal()
     visibility_changed = pyqtSignal(str, bool)   # marker_type, visible
 
@@ -2663,6 +2794,8 @@ class TreePanel(QWidget):
             menu.addAction("+ Lägg till avvikelse", self.add_deviation)
         elif type_ == DEV_T:
             menu.addAction("+ Lägg till orsak", self.add_cause)
+            menu.addAction("📍 Lägg till orsaker på P&ID",
+                           lambda i=id_: self.add_causes_on_pid_requested.emit(i))
         elif type_ == CAUSE_T:
             menu.addAction("+ Lägg till konsekvens", self.add_consequence)
         menu.addSeparator()
@@ -5071,6 +5204,190 @@ class MatrixCellButton(QPushButton):
             event.ignore()
 
 
+class StandardCausesSettingsPanel(QWidget):
+    """Editable library of standard deviations and their template causes."""
+
+    def __init__(self, db, parent=None):
+        super().__init__(parent)
+        self.db = db
+
+        layout = QHBoxLayout(self)
+
+        # ── Left: standard deviations list ───────────────────────────────────
+        left = QVBoxLayout()
+        left.addWidget(QLabel("<b>Standardavvikelser</b>"))
+        self._dev_list = QListWidget()
+        self._dev_list.currentRowChanged.connect(self._on_dev_selected)
+        left.addWidget(self._dev_list)
+        dev_btns = QHBoxLayout()
+        btn_add_dev = QPushButton("+")
+        btn_add_dev.setFixedWidth(28)
+        btn_add_dev.clicked.connect(self._add_deviation)
+        btn_del_dev = QPushButton("−")
+        btn_del_dev.setFixedWidth(28)
+        btn_del_dev.clicked.connect(self._del_deviation)
+        btn_up_dev = QPushButton("↑")
+        btn_up_dev.setFixedWidth(28)
+        btn_up_dev.clicked.connect(lambda: self._move_deviation(-1))
+        btn_dn_dev = QPushButton("↓")
+        btn_dn_dev.setFixedWidth(28)
+        btn_dn_dev.clicked.connect(lambda: self._move_deviation(1))
+        for b in (btn_add_dev, btn_del_dev, btn_up_dev, btn_dn_dev):
+            dev_btns.addWidget(b)
+        dev_btns.addStretch()
+        left.addLayout(dev_btns)
+
+        # ── Right: standard causes for selected deviation ─────────────────────
+        right = QVBoxLayout()
+        self._causes_label = QLabel("<b>Standardorsaker</b>")
+        right.addWidget(self._causes_label)
+        self._cause_list = QListWidget()
+        self._cause_list.itemChanged.connect(self._on_cause_edited)
+        right.addWidget(self._cause_list)
+        cause_btns = QHBoxLayout()
+        btn_add_c = QPushButton("+")
+        btn_add_c.setFixedWidth(28)
+        btn_add_c.clicked.connect(self._add_cause)
+        btn_del_c = QPushButton("−")
+        btn_del_c.setFixedWidth(28)
+        btn_del_c.clicked.connect(self._del_cause)
+        btn_up_c = QPushButton("↑")
+        btn_up_c.setFixedWidth(28)
+        btn_up_c.clicked.connect(lambda: self._move_cause(-1))
+        btn_dn_c = QPushButton("↓")
+        btn_dn_c.setFixedWidth(28)
+        btn_dn_c.clicked.connect(lambda: self._move_cause(1))
+        for b in (btn_add_c, btn_del_c, btn_up_c, btn_dn_c):
+            cause_btns.addWidget(b)
+        cause_btns.addStretch()
+        right.addLayout(cause_btns)
+
+        layout.addLayout(left, 1)
+        layout.addLayout(right, 2)
+
+        self._loading = False
+        self._load_deviations()
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def _load_deviations(self):
+        self._loading = True
+        cur_row = self._dev_list.currentRow()
+        self._dev_list.clear()
+        for dev in self.db.standard_deviations():
+            item = QListWidgetItem(dev['description'])
+            item.setData(Qt.ItemDataRole.UserRole, dev['id'])
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+            self._dev_list.addItem(item)
+        self._loading = False
+        if cur_row >= 0:
+            self._dev_list.setCurrentRow(min(cur_row, self._dev_list.count() - 1))
+        elif self._dev_list.count():
+            self._dev_list.setCurrentRow(0)
+
+    def _load_causes(self, dev_id):
+        self._loading = True
+        self._cause_list.clear()
+        for c in self.db.standard_causes(dev_id):
+            item = QListWidgetItem(c['description'])
+            item.setData(Qt.ItemDataRole.UserRole, c['id'])
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+            self._cause_list.addItem(item)
+        self._loading = False
+
+    def _current_dev_id(self):
+        item = self._dev_list.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def _current_cause_id(self):
+        item = self._cause_list.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    # ── Deviation slots ───────────────────────────────────────────────────────
+    def _on_dev_selected(self, row):
+        item = self._dev_list.item(row)
+        if item:
+            dev_id = item.data(Qt.ItemDataRole.UserRole)
+            self._causes_label.setText(f"<b>Standardorsaker — {item.text()}</b>")
+            self._load_causes(dev_id)
+        else:
+            self._cause_list.clear()
+
+    def _add_deviation(self):
+        name, ok = QInputDialog.getText(self, "Ny avvikelse", "Namn:")
+        if not ok or not name.strip():
+            return
+        self.db.add_standard_deviation(name.strip())
+        self._load_deviations()
+        self._dev_list.setCurrentRow(self._dev_list.count() - 1)
+
+    def _del_deviation(self):
+        dev_id = self._current_dev_id()
+        if dev_id is None:
+            return
+        if QMessageBox.question(self, "Ta bort",
+                "Ta bort avvikelsen och alla dess standardorsaker?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                ) != QMessageBox.StandardButton.Yes:
+            return
+        self.db.delete_standard_deviation(dev_id)
+        self._load_deviations()
+        self._cause_list.clear()
+
+    def _move_deviation(self, direction):
+        row = self._dev_list.currentRow()
+        new_row = row + direction
+        if new_row < 0 or new_row >= self._dev_list.count():
+            return
+        ids = [self._dev_list.item(i).data(Qt.ItemDataRole.UserRole)
+               for i in range(self._dev_list.count())]
+        ids[row], ids[new_row] = ids[new_row], ids[row]
+        self.db.reorder_standard_deviations(ids)
+        self._load_deviations()
+        self._dev_list.setCurrentRow(new_row)
+
+    # ── Cause slots ───────────────────────────────────────────────────────────
+    def _on_cause_edited(self, item):
+        if self._loading:
+            return
+        cid = item.data(Qt.ItemDataRole.UserRole)
+        if cid:
+            self.db.update_standard_cause(cid, item.text())
+
+    def _add_cause(self):
+        dev_id = self._current_dev_id()
+        if dev_id is None:
+            return
+        name, ok = QInputDialog.getText(self, "Ny standardorsak", "Beskrivning:")
+        if not ok or not name.strip():
+            return
+        self.db.add_standard_cause(dev_id, name.strip())
+        self._load_causes(dev_id)
+        self._cause_list.setCurrentRow(self._cause_list.count() - 1)
+
+    def _del_cause(self):
+        cid = self._current_cause_id()
+        if cid is None:
+            return
+        self.db.delete_standard_cause(cid)
+        dev_id = self._current_dev_id()
+        if dev_id:
+            self._load_causes(dev_id)
+
+    def _move_cause(self, direction):
+        row = self._cause_list.currentRow()
+        new_row = row + direction
+        if new_row < 0 or new_row >= self._cause_list.count():
+            return
+        ids = [self._cause_list.item(i).data(Qt.ItemDataRole.UserRole)
+               for i in range(self._cause_list.count())]
+        ids[row], ids[new_row] = ids[new_row], ids[row]
+        self.db.reorder_standard_causes(ids)
+        dev_id = self._current_dev_id()
+        if dev_id:
+            self._load_causes(dev_id)
+        self._cause_list.setCurrentRow(new_row)
+
+
 class SettingsPanel(QWidget):
     matrix_changed = pyqtSignal()
 
@@ -5263,6 +5580,10 @@ class SettingsPanel(QWidget):
         # ── Tab: Identifierade objekt ─────────────────────────────────────────
         self.analysis_panel = PIDAnalysisPanel(self.db)
         tabs.addTab(self.analysis_panel, "Identifierade objekt")
+
+        # ── Tab: Standardavvikelser & Orsaker ─────────────────────────────────
+        self._std_causes_panel = StandardCausesSettingsPanel(self.db)
+        tabs.addTab(self._std_causes_panel, "Standardorsaker")
 
         self._load_all()
 
@@ -6808,6 +7129,8 @@ class MainWindow(QMainWindow):
         self.scenario_panel.navigate_to_pid.connect(self._on_scenario_navigate_to_pid)
         self.scenario_panel.remove_requested.connect(self._on_scenario_remove_from_pid)
 
+        self.tree_panel.add_causes_on_pid_requested.connect(self._on_add_causes_on_pid)
+
         self.pid_panel.node_created.connect(
             lambda nid: (self.tree_panel.refresh(NODE_T, nid),
                          self._on_selected(NODE_T, nid)))
@@ -6821,6 +7144,10 @@ class MainWindow(QMainWindow):
                          self.scenario_panel.refresh_placed()))
         self.pid_panel.safeguard_created.connect(self._on_safeguard_created)
         self.pid_panel.existing_marker_placed.connect(self._on_existing_marker_placed)
+        self.pid_panel.cause_template_created.connect(
+            lambda cid: (self.tree_panel.refresh(CAUSE_T, cid),
+                         self._on_selected(CAUSE_T, cid),
+                         self.scenario_panel.refresh_placed()))
         self.pid_panel.risk_scenario_requested.connect(self._on_pid_risk_scenario)
         self.pid_panel.marker_navigated.connect(self._on_marker_navigate)
         self.pid_panel.pid_analysis_done.connect(self._on_pid_analysis_done)
@@ -6970,6 +7297,14 @@ class MainWindow(QMainWindow):
         self.pid_panel.remove_existing_marker(type_str, id_)
         self.scenario_panel.refresh_placed()
         self.tree_panel.refresh()
+
+    def _on_add_causes_on_pid(self, deviation_id):
+        """Right-click deviation → 'Lägg till orsaker på P&ID': switch to P&ID and enter template mode."""
+        dev = self.db.get_deviation(deviation_id)
+        if dev:
+            self.pid_panel.set_active_node(dev['node_id'])
+        self._switch_view(0)   # switch to P&ID tab
+        self.pid_panel.start_cause_template_mode(deviation_id)
 
     def _on_existing_marker_placed(self, type_str, id_):
         """Marker placed via 'place existing' flow — refresh pins and tree without reloading panels."""

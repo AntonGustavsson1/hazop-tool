@@ -365,12 +365,13 @@ def _pid_build_chain_text(base: str, chain: dict) -> str:
     return ' → '.join(parts)
 
 
-MODE_NAV           = 0
-MODE_NODE          = 1
-MODE_CAUSE         = 2
-MODE_CONSEQUENCE   = 3
-MODE_SAFEGUARD     = 4
+MODE_NAV            = 0
+MODE_NODE           = 1
+MODE_CAUSE          = 2
+MODE_CONSEQUENCE    = 3
+MODE_SAFEGUARD      = 4
 MODE_PLACE_EXISTING = 5   # place a pre-existing item (no new item created)
+MODE_CAUSE_TEMPLATE = 6   # place cause from template list for a specific deviation
 
 Z_PAGE      = 0
 Z_HIGHLIGHT = 1   # tag highlights between page and connections
@@ -1946,9 +1947,10 @@ class PIDGraphicsView(QGraphicsView):
     cause_clicked         = pyqtSignal(object, int, str)
     consequence_clicked   = pyqtSignal(object, int, str)
     safeguard_clicked     = pyqtSignal(object, int, str)
-    place_existing_clicked = pyqtSignal(object, int)   # (center_scene_pos, page)
-    context_action        = pyqtSignal(str, object, int)
-    marker_clicked        = pyqtSignal(str, int)
+    place_existing_clicked  = pyqtSignal(object, int)   # (center_scene_pos, page)
+    cause_template_clicked  = pyqtSignal(object, int)   # (center_scene_pos, page) — MODE_CAUSE_TEMPLATE
+    context_action          = pyqtSignal(str, object, int)
+    marker_clicked          = pyqtSignal(str, int)
 
     # Keys for QGraphicsItem.setData / .data
     _DATA_TYPE = 0    # 'cause' | 'consequence' | 'safeguard'
@@ -2164,7 +2166,8 @@ class PIDGraphicsView(QGraphicsView):
         elif mode == MODE_NODE:
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
-        elif mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD, MODE_PLACE_EXISTING):
+        elif mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD,
+                      MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE):
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)  # cross = draw a rect
         if mode != MODE_NODE:
@@ -2564,6 +2567,8 @@ class PIDGraphicsView(QGraphicsView):
                 self.safeguard_clicked.emit(center, self.current_page, suggested)
             elif self.mode == MODE_PLACE_EXISTING:
                 self.place_existing_clicked.emit(center, self.current_page)
+            elif self.mode == MODE_CAUSE_TEMPLATE:
+                self.cause_template_clicked.emit(center, self.current_page)
             event.accept()
             return
 
@@ -2727,9 +2732,70 @@ def _draw_pid_marker(page, x, y, rgb, letter, label):
             pass
 
 
+class TemplateCausePickerDialog(QDialog):
+    """Shown after placing a cause marker — pick from standard causes or type freely."""
+
+    def __init__(self, deviation_name, standard_causes, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Orsak — {deviation_name}")
+        self.setMinimumWidth(360)
+        self._chosen = None
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"<b>Avvikelse:</b> {deviation_name}"))
+        layout.addWidget(QLabel("Välj standardorsak eller ange fritext:"))
+
+        self._group = QButtonGroup(self)
+        for i, c in enumerate(standard_causes):
+            rb = QRadioButton(c['description'])
+            rb.setProperty('cause_desc', c['description'])
+            self._group.addButton(rb, i)
+            layout.addWidget(rb)
+            if i == 0:
+                rb.setChecked(True)
+
+        # Free-text option
+        rb_free = QRadioButton("Annan:")
+        rb_free.setProperty('cause_desc', None)
+        self._group.addButton(rb_free, len(standard_causes))
+        layout.addWidget(rb_free)
+        self._free_edit = QLineEdit()
+        self._free_edit.setPlaceholderText("Fritext orsak…")
+        self._free_edit.textChanged.connect(lambda: rb_free.setChecked(True))
+        layout.addWidget(self._free_edit)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self._accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+        if not standard_causes:
+            rb_free.setChecked(True)
+
+    def _accept(self):
+        btn = self._group.checkedButton()
+        if btn is None:
+            self.reject()
+            return
+        desc = btn.property('cause_desc')
+        if desc is None:
+            desc = self._free_edit.text().strip()
+        if not desc:
+            QMessageBox.warning(self, "Tom orsak", "Ange en orsak.")
+            return
+        self._chosen = desc
+        self.accept()
+
+    @property
+    def chosen_description(self):
+        return self._chosen
+
+
 class PIDPanel(QWidget):
     node_created            = pyqtSignal(int)
     cause_created           = pyqtSignal(int)
+    cause_template_created  = pyqtSignal(int)   # cause_id — from template placement flow
     consequence_created     = pyqtSignal(int)
     safeguard_created       = pyqtSignal(int)
     existing_marker_placed  = pyqtSignal(str, int)   # (type_str, id_) — 'place existing' flow
@@ -2745,6 +2811,7 @@ class PIDPanel(QWidget):
         self._active_node_id        = None
         self._active_cause_id       = None
         self._active_consequence_id = None
+        self._active_deviation_id   = None   # set during MODE_CAUSE_TEMPLATE
         self._pending_markup_pts    = None
         self._pending_markup_page   = None
         self._current_display_page  = 0
@@ -2916,6 +2983,7 @@ class PIDPanel(QWidget):
         self.viewer.consequence_clicked.connect(self._on_consequence_click)
         self.viewer.safeguard_clicked.connect(self._on_safeguard_click)
         self.viewer.place_existing_clicked.connect(self._on_place_existing_click)
+        self.viewer.cause_template_clicked.connect(self._on_cause_template_click)
         self.viewer.context_action.connect(self._on_context_action)
         self._active_place_type = None   # 'cause' | 'consequence' | 'safeguard'
         self._active_place_id   = None
@@ -3717,6 +3785,43 @@ class PIDPanel(QWidget):
 
         # Draw tag highlights (yellow = known, green = defined as cause)
         self._draw_tag_highlights()
+
+    def start_cause_template_mode(self, deviation_id):
+        """Switch to template placement mode for the given deviation."""
+        self._active_deviation_id = deviation_id
+        self._set_mode(MODE_CAUSE_TEMPLATE)
+
+    def _on_cause_template_click(self, scene_pos, page):
+        dev_id = self._active_deviation_id
+        if not dev_id:
+            return
+        dev = self.db.get_deviation(dev_id)
+        if not dev:
+            return
+        dev_name = dev['description']
+        std_causes = self.db.standard_causes_for_name(dev_name) if hasattr(
+            self.db, 'standard_causes_for_name') else []
+
+        dlg = TemplateCausePickerDialog(dev_name, std_causes, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        desc = dlg.chosen_description
+        if not desc:
+            return
+
+        try:
+            cause_id = self.db.add_cause(dev_id)
+        except Exception as e:
+            QMessageBox.critical(self, "Databasfel", f"Kunde inte skapa orsak:\n{e}")
+            return
+        self.db.update_cause(cause_id, desc)
+
+        pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
+        self.db.add_cause_marker(cause_id, page, pdf_x, pdf_y, '', '')
+        self.viewer.add_cause_marker(cause_id, pdf_x, pdf_y, '', desc, '')
+        self._load_overlays()
+        self.cause_template_created.emit(cause_id)
 
     def set_active_node(self, node_id):
         self._active_node_id        = node_id

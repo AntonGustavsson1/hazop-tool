@@ -84,6 +84,8 @@
 | P&ID navigeringsprestanda | SVG-rendering ersatt med raster 3× scale som alltid användes som fallback. LRU-cache (10 sidor) i PIDGraphicsView eliminerar omrendering av besökta sidor. _PageRenderer (QThread) förrendar current±1 och current±2 sidor i bakgrunden. In-memory sheet_map i PIDPanel ersätter DB-fråga per sidnavigering. |
 | Export P&ID med markup | "📤 Exportera PDF"-knapp i PIDPanel toolbar. Skapar ny PDF i visningsordning med nodgränser (färgade polygoner), C/K/S-markörer (fyllda cirklar med bokstav + etikett) och kopplingslinjer ritade direkt på sidan via PyMuPDF Shape API. |
 | Avvikelsenivå i hierarkin | Ny nivå DEV_T=5 mellan Nod och Orsak: Nod → Avvikelse → Orsak → Konsekvens → Safeguard. 16 standardavvikelser (Lågt flöde, Högt tryck, etc.) + fri text. DeviationPanel med snabbknappar. Scenariotabell visar "Avvikelse"-kolumn med rad-merging. Migration skapar "Övrigt"-avvikelse automatiskt för befintliga orsaker. |
+| Standardorsaker mallbibliotek | Ny DB-tabell standard_deviations + standard_causes. Seedad med 16 avvikelser och typiska orsaker per avvikelse. Redigerbar via Inställningar → "Standardorsaker"-flik (lägg till/ta bort/sortera avvikelser och orsaker). add_node() seedar deviations från standard_deviations-tabellen. |
+| Lägg till orsaker på P&ID | Högerklick på avvikelse i trädet → "📍 Lägg till orsaker på P&ID". Byter till P&ID-vy och aktiverar MODE_CAUSE_TEMPLATE=6. Per klick på P&ID visas TemplateCausePickerDialog med standardorsaker för avvikelsen (+ fritext). Orsak skapas i DB, markör placeras, träd/scenarioproanelen uppdateras. |
 
 ---
 
