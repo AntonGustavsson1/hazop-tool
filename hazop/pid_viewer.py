@@ -3295,6 +3295,22 @@ class PIDPanel(QWidget):
         else:
             self.page_label.setText("—")
 
+    def navigate_to_marker(self, physical_page, x_pdf, y_pdf):
+        """Navigate to the page containing a marker and zoom in on it."""
+        if self.viewer.pdf_doc is None:
+            return
+        # Reverse the sheet_map to find the display page for this physical page
+        display_n = physical_page
+        if self._sheet_map:
+            rev = {phys: disp for disp, phys in self._sheet_map.items()}
+            display_n = rev.get(physical_page, physical_page)
+        self._goto_page(display_n)
+        # Center and zoom to the marker position (2.5× gives a comfortable close-up)
+        scene_pt = self.viewer.pdf_to_scene(x_pdf, y_pdf)
+        self.viewer.resetTransform()
+        self.viewer.scale(2.5, 2.5)
+        self.viewer.centerOn(scene_pt)
+
     def _set_mode(self, mode):
         for m, btn in self.mode_buttons.items():
             btn.setChecked(m == mode)

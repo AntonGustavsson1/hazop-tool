@@ -1057,6 +1057,24 @@ class Database:
         return {r[0] for r in self.conn.execute(
             "SELECT DISTINCT safeguard_id FROM safeguard_markers").fetchall()}
 
+    def get_cause_marker(self, cause_id):
+        row = self.conn.execute(
+            "SELECT pid_page, x, y FROM cause_markers WHERE cause_id=? LIMIT 1",
+            (cause_id,)).fetchone()
+        return dict(row) if row else None
+
+    def get_consequence_marker(self, consequence_id):
+        row = self.conn.execute(
+            "SELECT pid_page, x, y FROM consequence_markers WHERE consequence_id=? LIMIT 1",
+            (consequence_id,)).fetchone()
+        return dict(row) if row else None
+
+    def get_safeguard_marker(self, safeguard_id):
+        row = self.conn.execute(
+            "SELECT pid_page, x, y FROM safeguard_markers WHERE safeguard_id=? LIMIT 1",
+            (safeguard_id,)).fetchone()
+        return dict(row) if row else None
+
     # ── Queries ───────────────────────────────────────────────────────────────
     def nodes(self):
         return self.conn.execute("SELECT * FROM nodes ORDER BY id").fetchall()
@@ -3027,6 +3045,7 @@ class ScenarioTablePanel(QWidget):
     new_item_created = pyqtSignal(int, int)   # (type_, id_) — after quick-add via Enter menu
     item_edited      = pyqtSignal(int, int)   # (type_, id_) — cell edit committed → sync right panel
     place_requested  = pyqtSignal(int, int)   # (type_, id_) — 📌 icon clicked → enter P&ID placement
+    navigate_to_pid  = pyqtSignal(int, int)   # (type_, id_) — 📍 icon clicked → navigate to marker
 
     # Column indices
     _C_NOD, _C_ORS, _C_KON, _C_RFORE = 0, 1, 2, 3
@@ -3432,6 +3451,17 @@ class ScenarioTablePanel(QWidget):
         elif col == self._C_SG and sg_id is not None:
             self.place_requested.emit(SG_T, sg_id)
 
+    def _emit_navigate(self, row, col):
+        if row >= len(self._row_meta):
+            return
+        cause_id, cons_id, sg_id = self._row_meta[row]
+        if col == self._C_ORS and cause_id is not None:
+            self.navigate_to_pid.emit(CAUSE_T, cause_id)
+        elif col == self._C_KON and cons_id is not None:
+            self.navigate_to_pid.emit(CONS_T, cons_id)
+        elif col == self._C_SG and sg_id is not None:
+            self.navigate_to_pid.emit(SG_T, sg_id)
+
     def _on_cell_clicked(self, row, col):
         if col == self._C_ORS and row < len(self._row_meta):
             self.item_selected.emit(CAUSE_T, self._row_meta[row][0])
@@ -3509,9 +3539,13 @@ class ScenarioTablePanel(QWidget):
             if row >= 0 and col in (self._C_ORS, self._C_KON, self._C_SG):
                 col_x = self._table.columnViewportPosition(col)
                 if pos.x() - col_x < _PID_ICON_W:
-                    if not self._is_cell_placed(row, col):
+                    if self._is_cell_placed(row, col):
+                        # 📍 → navigate to marker on P&ID
+                        self._emit_navigate(row, col)
+                    else:
+                        # 📌 → enter placement mode
                         self._place_from_table(row, col)
-                        return True  # consume click — do not start edit
+                    return True  # always consume icon-strip click
 
         # Delegate inline editor (regular cell in edit mode)
         if (isinstance(obj, QLineEdit) and
@@ -6331,6 +6365,7 @@ class MainWindow(QMainWindow):
                                 self._on_selected(type_, id_)))
         self.scenario_panel.item_edited.connect(self._on_scenario_item_edited)
         self.scenario_panel.place_requested.connect(self._on_scenario_place_requested)
+        self.scenario_panel.navigate_to_pid.connect(self._on_scenario_navigate_to_pid)
 
         self.pid_panel.node_created.connect(
             lambda nid: (self.tree_panel.refresh(NODE_T, nid),
@@ -6443,15 +6478,30 @@ class MainWindow(QMainWindow):
         self.scenario_panel.refresh_placed()
 
     def _on_scenario_place_requested(self, type_, id_):
-        """User clicked the 📌 icon in the scenario table — activate that item and enter P&ID placement mode."""
+        """User clicked 📌 — activate item and enter P&ID placement mode."""
         self._on_selected(type_, id_)
-        self._switch_view(0)   # switch to P&ID page
+        self._switch_view(0)
         if type_ == CAUSE_T:
             self.pid_panel._set_mode(MODE_CAUSE)
         elif type_ == CONS_T:
             self.pid_panel._set_mode(MODE_CONSEQUENCE)
         elif type_ == SG_T:
             self.pid_panel._set_mode(MODE_SAFEGUARD)
+
+    def _on_scenario_navigate_to_pid(self, type_, id_):
+        """User clicked 📍 — switch to P&ID view and zoom to the marker."""
+        marker = None
+        if type_ == CAUSE_T:
+            marker = self.db.get_cause_marker(id_)
+        elif type_ == CONS_T:
+            marker = self.db.get_consequence_marker(id_)
+        elif type_ == SG_T:
+            marker = self.db.get_safeguard_marker(id_)
+        if not marker:
+            return
+        self._on_selected(type_, id_)
+        self._switch_view(0)
+        self.pid_panel.navigate_to_marker(marker['pid_page'], marker['x'], marker['y'])
 
     def _on_matrix_changed(self):
         if self._cur_type == CONS_T and self._cur_id is not None:
