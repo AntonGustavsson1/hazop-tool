@@ -649,6 +649,17 @@ class Database:
                 "UPDATE causes SET deviation_id=? WHERE node_id=? AND deviation_id IS NULL",
                 (dev_id, nid))
 
+        # Ensure every node has all 16 standard deviations
+        all_nodes = [r[0] for r in self.conn.execute("SELECT id FROM nodes").fetchall()]
+        for nid in all_nodes:
+            existing = {r[0] for r in self.conn.execute(
+                "SELECT description FROM deviations WHERE node_id=?", (nid,)).fetchall()}
+            for dev_type in _DEVIATION_TYPES:
+                if dev_type not in existing:
+                    self.conn.execute(
+                        "INSERT INTO deviations (node_id, description) VALUES (?,?)",
+                        (nid, dev_type))
+
         self.conn.commit()
 
     # ── Config ────────────────────────────────────────────────────────────────
@@ -1145,8 +1156,13 @@ class Database:
     # ── Add ───────────────────────────────────────────────────────────────────
     def add_node(self):
         cur = self.conn.execute("INSERT INTO nodes (name) VALUES ('Ny nod')")
+        node_id = cur.lastrowid
+        for dev_type in _DEVIATION_TYPES:
+            self.conn.execute(
+                "INSERT INTO deviations (node_id, description) VALUES (?,?)",
+                (node_id, dev_type))
         self.conn.commit()
-        return cur.lastrowid
+        return node_id
 
     def deviations(self, node_id):
         return self.conn.execute(
