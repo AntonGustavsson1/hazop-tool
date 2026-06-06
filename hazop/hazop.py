@@ -2997,8 +2997,8 @@ class _ScenarioDelegate(QStyledItemDelegate):
         return editor
 
 
-_PID_ICON_W = 22          # pixels reserved on the left for the 📍/📌 symbol
-_PID_ICON_RE = re.compile(r'^[📍📌]\s*')   # strip prefix when reading back descriptions
+_PID_ICON_W = 22          # pixels reserved on the left for the 🟢/📌 symbol
+_PID_ICON_RE = re.compile(r'^[🟢📌]\s*')   # strip prefix when reading back descriptions
 
 
 class _PidDelegate(_ScenarioDelegate):
@@ -3035,7 +3035,7 @@ class _PidDelegate(_ScenarioDelegate):
         else:
             painter.fillRect(icon_rect, option.palette.base())
         painter.drawText(icon_rect, Qt.AlignmentFlag.AlignCenter,
-                         '📍' if is_placed else '📌')
+                         '🟢' if is_placed else '📌')
 
 
 class ScenarioTablePanel(QWidget):
@@ -3045,7 +3045,7 @@ class ScenarioTablePanel(QWidget):
     new_item_created = pyqtSignal(int, int)   # (type_, id_) — after quick-add via Enter menu
     item_edited      = pyqtSignal(int, int)   # (type_, id_) — cell edit committed → sync right panel
     place_requested  = pyqtSignal(int, int)   # (type_, id_) — 📌 icon clicked → enter P&ID placement
-    navigate_to_pid  = pyqtSignal(int, int)   # (type_, id_) — 📍 icon clicked → navigate to marker
+    navigate_to_pid  = pyqtSignal(int, int)   # (type_, id_) — 🟢 icon clicked → navigate to marker
 
     # Column indices
     _C_NOD, _C_ORS, _C_KON, _C_RFORE = 0, 1, 2, 3
@@ -3531,7 +3531,7 @@ class ScenarioTablePanel(QWidget):
         ctrl = bool(event.type() == QEvent.Type.KeyPress and
                     event.modifiers() & Qt.KeyboardModifier.ControlModifier)
 
-        # Viewport mouse: detect click in the 📍/📌 icon strip
+        # Viewport mouse: detect click in the 🟢/📌 icon strip
         if obj is self._table.viewport() and event.type() == QEvent.Type.MouseButtonPress:
             pos = event.pos()
             col = self._table.columnAt(pos.x())
@@ -3540,10 +3540,10 @@ class ScenarioTablePanel(QWidget):
                 col_x = self._table.columnViewportPosition(col)
                 if pos.x() - col_x < _PID_ICON_W:
                     if self._is_cell_placed(row, col):
-                        # 📍 → navigate to marker on P&ID
+                        # 🟢 → navigate to marker on P&ID
                         self._emit_navigate(row, col)
                     else:
-                        # 📌 → enter placement mode
+                        # 📌 → place this specific item on P&ID
                         self._place_from_table(row, col)
                     return True  # always consume icon-strip click
 
@@ -6478,18 +6478,15 @@ class MainWindow(QMainWindow):
         self.scenario_panel.refresh_placed()
 
     def _on_scenario_place_requested(self, type_, id_):
-        """User clicked 📌 — activate item and enter P&ID placement mode."""
+        """User clicked 📌 — activate item, switch to P&ID and enter placement mode for that specific item."""
         self._on_selected(type_, id_)
         self._switch_view(0)
-        if type_ == CAUSE_T:
-            self.pid_panel._set_mode(MODE_CAUSE)
-        elif type_ == CONS_T:
-            self.pid_panel._set_mode(MODE_CONSEQUENCE)
-        elif type_ == SG_T:
-            self.pid_panel._set_mode(MODE_SAFEGUARD)
+        type_str = {CAUSE_T: 'cause', CONS_T: 'consequence', SG_T: 'safeguard'}.get(type_)
+        if type_str:
+            self.pid_panel.start_place_existing(type_str, id_)
 
     def _on_scenario_navigate_to_pid(self, type_, id_):
-        """User clicked 📍 — switch to P&ID view and zoom to the marker."""
+        """User clicked 🟢 — switch to P&ID view and zoom to the marker."""
         marker = None
         if type_ == CAUSE_T:
             marker = self.db.get_cause_marker(id_)

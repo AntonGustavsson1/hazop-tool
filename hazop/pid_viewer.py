@@ -365,11 +365,12 @@ def _pid_build_chain_text(base: str, chain: dict) -> str:
     return ' → '.join(parts)
 
 
-MODE_NAV         = 0
-MODE_NODE        = 1
-MODE_CAUSE       = 2
-MODE_CONSEQUENCE = 3
-MODE_SAFEGUARD   = 4
+MODE_NAV           = 0
+MODE_NODE          = 1
+MODE_CAUSE         = 2
+MODE_CONSEQUENCE   = 3
+MODE_SAFEGUARD     = 4
+MODE_PLACE_EXISTING = 5   # place a pre-existing item (no new item created)
 
 Z_PAGE      = 0
 Z_HIGHLIGHT = 1   # tag highlights between page and connections
@@ -1945,6 +1946,7 @@ class PIDGraphicsView(QGraphicsView):
     cause_clicked         = pyqtSignal(object, int, str)
     consequence_clicked   = pyqtSignal(object, int, str)
     safeguard_clicked     = pyqtSignal(object, int, str)
+    place_existing_clicked = pyqtSignal(object, int)   # (center_scene_pos, page)
     context_action        = pyqtSignal(str, object, int)
     marker_clicked        = pyqtSignal(str, int)
 
@@ -2162,7 +2164,7 @@ class PIDGraphicsView(QGraphicsView):
         elif mode == MODE_NODE:
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
-        elif mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD):
+        elif mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD, MODE_PLACE_EXISTING):
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)  # cross = draw a rect
         if mode != MODE_NODE:
@@ -2560,6 +2562,8 @@ class PIDGraphicsView(QGraphicsView):
                 self.consequence_clicked.emit(center, self.current_page, suggested)
             elif self.mode == MODE_SAFEGUARD:
                 self.safeguard_clicked.emit(center, self.current_page, suggested)
+            elif self.mode == MODE_PLACE_EXISTING:
+                self.place_existing_clicked.emit(center, self.current_page)
             event.accept()
             return
 
@@ -2910,7 +2914,10 @@ class PIDPanel(QWidget):
         self.viewer.cause_clicked.connect(self._on_cause_click)
         self.viewer.consequence_clicked.connect(self._on_consequence_click)
         self.viewer.safeguard_clicked.connect(self._on_safeguard_click)
+        self.viewer.place_existing_clicked.connect(self._on_place_existing_click)
         self.viewer.context_action.connect(self._on_context_action)
+        self._active_place_type = None   # 'cause' | 'consequence' | 'safeguard'
+        self._active_place_id   = None
         self.viewer.marker_clicked.connect(
             lambda t, i: self.marker_navigated.emit(t, i))
 
@@ -3299,17 +3306,55 @@ class PIDPanel(QWidget):
         """Navigate to the page containing a marker and zoom in on it."""
         if self.viewer.pdf_doc is None:
             return
-        # Reverse the sheet_map to find the display page for this physical page
         display_n = physical_page
         if self._sheet_map:
             rev = {phys: disp for disp, phys in self._sheet_map.items()}
             display_n = rev.get(physical_page, physical_page)
         self._goto_page(display_n)
-        # Center and zoom to the marker position (2.5× gives a comfortable close-up)
         scene_pt = self.viewer.pdf_to_scene(x_pdf, y_pdf)
         self.viewer.resetTransform()
         self.viewer.scale(2.5, 2.5)
         self.viewer.centerOn(scene_pt)
+
+    def start_place_existing(self, type_str, id_):
+        """Enter placement mode for a pre-existing item (no new item created)."""
+        self._active_place_type = type_str
+        self._active_place_id   = id_
+        self._set_mode(MODE_PLACE_EXISTING)
+
+    def _on_place_existing_click(self, scene_pos, page):
+        """Place a marker for an existing item without creating anything new."""
+        type_str = self._active_place_type
+        id_      = self._active_place_id
+        self._active_place_type = None
+        self._active_place_id   = None
+        self._set_mode(MODE_NAV)
+
+        if type_str is None or id_ is None:
+            return
+
+        pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
+
+        if type_str == 'cause':
+            cause = self.db.get_cause(id_)
+            desc  = cause['description'] if cause else ''
+            self.db.add_cause_marker(id_, page, pdf_x, pdf_y, 'Orsak', '')
+            self.viewer.add_cause_marker(id_, pdf_x, pdf_y, 'Orsak', desc, '')
+            self.cause_created.emit(id_)
+        elif type_str == 'consequence':
+            cons  = self.db.get_consequence(id_)
+            desc  = cons['description'] if cons else ''
+            self.db.add_consequence_marker(id_, page, pdf_x, pdf_y, '')
+            self.viewer.add_consequence_marker(id_, pdf_x, pdf_y, desc)
+            self.consequence_created.emit(id_)
+        elif type_str == 'safeguard':
+            sg   = self.db.get_safeguard(id_)
+            desc = sg['description'] if sg else ''
+            self.db.add_safeguard_marker(id_, page, pdf_x, pdf_y, '')
+            self.viewer.add_safeguard_marker(id_, pdf_x, pdf_y, '', desc)
+            self.safeguard_created.emit(id_)
+
+        self._load_overlays()
 
     def _set_mode(self, mode):
         for m, btn in self.mode_buttons.items():
