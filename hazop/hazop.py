@@ -3376,6 +3376,9 @@ class ScenarioTablePanel(QWidget):
     # ── Enter-tangent: snabblägg-till ─────────────────────────────────────────
 
     def eventFilter(self, obj, event):
+        ctrl = bool(event.type() == QEvent.Type.KeyPress and
+                    event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+
         # QLineEdit in multi-safeguard widget cell
         if isinstance(obj, QLineEdit) and obj.property('sg_id') is not None:
             if event.type() == QEvent.Type.FocusIn:
@@ -3384,18 +3387,43 @@ class ScenarioTablePanel(QWidget):
                 if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                     row = obj.property('sg_row')
                     if row is not None:
+                        if ctrl:
+                            self._ctrl_enter(row, self._C_SG)
+                            return True  # consume; skip editingFinished
                         self._enter_row = row
                         self._enter_col = self._C_SG
-                        self._last_enter_committed = True  # editingFinished fires synchronously before singleShot
+                        self._last_enter_committed = True
                         QTimer.singleShot(0, self._on_enter_after_edit)
+
         # Table-level Enter key
         if obj is self._table and event.type() == QEvent.Type.KeyPress:
             if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                self._enter_row = self._table.currentRow()
-                self._enter_col = self._table.currentColumn()
+                row = self._table.currentRow()
+                col = self._table.currentColumn()
+                if ctrl:
+                    self._ctrl_enter(row, col)
+                    return True
+                self._enter_row = row
+                self._enter_col = col
                 self._last_enter_committed = False
                 QTimer.singleShot(0, self._on_enter_after_edit)
         return False
+
+    def _ctrl_enter(self, row, col):
+        """Ctrl+Enter: immediately create a new sibling at the same hierarchy level."""
+        if row < 0 or row >= len(self._row_meta):
+            return
+        cause_id, cons_id, _sg_ids = self._row_meta[row]
+        if col == self._C_ORS or col == self._C_NOD:
+            cause = self.db.get_cause(cause_id)
+            if cause:
+                self._quick_add_cause(cause['node_id'])
+        elif col == self._C_KON or col == self._C_RFORE:
+            self._quick_add_consequence(cause_id)
+        else:
+            # SG, REFT, FA, IGN, OVRIGA, SLUT → new safeguard
+            if cons_id is not None:
+                self._quick_add_safeguard(cons_id)
 
     def _on_sg_le_commit(self, sg_id, text):
         desc = text.strip() or 'Ny safeguard'
