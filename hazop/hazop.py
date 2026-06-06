@@ -1170,6 +1170,8 @@ class Database:
         self.conn.commit()
 
     def delete_deviation(self, id_):
+        for cause in self.causes_for_deviation(id_):
+            self.delete_cause(cause['id'])
         self.conn.execute("DELETE FROM deviations WHERE id=?", (id_,))
         self.conn.commit()
 
