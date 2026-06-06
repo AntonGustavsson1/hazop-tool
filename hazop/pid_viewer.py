@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
     QSlider, QColorDialog, QFileDialog, QMessageBox, QInputDialog,
     QSizePolicy, QMenu, QTableWidget, QTableWidgetItem, QHeaderView,
     QProgressDialog, QApplication, QGridLayout, QTextEdit, QButtonGroup,
+    QScrollArea,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QThread
 from PyQt6.QtGui import (
@@ -2734,17 +2735,36 @@ def _draw_pid_marker(page, x, y, rgb, letter, label):
             pass
 
 
+_INSTR_SECONDARY_EFFECTS = [
+    "Pump stoppar",
+    "Kompressor stoppar",
+    "Reglerventil stänger",
+    "Reglerventil öppnar",
+    "Spjäll stänger",
+    "Spjäll öppnar",
+    "Nödstoppar / ESD",
+    "Larm aktiveras (ingen automatisk åtgärd)",
+]
+
+
 class TemplateCausePickerDialog(QDialog):
-    """Shown after placing a cause marker — pick component, tag and cause from template."""
+    """Shown after placing a cause marker — pick component, tag and cause from template.
+
+    Cause list filters dynamically when the user changes component type.
+    For Instrument / Sensor type an extra 'secondary effect' section is shown
+    so the user can capture the full chain: instrument fails → valve/pump reacts.
+    """
 
     def __init__(self, deviation_name, standard_causes,
                  component_types=None, suggested_tag='', preselect_type='', parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Orsak — {deviation_name}")
-        self.setMinimumWidth(400)
-        self._chosen = None
-        self._comp_type = ''
-        self._comp_tag  = ''
+        self.setMinimumWidth(460)
+        self._all_causes = list(standard_causes)   # full list, each row has comp_type field
+        self._std_rbs    = []                       # dynamically created primary radio buttons
+        self._chosen     = None
+        self._comp_type  = ''
+        self._comp_tag   = ''
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(f"<b>Avvikelse:</b> {deviation_name}"))
@@ -2755,8 +2775,6 @@ class TemplateCausePickerDialog(QDialog):
         self._type_combo.addItem("")
         for ct in (component_types or []):
             self._type_combo.addItem(ct)
-        if preselect_type and preselect_type in (component_types or []):
-            self._type_combo.setCurrentText(preselect_type)
         form.addRow("Komponenttyp:", self._type_combo)
 
         self._tag_edit = QLineEdit(suggested_tag)
@@ -2764,26 +2782,61 @@ class TemplateCausePickerDialog(QDialog):
         form.addRow("Komponent-ID:", self._tag_edit)
         layout.addLayout(form)
 
-        layout.addWidget(QLabel("Välj standardorsak eller ange fritext:"))
+        # ── Cause list (dynamic) ──────────────────────────────────────────────
+        self._cause_header = QLabel("Välj standardorsak eller ange fritext:")
+        layout.addWidget(self._cause_header)
 
-        # ── Cause radio buttons ───────────────────────────────────────────────
+        self._cause_container = QWidget()
+        self._cause_layout = QVBoxLayout(self._cause_container)
+        self._cause_layout.setContentsMargins(0, 0, 0, 0)
+        self._cause_layout.setSpacing(3)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self._cause_container)
+        scroll.setMaximumHeight(180)
+        layout.addWidget(scroll)
+
+        # ── Primary button group (radio buttons added dynamically + free text) ─
         self._group = QButtonGroup(self)
-        for i, c in enumerate(standard_causes):
-            rb = QRadioButton(c['description'])
-            rb.setProperty('cause_desc', c['description'])
-            self._group.addButton(rb, i)
-            layout.addWidget(rb)
-            if i == 0:
-                rb.setChecked(True)
 
-        rb_free = QRadioButton("Annan:")
-        rb_free.setProperty('cause_desc', None)
-        self._group.addButton(rb_free, len(standard_causes))
-        layout.addWidget(rb_free)
+        self._rb_free = QRadioButton("Annan:")
+        self._rb_free.setProperty('cause_desc', None)
+        self._group.addButton(self._rb_free, 9999)
+        layout.addWidget(self._rb_free)
         self._free_edit = QLineEdit()
         self._free_edit.setPlaceholderText("Fritext orsak…")
-        self._free_edit.textChanged.connect(lambda: rb_free.setChecked(True))
+        self._free_edit.textChanged.connect(lambda: self._rb_free.setChecked(True))
         layout.addWidget(self._free_edit)
+
+        # ── Instrument secondary section (hidden unless Instrument type) ───────
+        self._instr_group = QGroupBox("Sekundär verkan (vad händer som följd av instrumentfelet?)")
+        instr_layout = QVBoxLayout(self._instr_group)
+        instr_layout.setSpacing(3)
+        self._sec_group = QButtonGroup(self)
+        for i, eff in enumerate(_INSTR_SECONDARY_EFFECTS):
+            rb = QRadioButton(eff)
+            rb.setProperty('sec_desc', eff)
+            self._sec_group.addButton(rb, i)
+            instr_layout.addWidget(rb)
+            if i == 0:
+                rb.setChecked(True)
+        rb_sec_free = QRadioButton("Annan sekundär verkan:")
+        rb_sec_free.setProperty('sec_desc', None)
+        self._sec_group.addButton(rb_sec_free, len(_INSTR_SECONDARY_EFFECTS))
+        instr_layout.addWidget(rb_sec_free)
+        self._sec_free_edit = QLineEdit()
+        self._sec_free_edit.setPlaceholderText("t.ex. Reglerventil XV-201 stänger")
+        self._sec_free_edit.textChanged.connect(lambda: rb_sec_free.setChecked(True))
+        instr_layout.addWidget(self._sec_free_edit)
+
+        sec_form = QFormLayout()
+        self._sec_tag_edit = QLineEdit()
+        self._sec_tag_edit.setPlaceholderText("t.ex. P-101  (valfri)")
+        sec_form.addRow("Sekundär komponent-ID:", self._sec_tag_edit)
+        instr_layout.addLayout(sec_form)
+
+        self._instr_group.setVisible(False)
+        layout.addWidget(self._instr_group)
 
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -2791,8 +2844,63 @@ class TemplateCausePickerDialog(QDialog):
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
 
-        if not standard_causes:
-            rb_free.setChecked(True)
+        # ── Wire up type combo and initial render ─────────────────────────────
+        self._type_combo.currentTextChanged.connect(self._on_type_changed)
+        if preselect_type and preselect_type in (component_types or []):
+            self._type_combo.setCurrentText(preselect_type)
+        else:
+            self._update_cause_list('')
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _on_type_changed(self, comp_type):
+        self._update_cause_list(comp_type)
+        is_instrument = 'Instrument' in comp_type
+        self._instr_group.setVisible(is_instrument)
+
+    def _update_cause_list(self, comp_type):
+        # Remove old standard radio buttons from group and layout
+        for rb in self._std_rbs:
+            self._group.removeButton(rb)
+        self._std_rbs = []
+        while self._cause_layout.count():
+            item = self._cause_layout.takeAt(0)
+            if item and item.widget():
+                item.widget().hide()
+                item.widget().setParent(None)
+
+        # Filter: show causes matching selected type + generic causes (comp_type='')
+        if comp_type:
+            filtered = [c for c in self._all_causes
+                        if dict(c).get('comp_type', '') in ('', comp_type)]
+            # If the type has no specific causes at all, fall back to generic only
+            has_specific = any(dict(c).get('comp_type', '') == comp_type for c in filtered)
+            if not has_specific:
+                filtered = [c for c in self._all_causes if not dict(c).get('comp_type', '')]
+        else:
+            filtered = list(self._all_causes)
+
+        first_rb = None
+        for i, c in enumerate(filtered):
+            rb = QRadioButton(c['description'])
+            rb.setProperty('cause_desc', c['description'])
+            self._group.addButton(rb, i)
+            self._cause_layout.addWidget(rb)
+            self._std_rbs.append(rb)
+            if first_rb is None:
+                first_rb = rb
+
+        if first_rb:
+            first_rb.setChecked(True)
+        else:
+            self._rb_free.setChecked(True)
+
+        if comp_type:
+            self._cause_header.setText(f"Välj orsak för <b>{comp_type}</b>:")
+        else:
+            self._cause_header.setText("Välj standardorsak eller ange fritext:")
+
+    # ── Accept ────────────────────────────────────────────────────────────────
 
     def _accept(self):
         btn = self._group.checkedButton()
@@ -2805,8 +2913,22 @@ class TemplateCausePickerDialog(QDialog):
         if not desc:
             QMessageBox.warning(self, "Tom orsak", "Ange en orsak.")
             return
+
+        # Instrument secondary: append "→ secondary (sec_tag)" to description
+        comp_type = self._type_combo.currentText().strip()
+        if 'Instrument' in comp_type and self._instr_group.isVisible():
+            sec_btn = self._sec_group.checkedButton()
+            if sec_btn:
+                sec_desc = sec_btn.property('sec_desc')
+                if sec_desc is None:
+                    sec_desc = self._sec_free_edit.text().strip()
+                if sec_desc:
+                    sec_tag = self._sec_tag_edit.text().strip()
+                    suffix = f" ({sec_tag})" if sec_tag else ""
+                    desc = f"{desc} → {sec_desc}{suffix}"
+
         self._chosen    = desc
-        self._comp_type = self._type_combo.currentText().strip()
+        self._comp_type = comp_type
         self._comp_tag  = self._tag_edit.text().strip()
         self.accept()
 

@@ -471,6 +471,227 @@ _RRF_VALUES  = [1, 10, 100, 1000, 10000]
 _RRF_LABELS  = ['1 – Ingen', '10 – RRF10', '100 – RRF100', '1000 – RRF1000', '10000 – RRF10000']
 _RISK_ICON   = {'Låg': '🟢', 'Medium': '🟡', 'Hög': '🟠', 'Kritisk': '🔴'}
 
+# Component-specific standard causes seeded on first run.
+# comp_type must match keys in COMPONENT_TYPES (pid_viewer.py).
+_COMP_STD_CAUSES = {
+    "Lågt flöde": {
+        "Pump": [
+            "Pump stopp",
+            "Kavitation (reducerat flöde)",
+            "Slitet impeller / reducerad kapacitet",
+            "Pumptätning havererar (intern läcka)",
+        ],
+        "Kompressor": [
+            "Kompressorstopp",
+            "Kompressorsurge (reducerat flöde)",
+        ],
+        "Ventil": [
+            "Reglerventil fastnar stängd (fail-closed)",
+            "Spjäll stängt — kvarglömt efter underhåll",
+            "FCV delvis stängd (stiction / positioneringsfel)",
+            "Backventil fastnad stängd",
+        ],
+        "Rörledning": [
+            "Igensatt filter / sil",
+            "Rörblockering (avlagringar, hydrater)",
+            "Blindplatta kvar efter underhåll",
+        ],
+        "Instrument / Sensor": [
+            "Signalfel högt",
+            "Signalfel lågt",
+            "Impulsledning igensatt",
+            "Kalibreringsdrift",
+        ],
+        "Tank / Kärl": [
+            "Låg nivå i matningskärl",
+            "Kärl tömt / dränerat",
+        ],
+        "Värmeväxlare": [
+            "Igensatta rör (processsida)",
+            "Vakuumbrott / tömning av värmeväxlare",
+        ],
+    },
+    "Högt flöde": {
+        "Pump": [
+            "Pump kör mot lågt mottryck (hög kapacitet)",
+            "Felaktig pump installerad (för stor)",
+        ],
+        "Kompressor": [
+            "Kompressor kör mot reducerat mottryck",
+        ],
+        "Ventil": [
+            "Reglerventil fastnar öppen (fail-open)",
+            "Spjäll öppnat av misstag",
+            "FCV sitter kvar öppen (stiction)",
+            "Backventil saknas / defekt (backflöde adderas)",
+        ],
+        "Instrument / Sensor": [
+            "Signalfel lågt",
+            "Signalfel högt",
+            "Styrsignal felar högt",
+        ],
+    },
+    "Omvänt flöde": {
+        "Pump": [
+            "Pump stopp + defekt backventil",
+            "Pump roterar baklänges (felkopplad motor)",
+        ],
+        "Ventil": [
+            "Backventil defekt / saknas",
+            "Backventil fastnad öppen",
+        ],
+        "Rörledning": [
+            "Sifonverkan",
+            "Felaktig rörledningsdragning",
+        ],
+    },
+    "Missriktat flöde": {
+        "Ventil": [
+            "Felöppen ventil på alternativ flödesväg",
+            "Backventil saknas / defekt",
+        ],
+        "Rörledning": [
+            "Felaktig rörkoppling (monteringsfel)",
+        ],
+    },
+    "Högt tryck": {
+        "Pump": [
+            "Pump deadhead (strypt utlopp)",
+            "Pump mot stängd utloppsventil",
+        ],
+        "Kompressor": [
+            "Kompressor mot stängd utloppsventil",
+            "Kompressor utan flödesavlastning (PD-typ)",
+        ],
+        "Ventil": [
+            "Utloppsventil stängd / blockerad",
+            "Reglerventil på trycksida fastnar stängd",
+        ],
+        "Rörledning": [
+            "Vattenhammare (snabb stängning av ventil)",
+            "Termisk expansion i avspärrat rörledningsavsnitt",
+        ],
+        "Instrument / Sensor": [
+            "Signalfel lågt (tryckventil stänger)",
+            "Tryckstyrd ventil felar stängd",
+        ],
+        "Tank / Kärl": [
+            "Säkerhetsventil avspärrad (underhåll)",
+            "Yttre brand (ångbildning)",
+        ],
+    },
+    "Lågt tryck": {
+        "Pump": [
+            "Pump stopp (trycksidan faller)",
+            "Pumphaveri",
+        ],
+        "Ventil": [
+            "Utloppsventil öppnar (okontrollerat)",
+            "Tryckreducerande ventil fastnar öppen",
+        ],
+        "Rörledning": [
+            "Yttre läcka / rörbrott",
+            "Flanskläckage",
+        ],
+        "Instrument / Sensor": [
+            "Signalfel högt (tryckventil öppnar)",
+            "Tryckventil fastnar öppen via felaktig styrsignal",
+        ],
+        "Tank / Kärl": [
+            "Dräneringsventil öppen / läckande",
+            "Vakuum (för snabb tömning utan ventilering)",
+        ],
+    },
+    "Hög nivå": {
+        "Pump": [
+            "Utloppspump stopp",
+        ],
+        "Ventil": [
+            "Utloppsventil stängd / fastnad stängd",
+            "Inloppsventil öppen (okontrollerat)",
+        ],
+        "Instrument / Sensor": [
+            "Signalfel lågt (LT felar lågt — inlopp öppnar)",
+            "Nivågivare impulsledning igensatt (visar låg nivå)",
+        ],
+        "Tank / Kärl": [
+            "Skumbildning (skenbar hög nivå)",
+            "Densitetsminskning (kokning / flash)",
+        ],
+    },
+    "Låg nivå": {
+        "Pump": [
+            "Utloppspump kör med för högt flöde",
+        ],
+        "Ventil": [
+            "Inloppsventil stängd / fastnad stängd",
+            "Dräneringsventil öppen / läckande",
+        ],
+        "Instrument / Sensor": [
+            "Signalfel högt (LT felar högt — utlopp öppnar)",
+            "Nivågivare igensatt (visar hög nivå)",
+        ],
+        "Tank / Kärl": [
+            "Yttre läcka från kärlet",
+            "Avrinning via öppet dräneringsuttag",
+        ],
+    },
+    "Hög temperatur": {
+        "Värmeväxlare": [
+            "Otillräcklig kylning (kylmedelsflöde avbrutet)",
+            "Luftkylare (fin-fan) fläktstopp",
+            "Kylventil fastnar stängd",
+        ],
+        "Instrument / Sensor": [
+            "Signalfel lågt (TT felar lågt — värme ökar)",
+            "Temperaturgivare felar",
+        ],
+        "Tank / Kärl": [
+            "Exoterm reaktion / okontrollerad kemisk process",
+        ],
+    },
+    "Låg temperatur": {
+        "Värmeväxlare": [
+            "Överkylning (för högt kylmedelsflöde)",
+            "Ångförlust (värmemedium bortfaller)",
+            "Värmeventil fastnar stängd",
+        ],
+        "Instrument / Sensor": [
+            "Signalfel högt (TT felar högt — kylning ökar)",
+            "Temperaturgivare felar",
+        ],
+        "Rörledning": [
+            "Yttre kyla utan värmespårning — isbildning",
+        ],
+    },
+}
+
+
+def _seed_component_causes(conn):
+    """Insert component-type-specific standard causes (idempotent)."""
+    for dev_name, by_type in _COMP_STD_CAUSES.items():
+        row = conn.execute(
+            "SELECT id FROM standard_deviations WHERE description=?", (dev_name,)).fetchone()
+        if not row:
+            continue
+        dev_id = row[0]
+        max_sort = (conn.execute(
+            "SELECT COALESCE(MAX(sort_order),0) FROM standard_causes WHERE deviation_id=?",
+            (dev_id,)).fetchone()[0] or 0)
+        sort_i = max_sort + 1
+        for comp_type, causes in by_type.items():
+            for c_desc in causes:
+                exists = conn.execute(
+                    "SELECT id FROM standard_causes "
+                    "WHERE deviation_id=? AND description=? AND comp_type=?",
+                    (dev_id, c_desc, comp_type)).fetchone()
+                if not exists:
+                    conn.execute(
+                        "INSERT INTO standard_causes "
+                        "(deviation_id, description, sort_order, comp_type) VALUES (?,?,?,?)",
+                        (dev_id, c_desc, sort_i, comp_type))
+                    sort_i += 1
+
 
 class Database:
     def __init__(self, path=DB_PATH):
@@ -504,6 +725,7 @@ class Database:
             "ALTER TABLE consequences ADD COLUMN ignition_active INTEGER DEFAULT 0",
             "ALTER TABLE consequences ADD COLUMN ignition_rrf INTEGER DEFAULT 10",
             "ALTER TABLE cause_markers ADD COLUMN component_tag TEXT DEFAULT ''",
+            "ALTER TABLE standard_causes ADD COLUMN comp_type TEXT DEFAULT ''",
         ]:
             try:
                 self.conn.execute(sql)
@@ -705,6 +927,13 @@ class Database:
                     self.conn.execute(
                         "INSERT INTO standard_causes (deviation_id, description, sort_order)"
                         " VALUES (?,?,?)", (dev_tmpl_id, c_desc, cause_i))
+
+        # Seed component-type-specific standard causes (one-time, idempotent)
+        if not self.conn.execute(
+                "SELECT value FROM app_config WHERE key='comp_causes_seeded_v1'").fetchone():
+            _seed_component_causes(self.conn)
+            self.conn.execute(
+                "INSERT OR REPLACE INTO app_config (key,value) VALUES ('comp_causes_seeded_v1','1')")
 
         # Ensure every node has all standard deviations from template library
         std_devs = [r[0] for r in self.conn.execute(
@@ -5288,9 +5517,14 @@ class StandardCausesSettingsPanel(QWidget):
         self._loading = True
         self._cause_list.clear()
         for c in self.db.standard_causes(dev_id):
-            item = QListWidgetItem(c['description'])
+            comp = dict(c).get('comp_type', '') or ''
+            label = f"[{comp}]  {c['description']}" if comp else c['description']
+            item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, c['id'])
+            item.setData(Qt.ItemDataRole.UserRole + 1, c['description'])
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+            if comp:
+                item.setForeground(QColor('#1F4E79'))
             self._cause_list.addItem(item)
         self._loading = False
 
