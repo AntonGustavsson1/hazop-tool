@@ -3089,7 +3089,6 @@ class _PidDelegate(_ScenarioDelegate):
         super().paint(painter, opt, index)
         # Overlay the placement icon on the freed left strip
         row, col = index.row(), index.column()
-        is_placed = self._panel._is_cell_placed(row, col)
         icon_rect = QRect(option.rect.left(), option.rect.top(),
                           _PID_ICON_W, option.rect.height())
         # Fill icon strip with selection or alternating-row background
@@ -3099,6 +3098,10 @@ class _PidDelegate(_ScenarioDelegate):
             painter.fillRect(icon_rect, option.palette.alternateBase())
         else:
             painter.fillRect(icon_rect, option.palette.base())
+        # Only draw pin if the cell has a real item to place
+        if not self._panel._cell_has_item(row, col):
+            return
+        is_placed = self._panel._is_cell_placed(row, col)
         _draw_pid_pin(painter, icon_rect, is_placed)
 
 
@@ -3495,6 +3498,19 @@ class ScenarioTablePanel(QWidget):
             pass
         self._table.viewport().update()
 
+    def _cell_has_item(self, row, col):
+        """Returns True only when the cell actually has a placeable item ID."""
+        if row >= len(self._row_meta):
+            return False
+        cause_id, cons_id, sg_id = self._row_meta[row]
+        if col == self._C_ORS:
+            return cause_id is not None
+        if col == self._C_KON:
+            return cons_id is not None
+        if col == self._C_SG:
+            return sg_id is not None
+        return False
+
     def _is_cell_placed(self, row, col):
         if row >= len(self._row_meta):
             return False
@@ -3547,6 +3563,8 @@ class ScenarioTablePanel(QWidget):
             return
         if col not in (self._C_ORS, self._C_KON, self._C_SG):
             return
+        if not self._cell_has_item(row, col):
+            return  # no item to place/remove — e.g. safeguard row with no safeguard yet
         is_placed = self._is_cell_placed(row, col)
         menu = QMenu(self)
         if not is_placed:
@@ -3628,21 +3646,25 @@ class ScenarioTablePanel(QWidget):
         ctrl = bool(event.type() == QEvent.Type.KeyPress and
                     event.modifiers() & Qt.KeyboardModifier.ControlModifier)
 
-        # Viewport mouse: detect click in the 🟢/📌 icon strip
-        if obj is self._table.viewport() and event.type() == QEvent.Type.MouseButtonPress:
+        # Viewport mouse: detect LEFT-click in the 🟢/📌 icon strip
+        if (obj is self._table.viewport() and
+                event.type() == QEvent.Type.MouseButtonPress and
+                event.button() == Qt.MouseButton.LeftButton):
             pos = event.pos()
             col = self._table.columnAt(pos.x())
             row = self._table.rowAt(pos.y())
             if row >= 0 and col in (self._C_ORS, self._C_KON, self._C_SG):
                 col_x = self._table.columnViewportPosition(col)
                 if pos.x() - col_x < _PID_ICON_W:
+                    if not self._cell_has_item(row, col):
+                        return True  # consume click but do nothing for empty cells
                     if self._is_cell_placed(row, col):
                         # 🟢 → navigate to marker on P&ID
                         self._emit_navigate(row, col)
                     else:
                         # 📌 → place this specific item on P&ID
                         self._place_from_table(row, col)
-                    return True  # always consume icon-strip click
+                    return True  # consume left-click; right-click falls through to context menu
 
         # Delegate inline editor (regular cell in edit mode)
         if (isinstance(obj, QLineEdit) and
@@ -6477,6 +6499,7 @@ class MainWindow(QMainWindow):
                          self._on_selected(CONS_T, cid),
                          self.scenario_panel.refresh_placed()))
         self.pid_panel.safeguard_created.connect(self._on_safeguard_created)
+        self.pid_panel.existing_marker_placed.connect(self._on_existing_marker_placed)
         self.pid_panel.risk_scenario_requested.connect(self._on_pid_risk_scenario)
         self.pid_panel.marker_navigated.connect(self._on_marker_navigate)
         self.pid_panel.pid_analysis_done.connect(self._on_pid_analysis_done)
@@ -6614,6 +6637,13 @@ class MainWindow(QMainWindow):
         self.pid_panel.remove_existing_marker(type_str, id_)
         self.scenario_panel.refresh_placed()
         self.tree_panel.refresh()
+
+    def _on_existing_marker_placed(self, type_str, id_):
+        """Marker placed via 'place existing' flow — refresh pins and tree without reloading panels."""
+        type_ = {'cause': CAUSE_T, 'consequence': CONS_T, 'safeguard': SG_T}.get(type_str)
+        if type_ is not None:
+            self.tree_panel.refresh(type_, id_)
+        self.scenario_panel.refresh_placed()
 
     def _on_matrix_changed(self):
         if self._cur_type == CONS_T and self._cur_id is not None:

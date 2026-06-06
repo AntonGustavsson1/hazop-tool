@@ -2732,6 +2732,7 @@ class PIDPanel(QWidget):
     cause_created           = pyqtSignal(int)
     consequence_created     = pyqtSignal(int)
     safeguard_created       = pyqtSignal(int)
+    existing_marker_placed  = pyqtSignal(str, int)   # (type_str, id_) — 'place existing' flow
     risk_scenario_requested = pyqtSignal(int, object, int)
     marker_navigated        = pyqtSignal(str, int)
     pid_analysis_done       = pyqtSignal()   # emitted when scan finishes → open settings tab
@@ -3350,19 +3351,19 @@ class PIDPanel(QWidget):
             desc  = cause['description'] if cause else ''
             self.db.add_cause_marker(id_, page, pdf_x, pdf_y, 'Orsak', '')
             self.viewer.add_cause_marker(id_, pdf_x, pdf_y, 'Orsak', desc, '')
-            self.cause_created.emit(id_)
+            self.existing_marker_placed.emit(type_str, id_)
         elif type_str == 'consequence':
             cons  = self.db.get_consequence(id_)
             desc  = cons['description'] if cons else ''
             self.db.add_consequence_marker(id_, page, pdf_x, pdf_y, '')
             self.viewer.add_consequence_marker(id_, pdf_x, pdf_y, desc)
-            self.consequence_created.emit(id_)
+            self.existing_marker_placed.emit(type_str, id_)
         elif type_str == 'safeguard':
             sg   = self.db.get_safeguard(id_)
             desc = sg['description'] if sg else ''
             self.db.add_safeguard_marker(id_, page, pdf_x, pdf_y, '')
             self.viewer.add_safeguard_marker(id_, pdf_x, pdf_y, '', desc)
-            self.safeguard_created.emit(id_)
+            self.existing_marker_placed.emit(type_str, id_)
 
         self._load_overlays()
 
@@ -3686,23 +3687,33 @@ class PIDPanel(QWidget):
             self.viewer.add_safeguard_marker(
                 md['safeguard_id'], md['x'], md['y'], md.get('tag', ''), desc)
 
-        # Draw connections
-        cause_pos = {m['cause_id']: self.viewer.pdf_to_scene(m['x'], m['y'])
-                     for m in self.db.cause_markers_for_page(page)}
-        cons_pos  = {m['consequence_id']: self.viewer.pdf_to_scene(m['x'], m['y'])
-                     for m in self.db.consequence_markers_for_page(page)}
-        sg_pos    = {m['safeguard_id']: self.viewer.pdf_to_scene(m['x'], m['y'])
-                     for m in self.db.safeguard_markers_for_page(page)}
+        # Draw connections — use lists so multiple markers per item all get lines
+        cause_pos = {}
+        for m in self.db.cause_markers_for_page(page):
+            cause_pos.setdefault(m['cause_id'], []).append(
+                self.viewer.pdf_to_scene(m['x'], m['y']))
+        cons_pos = {}
+        for m in self.db.consequence_markers_for_page(page):
+            cons_pos.setdefault(m['consequence_id'], []).append(
+                self.viewer.pdf_to_scene(m['x'], m['y']))
+        sg_pos = {}
+        for m in self.db.safeguard_markers_for_page(page):
+            sg_pos.setdefault(m['safeguard_id'], []).append(
+                self.viewer.pdf_to_scene(m['x'], m['y']))
 
-        for cid, cpos in cons_pos.items():
+        for cid, cpos_list in cons_pos.items():
             c = self.db.get_consequence(cid)
             if c and c['cause_id'] in cause_pos:
-                self.viewer.add_connection_line(cause_pos[c['cause_id']], cpos, '#c0392b')
+                for cpos in cpos_list:
+                    for capos in cause_pos[c['cause_id']]:
+                        self.viewer.add_connection_line(capos, cpos, '#c0392b')
 
-        for sid, spos in sg_pos.items():
+        for sid, spos_list in sg_pos.items():
             s = self.db.get_safeguard(sid)
             if s and s['consequence_id'] in cons_pos:
-                self.viewer.add_connection_line(cons_pos[s['consequence_id']], spos, '#27ae60', dashed=True)
+                for spos in spos_list:
+                    for kpos in cons_pos[s['consequence_id']]:
+                        self.viewer.add_connection_line(kpos, spos, '#27ae60', dashed=True)
 
         # Draw tag highlights (yellow = known, green = defined as cause)
         self._draw_tag_highlights()
