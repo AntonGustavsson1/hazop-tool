@@ -3106,7 +3106,12 @@ class ScenarioTablePanel(QWidget):
         try:
             for cons in self.db.consequences(self.cause_id):
                 cons_d = dict(cons)
-                self._add_row(node_name, cause_d, freq, freq_lbl, cons_d)
+                sgs = [dict(s) for s in self.db.safeguards(cons_d['id'])]
+                if sgs:
+                    for sg in sgs:
+                        self._add_row(node_name, cause_d, freq, freq_lbl, cons_d, sgs, sg)
+                else:
+                    self._add_row(node_name, cause_d, freq, freq_lbl, cons_d, [], None)
             if self._table.rowCount() == 0:
                 self._add_empty_row(node_name, cause_d, freq, freq_lbl)
             self._apply_spans()
@@ -3138,20 +3143,27 @@ class ScenarioTablePanel(QWidget):
                             Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
                 r += span
 
+        def _meta(r, idx):
+            return self._row_meta[r][idx] if r < len(self._row_meta) else None
+
         # Nod: group by node_id stored in UserRole
         _span_col(self._C_NOD, lambda r: (
             self._table.item(r, self._C_NOD).data(Qt.ItemDataRole.UserRole)
             if self._table.item(r, self._C_NOD) else None))
 
-        # Orsak: group by cause_id from _row_meta
-        _span_col(self._C_ORS, lambda r: (
-            self._row_meta[r][0] if r < len(self._row_meta) else None))
+        # Orsak: group by cause_id
+        _span_col(self._C_ORS, lambda r: _meta(r, 0))
+
+        # Consequence-level columns: group by cons_id
+        for col in (self._C_KON, self._C_RFORE, self._C_REFT,
+                    self._C_FA, self._C_IGN, self._C_OVRIGA, self._C_SLUT):
+            _span_col(col, lambda r: _meta(r, 1))
 
     def _add_empty_row(self, node_name, cause_d, freq, freq_lbl):
         """Placeholder row when a cause has no consequences yet."""
         r = self._table.rowCount()
         self._table.insertRow(r)
-        self._row_meta.append((cause_d['id'], None, []))
+        self._row_meta.append((cause_d['id'], None, None))
 
         def _ro(text=''):
             item = QTableWidgetItem(text)
@@ -3176,18 +3188,18 @@ class ScenarioTablePanel(QWidget):
 
         self._table.setRowHeight(r, 52)
 
-    def _add_row(self, node_name, cause_d, freq, freq_lbl, cons_d):
-        r    = self._table.rowCount()
+    def _add_row(self, node_name, cause_d, freq, freq_lbl, cons_d, sgs, sg):
+        """One row per safeguard (sg=None when no safeguards exist yet).
+        sgs = all safeguards for this consequence (used for combined risk calc)."""
+        r   = self._table.rowCount()
         self._table.insertRow(r)
-        sev  = cons_d['severity'] or 1
-        cid  = cons_d['id']
+        sev = cons_d['severity'] or 1
+        cid = cons_d['id']
 
-        # Safeguards
-        sgs    = [dict(s) for s in self.db.safeguards(cid)]
-        self._row_meta.append((cause_d['id'], cid, [s['id'] for s in sgs]))
+        self._row_meta.append((cause_d['id'], cid, sg['id'] if sg else None))
         sg_rrf = 1
-        for sg in sgs:
-            sg_rrf *= (sg.get('rrf') or 1)
+        for s in sgs:
+            sg_rrf *= (s.get('rrf') or 1)
 
         # Extra reduction factors
         rfs = [dict(rf) for rf in self.db.reduction_factors(cid)]
@@ -3235,55 +3247,18 @@ class ScenarioTablePanel(QWidget):
         rb.setData(Qt.ItemDataRole.UserRole, ('risk_click', cause_d['id'], cid, freq, sev))
         self._table.setItem(r, self._C_RFORE, rb)
 
-        # ── Col 4: Safeguards ─────────────────────────────────────────────────
-        if not sgs:
+        # ── Col 4: Barriär — one row per safeguard ───────────────────────────
+        if sg is None:
             sg_item = QTableWidgetItem('—')
             sg_item.setFlags(sg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             sg_item.setToolTip("Tryck Enter för att lägga till safeguard")
-            self._table.setItem(r, self._C_SG, sg_item)
-        elif len(sgs) == 1:
-            sg_item = QTableWidgetItem(sgs[0]['description'])
-            sg_item.setData(Qt.ItemDataRole.UserRole, ('safeguard', sgs[0]['id']))
-            sg_item.setToolTip("Klicka för att redigera")
-            self._table.setItem(r, self._C_SG, sg_item)
         else:
-            # Multiple safeguards: one QLineEdit per safeguard so each is individually editable
-            sg_w = QWidget()
-            sg_lay = QVBoxLayout(sg_w)
-            sg_lay.setContentsMargins(2, 2, 2, 2)
-            sg_lay.setSpacing(2)
-            for sg in sgs:
-                sg_id = sg['id']
-                rrf = sg.get('rrf', 1) or 1
-                le = QLineEdit(sg['description'])
-                le.setProperty('sg_id', sg_id)
-                le.setProperty('sg_row', r)
-                le.setStyleSheet(
-                    "QLineEdit{border:none;border-bottom:1px solid #e0e0e0;"
-                    "font-size:10px;padding:1px 2px;background:transparent;}"
-                    "QLineEdit:focus{border-bottom:1px solid #1F4E79;background:#eef4fb;}")
-                le.installEventFilter(self)
-                le.editingFinished.connect(lambda sid=sg_id, w=le: self._on_sg_le_commit(sid, w.text()))
-                if rrf > 1:
-                    row_w = QWidget()
-                    row_l = QHBoxLayout(row_w)
-                    row_l.setContentsMargins(0, 0, 0, 0)
-                    row_l.setSpacing(3)
-                    row_l.addWidget(le, 1)
-                    rrf_lbl = QLabel(f"RRF{rrf}")
-                    rrf_lbl.setStyleSheet("color:#888;font-size:9px;padding-right:2px;")
-                    row_l.addWidget(rrf_lbl)
-                    sg_lay.addWidget(row_w)
-                else:
-                    sg_lay.addWidget(le)
-            if sg_rrf > 1:
-                steps = int(math.log10(sg_rrf))
-                total_lbl = QLabel(f"─── RRF {sg_rrf:,}  (−{steps} steg)")
-                total_lbl.setStyleSheet("color:#888;font-size:9px;padding:1px 2px;")
-                sg_lay.addWidget(total_lbl)
-            sg_lay.addStretch()
-            self._table.setCellWidget(r, self._C_SG, sg_w)
-            self._table.resizeRowToContents(r)
+            rrf = sg.get('rrf', 1) or 1
+            rrf_str = f"  [RRF {rrf}]" if rrf > 1 else ""
+            sg_item = QTableWidgetItem(sg['description'])
+            sg_item.setData(Qt.ItemDataRole.UserRole, ('safeguard', sg['id']))
+            sg_item.setToolTip(f"Klicka för att redigera{rrf_str}")
+        self._table.setItem(r, self._C_SG, sg_item)
 
         # ── Col 5: FA — checkable, text = probability % ──────────────────────
         fa_steps_txt = f"−{prob_to_reduction(fa_rrf)} steg" if fa_active else f"{fa_rrf}%"
@@ -3341,7 +3316,7 @@ class ScenarioTablePanel(QWidget):
         rs.setToolTip(f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}  (−{total_steps} steg totalt)")
         self._table.setItem(r, self._C_SLUT, rs)
 
-        self._table.setRowHeight(r, max(52, min(140, (len(sgs) + 2) * 18)))
+        self._table.setRowHeight(r, 52)
 
     def _open_chain_editor(self, cons_id: int, label_widget=None):
         """Open the consequence chain dialog; refresh the label on accept."""
@@ -3380,9 +3355,9 @@ class ScenarioTablePanel(QWidget):
             ))
             return
         if col == self._C_SG and row < len(self._row_meta):
-            sg_ids = self._row_meta[row][2]
-            if sg_ids:
-                self.item_selected.emit(SG_T, sg_ids[0])
+            sg_id = self._row_meta[row][2]
+            if sg_id is not None:
+                self.item_selected.emit(SG_T, sg_id)
                 QTimer.singleShot(0, lambda r=row, c=col: (
                     self._table.setFocus(),
                     self._table.edit(self._table.model().index(r, c))
@@ -3446,22 +3421,6 @@ class ScenarioTablePanel(QWidget):
                     self._ctrl_enter(row, col)
                     return True
 
-        # QLineEdit in multi-safeguard widget cell
-        if isinstance(obj, QLineEdit) and obj.property('sg_id') is not None:
-            if event.type() == QEvent.Type.FocusIn:
-                self.item_selected.emit(SG_T, obj.property('sg_id'))
-            elif event.type() == QEvent.Type.KeyPress:
-                if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                    row = obj.property('sg_row')
-                    if row is not None:
-                        if ctrl:
-                            self._ctrl_enter(row, self._C_SG)
-                            return True  # consume; skip editingFinished
-                        self._enter_row = row
-                        self._enter_col = self._C_SG
-                        self._last_enter_committed = True
-                        QTimer.singleShot(0, self._on_enter_after_edit)
-
         # Table-level Enter key
         if obj is self._table and event.type() == QEvent.Type.KeyPress:
             if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
@@ -3480,7 +3439,7 @@ class ScenarioTablePanel(QWidget):
         """Ctrl+Enter: immediately create a new sibling at the same hierarchy level."""
         if row < 0 or row >= len(self._row_meta):
             return
-        cause_id, cons_id, _sg_ids = self._row_meta[row]
+        cause_id, cons_id, _sg_id = self._row_meta[row]
         if col == self._C_ORS or col == self._C_NOD:
             cause = self.db.get_cause(cause_id)
             if cause:
@@ -3491,13 +3450,6 @@ class ScenarioTablePanel(QWidget):
             # SG, REFT, FA, IGN, OVRIGA, SLUT → new safeguard
             if cons_id is not None:
                 self._quick_add_safeguard(cons_id)
-
-    def _on_sg_le_commit(self, sg_id, text):
-        desc = text.strip() or 'Ny safeguard'
-        sg = self.db.get_safeguard(sg_id)
-        if sg:
-            self.db.update_safeguard(sg_id, desc, sg['rrf'] or 1)
-        self.item_edited.emit(SG_T, sg_id)
 
     def _on_enter_after_edit(self):
         row = self._enter_row
@@ -3510,7 +3462,7 @@ class ScenarioTablePanel(QWidget):
         if is_editable and not self._last_enter_committed:
             return
         self._last_enter_committed = False
-        cause_id, cons_id, sg_ids = self._row_meta[row]
+        cause_id, cons_id, _sg_id = self._row_meta[row]
         self._show_quick_add(row, cause_id, cons_id)
 
     def _show_quick_add(self, row, cause_id, cons_id):
