@@ -8767,12 +8767,16 @@ class MainWindow(QMainWindow):
         self.node_markup_panel.load(node_id)
         self.stack.setCurrentWidget(self.node_markup_panel)
         self._switch_view(0)
+        self.tree_panel.setVisible(False)
+        self.scenario_panel.setVisible(False)
         self.pid_panel.enter_markup_edit(node_id)
 
     def _on_close_node_markup(self):
         """NodeMarkupPanel 'Avsluta redigering' clicked."""
         self.pid_panel.exit_markup_mode()
         self.pid_panel.reload_overlays()
+        self.tree_panel.setVisible(True)
+        self.scenario_panel.setVisible(True)
         self.stack.setCurrentWidget(self.welcome_panel)
 
     def _on_markup_draw_finished(self, type_, node_id, pts, page, label):
