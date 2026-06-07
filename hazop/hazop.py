@@ -12,7 +12,7 @@ from pathlib import Path
 from pid_viewer import (
     PIDPanel, COMPONENT_TYPES, CONSEQUENCE_TEMPLATES, HAS_PYMUPDF,
     MODE_NAV, MODE_NODE, MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD,
-    scan_pdf_for_equipment, ocr_status, KNOWN_PREFIXES,
+    scan_pdf_for_equipment, ocr_status, KNOWN_PREFIXES, invert_cause_text,
 )
 
 from PyQt6.QtWidgets import (
@@ -7406,6 +7406,209 @@ class EquipmentPanel(QWidget):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# REUSE CAUSES DIALOG
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ReuseDeviationCausesDialog(QDialog):
+    """Pre-step dialog shown before P&ID placement.
+
+    Lists causes from other deviations in the same node, organised by
+    deviation with hierarchical reference labels (e.g. 1.2.3).
+    User can toggle Referera / Invers per cause; accepted selections are
+    created as new causes in the target deviation before P&ID mode opens.
+    """
+
+    SKIP = 2   # dialog result code for "Hoppa över"
+
+    def __init__(self, target_dev_name, existing_causes, parent=None):
+        """
+        existing_causes — list of dicts with keys:
+            id, description, deviation_name, deviation_id,
+            ref_label (e.g. '1.2.3'), dev_label (e.g. '1.2')
+        """
+        super().__init__(parent)
+        self.setWindowTitle("Återanvänd orsaker från andra avvikelser")
+        self.setMinimumWidth(580)
+        self.setMinimumHeight(420)
+
+        # cause_id → ('ref', description) | ('inv', inverted_description)
+        self._selections: dict = {}
+        self._inv_texts: dict  = {}   # cause_id → inverted text (pre-computed)
+
+        layout = QVBoxLayout(self)
+
+        hdr = QLabel(
+            f"Lägger till orsaker under avvikelsen: <b>{target_dev_name}</b><br>"
+            "<span style='color:gray;font-size:11px'>"
+            "Välj orsaker från andra avvikelser att referera (kopiera) eller invertera "
+            "(högt↔lågt, stänger↔öppnar, …).</span>")
+        hdr.setWordWrap(True)
+        layout.addWidget(hdr)
+
+        # ── Scrollable cause list ─────────────────────────────────────────────
+        inner = QWidget()
+        inner_layout = QVBoxLayout(inner)
+        inner_layout.setContentsMargins(2, 2, 2, 2)
+        inner_layout.setSpacing(2)
+
+        grouped: dict = {}
+        order:   list = []
+        for c in existing_causes:
+            dn = c['deviation_name']
+            if dn not in grouped:
+                grouped[dn] = []
+                order.append(dn)
+            grouped[dn].append(c)
+
+        for dev_n in order:
+            causes = grouped[dev_n]
+            dev_lbl = causes[0]['dev_label']
+            hdr_lbl = QLabel(
+                f"<b><span style='color:#555'>{dev_lbl}</span>&nbsp;&nbsp;{dev_n}</b>")
+            hdr_lbl.setStyleSheet(
+                "background:#ebebeb;padding:3px 6px;border-radius:3px;")
+            inner_layout.addWidget(hdr_lbl)
+
+            for cause in causes:
+                cid      = cause['id']
+                orig     = cause['description']
+                inv_text = invert_cause_text(orig)
+                self._inv_texts[cid] = inv_text
+
+                row_w = QWidget()
+                row_h = QHBoxLayout(row_w)
+                row_h.setContentsMargins(12, 1, 4, 1)
+                row_h.setSpacing(6)
+
+                num_lbl = QLabel(
+                    f"<span style='color:#888;font-family:monospace'>"
+                    f"{cause['ref_label']}</span>")
+                num_lbl.setFixedWidth(42)
+                row_h.addWidget(num_lbl)
+
+                desc_lbl = QLabel(orig)
+                desc_lbl.setToolTip(orig)
+                row_h.addWidget(desc_lbl, 1)
+
+                ref_btn = QPushButton("Referera")
+                ref_btn.setCheckable(True)
+                ref_btn.setFixedWidth(72)
+                ref_btn.setStyleSheet(
+                    "QPushButton{font-size:10px;padding:2px 4px;border:1px solid #2980b9;"
+                    "border-radius:3px;}"
+                    "QPushButton:checked{background:#2980b9;color:white;}"
+                    "QPushButton:hover:!checked{background:#d6eaf8;}")
+
+                inv_btn = QPushButton("Invers")
+                inv_btn.setCheckable(True)
+                inv_btn.setFixedWidth(56)
+                inv_btn.setToolTip(f"Skapar: {inv_text}")
+                inv_btn.setStyleSheet(
+                    "QPushButton{font-size:10px;padding:2px 4px;border:1px solid #8e44ad;"
+                    "border-radius:3px;}"
+                    "QPushButton:checked{background:#8e44ad;color:white;}"
+                    "QPushButton:hover:!checked{background:#e8daef;}")
+
+                ref_btn.toggled.connect(
+                    self._make_ref_handler(cid, orig, inv_btn))
+                inv_btn.toggled.connect(
+                    self._make_inv_handler(cid, inv_text, ref_btn))
+
+                row_h.addWidget(ref_btn)
+                row_h.addWidget(inv_btn)
+                inner_layout.addWidget(row_w)
+
+        inner_layout.addStretch()
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(inner)
+        layout.addWidget(scroll, 1)
+
+        # ── Summary ───────────────────────────────────────────────────────────
+        self._summary_lbl = QLabel("Inga orsaker markerade — tryck 'Hoppa över' för att gå direkt till P&ID.")
+        self._summary_lbl.setStyleSheet("color:gray;font-style:italic;font-size:11px;")
+        layout.addWidget(self._summary_lbl)
+
+        # ── Buttons ───────────────────────────────────────────────────────────
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
+        self._create_btn = QPushButton("✔ Skapa markerade och fortsätt till P&ID")
+        self._create_btn.setEnabled(False)
+        self._create_btn.setStyleSheet(
+            "QPushButton{background:#27ae60;color:white;border:none;border-radius:4px;"
+            "padding:6px 12px;font-weight:bold;}"
+            "QPushButton:hover:enabled{background:#2ecc71;}"
+            "QPushButton:disabled{background:#aaa;}")
+        self._create_btn.clicked.connect(self.accept)
+        btn_row.addWidget(self._create_btn, 1)
+
+        skip_btn = QPushButton("Hoppa över →")
+        skip_btn.setToolTip("Gå direkt till P&ID utan att skapa orsaker härifrån")
+        skip_btn.setStyleSheet(
+            "QPushButton{border:1px solid #aaa;border-radius:4px;padding:6px 10px;}"
+            "QPushButton:hover{background:#f0f0f0;}")
+        skip_btn.clicked.connect(lambda: self.done(self.SKIP))
+        btn_row.addWidget(skip_btn)
+
+        cancel_btn = QPushButton("Avbryt")
+        cancel_btn.setStyleSheet(
+            "QPushButton{border:1px solid #aaa;border-radius:4px;padding:6px 10px;}"
+            "QPushButton:hover{background:#f0f0f0;}")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+
+        layout.addLayout(btn_row)
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _make_ref_handler(self, cid, description, inv_btn):
+        def handler(checked):
+            if checked:
+                self._selections[cid] = ('ref', description)
+                inv_btn.blockSignals(True)
+                inv_btn.setChecked(False)
+                inv_btn.blockSignals(False)
+            else:
+                self._selections.pop(cid, None)
+            self._update_summary()
+        return handler
+
+    def _make_inv_handler(self, cid, inv_text, ref_btn):
+        def handler(checked):
+            if checked:
+                self._selections[cid] = ('inv', inv_text)
+                ref_btn.blockSignals(True)
+                ref_btn.setChecked(False)
+                ref_btn.blockSignals(False)
+            else:
+                self._selections.pop(cid, None)
+            self._update_summary()
+        return handler
+
+    def _update_summary(self):
+        n = len(self._selections)
+        if n == 0:
+            self._summary_lbl.setText(
+                "Inga orsaker markerade — tryck 'Hoppa över' för att gå direkt till P&ID.")
+            self._create_btn.setEnabled(False)
+        else:
+            kinds = {'ref': 0, 'inv': 0}
+            for mode, _ in self._selections.values():
+                kinds[mode] += 1
+            parts = []
+            if kinds['ref']: parts.append(f"{kinds['ref']} referens")
+            if kinds['inv']: parts.append(f"{kinds['inv']} invers")
+            self._summary_lbl.setText(f"{n} orsak(er) markerade: {', '.join(parts)}")
+            self._create_btn.setEnabled(True)
+
+    def get_selected_descriptions(self):
+        """Return list of description strings for the selected causes (ref or inv)."""
+        return [desc for _, desc in self._selections.values()]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # MAIN WINDOW
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -7756,11 +7959,55 @@ class MainWindow(QMainWindow):
         self.tree_panel.refresh()
 
     def _on_add_causes_on_pid(self, deviation_id):
-        """Right-click deviation → 'Lägg till orsaker på P&ID': switch to P&ID and enter template mode."""
+        """Right-click deviation → 'Lägg till orsaker på P&ID'.
+
+        Shows a pre-dialog listing causes from other deviations in the same node
+        (with hierarchical ref-labels) so the user can reference/invert them before
+        entering P&ID placement mode.
+        """
         dev = self.db.get_deviation(deviation_id)
-        if dev:
-            self.pid_panel.set_active_node(dev['node_id'])
-        self._switch_view(0)   # switch to P&ID tab
+        if not dev:
+            return
+        node_id  = dev['node_id']
+        dev_name = dev['description']
+
+        # ── Build hierarchical reference labels ───────────────────────────────
+        all_nodes = self.db.nodes()
+        node_idx  = next((i + 1 for i, n in enumerate(all_nodes) if n['id'] == node_id), 1)
+
+        all_devs     = self.db.deviations(node_id)
+        dev_pos_map  = {d['id']: i + 1 for i, d in enumerate(all_devs)}
+
+        cause_pos_map: dict = {}
+        for d in all_devs:
+            for j, c in enumerate(self.db.causes_for_deviation(d['id'])):
+                cause_pos_map[c['id']] = j + 1
+
+        raw = self.db.causes_for_node_excluding_deviation(node_id, deviation_id)
+        existing_causes = []
+        for c in raw:
+            cd = dict(c)
+            dp = dev_pos_map.get(cd['deviation_id'], 0)
+            cp = cause_pos_map.get(cd['id'], 0)
+            cd['dev_label'] = f"{node_idx}.{dp}"
+            cd['ref_label'] = f"{node_idx}.{dp}.{cp}"
+            existing_causes.append(cd)
+
+        # ── Show pre-dialog if there are causes to reuse ──────────────────────
+        if existing_causes:
+            dlg = ReuseDeviationCausesDialog(dev_name, existing_causes, parent=self)
+            result = dlg.exec()
+            if result == QDialog.DialogCode.Rejected:
+                return   # user cancelled — do not enter P&ID mode
+            if result == QDialog.DialogCode.Accepted:
+                for desc in dlg.get_selected_descriptions():
+                    cid = self.db.add_cause(deviation_id)
+                    self.db.update_cause(cid, desc)
+                self.tree_panel.refresh()
+
+        # ── Enter P&ID placement mode ─────────────────────────────────────────
+        self.pid_panel.set_active_node(node_id)
+        self._switch_view(0)
         self.pid_panel.start_cause_template_mode(deviation_id)
 
     def _on_existing_marker_placed(self, type_str, id_):

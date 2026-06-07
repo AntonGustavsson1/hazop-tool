@@ -2787,11 +2787,10 @@ class TemplateCausePickerDialog(QDialog):
     """
 
     def __init__(self, deviation_name, standard_causes,
-                 component_types=None, suggested_tag='', preselect_type='',
-                 existing_causes=None, parent=None):
+                 component_types=None, suggested_tag='', preselect_type='', parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Orsak — {deviation_name}")
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(460)
         self._all_causes        = list(standard_causes)   # full list, each row has comp_type field
         self._std_rbs           = []                       # dynamically created primary radio buttons
         self._chosen            = None
@@ -2817,70 +2816,6 @@ class TemplateCausePickerDialog(QDialog):
         form.addRow("Komponent-ID:", self._tag_edit)
         layout.addLayout(form)
 
-        # ── Reuse causes from other deviations ────────────────────────────────
-        if existing_causes:
-            reuse_box = QGroupBox("Återanvänd från andra avvikelser")
-            reuse_vbox = QVBoxLayout(reuse_box)
-            reuse_vbox.setContentsMargins(4, 4, 4, 4)
-            reuse_vbox.setSpacing(2)
-
-            reuse_inner = QWidget()
-            reuse_inner_layout = QVBoxLayout(reuse_inner)
-            reuse_inner_layout.setContentsMargins(0, 0, 0, 0)
-            reuse_inner_layout.setSpacing(2)
-
-            grouped = {}
-            order = []
-            for c in existing_causes:
-                dn = c['deviation_name']
-                if dn not in grouped:
-                    grouped[dn] = []
-                    order.append(dn)
-                grouped[dn].append(c)
-
-            for dev_n in order:
-                hdr = QLabel(f"<b>▸ {dev_n}</b>")
-                hdr.setContentsMargins(0, 4, 0, 2)
-                reuse_inner_layout.addWidget(hdr)
-                for cause in grouped[dev_n]:
-                    row_w = QWidget()
-                    row_h = QHBoxLayout(row_w)
-                    row_h.setContentsMargins(8, 0, 0, 0)
-                    row_h.setSpacing(4)
-                    desc_lbl = QLabel(cause['description'])
-                    desc_lbl.setToolTip(cause['description'])
-                    row_h.addWidget(desc_lbl, 1)
-
-                    ref_btn = QPushButton("Referera")
-                    ref_btn.setFixedWidth(68)
-                    ref_btn.setStyleSheet(
-                        "QPushButton{font-size:10px;padding:2px 4px;background:#2980b9;"
-                        "color:white;border:none;border-radius:3px;}"
-                        "QPushButton:hover{background:#3498db;}")
-                    ref_btn.clicked.connect(
-                        lambda _, d=cause['description']: self._apply_reuse(d))
-                    row_h.addWidget(ref_btn)
-
-                    inv_text = invert_cause_text(cause['description'])
-                    inv_btn = QPushButton("Invers")
-                    inv_btn.setFixedWidth(52)
-                    inv_btn.setToolTip(inv_text)
-                    inv_btn.setStyleSheet(
-                        "QPushButton{font-size:10px;padding:2px 4px;background:#8e44ad;"
-                        "color:white;border:none;border-radius:3px;}"
-                        "QPushButton:hover{background:#9b59b6;}")
-                    inv_btn.clicked.connect(lambda _, d=inv_text: self._apply_reuse(d))
-                    row_h.addWidget(inv_btn)
-                    reuse_inner_layout.addWidget(row_w)
-
-            reuse_scroll = QScrollArea()
-            reuse_scroll.setWidgetResizable(True)
-            reuse_scroll.setWidget(reuse_inner)
-            reuse_scroll.setMaximumHeight(120)
-            reuse_scroll.setFrameShape(QFrame.Shape.NoFrame)
-            reuse_vbox.addWidget(reuse_scroll)
-            layout.addWidget(reuse_box)
-
         # ── Cause list (dynamic) ──────────────────────────────────────────────
         self._cause_header = QLabel("Välj standardorsak eller ange fritext:")
         layout.addWidget(self._cause_header)
@@ -2892,7 +2827,7 @@ class TemplateCausePickerDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(self._cause_container)
-        scroll.setMaximumHeight(140)
+        scroll.setMaximumHeight(180)
         layout.addWidget(scroll)
 
         # ── Primary button group (radio buttons added dynamically + free text) ─
@@ -2961,11 +2896,6 @@ class TemplateCausePickerDialog(QDialog):
             self._update_cause_list('')
 
     # ── Helpers ───────────────────────────────────────────────────────────────
-
-    def _apply_reuse(self, description):
-        """Fill free-text field with the given description and select it."""
-        self._free_edit.setText(description)
-        self._rb_free.setChecked(True)
 
     def _on_type_changed(self, comp_type):
         self._update_cause_list(comp_type)
@@ -4129,16 +4059,11 @@ class PIDPanel(QWidget):
         comp_type_names = list(comp_data.keys()) if comp_data else []
         detected_type   = self._db_comp_for_tag(suggested_tag) if suggested_tag else ''
 
-        node_id = dev['node_id']
-        existing_causes = (self.db.causes_for_node_excluding_deviation(node_id, dev_id)
-                           if hasattr(self.db, 'causes_for_node_excluding_deviation') else [])
-
         dlg = TemplateCausePickerDialog(
             dev_name, std_causes,
             component_types=comp_type_names,
             suggested_tag=suggested_tag,
             preselect_type=detected_type,
-            existing_causes=existing_causes,
             parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
@@ -4210,16 +4135,11 @@ class PIDPanel(QWidget):
         comp_data       = (self.db.all_component_types_dict()
                            if hasattr(self.db, 'all_component_types_dict') else None)
         comp_type_names = list(comp_data.keys()) if comp_data else []
-        node_id = dev['node_id']
-        existing_causes = (self.db.causes_for_node_excluding_deviation(node_id, dev_id)
-                           if hasattr(self.db, 'causes_for_node_excluding_deviation') else [])
-
         dlg = TemplateCausePickerDialog(
             dev_name, std_causes,
             component_types=comp_type_names,
             suggested_tag='',
             preselect_type=preselect_type,
-            existing_causes=existing_causes,
             parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
