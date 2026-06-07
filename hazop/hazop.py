@@ -2897,10 +2897,11 @@ class HAZOPTreeWidget(QTreeWidget):
 
 
 class TreePanel(QWidget):
-    item_selected              = pyqtSignal(int, int)
+    item_selected               = pyqtSignal(int, int)
     add_causes_on_pid_requested = pyqtSignal(int)   # deviation_id
-    structure_changed = pyqtSignal()
-    visibility_changed = pyqtSignal(str, bool)   # marker_type, visible
+    structure_changed           = pyqtSignal()
+    visibility_changed          = pyqtSignal(str, bool)   # marker_type, visible
+    exit_pid_mode_requested     = pyqtSignal()    # exit any active P&ID placement mode
 
     def __init__(self, db: Database):
         super().__init__()
@@ -3141,6 +3142,7 @@ class TreePanel(QWidget):
         if cause_id is None:
             QMessageBox.information(self, "Välj cause", "Välj en cause i trädet."); return
         new_id = self.db.add_consequence(cause_id)
+        self.exit_pid_mode_requested.emit()
         self.refresh(CONS_T, new_id)
         self.structure_changed.emit()
 
@@ -8014,6 +8016,8 @@ class MainWindow(QMainWindow):
         self.scenario_panel.remove_requested.connect(self._on_scenario_remove_from_pid)
 
         self.tree_panel.add_causes_on_pid_requested.connect(self._on_add_causes_on_pid)
+        self.tree_panel.exit_pid_mode_requested.connect(
+            lambda: self.pid_panel._set_mode(MODE_NAV))
 
         self.pid_panel.node_created.connect(
             lambda nid: (self.tree_panel.refresh(NODE_T, nid),
