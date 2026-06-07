@@ -378,6 +378,7 @@ MODE_MARKUP_POLYLINE = 8   # draw open polyline markup on a node
 MODE_MARKUP_TEXT     = 9   # click to place a text label markup
 MODE_MARKUP_COMMENT  = 10  # click to place a comment box markup
 MODE_MARKUP_SELECT   = 11  # click existing markup items to select/edit
+MODE_SMART_POLYLINE  = 12  # click start+end, algorithm traces pipe path
 
 _SG_TYPES    = ['BPCS', 'SIS', 'Mekanisk', 'Administrativ', 'Övrigt']
 _RRF_VALUES  = [1, 10, 100, 1000, 10000]
@@ -1988,6 +1989,207 @@ class _PageRenderer(QThread):
             pass
 
 
+class SmartPipeTracer:
+    """
+    Traces pipe paths on a rendered P&ID page using A* on a greyscale image.
+    Works on both colour and B&W P&IDs; detects dark pixels as pipe material.
+    Gap-jumping handles crossings drawn with a small break between lines.
+    """
+    DARK_THRESHOLD = 110    # pixels darker than this count as "pipe"
+    TRACE_SCALE    = 1.0    # render resolution multiplier for tracing
+    MAX_GAP        = 7      # max white-pixel gap to jump across (crossing style)
+    MAX_EXPLORE    = 300_000  # A* node limit (safety)
+    GOAL_RADIUS_SQ = 25     # squared pixel distance that counts as "reached end"
+
+    def __init__(self, pdf_doc, page_n):
+        page = pdf_doc[page_n]
+        mat  = fitz.Matrix(self.TRACE_SCALE, self.TRACE_SCALE)
+        pix  = page.get_pixmap(matrix=mat, colorspace=fitz.csGRAY)
+        self.width  = pix.width
+        self.height = pix.height
+        self._data  = bytearray(pix.samples)   # flat greyscale bytes
+
+    # ------------------------------------------------------------------ helpers
+
+    def _is_dark(self, x, y):
+        if 0 <= x < self.width and 0 <= y < self.height:
+            return self._data[y * self.width + x] < self.DARK_THRESHOLD
+        return False
+
+    def _nearest_dark(self, x, y, radius=15):
+        """Spiral-search for nearest dark pixel within radius."""
+        x, y = int(x), int(y)
+        if self._is_dark(x, y):
+            return (x, y)
+        best, best_d2 = None, radius * radius + 1
+        for r in range(1, radius + 1):
+            for dx in range(-r, r + 1):
+                for sign in (-1, 1):
+                    nx, ny = x + dx, y + sign * r
+                    if 0 <= nx < self.width and 0 <= ny < self.height:
+                        d2 = dx * dx + r * r
+                        if d2 < best_d2 and self._is_dark(nx, ny):
+                            best, best_d2 = (nx, ny), d2
+                for dy in range(-r + 1, r):
+                    ny, nx = y + dy, x + sign * r
+                    if 0 <= nx < self.width and 0 <= ny < self.height:
+                        d2 = r * r + dy * dy
+                        if d2 < best_d2 and self._is_dark(nx, ny):
+                            best, best_d2 = (nx, ny), d2
+        return best
+
+    def _reconstruct(self, came_from, node):
+        path = []
+        cur  = node
+        while cur is not None:
+            path.append(cur)
+            cur = came_from[cur]
+        path.reverse()
+        return path
+
+    def _rdp(self, pts, eps=2.5):
+        """Iterative Ramer-Douglas-Peucker path simplification."""
+        if len(pts) < 3:
+            return list(pts)
+        keep  = {0, len(pts) - 1}
+        stack = [(0, len(pts) - 1)]
+        while stack:
+            lo, hi = stack.pop()
+            if hi - lo < 2:
+                continue
+            x1, y1 = pts[lo]
+            x2, y2 = pts[hi]
+            dx, dy  = x2 - x1, y2 - y1
+            d2      = dx * dx + dy * dy
+            max_d, max_i = 0.0, lo
+            for i in range(lo + 1, hi):
+                px, py = pts[i]
+                if d2 == 0:
+                    dist = ((px - x1) ** 2 + (py - y1) ** 2) ** 0.5
+                else:
+                    t    = max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / d2))
+                    dist = ((px - x1 - t * dx) ** 2 + (py - y1 - t * dy) ** 2) ** 0.5
+                if dist > max_d:
+                    max_d, max_i = dist, i
+            if max_d > eps:
+                keep.add(max_i)
+                stack.append((lo, max_i))
+                stack.append((max_i, hi))
+        return [pts[i] for i in sorted(keep)]
+
+    # ------------------------------------------------------------------ core A*
+
+    def _astar(self, start, end, blocked):
+        import heapq
+        from itertools import count
+        _cnt = count()
+
+        ex, ey = end
+        def h(x, y): return ((x - ex) ** 2 + (y - ey) ** 2) ** 0.5
+
+        open_h    = [(h(*start), next(_cnt), start)]
+        g         = {start: 0.0}
+        came_from = {start: None}
+        explored  = 0
+        W = self.width
+        data = self._data
+        thr  = self.DARK_THRESHOLD
+
+        while open_h and explored < self.MAX_EXPLORE:
+            _, _, cur = heapq.heappop(open_h)
+            explored += 1
+            cx, cy = cur
+
+            if (cx - ex) ** 2 + (cy - ey) ** 2 <= self.GOAL_RADIUS_SQ:
+                return self._reconstruct(came_from, cur)
+
+            gc = g[cur]
+            prev = came_from.get(cur)
+
+            # --- 8-directional dark neighbours ---
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    if dx == dy == 0:
+                        continue
+                    nx, ny = cx + dx, cy + dy
+                    if nx < 0 or nx >= self.width or ny < 0 or ny >= self.height:
+                        continue
+                    if data[ny * W + nx] >= thr:
+                        continue
+                    nb = (nx, ny)
+                    if nb in blocked:
+                        continue
+                    step = 1.414 if dx and dy else 1.0
+                    ng   = gc + step
+                    if ng < g.get(nb, 1e18):
+                        g[nb]         = ng
+                        came_from[nb] = cur
+                        f = ng + h(nx, ny)
+                        heapq.heappush(open_h, (f, next(_cnt), nb))
+
+            # --- gap jump: continue in last movement direction across short gap ---
+            if prev is not None:
+                pdx = cx - prev[0]
+                pdy = cy - prev[1]
+                ndx = (pdx // abs(pdx)) if pdx else 0
+                ndy = (pdy // abs(pdy)) if pdy else 0
+                if ndx or ndy:
+                    # check if current pixel is at the edge of a dark region
+                    step_base = 1.414 if ndx and ndy else 1.0
+                    for gap in range(2, self.MAX_GAP + 1):
+                        jx, jy = cx + ndx * gap, cy + ndy * gap
+                        if not (0 <= jx < self.width and 0 <= jy < self.height):
+                            break
+                        if data[jy * W + jx] < thr:
+                            jb = (jx, jy)
+                            if jb not in blocked:
+                                ng = gc + gap * step_base * 0.85  # slight bonus for jumping
+                                if ng < g.get(jb, 1e18):
+                                    g[jb]         = ng
+                                    came_from[jb] = cur
+                                    f = ng + h(jx, jy)
+                                    heapq.heappush(open_h, (f, next(_cnt), jb))
+                            break  # only jump to first dark pixel found
+
+        return None  # path not found
+
+    # ------------------------------------------------------------------ public
+
+    def trace(self, start_pdf, end_pdf, n_alt=2):
+        """
+        Find up to (n_alt+1) paths from start_pdf to end_pdf.
+        Returns list of paths; each path = list of [pdf_x, pdf_y].
+        First element is the best path.  Empty list = nothing found.
+        """
+        sx = int(start_pdf[0] * self.TRACE_SCALE)
+        sy = int(start_pdf[1] * self.TRACE_SCALE)
+        ex = int(end_pdf[0]   * self.TRACE_SCALE)
+        ey = int(end_pdf[1]   * self.TRACE_SCALE)
+
+        start = self._nearest_dark(sx, sy, 15)
+        end   = self._nearest_dark(ex, ey, 15)
+        if not start or not end:
+            return []
+
+        results = []
+        blocked = set()
+
+        for _ in range(n_alt + 1):
+            px_path = self._astar(start, end, frozenset(blocked))
+            if not px_path:
+                break
+            simplified  = self._rdp(px_path, eps=2.5)
+            pdf_path    = [[x / self.TRACE_SCALE, y / self.TRACE_SCALE]
+                           for x, y in simplified]
+            results.append(pdf_path)
+            # Block the middle half of this path so next search takes a different route
+            lo = len(px_path) // 4
+            hi = 3 * len(px_path) // 4
+            blocked.update(px_path[lo:hi])
+
+        return results
+
+
 class PIDGraphicsView(QGraphicsView):
     node_markup_finished    = pyqtSignal(list, int)
     # Third parameter = extracted tag text from drawn rectangle (may be empty)
@@ -2085,6 +2287,14 @@ class PIDGraphicsView(QGraphicsView):
         self._drag_threshold_exceeded = False
         self._drag_item_origins: list = []  # [(QGraphicsItem, QPointF)] for text/comment
         self._inline_edit_widget = None
+
+        self._smart_start_pdf   = None   # (pdf_x, pdf_y) first click
+        self._smart_end_pdf     = None
+        self._smart_paths       = []     # list of paths (each = [[pdf_x,pdf_y],...])
+        self._smart_path_idx    = 0
+        self._smart_preview     = []     # QGraphicsItem preview items on scene
+        self._smart_tracer      = None   # SmartPipeTracer, cached per page
+        self._smart_tracer_page = -1
 
         self._placeholder = None
         self._show_placeholder("Öppna en P&ID-fil (PDF) för att börja.")
@@ -2246,7 +2456,11 @@ class PIDGraphicsView(QGraphicsView):
                       MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE):
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
-        if mode not in (MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE):
+        elif mode == MODE_SMART_POLYLINE:
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self.setCursor(Qt.CursorShape.CrossCursor)
+            self._cancel_smart()
+        if mode not in (MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE, MODE_SMART_POLYLINE):
             self._cancel_drawing()
         self.setFocus()
 
@@ -2656,6 +2870,131 @@ class PIDGraphicsView(QGraphicsView):
         edit.returnPressed.connect(commit)
         edit.editingFinished.connect(commit)
 
+    # ---------------------------------------------------------------- smart polyline
+
+    def _clear_smart_preview(self):
+        for gi in self._smart_preview:
+            try: self._scene.removeItem(gi)
+            except Exception: pass
+        self._smart_preview.clear()
+
+    def _draw_smart_marker(self, scene_pos, role):
+        """Draw start (green) or end (red) marker dot at scene_pos."""
+        color  = QColor('#4CAF50') if role == 'start' else QColor('#F44336')
+        r      = 6
+        dot    = QGraphicsEllipseItem(-r, -r, r * 2, r * 2)
+        dot.setBrush(QBrush(color))
+        dot.setPen(QPen(color.darker(130), 1.5))
+        dot.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+        dot.setPos(scene_pos)
+        dot.setZValue(Z_OVERLAY + 8)
+        self._scene.addItem(dot)
+        self._smart_preview.append(dot)
+
+    def _run_smart_trace(self):
+        """Run SmartPipeTracer between the two clicked PDF points."""
+        if self._smart_start_pdf is None or self._smart_end_pdf is None:
+            return
+        # Re-use cached tracer if same page
+        if self._smart_tracer is None or self._smart_tracer_page != self.current_page:
+            self.setCursor(Qt.CursorShape.WaitCursor)
+            QApplication.processEvents()
+            self._smart_tracer      = SmartPipeTracer(self.pdf_doc, self.current_page)
+            self._smart_tracer_page = self.current_page
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        QApplication.processEvents()
+        try:
+            paths = self._smart_tracer.trace(self._smart_start_pdf, self._smart_end_pdf,
+                                              n_alt=2)
+        finally:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+
+        if not paths:
+            # No path found — inform user via a temporary scene text
+            sp = self.pdf_to_scene(*self._smart_end_pdf)
+            msg = QGraphicsSimpleTextItem("Ingen väg hittades – prova igen")
+            f   = QFont(); f.setPointSize(9)
+            msg.setFont(f)
+            msg.setBrush(QBrush(QColor('#F44336')))
+            msg.setPos(sp.x() + 10, sp.y() - 20)
+            msg.setZValue(Z_OVERLAY + 9)
+            self._scene.addItem(msg)
+            self._smart_preview.append(msg)
+            self._smart_start_pdf = None   # reset for new attempt
+            return
+
+        self._smart_paths    = paths
+        self._smart_path_idx = 0
+        self._show_smart_path(0)
+
+    def _show_smart_path(self, idx):
+        """Remove old path preview items and draw path[idx] as a dashed line."""
+        # Remove only path items (not the start/end dot markers — keep first 2 items)
+        markers = self._smart_preview[:2]
+        for gi in self._smart_preview[2:]:
+            try: self._scene.removeItem(gi)
+            except Exception: pass
+        self._smart_preview = markers
+
+        if not self._smart_paths or idx >= len(self._smart_paths):
+            return
+
+        path_pdf   = self._smart_paths[idx]
+        path_scene = [self.pdf_to_scene(*pt) for pt in path_pdf]
+
+        qpath = QPainterPath()
+        if path_scene:
+            qpath.moveTo(path_scene[0])
+            for pt in path_scene[1:]:
+                qpath.lineTo(pt)
+
+        # Use current draw_pen colour but dashed for preview
+        preview_pen = QPen(self.draw_pen)
+        preview_pen.setStyle(Qt.PenStyle.DashLine)
+        preview_pen.setCosmetic(True)
+        path_item = self._scene.addPath(qpath, preview_pen)
+        path_item.setZValue(Z_OVERLAY + 7)
+        self._smart_preview.append(path_item)
+
+        # Navigation hint text near end point
+        if len(self._smart_paths) > 1:
+            ep  = path_scene[-1]
+            lbl = f"Väg {idx + 1}/{len(self._smart_paths)}  ←  →  Enter=spara"
+            txt = QGraphicsSimpleTextItem(lbl)
+            f   = QFont(); f.setPointSize(8)
+            txt.setFont(f)
+            txt.setBrush(QBrush(QColor('#1565C0')))
+            bg_rect = txt.boundingRect()
+            bg = QGraphicsRectItem(ep.x() + 8, ep.y() - 18,
+                                    bg_rect.width() + 6, bg_rect.height() + 2)
+            bg.setBrush(QBrush(QColor(255, 255, 255, 200)))
+            bg.setPen(QPen(Qt.PenStyle.NoPen))
+            bg.setZValue(Z_OVERLAY + 8)
+            txt.setPos(ep.x() + 11, ep.y() - 17)
+            txt.setZValue(Z_OVERLAY + 9)
+            self._scene.addItem(bg)
+            self._scene.addItem(txt)
+            self._smart_preview.extend([bg, txt])
+
+    def _confirm_smart(self):
+        """Accept current path and emit it as a polyline markup."""
+        if not self._smart_paths or self._smart_path_idx >= len(self._smart_paths):
+            return
+        pts = self._smart_paths[self._smart_path_idx]
+        self._clear_smart_preview()
+        self._smart_start_pdf = None
+        self._smart_end_pdf   = None
+        self._smart_paths     = []
+        self.markup_draw_finished.emit('polyline', pts, self.current_page)
+
+    def _cancel_smart(self):
+        """Cancel the smart trace — reset state and clear preview."""
+        self._clear_smart_preview()
+        self._smart_start_pdf = None
+        self._smart_end_pdf   = None
+        self._smart_paths     = []
+        self._smart_path_idx  = 0
+
     def zoom_to_markup_items(self, mu_ids):
         """Zoom and pan the view to fit all given markup items."""
         combined = QRectF()
@@ -2922,6 +3261,20 @@ class PIDGraphicsView(QGraphicsView):
                 self._add_draw_point(self._snap_to_nearest(sp)); event.accept(); return
             elif event.button() == Qt.MouseButton.RightButton:
                 self._cancel_drawing(); event.accept(); return
+        elif self.mode == MODE_SMART_POLYLINE:
+            if event.button() == Qt.MouseButton.LeftButton:
+                if self._smart_start_pdf is None:
+                    self._smart_start_pdf = list(self.scene_to_pdf(sp))
+                    self._smart_end_pdf   = None
+                    self._clear_smart_preview()
+                    self._draw_smart_marker(sp, 'start')
+                else:
+                    self._smart_end_pdf = list(self.scene_to_pdf(sp))
+                    self._draw_smart_marker(sp, 'end')
+                    self._run_smart_trace()
+                event.accept(); return
+            elif event.button() == Qt.MouseButton.RightButton:
+                self._cancel_smart(); event.accept(); return
         elif self.mode in (MODE_MARKUP_TEXT, MODE_MARKUP_COMMENT):
             if event.button() == Qt.MouseButton.LeftButton:
                 # Single-click immediately triggers finished signal
@@ -3145,6 +3498,18 @@ class PIDGraphicsView(QGraphicsView):
                 self._finish_markup_drawing(); event.accept(); return
             elif event.key() == Qt.Key.Key_Escape:
                 self._cancel_drawing(); event.accept(); return
+        elif self.mode == MODE_SMART_POLYLINE and self._smart_paths:
+            k = event.key()
+            if k in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self._confirm_smart(); event.accept(); return
+            elif k == Qt.Key.Key_Escape:
+                self._cancel_smart(); event.accept(); return
+            elif k == Qt.Key.Key_Left:
+                self._smart_path_idx = (self._smart_path_idx - 1) % len(self._smart_paths)
+                self._show_smart_path(self._smart_path_idx); event.accept(); return
+            elif k == Qt.Key.Key_Right:
+                self._smart_path_idx = (self._smart_path_idx + 1) % len(self._smart_paths)
+                self._show_smart_path(self._smart_path_idx); event.accept(); return
         super().keyPressEvent(event)
 
 
@@ -4734,12 +5099,13 @@ class PIDPanel(QWidget):
         self._set_mode(MODE_NAV)
 
     def set_markup_tool(self, tool, color=None, opacity=None, width=None):
-        """Set drawing tool: 'polygon'|'polyline'|'text'|'comment'|'select'."""
+        """Set drawing tool: 'polygon'|'polyline'|'text'|'comment'|'select'|'smart'."""
         _map = {'polygon':  MODE_MARKUP_POLYGON,
                 'polyline': MODE_MARKUP_POLYLINE,
                 'text':     MODE_MARKUP_TEXT,
                 'comment':  MODE_MARKUP_COMMENT,
-                'select':   MODE_MARKUP_SELECT}
+                'select':   MODE_MARKUP_SELECT,
+                'smart':    MODE_SMART_POLYLINE}
         if tool in _map:
             self._set_mode(_map[tool])
         if color is not None:

@@ -3003,6 +3003,27 @@ def _mk_pm(name: str, sz: int, fg: QColor) -> QPixmap:
         p.setBrush(solid_br)
         p.drawEllipse(pt(0.50, cy_f), pr, pr)
 
+    elif name == 'smart':
+        # Pipe-route icon: horizontal entry, 90° bend, vertical exit, with endpoint dots
+        p.setPen(pen)
+        p.setBrush(no_br)
+        # Horizontal segment bottom-left
+        p.drawLine(pt(0.05, 0.75), pt(0.45, 0.75))
+        # Bend corner
+        p.drawLine(pt(0.45, 0.75), pt(0.45, 0.25))
+        # Horizontal segment top-right
+        p.drawLine(pt(0.45, 0.25), pt(0.92, 0.25))
+        # Start dot (filled circle at left)
+        p.setPen(no_pen)
+        p.setBrush(solid_br)
+        p.drawEllipse(pt(0.05, 0.75), dr, dr)
+        # End dot (filled circle at right)
+        p.drawEllipse(pt(0.92, 0.25), dr, dr)
+        # Small waypoint at corner
+        small_r = dr * 0.65
+        p.drawEllipse(pt(0.45, 0.75), small_r, small_r)
+        p.drawEllipse(pt(0.45, 0.25), small_r, small_r)
+
     p.end()
     return pm
 
@@ -3027,6 +3048,7 @@ class _StylePopup(QWidget):
         'polyline': 'Rita polylinje',
         'text':     'Lägg ut nodnamn',
         'comment':  'Lägg till kommentar',
+        'smart':    'Smart polylinje',
     }
 
     def __init__(self, ribbon, parent=None):
@@ -3128,8 +3150,8 @@ class _StylePopup(QWidget):
 
     def _configure_for(self, tool):
         self._title_lbl.setText(self._TOOL_NAMES.get(tool, tool))
-        self._opacity_row.setVisible(tool in ('polygon', 'polyline', 'comment'))
-        self._width_row.setVisible(tool in ('polygon', 'polyline'))
+        self._opacity_row.setVisible(tool in ('polygon', 'polyline', 'comment', 'smart'))
+        self._width_row.setVisible(tool in ('polygon', 'polyline', 'smart'))
         self._font_row.setVisible(tool in ('text', 'comment'))
         self._snap_row.setVisible(tool in ('polygon', 'polyline'))
 
@@ -3190,6 +3212,7 @@ class NodeMarkupPanel(QWidget):
         ('select',   'select',   'Välj/flytta'),
         ('polygon',  'polygon',  'Rita polygon'),
         ('polyline', 'polyline', 'Rita polylinje'),
+        ('smart',    'smart',    'Smart polylinje'),
         ('text',     'text',     'Lägg ut nodnamn'),
         ('comment',  'comment',  'Lägg till kommentar'),
     ]
