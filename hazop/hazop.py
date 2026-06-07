@@ -1395,6 +1395,27 @@ class Database:
                 (disp_order, row['id']))
         self.conn.commit()
 
+    def objects_on_pages(self, physical_pages):
+        """Return counts of HAZOP objects on the given physical page numbers.
+        Returns dict: physical_page -> {markups, causes, consequences, safeguards}."""
+        result = {}
+        for page in physical_pages:
+            markups = self.conn.execute(
+                "SELECT COUNT(*) FROM node_markups WHERE pid_page=?", (page,)).fetchone()[0]
+            causes = self.conn.execute(
+                "SELECT COUNT(*) FROM cause_markers WHERE pid_page=?", (page,)).fetchone()[0]
+            consequences = self.conn.execute(
+                "SELECT COUNT(*) FROM consequence_markers WHERE pid_page=?", (page,)).fetchone()[0]
+            safeguards = self.conn.execute(
+                "SELECT COUNT(*) FROM safeguard_markers WHERE pid_page=?", (page,)).fetchone()[0]
+            result[page] = {
+                'markups': markups,
+                'causes': causes,
+                'consequences': consequences,
+                'safeguards': safeguards,
+            }
+        return result
+
     def get_sheet_physical_page(self, display_index):
         row = self.conn.execute(
             "SELECT physical_page FROM pid_sheets ORDER BY display_order "
@@ -7888,13 +7909,58 @@ class PIDManagementPanel(QWidget):
         selected = self._sheet_list.selectedItems()
         if not selected:
             return
-        count = len(selected)
-        msg = f"Ta bort {count} blad?" if count > 1 else f"Ta bort '{selected[0].text().split('  ')[0]}'?"
-        ans = QMessageBox.question(self, "Ta bort blad", msg,
-                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if ans != QMessageBox.StandardButton.Yes:
-            return
         ids = [item.data(Qt.ItemDataRole.UserRole) for item in selected]
+
+        # Resolve sheet IDs → physical pages and names
+        all_sheets = {s['id']: s for s in self.db.get_sheets()}
+        pages_info = [(ids[i], all_sheets[ids[i]]['physical_page'],
+                       all_sheets[ids[i]]['sheet_name'])
+                      for i in range(len(ids)) if ids[i] in all_sheets]
+        physical_pages = [p for _, p, _ in pages_info]
+
+        # Check for HAZOP objects on these pages
+        objects = self.db.objects_on_pages(physical_pages)
+        affected_lines = []
+        for sheet_id, phys, name in pages_info:
+            obj = objects.get(phys, {})
+            parts = []
+            if obj.get('markups'):
+                parts.append(f"{obj['markups']} nodmarkering{'ar' if obj['markups'] != 1 else ''}")
+            if obj.get('causes'):
+                parts.append(f"{obj['causes']} orsak{'er' if obj['causes'] != 1 else ''}")
+            if obj.get('consequences'):
+                parts.append(f"{obj['consequences']} konsekvens{'er' if obj['consequences'] != 1 else ''}")
+            if obj.get('safeguards'):
+                parts.append(f"{obj['safeguards']} safeguard{'s' if obj['safeguards'] != 1 else ''}")
+            if parts:
+                affected_lines.append(f"• {name}: {', '.join(parts)}")
+
+        if affected_lines:
+            detail = "\n".join(affected_lines)
+            box = QMessageBox(self)
+            box.setWindowTitle("Ta bort blad")
+            box.setIcon(QMessageBox.Icon.Warning)
+            count = len(selected)
+            box.setText(
+                f"{'Dessa blad innehåller' if count > 1 else 'Detta blad innehåller'} "
+                f"HAZOP-objekt som kommer tas bort:")
+            box.setInformativeText(detail)
+            box.setStandardButtons(
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            box.setDefaultButton(QMessageBox.StandardButton.No)
+            box.button(QMessageBox.StandardButton.Yes).setText("Ta bort ändå")
+            box.button(QMessageBox.StandardButton.No).setText("Avbryt")
+            if box.exec() != QMessageBox.StandardButton.Yes:
+                return
+        else:
+            count = len(selected)
+            msg = (f"Ta bort {count} blad?" if count > 1
+                   else f"Ta bort '{all_sheets[ids[0]]['sheet_name']}'?")
+            ans = QMessageBox.question(self, "Ta bort blad", msg,
+                                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+
         self.db.delete_sheets(ids)
         self.refresh()
         self.sheets_changed.emit()
