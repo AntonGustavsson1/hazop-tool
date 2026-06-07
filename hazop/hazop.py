@@ -757,6 +757,7 @@ class Database:
             "ALTER TABLE cause_markers ADD COLUMN component_tag TEXT DEFAULT ''",
             "ALTER TABLE standard_causes ADD COLUMN comp_type TEXT DEFAULT ''",
             "ALTER TABLE standard_causes ADD COLUMN frequency REAL DEFAULT NULL",
+            "ALTER TABLE causes ADD COLUMN standard_cause_id INTEGER DEFAULT NULL",
         ]:
             try:
                 self.conn.execute(sql)
@@ -1690,7 +1691,8 @@ class Database:
 
     _SENTINEL = object()
 
-    def update_cause(self, id_, description=None, likelihood=None, base_freq=_SENTINEL):
+    def update_cause(self, id_, description=None, likelihood=None, base_freq=_SENTINEL,
+                     standard_cause_id=_SENTINEL):
         sets, vals = [], []
         if description is not None:
             sets.append("description=?"); vals.append(description)
@@ -1698,10 +1700,28 @@ class Database:
             sets.append("likelihood=?"); vals.append(likelihood)
         if base_freq is not Database._SENTINEL:
             sets.append("base_freq=?"); vals.append(base_freq)
+        if standard_cause_id is not Database._SENTINEL:
+            sets.append("standard_cause_id=?"); vals.append(standard_cause_id)
         if sets:
             vals.append(id_)
             self.conn.execute(f"UPDATE causes SET {', '.join(sets)} WHERE id=?", vals)
             self.conn.commit()
+
+    def update_cause_freqs_from_standard(self):
+        """Overwrite base_freq on all causes linked to a standard cause that has a frequency."""
+        self.conn.execute("""
+            UPDATE causes
+            SET base_freq = (
+                SELECT frequency FROM standard_causes WHERE id = causes.standard_cause_id
+            )
+            WHERE standard_cause_id IS NOT NULL
+              AND EXISTS (
+                SELECT 1 FROM standard_causes
+                WHERE id = causes.standard_cause_id AND frequency IS NOT NULL
+              )
+        """)
+        self.conn.commit()
+        return self.conn.execute("SELECT changes()").fetchone()[0]
 
     def update_consequence(self, id_, description, severity, category='',
                            consequence_chain=''):
@@ -5634,6 +5654,15 @@ class StandardCausesSettingsPanel(QWidget):
         cause_btns.addStretch()
         right.addLayout(cause_btns)
 
+        btn_sync = QPushButton("Synkronisera frekvenser → orsaker")
+        btn_sync.setToolTip(
+            "Skriver över frekvensen på alla orsaker som skapades från standardorsaker "
+            "med det aktuella värdet i denna lista.\n"
+            "Orsaker utan koppling till standardorsak påverkas inte.\n"
+            "Standardorsaker utan frekvens påverkas inte.")
+        btn_sync.clicked.connect(self._sync_freqs)
+        right.addWidget(btn_sync)
+
         layout.addLayout(left, 1)
         layout.addLayout(right, 2)
 
@@ -5811,6 +5840,21 @@ class StandardCausesSettingsPanel(QWidget):
         if dev_id:
             self._load_causes(dev_id)
         self._cause_table.setCurrentCell(new_row, 0)
+
+    def _sync_freqs(self):
+        ret = QMessageBox.warning(
+            self, "Synkronisera frekvenser",
+            "Alla orsaker som skapades från standardorsaker kommer att få sin frekvens "
+            "uppdaterad till det aktuella värdet i standardorsakslistan.\n\n"
+            "Orsaker utan koppling till standardorsak påverkas inte.\n"
+            "Standardorsaker utan frekvens påverkas inte.\n\n"
+            "Vill du fortsätta?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ret == QMessageBox.StandardButton.Yes:
+            n = self.db.update_cause_freqs_from_standard()
+            QMessageBox.information(self, "Klart", f"{n} orsak(er) uppdaterades.")
 
 
 class ComponentCausesSettingsPanel(QWidget):

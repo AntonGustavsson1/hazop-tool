@@ -2820,7 +2820,8 @@ class TemplateCausePickerDialog(QDialog):
         self._all_causes        = list(standard_causes)   # full list, each row has comp_type field
         self._std_rbs           = []                       # dynamically created primary radio buttons
         self._chosen            = None
-        self._chosen_std_freq   = None                     # frequency from chosen standard cause
+        self._chosen_std_freq      = None   # frequency from chosen standard cause
+        self._chosen_std_cause_id  = None   # id in standard_causes table
         self._comp_type         = ''
         self._comp_tag          = ''
         self._wants_secondary   = False
@@ -2955,6 +2956,7 @@ class TemplateCausePickerDialog(QDialog):
             rb = QRadioButton(c['description'])
             rb.setProperty('cause_desc', c['description'])
             rb.setProperty('cause_freq', dict(c).get('frequency'))
+            rb.setProperty('cause_id',   dict(c).get('id'))
             self._group.addButton(rb, i)
             self._cause_layout.addWidget(rb)
             self._std_rbs.append(rb)
@@ -3010,7 +3012,8 @@ class TemplateCausePickerDialog(QDialog):
         # Frequency from standard cause (None for free-text entries)
         btn2 = self._group.checkedButton()
         raw_desc = btn2.property('cause_desc') if btn2 else None
-        self._chosen_std_freq = btn2.property('cause_freq') if (btn2 and raw_desc is not None) else None
+        self._chosen_std_freq     = btn2.property('cause_freq') if (btn2 and raw_desc is not None) else None
+        self._chosen_std_cause_id = btn2.property('cause_id')   if (btn2 and raw_desc is not None) else None
         self.accept()
 
     @property
@@ -3020,6 +3023,10 @@ class TemplateCausePickerDialog(QDialog):
     @property
     def chosen_std_cause_freq(self):
         return self._chosen_std_freq
+
+    @property
+    def chosen_std_cause_id(self):
+        return self._chosen_std_cause_id
 
     @property
     def component_type(self):
@@ -4129,10 +4136,12 @@ class PIDPanel(QWidget):
             return
         self.db.update_cause(cause_id, label)
 
-        # Store standard cause frequency as base_freq so risk matrix can use it
-        std_freq = dlg.chosen_std_cause_freq
-        if std_freq is not None:
-            self.db.update_cause(cause_id, base_freq=std_freq)
+        # Store standard cause frequency + ID so risk matrix and sync can use them
+        std_freq     = dlg.chosen_std_cause_freq
+        std_cause_id = dlg.chosen_std_cause_id
+        if std_freq is not None or std_cause_id is not None:
+            self.db.update_cause(cause_id, base_freq=std_freq,
+                                 standard_cause_id=std_cause_id)
 
         pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
         self.db.add_cause_marker(cause_id, page, pdf_x, pdf_y, comp_type, tag)
@@ -4209,9 +4218,11 @@ class PIDPanel(QWidget):
             QMessageBox.critical(self, "Databasfel", f"Kunde inte skapa orsak:\n{e}")
             return
         self.db.update_cause(cause_id, label)
-        std_freq = dlg.chosen_std_cause_freq
-        if std_freq is not None:
-            self.db.update_cause(cause_id, base_freq=std_freq)
+        std_freq     = dlg.chosen_std_cause_freq
+        std_cause_id = dlg.chosen_std_cause_id
+        if std_freq is not None or std_cause_id is not None:
+            self.db.update_cause(cause_id, base_freq=std_freq,
+                                 standard_cause_id=std_cause_id)
         self.cause_template_created.emit(cause_id)
 
         # If user wants secondary again, queue it
