@@ -1511,6 +1511,16 @@ class Database:
         return self.conn.execute(
             "SELECT * FROM causes WHERE deviation_id=? ORDER BY id", (deviation_id,)).fetchall()
 
+    def causes_for_node_excluding_deviation(self, node_id, deviation_id):
+        """Return causes for the node that belong to OTHER deviations (for reuse dialog)."""
+        return self.conn.execute(
+            "SELECT c.id, c.description, d.description AS deviation_name, d.id AS deviation_id "
+            "FROM causes c "
+            "JOIN deviations d ON c.deviation_id = d.id "
+            "WHERE d.node_id=? AND d.id!=? "
+            "ORDER BY d.id, c.id",
+            (node_id, deviation_id)).fetchall()
+
     def add_deviation(self, node_id, description="Övrigt"):
         cur = self.conn.execute(
             "INSERT INTO deviations (node_id, description) VALUES (?,?)", (node_id, description))
