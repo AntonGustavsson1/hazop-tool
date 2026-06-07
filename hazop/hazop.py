@@ -1395,6 +1395,15 @@ class Database:
                 (disp_order, row['id']))
         self.conn.commit()
 
+    def delete_objects_on_pages(self, physical_pages):
+        """Delete all P&ID placements (markers and node markups) on the given physical pages."""
+        for page in physical_pages:
+            self.conn.execute("DELETE FROM node_markups WHERE pid_page=?", (page,))
+            self.conn.execute("DELETE FROM cause_markers WHERE pid_page=?", (page,))
+            self.conn.execute("DELETE FROM consequence_markers WHERE pid_page=?", (page,))
+            self.conn.execute("DELETE FROM safeguard_markers WHERE pid_page=?", (page,))
+        self.conn.commit()
+
     def objects_on_pages(self, physical_pages):
         """Return counts of HAZOP objects on the given physical page numbers.
         Returns dict: physical_page -> {markups, causes, consequences, safeguards}."""
@@ -7961,6 +7970,7 @@ class PIDManagementPanel(QWidget):
             if ans != QMessageBox.StandardButton.Yes:
                 return
 
+        self.db.delete_objects_on_pages(physical_pages)
         self.db.delete_sheets(ids)
         self.refresh()
         self.sheets_changed.emit()
@@ -9258,19 +9268,15 @@ class MainWindow(QMainWindow):
         self.scenario_panel.clear()
 
     def _on_sheets_changed(self):
-        """Rebuild PID viewer sheet map after sheets are deleted."""
+        """Rebuild PID viewer sheet map and reload current page after sheets are deleted."""
         pp = self.pid_panel
         pp._rebuild_sheet_map()
         total = len(pp._sheet_map)
         if total == 0:
             pp._update_page_label()
             return
-        if pp._current_display_page >= total:
-            pp._current_display_page = total - 1
-        physical = pp._sheet_map.get(pp._current_display_page, pp._current_display_page)
-        pp.viewer.goto_page(physical)
-        pp._update_page_label()
-        pp._load_overlays()
+        new_page = min(pp._current_display_page, total - 1)
+        pp._goto_page(new_page)
 
     def _on_pid_analysis_done(self):
         """Switch to Settings → Identifierade objekt after P&ID analysis."""
