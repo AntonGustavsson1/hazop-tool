@@ -3853,15 +3853,15 @@ class TemplateCausePickerDialog(QDialog):
                 item.widget().hide()
                 item.widget().setParent(None)
 
-        # Filter: when a type is selected show ONLY that type's causes.
-        # Fallback to generic (comp_type='') when no specific causes exist for this combination.
+        # Filter: only show causes marked for use in cause form.
+        # When a component type is selected, prefer type-specific causes; fall back to generic.
+        active = [c for c in self._all_causes if dict(c).get('use_in_cause_form', 1)]
         if comp_type:
-            filtered = [c for c in self._all_causes
-                        if dict(c).get('comp_type', '') == comp_type]
+            filtered = [c for c in active if dict(c).get('comp_type', '') == comp_type]
             if not filtered:
-                filtered = [c for c in self._all_causes if not dict(c).get('comp_type', '')]
+                filtered = [c for c in active if not dict(c).get('comp_type', '')]
         else:
-            filtered = [c for c in self._all_causes if not dict(c).get('comp_type', '')]
+            filtered = [c for c in active if not dict(c).get('comp_type', '')]
 
         first_rb = None
         for i, c in enumerate(filtered):

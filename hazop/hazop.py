@@ -760,6 +760,7 @@ class Database:
             "ALTER TABLE cause_markers ADD COLUMN component_tag TEXT DEFAULT ''",
             "ALTER TABLE standard_causes ADD COLUMN comp_type TEXT DEFAULT ''",
             "ALTER TABLE standard_causes ADD COLUMN frequency REAL DEFAULT NULL",
+            "ALTER TABLE standard_causes ADD COLUMN use_in_cause_form INTEGER DEFAULT 1",
             "ALTER TABLE causes ADD COLUMN standard_cause_id INTEGER DEFAULT NULL",
             "ALTER TABLE safeguards ADD COLUMN sg_type TEXT DEFAULT 'Övrigt'",
             "ALTER TABLE node_markups ADD COLUMN font_size INTEGER DEFAULT 12",
@@ -1675,6 +1676,8 @@ class Database:
             sets.append("description=?"); vals.append(description)
         if 'frequency' in kwargs:
             sets.append("frequency=?"); vals.append(kwargs['frequency'])
+        if 'use_in_cause_form' in kwargs:
+            sets.append("use_in_cause_form=?"); vals.append(kwargs['use_in_cause_form'])
         if sets:
             vals.append(id_)
             self.conn.execute(f"UPDATE standard_causes SET {', '.join(sets)} WHERE id=?", vals)
@@ -6665,14 +6668,17 @@ class StandardCausesSettingsPanel(QWidget):
         self._causes_label = QLabel("<b>Standardorsaker</b>")
         right.addWidget(self._causes_label)
 
-        self._cause_table = QTableWidget(0, 3)
-        self._cause_table.setHorizontalHeaderLabels(["Beskrivning", "Frekvens/år", "F-nivå"])
+        self._cause_table = QTableWidget(0, 4)
+        self._cause_table.setHorizontalHeaderLabels(
+            ["Beskrivning", "Frekvens/år", "F-nivå", "Orsaksformulär"])
         chdr = self._cause_table.horizontalHeader()
         chdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         chdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         chdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        chdr.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         self._cause_table.setColumnWidth(1, 90)
         self._cause_table.setColumnWidth(2, 72)
+        self._cause_table.setColumnWidth(3, 110)
         self._cause_table.verticalHeader().setVisible(False)
         self._cause_table.setSelectionBehavior(
             QTableWidget.SelectionBehavior.SelectRows)
@@ -6737,11 +6743,13 @@ class StandardCausesSettingsPanel(QWidget):
 
     def _load_causes(self, dev_id):
         self._loading = True
+        self._cause_table.blockSignals(True)
         self._cause_table.setRowCount(0)
         for c in self.db.standard_causes(dev_id):
             cd   = dict(c)
             comp = cd.get('comp_type', '') or ''
             freq = cd.get('frequency')
+            use_in_form = bool(cd.get('use_in_cause_form', 1))
             label = f"[{comp}]  {cd['description']}" if comp else cd['description']
 
             row = self._cause_table.rowCount()
@@ -6762,6 +6770,22 @@ class StandardCausesSettingsPanel(QWidget):
             item2.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             item2.setFlags(item2.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self._cause_table.setItem(row, 2, item2)
+
+            # Checkbox for "Använd i orsaksformulär"
+            chk = QCheckBox()
+            chk.setChecked(use_in_form)
+            cid_ = cd['id']
+            chk.stateChanged.connect(
+                lambda state, _cid=cid_:
+                    self.db.update_standard_cause(_cid, use_in_cause_form=1 if state else 0))
+            cell_w = QWidget()
+            cell_lay = QHBoxLayout(cell_w)
+            cell_lay.setContentsMargins(0, 0, 0, 0)
+            cell_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            cell_lay.addWidget(chk)
+            self._cause_table.setCellWidget(row, 3, cell_w)
+
+        self._cause_table.blockSignals(False)
         self._loading = False
 
     def _current_dev_id(self):
@@ -6783,7 +6807,7 @@ class StandardCausesSettingsPanel(QWidget):
             self._causes_label.setText(f"<b>Standardorsaker — {item.text()}</b>")
             self._load_causes(dev_id)
         else:
-            self._cause_list.clear()
+            self._cause_table.setRowCount(0)
 
     def _add_deviation(self):
         name, ok = QInputDialog.getText(self, "Ny avvikelse", "Namn:")
@@ -6898,144 +6922,6 @@ class StandardCausesSettingsPanel(QWidget):
         if ret == QMessageBox.StandardButton.Yes:
             n = self.db.update_cause_freqs_from_standard()
             QMessageBox.information(self, "Klart", f"{n} orsak(er) uppdaterades.")
-
-
-class ComponentCausesSettingsPanel(QWidget):
-    """Edit standard causes grouped by component type (felmoder per komponent)."""
-
-    def __init__(self, db, parent=None):
-        super().__init__(parent)
-        self.db = db
-        self._loading = False
-
-        layout = QHBoxLayout(self)
-
-        # ── Left: component type list ─────────────────────────────────────────
-        left = QVBoxLayout()
-        left.addWidget(QLabel("<b>Komponenttyp</b>"))
-        self._type_list = QListWidget()
-        self._type_list.currentRowChanged.connect(self._on_type_selected)
-        left.addWidget(self._type_list)
-        layout.addLayout(left, 1)
-
-        # ── Right: causes for selected component type ─────────────────────────
-        right = QVBoxLayout()
-        self._causes_label = QLabel("<b>Felmoder</b>")
-        right.addWidget(self._causes_label)
-
-        self._cause_tbl = QTableWidget(0, 2)
-        self._cause_tbl.setHorizontalHeaderLabels(["Avvikelse", "Orsak / Felmod"])
-        self._cause_tbl.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.Interactive)
-        self._cause_tbl.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.Stretch)
-        self._cause_tbl.setColumnWidth(0, 160)
-        self._cause_tbl.verticalHeader().setVisible(False)
-        self._cause_tbl.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self._cause_tbl.setStyleSheet(
-            "QHeaderView::section{background:#1F4E79;color:#fff;font-weight:bold;padding:4px;}")
-        self._cause_tbl.itemChanged.connect(self._on_cause_edited)
-        right.addWidget(self._cause_tbl)
-
-        btn_row = QHBoxLayout()
-        btn_add = QPushButton("+ Lägg till felmod")
-        btn_add.clicked.connect(self._add_cause)
-        btn_del = QPushButton("− Ta bort")
-        btn_del.clicked.connect(self._del_cause)
-        for b in (btn_add, btn_del):
-            btn_row.addWidget(b)
-        btn_row.addStretch()
-        right.addLayout(btn_row)
-        layout.addLayout(right, 3)
-
-        self._load_types()
-
-    def _load_types(self):
-        cur = self._type_list.currentRow()
-        self._type_list.clear()
-        for ct in self.db.distinct_comp_types():
-            self._type_list.addItem(ct)
-        if cur >= 0:
-            self._type_list.setCurrentRow(min(cur, self._type_list.count() - 1))
-        elif self._type_list.count():
-            self._type_list.setCurrentRow(0)
-
-    def _current_comp_type(self):
-        item = self._type_list.currentItem()
-        return item.text() if item else None
-
-    def _on_type_selected(self, _row):
-        ct = self._current_comp_type()
-        if ct:
-            self._causes_label.setText(f"<b>Felmoder — {ct}</b>")
-            self._load_causes(ct)
-        else:
-            self._cause_tbl.setRowCount(0)
-
-    def _load_causes(self, comp_type):
-        self._loading = True
-        self._cause_tbl.blockSignals(True)
-        self._cause_tbl.setRowCount(0)
-        for c in self.db.standard_causes_for_comp_type(comp_type):
-            r = self._cause_tbl.rowCount()
-            self._cause_tbl.insertRow(r)
-            dev_item = QTableWidgetItem(c['deviation_name'])
-            dev_item.setFlags(dev_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            dev_item.setForeground(QColor('#555'))
-            dev_item.setData(Qt.ItemDataRole.UserRole, c['id'])
-            dev_item.setData(Qt.ItemDataRole.UserRole + 1, c['deviation_id'])
-            self._cause_tbl.setItem(r, 0, dev_item)
-            desc_item = QTableWidgetItem(c['description'])
-            desc_item.setData(Qt.ItemDataRole.UserRole, c['id'])
-            self._cause_tbl.setItem(r, 1, desc_item)
-        self._cause_tbl.blockSignals(False)
-        self._loading = False
-
-    def _on_cause_edited(self, item):
-        if self._loading or item.column() != 1:
-            return
-        cid = item.data(Qt.ItemDataRole.UserRole)
-        if cid:
-            self.db.update_standard_cause(cid, item.text())
-
-    def _add_cause(self):
-        ct = self._current_comp_type()
-        if not ct:
-            return
-        devs = self.db.standard_deviations()
-        if not devs:
-            QMessageBox.information(self, "Inga avvikelser",
-                "Lägg till standardavvikelser under fliken Standardorsaker först.")
-            return
-        dev_names = [d['description'] for d in devs]
-        dev_name, ok = QInputDialog.getItem(
-            self, "Välj avvikelse", "Avvikelse:", dev_names, 0, False)
-        if not ok:
-            return
-        desc, ok2 = QInputDialog.getText(
-            self, "Ny felmod", f"Orsak / felmod för {ct}:")
-        if not ok2 or not desc.strip():
-            return
-        dev_row = next((d for d in devs if d['description'] == dev_name), None)
-        if not dev_row:
-            return
-        self.db.add_standard_cause_for_comp_type(dev_row['id'], desc.strip(), ct)
-        self._load_causes(ct)
-
-    def _del_cause(self):
-        row = self._cause_tbl.currentRow()
-        if row < 0:
-            return
-        cid = self._cause_tbl.item(row, 0).data(Qt.ItemDataRole.UserRole)
-        if cid is None:
-            return
-        self.db.delete_standard_cause(cid)
-        ct = self._current_comp_type()
-        if ct:
-            self._load_causes(ct)
-
-    def refresh(self):
-        self._load_types()
 
 
 class SettingsPanel(QWidget):
@@ -7230,10 +7116,6 @@ class SettingsPanel(QWidget):
         # ── Tab: Standardavvikelser & Orsaker ─────────────────────────────────
         self._std_causes_panel = StandardCausesSettingsPanel(self.db)
         tabs.addTab(self._std_causes_panel, "Standardorsaker")
-
-        # ── Tab: Felmoder per komponent ────────────────────────────────────────
-        self._comp_causes_panel = ComponentCausesSettingsPanel(self.db)
-        tabs.addTab(self._comp_causes_panel, "Felmoder")
 
         self._load_all()
 
