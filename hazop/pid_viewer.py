@@ -2008,18 +2008,55 @@ class SmartPipeTracer:
         self.width  = pix.width
         self.height = pix.height
         self._data  = bytearray(pix.samples)   # flat greyscale bytes
+        self._tmask = self._build_text_mask(page)   # pixels inside text bboxes
 
     # ------------------------------------------------------------------ helpers
 
+    def _build_text_mask(self, page):
+        """
+        Return a bytearray (same size as image) where 1 = inside a text bbox.
+        Uses PyMuPDF text extraction — works on vector P&IDs natively.
+        For scanned rasters with no text layer the result is all-zero (no effect).
+        """
+        mask = bytearray(self.width * self.height)
+        pad  = max(2, int(4 * self.TRACE_SCALE))  # pixel padding around each bbox
+        try:
+            blocks = page.get_text("dict", flags=0)["blocks"]
+            for block in blocks:
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        bx0, by0, bx1, by1 = span["bbox"]
+                        # Convert PDF coords → tracer pixel coords and expand
+                        px0 = max(0,            int(bx0 * self.TRACE_SCALE) - pad)
+                        py0 = max(0,            int(by0 * self.TRACE_SCALE) - pad)
+                        px1 = min(self.width,   int(bx1 * self.TRACE_SCALE) + pad + 1)
+                        py1 = min(self.height,  int(by1 * self.TRACE_SCALE) + pad + 1)
+                        W = self.width
+                        for y in range(py0, py1):
+                            base = y * W
+                            for x in range(px0, px1):
+                                mask[base + x] = 1
+        except Exception:
+            pass  # if extraction fails, proceed without masking (graceful degradation)
+        return mask
+
     def _is_dark(self, x, y):
+        """Raw dark-pixel check (no text exclusion)."""
         if 0 <= x < self.width and 0 <= y < self.height:
             return self._data[y * self.width + x] < self.DARK_THRESHOLD
+        return False
+
+    def _is_pipe(self, x, y):
+        """True only if pixel is dark AND not inside a text bounding box."""
+        if 0 <= x < self.width and 0 <= y < self.height:
+            idx = y * self.width + x
+            return self._data[idx] < self.DARK_THRESHOLD and not self._tmask[idx]
         return False
 
     def _nearest_dark(self, x, y, radius=15):
         """Spiral-search for nearest dark pixel within radius."""
         x, y = int(x), int(y)
-        if self._is_dark(x, y):
+        if self._is_pipe(x, y):
             return (x, y)
         best, best_d2 = None, radius * radius + 1
         for r in range(1, radius + 1):
@@ -2028,13 +2065,13 @@ class SmartPipeTracer:
                     nx, ny = x + dx, y + sign * r
                     if 0 <= nx < self.width and 0 <= ny < self.height:
                         d2 = dx * dx + r * r
-                        if d2 < best_d2 and self._is_dark(nx, ny):
+                        if d2 < best_d2 and self._is_pipe(nx, ny):
                             best, best_d2 = (nx, ny), d2
                 for dy in range(-r + 1, r):
                     ny, nx = y + dy, x + sign * r
                     if 0 <= nx < self.width and 0 <= ny < self.height:
                         d2 = r * r + dy * dy
-                        if d2 < best_d2 and self._is_dark(nx, ny):
+                        if d2 < best_d2 and self._is_pipe(nx, ny):
                             best, best_d2 = (nx, ny), d2
         return best
 
@@ -2092,8 +2129,9 @@ class SmartPipeTracer:
         came_from = {start: None}
         explored  = 0
         W = self.width
-        data = self._data
-        thr  = self.DARK_THRESHOLD
+        data  = self._data
+        tmask = self._tmask
+        thr   = self.DARK_THRESHOLD
 
         while open_h and explored < self.MAX_EXPLORE:
             _, _, cur = heapq.heappop(open_h)
@@ -2114,7 +2152,7 @@ class SmartPipeTracer:
                     nx, ny = cx + dx, cy + dy
                     if nx < 0 or nx >= self.width or ny < 0 or ny >= self.height:
                         continue
-                    if data[ny * W + nx] >= thr:
+                    if data[ny * W + nx] >= thr or tmask[ny * W + nx]:
                         continue
                     nb = (nx, ny)
                     if nb in blocked:
@@ -2140,7 +2178,7 @@ class SmartPipeTracer:
                         jx, jy = cx + ndx * gap, cy + ndy * gap
                         if not (0 <= jx < self.width and 0 <= jy < self.height):
                             break
-                        if data[jy * W + jx] < thr:
+                        if data[jy * W + jx] < thr and not tmask[jy * W + jx]:
                             jb = (jx, jy)
                             if jb not in blocked:
                                 ng = gc + gap * step_base * 0.85  # slight bonus for jumping
