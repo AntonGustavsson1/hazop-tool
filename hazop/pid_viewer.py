@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QLineEdit, QLabel, QPushButton, QDialogButtonBox, QRadioButton,
     QGraphicsView, QGraphicsScene, QGraphicsItem,
     QGraphicsPixmapItem, QGraphicsPathItem, QGraphicsEllipseItem,
-    QGraphicsRectItem, QGraphicsSimpleTextItem, QFrame, QSpinBox, QCheckBox, QGroupBox,
+    QGraphicsRectItem, QGraphicsSimpleTextItem, QFrame, QSpinBox, QAbstractSpinBox, QCheckBox, QGroupBox,
     QSlider, QColorDialog, QFileDialog, QMessageBox, QInputDialog,
     QSizePolicy, QMenu, QTableWidget, QTableWidgetItem, QHeaderView,
     QProgressDialog, QApplication, QGridLayout, QTextEdit, QButtonGroup,
@@ -4040,10 +4040,19 @@ class PIDPanel(QWidget):
         self.prev_btn.clicked.connect(lambda: self._goto_page(self._current_display_page - 1))
         bar.addWidget(self.prev_btn)
 
-        self.page_label = QLabel("—")
-        self.page_label.setMinimumWidth(70)
-        self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        bar.addWidget(self.page_label)
+        self.page_spin = QSpinBox()
+        self.page_spin.setRange(1, 1)
+        self.page_spin.setValue(1)
+        self.page_spin.setFixedWidth(48)
+        self.page_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.page_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.page_spin.setToolTip("Skriv sidnummer och tryck Enter för att navigera")
+        self.page_spin.editingFinished.connect(self._on_page_spin_changed)
+        bar.addWidget(self.page_spin)
+
+        self.page_total_label = QLabel("/ —")
+        self.page_total_label.setMinimumWidth(35)
+        bar.addWidget(self.page_total_label)
 
         self.next_btn = QPushButton("▶")
         self.next_btn.setFixedWidth(28)
@@ -4665,13 +4674,24 @@ class PIDPanel(QWidget):
         self._update_page_label()
         self._load_overlays()
 
+    def _on_page_spin_changed(self):
+        self._goto_page(self.page_spin.value() - 1)
+
     def _update_page_label(self):
         total = len(self._sheet_map) if self._sheet_map else (
             self.db.get_display_page_count() or self.viewer.page_count())
         if total > 0:
-            self.page_label.setText(f"{self._current_display_page + 1} / {total}")
+            self.page_spin.blockSignals(True)
+            self.page_spin.setRange(1, total)
+            self.page_spin.setValue(self._current_display_page + 1)
+            self.page_spin.blockSignals(False)
+            self.page_total_label.setText(f"/ {total}")
         else:
-            self.page_label.setText("—")
+            self.page_spin.blockSignals(True)
+            self.page_spin.setRange(1, 1)
+            self.page_spin.setValue(1)
+            self.page_spin.blockSignals(False)
+            self.page_total_label.setText("/ —")
 
     def navigate_to_marker(self, physical_page, x_pdf, y_pdf):
         """Navigate to the page containing a marker and zoom in on it."""
