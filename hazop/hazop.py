@@ -5585,12 +5585,14 @@ class StandardCausesSettingsPanel(QWidget):
         self._causes_label = QLabel("<b>Standardorsaker</b>")
         right.addWidget(self._causes_label)
 
-        self._cause_table = QTableWidget(0, 2)
-        self._cause_table.setHorizontalHeaderLabels(["Beskrivning", "Frekvens/år"])
+        self._cause_table = QTableWidget(0, 3)
+        self._cause_table.setHorizontalHeaderLabels(["Beskrivning", "Frekvens/år", "F-nivå"])
         chdr = self._cause_table.horizontalHeader()
         chdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         chdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        chdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         self._cause_table.setColumnWidth(1, 90)
+        self._cause_table.setColumnWidth(2, 72)
         self._cause_table.verticalHeader().setVisible(False)
         self._cause_table.setSelectionBehavior(
             QTableWidget.SelectionBehavior.SelectRows)
@@ -5637,6 +5639,16 @@ class StandardCausesSettingsPanel(QWidget):
         elif self._dev_list.count():
             self._dev_list.setCurrentRow(0)
 
+    @staticmethod
+    def _f_cell(freq):
+        """Return (text, bg_color) for the F-nivå column given a frequency (or None)."""
+        if freq is None:
+            return "—", "#f5f5f5"
+        f_val = freq_to_f_level(freq)
+        lbl   = freq_axis_label(f_val)
+        _, bg, _ = risk_info(f_val, 1)   # C=1 just to get the freq-axis colour
+        return lbl, bg
+
     def _load_causes(self, dev_id):
         self._loading = True
         self._cause_table.setRowCount(0)
@@ -5659,6 +5671,13 @@ class StandardCausesSettingsPanel(QWidget):
             item1.setData(Qt.ItemDataRole.UserRole, cd['id'])
             item1.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self._cause_table.setItem(row, 1, item1)
+
+            f_text, f_bg = self._f_cell(freq)
+            item2 = QTableWidgetItem(f_text)
+            item2.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            item2.setFlags(item2.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            item2.setBackground(QColor(f_bg))
+            self._cause_table.setItem(row, 2, item2)
         self._loading = False
 
     def _current_dev_id(self):
@@ -5701,7 +5720,7 @@ class StandardCausesSettingsPanel(QWidget):
             return
         self.db.delete_standard_deviation(dev_id)
         self._load_deviations()
-        self._cause_list.clear()
+        self._cause_table.setRowCount(0)
 
     def _move_deviation(self, direction):
         row = self._dev_list.currentRow()
@@ -5736,6 +5755,18 @@ class StandardCausesSettingsPanel(QWidget):
             except ValueError:
                 freq = None
             self.db.update_standard_cause(cid, frequency=freq)
+            # Refresh F-nivå column (col 2) in same row
+            f_text, f_bg = self._f_cell(freq)
+            self._loading = True
+            item2 = self._cause_table.item(item.row(), 2)
+            if item2 is None:
+                item2 = QTableWidgetItem()
+                item2.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                item2.setFlags(item2.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self._cause_table.setItem(item.row(), 2, item2)
+            item2.setText(f_text)
+            item2.setBackground(QColor(f_bg))
+            self._loading = False
 
     def _add_cause(self):
         dev_id = self._current_dev_id()
