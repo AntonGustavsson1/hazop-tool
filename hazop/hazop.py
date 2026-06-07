@@ -1761,6 +1761,25 @@ class Database:
                           (int(visible), node_id))
         self.conn.commit()
 
+    def has_node_markups(self, node_id) -> bool:
+        r = self.conn.execute(
+            "SELECT COUNT(*) FROM node_markups WHERE node_id=?", (node_id,)).fetchone()
+        return r[0] > 0
+
+    def has_visible_node_markups(self, node_id) -> bool:
+        r = self.conn.execute(
+            "SELECT COUNT(*) FROM node_markups WHERE node_id=? AND visible=1",
+            (node_id,)).fetchone()
+        return r[0] > 0
+
+    def get_node_number(self, node_id) -> int:
+        """Return 1-based position of node_id in creation order (0 if not found)."""
+        rows = self.conn.execute("SELECT id FROM nodes ORDER BY id").fetchall()
+        for i, r in enumerate(rows, 1):
+            if r[0] == node_id:
+                return i
+        return 0
+
     def sync_node_text_markups(self, node_id, new_name):
         """Update label of all 'text' type markups for a node to match its new name."""
         self.conn.execute(
@@ -2240,10 +2259,10 @@ class NodePanel(QWidget):
         layout.setSpacing(6)
         layout.setContentsMargins(10, 10, 10, 10)
 
-        title = QLabel("Nod")
+        self._title_lbl = QLabel("Nod")
         f = QFont(); f.setPointSize(12); f.setBold(True)
-        title.setFont(f)
-        layout.addWidget(title)
+        self._title_lbl.setFont(f)
+        layout.addWidget(self._title_lbl)
         sep = QLabel(); sep.setFixedHeight(1); sep.setStyleSheet("background:#ddd;")
         layout.addWidget(sep)
 
@@ -2299,6 +2318,8 @@ class NodePanel(QWidget):
 
     def load(self, node_id):
         self.node_id = node_id
+        n = self.db.get_node_number(node_id)
+        self._title_lbl.setText(f"Nod {n}" if n else "Nod")
         row = self.db.get_node(node_id)
         if row:
             self._loading = True
@@ -3474,9 +3495,14 @@ class MarkupTablePanel(QWidget):
         self.item_vis_toggled.emit(mu_id, new_vis)
 
     def _on_ctx_menu(self, pos):
-        rows = list({self._table.item(idx.row(), 0)
-                     for idx in self._table.selectedIndexes()
-                     if self._table.item(idx.row(), 0)})
+        seen, rows = set(), []
+        for idx in self._table.selectedIndexes():
+            r = idx.row()
+            if r not in seen:
+                seen.add(r)
+                item = self._table.item(r, 0)
+                if item:
+                    rows.append(item)
         if not rows:
             return
         menu = QMenu(self)
@@ -3639,7 +3665,8 @@ class TreePanel(QWidget):
     add_causes_on_pid_requested       = pyqtSignal(int)   # deviation_id
     add_consequences_on_pid_requested = pyqtSignal(int)   # cause_id
     add_safeguards_on_pid_requested   = pyqtSignal(int)   # consequence_id
-    edit_node_markup_requested        = pyqtSignal(int)   # node_id
+    edit_node_markup_requested        = pyqtSignal(int)        # node_id
+    node_markup_vis_requested         = pyqtSignal(int, bool)  # node_id, visible
     structure_changed           = pyqtSignal()
     visibility_changed          = pyqtSignal(str, bool)   # marker_type, visible
     exit_pid_mode_requested     = pyqtSignal()    # exit any active P&ID placement mode
@@ -3937,6 +3964,14 @@ class TreePanel(QWidget):
             menu.addAction("+ Lägg till avvikelse", self.add_deviation)
             menu.addAction("✏️ Editera nodmarkup",
                            lambda i=id_: self.edit_node_markup_requested.emit(i))
+            if self.db.has_node_markups(id_):
+                is_vis = self.db.has_visible_node_markups(id_)
+                if is_vis:
+                    menu.addAction("🙈 Dölj nod på P&ID",
+                                   lambda i=id_: self.node_markup_vis_requested.emit(i, False))
+                else:
+                    menu.addAction("👁 Visa nod på P&ID",
+                                   lambda i=id_: self.node_markup_vis_requested.emit(i, True))
         elif type_ == DEV_T:
             menu.addAction("+ Lägg till orsak", self.add_cause)
             menu.addAction("📍 Lägg till orsaker på P&ID",
@@ -8800,6 +8835,7 @@ class MainWindow(QMainWindow):
         self.tree_panel.add_safeguards_on_pid_requested.connect(
             self._on_add_safeguards_on_pid)
         self.tree_panel.edit_node_markup_requested.connect(self._on_edit_node_markup)
+        self.tree_panel.node_markup_vis_requested.connect(self._on_node_markup_vis)
 
         # Node markup ribbon signals
         self.node_markup_panel.closed.connect(self._on_close_node_markup)
@@ -8817,7 +8853,7 @@ class MainWindow(QMainWindow):
         self.markup_table_panel.item_deleted.connect(
             lambda _: self.pid_panel.refresh_markup_overlays())
         self.markup_table_panel.item_vis_toggled.connect(
-            lambda mu_id, vis: self.pid_panel.refresh_markup_overlays())
+            lambda mu_id, vis: self.pid_panel.viewer.set_markup_item_visible(mu_id, vis))
         self.markup_table_panel.item_selected.connect(
             lambda mu_id: self.pid_panel.viewer.highlight_markup(mu_id))
         self.pid_panel.markup_draw_finished.connect(self._on_markup_draw_finished)
@@ -9105,6 +9141,13 @@ class MainWindow(QMainWindow):
         self._h_splitter.setSizes([260, 650, 370, 0])
         self._v_splitter.setSizes([640, 220, 0])
         self.stack.setCurrentWidget(self.welcome_panel)
+
+    def _on_node_markup_vis(self, node_id, visible):
+        """Tree context menu hide/show all markups for a node."""
+        self.db.set_all_node_markups_visible(node_id, visible)
+        self.pid_panel.refresh_markup_overlays()
+        if self.markup_table_panel.isVisible() and self.markup_table_panel.node_id == node_id:
+            self.markup_table_panel.refresh()
 
     def _on_markup_draw_finished(self, type_, node_id, pts, page, label):
         """New markup drawn on P&ID — save to DB and refresh."""
