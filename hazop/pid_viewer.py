@@ -3013,9 +3013,11 @@ class PIDPanel(QWidget):
         self._active_deviation_id         = None   # set during MODE_CAUSE_TEMPLATE
         self._pending_markup_pts          = None
         self._pending_markup_page         = None
-        self._pending_secondary_cause_id  = None   # set to queue secondary marker after instrument cause
-        self._pending_secondary_comp_type = ''
-        self._pending_secondary_tag       = ''
+        self._pending_secondary_cause_id    = None   # set to queue secondary marker after instrument cause
+        self._pending_secondary_comp_type  = ''
+        self._pending_secondary_tag        = ''
+        self._pending_secondary_deviation_id   = None   # for re-opening dialog after secondary placement
+        self._pending_secondary_preselect_type = ''
         self._current_display_page  = 0
         self._sheet_map: dict       = {}
 
@@ -4072,18 +4074,22 @@ class PIDPanel(QWidget):
 
         # If user clicked "Markera objekt på P&ID", queue secondary marker placement
         if dlg.wants_secondary_placement and dlg.secondary_description:
-            self._pending_secondary_cause_id  = cause_id
-            self._pending_secondary_comp_type = dlg.secondary_comp_type
-            self._pending_secondary_tag       = dlg.secondary_component_tag
+            self._pending_secondary_cause_id       = cause_id
+            self._pending_secondary_comp_type      = dlg.secondary_comp_type
+            self._pending_secondary_tag            = dlg.secondary_component_tag
+            self._pending_secondary_deviation_id   = dev_id
+            self._pending_secondary_preselect_type = dlg.component_type
             self._secondary_lbl.setText(
                 f"Klicka nu på sekundärkomponenten på P&ID:n  —  {dlg.secondary_description}")
             self._secondary_banner.setVisible(True)
 
     def _place_secondary_marker(self, scene_pos, page, suggested_tag=''):
-        """Place the queued secondary marker (e.g. pump that stops due to instrument failure)."""
-        cause_id  = self._pending_secondary_cause_id
-        comp_type = self._pending_secondary_comp_type
-        tag       = suggested_tag or self._pending_secondary_tag
+        """Place the queued secondary marker, then re-open the dialog for the same deviation."""
+        cause_id     = self._pending_secondary_cause_id
+        comp_type    = self._pending_secondary_comp_type
+        tag          = suggested_tag or self._pending_secondary_tag
+        reopen_dev   = self._pending_secondary_deviation_id
+        reopen_type  = self._pending_secondary_preselect_type
         self._cancel_secondary_placement()
 
         pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
@@ -4093,10 +4099,67 @@ class PIDPanel(QWidget):
         self.viewer.add_cause_marker(cause_id, pdf_x, pdf_y, comp_type, label, tag)
         self._load_overlays()
 
+        # Re-open dialog for same deviation so user can continue
+        if reopen_dev:
+            self._open_template_dialog_for_deviation(reopen_dev, reopen_type)
+
+    def _open_template_dialog_for_deviation(self, dev_id, preselect_type=''):
+        """Open TemplateCausePickerDialog without a click position (cause gets no P&ID marker)."""
+        dev = self.db.get_deviation(dev_id)
+        if not dev:
+            return
+        dev_name = dev['description']
+        std_causes = (self.db.standard_causes_for_name(dev_name)
+                      if hasattr(self.db, 'standard_causes_for_name') else [])
+        comp_data       = (self.db.all_component_types_dict()
+                           if hasattr(self.db, 'all_component_types_dict') else None)
+        comp_type_names = list(comp_data.keys()) if comp_data else []
+
+        dlg = TemplateCausePickerDialog(
+            dev_name, std_causes,
+            component_types=comp_type_names,
+            suggested_tag='',
+            preselect_type=preselect_type,
+            parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        cause_desc = dlg.chosen_description
+        comp_type  = dlg.component_type
+        tag        = dlg.component_tag
+        if not cause_desc:
+            return
+
+        parts = []
+        if tag:       parts.append(tag)
+        if comp_type: parts.append(comp_type)
+        label = ((' — '.join(parts) + ': ') if parts else '') + cause_desc
+
+        try:
+            cause_id = self.db.add_cause(dev_id)
+        except Exception as e:
+            QMessageBox.critical(self, "Databasfel", f"Kunde inte skapa orsak:\n{e}")
+            return
+        self.db.update_cause(cause_id, label)
+        self.cause_template_created.emit(cause_id)
+
+        # If user wants secondary again, queue it
+        if dlg.wants_secondary_placement and dlg.secondary_description:
+            self._pending_secondary_cause_id       = cause_id
+            self._pending_secondary_comp_type      = dlg.secondary_comp_type
+            self._pending_secondary_tag            = dlg.secondary_component_tag
+            self._pending_secondary_deviation_id   = dev_id
+            self._pending_secondary_preselect_type = dlg.component_type
+            self._secondary_lbl.setText(
+                f"Klicka nu på sekundärkomponenten på P&ID:n  —  {dlg.secondary_description}")
+            self._secondary_banner.setVisible(True)
+
     def _cancel_secondary_placement(self):
-        self._pending_secondary_cause_id  = None
-        self._pending_secondary_comp_type = ''
-        self._pending_secondary_tag       = ''
+        self._pending_secondary_cause_id       = None
+        self._pending_secondary_comp_type      = ''
+        self._pending_secondary_tag            = ''
+        self._pending_secondary_deviation_id   = None
+        self._pending_secondary_preselect_type = ''
         self._secondary_banner.setVisible(False)
 
     def set_active_node(self, node_id):

@@ -1600,6 +1600,33 @@ class Database:
                 "UPDATE standard_causes SET sort_order=? WHERE id=?", (i, id_))
         self.conn.commit()
 
+    def distinct_comp_types(self):
+        """Return sorted list of all comp_type values used in standard_causes (excl. empty)."""
+        rows = self.conn.execute(
+            "SELECT DISTINCT comp_type FROM standard_causes "
+            "WHERE comp_type != '' ORDER BY comp_type").fetchall()
+        return [r[0] for r in rows]
+
+    def standard_causes_for_comp_type(self, comp_type):
+        """Return all standard_causes for comp_type, annotated with deviation description."""
+        return self.conn.execute(
+            "SELECT sc.id, sc.description, sc.sort_order, sc.comp_type, "
+            "sd.description AS deviation_name, sd.id AS deviation_id "
+            "FROM standard_causes sc "
+            "JOIN standard_deviations sd ON sc.deviation_id = sd.id "
+            "WHERE sc.comp_type=? ORDER BY sd.sort_order, sc.sort_order",
+            (comp_type,)).fetchall()
+
+    def add_standard_cause_for_comp_type(self, deviation_id, description, comp_type):
+        max_ord = (self.conn.execute(
+            "SELECT COALESCE(MAX(sort_order),0) FROM standard_causes WHERE deviation_id=?",
+            (deviation_id,)).fetchone()[0] or 0)
+        cur = self.conn.execute(
+            "INSERT INTO standard_causes (deviation_id, description, sort_order, comp_type)"
+            " VALUES (?,?,?,?)", (deviation_id, description, max_ord + 1, comp_type))
+        self.conn.commit()
+        return cur.lastrowid
+
     def add_cause(self, deviation_id):
         dev = self.get_deviation(deviation_id)
         node_id = dev['node_id'] if dev else None
@@ -5666,6 +5693,144 @@ class StandardCausesSettingsPanel(QWidget):
         self._cause_list.setCurrentRow(new_row)
 
 
+class ComponentCausesSettingsPanel(QWidget):
+    """Edit standard causes grouped by component type (felmoder per komponent)."""
+
+    def __init__(self, db, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self._loading = False
+
+        layout = QHBoxLayout(self)
+
+        # ── Left: component type list ─────────────────────────────────────────
+        left = QVBoxLayout()
+        left.addWidget(QLabel("<b>Komponenttyp</b>"))
+        self._type_list = QListWidget()
+        self._type_list.currentRowChanged.connect(self._on_type_selected)
+        left.addWidget(self._type_list)
+        layout.addLayout(left, 1)
+
+        # ── Right: causes for selected component type ─────────────────────────
+        right = QVBoxLayout()
+        self._causes_label = QLabel("<b>Felmoder</b>")
+        right.addWidget(self._causes_label)
+
+        self._cause_tbl = QTableWidget(0, 2)
+        self._cause_tbl.setHorizontalHeaderLabels(["Avvikelse", "Orsak / Felmod"])
+        self._cause_tbl.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Interactive)
+        self._cause_tbl.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch)
+        self._cause_tbl.setColumnWidth(0, 160)
+        self._cause_tbl.verticalHeader().setVisible(False)
+        self._cause_tbl.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._cause_tbl.setStyleSheet(
+            "QHeaderView::section{background:#1F4E79;color:#fff;font-weight:bold;padding:4px;}")
+        self._cause_tbl.itemChanged.connect(self._on_cause_edited)
+        right.addWidget(self._cause_tbl)
+
+        btn_row = QHBoxLayout()
+        btn_add = QPushButton("+ Lägg till felmod")
+        btn_add.clicked.connect(self._add_cause)
+        btn_del = QPushButton("− Ta bort")
+        btn_del.clicked.connect(self._del_cause)
+        for b in (btn_add, btn_del):
+            btn_row.addWidget(b)
+        btn_row.addStretch()
+        right.addLayout(btn_row)
+        layout.addLayout(right, 3)
+
+        self._load_types()
+
+    def _load_types(self):
+        cur = self._type_list.currentRow()
+        self._type_list.clear()
+        for ct in self.db.distinct_comp_types():
+            self._type_list.addItem(ct)
+        if cur >= 0:
+            self._type_list.setCurrentRow(min(cur, self._type_list.count() - 1))
+        elif self._type_list.count():
+            self._type_list.setCurrentRow(0)
+
+    def _current_comp_type(self):
+        item = self._type_list.currentItem()
+        return item.text() if item else None
+
+    def _on_type_selected(self, _row):
+        ct = self._current_comp_type()
+        if ct:
+            self._causes_label.setText(f"<b>Felmoder — {ct}</b>")
+            self._load_causes(ct)
+        else:
+            self._cause_tbl.setRowCount(0)
+
+    def _load_causes(self, comp_type):
+        self._loading = True
+        self._cause_tbl.blockSignals(True)
+        self._cause_tbl.setRowCount(0)
+        for c in self.db.standard_causes_for_comp_type(comp_type):
+            r = self._cause_tbl.rowCount()
+            self._cause_tbl.insertRow(r)
+            dev_item = QTableWidgetItem(c['deviation_name'])
+            dev_item.setFlags(dev_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            dev_item.setForeground(QColor('#555'))
+            dev_item.setData(Qt.ItemDataRole.UserRole, c['id'])
+            dev_item.setData(Qt.ItemDataRole.UserRole + 1, c['deviation_id'])
+            self._cause_tbl.setItem(r, 0, dev_item)
+            desc_item = QTableWidgetItem(c['description'])
+            desc_item.setData(Qt.ItemDataRole.UserRole, c['id'])
+            self._cause_tbl.setItem(r, 1, desc_item)
+        self._cause_tbl.blockSignals(False)
+        self._loading = False
+
+    def _on_cause_edited(self, item):
+        if self._loading or item.column() != 1:
+            return
+        cid = item.data(Qt.ItemDataRole.UserRole)
+        if cid:
+            self.db.update_standard_cause(cid, item.text())
+
+    def _add_cause(self):
+        ct = self._current_comp_type()
+        if not ct:
+            return
+        devs = self.db.standard_deviations()
+        if not devs:
+            QMessageBox.information(self, "Inga avvikelser",
+                "Lägg till standardavvikelser under fliken Standardorsaker först.")
+            return
+        dev_names = [d['description'] for d in devs]
+        dev_name, ok = QInputDialog.getItem(
+            self, "Välj avvikelse", "Avvikelse:", dev_names, 0, False)
+        if not ok:
+            return
+        desc, ok2 = QInputDialog.getText(
+            self, "Ny felmod", f"Orsak / felmod för {ct}:")
+        if not ok2 or not desc.strip():
+            return
+        dev_row = next((d for d in devs if d['description'] == dev_name), None)
+        if not dev_row:
+            return
+        self.db.add_standard_cause_for_comp_type(dev_row['id'], desc.strip(), ct)
+        self._load_causes(ct)
+
+    def _del_cause(self):
+        row = self._cause_tbl.currentRow()
+        if row < 0:
+            return
+        cid = self._cause_tbl.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        if cid is None:
+            return
+        self.db.delete_standard_cause(cid)
+        ct = self._current_comp_type()
+        if ct:
+            self._load_causes(ct)
+
+    def refresh(self):
+        self._load_types()
+
+
 class SettingsPanel(QWidget):
     matrix_changed = pyqtSignal()
 
@@ -5862,6 +6027,10 @@ class SettingsPanel(QWidget):
         # ── Tab: Standardavvikelser & Orsaker ─────────────────────────────────
         self._std_causes_panel = StandardCausesSettingsPanel(self.db)
         tabs.addTab(self._std_causes_panel, "Standardorsaker")
+
+        # ── Tab: Felmoder per komponent ────────────────────────────────────────
+        self._comp_causes_panel = ComponentCausesSettingsPanel(self.db)
+        tabs.addTab(self._comp_causes_panel, "Felmoder")
 
         self._load_all()
 
