@@ -7495,19 +7495,28 @@ class ReuseDeviationCausesDialog(QDialog):
                 "QPushButton:checked{background:#2980b9;color:white;}"
                 "QPushButton:hover:!checked{background:#d6eaf8;}")
 
+            has_dev_inv = inv_dev_n != dev_n
             inv_dev_btn = QPushButton("Invers avvikelse")
-            inv_dev_btn.setCheckable(True)
-            inv_dev_btn.setToolTip(f"Skapar en orsak med texten: {inv_dev_n}")
-            inv_dev_btn.setStyleSheet(
-                "QPushButton{font-size:10px;padding:2px 6px;border:1px solid #8e44ad;"
-                "border-radius:3px;background:transparent;}"
-                "QPushButton:checked{background:#8e44ad;color:white;}"
-                "QPushButton:hover:!checked{background:#e8daef;}")
+            inv_dev_btn.setCheckable(has_dev_inv)
+            inv_dev_btn.setEnabled(has_dev_inv)
+            if has_dev_inv:
+                inv_dev_btn.setToolTip(f"Skapar en orsak med texten: {inv_dev_n}")
+                inv_dev_btn.setStyleSheet(
+                    "QPushButton{font-size:10px;padding:2px 6px;border:1px solid #8e44ad;"
+                    "border-radius:3px;background:transparent;}"
+                    "QPushButton:checked{background:#8e44ad;color:white;}"
+                    "QPushButton:hover:!checked{background:#e8daef;}")
+            else:
+                inv_dev_btn.setToolTip("Ingen invers hittades för denna avvikelse")
+                inv_dev_btn.setStyleSheet(
+                    "QPushButton{font-size:10px;padding:2px 6px;border:1px solid #ccc;"
+                    "border-radius:3px;color:#aaa;background:transparent;}")
 
             ref_dev_btn.toggled.connect(
                 self._make_ref_handler(dev_key, dev_n, inv_dev_btn, None))
-            inv_dev_btn.toggled.connect(
-                self._make_inv_handler(dev_key, inv_dev_n, ref_dev_btn, None))
+            if has_dev_inv:
+                inv_dev_btn.toggled.connect(
+                    self._make_inv_handler(dev_key, inv_dev_n, ref_dev_btn, None))
 
             hdr_h.addWidget(ref_dev_btn)
             hdr_h.addWidget(inv_dev_btn)
@@ -7542,20 +7551,29 @@ class ReuseDeviationCausesDialog(QDialog):
                     "QPushButton:checked{background:#2980b9;color:white;}"
                     "QPushButton:hover:!checked{background:#d6eaf8;}")
 
+                has_inv = inv_text != orig
                 inv_btn = QPushButton("Invers")
-                inv_btn.setCheckable(True)
+                inv_btn.setCheckable(has_inv)
+                inv_btn.setEnabled(has_inv)
                 inv_btn.setFixedWidth(56)
-                inv_btn.setToolTip(f"Skapar: {inv_text}")
-                inv_btn.setStyleSheet(
-                    "QPushButton{font-size:10px;padding:2px 4px;border:1px solid #8e44ad;"
-                    "border-radius:3px;}"
-                    "QPushButton:checked{background:#8e44ad;color:white;}"
-                    "QPushButton:hover:!checked{background:#e8daef;}")
+                if has_inv:
+                    inv_btn.setToolTip(f"Skapar: {inv_text}")
+                    inv_btn.setStyleSheet(
+                        "QPushButton{font-size:10px;padding:2px 4px;border:1px solid #8e44ad;"
+                        "border-radius:3px;}"
+                        "QPushButton:checked{background:#8e44ad;color:white;}"
+                        "QPushButton:hover:!checked{background:#e8daef;}")
+                else:
+                    inv_btn.setToolTip("Ingen invers hittades för denna orsak")
+                    inv_btn.setStyleSheet(
+                        "QPushButton{font-size:10px;padding:2px 4px;border:1px solid #ccc;"
+                        "border-radius:3px;color:#aaa;background:#f5f5f5;}")
 
                 ref_btn.toggled.connect(
                     self._make_ref_handler(cid, orig, inv_btn, cid))
-                inv_btn.toggled.connect(
-                    self._make_inv_handler(cid, inv_text, ref_btn, cid))
+                if has_inv:
+                    inv_btn.toggled.connect(
+                        self._make_inv_handler(cid, inv_text, ref_btn, cid))
 
                 row_h.addWidget(ref_btn)
                 row_h.addWidget(inv_btn)

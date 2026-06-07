@@ -2757,24 +2757,50 @@ _INSTR_SEC_COMP_TYPES = {
     "Spjäll öppnar":          "Ventil",
 }
 
-# Simultaneous word-swap table for inverting cause descriptions
+# Simultaneous word-swap table for inverting cause descriptions.
+# Sorted longest-first in the regex so e.g. 'stoppar' matches before 'stopp'.
 _INVERSION_MAP = {
-    'högt': 'lågt',   'lågt': 'högt',
-    'Högt': 'Lågt',   'Lågt': 'Högt',
-    'hög': 'låg',     'låg': 'hög',
-    'Hög': 'Låg',     'Låg': 'Hög',
-    'stängd': 'öppen',  'öppen': 'stängd',
-    'Stängd': 'Öppen',  'Öppen': 'Stängd',
-    'stänger': 'öppnar', 'öppnar': 'stänger',
-    'Stänger': 'Öppnar', 'Öppnar': 'Stänger',
-    'stoppar': 'startar', 'startar': 'stoppar',
-    'Stoppar': 'Startar', 'Startar': 'Stoppar',
+    # ── High / low ─────────────────────────────────────────────────────────────
+    'högt': 'lågt',        'lågt': 'högt',
+    'Högt': 'Lågt',        'Lågt': 'Högt',
+    'hög': 'låg',          'låg': 'hög',
+    'Hög': 'Låg',          'Låg': 'Hög',
+    # ── Open / closed — verb (present tense) ────────────────────────────────────
+    'stänger': 'öppnar',   'öppnar': 'stänger',
+    'Stänger': 'Öppnar',   'Öppnar': 'Stänger',
+    # ── Open / closed — adjective common gender ──────────────────────────────────
+    'stängd': 'öppen',     'öppen': 'stängd',
+    'Stängd': 'Öppen',     'Öppen': 'Stängd',
+    # ── Open / closed — adjective neuter gender ──────────────────────────────────
+    'stängt': 'öppet',     'öppet': 'stängt',
+    'Stängt': 'Öppet',     'Öppet': 'Stängt',
+    # ── Open / closed — past participle ("öppnat") ──────────────────────────────
+    'öppnat': 'stängt',    'Öppnat': 'Stängt',
+    # ── Open / closed — noun ────────────────────────────────────────────────────
+    'stängning': 'öppning', 'öppning': 'stängning',
+    'Stängning': 'Öppning', 'Öppning': 'Stängning',
+    # ── Open / closed — English (fail-open / fail-closed) ───────────────────────
+    'closed': 'open',      'open': 'closed',
+    # ── Stop / start — verb (present tense) ─────────────────────────────────────
+    'stoppar': 'startar',  'startar': 'stoppar',
+    'Stoppar': 'Startar',  'Startar': 'Stoppar',
+    # ── Stop / start — noun / compound ──────────────────────────────────────────
+    'stopp': 'start',      'start': 'stopp',
+    'Stopp': 'Start',      'Start': 'Stopp',
 }
-_INVERSION_RE = re.compile('|'.join(re.escape(k) for k in _INVERSION_MAP))
+# Sort keys longest-first so longer tokens (e.g. 'stoppar') match before
+# their shorter prefixes (e.g. 'stopp') in the alternation.
+_INVERSION_RE = re.compile(
+    '|'.join(re.escape(k) for k in sorted(_INVERSION_MAP, key=len, reverse=True))
+)
 
 
 def invert_cause_text(text):
-    """Swap directional Swedish words (högt↔lågt, stänger↔öppnar, etc.) for inverse deviation."""
+    """Swap directional Swedish words for the inverse deviation.
+
+    Returns the original string unchanged if no invertible words were found
+    (caller can compare result == text to detect 'no inverse').
+    """
     return _INVERSION_RE.sub(lambda m: _INVERSION_MAP[m.group(0)], text)
 
 
