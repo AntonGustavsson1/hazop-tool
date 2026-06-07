@@ -3273,6 +3273,7 @@ class PIDPanel(QWidget):
 
         # Connect existing signals for scenario auto-progression
         self.cause_created.connect(self._sc_on_cause)
+        self.cause_template_created.connect(self._sc_on_cause)   # template flow also advances
         self.consequence_created.connect(self._sc_on_consequence)
         self.safeguard_created.connect(self._sc_on_safeguard)
 
@@ -4340,20 +4341,39 @@ class PIDPanel(QWidget):
     # ── Guided Risk Scenario mode ─────────────────────────────────────────────
 
     def start_scenario_mode(self, node_id=None):
-        """Start guided Risk Scenario: Orsak → Konsekvens → Safeguard."""
+        """Start guided Risk Scenario: Välj avvikelse → Orsak → Konsekvens → Safeguard."""
         if node_id:
             self._active_node_id = node_id
         if not self._active_node_id:
             QMessageBox.information(None, "Välj nod",
                 "Välj en nod i trädet eller på P&ID:n innan du startar Risk Scenario.")
             return
+
+        # Pick deviation — standard causes are organised per deviation
+        devs = self.db.deviations(self._active_node_id) if hasattr(self.db, 'deviations') else []
+        if not devs:
+            QMessageBox.information(None, "Inga avvikelser",
+                "Noden har inga avvikelser. Lägg till avvikelser i trädet först.")
+            return
+        dev_labels = [d['description'] for d in devs]
+        choice, ok = QInputDialog.getItem(
+            None, "Välj avvikelse",
+            "Vilken avvikelse gäller scenariot för?",
+            dev_labels, 0, False)
+        if not ok:
+            return
+        chosen = next((d for d in devs if d['description'] == choice), None)
+        if not chosen:
+            return
+        self._active_deviation_id = chosen['id']
+
         self._scenario_active = True
         self._scenario_step   = 1
         self._scenario_banner.setVisible(True)
         self._sc_add_sg_btn.setVisible(False)
         self._sc_finish_btn.setVisible(False)
         self._update_scenario_ui()
-        self._set_mode(MODE_CAUSE)
+        self._set_mode(MODE_CAUSE_TEMPLATE)
 
     def _update_scenario_ui(self):
         step = self._scenario_step
@@ -4371,7 +4391,7 @@ class PIDPanel(QWidget):
                 pill.setStyleSheet(_WAITING)
 
         instructions = {
-            1: "Klicka på orsak/utrustning på P&ID:n",
+            1: "Klicka på utrustning på P&ID:n — välj orsak ur standardlistan",
             2: "Klicka på konsekvens/målobjekt på P&ID:n",
             3: "Klicka på safeguard/barriär på P&ID:n",
         }
