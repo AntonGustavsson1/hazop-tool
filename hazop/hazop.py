@@ -1384,6 +1384,17 @@ class Database:
         self.conn.execute("UPDATE pid_sheets SET sheet_name=? WHERE id=?", (name, id_))
         self.conn.commit()
 
+    def delete_sheets(self, ids):
+        for id_ in ids:
+            self.conn.execute("DELETE FROM pid_sheets WHERE id=?", (id_,))
+        remaining = self.conn.execute(
+            "SELECT id FROM pid_sheets ORDER BY display_order").fetchall()
+        for disp_order, row in enumerate(remaining):
+            self.conn.execute(
+                "UPDATE pid_sheets SET display_order=? WHERE id=?",
+                (disp_order, row['id']))
+        self.conn.commit()
+
     def get_sheet_physical_page(self, display_index):
         row = self.conn.execute(
             "SELECT physical_page FROM pid_sheets ORDER BY display_order "
@@ -7807,12 +7818,25 @@ class PIDManagementPanel(QWidget):
         rename_btn = QPushButton("✏️ Byt namn")
         rename_btn.clicked.connect(self._rename_sheet)
         sheet_hdr.addWidget(rename_btn)
+        delete_btn = QPushButton("🗑 Ta bort")
+        delete_btn.clicked.connect(self._delete_sheets)
+        sheet_hdr.addWidget(delete_btn)
         sheets_layout.addLayout(sheet_hdr)
 
         self._sheet_list = QListWidget()
         self._sheet_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
         self._sheet_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self._sheet_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self._sheet_list.model().rowsMoved.connect(self._on_sheets_reordered)
+        self._sheet_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._sheet_list.customContextMenuRequested.connect(self._sheet_context_menu)
+        _base_kp = self._sheet_list.keyPressEvent
+        def _sheet_key_press(event, _base=_base_kp):
+            if event.key() == Qt.Key.Key_Delete:
+                self._delete_sheets()
+            else:
+                _base(event)
+        self._sheet_list.keyPressEvent = _sheet_key_press
         sheets_layout.addWidget(self._sheet_list)
         tabs.addTab(sheets_widget, "Blad")
 
@@ -7858,6 +7882,30 @@ class PIDManagementPanel(QWidget):
         if ok and name.strip():
             self.db.update_sheet_name(sheet_id, name.strip())
             self.refresh()
+
+    def _delete_sheets(self):
+        selected = self._sheet_list.selectedItems()
+        if not selected:
+            return
+        count = len(selected)
+        msg = f"Ta bort {count} blad?" if count > 1 else f"Ta bort '{selected[0].text().split('  ')[0]}'?"
+        ans = QMessageBox.question(self, "Ta bort blad", msg,
+                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        ids = [item.data(Qt.ItemDataRole.UserRole) for item in selected]
+        self.db.delete_sheets(ids)
+        self.refresh()
+
+    def _sheet_context_menu(self, pos):
+        selected = self._sheet_list.selectedItems()
+        if not selected:
+            return
+        menu = QMenu(self)
+        if len(selected) == 1:
+            menu.addAction("✏️ Byt namn", self._rename_sheet)
+        menu.addAction("🗑 Ta bort", self._delete_sheets)
+        menu.exec(self._sheet_list.viewport().mapToGlobal(pos))
 
 
 class StudyManagementPanel(QWidget):
