@@ -4094,9 +4094,10 @@ class PIDPanel(QWidget):
         std_causes = (self.db.standard_causes_for_name(dev_name)
                       if hasattr(self.db, 'standard_causes_for_name') else [])
 
-        comp_data      = (self.db.all_component_types_dict()
-                          if hasattr(self.db, 'all_component_types_dict') else None)
-        comp_type_names = list(comp_data.keys()) if comp_data else []
+        comp_type_names = sorted({
+            dict(c).get('comp_type', '') for c in std_causes
+            if dict(c).get('comp_type', '')
+        })
         detected_type   = self._db_comp_for_tag(suggested_tag) if suggested_tag else ''
 
         dlg = TemplateCausePickerDialog(
@@ -4177,9 +4178,10 @@ class PIDPanel(QWidget):
         dev_name = dev['description']
         std_causes = (self.db.standard_causes_for_name(dev_name)
                       if hasattr(self.db, 'standard_causes_for_name') else [])
-        comp_data       = (self.db.all_component_types_dict()
-                           if hasattr(self.db, 'all_component_types_dict') else None)
-        comp_type_names = list(comp_data.keys()) if comp_data else []
+        comp_type_names = sorted({
+            dict(c).get('comp_type', '') for c in std_causes
+            if dict(c).get('comp_type', '')
+        })
         dlg = TemplateCausePickerDialog(
             dev_name, std_causes,
             component_types=comp_type_names,

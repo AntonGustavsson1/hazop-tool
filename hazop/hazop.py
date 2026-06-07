@@ -2317,15 +2317,15 @@ class CausePanel(QWidget):
         self.desc_edit.focusOutEvent = _desc_foe
         form.addRow("Beskrivning:", self.desc_edit)
 
-        # Row 1: value from component database (read-only)
+        # Row 1: value from standard cause library (read-only)
         self._db_freq_lbl = QLabel("—")
         self._db_freq_lbl.setStyleSheet(
             "color:#1F4E79; font-style:italic; padding:2px 4px;"
             "background:#eef4fb; border:1px solid #bee3f8; border-radius:3px;")
         self._db_freq_lbl.setToolTip(
-            "F-nivå beräknad från komponentens felfrekvens i Inställningar → Komponenter.\n"
-            "Tomt om ingen frekvens är definierad för denna felmod.")
-        form.addRow("Frekvens (komponent):", self._db_freq_lbl)
+            "F-nivå beräknad från frekvens definierad i Inställningar → Standardorsaker.\n"
+            "Tomt om ingen frekvens är definierad för denna orsak.")
+        form.addRow("Frekvens (standardorsak):", self._db_freq_lbl)
 
         # Row 2: manual override
         self.freq_combo = QComboBox()
@@ -6089,10 +6089,6 @@ class SettingsPanel(QWidget):
             lambda: self.db.set_config('project_revision', self._proj_rev.text()))
         pl.addRow("Revision:", self._proj_rev)
         tabs.addTab(proj_tab, "Projekt")
-
-        # ── Tab: Komponenter ──────────────────────────────────────────────────
-        self._comp_editor = ComponentEditorPanel(self.db)
-        tabs.addTab(self._comp_editor, "Komponenter")
 
         # ── Tab: Tagdatabas ───────────────────────────────────────────────────
         self._tag_db_panel = TagDatabasePanel(self.db)
