@@ -756,6 +756,7 @@ class Database:
             "ALTER TABLE consequences ADD COLUMN ignition_rrf INTEGER DEFAULT 10",
             "ALTER TABLE cause_markers ADD COLUMN component_tag TEXT DEFAULT ''",
             "ALTER TABLE standard_causes ADD COLUMN comp_type TEXT DEFAULT ''",
+            "ALTER TABLE standard_causes ADD COLUMN frequency REAL DEFAULT NULL",
         ]:
             try:
                 self.conn.execute(sql)
@@ -1602,10 +1603,16 @@ class Database:
         self.conn.commit()
         return cur.lastrowid
 
-    def update_standard_cause(self, id_, description):
-        self.conn.execute(
-            "UPDATE standard_causes SET description=? WHERE id=?", (description, id_))
-        self.conn.commit()
+    def update_standard_cause(self, id_, description=None, frequency=_SENTINEL):
+        sets, vals = [], []
+        if description is not None:
+            sets.append("description=?"); vals.append(description)
+        if frequency is not Database._SENTINEL:
+            sets.append("frequency=?"); vals.append(frequency)
+        if sets:
+            vals.append(id_)
+            self.conn.execute(f"UPDATE standard_causes SET {', '.join(sets)} WHERE id=?", vals)
+            self.conn.commit()
 
     def delete_standard_cause(self, id_):
         self.conn.execute("DELETE FROM standard_causes WHERE id=?", (id_,))
@@ -1866,15 +1873,26 @@ class RiskBadge(QLabel):
     def __init__(self):
         super().__init__()
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setFixedSize(150, 26)
+        self.setFixedSize(200, 38)
+        self.setWordWrap(True)
         f = QFont(); f.setBold(True)
         self.setFont(f)
-        self.update_risk(1, 1)
+        self.set_empty()
 
-    def update_risk(self, frequency, consequence):
+    def update_risk(self, frequency, consequence, base_freq=None):
         label, bg, fg = risk_info(frequency, consequence)
-        self.setText(f"{label}  F={frequency} C={consequence}")
+        if base_freq is not None:
+            freq_str = f"{base_freq:g}/år"
+            self.setText(f"{label}  F={frequency} C={consequence}\n🗄️ {freq_str}")
+        else:
+            self.setText(f"{label}  F={frequency} C={consequence}")
         self.setStyleSheet(f"background:{bg}; color:{fg}; border-radius:5px; padding:2px 8px;")
+
+    def set_empty(self):
+        self.setText("—  (ingen frekvens)")
+        self.setStyleSheet(
+            "background:#f0f0f0; color:#aaa; border-radius:5px; "
+            "padding:2px 8px; border:1px solid #ddd;")
 
 
 class SafeguardEditor(QWidget):
@@ -2564,13 +2582,21 @@ class ConsequencePanel(QWidget):
         self._rebuild_preview()
 
         cause_id = dict(row)['cause_id'] if row else None
+        base_freq = None
         freq = 3
         if cause_id:
             cause = self.db.get_cause(cause_id)
             if cause:
-                freq = cause['likelihood'] if cause['likelihood'] is not None else 3
+                base_freq = cause['base_freq'] if 'base_freq' in cause.keys() else None
+                if base_freq is not None:
+                    freq = freq_to_f_level(base_freq)
+                elif cause['likelihood'] is not None:
+                    freq = cause['likelihood']
         sev = (row['severity'] or 1) if row else 1
-        self.risk_badge.update_risk(freq, sev)
+        if base_freq is not None:
+            self.risk_badge.update_risk(freq, sev, base_freq=base_freq)
+        else:
+            self.risk_badge.set_empty()
         self.sg_editor.load(consequence_id, freq)
         self.act_editor.load(consequence_id)
 
@@ -5558,9 +5584,19 @@ class StandardCausesSettingsPanel(QWidget):
         right = QVBoxLayout()
         self._causes_label = QLabel("<b>Standardorsaker</b>")
         right.addWidget(self._causes_label)
-        self._cause_list = QListWidget()
-        self._cause_list.itemChanged.connect(self._on_cause_edited)
-        right.addWidget(self._cause_list)
+
+        self._cause_table = QTableWidget(0, 2)
+        self._cause_table.setHorizontalHeaderLabels(["Beskrivning", "Frekvens/år"])
+        chdr = self._cause_table.horizontalHeader()
+        chdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        chdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        self._cause_table.setColumnWidth(1, 90)
+        self._cause_table.verticalHeader().setVisible(False)
+        self._cause_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows)
+        self._cause_table.itemChanged.connect(self._on_cause_cell_changed)
+        right.addWidget(self._cause_table)
+
         cause_btns = QHBoxLayout()
         btn_add_c = QPushButton("+")
         btn_add_c.setFixedWidth(28)
@@ -5603,17 +5639,26 @@ class StandardCausesSettingsPanel(QWidget):
 
     def _load_causes(self, dev_id):
         self._loading = True
-        self._cause_list.clear()
+        self._cause_table.setRowCount(0)
         for c in self.db.standard_causes(dev_id):
-            comp = dict(c).get('comp_type', '') or ''
-            label = f"[{comp}]  {c['description']}" if comp else c['description']
-            item = QListWidgetItem(label)
-            item.setData(Qt.ItemDataRole.UserRole, c['id'])
-            item.setData(Qt.ItemDataRole.UserRole + 1, c['description'])
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+            cd   = dict(c)
+            comp = cd.get('comp_type', '') or ''
+            freq = cd.get('frequency')
+            label = f"[{comp}]  {cd['description']}" if comp else cd['description']
+
+            row = self._cause_table.rowCount()
+            self._cause_table.insertRow(row)
+
+            item0 = QTableWidgetItem(label)
+            item0.setData(Qt.ItemDataRole.UserRole, cd['id'])
             if comp:
-                item.setForeground(QColor('#1F4E79'))
-            self._cause_list.addItem(item)
+                item0.setForeground(QColor('#1F4E79'))
+            self._cause_table.setItem(row, 0, item0)
+
+            item1 = QTableWidgetItem("" if freq is None else f"{freq:g}")
+            item1.setData(Qt.ItemDataRole.UserRole, cd['id'])
+            item1.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._cause_table.setItem(row, 1, item1)
         self._loading = False
 
     def _current_dev_id(self):
@@ -5621,7 +5666,10 @@ class StandardCausesSettingsPanel(QWidget):
         return item.data(Qt.ItemDataRole.UserRole) if item else None
 
     def _current_cause_id(self):
-        item = self._cause_list.currentItem()
+        row = self._cause_table.currentRow()
+        if row < 0:
+            return None
+        item = self._cause_table.item(row, 0)
         return item.data(Qt.ItemDataRole.UserRole) if item else None
 
     # ── Deviation slots ───────────────────────────────────────────────────────
@@ -5668,12 +5716,26 @@ class StandardCausesSettingsPanel(QWidget):
         self._dev_list.setCurrentRow(new_row)
 
     # ── Cause slots ───────────────────────────────────────────────────────────
-    def _on_cause_edited(self, item):
+    def _on_cause_cell_changed(self, item):
         if self._loading:
             return
+        col = item.column()
         cid = item.data(Qt.ItemDataRole.UserRole)
-        if cid:
-            self.db.update_standard_cause(cid, item.text())
+        if not cid:
+            return
+        if col == 0:
+            text = item.text().strip()
+            if ']  ' in text:   # strip "[comp_type]  " prefix
+                text = text.split(']  ', 1)[1]
+            if text:
+                self.db.update_standard_cause(cid, description=text)
+        elif col == 1:
+            raw = item.text().strip().replace(',', '.')
+            try:
+                freq = float(raw) if raw else None
+            except ValueError:
+                freq = None
+            self.db.update_standard_cause(cid, frequency=freq)
 
     def _add_cause(self):
         dev_id = self._current_dev_id()
@@ -5684,7 +5746,7 @@ class StandardCausesSettingsPanel(QWidget):
             return
         self.db.add_standard_cause(dev_id, name.strip())
         self._load_causes(dev_id)
-        self._cause_list.setCurrentRow(self._cause_list.count() - 1)
+        self._cause_table.setCurrentCell(self._cause_table.rowCount() - 1, 0)
 
     def _del_cause(self):
         cid = self._current_cause_id()
@@ -5696,18 +5758,18 @@ class StandardCausesSettingsPanel(QWidget):
             self._load_causes(dev_id)
 
     def _move_cause(self, direction):
-        row = self._cause_list.currentRow()
+        row = self._cause_table.currentRow()
         new_row = row + direction
-        if new_row < 0 or new_row >= self._cause_list.count():
+        if new_row < 0 or new_row >= self._cause_table.rowCount():
             return
-        ids = [self._cause_list.item(i).data(Qt.ItemDataRole.UserRole)
-               for i in range(self._cause_list.count())]
+        ids = [self._cause_table.item(i, 0).data(Qt.ItemDataRole.UserRole)
+               for i in range(self._cause_table.rowCount())]
         ids[row], ids[new_row] = ids[new_row], ids[row]
         self.db.reorder_standard_causes(ids)
         dev_id = self._current_dev_id()
         if dev_id:
             self._load_causes(dev_id)
-        self._cause_list.setCurrentRow(new_row)
+        self._cause_table.setCurrentCell(new_row, 0)
 
 
 class ComponentCausesSettingsPanel(QWidget):
