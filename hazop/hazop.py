@@ -2856,239 +2856,240 @@ class SafeguardPanel(QWidget):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# NODE MARKUP PANEL
+# NODE MARKUP — RIBBON + STYLE POPUP + TABLE PANEL
 # ══════════════════════════════════════════════════════════════════════════════
 
-class NodeMarkupPanel(QWidget):
-    """Right-panel toolbox shown when editing node markup overlays."""
-    closed           = pyqtSignal()
-    tool_changed     = pyqtSignal(str)        # 'polygon'|'polyline'|'text'|'comment'|'select'
-    item_deleted     = pyqtSignal(int)        # markup_id
-    item_vis_toggled = pyqtSignal(int, bool)  # markup_id, visible
-    all_vis_toggled  = pyqtSignal(bool)       # visible
-    style_changed    = pyqtSignal(str, float, int)  # color, opacity, line_width
+class _StylePopup(QWidget):
+    """Frameless popup with colour / opacity / width / font-size controls."""
 
-    _TOOL_ICONS = {
-        'polygon':  '◻',
-        'polyline': '〰',
-        'text':     '𝐀',
-        'comment':  '💬',
-        'select':   '↖',
-    }
-    _TOOL_LABELS = {
-        'polygon':  'Polygon',
-        'polyline': 'Polylinje',
-        'text':     'Nodnamn',
-        'comment':  'Kommentar',
-        'select':   'Välj',
-    }
-    _TYPE_ICON = {'polygon': '◻', 'polyline': '〰', 'text': '𝐀', 'comment': '💬'}
+    def __init__(self, ribbon, parent=None):
+        super().__init__(parent,
+                         Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self.setStyleSheet(
+            "QWidget{background:#fff;}"
+            "QLabel{font-size:10px;color:#444;}")
+        self._ribbon = ribbon
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 8, 10, 10)
+        outer.setSpacing(6)
+
+        ttl = QLabel("Stilinställningar")
+        f = QFont(); f.setBold(True); f.setPointSize(10)
+        ttl.setFont(f); outer.addWidget(ttl)
+
+        sep = QLabel(); sep.setFixedHeight(1)
+        sep.setStyleSheet("background:#ddd;"); outer.addWidget(sep)
+
+        # Colour swatches
+        crow = QHBoxLayout(); crow.setSpacing(3)
+        crow.addWidget(QLabel("Färg:"))
+        self._cbts = []
+        for hc in _MARKUP_COLORS:
+            cb = QPushButton(); cb.setFixedSize(22, 22)
+            cb.setStyleSheet(f"background:{hc};border:2px solid transparent;"
+                             f"border-radius:3px;")
+            cb.clicked.connect(lambda _, c=hc: self._pick(c))
+            crow.addWidget(cb); self._cbts.append((hc, cb))
+        pal = QPushButton("···"); pal.setFixedSize(28, 22)
+        pal.setStyleSheet("font-size:10px;border:1px solid #ccc;border-radius:3px;")
+        pal.clicked.connect(self._open_palette)
+        crow.addWidget(pal); crow.addStretch()
+        outer.addLayout(crow)
+
+        self._bar = QLabel(); self._bar.setFixedHeight(5)
+        outer.addWidget(self._bar)
+
+        sep2 = QLabel(); sep2.setFixedHeight(1)
+        sep2.setStyleSheet("background:#eee;"); outer.addWidget(sep2)
+
+        # Opacity
+        orow = QHBoxLayout()
+        orow.addWidget(QLabel("Opacitet:"))
+        self._op_sl = QSlider(Qt.Orientation.Horizontal)
+        self._op_sl.setRange(10, 90); orow.addWidget(self._op_sl)
+        self._op_lbl = QLabel(); self._op_lbl.setFixedWidth(36)
+        orow.addWidget(self._op_lbl); outer.addLayout(orow)
+        self._op_sl.valueChanged.connect(
+            lambda v: (ribbon._apply_opacity(v),
+                       self._op_lbl.setText(f"{v}%")))
+
+        # Width + font size
+        wrow = QHBoxLayout(); wrow.setSpacing(5)
+        wrow.addWidget(QLabel("Tjocklek:"))
+        self._w_sp = QSpinBox(); self._w_sp.setRange(1, 99)
+        self._w_sp.setMaximumWidth(58)
+        self._w_sp.valueChanged.connect(ribbon._apply_width)
+        wrow.addWidget(self._w_sp)
+        wrow.addSpacing(6)
+        wrow.addWidget(QLabel("Font:"))
+        self._f_sp = QSpinBox(); self._f_sp.setRange(6, 99)
+        self._f_sp.setMaximumWidth(58)
+        self._f_sp.valueChanged.connect(ribbon._apply_font)
+        wrow.addWidget(self._f_sp); wrow.addStretch()
+        outer.addLayout(wrow)
+
+        self.setMinimumWidth(390)
+        self._sync()
+
+    def _sync(self):
+        r = self._ribbon
+        self._bar.setStyleSheet(f"background:{r._color};border-radius:2px;")
+        self._op_sl.blockSignals(True); self._op_sl.setValue(int(r._opacity * 100))
+        self._op_sl.blockSignals(False)
+        self._op_lbl.setText(f"{int(r._opacity*100)}%")
+        self._w_sp.blockSignals(True); self._w_sp.setValue(r._width)
+        self._w_sp.blockSignals(False)
+        self._f_sp.blockSignals(True); self._f_sp.setValue(r._font_size)
+        self._f_sp.blockSignals(False)
+        for hc, cb in self._cbts:
+            cb.setStyleSheet(
+                f"background:{hc};border:2px solid "
+                f"{'#333' if hc == r._color else 'transparent'};border-radius:3px;")
+
+    def _pick(self, hex_c):
+        self._ribbon._apply_color(hex_c)
+        self._bar.setStyleSheet(f"background:{hex_c};border-radius:2px;")
+        for hc, cb in self._cbts:
+            cb.setStyleSheet(
+                f"background:{hc};border:2px solid "
+                f"{'#333' if hc == hex_c else 'transparent'};border-radius:3px;")
+
+    def _open_palette(self):
+        self.hide()
+        c = QColorDialog.getColor(QColor(self._ribbon._color), None, "Välj färg")
+        if c.isValid():
+            self._ribbon._apply_color(c.name())
+
+    def showEvent(self, event):
+        self._sync()
+        super().showEvent(event)
+
+
+class NodeMarkupPanel(QWidget):
+    """Narrow vertical ribbon for node markup tool selection (replaces old full panel)."""
+    closed        = pyqtSignal()
+    tool_changed  = pyqtSignal(str)
+    all_vis_toggled = pyqtSignal(bool)
+    style_changed = pyqtSignal(str, float, int)  # color, opacity, line_width
+
+    _TOOLS = [
+        ('select',   '↖', 'Välj/flytta'),
+        ('polygon',  '◻', 'Rita polygon'),
+        ('polyline', '〰', 'Rita polylinje'),
+        ('text',     '𝐀', 'Lägg ut nodnamn'),
+        ('comment',  '💬', 'Lägg till kommentar'),
+    ]
 
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
-        self.db       = db
-        self.node_id  = None
-        self._color   = _MARKUP_COLORS[5]   # default blue
-        self._opacity = 0.45
-        self._width   = 12
-        self._font_size = 12
+        self.db            = db
+        self.node_id       = None
+        self._color        = _MARKUP_COLORS[5]
+        self._opacity      = 0.45
+        self._width        = 12
+        self._font_size    = 24
         self._current_tool = 'select'
-        self._selected_mu_id = None
+        self._popup        = None
+
+        SZ = 54
+        self.setFixedWidth(64)
+        self.setStyleSheet("background:#F5F5F5;")
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(10, 10, 10, 10)
-        outer.setSpacing(8)
-
-        # ── Header ────────────────────────────────────────────────────────────
-        self._title = QLabel("Nodmarkering")
-        f = QFont(); f.setPointSize(12); f.setBold(True)
-        self._title.setFont(f)
-        outer.addWidget(self._title)
-        sep = QLabel(); sep.setFixedHeight(1); sep.setStyleSheet("background:#1565C0;")
-        outer.addWidget(sep)
-
-        # ── Tool selection ────────────────────────────────────────────────────
-        tool_grp = QGroupBox("Verktyg")
-        tool_grp.setStyleSheet(
-            "QGroupBox{font-size:10px;color:#555;border:1px solid #ddd;"
-            "border-radius:4px;margin-top:4px;padding-top:2px;}"
-            "QGroupBox::title{subcontrol-origin:margin;left:6px;}")
-        tool_lay = QGridLayout(tool_grp)
-        tool_lay.setSpacing(4); tool_lay.setContentsMargins(4,4,4,4)
-        self._tool_btns = {}
-        tools = [('select','↖'),('polygon','◻'),('polyline','〰'),('text','𝐀'),('comment','💬')]
-        for i, (tool, icon) in enumerate(tools):
-            label = self._TOOL_LABELS[tool]
-            btn = QPushButton(f"{icon}  {label}")
-            btn.setCheckable(True)
-            btn.setStyleSheet(
-                "QPushButton{padding:4px 6px;font-size:10px;border:1px solid #ccc;"
-                "border-radius:3px;text-align:left;}"
-                "QPushButton:checked{background:#1565C0;color:white;border-color:#1565C0;}"
-                "QPushButton:hover:!checked{background:#e8f0fe;}")
-            btn.clicked.connect(lambda _, t=tool: self._on_tool(t))
-            tool_lay.addWidget(btn, i // 3, i % 3)
-            self._tool_btns[tool] = btn
-        outer.addWidget(tool_grp)
-
-        # ── Style controls ────────────────────────────────────────────────────
-        style_grp = QGroupBox("Stil")
-        style_grp.setStyleSheet(tool_grp.styleSheet())
-        style_lay = QVBoxLayout(style_grp)
-        style_lay.setSpacing(4); style_lay.setContentsMargins(6,4,6,4)
-
-        # Color row
-        color_row = QHBoxLayout()
-        color_row.addWidget(QLabel("Färg:"))
-        self._color_btns = []
-        for hex_c in _MARKUP_COLORS:
-            cb = QPushButton()
-            cb.setFixedSize(22, 22)
-            cb.setStyleSheet(f"background:{hex_c};border:2px solid transparent;"
-                             f"border-radius:3px;")
-            cb.clicked.connect(lambda _, c=hex_c: self._pick_preset(c))
-            color_row.addWidget(cb)
-            self._color_btns.append((hex_c, cb))
-        palette_btn = QPushButton("···")
-        palette_btn.setFixedSize(30, 22)
-        palette_btn.setToolTip("Öppna färgpaletten")
-        palette_btn.setStyleSheet("font-size:11px;border:1px solid #ccc;border-radius:3px;")
-        palette_btn.clicked.connect(self._pick_full_color)
-        color_row.addWidget(palette_btn)
-        color_row.addStretch()
-        style_lay.addLayout(color_row)
-
-        # Current color preview
-        self._cur_color_lbl = QLabel()
-        self._cur_color_lbl.setFixedHeight(6)
-        self._cur_color_lbl.setStyleSheet(f"background:{self._color};border-radius:2px;")
-        style_lay.addWidget(self._cur_color_lbl)
-
-        # Width row
-        w_row = QHBoxLayout()
-        w_row.addWidget(QLabel("Tjocklek:"))
-        self._width_spin = QSpinBox()
-        self._width_spin.setRange(1, 99); self._width_spin.setValue(self._width)
-        self._width_spin.setMaximumWidth(60)
-        self._width_spin.valueChanged.connect(self._on_width)
-        w_row.addWidget(self._width_spin)
-        # Font size row (inline with width row)
-        w_row.addSpacing(10)
-        w_row.addWidget(QLabel("Font:"))
-        self._font_size_spin = QSpinBox()
-        self._font_size_spin.setRange(6, 48); self._font_size_spin.setValue(self._font_size)
-        self._font_size_spin.setMaximumWidth(55)
-        self._font_size_spin.setToolTip("Teckenstorlek för text/kommentar")
-        self._font_size_spin.valueChanged.connect(lambda v: setattr(self, '_font_size', v))
-        w_row.addWidget(self._font_size_spin); w_row.addStretch()
-        style_lay.addLayout(w_row)
-
-        # Opacity row
-        op_row = QHBoxLayout()
-        op_row.addWidget(QLabel("Opacitet:"))
-        self._opacity_slider = QSlider(Qt.Orientation.Horizontal)
-        self._opacity_slider.setRange(10, 90); self._opacity_slider.setValue(int(self._opacity * 100))
-        self._opacity_lbl = QLabel(f"{int(self._opacity*100)}%")
-        self._opacity_lbl.setFixedWidth(32)
-        self._opacity_slider.valueChanged.connect(self._on_opacity)
-        op_row.addWidget(self._opacity_slider); op_row.addWidget(self._opacity_lbl)
-        style_lay.addLayout(op_row)
-
-        outer.addWidget(style_grp)
-
-        # ── Markup list ───────────────────────────────────────────────────────
-        list_grp = QGroupBox("Markeringar")
-        list_grp.setStyleSheet(tool_grp.styleSheet())
-        list_lay = QVBoxLayout(list_grp)
-        list_lay.setSpacing(2); list_lay.setContentsMargins(4,4,4,4)
-
-        # Master toggle
-        vis_row = QHBoxLayout()
-        self._all_vis_btn = QPushButton("👁 Dölj alla")
-        self._all_vis_btn.setCheckable(True); self._all_vis_btn.setChecked(True)
-        self._all_vis_btn.setStyleSheet(
-            "QPushButton{padding:3px 6px;font-size:10px;border:1px solid #ccc;border-radius:3px;}"
-            "QPushButton:checked{background:#27ae60;color:white;border-color:#27ae60;}"
-            "QPushButton:!checked{background:#e74c3c;color:white;border-color:#c0392b;}")
-        self._all_vis_btn.clicked.connect(self._on_all_vis)
-        vis_row.addWidget(self._all_vis_btn); vis_row.addStretch()
-        list_lay.addLayout(vis_row)
-
-        self._list_widget = QListWidget()
-        self._list_widget.setFixedHeight(150)
-        self._list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self._list_widget.setStyleSheet(
-            "QListWidget{border:1px solid #ddd;border-radius:3px;}"
-            "QListWidget::item:selected{background:#e8f0fe;color:#1565C0;}")
-        self._list_widget.itemClicked.connect(self._on_list_item_clicked)
-        self._list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._list_widget.customContextMenuRequested.connect(self._on_list_context_menu)
-        list_lay.addWidget(self._list_widget)
-
-        outer.addWidget(list_grp)
-
-        # ── Selected item controls ────────────────────────────────────────────
-        self._item_box = QGroupBox("Vald markering")
-        self._item_box.setStyleSheet(tool_grp.styleSheet())
-        self._item_box.setVisible(False)
-        item_lay = QFormLayout(self._item_box)
-        item_lay.setSpacing(4); item_lay.setContentsMargins(6,4,6,4)
-
-        self._item_label_edit = QLineEdit()
-        self._item_label_edit.setPlaceholderText("Text / etikett")
-        self._item_label_edit.editingFinished.connect(self._save_selected_label)
-        item_lay.addRow("Text:", self._item_label_edit)
-
-        item_btns = QHBoxLayout()
-        del_btn = QPushButton("🗑 Ta bort")
-        del_btn.setStyleSheet("color:#c0392b;font-size:10px;")
-        del_btn.clicked.connect(self._delete_selected)
-        item_btns.addWidget(del_btn); item_btns.addStretch()
-        item_lay.addRow(item_btns)
-        outer.addWidget(self._item_box)
-
-        outer.addStretch()
+        outer.setContentsMargins(5, 5, 5, 5)
+        outer.setSpacing(4)
 
         # ── Close button ──────────────────────────────────────────────────────
-        close_btn = QPushButton("✕ Avsluta redigering")
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(SZ, SZ)
+        close_btn.setToolTip("Avsluta redigering")
         close_btn.setStyleSheet(
             "QPushButton{background:#546E7A;color:white;border:none;"
-            "border-radius:4px;padding:7px;font-weight:bold;}"
+            "border-radius:4px;font-size:18px;font-weight:bold;}"
             "QPushButton:hover{background:#37474F;}")
         close_btn.clicked.connect(self.closed.emit)
         outer.addWidget(close_btn)
 
+        sep1 = QFrame(); sep1.setFrameShape(QFrame.Shape.HLine)
+        sep1.setStyleSheet("color:#ccc;")
+        outer.addWidget(sep1)
+
+        # ── Tool buttons ──────────────────────────────────────────────────────
+        self._tool_btns = {}
+        for tool, icon, tip in self._TOOLS:
+            btn = QPushButton(icon)
+            btn.setFixedSize(SZ, SZ)
+            btn.setCheckable(True)
+            btn.setToolTip(tip)
+            btn.setStyleSheet(
+                "QPushButton{font-size:22px;border:1px solid #ccc;"
+                "border-radius:4px;background:#fff;}"
+                "QPushButton:checked{background:#1565C0;color:white;border-color:#1565C0;}"
+                "QPushButton:hover:!checked{background:#E3F2FD;}")
+            btn.clicked.connect(lambda _, t=tool: self._on_tool(t))
+            outer.addWidget(btn)
+            self._tool_btns[tool] = btn
+
+        sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setStyleSheet("color:#ccc;")
+        outer.addWidget(sep2)
+
+        # ── Color strip ───────────────────────────────────────────────────────
+        self._color_strip = QLabel()
+        self._color_strip.setFixedHeight(8)
+        self._color_strip.setStyleSheet(f"background:{self._color};border-radius:3px;")
+        outer.addWidget(self._color_strip)
+
+        # ── Style popup button ────────────────────────────────────────────────
+        style_btn = QPushButton("🎨")
+        style_btn.setFixedSize(SZ, SZ)
+        style_btn.setToolTip("Stil (färg, opacitet, tjocklek, font)")
+        style_btn.setStyleSheet(
+            "QPushButton{font-size:22px;border:1px solid #ccc;"
+            "border-radius:4px;background:#fff;}"
+            "QPushButton:hover{background:#E3F2FD;}")
+        style_btn.clicked.connect(self._show_popup)
+        outer.addWidget(style_btn)
+
+        sep3 = QFrame(); sep3.setFrameShape(QFrame.Shape.HLine)
+        sep3.setStyleSheet("color:#ccc;")
+        outer.addWidget(sep3)
+
+        # ── Visibility toggle ─────────────────────────────────────────────────
+        self._all_vis_btn = QPushButton("👁")
+        self._all_vis_btn.setFixedSize(SZ, SZ)
+        self._all_vis_btn.setCheckable(True)
+        self._all_vis_btn.setChecked(True)
+        self._all_vis_btn.setToolTip("Dölj/visa alla markeringar")
+        self._all_vis_btn.setStyleSheet(
+            "QPushButton{font-size:22px;border:1px solid #ccc;"
+            "border-radius:4px;background:#27ae60;color:white;}"
+            "QPushButton:!checked{background:#e74c3c;}")
+        self._all_vis_btn.clicked.connect(self._on_all_vis)
+        outer.addWidget(self._all_vis_btn)
+
+        outer.addStretch()
         self._on_tool('select')
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def load(self, node_id):
         self.node_id = node_id
-        node = self.db.get_node(node_id)
-        name = node['name'] if node else '?'
-        self._title.setText(f"Nodmarkering: {name}")
-        self._refresh_list()
+        self._all_vis_btn.setChecked(True)
+        self._on_tool('select')
 
     def refresh(self):
-        self._refresh_list()
+        pass
 
     def on_markup_saved(self, mu_id):
-        """Called after a new markup has been saved to DB — refresh list and highlight."""
-        self._refresh_list()
-        self.select_markup(mu_id)
+        pass
 
     def select_markup(self, mu_id):
-        """Select a markup item in the list (e.g. when clicked on canvas)."""
-        self._selected_mu_id = mu_id
-        for i in range(self._list_widget.count()):
-            item = self._list_widget.item(i)
-            if item.data(Qt.ItemDataRole.UserRole) == mu_id:
-                self._list_widget.setCurrentItem(item)
-                self._show_item_controls(mu_id)
-                break
+        pass
 
     def get_current_style(self):
-        """Return (color, opacity, line_width, font_size) for the next drawn markup."""
         return self._color, self._opacity, self._width, self._font_size
 
     # ── Internal ──────────────────────────────────────────────────────────────
@@ -3099,103 +3100,195 @@ class NodeMarkupPanel(QWidget):
             btn.setChecked(t == tool)
         self.tool_changed.emit(tool)
 
-    def _pick_preset(self, hex_c):
-        self._color = hex_c
-        self._cur_color_lbl.setStyleSheet(
-            f"background:{hex_c};border-radius:2px;")
-        for hc, cb in self._color_btns:
-            cb.setStyleSheet(
-                f"background:{hc};border:2px solid "
-                f"{'#333' if hc == hex_c else 'transparent'};border-radius:3px;")
-        self.style_changed.emit(self._color, self._opacity, self._width)
-
-    def _pick_full_color(self):
-        c = QColorDialog.getColor(QColor(self._color), self, "Välj färg")
-        if c.isValid():
-            self._pick_preset(c.name())
-
-    def _on_opacity(self, val):
-        self._opacity = val / 100.0
-        self._opacity_lbl.setText(f"{val}%")
-        self.style_changed.emit(self._color, self._opacity, self._width)
-
-    def _on_width(self, val):
-        self._width = val
-        self.style_changed.emit(self._color, self._opacity, self._width)
+    def _show_popup(self):
+        if self._popup is None:
+            self._popup = _StylePopup(self)
+        self._popup._sync()
+        gp = self.mapToGlobal(self.rect().topRight())
+        self._popup.move(gp)
+        self._popup.show()
 
     def _on_all_vis(self, checked):
         if self.node_id is None:
             return
         self.db.set_all_node_markups_visible(self.node_id, checked)
-        # checked=True means button is depressed → all are now visible → offer to hide
-        self._all_vis_btn.setText("👁 Dölj alla" if checked else "👁 Visa alla")
         self.all_vis_toggled.emit(checked)
 
-    def _on_list_context_menu(self, pos):
-        selected = self._list_widget.selectedItems()
-        if not selected:
-            return
-        menu = QMenu(self)
-        n = len(selected)
-        lbl = f"🗑 Ta bort ({n} valda)" if n > 1 else "🗑 Ta bort"
-        act_del = menu.addAction(lbl)
-        action = menu.exec(self._list_widget.mapToGlobal(pos))
-        if action == act_del:
-            for lw_item in selected:
-                mu_id = lw_item.data(Qt.ItemDataRole.UserRole)
-                self.db.delete_node_markup(mu_id)
-                self.item_deleted.emit(mu_id)
-            self._selected_mu_id = None
-            self._item_box.setVisible(False)
-            self._refresh_list()
+    def _apply_color(self, hex_c):
+        self._color = hex_c
+        self._color_strip.setStyleSheet(f"background:{hex_c};border-radius:3px;")
+        self.style_changed.emit(self._color, self._opacity, self._width)
 
-    def _refresh_list(self):
-        self._list_widget.clear()
+    def _apply_opacity(self, val):
+        self._opacity = val / 100.0
+        self.style_changed.emit(self._color, self._opacity, self._width)
+
+    def _apply_width(self, val):
+        self._width = val
+        self.style_changed.emit(self._color, self._opacity, self._width)
+
+    def _apply_font(self, val):
+        self._font_size = val
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MARKUP TABLE PANEL  (bottom panel, shown during markup edit mode)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class MarkupTablePanel(QWidget):
+    """Table of markups for the active node — lives in bottom splitter alongside scenario panel."""
+    item_deleted     = pyqtSignal(int)        # mu_id
+    item_vis_toggled = pyqtSignal(int, bool)  # mu_id, visible
+    item_selected    = pyqtSignal(int)        # mu_id
+
+    _TYPE_ICON = {'polygon': '◻', 'polyline': '〰', 'text': '𝐀', 'comment': '💬'}
+    _COLS      = ['Typ', 'Etikett', 'Färg', 'Opacitet', 'Tjocklek', 'Font', '👁']
+
+    def __init__(self, db: Database, parent=None):
+        super().__init__(parent)
+        self.db      = db
+        self.node_id = None
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(2)
+
+        hdr = QHBoxLayout()
+        title = QLabel("Nodmarkeringar")
+        f = QFont(); f.setBold(True); f.setPointSize(9)
+        title.setFont(f)
+        hdr.addWidget(title)
+        hdr.addStretch()
+        lay.addLayout(hdr)
+
+        self._table = QTableWidget(0, len(self._COLS))
+        self._table.setHorizontalHeaderLabels(self._COLS)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table.setAlternatingRowColors(True)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._on_ctx_menu)
+        self._table.cellClicked.connect(self._on_cell_clicked)
+        self._table.setStyleSheet(
+            "QTableWidget{border:1px solid #ddd;font-size:10px;}"
+            "QTableWidget::item:selected{background:#E3F2FD;color:#1565C0;}")
+
+        hh = self._table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        lay.addWidget(self._table)
+
+    def load(self, node_id):
+        self.node_id = node_id
+        self.refresh()
+
+    def refresh(self):
+        self._table.setRowCount(0)
         if self.node_id is None:
             return
         for mu in self.db.node_markups_for_node(self.node_id):
             m = dict(mu)
-            icon = self._TYPE_ICON.get(m.get('type', 'polygon'), '◻')
-            vis  = '👁' if m.get('visible', 1) else '○'
-            label = m.get('label', '') or m.get('type', 'polygon')
-            text = f"{vis} {icon} {label[:30]}"
-            lw_item = QListWidgetItem(text)
-            lw_item.setData(Qt.ItemDataRole.UserRole, m['id'])
-            c = QColor(m.get('color', '#1565C0'))
-            lw_item.setForeground(c)
-            self._list_widget.addItem(lw_item)
+            row = self._table.rowCount()
+            self._table.insertRow(row)
+            mu_id   = m['id']
+            typ     = m.get('type', 'polygon')
+            label   = m.get('label', '') or ''
+            color   = m.get('color', '#1565C0')
+            opacity = m.get('opacity', 0.45)
+            width   = m.get('line_width', 12)
+            font_sz = m.get('font_size', 12)
+            visible = bool(m.get('visible', 1))
 
-    def _on_list_item_clicked(self, lw_item):
-        mu_id = lw_item.data(Qt.ItemDataRole.UserRole)
-        self._selected_mu_id = mu_id
-        self._show_item_controls(mu_id)
-        self.item_vis_toggled.emit(mu_id, True)  # signal canvas to highlight
+            icon_item = QTableWidgetItem(self._TYPE_ICON.get(typ, '◻'))
+            icon_item.setData(Qt.ItemDataRole.UserRole, mu_id)
+            icon_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._table.setItem(row, 0, icon_item)
 
-    def _show_item_controls(self, mu_id):
+            lbl_item = QTableWidgetItem(label)
+            lbl_item.setData(Qt.ItemDataRole.UserRole, mu_id)
+            self._table.setItem(row, 1, lbl_item)
+
+            color_item = QTableWidgetItem(color)
+            color_item.setData(Qt.ItemDataRole.UserRole, mu_id)
+            color_item.setBackground(QColor(color))
+            color_item.setForeground(QColor(color))
+            color_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._table.setItem(row, 2, color_item)
+
+            op_item = QTableWidgetItem(f"{int(opacity * 100)}%")
+            op_item.setData(Qt.ItemDataRole.UserRole, mu_id)
+            op_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._table.setItem(row, 3, op_item)
+
+            w_item = QTableWidgetItem(str(width))
+            w_item.setData(Qt.ItemDataRole.UserRole, mu_id)
+            w_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._table.setItem(row, 4, w_item)
+
+            f_item = QTableWidgetItem(str(font_sz))
+            f_item.setData(Qt.ItemDataRole.UserRole, mu_id)
+            f_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._table.setItem(row, 5, f_item)
+
+            vis_item = QTableWidgetItem('👁' if visible else '○')
+            vis_item.setData(Qt.ItemDataRole.UserRole, mu_id)
+            vis_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._table.setItem(row, 6, vis_item)
+
+    def select_markup(self, mu_id):
+        for row in range(self._table.rowCount()):
+            item = self._table.item(row, 0)
+            if item and item.data(Qt.ItemDataRole.UserRole) == mu_id:
+                self._table.selectRow(row)
+                break
+
+    def clear(self):
+        self.node_id = None
+        self._table.setRowCount(0)
+
+    def _on_cell_clicked(self, row, col):
+        item = self._table.item(row, 0)
+        if item is None:
+            return
+        mu_id = item.data(Qt.ItemDataRole.UserRole)
+        if col == 6:
+            self._toggle_visibility(row, mu_id)
+        else:
+            self.item_selected.emit(mu_id)
+
+    def _toggle_visibility(self, row, mu_id):
         mu = self.db.get_node_markup(mu_id)
         if not mu:
-            self._item_box.setVisible(False)
             return
-        m = dict(mu)
-        self._item_label_edit.setText(m.get('label', ''))
-        self._item_box.setVisible(True)
+        new_vis = not bool(dict(mu).get('visible', 1))
+        self.db.update_node_markup(mu_id, visible=new_vis)
+        vis_item = self._table.item(row, 6)
+        if vis_item:
+            vis_item.setText('👁' if new_vis else '○')
+        self.item_vis_toggled.emit(mu_id, new_vis)
 
-    def _save_selected_label(self):
-        if self._selected_mu_id is None:
+    def _on_ctx_menu(self, pos):
+        rows = list({self._table.item(idx.row(), 0)
+                     for idx in self._table.selectedIndexes()
+                     if self._table.item(idx.row(), 0)})
+        if not rows:
             return
-        self.db.update_node_markup(self._selected_mu_id,
-                                   label=self._item_label_edit.text().strip())
-        self._refresh_list()
-
-    def _delete_selected(self):
-        if self._selected_mu_id is None:
-            return
-        self.db.delete_node_markup(self._selected_mu_id)
-        mu_id = self._selected_mu_id
-        self._selected_mu_id = None
-        self._item_box.setVisible(False)
-        self._refresh_list()
-        self.item_deleted.emit(mu_id)
+        menu = QMenu(self)
+        n = len(rows)
+        lbl = f"🗑 Ta bort ({n} valda)" if n > 1 else "🗑 Ta bort"
+        act_del = menu.addAction(lbl)
+        if menu.exec(self._table.viewport().mapToGlobal(pos)) == act_del:
+            for item in rows:
+                mu_id = item.data(Qt.ItemDataRole.UserRole)
+                self.db.delete_node_markup(mu_id)
+                self.item_deleted.emit(mu_id)
+            self.refresh()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -8397,23 +8490,23 @@ class MainWindow(QMainWindow):
         pid_layout.setContentsMargins(0, 0, 0, 0)
         pid_layout.setSpacing(0)
 
-        v_splitter = QSplitter(Qt.Orientation.Vertical)
-        pid_layout.addWidget(v_splitter)
+        self._v_splitter = QSplitter(Qt.Orientation.Vertical)
+        pid_layout.addWidget(self._v_splitter)
 
-        h_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._h_splitter = QSplitter(Qt.Orientation.Horizontal)
 
         self.tree_panel = TreePanel(self.db)
         self.tree_panel.setMinimumWidth(220)
         self.tree_panel.setMaximumWidth(340)
-        h_splitter.addWidget(self.tree_panel)
+        self._h_splitter.addWidget(self.tree_panel)
 
         self.pid_panel = PIDPanel(self.db)
         self.pid_panel.setMinimumWidth(400)
-        h_splitter.addWidget(self.pid_panel)
+        self._h_splitter.addWidget(self.pid_panel)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self._right_scroll = QScrollArea()
+        self._right_scroll.setWidgetResizable(True)
+        self._right_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self.stack = QStackedWidget()
         self.welcome_panel    = WelcomePanel()
         self.node_panel       = NodePanel(self.db)
@@ -8421,19 +8514,27 @@ class MainWindow(QMainWindow):
         self.cause_panel      = CausePanel(self.db)
         self.cons_panel       = ConsequencePanel(self.db)
         self.sg_panel         = SafeguardPanel(self.db)
-        self.node_markup_panel = NodeMarkupPanel(self.db)
         for panel in [self.welcome_panel, self.node_panel, self.deviation_panel,
-                      self.cause_panel, self.cons_panel, self.sg_panel,
-                      self.node_markup_panel]:
+                      self.cause_panel, self.cons_panel, self.sg_panel]:
             self.stack.addWidget(panel)
-        scroll.setWidget(self.stack)
-        h_splitter.addWidget(scroll)
-        h_splitter.setSizes([260, 650, 370])
-        v_splitter.addWidget(h_splitter)
+        self._right_scroll.setWidget(self.stack)
+        self._h_splitter.addWidget(self._right_scroll)
+
+        self.node_markup_panel = NodeMarkupPanel(self.db)
+        self.node_markup_panel.setVisible(False)
+        self._h_splitter.addWidget(self.node_markup_panel)
+
+        self._h_splitter.setSizes([260, 650, 370, 0])
+        self._v_splitter.addWidget(self._h_splitter)
 
         self.scenario_panel = ScenarioTablePanel(self.db)
-        v_splitter.addWidget(self.scenario_panel)
-        v_splitter.setSizes([640, 220])
+        self._v_splitter.addWidget(self.scenario_panel)
+
+        self.markup_table_panel = MarkupTablePanel(self.db)
+        self.markup_table_panel.setVisible(False)
+        self._v_splitter.addWidget(self.markup_table_panel)
+
+        self._v_splitter.setSizes([640, 220, 0])
         self.view_stack.addWidget(pid_page)
 
         # ── Page 1: Worksheet ─────────────────────────────────────────────────
@@ -8500,23 +8601,26 @@ class MainWindow(QMainWindow):
             self._on_add_safeguards_on_pid)
         self.tree_panel.edit_node_markup_requested.connect(self._on_edit_node_markup)
 
-        # Node markup panel signals
+        # Node markup ribbon signals
         self.node_markup_panel.closed.connect(self._on_close_node_markup)
         self.node_markup_panel.tool_changed.connect(
             lambda t: self.pid_panel.set_markup_tool(
                 t, *self.node_markup_panel.get_current_style()[:3]))
-        self.node_markup_panel.item_deleted.connect(
-            lambda _: self.pid_panel.refresh_markup_overlays())
         self.node_markup_panel.all_vis_toggled.connect(
             lambda _: self.pid_panel.refresh_markup_overlays())
-        self.node_markup_panel.item_vis_toggled.connect(
-            lambda mu_id, _: self.pid_panel.viewer.highlight_markup(mu_id))
         self.node_markup_panel.style_changed.connect(
             lambda color, opacity, width: self.pid_panel.viewer.set_pen_style(
                 color, width, int(opacity * 210)))
+        # Markup table panel signals
+        self.markup_table_panel.item_deleted.connect(
+            lambda _: self.pid_panel.refresh_markup_overlays())
+        self.markup_table_panel.item_vis_toggled.connect(
+            lambda mu_id, vis: self.pid_panel.refresh_markup_overlays())
+        self.markup_table_panel.item_selected.connect(
+            lambda mu_id: self.pid_panel.viewer.highlight_markup(mu_id))
         self.pid_panel.markup_draw_finished.connect(self._on_markup_draw_finished)
         self.pid_panel.markup_item_selected.connect(
-            self.node_markup_panel.select_markup)
+            self.markup_table_panel.select_markup)
         self.tree_panel.exit_pid_mode_requested.connect(
             lambda: self.pid_panel._set_mode(MODE_NAV))
 
@@ -8775,19 +8879,29 @@ class MainWindow(QMainWindow):
 
     def _on_edit_node_markup(self, node_id):
         """Tree right-click NODE → 'Editera nodmarkup'."""
-        self.node_markup_panel.load(node_id)
-        self.stack.setCurrentWidget(self.node_markup_panel)
         self._switch_view(0)
+        self.node_markup_panel.load(node_id)
+        self.markup_table_panel.load(node_id)
         self.tree_panel.setVisible(False)
+        self._right_scroll.setVisible(False)
+        self.node_markup_panel.setVisible(True)
         self.scenario_panel.setVisible(False)
+        self.markup_table_panel.setVisible(True)
+        self._h_splitter.setSizes([0, 800, 0, 64])
+        self._v_splitter.setSizes([560, 0, 200])
         self.pid_panel.enter_markup_edit(node_id)
 
     def _on_close_node_markup(self):
-        """NodeMarkupPanel 'Avsluta redigering' clicked."""
+        """Ribbon close button clicked — leave markup edit mode."""
         self.pid_panel.exit_markup_mode()
         self.pid_panel.reload_overlays()
         self.tree_panel.setVisible(True)
+        self._right_scroll.setVisible(True)
+        self.node_markup_panel.setVisible(False)
         self.scenario_panel.setVisible(True)
+        self.markup_table_panel.setVisible(False)
+        self._h_splitter.setSizes([260, 650, 370, 0])
+        self._v_splitter.setSizes([640, 220, 0])
         self.stack.setCurrentWidget(self.welcome_panel)
 
     def _on_markup_draw_finished(self, type_, node_id, pts, page, label):
@@ -8795,9 +8909,10 @@ class MainWindow(QMainWindow):
         color, opacity, line_width, font_size = self.node_markup_panel.get_current_style()
         mu_id = self.db.add_node_markup(
             node_id, type_, pts, label, color, opacity, line_width, page, font_size)
-        self.pid_panel.viewer._pending_path_item = None   # clear temp item
+        self.pid_panel.viewer._pending_path_item = None
         self.pid_panel.refresh_markup_overlays()
-        self.node_markup_panel.on_markup_saved(mu_id)
+        self.markup_table_panel.refresh()
+        self.markup_table_panel.select_markup(mu_id)
 
     def _on_existing_marker_placed(self, type_str, id_):
         """Marker placed via 'place existing' flow — refresh pins and tree without reloading panels."""
