@@ -1581,6 +1581,11 @@ class Database:
                 "UPDATE standard_deviations SET sort_order=? WHERE id=?", (i, id_))
         self.conn.commit()
 
+    def get_standard_cause(self, id_):
+        row = self.conn.execute(
+            "SELECT * FROM standard_causes WHERE id=?", (id_,)).fetchone()
+        return dict(row) if row else None
+
     def standard_causes(self, deviation_id):
         return self.conn.execute(
             "SELECT * FROM standard_causes WHERE deviation_id=? ORDER BY sort_order, id",
@@ -2377,12 +2382,20 @@ class CausePanel(QWidget):
         self._loading = True
         self.desc_edit.setPlainText(row['description'])
 
-        # Field 1: component DB value (base_freq → F-level)
-        base_freq = row['base_freq'] if 'base_freq' in row.keys() else None
+        # Field 1: frequency — prefer live standard_causes lookup if linked
+        std_cause_id = row['standard_cause_id'] if 'standard_cause_id' in row.keys() else None
+        base_freq = None
+        if std_cause_id:
+            sc = self.db.get_standard_cause(std_cause_id)
+            if sc and sc.get('frequency') is not None:
+                base_freq = sc['frequency']
+        if base_freq is None:
+            base_freq = row['base_freq'] if 'base_freq' in row.keys() else None
         if base_freq is not None:
             f_auto = freq_to_f_level(base_freq)
             f_lbl  = _FREQ_LABELS[freq_to_idx(f_auto)] if freq_to_idx(f_auto) < len(_FREQ_LABELS) else f'F={f_auto}'
-            self._db_freq_lbl.setText(f"F={f_auto} — {base_freq:.4g}/år  →  {f_lbl}")
+            suffix = "  🗄️" if std_cause_id else ""
+            self._db_freq_lbl.setText(f"F={f_auto} — {base_freq:.4g}/år  →  {f_lbl}{suffix}")
         else:
             self._db_freq_lbl.setText("—")
 
@@ -2603,18 +2616,26 @@ class ConsequencePanel(QWidget):
 
         cause_id = dict(row)['cause_id'] if row else None
         base_freq = None
+        std_linked = False
         freq = 3
         if cause_id:
             cause = self.db.get_cause(cause_id)
             if cause:
-                base_freq = cause['base_freq'] if 'base_freq' in cause.keys() else None
+                std_cause_id = cause['standard_cause_id'] if 'standard_cause_id' in cause.keys() else None
+                if std_cause_id:
+                    sc = self.db.get_standard_cause(std_cause_id)
+                    if sc and sc.get('frequency') is not None:
+                        base_freq = sc['frequency']
+                        std_linked = True
+                if base_freq is None:
+                    base_freq = cause['base_freq'] if 'base_freq' in cause.keys() else None
                 if base_freq is not None:
                     freq = freq_to_f_level(base_freq)
                 elif cause['likelihood'] is not None:
                     freq = cause['likelihood']
         sev = (row['severity'] or 1) if row else 1
         if base_freq is not None:
-            self.risk_badge.update_risk(freq, sev, base_freq=base_freq)
+            self.risk_badge.update_risk(freq, sev, base_freq=base_freq if std_linked else None)
         else:
             self.risk_badge.set_empty()
         self.sg_editor.load(consequence_id, freq)

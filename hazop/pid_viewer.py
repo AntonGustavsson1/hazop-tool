@@ -2953,9 +2953,13 @@ class TemplateCausePickerDialog(QDialog):
 
         first_rb = None
         for i, c in enumerate(filtered):
-            rb = QRadioButton(c['description'])
+            freq = dict(c).get('frequency')
+            label = c['description']
+            if freq is not None:
+                label += f"  ({freq:g}/år)"
+            rb = QRadioButton(label)
             rb.setProperty('cause_desc', c['description'])
-            rb.setProperty('cause_freq', dict(c).get('frequency'))
+            rb.setProperty('cause_freq', freq)
             rb.setProperty('cause_id',   dict(c).get('id'))
             self._group.addButton(rb, i)
             self._cause_layout.addWidget(rb)
