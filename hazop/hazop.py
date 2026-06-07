@@ -4866,6 +4866,7 @@ class ScenarioTablePanel(QWidget):
         self._enter_row = -1
         self._enter_col = -1
         self._last_enter_committed = False
+        self._cell_font_size = 9
         self.setMinimumHeight(160)
         self.setMaximumHeight(380)
 
@@ -4879,6 +4880,15 @@ class ScenarioTablePanel(QWidget):
         self._hdr_lbl.setFont(f)
         hdr_row.addWidget(self._hdr_lbl)
         hdr_row.addStretch()
+        hdr_row.addWidget(QLabel("Textstorlek:"))
+        self._fs_spin = QSpinBox()
+        self._fs_spin.setRange(7, 16)
+        self._fs_spin.setValue(9)
+        self._fs_spin.setSuffix(" pt")
+        self._fs_spin.setFixedWidth(62)
+        self._fs_spin.setToolTip("Teckenstorlek i scenario-tabellen")
+        self._fs_spin.valueChanged.connect(self._on_font_size_changed)
+        hdr_row.addWidget(self._fs_spin)
         outer.addLayout(hdr_row)
 
         self._table = QTableWidget(0, len(self._COLS))
@@ -4887,20 +4897,20 @@ class ScenarioTablePanel(QWidget):
         resize_modes = {
             self._C_NOD:   (QHeaderView.ResizeMode.Interactive, 70),
             self._C_DEV:   (QHeaderView.ResizeMode.Interactive, 120),
-            self._C_ORS:   (QHeaderView.ResizeMode.Stretch,     0),
-            self._C_KON:   (QHeaderView.ResizeMode.Stretch,     0),
-            self._C_RFORE: (QHeaderView.ResizeMode.Fixed,       130),
+            self._C_ORS:   (QHeaderView.ResizeMode.Interactive, 180),
+            self._C_KON:   (QHeaderView.ResizeMode.Interactive, 180),
+            self._C_RFORE: (QHeaderView.ResizeMode.Interactive, 130),
             self._C_SG:    (QHeaderView.ResizeMode.Interactive, 160),
-            self._C_FA:    (QHeaderView.ResizeMode.Fixed,       140),
-            self._C_IGN:   (QHeaderView.ResizeMode.Fixed,       140),
+            self._C_FA:    (QHeaderView.ResizeMode.Interactive, 140),
+            self._C_IGN:   (QHeaderView.ResizeMode.Interactive, 140),
             self._C_OVRIGA:(QHeaderView.ResizeMode.Interactive, 120),
-            self._C_REFT:  (QHeaderView.ResizeMode.Fixed,       130),
-            self._C_SLUT:  (QHeaderView.ResizeMode.Fixed,       130),
+            self._C_REFT:  (QHeaderView.ResizeMode.Interactive, 130),
+            self._C_SLUT:  (QHeaderView.ResizeMode.Interactive, 130),
         }
         for col, (mode, width) in resize_modes.items():
             h.setSectionResizeMode(col, mode)
-            if width:
-                self._table.setColumnWidth(col, width)
+            self._table.setColumnWidth(col, width)
+        self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._table.verticalHeader().setVisible(False)
         self._table.setAlternatingRowColors(True)
         self._table.setWordWrap(True)
@@ -4962,6 +4972,14 @@ class ScenarioTablePanel(QWidget):
         self._cons_id = None
         self._table.setRowCount(0)
         self._hdr_lbl.setText("HAZOP Scenario")
+
+    def _on_font_size_changed(self, size):
+        self._cell_font_size = size
+        f = QFont()
+        f.setPointSize(size)
+        self._table.setFont(f)
+        self._table.verticalHeader().setDefaultSectionSize(max(28, size * 5 + 7))
+        self._rebuild()
 
     # ── Build ─────────────────────────────────────────────────────────────────
 
@@ -5139,7 +5157,7 @@ class ScenarioTablePanel(QWidget):
                     self._C_FA, self._C_IGN, self._C_OVRIGA, self._C_SLUT):
             self._table.setItem(r, col, _ro())
 
-        self._table.setRowHeight(r, 52)
+        self._table.setRowHeight(r, max(36, self._cell_font_size * 5 + 7))
 
     def _add_row(self, node_name, dev_d, cause_d, freq, freq_lbl, cons_d, sgs, sg):
         """One row per safeguard (sg=None when no safeguards exist yet).
@@ -5278,7 +5296,7 @@ class ScenarioTablePanel(QWidget):
         rs.setToolTip(f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}  (−{total_steps} steg totalt)")
         self._table.setItem(r, self._C_SLUT, rs)
 
-        self._table.setRowHeight(r, 52)
+        self._table.setRowHeight(r, max(36, self._cell_font_size * 5 + 7))
 
     def _open_chain_editor(self, cons_id: int, label_widget=None):
         """Open the consequence chain dialog; refresh the label on accept."""
