@@ -2356,7 +2356,7 @@ class PIDGraphicsView(QGraphicsView):
     # ── Node markup overlays ──────────────────────────────────────────────────
 
     def add_markup_overlay(self, mu_id, type_, points_pdf, label,
-                           color_hex, opacity, line_width, visible=True):
+                           color_hex, opacity, line_width, visible=True, font_size=12):
         """Render a node_markup item.  type_: polygon|polyline|text|comment"""
         items = []
         c = QColor(color_hex)
@@ -2388,22 +2388,23 @@ class PIDGraphicsView(QGraphicsView):
             if label and type_ == 'polygon':
                 cx = sum(p[0] for p in points_pdf) / len(points_pdf)
                 cy = sum(p[1] for p in points_pdf) / len(points_pdf)
-                items.extend(self._add_markup_label(mu_id, label, cx, cy, c, border_alpha))
+                items.extend(self._add_markup_label(mu_id, label, cx, cy, c, border_alpha,
+                                                    font_size))
 
         elif type_ in ('text', 'comment') and len(points_pdf) >= 1:
             px, py = points_pdf[0]
             items.extend(self._add_markup_text_item(mu_id, type_, label or '?',
-                                                     px, py, c, opacity, line_width))
+                                                     px, py, c, opacity, line_width, font_size))
 
         self._markup_items[mu_id] = items
         if not visible:
             for gi in items:
                 gi.setVisible(False)
 
-    def _add_markup_label(self, mu_id, label, cx_pdf, cy_pdf, color, alpha):
+    def _add_markup_label(self, mu_id, label, cx_pdf, cy_pdf, color, alpha, font_size=12):
         center = self.pdf_to_scene(cx_pdf, cy_pdf)
         txt = QGraphicsSimpleTextItem(label)
-        f = QFont(); f.setBold(True); f.setPointSize(10)
+        f = QFont(); f.setBold(True); f.setPointSize(font_size)
         txt.setFont(f)
         txt.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(),
                                    min(255, alpha + 30))))
@@ -2416,13 +2417,13 @@ class PIDGraphicsView(QGraphicsView):
         return [txt]
 
     def _add_markup_text_item(self, mu_id, type_, label, px_pdf, py_pdf,
-                              color, opacity, line_width):
+                              color, opacity, line_width, font_size=12):
         pos = self.pdf_to_scene(px_pdf, py_pdf)
         txt = QGraphicsSimpleTextItem(label)
         f = QFont()
         if type_ == 'comment':
             f.setItalic(True)
-        f.setPointSize(10)
+        f.setPointSize(font_size)
         txt.setFont(f)
         txt.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(),
                                    int(opacity * 230))))
@@ -2451,6 +2452,36 @@ class PIDGraphicsView(QGraphicsView):
         self._scene.addItem(txt)
         items.append(txt)
         return items
+
+    def _snap_to_nearest(self, scene_pos):
+        """Return nearest existing markup path point within snap threshold, else original pos.
+        Only snaps when in a markup draw mode (polygon/polyline)."""
+        SNAP_PX = 18.0
+        best_dist = SNAP_PX
+        best_pos = scene_pos
+        for mu_id, items in self._markup_items.items():
+            for gi in items:
+                if not isinstance(gi, QGraphicsPathItem):
+                    continue
+                path = gi.path()
+                for i in range(path.elementCount()):
+                    el = path.elementAt(i)
+                    pt = QPointF(el.x, el.y)
+                    dx = pt.x() - scene_pos.x()
+                    dy = pt.y() - scene_pos.y()
+                    dist = (dx * dx + dy * dy) ** 0.5
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_pos = pt
+        # Also snap to in-progress draw points
+        for pt in self.draw_points:
+            dx = pt.x() - scene_pos.x()
+            dy = pt.y() - scene_pos.y()
+            dist = (dx * dx + dy * dy) ** 0.5
+            if dist < best_dist:
+                best_dist = dist
+                best_pos = pt
+        return best_pos
 
     def clear_markup_overlays(self):
         """Remove all node markup overlay items from the scene."""
@@ -2702,7 +2733,7 @@ class PIDGraphicsView(QGraphicsView):
                 self._cancel_drawing(); event.accept(); return
         elif self.mode in (MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE):
             if event.button() == Qt.MouseButton.LeftButton:
-                self._add_draw_point(sp); event.accept(); return
+                self._add_draw_point(self._snap_to_nearest(sp)); event.accept(); return
             elif event.button() == Qt.MouseButton.RightButton:
                 self._cancel_drawing(); event.accept(); return
         elif self.mode in (MODE_MARKUP_TEXT, MODE_MARKUP_COMMENT):
@@ -2817,7 +2848,10 @@ class PIDGraphicsView(QGraphicsView):
     def mouseMoveEvent(self, event):
         if self.mode in (MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE) \
                 and self.draw_points:
-            self._update_rubber_band(self.mapToScene(event.position().toPoint()))
+            sp = self.mapToScene(event.position().toPoint())
+            if self.mode in (MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE):
+                sp = self._snap_to_nearest(sp)
+            self._update_rubber_band(sp)
         elif self.mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD,
                            MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE) \
                 and self._rect_start is not None:
@@ -4352,7 +4386,7 @@ class PIDPanel(QWidget):
         except Exception: pass
         self._set_mode(MODE_NAV)
 
-    def set_markup_tool(self, tool):
+    def set_markup_tool(self, tool, color=None, opacity=None, width=None):
         """Set drawing tool: 'polygon'|'polyline'|'text'|'comment'|'select'."""
         _map = {'polygon':  MODE_MARKUP_POLYGON,
                 'polyline': MODE_MARKUP_POLYLINE,
@@ -4361,6 +4395,8 @@ class PIDPanel(QWidget):
                 'select':   MODE_MARKUP_SELECT}
         if tool in _map:
             self._set_mode(_map[tool])
+        if color is not None:
+            self.viewer.set_pen_style(color, width or 3, int((opacity or 0.45) * 210))
 
     def refresh_markup_overlays(self):
         """Reload only the markup overlays (cheap — no cause/cons/sg reload)."""
@@ -4374,17 +4410,21 @@ class PIDPanel(QWidget):
                 self.viewer.add_markup_overlay(
                     m['id'], m.get('type', 'polygon'), pts,
                     m.get('label', ''), m.get('color', '#1565C0'),
-                    float(m.get('opacity', 0.45)), int(m.get('line_width', 2)),
-                    bool(m.get('visible', 1)))
+                    float(m.get('opacity', 0.45)), int(m.get('line_width', 3)),
+                    bool(m.get('visible', 1)),
+                    int(m.get('font_size', 12)))
 
     def _on_viewer_markup_drawn(self, type_, pts, page):
         """Called when user finishes drawing in the viewer; route to NodeMarkupPanel."""
         node_id = self._active_node_id
         if node_id is None:
             return
-        if type_ in ('text', 'comment'):
-            label, ok = QInputDialog.getText(
-                self, 'Text', 'Text:' if type_ == 'text' else 'Kommentar:')
+        if type_ == 'text':
+            # Auto-fill with the node name from DB
+            node = self.db.get_node(node_id) if hasattr(self.db, 'get_node') else None
+            label = node['name'] if node else ''
+        elif type_ == 'comment':
+            label, ok = QInputDialog.getText(self, 'Kommentar', 'Kommentar:')
             if not ok or not label.strip():
                 self.viewer.clear_markup_overlays()
                 self.refresh_markup_overlays()

@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox,
     QMessageBox, QFileDialog, QGroupBox,
     QMenu, QToolBar, QStatusBar, QSizePolicy,
-    QSpinBox, QColorDialog, QFrame, QListWidget, QListWidgetItem,
+    QSpinBox, QSlider, QColorDialog, QFrame, QListWidget, QListWidgetItem,
     QProgressDialog, QAbstractItemView, QToolTip, QInputDialog, QCheckBox,
     QStyledItemDelegate, QStyleOptionViewItem, QStyle,
 )
@@ -471,7 +471,7 @@ _RRF_VALUES  = [1, 10, 100, 1000, 10000]
 _RRF_LABELS  = ['1 – Ingen', '10 – RRF10', '100 – RRF100', '1000 – RRF1000', '10000 – RRF10000']
 _SG_TYPES      = ['BPCS', 'SIS', 'Mekanisk', 'Administrativ', 'Övrigt']
 _MARKUP_COLORS = ['#E53935', '#F57C00', '#F9A825', '#388E3C',
-                  '#00796B', '#1565C0', '#7B1FA2', '#546E7A']
+                  '#00796B', '#1565C0', '#7B1FA2', '#FF4081']
 _RISK_ICON   = {'Låg': '🟢', 'Medium': '🟡', 'Hög': '🟠', 'Kritisk': '🔴'}
 
 # Component-specific standard causes seeded on first run.
@@ -762,6 +762,7 @@ class Database:
             "ALTER TABLE standard_causes ADD COLUMN frequency REAL DEFAULT NULL",
             "ALTER TABLE causes ADD COLUMN standard_cause_id INTEGER DEFAULT NULL",
             "ALTER TABLE safeguards ADD COLUMN sg_type TEXT DEFAULT 'Övrigt'",
+            "ALTER TABLE node_markups ADD COLUMN font_size INTEGER DEFAULT 12",
         ]:
             try:
                 self.conn.execute(sql)
@@ -875,7 +876,8 @@ class Database:
                 label      TEXT DEFAULT '',
                 color      TEXT DEFAULT '#1565C0',
                 opacity    REAL DEFAULT 0.45,
-                line_width INTEGER DEFAULT 2,
+                line_width INTEGER DEFAULT 3,
+                font_size  INTEGER DEFAULT 12,
                 visible    INTEGER DEFAULT 1,
                 pid_page   INTEGER DEFAULT 0,
                 sort_order INTEGER DEFAULT 0
@@ -1712,11 +1714,13 @@ class Database:
         self.conn.commit()
 
     # ── Node markup CRUD ──────────────────────────────────────────────────────
-    def add_node_markup(self, node_id, type_, pts, label, color, opacity, line_width, page):
+    def add_node_markup(self, node_id, type_, pts, label, color, opacity, line_width, page,
+                        font_size=12):
         cur = self.conn.execute(
-            "INSERT INTO node_markups (node_id,type,points,label,color,opacity,line_width,pid_page)"
-            " VALUES (?,?,?,?,?,?,?,?)",
-            (node_id, type_, json.dumps(pts), label, color, opacity, line_width, page))
+            "INSERT INTO node_markups (node_id,type,points,label,color,opacity,line_width,"
+            "font_size,pid_page) VALUES (?,?,?,?,?,?,?,?,?)",
+            (node_id, type_, json.dumps(pts), label, color, opacity, line_width,
+             font_size, page))
         self.conn.commit()
         return cur.lastrowid
 
@@ -1735,13 +1739,14 @@ class Database:
             "SELECT * FROM node_markups WHERE id=?", (mu_id,)).fetchone()
 
     def update_node_markup(self, mu_id, label=None, color=None, opacity=None,
-                           line_width=None, visible=None):
+                           line_width=None, font_size=None, visible=None):
         sets, vals = [], []
-        if label     is not None: sets.append("label=?");      vals.append(label)
-        if color     is not None: sets.append("color=?");      vals.append(color)
-        if opacity   is not None: sets.append("opacity=?");    vals.append(opacity)
+        if label      is not None: sets.append("label=?");      vals.append(label)
+        if color      is not None: sets.append("color=?");      vals.append(color)
+        if opacity    is not None: sets.append("opacity=?");    vals.append(opacity)
         if line_width is not None: sets.append("line_width=?"); vals.append(line_width)
-        if visible   is not None: sets.append("visible=?");    vals.append(int(visible))
+        if font_size  is not None: sets.append("font_size=?");  vals.append(font_size)
+        if visible    is not None: sets.append("visible=?");    vals.append(int(visible))
         if sets:
             vals.append(mu_id)
             self.conn.execute(f"UPDATE node_markups SET {','.join(sets)} WHERE id=?", vals)
@@ -2849,11 +2854,12 @@ class SafeguardPanel(QWidget):
 
 class NodeMarkupPanel(QWidget):
     """Right-panel toolbox shown when editing node markup overlays."""
-    closed         = pyqtSignal()
-    tool_changed   = pyqtSignal(str)   # 'polygon'|'polyline'|'text'|'comment'|'select'
-    item_deleted   = pyqtSignal(int)   # markup_id
+    closed           = pyqtSignal()
+    tool_changed     = pyqtSignal(str)        # 'polygon'|'polyline'|'text'|'comment'|'select'
+    item_deleted     = pyqtSignal(int)        # markup_id
     item_vis_toggled = pyqtSignal(int, bool)  # markup_id, visible
     all_vis_toggled  = pyqtSignal(bool)       # visible
+    style_changed    = pyqtSignal(str, float, int)  # color, opacity, line_width
 
     _TOOL_ICONS = {
         'polygon':  '◻',
@@ -2877,7 +2883,8 @@ class NodeMarkupPanel(QWidget):
         self.node_id  = None
         self._color   = _MARKUP_COLORS[5]   # default blue
         self._opacity = 0.45
-        self._width   = 2
+        self._width   = 3
+        self._font_size = 12
         self._current_tool = 'select'
         self._selected_mu_id = None
 
@@ -2954,10 +2961,19 @@ class NodeMarkupPanel(QWidget):
         w_row = QHBoxLayout()
         w_row.addWidget(QLabel("Tjocklek:"))
         self._width_spin = QSpinBox()
-        self._width_spin.setRange(1, 10); self._width_spin.setValue(self._width)
+        self._width_spin.setRange(1, 12); self._width_spin.setValue(self._width)
         self._width_spin.setMaximumWidth(60)
-        self._width_spin.valueChanged.connect(lambda v: setattr(self, '_width', v))
-        w_row.addWidget(self._width_spin); w_row.addStretch()
+        self._width_spin.valueChanged.connect(self._on_width)
+        w_row.addWidget(self._width_spin)
+        # Font size row (inline with width row)
+        w_row.addSpacing(10)
+        w_row.addWidget(QLabel("Font:"))
+        self._font_size_spin = QSpinBox()
+        self._font_size_spin.setRange(6, 48); self._font_size_spin.setValue(self._font_size)
+        self._font_size_spin.setMaximumWidth(55)
+        self._font_size_spin.setToolTip("Teckenstorlek för text/kommentar")
+        self._font_size_spin.valueChanged.connect(lambda v: setattr(self, '_font_size', v))
+        w_row.addWidget(self._font_size_spin); w_row.addStretch()
         style_lay.addLayout(w_row)
 
         # Opacity row
@@ -2981,7 +2997,7 @@ class NodeMarkupPanel(QWidget):
 
         # Master toggle
         vis_row = QHBoxLayout()
-        self._all_vis_btn = QPushButton("👁 Visa alla")
+        self._all_vis_btn = QPushButton("👁 Dölj alla")
         self._all_vis_btn.setCheckable(True); self._all_vis_btn.setChecked(True)
         self._all_vis_btn.setStyleSheet(
             "QPushButton{padding:3px 6px;font-size:10px;border:1px solid #ccc;border-radius:3px;}"
@@ -2993,10 +3009,13 @@ class NodeMarkupPanel(QWidget):
 
         self._list_widget = QListWidget()
         self._list_widget.setFixedHeight(150)
+        self._list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._list_widget.setStyleSheet(
             "QListWidget{border:1px solid #ddd;border-radius:3px;}"
             "QListWidget::item:selected{background:#e8f0fe;color:#1565C0;}")
         self._list_widget.itemClicked.connect(self._on_list_item_clicked)
+        self._list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._list_widget.customContextMenuRequested.connect(self._on_list_context_menu)
         list_lay.addWidget(self._list_widget)
 
         outer.addWidget(list_grp)
@@ -3062,8 +3081,8 @@ class NodeMarkupPanel(QWidget):
                 break
 
     def get_current_style(self):
-        """Return (color, opacity, line_width) for the next drawn markup."""
-        return self._color, self._opacity, self._width
+        """Return (color, opacity, line_width, font_size) for the next drawn markup."""
+        return self._color, self._opacity, self._width, self._font_size
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
@@ -3081,6 +3100,7 @@ class NodeMarkupPanel(QWidget):
             cb.setStyleSheet(
                 f"background:{hc};border:2px solid "
                 f"{'#333' if hc == hex_c else 'transparent'};border-radius:3px;")
+        self.style_changed.emit(self._color, self._opacity, self._width)
 
     def _pick_full_color(self):
         c = QColorDialog.getColor(QColor(self._color), self, "Välj färg")
@@ -3090,13 +3110,37 @@ class NodeMarkupPanel(QWidget):
     def _on_opacity(self, val):
         self._opacity = val / 100.0
         self._opacity_lbl.setText(f"{val}%")
+        self.style_changed.emit(self._color, self._opacity, self._width)
+
+    def _on_width(self, val):
+        self._width = val
+        self.style_changed.emit(self._color, self._opacity, self._width)
 
     def _on_all_vis(self, checked):
         if self.node_id is None:
             return
         self.db.set_all_node_markups_visible(self.node_id, checked)
-        self._all_vis_btn.setText("👁 Visa alla" if checked else "👁 Dölj alla")
+        # checked=True means button is depressed → all are now visible → offer to hide
+        self._all_vis_btn.setText("👁 Dölj alla" if checked else "👁 Visa alla")
         self.all_vis_toggled.emit(checked)
+
+    def _on_list_context_menu(self, pos):
+        selected = self._list_widget.selectedItems()
+        if not selected:
+            return
+        menu = QMenu(self)
+        n = len(selected)
+        lbl = f"🗑 Ta bort ({n} valda)" if n > 1 else "🗑 Ta bort"
+        act_del = menu.addAction(lbl)
+        action = menu.exec(self._list_widget.mapToGlobal(pos))
+        if action == act_del:
+            for lw_item in selected:
+                mu_id = lw_item.data(Qt.ItemDataRole.UserRole)
+                self.db.delete_node_markup(mu_id)
+                self.item_deleted.emit(mu_id)
+            self._selected_mu_id = None
+            self._item_box.setVisible(False)
+            self._refresh_list()
 
     def _refresh_list(self):
         self._list_widget.clear()
@@ -8448,13 +8492,17 @@ class MainWindow(QMainWindow):
         # Node markup panel signals
         self.node_markup_panel.closed.connect(self._on_close_node_markup)
         self.node_markup_panel.tool_changed.connect(
-            lambda t: self.pid_panel.set_markup_tool(t))
+            lambda t: self.pid_panel.set_markup_tool(
+                t, *self.node_markup_panel.get_current_style()[:3]))
         self.node_markup_panel.item_deleted.connect(
             lambda _: self.pid_panel.refresh_markup_overlays())
         self.node_markup_panel.all_vis_toggled.connect(
             lambda _: self.pid_panel.refresh_markup_overlays())
         self.node_markup_panel.item_vis_toggled.connect(
             lambda mu_id, _: self.pid_panel.viewer.highlight_markup(mu_id))
+        self.node_markup_panel.style_changed.connect(
+            lambda color, opacity, width: self.pid_panel.viewer.set_pen_style(
+                color, width, int(opacity * 210)))
         self.pid_panel.markup_draw_finished.connect(self._on_markup_draw_finished)
         self.pid_panel.markup_item_selected.connect(
             self.node_markup_panel.select_markup)
@@ -8729,9 +8777,9 @@ class MainWindow(QMainWindow):
 
     def _on_markup_draw_finished(self, type_, node_id, pts, page, label):
         """New markup drawn on P&ID — save to DB and refresh."""
-        color, opacity, line_width = self.node_markup_panel.get_current_style()
+        color, opacity, line_width, font_size = self.node_markup_panel.get_current_style()
         mu_id = self.db.add_node_markup(
-            node_id, type_, pts, label, color, opacity, line_width, page)
+            node_id, type_, pts, label, color, opacity, line_width, page, font_size)
         self.pid_panel.viewer._pending_path_item = None   # clear temp item
         self.pid_panel.refresh_markup_overlays()
         self.node_markup_panel.on_markup_saved(mu_id)
