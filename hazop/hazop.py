@@ -7462,12 +7462,48 @@ class ReuseDeviationCausesDialog(QDialog):
 
         for dev_n in order:
             causes = grouped[dev_n]
-            dev_lbl = causes[0]['dev_label']
+            dev_lbl   = causes[0]['dev_label']
+            dev_id    = causes[0]['deviation_id']
+            dev_key   = f"dev_{dev_id}"           # unique selection key for the deviation itself
+            inv_dev_n = invert_cause_text(dev_n)
+
+            # ── Deviation header row: label + "Referera avvikelse" / "Invers avvikelse" ──
+            hdr_w = QWidget()
+            hdr_w.setStyleSheet("background:#ebebeb;border-radius:3px;")
+            hdr_h = QHBoxLayout(hdr_w)
+            hdr_h.setContentsMargins(6, 3, 4, 3)
+            hdr_h.setSpacing(6)
+
             hdr_lbl = QLabel(
                 f"<b><span style='color:#555'>{dev_lbl}</span>&nbsp;&nbsp;{dev_n}</b>")
-            hdr_lbl.setStyleSheet(
-                "background:#ebebeb;padding:3px 6px;border-radius:3px;")
-            inner_layout.addWidget(hdr_lbl)
+            hdr_h.addWidget(hdr_lbl, 1)
+
+            ref_dev_btn = QPushButton("Referera avvikelse")
+            ref_dev_btn.setCheckable(True)
+            ref_dev_btn.setToolTip(f"Skapar en orsak med texten: {dev_n}")
+            ref_dev_btn.setStyleSheet(
+                "QPushButton{font-size:10px;padding:2px 6px;border:1px solid #2980b9;"
+                "border-radius:3px;background:transparent;}"
+                "QPushButton:checked{background:#2980b9;color:white;}"
+                "QPushButton:hover:!checked{background:#d6eaf8;}")
+
+            inv_dev_btn = QPushButton("Invers avvikelse")
+            inv_dev_btn.setCheckable(True)
+            inv_dev_btn.setToolTip(f"Skapar en orsak med texten: {inv_dev_n}")
+            inv_dev_btn.setStyleSheet(
+                "QPushButton{font-size:10px;padding:2px 6px;border:1px solid #8e44ad;"
+                "border-radius:3px;background:transparent;}"
+                "QPushButton:checked{background:#8e44ad;color:white;}"
+                "QPushButton:hover:!checked{background:#e8daef;}")
+
+            ref_dev_btn.toggled.connect(
+                self._make_ref_handler(dev_key, dev_n, inv_dev_btn))
+            inv_dev_btn.toggled.connect(
+                self._make_inv_handler(dev_key, inv_dev_n, ref_dev_btn))
+
+            hdr_h.addWidget(ref_dev_btn)
+            hdr_h.addWidget(inv_dev_btn)
+            inner_layout.addWidget(hdr_w)
 
             for cause in causes:
                 cid      = cause['id']
