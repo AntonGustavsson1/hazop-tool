@@ -2937,7 +2937,7 @@ class TreePanel(QWidget):
             if select_type == NODE_T and select_id == node['id']: target = nitem
 
             for di, dev in enumerate(self.db.deviations(node['id']), 1):
-                ditem = QTreeWidgetItem([f"  ⚠  {di}. {dev['description'][:55]}"])
+                ditem = QTreeWidgetItem([f"  ⬡  {di}. {dev['description'][:55]}"])
                 ditem.setData(0, Qt.ItemDataRole.UserRole, dev['id'])
                 ditem.setData(0, Qt.ItemDataRole.UserRole + 1, DEV_T)
                 dev_font = QFont(); dev_font.setItalic(True)
