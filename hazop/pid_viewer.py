@@ -3730,67 +3730,91 @@ class PIDPanel(QWidget):
                         pass
                 shape.commit()
 
-            # ── Node markup overlays (node_markups table) ─────────────────
+            # ── Node markup overlays as editable PDF annotations ──────────
             if hasattr(self.db, 'node_markups_for_page'):
+                node_ocgs = {}  # node_id -> OCG xref (one layer per node)
+
                 for mu in self.db.node_markups_for_page(phys_page):
                     m = dict(mu)
                     if not m.get('visible', 1):
                         continue
+
+                    # ── OCG: one layer per node, named after the node ─────
+                    node_id = m.get('node_id')
+                    if node_id not in node_ocgs:
+                        node_row = (self.db.get_node(node_id)
+                                    if hasattr(self.db, 'get_node') else None)
+                        nname = (dict(node_row)['name'] if node_row
+                                 else f'Nod {node_id}')
+                        try:
+                            node_ocgs[node_id] = out_doc.add_ocg(nname, on=True)
+                        except Exception:
+                            node_ocgs[node_id] = None
+                    ocg_xref = node_ocgs[node_id]
+
+                    # ── Parse geometry & style ─────────────────────────────
                     try:
                         pts_raw = json.loads(m.get('points', '[]') or '[]')
-                        pts = [fitz.Point(float(p[0]), float(p[1])) for p in pts_raw]
+                        pts = [fitz.Point(float(p[0]), float(p[1]))
+                               for p in pts_raw]
                     except Exception:
                         pts = []
-                    mu_color = _hex_to_fitz_rgb(m.get('color', '#1565C0'))
-                    mu_opacity = float(m.get('opacity', 0.45))
-                    mu_width = max(0.3, int(m.get('line_width', 3)) * 0.4)
-                    mu_font  = max(6, int(m.get('font_size', 12)))
+
+                    rgb      = _hex_to_fitz_rgb(m.get('color', '#1565C0'))
+                    opacity  = float(m.get('opacity', 0.45))
+                    width    = max(0.5, int(m.get('line_width', 12)) * 0.4)
+                    font_sz  = max(6, int(m.get('font_size', 12)))
                     mu_type  = m.get('type', 'polygon')
-                    mu_label = m.get('label', '') or ''
-                    if mu_type in ('polygon', 'polyline') and len(pts) >= 2:
-                        shape = page.new_shape()
-                        if mu_type == 'polygon':
-                            shape.draw_polyline(pts + [pts[0]])
-                            try:
-                                shape.finish(color=mu_color, width=mu_width,
-                                             fill=mu_color,
-                                             fill_opacity=mu_opacity * 0.25)
-                            except TypeError:
-                                shape.finish(color=mu_color, width=mu_width)
-                        else:
-                            shape.draw_polyline(pts)
-                            shape.finish(color=mu_color, width=mu_width)
-                        shape.commit()
-                        if mu_label and mu_type == 'polygon':
-                            cx = sum(p.x for p in pts) / len(pts)
-                            cy = sum(p.y for p in pts) / len(pts)
-                            try:
-                                page.insert_text(
-                                    fitz.Point(cx - len(mu_label) * mu_font * 0.28, cy + mu_font * 0.35),
-                                    mu_label, fontsize=mu_font, color=mu_color, fontname='helv')
-                            except Exception:
-                                pass
-                    elif mu_type in ('text', 'comment') and pts:
-                        txt = mu_label or '?'
-                        x, y = pts[0].x, pts[0].y
-                        if mu_type == 'comment':
-                            # Draw a light background rect
-                            txt_w = len(txt) * mu_font * 0.55
-                            txt_h = mu_font * 1.4
-                            pad = 2.5
-                            shape = page.new_shape()
-                            shape.draw_rect(fitz.Rect(x - pad, y - txt_h,
-                                                      x + txt_w + pad, y + pad))
-                            try:
-                                shape.finish(color=mu_color, width=0.5,
-                                             fill=(1, 1, 0.85), fill_opacity=0.75)
-                            except TypeError:
-                                shape.finish(color=mu_color, width=0.5)
-                            shape.commit()
+                    label    = m.get('label', '') or ''
+                    # Light fill: blend stroke colour with white at 30%
+                    fill_rgb = tuple(min(1.0, 0.70 + 0.30 * c) for c in rgb)
+
+                    annot = None
+                    try:
+                        if mu_type == 'polygon' and len(pts) >= 2:
+                            annot = page.add_polygon_annot(pts)
+                            annot.set_colors({"stroke": list(rgb),
+                                              "fill":   list(fill_rgb)})
+                            annot.set_border({"width": width})
+                            if label:
+                                annot.set_info(title=label, content=label)
+                            annot.update(opacity=opacity)
+
+                        elif mu_type == 'polyline' and len(pts) >= 2:
+                            annot = page.add_polyline_annot(pts)
+                            annot.set_colors({"stroke": list(rgb)})
+                            annot.set_border({"width": width})
+                            if label:
+                                annot.set_info(title=label)
+                            annot.update(opacity=opacity)
+
+                        elif mu_type in ('text', 'comment') and pts:
+                            txt = label or '?'
+                            x, y = pts[0].x, pts[0].y
+                            rect_w = len(txt) * font_sz * 0.58 + 8
+                            rect_h = font_sz * 1.7
+                            rect   = fitz.Rect(x, y - rect_h,
+                                               x + rect_w, y + 2)
+                            bg = ([1.0, 1.0, 0.82] if mu_type == 'comment'
+                                  else list(fill_rgb))
+                            annot = page.add_freetext_annot(
+                                rect, txt,
+                                fontsize=font_sz,
+                                fontname='helv',
+                                text_color=list(rgb),
+                                fill_color=bg)
+                            annot.set_info(
+                                title=('Kommentar' if mu_type == 'comment'
+                                       else 'Nodnamn'),
+                                content=txt)
+                            annot.update(opacity=opacity)
+
+                    except Exception:
+                        pass  # skip faulty item; never crash the export
+
+                    if annot is not None and ocg_xref:
                         try:
-                            page.insert_text(
-                                fitz.Point(x, y),
-                                txt, fontsize=mu_font, color=mu_color, fontname='helv')
+                            annot.set_oc(ocg_xref)
                         except Exception:
                             pass
 
