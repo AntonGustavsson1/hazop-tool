@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (
     QStyledItemDelegate, QStyleOptionViewItem, QStyle,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF, QRect, QTimer, QMimeData, QEvent
-from PyQt6.QtGui import QFont, QColor, QAction, QBrush, QPen, QPainter, QDrag, QPainterPath, QPixmap, QIcon, QPolygonF
+from PyQt6.QtGui import QFont, QColor, QAction, QBrush, QPen, QPainter, QDrag, QPainterPath, QPixmap, QIcon, QPolygonF, QShortcut, QKeySequence
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DATABASE
@@ -1739,7 +1739,7 @@ class Database:
             "SELECT * FROM node_markups WHERE id=?", (mu_id,)).fetchone()
 
     def update_node_markup(self, mu_id, label=None, color=None, opacity=None,
-                           line_width=None, font_size=None, visible=None):
+                           line_width=None, font_size=None, visible=None, points=None):
         sets, vals = [], []
         if label      is not None: sets.append("label=?");      vals.append(label)
         if color      is not None: sets.append("color=?");      vals.append(color)
@@ -1747,6 +1747,7 @@ class Database:
         if line_width is not None: sets.append("line_width=?"); vals.append(line_width)
         if font_size  is not None: sets.append("font_size=?");  vals.append(font_size)
         if visible    is not None: sets.append("visible=?");    vals.append(int(visible))
+        if points     is not None: sets.append("points=?");     vals.append(json.dumps(points))
         if sets:
             vals.append(mu_id)
             self.conn.execute(f"UPDATE node_markups SET {','.join(sets)} WHERE id=?", vals)
@@ -8643,6 +8644,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.db = Database()
         load_matrix(self.db)
+        self._markup_undo_stack = []
         self.setWindowTitle(f"HAZOP Tool  —  {self.db.path.name}")
         self.resize(1440, 900)
 
@@ -8789,6 +8791,11 @@ class MainWindow(QMainWindow):
         self.settings_panel.matrix_changed.connect(self._on_matrix_changed)
         self.view_stack.addWidget(self.settings_panel)
 
+        # ── Undo shortcut (Ctrl+Z) — only active during markup editing ────────
+        self._undo_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)
+        self._undo_shortcut.setEnabled(False)
+        self._undo_shortcut.activated.connect(self._undo_last_markup)
+
         # ── Wire signals ──────────────────────────────────────────────────────
         self.tree_panel.item_selected.connect(self._on_selected)
         self.tree_panel.structure_changed.connect(self._on_structure_changed)
@@ -8857,6 +8864,7 @@ class MainWindow(QMainWindow):
         self.markup_table_panel.item_selected.connect(
             lambda mu_id: self.pid_panel.viewer.highlight_markup(mu_id))
         self.pid_panel.markup_draw_finished.connect(self._on_markup_draw_finished)
+        self.pid_panel.markup_moved.connect(self._on_markup_moved)
         self.pid_panel.markup_item_selected.connect(
             self.markup_table_panel.select_markup)
         self.tree_panel.exit_pid_mode_requested.connect(
@@ -9128,6 +9136,8 @@ class MainWindow(QMainWindow):
         self._h_splitter.setSizes([0, 800, 0, 64])
         self._v_splitter.setSizes([560, 0, 200])
         self.pid_panel.enter_markup_edit(node_id)
+        self._markup_undo_stack.clear()
+        self._undo_shortcut.setEnabled(True)
 
     def _on_close_node_markup(self):
         """Ribbon close button clicked — leave markup edit mode."""
@@ -9141,6 +9151,8 @@ class MainWindow(QMainWindow):
         self._h_splitter.setSizes([260, 650, 370, 0])
         self._v_splitter.setSizes([640, 220, 0])
         self.stack.setCurrentWidget(self.welcome_panel)
+        self._markup_undo_stack.clear()
+        self._undo_shortcut.setEnabled(False)
 
     def _on_node_markup_vis(self, node_id, visible):
         """Tree context menu hide/show all markups for a node."""
@@ -9154,10 +9166,33 @@ class MainWindow(QMainWindow):
         color, opacity, line_width, font_size = self.node_markup_panel.get_current_style()
         mu_id = self.db.add_node_markup(
             node_id, type_, pts, label, color, opacity, line_width, page, font_size)
+        self._markup_undo_stack.append({'op': 'draw', 'mu_id': mu_id})
         self.pid_panel.viewer._pending_path_item = None
         self.pid_panel.refresh_markup_overlays()
         self.markup_table_panel.refresh()
         self.markup_table_panel.select_markup(mu_id)
+
+    def _on_markup_moved(self, mu_id, new_pts):
+        """Markup item dragged to new position — save to DB, push undo entry."""
+        old_row = self.db.get_node_markup(mu_id)
+        if old_row:
+            old_pts = json.loads(dict(old_row).get('points', '[]') or '[]')
+            self._markup_undo_stack.append({'op': 'move', 'mu_id': mu_id, 'old_pts': old_pts})
+        self.db.update_node_markup(mu_id, points=new_pts)
+        self.markup_table_panel.refresh()
+
+    def _undo_last_markup(self):
+        if not self._markup_undo_stack:
+            return
+        entry = self._markup_undo_stack.pop()
+        if entry['op'] == 'draw':
+            self.db.delete_node_markup(entry['mu_id'])
+            self.pid_panel.refresh_markup_overlays()
+            self.markup_table_panel.refresh()
+        elif entry['op'] == 'move':
+            self.db.update_node_markup(entry['mu_id'], points=entry['old_pts'])
+            self.pid_panel.refresh_markup_overlays()
+            self.markup_table_panel.refresh()
 
     def _on_existing_marker_placed(self, type_str, id_):
         """Marker placed via 'place existing' flow — refresh pins and tree without reloading panels."""

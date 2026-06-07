@@ -2001,11 +2001,13 @@ class PIDGraphicsView(QGraphicsView):
     # Markup editing signals
     markup_draw_finished    = pyqtSignal(str, list, int)   # type_, pdf_pts, page
     markup_item_clicked     = pyqtSignal(int)              # markup_id
+    markup_moved            = pyqtSignal(int, list)        # mu_id, new PDF points [[x,y],...]
 
     # Keys for QGraphicsItem.setData / .data
     _DATA_TYPE      = 0    # 'cause' | 'consequence' | 'safeguard' | 'markup'
     _DATA_ID        = 1    # database id
     _DATA_MARKUP_ID = 2    # markup id (for markup items)
+    _DATA_MARKUP_PTS = 3   # stores PDF points list on path/text items
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2070,6 +2072,16 @@ class PIDGraphicsView(QGraphicsView):
         self._markup_items: dict = {}
         self._markup_highlighted: int = -1
         self._snap_enabled: bool = True
+        self._markup_types: dict   = {}   # mu_id → 'polygon'|'polyline'|'text'|'comment'
+        self._edit_mu_id            = None
+        self._vertex_handles: list  = []
+        self._drag_mode             = None   # 'vertex' | 'item' | None
+        self._drag_vertex_idx       = None
+        self._drag_start_scene      = None
+        self._drag_original_pts: list = []
+        self._drag_current_pts: list  = []
+        self._drag_threshold_exceeded = False
+        self._drag_item_origins: list = []  # [(QGraphicsItem, QPointF)] for text/comment
 
         self._placeholder = None
         self._show_placeholder("Öppna en P&ID-fil (PDF) för att börja.")
@@ -2225,7 +2237,8 @@ class PIDGraphicsView(QGraphicsView):
             self.setCursor(Qt.CursorShape.CrossCursor)
         elif mode == MODE_MARKUP_SELECT:
             self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            self._clear_edit_handles()
         elif mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD,
                       MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE):
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
@@ -2385,6 +2398,7 @@ class PIDGraphicsView(QGraphicsView):
             gi.setZValue(Z_OVERLAY)
             gi.setData(self._DATA_MARKUP_ID, mu_id)
             gi.setData(self._DATA_TYPE, 'markup')
+            gi.setData(self._DATA_MARKUP_PTS, points_pdf)
             gi.setCursor(Qt.CursorShape.PointingHandCursor)
             gi.setToolTip(f"Klicka för att markera  [{type_}]" + (f": {label}" if label else ""))
             self._scene.addItem(gi)
@@ -2399,8 +2413,11 @@ class PIDGraphicsView(QGraphicsView):
             px, py = points_pdf[0]
             items.extend(self._add_markup_text_item(mu_id, type_, label or '?',
                                                      px, py, c, opacity, line_width, font_size))
+            if items:
+                items[0].setData(self._DATA_MARKUP_PTS, [[points_pdf[0][0], points_pdf[0][1]]])
 
         self._markup_items[mu_id] = items
+        self._markup_types[mu_id] = type_
         if not visible:
             for gi in items:
                 gi.setVisible(False)
@@ -2490,6 +2507,8 @@ class PIDGraphicsView(QGraphicsView):
 
     def clear_markup_overlays(self):
         """Remove all node markup overlay items from the scene."""
+        self._clear_edit_handles()
+        self._markup_types.clear()
         for mu_id, items in self._markup_items.items():
             for gi in items:
                 try: self._scene.removeItem(gi)
@@ -2501,6 +2520,97 @@ class PIDGraphicsView(QGraphicsView):
         for gi in self._markup_items.get(mu_id, []):
             try: gi.setVisible(visible)
             except Exception: pass
+
+    def _clear_edit_handles(self):
+        for h in self._vertex_handles:
+            try: self._scene.removeItem(h)
+            except Exception: pass
+        self._vertex_handles  = []
+        self._edit_mu_id      = None
+        self._drag_mode       = None
+        self._drag_vertex_idx = None
+        self._drag_original_pts = []
+        self._drag_current_pts  = []
+        self._drag_item_origins = []
+        self._drag_threshold_exceeded = False
+
+    def _select_for_edit(self, mu_id):
+        """Select a markup item and show vertex handles."""
+        self._clear_edit_handles()
+        self._edit_mu_id = mu_id
+
+        # Read stored PDF points from item
+        pts_pdf = None
+        for gi in self._markup_items.get(mu_id, []):
+            pts_pdf = gi.data(self._DATA_MARKUP_PTS)
+            if pts_pdf:
+                break
+        if not pts_pdf:
+            return
+
+        pts_scene = [self.pdf_to_scene(*p) for p in pts_pdf]
+        self._drag_current_pts = list(pts_scene)
+
+        typ = self._markup_types.get(mu_id, 'polygon')
+
+        if typ in ('polygon', 'polyline'):
+            HANDLE_R = 5
+            for pt in pts_scene:
+                h = QGraphicsEllipseItem(-HANDLE_R, -HANDLE_R, HANDLE_R * 2, HANDLE_R * 2)
+                h.setBrush(QBrush(QColor(255, 255, 255, 220)))
+                h.setPen(QPen(QColor(30, 120, 230), 1.5))
+                h.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+                h.setPos(pt)
+                h.setZValue(Z_OVERLAY + 5)
+                self._scene.addItem(h)
+                self._vertex_handles.append(h)
+        elif typ in ('text', 'comment'):
+            self._drag_item_origins = [
+                (gi, QPointF(gi.pos()))
+                for gi in self._markup_items.get(mu_id, [])
+            ]
+
+        self.highlight_markup(mu_id)
+
+    def _update_edit_path(self, pts_scene):
+        """Rebuild the path/positions of the currently edited markup."""
+        if self._edit_mu_id not in self._markup_items:
+            return
+        typ = self._markup_types.get(self._edit_mu_id, 'polygon')
+
+        if typ in ('polygon', 'polyline') and pts_scene:
+            for gi in self._markup_items[self._edit_mu_id]:
+                if isinstance(gi, QGraphicsPathItem):
+                    path = QPainterPath()
+                    path.moveTo(pts_scene[0])
+                    for pt in pts_scene[1:]:
+                        path.lineTo(pt)
+                    if typ == 'polygon':
+                        path.closeSubpath()
+                    gi.setPath(path)
+                    break
+
+        elif typ in ('text', 'comment') and pts_scene and self._drag_original_pts:
+            delta = pts_scene[0] - self._drag_original_pts[0]
+            for gi, orig in self._drag_item_origins:
+                gi.setPos(orig + delta)
+
+    def _update_handle_positions(self, pts_scene):
+        for i, handle in enumerate(self._vertex_handles):
+            if i < len(pts_scene):
+                handle.setPos(pts_scene[i])
+
+    def _finish_edit_drag(self):
+        """Called on mouseRelease after a drag — save new points."""
+        if self._edit_mu_id is None:
+            return
+        new_pdf_pts = [list(self.scene_to_pdf(pt)) for pt in self._drag_current_pts]
+        # Update stored data on item
+        for gi in self._markup_items.get(self._edit_mu_id, []):
+            if gi.data(self._DATA_MARKUP_PTS) is not None:
+                gi.setData(self._DATA_MARKUP_PTS, new_pdf_pts)
+                break
+        self.markup_moved.emit(self._edit_mu_id, new_pdf_pts)
 
     def highlight_markup(self, mu_id):
         """Briefly pulse-highlight a markup item (thicken its border)."""
@@ -2748,6 +2858,36 @@ class PIDGraphicsView(QGraphicsView):
                 type_ = 'text' if self.mode == MODE_MARKUP_TEXT else 'comment'
                 self.markup_draw_finished.emit(type_, [list(pdf_pt)], self.current_page)
                 event.accept(); return
+        elif self.mode == MODE_MARKUP_SELECT:
+            if event.button() == Qt.MouseButton.LeftButton:
+                view_pos = event.position().toPoint()
+                # Priority 1: vertex handle hit
+                for i, handle in enumerate(self._vertex_handles):
+                    hvp = self.mapFromScene(handle.scenePos())
+                    dx = view_pos.x() - hvp.x()
+                    dy = view_pos.y() - hvp.y()
+                    if dx * dx + dy * dy < 144:   # 12 screen-pixel radius
+                        self._drag_mode = 'vertex'
+                        self._drag_vertex_idx = i
+                        self._drag_start_scene = sp
+                        self._drag_original_pts = list(self._drag_current_pts)
+                        self._drag_threshold_exceeded = False
+                        self.setCursor(Qt.CursorShape.CrossCursor)
+                        event.accept(); return
+                # Priority 2: markup item hit
+                for item in self._scene.items(sp):
+                    mu_id = item.data(self._DATA_MARKUP_ID)
+                    if mu_id is not None:
+                        mu_id_int = int(mu_id)
+                        self._select_for_edit(mu_id_int)
+                        self._drag_mode = 'item'
+                        self._drag_start_scene = sp
+                        self._drag_original_pts = list(self._drag_current_pts)
+                        self._drag_threshold_exceeded = False
+                        self.setCursor(Qt.CursorShape.SizeAllCursor)
+                        event.accept(); return
+                # Priority 3: empty space → clear selection, fall through for panning
+                self._clear_edit_handles()
         elif self.mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD,
                            MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE):
             if event.button() == Qt.MouseButton.LeftButton:
@@ -2824,8 +2964,23 @@ class PIDGraphicsView(QGraphicsView):
             event.accept()
             return
 
+        # ── MARKUP_SELECT drag-aware release ──────────────────────────────────
+        if self.mode == MODE_MARKUP_SELECT and self._drag_mode is not None and \
+                event.button() == Qt.MouseButton.LeftButton:
+            if self._drag_threshold_exceeded and self._edit_mu_id is not None:
+                self._finish_edit_drag()
+            elif not self._drag_threshold_exceeded and self._edit_mu_id is not None:
+                self.markup_item_clicked.emit(self._edit_mu_id)
+            self._drag_mode = None
+            self._drag_vertex_idx = None
+            self._drag_threshold_exceeded = False
+            self._press_pos = None
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            event.accept()
+            return
+
         # ── NAV mode: click on marker navigates tree ──────────────────────────
-        if (self.mode in (MODE_NAV, MODE_MARKUP_SELECT) and
+        if (self.mode in (MODE_NAV,) and
                 event.button() == Qt.MouseButton.LeftButton and
                 self._press_pos is not None):
             p  = event.position()
@@ -2833,24 +2988,36 @@ class PIDGraphicsView(QGraphicsView):
             dy = p.y() - self._press_pos.y()
             if dx * dx + dy * dy < 25:
                 sp = self.mapToScene(p.toPoint())
-                if self.mode == MODE_MARKUP_SELECT:
-                    # Try to click on a markup item first
-                    for item in self._scene.items(sp):
-                        mu_id = item.data(self._DATA_MARKUP_ID)
-                        if mu_id is not None:
-                            self.markup_item_clicked.emit(int(mu_id))
-                            break
-                else:
-                    for item in self._scene.items(sp):
-                        itype = item.data(self._DATA_TYPE)
-                        iid   = item.data(self._DATA_ID)
-                        if itype in ('cause', 'consequence', 'safeguard') and iid is not None:
-                            self.marker_clicked.emit(itype, int(iid))
-                            break
+                for item in self._scene.items(sp):
+                    itype = item.data(self._DATA_TYPE)
+                    iid   = item.data(self._DATA_ID)
+                    if itype in ('cause', 'consequence', 'safeguard') and iid is not None:
+                        self.marker_clicked.emit(itype, int(iid))
+                        break
         self._press_pos = None
         super().mouseReleaseEvent(event)
 
     def mouseMoveEvent(self, event):
+        if self.mode == MODE_MARKUP_SELECT and self._drag_mode is not None:
+            sp = self.mapToScene(event.position().toPoint())
+            if not self._drag_threshold_exceeded:
+                dx = sp.x() - self._drag_start_scene.x()
+                dy = sp.y() - self._drag_start_scene.y()
+                if dx * dx + dy * dy > 4.0:
+                    self._drag_threshold_exceeded = True
+            if self._drag_threshold_exceeded:
+                delta = sp - self._drag_start_scene
+                if self._drag_mode == 'vertex' and self._drag_vertex_idx is not None:
+                    new_pts = list(self._drag_current_pts)
+                    idx = self._drag_vertex_idx
+                    new_pts[idx] = self._drag_original_pts[idx] + delta
+                    self._drag_current_pts = new_pts
+                elif self._drag_mode == 'item':
+                    self._drag_current_pts = [p + delta for p in self._drag_original_pts]
+                self._update_edit_path(self._drag_current_pts)
+                self._update_handle_positions(self._drag_current_pts)
+                event.accept()
+                return
         if self.mode in (MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE) \
                 and self.draw_points:
             sp = self.mapToScene(event.position().toPoint())
@@ -3333,6 +3500,7 @@ class PIDPanel(QWidget):
     # Node markup signals
     markup_draw_finished    = pyqtSignal(str, int, list, int, str)  # type_, node_id, pts, page, label
     markup_item_selected    = pyqtSignal(int)                        # markup_id
+    markup_moved            = pyqtSignal(int, list)                  # mu_id, new PDF pts
 
     def __init__(self, db, parent=None):
         super().__init__(parent)
@@ -3545,6 +3713,7 @@ class PIDPanel(QWidget):
         self._active_place_id   = None
         self.viewer.marker_clicked.connect(
             lambda t, i: self.marker_navigated.emit(t, i))
+        self.viewer.markup_moved.connect(self.markup_moved)
 
         # Connect existing signals for scenario auto-progression
         self.cause_created.connect(self._sc_on_cause)
