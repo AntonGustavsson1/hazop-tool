@@ -2924,10 +2924,10 @@ class TreePanel(QWidget):
         marked_consequences = self.db.marked_consequence_ids()
         marked_safeguards = self.db.marked_safeguard_ids()
 
-        for node in self.db.nodes():
+        for ni, node in enumerate(self.db.nodes(), 1):
             node_on_pid = bool(node['markup_points'])
             pid_pin = " 📍" if node_on_pid else ""
-            nitem = QTreeWidgetItem([f"🏭  {node['name']}{pid_pin}"])
+            nitem = QTreeWidgetItem([f"🏭  {ni}. {node['name']}{pid_pin}"])
             nitem.setData(0, Qt.ItemDataRole.UserRole, node['id'])
             nitem.setData(0, Qt.ItemDataRole.UserRole + 1, NODE_T)
             nitem.setFont(0, bold_font)
@@ -2936,8 +2936,8 @@ class TreePanel(QWidget):
             if (NODE_T, node['id']) in expanded: nitem.setExpanded(True)
             if select_type == NODE_T and select_id == node['id']: target = nitem
 
-            for dev in self.db.deviations(node['id']):
-                ditem = QTreeWidgetItem([f"  ⚠  {dev['description'][:55]}"])
+            for di, dev in enumerate(self.db.deviations(node['id']), 1):
+                ditem = QTreeWidgetItem([f"  ⚠  {di}. {dev['description'][:55]}"])
                 ditem.setData(0, Qt.ItemDataRole.UserRole, dev['id'])
                 ditem.setData(0, Qt.ItemDataRole.UserRole + 1, DEV_T)
                 dev_font = QFont(); dev_font.setItalic(True)
@@ -2946,9 +2946,9 @@ class TreePanel(QWidget):
                 if (DEV_T, dev['id']) in expanded: ditem.setExpanded(True)
                 if select_type == DEV_T and select_id == dev['id']: target = ditem
 
-                for cause in self.db.causes_for_deviation(dev['id']):
+                for ci, cause in enumerate(self.db.causes_for_deviation(dev['id']), 1):
                     placed_c = cause['id'] in marked_causes
-                    citem = QTreeWidgetItem([f"    ⚙  {cause['description'][:50]}"])
+                    citem = QTreeWidgetItem([f"    ⚙  {ci}. {cause['description'][:50]}"])
                     citem.setIcon(0, _make_pin_icon(placed_c))
                     citem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
                     citem.setData(0, Qt.ItemDataRole.UserRole + 1, CAUSE_T)
@@ -2956,11 +2956,11 @@ class TreePanel(QWidget):
                     if (CAUSE_T, cause['id']) in expanded: citem.setExpanded(True)
                     if select_type == CAUSE_T and select_id == cause['id']: target = citem
 
-                    for cons in self.db.consequences(cause['id']):
+                    for ki, cons in enumerate(self.db.consequences(cause['id']), 1):
                         level, _, _ = risk_info(cause['likelihood'], cons['severity'])
                         risk_icon = _RISK_ICON.get(level, '⚪')
                         placed_k = cons['id'] in marked_consequences
-                        kitem = QTreeWidgetItem([f"      {risk_icon}  {cons['description'][:40]}"])
+                        kitem = QTreeWidgetItem([f"      {risk_icon}  {ki}. {cons['description'][:40]}"])
                         kitem.setIcon(0, _make_pin_icon(placed_k))
                         kitem.setData(0, Qt.ItemDataRole.UserRole, cons['id'])
                         kitem.setData(0, Qt.ItemDataRole.UserRole + 1, CONS_T)
@@ -2968,7 +2968,7 @@ class TreePanel(QWidget):
                         if (CONS_T, cons['id']) in expanded: kitem.setExpanded(True)
                         if select_type == CONS_T and select_id == cons['id']: target = kitem
 
-                        for sg in self.db.safeguards(cons['id']):
+                        for si, sg in enumerate(self.db.safeguards(cons['id']), 1):
                             rrf = (sg['rrf'] or 1) if sg['rrf'] is not None else 1
                             rrf_str = f"RRF{rrf}" if rrf > 1 else "—"
                             try:
@@ -2977,7 +2977,7 @@ class TreePanel(QWidget):
                                 linked = False
                             sg_icon = "🔗🛡" if linked else "🛡"
                             placed_s = sg['id'] in marked_safeguards
-                            sgitem = QTreeWidgetItem([f"         {sg_icon}  {sg['description'][:35]}  [{rrf_str}]"])
+                            sgitem = QTreeWidgetItem([f"         {sg_icon}  {si}. {sg['description'][:35]}  [{rrf_str}]"])
                             sgitem.setIcon(0, _make_pin_icon(placed_s))
                             sgitem.setData(0, Qt.ItemDataRole.UserRole, sg['id'])
                             sgitem.setData(0, Qt.ItemDataRole.UserRole + 1, SG_T)
