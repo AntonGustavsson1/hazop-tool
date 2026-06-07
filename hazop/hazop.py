@@ -5640,14 +5640,11 @@ class StandardCausesSettingsPanel(QWidget):
             self._dev_list.setCurrentRow(0)
 
     @staticmethod
-    def _f_cell(freq):
-        """Return (text, bg_color) for the F-nivå column given a frequency (or None)."""
+    def _f_label(freq):
+        """Return the risk matrix frequency label for a given frequency (or '—')."""
         if freq is None:
-            return "—", "#f5f5f5"
-        f_val = freq_to_f_level(freq)
-        lbl   = freq_axis_label(f_val)
-        _, bg, _ = risk_info(f_val, 1)   # C=1 just to get the freq-axis colour
-        return lbl, bg
+            return "—"
+        return freq_axis_label(freq_to_f_level(freq))
 
     def _load_causes(self, dev_id):
         self._loading = True
@@ -5672,11 +5669,9 @@ class StandardCausesSettingsPanel(QWidget):
             item1.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self._cause_table.setItem(row, 1, item1)
 
-            f_text, f_bg = self._f_cell(freq)
-            item2 = QTableWidgetItem(f_text)
+            item2 = QTableWidgetItem(self._f_label(freq))
             item2.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             item2.setFlags(item2.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            item2.setBackground(QColor(f_bg))
             self._cause_table.setItem(row, 2, item2)
         self._loading = False
 
@@ -5756,7 +5751,6 @@ class StandardCausesSettingsPanel(QWidget):
                 freq = None
             self.db.update_standard_cause(cid, frequency=freq)
             # Refresh F-nivå column (col 2) in same row
-            f_text, f_bg = self._f_cell(freq)
             self._loading = True
             item2 = self._cause_table.item(item.row(), 2)
             if item2 is None:
@@ -5764,8 +5758,7 @@ class StandardCausesSettingsPanel(QWidget):
                 item2.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 item2.setFlags(item2.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self._cause_table.setItem(item.row(), 2, item2)
-            item2.setText(f_text)
-            item2.setBackground(QColor(f_bg))
+            item2.setText(self._f_label(freq))
             self._loading = False
 
     def _add_cause(self):
