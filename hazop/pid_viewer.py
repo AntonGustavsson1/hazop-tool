@@ -2596,7 +2596,8 @@ class PIDGraphicsView(QGraphicsView):
     def mouseMoveEvent(self, event):
         if self.mode == MODE_NODE and self.draw_points:
             self._update_rubber_band(self.mapToScene(event.position().toPoint()))
-        elif self.mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD) \
+        elif self.mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD,
+                           MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE) \
                 and self._rect_start is not None:
             current = self.mapToScene(event.position().toPoint())
             rect = QRectF(self._rect_start, current).normalized()
