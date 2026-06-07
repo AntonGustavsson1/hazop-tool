@@ -1761,6 +1761,13 @@ class Database:
                           (int(visible), node_id))
         self.conn.commit()
 
+    def sync_node_text_markups(self, node_id, new_name):
+        """Update label of all 'text' type markups for a node to match its new name."""
+        self.conn.execute(
+            "UPDATE node_markups SET label=? WHERE node_id=? AND type='text'",
+            (new_name, node_id))
+        self.conn.commit()
+
     _SENTINEL = object()
 
     def update_cause(self, id_, description=None, likelihood=None, base_freq=_SENTINEL,
@@ -8453,7 +8460,11 @@ class MainWindow(QMainWindow):
             lambda t, v: self.pid_panel.viewer.set_marker_visibility(t, v))
 
         self.node_panel.saved.connect(
-            lambda id_, name: self.tree_panel.refresh(NODE_T, id_))
+            lambda id_, name: (
+                self.tree_panel.refresh(NODE_T, id_),
+                self.db.sync_node_text_markups(id_, name),
+                self.pid_panel.refresh_markup_overlays(),
+            ))
         self.deviation_panel.saved.connect(
             lambda id_, _: self.tree_panel.refresh(DEV_T, id_))
         self.deviation_panel.add_cause_requested.connect(self._on_deviation_add_cause)
