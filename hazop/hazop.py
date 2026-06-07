@@ -4078,7 +4078,21 @@ class ScenarioTablePanel(QWidget):
             for cause_d, dev_d in causes_to_show:
                 node = self.db.get_node(cause_d['node_id'])
                 node_name = node['name'] if node else '?'
-                freq = cause_d['likelihood'] if cause_d['likelihood'] is not None else 3
+                # Resolve frequency: prefer live standard_causes lookup, then base_freq, then likelihood
+                std_id = cause_d.get('standard_cause_id')
+                base_freq = None
+                if std_id:
+                    sc = self.db.get_standard_cause(std_id)
+                    if sc and sc.get('frequency') is not None:
+                        base_freq = sc['frequency']
+                if base_freq is None:
+                    base_freq = cause_d.get('base_freq')
+                if base_freq is not None:
+                    freq = freq_to_f_level(base_freq)
+                elif cause_d['likelihood'] is not None:
+                    freq = cause_d['likelihood']
+                else:
+                    freq = 3
                 _fi = freq_to_idx(freq)
                 freq_lbl = _FREQ_LABELS[_fi] if _fi < len(_FREQ_LABELS) else f'F{freq}'
                 first_row_for_cause = self._table.rowCount()
