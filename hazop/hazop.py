@@ -3871,6 +3871,7 @@ class ScenarioTablePanel(QWidget):
         self._node_id = None
         self._deviation_id = None
         self._row_meta = []   # list of (dev_id, cause_id, cons_id, sg_id) per visible row
+        self._cons_id  = None  # if set, show only this consequence (set by load_consequence)
         self._enter_row = -1
         self._enter_col = -1
         self._last_enter_committed = False
@@ -3936,6 +3937,7 @@ class ScenarioTablePanel(QWidget):
         self._node_id = node_id
         self._deviation_id = None
         self.cause_id = None
+        self._cons_id = None
         self._rebuild()
 
     def load_deviation(self, deviation_id):
@@ -3943,12 +3945,14 @@ class ScenarioTablePanel(QWidget):
         self._node_id = dev['node_id'] if dev else None
         self._deviation_id = deviation_id
         self.cause_id = None
+        self._cons_id = None
         self._rebuild()
 
     def load_cause(self, cause_id):
         self._node_id = None
         self._deviation_id = None
         self.cause_id = cause_id
+        self._cons_id = None
         self._rebuild()
 
     def load_consequence(self, cons_id):
@@ -3957,12 +3961,14 @@ class ScenarioTablePanel(QWidget):
             self._node_id = None
             self._deviation_id = None
             self.cause_id = dict(row)['cause_id']
+            self._cons_id = cons_id
             self._rebuild()
 
     def clear(self):
         self._node_id = None
         self._deviation_id = None
         self.cause_id = None
+        self._cons_id = None
         self._table.setRowCount(0)
         self._hdr_lbl.setText("HAZOP Scenario")
 
@@ -4009,10 +4015,18 @@ class ScenarioTablePanel(QWidget):
         first_cause = causes_to_show[0][0]
         node = self.db.get_node(first_cause['node_id'])
         node_name_hdr = node['name'] if node else '?'
-        if self._deviation_id is not None:
+        if self._cons_id is not None:
+            cons = self.db.get_consequence(self._cons_id)
+            cons_desc = cons['description'] if cons else '?'
+            self._hdr_lbl.setText(
+                f"HAZOP Scenario — {node_name_hdr} / {first_cause.get('description', '?')} / {cons_desc}")
+        elif self._deviation_id is not None:
             dev = self.db.get_deviation(self._deviation_id)
             self._hdr_lbl.setText(
                 f"HAZOP Scenario — {node_name_hdr} / {dev['description'] if dev else ''}")
+        elif self.cause_id is not None:
+            self._hdr_lbl.setText(
+                f"HAZOP Scenario — {node_name_hdr} / {first_cause.get('description', '?')}")
         elif self._node_id is not None:
             self._hdr_lbl.setText(f"HAZOP Scenario — {node_name_hdr}")
         else:
@@ -4027,7 +4041,10 @@ class ScenarioTablePanel(QWidget):
                 _fi = freq_to_idx(freq)
                 freq_lbl = _FREQ_LABELS[_fi] if _fi < len(_FREQ_LABELS) else f'F{freq}'
                 first_row_for_cause = self._table.rowCount()
-                for cons in self.db.consequences(cause_d['id']):
+                all_cons = list(self.db.consequences(cause_d['id']))
+                if self._cons_id is not None:
+                    all_cons = [c for c in all_cons if dict(c)['id'] == self._cons_id]
+                for cons in all_cons:
                     cons_d = dict(cons)
                     sgs = [dict(s) for s in self.db.safeguards(cons_d['id'])]
                     if sgs:
