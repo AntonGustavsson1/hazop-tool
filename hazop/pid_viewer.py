@@ -4038,6 +4038,10 @@ class PIDPanel(QWidget):
         self._active_deviation_id = deviation_id
         self._set_mode(MODE_CAUSE_TEMPLATE)
 
+    def reload_overlays(self):
+        """Public helper to refresh all P&ID markers and connection lines."""
+        self._load_overlays()
+
     def _on_cause_template_click(self, scene_pos, page, suggested_tag=''):
         # If secondary placement is pending, place secondary marker instead of opening dialog
         if self._pending_secondary_cause_id is not None:

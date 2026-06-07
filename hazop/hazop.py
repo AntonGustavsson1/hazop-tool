@@ -1443,6 +1443,13 @@ class Database:
             (cause_id,)).fetchone()
         return dict(row) if row else None
 
+    def cause_markers_for_cause(self, cause_id):
+        """Return all markers for a specific cause (page, x, y, comp_type, tag)."""
+        return self.conn.execute(
+            "SELECT pid_page, x, y, component_type, component_tag "
+            "FROM cause_markers WHERE cause_id=?",
+            (cause_id,)).fetchall()
+
     def get_consequence_marker(self, consequence_id):
         row = self.conn.execute(
             "SELECT pid_page, x, y FROM consequence_markers WHERE consequence_id=? LIMIT 1",
@@ -7431,9 +7438,10 @@ class ReuseDeviationCausesDialog(QDialog):
         self.setMinimumWidth(580)
         self.setMinimumHeight(420)
 
-        # cause_id → ('ref', description) | ('inv', inverted_description)
+        # key → (mode, description, original_cause_id)
+        # key is cause_id (int) for individual causes, or f"dev_{dev_id}" for deviation-level
+        # original_cause_id is None for deviation-level entries (no marker to copy)
         self._selections: dict = {}
-        self._inv_texts: dict  = {}   # cause_id → inverted text (pre-computed)
 
         layout = QVBoxLayout(self)
 
@@ -7497,9 +7505,9 @@ class ReuseDeviationCausesDialog(QDialog):
                 "QPushButton:hover:!checked{background:#e8daef;}")
 
             ref_dev_btn.toggled.connect(
-                self._make_ref_handler(dev_key, dev_n, inv_dev_btn))
+                self._make_ref_handler(dev_key, dev_n, inv_dev_btn, None))
             inv_dev_btn.toggled.connect(
-                self._make_inv_handler(dev_key, inv_dev_n, ref_dev_btn))
+                self._make_inv_handler(dev_key, inv_dev_n, ref_dev_btn, None))
 
             hdr_h.addWidget(ref_dev_btn)
             hdr_h.addWidget(inv_dev_btn)
@@ -7546,9 +7554,9 @@ class ReuseDeviationCausesDialog(QDialog):
                     "QPushButton:hover:!checked{background:#e8daef;}")
 
                 ref_btn.toggled.connect(
-                    self._make_ref_handler(cid, orig, inv_btn))
+                    self._make_ref_handler(cid, orig, inv_btn, cid))
                 inv_btn.toggled.connect(
-                    self._make_inv_handler(cid, inv_text, ref_btn))
+                    self._make_inv_handler(cid, inv_text, ref_btn, cid))
 
                 row_h.addWidget(ref_btn)
                 row_h.addWidget(inv_btn)
@@ -7599,10 +7607,10 @@ class ReuseDeviationCausesDialog(QDialog):
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _make_ref_handler(self, cid, description, inv_btn):
+    def _make_ref_handler(self, cid, description, inv_btn, original_cause_id):
         def handler(checked):
             if checked:
-                self._selections[cid] = ('ref', description)
+                self._selections[cid] = ('ref', description, original_cause_id)
                 inv_btn.blockSignals(True)
                 inv_btn.setChecked(False)
                 inv_btn.blockSignals(False)
@@ -7611,10 +7619,10 @@ class ReuseDeviationCausesDialog(QDialog):
             self._update_summary()
         return handler
 
-    def _make_inv_handler(self, cid, inv_text, ref_btn):
+    def _make_inv_handler(self, cid, inv_text, ref_btn, original_cause_id):
         def handler(checked):
             if checked:
-                self._selections[cid] = ('inv', inv_text)
+                self._selections[cid] = ('inv', inv_text, original_cause_id)
                 ref_btn.blockSignals(True)
                 ref_btn.setChecked(False)
                 ref_btn.blockSignals(False)
@@ -7631,7 +7639,7 @@ class ReuseDeviationCausesDialog(QDialog):
             self._create_btn.setEnabled(False)
         else:
             kinds = {'ref': 0, 'inv': 0}
-            for mode, _ in self._selections.values():
+            for mode, _, _ in self._selections.values():
                 kinds[mode] += 1
             parts = []
             if kinds['ref']: parts.append(f"{kinds['ref']} referens")
@@ -7639,9 +7647,12 @@ class ReuseDeviationCausesDialog(QDialog):
             self._summary_lbl.setText(f"{n} orsak(er) markerade: {', '.join(parts)}")
             self._create_btn.setEnabled(True)
 
-    def get_selected_descriptions(self):
-        """Return list of description strings for the selected causes (ref or inv)."""
-        return [desc for _, desc in self._selections.values()]
+    def get_selections(self):
+        """Return list of (description, original_cause_id) for selected entries.
+
+        original_cause_id is None for deviation-level references (no marker to copy).
+        """
+        return [(desc, orig_id) for _, desc, orig_id in self._selections.values()]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -8036,10 +8047,20 @@ class MainWindow(QMainWindow):
             if result == QDialog.DialogCode.Rejected:
                 return   # user cancelled — do not enter P&ID mode
             if result == QDialog.DialogCode.Accepted:
-                for desc in dlg.get_selected_descriptions():
-                    cid = self.db.add_cause(deviation_id)
-                    self.db.update_cause(cid, desc)
+                markers_need_reload = False
+                for desc, orig_cause_id in dlg.get_selections():
+                    new_cid = self.db.add_cause(deviation_id)
+                    self.db.update_cause(new_cid, desc)
+                    # Copy P&ID markers from the original cause (same physical component)
+                    if orig_cause_id is not None:
+                        for m in self.db.cause_markers_for_cause(orig_cause_id):
+                            self.db.add_cause_marker(
+                                new_cid, m['pid_page'], m['x'], m['y'],
+                                m['component_type'], m['component_tag'])
+                            markers_need_reload = True
                 self.tree_panel.refresh()
+                if markers_need_reload:
+                    self.pid_panel.reload_overlays()
 
         # ── Enter P&ID placement mode ─────────────────────────────────────────
         self.pid_panel.set_active_node(node_id)
