@@ -2002,6 +2002,8 @@ class PIDGraphicsView(QGraphicsView):
     markup_draw_finished    = pyqtSignal(str, list, int)   # type_, pdf_pts, page
     markup_item_clicked     = pyqtSignal(int)              # markup_id
     markup_moved            = pyqtSignal(int, list)        # mu_id, new PDF points [[x,y],...]
+    markup_label_edited     = pyqtSignal(int, str)         # mu_id, new_label
+    markup_duplicate_requested = pyqtSignal(int)           # mu_id
 
     # Keys for QGraphicsItem.setData / .data
     _DATA_TYPE      = 0    # 'cause' | 'consequence' | 'safeguard' | 'markup'
@@ -2082,6 +2084,7 @@ class PIDGraphicsView(QGraphicsView):
         self._drag_current_pts: list  = []
         self._drag_threshold_exceeded = False
         self._drag_item_origins: list = []  # [(QGraphicsItem, QPointF)] for text/comment
+        self._inline_edit_widget = None
 
         self._placeholder = None
         self._show_placeholder("Öppna en P&ID-fil (PDF) för att börja.")
@@ -2612,6 +2615,74 @@ class PIDGraphicsView(QGraphicsView):
                 break
         self.markup_moved.emit(self._edit_mu_id, new_pdf_pts)
 
+    def _start_inline_label_edit(self, mu_id):
+        """Show a floating QLineEdit over the text item for in-place label editing."""
+        txt_item = None
+        for gi in self._markup_items.get(mu_id, []):
+            if isinstance(gi, QGraphicsSimpleTextItem):
+                txt_item = gi
+                break
+        if txt_item is None:
+            return
+        if self._inline_edit_widget is not None:
+            self._inline_edit_widget.deleteLater()
+            self._inline_edit_widget = None
+
+        vp = self.mapFromScene(txt_item.pos())
+        br = txt_item.boundingRect()
+        edit = QLineEdit(self.viewport())
+        edit.setFont(txt_item.font())
+        edit.setText(txt_item.text())
+        edit.move(vp.x(), vp.y())
+        edit.resize(max(160, int(br.width()) + 20), int(br.height()) + 6)
+        edit.selectAll()
+        edit.setStyleSheet(
+            "background:white;border:2px solid #1e78e6;border-radius:2px;padding:1px;")
+        edit.show()
+        edit.setFocus()
+        self._inline_edit_widget = edit
+        committed = [False]
+
+        def commit():
+            if committed[0]:
+                return
+            committed[0] = True
+            new_text = edit.text().strip() or edit.text()
+            if new_text:
+                self.markup_label_edited.emit(mu_id, new_text)
+            edit.deleteLater()
+            self._inline_edit_widget = None
+
+        edit.returnPressed.connect(commit)
+        edit.editingFinished.connect(commit)
+
+    def zoom_to_markup_items(self, mu_ids):
+        """Zoom and pan the view to fit all given markup items."""
+        combined = QRectF()
+        for mu_id in mu_ids:
+            for gi in self._markup_items.get(mu_id, []):
+                br = gi.mapToScene(gi.boundingRect()).boundingRect()
+                if combined.isNull():
+                    combined = br
+                else:
+                    combined = combined.united(br)
+        if not combined.isNull():
+            combined.adjust(-60, -60, 60, 60)
+            self.fitInView(combined, Qt.AspectRatioMode.KeepAspectRatio)
+
+    def contextMenuEvent(self, event):
+        if self.mode == MODE_MARKUP_SELECT and self._edit_mu_id is not None:
+            sp = self.mapToScene(event.pos())
+            for gi in self._scene.items(sp):
+                if gi.data(self._DATA_MARKUP_ID) is not None:
+                    menu = QMenu(self)
+                    menu.addAction("📋 Duplicera",
+                                   lambda: self.markup_duplicate_requested.emit(self._edit_mu_id))
+                    menu.exec(event.globalPos())
+                    event.accept()
+                    return
+        super().contextMenuEvent(event)
+
     def highlight_markup(self, mu_id):
         """Briefly pulse-highlight a markup item (thicken its border)."""
         if self._markup_highlighted == mu_id:
@@ -2917,6 +2988,16 @@ class PIDGraphicsView(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event):
+        if self.mode == MODE_MARKUP_SELECT and event.button() == Qt.MouseButton.LeftButton:
+            sp = self.mapToScene(event.position().toPoint())
+            for gi in self._scene.items(sp):
+                mu_id = gi.data(self._DATA_MARKUP_ID)
+                if mu_id is not None:
+                    mu_id_int = int(mu_id)
+                    if self._markup_types.get(mu_id_int) in ('text', 'comment'):
+                        self._start_inline_label_edit(mu_id_int)
+                        event.accept()
+                        return
         if self.mode in (MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE) \
                 and event.button() == Qt.MouseButton.LeftButton:
             sp = self.mapToScene(event.position().toPoint())
@@ -3501,6 +3582,8 @@ class PIDPanel(QWidget):
     markup_draw_finished    = pyqtSignal(str, int, list, int, str)  # type_, node_id, pts, page, label
     markup_item_selected    = pyqtSignal(int)                        # markup_id
     markup_moved            = pyqtSignal(int, list)                  # mu_id, new PDF pts
+    markup_label_edited     = pyqtSignal(int, str)                   # mu_id, new_label
+    markup_duplicate_requested = pyqtSignal(int)                     # mu_id
 
     def __init__(self, db, parent=None):
         super().__init__(parent)
@@ -3714,6 +3797,8 @@ class PIDPanel(QWidget):
         self.viewer.marker_clicked.connect(
             lambda t, i: self.marker_navigated.emit(t, i))
         self.viewer.markup_moved.connect(self.markup_moved)
+        self.viewer.markup_label_edited.connect(self.markup_label_edited)
+        self.viewer.markup_duplicate_requested.connect(self.markup_duplicate_requested)
 
         # Connect existing signals for scenario auto-progression
         self.cause_created.connect(self._sc_on_cause)

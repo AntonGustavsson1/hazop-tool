@@ -3353,6 +3353,91 @@ class NodeMarkupPanel(QWidget):
         self.snap_changed.emit(enabled)
 
 
+class _MarkupStyleDialog(QDialog):
+    def __init__(self, mu_type, color, opacity, line_width, font_size, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Ändra stil")
+        self.setFixedWidth(310)
+        self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
+        outer = QVBoxLayout(self)
+        outer.setSpacing(10)
+
+        # Color row
+        color_row = QHBoxLayout()
+        color_row.addWidget(QLabel("Färg:"))
+        self._color = color
+        self._color_btns = []
+        for hc in _MARKUP_COLORS:
+            btn = QPushButton()
+            btn.setFixedSize(22, 22)
+            sel = hc.lower() == color.lower()
+            btn.setStyleSheet(
+                f"background:{hc};border:2px solid {'#222' if sel else 'transparent'};"
+                f"border-radius:3px;")
+            btn.clicked.connect(lambda _, c=hc: self._pick(c))
+            color_row.addWidget(btn)
+            self._color_btns.append((hc, btn))
+        color_row.addStretch()
+        outer.addLayout(color_row)
+
+        # Opacity
+        self._opacity_row = QWidget()
+        op_lay = QHBoxLayout(self._opacity_row)
+        op_lay.setContentsMargins(0, 0, 0, 0)
+        op_lay.addWidget(QLabel("Opacitet:"))
+        self._opacity_sl = QSlider(Qt.Orientation.Horizontal)
+        self._opacity_sl.setRange(10, 100)
+        self._opacity_sl.setValue(int(opacity * 100))
+        op_lay.addWidget(self._opacity_sl)
+        self._opacity_row.setVisible(mu_type in ('polygon', 'polyline', 'comment'))
+        outer.addWidget(self._opacity_row)
+
+        # Line width
+        self._width_row = QWidget()
+        w_lay = QHBoxLayout(self._width_row)
+        w_lay.setContentsMargins(0, 0, 0, 0)
+        w_lay.addWidget(QLabel("Tjocklek:"))
+        self._width_sp = QSpinBox()
+        self._width_sp.setRange(1, 20)
+        self._width_sp.setValue(int(line_width))
+        w_lay.addWidget(self._width_sp)
+        w_lay.addStretch()
+        self._width_row.setVisible(mu_type in ('polygon', 'polyline'))
+        outer.addWidget(self._width_row)
+
+        # Font size
+        self._font_row = QWidget()
+        f_lay = QHBoxLayout(self._font_row)
+        f_lay.setContentsMargins(0, 0, 0, 0)
+        f_lay.addWidget(QLabel("Teckenstorlek:"))
+        self._font_sp = QSpinBox()
+        self._font_sp.setRange(6, 72)
+        self._font_sp.setValue(int(font_size))
+        f_lay.addWidget(self._font_sp)
+        f_lay.addStretch()
+        self._font_row.setVisible(mu_type in ('text', 'comment'))
+        outer.addWidget(self._font_row)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        outer.addWidget(btns)
+
+    def _pick(self, hc):
+        self._color = hc
+        for c, btn in self._color_btns:
+            btn.setStyleSheet(
+                f"background:{c};border:2px solid {'#222' if c.lower()==hc.lower() else 'transparent'};"
+                f"border-radius:3px;")
+
+    def get_style(self):
+        return (self._color,
+                self._opacity_sl.value() / 100.0,
+                self._width_sp.value(),
+                self._font_sp.value())
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MARKUP TABLE PANEL  (bottom panel, shown during markup edit mode)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3362,6 +3447,8 @@ class MarkupTablePanel(QWidget):
     item_deleted     = pyqtSignal(int)        # mu_id
     item_vis_toggled = pyqtSignal(int, bool)  # mu_id, visible
     item_selected    = pyqtSignal(int)        # mu_id
+    item_style_changed = pyqtSignal(int)      # mu_id
+    item_duplicated  = pyqtSignal(int)        # mu_id
 
     _TYPE_ICON = {'polygon': '◻', 'polyline': '〰', 'text': '𝐀', 'comment': '💬'}
     _COLS      = ['Typ', 'Etikett', 'Färg', 'Opacitet', 'Tjocklek', 'Font', '👁']
@@ -3510,12 +3597,39 @@ class MarkupTablePanel(QWidget):
         n = len(rows)
         lbl = f"🗑 Ta bort ({n} valda)" if n > 1 else "🗑 Ta bort"
         act_del = menu.addAction(lbl)
-        if menu.exec(self._table.viewport().mapToGlobal(pos)) == act_del:
+        act_style = None
+        act_dup   = None
+        if n == 1:
+            act_style = menu.addAction("✏ Ändra stil...")
+            act_dup   = menu.addAction("📋 Duplicera")
+        result = menu.exec(self._table.viewport().mapToGlobal(pos))
+        if result == act_del:
             for item in rows:
                 mu_id = item.data(Qt.ItemDataRole.UserRole)
                 self.db.delete_node_markup(mu_id)
                 self.item_deleted.emit(mu_id)
             self.refresh()
+        elif act_style is not None and result == act_style:
+            mu_id = rows[0].data(Qt.ItemDataRole.UserRole)
+            mu = self.db.get_node_markup(mu_id)
+            if mu:
+                mu = dict(mu)
+                dlg = _MarkupStyleDialog(
+                    mu.get('type', 'polygon'),
+                    mu.get('color', '#E53935'),
+                    float(mu.get('opacity', 0.7)),
+                    int(mu.get('line_width', 2)),
+                    int(mu.get('font_size', 12)),
+                    self)
+                if dlg.exec() == QDialog.DialogCode.Accepted:
+                    c, op, lw, fs = dlg.get_style()
+                    self.db.update_node_markup(mu_id, color=c, opacity=op,
+                                               line_width=lw, font_size=fs)
+                    self.item_style_changed.emit(mu_id)
+                    self.refresh()
+        elif act_dup is not None and result == act_dup:
+            mu_id = rows[0].data(Qt.ItemDataRole.UserRole)
+            self.item_duplicated.emit(mu_id)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3668,6 +3782,7 @@ class TreePanel(QWidget):
     add_safeguards_on_pid_requested   = pyqtSignal(int)   # consequence_id
     edit_node_markup_requested        = pyqtSignal(int)        # node_id
     node_markup_vis_requested         = pyqtSignal(int, bool)  # node_id, visible
+    node_jump_to_markup               = pyqtSignal(int)         # node_id
     structure_changed           = pyqtSignal()
     visibility_changed          = pyqtSignal(str, bool)   # marker_type, visible
     exit_pid_mode_requested     = pyqtSignal()    # exit any active P&ID placement mode
@@ -3693,6 +3808,7 @@ class TreePanel(QWidget):
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._context_menu)
         self.tree.currentItemChanged.connect(self._on_select)
+        self.tree.itemDoubleClicked.connect(self._on_item_double_click)
         layout.addWidget(self.tree)
 
         btn_row = QHBoxLayout()
@@ -3953,6 +4069,14 @@ class TreePanel(QWidget):
         type_ = current.data(0, Qt.ItemDataRole.UserRole + 1)
         id_   = current.data(0, Qt.ItemDataRole.UserRole)
         self.item_selected.emit(type_, id_)
+
+    def _on_item_double_click(self, item, col):
+        if item is None:
+            return
+        type_ = item.data(0, Qt.ItemDataRole.UserRole + 1)
+        id_   = item.data(0, Qt.ItemDataRole.UserRole)
+        if type_ == NODE_T and self.db.has_node_markups(id_):
+            self.node_jump_to_markup.emit(id_)
 
     def _context_menu(self, pos):
         item = self.tree.itemAt(pos)
@@ -8843,6 +8967,7 @@ class MainWindow(QMainWindow):
             self._on_add_safeguards_on_pid)
         self.tree_panel.edit_node_markup_requested.connect(self._on_edit_node_markup)
         self.tree_panel.node_markup_vis_requested.connect(self._on_node_markup_vis)
+        self.tree_panel.node_jump_to_markup.connect(self._on_jump_to_node_markup)
 
         # Node markup ribbon signals
         self.node_markup_panel.closed.connect(self._on_close_node_markup)
@@ -8863,6 +8988,12 @@ class MainWindow(QMainWindow):
             lambda mu_id, vis: self.pid_panel.viewer.set_markup_item_visible(mu_id, vis))
         self.markup_table_panel.item_selected.connect(
             lambda mu_id: self.pid_panel.viewer.highlight_markup(mu_id))
+
+        self.pid_panel.markup_label_edited.connect(self._on_markup_label_edited)
+        self.pid_panel.markup_duplicate_requested.connect(self._on_duplicate_markup)
+        self.markup_table_panel.item_style_changed.connect(
+            lambda _: self.pid_panel.refresh_markup_overlays())
+        self.markup_table_panel.item_duplicated.connect(self._on_duplicate_markup)
         self.pid_panel.markup_draw_finished.connect(self._on_markup_draw_finished)
         self.pid_panel.markup_moved.connect(self._on_markup_moved)
         self.pid_panel.markup_item_selected.connect(
@@ -9180,6 +9311,54 @@ class MainWindow(QMainWindow):
             self._markup_undo_stack.append({'op': 'move', 'mu_id': mu_id, 'old_pts': old_pts})
         self.db.update_node_markup(mu_id, points=new_pts)
         self.markup_table_panel.refresh()
+
+    def _on_markup_label_edited(self, mu_id, new_label):
+        self.db.update_node_markup(mu_id, label=new_label)
+        self.pid_panel.refresh_markup_overlays()
+        self.markup_table_panel.refresh()
+
+    def _on_jump_to_node_markup(self, node_id):
+        """Double-click node with markups in tree → enter markup edit mode and zoom to items."""
+        self._on_edit_node_markup(node_id)
+        markups = self.db.node_markups_for_node(node_id)
+        if not markups:
+            return
+        markups = [dict(m) for m in markups]
+        mu_ids = [m['id'] for m in markups]
+
+        # Navigate to the physical page of the first markup
+        phys_page = markups[0].get('pid_page', 0)
+        sheet_map = self.pid_panel._sheet_map  # display_index → physical_page
+        if sheet_map:
+            display_n = next((k for k, v in sheet_map.items() if v == phys_page), 0)
+        else:
+            display_n = phys_page
+        self.pid_panel._goto_page(display_n)
+
+        # Zoom to markup bounding box (overlays already loaded by enter_markup_edit)
+        self.pid_panel.viewer.zoom_to_markup_items(mu_ids)
+
+    def _on_duplicate_markup(self, mu_id):
+        mu = self.db.get_node_markup(mu_id)
+        if not mu:
+            return
+        mu = dict(mu)
+        pts = json.loads(mu.get('points', '[]') or '[]')
+        offset_pts = [[p[0] + 20, p[1] + 20] if len(p) >= 2 else p for p in pts]
+        new_id = self.db.add_node_markup(
+            node_id=mu['node_id'],
+            type_=mu['type'],
+            pts=offset_pts,
+            label=mu['label'] + ' (kopia)',
+            color=mu['color'],
+            opacity=float(mu['opacity']),
+            line_width=int(mu['line_width']),
+            page=mu['pid_page'],
+            font_size=int(mu['font_size']))
+        self._markup_undo_stack.append({'op': 'draw', 'mu_id': new_id})
+        self.pid_panel.refresh_markup_overlays()
+        self.markup_table_panel.refresh()
+        self.markup_table_panel.select_markup(new_id)
 
     def _undo_last_markup(self):
         if not self._markup_undo_stack:
