@@ -7468,14 +7468,16 @@ class ReuseDeviationCausesDialog(QDialog):
                 order.append(dn)
             grouped[dn].append(c)
 
+        global_pos = 0
         for dev_n in order:
-            causes = grouped[dev_n]
-            dev_lbl   = causes[0]['dev_label']
-            dev_id    = causes[0]['deviation_id']
-            dev_key   = f"dev_{dev_id}"           # unique selection key for the deviation itself
-            inv_dev_n = invert_cause_text(dev_n)
+            causes  = grouped[dev_n]
+            dev_lbl = causes[0]['dev_label']
+            dev_id  = causes[0]['deviation_id']
+            dev_key = f"dev_{dev_id}"
+            dev_pos = global_pos
+            global_pos += 1
 
-            # ── Deviation header row: label + "Referera avvikelse" / "Invers avvikelse" ──
+            # ── Deviation header row ──────────────────────────────────────────
             hdr_w = QWidget()
             hdr_w.setStyleSheet("background:#ebebeb;border-radius:3px;")
             hdr_h = QHBoxLayout(hdr_w)
@@ -7486,46 +7488,26 @@ class ReuseDeviationCausesDialog(QDialog):
                 f"<b><span style='color:#555'>{dev_lbl}</span>&nbsp;&nbsp;{dev_n}</b>")
             hdr_h.addWidget(hdr_lbl, 1)
 
-            ref_dev_btn = QPushButton("Referera avvikelse")
+            ref_label   = f"Se {dev_lbl}"
+            ref_dev_btn = QPushButton(f"↗ {ref_label}")
             ref_dev_btn.setCheckable(True)
-            ref_dev_btn.setToolTip(f"Skapar en orsak med texten: {dev_n}")
+            ref_dev_btn.setToolTip(f"Skapar en referensorsak med texten: {ref_label}")
             ref_dev_btn.setStyleSheet(
-                "QPushButton{font-size:10px;padding:2px 6px;border:1px solid #2980b9;"
-                "border-radius:3px;background:transparent;}"
-                "QPushButton:checked{background:#2980b9;color:white;}"
+                "QPushButton{font-size:10px;padding:2px 8px;border:1px solid #2980b9;"
+                "border-radius:3px;background:transparent;color:#2980b9;font-style:italic;}"
+                "QPushButton:checked{background:#2980b9;color:white;font-style:normal;}"
                 "QPushButton:hover:!checked{background:#d6eaf8;}")
-
-            has_dev_inv = inv_dev_n != dev_n
-            inv_dev_btn = QPushButton("Invers avvikelse")
-            inv_dev_btn.setCheckable(has_dev_inv)
-            inv_dev_btn.setEnabled(has_dev_inv)
-            if has_dev_inv:
-                inv_dev_btn.setToolTip(f"Skapar en orsak med texten: {inv_dev_n}")
-                inv_dev_btn.setStyleSheet(
-                    "QPushButton{font-size:10px;padding:2px 6px;border:1px solid #8e44ad;"
-                    "border-radius:3px;background:transparent;}"
-                    "QPushButton:checked{background:#8e44ad;color:white;}"
-                    "QPushButton:hover:!checked{background:#e8daef;}")
-            else:
-                inv_dev_btn.setToolTip("Ingen invers hittades för denna avvikelse")
-                inv_dev_btn.setStyleSheet(
-                    "QPushButton{font-size:10px;padding:2px 6px;border:1px solid #ccc;"
-                    "border-radius:3px;color:#aaa;background:transparent;}")
-
             ref_dev_btn.toggled.connect(
-                self._make_ref_handler(dev_key, dev_n, inv_dev_btn, None))
-            if has_dev_inv:
-                inv_dev_btn.toggled.connect(
-                    self._make_inv_handler(dev_key, inv_dev_n, ref_dev_btn, None))
-
+                self._make_ref_handler(dev_key, ref_label, None, None, dev_pos))
             hdr_h.addWidget(ref_dev_btn)
-            hdr_h.addWidget(inv_dev_btn)
             inner_layout.addWidget(hdr_w)
 
             for cause in causes:
                 cid      = cause['id']
                 orig     = cause['description']
                 inv_text = invert_cause_text(orig)
+                c_pos    = global_pos
+                global_pos += 1
 
                 row_w = QWidget()
                 row_h = QHBoxLayout(row_w)
@@ -7570,10 +7552,10 @@ class ReuseDeviationCausesDialog(QDialog):
                         "border-radius:3px;color:#aaa;background:#f5f5f5;}")
 
                 ref_btn.toggled.connect(
-                    self._make_ref_handler(cid, orig, inv_btn, cid))
+                    self._make_ref_handler(cid, orig, inv_btn, cid, c_pos))
                 if has_inv:
                     inv_btn.toggled.connect(
-                        self._make_inv_handler(cid, inv_text, ref_btn, cid))
+                        self._make_inv_handler(cid, inv_text, ref_btn, cid, c_pos))
 
                 row_h.addWidget(ref_btn)
                 row_h.addWidget(inv_btn)
@@ -7624,22 +7606,23 @@ class ReuseDeviationCausesDialog(QDialog):
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _make_ref_handler(self, cid, description, inv_btn, original_cause_id):
+    def _make_ref_handler(self, cid, description, inv_btn, original_cause_id, sort_pos):
         def handler(checked):
             if checked:
-                self._selections[cid] = ('ref', description, original_cause_id)
-                inv_btn.blockSignals(True)
-                inv_btn.setChecked(False)
-                inv_btn.blockSignals(False)
+                self._selections[cid] = ('ref', description, original_cause_id, sort_pos)
+                if inv_btn is not None:
+                    inv_btn.blockSignals(True)
+                    inv_btn.setChecked(False)
+                    inv_btn.blockSignals(False)
             else:
                 self._selections.pop(cid, None)
             self._update_summary()
         return handler
 
-    def _make_inv_handler(self, cid, inv_text, ref_btn, original_cause_id):
+    def _make_inv_handler(self, cid, inv_text, ref_btn, original_cause_id, sort_pos):
         def handler(checked):
             if checked:
-                self._selections[cid] = ('inv', inv_text, original_cause_id)
+                self._selections[cid] = ('inv', inv_text, original_cause_id, sort_pos)
                 ref_btn.blockSignals(True)
                 ref_btn.setChecked(False)
                 ref_btn.blockSignals(False)
@@ -7656,7 +7639,7 @@ class ReuseDeviationCausesDialog(QDialog):
             self._create_btn.setEnabled(False)
         else:
             kinds = {'ref': 0, 'inv': 0}
-            for mode, _, _ in self._selections.values():
+            for mode, _, _, _ in self._selections.values():
                 kinds[mode] += 1
             parts = []
             if kinds['ref']: parts.append(f"{kinds['ref']} referens")
@@ -7665,11 +7648,9 @@ class ReuseDeviationCausesDialog(QDialog):
             self._create_btn.setEnabled(True)
 
     def get_selections(self):
-        """Return list of (description, original_cause_id) for selected entries.
-
-        original_cause_id is None for deviation-level references (no marker to copy).
-        """
-        return [(desc, orig_id) for _, desc, orig_id in self._selections.values()]
+        """Return (description, original_cause_id) pairs in original list order."""
+        sorted_vals = sorted(self._selections.values(), key=lambda v: v[3])
+        return [(desc, orig_id) for _, desc, orig_id, _ in sorted_vals]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
