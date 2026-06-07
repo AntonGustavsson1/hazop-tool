@@ -7517,7 +7517,6 @@ class ReuseDeviationCausesDialog(QDialog):
                 cid      = cause['id']
                 orig     = cause['description']
                 inv_text = invert_cause_text(orig)
-                self._inv_texts[cid] = inv_text
 
                 row_w = QWidget()
                 row_h = QHBoxLayout(row_w)
