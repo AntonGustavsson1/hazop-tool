@@ -2898,7 +2898,8 @@ class HAZOPTreeWidget(QTreeWidget):
 
 class TreePanel(QWidget):
     item_selected               = pyqtSignal(int, int)
-    add_causes_on_pid_requested = pyqtSignal(int)   # deviation_id
+    add_causes_on_pid_requested       = pyqtSignal(int)   # deviation_id
+    add_consequences_on_pid_requested = pyqtSignal(int)   # cause_id
     structure_changed           = pyqtSignal()
     visibility_changed          = pyqtSignal(str, bool)   # marker_type, visible
     exit_pid_mode_requested     = pyqtSignal()    # exit any active P&ID placement mode
@@ -3184,6 +3185,8 @@ class TreePanel(QWidget):
                            lambda i=id_: self.add_causes_on_pid_requested.emit(i))
         elif type_ == CAUSE_T:
             menu.addAction("+ Lägg till konsekvens", self.add_consequence)
+            menu.addAction("📍 Lägg till konsekvens på P&ID",
+                           lambda i=id_: self.add_consequences_on_pid_requested.emit(i))
         menu.addSeparator()
 
         # Copy
@@ -8016,6 +8019,8 @@ class MainWindow(QMainWindow):
         self.scenario_panel.remove_requested.connect(self._on_scenario_remove_from_pid)
 
         self.tree_panel.add_causes_on_pid_requested.connect(self._on_add_causes_on_pid)
+        self.tree_panel.add_consequences_on_pid_requested.connect(
+            self._on_add_consequences_on_pid)
         self.tree_panel.exit_pid_mode_requested.connect(
             lambda: self.pid_panel._set_mode(MODE_NAV))
 
@@ -8247,6 +8252,17 @@ class MainWindow(QMainWindow):
         self.pid_panel.set_active_node(node_id)
         self._switch_view(0)
         self.pid_panel.start_cause_template_mode(deviation_id)
+
+    def _on_add_consequences_on_pid(self, cause_id):
+        """Right-click cause → 'Lägg till konsekvens på P&ID'."""
+        cause = self.db.get_cause(cause_id)
+        if not cause:
+            return
+        node_id = cause['node_id']
+        self.pid_panel.set_active_node(node_id)
+        self.pid_panel.set_active_cause(cause_id)
+        self._switch_view(0)
+        self.pid_panel._set_mode(MODE_CONSEQUENCE)
 
     def _on_existing_marker_placed(self, type_str, id_):
         """Marker placed via 'place existing' flow — refresh pins and tree without reloading panels."""
