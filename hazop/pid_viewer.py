@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QLineEdit, QLabel, QPushButton, QDialogButtonBox, QRadioButton,
     QGraphicsView, QGraphicsScene, QGraphicsItem,
     QGraphicsPixmapItem, QGraphicsPathItem, QGraphicsEllipseItem,
-    QGraphicsSimpleTextItem, QFrame, QSpinBox, QCheckBox, QGroupBox,
+    QGraphicsRectItem, QGraphicsSimpleTextItem, QFrame, QSpinBox, QCheckBox, QGroupBox,
     QSlider, QColorDialog, QFileDialog, QMessageBox, QInputDialog,
     QSizePolicy, QMenu, QTableWidget, QTableWidgetItem, QHeaderView,
     QProgressDialog, QApplication, QGridLayout, QTextEdit, QButtonGroup,
@@ -366,13 +366,22 @@ def _pid_build_chain_text(base: str, chain: dict) -> str:
     return ' → '.join(parts)
 
 
-MODE_NAV            = 0
-MODE_NODE           = 1
-MODE_CAUSE          = 2
-MODE_CONSEQUENCE    = 3
-MODE_SAFEGUARD      = 4
-MODE_PLACE_EXISTING = 5   # place a pre-existing item (no new item created)
-MODE_CAUSE_TEMPLATE = 6   # place cause from template list for a specific deviation
+MODE_NAV             = 0
+MODE_NODE            = 1
+MODE_CAUSE           = 2
+MODE_CONSEQUENCE     = 3
+MODE_SAFEGUARD       = 4
+MODE_PLACE_EXISTING  = 5   # place a pre-existing item (no new item created)
+MODE_CAUSE_TEMPLATE  = 6   # place cause from template list for a specific deviation
+MODE_MARKUP_POLYGON  = 7   # draw closed polygon markup on a node
+MODE_MARKUP_POLYLINE = 8   # draw open polyline markup on a node
+MODE_MARKUP_TEXT     = 9   # click to place a text label markup
+MODE_MARKUP_COMMENT  = 10  # click to place a comment box markup
+MODE_MARKUP_SELECT   = 11  # click existing markup items to select/edit
+
+_SG_TYPES    = ['BPCS', 'SIS', 'Mekanisk', 'Administrativ', 'Övrigt']
+_RRF_VALUES  = [1, 10, 100, 1000, 10000]
+_RRF_LABELS  = ['1 – Ingen', '10 – RRF10', '100 – RRF100', '1000 – RRF1000', '10000 – RRF10000']
 
 Z_PAGE      = 0
 Z_HIGHLIGHT = 1   # tag highlights between page and connections
@@ -1828,15 +1837,19 @@ class ExistingSafeguardPicker(QDialog):
 
 
 class SafeguardPickerDialog(QDialog):
-    def __init__(self, parent=None, suggested_tag='', existing_safeguards=None, db=None):
+    def __init__(self, parent=None, suggested_tag='', existing_safeguards=None, db=None,
+                 existing_bpcs_count=0):
         super().__init__(parent)
         self.setWindowTitle("Markera safeguard / barriär")
-        self.setMinimumWidth(420)
-        self._db         = db
-        self.tag         = ''
-        self.description = ''
-        self.add_more    = False
-        self.link_to_id  = None   # set if user chooses to link an existing safeguard
+        self.setMinimumWidth(440)
+        self._db              = db
+        self.tag              = ''
+        self.description      = ''
+        self.sg_type          = 'Övrigt'
+        self.rrf              = 1
+        self.add_more         = False
+        self.link_to_id       = None
+        self._existing_bpcs   = existing_bpcs_count
 
         layout = QVBoxLayout(self)
 
@@ -1853,7 +1866,7 @@ class SafeguardPickerDialog(QDialog):
             sep.setStyleSheet("color:#888; font-size:10px;")
             layout.addWidget(sep)
 
-        form   = QFormLayout()
+        form = QFormLayout()
 
         self.tag_edit = QLineEdit(suggested_tag)
         self.tag_edit.setPlaceholderText("t.ex. PSV-101  (lästes från PDF)")
@@ -1862,14 +1875,38 @@ class SafeguardPickerDialog(QDialog):
         self.desc_edit = QLineEdit()
         self.desc_edit.setPlaceholderText("t.ex. Säkerhetsventil, Nivålarm LAH-101")
         form.addRow("Beskrivning:", self.desc_edit)
+
+        self.type_combo = QComboBox()
+        self.type_combo.addItems(_SG_TYPES)
+        self.type_combo.setCurrentIndex(len(_SG_TYPES) - 1)  # default Övrigt
+        self.type_combo.currentIndexChanged.connect(self._on_type_changed)
+        form.addRow("Typ av barriär:", self.type_combo)
+
+        self.rrf_combo = QComboBox()
+        self.rrf_combo.addItems(_RRF_LABELS)
+        form.addRow("RRF:", self.rrf_combo)
+
         layout.addLayout(form)
 
+        # BPCS warning (IEC 61511 — two BPCS layers ≤ RRF10 combined)
+        self._bpcs_warn = QLabel(
+            "⚠️  Redan en BPCS-barriär på denna konsekvens. "
+            "Enligt IEC 61511 får två BPCS-skydd inte ge mer än RRF 10 totalt.")
+        self._bpcs_warn.setWordWrap(True)
+        self._bpcs_warn.setStyleSheet(
+            "background:#fff3cd; color:#856404; border:1px solid #ffc107;"
+            "border-radius:4px; padding:6px 8px; font-size:11px;")
+        self._bpcs_warn.setVisible(False)
+        layout.addWidget(self._bpcs_warn)
+
         if existing_safeguards:
-            layout.addWidget(QLabel("Snabbval (befintliga safeguards för denna konsekvens):"))
+            lbl = QLabel("Snabbval (befintliga safeguards för denna konsekvens):")
+            lbl.setStyleSheet("font-size:10px; color:#555;")
+            layout.addWidget(lbl)
             for sg_text in existing_safeguards[:6]:
                 btn = QPushButton(sg_text)
                 btn.setFlat(True)
-                btn.setStyleSheet("text-align:left; color:#1a7a40; padding:2px;")
+                btn.setStyleSheet("text-align:left; color:#1a7a40; padding:2px; font-size:10px;")
                 btn.clicked.connect(lambda _, s=sg_text: self.desc_edit.setText(s))
                 layout.addWidget(btn)
 
@@ -1897,6 +1934,13 @@ class SafeguardPickerDialog(QDialog):
 
         layout.addLayout(btn_row)
 
+        # Show warning immediately if BPCS already present and BPCS is pre-selected
+        self._on_type_changed(self.type_combo.currentIndex())
+
+    def _on_type_changed(self, idx):
+        selected = _SG_TYPES[idx] if idx < len(_SG_TYPES) else 'Övrigt'
+        self._bpcs_warn.setVisible(selected == 'BPCS' and self._existing_bpcs >= 1)
+
     def _pick_existing(self):
         if self._db is None:
             return
@@ -1911,6 +1955,8 @@ class SafeguardPickerDialog(QDialog):
         self.description = self.desc_edit.text().strip()
         if not self.description:
             self.description = self.tag or 'Safeguard'
+        self.sg_type  = _SG_TYPES[self.type_combo.currentIndex()]
+        self.rrf      = _RRF_VALUES[self.rrf_combo.currentIndex()]
         self.add_more = add_more
         self.accept()
 
@@ -1943,19 +1989,23 @@ class _PageRenderer(QThread):
 
 
 class PIDGraphicsView(QGraphicsView):
-    node_markup_finished  = pyqtSignal(list, int)
+    node_markup_finished    = pyqtSignal(list, int)
     # Third parameter = extracted tag text from drawn rectangle (may be empty)
-    cause_clicked         = pyqtSignal(object, int, str)
-    consequence_clicked   = pyqtSignal(object, int, str)
-    safeguard_clicked     = pyqtSignal(object, int, str)
-    place_existing_clicked  = pyqtSignal(object, int)   # (center_scene_pos, page)
-    cause_template_clicked  = pyqtSignal(object, int, str)   # (center_scene_pos, page, suggested_tag)
+    cause_clicked           = pyqtSignal(object, int, str)
+    consequence_clicked     = pyqtSignal(object, int, str)
+    safeguard_clicked       = pyqtSignal(object, int, str)
+    place_existing_clicked  = pyqtSignal(object, int)
+    cause_template_clicked  = pyqtSignal(object, int, str)
     context_action          = pyqtSignal(str, object, int)
     marker_clicked          = pyqtSignal(str, int)
+    # Markup editing signals
+    markup_draw_finished    = pyqtSignal(str, list, int)   # type_, pdf_pts, page
+    markup_item_clicked     = pyqtSignal(int)              # markup_id
 
     # Keys for QGraphicsItem.setData / .data
-    _DATA_TYPE = 0    # 'cause' | 'consequence' | 'safeguard'
-    _DATA_ID   = 1    # database id
+    _DATA_TYPE      = 0    # 'cause' | 'consequence' | 'safeguard' | 'markup'
+    _DATA_ID        = 1    # database id
+    _DATA_MARKUP_ID = 2    # markup id (for markup items)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2015,6 +2065,10 @@ class PIDGraphicsView(QGraphicsView):
         self.temp_items         = []
         self.rubber_line        = None
         self._pending_path_item = None
+
+        # Markup overlay tracking: markup_id → list of QGraphicsItems
+        self._markup_items: dict = {}
+        self._markup_highlighted: int = -1
 
         self._placeholder = None
         self._show_placeholder("Öppna en P&ID-fil (PDF) för att börja.")
@@ -2164,14 +2218,18 @@ class PIDGraphicsView(QGraphicsView):
         if mode == MODE_NAV:
             self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
             self.setCursor(Qt.CursorShape.OpenHandCursor)
-        elif mode == MODE_NODE:
+        elif mode in (MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE,
+                      MODE_MARKUP_TEXT, MODE_MARKUP_COMMENT):
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
+        elif mode == MODE_MARKUP_SELECT:
+            self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
         elif mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD,
                       MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE):
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
-            self.setCursor(Qt.CursorShape.CrossCursor)  # cross = draw a rect
-        if mode != MODE_NODE:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        if mode not in (MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE):
             self._cancel_drawing()
         self.setFocus()
 
@@ -2210,26 +2268,40 @@ class PIDGraphicsView(QGraphicsView):
             self.rubber_line.setLine(last.x(), last.y(), sp.x(), sp.y())
 
     def _finish_drawing(self):
+        """Legacy finish for MODE_NODE — creates node boundary polygon."""
+        self._finish_markup_drawing()
+
+    def _finish_markup_drawing(self):
+        """Finish drawing for MODE_NODE, MARKUP_POLYGON and MARKUP_POLYLINE."""
         if len(self.draw_points) < 2:
             self._cancel_drawing()
             return
+        mode = self.mode
         path = QPainterPath()
         path.moveTo(self.draw_points[0])
         for pt in self.draw_points[1:]:
             path.lineTo(pt)
-        path.closeSubpath()
-        pdf_points = [self.scene_to_pdf(pt) for pt in self.draw_points]
+        if mode in (MODE_NODE, MODE_MARKUP_POLYGON):
+            path.closeSubpath()
+
+        pdf_points = [list(self.scene_to_pdf(pt)) for pt in self.draw_points]
         self._remove_temp_items()
 
         item = QGraphicsPathItem(path)
         item.setPen(self.draw_pen)
-        item.setBrush(self.draw_brush)
+        item.setBrush(self.draw_brush if mode in (MODE_NODE, MODE_MARKUP_POLYGON)
+                      else QBrush(Qt.BrushStyle.NoBrush))
         item.setZValue(Z_OVERLAY)
         self._scene.addItem(item)
         self._pending_path_item = item
 
         self.draw_points = []
-        self.node_markup_finished.emit(pdf_points, self.current_page)
+        if mode == MODE_NODE:
+            self.node_markup_finished.emit(pdf_points, self.current_page)
+        elif mode == MODE_MARKUP_POLYGON:
+            self.markup_draw_finished.emit('polygon', pdf_points, self.current_page)
+        elif mode == MODE_MARKUP_POLYLINE:
+            self.markup_draw_finished.emit('polyline', pdf_points, self.current_page)
 
     def _cancel_drawing(self):
         self._remove_temp_items()
@@ -2280,6 +2352,134 @@ class PIDGraphicsView(QGraphicsView):
             txt.setPos(center.x() - br.width() / 2, center.y() - br.height() / 2)
             txt.setZValue(Z_OVERLAY + 1)
             self._scene.addItem(txt)
+
+    # ── Node markup overlays ──────────────────────────────────────────────────
+
+    def add_markup_overlay(self, mu_id, type_, points_pdf, label,
+                           color_hex, opacity, line_width, visible=True):
+        """Render a node_markup item.  type_: polygon|polyline|text|comment"""
+        items = []
+        c = QColor(color_hex)
+        border_alpha = int(opacity * 210)
+        fill_alpha   = int(opacity * 52)
+        pen = QPen(QColor(c.red(), c.green(), c.blue(), border_alpha), line_width)
+        pen.setCosmetic(True)
+
+        if type_ in ('polygon', 'polyline') and len(points_pdf) >= 2:
+            path = QPainterPath()
+            first = self.pdf_to_scene(*points_pdf[0])
+            path.moveTo(first)
+            for p in points_pdf[1:]:
+                path.lineTo(self.pdf_to_scene(*p))
+            if type_ == 'polygon':
+                path.closeSubpath()
+                brush = QBrush(QColor(c.red(), c.green(), c.blue(), fill_alpha))
+            else:
+                brush = QBrush(Qt.BrushStyle.NoBrush)
+            gi = QGraphicsPathItem(path)
+            gi.setPen(pen); gi.setBrush(brush)
+            gi.setZValue(Z_OVERLAY)
+            gi.setData(self._DATA_MARKUP_ID, mu_id)
+            gi.setData(self._DATA_TYPE, 'markup')
+            gi.setCursor(Qt.CursorShape.PointingHandCursor)
+            gi.setToolTip(f"Klicka för att markera  [{type_}]" + (f": {label}" if label else ""))
+            self._scene.addItem(gi)
+            items.append(gi)
+            if label and type_ == 'polygon':
+                cx = sum(p[0] for p in points_pdf) / len(points_pdf)
+                cy = sum(p[1] for p in points_pdf) / len(points_pdf)
+                items.extend(self._add_markup_label(mu_id, label, cx, cy, c, border_alpha))
+
+        elif type_ in ('text', 'comment') and len(points_pdf) >= 1:
+            px, py = points_pdf[0]
+            items.extend(self._add_markup_text_item(mu_id, type_, label or '?',
+                                                     px, py, c, opacity, line_width))
+
+        self._markup_items[mu_id] = items
+        if not visible:
+            for gi in items:
+                gi.setVisible(False)
+
+    def _add_markup_label(self, mu_id, label, cx_pdf, cy_pdf, color, alpha):
+        center = self.pdf_to_scene(cx_pdf, cy_pdf)
+        txt = QGraphicsSimpleTextItem(label)
+        f = QFont(); f.setBold(True); f.setPointSize(10)
+        txt.setFont(f)
+        txt.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(),
+                                   min(255, alpha + 30))))
+        br = txt.boundingRect()
+        txt.setPos(center.x() - br.width() / 2, center.y() - br.height() / 2)
+        txt.setZValue(Z_OVERLAY + 1)
+        txt.setData(self._DATA_MARKUP_ID, mu_id)
+        txt.setData(self._DATA_TYPE, 'markup')
+        self._scene.addItem(txt)
+        return [txt]
+
+    def _add_markup_text_item(self, mu_id, type_, label, px_pdf, py_pdf,
+                              color, opacity, line_width):
+        pos = self.pdf_to_scene(px_pdf, py_pdf)
+        txt = QGraphicsSimpleTextItem(label)
+        f = QFont()
+        if type_ == 'comment':
+            f.setItalic(True)
+        f.setPointSize(10)
+        txt.setFont(f)
+        txt.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(),
+                                   int(opacity * 230))))
+        br = txt.boundingRect()
+        txt.setPos(pos.x(), pos.y())
+        txt.setZValue(Z_OVERLAY + 1)
+        txt.setData(self._DATA_MARKUP_ID, mu_id)
+        txt.setData(self._DATA_TYPE, 'markup')
+        items = []
+        if type_ == 'comment':
+            # Draw a slightly rounded rect behind the text
+            pad = 5
+            bg_alpha = int(opacity * 90)
+            border_alpha = int(opacity * 200)
+            bg = QGraphicsRectItem(pos.x() - pad, pos.y() - pad,
+                                   br.width() + 2*pad, br.height() + 2*pad)
+            bg.setPen(QPen(QColor(color.red(), color.green(), color.blue(), border_alpha),
+                           max(1, line_width - 1)))
+            bg.setBrush(QBrush(QColor(255, 255, 200, bg_alpha)))
+            bg.setZValue(Z_OVERLAY)
+            bg.setData(self._DATA_MARKUP_ID, mu_id)
+            bg.setData(self._DATA_TYPE, 'markup')
+            bg.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._scene.addItem(bg)
+            items.append(bg)
+        self._scene.addItem(txt)
+        items.append(txt)
+        return items
+
+    def clear_markup_overlays(self):
+        """Remove all node markup overlay items from the scene."""
+        for mu_id, items in self._markup_items.items():
+            for gi in items:
+                try: self._scene.removeItem(gi)
+                except Exception: pass
+        self._markup_items.clear()
+        self._markup_highlighted = -1
+
+    def set_markup_item_visible(self, mu_id, visible):
+        for gi in self._markup_items.get(mu_id, []):
+            try: gi.setVisible(visible)
+            except Exception: pass
+
+    def highlight_markup(self, mu_id):
+        """Briefly pulse-highlight a markup item (thicken its border)."""
+        if self._markup_highlighted == mu_id:
+            return
+        # Reset previous
+        if self._markup_highlighted in self._markup_items:
+            for gi in self._markup_items[self._markup_highlighted]:
+                if isinstance(gi, (QGraphicsPathItem, QGraphicsRectItem)):
+                    p = gi.pen(); p.setWidthF(max(1, p.widthF() - 2)); gi.setPen(p)
+        self._markup_highlighted = mu_id
+        if mu_id in self._markup_items:
+            for gi in self._markup_items[mu_id]:
+                if isinstance(gi, (QGraphicsPathItem, QGraphicsRectItem)):
+                    p = gi.pen(); p.setWidthF(p.widthF() + 2); gi.setPen(p)
 
     def _add_tracked(self, item, marker_type: str):
         """Add item to scene and track it for visibility toggling."""
@@ -2492,7 +2692,7 @@ class PIDGraphicsView(QGraphicsView):
             self._type_items[key] = []
 
     def mousePressEvent(self, event):
-        if self.mode == MODE_NAV:
+        if self.mode in (MODE_NAV, MODE_MARKUP_SELECT):
             self._press_pos = event.position()
         sp = self.mapToScene(event.position().toPoint())
         if self.mode == MODE_NODE:
@@ -2500,6 +2700,18 @@ class PIDGraphicsView(QGraphicsView):
                 self._add_draw_point(sp); event.accept(); return
             elif event.button() == Qt.MouseButton.RightButton:
                 self._cancel_drawing(); event.accept(); return
+        elif self.mode in (MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE):
+            if event.button() == Qt.MouseButton.LeftButton:
+                self._add_draw_point(sp); event.accept(); return
+            elif event.button() == Qt.MouseButton.RightButton:
+                self._cancel_drawing(); event.accept(); return
+        elif self.mode in (MODE_MARKUP_TEXT, MODE_MARKUP_COMMENT):
+            if event.button() == Qt.MouseButton.LeftButton:
+                # Single-click immediately triggers finished signal
+                pdf_pt = self.scene_to_pdf(sp)
+                type_ = 'text' if self.mode == MODE_MARKUP_TEXT else 'comment'
+                self.markup_draw_finished.emit(type_, [list(pdf_pt)], self.current_page)
+                event.accept(); return
         elif self.mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD,
                            MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE):
             if event.button() == Qt.MouseButton.LeftButton:
@@ -2529,10 +2741,11 @@ class PIDGraphicsView(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event):
-        if self.mode == MODE_NODE and event.button() == Qt.MouseButton.LeftButton:
+        if self.mode in (MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE) \
+                and event.button() == Qt.MouseButton.LeftButton:
             sp = self.mapToScene(event.position().toPoint())
             self._add_draw_point(sp)
-            self._finish_drawing()
+            self._finish_markup_drawing()
             event.accept(); return
         super().mouseDoubleClickEvent(event)
 
@@ -2576,7 +2789,7 @@ class PIDGraphicsView(QGraphicsView):
             return
 
         # ── NAV mode: click on marker navigates tree ──────────────────────────
-        if (self.mode == MODE_NAV and
+        if (self.mode in (MODE_NAV, MODE_MARKUP_SELECT) and
                 event.button() == Qt.MouseButton.LeftButton and
                 self._press_pos is not None):
             p  = event.position()
@@ -2584,17 +2797,26 @@ class PIDGraphicsView(QGraphicsView):
             dy = p.y() - self._press_pos.y()
             if dx * dx + dy * dy < 25:
                 sp = self.mapToScene(p.toPoint())
-                for item in self._scene.items(sp):
-                    itype = item.data(self._DATA_TYPE)
-                    iid   = item.data(self._DATA_ID)
-                    if itype in ('cause', 'consequence', 'safeguard') and iid is not None:
-                        self.marker_clicked.emit(itype, int(iid))
-                        break
+                if self.mode == MODE_MARKUP_SELECT:
+                    # Try to click on a markup item first
+                    for item in self._scene.items(sp):
+                        mu_id = item.data(self._DATA_MARKUP_ID)
+                        if mu_id is not None:
+                            self.markup_item_clicked.emit(int(mu_id))
+                            break
+                else:
+                    for item in self._scene.items(sp):
+                        itype = item.data(self._DATA_TYPE)
+                        iid   = item.data(self._DATA_ID)
+                        if itype in ('cause', 'consequence', 'safeguard') and iid is not None:
+                            self.marker_clicked.emit(itype, int(iid))
+                            break
         self._press_pos = None
         super().mouseReleaseEvent(event)
 
     def mouseMoveEvent(self, event):
-        if self.mode == MODE_NODE and self.draw_points:
+        if self.mode in (MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE) \
+                and self.draw_points:
             self._update_rubber_band(self.mapToScene(event.position().toPoint()))
         elif self.mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD,
                            MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE) \
@@ -2631,9 +2853,9 @@ class PIDGraphicsView(QGraphicsView):
         event.accept()
 
     def keyPressEvent(self, event):
-        if self.mode == MODE_NODE:
+        if self.mode in (MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE):
             if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                self._finish_drawing(); event.accept(); return
+                self._finish_markup_drawing(); event.accept(); return
             elif event.key() == Qt.Key.Key_Escape:
                 self._cancel_drawing(); event.accept(); return
         super().keyPressEvent(event)
@@ -3062,13 +3284,16 @@ class TemplateCausePickerDialog(QDialog):
 class PIDPanel(QWidget):
     node_created            = pyqtSignal(int)
     cause_created           = pyqtSignal(int)
-    cause_template_created  = pyqtSignal(int)   # cause_id — from template placement flow
+    cause_template_created  = pyqtSignal(int)
     consequence_created     = pyqtSignal(int)
     safeguard_created       = pyqtSignal(int)
-    existing_marker_placed  = pyqtSignal(str, int)   # (type_str, id_) — 'place existing' flow
+    existing_marker_placed  = pyqtSignal(str, int)
     risk_scenario_requested = pyqtSignal(int, object, int)
     marker_navigated        = pyqtSignal(str, int)
-    pid_analysis_done       = pyqtSignal()   # emitted when scan finishes → open settings tab
+    pid_analysis_done       = pyqtSignal()
+    # Node markup signals
+    markup_draw_finished    = pyqtSignal(str, int, list, int, str)  # type_, node_id, pts, page, label
+    markup_item_selected    = pyqtSignal(int)                        # markup_id
 
     def __init__(self, db, parent=None):
         super().__init__(parent)
@@ -3872,10 +4097,14 @@ class PIDPanel(QWidget):
                 "Välj en consequence i trädet innan du markerar en safeguard.")
             return
 
-        existing = [s['description'] for s in self.db.safeguards(self._active_consequence_id)]
+        all_sgs = self.db.safeguards(self._active_consequence_id)
+        existing = [s['description'] for s in all_sgs]
+        bpcs_count = sum(1 for s in all_sgs
+                         if dict(s).get('sg_type', 'Övrigt') == 'BPCS')
 
         dlg = SafeguardPickerDialog(self, suggested_tag=suggested_tag,
-                                    existing_safeguards=existing, db=self.db)
+                                    existing_safeguards=existing, db=self.db,
+                                    existing_bpcs_count=bpcs_count)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
@@ -3894,7 +4123,7 @@ class PIDPanel(QWidget):
             tag         = dlg.tag
             description = dlg.description
             sg_id = self.db.add_safeguard(self._active_consequence_id)
-            self.db.update_safeguard(sg_id, description)
+            self.db.update_safeguard(sg_id, description, dlg.rrf, dlg.sg_type)
 
         self.db.add_safeguard_marker(sg_id, page, pdf_x, pdf_y, tag)
         self.viewer.add_safeguard_marker(sg_id, pdf_x, pdf_y, tag, description)
@@ -4011,6 +4240,7 @@ class PIDPanel(QWidget):
 
     def _load_overlays(self):
         self.viewer.clear_overlays()
+        self.viewer.clear_markup_overlays()
         page = self.viewer.current_page
 
         for node in self.db.nodes():
@@ -4026,6 +4256,21 @@ class PIDPanel(QWidget):
                 continue
             if points:
                 self.viewer.add_node_overlay(nd['id'], points, style, nd.get('name', ''))
+
+        # New-style node markup items
+        if hasattr(self.db, 'node_markups_for_page'):
+            for mu in self.db.node_markups_for_page(page):
+                m = dict(mu)
+                try:
+                    pts = json.loads(m.get('points', '[]') or '[]')
+                except Exception:
+                    pts = []
+                self.viewer.add_markup_overlay(
+                    m['id'], m.get('type', 'polygon'), pts,
+                    m.get('label', ''), m.get('color', '#1565C0'),
+                    float(m.get('opacity', 0.45)), int(m.get('line_width', 2)),
+                    bool(m.get('visible', 1))
+                )
 
         for m in self.db.cause_markers_for_page(page):
             md    = dict(m)
@@ -4089,6 +4334,68 @@ class PIDPanel(QWidget):
     def reload_overlays(self):
         """Public helper to refresh all P&ID markers and connection lines."""
         self._load_overlays()
+
+    # ── Node markup editing API ───────────────────────────────────────────────
+
+    def enter_markup_edit(self, node_id):
+        """Enter markup editing mode for a node: show existing markup + enable tools."""
+        self.set_active_node(node_id)
+        self._set_mode(MODE_MARKUP_SELECT)
+        self.viewer.markup_draw_finished.connect(self._on_viewer_markup_drawn)
+        self.viewer.markup_item_clicked.connect(self._on_viewer_markup_clicked)
+
+    def exit_markup_mode(self):
+        """Return to normal navigation mode."""
+        try: self.viewer.markup_draw_finished.disconnect(self._on_viewer_markup_drawn)
+        except Exception: pass
+        try: self.viewer.markup_item_clicked.disconnect(self._on_viewer_markup_clicked)
+        except Exception: pass
+        self._set_mode(MODE_NAV)
+
+    def set_markup_tool(self, tool):
+        """Set drawing tool: 'polygon'|'polyline'|'text'|'comment'|'select'."""
+        _map = {'polygon':  MODE_MARKUP_POLYGON,
+                'polyline': MODE_MARKUP_POLYLINE,
+                'text':     MODE_MARKUP_TEXT,
+                'comment':  MODE_MARKUP_COMMENT,
+                'select':   MODE_MARKUP_SELECT}
+        if tool in _map:
+            self._set_mode(_map[tool])
+
+    def refresh_markup_overlays(self):
+        """Reload only the markup overlays (cheap — no cause/cons/sg reload)."""
+        self.viewer.clear_markup_overlays()
+        page = self.viewer.current_page
+        if hasattr(self.db, 'node_markups_for_page'):
+            for mu in self.db.node_markups_for_page(page):
+                m = dict(mu)
+                try: pts = json.loads(m.get('points', '[]') or '[]')
+                except Exception: pts = []
+                self.viewer.add_markup_overlay(
+                    m['id'], m.get('type', 'polygon'), pts,
+                    m.get('label', ''), m.get('color', '#1565C0'),
+                    float(m.get('opacity', 0.45)), int(m.get('line_width', 2)),
+                    bool(m.get('visible', 1)))
+
+    def _on_viewer_markup_drawn(self, type_, pts, page):
+        """Called when user finishes drawing in the viewer; route to NodeMarkupPanel."""
+        node_id = self._active_node_id
+        if node_id is None:
+            return
+        if type_ in ('text', 'comment'):
+            label, ok = QInputDialog.getText(
+                self, 'Text', 'Text:' if type_ == 'text' else 'Kommentar:')
+            if not ok or not label.strip():
+                self.viewer.clear_markup_overlays()
+                self.refresh_markup_overlays()
+                return
+        else:
+            label = ''
+        self.markup_draw_finished.emit(type_, node_id, pts, page, label)
+
+    def _on_viewer_markup_clicked(self, mu_id):
+        self.markup_item_selected.emit(mu_id)
+        self.viewer.highlight_markup(mu_id)
 
     def _on_cause_template_click(self, scene_pos, page, suggested_tag=''):
         # If secondary placement is pending, place secondary marker instead of opening dialog

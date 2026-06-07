@@ -469,6 +469,9 @@ _LIKE_LABELS = _FREQ_LABELS
 _SEV_LABELS  = ['C1 – Försumbar', 'C2 – Liten', 'C3 – Måttlig', 'C4 – Allvarlig', 'C5 – Katastrofal']
 _RRF_VALUES  = [1, 10, 100, 1000, 10000]
 _RRF_LABELS  = ['1 – Ingen', '10 – RRF10', '100 – RRF100', '1000 – RRF1000', '10000 – RRF10000']
+_SG_TYPES      = ['BPCS', 'SIS', 'Mekanisk', 'Administrativ', 'Övrigt']
+_MARKUP_COLORS = ['#E53935', '#F57C00', '#F9A825', '#388E3C',
+                  '#00796B', '#1565C0', '#7B1FA2', '#546E7A']
 _RISK_ICON   = {'Låg': '🟢', 'Medium': '🟡', 'Hög': '🟠', 'Kritisk': '🔴'}
 
 # Component-specific standard causes seeded on first run.
@@ -758,6 +761,7 @@ class Database:
             "ALTER TABLE standard_causes ADD COLUMN comp_type TEXT DEFAULT ''",
             "ALTER TABLE standard_causes ADD COLUMN frequency REAL DEFAULT NULL",
             "ALTER TABLE causes ADD COLUMN standard_cause_id INTEGER DEFAULT NULL",
+            "ALTER TABLE safeguards ADD COLUMN sg_type TEXT DEFAULT 'Övrigt'",
         ]:
             try:
                 self.conn.execute(sql)
@@ -862,6 +866,19 @@ class Database:
                 deviation_id INTEGER NOT NULL REFERENCES standard_deviations(id) ON DELETE CASCADE,
                 description  TEXT NOT NULL,
                 sort_order   INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS node_markups (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                node_id    INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+                type       TEXT NOT NULL DEFAULT 'polygon',
+                points     TEXT DEFAULT '[]',
+                label      TEXT DEFAULT '',
+                color      TEXT DEFAULT '#1565C0',
+                opacity    REAL DEFAULT 0.45,
+                line_width INTEGER DEFAULT 2,
+                visible    INTEGER DEFAULT 1,
+                pid_page   INTEGER DEFAULT 0,
+                sort_order INTEGER DEFAULT 0
             );
         """)
 
@@ -1694,6 +1711,51 @@ class Database:
             (name, description, pid_ref, media, pressure, temperature, id_))
         self.conn.commit()
 
+    # ── Node markup CRUD ──────────────────────────────────────────────────────
+    def add_node_markup(self, node_id, type_, pts, label, color, opacity, line_width, page):
+        cur = self.conn.execute(
+            "INSERT INTO node_markups (node_id,type,points,label,color,opacity,line_width,pid_page)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            (node_id, type_, json.dumps(pts), label, color, opacity, line_width, page))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def node_markups_for_node(self, node_id):
+        return self.conn.execute(
+            "SELECT * FROM node_markups WHERE node_id=? ORDER BY sort_order,id",
+            (node_id,)).fetchall()
+
+    def node_markups_for_page(self, page):
+        return self.conn.execute(
+            "SELECT * FROM node_markups WHERE pid_page=? ORDER BY sort_order,id",
+            (page,)).fetchall()
+
+    def get_node_markup(self, mu_id):
+        return self.conn.execute(
+            "SELECT * FROM node_markups WHERE id=?", (mu_id,)).fetchone()
+
+    def update_node_markup(self, mu_id, label=None, color=None, opacity=None,
+                           line_width=None, visible=None):
+        sets, vals = [], []
+        if label     is not None: sets.append("label=?");      vals.append(label)
+        if color     is not None: sets.append("color=?");      vals.append(color)
+        if opacity   is not None: sets.append("opacity=?");    vals.append(opacity)
+        if line_width is not None: sets.append("line_width=?"); vals.append(line_width)
+        if visible   is not None: sets.append("visible=?");    vals.append(int(visible))
+        if sets:
+            vals.append(mu_id)
+            self.conn.execute(f"UPDATE node_markups SET {','.join(sets)} WHERE id=?", vals)
+            self.conn.commit()
+
+    def delete_node_markup(self, mu_id):
+        self.conn.execute("DELETE FROM node_markups WHERE id=?", (mu_id,))
+        self.conn.commit()
+
+    def set_all_node_markups_visible(self, node_id, visible):
+        self.conn.execute("UPDATE node_markups SET visible=? WHERE node_id=?",
+                          (int(visible), node_id))
+        self.conn.commit()
+
     _SENTINEL = object()
 
     def update_cause(self, id_, description=None, likelihood=None, base_freq=_SENTINEL,
@@ -1736,9 +1798,9 @@ class Database:
             (description, severity, category, consequence_chain, id_))
         self.conn.commit()
 
-    def update_safeguard(self, id_, description, rrf=1):
-        self.conn.execute("UPDATE safeguards SET description=?,rrf=? WHERE id=?",
-                          (description, rrf, id_))
+    def update_safeguard(self, id_, description, rrf=1, sg_type='Övrigt'):
+        self.conn.execute("UPDATE safeguards SET description=?,rrf=?,sg_type=? WHERE id=?",
+                          (description, rrf, sg_type, id_))
         self.conn.commit()
 
     def update_action(self, id_, description, responsible, due_date, status):
@@ -1820,8 +1882,8 @@ class Database:
         # Copy safeguards
         for sg in self.safeguards(cons_id):
             self.conn.execute(
-                "INSERT INTO safeguards (consequence_id,description,rrf,source_id) VALUES (?,?,?,?)",
-                (new_id, sg['description'], sg['rrf'], sg['id']))
+                "INSERT INTO safeguards (consequence_id,description,rrf,sg_type,source_id) VALUES (?,?,?,?,?)",
+                (new_id, sg['description'], sg['rrf'], sg.get('sg_type','Övrigt'), sg['id']))
         # Copy reduction factors
         for rf in self.reduction_factors(cons_id):
             self.conn.execute(
@@ -1835,8 +1897,9 @@ class Database:
         if not orig:
             return None
         cur = self.conn.execute(
-            "INSERT INTO safeguards (consequence_id,description,rrf,source_id) VALUES (?,?,?,?)",
-            (target_cons_id, orig['description'], orig['rrf'], sg_id))
+            "INSERT INTO safeguards (consequence_id,description,rrf,sg_type,source_id) VALUES (?,?,?,?,?)",
+            (target_cons_id, orig['description'], orig['rrf'],
+             dict(orig).get('sg_type', 'Övrigt'), sg_id))
         self.conn.commit()
         return cur.lastrowid
 
@@ -1937,16 +2000,18 @@ class SafeguardEditor(QWidget):
         btn.clicked.connect(self._add)
         layout.addWidget(btn)
 
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(['Beskrivning', 'RRF', 'Eff. risk', ''])
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(['Beskrivning', 'Typ', 'RRF', 'Eff. risk', ''])
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(1, 110)
-        self.table.setColumnWidth(2, 130)
-        self.table.setColumnWidth(3, 72)
+        hdr.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(1, 100)
+        self.table.setColumnWidth(2, 100)
+        self.table.setColumnWidth(3, 100)
+        self.table.setColumnWidth(4, 65)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         self.table.setFixedHeight(160)
@@ -1970,29 +2035,38 @@ class SafeguardEditor(QWidget):
         for sg in self.db.safeguards(self.consequence_id):
             row = self.table.rowCount()
             self.table.insertRow(row)
+            sg_d = dict(sg)
 
-            item = QTableWidgetItem(sg['description'])
-            item.setData(Qt.ItemDataRole.UserRole, sg['id'])
+            item = QTableWidgetItem(sg_d['description'])
+            item.setData(Qt.ItemDataRole.UserRole, sg_d['id'])
             self.table.setItem(row, 0, item)
+
+            sid = sg_d['id']
+            type_combo = QComboBox()
+            type_combo.addItems(_SG_TYPES)
+            sg_type = sg_d.get('sg_type', 'Övrigt') or 'Övrigt'
+            type_combo.setCurrentIndex(_SG_TYPES.index(sg_type) if sg_type in _SG_TYPES else len(_SG_TYPES)-1)
+            type_combo.currentIndexChanged.connect(
+                lambda idx, s=sid, r=row: self._type_changed(s, r, idx))
+            self.table.setCellWidget(row, 1, type_combo)
 
             rrf_combo = QComboBox()
             rrf_combo.addItems(_RRF_LABELS)
-            sg_rrf_val = sg['rrf'] if sg['rrf'] is not None else 1
+            sg_rrf_val = sg_d['rrf'] if sg_d['rrf'] is not None else 1
             rrf_idx = _RRF_VALUES.index(sg_rrf_val) if sg_rrf_val in _RRF_VALUES else 0
             rrf_combo.setCurrentIndex(rrf_idx)
-            sid = sg['id']
             rrf_combo.currentIndexChanged.connect(
                 lambda idx, s=sid, r=row: self._rrf_changed(s, r, idx))
-            self.table.setCellWidget(row, 1, rrf_combo)
+            self.table.setCellWidget(row, 2, rrf_combo)
 
-            eff_f = effective_frequency(self._parent_cause_likelihood, sg['rrf'] or 1)
+            eff_f = effective_frequency(self._parent_cause_likelihood, sg_d['rrf'] or 1)
             badge = RiskBadge()
             badge.update_risk(eff_f, severity)
-            self.table.setCellWidget(row, 2, badge)
+            self.table.setCellWidget(row, 3, badge)
 
             del_btn = QPushButton("Ta bort")
             del_btn.clicked.connect(lambda _, s=sid: self._delete(s))
-            self.table.setCellWidget(row, 3, del_btn)
+            self.table.setCellWidget(row, 4, del_btn)
 
         self.table.cellChanged.connect(self._cell_changed)
 
@@ -2008,11 +2082,22 @@ class SafeguardEditor(QWidget):
         self._refresh()
         self.changed.emit()
 
+    def _type_changed(self, sg_id, row, idx):
+        sg_type = _SG_TYPES[idx]
+        item = self.table.item(row, 0)
+        desc = item.text() if item else ''
+        rrf_w = self.table.cellWidget(row, 2)
+        rrf = _RRF_VALUES[rrf_w.currentIndex()] if rrf_w else 1
+        self.db.update_safeguard(sg_id, desc, rrf, sg_type)
+        self.changed.emit()
+
     def _rrf_changed(self, sg_id, row, idx):
         rrf = _RRF_VALUES[idx]
         item = self.table.item(row, 0)
         desc = item.text() if item else ''
-        self.db.update_safeguard(sg_id, desc, rrf)
+        type_w = self.table.cellWidget(row, 1)
+        sg_type = _SG_TYPES[type_w.currentIndex()] if type_w else 'Övrigt'
+        self.db.update_safeguard(sg_id, desc, rrf, sg_type)
         self._refresh()
         self.changed.emit()
 
@@ -2023,9 +2108,11 @@ class SafeguardEditor(QWidget):
         if not item:
             return
         sg_id = item.data(Qt.ItemDataRole.UserRole)
-        rrf_w = self.table.cellWidget(row, 1)
+        type_w = self.table.cellWidget(row, 1)
+        sg_type = _SG_TYPES[type_w.currentIndex()] if type_w else 'Övrigt'
+        rrf_w = self.table.cellWidget(row, 2)
         rrf = _RRF_VALUES[rrf_w.currentIndex()] if rrf_w else 1
-        self.db.update_safeguard(sg_id, item.text(), rrf)
+        self.db.update_safeguard(sg_id, item.text(), rrf, sg_type)
 
 
 class ActionEditor(QWidget):
@@ -2138,18 +2225,18 @@ class NodePanel(QWidget):
         self._loading = False
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(6)
+        layout.setContentsMargins(10, 10, 10, 10)
 
         title = QLabel("Nod")
-        f = QFont(); f.setPointSize(15); f.setBold(True)
+        f = QFont(); f.setPointSize(12); f.setBold(True)
         title.setFont(f)
         layout.addWidget(title)
         sep = QLabel(); sep.setFixedHeight(1); sep.setStyleSheet("background:#ddd;")
         layout.addWidget(sep)
 
         form = QFormLayout()
-        form.setSpacing(10)
+        form.setSpacing(5)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
         self.name_edit = QLineEdit()
@@ -2164,7 +2251,7 @@ class NodePanel(QWidget):
 
         self.desc_edit = QTextEdit()
         self.desc_edit.setPlaceholderText("Beskrivning av noden / systemgränsen...")
-        self.desc_edit.setFixedHeight(80)
+        self.desc_edit.setFixedHeight(55)
         _orig_foe = QTextEdit.focusOutEvent
         _w = self.desc_edit
         _s = self._save
@@ -2175,9 +2262,9 @@ class NodePanel(QWidget):
         form.addRow("Beskrivning:", self.desc_edit)
 
         sep2 = QLabel("Processparametrar")
-        f2 = QFont(); f2.setBold(True); f2.setPointSize(10)
+        f2 = QFont(); f2.setBold(True); f2.setPointSize(9)
         sep2.setFont(f2)
-        sep2.setStyleSheet("color:#1F4E79; margin-top:6px;")
+        sep2.setStyleSheet("color:#1F4E79; margin-top:2px;")
         form.addRow(sep2)
 
         self.media_edit = QLineEdit()
@@ -2256,21 +2343,6 @@ class DeviationPanel(QWidget):
         form.addRow("Beskrivning:", self.desc_edit)
         layout.addLayout(form)
 
-        lbl = QLabel("Välj standardavvikelse:")
-        lbl.setStyleSheet("color:#555; font-size:11px; margin-top:6px;")
-        layout.addWidget(lbl)
-
-        grid = QGridLayout()
-        grid.setSpacing(4)
-        for i, name in enumerate(_DEVIATION_TYPES):
-            btn = QPushButton(name)
-            btn.setStyleSheet(
-                "QPushButton{padding:4px 6px;font-size:10px;border:1px solid #ccc;border-radius:3px;}"
-                "QPushButton:hover{background:#e8f0fe;}")
-            btn.clicked.connect(lambda _, n=name: self._quick_set(n))
-            grid.addWidget(btn, i // 2, i % 2)
-        layout.addLayout(grid)
-
         self._add_btn = QPushButton("⚙  Lägg till orsak")
         self._add_btn.setEnabled(False)
         self._add_btn.setStyleSheet(
@@ -2292,10 +2364,6 @@ class DeviationPanel(QWidget):
         self._loading = True
         self.desc_edit.setText(dev['description'])
         self._loading = False
-
-    def _quick_set(self, name):
-        self.desc_edit.setText(name)
-        self._save()
 
     def _save(self):
         if self._loading or self.deviation_id is None:
@@ -2332,7 +2400,7 @@ class CausePanel(QWidget):
 
         self.desc_edit = QTextEdit()
         self.desc_edit.setPlaceholderText("Beskriv orsaken till avvikelsen / faran...")
-        self.desc_edit.setFixedHeight(120)
+        self.desc_edit.setFixedHeight(80)
         _orig_foe = QTextEdit.focusOutEvent
         _w = self.desc_edit
         _s = self._save
@@ -2342,24 +2410,36 @@ class CausePanel(QWidget):
         self.desc_edit.focusOutEvent = _desc_foe
         form.addRow("Beskrivning:", self.desc_edit)
 
-        # Row 1: value from standard cause library (read-only)
+        layout.addLayout(form)
+
+        # Compact frequency section
+        freq_box = QGroupBox("Frekvens")
+        freq_box.setStyleSheet(
+            "QGroupBox{font-size:10px;color:#555;border:1px solid #ddd;"
+            "border-radius:4px;margin-top:4px;padding-top:2px;}"
+            "QGroupBox::title{subcontrol-origin:margin;left:6px;}")
+        freq_lay = QFormLayout(freq_box)
+        freq_lay.setSpacing(4)
+        freq_lay.setContentsMargins(6, 4, 6, 4)
+        freq_lay.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
         self._db_freq_lbl = QLabel("—")
         self._db_freq_lbl.setStyleSheet(
-            "color:#1F4E79; font-style:italic; padding:2px 4px;"
+            "color:#1F4E79; font-style:italic; font-size:10px; padding:1px 3px;"
             "background:#eef4fb; border:1px solid #bee3f8; border-radius:3px;")
         self._db_freq_lbl.setToolTip(
             "F-nivå beräknad från frekvens definierad i Inställningar → Standardorsaker.\n"
             "Tomt om ingen frekvens är definierad för denna orsak.")
-        form.addRow("Frekvens (standardorsak):", self._db_freq_lbl)
+        freq_lay.addRow("Standard:", self._db_freq_lbl)
 
-        # Row 2: manual override
         self.freq_combo = QComboBox()
-        self.freq_combo.addItem("— (välj)")          # index 0 = "not set"
-        self.freq_combo.addItems(_FREQ_LABELS)         # index 1..7
+        self.freq_combo.setMaximumWidth(180)
+        self.freq_combo.addItem("— (välj)")
+        self.freq_combo.addItems(_FREQ_LABELS)
         self.freq_combo.currentIndexChanged.connect(self._save)
-        form.addRow("Frekvens (manuell):", self.freq_combo)
+        freq_lay.addRow("Manuell:", self.freq_combo)
 
-        layout.addLayout(form)
+        layout.addWidget(freq_box)
 
         self._pid_btn = QPushButton("📍 Lägg till på P&ID")
         self._pid_btn.setEnabled(False)
@@ -2683,7 +2763,7 @@ class SafeguardPanel(QWidget):
 
         self.desc_edit = QTextEdit()
         self.desc_edit.setPlaceholderText("Beskriv safeguarden...")
-        self.desc_edit.setFixedHeight(100)
+        self.desc_edit.setFixedHeight(80)
         _orig_foe = QTextEdit.focusOutEvent
         _w = self.desc_edit
         _s = self._save
@@ -2692,6 +2772,11 @@ class SafeguardPanel(QWidget):
             _orig(_w, e)
         self.desc_edit.focusOutEvent = _desc_foe
         form.addRow("Beskrivning:", self.desc_edit)
+
+        self.type_combo = QComboBox()
+        self.type_combo.addItems(_SG_TYPES)
+        self.type_combo.currentIndexChanged.connect(self._save)
+        form.addRow("Typ:", self.type_combo)
 
         self.rrf_combo = QComboBox()
         self.rrf_combo.addItems(_RRF_LABELS)
@@ -2722,10 +2807,14 @@ class SafeguardPanel(QWidget):
         if not sg:
             return
         self._loading = True
-        self.desc_edit.setPlainText(sg['description'])
-        rrf = sg['rrf'] if sg['rrf'] in _RRF_VALUES else 1
+        sg_d = dict(sg)
+        self.desc_edit.setPlainText(sg_d['description'])
+        sg_type = sg_d.get('sg_type', 'Övrigt') or 'Övrigt'
+        self.type_combo.setCurrentIndex(
+            _SG_TYPES.index(sg_type) if sg_type in _SG_TYPES else len(_SG_TYPES)-1)
+        rrf = sg_d['rrf'] if sg_d['rrf'] in _RRF_VALUES else 1
         self.rrf_combo.setCurrentIndex(_RRF_VALUES.index(rrf))
-        self._update_badge(sg)
+        self._update_badge(sg_d)
         self._loading = False
 
     def _update_badge(self, sg=None):
@@ -2746,11 +2835,316 @@ class SafeguardPanel(QWidget):
     def _save(self):
         if self._loading or self.safeguard_id is None:
             return
-        desc = self.desc_edit.toPlainText().strip() or 'Ny safeguard'
-        rrf  = _RRF_VALUES[self.rrf_combo.currentIndex()]
-        self.db.update_safeguard(self.safeguard_id, desc, rrf)
+        desc    = self.desc_edit.toPlainText().strip() or 'Ny safeguard'
+        rrf     = _RRF_VALUES[self.rrf_combo.currentIndex()]
+        sg_type = _SG_TYPES[self.type_combo.currentIndex()]
+        self.db.update_safeguard(self.safeguard_id, desc, rrf, sg_type)
         self._update_badge()
         self.saved.emit(self.safeguard_id)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NODE MARKUP PANEL
+# ══════════════════════════════════════════════════════════════════════════════
+
+class NodeMarkupPanel(QWidget):
+    """Right-panel toolbox shown when editing node markup overlays."""
+    closed         = pyqtSignal()
+    tool_changed   = pyqtSignal(str)   # 'polygon'|'polyline'|'text'|'comment'|'select'
+    item_deleted   = pyqtSignal(int)   # markup_id
+    item_vis_toggled = pyqtSignal(int, bool)  # markup_id, visible
+    all_vis_toggled  = pyqtSignal(bool)       # visible
+
+    _TOOL_ICONS = {
+        'polygon':  '◻',
+        'polyline': '〰',
+        'text':     '𝐀',
+        'comment':  '💬',
+        'select':   '↖',
+    }
+    _TOOL_LABELS = {
+        'polygon':  'Polygon',
+        'polyline': 'Polylinje',
+        'text':     'Nodnamn',
+        'comment':  'Kommentar',
+        'select':   'Välj',
+    }
+    _TYPE_ICON = {'polygon': '◻', 'polyline': '〰', 'text': '𝐀', 'comment': '💬'}
+
+    def __init__(self, db: Database, parent=None):
+        super().__init__(parent)
+        self.db       = db
+        self.node_id  = None
+        self._color   = _MARKUP_COLORS[5]   # default blue
+        self._opacity = 0.45
+        self._width   = 2
+        self._current_tool = 'select'
+        self._selected_mu_id = None
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setSpacing(8)
+
+        # ── Header ────────────────────────────────────────────────────────────
+        self._title = QLabel("Nodmarkering")
+        f = QFont(); f.setPointSize(12); f.setBold(True)
+        self._title.setFont(f)
+        outer.addWidget(self._title)
+        sep = QLabel(); sep.setFixedHeight(1); sep.setStyleSheet("background:#1565C0;")
+        outer.addWidget(sep)
+
+        # ── Tool selection ────────────────────────────────────────────────────
+        tool_grp = QGroupBox("Verktyg")
+        tool_grp.setStyleSheet(
+            "QGroupBox{font-size:10px;color:#555;border:1px solid #ddd;"
+            "border-radius:4px;margin-top:4px;padding-top:2px;}"
+            "QGroupBox::title{subcontrol-origin:margin;left:6px;}")
+        tool_lay = QGridLayout(tool_grp)
+        tool_lay.setSpacing(4); tool_lay.setContentsMargins(4,4,4,4)
+        self._tool_btns = {}
+        tools = [('select','↖'),('polygon','◻'),('polyline','〰'),('text','𝐀'),('comment','💬')]
+        for i, (tool, icon) in enumerate(tools):
+            label = self._TOOL_LABELS[tool]
+            btn = QPushButton(f"{icon}  {label}")
+            btn.setCheckable(True)
+            btn.setStyleSheet(
+                "QPushButton{padding:4px 6px;font-size:10px;border:1px solid #ccc;"
+                "border-radius:3px;text-align:left;}"
+                "QPushButton:checked{background:#1565C0;color:white;border-color:#1565C0;}"
+                "QPushButton:hover:!checked{background:#e8f0fe;}")
+            btn.clicked.connect(lambda _, t=tool: self._on_tool(t))
+            tool_lay.addWidget(btn, i // 3, i % 3)
+            self._tool_btns[tool] = btn
+        outer.addWidget(tool_grp)
+
+        # ── Style controls ────────────────────────────────────────────────────
+        style_grp = QGroupBox("Stil")
+        style_grp.setStyleSheet(tool_grp.styleSheet())
+        style_lay = QVBoxLayout(style_grp)
+        style_lay.setSpacing(4); style_lay.setContentsMargins(6,4,6,4)
+
+        # Color row
+        color_row = QHBoxLayout()
+        color_row.addWidget(QLabel("Färg:"))
+        self._color_btns = []
+        for hex_c in _MARKUP_COLORS:
+            cb = QPushButton()
+            cb.setFixedSize(22, 22)
+            cb.setStyleSheet(f"background:{hex_c};border:2px solid transparent;"
+                             f"border-radius:3px;")
+            cb.clicked.connect(lambda _, c=hex_c: self._pick_preset(c))
+            color_row.addWidget(cb)
+            self._color_btns.append((hex_c, cb))
+        palette_btn = QPushButton("···")
+        palette_btn.setFixedSize(30, 22)
+        palette_btn.setToolTip("Öppna färgpaletten")
+        palette_btn.setStyleSheet("font-size:11px;border:1px solid #ccc;border-radius:3px;")
+        palette_btn.clicked.connect(self._pick_full_color)
+        color_row.addWidget(palette_btn)
+        color_row.addStretch()
+        style_lay.addLayout(color_row)
+
+        # Current color preview
+        self._cur_color_lbl = QLabel()
+        self._cur_color_lbl.setFixedHeight(6)
+        self._cur_color_lbl.setStyleSheet(f"background:{self._color};border-radius:2px;")
+        style_lay.addWidget(self._cur_color_lbl)
+
+        # Width row
+        w_row = QHBoxLayout()
+        w_row.addWidget(QLabel("Tjocklek:"))
+        self._width_spin = QSpinBox()
+        self._width_spin.setRange(1, 10); self._width_spin.setValue(self._width)
+        self._width_spin.setMaximumWidth(60)
+        self._width_spin.valueChanged.connect(lambda v: setattr(self, '_width', v))
+        w_row.addWidget(self._width_spin); w_row.addStretch()
+        style_lay.addLayout(w_row)
+
+        # Opacity row
+        op_row = QHBoxLayout()
+        op_row.addWidget(QLabel("Opacitet:"))
+        self._opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self._opacity_slider.setRange(10, 90); self._opacity_slider.setValue(int(self._opacity * 100))
+        self._opacity_lbl = QLabel(f"{int(self._opacity*100)}%")
+        self._opacity_lbl.setFixedWidth(32)
+        self._opacity_slider.valueChanged.connect(self._on_opacity)
+        op_row.addWidget(self._opacity_slider); op_row.addWidget(self._opacity_lbl)
+        style_lay.addLayout(op_row)
+
+        outer.addWidget(style_grp)
+
+        # ── Markup list ───────────────────────────────────────────────────────
+        list_grp = QGroupBox("Markeringar")
+        list_grp.setStyleSheet(tool_grp.styleSheet())
+        list_lay = QVBoxLayout(list_grp)
+        list_lay.setSpacing(2); list_lay.setContentsMargins(4,4,4,4)
+
+        # Master toggle
+        vis_row = QHBoxLayout()
+        self._all_vis_btn = QPushButton("👁 Visa alla")
+        self._all_vis_btn.setCheckable(True); self._all_vis_btn.setChecked(True)
+        self._all_vis_btn.setStyleSheet(
+            "QPushButton{padding:3px 6px;font-size:10px;border:1px solid #ccc;border-radius:3px;}"
+            "QPushButton:checked{background:#27ae60;color:white;border-color:#27ae60;}"
+            "QPushButton:!checked{background:#e74c3c;color:white;border-color:#c0392b;}")
+        self._all_vis_btn.clicked.connect(self._on_all_vis)
+        vis_row.addWidget(self._all_vis_btn); vis_row.addStretch()
+        list_lay.addLayout(vis_row)
+
+        self._list_widget = QListWidget()
+        self._list_widget.setFixedHeight(150)
+        self._list_widget.setStyleSheet(
+            "QListWidget{border:1px solid #ddd;border-radius:3px;}"
+            "QListWidget::item:selected{background:#e8f0fe;color:#1565C0;}")
+        self._list_widget.itemClicked.connect(self._on_list_item_clicked)
+        list_lay.addWidget(self._list_widget)
+
+        outer.addWidget(list_grp)
+
+        # ── Selected item controls ────────────────────────────────────────────
+        self._item_box = QGroupBox("Vald markering")
+        self._item_box.setStyleSheet(tool_grp.styleSheet())
+        self._item_box.setVisible(False)
+        item_lay = QFormLayout(self._item_box)
+        item_lay.setSpacing(4); item_lay.setContentsMargins(6,4,6,4)
+
+        self._item_label_edit = QLineEdit()
+        self._item_label_edit.setPlaceholderText("Text / etikett")
+        self._item_label_edit.editingFinished.connect(self._save_selected_label)
+        item_lay.addRow("Text:", self._item_label_edit)
+
+        item_btns = QHBoxLayout()
+        del_btn = QPushButton("🗑 Ta bort")
+        del_btn.setStyleSheet("color:#c0392b;font-size:10px;")
+        del_btn.clicked.connect(self._delete_selected)
+        item_btns.addWidget(del_btn); item_btns.addStretch()
+        item_lay.addRow(item_btns)
+        outer.addWidget(self._item_box)
+
+        outer.addStretch()
+
+        # ── Close button ──────────────────────────────────────────────────────
+        close_btn = QPushButton("✕ Avsluta redigering")
+        close_btn.setStyleSheet(
+            "QPushButton{background:#546E7A;color:white;border:none;"
+            "border-radius:4px;padding:7px;font-weight:bold;}"
+            "QPushButton:hover{background:#37474F;}")
+        close_btn.clicked.connect(self.closed.emit)
+        outer.addWidget(close_btn)
+
+        self._on_tool('select')
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def load(self, node_id):
+        self.node_id = node_id
+        node = self.db.get_node(node_id)
+        name = node['name'] if node else '?'
+        self._title.setText(f"Nodmarkering: {name}")
+        self._refresh_list()
+
+    def refresh(self):
+        self._refresh_list()
+
+    def on_markup_saved(self, mu_id):
+        """Called after a new markup has been saved to DB — refresh list and highlight."""
+        self._refresh_list()
+        self.select_markup(mu_id)
+
+    def select_markup(self, mu_id):
+        """Select a markup item in the list (e.g. when clicked on canvas)."""
+        self._selected_mu_id = mu_id
+        for i in range(self._list_widget.count()):
+            item = self._list_widget.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) == mu_id:
+                self._list_widget.setCurrentItem(item)
+                self._show_item_controls(mu_id)
+                break
+
+    def get_current_style(self):
+        """Return (color, opacity, line_width) for the next drawn markup."""
+        return self._color, self._opacity, self._width
+
+    # ── Internal ──────────────────────────────────────────────────────────────
+
+    def _on_tool(self, tool):
+        self._current_tool = tool
+        for t, btn in self._tool_btns.items():
+            btn.setChecked(t == tool)
+        self.tool_changed.emit(tool)
+
+    def _pick_preset(self, hex_c):
+        self._color = hex_c
+        self._cur_color_lbl.setStyleSheet(
+            f"background:{hex_c};border-radius:2px;")
+        for hc, cb in self._color_btns:
+            cb.setStyleSheet(
+                f"background:{hc};border:2px solid "
+                f"{'#333' if hc == hex_c else 'transparent'};border-radius:3px;")
+
+    def _pick_full_color(self):
+        c = QColorDialog.getColor(QColor(self._color), self, "Välj färg")
+        if c.isValid():
+            self._pick_preset(c.name())
+
+    def _on_opacity(self, val):
+        self._opacity = val / 100.0
+        self._opacity_lbl.setText(f"{val}%")
+
+    def _on_all_vis(self, checked):
+        if self.node_id is None:
+            return
+        self.db.set_all_node_markups_visible(self.node_id, checked)
+        self._all_vis_btn.setText("👁 Visa alla" if checked else "👁 Dölj alla")
+        self.all_vis_toggled.emit(checked)
+
+    def _refresh_list(self):
+        self._list_widget.clear()
+        if self.node_id is None:
+            return
+        for mu in self.db.node_markups_for_node(self.node_id):
+            m = dict(mu)
+            icon = self._TYPE_ICON.get(m.get('type', 'polygon'), '◻')
+            vis  = '👁' if m.get('visible', 1) else '○'
+            label = m.get('label', '') or m.get('type', 'polygon')
+            text = f"{vis} {icon} {label[:30]}"
+            lw_item = QListWidgetItem(text)
+            lw_item.setData(Qt.ItemDataRole.UserRole, m['id'])
+            c = QColor(m.get('color', '#1565C0'))
+            lw_item.setForeground(c)
+            self._list_widget.addItem(lw_item)
+
+    def _on_list_item_clicked(self, lw_item):
+        mu_id = lw_item.data(Qt.ItemDataRole.UserRole)
+        self._selected_mu_id = mu_id
+        self._show_item_controls(mu_id)
+        self.item_vis_toggled.emit(mu_id, True)  # signal canvas to highlight
+
+    def _show_item_controls(self, mu_id):
+        mu = self.db.get_node_markup(mu_id)
+        if not mu:
+            self._item_box.setVisible(False)
+            return
+        m = dict(mu)
+        self._item_label_edit.setText(m.get('label', ''))
+        self._item_box.setVisible(True)
+
+    def _save_selected_label(self):
+        if self._selected_mu_id is None:
+            return
+        self.db.update_node_markup(self._selected_mu_id,
+                                   label=self._item_label_edit.text().strip())
+        self._refresh_list()
+
+    def _delete_selected(self):
+        if self._selected_mu_id is None:
+            return
+        self.db.delete_node_markup(self._selected_mu_id)
+        mu_id = self._selected_mu_id
+        self._selected_mu_id = None
+        self._item_box.setVisible(False)
+        self._refresh_list()
+        self.item_deleted.emit(mu_id)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2900,6 +3294,8 @@ class TreePanel(QWidget):
     item_selected               = pyqtSignal(int, int)
     add_causes_on_pid_requested       = pyqtSignal(int)   # deviation_id
     add_consequences_on_pid_requested = pyqtSignal(int)   # cause_id
+    add_safeguards_on_pid_requested   = pyqtSignal(int)   # consequence_id
+    edit_node_markup_requested        = pyqtSignal(int)   # node_id
     structure_changed           = pyqtSignal()
     visibility_changed          = pyqtSignal(str, bool)   # marker_type, visible
     exit_pid_mode_requested     = pyqtSignal()    # exit any active P&ID placement mode
@@ -3111,6 +3507,12 @@ class TreePanel(QWidget):
                 c = self.db.get_consequence(r['consequence_id']); return c['cause_id'] if c else None
         return None
 
+    def _resolve_consequence_id(self, type_, id_):
+        if type_ == CONS_T: return id_
+        if type_ == SG_T:
+            r = self.db.get_safeguard(id_); return r['consequence_id'] if r else None
+        return None
+
     def add_node(self):
         new_id = self.db.add_node()
         self.refresh(NODE_T, new_id)
@@ -3147,6 +3549,16 @@ class TreePanel(QWidget):
         self.refresh(CONS_T, new_id)
         self.structure_changed.emit()
 
+    def add_safeguard(self):
+        type_, id_ = self._current()
+        cons_id = self._resolve_consequence_id(type_, id_) if type_ else None
+        if cons_id is None:
+            QMessageBox.information(self, "Välj konsekvens", "Välj en konsekvens i trädet."); return
+        new_id = self.db.add_safeguard(cons_id)
+        self.exit_pid_mode_requested.emit()
+        self.refresh(SG_T, new_id)
+        self.structure_changed.emit()
+
     def delete_selected(self):
         type_, id_ = self._current()
         if type_ is None: return
@@ -3179,6 +3591,8 @@ class TreePanel(QWidget):
 
         if type_ == NODE_T:
             menu.addAction("+ Lägg till avvikelse", self.add_deviation)
+            menu.addAction("✏️ Editera nodmarkup",
+                           lambda i=id_: self.edit_node_markup_requested.emit(i))
         elif type_ == DEV_T:
             menu.addAction("+ Lägg till orsak", self.add_cause)
             menu.addAction("📍 Lägg till orsaker på P&ID",
@@ -3187,6 +3601,10 @@ class TreePanel(QWidget):
             menu.addAction("+ Lägg till konsekvens", self.add_consequence)
             menu.addAction("📍 Lägg till konsekvens på P&ID",
                            lambda i=id_: self.add_consequences_on_pid_requested.emit(i))
+        elif type_ == CONS_T:
+            menu.addAction("+ Lägg till safeguard", self.add_safeguard)
+            menu.addAction("📍 Lägg till safeguard på P&ID",
+                           lambda i=id_: self.add_safeguards_on_pid_requested.emit(i))
         menu.addSeparator()
 
         # Copy
@@ -7952,8 +8370,10 @@ class MainWindow(QMainWindow):
         self.cause_panel      = CausePanel(self.db)
         self.cons_panel       = ConsequencePanel(self.db)
         self.sg_panel         = SafeguardPanel(self.db)
+        self.node_markup_panel = NodeMarkupPanel(self.db)
         for panel in [self.welcome_panel, self.node_panel, self.deviation_panel,
-                      self.cause_panel, self.cons_panel, self.sg_panel]:
+                      self.cause_panel, self.cons_panel, self.sg_panel,
+                      self.node_markup_panel]:
             self.stack.addWidget(panel)
         scroll.setWidget(self.stack)
         h_splitter.addWidget(scroll)
@@ -8021,6 +8441,23 @@ class MainWindow(QMainWindow):
         self.tree_panel.add_causes_on_pid_requested.connect(self._on_add_causes_on_pid)
         self.tree_panel.add_consequences_on_pid_requested.connect(
             self._on_add_consequences_on_pid)
+        self.tree_panel.add_safeguards_on_pid_requested.connect(
+            self._on_add_safeguards_on_pid)
+        self.tree_panel.edit_node_markup_requested.connect(self._on_edit_node_markup)
+
+        # Node markup panel signals
+        self.node_markup_panel.closed.connect(self._on_close_node_markup)
+        self.node_markup_panel.tool_changed.connect(
+            lambda t: self.pid_panel.set_markup_tool(t))
+        self.node_markup_panel.item_deleted.connect(
+            lambda _: self.pid_panel.refresh_markup_overlays())
+        self.node_markup_panel.all_vis_toggled.connect(
+            lambda _: self.pid_panel.refresh_markup_overlays())
+        self.node_markup_panel.item_vis_toggled.connect(
+            lambda mu_id, _: self.pid_panel.viewer.highlight_markup(mu_id))
+        self.pid_panel.markup_draw_finished.connect(self._on_markup_draw_finished)
+        self.pid_panel.markup_item_selected.connect(
+            self.node_markup_panel.select_markup)
         self.tree_panel.exit_pid_mode_requested.connect(
             lambda: self.pid_panel._set_mode(MODE_NAV))
 
@@ -8263,6 +8700,41 @@ class MainWindow(QMainWindow):
         self.pid_panel.set_active_cause(cause_id)
         self._switch_view(0)
         self.pid_panel._set_mode(MODE_CONSEQUENCE)
+
+    def _on_add_safeguards_on_pid(self, cons_id):
+        """Right-click consequence → 'Lägg till safeguard på P&ID'."""
+        cons = self.db.get_consequence(cons_id)
+        if not cons:
+            return
+        cause = self.db.get_cause(cons['cause_id'])
+        node_id = cause['node_id'] if cause else None
+        if node_id:
+            self.pid_panel.set_active_node(node_id)
+        self.pid_panel.set_active_consequence(cons_id)
+        self._switch_view(0)
+        self.pid_panel._set_mode(MODE_SAFEGUARD)
+
+    def _on_edit_node_markup(self, node_id):
+        """Tree right-click NODE → 'Editera nodmarkup'."""
+        self.node_markup_panel.load(node_id)
+        self.stack.setCurrentWidget(self.node_markup_panel)
+        self._switch_view(0)
+        self.pid_panel.enter_markup_edit(node_id)
+
+    def _on_close_node_markup(self):
+        """NodeMarkupPanel 'Avsluta redigering' clicked."""
+        self.pid_panel.exit_markup_mode()
+        self.pid_panel.reload_overlays()
+        self.stack.setCurrentWidget(self.welcome_panel)
+
+    def _on_markup_draw_finished(self, type_, node_id, pts, page, label):
+        """New markup drawn on P&ID — save to DB and refresh."""
+        color, opacity, line_width = self.node_markup_panel.get_current_style()
+        mu_id = self.db.add_node_markup(
+            node_id, type_, pts, label, color, opacity, line_width, page)
+        self.pid_panel.viewer._pending_path_item = None   # clear temp item
+        self.pid_panel.refresh_markup_overlays()
+        self.node_markup_panel.on_markup_saved(mu_id)
 
     def _on_existing_marker_placed(self, type_str, id_):
         """Marker placed via 'place existing' flow — refresh pins and tree without reloading panels."""
