@@ -4132,7 +4132,6 @@ class TreePanel(QWidget):
             menu.addAction("+ Lägg till safeguard", self.add_safeguard)
             menu.addAction("📍 Lägg till safeguard på P&ID",
                            lambda i=id_: self.add_safeguards_on_pid_requested.emit(i))
-        menu.addSeparator()
 
         # Copy
         copy_labels = {CAUSE_T: "📋 Kopiera orsak",
