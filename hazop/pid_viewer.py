@@ -2362,8 +2362,8 @@ class PIDGraphicsView(QGraphicsView):
         c = QColor(color_hex)
         border_alpha = int(opacity * 210)
         fill_alpha   = int(opacity * 52)
+        # Non-cosmetic pen: width in scene coords so lines scale proportionally with zoom
         pen = QPen(QColor(c.red(), c.green(), c.blue(), border_alpha), line_width)
-        pen.setCosmetic(True)
 
         if type_ in ('polygon', 'polyline') and len(points_pdf) >= 2:
             path = QPainterPath()
@@ -3729,6 +3729,70 @@ class PIDPanel(QWidget):
                     except Exception:
                         pass
                 shape.commit()
+
+            # ── Node markup overlays (node_markups table) ─────────────────
+            if hasattr(self.db, 'node_markups_for_page'):
+                for mu in self.db.node_markups_for_page(phys_page):
+                    m = dict(mu)
+                    if not m.get('visible', 1):
+                        continue
+                    try:
+                        pts_raw = json.loads(m.get('points', '[]') or '[]')
+                        pts = [fitz.Point(float(p[0]), float(p[1])) for p in pts_raw]
+                    except Exception:
+                        pts = []
+                    mu_color = _hex_to_fitz_rgb(m.get('color', '#1565C0'))
+                    mu_opacity = float(m.get('opacity', 0.45))
+                    mu_width = max(0.3, int(m.get('line_width', 3)) * 0.4)
+                    mu_font  = max(6, int(m.get('font_size', 12)))
+                    mu_type  = m.get('type', 'polygon')
+                    mu_label = m.get('label', '') or ''
+                    if mu_type in ('polygon', 'polyline') and len(pts) >= 2:
+                        shape = page.new_shape()
+                        if mu_type == 'polygon':
+                            shape.draw_polyline(pts + [pts[0]])
+                            try:
+                                shape.finish(color=mu_color, width=mu_width,
+                                             fill=mu_color,
+                                             fill_opacity=mu_opacity * 0.25)
+                            except TypeError:
+                                shape.finish(color=mu_color, width=mu_width)
+                        else:
+                            shape.draw_polyline(pts)
+                            shape.finish(color=mu_color, width=mu_width)
+                        shape.commit()
+                        if mu_label and mu_type == 'polygon':
+                            cx = sum(p.x for p in pts) / len(pts)
+                            cy = sum(p.y for p in pts) / len(pts)
+                            try:
+                                page.insert_text(
+                                    fitz.Point(cx - len(mu_label) * mu_font * 0.28, cy + mu_font * 0.35),
+                                    mu_label, fontsize=mu_font, color=mu_color, fontname='helv')
+                            except Exception:
+                                pass
+                    elif mu_type in ('text', 'comment') and pts:
+                        txt = mu_label or '?'
+                        x, y = pts[0].x, pts[0].y
+                        if mu_type == 'comment':
+                            # Draw a light background rect
+                            txt_w = len(txt) * mu_font * 0.55
+                            txt_h = mu_font * 1.4
+                            pad = 2.5
+                            shape = page.new_shape()
+                            shape.draw_rect(fitz.Rect(x - pad, y - txt_h,
+                                                      x + txt_w + pad, y + pad))
+                            try:
+                                shape.finish(color=mu_color, width=0.5,
+                                             fill=(1, 1, 0.85), fill_opacity=0.75)
+                            except TypeError:
+                                shape.finish(color=mu_color, width=0.5)
+                            shape.commit()
+                        try:
+                            page.insert_text(
+                                fitz.Point(x, y),
+                                txt, fontsize=mu_font, color=mu_color, fontname='helv')
+                        except Exception:
+                            pass
 
             # ── Cause markers ─────────────────────────────────────────────
             cause_pos = {}
