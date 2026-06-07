@@ -1603,12 +1603,12 @@ class Database:
         self.conn.commit()
         return cur.lastrowid
 
-    def update_standard_cause(self, id_, description=None, frequency=_SENTINEL):
+    def update_standard_cause(self, id_, description=None, **kwargs):
         sets, vals = [], []
         if description is not None:
             sets.append("description=?"); vals.append(description)
-        if frequency is not Database._SENTINEL:
-            sets.append("frequency=?"); vals.append(frequency)
+        if 'frequency' in kwargs:
+            sets.append("frequency=?"); vals.append(kwargs['frequency'])
         if sets:
             vals.append(id_)
             self.conn.execute(f"UPDATE standard_causes SET {', '.join(sets)} WHERE id=?", vals)
