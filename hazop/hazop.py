@@ -2860,30 +2860,42 @@ class SafeguardPanel(QWidget):
 # ══════════════════════════════════════════════════════════════════════════════
 
 class _StylePopup(QWidget):
-    """Frameless popup with colour / opacity / width / font-size controls."""
+    """Per-tool flyout popup — appears to the left of the clicked tool button."""
+
+    _TOOL_NAMES = {
+        'polygon':  'Rita polygon',
+        'polyline': 'Rita polylinje',
+        'text':     'Lägg ut nodnamn',
+        'comment':  'Lägg till kommentar',
+    }
 
     def __init__(self, ribbon, parent=None):
         super().__init__(parent,
                          Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         self.setStyleSheet(
-            "QWidget{background:#fff;}"
-            "QLabel{font-size:10px;color:#444;}")
+            "QWidget{background:#fff;border-radius:4px;}"
+            "QLabel{font-size:10px;color:#444;border:none;}")
         self._ribbon = ribbon
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 8, 10, 10)
         outer.setSpacing(6)
 
-        ttl = QLabel("Stilinställningar")
+        # Title
+        self._title_lbl = QLabel()
         f = QFont(); f.setBold(True); f.setPointSize(10)
-        ttl.setFont(f); outer.addWidget(ttl)
+        self._title_lbl.setFont(f)
+        outer.addWidget(self._title_lbl)
 
         sep = QLabel(); sep.setFixedHeight(1)
-        sep.setStyleSheet("background:#ddd;"); outer.addWidget(sep)
+        sep.setStyleSheet("background:#ddd;border:none;")
+        outer.addWidget(sep)
 
-        # Colour swatches
-        crow = QHBoxLayout(); crow.setSpacing(3)
+        # Colour swatches (always shown)
+        color_widget = QWidget()
+        crow = QHBoxLayout(color_widget)
+        crow.setContentsMargins(0, 0, 0, 0); crow.setSpacing(3)
         crow.addWidget(QLabel("Färg:"))
         self._cbts = []
         for hc in _MARKUP_COLORS:
@@ -2896,53 +2908,92 @@ class _StylePopup(QWidget):
         pal.setStyleSheet("font-size:10px;border:1px solid #ccc;border-radius:3px;")
         pal.clicked.connect(self._open_palette)
         crow.addWidget(pal); crow.addStretch()
-        outer.addLayout(crow)
+        outer.addWidget(color_widget)
 
         self._bar = QLabel(); self._bar.setFixedHeight(5)
+        self._bar.setStyleSheet("border:none;")
         outer.addWidget(self._bar)
 
         sep2 = QLabel(); sep2.setFixedHeight(1)
-        sep2.setStyleSheet("background:#eee;"); outer.addWidget(sep2)
+        sep2.setStyleSheet("background:#eee;border:none;")
+        outer.addWidget(sep2)
 
-        # Opacity
-        orow = QHBoxLayout()
+        # Opacity row (polygon, polyline, comment)
+        self._opacity_row = QWidget()
+        orow = QHBoxLayout(self._opacity_row)
+        orow.setContentsMargins(0, 0, 0, 0)
         orow.addWidget(QLabel("Opacitet:"))
         self._op_sl = QSlider(Qt.Orientation.Horizontal)
-        self._op_sl.setRange(10, 90); orow.addWidget(self._op_sl)
+        self._op_sl.setRange(10, 90)
+        orow.addWidget(self._op_sl)
         self._op_lbl = QLabel(); self._op_lbl.setFixedWidth(36)
-        orow.addWidget(self._op_lbl); outer.addLayout(orow)
+        orow.addWidget(self._op_lbl)
         self._op_sl.valueChanged.connect(
-            lambda v: (ribbon._apply_opacity(v),
-                       self._op_lbl.setText(f"{v}%")))
+            lambda v: (ribbon._apply_opacity(v), self._op_lbl.setText(f"{v}%")))
+        outer.addWidget(self._opacity_row)
 
-        # Width + font size
-        wrow = QHBoxLayout(); wrow.setSpacing(5)
+        # Line width row (polygon, polyline)
+        self._width_row = QWidget()
+        wrow = QHBoxLayout(self._width_row)
+        wrow.setContentsMargins(0, 0, 0, 0); wrow.setSpacing(5)
         wrow.addWidget(QLabel("Tjocklek:"))
         self._w_sp = QSpinBox(); self._w_sp.setRange(1, 99)
         self._w_sp.setMaximumWidth(58)
         self._w_sp.valueChanged.connect(ribbon._apply_width)
-        wrow.addWidget(self._w_sp)
-        wrow.addSpacing(6)
-        wrow.addWidget(QLabel("Font:"))
+        wrow.addWidget(self._w_sp); wrow.addStretch()
+        outer.addWidget(self._width_row)
+
+        # Font size row (text, comment)
+        self._font_row = QWidget()
+        frow = QHBoxLayout(self._font_row)
+        frow.setContentsMargins(0, 0, 0, 0); frow.setSpacing(5)
+        frow.addWidget(QLabel("Textstorlek:"))
         self._f_sp = QSpinBox(); self._f_sp.setRange(6, 99)
         self._f_sp.setMaximumWidth(58)
         self._f_sp.valueChanged.connect(ribbon._apply_font)
-        wrow.addWidget(self._f_sp); wrow.addStretch()
-        outer.addLayout(wrow)
+        frow.addWidget(self._f_sp); frow.addStretch()
+        outer.addWidget(self._font_row)
 
-        self.setMinimumWidth(390)
+        # Snap row (polygon, polyline)
+        self._snap_row = QWidget()
+        srow = QHBoxLayout(self._snap_row)
+        srow.setContentsMargins(0, 0, 0, 0)
+        self._snap_cb = QCheckBox("Snap till befintliga punkter")
+        self._snap_cb.setChecked(True)
+        self._snap_cb.toggled.connect(ribbon._apply_snap)
+        srow.addWidget(self._snap_cb); srow.addStretch()
+        outer.addWidget(self._snap_row)
+
+        self.setMinimumWidth(300)
+
+    def _configure_for(self, tool):
+        self._title_lbl.setText(self._TOOL_NAMES.get(tool, tool))
+        self._opacity_row.setVisible(tool in ('polygon', 'polyline', 'comment'))
+        self._width_row.setVisible(tool in ('polygon', 'polyline'))
+        self._font_row.setVisible(tool in ('text', 'comment'))
+        self._snap_row.setVisible(tool in ('polygon', 'polyline'))
+
+    def show_for(self, tool, btn):
+        self._configure_for(tool)
         self._sync()
+        self.adjustSize()
+        # Position to the left of the tool button
+        gp = btn.mapToGlobal(btn.rect().topLeft())
+        self.move(gp.x() - self.width() - 4, gp.y())
+        self.show()
 
     def _sync(self):
         r = self._ribbon
-        self._bar.setStyleSheet(f"background:{r._color};border-radius:2px;")
+        self._bar.setStyleSheet(f"background:{r._color};border-radius:2px;border:none;")
         self._op_sl.blockSignals(True); self._op_sl.setValue(int(r._opacity * 100))
         self._op_sl.blockSignals(False)
-        self._op_lbl.setText(f"{int(r._opacity*100)}%")
+        self._op_lbl.setText(f"{int(r._opacity * 100)}%")
         self._w_sp.blockSignals(True); self._w_sp.setValue(r._width)
         self._w_sp.blockSignals(False)
         self._f_sp.blockSignals(True); self._f_sp.setValue(r._font_size)
         self._f_sp.blockSignals(False)
+        self._snap_cb.blockSignals(True); self._snap_cb.setChecked(r._snap)
+        self._snap_cb.blockSignals(False)
         for hc, cb in self._cbts:
             cb.setStyleSheet(
                 f"background:{hc};border:2px solid "
@@ -2950,7 +3001,7 @@ class _StylePopup(QWidget):
 
     def _pick(self, hex_c):
         self._ribbon._apply_color(hex_c)
-        self._bar.setStyleSheet(f"background:{hex_c};border-radius:2px;")
+        self._bar.setStyleSheet(f"background:{hex_c};border-radius:2px;border:none;")
         for hc, cb in self._cbts:
             cb.setStyleSheet(
                 f"background:{hc};border:2px solid "
@@ -2968,11 +3019,12 @@ class _StylePopup(QWidget):
 
 
 class NodeMarkupPanel(QWidget):
-    """Narrow vertical ribbon for node markup tool selection (replaces old full panel)."""
-    closed        = pyqtSignal()
-    tool_changed  = pyqtSignal(str)
+    """Narrow vertical ribbon for node markup tool selection."""
+    closed          = pyqtSignal()
+    tool_changed    = pyqtSignal(str)
     all_vis_toggled = pyqtSignal(bool)
-    style_changed = pyqtSignal(str, float, int)  # color, opacity, line_width
+    style_changed   = pyqtSignal(str, float, int)   # color, opacity, line_width
+    snap_changed    = pyqtSignal(bool)
 
     _TOOLS = [
         ('select',   '↖', 'Välj/flytta'),
@@ -2990,6 +3042,7 @@ class NodeMarkupPanel(QWidget):
         self._opacity      = 0.45
         self._width        = 12
         self._font_size    = 24
+        self._snap         = True
         self._current_tool = 'select'
         self._popup        = None
 
@@ -3016,7 +3069,7 @@ class NodeMarkupPanel(QWidget):
         sep1.setStyleSheet("color:#ccc;")
         outer.addWidget(sep1)
 
-        # ── Tool buttons ──────────────────────────────────────────────────────
+        # ── Tool buttons — each click selects tool AND opens per-tool popup ───
         self._tool_btns = {}
         for tool, icon, tip in self._TOOLS:
             btn = QPushButton(icon)
@@ -3028,7 +3081,7 @@ class NodeMarkupPanel(QWidget):
                 "border-radius:4px;background:#fff;}"
                 "QPushButton:checked{background:#1565C0;color:white;border-color:#1565C0;}"
                 "QPushButton:hover:!checked{background:#E3F2FD;}")
-            btn.clicked.connect(lambda _, t=tool: self._on_tool(t))
+            btn.clicked.connect(lambda _, t=tool, b=btn: self._on_tool(t, b))
             outer.addWidget(btn)
             self._tool_btns[tool] = btn
 
@@ -3041,17 +3094,6 @@ class NodeMarkupPanel(QWidget):
         self._color_strip.setFixedHeight(8)
         self._color_strip.setStyleSheet(f"background:{self._color};border-radius:3px;")
         outer.addWidget(self._color_strip)
-
-        # ── Style popup button ────────────────────────────────────────────────
-        style_btn = QPushButton("🎨")
-        style_btn.setFixedSize(SZ, SZ)
-        style_btn.setToolTip("Stil (färg, opacitet, tjocklek, font)")
-        style_btn.setStyleSheet(
-            "QPushButton{font-size:22px;border:1px solid #ccc;"
-            "border-radius:4px;background:#fff;}"
-            "QPushButton:hover{background:#E3F2FD;}")
-        style_btn.clicked.connect(self._show_popup)
-        outer.addWidget(style_btn)
 
         sep3 = QFrame(); sep3.setFrameShape(QFrame.Shape.HLine)
         sep3.setStyleSheet("color:#ccc;")
@@ -3094,19 +3136,19 @@ class NodeMarkupPanel(QWidget):
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
-    def _on_tool(self, tool):
+    def _on_tool(self, tool, btn=None):
         self._current_tool = tool
-        for t, btn in self._tool_btns.items():
-            btn.setChecked(t == tool)
+        for t, b in self._tool_btns.items():
+            b.setChecked(t == tool)
         self.tool_changed.emit(tool)
+        # Open per-tool popup for all drawing tools
+        if tool != 'select' and btn is not None:
+            self._show_tool_popup(tool, btn)
 
-    def _show_popup(self):
+    def _show_tool_popup(self, tool, btn):
         if self._popup is None:
             self._popup = _StylePopup(self)
-        self._popup._sync()
-        gp = self.mapToGlobal(self.rect().topRight())
-        self._popup.move(gp)
-        self._popup.show()
+        self._popup.show_for(tool, btn)
 
     def _on_all_vis(self, checked):
         if self.node_id is None:
@@ -3129,6 +3171,10 @@ class NodeMarkupPanel(QWidget):
 
     def _apply_font(self, val):
         self._font_size = val
+
+    def _apply_snap(self, enabled):
+        self._snap = enabled
+        self.snap_changed.emit(enabled)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -8611,6 +8657,8 @@ class MainWindow(QMainWindow):
         self.node_markup_panel.style_changed.connect(
             lambda color, opacity, width: self.pid_panel.viewer.set_pen_style(
                 color, width, int(opacity * 210)))
+        self.node_markup_panel.snap_changed.connect(
+            self.pid_panel.viewer.set_snap)
         # Markup table panel signals
         self.markup_table_panel.item_deleted.connect(
             lambda _: self.pid_panel.refresh_markup_overlays())

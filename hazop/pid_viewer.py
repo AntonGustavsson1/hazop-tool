@@ -2069,6 +2069,7 @@ class PIDGraphicsView(QGraphicsView):
         # Markup overlay tracking: markup_id → list of QGraphicsItems
         self._markup_items: dict = {}
         self._markup_highlighted: int = -1
+        self._snap_enabled: bool = True
 
         self._placeholder = None
         self._show_placeholder("Öppna en P&ID-fil (PDF) för att börja.")
@@ -2238,6 +2239,9 @@ class PIDGraphicsView(QGraphicsView):
         self.draw_pen = QPen(QColor(c.red(), c.green(), c.blue(), alpha), width)
         self.draw_pen.setCosmetic(True)
         self.draw_brush = QBrush(QColor(c.red(), c.green(), c.blue(), max(30, alpha // 4)))
+
+    def set_snap(self, enabled: bool):
+        self._snap_enabled = enabled
 
     def _add_draw_point(self, sp):
         self.draw_points.append(sp)
@@ -2454,8 +2458,9 @@ class PIDGraphicsView(QGraphicsView):
         return items
 
     def _snap_to_nearest(self, scene_pos):
-        """Return nearest existing markup path point within snap threshold, else original pos.
-        Only snaps when in a markup draw mode (polygon/polyline)."""
+        """Return nearest existing markup path point within snap threshold, else original pos."""
+        if not self._snap_enabled:
+            return scene_pos
         SNAP_PX = 18.0
         best_dist = SNAP_PX
         best_pos = scene_pos
