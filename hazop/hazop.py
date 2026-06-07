@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (
     QStyledItemDelegate, QStyleOptionViewItem, QStyle,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF, QRect, QTimer, QMimeData, QEvent
-from PyQt6.QtGui import QFont, QColor, QAction, QBrush, QPen, QPainter, QDrag, QPainterPath, QPixmap, QIcon
+from PyQt6.QtGui import QFont, QColor, QAction, QBrush, QPen, QPainter, QDrag, QPainterPath, QPixmap, QIcon, QPolygonF
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DATABASE
@@ -2859,6 +2859,144 @@ class SafeguardPanel(QWidget):
 # NODE MARKUP — RIBBON + STYLE POPUP + TABLE PANEL
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ── Ribbon icon renderer ──────────────────────────────────────────────────────
+
+def _mk_pm(name: str, sz: int, fg: QColor) -> QPixmap:
+    """Render one icon onto a transparent QPixmap using QPainter."""
+    pm = QPixmap(sz, sz)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    m  = sz * 0.11                 # margin
+    S  = sz - 2 * m               # drawable area side
+    sw = max(1.6, sz * 0.078)     # stroke width
+    dr = max(2.0, sz * 0.075)     # vertex dot radius
+
+    def pt(fx, fy):
+        return QPointF(m + S * fx, m + S * fy)
+
+    pen = QPen(fg, sw, Qt.PenStyle.SolidLine,
+               Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+    no_pen   = QPen(Qt.PenStyle.NoPen)
+    solid_br = QBrush(fg)
+    no_br    = QBrush(Qt.BrushStyle.NoBrush)
+
+    if name == 'close':
+        p.setPen(QPen(fg, sw * 1.5, Qt.PenStyle.SolidLine,
+                      Qt.PenCapStyle.RoundCap))
+        p.drawLine(pt(0.08, 0.08), pt(0.92, 0.92))
+        p.drawLine(pt(0.92, 0.08), pt(0.08, 0.92))
+
+    elif name == 'select':
+        # Classic cursor arrow: tip at top-left, shaft goes down-right
+        path = QPainterPath()
+        coords = [
+            (0.00, 0.00),   # tip
+            (0.00, 0.82),   # left edge base
+            (0.26, 0.60),   # inner notch left
+            (0.46, 1.00),   # shaft bottom right-inner
+            (0.60, 0.93),   # shaft bottom right-outer
+            (0.38, 0.54),   # inner notch right
+            (0.66, 0.54),   # arrowhead right shoulder
+        ]
+        first = pt(*coords[0])
+        path.moveTo(first)
+        for c in coords[1:]:
+            path.lineTo(pt(*c))
+        path.closeSubpath()
+        p.setPen(pen)
+        p.setBrush(solid_br)
+        p.drawPath(path)
+
+    elif name == 'polygon':
+        # Irregular quadrilateral that reads as "polygon" + vertex dots
+        verts = [pt(0.10, 0.10), pt(0.90, 0.18),
+                 pt(0.82, 0.90), pt(0.12, 0.78)]
+        poly = QPolygonF(verts)
+        p.setPen(pen)
+        p.setBrush(no_br)
+        p.drawPolygon(poly)
+        p.setPen(no_pen)
+        p.setBrush(solid_br)
+        for v in verts:
+            p.drawEllipse(v, dr, dr)
+
+    elif name == 'polyline':
+        # 4-point zigzag with vertex dots
+        verts = [pt(0.04, 0.75), pt(0.34, 0.15),
+                 pt(0.66, 0.68), pt(0.96, 0.10)]
+        p.setPen(pen)
+        for i in range(len(verts) - 1):
+            p.drawLine(verts[i], verts[i + 1])
+        p.setPen(no_pen)
+        p.setBrush(solid_br)
+        for v in verts:
+            p.drawEllipse(v, dr, dr)
+
+    elif name == 'text':
+        # Bold "T" — same family as a label/text tool
+        font = QFont("Arial", max(10, int(sz * 0.60)))
+        font.setBold(True)
+        p.setFont(font)
+        p.setPen(QPen(fg))
+        p.drawText(QRectF(0, 0, sz, sz),
+                   Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+                   "T")
+
+    elif name == 'comment':
+        # Speech bubble: rounded rect body + filled triangle tail
+        bw, bh = S, S * 0.70
+        radius = S * 0.15
+        p.setPen(pen)
+        p.setBrush(no_br)
+        p.drawRoundedRect(QRectF(m, m, bw, bh), radius, radius)
+        # Tail
+        tail = QPolygonF([
+            pt(0.16, 0.68),
+            pt(0.36, 0.68),
+            pt(0.18, 1.00),
+        ])
+        p.setPen(no_pen)
+        p.setBrush(solid_br)
+        p.drawPolygon(tail)
+        # Two horizontal text-lines inside the bubble
+        lpen = QPen(fg, sw * 0.75, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        p.setPen(lpen)
+        p.drawLine(pt(0.22, 0.28), pt(0.82, 0.28))
+        p.drawLine(pt(0.22, 0.50), pt(0.70, 0.50))
+
+    elif name == 'eye':
+        # Almond outline + solid pupil
+        cy_f = 0.50
+        path = QPainterPath()
+        path.moveTo(pt(0.02, cy_f))
+        path.cubicTo(pt(0.25, cy_f - 0.32), pt(0.75, cy_f - 0.32), pt(0.98, cy_f))
+        path.cubicTo(pt(0.75, cy_f + 0.32), pt(0.25, cy_f + 0.32), pt(0.02, cy_f))
+        p.setPen(pen)
+        p.setBrush(no_br)
+        p.drawPath(path)
+        pr = S * 0.14
+        p.setPen(no_pen)
+        p.setBrush(solid_br)
+        p.drawEllipse(pt(0.50, cy_f), pr, pr)
+
+    p.end()
+    return pm
+
+
+def _mk_icon(name: str, sz: int = 28) -> QIcon:
+    """Return a QIcon with dark pixmap for normal state, white for checked state."""
+    icon = QIcon()
+    icon.addPixmap(_mk_pm(name, sz, QColor("#2c2c2c")),
+                   QIcon.Mode.Normal, QIcon.State.Off)
+    icon.addPixmap(_mk_pm(name, sz, QColor("#ffffff")),
+                   QIcon.Mode.Normal, QIcon.State.On)
+    return icon
+
+
+# ── Style popup ───────────────────────────────────────────────────────────────
+
 class _StylePopup(QWidget):
     """Per-tool flyout popup — appears to the left of the clicked tool button."""
 
@@ -3027,11 +3165,11 @@ class NodeMarkupPanel(QWidget):
     snap_changed    = pyqtSignal(bool)
 
     _TOOLS = [
-        ('select',   '↖', 'Välj/flytta'),
-        ('polygon',  '◻', 'Rita polygon'),
-        ('polyline', '〰', 'Rita polylinje'),
-        ('text',     '𝐀', 'Lägg ut nodnamn'),
-        ('comment',  '💬', 'Lägg till kommentar'),
+        ('select',   'select',   'Välj/flytta'),
+        ('polygon',  'polygon',  'Rita polygon'),
+        ('polyline', 'polyline', 'Rita polylinje'),
+        ('text',     'text',     'Lägg ut nodnamn'),
+        ('comment',  'comment',  'Lägg till kommentar'),
     ]
 
     def __init__(self, db: Database, parent=None):
@@ -3046,69 +3184,85 @@ class NodeMarkupPanel(QWidget):
         self._current_tool = 'select'
         self._popup        = None
 
-        SZ = 54
-        self.setFixedWidth(64)
-        self.setStyleSheet("background:#F5F5F5;")
+        SZ = 48
+        ISZ = 28   # icon size within button
+        self.setFixedWidth(58)
+        self.setStyleSheet("background:#F0F2F5;")
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(5, 5, 5, 5)
-        outer.setSpacing(4)
+        outer.setContentsMargins(5, 6, 5, 6)
+        outer.setSpacing(3)
+
+        _btn_ss = (
+            "QPushButton{border:1px solid #D0D4DA;border-radius:5px;"
+            "background:#FFFFFF;padding:0px;}"
+            "QPushButton:checked{background:#1565C0;border-color:#1565C0;}"
+            "QPushButton:hover:!checked{background:#E8EEF8;border-color:#A0AABB;}")
 
         # ── Close button ──────────────────────────────────────────────────────
-        close_btn = QPushButton("✕")
+        close_btn = QPushButton()
         close_btn.setFixedSize(SZ, SZ)
         close_btn.setToolTip("Avsluta redigering")
+        close_icon = QIcon()
+        close_icon.addPixmap(_mk_pm('close', ISZ, QColor("#ffffff")))
+        close_btn.setIcon(close_icon)
+        close_btn.setIconSize(QSize(ISZ, ISZ))
         close_btn.setStyleSheet(
-            "QPushButton{background:#546E7A;color:white;border:none;"
-            "border-radius:4px;font-size:18px;font-weight:bold;}"
+            "QPushButton{background:#546E7A;border:none;border-radius:5px;padding:0px;}"
             "QPushButton:hover{background:#37474F;}")
         close_btn.clicked.connect(self.closed.emit)
         outer.addWidget(close_btn)
 
         sep1 = QFrame(); sep1.setFrameShape(QFrame.Shape.HLine)
-        sep1.setStyleSheet("color:#ccc;")
+        sep1.setStyleSheet("background:#C8CDD5;max-height:1px;border:none;")
         outer.addWidget(sep1)
 
         # ── Tool buttons — each click selects tool AND opens per-tool popup ───
         self._tool_btns = {}
-        for tool, icon, tip in self._TOOLS:
-            btn = QPushButton(icon)
+        for tool, icon_name, tip in self._TOOLS:
+            btn = QPushButton()
             btn.setFixedSize(SZ, SZ)
             btn.setCheckable(True)
             btn.setToolTip(tip)
-            btn.setStyleSheet(
-                "QPushButton{font-size:22px;border:1px solid #ccc;"
-                "border-radius:4px;background:#fff;}"
-                "QPushButton:checked{background:#1565C0;color:white;border-color:#1565C0;}"
-                "QPushButton:hover:!checked{background:#E3F2FD;}")
+            btn.setIcon(_mk_icon(icon_name, ISZ))
+            btn.setIconSize(QSize(ISZ, ISZ))
+            btn.setStyleSheet(_btn_ss)
             btn.clicked.connect(lambda _, t=tool, b=btn: self._on_tool(t, b))
             outer.addWidget(btn)
             self._tool_btns[tool] = btn
 
         sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
-        sep2.setStyleSheet("color:#ccc;")
+        sep2.setStyleSheet("background:#C8CDD5;max-height:1px;border:none;")
         outer.addWidget(sep2)
 
         # ── Color strip ───────────────────────────────────────────────────────
         self._color_strip = QLabel()
-        self._color_strip.setFixedHeight(8)
-        self._color_strip.setStyleSheet(f"background:{self._color};border-radius:3px;")
+        self._color_strip.setFixedHeight(7)
+        self._color_strip.setStyleSheet(
+            f"background:{self._color};border-radius:3px;border:none;")
         outer.addWidget(self._color_strip)
 
         sep3 = QFrame(); sep3.setFrameShape(QFrame.Shape.HLine)
-        sep3.setStyleSheet("color:#ccc;")
+        sep3.setStyleSheet("background:#C8CDD5;max-height:1px;border:none;")
         outer.addWidget(sep3)
 
         # ── Visibility toggle ─────────────────────────────────────────────────
-        self._all_vis_btn = QPushButton("👁")
+        self._all_vis_btn = QPushButton()
         self._all_vis_btn.setFixedSize(SZ, SZ)
         self._all_vis_btn.setCheckable(True)
         self._all_vis_btn.setChecked(True)
         self._all_vis_btn.setToolTip("Dölj/visa alla markeringar")
+        eye_icon = QIcon()
+        eye_icon.addPixmap(_mk_pm('eye', ISZ, QColor("#ffffff")),
+                           QIcon.Mode.Normal, QIcon.State.Off)
+        eye_icon.addPixmap(_mk_pm('eye', ISZ, QColor("#ffffff")),
+                           QIcon.Mode.Normal, QIcon.State.On)
+        self._all_vis_btn.setIcon(eye_icon)
+        self._all_vis_btn.setIconSize(QSize(ISZ, ISZ))
         self._all_vis_btn.setStyleSheet(
-            "QPushButton{font-size:22px;border:1px solid #ccc;"
-            "border-radius:4px;background:#27ae60;color:white;}"
-            "QPushButton:!checked{background:#e74c3c;}")
+            "QPushButton{border:none;border-radius:5px;padding:0px;"
+            "background:#27AE60;}"
+            "QPushButton:!checked{background:#E74C3C;}")
         self._all_vis_btn.clicked.connect(self._on_all_vis)
         outer.addWidget(self._all_vis_btn)
 
