@@ -7435,8 +7435,9 @@ class ReuseDeviationCausesDialog(QDialog):
         """
         super().__init__(parent)
         self.setWindowTitle("Återanvänd orsaker från andra avvikelser")
-        self.setMinimumWidth(580)
-        self.setMinimumHeight(420)
+        self.setMinimumWidth(720)
+        self.setMinimumHeight(560)
+        self.resize(800, 640)
 
         # key → (mode, description, original_cause_id)
         # key is cause_id (int) for individual causes, or f"dev_{dev_id}" for deviation-level
