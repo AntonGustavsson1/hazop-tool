@@ -4474,7 +4474,7 @@ class PIDPanel(QWidget):
                 self.viewer.add_markup_overlay(
                     m['id'], m.get('type', 'polygon'), pts,
                     m.get('label', ''), m.get('color', '#1565C0'),
-                    float(m.get('opacity', 0.45)), int(m.get('line_width', 3)),
+                    float(m.get('opacity', 0.45)), int(m.get('line_width', 12)),
                     bool(m.get('visible', 1)),
                     int(m.get('font_size', 12)))
 

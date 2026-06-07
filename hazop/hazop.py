@@ -876,7 +876,7 @@ class Database:
                 label      TEXT DEFAULT '',
                 color      TEXT DEFAULT '#1565C0',
                 opacity    REAL DEFAULT 0.45,
-                line_width INTEGER DEFAULT 3,
+                line_width INTEGER DEFAULT 12,
                 font_size  INTEGER DEFAULT 12,
                 visible    INTEGER DEFAULT 1,
                 pid_page   INTEGER DEFAULT 0,
@@ -2883,7 +2883,7 @@ class NodeMarkupPanel(QWidget):
         self.node_id  = None
         self._color   = _MARKUP_COLORS[5]   # default blue
         self._opacity = 0.45
-        self._width   = 3
+        self._width   = 12
         self._font_size = 12
         self._current_tool = 'select'
         self._selected_mu_id = None
@@ -2961,7 +2961,7 @@ class NodeMarkupPanel(QWidget):
         w_row = QHBoxLayout()
         w_row.addWidget(QLabel("Tjocklek:"))
         self._width_spin = QSpinBox()
-        self._width_spin.setRange(1, 12); self._width_spin.setValue(self._width)
+        self._width_spin.setRange(1, 99); self._width_spin.setValue(self._width)
         self._width_spin.setMaximumWidth(60)
         self._width_spin.valueChanged.connect(self._on_width)
         w_row.addWidget(self._width_spin)
