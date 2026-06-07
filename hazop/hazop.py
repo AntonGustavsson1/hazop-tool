@@ -7765,6 +7765,7 @@ class SettingsPanel(QWidget):
 
 class PIDManagementPanel(QWidget):
     """PID revision history and sheet reordering panel."""
+    sheets_changed = pyqtSignal()
 
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
@@ -7896,6 +7897,7 @@ class PIDManagementPanel(QWidget):
         ids = [item.data(Qt.ItemDataRole.UserRole) for item in selected]
         self.db.delete_sheets(ids)
         self.refresh()
+        self.sheets_changed.emit()
 
     def _sheet_context_menu(self, pos):
         selected = self._sheet_list.selectedItems()
@@ -9109,6 +9111,7 @@ class MainWindow(QMainWindow):
         self.pid_panel.risk_scenario_requested.connect(self._on_pid_risk_scenario)
         self.pid_panel.marker_navigated.connect(self._on_marker_navigate)
         self.pid_panel.pid_analysis_done.connect(self._on_pid_analysis_done)
+        self.admin_panel._pid_mgmt.sheets_changed.connect(self._on_sheets_changed)
 
         self._cur_type = None
         self._cur_id   = None
@@ -9187,6 +9190,21 @@ class MainWindow(QMainWindow):
         self._cur_id   = None
         self.stack.setCurrentWidget(self.welcome_panel)
         self.scenario_panel.clear()
+
+    def _on_sheets_changed(self):
+        """Rebuild PID viewer sheet map after sheets are deleted."""
+        pp = self.pid_panel
+        pp._rebuild_sheet_map()
+        total = len(pp._sheet_map)
+        if total == 0:
+            pp._update_page_label()
+            return
+        if pp._current_display_page >= total:
+            pp._current_display_page = total - 1
+        physical = pp._sheet_map.get(pp._current_display_page, pp._current_display_page)
+        pp.viewer.goto_page(physical)
+        pp._update_page_label()
+        pp._load_overlays()
 
     def _on_pid_analysis_done(self):
         """Switch to Settings → Identifierade objekt after P&ID analysis."""
