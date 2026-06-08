@@ -5076,6 +5076,7 @@ class ScenarioTablePanel(QWidget):
         self._table.verticalHeader().setVisible(False)
         self._table.setAlternatingRowColors(True)
         self._table.setWordWrap(True)
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.setStyleSheet(
             "QHeaderView::section{background:#1F4E79;color:#fff;font-weight:bold;padding:3px;}")
         self._table.cellChanged.connect(self._on_cell_changed)
@@ -5365,6 +5366,7 @@ class ScenarioTablePanel(QWidget):
         # ── Col 2: Orsak (editable, description only) ────────────────────────
         ors = QTableWidgetItem(cause_d['description'])
         ors.setData(Qt.ItemDataRole.UserRole, ('cause', cause_d['id']))
+        ors.setToolTip("Dubbelklicka för att redigera")
         self._table.setItem(r, self._C_ORS, ors)
 
         # ── Col 2: Konsekvens (editable description) ─────────────────────────
@@ -5374,8 +5376,10 @@ class ScenarioTablePanel(QWidget):
 
         kon_item = QTableWidgetItem(cons_d['description'])
         kon_item.setData(Qt.ItemDataRole.UserRole, ('consequence', cid))
+        tip = "Dubbelklicka för att redigera"
         if display_desc != cons_d['description']:
-            kon_item.setToolTip(f"Kedjetext: {display_desc}\n(Redigera kedja i höger panel)")
+            tip += f"\nKedjetext: {display_desc}\n(Redigera kedja i höger panel)"
+        kon_item.setToolTip(tip)
         self._table.setItem(r, self._C_KON, kon_item)
 
         # ── Col 3: Risk före barriär — klickbar för att öppna riskmatris ────────
@@ -5396,11 +5400,11 @@ class ScenarioTablePanel(QWidget):
         else:
             rrf = sg.get('rrf', 1) or 1
             sg_item = QTableWidgetItem()
-            display = sg['description'] + (f"\n[RRF {rrf}]" if rrf > 1 else "")
+            display = sg['description'] + f"\n🎚️  RRF {rrf}"
             sg_item.setData(Qt.ItemDataRole.DisplayRole, display)
             sg_item.setData(Qt.ItemDataRole.EditRole, sg['description'])
             sg_item.setData(Qt.ItemDataRole.UserRole, ('safeguard', sg['id']))
-            sg_item.setToolTip("Klicka för att redigera" + (f"  [RRF {rrf}]" if rrf > 1 else ""))
+            sg_item.setToolTip(f"Dubbelklicka för att redigera\nKlicka på 🎚️ RRF-raden för att ändra värdet")
         self._table.setItem(r, self._C_SG, sg_item)
 
         # ── Col 5: FA — checkable, text = probability % ──────────────────────
@@ -5588,15 +5592,6 @@ class ScenarioTablePanel(QWidget):
         if col == self._C_SG and row < len(self._row_meta):
             sg_id = self._row_meta[row][3]
             if sg_id is not None:
-                # Click in lower 40% of cell → open RRF popup
-                item = self._table.item(row, col)
-                if item:
-                    vp_pos = self._table.viewport().mapFromGlobal(
-                        self._table.viewport().cursor().pos())
-                    cell_rect = self._table.visualItemRect(item)
-                    if vp_pos.y() > cell_rect.top() + cell_rect.height() * 0.6:
-                        self._show_rrf_popup(row, sg_id)
-                        return
                 self.item_selected.emit(SG_T, sg_id)
             return
         if col != self._C_RFORE:
@@ -5643,26 +5638,40 @@ class ScenarioTablePanel(QWidget):
         row = item.row()
         col = item.column()
         if col in (self._C_ORS, self._C_KON, self._C_SG):
+            if not bool(item.flags() & Qt.ItemFlag.ItemIsEditable):
+                return
             self._table.setFocus()
             self._table.edit(self._table.model().index(row, col))
 
     def _show_rrf_popup(self, row, sg_id):
+        """Called from context menu — centre on the cell."""
+        item = self._table.item(row, self._C_SG)
+        if item:
+            cr = self._table.visualItemRect(item)
+            gp = self._table.viewport().mapToGlobal(cr.center())
+        else:
+            gp = self._table.viewport().mapToGlobal(self._table.viewport().rect().center())
+        self._show_rrf_popup_at(row, sg_id, gp)
+
+    def _show_rrf_popup_at(self, row, sg_id, global_pos):
+        """Show RRF popup near global_pos, keeping it within the screen."""
         sg = self.db.get_safeguard(sg_id)
         current_rrf = int(dict(sg).get('rrf', 1)) if sg else 1
         popup = RRFPopup(current_rrf, self)
         popup.rrf_selected.connect(lambda v, r=row, sid=sg_id: self._update_sg_rrf(r, sid, v))
-        item = self._table.item(row, self._C_SG)
-        if item:
-            cell_rect = self._table.visualItemRect(item)
-            anchor = self._table.viewport().mapToGlobal(cell_rect.bottomLeft())
-            popup.adjustSize()
-            screen = QApplication.primaryScreen().availableGeometry()
-            ph, pw = popup.sizeHint().height(), popup.sizeHint().width()
-            y = anchor.y() + 4
-            if y + ph > screen.bottom():
-                y = self._table.viewport().mapToGlobal(cell_rect.topLeft()).y() - ph - 4
-            x = max(screen.left(), min(anchor.x(), screen.right() - pw))
-            popup.move(x, y)
+        popup.adjustSize()
+        screen = QApplication.primaryScreen().availableGeometry()
+        pw = popup.sizeHint().width()
+        ph = popup.sizeHint().height()
+        x = global_pos.x()
+        y = global_pos.y() + 6
+        if y + ph > screen.bottom():
+            y = global_pos.y() - ph - 6
+        if x + pw > screen.right():
+            x = screen.right() - pw - 4
+        x = max(screen.left() + 4, x)
+        y = max(screen.top() + 4, y)
+        popup.move(x, y)
         popup.exec()
 
     def _update_sg_rrf(self, row, sg_id, rrf):
@@ -5675,7 +5684,7 @@ class ScenarioTablePanel(QWidget):
         ctrl = bool(event.type() == QEvent.Type.KeyPress and
                     event.modifiers() & Qt.KeyboardModifier.ControlModifier)
 
-        # Viewport mouse: detect LEFT-click in the 🟢/📌 icon strip
+        # Viewport mouse: detect LEFT-click in icon strip or RRF row
         if (obj is self._table.viewport() and
                 event.type() == QEvent.Type.MouseButtonPress and
                 event.button() == Qt.MouseButton.LeftButton):
@@ -5694,6 +5703,19 @@ class ScenarioTablePanel(QWidget):
                         # 📌 → place this specific item on P&ID
                         self._place_from_table(row, col)
                     return True  # consume left-click; right-click falls through to context menu
+
+            # 🎚️ RRF row click — lower portion of safeguard cell (outside pin strip)
+            if (row >= 0 and col == self._C_SG and row < len(self._row_meta)):
+                col_x = self._table.columnViewportPosition(col)
+                if pos.x() - col_x >= _PID_ICON_W:
+                    sg_id = self._row_meta[row][3]
+                    if sg_id is not None:
+                        cell_idx = self._table.model().index(row, col)
+                        cr = self._table.visualRect(cell_idx)
+                        if pos.y() >= cr.top() + cr.height() * 0.55:
+                            gp = self._table.viewport().mapToGlobal(pos)
+                            self._show_rrf_popup_at(row, sg_id, gp)
+                            return True
 
         # Delegate inline editor (regular cell in edit mode)
         if (isinstance(obj, QLineEdit) and
