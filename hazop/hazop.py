@@ -6652,8 +6652,20 @@ class ScenarioTablePanel(QWidget):
                     if self._is_cell_placed(row, col):
                         # 🟢 → navigate to marker on P&ID
                         self._emit_navigate(row, col)
+                    elif col == self._C_ORS and row < len(self._row_meta):
+                        # 🔴 on existing unplaced cause → offer place OR add new
+                        dev_id = self._row_meta[row][0]
+                        menu = QMenu(self._table.viewport())
+                        menu.setStyleSheet("font-size:11px;")
+                        act_place = menu.addAction("📍 Placera denna orsak på P&ID")
+                        act_new   = menu.addAction("➕ Lägg till ny orsak på P&ID")
+                        chosen = menu.exec(self._table.viewport().mapToGlobal(pos))
+                        if chosen is act_place:
+                            self._place_from_table(row, col)
+                        elif chosen is act_new and dev_id is not None:
+                            self.add_causes_on_pid_requested.emit(dev_id)
                     else:
-                        # 📌 → place this specific item on P&ID
+                        # 🔴 other columns → place this item
                         self._place_from_table(row, col)
                     return True  # consume left-click; right-click falls through to context menu
 
