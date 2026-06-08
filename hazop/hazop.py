@@ -4562,13 +4562,31 @@ class ObjectTagPopup(QDialog):
     """Small popup to set comp_type + comp_tag on a cause."""
     saved = pyqtSignal(str, str)   # (comp_type, comp_tag)
 
-    def __init__(self, comp_type: str, comp_tag: str, parent=None):
+    def __init__(self, comp_type: str, comp_tag: str, db=None, parent=None):
         super().__init__(parent)
+        self._db = db
         self.setWindowTitle("Objekt / Utrustning")
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         layout = QVBoxLayout(self)
         layout.setSpacing(6)
         layout.setContentsMargins(10, 10, 10, 10)
+
+        layout.addWidget(QLabel("<b>Tag-ID</b>  (t.ex. P-101)"))
+        self._tag_edit = QLineEdit(comp_tag)
+        self._tag_edit.setPlaceholderText("t.ex. P-101")
+        layout.addWidget(self._tag_edit)
+
+        # Completer from equipment catalog
+        if db:
+            try:
+                tags = [r[0] for r in db.conn.execute(
+                    "SELECT DISTINCT tag FROM equipment_catalog ORDER BY tag").fetchall()]
+                comp = QCompleter(tags, self)
+                comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+                comp.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+                self._tag_edit.setCompleter(comp)
+            except Exception:
+                pass
 
         layout.addWidget(QLabel("<b>Utrustningstyp</b>"))
         self._type_cb = QComboBox()
@@ -4577,10 +4595,11 @@ class ObjectTagPopup(QDialog):
         self._type_cb.setCurrentIndex(max(0, idx))
         layout.addWidget(self._type_cb)
 
-        layout.addWidget(QLabel("<b>Tag-ID</b>  (t.ex. P-101)"))
-        self._tag_edit = QLineEdit(comp_tag)
-        self._tag_edit.setPlaceholderText("t.ex. P-101")
-        layout.addWidget(self._tag_edit)
+        # Auto-fill type when tag is edited
+        self._tag_edit.textChanged.connect(self._on_tag_changed)
+        # Trigger once on open if there's already a tag
+        if comp_tag:
+            self._on_tag_changed(comp_tag)
 
         btns = QHBoxLayout()
         ok = QPushButton("OK")
@@ -4594,6 +4613,20 @@ class ObjectTagPopup(QDialog):
         layout.addLayout(btns)
 
         self._tag_edit.returnPressed.connect(self._ok)
+
+    def _on_tag_changed(self, text):
+        if not self._db or not text.strip():
+            return
+        try:
+            row = self._db.conn.execute(
+                "SELECT equipment_type FROM equipment_catalog WHERE tag=? COLLATE NOCASE LIMIT 1",
+                (text.strip(),)).fetchone()
+            if row and row[0]:
+                idx = self._type_cb.findText(row[0])
+                if idx >= 0:
+                    self._type_cb.setCurrentIndex(idx)
+        except Exception:
+            pass
 
     def _ok(self):
         self.saved.emit(self._type_cb.currentText(), self._tag_edit.text().strip())
@@ -5368,6 +5401,25 @@ class ScenarioTablePanel(QWidget):
                     causes_to_show.append((dict(c), dev_d))
 
         if not causes_to_show:
+            # Show placeholder rows so the user can start adding content
+            if self._deviation_id is not None:
+                dev = self.db.get_deviation(self._deviation_id)
+                if dev:
+                    dev_d = dict(dev)
+                    node  = self.db.get_node(dev_d['node_id'])
+                    nn    = node['name'] if node else '?'
+                    self._hdr_lbl.setText(f"HAZOP Scenario — {nn} / {dev_d['description']}")
+                    self._add_placeholder_row(nn, dev_d)
+            elif self._node_id is not None:
+                node = self.db.get_node(self._node_id)
+                nn   = node['name'] if node else '?'
+                self._hdr_lbl.setText(f"HAZOP Scenario — {nn}")
+                devs = list(self.db.deviations(self._node_id))
+                if devs:
+                    for dev in devs:
+                        self._add_placeholder_row(nn, dict(dev))
+                else:
+                    self._add_placeholder_row(nn, None)
             self._table.blockSignals(False)
             self._table.cellChanged.connect(self._on_cell_changed)
             self._rebuilding = False
@@ -5477,6 +5529,35 @@ class ScenarioTablePanel(QWidget):
         for col in (self._C_KON, self._C_RFORE, self._C_REFT,
                     self._C_FA, self._C_IGN, self._C_OVRIGA, self._C_SLUT):
             _span_col(col, lambda r: _meta(r, 2))
+
+    def _add_placeholder_row(self, node_name, dev_d):
+        """Empty row shown when a node/deviation has no causes yet."""
+        r = self._table.rowCount()
+        self._table.insertRow(r)
+        dev_id = dev_d['id'] if dev_d else None
+        self._row_meta.append((dev_id, None, None, None))
+
+        def _ro(text=''):
+            item = QTableWidgetItem(text)
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            return item
+
+        nod = _ro(node_name)
+        self._table.setItem(r, self._C_NOD, nod)
+        dev_item = _ro(dev_d['description'] if dev_d else '')
+        dev_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
+        self._table.setItem(r, self._C_DEV, dev_item)
+
+        # ORS cell shows the two-zone layout (with '+' in obj zone) but has no cause yet
+        ors = QTableWidgetItem('')
+        ors.setData(Qt.ItemDataRole.UserRole + 2, ('', ''))
+        ors.setToolTip("Enter för att lägga till orsak")
+        self._table.setItem(r, self._C_ORS, ors)
+
+        for col in (self._C_KON, self._C_RFORE, self._C_SG, self._C_REFT,
+                    self._C_FA, self._C_IGN, self._C_OVRIGA, self._C_SLUT):
+            self._table.setItem(r, col, _ro())
+        self._table.setRowHeight(r, max(22, self._cell_font_size * 2 + 4))
 
     def _add_empty_row(self, node_name, dev_d, cause_d, freq, freq_lbl):
         """Placeholder row when a cause has no consequences yet."""
@@ -5878,7 +5959,7 @@ class ScenarioTablePanel(QWidget):
         item = self._table.item(row, self._C_ORS)
         obj_data = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
         comp_type, comp_tag = obj_data if obj_data else ('', '')
-        popup = ObjectTagPopup(comp_type, comp_tag, self)
+        popup = ObjectTagPopup(comp_type, comp_tag, db=self.db, parent=self)
         popup.saved.connect(lambda ct, tg, r=row, cid=cause_id: self._update_cause_obj(r, cid, ct, tg))
         popup.adjustSize()
         _scr   = QApplication.screenAt(global_pos) or QApplication.primaryScreen()
