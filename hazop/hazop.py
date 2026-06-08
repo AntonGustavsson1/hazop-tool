@@ -6705,28 +6705,27 @@ class ScenarioTablePanel(QWidget):
                     self._ctrl_enter(row, col)
                     return True
 
-        # Table-level Enter key — only for safeguard columns
+        # Table-level Enter key (no inline editor open — table itself has focus)
         if obj is self._table and event.type() == QEvent.Type.KeyPress:
             if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 row = self._table.currentRow()
                 col = self._table.currentColumn()
-                if col not in (self._C_ORS, self._C_NOD, self._C_DEV,
-                               self._C_KON, self._C_RFORE):
-                    self._ctrl_enter(row, col)
+                self._ctrl_enter(row, col)
                 return True
         return False
 
     def _ctrl_enter(self, row, col):
-        """Ctrl+Enter: immediately create a new sibling at the same hierarchy level."""
+        """Enter on table (not in editor): create a new sibling at the same level."""
         if row < 0 or row >= len(self._row_meta):
             return
         dev_id, cause_id, cons_id, _sg_id = self._row_meta[row]
         if col in (self._C_ORS, self._C_NOD, self._C_DEV):
-            pass   # Enter does not create causes — use + button or tree
+            if dev_id is not None:
+                self._quick_add_cause(dev_id)
         elif col in (self._C_KON, self._C_RFORE):
-            pass   # Enter does not create consequences
+            if cause_id is not None:
+                self._quick_add_consequence(cause_id)
         else:
-            # SG, REFT, FA, IGN, OVRIGA, SLUT → new safeguard still allowed
             if cons_id is not None:
                 self._quick_add_safeguard(cons_id)
 
