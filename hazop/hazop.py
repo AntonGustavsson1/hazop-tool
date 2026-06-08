@@ -5729,10 +5729,11 @@ class _PidDelegate(_ScenarioDelegate):
                 else:
                     painter.fillRect(r, option.palette.base())
 
+                cow = self._panel._cause_obj_w
                 pin_rect  = QRect(r.left(), r.top(), _PID_ICON_W, r.height())
-                obj_rect  = QRect(r.left() + _PID_ICON_W, r.top(), _CAUSE_OBJ_W, r.height())
-                desc_rect = QRect(r.left() + _PID_ICON_W + _CAUSE_OBJ_W, r.top(),
-                                  r.width() - _PID_ICON_W - _CAUSE_OBJ_W, r.height())
+                obj_rect  = QRect(r.left() + _PID_ICON_W, r.top(), cow, r.height())
+                desc_rect = QRect(r.left() + _PID_ICON_W + cow, r.top(),
+                                  r.width() - _PID_ICON_W - cow, r.height())
 
                 # Object-tag zone background
                 has_tag = bool(comp_tag or comp_type)
@@ -5853,6 +5854,10 @@ class ScenarioTablePanel(QWidget):
         self._enter_col = -1
         self._last_enter_committed = False
         self._cell_font_size = 9
+        self._cause_obj_w = int(self.db.get_config('cause_obj_w', '64'))
+        self._drag_obj_w_active = False
+        self._drag_obj_w_start_x = 0
+        self._drag_obj_w_start_w = 0
         self.setMinimumHeight(160)
         self.setMaximumHeight(380)
 
@@ -6632,11 +6637,40 @@ class ScenarioTablePanel(QWidget):
         ctrl = bool(event.type() == QEvent.Type.KeyPress and
                     event.modifiers() & Qt.KeyboardModifier.ControlModifier)
 
+        # Viewport mouse: drag divider between obj-zone and text in ORS column
+        if obj is self._table.viewport() and event.type() == QEvent.Type.MouseMove:
+            pos = event.pos()
+            if self._drag_obj_w_active:
+                delta = pos.x() - self._drag_obj_w_start_x
+                self._cause_obj_w = max(30, min(300, self._drag_obj_w_start_w + delta))
+                self._table.viewport().update()
+                return True
+            div_x = self._table.columnViewportPosition(self._C_ORS) + _PID_ICON_W + self._cause_obj_w
+            if abs(pos.x() - div_x) <= 4:
+                self._table.viewport().setCursor(Qt.CursorShape.SizeHorCursor)
+            else:
+                self._table.viewport().unsetCursor()
+
+        if obj is self._table.viewport() and event.type() == QEvent.Type.MouseButtonRelease:
+            if self._drag_obj_w_active:
+                self._drag_obj_w_active = False
+                self._table.viewport().unsetCursor()
+                self.db.set_config('cause_obj_w', str(self._cause_obj_w))
+                return True
+
         # Viewport mouse: detect LEFT-click in icon strip or RRF row
         if (obj is self._table.viewport() and
                 event.type() == QEvent.Type.MouseButtonPress and
                 event.button() == Qt.MouseButton.LeftButton):
             pos = event.pos()
+            # Check for divider drag start before any other click handling
+            div_x = self._table.columnViewportPosition(self._C_ORS) + _PID_ICON_W + self._cause_obj_w
+            if abs(pos.x() - div_x) <= 4:
+                self._drag_obj_w_active = True
+                self._drag_obj_w_start_x = pos.x()
+                self._drag_obj_w_start_w = self._cause_obj_w
+                self._table.viewport().setCursor(Qt.CursorShape.SizeHorCursor)
+                return True
             col = self._table.columnAt(pos.x())
             row = self._table.rowAt(pos.y())
             if row >= 0 and col in (self._C_ORS, self._C_KON, self._C_SG):
@@ -6669,11 +6703,11 @@ class ScenarioTablePanel(QWidget):
                         self._place_from_table(row, col)
                     return True  # consume left-click; right-click falls through to context menu
 
-            # Object-tag zone click — left (_PID_ICON_W .. _PID_ICON_W+_CAUSE_OBJ_W) of cause cell
+            # Object-tag zone click — left (_PID_ICON_W .. _PID_ICON_W+_cause_obj_w) of cause cell
             if row >= 0 and col == self._C_ORS and row < len(self._row_meta):
                 col_x     = self._table.columnViewportPosition(col)
                 obj_start = col_x + _PID_ICON_W
-                obj_end   = obj_start + _CAUSE_OBJ_W
+                obj_end   = obj_start + self._cause_obj_w
                 if obj_start <= pos.x() < obj_end:
                     cause_id = self._row_meta[row][1]
                     if cause_id is not None:
