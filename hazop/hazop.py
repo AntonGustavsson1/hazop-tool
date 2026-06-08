@@ -1744,7 +1744,7 @@ class Database:
     def standard_causes_for_comp_type(self, comp_type):
         """Return all standard_causes for comp_type, annotated with deviation description."""
         return self.conn.execute(
-            "SELECT sc.id, sc.description, sc.sort_order, sc.comp_type, "
+            "SELECT sc.id, sc.description, sc.sort_order, sc.comp_type, sc.frequency, "
             "sd.description AS deviation_name, sd.id AS deviation_id "
             "FROM standard_causes sc "
             "JOIN standard_deviations sd ON sc.deviation_id = sd.id "
@@ -4552,24 +4552,199 @@ class EditableScenarioPanel(QWidget):
 
 _CAUSE_OBJ_W = 64   # width of the object-tag zone on the left of Orsak cells
 
-_COMP_EMOJI = {
-    # Characters chosen to match ISA 5.1 / ISO 10628-2 P&ID symbol shapes
-    'Pump':                  '⊙',  # ⊙  circled dot — centrifugal pump circle+shaft
-    'Ventil':                '⋈',  # ⋈  bowtie — IS the ISA valve symbol shape
-    'Kompressor':            '⊗',  # ⊗  circled × — compressor (distinct from pump)
-    'Tank / Kärl':           '▭',  # ▭  white rectangle — vessel / storage tank
-    'Värmeväxlare':          '⊠',  # ⊠  squared times — heat-exchanger tube cross-section
-    'Rörledning':            '→',  # →  rightward arrow — process flow line
-    'Instrument / Sensor':   '◯',  # ◯  large circle — ISA instrument bubble
-    'Säkerhetsventil (PSV)': '⋔',  # ⋔  pitchfork — PSV body + upward discharge stem
-    'Övrigt':                '◇',  # ◇  white diamond — generic / unknown
-}
-_COMP_EMOJI_DEFAULT = '◇'  # ◇
-
 _OBJ_TYPES = [
     '', 'Pump', 'Ventil', 'Kompressor', 'Tank / Kärl', 'Värmeväxlare',
     'Rörledning', 'Instrument / Sensor', 'Säkerhetsventil (PSV)', 'Övrigt',
 ]
+
+# Icon size used in the obj-zone (square, left part of _CAUSE_OBJ_W)
+_EQUIP_ICON_SZ = 20
+
+
+def _draw_equip_icon(painter, rect, comp_type):
+    """Draw a colorful QPainter icon for the given equipment type.
+
+    rect  -- the QRect to draw inside (icon is centred/fitted)
+    comp_type -- one of _OBJ_TYPES strings (or empty / unknown)
+    """
+    sz    = min(rect.width(), rect.height()) - 4
+    sz    = max(6, sz)
+    cx    = float(rect.center().x())
+    cy    = float(rect.center().y())
+    half  = sz / 2.0
+
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    if comp_type == 'Pump':
+        # Blue filled circle with a white rotation arrow inside
+        body = QColor('#2980b9')
+        dark = QColor('#1a5276')
+        painter.setBrush(QBrush(body))
+        painter.setPen(QPen(dark, 1.2))
+        painter.drawEllipse(QPointF(cx, cy), half, half)
+        # White curved arrow (two small arcs simulated as a triangle near top-right)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor(255, 255, 255, 220)))
+        # Impeller: three short radial lines
+        pen_imp = QPen(QColor(255, 255, 255, 220), max(1.0, sz * 0.12))
+        pen_imp.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen_imp)
+        for angle_deg in (0, 120, 240):
+            angle = math.radians(angle_deg)
+            r_in  = half * 0.25
+            r_out = half * 0.65
+            painter.drawLine(
+                QPointF(cx + r_in  * math.cos(angle), cy + r_in  * math.sin(angle)),
+                QPointF(cx + r_out * math.cos(angle), cy + r_out * math.sin(angle)),
+            )
+
+    elif comp_type == 'Ventil':
+        # Orange bowtie / valve body
+        col  = QColor('#e67e22')
+        dark = QColor('#935116')
+        half_v = half * 0.85
+        pts = [
+            QPointF(cx - half_v, cy - half_v),
+            QPointF(cx + half_v, cy + half_v),
+            QPointF(cx + half_v, cy - half_v),
+            QPointF(cx - half_v, cy + half_v),
+        ]
+        painter.setBrush(QBrush(col))
+        painter.setPen(QPen(dark, 1.2))
+        painter.drawPolygon(QPolygonF(pts))
+        # Stem line upward
+        painter.setPen(QPen(dark, max(1.0, sz * 0.12)))
+        painter.drawLine(QPointF(cx, cy - half_v), QPointF(cx, cy - half_v - half * 0.4))
+        # Handwheel circle at top of stem
+        painter.setPen(QPen(dark, 1.0))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(QPointF(cx, cy - half_v - half * 0.4), half * 0.25, half * 0.25)
+
+    elif comp_type == 'Kompressor':
+        # Green diamond-ish rotary symbol
+        col  = QColor('#27ae60')
+        dark = QColor('#1a6b3c')
+        painter.setBrush(QBrush(col))
+        painter.setPen(QPen(dark, 1.2))
+        painter.drawEllipse(QPointF(cx, cy), half * 0.9, half * 0.9)
+        # Inner × marks
+        pen_x = QPen(QColor(255, 255, 255, 200), max(1.0, sz * 0.14))
+        pen_x.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen_x)
+        off = half * 0.5
+        painter.drawLine(QPointF(cx - off, cy - off), QPointF(cx + off, cy + off))
+        painter.drawLine(QPointF(cx + off, cy - off), QPointF(cx - off, cy + off))
+
+    elif comp_type == 'Tank / Kärl':
+        # Gray rounded rectangle (vessel)
+        col  = QColor('#7f8c8d')
+        dark = QColor('#2c3e50')
+        rw   = half * 0.85
+        rh   = half * 0.95
+        painter.setBrush(QBrush(col))
+        painter.setPen(QPen(dark, 1.2))
+        painter.drawRoundedRect(
+            QRectF(cx - rw, cy - rh, rw * 2, rh * 2), 3.0, 3.0)
+        # Horizontal seam line
+        painter.setPen(QPen(QColor(255, 255, 255, 150), 1.0))
+        painter.drawLine(QPointF(cx - rw + 2, cy), QPointF(cx + rw - 2, cy))
+
+    elif comp_type == 'Värmeväxlare':
+        # Red/blue split rectangle with heat exchange arrows
+        rw  = half * 0.85
+        rh  = half * 0.8
+        painter.setBrush(QBrush(QColor('#e74c3c')))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRect(QRectF(cx - rw, cy - rh, rw * 2, rh))
+        painter.setBrush(QBrush(QColor('#2980b9')))
+        painter.drawRect(QRectF(cx - rw, cy,      rw * 2, rh))
+        painter.setPen(QPen(QColor('#2c3e50'), 1.2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(QRectF(cx - rw, cy - rh, rw * 2, rh * 2))
+        # Divider
+        painter.setPen(QPen(QColor('#2c3e50'), 1.0))
+        painter.drawLine(QPointF(cx - rw, cy), QPointF(cx + rw, cy))
+
+    elif comp_type == 'Rörledning':
+        # Teal horizontal pipe with end flanges
+        col  = QColor('#16a085')
+        dark = QColor('#0e6655')
+        rh   = half * 0.28
+        painter.setBrush(QBrush(col))
+        painter.setPen(QPen(dark, 1.0))
+        painter.drawRect(QRectF(cx - half * 0.9, cy - rh, half * 1.8, rh * 2))
+        # Flanges
+        flange_w = max(1.5, sz * 0.1)
+        for fx in (cx - half * 0.9, cx + half * 0.9):
+            painter.drawLine(QPointF(fx, cy - rh * 1.8), QPointF(fx, cy + rh * 1.8))
+        # Arrow head
+        painter.setBrush(QBrush(QColor('#ffffff')))
+        painter.setPen(Qt.PenStyle.NoPen)
+        ax = cx + half * 0.3
+        aw = half * 0.25
+        ah = rh * 1.4
+        arrow = QPolygonF([
+            QPointF(ax,       cy),
+            QPointF(ax - aw,  cy - ah),
+            QPointF(ax - aw,  cy + ah),
+        ])
+        painter.drawPolygon(arrow)
+
+    elif comp_type == 'Instrument / Sensor':
+        # White circle with blue border (ISA instrument bubble) + letter I
+        painter.setBrush(QBrush(QColor('#ffffff')))
+        painter.setPen(QPen(QColor('#2471a3'), 1.8))
+        painter.drawEllipse(QPointF(cx, cy), half * 0.85, half * 0.85)
+        # Dashed line inside (indicates field-mounted)
+        pen_d = QPen(QColor('#2471a3'), 1.0)
+        pen_d.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(pen_d)
+        painter.drawLine(QPointF(cx - half * 0.6, cy), QPointF(cx + half * 0.6, cy))
+
+    elif comp_type == 'Säkerhetsventil (PSV)':
+        # Purple filled diamond with upward spike
+        col  = QColor('#8e44ad')
+        dark = QColor('#6c3483')
+        hd   = half * 0.75
+        diamond = QPolygonF([
+            QPointF(cx,       cy - hd),
+            QPointF(cx + hd,  cy),
+            QPointF(cx,       cy + hd),
+            QPointF(cx - hd,  cy),
+        ])
+        painter.setBrush(QBrush(col))
+        painter.setPen(QPen(dark, 1.2))
+        painter.drawPolygon(diamond)
+        # Discharge spike upward
+        painter.setPen(QPen(dark, max(1.5, sz * 0.13)))
+        painter.drawLine(QPointF(cx, cy - hd), QPointF(cx, cy - hd - half * 0.45))
+        # Small horizontal discharge bar at top
+        painter.drawLine(QPointF(cx - half * 0.3, cy - hd - half * 0.45),
+                         QPointF(cx + half * 0.3, cy - hd - half * 0.45))
+
+    else:
+        # Generic: gray circle with '?' — Övrigt or unknown
+        painter.setBrush(QBrush(QColor('#bdc3c7')))
+        painter.setPen(QPen(QColor('#7f8c8d'), 1.2))
+        painter.drawEllipse(QPointF(cx, cy), half * 0.85, half * 0.85)
+        if not comp_type:
+            # '+' — not yet set
+            pen_plus = QPen(QColor('#7f8c8d'), max(1.2, sz * 0.13))
+            pen_plus.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen_plus)
+            painter.drawLine(QPointF(cx - half * 0.45, cy), QPointF(cx + half * 0.45, cy))
+            painter.drawLine(QPointF(cx, cy - half * 0.45), QPointF(cx, cy + half * 0.45))
+        else:
+            # '?' mark
+            f = QFont()
+            f.setPointSize(max(5, int(sz * 0.45)))
+            f.setBold(True)
+            painter.setFont(f)
+            painter.setPen(QColor('#555'))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, '?')
+
+    painter.restore()
 
 
 class StandardCausesPickerPopup(QDialog):
@@ -4585,10 +4760,22 @@ class StandardCausesPickerPopup(QDialog):
         layout.setSpacing(4)
         layout.setContentsMargins(8, 8, 8, 8)
 
-        emoji = _COMP_EMOJI.get(comp_type, _COMP_EMOJI_DEFAULT)
-        hdr = QLabel(f"<b>{emoji} {comp_type}</b> — välj standardorsak")
-        hdr.setStyleSheet("color:#1F4E79;")
-        layout.addWidget(hdr)
+        # Header row: drawn icon + comp_type label
+        hdr_row = QHBoxLayout()
+        hdr_row.setSpacing(6)
+        icon_px = QPixmap(28, 28)
+        icon_px.fill(Qt.GlobalColor.transparent)
+        _p = QPainter(icon_px)
+        _draw_equip_icon(_p, QRect(0, 0, 28, 28), comp_type)
+        _p.end()
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(icon_px)
+        hdr_row.addWidget(icon_lbl)
+        hdr_lbl = QLabel(f"<b>{comp_type}</b> — välj standardorsak")
+        hdr_lbl.setStyleSheet("color:#1F4E79;")
+        hdr_row.addWidget(hdr_lbl)
+        hdr_row.addStretch()
+        layout.addLayout(hdr_row)
 
         # Group by deviation_name
         groups = {}
@@ -4610,18 +4797,28 @@ class StandardCausesPickerPopup(QDialog):
             vbox.addWidget(lbl)
             for c in causes:
                 freq = c.get('frequency')
-                freq_txt = f"  <span style='color:#888;font-size:10px;'>"
-                if freq is not None:
-                    freq_txt += f"F={freq:.0f}"
-                freq_txt += "</span>"
-                btn = QPushButton(f"{c['description']}{freq_txt if freq is not None else ''}")
-                btn.setFlat(True)
-                btn.setStyleSheet(
+                # Row widget: description left, freq badge right
+                row_w  = QWidget()
+                row_h  = QHBoxLayout(row_w)
+                row_h.setContentsMargins(0, 0, 0, 0)
+                row_h.setSpacing(4)
+                desc_btn = QPushButton(c['description'])
+                desc_btn.setFlat(True)
+                desc_btn.setStyleSheet(
                     "QPushButton{text-align:left;padding:3px 6px;border-radius:3px;}"
                     "QPushButton:hover{background:#e8f0fe;}")
-                btn.clicked.connect(
+                desc_btn.clicked.connect(
                     lambda _, d=c['description'], f=freq: self._pick(d, f))
-                vbox.addWidget(btn)
+                row_h.addWidget(desc_btn, stretch=1)
+                if freq is not None:
+                    freq_lbl = QLabel(freq_axis_label(int(round(freq))))
+                    freq_lbl.setStyleSheet(
+                        "color:#1F4E79; background:#dce8f5; border-radius:3px;"
+                        "padding:1px 5px; font-size:10px; font-weight:bold;")
+                    freq_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    freq_lbl.setFixedWidth(48)
+                    row_h.addWidget(freq_lbl)
+                vbox.addWidget(row_w)
 
         vbox.addStretch()
         scroll.setWidget(inner)
@@ -5227,34 +5424,27 @@ class _PidDelegate(_ScenarioDelegate):
                     obj_bg = QColor('#f4f4f4') if row % 2 == 0 else QColor('#ececec')
                 painter.fillRect(obj_rect, obj_bg)
 
-                # Object zone: emoji (top, larger) + tag below
-                emoji = (_COMP_EMOJI.get(comp_type, _COMP_EMOJI_DEFAULT)
-                         if comp_type else '+')
-                tag_label = comp_tag or ''
-                # Use a font with good math/geometric Unicode coverage
-                obj_font_e = QFont('Segoe UI Symbol, Arial Unicode MS, sans-serif')
-                obj_font_e.setPointSize(max(10, option.font.pointSize() + 2))
-                obj_font_t = QFont(option.font)
-                obj_font_t.setPointSize(max(6, option.font.pointSize() - 2))
-                obj_font_t.setBold(True)
-                obj_tc = (option.palette.highlightedText().color() if sel
-                          else (QColor('#1a56db') if has_tag else QColor('#888')))
-                painter.setPen(obj_tc)
-                # Split obj_rect vertically: emoji top half, tag bottom half
-                half_h = obj_rect.height() // 2
-                emoji_rect = QRect(obj_rect.left(), obj_rect.top(),
-                                   obj_rect.width(), half_h)
-                tag_rect   = QRect(obj_rect.left(), obj_rect.top() + half_h,
-                                   obj_rect.width(), obj_rect.height() - half_h)
-                painter.setFont(obj_font_e)
-                painter.drawText(emoji_rect, Qt.AlignmentFlag.AlignCenter, emoji)
+                # Object zone: [icon _EQUIP_ICON_SZ px left] [tag text right]
+                tag_label  = comp_tag or ''
+                icon_rect  = QRect(obj_rect.left(), obj_rect.top(),
+                                   _EQUIP_ICON_SZ, obj_rect.height())
+                tag_rect   = QRect(obj_rect.left() + _EQUIP_ICON_SZ, obj_rect.top(),
+                                   obj_rect.width() - _EQUIP_ICON_SZ, obj_rect.height())
+                _draw_equip_icon(painter, icon_rect, comp_type if comp_type else '')
                 if tag_label:
+                    obj_font_t = QFont(option.font)
+                    obj_font_t.setPointSize(max(6, option.font.pointSize() - 1))
+                    obj_font_t.setBold(True)
+                    obj_tc = (option.palette.highlightedText().color() if sel
+                              else QColor('#1a56db'))
                     painter.setFont(obj_font_t)
+                    painter.setPen(obj_tc)
                     fm2 = painter.fontMetrics()
-                    painter.drawText(tag_rect, Qt.AlignmentFlag.AlignCenter,
+                    painter.drawText(tag_rect.adjusted(2, 0, -2, 0),
+                                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                                      fm2.elidedText(tag_label,
                                                     Qt.TextElideMode.ElideRight,
-                                                    obj_rect.width() - 2))
+                                                    tag_rect.width() - 4))
 
                 # Separator
                 painter.setPen(QPen(QColor('#ddd'), 1))
@@ -6133,21 +6323,22 @@ class ScenarioTablePanel(QWidget):
 
             # Object-tag zone click — left (_PID_ICON_W .. _PID_ICON_W+_CAUSE_OBJ_W) of cause cell
             if row >= 0 and col == self._C_ORS and row < len(self._row_meta):
-                col_x = self._table.columnViewportPosition(col)
+                col_x     = self._table.columnViewportPosition(col)
                 obj_start = col_x + _PID_ICON_W
                 obj_end   = obj_start + _CAUSE_OBJ_W
                 if obj_start <= pos.x() < obj_end:
-                    cause_id = self._row_meta[row][1]
-                    gp = self._table.viewport().mapToGlobal(pos)
-                    item = self._table.item(row, self._C_ORS)
-                    obj_data = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
+                    cause_id  = self._row_meta[row][1]
+                    gp        = self._table.viewport().mapToGlobal(pos)
+                    item      = self._table.item(row, self._C_ORS)
+                    obj_data  = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
                     comp_type, comp_tag = obj_data if obj_data else ('', '')
-                    if comp_type and cause_id is not None:
+                    in_icon   = pos.x() < obj_start + _EQUIP_ICON_SZ
+                    if in_icon and comp_type and cause_id is not None:
+                        # Click on icon → show standard causes picker
                         self._show_std_causes_popup(row, cause_id, comp_type, gp)
-                    else:
-                        # No type set yet — open tag/type picker
-                        if cause_id is not None:
-                            self._show_obj_tag_popup(row, cause_id, gp)
+                    elif cause_id is not None:
+                        # Click on tag text area (or icon with no type) → edit tag / type
+                        self._show_obj_tag_popup(row, cause_id, gp)
                     return True
 
             # ⚡ RRF badge click — right _RRF_W pixels of safeguard cell
