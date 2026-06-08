@@ -946,6 +946,13 @@ class Database:
                 freq_per_year REAL DEFAULT NULL,
                 sort_order INTEGER DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS consequence_severities (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                consequence_id INTEGER NOT NULL,
+                category_id    INTEGER NOT NULL,
+                severity       INTEGER NOT NULL DEFAULT 1,
+                UNIQUE(consequence_id, category_id)
+            );
         """)
 
         # Seed missing deviation_id for existing causes
@@ -1293,6 +1300,29 @@ class Database:
     def consequence_categories(self):
         return self.conn.execute(
             "SELECT * FROM consequence_categories ORDER BY sort_order, name").fetchall()
+
+    def get_consequence_severities(self, consequence_id):
+        """Return list of {id, category_id, name, severity} for each assessed category."""
+        return self.conn.execute(
+            "SELECT cs.id, cs.category_id, cc.name, cs.severity "
+            "FROM consequence_severities cs "
+            "JOIN consequence_categories cc ON cc.id=cs.category_id "
+            "WHERE cs.consequence_id=? ORDER BY cc.sort_order, cc.name",
+            (consequence_id,)).fetchall()
+
+    def set_consequence_severity(self, consequence_id, category_id, severity):
+        """Set (or clear when severity=0) a per-category severity for a consequence."""
+        if not severity:
+            self.conn.execute(
+                "DELETE FROM consequence_severities "
+                "WHERE consequence_id=? AND category_id=?",
+                (consequence_id, category_id))
+        else:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO consequence_severities "
+                "(consequence_id, category_id, severity) VALUES (?,?,?)",
+                (consequence_id, category_id, severity))
+        self.conn.commit()
 
     def add_category(self, name):
         cur = self.conn.execute(
@@ -5584,8 +5614,9 @@ class _ScenarioDelegate(QStyledItemDelegate):
         return editor
 
 
-_PID_ICON_W = 22          # pixels reserved on the left for the pin icon
-_RRF_W      = 54          # pixel width of the RRF badge column on the right of safeguard cells
+_PID_ICON_W  = 22          # pixels reserved on the left for the pin icon
+_KON_CAT_W   = 26          # pixels for the category badge zone in KON cells
+_RRF_W       = 54          # pixel width of the RRF badge column on the right of safeguard cells
 
 _PID_ICON_RE = re.compile(r'^[🟢📌]\s*')   # strip any old emoji prefix
 
@@ -5660,6 +5691,8 @@ class _PidDelegate(_ScenarioDelegate):
         col = index.column()
         if col == self._panel._C_ORS:
             offset = _PID_ICON_W + self._panel._cause_obj_w
+        elif col == self._panel._C_KON:
+            offset = _PID_ICON_W + _KON_CAT_W
         else:
             offset = _PID_ICON_W
         editor.setGeometry(QRect(r.left() + offset, r.top(),
@@ -5805,6 +5838,76 @@ class _PidDelegate(_ScenarioDelegate):
                 painter.restore()
                 return
 
+        # ── Consequence cells: [pin][cat-badge][description] ──────────────────
+        if col == self._panel._C_KON:
+            con_data = index.data(Qt.ItemDataRole.UserRole)
+            if con_data and con_data[0] == 'consequence':
+                r = option.rect
+                painter.save()
+                if sel:
+                    painter.fillRect(r, option.palette.highlight())
+                elif row % 2 == 1:
+                    painter.fillRect(r, option.palette.alternateBase())
+                else:
+                    painter.fillRect(r, option.palette.base())
+
+                pin_rect = QRect(r.left(), r.top(), _PID_ICON_W, r.height())
+                cat_rect = QRect(r.left() + _PID_ICON_W, r.top(), _KON_CAT_W, r.height())
+                txt_rect = QRect(r.left() + _PID_ICON_W + _KON_CAT_W, r.top(),
+                                 r.width() - _PID_ICON_W - _KON_CAT_W, r.height())
+
+                # Category badge
+                cat_info = index.data(Qt.ItemDataRole.UserRole + 3)
+                n_cats   = index.data(Qt.ItemDataRole.UserRole + 4) or 0
+                if cat_info:
+                    cat_id, cat_name, cat_sev = cat_info
+                    _, cat_bg, _ = risk_info(3, cat_sev)
+                    badge = cat_rect.adjusted(3, 4, -3, -4)
+                    painter.fillRect(badge, QColor(cat_bg))
+                    painter.setPen(QColor(_contrast_fg(cat_bg)))
+                    cf = QFont(option.font)
+                    cf.setPointSize(max(6, option.font.pointSize() - 2))
+                    cf.setBold(True)
+                    painter.setFont(cf)
+                    painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, cat_name[:3])
+                else:
+                    icon_clr = QColor('#1a56db') if n_cats > 0 else QColor('#aaa')
+                    painter.setPen(icon_clr)
+                    f2 = QFont(option.font)
+                    f2.setPointSize(max(6, option.font.pointSize() - 1))
+                    painter.setFont(f2)
+                    txt_icon = f"📊{n_cats}" if n_cats > 0 else "📊"
+                    painter.drawText(cat_rect, Qt.AlignmentFlag.AlignCenter, txt_icon)
+
+                painter.setPen(QPen(QColor('#ddd'), 1))
+                painter.drawLine(cat_rect.right(), r.top(), cat_rect.right(), r.bottom())
+
+                # Description text (show category label when in cat-override row)
+                if cat_info:
+                    _, _, cat_sev = cat_info
+                    display = f"▸ {cat_info[1]}  K{cat_sev}"
+                else:
+                    display = index.data(Qt.ItemDataRole.DisplayRole) or ''
+                tc = (option.palette.highlightedText().color() if sel
+                      else option.palette.text().color())
+                painter.setFont(option.font)
+                painter.setPen(tc)
+                fm = painter.fontMetrics()
+                painter.drawText(txt_rect.adjusted(2, 0, -2, 0),
+                                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                                 fm.elidedText(display, Qt.TextElideMode.ElideRight,
+                                               txt_rect.width() - 4))
+
+                # Pin icon
+                meta = self._panel._row_meta
+                _cid = meta[row][2] if row < len(meta) else None
+                if _cid is not None:
+                    _draw_pid_pin(painter, pin_rect, self._panel._is_cell_placed(row, col))
+                else:
+                    _draw_pid_pin(painter, pin_rect, False)
+                painter.restore()
+                return
+
         # ── Default: shift content right, draw pin on left ────────────────────
         opt = QStyleOptionViewItem(option)
         opt.rect = option.rect.adjusted(_PID_ICON_W, 0, 0, 0)
@@ -5820,6 +5923,120 @@ class _PidDelegate(_ScenarioDelegate):
         if not self._panel._cell_has_item(row, col):
             return
         _draw_pid_pin(painter, icon_rect, self._panel._is_cell_placed(row, col))
+
+
+class ConsCategoryMatrixPopup(QDialog):
+    """Small popup: select severity per consequence category, one row per category."""
+
+    def __init__(self, db: 'Database', consequence_id: int, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self._cons_id = consequence_id
+        self.setWindowTitle("Konsekvens per kategori")
+        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._sel: dict[int, int] = {}
+        self._buttons: dict[tuple, QPushButton] = {}
+        self._build()
+
+    def _build(self):
+        cats  = [dict(r) for r in self.db.consequence_categories()]
+        saved = {r['category_id']: r['severity']
+                 for r in self.db.get_consequence_severities(self._cons_id)}
+        mat   = self.db.get_risk_matrix() or DEFAULT_MATRIX
+        n_sev = mat.get('n_consequences', 5)
+
+        self._sel = {c['id']: saved.get(c['id'], 0) for c in cats}
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 8, 10, 8)
+        outer.setSpacing(4)
+
+        title = QLabel("Konsekvens per kategori")
+        tf = QFont(); tf.setBold(True); tf.setPointSize(9)
+        title.setFont(tf)
+        outer.addWidget(title)
+
+        # Header: severity labels
+        hdr = QHBoxLayout(); hdr.setSpacing(2)
+        pad = QLabel(); pad.setFixedWidth(88)
+        hdr.addWidget(pad)
+        for s in range(1, n_sev + 1):
+            lbl = QLabel(cons_axis_label(s))
+            lbl.setFixedWidth(42)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setStyleSheet("font-size:9px; color:#555;")
+            hdr.addWidget(lbl)
+        outer.addLayout(hdr)
+
+        # One row per category
+        for cat in cats:
+            cid = cat['id']
+            row_l = QHBoxLayout(); row_l.setSpacing(2); row_l.setContentsMargins(0,0,0,0)
+            name_l = QLabel(cat['name'])
+            name_l.setFixedWidth(88)
+            name_l.setStyleSheet("font-size:10px;")
+            row_l.addWidget(name_l)
+            for s in range(1, n_sev + 1):
+                _, bg, _ = risk_info(3, s)
+                btn = QPushButton()
+                btn.setFixedSize(42, 22)
+                btn.setCheckable(True)
+                btn.setChecked(self._sel.get(cid, 0) == s)
+                btn.setStyleSheet(self._bstyle(bg, btn.isChecked()))
+                btn.clicked.connect(lambda _, ci=cid, sv=s: self._toggle(ci, sv))
+                self._buttons[(cid, s)] = btn
+                row_l.addWidget(btn)
+            outer.addLayout(row_l)
+
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("color:#ddd;"); outer.addWidget(sep)
+
+        btn_row = QHBoxLayout()
+        clr = QPushButton("Rensa alla")
+        clr.setStyleSheet("font-size:10px; padding:2px 8px;")
+        clr.clicked.connect(self._clear)
+        ok  = QPushButton("OK")
+        ok.setDefault(True)
+        ok.setStyleSheet(
+            "QPushButton{font-size:10px;padding:2px 12px;"
+            "background:#1F4E79;color:white;border-radius:3px;}"
+            "QPushButton:hover{background:#2a6099;}")
+        ok.clicked.connect(self._ok)
+        cancel = QPushButton("Avbryt")
+        cancel.setStyleSheet("font-size:10px; padding:2px 8px;")
+        cancel.clicked.connect(self.reject)
+        btn_row.addWidget(clr); btn_row.addStretch()
+        btn_row.addWidget(cancel); btn_row.addWidget(ok)
+        outer.addLayout(btn_row)
+
+    @staticmethod
+    def _bstyle(bg: str, selected: bool) -> str:
+        border = "2px solid #222" if selected else "1px solid #ccc"
+        fw = "bold" if selected else "normal"
+        return (f"QPushButton{{background:{bg};border:{border};"
+                f"border-radius:3px;font-size:9px;font-weight:{fw};}}"
+                f"QPushButton:hover{{border:2px solid #555;}}")
+
+    def _toggle(self, cat_id: int, sev: int):
+        self._sel[cat_id] = 0 if self._sel.get(cat_id) == sev else sev
+        self._refresh()
+
+    def _clear(self):
+        self._sel = {k: 0 for k in self._sel}
+        self._refresh()
+
+    def _refresh(self):
+        for (cid, s), btn in self._buttons.items():
+            _, bg, _ = risk_info(3, s)
+            selected = self._sel.get(cid, 0) == s
+            btn.setChecked(selected)
+            btn.setStyleSheet(self._bstyle(bg, selected))
+
+    def _ok(self):
+        for cat_id, sev in self._sel.items():
+            self.db.set_consequence_severity(self._cons_id, cat_id, sev)
+        self.accept()
 
 
 class ScenarioTablePanel(QWidget):
@@ -5868,6 +6085,8 @@ class ScenarioTablePanel(QWidget):
         self._drag_obj_w_active = False
         self._drag_obj_w_start_x = 0
         self._drag_obj_w_start_w = 0
+        # Parallel list to _row_meta: None or (cat_id, cat_name, cat_sev)
+        self._row_cat_info: list = []
         self.setMinimumHeight(160)
         self.setMaximumHeight(380)
 
@@ -6001,6 +6220,7 @@ class ScenarioTablePanel(QWidget):
         self._table.blockSignals(True)
         self._table.setRowCount(0)
         self._row_meta = []
+        self._row_cat_info = []
 
         # Build list of (cause_dict, deviation_dict) to display
         causes_to_show = []
@@ -6095,12 +6315,30 @@ class ScenarioTablePanel(QWidget):
                     all_cons = [c for c in all_cons if dict(c)['id'] == self._cons_id]
                 for cons in all_cons:
                     cons_d = dict(cons)
-                    sgs = [dict(s) for s in self.db.safeguards(cons_d['id'])]
-                    if sgs:
-                        for sg in sgs:
-                            self._add_row(node_name, dev_d, cause_d, freq, freq_lbl, cons_d, sgs, sg)
+                    sgs    = [dict(s) for s in self.db.safeguards(cons_d['id'])]
+                    cat_rows = [dict(r) for r in
+                                self.db.get_consequence_severities(cons_d['id'])]
+                    n_cats   = len(cat_rows)
+                    if cat_rows:
+                        for cr in cat_rows:
+                            cat_override = (cr['category_id'], cr['name'], cr['severity'])
+                            if sgs:
+                                for sg in sgs:
+                                    self._add_row(node_name, dev_d, cause_d, freq, freq_lbl,
+                                                  cons_d, sgs, sg,
+                                                  cat_override=cat_override, n_cats=n_cats)
+                            else:
+                                self._add_row(node_name, dev_d, cause_d, freq, freq_lbl,
+                                              cons_d, [], None,
+                                              cat_override=cat_override, n_cats=n_cats)
                     else:
-                        self._add_row(node_name, dev_d, cause_d, freq, freq_lbl, cons_d, [], None)
+                        if sgs:
+                            for sg in sgs:
+                                self._add_row(node_name, dev_d, cause_d, freq, freq_lbl,
+                                              cons_d, sgs, sg, n_cats=0)
+                        else:
+                            self._add_row(node_name, dev_d, cause_d, freq, freq_lbl,
+                                          cons_d, [], None, n_cats=0)
                 if self._table.rowCount() == first_row_for_cause:
                     self._add_empty_row(node_name, dev_d, cause_d, freq, freq_lbl)
             self._apply_spans()
@@ -6146,10 +6384,17 @@ class ScenarioTablePanel(QWidget):
         # Orsak: group by cause_id (index 1)
         _span_col(self._C_ORS, lambda r: _meta(r, 1))
 
-        # Consequence-level columns: group by cons_id (index 2)
+        # Consequence-level columns: group by (cons_id, cat_id) so each
+        # category assessment forms its own span group
+        def _cat_key(r):
+            cons_id  = _meta(r, 2)
+            cat_info = self._row_cat_info[r] if r < len(self._row_cat_info) else None
+            cat_id   = cat_info[0] if cat_info else None
+            return (cons_id, cat_id)
+
         for col in (self._C_KON, self._C_RFORE, self._C_REFT,
                     self._C_FA, self._C_IGN, self._C_OVRIGA, self._C_SLUT):
-            _span_col(col, lambda r: _meta(r, 2))
+            _span_col(col, _cat_key)
 
     def _add_placeholder_row(self, node_name, dev_d):
         """Empty row shown when a node/deviation has no causes yet."""
@@ -6157,6 +6402,7 @@ class ScenarioTablePanel(QWidget):
         self._table.insertRow(r)
         dev_id = dev_d['id'] if dev_d else None
         self._row_meta.append((dev_id, None, None, None))
+        self._row_cat_info.append(None)
 
         def _ro(text=''):
             item = QTableWidgetItem(text)
@@ -6186,6 +6432,7 @@ class ScenarioTablePanel(QWidget):
         self._table.insertRow(r)
         dev_id = dev_d['id'] if dev_d else None
         self._row_meta.append((dev_id, cause_d['id'], None, None))
+        self._row_cat_info.append(None)
 
         def _ro(text=''):
             item = QTableWidgetItem(text)
@@ -6216,16 +6463,19 @@ class ScenarioTablePanel(QWidget):
 
         self._table.setRowHeight(r, max(22, self._cell_font_size * 2 + 4))
 
-    def _add_row(self, node_name, dev_d, cause_d, freq, freq_lbl, cons_d, sgs, sg):
+    def _add_row(self, node_name, dev_d, cause_d, freq, freq_lbl, cons_d, sgs, sg,
+                 cat_override=None, n_cats=0):
         """One row per safeguard (sg=None when no safeguards exist yet).
-        sgs = all safeguards for this consequence (used for combined risk calc)."""
+        cat_override = (cat_id, cat_name, cat_sev) or None (use cons_d['severity']).
+        n_cats = total active category assessments (for the 📊 badge count)."""
         r   = self._table.rowCount()
         self._table.insertRow(r)
-        sev = cons_d['severity'] or 1
+        sev = (cat_override[2] if cat_override else cons_d['severity']) or 1
         cid = cons_d['id']
         dev_id = dev_d['id'] if dev_d else None
 
         self._row_meta.append((dev_id, cause_d['id'], cid, sg['id'] if sg else None))
+        self._row_cat_info.append(cat_override)
         sg_rrf = 1
         for s in sgs:
             sg_rrf *= (s.get('rrf') or 1)
@@ -6273,7 +6523,10 @@ class ScenarioTablePanel(QWidget):
 
         kon_item = QTableWidgetItem(cons_d['description'])
         kon_item.setData(Qt.ItemDataRole.UserRole, ('consequence', cid))
-        tip = "Dubbelklicka för att redigera\nEnter för att lägga till ny konsekvens"
+        kon_item.setData(Qt.ItemDataRole.UserRole + 3, cat_override)
+        kon_item.setData(Qt.ItemDataRole.UserRole + 4, n_cats)
+        tip = ("Klicka på 📊-ikonen för att sätta konsekvens per kategori\n"
+               "Dubbelklicka för att redigera\nEnter för att lägga till ny konsekvens")
         if display_desc != cons_d['description']:
             tip += f"\nKedjetext: {display_desc}\n(Redigera kedja i höger panel)"
         kon_item.setToolTip(tip)
@@ -6723,6 +6976,26 @@ class ScenarioTablePanel(QWidget):
                     if cause_id is not None:
                         gp = self._table.viewport().mapToGlobal(pos)
                         self._show_cause_obj_popup(row, cause_id, gp)
+                    return True
+
+            # 📊 Category badge click in KON cell
+            if row >= 0 and col == self._C_KON and row < len(self._row_meta):
+                col_x     = self._table.columnViewportPosition(col)
+                cat_start = col_x + _PID_ICON_W
+                cat_end   = cat_start + _KON_CAT_W
+                if cat_start <= pos.x() < cat_end:
+                    cons_id = self._row_meta[row][2]
+                    if cons_id is not None:
+                        gp = self._table.viewport().mapToGlobal(pos)
+                        popup = ConsCategoryMatrixPopup(self.db, cons_id, self)
+                        popup.adjustSize()
+                        scr    = (QApplication.screenAt(gp) or QApplication.primaryScreen()).availableGeometry()
+                        pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
+                        x = min(gp.x(), scr.right() - pw)
+                        y = min(gp.y() + 4, scr.bottom() - ph)
+                        popup.move(max(scr.left(), x), max(scr.top(), y))
+                        if popup.exec() == QDialog.DialogCode.Accepted:
+                            QTimer.singleShot(0, self._rebuild)
                     return True
 
             # ⚡ RRF badge click — right _RRF_W pixels of safeguard cell
