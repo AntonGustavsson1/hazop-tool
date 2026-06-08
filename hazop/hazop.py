@@ -8444,7 +8444,12 @@ class SettingsPanel(QWidget):
 
     def _load_matrix_ui(self):
         cfg = self.db.get_risk_matrix() or DEFAULT_MATRIX
-        self._last_built_cfg = None   # reset so _apply_size uses DB state
+        self._last_built_cfg = None   # reset before blocking so _apply_size sees None
+        # Block all signals that would trigger _apply_size while we populate controls
+        _senders = (self._rows_spin, self._cols_spin, self._axis_combo,
+                    self._x_rev_chk, self._y_rev_chk)
+        for w in _senders:
+            w.blockSignals(True)
         self._rows_spin.setValue(cfg.get('rows', 5))
         self._cols_spin.setValue(cfg.get('cols', 7))
         x_axis = cfg.get('x_axis', 'frequency')
@@ -8453,6 +8458,8 @@ class SettingsPanel(QWidget):
             self._axis_combo.setCurrentIndex(idx)
         self._x_rev_chk.setChecked(bool(cfg.get('x_reversed', False)))
         self._y_rev_chk.setChecked(bool(cfg.get('y_reversed', False)))
+        for w in _senders:
+            w.blockSignals(False)
         self._build_matrix_grid(cfg)
 
     def _apply_size(self):
@@ -8460,38 +8467,50 @@ class SettingsPanel(QWidget):
         n_cons    = self._rows_spin.value()
         n_freq    = self._cols_spin.value()
         old       = self.db.get_risk_matrix() or DEFAULT_MATRIX
-        # Use the config that was actually used to build the current display
-        # (may differ from DB if user has changed checkboxes without saving)
-        disp      = getattr(self, '_last_built_cfg', None) or old
-        old_xaxis = disp.get('x_axis', 'frequency')
         new_xaxis = self._axis_combo.currentData() or 'frequency'
         x_rev     = self._x_rev_chk.isChecked()
         y_rev     = self._y_rev_chk.isChecked()
 
-        # ── Recover labels from the current display widgets ───────────────────
-        # _x_label_edits = column headers (display left→right)
-        # _y_label_edits = row headers    (display top→bottom)
-        if self._x_label_edits and self._y_label_edits:
-            col_lbls = [e.text().strip() for e in self._x_label_edits]
-            row_lbls = [e.text().strip() for e in self._y_label_edits]  # top→bottom
+        # ── Recover semantic labels ───────────────────────────────────────────
+        # Start from last-built config (source of truth for semantic order).
+        # Only fall back to DB when the grid has never been built.
+        disp          = getattr(self, '_last_built_cfg', None) or old
+        disp_freq_on_x = disp.get('x_axis', 'frequency') == 'frequency'
+        disp_x_rev    = disp.get('x_reversed', False)
+        disp_y_rev    = disp.get('y_reversed', False)
 
-            # Which semantic axis was on X/Y in the current display?
-            if old_xaxis == 'frequency':
-                # cols = freq (low→high or high→low depending on disp x_rev)
-                freq_lbls = col_lbls if not disp.get('x_reversed', False) \
-                            else list(reversed(col_lbls))
-                # rows = cons (high→low at top unless disp y_rev)
-                cons_lbls = list(reversed(row_lbls)) if not disp.get('y_reversed', False) \
-                            else row_lbls
-            else:
-                # cols = cons, rows = freq
-                cons_lbls = col_lbls if not disp.get('x_reversed', False) \
-                            else list(reversed(col_lbls))
-                freq_lbls = list(reversed(row_lbls)) if not disp.get('y_reversed', False) \
-                            else row_lbls
-        else:
-            freq_lbls = old.get('x_labels', _FREQ_LABELS[:n_freq])
-            cons_lbls = old.get('y_labels', _SEV_LABELS[:n_cons])
+        freq_lbls = list(disp.get('x_labels', old.get('x_labels', _FREQ_LABELS[:n_freq])))
+        cons_lbls = list(disp.get('y_labels', old.get('y_labels', _SEV_LABELS[:n_cons])))
+
+        # Apply any manual text edits from display widgets by mapping each
+        # widget directly to its data index (no reversal ambiguity).
+        if self._x_label_edits:
+            nc = len(self._x_label_edits)
+            for c, e in enumerate(self._x_label_edits):
+                data_c = (nc - 1 - c) if disp_x_rev else c
+                txt = e.text().strip()
+                if not txt:
+                    continue
+                if disp_freq_on_x:
+                    if data_c < len(freq_lbls):
+                        freq_lbls[data_c] = txt
+                else:
+                    if data_c < len(cons_lbls):
+                        cons_lbls[data_c] = txt
+
+        if self._y_label_edits:
+            nr = len(self._y_label_edits)
+            for r, e in enumerate(self._y_label_edits):
+                data_r = r if disp_y_rev else (nr - 1 - r)
+                txt = e.text().strip()
+                if not txt:
+                    continue
+                if disp_freq_on_x:
+                    if data_r < len(cons_lbls):
+                        cons_lbls[data_r] = txt
+                else:
+                    if data_r < len(freq_lbls):
+                        freq_lbls[data_r] = txt
 
         # Pad/trim to new dimensions
         while len(freq_lbls) < n_freq:
