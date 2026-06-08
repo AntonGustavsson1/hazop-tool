@@ -303,13 +303,22 @@ def _contrast_fg(bg_hex):
 
 
 def freq_axis_label(f_val: int) -> str:
-    """Short configured label for a frequency value (-1..5). x_labels always stores freq labels."""
+    """Short configured label (first word only) for a frequency value (-1..5)."""
     cfg  = get_matrix()
     cols = cfg.get('cols', 7)
     idx  = max(0, min(int(f_val) + 1, cols - 1))
     lbls = cfg.get('x_labels', [])
     full = lbls[idx] if idx < len(lbls) else f'F={f_val}'
     return full.split()[0] if full.strip() else f'F={f_val}'
+
+
+def freq_axis_label_full(f_val: int) -> str:
+    """Full configured label for a frequency value (-1..5), e.g. 'F3 – Möjlig (1/100 år)'."""
+    cfg  = get_matrix()
+    cols = cfg.get('cols', 7)
+    idx  = max(0, min(int(f_val) + 1, cols - 1))
+    lbls = cfg.get('x_labels', [])
+    return lbls[idx] if idx < len(lbls) else f'F={f_val}'
 
 
 def cons_axis_label(c_val: int) -> str:
@@ -4764,7 +4773,7 @@ class StandardCausesPickerPopup(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Standardorsaker")
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
-        self.setMinimumWidth(320)
+        self.setMinimumWidth(420)
         layout = QVBoxLayout(self)
         layout.setSpacing(4)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -4820,12 +4829,18 @@ class StandardCausesPickerPopup(QDialog):
                     lambda _, d=c['description'], f=freq: self._pick(d, f))
                 row_h.addWidget(desc_btn, stretch=1)
                 if freq is not None:
-                    freq_lbl = QLabel(freq_axis_label(int(round(freq))))
+                    f_int  = int(round(freq))
+                    short  = freq_axis_label(f_int)        # e.g. "F3"
+                    full   = freq_axis_label_full(f_int)   # e.g. "F3 – Möjlig (1/100 år)"
+                    # Show short code + descriptive part on separate lines
+                    rest   = full[len(short):].strip().lstrip('–').strip()
+                    badge_txt = f"{short}\n{rest}" if rest else short
+                    freq_lbl = QLabel(badge_txt)
                     freq_lbl.setStyleSheet(
                         "color:#1F4E79; background:#dce8f5; border-radius:3px;"
-                        "padding:1px 5px; font-size:10px; font-weight:bold;")
+                        "padding:2px 6px; font-size:10px; font-weight:bold;")
                     freq_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                    freq_lbl.setFixedWidth(48)
+                    freq_lbl.setWordWrap(False)
                     row_h.addWidget(freq_lbl)
                 vbox.addWidget(row_w)
 
