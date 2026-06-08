@@ -1913,9 +1913,18 @@ class Database:
             (description, severity, category, consequence_chain, id_))
         self.conn.commit()
 
-    def update_safeguard(self, id_, description, rrf=1, sg_type='Övrigt'):
-        self.conn.execute("UPDATE safeguards SET description=?,rrf=?,sg_type=? WHERE id=?",
-                          (description, rrf, sg_type, id_))
+    def update_safeguard(self, id_, description=None, rrf=None, sg_type=None):
+        if description is None and rrf is None and sg_type is None:
+            return
+        parts, vals = [], []
+        if description is not None:
+            parts.append("description=?"); vals.append(description)
+        if rrf is not None:
+            parts.append("rrf=?"); vals.append(rrf)
+        if sg_type is not None:
+            parts.append("sg_type=?"); vals.append(sg_type)
+        vals.append(id_)
+        self.conn.execute(f"UPDATE safeguards SET {', '.join(parts)} WHERE id=?", vals)
         self.conn.commit()
 
     def update_action(self, id_, description, responsible, due_date, status):
@@ -4535,6 +4544,48 @@ class EditableScenarioPanel(QWidget):
 # SCENARIO TABLE PANEL  (6-column bottom panel)
 # ══════════════════════════════════════════════════════════════════════════════
 
+class RRFPopup(QDialog):
+    """Quick-pick popup for setting a safeguard's RRF value."""
+    rrf_selected = pyqtSignal(int)
+
+    def __init__(self, current_rrf: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Ändra RRF")
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(6)
+
+        layout.addWidget(QLabel("<b>Risk Reduction Factor (RRF)</b>"))
+
+        presets = QHBoxLayout()
+        for val in (1, 10, 100, 1000, 10000):
+            btn = QPushButton(str(val))
+            btn.setFixedWidth(62)
+            btn.setStyleSheet(
+                "QPushButton{background:#1F4E79;color:white;border:none;"
+                "border-radius:4px;padding:5px;font-weight:bold;}"
+                "QPushButton:hover{background:#2563a8;}")
+            btn.clicked.connect(lambda _, v=val: self._pick(v))
+            presets.addWidget(btn)
+        layout.addLayout(presets)
+
+        custom_row = QHBoxLayout()
+        custom_row.addWidget(QLabel("Eget:"))
+        self._spin = QSpinBox()
+        self._spin.setRange(1, 1_000_000)
+        self._spin.setValue(current_rrf)
+        custom_row.addWidget(self._spin)
+        ok_btn = QPushButton("OK")
+        ok_btn.clicked.connect(lambda: self._pick(self._spin.value()))
+        custom_row.addWidget(ok_btn)
+        layout.addLayout(custom_row)
+
+    def _pick(self, val: int):
+        self.rrf_selected.emit(val)
+        self.accept()
+
+
 class RiskMatrixPopup(QDialog):
     """Popup risk matrix matching the configured format in Settings."""
 
@@ -5029,6 +5080,7 @@ class ScenarioTablePanel(QWidget):
             "QHeaderView::section{background:#1F4E79;color:#fff;font-weight:bold;padding:3px;}")
         self._table.cellChanged.connect(self._on_cell_changed)
         self._table.cellClicked.connect(self._on_cell_clicked)
+        self._table.itemDoubleClicked.connect(self._on_cell_double_clicked)
         self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._on_table_context_menu)
         self._table.installEventFilter(self)
@@ -5511,39 +5563,41 @@ class ScenarioTablePanel(QWidget):
         is_placed = self._is_cell_placed(row, col)
         menu = QMenu(self)
         if not is_placed:
-            a = menu.addAction("Lägg till på P&ID")
+            a = menu.addAction("📍 Lägg till på P&ID")
             a.triggered.connect(lambda: self._place_from_table(row, col))
         else:
-            a1 = menu.addAction("Lägg till ytterligare på P&ID")
+            a1 = menu.addAction("📍 Lägg till ytterligare på P&ID")
             a1.triggered.connect(lambda: self._place_from_table(row, col))
-            a2 = menu.addAction("Ta bort från P&ID")
+            a2 = menu.addAction("🗑 Ta bort från P&ID")
             a2.triggered.connect(lambda: self._remove_from_pid(row, col))
+        if col == self._C_SG and row < len(self._row_meta):
+            sg_id = self._row_meta[row][3]
+            if sg_id is not None:
+                menu.addSeparator()
+                a_rrf = menu.addAction("⚙ Ändra RRF...")
+                a_rrf.triggered.connect(lambda: self._show_rrf_popup(row, sg_id))
         menu.exec(self._table.viewport().mapToGlobal(pos))
 
     def _on_cell_clicked(self, row, col):
         if col == self._C_ORS and row < len(self._row_meta):
-            self.item_selected.emit(CAUSE_T, self._row_meta[row][0])
-            # Single-click starts editing immediately (deferred so right-panel load runs first)
-            QTimer.singleShot(0, lambda r=row, c=col: (
-                self._table.setFocus(),
-                self._table.edit(self._table.model().index(r, c))
-            ))
+            self.item_selected.emit(CAUSE_T, self._row_meta[row][1])
             return
         if col == self._C_KON and row < len(self._row_meta):
-            self.item_selected.emit(CONS_T, self._row_meta[row][1])
-            QTimer.singleShot(0, lambda r=row, c=col: (
-                self._table.setFocus(),
-                self._table.edit(self._table.model().index(r, c))
-            ))
+            self.item_selected.emit(CONS_T, self._row_meta[row][2])
             return
         if col == self._C_SG and row < len(self._row_meta):
-            sg_id = self._row_meta[row][2]
+            sg_id = self._row_meta[row][3]
             if sg_id is not None:
+                # Click in lower 40% of cell → open RRF popup
+                item = self._table.item(row, col)
+                if item:
+                    vp_pos = self._table.viewport().mapFromGlobal(
+                        self._table.viewport().cursor().pos())
+                    cell_rect = self._table.visualItemRect(item)
+                    if vp_pos.y() > cell_rect.top() + cell_rect.height() * 0.6:
+                        self._show_rrf_popup(row, sg_id)
+                        return
                 self.item_selected.emit(SG_T, sg_id)
-                QTimer.singleShot(0, lambda r=row, c=col: (
-                    self._table.setFocus(),
-                    self._table.edit(self._table.model().index(r, c))
-                ))
             return
         if col != self._C_RFORE:
             return
@@ -5581,6 +5635,38 @@ class ScenarioTablePanel(QWidget):
         if cons:
             self.db.update_consequence(
                 cons_id, cons['description'], new_cons, cons['category'] or '')
+        QTimer.singleShot(0, self._rebuild)
+
+    def _on_cell_double_clicked(self, item):
+        if item is None:
+            return
+        row = item.row()
+        col = item.column()
+        if col in (self._C_ORS, self._C_KON, self._C_SG):
+            self._table.setFocus()
+            self._table.edit(self._table.model().index(row, col))
+
+    def _show_rrf_popup(self, row, sg_id):
+        sg = self.db.get_safeguard(sg_id)
+        current_rrf = int(dict(sg).get('rrf', 1)) if sg else 1
+        popup = RRFPopup(current_rrf, self)
+        popup.rrf_selected.connect(lambda v, r=row, sid=sg_id: self._update_sg_rrf(r, sid, v))
+        item = self._table.item(row, self._C_SG)
+        if item:
+            cell_rect = self._table.visualItemRect(item)
+            anchor = self._table.viewport().mapToGlobal(cell_rect.bottomLeft())
+            popup.adjustSize()
+            screen = QApplication.primaryScreen().availableGeometry()
+            ph, pw = popup.sizeHint().height(), popup.sizeHint().width()
+            y = anchor.y() + 4
+            if y + ph > screen.bottom():
+                y = self._table.viewport().mapToGlobal(cell_rect.topLeft()).y() - ph - 4
+            x = max(screen.left(), min(anchor.x(), screen.right() - pw))
+            popup.move(x, y)
+        popup.exec()
+
+    def _update_sg_rrf(self, row, sg_id, rrf):
+        self.db.update_safeguard(sg_id, rrf=rrf)
         QTimer.singleShot(0, self._rebuild)
 
     # ── Enter-tangent: snabblägg-till ─────────────────────────────────────────
@@ -9159,10 +9245,10 @@ class MainWindow(QMainWindow):
         self.deviation_panel.add_cause_requested.connect(self._on_deviation_add_cause)
         self.cause_panel.saved.connect(
             lambda id_, _: (self.tree_panel.refresh(CAUSE_T, id_),
-                            self.scenario_panel.load_cause(id_)))
+                            self.scenario_panel.refresh_placed()))
         self.cons_panel.saved.connect(
             lambda id_: (self.tree_panel.refresh(CONS_T, id_),
-                         self.scenario_panel.load_consequence(id_)))
+                         self.scenario_panel.refresh_placed()))
         self.sg_panel.saved.connect(
             lambda id_: self.tree_panel.refresh(SG_T, id_))
 
@@ -9173,7 +9259,7 @@ class MainWindow(QMainWindow):
         self.sg_panel.place_on_pid.connect(
             lambda: self.pid_panel._set_mode(MODE_SAFEGUARD))
 
-        self.scenario_panel.item_selected.connect(self._on_selected)
+        self.scenario_panel.item_selected.connect(self._on_scenario_item_selected)
         self.scenario_panel.new_item_created.connect(
             lambda type_, id_: (self.tree_panel.refresh(type_, id_),
                                 self._on_selected(type_, id_)))
@@ -9263,6 +9349,22 @@ class MainWindow(QMainWindow):
         if page == 3:
             self.admin_panel.refresh()
             self.admin_panel.refresh_pid()
+
+    def _on_scenario_item_selected(self, type_, id_):
+        """Scenario table cell click — update detail panel only; do NOT change scenario filter."""
+        self._cur_type = type_
+        self._cur_id   = id_
+        if type_ == CAUSE_T:
+            self.cause_panel.load(id_)
+            self.stack.setCurrentWidget(self.cause_panel)
+            self.pid_panel.set_active_cause(id_)
+        elif type_ == CONS_T:
+            self.cons_panel.load(id_)
+            self.stack.setCurrentWidget(self.cons_panel)
+            self.pid_panel.set_active_consequence(id_)
+        elif type_ == SG_T:
+            self.sg_panel.load(id_)
+            self.stack.setCurrentWidget(self.sg_panel)
 
     def _on_selected(self, type_, id_):
         self._cur_type = type_
