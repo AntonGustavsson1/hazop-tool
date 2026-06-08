@@ -6700,18 +6700,19 @@ class ScenarioTablePanel(QWidget):
                 if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                     row = obj.property('editing_row')
                     col = obj.property('editing_col')
-                    # Commit the current edit first, then create sibling
                     self._delegate.commitData.emit(obj)
                     self._delegate.closeEditor.emit(obj, QStyledItemDelegate.EndEditHint.NoHint)
                     self._ctrl_enter(row, col)
                     return True
 
-        # Table-level Enter key
+        # Table-level Enter key — only for safeguard columns
         if obj is self._table and event.type() == QEvent.Type.KeyPress:
             if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 row = self._table.currentRow()
                 col = self._table.currentColumn()
-                self._ctrl_enter(row, col)
+                if col not in (self._C_ORS, self._C_NOD, self._C_DEV,
+                               self._C_KON, self._C_RFORE):
+                    self._ctrl_enter(row, col)
                 return True
         return False
 
@@ -6721,12 +6722,11 @@ class ScenarioTablePanel(QWidget):
             return
         dev_id, cause_id, cons_id, _sg_id = self._row_meta[row]
         if col in (self._C_ORS, self._C_NOD, self._C_DEV):
-            if dev_id is not None:
-                self._quick_add_cause(dev_id)
+            pass   # Enter does not create causes — use + button or tree
         elif col in (self._C_KON, self._C_RFORE):
-            self._quick_add_consequence(cause_id)
+            pass   # Enter does not create consequences
         else:
-            # SG, REFT, FA, IGN, OVRIGA, SLUT → new safeguard
+            # SG, REFT, FA, IGN, OVRIGA, SLUT → new safeguard still allowed
             if cons_id is not None:
                 self._quick_add_safeguard(cons_id)
 
