@@ -1634,7 +1634,8 @@ class Database:
     def causes_for_node_excluding_deviation(self, node_id, deviation_id):
         """Return causes for the node that belong to OTHER deviations (for reuse dialog)."""
         return self.conn.execute(
-            "SELECT c.id, c.description, d.description AS deviation_name, d.id AS deviation_id "
+            "SELECT c.id, c.description, c.comp_type, c.comp_tag, "
+            "d.description AS deviation_name, d.id AS deviation_id "
             "FROM causes c "
             "JOIN deviations d ON c.deviation_id = d.id "
             "WHERE d.node_id=? AND d.id!=? "
@@ -9890,10 +9891,12 @@ class ReuseDeviationCausesDialog(QDialog):
             inner_layout.addWidget(hdr_w)
 
             for cause in causes:
-                cid      = cause['id']
-                orig     = cause['description']
-                inv_text = invert_cause_text(orig)
-                c_pos    = global_pos
+                cid       = cause['id']
+                orig      = cause['description']
+                inv_text  = invert_cause_text(orig)
+                comp_type = cause['comp_type'] or ''
+                comp_tag  = cause['comp_tag']  or ''
+                c_pos     = global_pos
                 global_pos += 1
 
                 row_w = QWidget()
@@ -9906,6 +9909,24 @@ class ReuseDeviationCausesDialog(QDialog):
                     f"{cause['ref_label']}</span>")
                 num_lbl.setFixedWidth(42)
                 row_h.addWidget(num_lbl)
+
+                # Equipment icon + tag badge (only if tag is set)
+                if comp_tag:
+                    icon_px = QPixmap(18, 18)
+                    icon_px.fill(Qt.GlobalColor.transparent)
+                    _ip = QPainter(icon_px)
+                    _draw_equip_icon(_ip, QRect(0, 0, 18, 18), comp_type)
+                    _ip.end()
+                    icon_lbl = QLabel()
+                    icon_lbl.setPixmap(icon_px)
+                    row_h.addWidget(icon_lbl)
+
+                    tag_lbl = QLabel(f"<b>{comp_tag}</b>")
+                    tag_lbl.setStyleSheet(
+                        "color:#1a56db; background:#e8f0fe; border-radius:3px;"
+                        "padding:0px 4px; font-size:10px;")
+                    tag_lbl.setToolTip(comp_type or "Okänd typ")
+                    row_h.addWidget(tag_lbl)
 
                 desc_lbl = QLabel(orig)
                 desc_lbl.setToolTip(orig)
@@ -9939,10 +9960,12 @@ class ReuseDeviationCausesDialog(QDialog):
                         "border-radius:3px;color:#aaa;background:#f5f5f5;}")
 
                 ref_btn.toggled.connect(
-                    self._make_ref_handler(cid, orig, inv_btn, cid, c_pos))
+                    self._make_ref_handler(cid, orig, inv_btn, cid, c_pos,
+                                           comp_type, comp_tag))
                 if has_inv:
                     inv_btn.toggled.connect(
-                        self._make_inv_handler(cid, inv_text, ref_btn, cid, c_pos))
+                        self._make_inv_handler(cid, inv_text, ref_btn, cid, c_pos,
+                                               comp_type, comp_tag))
 
                 row_h.addWidget(ref_btn)
                 row_h.addWidget(inv_btn)
@@ -9993,10 +10016,12 @@ class ReuseDeviationCausesDialog(QDialog):
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _make_ref_handler(self, cid, description, inv_btn, original_cause_id, sort_pos):
+    def _make_ref_handler(self, cid, description, inv_btn, original_cause_id, sort_pos,
+                          comp_type='', comp_tag=''):
         def handler(checked):
             if checked:
-                self._selections[cid] = ('ref', description, original_cause_id, sort_pos)
+                self._selections[cid] = (
+                    'ref', description, original_cause_id, sort_pos, comp_type, comp_tag)
                 if inv_btn is not None:
                     inv_btn.blockSignals(True)
                     inv_btn.setChecked(False)
@@ -10006,10 +10031,12 @@ class ReuseDeviationCausesDialog(QDialog):
             self._update_summary()
         return handler
 
-    def _make_inv_handler(self, cid, inv_text, ref_btn, original_cause_id, sort_pos):
+    def _make_inv_handler(self, cid, inv_text, ref_btn, original_cause_id, sort_pos,
+                          comp_type='', comp_tag=''):
         def handler(checked):
             if checked:
-                self._selections[cid] = ('inv', inv_text, original_cause_id, sort_pos)
+                self._selections[cid] = (
+                    'inv', inv_text, original_cause_id, sort_pos, comp_type, comp_tag)
                 ref_btn.blockSignals(True)
                 ref_btn.setChecked(False)
                 ref_btn.blockSignals(False)
@@ -10026,8 +10053,8 @@ class ReuseDeviationCausesDialog(QDialog):
             self._create_btn.setEnabled(False)
         else:
             kinds = {'ref': 0, 'inv': 0}
-            for mode, _, _, _ in self._selections.values():
-                kinds[mode] += 1
+            for v in self._selections.values():
+                kinds[v[0]] += 1
             parts = []
             if kinds['ref']: parts.append(f"{kinds['ref']} referens")
             if kinds['inv']: parts.append(f"{kinds['inv']} invers")
@@ -10035,9 +10062,10 @@ class ReuseDeviationCausesDialog(QDialog):
             self._create_btn.setEnabled(True)
 
     def get_selections(self):
-        """Return (description, original_cause_id) pairs in original list order."""
+        """Return (description, original_cause_id, comp_type, comp_tag) in list order."""
         sorted_vals = sorted(self._selections.values(), key=lambda v: v[3])
-        return [(desc, orig_id) for _, desc, orig_id, _ in sorted_vals]
+        return [(v[1], v[2], v[4] if len(v) > 4 else '',
+                 v[5] if len(v) > 5 else '') for v in sorted_vals]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -10538,9 +10566,10 @@ class MainWindow(QMainWindow):
                 return   # user cancelled — do not enter P&ID mode
             if result == QDialog.DialogCode.Accepted:
                 markers_need_reload = False
-                for desc, orig_cause_id in dlg.get_selections():
+                for desc, orig_cause_id, comp_type, comp_tag in dlg.get_selections():
                     new_cid = self.db.add_cause(deviation_id)
-                    self.db.update_cause(new_cid, desc)
+                    self.db.update_cause(new_cid, desc,
+                                         comp_type=comp_type, comp_tag=comp_tag)
                     # Copy P&ID markers from the original cause (same physical component)
                     if orig_cause_id is not None:
                         for m in self.db.cause_markers_for_cause(orig_cause_id):
