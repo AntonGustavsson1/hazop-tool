@@ -1741,8 +1741,17 @@ class Database:
             "WHERE comp_type != '' ORDER BY comp_type").fetchall()
         return [r[0] for r in rows]
 
-    def standard_causes_for_comp_type(self, comp_type):
-        """Return all standard_causes for comp_type, annotated with deviation description."""
+    def standard_causes_for_comp_type(self, comp_type, deviation_description=None):
+        """Return standard_causes for comp_type, optionally filtered to one deviation."""
+        if deviation_description:
+            return self.conn.execute(
+                "SELECT sc.id, sc.description, sc.sort_order, sc.comp_type, sc.frequency, "
+                "sd.description AS deviation_name, sd.id AS deviation_id "
+                "FROM standard_causes sc "
+                "JOIN standard_deviations sd ON sc.deviation_id = sd.id "
+                "WHERE sc.comp_type=? AND sd.description=? "
+                "ORDER BY sd.sort_order, sc.sort_order",
+                (comp_type, deviation_description)).fetchall()
         return self.conn.execute(
             "SELECT sc.id, sc.description, sc.sort_order, sc.comp_type, sc.frequency, "
             "sd.description AS deviation_name, sd.id AS deviation_id "
@@ -6237,7 +6246,16 @@ class ScenarioTablePanel(QWidget):
         popup.exec()
 
     def _show_std_causes_popup(self, row, cause_id, comp_type, global_pos):
-        rows = self.db.standard_causes_for_comp_type(comp_type)
+        dev_id = self._row_meta[row][0] if row < len(self._row_meta) else None
+        dev_desc = None
+        if dev_id is not None:
+            dev_row = self.db.get_deviation(dev_id)
+            if dev_row:
+                dev_desc = dev_row['description']
+        rows = self.db.standard_causes_for_comp_type(comp_type, dev_desc)
+        if not rows:
+            # No causes for this specific deviation — fall back to all
+            rows = self.db.standard_causes_for_comp_type(comp_type)
         if not rows:
             return
         popup = StandardCausesPickerPopup(comp_type, rows, self)
