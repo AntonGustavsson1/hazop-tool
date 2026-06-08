@@ -91,6 +91,9 @@
 | Inversionsord utökade | `_INVERSION_MAP` utökad med: stopp↔start, stängt↔öppet, öppnat→stängt, stängning↔öppning, closed↔open. Regex sorteras efter nyckel-längd fallande så "stoppar" matchar före prefix "stopp". `invert_cause_text()` returnerar oförändrad text om ingen substitution hittas; dialogen visar då inaktiverad Invers-knapp. |
 | Sekvensnummer i trädet | Varje trädobjekt visar sitt eget positionsnummer (t.ex. "1. Nod Alpha", "2. Högt flöde", "3. Pump stopp"). Enumerate används på alla nivåer: nod, avvikelse, orsak, konsekvens, safeguard. |
 | Avvikelseemoji ändrad | Avvikelser i trädet använder nu ⬡ (hexagon) istället för ⚠ (varningstriangel). |
+| Kategoribaserad konsekvensbedömning | 📊-knapp på KON-cellen öppnar matris-popup där användaren sätter konsekvensnivå (K1–K5) per konsekvenskategori. Varje vald kategori genererar EN rad i scenariotabellen (inte en rad per barriär). KON-cellen visar alltid textbeskrivningen; kategoribadgen visar "Per K3" etc. DB: `consequence_severities (id, consequence_id, category_id, severity)`. |
+| RRF-knapp per kategorirad | Barriär-cellen för kategoriraderna visar "RRF×n/tot: rrf"-knapp. Klick öppnar `CatSGSelectionPopup` där alla barriärer är ikryssade som default; avmarkering = "gäller ej" för den kategorin. DB: `consequence_severity_exclusions (severity_id, safeguard_id)`. |
+| Dubbelriktad RFORE ↔ kategorimatris | Risk-före-barriär-cellen för kategoriraderna lagrar `risk_click_cat`-metadata. Klick öppnar riskmatrisen och uppdaterar `consequence_severities.severity` (inte `consequences.severity`). Speglar också kategorimatrisens val. |
 
 ---
 

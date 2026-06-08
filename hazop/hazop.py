@@ -953,6 +953,11 @@ class Database:
                 severity       INTEGER NOT NULL DEFAULT 1,
                 UNIQUE(consequence_id, category_id)
             );
+            CREATE TABLE IF NOT EXISTS consequence_severity_exclusions (
+                severity_id  INTEGER NOT NULL,
+                safeguard_id INTEGER NOT NULL,
+                PRIMARY KEY (severity_id, safeguard_id)
+            );
         """)
 
         # Seed missing deviation_id for existing causes
@@ -1322,6 +1327,23 @@ class Database:
                 "INSERT OR REPLACE INTO consequence_severities "
                 "(consequence_id, category_id, severity) VALUES (?,?,?)",
                 (consequence_id, category_id, severity))
+        self.conn.commit()
+
+    def get_severity_excluded_sgs(self, severity_id):
+        """Return set of safeguard_ids excluded from this category assessment."""
+        rows = self.conn.execute(
+            "SELECT safeguard_id FROM consequence_severity_exclusions WHERE severity_id=?",
+            (severity_id,)).fetchall()
+        return {r[0] for r in rows}
+
+    def set_severity_excluded_sgs(self, severity_id, excluded_sg_ids):
+        self.conn.execute(
+            "DELETE FROM consequence_severity_exclusions WHERE severity_id=?",
+            (severity_id,))
+        for sg_id in excluded_sg_ids:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO consequence_severity_exclusions "
+                "(severity_id, safeguard_id) VALUES (?,?)", (severity_id, sg_id))
         self.conn.commit()
 
     def add_category(self, name):
@@ -5860,7 +5882,7 @@ class _PidDelegate(_ScenarioDelegate):
                 cat_info = index.data(Qt.ItemDataRole.UserRole + 3)
                 n_cats   = index.data(Qt.ItemDataRole.UserRole + 4) or 0
                 if cat_info:
-                    cat_id, cat_name, cat_sev = cat_info
+                    cat_id, sev_id, cat_name, cat_sev = cat_info
                     _, cat_bg, _ = risk_info(3, cat_sev)
                     badge = cat_rect.adjusted(3, 4, -3, -4)
                     painter.fillRect(badge, QColor(cat_bg))
@@ -5869,7 +5891,8 @@ class _PidDelegate(_ScenarioDelegate):
                     cf.setPointSize(max(6, option.font.pointSize() - 2))
                     cf.setBold(True)
                     painter.setFont(cf)
-                    painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, cat_name[:3])
+                    painter.drawText(badge, Qt.AlignmentFlag.AlignCenter,
+                                     f"{cat_name[:3]} K{cat_sev}")
                 else:
                     icon_clr = QColor('#1a56db') if n_cats > 0 else QColor('#aaa')
                     painter.setPen(icon_clr)
@@ -5882,12 +5905,8 @@ class _PidDelegate(_ScenarioDelegate):
                 painter.setPen(QPen(QColor('#ddd'), 1))
                 painter.drawLine(cat_rect.right(), r.top(), cat_rect.right(), r.bottom())
 
-                # Description text (show category label when in cat-override row)
-                if cat_info:
-                    _, _, cat_sev = cat_info
-                    display = f"▸ {cat_info[1]}  K{cat_sev}"
-                else:
-                    display = index.data(Qt.ItemDataRole.DisplayRole) or ''
+                # Description text — always show the actual consequence description
+                display = index.data(Qt.ItemDataRole.DisplayRole) or ''
                 tc = (option.palette.highlightedText().color() if sel
                       else option.palette.text().color())
                 painter.setFont(option.font)
@@ -5923,6 +5942,70 @@ class _PidDelegate(_ScenarioDelegate):
         if not self._panel._cell_has_item(row, col):
             return
         _draw_pid_pin(painter, icon_rect, self._panel._is_cell_placed(row, col))
+
+
+class CatSGSelectionPopup(QDialog):
+    """Popup: select which safeguards apply for a category-row (gäller ej för)."""
+
+    def __init__(self, db, severity_id, all_sgs, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self._sev_id = severity_id
+        self._all_sgs = all_sgs
+        self.setWindowTitle("Barriärer — gäller ej för")
+        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._checks: dict[int, QCheckBox] = {}
+        self._build()
+
+    def _build(self):
+        excluded = self.db.get_severity_excluded_sgs(self._sev_id)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 8, 10, 8)
+        outer.setSpacing(4)
+
+        title = QLabel("Barriärer för detta scenario")
+        tf = QFont(); tf.setBold(True); tf.setPointSize(9)
+        title.setFont(tf)
+        outer.addWidget(title)
+
+        note = QLabel("Avmarkera 'Gäller ej' för barriärer som inte gäller denna kategori.")
+        note.setStyleSheet("font-size:9px; color:#666;")
+        note.setWordWrap(True)
+        outer.addWidget(note)
+
+        if not self._all_sgs:
+            outer.addWidget(QLabel("Inga barriärer tillagda ännu."))
+        for sg in self._all_sgs:
+            sg_id = sg['id']
+            rrf   = sg.get('rrf', 1) or 1
+            cb = QCheckBox(f"{sg['description']}  (RRF {rrf})")
+            cb.setStyleSheet("font-size:10px;")
+            cb.setChecked(sg_id not in excluded)
+            self._checks[sg_id] = cb
+            outer.addWidget(cb)
+
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("color:#ddd;"); outer.addWidget(sep)
+
+        btn_row = QHBoxLayout()
+        ok = QPushButton("OK")
+        ok.setDefault(True)
+        ok.setStyleSheet(
+            "QPushButton{font-size:10px;padding:2px 12px;"
+            "background:#1F4E79;color:white;border-radius:3px;}"
+            "QPushButton:hover{background:#2a6099;}")
+        ok.clicked.connect(self._ok)
+        cancel = QPushButton("Avbryt")
+        cancel.setStyleSheet("font-size:10px; padding:2px 8px;")
+        cancel.clicked.connect(self.reject)
+        btn_row.addStretch(); btn_row.addWidget(cancel); btn_row.addWidget(ok)
+        outer.addLayout(btn_row)
+
+    def _ok(self):
+        excluded = [sg_id for sg_id, cb in self._checks.items() if not cb.isChecked()]
+        self.db.set_severity_excluded_sgs(self._sev_id, excluded)
+        self.accept()
 
 
 class ConsCategoryMatrixPopup(QDialog):
@@ -6321,24 +6404,18 @@ class ScenarioTablePanel(QWidget):
                     n_cats   = len(cat_rows)
                     if cat_rows:
                         for cr in cat_rows:
-                            cat_override = (cr['category_id'], cr['name'], cr['severity'])
-                            if sgs:
-                                for sg in sgs:
-                                    self._add_row(node_name, dev_d, cause_d, freq, freq_lbl,
-                                                  cons_d, sgs, sg,
-                                                  cat_override=cat_override, n_cats=n_cats)
-                            else:
-                                self._add_row(node_name, dev_d, cause_d, freq, freq_lbl,
-                                              cons_d, [], None,
-                                              cat_override=cat_override, n_cats=n_cats)
+                            # ONE row per category — safeguards shown as combined RRF button
+                            cat_info = (cr['category_id'], cr['id'], cr['name'], cr['severity'])
+                            self._add_cat_row(node_name, dev_d, cause_d, freq, freq_lbl,
+                                              cons_d, sgs, cat_info=cat_info, n_cats=n_cats)
                     else:
                         if sgs:
                             for sg in sgs:
                                 self._add_row(node_name, dev_d, cause_d, freq, freq_lbl,
-                                              cons_d, sgs, sg, n_cats=0)
+                                              cons_d, sgs, sg)
                         else:
                             self._add_row(node_name, dev_d, cause_d, freq, freq_lbl,
-                                          cons_d, [], None, n_cats=0)
+                                          cons_d, [], None)
                 if self._table.rowCount() == first_row_for_cause:
                     self._add_empty_row(node_name, dev_d, cause_d, freq, freq_lbl)
             self._apply_spans()
@@ -6463,19 +6540,17 @@ class ScenarioTablePanel(QWidget):
 
         self._table.setRowHeight(r, max(22, self._cell_font_size * 2 + 4))
 
-    def _add_row(self, node_name, dev_d, cause_d, freq, freq_lbl, cons_d, sgs, sg,
-                 cat_override=None, n_cats=0):
+    def _add_row(self, node_name, dev_d, cause_d, freq, freq_lbl, cons_d, sgs, sg):
         """One row per safeguard (sg=None when no safeguards exist yet).
-        cat_override = (cat_id, cat_name, cat_sev) or None (use cons_d['severity']).
-        n_cats = total active category assessments (for the 📊 badge count)."""
+        sgs = all safeguards for this consequence (used for combined risk calc)."""
         r   = self._table.rowCount()
         self._table.insertRow(r)
-        sev = (cat_override[2] if cat_override else cons_d['severity']) or 1
+        sev = cons_d['severity'] or 1
         cid = cons_d['id']
         dev_id = dev_d['id'] if dev_d else None
 
         self._row_meta.append((dev_id, cause_d['id'], cid, sg['id'] if sg else None))
-        self._row_cat_info.append(cat_override)
+        self._row_cat_info.append(None)
         sg_rrf = 1
         for s in sgs:
             sg_rrf *= (s.get('rrf') or 1)
@@ -6523,8 +6598,8 @@ class ScenarioTablePanel(QWidget):
 
         kon_item = QTableWidgetItem(cons_d['description'])
         kon_item.setData(Qt.ItemDataRole.UserRole, ('consequence', cid))
-        kon_item.setData(Qt.ItemDataRole.UserRole + 3, cat_override)
-        kon_item.setData(Qt.ItemDataRole.UserRole + 4, n_cats)
+        kon_item.setData(Qt.ItemDataRole.UserRole + 3, None)
+        kon_item.setData(Qt.ItemDataRole.UserRole + 4, 0)
         tip = ("Klicka på 📊-ikonen för att sätta konsekvens per kategori\n"
                "Dubbelklicka för att redigera\nEnter för att lägga till ny konsekvens")
         if display_desc != cons_d['description']:
@@ -6762,14 +6837,21 @@ class ScenarioTablePanel(QWidget):
         if not item:
             return
         meta = item.data(Qt.ItemDataRole.UserRole)
-        if not meta or meta[0] != 'risk_click':
+        if not meta or meta[0] not in ('risk_click', 'risk_click_cat'):
             return
-        _, cause_id, cons_id, cur_freq, cur_cons = meta
 
-        popup = RiskMatrixPopup(cur_freq, cur_cons, self)
-        popup.selection_made.connect(
-            lambda f, c, caid=cause_id, coid=cons_id:
-                self._apply_risk_from_matrix(caid, coid, f, c))
+        if meta[0] == 'risk_click_cat':
+            _, cause_id, cons_id, cat_id, sev_id, cur_freq, cur_cons = meta
+            popup = RiskMatrixPopup(cur_freq, cur_cons, self)
+            popup.selection_made.connect(
+                lambda f, c, caid=cause_id, coid=cons_id, catid=cat_id:
+                    self._apply_risk_from_matrix_cat(caid, coid, catid, f, c))
+        else:
+            _, cause_id, cons_id, cur_freq, cur_cons = meta
+            popup = RiskMatrixPopup(cur_freq, cur_cons, self)
+            popup.selection_made.connect(
+                lambda f, c, caid=cause_id, coid=cons_id:
+                    self._apply_risk_from_matrix(caid, coid, f, c))
 
         # Position popup: prefer above the cell, fall back to below if off-screen
         popup.adjustSize()
@@ -6794,6 +6876,25 @@ class ScenarioTablePanel(QWidget):
             self.db.update_consequence(
                 cons_id, cons['description'], new_cons, cons['category'] or '')
         QTimer.singleShot(0, self._rebuild)
+
+    def _apply_risk_from_matrix_cat(self, cause_id, cons_id, cat_id, new_freq, new_cons):
+        """Bidirectional: update frequency on cause and category severity on consequence."""
+        self.db.update_cause(cause_id, likelihood=new_freq)
+        self.db.set_consequence_severity(cons_id, cat_id, new_cons)
+        QTimer.singleShot(0, self._rebuild)
+
+    def _show_cat_sg_popup(self, sev_id, all_sgs):
+        """Open the safeguard-selection popup for a category row."""
+        popup = CatSGSelectionPopup(self.db, sev_id, all_sgs, self)
+        popup.adjustSize()
+        gp  = QCursor.pos()
+        scr = (QApplication.screenAt(gp) or QApplication.primaryScreen()).availableGeometry()
+        pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
+        x = min(gp.x(), scr.right() - pw)
+        y = min(gp.y() + 4, scr.bottom() - ph)
+        popup.move(max(scr.left(), x), max(scr.top(), y))
+        if popup.exec() == QDialog.DialogCode.Accepted:
+            QTimer.singleShot(0, self._rebuild)
 
     def _on_cell_double_clicked(self, item):
         if item is None:
@@ -7046,6 +7147,145 @@ class ScenarioTablePanel(QWidget):
         else:
             if cons_id is not None:
                 self._quick_add_safeguard(cons_id)
+
+    def _add_cat_row(self, node_name, dev_d, cause_d, freq, freq_lbl, cons_d,
+                     all_sgs, *, cat_info, n_cats):
+        """One row per category assessment (no per-safeguard duplication).
+        cat_info = (cat_id, sev_id, cat_name, cat_sev)."""
+        cat_id, sev_id, cat_name, cat_sev = cat_info
+        sev    = cat_sev or 1
+        cid    = cons_d['id']
+        dev_id = dev_d['id'] if dev_d else None
+
+        r = self._table.rowCount()
+        self._table.insertRow(r)
+        self._row_meta.append((dev_id, cause_d['id'], cid, None))
+        self._row_cat_info.append(cat_info)
+
+        # Effective RRF: exclude safeguards marked as "gäller ej"
+        excl       = self.db.get_severity_excluded_sgs(sev_id)
+        active_sgs = [s for s in all_sgs if s['id'] not in excl]
+        sg_rrf     = 1
+        for s in active_sgs:
+            sg_rrf *= (s.get('rrf') or 1)
+
+        rfs        = [dict(rf) for rf in self.db.reduction_factors(cid)]
+        fa_active  = bool(cons_d.get('fa_active', 0))
+        fa_rrf     = cons_d.get('fa_rrf', 10) or 10
+        ign_active = bool(cons_d.get('ignition_active', 0))
+        ign_rrf    = cons_d.get('ignition_rrf', 10) or 10
+
+        final_f, _total_rrf, total_steps = total_freq_reduction(
+            freq, sg_rrf, fa_active, fa_rrf, ign_active, ign_rrf, rfs)
+
+        level_b, bg_b, _fg_b = risk_info(freq, sev)
+        level_a, bg_a, _fg_a = risk_info(effective_frequency(freq, sg_rrf), sev)
+        level_s, bg_s, _fg_s = risk_info(final_f, sev)
+
+        # Col 0: Nod
+        nod = QTableWidgetItem(node_name)
+        nod.setFlags(nod.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        nod.setData(Qt.ItemDataRole.UserRole, cause_d['node_id'])
+        self._table.setItem(r, self._C_NOD, nod)
+
+        # Col 1: Avvikelse
+        dev_item = QTableWidgetItem(dev_d['description'] if dev_d else '')
+        dev_item.setFlags(dev_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        dev_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
+        self._table.setItem(r, self._C_DEV, dev_item)
+
+        # Col 2: Orsak
+        ors = QTableWidgetItem(cause_d['description'])
+        ors.setData(Qt.ItemDataRole.UserRole,     ('cause', cause_d['id']))
+        ors.setData(Qt.ItemDataRole.UserRole + 2, (cause_d.get('comp_type') or '',
+                                                    cause_d.get('comp_tag')  or ''))
+        ors.setToolTip("Dubbelklicka för att redigera")
+        self._table.setItem(r, self._C_ORS, ors)
+
+        # Col 3: Konsekvens — description + category badge
+        kon_item = QTableWidgetItem(cons_d['description'])
+        kon_item.setData(Qt.ItemDataRole.UserRole,     ('consequence', cid))
+        kon_item.setData(Qt.ItemDataRole.UserRole + 3, cat_info)   # 4-tuple
+        kon_item.setData(Qt.ItemDataRole.UserRole + 4, n_cats)
+        kon_item.setToolTip("Klicka på 📊-ikonen för att ändra kategoribedömning")
+        self._table.setItem(r, self._C_KON, kon_item)
+
+        # Col 4: Risk före barriär
+        rb = QTableWidgetItem(f"{level_b}\n{freq_axis_label(freq)}  {cons_axis_label(sev)}")
+        rb.setBackground(QBrush(QColor(bg_b)))
+        rb.setForeground(QBrush(QColor(_contrast_fg(bg_b))))
+        rb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        rb.setToolTip("🖱 Klicka för att ändra konsekvens/frekvens i matrisen")
+        rb.setData(Qt.ItemDataRole.UserRole,
+                   ('risk_click_cat', cause_d['id'], cid, cat_id, sev_id, freq, sev))
+        self._table.setItem(r, self._C_RFORE, rb)
+
+        # Col 5: Barriär — combined RRF button (click → safeguard selection popup)
+        n_active = len(active_sgs)
+        n_total  = len(all_sgs)
+        if all_sgs:
+            sg_lbl = f"RRF×{n_active}/{n_total}: {sg_rrf}"
+        else:
+            sg_lbl = "—  (inga barriärer)"
+        sg_btn = QPushButton(sg_lbl)
+        sg_btn.setFlat(True)
+        sg_btn.setStyleSheet("font-size:9px; text-align:left; padding:2px 4px;")
+        sg_btn.setToolTip("Klicka för att välja vilka barriärer som gäller")
+        sg_btn.clicked.connect(
+            lambda _, sid=sev_id, sa=list(all_sgs): self._show_cat_sg_popup(sid, sa))
+        self._table.setCellWidget(r, self._C_SG, sg_btn)
+
+        # Col 7: FA
+        fa_steps_txt = f"{fa_rrf}%"
+        fa_item = QTableWidgetItem(fa_steps_txt)
+        fa_item.setCheckState(Qt.CheckState.Checked if fa_active else Qt.CheckState.Unchecked)
+        fa_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable |
+                         Qt.ItemFlag.ItemIsEditable)
+        fa_item.setData(Qt.ItemDataRole.UserRole, ('fa', cid))
+        fa_item.setToolTip("Närvaro/FA-sannolikhet i %.")
+        self._table.setItem(r, self._C_FA, fa_item)
+
+        # Col 8: Antändning
+        ign_item = QTableWidgetItem(f"{ign_rrf}%")
+        ign_item.setCheckState(Qt.CheckState.Checked if ign_active else Qt.CheckState.Unchecked)
+        ign_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable |
+                          Qt.ItemFlag.ItemIsEditable)
+        ign_item.setData(Qt.ItemDataRole.UserRole, ('ignition', cid))
+        ign_item.setToolTip("Antändningssannolikhet i %.")
+        self._table.setItem(r, self._C_IGN, ign_item)
+
+        # Col 9: Övriga faktorer
+        n_rf_active = sum(1 for rf in rfs if rf.get('active'))
+        extra_btn = QPushButton(
+            f"📋 {n_rf_active} aktiv(a)" if n_rf_active else "📋 Lägg till…")
+        extra_btn.setFlat(True)
+        extra_btn.clicked.connect(lambda _, c=cid: self._edit_extra(c))
+        self._table.setCellWidget(r, self._C_OVRIGA, extra_btn)
+
+        # Col 6: Risk efter barriärer
+        f_eff       = effective_frequency(freq, sg_rrf)
+        sg_steps    = int(math.log10(max(1, sg_rrf))) if sg_rrf > 1 else 0
+        sg_step_str = f"  −{sg_steps} steg" if sg_steps > 0 else ""
+        ra = QTableWidgetItem(
+            f"{level_a}{sg_step_str}\n{freq_axis_label(f_eff)}  {cons_axis_label(sev)}")
+        ra.setBackground(QBrush(QColor(bg_a)))
+        ra.setForeground(QBrush(QColor(_contrast_fg(bg_a))))
+        ra.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        ra.setFlags(ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self._table.setItem(r, self._C_REFT, ra)
+
+        # Col 10: Slutkonsekvens
+        slut_step_str = f"  −{total_steps} steg" if total_steps > 0 else ""
+        rs = QTableWidgetItem(
+            f"{level_s}{slut_step_str}\n{freq_axis_label(final_f)}  {cons_axis_label(sev)}")
+        rs.setBackground(QBrush(QColor(bg_s)))
+        rs.setForeground(QBrush(QColor(_contrast_fg(bg_s))))
+        rs.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self._table.setItem(r, self._C_SLUT, rs)
+
+        self._table.setRowHeight(r, max(22, self._cell_font_size * 2 + 4))
 
     def _on_enter_after_edit(self):
         row = self._enter_row
