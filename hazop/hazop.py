@@ -10346,7 +10346,7 @@ class MainWindow(QMainWindow):
         self.scenario_panel.remove_requested.connect(self._on_scenario_remove_from_pid)
         self.scenario_panel.add_causes_on_pid_requested.connect(self._on_add_causes_on_pid)
 
-        self.tree_panel.add_causes_on_pid_requested.connect(self._on_add_causes_on_pid)
+        self.tree_panel.add_causes_on_pid_requested.connect(self._on_add_causes_on_pid_tree)
         self.tree_panel.add_consequences_on_pid_requested.connect(
             self._on_add_consequences_on_pid)
         self.tree_panel.add_safeguards_on_pid_requested.connect(
@@ -10602,11 +10602,64 @@ class MainWindow(QMainWindow):
         self.tree_panel.refresh()
 
     def _on_add_causes_on_pid(self, deviation_id):
-        """Red-pin click or right-click deviation → enter P&ID cause-placement mode."""
+        """Red-pin click in scenario table → enter P&ID cause-placement mode directly."""
         dev = self.db.get_deviation(deviation_id)
         if not dev:
             return
         self.pid_panel.set_active_node(dev['node_id'])
+        self._switch_view(0)
+        self.pid_panel.start_cause_template_mode(deviation_id)
+
+    def _on_add_causes_on_pid_tree(self, deviation_id):
+        """Right-click deviation in tree → show reuse dialog, then enter P&ID mode."""
+        dev = self.db.get_deviation(deviation_id)
+        if not dev:
+            return
+        node_id  = dev['node_id']
+        dev_name = dev['description']
+
+        # Build hierarchical reference labels for causes from other deviations
+        all_nodes    = self.db.nodes()
+        node_idx     = next((i + 1 for i, n in enumerate(all_nodes) if n['id'] == node_id), 1)
+        all_devs     = self.db.deviations(node_id)
+        dev_pos_map  = {d['id']: i + 1 for i, d in enumerate(all_devs)}
+        cause_pos_map = {}
+        for d in all_devs:
+            for j, c in enumerate(self.db.causes_for_deviation(d['id'])):
+                cause_pos_map[c['id']] = j + 1
+
+        raw = self.db.causes_for_node_excluding_deviation(node_id, deviation_id)
+        existing_causes = []
+        for c in raw:
+            cd = dict(c)
+            dp = dev_pos_map.get(cd['deviation_id'], 0)
+            cp = cause_pos_map.get(cd['id'], 0)
+            cd['dev_label'] = f"{node_idx}.{dp}"
+            cd['ref_label'] = f"{node_idx}.{dp}.{cp}"
+            existing_causes.append(cd)
+
+        if existing_causes:
+            dlg = ReuseDeviationCausesDialog(dev_name, existing_causes, parent=self)
+            result = dlg.exec()
+            if result == QDialog.DialogCode.Rejected:
+                return
+            if result == QDialog.DialogCode.Accepted:
+                markers_need_reload = False
+                for desc, orig_cause_id, comp_type, comp_tag in dlg.get_selections():
+                    new_cid = self.db.add_cause(deviation_id)
+                    self.db.update_cause(new_cid, desc,
+                                         comp_type=comp_type, comp_tag=comp_tag)
+                    if orig_cause_id is not None:
+                        for m in self.db.cause_markers_for_cause(orig_cause_id):
+                            self.db.add_cause_marker(
+                                new_cid, m['pid_page'], m['x'], m['y'],
+                                m['component_type'], m['component_tag'])
+                            markers_need_reload = True
+                self.tree_panel.refresh()
+                if markers_need_reload:
+                    self.pid_panel.reload_overlays()
+
+        self.pid_panel.set_active_node(node_id)
         self._switch_view(0)
         self.pid_panel.start_cause_template_mode(deviation_id)
 
