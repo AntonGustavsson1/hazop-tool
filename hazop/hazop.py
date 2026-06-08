@@ -467,6 +467,18 @@ def idx_to_freq(i: int) -> int:
 _LIKE_LABELS = _FREQ_LABELS
 
 _SEV_LABELS  = ['C1 – Försumbar', 'C2 – Liten', 'C3 – Måttlig', 'C4 – Allvarlig', 'C5 – Katastrofal']
+
+
+def get_sev_labels():
+    """Return severity labels from current matrix config (y_labels), falling back to _SEV_LABELS."""
+    cfg = get_matrix()
+    y = cfg.get('y_labels', [])
+    n = cfg.get('rows', 5)
+    if y and len(y) >= n:
+        return [f"C{i+1} – {y[i]}" if not y[i].startswith('C') else y[i] for i in range(n)]
+    return _SEV_LABELS[:n] if n <= len(_SEV_LABELS) else _SEV_LABELS + [f"C{i+1}" for i in range(len(_SEV_LABELS), n)]
+
+
 _RRF_VALUES  = [1, 10, 100, 1000, 10000]
 _RRF_LABELS  = ['1 – Ingen', '10 – RRF10', '100 – RRF100', '1000 – RRF1000', '10000 – RRF10000']
 _SG_TYPES      = ['BPCS', 'SIS', 'Mekanisk', 'Administrativ', 'Övrigt']
@@ -820,6 +832,13 @@ class Database:
             CREATE TABLE IF NOT EXISTS consequence_categories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL, sort_order INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS severity_definitions (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                severity_level INTEGER NOT NULL,
+                category_id    INTEGER NOT NULL REFERENCES consequence_categories(id) ON DELETE CASCADE,
+                description    TEXT    DEFAULT '',
+                UNIQUE(severity_level, category_id)
             );
             CREATE TABLE IF NOT EXISTS deviations (
                 id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1275,6 +1294,26 @@ class Database:
 
     def delete_category(self, id_):
         self.conn.execute("DELETE FROM consequence_categories WHERE id=?", (id_,))
+        self.conn.commit()
+
+    def get_severity_definitions(self):
+        """Return dict: severity_level (1-based int) -> {category_id -> description}."""
+        rows = self.conn.execute(
+            "SELECT severity_level, category_id, description FROM severity_definitions"
+        ).fetchall()
+        result = {}
+        for r in rows:
+            lvl = r['severity_level']
+            if lvl not in result:
+                result[lvl] = {}
+            result[lvl][r['category_id']] = r['description']
+        return result
+
+    def set_severity_definition(self, severity_level, category_id, description):
+        self.conn.execute(
+            "INSERT INTO severity_definitions (severity_level, category_id, description) "
+            "VALUES (?,?,?) ON CONFLICT(severity_level,category_id) DO UPDATE SET description=excluded.description",
+            (severity_level, category_id, description))
         self.conn.commit()
 
     # ── Component types & failure modes ───────────────────────────────────────
@@ -2690,6 +2729,18 @@ class ConsequencePanel(QWidget):
         risk_lay.addRow("Risknivå:", self.risk_badge)
         layout.addWidget(risk_box)
 
+        # ── Konsekvensdefinitioner (reference) ───────────────────────────────
+        self._crit_box = QGroupBox("Konsekvensdefinitioner för vald nivå")
+        crit_lay = QVBoxLayout(self._crit_box)
+        crit_lay.setSpacing(2)
+        self._crit_label = QLabel("—")
+        self._crit_label.setWordWrap(True)
+        self._crit_label.setStyleSheet(
+            "background:#f0f4f8; border:1px solid #ccd; border-radius:4px;"
+            "padding:6px 8px; font-size:11px;")
+        crit_lay.addWidget(self._crit_label)
+        layout.addWidget(self._crit_box)
+
         # ── Safeguards + Åtgärder ─────────────────────────────────────────────
         sg_box = QGroupBox("Safeguards")
         sg_lay = QVBoxLayout(sg_box)
@@ -2798,10 +2849,27 @@ class ConsequencePanel(QWidget):
             self.risk_badge.set_empty()
         self.sg_editor.load(consequence_id, freq)
         self.act_editor.load(consequence_id)
+        self._update_criteria()
 
     def _risk_changed(self):
         if not self._loading:
             self._save()
+        self._update_criteria()
+
+    def _update_criteria(self):
+        """Show severity definitions for currently selected severity level."""
+        sev = self.sev_combo.currentIndex() + 1  # 1-based
+        defs = self.db.get_severity_definitions()
+        lvl_defs = defs.get(sev, {})
+        if not lvl_defs:
+            self._crit_label.setText("(Inga konsekvensdefinitioner inlagda ännu — se Inställningar → Konsekvenskriterier)")
+            return
+        cats = {c['id']: c['name'] for c in self.db.consequence_categories()}
+        lines = []
+        for cat_id, desc in lvl_defs.items():
+            if desc:
+                lines.append(f"<b>{cats.get(cat_id, '?')}:</b> {desc}")
+        self._crit_label.setText("<br>".join(lines) if lines else "—")
 
     def _save(self):
         if self._loading or self.consequence_id is None:
@@ -6924,6 +6992,104 @@ class StandardCausesSettingsPanel(QWidget):
             QMessageBox.information(self, "Klart", f"{n} orsak(er) uppdaterades.")
 
 
+class SeverityDefinitionsPanel(QWidget):
+    """Grid panel: consequence categories (rows) × severity levels (cols).
+    Each cell holds a short description of what that level means for that category."""
+
+    def __init__(self, db, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self._edits = {}   # (severity_level, category_id) → QLineEdit
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(6)
+
+        lbl = QLabel(
+            "Definiera vad varje konsekvensgrad (C1–CN) innebär per kategori. "
+            "Värdena visas som referens vid bedömning av konsekvenser.")
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet("color:#555; font-size:11px;")
+        outer.addWidget(lbl)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        self._scroll_widget = QWidget()
+        self._grid_layout = QGridLayout(self._scroll_widget)
+        self._grid_layout.setSpacing(4)
+        scroll.setWidget(self._scroll_widget)
+        outer.addWidget(scroll)
+
+        self.refresh()
+
+    def refresh(self):
+        """Rebuild grid from current matrix config + categories."""
+        # Save pending edits before rebuild
+        self._flush_pending()
+
+        cfg  = get_matrix()
+        y    = cfg.get('y_labels', [])
+        n    = cfg.get('rows', 5)
+        cats = self.db.consequence_categories()
+        defs = self.db.get_severity_definitions()
+
+        # Clear grid
+        while self._grid_layout.count():
+            item = self._grid_layout.takeAt(0)
+            if item and item.widget():
+                item.widget().deleteLater()
+        self._edits.clear()
+
+        if not cats:
+            self._grid_layout.addWidget(
+                QLabel("Lägg till konsekvenskategorier i fliken Kategorier först."), 0, 0)
+            return
+
+        # Header row: severity level labels
+        self._grid_layout.addWidget(QLabel(""), 0, 0)  # top-left corner
+        for col_idx in range(n):
+            label = y[col_idx] if col_idx < len(y) else f"C{col_idx+1}"
+            hdr = QLabel(f"<b>C{col_idx+1}</b><br><small>{label}</small>")
+            hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            hdr.setStyleSheet(
+                "background:#1F4E79; color:white; border-radius:3px; padding:4px 6px;")
+            hdr.setMinimumWidth(120)
+            self._grid_layout.addWidget(hdr, 0, col_idx + 1)
+
+        # Data rows: one per category
+        for row_idx, cat in enumerate(cats):
+            cat_id = cat['id']
+            cat_name = cat['name']
+
+            cat_lbl = QLabel(f"<b>{cat_name}</b>")
+            cat_lbl.setStyleSheet("padding:2px 4px;")
+            cat_lbl.setMinimumWidth(90)
+            self._grid_layout.addWidget(cat_lbl, row_idx + 1, 0)
+
+            for col_idx in range(n):
+                sev_lvl = col_idx + 1  # 1-based
+                desc = defs.get(sev_lvl, {}).get(cat_id, '')
+                edit = QLineEdit(desc)
+                edit.setPlaceholderText(f"C{sev_lvl}, {cat_name}…")
+                edit.setMinimumWidth(120)
+                # Save on focus-out
+                _lvl, _cid = sev_lvl, cat_id
+                edit.editingFinished.connect(
+                    lambda _e=edit, _l=_lvl, _c=_cid:
+                        self.db.set_severity_definition(_l, _c, _e.text().strip()))
+                self._edits[(_lvl, _cid)] = edit
+                self._grid_layout.addWidget(edit, row_idx + 1, col_idx + 1)
+
+        self._grid_layout.setColumnStretch(0, 0)
+        for c in range(1, n + 1):
+            self._grid_layout.setColumnStretch(c, 1)
+
+    def _flush_pending(self):
+        """Save all currently displayed edits to DB."""
+        for (lvl, cid), edit in self._edits.items():
+            self.db.set_severity_definition(lvl, cid, edit.text().strip())
+
+
 class SettingsPanel(QWidget):
     matrix_changed = pyqtSignal()
 
@@ -7116,6 +7282,10 @@ class SettingsPanel(QWidget):
         # ── Tab: Standardavvikelser & Orsaker ─────────────────────────────────
         self._std_causes_panel = StandardCausesSettingsPanel(self.db)
         tabs.addTab(self._std_causes_panel, "Standardorsaker")
+
+        # ── Tab: Konsekvenskriterier ──────────────────────────────────────────
+        self._sev_def_panel = SeverityDefinitionsPanel(self.db)
+        tabs.addTab(self._sev_def_panel, "Konsekvenskriterier")
 
         self._load_all()
 
@@ -7602,6 +7772,7 @@ class SettingsPanel(QWidget):
         cfg = _normalise_matrix(cfg)   # ensure consistent before saving
         self.db.set_risk_matrix(cfg)
         load_matrix(self.db)
+        self._sev_def_panel.refresh()
         QMessageBox.information(self, "Sparat", "Riskmatris sparad.")
         self.matrix_changed.emit()
 
@@ -7654,6 +7825,7 @@ class SettingsPanel(QWidget):
         if ok and name.strip():
             self.db.add_category(name.strip())
             self._load_categories()
+            self._sev_def_panel.refresh()
 
     def _cat_rename(self):
         from PyQt6.QtWidgets import QInputDialog
@@ -7663,12 +7835,14 @@ class SettingsPanel(QWidget):
         if ok and name.strip():
             self.db.update_category(item.data(Qt.ItemDataRole.UserRole), name.strip())
             self._load_categories()
+            self._sev_def_panel.refresh()
 
     def _cat_delete(self):
         item = self._cat_list.currentItem()
         if not item: return
         self.db.delete_category(item.data(Qt.ItemDataRole.UserRole))
         self._load_categories()
+        self._sev_def_panel.refresh()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
