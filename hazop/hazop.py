@@ -5286,10 +5286,10 @@ class CauseObjectPopup(QDialog):
 
 
 class RRFPopup(QDialog):
-    """Quick-pick popup for setting a safeguard's RRF value."""
-    rrf_selected = pyqtSignal(int)
+    """Quick-pick popup for setting a safeguard's RRF value and type."""
+    rrf_selected = pyqtSignal(int, str)   # (rrf_value, sg_type)
 
-    def __init__(self, current_rrf: int, parent=None):
+    def __init__(self, current_rrf: int, current_sg_type: str = 'Övrigt', parent=None):
         super().__init__(parent)
         self.setWindowTitle("Ändra RRF")
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
@@ -5299,6 +5299,19 @@ class RRFPopup(QDialog):
 
         layout.addWidget(QLabel("<b>Risk Reduction Factor (RRF)</b>"))
 
+        # Type selector
+        type_row = QHBoxLayout()
+        type_row.addWidget(QLabel("Typ:"))
+        self._type_combo = QComboBox()
+        self._type_combo.addItems(_SG_TYPES)
+        idx = self._type_combo.findText(current_sg_type)
+        if idx >= 0:
+            self._type_combo.setCurrentIndex(idx)
+        self._type_combo.setStyleSheet("font-size:10px;")
+        type_row.addWidget(self._type_combo)
+        layout.addLayout(type_row)
+
+        # Preset buttons
         presets = QHBoxLayout()
         for val in (1, 10, 100, 1000, 10000):
             btn = QPushButton(str(val))
@@ -5311,6 +5324,7 @@ class RRFPopup(QDialog):
             presets.addWidget(btn)
         layout.addLayout(presets)
 
+        # Custom value
         custom_row = QHBoxLayout()
         custom_row.addWidget(QLabel("Eget:"))
         self._spin = QSpinBox()
@@ -5323,7 +5337,7 @@ class RRFPopup(QDialog):
         layout.addLayout(custom_row)
 
     def _pick(self, val: int):
-        self.rrf_selected.emit(val)
+        self.rrf_selected.emit(val, self._type_combo.currentText())
         self.accept()
 
 
@@ -5956,14 +5970,15 @@ class _PidDelegate(_ScenarioDelegate):
 
 
 class SgRRFCategoryPopup(QDialog):
-    """Popup: change a safeguard's RRF and toggle per-category exclusions."""
+    """Popup: change a safeguard's RRF, type, and toggle per-category exclusions."""
 
-    def __init__(self, db, sg_id, current_rrf, sev_cat_list, parent=None):
+    def __init__(self, db, sg_id, current_rrf, current_sg_type, sev_cat_list, parent=None):
         super().__init__(parent)
-        self.db            = db
-        self._sg_id        = sg_id
-        self._current_rrf  = current_rrf
-        self._sev_cat_list = sev_cat_list   # [(sev_id, cat_name), ...]
+        self.db              = db
+        self._sg_id          = sg_id
+        self._current_rrf    = current_rrf
+        self._current_type   = current_sg_type or 'Övrigt'
+        self._sev_cat_list   = sev_cat_list   # [(sev_id, cat_name), ...]
         self._checks: dict[int, QCheckBox] = {}
         self.setWindowTitle("Barriär — RRF & kategorier")
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
@@ -5971,7 +5986,6 @@ class SgRRFCategoryPopup(QDialog):
         self._build()
 
     def _build(self):
-        # Load current exclusions: sev_id → is this sg excluded?
         excl_by_sev = {sev_id: self._sg_id in self.db.get_severity_excluded_sgs(sev_id)
                        for sev_id, _ in self._sev_cat_list}
 
@@ -5984,31 +5998,52 @@ class SgRRFCategoryPopup(QDialog):
         title.setFont(tf)
         outer.addWidget(title)
 
-        # RRF selector row
-        rrf_row = QHBoxLayout()
-        rrf_row.addWidget(QLabel("RRF:"))
-        self._rrf_combo = QComboBox()
-        for v in (1, 2, 5, 10, 100, 1000, 10000):
-            self._rrf_combo.addItem(str(v), v)
-            if v == self._current_rrf:
-                self._rrf_combo.setCurrentIndex(self._rrf_combo.count() - 1)
-        self._rrf_combo.setStyleSheet("font-size:10px;")
-        rrf_row.addWidget(self._rrf_combo)
-        rrf_row.addStretch()
-        outer.addLayout(rrf_row)
+        # Type selector
+        type_row = QHBoxLayout()
+        type_row.addWidget(QLabel("Typ:"))
+        self._type_combo = QComboBox()
+        self._type_combo.addItems(_SG_TYPES)
+        idx = self._type_combo.findText(self._current_type)
+        if idx >= 0:
+            self._type_combo.setCurrentIndex(idx)
+        self._type_combo.setStyleSheet("font-size:10px;")
+        type_row.addWidget(self._type_combo)
+        outer.addLayout(type_row)
+
+        # RRF preset buttons + custom spinbox
+        rrf_lbl = QLabel("RRF:")
+        rrf_lbl.setStyleSheet("font-size:9px; color:#666;")
+        outer.addWidget(rrf_lbl)
+        presets = QHBoxLayout()
+        for v in (1, 10, 100, 1000, 10000):
+            btn = QPushButton(str(v))
+            btn.setFixedWidth(52)
+            btn.setStyleSheet(
+                "QPushButton{background:#1F4E79;color:white;border:none;"
+                "border-radius:3px;padding:3px;font-weight:bold;font-size:9px;}"
+                "QPushButton:hover{background:#2563a8;}")
+            btn.clicked.connect(lambda _, v=v: self._spin.setValue(v))
+            presets.addWidget(btn)
+        outer.addLayout(presets)
+        spin_row = QHBoxLayout()
+        spin_row.addWidget(QLabel("Eget:"))
+        self._spin = QSpinBox()
+        self._spin.setRange(1, 1_000_000)
+        self._spin.setValue(self._current_rrf)
+        self._spin.setStyleSheet("font-size:10px;")
+        spin_row.addWidget(self._spin)
+        outer.addLayout(spin_row)
 
         if self._sev_cat_list:
             sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
             sep.setStyleSheet("color:#ddd;"); outer.addWidget(sep)
-
             lbl = QLabel("Gäller ej för:")
             lbl.setStyleSheet("font-size:9px; color:#666;")
             outer.addWidget(lbl)
-
             for sev_id, cat_name in self._sev_cat_list:
                 cb = QCheckBox(f"{cat_name}")
                 cb.setStyleSheet("font-size:10px;")
-                cb.setChecked(excl_by_sev.get(sev_id, False))   # checked = excluded
+                cb.setChecked(excl_by_sev.get(sev_id, False))
                 self._checks[sev_id] = cb
                 outer.addWidget(cb)
 
@@ -6030,10 +6065,10 @@ class SgRRFCategoryPopup(QDialog):
         outer.addLayout(btn_row)
 
     def _ok(self):
-        # Save RRF (keyword-arg form that update_safeguard supports)
-        new_rrf = self._rrf_combo.currentData()
-        if new_rrf != self._current_rrf:
-            self.db.update_safeguard(self._sg_id, rrf=new_rrf)
+        new_rrf  = self._spin.value()
+        new_type = self._type_combo.currentText()
+        if new_rrf != self._current_rrf or new_type != self._current_type:
+            self.db.update_safeguard(self._sg_id, rrf=new_rrf, sg_type=new_type)
 
         # Save category exclusions: toggle this sg in each severity's exclusion set
         for sev_id, cb in self._checks.items():
@@ -6765,25 +6800,18 @@ class ScenarioTablePanel(QWidget):
         self._table.setItem(r, self._C_KON, kon_item)
 
         # ── Col 4: Risk före barriär ─────────────────────────────────────────
+        rb = QTableWidgetItem(f"{freq_axis_label(freq)}  {cons_axis_label(sev)}")
+        rb.setBackground(QBrush(QColor(bg_b)))
+        rb.setForeground(QBrush(QColor(_contrast_fg(bg_b))))
+        rb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        rb.setToolTip(f"🖱 Klicka för att ändra i riskmatrisen\n{level_b}")
         if cat_info:
-            rb = QTableWidgetItem(f"{level_b}\n{freq_axis_label(freq)}  {cons_axis_label(sev)}")
-            rb.setBackground(QBrush(QColor(bg_b)))
-            rb.setForeground(QBrush(QColor(_contrast_fg(bg_b))))
-            rb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            rb.setToolTip("🖱 Klicka för att ändra i riskmatrisen")
             rb.setData(Qt.ItemDataRole.UserRole,
                        ('risk_click_cat', cause_d['id'], cid, cat_id, sev_id, freq, sev))
-            self._table.setItem(r, self._C_RFORE, rb)
         else:
-            rb = QTableWidgetItem(f"{level_b}\n{freq_axis_label(freq)}  {cons_axis_label(sev)}")
-            rb.setBackground(QBrush(QColor(bg_b)))
-            rb.setForeground(QBrush(QColor(_contrast_fg(bg_b))))
-            rb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            rb.setToolTip("🖱 Klicka för att ändra i riskmatrisen")
             rb.setData(Qt.ItemDataRole.UserRole, ('risk_click', cause_d['id'], cid, freq, sev))
-            self._table.setItem(r, self._C_RFORE, rb)
+        self._table.setItem(r, self._C_RFORE, rb)
 
         # ── Col 5: Barriär ───────────────────────────────────────────────────
         if sg is None:
@@ -6842,24 +6870,26 @@ class ScenarioTablePanel(QWidget):
         self._table.setCellWidget(r, self._C_OVRIGA, extra_btn)
 
         # ── Col 6: Risk efter barriärer ──────────────────────────────────────
-        sg_steps    = int(math.log10(max(1, sg_rrf))) if sg_rrf > 1 else 0
-        sg_step_str = f"  −{sg_steps} steg" if sg_steps > 0 else ""
-        ra = QTableWidgetItem(f"{level_a}{sg_step_str}\n{freq_axis_label(f_eff)}  {cons_axis_label(sev)}")
+        sg_steps  = int(math.log10(max(1, sg_rrf))) if sg_rrf > 1 else 0
+        reft_text = (f"−{sg_steps} steg\n" if sg_steps else "") + \
+                    f"{freq_axis_label(f_eff)}  {cons_axis_label(sev)}"
+        ra = QTableWidgetItem(reft_text)
         ra.setBackground(QBrush(QColor(bg_a)))
         ra.setForeground(QBrush(QColor(_contrast_fg(bg_a))))
         ra.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         ra.setFlags(ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        ra.setToolTip(f"{freq_axis_label(f_eff)}  {cons_axis_label(sev)}  (efter safeguards)")
+        ra.setToolTip(f"{level_a} — {freq_axis_label(f_eff)}  {cons_axis_label(sev)}  (efter barriärer)")
         self._table.setItem(r, self._C_REFT, ra)
 
         # ── Col 10: Slutkonsekvens ────────────────────────────────────────────
-        slut_step_str = f"  −{total_steps} steg" if total_steps > 0 else ""
-        rs = QTableWidgetItem(f"{level_s}{slut_step_str}\n{freq_axis_label(final_f)}  {cons_axis_label(sev)}")
+        slut_text = (f"−{total_steps} steg\n" if total_steps else "") + \
+                    f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}"
+        rs = QTableWidgetItem(slut_text)
         rs.setBackground(QBrush(QColor(bg_s)))
         rs.setForeground(QBrush(QColor(_contrast_fg(bg_s))))
         rs.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        rs.setToolTip(f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}  (−{total_steps} steg totalt)")
+        rs.setToolTip(f"{level_s} — {freq_axis_label(final_f)}  {cons_axis_label(sev)}  (−{total_steps} steg totalt)")
         self._table.setItem(r, self._C_SLUT, rs)
 
         self._table.setRowHeight(r, max(22, self._cell_font_size * 2 + 4))
@@ -7095,19 +7125,22 @@ class ScenarioTablePanel(QWidget):
     def _show_rrf_popup_at(self, row, sg_id, global_pos):
         """Show RRF popup near global_pos, keeping it within the screen."""
         sg = self.db.get_safeguard(sg_id)
-        current_rrf = int(dict(sg).get('rrf', 1)) if sg else 1
+        sg_d        = dict(sg) if sg else {}
+        current_rrf     = int(sg_d.get('rrf', 1))
+        current_sg_type = sg_d.get('sg_type', 'Övrigt') or 'Övrigt'
 
         # Use extended popup when consequence has category assessments
-        item        = self._table.item(row, self._C_SG)
+        item         = self._table.item(row, self._C_SG)
         cat_pop_data = item.data(Qt.ItemDataRole.UserRole + 3) if item else None
 
         if cat_pop_data:
             _cons_id, sev_cat_list = cat_pop_data
-            popup = SgRRFCategoryPopup(self.db, sg_id, current_rrf, sev_cat_list, self)
+            popup = SgRRFCategoryPopup(
+                self.db, sg_id, current_rrf, current_sg_type, sev_cat_list, self)
         else:
-            popup = RRFPopup(current_rrf, self)
+            popup = RRFPopup(current_rrf, current_sg_type, self)
             popup.rrf_selected.connect(
-                lambda v, r=row, sid=sg_id: self._update_sg_rrf(r, sid, v))
+                lambda v, t, r=row, sid=sg_id: self._update_sg_rrf(r, sid, v, t))
 
         popup.adjustSize()
         _scr   = QApplication.screenAt(global_pos) or QApplication.primaryScreen()
@@ -7178,8 +7211,8 @@ class ScenarioTablePanel(QWidget):
             self._table.blockSignals(False)
             self._table.viewport().update()
 
-    def _update_sg_rrf(self, row, sg_id, rrf):
-        self.db.update_safeguard(sg_id, rrf=rrf)
+    def _update_sg_rrf(self, row, sg_id, rrf, sg_type=None):
+        self.db.update_safeguard(sg_id, rrf=rrf, sg_type=sg_type)
         QTimer.singleShot(0, self._rebuild)
 
     # ── Enter-tangent: snabblägg-till ─────────────────────────────────────────
