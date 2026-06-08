@@ -6696,14 +6696,15 @@ class ScenarioTablePanel(QWidget):
         if (isinstance(obj, QLineEdit) and
                 obj.property('editing_row') is not None and
                 obj.property('sg_id') is None):
-            if ctrl and event.type() == QEvent.Type.KeyPress:
+            if event.type() == QEvent.Type.KeyPress:
                 if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                     row = obj.property('editing_row')
                     col = obj.property('editing_col')
                     self._delegate.commitData.emit(obj)
                     self._delegate.closeEditor.emit(obj, QStyledItemDelegate.EndEditHint.NoHint)
-                    self._ctrl_enter(row, col)
-                    return True
+                    if ctrl:
+                        self._ctrl_enter(row, col)
+                    return True  # always consume Enter in editor — prevents table-level handler
 
         # Table-level Enter key (no inline editor open — table itself has focus)
         if obj is self._table and event.type() == QEvent.Type.KeyPress:
