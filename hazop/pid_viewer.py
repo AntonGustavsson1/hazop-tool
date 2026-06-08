@@ -5231,10 +5231,12 @@ class PIDPanel(QWidget):
         """Called by MainWindow after CauseObjectPopup is confirmed."""
         if not description:
             return None
-        parts = []
-        if comp_tag:  parts.append(comp_tag)
-        if comp_type: parts.append(comp_type)
-        label = ((' — '.join(parts) + ': ') if parts else '') + description
+        if comp_tag:
+            label = f"{comp_tag}: {description}"
+        elif comp_type:
+            label = f"{comp_type}: {description}"
+        else:
+            label = description
 
         try:
             cause_id = self.db.add_cause(dev_id)
@@ -5299,10 +5301,12 @@ class PIDPanel(QWidget):
         if not cause_desc:
             return
 
-        parts = []
-        if tag:       parts.append(tag)
-        if comp_type: parts.append(comp_type)
-        label = ((' — '.join(parts) + ': ') if parts else '') + cause_desc
+        if tag:
+            label = f"{tag}: {cause_desc}"
+        elif comp_type:
+            label = f"{comp_type}: {cause_desc}"
+        else:
+            label = cause_desc
 
         try:
             cause_id = self.db.add_cause(dev_id)

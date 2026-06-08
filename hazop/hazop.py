@@ -4953,32 +4953,42 @@ class CauseObjectPopup(QDialog):
 
         self.setWindowTitle("Objekt / Standardorsak")
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
-        self.setMinimumWidth(320)
-        self.setMaximumWidth(380)
+        self.setMinimumWidth(280)
+        self.setMaximumWidth(340)
+
+        _small = "font-size:10px;"
+        _btn_style = ("QPushButton{font-size:10px; padding:2px 10px;"
+                      "border:1px solid #bbb; border-radius:3px; background:#f5f5f5;}"
+                      "QPushButton:hover{background:#e0e8f5;}"
+                      "QPushButton:default{background:#1F4E79; color:white; border-color:#1F4E79;}"
+                      "QPushButton:default:hover{background:#2a6099;}")
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(8)
-        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(4)
+        layout.setContentsMargins(8, 8, 8, 8)
 
         # ── Header: icon + title ──────────────────────────────────────────────
         hdr = QHBoxLayout()
-        hdr.setSpacing(8)
+        hdr.setSpacing(6)
         self._icon_lbl = QLabel()
-        self._icon_lbl.setFixedSize(32, 32)
+        self._icon_lbl.setFixedSize(22, 22)
         hdr.addWidget(self._icon_lbl)
-        title = QLabel("<b>Objekt / Standardorsak</b>")
-        title.setStyleSheet("font-size:12px; color:#1F4E79;")
+        title = QLabel("<b>Orsak på P&amp;ID</b>")
+        title.setStyleSheet("font-size:11px; color:#1F4E79;")
         hdr.addWidget(title)
         hdr.addStretch()
         layout.addLayout(hdr)
 
         # ── Form: Tag-ID + Type ───────────────────────────────────────────────
         form = QFormLayout()
-        form.setSpacing(6)
+        form.setSpacing(3)
+        form.setContentsMargins(0, 0, 0, 0)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
         self._tag_edit = QLineEdit(comp_tag)
         self._tag_edit.setPlaceholderText("t.ex. P-101")
+        self._tag_edit.setFixedHeight(22)
+        self._tag_edit.setStyleSheet(_small)
         if db:
             try:
                 tags = [r[0] for r in db.conn.execute(
@@ -4989,30 +4999,37 @@ class CauseObjectPopup(QDialog):
                 self._tag_edit.setCompleter(comp)
             except Exception:
                 pass
-        form.addRow("Tag-ID:", self._tag_edit)
+        tag_lbl = QLabel("Tag:")
+        tag_lbl.setStyleSheet(_small)
+        form.addRow(tag_lbl, self._tag_edit)
 
         self._type_cb = QComboBox()
         self._type_cb.addItems(_OBJ_TYPES)
+        self._type_cb.setFixedHeight(22)
+        self._type_cb.setStyleSheet(_small)
         idx = self._type_cb.findText(comp_type)
         self._type_cb.setCurrentIndex(max(0, idx))
-        form.addRow("Typ:", self._type_cb)
+        typ_lbl = QLabel("Typ:")
+        typ_lbl.setStyleSheet(_small)
+        form.addRow(typ_lbl, self._type_cb)
         layout.addLayout(form)
 
-        # ── Separator ─────────────────────────────────────────────────────────
+        # ── Thin separator ────────────────────────────────────────────────────
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color:#ddd;")
+        sep.setStyleSheet("color:#e0e0e0; margin:0px;")
+        sep.setFixedHeight(1)
         layout.addWidget(sep)
 
         # ── Standard causes section ───────────────────────────────────────────
         self._causes_header = QLabel()
-        self._causes_header.setStyleSheet("color:#555; font-size:10px;")
+        self._causes_header.setStyleSheet("color:#777; font-size:9px;")
         layout.addWidget(self._causes_header)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        self._scroll.setMaximumHeight(160)
+        self._scroll.setMaximumHeight(150)
         layout.addWidget(self._scroll)
 
         self._btn_group = QButtonGroup(self)
@@ -5020,19 +5037,29 @@ class CauseObjectPopup(QDialog):
 
         # Freetext radio — always the last option
         self._freetext_radio = QRadioButton("Fritext:")
+        self._freetext_radio.setStyleSheet(_small)
         self._freetext_edit  = QLineEdit(current_description)
         self._freetext_edit.setPlaceholderText("Beskriv orsaken…")
+        self._freetext_edit.setFixedHeight(22)
+        self._freetext_edit.setStyleSheet(_small)
         self._freetext_radio.toggled.connect(
             lambda on: self._freetext_edit.setEnabled(on))
 
         # ── Buttons ───────────────────────────────────────────────────────────
         btns = QHBoxLayout()
+        btns.setSpacing(4)
         ok  = QPushButton("OK")
         ok.setDefault(True)
+        ok.setFixedHeight(24)
+        ok.setStyleSheet(_btn_style)
         ok.clicked.connect(self._ok)
         clr = QPushButton("Rensa")
+        clr.setFixedHeight(24)
+        clr.setStyleSheet(_btn_style)
         clr.clicked.connect(self._clear)
         cancel = QPushButton("Avbryt")
+        cancel.setFixedHeight(24)
+        cancel.setStyleSheet(_btn_style)
         cancel.clicked.connect(self.reject)
         btns.addWidget(ok)
         btns.addStretch()
@@ -5053,10 +5080,10 @@ class CauseObjectPopup(QDialog):
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _update_icon(self, comp_type):
-        px = QPixmap(32, 32)
+        px = QPixmap(22, 22)
         px.fill(Qt.GlobalColor.transparent)
         p = QPainter(px)
-        _draw_equip_icon(p, QRect(0, 0, 32, 32), comp_type)
+        _draw_equip_icon(p, QRect(0, 0, 22, 22), comp_type)
         p.end()
         self._icon_lbl.setPixmap(px)
 
@@ -5093,10 +5120,12 @@ class CauseObjectPopup(QDialog):
             if not rows:
                 rows = self._db.standard_causes_for_comp_type(comp_type)
 
+        _rs = "font-size:10px;"
+
         inner = QWidget()
         vbox  = QVBoxLayout(inner)
-        vbox.setSpacing(3)
-        vbox.setContentsMargins(2, 2, 2, 2)
+        vbox.setSpacing(1)
+        vbox.setContentsMargins(2, 1, 2, 1)
 
         to_check = None   # radio to pre-select
 
@@ -5105,13 +5134,14 @@ class CauseObjectPopup(QDialog):
             freq  = r.get('frequency')
             desc  = r['description']
             radio = QRadioButton(desc)
+            radio.setStyleSheet(_rs)
             self._btn_group.addButton(radio)
             self._cause_buttons.append((radio, desc, freq))
 
             row_w = QWidget()
             row_h = QHBoxLayout(row_w)
             row_h.setContentsMargins(0, 0, 0, 0)
-            row_h.setSpacing(6)
+            row_h.setSpacing(4)
             row_h.addWidget(radio, stretch=1)
 
             if freq is not None:
