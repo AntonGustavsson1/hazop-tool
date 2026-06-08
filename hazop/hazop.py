@@ -4953,7 +4953,8 @@ class CauseObjectPopup(QDialog):
 
         self.setWindowTitle("Objekt / Standardorsak")
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(320)
+        self.setMaximumWidth(380)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
@@ -5011,7 +5012,7 @@ class CauseObjectPopup(QDialog):
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        self._scroll.setMaximumHeight(220)
+        self._scroll.setMaximumHeight(160)
         layout.addWidget(self._scroll)
 
         self._btn_group = QButtonGroup(self)
@@ -10562,72 +10563,18 @@ class MainWindow(QMainWindow):
         self.tree_panel.refresh()
 
     def _on_add_causes_on_pid(self, deviation_id):
-        """Right-click deviation → 'Lägg till orsaker på P&ID'.
-
-        Shows a pre-dialog listing causes from other deviations in the same node
-        (with hierarchical ref-labels) so the user can reference/invert them before
-        entering P&ID placement mode.
-        """
+        """Red-pin click or right-click deviation → enter P&ID cause-placement mode."""
         dev = self.db.get_deviation(deviation_id)
         if not dev:
             return
-        node_id  = dev['node_id']
-        dev_name = dev['description']
-
-        # ── Build hierarchical reference labels ───────────────────────────────
-        all_nodes = self.db.nodes()
-        node_idx  = next((i + 1 for i, n in enumerate(all_nodes) if n['id'] == node_id), 1)
-
-        all_devs     = self.db.deviations(node_id)
-        dev_pos_map  = {d['id']: i + 1 for i, d in enumerate(all_devs)}
-
-        cause_pos_map: dict = {}
-        for d in all_devs:
-            for j, c in enumerate(self.db.causes_for_deviation(d['id'])):
-                cause_pos_map[c['id']] = j + 1
-
-        raw = self.db.causes_for_node_excluding_deviation(node_id, deviation_id)
-        existing_causes = []
-        for c in raw:
-            cd = dict(c)
-            dp = dev_pos_map.get(cd['deviation_id'], 0)
-            cp = cause_pos_map.get(cd['id'], 0)
-            cd['dev_label'] = f"{node_idx}.{dp}"
-            cd['ref_label'] = f"{node_idx}.{dp}.{cp}"
-            existing_causes.append(cd)
-
-        # ── Show pre-dialog if there are causes to reuse ──────────────────────
-        if existing_causes:
-            dlg = ReuseDeviationCausesDialog(dev_name, existing_causes, parent=self)
-            result = dlg.exec()
-            if result == QDialog.DialogCode.Rejected:
-                return   # user cancelled — do not enter P&ID mode
-            if result == QDialog.DialogCode.Accepted:
-                markers_need_reload = False
-                for desc, orig_cause_id, comp_type, comp_tag in dlg.get_selections():
-                    new_cid = self.db.add_cause(deviation_id)
-                    self.db.update_cause(new_cid, desc,
-                                         comp_type=comp_type, comp_tag=comp_tag)
-                    # Copy P&ID markers from the original cause (same physical component)
-                    if orig_cause_id is not None:
-                        for m in self.db.cause_markers_for_cause(orig_cause_id):
-                            self.db.add_cause_marker(
-                                new_cid, m['pid_page'], m['x'], m['y'],
-                                m['component_type'], m['component_tag'])
-                            markers_need_reload = True
-                self.tree_panel.refresh()
-                if markers_need_reload:
-                    self.pid_panel.reload_overlays()
-
-        # ── Enter P&ID placement mode ─────────────────────────────────────────
-        self.pid_panel.set_active_node(node_id)
+        self.pid_panel.set_active_node(dev['node_id'])
         self._switch_view(0)
         self.pid_panel.start_cause_template_mode(deviation_id)
 
     def _on_cause_placement_requested(self, dev_id, suggested_tag, detected_type,
                                        scene_pos, page):
         """User clicked on P&ID in cause-template mode — show CauseObjectPopup."""
-        dev_row = self.db.get_deviation(dev_id)
+        dev_row  = self.db.get_deviation(dev_id)
         dev_desc = dev_row['description'] if dev_row else None
 
         popup = CauseObjectPopup(
@@ -10636,6 +10583,20 @@ class MainWindow(QMainWindow):
             current_description='',
             parent=self)
         popup.setWindowFlags(popup.windowFlags() | Qt.WindowType.Window)
+        popup.adjustSize()
+
+        # Position popup near the P&ID click point
+        try:
+            viewer    = self.pid_panel.viewer
+            vp_pos    = viewer.mapFromScene(scene_pos).toPoint()
+            gp        = viewer.mapToGlobal(vp_pos)
+            screen    = (QApplication.screenAt(gp) or QApplication.primaryScreen()).availableGeometry()
+            pw, ph    = popup.sizeHint().width(), popup.sizeHint().height()
+            x = min(gp.x() + 12, screen.right()  - pw)
+            y = min(gp.y() + 12, screen.bottom() - ph)
+            popup.move(max(screen.left(), x), max(screen.top(), y))
+        except Exception:
+            pass
 
         def _on_committed(comp_type, comp_tag, description, frequency):
             self.pid_panel.place_cause_from_template(
