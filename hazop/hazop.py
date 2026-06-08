@@ -774,6 +774,8 @@ class Database:
             "ALTER TABLE standard_causes ADD COLUMN frequency REAL DEFAULT NULL",
             "ALTER TABLE standard_causes ADD COLUMN use_in_cause_form INTEGER DEFAULT 1",
             "ALTER TABLE causes ADD COLUMN standard_cause_id INTEGER DEFAULT NULL",
+            "ALTER TABLE causes ADD COLUMN comp_type TEXT DEFAULT ''",
+            "ALTER TABLE causes ADD COLUMN comp_tag  TEXT DEFAULT ''",
             "ALTER TABLE safeguards ADD COLUMN sg_type TEXT DEFAULT 'Övrigt'",
             "ALTER TABLE node_markups ADD COLUMN font_size INTEGER DEFAULT 12",
         ]:
@@ -1874,7 +1876,7 @@ class Database:
     _SENTINEL = object()
 
     def update_cause(self, id_, description=None, likelihood=None, base_freq=_SENTINEL,
-                     standard_cause_id=_SENTINEL):
+                     standard_cause_id=_SENTINEL, comp_type=_SENTINEL, comp_tag=_SENTINEL):
         sets, vals = [], []
         if description is not None:
             sets.append("description=?"); vals.append(description)
@@ -1884,6 +1886,10 @@ class Database:
             sets.append("base_freq=?"); vals.append(base_freq)
         if standard_cause_id is not Database._SENTINEL:
             sets.append("standard_cause_id=?"); vals.append(standard_cause_id)
+        if comp_type is not Database._SENTINEL:
+            sets.append("comp_type=?"); vals.append(comp_type)
+        if comp_tag is not Database._SENTINEL:
+            sets.append("comp_tag=?"); vals.append(comp_tag)
         if sets:
             vals.append(id_)
             self.conn.execute(f"UPDATE causes SET {', '.join(sets)} WHERE id=?", vals)
@@ -4544,6 +4550,60 @@ class EditableScenarioPanel(QWidget):
 # SCENARIO TABLE PANEL  (6-column bottom panel)
 # ══════════════════════════════════════════════════════════════════════════════
 
+_CAUSE_OBJ_W = 64   # width of the object-tag zone on the left of Orsak cells
+
+_OBJ_TYPES = [
+    '', 'Pump', 'Ventil', 'Kompressor', 'Tank / Kärl', 'Värmeväxlare',
+    'Rörledning', 'Instrument / Sensor', 'Säkerhetsventil (PSV)', 'Övrigt',
+]
+
+
+class ObjectTagPopup(QDialog):
+    """Small popup to set comp_type + comp_tag on a cause."""
+    saved = pyqtSignal(str, str)   # (comp_type, comp_tag)
+
+    def __init__(self, comp_type: str, comp_tag: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Objekt / Utrustning")
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(6)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        layout.addWidget(QLabel("<b>Utrustningstyp</b>"))
+        self._type_cb = QComboBox()
+        self._type_cb.addItems(_OBJ_TYPES)
+        idx = self._type_cb.findText(comp_type)
+        self._type_cb.setCurrentIndex(max(0, idx))
+        layout.addWidget(self._type_cb)
+
+        layout.addWidget(QLabel("<b>Tag-ID</b>  (t.ex. P-101)"))
+        self._tag_edit = QLineEdit(comp_tag)
+        self._tag_edit.setPlaceholderText("t.ex. P-101")
+        layout.addWidget(self._tag_edit)
+
+        btns = QHBoxLayout()
+        ok = QPushButton("OK")
+        ok.setDefault(True)
+        ok.clicked.connect(self._ok)
+        clr = QPushButton("Rensa")
+        clr.clicked.connect(self._clear)
+        cancel = QPushButton("Avbryt")
+        cancel.clicked.connect(self.reject)
+        btns.addWidget(ok); btns.addWidget(clr); btns.addWidget(cancel)
+        layout.addLayout(btns)
+
+        self._tag_edit.returnPressed.connect(self._ok)
+
+    def _ok(self):
+        self.saved.emit(self._type_cb.currentText(), self._tag_edit.text().strip())
+        self.accept()
+
+    def _clear(self):
+        self.saved.emit('', '')
+        self.accept()
+
+
 class RRFPopup(QDialog):
     """Quick-pick popup for setting a safeguard's RRF value."""
     rrf_selected = pyqtSignal(int)
@@ -5026,6 +5086,76 @@ class _PidDelegate(_ScenarioDelegate):
                 painter.restore()
                 return
 
+        # ── Cause cells: [pin][obj-tag zone][description] ─────────────────────
+        if col == self._panel._C_ORS:
+            obj_data = index.data(Qt.ItemDataRole.UserRole + 2)
+            if obj_data is not None:
+                comp_type, comp_tag = obj_data
+                r = option.rect
+                painter.save()
+                if sel:
+                    painter.fillRect(r, option.palette.highlight())
+                elif row % 2 == 1:
+                    painter.fillRect(r, option.palette.alternateBase())
+                else:
+                    painter.fillRect(r, option.palette.base())
+
+                pin_rect  = QRect(r.left(), r.top(), _PID_ICON_W, r.height())
+                obj_rect  = QRect(r.left() + _PID_ICON_W, r.top(), _CAUSE_OBJ_W, r.height())
+                desc_rect = QRect(r.left() + _PID_ICON_W + _CAUSE_OBJ_W, r.top(),
+                                  r.width() - _PID_ICON_W - _CAUSE_OBJ_W, r.height())
+
+                # Object-tag zone background
+                has_tag = bool(comp_tag or comp_type)
+                if sel:
+                    obj_bg = option.palette.highlight().color().darker(120)
+                elif has_tag:
+                    obj_bg = QColor('#e8f0fe')
+                else:
+                    obj_bg = QColor('#f4f4f4') if row % 2 == 0 else QColor('#ececec')
+                painter.fillRect(obj_rect, obj_bg)
+
+                # Object label: show tag if set, else type abbrev, else '+'
+                if comp_tag:
+                    obj_label = comp_tag
+                elif comp_type:
+                    obj_label = comp_type[:6]
+                else:
+                    obj_label = '+'
+                obj_font = QFont(option.font)
+                obj_font.setPointSize(max(6, option.font.pointSize() - 2))
+                obj_font.setBold(bool(has_tag))
+                painter.setFont(obj_font)
+                obj_tc = (option.palette.highlightedText().color() if sel
+                          else (QColor('#1a56db') if has_tag else QColor('#999')))
+                painter.setPen(obj_tc)
+                painter.drawText(obj_rect.adjusted(2, 0, -2, 0),
+                                 Qt.AlignmentFlag.AlignCenter, obj_label)
+
+                # Separator
+                painter.setPen(QPen(QColor('#ddd'), 1))
+                painter.drawLine(obj_rect.right(), r.top(), obj_rect.right(), r.bottom())
+
+                # Description text
+                desc = index.data(Qt.ItemDataRole.DisplayRole) or ''
+                tc = (option.palette.highlightedText().color() if sel
+                      else option.palette.text().color())
+                painter.setPen(tc)
+                painter.setFont(option.font)
+                fm = painter.fontMetrics()
+                elided = fm.elidedText(desc, Qt.TextElideMode.ElideRight,
+                                       desc_rect.width() - 4)
+                painter.drawText(desc_rect.adjusted(2, 0, -2, 0),
+                                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                                 elided)
+
+                # Pin icon
+                if self._panel._cell_has_item(row, col):
+                    _draw_pid_pin(painter, pin_rect, self._panel._is_cell_placed(row, col))
+
+                painter.restore()
+                return
+
         # ── Default: shift content right, draw pin on left ────────────────────
         opt = QStyleOptionViewItem(option)
         opt.rect = option.rect.adjusted(_PID_ICON_W, 0, 0, 0)
@@ -5369,7 +5499,9 @@ class ScenarioTablePanel(QWidget):
         self._table.setItem(r, self._C_DEV, dev_item)
 
         ors = QTableWidgetItem(cause_d['description'])
-        ors.setData(Qt.ItemDataRole.UserRole, ('cause', cause_d['id']))
+        ors.setData(Qt.ItemDataRole.UserRole,     ('cause', cause_d['id']))
+        ors.setData(Qt.ItemDataRole.UserRole + 2, (cause_d.get('comp_type') or '',
+                                                    cause_d.get('comp_tag')  or ''))
         self._table.setItem(r, self._C_ORS, ors)
 
         kon = _ro()
@@ -5422,10 +5554,14 @@ class ScenarioTablePanel(QWidget):
         dev_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
         self._table.setItem(r, self._C_DEV, dev_item)
 
-        # ── Col 2: Orsak (editable, description only) ────────────────────────
+        # ── Col 2: Orsak ─────────────────────────────────────────────────────
         ors = QTableWidgetItem(cause_d['description'])
-        ors.setData(Qt.ItemDataRole.UserRole, ('cause', cause_d['id']))
-        ors.setToolTip("Dubbelklicka för att redigera\nEnter för att lägga till ny orsak")
+        ors.setData(Qt.ItemDataRole.UserRole,     ('cause', cause_d['id']))
+        ors.setData(Qt.ItemDataRole.UserRole + 2, (cause_d.get('comp_type') or '',
+                                                    cause_d.get('comp_tag')  or ''))
+        ors.setToolTip("Dubbelklicka för att redigera\n"
+                       "Klicka på objektzonen (vänster) för att sätta utrustnings-tag\n"
+                       "Enter för att lägga till ny orsak")
         self._table.setItem(r, self._C_ORS, ors)
 
         # ── Col 2: Konsekvens (editable description) ─────────────────────────
@@ -5738,6 +5874,31 @@ class ScenarioTablePanel(QWidget):
         popup.move(x, y)
         popup.exec()
 
+    def _show_obj_tag_popup(self, row, cause_id, global_pos):
+        item = self._table.item(row, self._C_ORS)
+        obj_data = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
+        comp_type, comp_tag = obj_data if obj_data else ('', '')
+        popup = ObjectTagPopup(comp_type, comp_tag, self)
+        popup.saved.connect(lambda ct, tg, r=row, cid=cause_id: self._update_cause_obj(r, cid, ct, tg))
+        popup.adjustSize()
+        _scr   = QApplication.screenAt(global_pos) or QApplication.primaryScreen()
+        screen = _scr.availableGeometry()
+        pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
+        x, y   = global_pos.x(), global_pos.y() + 6
+        if y + ph > screen.bottom(): y = global_pos.y() - ph - 6
+        if x + pw > screen.right():  x = screen.right() - pw - 4
+        x = max(screen.left() + 4, x)
+        y = max(screen.top()  + 4, y)
+        popup.move(x, y)
+        popup.exec()
+
+    def _update_cause_obj(self, row, cause_id, comp_type, comp_tag):
+        self.db.update_cause(cause_id, comp_type=comp_type, comp_tag=comp_tag)
+        item = self._table.item(row, self._C_ORS)
+        if item:
+            item.setData(Qt.ItemDataRole.UserRole + 2, (comp_type, comp_tag))
+        self._table.viewport().update()   # repaint without full rebuild
+
     def _update_sg_rrf(self, row, sg_id, rrf):
         self.db.update_safeguard(sg_id, rrf=rrf)
         QTimer.singleShot(0, self._rebuild)
@@ -5768,7 +5929,19 @@ class ScenarioTablePanel(QWidget):
                         self._place_from_table(row, col)
                     return True  # consume left-click; right-click falls through to context menu
 
-            # ⚡ RRF badge click — bottom _RRF_H pixels of safeguard cell
+            # Object-tag zone click — left (_PID_ICON_W .. _PID_ICON_W+_CAUSE_OBJ_W) of cause cell
+            if row >= 0 and col == self._C_ORS and row < len(self._row_meta):
+                col_x = self._table.columnViewportPosition(col)
+                obj_start = col_x + _PID_ICON_W
+                obj_end   = obj_start + _CAUSE_OBJ_W
+                if obj_start <= pos.x() < obj_end:
+                    cause_id = self._row_meta[row][1]
+                    if cause_id is not None:
+                        gp = self._table.viewport().mapToGlobal(pos)
+                        self._show_obj_tag_popup(row, cause_id, gp)
+                        return True
+
+            # ⚡ RRF badge click — right _RRF_W pixels of safeguard cell
             if (row >= 0 and col == self._C_SG and row < len(self._row_meta)):
                 sg_id = self._row_meta[row][3]
                 if sg_id is not None:
