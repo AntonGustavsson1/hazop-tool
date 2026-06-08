@@ -4829,13 +4829,13 @@ class StandardCausesPickerPopup(QDialog):
                     lambda _, d=c['description'], f=freq: self._pick(d, f))
                 row_h.addWidget(desc_btn, stretch=1)
                 if freq is not None:
-                    f_int  = int(round(freq))
-                    short  = freq_axis_label(f_int)        # e.g. "F3"
-                    full   = freq_axis_label_full(f_int)   # e.g. "F3 – Möjlig (1/100 år)"
-                    # Show short code + descriptive part on separate lines
-                    rest   = full[len(short):].strip().lstrip('–').strip()
-                    badge_txt = f"{short}\n{rest}" if rest else short
-                    freq_lbl = QLabel(badge_txt)
+                    if freq < 0.01:
+                        freq_str = f"{freq:.2e} /år"
+                    elif freq < 1:
+                        freq_str = f"{freq:.3g} /år"
+                    else:
+                        freq_str = f"{freq:.3g} /år"
+                    freq_lbl = QLabel(freq_str)
                     freq_lbl.setStyleSheet(
                         "color:#1F4E79; background:#dce8f5; border-radius:3px;"
                         "padding:2px 6px; font-size:10px; font-weight:bold;")
