@@ -4553,17 +4553,18 @@ class EditableScenarioPanel(QWidget):
 _CAUSE_OBJ_W = 64   # width of the object-tag zone on the left of Orsak cells
 
 _COMP_EMOJI = {
-    'Pump':                  '⚙',
-    'Ventil':                '🔧',
-    'Kompressor':            '💨',
-    'Tank / Kärl':           '🛢',
-    'Värmeväxlare':          '♨',
-    'Rörledning':            '〰',
-    'Instrument / Sensor':   '📡',
-    'Säkerhetsventil (PSV)': '🛡',
-    'Övrigt':                '❓',
+    # Characters chosen to match ISA 5.1 / ISO 10628-2 P&ID symbol shapes
+    'Pump':                  '⊙',  # ⊙  circled dot — centrifugal pump circle+shaft
+    'Ventil':                '⋈',  # ⋈  bowtie — IS the ISA valve symbol shape
+    'Kompressor':            '⊗',  # ⊗  circled × — compressor (distinct from pump)
+    'Tank / Kärl':           '▭',  # ▭  white rectangle — vessel / storage tank
+    'Värmeväxlare':          '⊠',  # ⊠  squared times — heat-exchanger tube cross-section
+    'Rörledning':            '→',  # →  rightward arrow — process flow line
+    'Instrument / Sensor':   '◯',  # ◯  large circle — ISA instrument bubble
+    'Säkerhetsventil (PSV)': '⋔',  # ⋔  pitchfork — PSV body + upward discharge stem
+    'Övrigt':                '◇',  # ◇  white diamond — generic / unknown
 }
-_COMP_EMOJI_DEFAULT = '⚙'
+_COMP_EMOJI_DEFAULT = '◇'  # ◇
 
 _OBJ_TYPES = [
     '', 'Pump', 'Ventil', 'Kompressor', 'Tank / Kärl', 'Värmeväxlare',
@@ -5230,8 +5231,9 @@ class _PidDelegate(_ScenarioDelegate):
                 emoji = (_COMP_EMOJI.get(comp_type, _COMP_EMOJI_DEFAULT)
                          if comp_type else '+')
                 tag_label = comp_tag or ''
-                obj_font_e = QFont(option.font)
-                obj_font_e.setPointSize(max(8, option.font.pointSize()))
+                # Use a font with good math/geometric Unicode coverage
+                obj_font_e = QFont('Segoe UI Symbol, Arial Unicode MS, sans-serif')
+                obj_font_e.setPointSize(max(10, option.font.pointSize() + 2))
                 obj_font_t = QFont(option.font)
                 obj_font_t.setPointSize(max(6, option.font.pointSize() - 2))
                 obj_font_t.setBold(True)
