@@ -6348,6 +6348,15 @@ class ScenarioTablePanel(QWidget):
             pass
         self._table.viewport().update()
 
+    def ors_cell_global_pos(self, dev_id):
+        """Return global top-right corner of the first placeholder ORS cell for dev_id."""
+        for row, meta in enumerate(self._row_meta):
+            if meta[0] == dev_id:
+                rect = self._table.visualRect(
+                    self._table.model().index(row, self._C_ORS))
+                return self._table.viewport().mapToGlobal(rect.topRight())
+        return None
+
     def _cell_has_item(self, row, col):
         """Returns True only when the cell actually has a placeable item ID."""
         if row >= len(self._row_meta):
@@ -10115,7 +10124,6 @@ class MainWindow(QMainWindow):
         self.db = Database()
         load_matrix(self.db)
         self._markup_undo_stack  = []
-        self._pending_cause_data = None   # (comp_type, comp_tag, desc, freq) set before P&ID click
         self.setWindowTitle(f"HAZOP Tool  —  {self.db.path.name}")
         self.resize(1440, 900)
 
@@ -10564,80 +10572,43 @@ class MainWindow(QMainWindow):
         self.tree_panel.refresh()
 
     def _on_add_causes_on_pid(self, deviation_id):
-        """Red-pin click or right-click deviation in scenario table → show popup near cell,
-        then enter P&ID cause-placement mode with the pre-filled data."""
+        """Red-pin click or right-click deviation → enter P&ID cause-placement mode."""
         dev = self.db.get_deviation(deviation_id)
         if not dev:
             return
-
-        popup = CauseObjectPopup(
-            '', '', self.db,
-            dev_description=dev['description'],
-            current_description='',
-            parent=self)
-        popup.setWindowFlags(popup.windowFlags() | Qt.WindowType.Window)
-        popup.adjustSize()
-
-        # Anchor next to the cursor (which is at the ORS cell that was just clicked)
-        gp     = QCursor.pos()
-        screen = (QApplication.screenAt(gp) or QApplication.primaryScreen()).availableGeometry()
-        pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
-        x = min(gp.x() + 16, screen.right()  - pw)
-        y = min(gp.y(),       screen.bottom() - ph)
-        popup.move(max(screen.left(), x), max(screen.top(), y))
-
-        committed = [None]
-        popup.committed.connect(lambda ct, tag, desc, freq: committed.__setitem__(0, (ct, tag, desc, freq)))
-        if popup.exec() != QDialog.DialogCode.Accepted:
-            return
-        data = committed[0]
-        if not data or not data[2]:   # no description → nothing to place
-            return
-
-        self._pending_cause_data = data
         self.pid_panel.set_active_node(dev['node_id'])
         self._switch_view(0)
         self.pid_panel.start_cause_template_mode(deviation_id)
 
     def _on_cause_placement_requested(self, dev_id, suggested_tag, detected_type,
                                        scene_pos, page):
-        """User clicked on P&ID in cause-template mode — place cause using pre-filled data."""
-        if self._pending_cause_data:
-            comp_type, comp_tag, description, frequency = self._pending_cause_data
-            self._pending_cause_data = None
-            # Merge OCR tag/type if user left them empty
-            if not comp_tag and suggested_tag:
-                comp_tag = suggested_tag
-            if not comp_type and detected_type:
-                comp_type = detected_type
-            self.pid_panel.place_cause_from_template(
-                dev_id, scene_pos, page, comp_type, comp_tag, description, frequency)
-        else:
-            # Fallback for placement triggered without pre-filled data
-            dev_row  = self.db.get_deviation(dev_id)
-            dev_desc = dev_row['description'] if dev_row else None
-            popup = CauseObjectPopup(
-                detected_type, suggested_tag, self.db,
-                dev_description=dev_desc,
-                current_description='',
-                parent=self)
-            popup.setWindowFlags(popup.windowFlags() | Qt.WindowType.Window)
-            popup.adjustSize()
-            try:
-                viewer = self.pid_panel.viewer
-                vp_pos = viewer.mapFromScene(scene_pos).toPoint()
-                gp     = viewer.mapToGlobal(vp_pos)
-                screen = (QApplication.screenAt(gp) or QApplication.primaryScreen()).availableGeometry()
-                pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
-                x = min(gp.x() + 12, screen.right()  - pw)
-                y = min(gp.y() + 12, screen.bottom() - ph)
-                popup.move(max(screen.left(), x), max(screen.top(), y))
-            except Exception:
-                pass
-            popup.committed.connect(
-                lambda ct, tag, desc, freq: self.pid_panel.place_cause_from_template(
-                    dev_id, scene_pos, page, ct, tag, desc, freq))
-            popup.exec()
+        """P&ID clicked in template mode — show popup anchored to the ORS cell,
+        pre-filled with OCR tag/type; then place on confirm."""
+        dev_row  = self.db.get_deviation(dev_id)
+        dev_desc = dev_row['description'] if dev_row else None
+
+        popup = CauseObjectPopup(
+            detected_type, suggested_tag, self.db,
+            dev_description=dev_desc,
+            current_description='',
+            parent=self)
+        popup.setWindowFlags(popup.windowFlags() | Qt.WindowType.Window)
+        popup.adjustSize()
+
+        # Anchor to the ORS cell in the scenario table; fall back to cursor position
+        gp = self.scenario_panel.ors_cell_global_pos(dev_id)
+        if gp is None:
+            gp = QCursor.pos()
+        screen = (QApplication.screenAt(gp) or QApplication.primaryScreen()).availableGeometry()
+        pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
+        x = min(gp.x() + 4,  screen.right()  - pw)
+        y = min(gp.y(),       screen.bottom() - ph)
+        popup.move(max(screen.left(), x), max(screen.top(), y))
+
+        popup.committed.connect(
+            lambda ct, tag, desc, freq: self.pid_panel.place_cause_from_template(
+                dev_id, scene_pos, page, ct, tag, desc, freq))
+        popup.exec()
 
     def _on_add_consequences_on_pid(self, cause_id):
         """Right-click cause → 'Lägg till konsekvens på P&ID'."""
