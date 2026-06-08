@@ -5150,6 +5150,13 @@ class ScenarioTablePanel(QWidget):
         self._placed_safeguards   = set()
         outer.addWidget(self._table)
 
+        # Timer for single vs double click distinction on ORS/KON/SG cells
+        self._click_timer = QTimer(self)
+        self._click_timer.setSingleShot(True)
+        self._click_timer.setInterval(QApplication.doubleClickInterval())
+        self._click_timer.timeout.connect(self._on_pending_single_click)
+        self._pending_click = (-1, -1)  # (row, col)
+
     # ── Load ──────────────────────────────────────────────────────────────────
 
     def load_node(self, node_id):
@@ -5368,7 +5375,7 @@ class ScenarioTablePanel(QWidget):
         self._table.setItem(r, self._C_ORS, ors)
 
         kon = _ro()
-        kon.setToolTip("Tryck Enter för att lägga till konsekvens")
+        kon.setToolTip("Klicka för att lägga till konsekvens\nDubbelklicka för att skapa och redigera")
         self._table.setItem(r, self._C_KON, kon)
 
         for col in (self._C_RFORE, self._C_SG, self._C_REFT,
@@ -5420,7 +5427,7 @@ class ScenarioTablePanel(QWidget):
         # ── Col 2: Orsak (editable, description only) ────────────────────────
         ors = QTableWidgetItem(cause_d['description'])
         ors.setData(Qt.ItemDataRole.UserRole, ('cause', cause_d['id']))
-        ors.setToolTip("Dubbelklicka för att redigera")
+        ors.setToolTip("Klicka för att lägga till ny orsak\nDubbelklicka för att redigera")
         self._table.setItem(r, self._C_ORS, ors)
 
         # ── Col 2: Konsekvens (editable description) ─────────────────────────
@@ -5430,7 +5437,7 @@ class ScenarioTablePanel(QWidget):
 
         kon_item = QTableWidgetItem(cons_d['description'])
         kon_item.setData(Qt.ItemDataRole.UserRole, ('consequence', cid))
-        tip = "Dubbelklicka för att redigera"
+        tip = "Klicka för att lägga till ny konsekvens\nDubbelklicka för att redigera"
         if display_desc != cons_d['description']:
             tip += f"\nKedjetext: {display_desc}\n(Redigera kedja i höger panel)"
         kon_item.setToolTip(tip)
@@ -5450,14 +5457,14 @@ class ScenarioTablePanel(QWidget):
         if sg is None:
             sg_item = QTableWidgetItem('—')
             sg_item.setFlags(sg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            sg_item.setToolTip("Tryck Enter för att lägga till safeguard")
+            sg_item.setToolTip("Klicka för att lägga till barriär\nDubbelklicka för att skapa och redigera")
         else:
             rrf = sg.get('rrf', 1) or 1
             sg_item = QTableWidgetItem(sg['description'])
             sg_item.setData(Qt.ItemDataRole.EditRole, sg['description'])
             sg_item.setData(Qt.ItemDataRole.UserRole, ('safeguard', sg['id']))
             sg_item.setData(Qt.ItemDataRole.UserRole + 1, rrf)
-            sg_item.setToolTip("Dubbelklicka för att redigera\nKlicka på ⚡ RRF-raden för att ändra värdet")
+            sg_item.setToolTip("Klicka för att lägga till ny barriär\nDubbelklicka för att redigera\nKlicka på ⚡ RRF-raden för att ändra värdet")
         self._table.setItem(r, self._C_SG, sg_item)
 
         # ── Col 5: FA — checkable, text = probability % ──────────────────────
@@ -5636,16 +5643,10 @@ class ScenarioTablePanel(QWidget):
         menu.exec(self._table.viewport().mapToGlobal(pos))
 
     def _on_cell_clicked(self, row, col):
-        if col == self._C_ORS and row < len(self._row_meta):
-            self.item_selected.emit(CAUSE_T, self._row_meta[row][1])
-            return
-        if col == self._C_KON and row < len(self._row_meta):
-            self.item_selected.emit(CONS_T, self._row_meta[row][2])
-            return
-        if col == self._C_SG and row < len(self._row_meta):
-            sg_id = self._row_meta[row][3]
-            if sg_id is not None:
-                self.item_selected.emit(SG_T, sg_id)
+        if col in (self._C_ORS, self._C_KON, self._C_SG) and row < len(self._row_meta):
+            # Defer action — cancel if double-click arrives within the interval
+            self._pending_click = (row, col)
+            self._click_timer.start()
             return
         if col != self._C_RFORE:
             return
@@ -5678,6 +5679,26 @@ class ScenarioTablePanel(QWidget):
         popup.move(x, y)
         popup.exec()
 
+    def _on_pending_single_click(self):
+        """Timer expired without a double-click — create a new item in the clicked column."""
+        row, col = self._pending_click
+        if row < 0 or row >= len(self._row_meta):
+            return
+        dev_id, cause_id, cons_id, sg_id = self._row_meta[row]
+
+        if col == self._C_ORS and dev_id is not None:
+            new_id = self.db.add_cause(dev_id)
+            self.new_item_created.emit(CAUSE_T, new_id)
+            QTimer.singleShot(0, self._rebuild)
+        elif col == self._C_KON and cause_id is not None:
+            new_id = self.db.add_consequence(cause_id)
+            self.new_item_created.emit(CONS_T, new_id)
+            QTimer.singleShot(0, self._rebuild)
+        elif col == self._C_SG and cons_id is not None:
+            new_id = self.db.add_safeguard(cons_id)
+            self.new_item_created.emit(SG_T, new_id)
+            QTimer.singleShot(0, self._rebuild)
+
     def _apply_risk_from_matrix(self, cause_id, cons_id, new_freq, new_cons):
         self.db.update_cause(cause_id, likelihood=new_freq)
         cons = self.db.get_consequence(cons_id)
@@ -5689,9 +5710,48 @@ class ScenarioTablePanel(QWidget):
     def _on_cell_double_clicked(self, item):
         if item is None:
             return
+        self._click_timer.stop()   # cancel pending single-click action
+
         row = item.row()
         col = item.column()
-        if col in (self._C_ORS, self._C_KON, self._C_SG):
+        if col not in (self._C_ORS, self._C_KON, self._C_SG):
+            return
+        if row >= len(self._row_meta):
+            return
+
+        dev_id, cause_id, cons_id, sg_id = self._row_meta[row]
+
+        # Determine if there is already an item or if we must create one first
+        existing_id = (cause_id if col == self._C_ORS
+                       else cons_id if col == self._C_KON
+                       else sg_id)
+
+        if existing_id is None:
+            # No existing item — create one then drop into edit mode
+            if col == self._C_ORS and dev_id is not None:
+                new_id = self.db.add_cause(dev_id)
+                type_ = CAUSE_T
+            elif col == self._C_KON and cause_id is not None:
+                new_id = self.db.add_consequence(cause_id)
+                type_ = CONS_T
+            elif col == self._C_SG and cons_id is not None:
+                new_id = self.db.add_safeguard(cons_id)
+                type_ = SG_T
+            else:
+                return
+            self.new_item_created.emit(type_, new_id)
+            self._rebuild()
+            # Find the new row and start editing
+            idx_col = (1 if col == self._C_ORS else 2 if col == self._C_KON else 3)
+            for r in range(self._table.rowCount()):
+                if r < len(self._row_meta) and self._row_meta[r][idx_col] == new_id:
+                    idx = self._table.model().index(r, col)
+                    self._table.setCurrentIndex(idx)
+                    self._table.setFocus()
+                    self._table.edit(idx)
+                    break
+        else:
+            # Existing item — edit in place
             if not bool(item.flags() & Qt.ItemFlag.ItemIsEditable):
                 return
             self._table.setFocus()
