@@ -4552,10 +4552,88 @@ class EditableScenarioPanel(QWidget):
 
 _CAUSE_OBJ_W = 64   # width of the object-tag zone on the left of Orsak cells
 
+_COMP_EMOJI = {
+    'Pump':                  '⚙',
+    'Ventil':                '🔧',
+    'Kompressor':            '💨',
+    'Tank / Kärl':           '🛢',
+    'Värmeväxlare':          '♨',
+    'Rörledning':            '〰',
+    'Instrument / Sensor':   '📡',
+    'Säkerhetsventil (PSV)': '🛡',
+    'Övrigt':                '❓',
+}
+_COMP_EMOJI_DEFAULT = '⚙'
+
 _OBJ_TYPES = [
     '', 'Pump', 'Ventil', 'Kompressor', 'Tank / Kärl', 'Värmeväxlare',
     'Rörledning', 'Instrument / Sensor', 'Säkerhetsventil (PSV)', 'Övrigt',
 ]
+
+
+class StandardCausesPickerPopup(QDialog):
+    """Frameless popup listing standard causes for a given comp_type."""
+    cause_picked = pyqtSignal(str, object)   # (description, frequency_or_None)
+
+    def __init__(self, comp_type: str, rows, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Standardorsaker")
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setMinimumWidth(320)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(4)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        emoji = _COMP_EMOJI.get(comp_type, _COMP_EMOJI_DEFAULT)
+        hdr = QLabel(f"<b>{emoji} {comp_type}</b> — välj standardorsak")
+        hdr.setStyleSheet("color:#1F4E79;")
+        layout.addWidget(hdr)
+
+        # Group by deviation_name
+        groups = {}
+        for r in rows:
+            r = dict(r)
+            groups.setdefault(r['deviation_name'], []).append(r)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        inner = QWidget()
+        vbox  = QVBoxLayout(inner)
+        vbox.setSpacing(2)
+        vbox.setContentsMargins(0, 0, 0, 0)
+
+        for dev_name, causes in groups.items():
+            lbl = QLabel(f"<i>{dev_name}</i>")
+            lbl.setStyleSheet("color:#555; font-size:10px; margin-top:4px;")
+            vbox.addWidget(lbl)
+            for c in causes:
+                freq = c.get('frequency')
+                freq_txt = f"  <span style='color:#888;font-size:10px;'>"
+                if freq is not None:
+                    freq_txt += f"F={freq:.0f}"
+                freq_txt += "</span>"
+                btn = QPushButton(f"{c['description']}{freq_txt if freq is not None else ''}")
+                btn.setFlat(True)
+                btn.setStyleSheet(
+                    "QPushButton{text-align:left;padding:3px 6px;border-radius:3px;}"
+                    "QPushButton:hover{background:#e8f0fe;}")
+                btn.clicked.connect(
+                    lambda _, d=c['description'], f=freq: self._pick(d, f))
+                vbox.addWidget(btn)
+
+        vbox.addStretch()
+        scroll.setWidget(inner)
+        scroll.setMaximumHeight(300)
+        layout.addWidget(scroll)
+
+        close_btn = QPushButton("Avbryt")
+        close_btn.clicked.connect(self.reject)
+        layout.addWidget(close_btn)
+
+    def _pick(self, description, frequency):
+        self.cause_picked.emit(description, frequency)
+        self.accept()
 
 
 class ObjectTagPopup(QDialog):
@@ -5148,22 +5226,33 @@ class _PidDelegate(_ScenarioDelegate):
                     obj_bg = QColor('#f4f4f4') if row % 2 == 0 else QColor('#ececec')
                 painter.fillRect(obj_rect, obj_bg)
 
-                # Object label: show tag if set, else type abbrev, else '+'
-                if comp_tag:
-                    obj_label = comp_tag
-                elif comp_type:
-                    obj_label = comp_type[:6]
-                else:
-                    obj_label = '+'
-                obj_font = QFont(option.font)
-                obj_font.setPointSize(max(6, option.font.pointSize() - 2))
-                obj_font.setBold(bool(has_tag))
-                painter.setFont(obj_font)
+                # Object zone: emoji (top, larger) + tag below
+                emoji = (_COMP_EMOJI.get(comp_type, _COMP_EMOJI_DEFAULT)
+                         if comp_type else '+')
+                tag_label = comp_tag or ''
+                obj_font_e = QFont(option.font)
+                obj_font_e.setPointSize(max(8, option.font.pointSize()))
+                obj_font_t = QFont(option.font)
+                obj_font_t.setPointSize(max(6, option.font.pointSize() - 2))
+                obj_font_t.setBold(True)
                 obj_tc = (option.palette.highlightedText().color() if sel
-                          else (QColor('#1a56db') if has_tag else QColor('#999')))
+                          else (QColor('#1a56db') if has_tag else QColor('#888')))
                 painter.setPen(obj_tc)
-                painter.drawText(obj_rect.adjusted(2, 0, -2, 0),
-                                 Qt.AlignmentFlag.AlignCenter, obj_label)
+                # Split obj_rect vertically: emoji top half, tag bottom half
+                half_h = obj_rect.height() // 2
+                emoji_rect = QRect(obj_rect.left(), obj_rect.top(),
+                                   obj_rect.width(), half_h)
+                tag_rect   = QRect(obj_rect.left(), obj_rect.top() + half_h,
+                                   obj_rect.width(), obj_rect.height() - half_h)
+                painter.setFont(obj_font_e)
+                painter.drawText(emoji_rect, Qt.AlignmentFlag.AlignCenter, emoji)
+                if tag_label:
+                    painter.setFont(obj_font_t)
+                    fm2 = painter.fontMetrics()
+                    painter.drawText(tag_rect, Qt.AlignmentFlag.AlignCenter,
+                                     fm2.elidedText(tag_label,
+                                                    Qt.TextElideMode.ElideRight,
+                                                    obj_rect.width() - 2))
 
                 # Separator
                 painter.setPen(QPen(QColor('#ddd'), 1))
@@ -5955,6 +6044,36 @@ class ScenarioTablePanel(QWidget):
         popup.move(x, y)
         popup.exec()
 
+    def _show_std_causes_popup(self, row, cause_id, comp_type, global_pos):
+        rows = self.db.standard_causes_for_comp_type(comp_type)
+        if not rows:
+            return
+        popup = StandardCausesPickerPopup(comp_type, rows, self)
+        popup.cause_picked.connect(
+            lambda desc, freq, r=row, cid=cause_id: self._apply_std_cause(r, cid, desc, freq))
+        popup.adjustSize()
+        _scr   = QApplication.screenAt(global_pos) or QApplication.primaryScreen()
+        screen = _scr.availableGeometry()
+        pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
+        x, y   = global_pos.x(), global_pos.y() + 6
+        if y + ph > screen.bottom(): y = global_pos.y() - ph - 6
+        if x + pw > screen.right():  x = screen.right() - pw - 4
+        x = max(screen.left() + 4, x); y = max(screen.top() + 4, y)
+        popup.move(x, y)
+        popup.exec()
+
+    def _apply_std_cause(self, row, cause_id, description, frequency):
+        kwargs = {'description': description}
+        if frequency is not None:
+            kwargs['base_freq'] = frequency
+        self.db.update_cause(cause_id, **kwargs)
+        item = self._table.item(row, self._C_ORS)
+        if item:
+            self._table.blockSignals(True)
+            item.setText(description)
+            self._table.blockSignals(False)
+        QTimer.singleShot(0, self._rebuild)
+
     def _show_obj_tag_popup(self, row, cause_id, global_pos):
         item = self._table.item(row, self._C_ORS)
         obj_data = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
@@ -6017,10 +6136,17 @@ class ScenarioTablePanel(QWidget):
                 obj_end   = obj_start + _CAUSE_OBJ_W
                 if obj_start <= pos.x() < obj_end:
                     cause_id = self._row_meta[row][1]
-                    if cause_id is not None:
-                        gp = self._table.viewport().mapToGlobal(pos)
-                        self._show_obj_tag_popup(row, cause_id, gp)
-                        return True
+                    gp = self._table.viewport().mapToGlobal(pos)
+                    item = self._table.item(row, self._C_ORS)
+                    obj_data = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
+                    comp_type, comp_tag = obj_data if obj_data else ('', '')
+                    if comp_type and cause_id is not None:
+                        self._show_std_causes_popup(row, cause_id, comp_type, gp)
+                    else:
+                        # No type set yet — open tag/type picker
+                        if cause_id is not None:
+                            self._show_obj_tag_popup(row, cause_id, gp)
+                    return True
 
             # ⚡ RRF badge click — right _RRF_W pixels of safeguard cell
             if (row >= 0 and col == self._C_SG and row < len(self._row_meta)):
