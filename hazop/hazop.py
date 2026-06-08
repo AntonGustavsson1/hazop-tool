@@ -4937,6 +4937,245 @@ class ObjectTagPopup(QDialog):
         self.accept()
 
 
+class CauseObjectPopup(QDialog):
+    """Combined popup: set Tag-ID + equipment type, then pick a standard cause."""
+    committed = pyqtSignal(str, str, str, object)  # (comp_type, comp_tag, description, freq|None)
+
+    def __init__(self, comp_type: str, comp_tag: str, db,
+                 dev_description=None, current_description='', parent=None):
+        super().__init__(parent)
+        self._db              = db
+        self._dev_description = dev_description
+        self._cause_buttons   = []   # list of (QRadioButton, description, freq)
+
+        self.setWindowTitle("Objekt / Standardorsak")
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setMinimumWidth(460)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        # ── Header: icon + title ──────────────────────────────────────────────
+        hdr = QHBoxLayout()
+        hdr.setSpacing(8)
+        self._icon_lbl = QLabel()
+        self._icon_lbl.setFixedSize(32, 32)
+        hdr.addWidget(self._icon_lbl)
+        title = QLabel("<b>Objekt / Standardorsak</b>")
+        title.setStyleSheet("font-size:12px; color:#1F4E79;")
+        hdr.addWidget(title)
+        hdr.addStretch()
+        layout.addLayout(hdr)
+
+        # ── Form: Tag-ID + Type ───────────────────────────────────────────────
+        form = QFormLayout()
+        form.setSpacing(6)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self._tag_edit = QLineEdit(comp_tag)
+        self._tag_edit.setPlaceholderText("t.ex. P-101")
+        if db:
+            try:
+                tags = [r[0] for r in db.conn.execute(
+                    "SELECT DISTINCT tag FROM equipment_catalog ORDER BY tag").fetchall()]
+                comp = QCompleter(tags, self)
+                comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+                comp.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+                self._tag_edit.setCompleter(comp)
+            except Exception:
+                pass
+        form.addRow("Tag-ID:", self._tag_edit)
+
+        self._type_cb = QComboBox()
+        self._type_cb.addItems(_OBJ_TYPES)
+        idx = self._type_cb.findText(comp_type)
+        self._type_cb.setCurrentIndex(max(0, idx))
+        form.addRow("Typ:", self._type_cb)
+        layout.addLayout(form)
+
+        # ── Separator ─────────────────────────────────────────────────────────
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("color:#ddd;")
+        layout.addWidget(sep)
+
+        # ── Standard causes section ───────────────────────────────────────────
+        self._causes_header = QLabel()
+        self._causes_header.setStyleSheet("color:#555; font-size:10px;")
+        layout.addWidget(self._causes_header)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self._scroll.setMaximumHeight(220)
+        layout.addWidget(self._scroll)
+
+        self._btn_group = QButtonGroup(self)
+        self._btn_group.setExclusive(True)
+
+        # Freetext radio — always the last option
+        self._freetext_radio = QRadioButton("Fritext:")
+        self._freetext_edit  = QLineEdit(current_description)
+        self._freetext_edit.setPlaceholderText("Beskriv orsaken…")
+        self._freetext_radio.toggled.connect(
+            lambda on: self._freetext_edit.setEnabled(on))
+
+        # ── Buttons ───────────────────────────────────────────────────────────
+        btns = QHBoxLayout()
+        ok  = QPushButton("OK")
+        ok.setDefault(True)
+        ok.clicked.connect(self._ok)
+        clr = QPushButton("Rensa")
+        clr.clicked.connect(self._clear)
+        cancel = QPushButton("Avbryt")
+        cancel.clicked.connect(self.reject)
+        btns.addWidget(ok)
+        btns.addStretch()
+        btns.addWidget(clr)
+        btns.addWidget(cancel)
+        layout.addLayout(btns)
+
+        # ── Wire signals ──────────────────────────────────────────────────────
+        self._type_cb.currentTextChanged.connect(self._rebuild_causes)
+        self._tag_edit.textChanged.connect(self._on_tag_changed)
+        self._tag_edit.returnPressed.connect(self._ok)
+        if comp_tag:
+            self._on_tag_changed(comp_tag)
+
+        # Build initial causes list (triggers icon update too)
+        self._rebuild_causes(self._type_cb.currentText(), pre_select=current_description)
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _update_icon(self, comp_type):
+        px = QPixmap(32, 32)
+        px.fill(Qt.GlobalColor.transparent)
+        p = QPainter(px)
+        _draw_equip_icon(p, QRect(0, 0, 32, 32), comp_type)
+        p.end()
+        self._icon_lbl.setPixmap(px)
+
+    def _on_tag_changed(self, text):
+        if not self._db or not text.strip():
+            return
+        try:
+            row = self._db.conn.execute(
+                "SELECT equipment_type FROM equipment_catalog"
+                " WHERE tag=? COLLATE NOCASE LIMIT 1",
+                (text.strip(),)).fetchone()
+            if row and row[0]:
+                idx = self._type_cb.findText(row[0])
+                if idx >= 0:
+                    self._type_cb.setCurrentIndex(idx)
+        except Exception:
+            pass
+
+    def _rebuild_causes(self, comp_type, pre_select=''):
+        self._update_icon(comp_type)
+
+        # Clear old buttons from group
+        for btn, _, _ in self._cause_buttons:
+            self._btn_group.removeButton(btn)
+        self._cause_buttons.clear()
+        if self._freetext_radio in self._btn_group.buttons():
+            self._btn_group.removeButton(self._freetext_radio)
+
+        # Query causes filtered to current deviation, fall back to all
+        rows = []
+        if comp_type:
+            rows = self._db.standard_causes_for_comp_type(comp_type, self._dev_description)
+            if not rows:
+                rows = self._db.standard_causes_for_comp_type(comp_type)
+
+        inner = QWidget()
+        vbox  = QVBoxLayout(inner)
+        vbox.setSpacing(3)
+        vbox.setContentsMargins(2, 2, 2, 2)
+
+        to_check = None   # radio to pre-select
+
+        for r in rows:
+            r = dict(r)
+            freq  = r.get('frequency')
+            desc  = r['description']
+            radio = QRadioButton(desc)
+            self._btn_group.addButton(radio)
+            self._cause_buttons.append((radio, desc, freq))
+
+            row_w = QWidget()
+            row_h = QHBoxLayout(row_w)
+            row_h.setContentsMargins(0, 0, 0, 0)
+            row_h.setSpacing(6)
+            row_h.addWidget(radio, stretch=1)
+
+            if freq is not None:
+                freq_str = f"{freq:.3g} /år" if freq >= 0.01 else f"{freq:.2e} /år"
+                fl = QLabel(freq_str)
+                fl.setStyleSheet(
+                    "color:#1F4E79; background:#dce8f5; border-radius:3px;"
+                    "padding:1px 5px; font-size:10px; font-weight:bold;")
+                fl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                row_h.addWidget(fl)
+
+            vbox.addWidget(row_w)
+
+            if pre_select and desc == pre_select:
+                to_check = radio
+
+        # Freetext option (always last)
+        ft_row = QWidget()
+        ft_h   = QHBoxLayout(ft_row)
+        ft_h.setContentsMargins(0, 0, 0, 0)
+        ft_h.setSpacing(6)
+        ft_h.addWidget(self._freetext_radio)
+        ft_h.addWidget(self._freetext_edit, stretch=1)
+        vbox.addWidget(ft_row)
+        self._btn_group.addButton(self._freetext_radio)
+
+        vbox.addStretch()
+        self._scroll.setWidget(inner)
+
+        # Pre-select
+        if to_check:
+            to_check.setChecked(True)
+            self._freetext_edit.setEnabled(False)
+        else:
+            self._freetext_radio.setChecked(True)
+            self._freetext_edit.setEnabled(True)
+
+        # Update header text
+        has_std = bool(rows)
+        if has_std and self._dev_description:
+            self._causes_header.setText(
+                f"Standardorsaker  —  {comp_type}  /  {self._dev_description}")
+        elif has_std:
+            self._causes_header.setText(f"Standardorsaker  —  {comp_type}")
+        else:
+            self._causes_header.setText("Ingen standardorsak — ange fritext")
+        self._causes_header.setVisible(True)
+
+    def _ok(self):
+        comp_type = self._type_cb.currentText()
+        comp_tag  = self._tag_edit.text().strip()
+
+        desc, freq = '', None
+        if self._freetext_radio.isChecked():
+            desc = self._freetext_edit.text().strip()
+        else:
+            for radio, d, f in self._cause_buttons:
+                if radio.isChecked():
+                    desc, freq = d, f
+                    break
+
+        self.committed.emit(comp_type, comp_tag, desc, freq)
+        self.accept()
+
+    def _clear(self):
+        self.committed.emit('', '', '', None)
+        self.accept()
+
+
 class RRFPopup(QDialog):
     """Quick-pick popup for setting a safeguard's RRF value."""
     rrf_selected = pyqtSignal(int)
@@ -6260,51 +6499,27 @@ class ScenarioTablePanel(QWidget):
         popup.move(x, y)
         popup.exec()
 
-    def _show_std_causes_popup(self, row, cause_id, comp_type, global_pos):
-        dev_id = self._row_meta[row][0] if row < len(self._row_meta) else None
+    def _show_cause_obj_popup(self, row, cause_id, global_pos):
+        item      = self._table.item(row, self._C_ORS)
+        obj_data  = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
+        comp_type, comp_tag = obj_data if obj_data else ('', '')
+        current_desc = (item.text() if item else '') or ''
+
+        dev_id   = self._row_meta[row][0] if row < len(self._row_meta) else None
         dev_desc = None
         if dev_id is not None:
             dev_row = self.db.get_deviation(dev_id)
             if dev_row:
                 dev_desc = dev_row['description']
-        rows = self.db.standard_causes_for_comp_type(comp_type, dev_desc)
-        if not rows:
-            # No causes for this specific deviation — fall back to all
-            rows = self.db.standard_causes_for_comp_type(comp_type)
-        if not rows:
-            return
-        popup = StandardCausesPickerPopup(comp_type, rows, self)
-        popup.cause_picked.connect(
-            lambda desc, freq, r=row, cid=cause_id: self._apply_std_cause(r, cid, desc, freq))
-        popup.adjustSize()
-        _scr   = QApplication.screenAt(global_pos) or QApplication.primaryScreen()
-        screen = _scr.availableGeometry()
-        pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
-        x, y   = global_pos.x(), global_pos.y() + 6
-        if y + ph > screen.bottom(): y = global_pos.y() - ph - 6
-        if x + pw > screen.right():  x = screen.right() - pw - 4
-        x = max(screen.left() + 4, x); y = max(screen.top() + 4, y)
-        popup.move(x, y)
-        popup.exec()
 
-    def _apply_std_cause(self, row, cause_id, description, frequency):
-        kwargs = {'description': description}
-        if frequency is not None:
-            kwargs['base_freq'] = frequency
-        self.db.update_cause(cause_id, **kwargs)
-        item = self._table.item(row, self._C_ORS)
-        if item:
-            self._table.blockSignals(True)
-            item.setText(description)
-            self._table.blockSignals(False)
-        QTimer.singleShot(0, self._rebuild)
-
-    def _show_obj_tag_popup(self, row, cause_id, global_pos):
-        item = self._table.item(row, self._C_ORS)
-        obj_data = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
-        comp_type, comp_tag = obj_data if obj_data else ('', '')
-        popup = ObjectTagPopup(comp_type, comp_tag, db=self.db, parent=self)
-        popup.saved.connect(lambda ct, tg, r=row, cid=cause_id: self._update_cause_obj(r, cid, ct, tg))
+        popup = CauseObjectPopup(
+            comp_type, comp_tag, self.db,
+            dev_description=dev_desc,
+            current_description=current_desc,
+            parent=self)
+        popup.committed.connect(
+            lambda ct, tg, desc, freq, r=row, cid=cause_id:
+                self._apply_cause_obj(r, cid, ct, tg, desc, freq))
         popup.adjustSize()
         _scr   = QApplication.screenAt(global_pos) or QApplication.primaryScreen()
         screen = _scr.availableGeometry()
@@ -6317,12 +6532,23 @@ class ScenarioTablePanel(QWidget):
         popup.move(x, y)
         popup.exec()
 
-    def _update_cause_obj(self, row, cause_id, comp_type, comp_tag):
+    def _apply_cause_obj(self, row, cause_id, comp_type, comp_tag, description, frequency):
         self.db.update_cause(cause_id, comp_type=comp_type, comp_tag=comp_tag)
         item = self._table.item(row, self._C_ORS)
         if item:
             item.setData(Qt.ItemDataRole.UserRole + 2, (comp_type, comp_tag))
-        self._table.viewport().update()   # repaint without full rebuild
+        if description:
+            kwargs = {'description': description}
+            if frequency is not None:
+                kwargs['base_freq'] = frequency
+            self.db.update_cause(cause_id, **kwargs)
+            if item:
+                self._table.blockSignals(True)
+                item.setText(description)
+                self._table.blockSignals(False)
+            QTimer.singleShot(0, self._rebuild)
+        else:
+            self._table.viewport().update()
 
     def _update_sg_rrf(self, row, sg_id, rrf):
         self.db.update_safeguard(sg_id, rrf=rrf)
@@ -6360,18 +6586,10 @@ class ScenarioTablePanel(QWidget):
                 obj_start = col_x + _PID_ICON_W
                 obj_end   = obj_start + _CAUSE_OBJ_W
                 if obj_start <= pos.x() < obj_end:
-                    cause_id  = self._row_meta[row][1]
-                    gp        = self._table.viewport().mapToGlobal(pos)
-                    item      = self._table.item(row, self._C_ORS)
-                    obj_data  = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
-                    comp_type, comp_tag = obj_data if obj_data else ('', '')
-                    in_icon   = pos.x() < obj_start + _EQUIP_ICON_SZ
-                    if in_icon and comp_type and cause_id is not None:
-                        # Click on icon → show standard causes picker
-                        self._show_std_causes_popup(row, cause_id, comp_type, gp)
-                    elif cause_id is not None:
-                        # Click on tag text area (or icon with no type) → edit tag / type
-                        self._show_obj_tag_popup(row, cause_id, gp)
+                    cause_id = self._row_meta[row][1]
+                    if cause_id is not None:
+                        gp = self._table.viewport().mapToGlobal(pos)
+                        self._show_cause_obj_popup(row, cause_id, gp)
                     return True
 
             # ⚡ RRF badge click — right _RRF_W pixels of safeguard cell
