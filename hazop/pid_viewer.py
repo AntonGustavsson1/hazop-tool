@@ -3981,6 +3981,10 @@ class PIDPanel(QWidget):
     risk_scenario_requested = pyqtSignal(int, object, int)
     marker_navigated        = pyqtSignal(str, int)
     pid_analysis_done       = pyqtSignal()
+    # Emitted when user clicks P&ID in cause-template mode;
+    # MainWindow shows CauseObjectPopup then calls place_cause_from_template()
+    cause_placement_requested = pyqtSignal(int, str, str, object, int)
+    # (deviation_id, suggested_tag, detected_comp_type, scene_pos, page)
     # Node markup signals
     markup_draw_finished    = pyqtSignal(str, int, list, int, str)  # type_, node_id, pts, page, label
     markup_item_selected    = pyqtSignal(int)                        # markup_id
@@ -5217,70 +5221,36 @@ class PIDPanel(QWidget):
         dev_id = self._active_deviation_id
         if not dev_id:
             return
-        dev = self.db.get_deviation(dev_id)
-        if not dev:
-            return
-        dev_name = dev['description']
-        std_causes = (self.db.standard_causes_for_name(dev_name)
-                      if hasattr(self.db, 'standard_causes_for_name') else [])
 
-        comp_type_names = sorted({
-            dict(c).get('comp_type', '') for c in std_causes
-            if dict(c).get('comp_type', '')
-        })
-        detected_type   = self._db_comp_for_tag(suggested_tag) if suggested_tag else ''
+        detected_type = self._db_comp_for_tag(suggested_tag) if suggested_tag else ''
+        self.cause_placement_requested.emit(
+            dev_id, suggested_tag or '', detected_type, scene_pos, page)
 
-        dlg = TemplateCausePickerDialog(
-            dev_name, std_causes,
-            component_types=comp_type_names,
-            suggested_tag=suggested_tag,
-            preselect_type=detected_type,
-            parent=self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-
-        cause_desc = dlg.chosen_description
-        comp_type  = dlg.component_type
-        tag        = dlg.component_tag
-        if not cause_desc:
-            return
-
-        # Build label identical to normal cause flow
+    def place_cause_from_template(self, dev_id, scene_pos, page,
+                                  comp_type, comp_tag, description, frequency):
+        """Called by MainWindow after CauseObjectPopup is confirmed."""
+        if not description:
+            return None
         parts = []
-        if tag:       parts.append(tag)
+        if comp_tag:  parts.append(comp_tag)
         if comp_type: parts.append(comp_type)
-        label = ((' — '.join(parts) + ': ') if parts else '') + cause_desc
+        label = ((' — '.join(parts) + ': ') if parts else '') + description
 
         try:
             cause_id = self.db.add_cause(dev_id)
         except Exception as e:
             QMessageBox.critical(self, "Databasfel", f"Kunde inte skapa orsak:\n{e}")
-            return
-        self.db.update_cause(cause_id, label)
-
-        # Store standard cause frequency + ID so risk matrix and sync can use them
-        std_freq     = dlg.chosen_std_cause_freq
-        std_cause_id = dlg.chosen_std_cause_id
-        if std_freq is not None or std_cause_id is not None:
-            self.db.update_cause(cause_id, base_freq=std_freq,
-                                 standard_cause_id=std_cause_id)
+            return None
+        self.db.update_cause(cause_id, label, comp_type=comp_type, comp_tag=comp_tag)
+        if frequency is not None:
+            self.db.update_cause(cause_id, base_freq=frequency)
 
         pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
-        self.db.add_cause_marker(cause_id, page, pdf_x, pdf_y, comp_type, tag)
-        self.viewer.add_cause_marker(cause_id, pdf_x, pdf_y, comp_type, label, tag)
+        self.db.add_cause_marker(cause_id, page, pdf_x, pdf_y, comp_type, comp_tag)
+        self.viewer.add_cause_marker(cause_id, pdf_x, pdf_y, comp_type, label, comp_tag)
         self._load_overlays()
         self.cause_template_created.emit(cause_id)
-
-        # If user clicked "Markera objekt på P&ID", queue secondary marker placement
-        if dlg.wants_secondary_placement and dlg.secondary_description:
-            self._pending_secondary_cause_id       = cause_id
-            self._pending_secondary_comp_type      = dlg.secondary_comp_type
-            self._pending_secondary_tag            = dlg.secondary_component_tag
-            self._pending_secondary_deviation_id   = dev_id
-            self._pending_secondary_preselect_type = dlg.component_type
-            self._secondary_lbl.setText(
-                f"Klicka nu på sekundärkomponenten på P&ID:n  —  {dlg.secondary_description}")
-            self._secondary_banner.setVisible(True)
+        return cause_id
 
     def _place_secondary_marker(self, scene_pos, page, suggested_tag=''):
         """Place the queued secondary marker, then re-open the dialog for the same deviation."""

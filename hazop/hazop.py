@@ -4949,6 +4949,7 @@ class CauseObjectPopup(QDialog):
         self._db              = db
         self._dev_description = dev_description
         self._cause_buttons   = []   # list of (QRadioButton, description, freq)
+        self._freq_overrides  = {}   # QRadioButton → custom freq (overrides standard)
 
         self.setWindowTitle("Objekt / Standardorsak")
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
@@ -5080,6 +5081,7 @@ class CauseObjectPopup(QDialog):
         for btn, _, _ in self._cause_buttons:
             self._btn_group.removeButton(btn)
         self._cause_buttons.clear()
+        self._freq_overrides.clear()
         if self._freetext_radio in self._btn_group.buttons():
             self._btn_group.removeButton(self._freetext_radio)
 
@@ -5113,12 +5115,33 @@ class CauseObjectPopup(QDialog):
 
             if freq is not None:
                 freq_str = f"{freq:.3g} /år" if freq >= 0.01 else f"{freq:.2e} /år"
-                fl = QLabel(freq_str)
-                fl.setStyleSheet(
-                    "color:#1F4E79; background:#dce8f5; border-radius:3px;"
-                    "padding:1px 5px; font-size:10px; font-weight:bold;")
-                fl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                row_h.addWidget(fl)
+                fb = QPushButton(freq_str)
+                fb.setFixedHeight(20)
+                fb.setStyleSheet(
+                    "QPushButton{color:#1F4E79; background:#dce8f5; border-radius:3px;"
+                    "padding:1px 5px; font-size:10px; font-weight:bold; border:none;}"
+                    "QPushButton:hover{background:#b8d4f0;}")
+                fb.setToolTip("Klicka för att ange anpassad frekvens")
+                # capture radio + fb in closure
+                def _make_freq_handler(r=radio, btn=fb, base=freq):
+                    def _handler():
+                        cur = self._freq_overrides.get(r, base)
+                        val, ok = QInputDialog.getDouble(
+                            self, "Anpassad frekvens",
+                            "Frekvens (händelser/år):",
+                            cur, 0.0, 1e6, 6)
+                        if ok:
+                            self._freq_overrides[r] = val
+                            label = f"{val:.3g} /år" if val >= 0.01 else f"{val:.2e} /år"
+                            btn.setText(label)
+                            btn.setStyleSheet(
+                                "QPushButton{color:#7B2D00; background:#fde8cc;"
+                                "border-radius:3px; padding:1px 5px;"
+                                "font-size:10px; font-weight:bold; border:none;}"
+                                "QPushButton:hover{background:#fbd4a0;}")
+                    return _handler
+                fb.clicked.connect(_make_freq_handler())
+                row_h.addWidget(fb)
 
             vbox.addWidget(row_w)
 
@@ -5167,7 +5190,8 @@ class CauseObjectPopup(QDialog):
         else:
             for radio, d, f in self._cause_buttons:
                 if radio.isChecked():
-                    desc, freq = d, f
+                    desc = d
+                    freq = self._freq_overrides.get(radio, f)
                     break
 
         self.committed.emit(comp_type, comp_tag, desc, freq)
@@ -5728,9 +5752,13 @@ class _PidDelegate(_ScenarioDelegate):
                                  Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                                  elided)
 
-                # Pin icon
-                if self._panel._cell_has_item(row, col):
+                # Pin icon — always shown in ORS column (red if placeholder)
+                meta = self._panel._row_meta
+                _cause_id = meta[row][1] if row < len(meta) else None
+                if _cause_id is not None:
                     _draw_pid_pin(painter, pin_rect, self._panel._is_cell_placed(row, col))
+                else:
+                    _draw_pid_pin(painter, pin_rect, False)   # placeholder → red
 
                 painter.restore()
                 return
@@ -5755,12 +5783,13 @@ class _PidDelegate(_ScenarioDelegate):
 class ScenarioTablePanel(QWidget):
     """Extended scenario table with FA, Antändning, Övriga faktorer and Slutkonsekvens."""
 
-    item_selected    = pyqtSignal(int, int)   # (type_, id_) — cell clicked → open right panel
-    new_item_created = pyqtSignal(int, int)   # (type_, id_) — after quick-add via Enter menu
-    item_edited      = pyqtSignal(int, int)   # (type_, id_) — cell edit committed → sync right panel
-    place_requested  = pyqtSignal(int, int)   # (type_, id_) — place/add marker
-    navigate_to_pid  = pyqtSignal(int, int)   # (type_, id_) — navigate to existing marker
-    remove_requested = pyqtSignal(int, int)   # (type_, id_) — delete all markers
+    item_selected              = pyqtSignal(int, int)   # (type_, id_) — cell clicked → open right panel
+    new_item_created           = pyqtSignal(int, int)   # (type_, id_) — after quick-add via Enter menu
+    item_edited                = pyqtSignal(int, int)   # (type_, id_) — cell edit committed → sync right panel
+    place_requested            = pyqtSignal(int, int)   # (type_, id_) — place/add marker
+    navigate_to_pid            = pyqtSignal(int, int)   # (type_, id_) — navigate to existing marker
+    remove_requested           = pyqtSignal(int, int)   # (type_, id_) — delete all markers
+    add_causes_on_pid_requested = pyqtSignal(int)       # deviation_id — red pin click on empty ORS row
 
     # Column indices
     _C_NOD, _C_DEV, _C_ORS, _C_KON, _C_RFORE = 0, 1, 2, 3, 4
@@ -6574,7 +6603,12 @@ class ScenarioTablePanel(QWidget):
                 col_x = self._table.columnViewportPosition(col)
                 if pos.x() - col_x < _PID_ICON_W:
                     if not self._cell_has_item(row, col):
-                        return True  # consume click but do nothing for empty cells
+                        # Placeholder ORS row — red pin click → enter P&ID placement mode
+                        if col == self._C_ORS and row < len(self._row_meta):
+                            dev_id = self._row_meta[row][0]
+                            if dev_id is not None:
+                                self.add_causes_on_pid_requested.emit(dev_id)
+                        return True
                     if self._is_cell_placed(row, col):
                         # 🟢 → navigate to marker on P&ID
                         self._emit_navigate(row, col)
@@ -10270,6 +10304,7 @@ class MainWindow(QMainWindow):
         self.scenario_panel.place_requested.connect(self._on_scenario_place_requested)
         self.scenario_panel.navigate_to_pid.connect(self._on_scenario_navigate_to_pid)
         self.scenario_panel.remove_requested.connect(self._on_scenario_remove_from_pid)
+        self.scenario_panel.add_causes_on_pid_requested.connect(self._on_add_causes_on_pid)
 
         self.tree_panel.add_causes_on_pid_requested.connect(self._on_add_causes_on_pid)
         self.tree_panel.add_consequences_on_pid_requested.connect(
@@ -10329,6 +10364,7 @@ class MainWindow(QMainWindow):
             lambda cid: (self.tree_panel.refresh(CAUSE_T, cid),
                          self._on_selected(CAUSE_T, cid),
                          self.scenario_panel.refresh_placed()))
+        self.pid_panel.cause_placement_requested.connect(self._on_cause_placement_requested)
         self.pid_panel.risk_scenario_requested.connect(self._on_pid_risk_scenario)
         self.pid_panel.marker_navigated.connect(self._on_marker_navigate)
         self.pid_panel.pid_analysis_done.connect(self._on_pid_analysis_done)
@@ -10587,6 +10623,26 @@ class MainWindow(QMainWindow):
         self.pid_panel.set_active_node(node_id)
         self._switch_view(0)
         self.pid_panel.start_cause_template_mode(deviation_id)
+
+    def _on_cause_placement_requested(self, dev_id, suggested_tag, detected_type,
+                                       scene_pos, page):
+        """User clicked on P&ID in cause-template mode — show CauseObjectPopup."""
+        dev_row = self.db.get_deviation(dev_id)
+        dev_desc = dev_row['description'] if dev_row else None
+
+        popup = CauseObjectPopup(
+            detected_type, suggested_tag, self.db,
+            dev_description=dev_desc,
+            current_description='',
+            parent=self)
+        popup.setWindowFlags(popup.windowFlags() | Qt.WindowType.Window)
+
+        def _on_committed(comp_type, comp_tag, description, frequency):
+            self.pid_panel.place_cause_from_template(
+                dev_id, scene_pos, page, comp_type, comp_tag, description, frequency)
+
+        popup.committed.connect(_on_committed)
+        popup.exec()
 
     def _on_add_consequences_on_pid(self, cause_id):
         """Right-click cause → 'Lägg till konsekvens på P&ID'."""
