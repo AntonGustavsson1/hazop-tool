@@ -9533,7 +9533,7 @@ class MainWindow(QMainWindow):
             self.cause_panel.load(id_)
             self.stack.setCurrentWidget(self.cause_panel)
             self.pid_panel.set_active_cause(id_)
-            cause = self.db.get_cause(id_)
+            _row = self.db.get_cause(id_); cause = dict(_row) if _row else None
             if cause and cause.get('deviation_id'):
                 self.scenario_panel.load_deviation(cause['deviation_id'])
             else:
@@ -9542,9 +9542,11 @@ class MainWindow(QMainWindow):
             self.cons_panel.load(id_)
             self.stack.setCurrentWidget(self.cons_panel)
             self.pid_panel.set_active_consequence(id_)
-            cons = self.db.get_consequence(id_)
+            _cons = self.db.get_consequence(id_)
+            cons = dict(_cons) if _cons else None
             if cons:
-                cause = self.db.get_cause(cons['cause_id'])
+                _cause = self.db.get_cause(cons['cause_id'])
+                cause = dict(_cause) if _cause else None
                 if cause and cause.get('deviation_id'):
                     self.scenario_panel.load_deviation(cause['deviation_id'])
                 else:
@@ -9559,7 +9561,7 @@ class MainWindow(QMainWindow):
                 cons = self.db.get_consequence(sg['consequence_id'])
                 if cons:
                     self.pid_panel.set_active_consequence(cons['id'])
-                    cause = self.db.get_cause(cons['cause_id'])
+                    _cr = self.db.get_cause(cons['cause_id']); cause = dict(_cr) if _cr else None
                     if cause and cause.get('deviation_id'):
                         self.scenario_panel.load_deviation(cause['deviation_id'])
                     else:
