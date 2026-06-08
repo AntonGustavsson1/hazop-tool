@@ -5655,6 +5655,16 @@ class _PidDelegate(_ScenarioDelegate):
         clean = _PID_ICON_RE.sub('', editor.text().strip())
         model.setData(index, clean, Qt.ItemDataRole.EditRole)
 
+    def updateEditorGeometry(self, editor, option, index):
+        r = option.rect
+        col = index.column()
+        if col == self._panel._C_ORS:
+            offset = _PID_ICON_W + self._panel._cause_obj_w
+        else:
+            offset = _PID_ICON_W
+        editor.setGeometry(QRect(r.left() + offset, r.top(),
+                                 max(10, r.width() - offset), r.height()))
+
     def paint(self, painter, option, index):
         row, col = index.row(), index.column()
         sel = bool(option.state & QStyle.StateFlag.State_Selected)
