@@ -4896,7 +4896,7 @@ class _ScenarioDelegate(QStyledItemDelegate):
 
 
 _PID_ICON_W = 22          # pixels reserved on the left for the pin icon
-_RRF_H      = 18          # pixel height of the RRF badge row at the bottom of safeguard cells
+_RRF_W      = 54          # pixel width of the RRF badge column on the right of safeguard cells
 
 _PID_ICON_RE = re.compile(r'^[🟢📌]\s*')   # strip any old emoji prefix
 
@@ -4970,7 +4970,7 @@ class _PidDelegate(_ScenarioDelegate):
         row, col = index.row(), index.column()
         sel = bool(option.state & QStyle.StateFlag.State_Selected)
 
-        # ── Safeguard cells: two-zone custom paint ────────────────────────────
+        # ── Safeguard cells: side-by-side description | RRF badge ───────────
         if col == self._panel._C_SG:
             rrf = index.data(Qt.ItemDataRole.UserRole + 1)
             if rrf is not None:
@@ -4984,39 +4984,40 @@ class _PidDelegate(_ScenarioDelegate):
                 else:
                     painter.fillRect(r, option.palette.base())
 
-                # Split rect: description zone (top) and RRF badge (bottom)
-                desc_h    = r.height() - _RRF_H
-                desc_rect = QRect(r.left() + _PID_ICON_W, r.top(),
-                                  r.width() - _PID_ICON_W, desc_h)
-                rrf_rect  = QRect(r.left(), r.top() + desc_h, r.width(), _RRF_H)
-                pin_rect  = QRect(r.left(), r.top(), _PID_ICON_W, desc_h)
+                # Layout: [pin 22px][description ...][RRF badge 54px]
+                desc_w    = r.width() - _PID_ICON_W - _RRF_W
+                pin_rect  = QRect(r.left(), r.top(), _PID_ICON_W, r.height())
+                desc_rect = QRect(r.left() + _PID_ICON_W, r.top(), desc_w, r.height())
+                rrf_rect  = QRect(r.right() - _RRF_W, r.top(), _RRF_W, r.height())
 
-                # Description text
+                # Description text (elided to one line)
                 desc = index.data(Qt.ItemDataRole.DisplayRole) or ''
                 tc = (option.palette.highlightedText().color() if sel
                       else option.palette.text().color())
                 painter.setPen(tc)
                 painter.setFont(option.font)
-                painter.drawText(desc_rect.adjusted(3, 2, -2, -2),
+                fm = painter.fontMetrics()
+                elided = fm.elidedText(desc, Qt.TextElideMode.ElideRight, desc_w - 4)
+                painter.drawText(desc_rect.adjusted(2, 0, -2, 0),
                                  Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                                 desc)
+                                 elided)
 
-                # RRF badge strip
+                # RRF badge (right column)
                 badge_bg = QColor('#1F4E79') if sel else QColor('#dce8f5')
                 painter.fillRect(rrf_rect, badge_bg)
                 badge_tc = QColor('#ffffff') if sel else QColor('#1F4E79')
                 painter.setPen(badge_tc)
                 badge_font = QFont(option.font)
-                badge_font.setPointSize(max(7, option.font.pointSize() - 1))
+                badge_font.setPointSize(max(6, option.font.pointSize() - 2))
                 badge_font.setBold(True)
                 painter.setFont(badge_font)
-                painter.drawText(rrf_rect.adjusted(4, 0, -2, 0),
-                                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                                 f"⚡ RRF {rrf}")
+                painter.drawText(rrf_rect.adjusted(2, 1, -2, -1),
+                                 Qt.AlignmentFlag.AlignCenter,
+                                 f"RRF\n{rrf}")
 
-                # Separator line
+                # Separator line between description and badge
                 painter.setPen(QPen(QColor('#bcd'), 1))
-                painter.drawLine(r.left(), r.top() + desc_h, r.right(), r.top() + desc_h)
+                painter.drawLine(rrf_rect.left(), r.top(), rrf_rect.left(), r.bottom())
 
                 # Pin icon
                 if self._panel._cell_has_item(row, col):
@@ -5200,7 +5201,7 @@ class ScenarioTablePanel(QWidget):
         f = QFont()
         f.setPointSize(size)
         self._table.setFont(f)
-        self._table.verticalHeader().setDefaultSectionSize(max(28, size * 5 + 7))
+        self._table.verticalHeader().setDefaultSectionSize(max(22, size * 2 + 4))
         self._rebuild()
 
     # ── Build ─────────────────────────────────────────────────────────────────
@@ -5379,7 +5380,7 @@ class ScenarioTablePanel(QWidget):
                     self._C_FA, self._C_IGN, self._C_OVRIGA, self._C_SLUT):
             self._table.setItem(r, col, _ro())
 
-        self._table.setRowHeight(r, max(36 + _RRF_H, self._cell_font_size * 5 + 7 + _RRF_H))
+        self._table.setRowHeight(r, max(22, self._cell_font_size * 2 + 4))
 
     def _add_row(self, node_name, dev_d, cause_d, freq, freq_lbl, cons_d, sgs, sg):
         """One row per safeguard (sg=None when no safeguards exist yet).
@@ -5461,7 +5462,7 @@ class ScenarioTablePanel(QWidget):
             sg_item.setData(Qt.ItemDataRole.EditRole, sg['description'])
             sg_item.setData(Qt.ItemDataRole.UserRole, ('safeguard', sg['id']))
             sg_item.setData(Qt.ItemDataRole.UserRole + 1, rrf)
-            sg_item.setToolTip("Dubbelklicka för att redigera\nEnter för att lägga till ny barriär\nKlicka på ⚡ RRF-raden för att ändra värdet")
+            sg_item.setToolTip("Dubbelklicka för att redigera\nEnter för att lägga till ny barriär\nKlicka på RRF-kolumnen för att ändra värdet")
         self._table.setItem(r, self._C_SG, sg_item)
 
         # ── Col 5: FA — checkable, text = probability % ──────────────────────
@@ -5520,7 +5521,7 @@ class ScenarioTablePanel(QWidget):
         rs.setToolTip(f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}  (−{total_steps} steg totalt)")
         self._table.setItem(r, self._C_SLUT, rs)
 
-        self._table.setRowHeight(r, max(36 + _RRF_H, self._cell_font_size * 5 + 7 + _RRF_H))
+        self._table.setRowHeight(r, max(22, self._cell_font_size * 2 + 4))
 
     def _open_chain_editor(self, cons_id: int, label_widget=None):
         """Open the consequence chain dialog; refresh the label on accept."""
@@ -5773,7 +5774,7 @@ class ScenarioTablePanel(QWidget):
                 if sg_id is not None:
                     cell_idx = self._table.model().index(row, col)
                     cr = self._table.visualRect(cell_idx)
-                    if pos.y() >= cr.bottom() - _RRF_H:
+                    if pos.x() >= cr.right() - _RRF_W:
                         gp = self._table.viewport().mapToGlobal(pos)
                         self._show_rrf_popup_at(row, sg_id, gp)
                         return True
