@@ -5183,6 +5183,10 @@ class ScenarioTablePanel(QWidget):
             self._cons_id = cons_id
             self._rebuild()
 
+    def refresh(self):
+        """Rebuild in place — keeps the current filter unchanged."""
+        self._rebuild()
+
     def clear(self):
         self._node_id = None
         self._deviation_id = None
@@ -9406,7 +9410,7 @@ class MainWindow(QMainWindow):
         self.scenario_panel.item_selected.connect(self._on_scenario_item_selected)
         self.scenario_panel.new_item_created.connect(
             lambda type_, id_: (self.tree_panel.refresh(type_, id_),
-                                self._on_selected(type_, id_)))
+                                self.scenario_panel.refresh()))
         self.scenario_panel.item_edited.connect(self._on_scenario_item_edited)
         self.scenario_panel.place_requested.connect(self._on_scenario_place_requested)
         self.scenario_panel.navigate_to_pid.connect(self._on_scenario_navigate_to_pid)
@@ -9529,12 +9533,24 @@ class MainWindow(QMainWindow):
             self.cause_panel.load(id_)
             self.stack.setCurrentWidget(self.cause_panel)
             self.pid_panel.set_active_cause(id_)
-            self.scenario_panel.load_cause(id_)
+            cause = self.db.get_cause(id_)
+            if cause and cause.get('deviation_id'):
+                self.scenario_panel.load_deviation(cause['deviation_id'])
+            else:
+                self.scenario_panel.load_cause(id_)
         elif type_ == CONS_T:
             self.cons_panel.load(id_)
             self.stack.setCurrentWidget(self.cons_panel)
             self.pid_panel.set_active_consequence(id_)
-            self.scenario_panel.load_consequence(id_)
+            cons = self.db.get_consequence(id_)
+            if cons:
+                cause = self.db.get_cause(cons['cause_id'])
+                if cause and cause.get('deviation_id'):
+                    self.scenario_panel.load_deviation(cause['deviation_id'])
+                else:
+                    self.scenario_panel.load_consequence(id_)
+            else:
+                self.scenario_panel.load_consequence(id_)
         elif type_ == SG_T:
             self.sg_panel.load(id_)
             self.stack.setCurrentWidget(self.sg_panel)
@@ -9543,7 +9559,11 @@ class MainWindow(QMainWindow):
                 cons = self.db.get_consequence(sg['consequence_id'])
                 if cons:
                     self.pid_panel.set_active_consequence(cons['id'])
-                    self.scenario_panel.load_consequence(cons['id'])
+                    cause = self.db.get_cause(cons['cause_id'])
+                    if cause and cause.get('deviation_id'):
+                        self.scenario_panel.load_deviation(cause['deviation_id'])
+                    else:
+                        self.scenario_panel.load_consequence(cons['id'])
 
     def _on_deviation_add_cause(self, dev_id):
         new_id = self.db.add_cause(dev_id)
