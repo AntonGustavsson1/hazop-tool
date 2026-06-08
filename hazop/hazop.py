@@ -7186,6 +7186,7 @@ class SettingsPanel(QWidget):
         self._x_label_edits  = []   # QLineEdit per column
         self._y_label_edits  = []   # QLineEdit per row (high→low)
         self._palette_swatches = []
+        self._sev_def_edits  = {}   # (cat_id, sev_level) → QLineEdit, embedded in matrix grid
 
         tabs = QTabWidget()
         main = QVBoxLayout(self)
@@ -7368,10 +7369,6 @@ class SettingsPanel(QWidget):
         # ── Tab: Standardavvikelser & Orsaker ─────────────────────────────────
         self._std_causes_panel = StandardCausesSettingsPanel(self.db)
         tabs.addTab(self._std_causes_panel, "Standardorsaker")
-
-        # ── Tab: Konsekvenskriterier ──────────────────────────────────────────
-        self._sev_def_panel = SeverityDefinitionsPanel(self.db)
-        tabs.addTab(self._sev_def_panel, "Konsekvenskriterier")
 
         self._load_all()
 
@@ -7557,6 +7554,7 @@ class SettingsPanel(QWidget):
         self._x_label_edits      = []
         self._y_label_edits      = []
         self._freq_boundary_edits = []
+        self._sev_def_edits       = {}
 
         # Data always stored as [consequence_idx][frequency_idx]
         n_cons = cfg.get('rows', 5)    # consequence levels
@@ -7726,6 +7724,79 @@ class SettingsPanel(QWidget):
                     self._matrix_grid.addWidget(e, r + 1, n_dcols + 1)
                     self._freq_boundary_edits.append(e)
 
+        # ── Consequence category definitions embedded in matrix ────────────────
+        cats = self.db.consequence_categories()
+        defs = self.db.get_severity_definitions()  # {sev_level: {cat_id: description}}
+
+        _def_style = ("font-size:9px; border:1px solid #ccc; border-radius:0;"
+                      "background:#f8f8ff; padding:1px 3px;")
+        _cat_hdr_style = ("font-size:9px; font-weight:bold; background:#e8edf5;"
+                          "border:1px solid #bbb; padding:2px 6px;")
+
+        if not freq_on_x:
+            # Consequence on X (columns) → category rows go BELOW the matrix
+            # n_drows = n_freq; no boundary row exists (boundary is a column)
+            base_row = n_drows + 1
+
+            # Thin separator spanning all columns
+            sep = QLabel("── Konsekvensdefinitioner ──")
+            sep.setStyleSheet("font-size:8px; color:#888; padding:2px 4px;")
+            sep.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            self._matrix_grid.addWidget(sep, base_row, 0, 1, n_dcols + 1)
+
+            for cat_i, cat in enumerate(cats):
+                cat_id  = cat['id']
+                cat_row = base_row + 1 + cat_i
+
+                cat_lbl = QLabel(cat['name'])
+                cat_lbl.setStyleSheet(_cat_hdr_style)
+                cat_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                cat_lbl.setMinimumHeight(28)
+                self._matrix_grid.addWidget(cat_lbl, cat_row, 0)
+
+                for c in range(n_dcols):      # n_dcols = n_cons
+                    data_c    = (n_dcols - 1 - c) if x_rev else c
+                    sev_level = data_c + 1
+                    text = defs.get(sev_level, {}).get(cat_id, '')
+                    e = QLineEdit(text)
+                    e.setMinimumHeight(28)
+                    e.setStyleSheet(_def_style)
+                    e.setPlaceholderText("—")
+                    e.editingFinished.connect(
+                        lambda cid=cat_id, sl=sev_level, _e=e:
+                        self.db.set_severity_definition(sl, cid, _e.text().strip()))
+                    self._matrix_grid.addWidget(e, cat_row, c + 1)
+                    self._sev_def_edits[(cat_id, sev_level)] = e
+        else:
+            # Consequence on Y (rows) → category columns go to the RIGHT
+            # n_dcols = n_freq; no boundary column exists (boundary is a row)
+            base_col = n_dcols + 1
+
+            for cat_i, cat in enumerate(cats):
+                cat_id  = cat['id']
+                cat_col = base_col + cat_i
+
+                cat_hdr = QLabel(cat['name'])
+                cat_hdr.setStyleSheet(_cat_hdr_style)
+                cat_hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                cat_hdr.setMinimumHeight(28)
+                cat_hdr.setMinimumWidth(130)
+                self._matrix_grid.addWidget(cat_hdr, 0, cat_col)
+
+                for r in range(n_drows):      # n_drows = n_cons
+                    disp_r    = (n_drows - 1 - r) if not y_rev else r
+                    sev_level = disp_r + 1
+                    text = defs.get(sev_level, {}).get(cat_id, '')
+                    e = QLineEdit(text)
+                    e.setMinimumWidth(130)
+                    e.setStyleSheet(_def_style)
+                    e.setPlaceholderText("—")
+                    e.editingFinished.connect(
+                        lambda cid=cat_id, sl=sev_level, _e=e:
+                        self.db.set_severity_definition(sl, cid, _e.text().strip()))
+                    self._matrix_grid.addWidget(e, r + 1, cat_col)
+                    self._sev_def_edits[(cat_id, sev_level)] = e
+
     def _sync_freq_label_from_boundary(self, boundary_edit, col_idx: int):
         """Auto-update the frequency axis label(s) adjacent to the changed boundary."""
         try:
@@ -7858,7 +7929,6 @@ class SettingsPanel(QWidget):
         cfg = _normalise_matrix(cfg)   # ensure consistent before saving
         self.db.set_risk_matrix(cfg)
         load_matrix(self.db)
-        self._sev_def_panel.refresh()
         QMessageBox.information(self, "Sparat", "Riskmatris sparad.")
         self.matrix_changed.emit()
 
@@ -7911,7 +7981,7 @@ class SettingsPanel(QWidget):
         if ok and name.strip():
             self.db.add_category(name.strip())
             self._load_categories()
-            self._sev_def_panel.refresh()
+            self._apply_size()
 
     def _cat_rename(self):
         from PyQt6.QtWidgets import QInputDialog
@@ -7921,7 +7991,7 @@ class SettingsPanel(QWidget):
         if ok and name.strip():
             self.db.update_category(item.data(Qt.ItemDataRole.UserRole), name.strip())
             self._load_categories()
-            self._sev_def_panel.refresh()
+            self._apply_size()
 
     def _cat_delete(self):
         item = self._cat_list.currentItem()
