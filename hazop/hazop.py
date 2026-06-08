@@ -4896,6 +4896,7 @@ class _ScenarioDelegate(QStyledItemDelegate):
 
 
 _PID_ICON_W = 22          # pixels reserved on the left for the pin icon
+_RRF_H      = 18          # pixel height of the RRF badge row at the bottom of safeguard cells
 
 _PID_ICON_RE = re.compile(r'^[🟢📌]\s*')   # strip any old emoji prefix
 
@@ -4966,26 +4967,79 @@ class _PidDelegate(_ScenarioDelegate):
         model.setData(index, clean, Qt.ItemDataRole.EditRole)
 
     def paint(self, painter, option, index):
-        # Draw cell normally but shift content rect right to make room for icon
+        row, col = index.row(), index.column()
+        sel = bool(option.state & QStyle.StateFlag.State_Selected)
+
+        # ── Safeguard cells: two-zone custom paint ────────────────────────────
+        if col == self._panel._C_SG:
+            rrf = index.data(Qt.ItemDataRole.UserRole + 1)
+            if rrf is not None:
+                r = option.rect
+                painter.save()
+                # Background
+                if sel:
+                    painter.fillRect(r, option.palette.highlight())
+                elif row % 2 == 1:
+                    painter.fillRect(r, option.palette.alternateBase())
+                else:
+                    painter.fillRect(r, option.palette.base())
+
+                # Split rect: description zone (top) and RRF badge (bottom)
+                desc_h    = r.height() - _RRF_H
+                desc_rect = QRect(r.left() + _PID_ICON_W, r.top(),
+                                  r.width() - _PID_ICON_W, desc_h)
+                rrf_rect  = QRect(r.left(), r.top() + desc_h, r.width(), _RRF_H)
+                pin_rect  = QRect(r.left(), r.top(), _PID_ICON_W, desc_h)
+
+                # Description text
+                desc = index.data(Qt.ItemDataRole.DisplayRole) or ''
+                tc = (option.palette.highlightedText().color() if sel
+                      else option.palette.text().color())
+                painter.setPen(tc)
+                painter.setFont(option.font)
+                painter.drawText(desc_rect.adjusted(3, 2, -2, -2),
+                                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                                 desc)
+
+                # RRF badge strip
+                badge_bg = QColor('#1F4E79') if sel else QColor('#dce8f5')
+                painter.fillRect(rrf_rect, badge_bg)
+                badge_tc = QColor('#ffffff') if sel else QColor('#1F4E79')
+                painter.setPen(badge_tc)
+                badge_font = QFont(option.font)
+                badge_font.setPointSize(max(7, option.font.pointSize() - 1))
+                badge_font.setBold(True)
+                painter.setFont(badge_font)
+                painter.drawText(rrf_rect.adjusted(4, 0, -2, 0),
+                                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                                 f"⚡ RRF {rrf}")
+
+                # Separator line
+                painter.setPen(QPen(QColor('#bcd'), 1))
+                painter.drawLine(r.left(), r.top() + desc_h, r.right(), r.top() + desc_h)
+
+                # Pin icon
+                if self._panel._cell_has_item(row, col):
+                    _draw_pid_pin(painter, pin_rect, self._panel._is_cell_placed(row, col))
+
+                painter.restore()
+                return
+
+        # ── Default: shift content right, draw pin on left ────────────────────
         opt = QStyleOptionViewItem(option)
         opt.rect = option.rect.adjusted(_PID_ICON_W, 0, 0, 0)
         super().paint(painter, opt, index)
-        # Overlay the placement icon on the freed left strip
-        row, col = index.row(), index.column()
         icon_rect = QRect(option.rect.left(), option.rect.top(),
                           _PID_ICON_W, option.rect.height())
-        # Fill icon strip with selection or alternating-row background
-        if option.state & QStyle.StateFlag.State_Selected:
+        if sel:
             painter.fillRect(icon_rect, option.palette.highlight())
-        elif index.row() % 2 == 1:
+        elif row % 2 == 1:
             painter.fillRect(icon_rect, option.palette.alternateBase())
         else:
             painter.fillRect(icon_rect, option.palette.base())
-        # Only draw pin if the cell has a real item to place
         if not self._panel._cell_has_item(row, col):
             return
-        is_placed = self._panel._is_cell_placed(row, col)
-        _draw_pid_pin(painter, icon_rect, is_placed)
+        _draw_pid_pin(painter, icon_rect, self._panel._is_cell_placed(row, col))
 
 
 class ScenarioTablePanel(QWidget):
@@ -5321,7 +5375,7 @@ class ScenarioTablePanel(QWidget):
                     self._C_FA, self._C_IGN, self._C_OVRIGA, self._C_SLUT):
             self._table.setItem(r, col, _ro())
 
-        self._table.setRowHeight(r, max(36, self._cell_font_size * 5 + 7))
+        self._table.setRowHeight(r, max(36 + _RRF_H, self._cell_font_size * 5 + 7 + _RRF_H))
 
     def _add_row(self, node_name, dev_d, cause_d, freq, freq_lbl, cons_d, sgs, sg):
         """One row per safeguard (sg=None when no safeguards exist yet).
@@ -5399,12 +5453,11 @@ class ScenarioTablePanel(QWidget):
             sg_item.setToolTip("Tryck Enter för att lägga till safeguard")
         else:
             rrf = sg.get('rrf', 1) or 1
-            sg_item = QTableWidgetItem()
-            display = sg['description'] + f"\n🎚️  RRF {rrf}"
-            sg_item.setData(Qt.ItemDataRole.DisplayRole, display)
+            sg_item = QTableWidgetItem(sg['description'])
             sg_item.setData(Qt.ItemDataRole.EditRole, sg['description'])
             sg_item.setData(Qt.ItemDataRole.UserRole, ('safeguard', sg['id']))
-            sg_item.setToolTip(f"Dubbelklicka för att redigera\nKlicka på 🎚️ RRF-raden för att ändra värdet")
+            sg_item.setData(Qt.ItemDataRole.UserRole + 1, rrf)
+            sg_item.setToolTip("Dubbelklicka för att redigera\nKlicka på ⚡ RRF-raden för att ändra värdet")
         self._table.setItem(r, self._C_SG, sg_item)
 
         # ── Col 5: FA — checkable, text = probability % ──────────────────────
@@ -5463,7 +5516,7 @@ class ScenarioTablePanel(QWidget):
         rs.setToolTip(f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}  (−{total_steps} steg totalt)")
         self._table.setItem(r, self._C_SLUT, rs)
 
-        self._table.setRowHeight(r, max(36, self._cell_font_size * 5 + 7))
+        self._table.setRowHeight(r, max(36 + _RRF_H, self._cell_font_size * 5 + 7 + _RRF_H))
 
     def _open_chain_editor(self, cons_id: int, label_widget=None):
         """Open the consequence chain dialog; refresh the label on accept."""
@@ -5613,7 +5666,8 @@ class ScenarioTablePanel(QWidget):
         popup.adjustSize()
         cell_rect  = self._table.visualItemRect(item)
         anchor     = self._table.viewport().mapToGlobal(cell_rect.topLeft())
-        screen     = QApplication.primaryScreen().availableGeometry()
+        _scr       = QApplication.screenAt(anchor) or QApplication.primaryScreen()
+        screen     = _scr.availableGeometry()
         ph         = popup.sizeHint().height()
         pw         = popup.sizeHint().width()
         # Try above first
@@ -5660,7 +5714,8 @@ class ScenarioTablePanel(QWidget):
         popup = RRFPopup(current_rrf, self)
         popup.rrf_selected.connect(lambda v, r=row, sid=sg_id: self._update_sg_rrf(r, sid, v))
         popup.adjustSize()
-        screen = QApplication.primaryScreen().availableGeometry()
+        _scr   = QApplication.screenAt(global_pos) or QApplication.primaryScreen()
+        screen = _scr.availableGeometry()
         pw = popup.sizeHint().width()
         ph = popup.sizeHint().height()
         x = global_pos.x()
@@ -5704,18 +5759,16 @@ class ScenarioTablePanel(QWidget):
                         self._place_from_table(row, col)
                     return True  # consume left-click; right-click falls through to context menu
 
-            # 🎚️ RRF row click — lower portion of safeguard cell (outside pin strip)
+            # ⚡ RRF badge click — bottom _RRF_H pixels of safeguard cell
             if (row >= 0 and col == self._C_SG and row < len(self._row_meta)):
-                col_x = self._table.columnViewportPosition(col)
-                if pos.x() - col_x >= _PID_ICON_W:
-                    sg_id = self._row_meta[row][3]
-                    if sg_id is not None:
-                        cell_idx = self._table.model().index(row, col)
-                        cr = self._table.visualRect(cell_idx)
-                        if pos.y() >= cr.top() + cr.height() * 0.55:
-                            gp = self._table.viewport().mapToGlobal(pos)
-                            self._show_rrf_popup_at(row, sg_id, gp)
-                            return True
+                sg_id = self._row_meta[row][3]
+                if sg_id is not None:
+                    cell_idx = self._table.model().index(row, col)
+                    cr = self._table.visualRect(cell_idx)
+                    if pos.y() >= cr.bottom() - _RRF_H:
+                        gp = self._table.viewport().mapToGlobal(pos)
+                        self._show_rrf_popup_at(row, sg_id, gp)
+                        return True
 
         # Delegate inline editor (regular cell in edit mode)
         if (isinstance(obj, QLineEdit) and
