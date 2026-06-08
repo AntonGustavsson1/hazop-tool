@@ -6535,21 +6535,22 @@ class ScenarioTablePanel(QWidget):
         popup.exec()
 
     def _apply_cause_obj(self, row, cause_id, comp_type, comp_tag, description, frequency):
+        # Do all DB writes first — before touching any QTableWidgetItem references
         self.db.update_cause(cause_id, comp_type=comp_type, comp_tag=comp_tag)
-        item = self._table.item(row, self._C_ORS)
-        if item:
-            item.setData(Qt.ItemDataRole.UserRole + 2, (comp_type, comp_tag))
         if description:
             kwargs = {'description': description}
             if frequency is not None:
                 kwargs['base_freq'] = frequency
             self.db.update_cause(cause_id, **kwargs)
-            if item:
-                self._table.blockSignals(True)
-                item.setText(description)
-                self._table.blockSignals(False)
+            # Description changed → full rebuild (item refs are stale after rebuild anyway)
             QTimer.singleShot(0, self._rebuild)
         else:
+            # Only tag/type changed → update item in-place with signals blocked
+            self._table.blockSignals(True)
+            item = self._table.item(row, self._C_ORS)
+            if item:
+                item.setData(Qt.ItemDataRole.UserRole + 2, (comp_type, comp_tag))
+            self._table.blockSignals(False)
             self._table.viewport().update()
 
     def _update_sg_rrf(self, row, sg_id, rrf):
