@@ -8444,6 +8444,7 @@ class SettingsPanel(QWidget):
 
     def _load_matrix_ui(self):
         cfg = self.db.get_risk_matrix() or DEFAULT_MATRIX
+        self._last_built_cfg = None   # reset so _apply_size uses DB state
         self._rows_spin.setValue(cfg.get('rows', 5))
         self._cols_spin.setValue(cfg.get('cols', 7))
         x_axis = cfg.get('x_axis', 'frequency')
@@ -8459,7 +8460,10 @@ class SettingsPanel(QWidget):
         n_cons    = self._rows_spin.value()
         n_freq    = self._cols_spin.value()
         old       = self.db.get_risk_matrix() or DEFAULT_MATRIX
-        old_xaxis = old.get('x_axis', 'frequency')
+        # Use the config that was actually used to build the current display
+        # (may differ from DB if user has changed checkboxes without saving)
+        disp      = getattr(self, '_last_built_cfg', None) or old
+        old_xaxis = disp.get('x_axis', 'frequency')
         new_xaxis = self._axis_combo.currentData() or 'frequency'
         x_rev     = self._x_rev_chk.isChecked()
         y_rev     = self._y_rev_chk.isChecked()
@@ -8471,19 +8475,19 @@ class SettingsPanel(QWidget):
             col_lbls = [e.text().strip() for e in self._x_label_edits]
             row_lbls = [e.text().strip() for e in self._y_label_edits]  # top→bottom
 
-            # Which semantic axis was on X/Y in the old display?
+            # Which semantic axis was on X/Y in the current display?
             if old_xaxis == 'frequency':
-                # cols = freq (low→high or high→low depending on old x_rev)
-                freq_lbls = col_lbls if not old.get('x_reversed', False) \
+                # cols = freq (low→high or high→low depending on disp x_rev)
+                freq_lbls = col_lbls if not disp.get('x_reversed', False) \
                             else list(reversed(col_lbls))
-                # rows = cons (high→low at top unless old y_rev)
-                cons_lbls = list(reversed(row_lbls)) if not old.get('y_reversed', False) \
+                # rows = cons (high→low at top unless disp y_rev)
+                cons_lbls = list(reversed(row_lbls)) if not disp.get('y_reversed', False) \
                             else row_lbls
             else:
                 # cols = cons, rows = freq
-                cons_lbls = col_lbls if not old.get('x_reversed', False) \
+                cons_lbls = col_lbls if not disp.get('x_reversed', False) \
                             else list(reversed(col_lbls))
-                freq_lbls = list(reversed(row_lbls)) if not old.get('y_reversed', False) \
+                freq_lbls = list(reversed(row_lbls)) if not disp.get('y_reversed', False) \
                             else row_lbls
         else:
             freq_lbls = old.get('x_labels', _FREQ_LABELS[:n_freq])
@@ -8534,10 +8538,12 @@ class SettingsPanel(QWidget):
             'cell_fg_colors': fg_colors,
             'freq_boundaries': old.get('freq_boundaries', DEFAULT_FREQ_BOUNDARIES),
         }
+        self._last_built_cfg = new_cfg
         self._build_matrix_grid(new_cfg)
 
     def _build_matrix_grid(self, cfg):
         """Build the matrix grid respecting axis orientation and intervals."""
+        self._last_built_cfg = cfg   # track for _apply_size label recovery
         while self._matrix_grid.count():
             item = self._matrix_grid.takeAt(0)
             if item.widget():
