@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
     QSpinBox, QSlider, QColorDialog, QFrame, QListWidget, QListWidgetItem,
     QProgressDialog, QAbstractItemView, QToolTip, QInputDialog, QCheckBox,
     QStyledItemDelegate, QStyleOptionViewItem, QStyle,
+    QButtonGroup, QRadioButton,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF, QRect, QTimer, QMimeData, QEvent
 from PyQt6.QtGui import QFont, QColor, QAction, QBrush, QPen, QPainter, QDrag, QPainterPath, QPixmap, QIcon, QPolygonF, QShortcut, QKeySequence
