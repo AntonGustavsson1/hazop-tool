@@ -11671,11 +11671,20 @@ class MainWindow(QMainWindow):
         dev_row  = self.db.get_deviation(dev_id) if dev_id else None
         dev_desc = dev_row['description'] if dev_row else None
         node_id  = getattr(self.pid_panel, '_active_node_id', None)
+        # Fallback: if no node is active, use first node in DB so the deviation
+        # picker is always shown when rubber-banding from P&ID NAV mode
+        if node_id is None:
+            all_nodes = self.db.nodes()
+            if all_nodes:
+                node_id = all_nodes[0]['id']
+
+        # OCR/detected text goes into the tag field, not description
+        effective_tag = suggested_desc or suggested_tag
 
         popup = CauseObjectPopup(
-            detected_type, suggested_tag, self.db,
+            detected_type, effective_tag, self.db,
             dev_description=dev_desc,
-            current_description=suggested_desc,
+            current_description='',
             node_id=node_id,
             deviation_id=dev_id or None,
             parent=self)

@@ -5524,9 +5524,7 @@ class PIDPanel(QWidget):
     def place_cause_from_template(self, dev_id, scene_pos, page,
                                   comp_type, comp_tag, description, frequency):
         """Called by MainWindow after CauseObjectPopup is confirmed."""
-        if not description:
-            return None
-        label = description
+        label = description or comp_tag or 'Ny orsak'
 
         try:
             cause_id = self.db.add_cause(dev_id)
