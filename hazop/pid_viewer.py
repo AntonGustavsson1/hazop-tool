@@ -33,10 +33,10 @@ from PyQt6.QtWidgets import (
     QProgressDialog, QApplication, QGridLayout, QTextEdit, QButtonGroup,
     QScrollArea,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QThread
+from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QThread, QPoint
 from PyQt6.QtGui import (
     QColor, QPen, QBrush, QPainterPath, QPixmap, QImage, QFont,
-    QPainter, QPicture,
+    QPainter, QPicture, QCursor,
 )
 
 # Optional OpenGL for GPU-accelerated rendering
