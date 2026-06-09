@@ -11665,7 +11665,7 @@ class MainWindow(QMainWindow):
         self.pid_panel.start_cause_template_mode(deviation_id)
 
     def _on_cause_placement_requested(self, dev_id, suggested_tag, detected_type,
-                                       scene_pos, page):
+                                       scene_pos, page, suggested_desc=''):
         """P&ID clicked in template/context mode — show CauseObjectPopup anchored
         to the ORS cell; includes deviation picker when no deviation is pre-selected."""
         dev_row  = self.db.get_deviation(dev_id) if dev_id else None
@@ -11675,7 +11675,7 @@ class MainWindow(QMainWindow):
         popup = CauseObjectPopup(
             detected_type, suggested_tag, self.db,
             dev_description=dev_desc,
-            current_description='',
+            current_description=suggested_desc,
             node_id=node_id,
             deviation_id=dev_id or None,
             parent=self)

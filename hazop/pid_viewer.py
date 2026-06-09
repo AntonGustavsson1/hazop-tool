@@ -3378,6 +3378,50 @@ class PIDGraphicsView(QGraphicsView):
             pass
         return ''
 
+    def _text_in_rect(self, pdf_rect: QRectF) -> str:
+        """Return all text inside pdf_rect. Uses native PDF text first, OCR as fallback."""
+        if not HAS_PYMUPDF or self.pdf_doc is None:
+            return ''
+        try:
+            pg    = self.pdf_doc.load_page(self.current_page)
+            frect = fitz.Rect(pdf_rect.x(), pdf_rect.y(),
+                               pdf_rect.x() + pdf_rect.width(),
+                               pdf_rect.y() + pdf_rect.height())
+            raw_words = pg.get_text("words", clip=frect)
+            native = ' '.join(w[4].strip() for w in raw_words if w[4].strip())
+            if native.strip():
+                return native.strip()
+            # OCR fallback
+            if not HAS_PIL:
+                return ''
+            min_dim = max(pdf_rect.width(), pdf_rect.height(), 10.0)
+            scale   = max(4.0, min(16.0, 300.0 / min_dim))
+            mat     = fitz.Matrix(scale, scale)
+            pix     = pg.get_pixmap(matrix=mat, clip=frect, alpha=False)
+            pil     = _PILImage.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            pil     = _preprocess_for_ocr(pil)
+            if HAS_TESSERACT:
+                try:
+                    ocr = pytesseract.image_to_string(pil).strip()
+                    if ocr:
+                        return ocr
+                except Exception:
+                    pass
+            if HAS_EASYOCR:
+                try:
+                    import numpy as np
+                    reader = _get_easyocr_reader()
+                    if reader:
+                        results = reader.readtext(np.array(pil))
+                        txt = ' '.join(r[1] for r in results if r[2] > 0.3)
+                        if txt.strip():
+                            return txt.strip()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return ''
+
     def add_tag_highlight(self, bbox: 'fitz.Rect', color: str, tooltip: str = ''):
         """Draw a semi-transparent highlight rectangle at the tag's PDF position."""
         r = QRectF(bbox.x0, bbox.y0, bbox.width, bbox.height)
@@ -3416,9 +3460,10 @@ class PIDGraphicsView(QGraphicsView):
             try: self._scene.removeItem(self._pending_path_item)
             except Exception: pass
             self._pending_path_item = None
-        # Clear per-type item lists (items are gone from scene)
+        # Clear per-type item lists and zone rect dict (items gone from scene)
         for key in self._type_items:
             self._type_items[key] = []
+        self._zone_rects.clear()
 
     def mousePressEvent(self, event):
         # ── Zone corner handle — intercept LEFT click in any mode ─────────────
@@ -4173,7 +4218,7 @@ class PIDPanel(QWidget):
     pid_analysis_done       = pyqtSignal()
     # Emitted when user clicks P&ID in cause-template mode;
     # MainWindow shows CauseObjectPopup then calls place_cause_from_template()
-    cause_placement_requested = pyqtSignal(int, str, str, object, int)
+    cause_placement_requested = pyqtSignal(int, str, str, object, int, str)
     # (deviation_id, suggested_tag, detected_comp_type, scene_pos, page)
     # Node markup signals
     markup_draw_finished    = pyqtSignal(str, int, list, int, str)  # type_, node_id, pts, page, label
@@ -5178,7 +5223,8 @@ class PIDPanel(QWidget):
         if chosen is a_cause:
             dev_id   = self._active_deviation_id or 0
             detected = self._db_comp_for_tag(tag) if tag else comp_type
-            self.cause_placement_requested.emit(dev_id, tag or '', detected, center_scene, page)
+            suggested_desc = self.viewer._text_in_rect(pdf_rect) if HAS_PYMUPDF and self.viewer.pdf_doc else ''
+            self.cause_placement_requested.emit(dev_id, tag or '', detected, center_scene, page, suggested_desc)
         elif chosen is a_cons:
             self._on_consequence_click(center_scene, page, tag)
         elif chosen is a_sg:
@@ -5197,7 +5243,7 @@ class PIDPanel(QWidget):
                   if self.viewer.pdf_doc else ''
             detected_type = self._db_comp_for_tag(tag) if tag else ''
             dev_id = self._active_deviation_id or 0
-            self.cause_placement_requested.emit(dev_id, tag or '', detected_type, pos, page)
+            self.cause_placement_requested.emit(dev_id, tag or '', detected_type, pos, page, '')
         elif action == 'consequence':
             self._set_mode(MODE_CONSEQUENCE)
             tag = find_tag_near_point(self.viewer.pdf_doc, page,
@@ -5473,7 +5519,7 @@ class PIDPanel(QWidget):
 
         detected_type = self._db_comp_for_tag(suggested_tag) if suggested_tag else ''
         self.cause_placement_requested.emit(
-            dev_id, suggested_tag or '', detected_type, scene_pos, page)
+            dev_id, suggested_tag or '', detected_type, scene_pos, page, '')
 
     def place_cause_from_template(self, dev_id, scene_pos, page,
                                   comp_type, comp_tag, description, frequency):
