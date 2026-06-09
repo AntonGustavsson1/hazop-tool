@@ -12484,6 +12484,11 @@ class MainWindow(QMainWindow):
 
     def _on_markup_moved(self, mu_id, new_pts):
         """Markup item dragged to new position — save to DB, push undo entry."""
+        red_row = self.db.get_node_red_markup(mu_id)
+        if red_row:
+            # Red markup item — route to red markup handler
+            self._on_red_markup_moved(mu_id, new_pts)
+            return
         old_row = self.db.get_node_markup(mu_id)
         if old_row:
             old_pts = json.loads(dict(old_row).get('points', '[]') or '[]')

@@ -2973,9 +2973,14 @@ class PIDGraphicsView(QGraphicsView):
         self._clear_edit_handles()
         self._edit_mu_id = mu_id
 
-        # Read stored PDF points from item
+        # Look in both node markup and red markup dicts
+        items_dict = (self._markup_items if mu_id in self._markup_items
+                      else self._red_markup_items)
+        types_dict = (self._markup_types if mu_id in self._markup_types
+                      else self._red_markup_types)
+
         pts_pdf = None
-        for gi in self._markup_items.get(mu_id, []):
+        for gi in items_dict.get(mu_id, []):
             pts_pdf = gi.data(self._DATA_MARKUP_PTS)
             if pts_pdf:
                 break
@@ -2985,7 +2990,7 @@ class PIDGraphicsView(QGraphicsView):
         pts_scene = [self.pdf_to_scene(*p) for p in pts_pdf]
         self._drag_current_pts = list(pts_scene)
 
-        typ = self._markup_types.get(mu_id, 'polygon')
+        typ = types_dict.get(mu_id, 'polygon')
 
         if typ in ('polygon', 'polyline'):
             HANDLE_R = 5
@@ -2998,22 +3003,27 @@ class PIDGraphicsView(QGraphicsView):
                 h.setZValue(Z_OVERLAY + 5)
                 self._scene.addItem(h)
                 self._vertex_handles.append(h)
-        elif typ in ('text', 'comment'):
+        elif typ in ('text', 'comment', 'symbol'):
             self._drag_item_origins = [
                 (gi, QPointF(gi.pos()))
-                for gi in self._markup_items.get(mu_id, [])
+                for gi in items_dict.get(mu_id, [])
             ]
 
         self.highlight_markup(mu_id)
 
     def _update_edit_path(self, pts_scene):
         """Rebuild the path/positions of the currently edited markup."""
-        if self._edit_mu_id not in self._markup_items:
+        mu_id = self._edit_mu_id
+        if mu_id not in self._markup_items and mu_id not in self._red_markup_items:
             return
-        typ = self._markup_types.get(self._edit_mu_id, 'polygon')
+        items_dict = (self._markup_items if mu_id in self._markup_items
+                      else self._red_markup_items)
+        types_dict = (self._markup_types if mu_id in self._markup_types
+                      else self._red_markup_types)
+        typ = types_dict.get(mu_id, 'polygon')
 
         if typ in ('polygon', 'polyline') and pts_scene:
-            for gi in self._markup_items[self._edit_mu_id]:
+            for gi in items_dict[mu_id]:
                 if isinstance(gi, QGraphicsPathItem):
                     path = QPainterPath()
                     path.moveTo(pts_scene[0])
@@ -3024,7 +3034,7 @@ class PIDGraphicsView(QGraphicsView):
                     gi.setPath(path)
                     break
 
-        elif typ in ('text', 'comment') and pts_scene and self._drag_original_pts:
+        elif typ in ('text', 'comment', 'symbol') and pts_scene and self._drag_original_pts:
             delta = pts_scene[0] - self._drag_original_pts[0]
             for gi, orig in self._drag_item_origins:
                 gi.setPos(orig + delta)
@@ -3038,13 +3048,15 @@ class PIDGraphicsView(QGraphicsView):
         """Called on mouseRelease after a drag — save new points."""
         if self._edit_mu_id is None:
             return
+        mu_id = self._edit_mu_id
+        is_red = mu_id in self._red_markup_items
+        items_dict = self._red_markup_items if is_red else self._markup_items
         new_pdf_pts = [list(self.scene_to_pdf(pt)) for pt in self._drag_current_pts]
-        # Update stored data on item
-        for gi in self._markup_items.get(self._edit_mu_id, []):
+        for gi in items_dict.get(mu_id, []):
             if gi.data(self._DATA_MARKUP_PTS) is not None:
                 gi.setData(self._DATA_MARKUP_PTS, new_pdf_pts)
                 break
-        self.markup_moved.emit(self._edit_mu_id, new_pdf_pts)
+        self.markup_moved.emit(mu_id, new_pdf_pts)
 
     def _start_inline_label_edit(self, mu_id):
         """Show a floating QLineEdit over the text item for in-place label editing."""
