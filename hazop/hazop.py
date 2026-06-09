@@ -11092,12 +11092,15 @@ class MainWindow(QMainWindow):
         self.pid_panel.try_reload_pdf()
 
     def _switch_view(self, page):
+        prev = self.view_stack.currentIndex()
         self.view_stack.setCurrentIndex(page)
         self.btn_pid.setChecked(page == 0)
         self.btn_sheet.setChecked(page == 1)
         self.btn_equip.setChecked(page == 2)
         self.btn_admin.setChecked(page == 3)
         self.btn_settings.setChecked(page == 4)
+        if page == 0 and prev != 0:
+            self.pid_panel.reload_overlays()
         if page == 1: self.worksheet.refresh()
         if page == 2: self.equipment_panel.refresh()
         if page == 3:
@@ -11179,7 +11182,7 @@ class MainWindow(QMainWindow):
         self.tree_panel.structure_changed.emit()
 
     def _on_scenario_item_edited(self, type_, id_):
-        """Scenario table committed an edit — sync the tree and the right panel."""
+        """Scenario table committed an edit — sync the tree, right panel, and P&ID labels."""
         self.tree_panel.refresh(type_, id_)
         if type_ == CAUSE_T:
             if self.cause_panel.cause_id == id_:
@@ -11190,6 +11193,8 @@ class MainWindow(QMainWindow):
         elif type_ == SG_T:
             if self.sg_panel.safeguard_id == id_:
                 self.sg_panel.load(id_)
+        # Refresh P&ID marker labels immediately (description may have changed)
+        self.pid_panel.reload_overlays()
 
     def _on_structure_changed(self):
         self._cur_type = None
