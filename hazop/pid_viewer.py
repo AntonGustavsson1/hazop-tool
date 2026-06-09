@@ -379,10 +379,80 @@ MODE_MARKUP_TEXT     = 9   # click to place a text label markup
 MODE_MARKUP_COMMENT  = 10  # click to place a comment box markup
 MODE_MARKUP_SELECT   = 11  # click existing markup items to select/edit
 MODE_SMART_POLYLINE  = 12  # click start+end, algorithm traces pipe path
+MODE_RED_MARKUP_SYMBOL = 13  # click to place a red markup P&ID symbol
 
 _SG_TYPES    = ['BPCS', 'SIS', 'Mekanisk', 'Administrativ', 'Övrigt']
 _RRF_VALUES  = [1, 10, 100, 1000, 10000]
 _RRF_LABELS  = ['1 – Ingen', '10 – RRF10', '100 – RRF100', '1000 – RRF1000', '10000 – RRF10000']
+
+# ── Red Markup P&ID Symbols ───────────────────────────────────────────────────
+_RED_MARKUP_SYMBOLS = {
+    "Ventiler": [
+        ("gate_valve",     "Spjällventil",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5" fill="none"><line x1="2" y1="24" x2="46" y2="24"/><polygon points="2,11 24,24 2,37"/><polygon points="46,11 24,24 46,37"/></g></svg>'),
+        ("gate_valve_nc",  "Spjällventil NC",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5"><line x1="2" y1="24" x2="46" y2="24" fill="none"/><polygon points="2,11 24,24 2,37" fill="red"/><polygon points="46,11 24,24 46,37" fill="red"/></g></svg>'),
+        ("butterfly_valve","Fjärilsventil",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5" fill="none"><line x1="2" y1="24" x2="46" y2="24"/><line x1="24" y1="7" x2="24" y2="41"/><line x1="9" y1="9" x2="39" y2="39"/><line x1="39" y1="9" x2="9" y2="39"/></g></svg>'),
+        ("check_valve",    "Backventil",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5" fill="none"><line x1="2" y1="24" x2="46" y2="24"/><polygon points="10,11 32,24 10,37"/><line x1="32" y1="11" x2="32" y2="37"/></g></svg>'),
+        ("globe_valve",    "Globventil",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5" fill="none"><line x1="2" y1="24" x2="46" y2="24"/><polygon points="2,11 24,24 2,37"/><polygon points="46,11 24,24 46,37"/><circle cx="24" cy="24" r="6"/></g></svg>'),
+        ("ball_valve",     "Kulventil",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5"><line x1="2" y1="24" x2="46" y2="24" fill="none"/><polygon points="2,11 24,24 2,37" fill="red"/><polygon points="46,11 24,24 46,37" fill="red"/></g></svg>'),
+        ("safety_valve",   "Säkerhetsventil (PSV)",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5"><line x1="24" y1="2" x2="24" y2="16" fill="none"/><polygon points="8,16 40,16 24,40" fill="red"/><line x1="24" y1="40" x2="24" y2="46" fill="none"/><line x1="14" y1="12" x2="34" y2="12" fill="none"/><line x1="14" y1="8" x2="34" y2="8" fill="none"/></g></svg>'),
+        ("control_valve",  "Reglerventil",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5"><line x1="2" y1="30" x2="46" y2="30" fill="none"/><polygon points="2,18 24,30 2,42" fill="red"/><polygon points="46,18 24,30 46,42" fill="red"/><line x1="24" y1="30" x2="24" y2="18" fill="none"/><polygon points="16,4 24,18 32,4" fill="none" stroke="red"/></g></svg>'),
+        ("hand_valve",     "Handventil",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5" fill="none"><line x1="2" y1="28" x2="46" y2="28"/><polygon points="2,16 24,28 2,40"/><polygon points="46,16 24,28 46,40"/><line x1="24" y1="28" x2="24" y2="15"/><line x1="16" y1="11" x2="32" y2="11"/><path d="M16,11 Q24,6 32,11"/></g></svg>'),
+        ("motor_valve",    "Motorventil",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5"><line x1="2" y1="30" x2="46" y2="30" fill="none"/><polygon points="2,18 24,30 2,42" fill="red"/><polygon points="46,18 24,30 46,42" fill="red"/><line x1="24" y1="30" x2="24" y2="19" fill="none"/><rect x="17" y="7" width="14" height="12" fill="none" stroke="red"/></g></svg>'),
+        ("three_way_valve","Trevägsventil",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5" fill="none"><line x1="2" y1="24" x2="46" y2="24"/><line x1="24" y1="24" x2="24" y2="46"/><polygon points="2,14 20,24 2,34"/><polygon points="46,14 28,24 46,34"/><polygon points="14,46 24,28 34,46"/></g></svg>'),
+        ("angle_valve",    "Vinkelventil",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5" fill="none"><line x1="2" y1="24" x2="24" y2="24"/><line x1="24" y1="24" x2="24" y2="46"/><polygon points="2,13 24,24 2,35"/><polygon points="13,46 24,24 35,46"/></g></svg>'),
+        ("needle_valve",   "Nålventil",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5" fill="none"><line x1="2" y1="24" x2="46" y2="24"/><polygon points="24,10 44,17 44,31 24,38 4,31 4,17"/></g></svg>'),
+    ],
+    "Kärl": [
+        ("horiz_vessel",   "Horisontell behållare",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5" fill="none"><rect x="4" y="14" width="40" height="20" rx="10"/></g></svg>'),
+        ("vert_vessel",    "Vertikal behållare",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5" fill="none"><rect x="14" y="4" width="20" height="40" rx="10"/></g></svg>'),
+        ("column",         "Kolonn",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5" fill="none"><rect x="13" y="2" width="22" height="44" rx="3"/><line x1="13" y1="14" x2="35" y2="22"/><line x1="13" y1="22" x2="35" y2="14"/><line x1="13" y1="28" x2="35" y2="36"/><line x1="13" y1="36" x2="35" y2="28"/></g></svg>'),
+        ("hopper",         "Tratt/Binge",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5" fill="none"><line x1="5" y1="5" x2="43" y2="5"/><line x1="5" y1="5" x2="19" y2="35"/><line x1="43" y1="5" x2="29" y2="35"/><line x1="19" y1="35" x2="29" y2="35"/><line x1="24" y1="35" x2="24" y2="46"/></g></svg>'),
+        ("separator",      "Separator",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5" fill="none"><ellipse cx="24" cy="16" rx="18" ry="13"/><line x1="6" y1="16" x2="6" y2="30"/><line x1="42" y1="16" x2="42" y2="30"/><line x1="6" y1="30" x2="24" y2="44"/><line x1="42" y1="30" x2="24" y2="44"/></g></svg>'),
+    ],
+    "Utrustning": [
+        ("pump",           "Pump (centrifugal)",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5" fill="none"><circle cx="24" cy="24" r="18"/><polygon points="12,16 38,24 12,32"/></g></svg>'),
+        ("heat_exchanger", "Värmeväxlare",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5" fill="none"><rect x="3" y="12" width="42" height="24" rx="2"/><line x1="3" y1="21" x2="45" y2="21"/><line x1="3" y1="27" x2="45" y2="27"/><line x1="3" y1="21" x2="3" y2="15"/><line x1="45" y1="21" x2="45" y2="33"/><line x1="3" y1="27" x2="3" y2="33"/><line x1="45" y1="27" x2="45" y2="15"/></g></svg>'),
+        ("instrument",     "Instrument (ISA)",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5" fill="none"><circle cx="24" cy="24" r="18"/><line x1="8" y1="27" x2="40" y2="27"/><text x="24" y="22" text-anchor="middle" font-size="8" stroke="none" fill="red" font-family="sans-serif">XX</text><text x="24" y="38" text-anchor="middle" font-size="7" stroke="none" fill="red" font-family="sans-serif">XXXX</text></g></svg>'),
+        ("mixer",          "Reaktor/Omrörare",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5" fill="none"><rect x="12" y="4" width="24" height="36" rx="4"/><line x1="24" y1="4" x2="24" y2="40"/><line x1="14" y1="18" x2="34" y2="18"/><line x1="15" y1="27" x2="33" y2="27"/><line x1="24" y1="40" x2="24" y2="46"/><line x1="20" y1="40" x2="28" y2="40"/></g></svg>'),
+        ("filter",         "Filter/Sil",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5" fill="none"><line x1="2" y1="24" x2="46" y2="24"/><rect x="11" y="13" width="26" height="22" rx="2"/><line x1="17" y1="13" x2="17" y2="35"/><line x1="23" y1="13" x2="23" y2="35"/><line x1="29" y1="13" x2="29" y2="35"/><line x1="35" y1="13" x2="35" y2="35"/></g></svg>'),
+        ("compressor",     "Kompressor",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5" fill="none"><polygon points="2,40 24,8 46,40"/><circle cx="24" cy="30" r="8"/></g></svg>'),
+        ("expansion_joint","Expansionskoppling",
+         '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><g stroke="red" stroke-width="2.5" fill="none"><line x1="2" y1="24" x2="11" y2="24"/><line x1="37" y1="24" x2="46" y2="24"/><line x1="11" y1="13" x2="11" y2="35"/><line x1="37" y1="13" x2="37" y2="35"/><path d="M11,13 Q24,8 37,13"/><path d="M11,35 Q24,40 37,35"/></g></svg>'),
+    ],
+}
+
+
+def _get_red_symbol_svg(symbol_id: str) -> str | None:
+    """Return the SVG string for the given red markup symbol ID, or None."""
+    for syms in _RED_MARKUP_SYMBOLS.values():
+        for sid, _sname, svg in syms:
+            if sid == symbol_id:
+                return svg
+    return None
 
 Z_PAGE      = 0
 Z_HIGHLIGHT = 1   # tag highlights between page and connections
@@ -2337,6 +2407,9 @@ class PIDGraphicsView(QGraphicsView):
         self._markup_highlighted: int = -1
         self._snap_enabled: bool = True
         self._markup_types: dict   = {}   # mu_id → 'polygon'|'polyline'|'text'|'comment'
+        # Red markup overlay tracking (separate from node markup)
+        self._red_markup_items: dict = {}
+        self._red_markup_types: dict = {}
         self._edit_mu_id            = None
         self._vertex_handles: list  = []
         self._drag_mode             = None   # 'vertex' | 'item' | None
@@ -2520,6 +2593,9 @@ class PIDGraphicsView(QGraphicsView):
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
             self._cancel_smart()
+        elif mode == MODE_RED_MARKUP_SYMBOL:
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self.setCursor(Qt.CursorShape.CrossCursor)
         if mode not in (MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE, MODE_SMART_POLYLINE):
             self._cancel_drawing()
         self.setFocus()
@@ -2650,12 +2726,17 @@ class PIDGraphicsView(QGraphicsView):
     # ── Node markup overlays ──────────────────────────────────────────────────
 
     def add_markup_overlay(self, mu_id, type_, points_pdf, label,
-                           color_hex, opacity, line_width, visible=True, font_size=12):
-        """Render a node_markup item.  type_: polygon|polyline|text|comment"""
+                           color_hex, opacity, line_width, visible=True, font_size=12,
+                           opaque_fill=False, symbol_svg=None,
+                           symbol_w=40, symbol_h=40, symbol_rot=0,
+                           _items_dict=None):
+        """Render a node_markup or red_markup item.  type_: polygon|polyline|text|comment|symbol"""
+        if _items_dict is None:
+            _items_dict = self._markup_items
         items = []
         c = QColor(color_hex)
         border_alpha = int(opacity * 210)
-        fill_alpha   = int(opacity * 52)
+        fill_alpha   = int(opacity * 210) if opaque_fill else int(opacity * 52)
         # Non-cosmetic pen: width in scene coords so lines scale proportionally with zoom
         pen = QPen(QColor(c.red(), c.green(), c.blue(), border_alpha), line_width)
 
@@ -2693,8 +2774,18 @@ class PIDGraphicsView(QGraphicsView):
             if items:
                 items[0].setData(self._DATA_MARKUP_PTS, [[points_pdf[0][0], points_pdf[0][1]]])
 
-        self._markup_items[mu_id] = items
-        self._markup_types[mu_id] = type_
+        elif type_ == 'symbol' and symbol_svg and len(points_pdf) >= 1:
+            items.extend(self._add_markup_symbol_item(
+                mu_id, symbol_svg, points_pdf[0], c, opacity,
+                symbol_w, symbol_h, symbol_rot))
+            if items:
+                items[0].setData(self._DATA_MARKUP_PTS, [[points_pdf[0][0], points_pdf[0][1]]])
+
+        _items_dict[mu_id] = items
+        if _items_dict is self._markup_items:
+            self._markup_types[mu_id] = type_
+        else:
+            self._red_markup_types[mu_id] = type_
         if not visible:
             for gi in items:
                 gi.setVisible(False)
@@ -2797,6 +2888,72 @@ class PIDGraphicsView(QGraphicsView):
         for gi in self._markup_items.get(mu_id, []):
             try: gi.setVisible(visible)
             except Exception: pass
+
+    # ── Red markup overlay methods ────────────────────────────────────────────
+
+    def add_red_markup_overlay(self, mu_id, type_, points_pdf, label,
+                               color_hex, opacity, line_width, visible=True, font_size=12,
+                               symbol_w=40, symbol_h=40, symbol_rot=0):
+        """Render a red markup item (same as node markup but fully filled and supports symbols)."""
+        svg = _get_red_symbol_svg(label) if type_ == 'symbol' else None
+        self.add_markup_overlay(
+            mu_id, type_, points_pdf, label, color_hex, opacity, line_width,
+            visible, font_size, opaque_fill=True, symbol_svg=svg,
+            symbol_w=symbol_w, symbol_h=symbol_h, symbol_rot=symbol_rot,
+            _items_dict=self._red_markup_items)
+
+    def clear_red_markup_overlays(self):
+        """Remove all red markup overlay items from the scene."""
+        self._red_markup_types.clear()
+        for mu_id, items in self._red_markup_items.items():
+            for gi in items:
+                try: self._scene.removeItem(gi)
+                except Exception: pass
+        self._red_markup_items.clear()
+
+    def set_red_markup_item_visible(self, mu_id, visible):
+        for gi in self._red_markup_items.get(mu_id, []):
+            try: gi.setVisible(visible)
+            except Exception: pass
+
+    def _add_markup_symbol_item(self, mu_id, svg_str, pos_pdf, color, opacity,
+                                symbol_w=40, symbol_h=40, symbol_rot=0):
+        """Render an SVG symbol at pos_pdf with given PDF-unit size and rotation."""
+        if not HAS_SVG_RENDERER or QSvgRenderer is None:
+            return []
+        # Replace placeholder color in SVG with user's chosen color
+        colored_svg = svg_str.replace('"red"', f'"{color.name()}"')
+        colored_svg = colored_svg.replace("'red'", f"'{color.name()}'")
+        renderer = QSvgRenderer()
+        renderer.load(colored_svg.encode('utf-8'))
+        if not renderer.isValid():
+            return []
+        # Compute scene coords and size
+        scene_pos = self.pdf_to_scene(*pos_pdf)
+        scene_pt2 = self.pdf_to_scene(pos_pdf[0] + symbol_w, pos_pdf[1] + symbol_h)
+        sw = abs(scene_pt2.x() - scene_pos.x())
+        sh = abs(scene_pt2.y() - scene_pos.y())
+        pm = QPixmap(max(1, int(sw * 2)), max(1, int(sh * 2)))
+        pm.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pm)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        alpha_val = int(opacity * 255)
+        painter.setOpacity(alpha_val / 255.0)
+        renderer.render(painter)
+        painter.end()
+        gi = QGraphicsPixmapItem(pm)
+        gi.setTransformOriginPoint(sw, sh)  # center
+        gi.setRotation(symbol_rot)
+        gi.setPos(scene_pos.x() - sw / 2, scene_pos.y() - sh / 2)
+        gi.setScale(0.5)  # we rendered at 2× for crispness
+        gi.setZValue(Z_OVERLAY)
+        gi.setData(self._DATA_MARKUP_ID, mu_id)
+        gi.setData(self._DATA_TYPE, 'red_markup')
+        gi.setData(self._DATA_MARKUP_PTS, [[pos_pdf[0], pos_pdf[1]]])
+        gi.setCursor(Qt.CursorShape.PointingHandCursor)
+        gi.setToolTip(f"Symbol: {label}" if label else "P&ID-symbol")
+        self._scene.addItem(gi)
+        return [gi]
 
     def _clear_edit_handles(self):
         for h in self._vertex_handles:
@@ -3561,6 +3718,11 @@ class PIDGraphicsView(QGraphicsView):
                 type_ = 'text' if self.mode == MODE_MARKUP_TEXT else 'comment'
                 self.markup_draw_finished.emit(type_, [list(pdf_pt)], self.current_page)
                 event.accept(); return
+        elif self.mode == MODE_RED_MARKUP_SYMBOL:
+            if event.button() == Qt.MouseButton.LeftButton:
+                pdf_pt = self.scene_to_pdf(sp)
+                self.markup_draw_finished.emit('symbol', [list(pdf_pt)], self.current_page)
+                event.accept(); return
         elif self.mode == MODE_MARKUP_SELECT:
             if event.button() == Qt.MouseButton.LeftButton:
                 view_pos = event.position().toPoint()
@@ -4275,6 +4437,10 @@ class PIDPanel(QWidget):
     markup_moved            = pyqtSignal(int, list)                  # mu_id, new PDF pts
     markup_label_edited     = pyqtSignal(int, str)                   # mu_id, new_label
     markup_duplicate_requested = pyqtSignal(int)                     # mu_id
+    # Red markup signals
+    red_markup_draw_finished = pyqtSignal(str, int, list, int, str)  # type_, node_id, pts, page, label/symbol_id
+    red_markup_item_selected = pyqtSignal(int)                        # mu_id
+    red_markup_moved         = pyqtSignal(int, list)                  # mu_id, new PDF pts
 
     def __init__(self, db, parent=None):
         super().__init__(parent)
@@ -4285,6 +4451,8 @@ class PIDPanel(QWidget):
         self._active_cause_id             = None
         self._active_consequence_id       = None
         self._active_deviation_id         = None   # set during MODE_CAUSE_TEMPLATE
+        self._active_markup_class         = 'node' # 'node' or 'red'
+        self._active_symbol_id            = None   # set when red markup symbol tool selected
         self._pending_markup_pts          = None
         self._pending_markup_page         = None
         self._pending_secondary_cause_id    = None   # set to queue secondary marker after instrument cause
@@ -5399,6 +5567,7 @@ class PIDPanel(QWidget):
     def _load_overlays(self):
         self.viewer.clear_overlays()
         self.viewer.clear_markup_overlays()
+        self.viewer.clear_red_markup_overlays()
         page = self.viewer.current_page
 
         for node in self.db.nodes():
@@ -5428,6 +5597,23 @@ class PIDPanel(QWidget):
                     m.get('label', ''), m.get('color', '#1565C0'),
                     float(m.get('opacity', 0.45)), int(m.get('line_width', 2)),
                     bool(m.get('visible', 1))
+                )
+
+        # Red markup items
+        if hasattr(self.db, 'node_red_markups_for_page'):
+            for mu in self.db.node_red_markups_for_page(page):
+                m = dict(mu)
+                try:
+                    pts = json.loads(m.get('points', '[]') or '[]')
+                except Exception:
+                    pts = []
+                self.viewer.add_red_markup_overlay(
+                    m['id'], m.get('type', 'polygon'), pts,
+                    m.get('label', ''), m.get('color', '#CC0000'),
+                    float(m.get('opacity', 1.0)), int(m.get('line_width', 4)),
+                    bool(m.get('visible', 1)), int(m.get('font_size', 12)),
+                    float(m.get('symbol_w', 40)), float(m.get('symbol_h', 40)),
+                    float(m.get('symbol_rot', 0))
                 )
 
         for m in self.db.cause_markers_for_page(page):
@@ -5500,6 +5686,7 @@ class PIDPanel(QWidget):
 
     def enter_markup_edit(self, node_id):
         """Enter markup editing mode for a node: show existing markup + enable tools."""
+        self._active_markup_class = 'node'
         self.set_active_node(node_id)
         self._set_mode(MODE_MARKUP_SELECT)
         self.viewer.markup_draw_finished.connect(self._on_viewer_markup_drawn)
@@ -5511,6 +5698,8 @@ class PIDPanel(QWidget):
         except Exception: pass
         try: self.viewer.markup_item_clicked.disconnect(self._on_viewer_markup_clicked)
         except Exception: pass
+        self._active_markup_class = 'node'
+        self._active_symbol_id = None
         self._set_mode(MODE_NAV)
 
     def set_markup_tool(self, tool, color=None, opacity=None, width=None):
@@ -5542,28 +5731,101 @@ class PIDPanel(QWidget):
                     bool(m.get('visible', 1)),
                     int(m.get('font_size', 12)))
 
+    # ── Red markup editing API ────────────────────────────────────────────────
+
+    def enter_red_markup_edit(self, node_id):
+        """Enter red markup editing mode for a node."""
+        self._active_markup_class = 'red'
+        self._active_symbol_id = None
+        self.set_active_node(node_id)
+        self._set_mode(MODE_MARKUP_SELECT)
+        self.viewer.markup_draw_finished.connect(self._on_viewer_markup_drawn)
+        self.viewer.markup_item_clicked.connect(self._on_viewer_markup_clicked)
+
+    def exit_red_markup_mode(self):
+        """Return to normal navigation mode from red markup."""
+        try: self.viewer.markup_draw_finished.disconnect(self._on_viewer_markup_drawn)
+        except Exception: pass
+        try: self.viewer.markup_item_clicked.disconnect(self._on_viewer_markup_clicked)
+        except Exception: pass
+        self._active_markup_class = 'node'
+        self._active_symbol_id = None
+        self._set_mode(MODE_NAV)
+
+    def set_red_markup_tool(self, tool, color=None, opacity=None, width=None, symbol_id=None):
+        """Set red markup tool: 'polygon'|'polyline'|'comment'|'select'|'smart'|'symbol'."""
+        _map = {'polygon':  MODE_MARKUP_POLYGON,
+                'polyline': MODE_MARKUP_POLYLINE,
+                'comment':  MODE_MARKUP_COMMENT,
+                'select':   MODE_MARKUP_SELECT,
+                'smart':    MODE_SMART_POLYLINE,
+                'symbol':   MODE_RED_MARKUP_SYMBOL}
+        if tool in _map:
+            self._set_mode(_map[tool])
+        if tool == 'symbol' and symbol_id is not None:
+            self._active_symbol_id = symbol_id
+        elif tool != 'symbol':
+            self._active_symbol_id = None
+        if color is not None:
+            self.viewer.set_pen_style(color, width or 4, int((opacity or 1.0) * 210))
+
+    def refresh_red_markup_overlays(self):
+        """Reload only the red markup overlays."""
+        self.viewer.clear_red_markup_overlays()
+        page = self.viewer.current_page
+        if hasattr(self.db, 'node_red_markups_for_page'):
+            for mu in self.db.node_red_markups_for_page(page):
+                m = dict(mu)
+                try: pts = json.loads(m.get('points', '[]') or '[]')
+                except Exception: pts = []
+                self.viewer.add_red_markup_overlay(
+                    m['id'], m.get('type', 'polygon'), pts,
+                    m.get('label', ''), m.get('color', '#CC0000'),
+                    float(m.get('opacity', 1.0)), int(m.get('line_width', 4)),
+                    bool(m.get('visible', 1)), int(m.get('font_size', 12)),
+                    float(m.get('symbol_w', 40)), float(m.get('symbol_h', 40)),
+                    float(m.get('symbol_rot', 0)))
+
     def _on_viewer_markup_drawn(self, type_, pts, page):
-        """Called when user finishes drawing in the viewer; route to NodeMarkupPanel."""
+        """Called when user finishes drawing in the viewer; route to appropriate panel."""
         node_id = self._active_node_id
         if node_id is None:
             return
-        if type_ == 'text':
-            # Auto-fill with the node name from DB
-            node = self.db.get_node(node_id) if hasattr(self.db, 'get_node') else None
-            label = node['name'] if node else ''
-        elif type_ == 'comment':
-            label, ok = QInputDialog.getText(self, 'Kommentar', 'Kommentar:')
-            if not ok or not label.strip():
-                self.viewer.clear_markup_overlays()
-                self.refresh_markup_overlays()
-                return
+        if self._active_markup_class == 'red':
+            # Red markup mode
+            if type_ == 'comment':
+                label, ok = QInputDialog.getText(self, 'Kommentar', 'Kommentar:')
+                if not ok or not label.strip():
+                    self.viewer.clear_red_markup_overlays()
+                    self.refresh_red_markup_overlays()
+                    return
+            elif type_ == 'symbol':
+                label = self._active_symbol_id or ''
+                self._set_mode(MODE_MARKUP_SELECT)
+            else:
+                label = ''
+            self.red_markup_draw_finished.emit(type_, node_id, pts, page, label)
         else:
-            label = ''
-        self.markup_draw_finished.emit(type_, node_id, pts, page, label)
+            # Node markup mode
+            if type_ == 'text':
+                node = self.db.get_node(node_id) if hasattr(self.db, 'get_node') else None
+                label = node['name'] if node else ''
+            elif type_ == 'comment':
+                label, ok = QInputDialog.getText(self, 'Kommentar', 'Kommentar:')
+                if not ok or not label.strip():
+                    self.viewer.clear_markup_overlays()
+                    self.refresh_markup_overlays()
+                    return
+            else:
+                label = ''
+            self.markup_draw_finished.emit(type_, node_id, pts, page, label)
 
     def _on_viewer_markup_clicked(self, mu_id):
-        self.markup_item_selected.emit(mu_id)
-        self.viewer.highlight_markup(mu_id)
+        if self._active_markup_class == 'red':
+            self.red_markup_item_selected.emit(mu_id)
+        else:
+            self.markup_item_selected.emit(mu_id)
+            self.viewer.highlight_markup(mu_id)
 
     def _on_cause_template_click(self, scene_pos, page, suggested_tag=''):
         # If secondary placement is pending, place secondary marker instead of opening dialog

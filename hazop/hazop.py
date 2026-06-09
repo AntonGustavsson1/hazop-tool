@@ -13,6 +13,7 @@ from pid_viewer import (
     PIDPanel, COMPONENT_TYPES, CONSEQUENCE_TEMPLATES, HAS_PYMUPDF,
     MODE_NAV, MODE_NODE, MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD,
     scan_pdf_for_equipment, ocr_status, KNOWN_PREFIXES, invert_cause_text,
+    _RED_MARKUP_SYMBOLS, _get_red_symbol_svg,
 )
 
 from PyQt6.QtWidgets import (
@@ -925,6 +926,23 @@ class Database:
                 safeguard_id INTEGER NOT NULL REFERENCES safeguards(id) ON DELETE CASCADE,
                 cause_id     INTEGER NOT NULL REFERENCES causes(id)     ON DELETE CASCADE,
                 PRIMARY KEY (safeguard_id, cause_id)
+            );
+            CREATE TABLE IF NOT EXISTS node_red_markups (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                node_id    INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+                type       TEXT NOT NULL DEFAULT 'polygon',
+                points     TEXT DEFAULT '[]',
+                label      TEXT DEFAULT '',
+                color      TEXT DEFAULT '#CC0000',
+                opacity    REAL DEFAULT 1.0,
+                line_width INTEGER DEFAULT 4,
+                font_size  INTEGER DEFAULT 12,
+                visible    INTEGER DEFAULT 1,
+                pid_page   INTEGER DEFAULT 0,
+                sort_order INTEGER DEFAULT 0,
+                symbol_w   REAL DEFAULT 40,
+                symbol_h   REAL DEFAULT 40,
+                symbol_rot REAL DEFAULT 0
             );
         """)
 
@@ -1990,6 +2008,74 @@ class Database:
     def has_visible_node_markups(self, node_id) -> bool:
         r = self.conn.execute(
             "SELECT COUNT(*) FROM node_markups WHERE node_id=? AND visible=1",
+            (node_id,)).fetchone()
+        return r[0] > 0
+
+    # ── Node red markup CRUD ──────────────────────────────────────────────────
+    def add_node_red_markup(self, node_id, type_, pts, label, color, opacity,
+                            line_width, page, font_size=12,
+                            symbol_w=40, symbol_h=40, symbol_rot=0):
+        cur = self.conn.execute(
+            "INSERT INTO node_red_markups "
+            "(node_id,type,points,label,color,opacity,line_width,font_size,pid_page,"
+            "symbol_w,symbol_h,symbol_rot) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (node_id, type_, json.dumps(pts), label, color, opacity, line_width,
+             font_size, page, symbol_w, symbol_h, symbol_rot))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def node_red_markups_for_node(self, node_id):
+        return self.conn.execute(
+            "SELECT * FROM node_red_markups WHERE node_id=? ORDER BY sort_order,id",
+            (node_id,)).fetchall()
+
+    def node_red_markups_for_page(self, page):
+        return self.conn.execute(
+            "SELECT * FROM node_red_markups WHERE pid_page=? ORDER BY sort_order,id",
+            (page,)).fetchall()
+
+    def get_node_red_markup(self, mu_id):
+        return self.conn.execute(
+            "SELECT * FROM node_red_markups WHERE id=?", (mu_id,)).fetchone()
+
+    def update_node_red_markup(self, mu_id, label=None, color=None, opacity=None,
+                               line_width=None, font_size=None, visible=None,
+                               points=None, symbol_w=None, symbol_h=None, symbol_rot=None):
+        sets, vals = [], []
+        if label      is not None: sets.append("label=?");      vals.append(label)
+        if color      is not None: sets.append("color=?");      vals.append(color)
+        if opacity    is not None: sets.append("opacity=?");    vals.append(opacity)
+        if line_width is not None: sets.append("line_width=?"); vals.append(line_width)
+        if font_size  is not None: sets.append("font_size=?");  vals.append(font_size)
+        if visible    is not None: sets.append("visible=?");    vals.append(int(visible))
+        if points     is not None: sets.append("points=?");     vals.append(json.dumps(points))
+        if symbol_w   is not None: sets.append("symbol_w=?");   vals.append(symbol_w)
+        if symbol_h   is not None: sets.append("symbol_h=?");   vals.append(symbol_h)
+        if symbol_rot is not None: sets.append("symbol_rot=?"); vals.append(symbol_rot)
+        if sets:
+            vals.append(mu_id)
+            self.conn.execute(
+                f"UPDATE node_red_markups SET {','.join(sets)} WHERE id=?", vals)
+            self.conn.commit()
+
+    def delete_node_red_markup(self, mu_id):
+        self.conn.execute("DELETE FROM node_red_markups WHERE id=?", (mu_id,))
+        self.conn.commit()
+
+    def set_all_node_red_markups_visible(self, node_id, visible):
+        self.conn.execute(
+            "UPDATE node_red_markups SET visible=? WHERE node_id=?",
+            (int(visible), node_id))
+        self.conn.commit()
+
+    def has_node_red_markups(self, node_id) -> bool:
+        r = self.conn.execute(
+            "SELECT COUNT(*) FROM node_red_markups WHERE node_id=?", (node_id,)).fetchone()
+        return r[0] > 0
+
+    def has_visible_node_red_markups(self, node_id) -> bool:
+        r = self.conn.execute(
+            "SELECT COUNT(*) FROM node_red_markups WHERE node_id=? AND visible=1",
             (node_id,)).fetchone()
         return r[0] > 0
 
@@ -3921,6 +4007,501 @@ class MarkupTablePanel(QWidget):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# RED MARKUP PANELS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _mk_symbol_icon(svg_str: str, sz: int = 32) -> QIcon:
+    """Render an SVG string to a QIcon for the symbol selector buttons."""
+    from PyQt6.QtSvg import QSvgRenderer
+    from PyQt6.QtCore import QByteArray
+    renderer = QSvgRenderer(QByteArray(svg_str.encode('utf-8')))
+    pm = QPixmap(sz, sz)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    if renderer.isValid():
+        renderer.render(p)
+    p.end()
+    return QIcon(pm)
+
+
+class _SymbolSelectorPopup(QFrame):
+    """Floating popup with P&ID symbol buttons grouped by category."""
+    symbol_selected = pyqtSignal(str)  # symbol_id
+
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.setStyleSheet(
+            "QFrame{background:#FFFFFF;border:1px solid #AAAAAA;border-radius:6px;}"
+            "QPushButton{border:1px solid #DDD;border-radius:4px;background:#FAFAFA;"
+            "padding:2px;}"
+            "QPushButton:hover{background:#E8F0FE;border-color:#1565C0;}"
+            "QPushButton:checked{background:#1565C0;border-color:#1565C0;}")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(4)
+
+        lbl = QLabel("Välj P&ID-symbol")
+        f = QFont(); f.setBold(True); f.setPointSize(9)
+        lbl.setFont(f)
+        outer.addWidget(lbl)
+
+        tabs = QTabWidget()
+        tabs.setStyleSheet(
+            "QTabBar::tab{padding:4px 10px;font-size:9px;}"
+            "QTabBar::tab:selected{background:#E8F0FE;}")
+        outer.addWidget(tabs)
+
+        for cat, syms in _RED_MARKUP_SYMBOLS.items():
+            tab = QWidget()
+            grid = QGridLayout(tab)
+            grid.setContentsMargins(4, 4, 4, 4)
+            grid.setSpacing(4)
+            for i, (sid, sname, svg) in enumerate(syms):
+                btn = QPushButton()
+                btn.setFixedSize(40, 40)
+                btn.setIcon(_mk_symbol_icon(svg, 28))
+                btn.setIconSize(QSize(28, 28))
+                btn.setToolTip(sname)
+                btn.clicked.connect(lambda _, s=sid: (self.symbol_selected.emit(s), self.hide()))
+                row, col = divmod(i, 4)
+                grid.addWidget(btn, row, col)
+            tabs.addTab(tab, cat)
+
+        self.setFixedSize(220, 280)
+
+    def show_near(self, btn):
+        gp = btn.mapToGlobal(btn.rect().bottomLeft())
+        self.move(gp.x() - self.width() - 4, gp.y())
+        self.show()
+
+
+class RedMarkupPanel(QWidget):
+    """Narrow vertical ribbon for red markup tool selection (P&ID symbols + shapes)."""
+    closed          = pyqtSignal()
+    tool_changed    = pyqtSignal(str)
+    symbol_selected = pyqtSignal(str)   # symbol_id
+    all_vis_toggled = pyqtSignal(bool)
+    style_changed   = pyqtSignal(str, float, int)   # color, opacity, line_width
+    snap_changed    = pyqtSignal(bool)
+    symbol_dims_changed = pyqtSignal(float, float, float)  # w, h, rot
+
+    _TOOLS = [
+        ('select',   'select',   'Välj/flytta'),
+        ('polygon',  'polygon',  'Rita polygon'),
+        ('polyline', 'polyline', 'Rita polylinje'),
+        ('smart',    'smart',    'Smart polylinje'),
+        ('comment',  'comment',  'Lägg till kommentar'),
+        ('symbol',   'symbol',   'Lägg ut P&ID-symbol'),
+    ]
+
+    def __init__(self, db: Database, parent=None):
+        super().__init__(parent)
+        self.db            = db
+        self.node_id       = None
+        self._color        = '#CC0000'
+        self._opacity      = 1.0
+        self._width        = 4
+        self._font_size    = 16
+        self._snap         = True
+        self._current_tool = 'select'
+        self._selected_symbol_id = None
+        self._popup        = None
+        self._sym_popup    = None
+
+        SZ = 48
+        ISZ = 28
+        self.setFixedWidth(58)
+        self.setStyleSheet("background:#FFF5F5;")
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(5, 6, 5, 6)
+        outer.setSpacing(3)
+
+        _btn_ss = (
+            "QPushButton{border:1px solid #D0D4DA;border-radius:5px;"
+            "background:#FFFFFF;padding:0px;}"
+            "QPushButton:checked{background:#C62828;border-color:#C62828;}"
+            "QPushButton:hover:!checked{background:#FFEBEE;border-color:#EF9A9A;}")
+
+        # Close button
+        close_btn = QPushButton()
+        close_btn.setFixedSize(SZ, SZ)
+        close_btn.setToolTip("Avsluta redigering")
+        close_icon = QIcon()
+        close_icon.addPixmap(_mk_pm('close', ISZ, QColor("#ffffff")))
+        close_btn.setIcon(close_icon)
+        close_btn.setIconSize(QSize(ISZ, ISZ))
+        close_btn.setStyleSheet(
+            "QPushButton{background:#546E7A;border:none;border-radius:5px;padding:0px;}"
+            "QPushButton:hover{background:#37474F;}")
+        close_btn.clicked.connect(self.closed.emit)
+        outer.addWidget(close_btn)
+
+        sep1 = QFrame(); sep1.setFrameShape(QFrame.Shape.HLine)
+        sep1.setStyleSheet("background:#FFCDD2;max-height:1px;border:none;")
+        outer.addWidget(sep1)
+
+        self._tool_btns = {}
+        for tool, icon_name, tip in self._TOOLS:
+            btn = QPushButton()
+            btn.setFixedSize(SZ, SZ)
+            btn.setCheckable(True)
+            btn.setToolTip(tip)
+            if tool == 'symbol':
+                # Custom red X icon for symbol tool
+                sym_pm = QPixmap(ISZ, ISZ)
+                sym_pm.fill(Qt.GlobalColor.transparent)
+                p = QPainter(sym_pm)
+                p.setRenderHint(QPainter.RenderHint.Antialiasing)
+                p.setPen(QPen(QColor("#CC0000"), 3))
+                p.drawText(QRect(0, 0, ISZ, ISZ), Qt.AlignmentFlag.AlignCenter, "⚙")
+                p.end()
+                sym_icon = QIcon()
+                sym_icon.addPixmap(sym_pm, QIcon.Mode.Normal)
+                btn.setIcon(sym_icon)
+            else:
+                btn.setIcon(_mk_icon(icon_name, ISZ))
+            btn.setIconSize(QSize(ISZ, ISZ))
+            btn.setStyleSheet(_btn_ss)
+            btn.clicked.connect(lambda _, t=tool, b=btn: self._on_tool(t, b))
+            outer.addWidget(btn)
+            self._tool_btns[tool] = btn
+
+        sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setStyleSheet("background:#FFCDD2;max-height:1px;border:none;")
+        outer.addWidget(sep2)
+
+        self._color_strip = QLabel()
+        self._color_strip.setFixedHeight(7)
+        self._color_strip.setStyleSheet(
+            f"background:{self._color};border-radius:3px;border:none;")
+        outer.addWidget(self._color_strip)
+
+        sep3 = QFrame(); sep3.setFrameShape(QFrame.Shape.HLine)
+        sep3.setStyleSheet("background:#FFCDD2;max-height:1px;border:none;")
+        outer.addWidget(sep3)
+
+        self._all_vis_btn = QPushButton()
+        self._all_vis_btn.setFixedSize(SZ, SZ)
+        self._all_vis_btn.setCheckable(True)
+        self._all_vis_btn.setChecked(True)
+        self._all_vis_btn.setToolTip("Dölj/visa alla redmarkeringar")
+        eye_icon = QIcon()
+        eye_icon.addPixmap(_mk_pm('eye', ISZ, QColor("#ffffff")),
+                           QIcon.Mode.Normal, QIcon.State.Off)
+        eye_icon.addPixmap(_mk_pm('eye', ISZ, QColor("#ffffff")),
+                           QIcon.Mode.Normal, QIcon.State.On)
+        self._all_vis_btn.setIcon(eye_icon)
+        self._all_vis_btn.setIconSize(QSize(ISZ, ISZ))
+        self._all_vis_btn.setStyleSheet(
+            "QPushButton{border:none;border-radius:5px;padding:0px;"
+            "background:#27AE60;}"
+            "QPushButton:!checked{background:#E74C3C;}")
+        self._all_vis_btn.clicked.connect(self._on_all_vis)
+        outer.addWidget(self._all_vis_btn)
+
+        outer.addStretch()
+        self._on_tool('select')
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def load(self, node_id):
+        self.node_id = node_id
+        self._all_vis_btn.setChecked(True)
+        self._on_tool('select')
+
+    def get_current_style(self):
+        return self._color, self._opacity, self._width, self._font_size
+
+    def get_selected_symbol(self):
+        return self._selected_symbol_id
+
+    def get_symbol_dims(self):
+        """Returns (w, h, rot) for the currently selected symbol."""
+        return 40.0, 40.0, 0.0
+
+    # ── Internal ──────────────────────────────────────────────────────────────
+
+    def _on_tool(self, tool, btn=None):
+        self._current_tool = tool
+        for t, b in self._tool_btns.items():
+            b.setChecked(t == tool)
+        if tool == 'symbol' and btn is not None:
+            if self._sym_popup is None:
+                self._sym_popup = _SymbolSelectorPopup(self)
+                self._sym_popup.symbol_selected.connect(self._on_symbol_selected)
+            self._sym_popup.show_near(btn)
+            return
+        elif tool != 'select' and btn is not None:
+            self._show_tool_popup(tool, btn)
+        self.tool_changed.emit(tool)
+
+    def _on_symbol_selected(self, symbol_id):
+        self._selected_symbol_id = symbol_id
+        self.symbol_selected.emit(symbol_id)
+        self.tool_changed.emit('symbol')
+
+    def _show_tool_popup(self, tool, btn):
+        if self._popup is None:
+            self._popup = _StylePopup(self)
+        self._popup.show_for(tool, btn)
+
+    def _on_all_vis(self, checked):
+        if self.node_id is None:
+            return
+        self.db.set_all_node_red_markups_visible(self.node_id, checked)
+        self.all_vis_toggled.emit(checked)
+
+    def _apply_color(self, hex_c):
+        self._color = hex_c
+        self._color_strip.setStyleSheet(f"background:{hex_c};border-radius:3px;")
+        self.style_changed.emit(self._color, self._opacity, self._width)
+
+    def _apply_opacity(self, val):
+        self._opacity = val / 100.0
+        self.style_changed.emit(self._color, self._opacity, self._width)
+
+    def _apply_width(self, val):
+        self._width = val
+        self.style_changed.emit(self._color, self._opacity, self._width)
+
+    def _apply_font(self, val):
+        self._font_size = val
+
+    def _apply_snap(self, enabled):
+        self._snap = enabled
+        self.snap_changed.emit(enabled)
+
+
+class RedMarkupTablePanel(QWidget):
+    """Table of red markups for the active node."""
+    item_deleted     = pyqtSignal(int)
+    item_vis_toggled = pyqtSignal(int, bool)
+    item_selected    = pyqtSignal(int)
+    item_style_changed = pyqtSignal(int)
+
+    _TYPE_ICON = {'polygon': '◻', 'polyline': '〰', 'text': '𝐀',
+                  'comment': '💬', 'symbol': '⚙'}
+    _COLS      = ['Typ', 'Etikett', 'Färg', 'Opacitet', 'Tjocklek', '👁']
+
+    def __init__(self, db: Database, parent=None):
+        super().__init__(parent)
+        self.db      = db
+        self.node_id = None
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(2)
+
+        hdr = QHBoxLayout()
+        title = QLabel("🔴 Redmarkeringar")
+        f = QFont(); f.setBold(True); f.setPointSize(9)
+        title.setFont(f)
+        hdr.addWidget(title)
+        hdr.addStretch()
+        lay.addLayout(hdr)
+
+        self._table = QTableWidget(0, len(self._COLS))
+        self._table.setHorizontalHeaderLabels(self._COLS)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table.setAlternatingRowColors(True)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._on_ctx_menu)
+        self._table.cellClicked.connect(self._on_cell_clicked)
+        self._table.setStyleSheet(
+            "QTableWidget{border:1px solid #FFCDD2;font-size:10px;}"
+            "QTableWidget::item:selected{background:#FFEBEE;color:#C62828;}")
+
+        hh = self._table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        lay.addWidget(self._table)
+
+    def load(self, node_id):
+        self.node_id = node_id
+        self.refresh()
+
+    def refresh(self):
+        self._table.setRowCount(0)
+        if self.node_id is None:
+            return
+        for mu in self.db.node_red_markups_for_node(self.node_id):
+            m = dict(mu)
+            row = self._table.rowCount()
+            self._table.insertRow(row)
+            mu_id   = m['id']
+            typ     = m.get('type', 'polygon')
+            label   = m.get('label', '') or ''
+            color   = m.get('color', '#CC0000')
+            opacity = m.get('opacity', 1.0)
+            width   = m.get('line_width', 4)
+            visible = bool(m.get('visible', 1))
+
+            icon_item = QTableWidgetItem(self._TYPE_ICON.get(typ, '◻'))
+            icon_item.setData(Qt.ItemDataRole.UserRole, mu_id)
+            icon_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._table.setItem(row, 0, icon_item)
+
+            display_label = label if typ != 'symbol' else f"⚙ {label}"
+            lbl_item = QTableWidgetItem(display_label)
+            lbl_item.setData(Qt.ItemDataRole.UserRole, mu_id)
+            self._table.setItem(row, 1, lbl_item)
+
+            color_item = QTableWidgetItem(color)
+            color_item.setData(Qt.ItemDataRole.UserRole, mu_id)
+            color_item.setBackground(QColor(color))
+            color_item.setForeground(QColor(color))
+            color_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._table.setItem(row, 2, color_item)
+
+            op_item = QTableWidgetItem(f"{int(opacity * 100)}%")
+            op_item.setData(Qt.ItemDataRole.UserRole, mu_id)
+            op_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._table.setItem(row, 3, op_item)
+
+            w_item = QTableWidgetItem(str(width))
+            w_item.setData(Qt.ItemDataRole.UserRole, mu_id)
+            w_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._table.setItem(row, 4, w_item)
+
+            vis_item = QTableWidgetItem('👁' if visible else '○')
+            vis_item.setData(Qt.ItemDataRole.UserRole, mu_id)
+            vis_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._table.setItem(row, 5, vis_item)
+
+    def select_markup(self, mu_id):
+        for row in range(self._table.rowCount()):
+            item = self._table.item(row, 0)
+            if item and item.data(Qt.ItemDataRole.UserRole) == mu_id:
+                self._table.selectRow(row)
+                break
+
+    def clear(self):
+        self.node_id = None
+        self._table.setRowCount(0)
+
+    def _on_cell_clicked(self, row, col):
+        item = self._table.item(row, 0)
+        if item is None:
+            return
+        mu_id = item.data(Qt.ItemDataRole.UserRole)
+        if col == 5:
+            self._toggle_visibility(row, mu_id)
+        else:
+            self.item_selected.emit(mu_id)
+
+    def _toggle_visibility(self, row, mu_id):
+        mu = self.db.get_node_red_markup(mu_id)
+        if not mu:
+            return
+        new_vis = not bool(dict(mu).get('visible', 1))
+        self.db.update_node_red_markup(mu_id, visible=new_vis)
+        vis_item = self._table.item(row, 5)
+        if vis_item:
+            vis_item.setText('👁' if new_vis else '○')
+        self.item_vis_toggled.emit(mu_id, new_vis)
+
+    def _on_ctx_menu(self, pos):
+        seen, rows = set(), []
+        for idx in self._table.selectedIndexes():
+            r = idx.row()
+            if r not in seen:
+                seen.add(r)
+                item = self._table.item(r, 0)
+                if item:
+                    rows.append(item)
+        if not rows:
+            return
+        menu = QMenu(self)
+        n = len(rows)
+        lbl = f"🗑 Ta bort ({n} valda)" if n > 1 else "🗑 Ta bort"
+        act_del = menu.addAction(lbl)
+        act_style = None
+        if n == 1:
+            mu = self.db.get_node_red_markup(rows[0].data(Qt.ItemDataRole.UserRole))
+            if mu and dict(mu).get('type') == 'symbol':
+                act_style = menu.addAction("📐 Ändra storlek/rotation...")
+            else:
+                act_style = menu.addAction("✏ Ändra stil...")
+        result = menu.exec(self._table.viewport().mapToGlobal(pos))
+        if result == act_del:
+            for item in rows:
+                mu_id = item.data(Qt.ItemDataRole.UserRole)
+                self.db.delete_node_red_markup(mu_id)
+                self.item_deleted.emit(mu_id)
+            self.refresh()
+        elif act_style is not None and result == act_style:
+            mu_id = rows[0].data(Qt.ItemDataRole.UserRole)
+            mu = self.db.get_node_red_markup(mu_id)
+            if mu:
+                mu = dict(mu)
+                if mu.get('type') == 'symbol':
+                    dlg = _SymbolDimsDialog(
+                        float(mu.get('symbol_w', 40)),
+                        float(mu.get('symbol_h', 40)),
+                        float(mu.get('symbol_rot', 0)),
+                        self)
+                    if dlg.exec() == QDialog.DialogCode.Accepted:
+                        w, h, rot = dlg.get_dims()
+                        self.db.update_node_red_markup(mu_id, symbol_w=w, symbol_h=h, symbol_rot=rot)
+                        self.item_style_changed.emit(mu_id)
+                        self.refresh()
+                else:
+                    dlg = _MarkupStyleDialog(
+                        mu.get('type', 'polygon'),
+                        mu.get('color', '#CC0000'),
+                        float(mu.get('opacity', 1.0)),
+                        int(mu.get('line_width', 4)),
+                        int(mu.get('font_size', 12)),
+                        self)
+                    if dlg.exec() == QDialog.DialogCode.Accepted:
+                        c, op, lw, fs = dlg.get_style()
+                        self.db.update_node_red_markup(mu_id, color=c, opacity=op,
+                                                       line_width=lw, font_size=fs)
+                        self.item_style_changed.emit(mu_id)
+                        self.refresh()
+
+
+class _SymbolDimsDialog(QDialog):
+    """Dialog to adjust symbol width, height, and rotation."""
+    def __init__(self, w=40, h=40, rot=0, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Symbolstorlek och rotation")
+        self.setFixedWidth(280)
+        self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
+        outer = QVBoxLayout(self)
+        outer.setSpacing(10)
+
+        form = QFormLayout()
+        self._w_sp = QSpinBox(); self._w_sp.setRange(5, 500); self._w_sp.setValue(int(w))
+        self._w_sp.setSuffix(" pt")
+        self._h_sp = QSpinBox(); self._h_sp.setRange(5, 500); self._h_sp.setValue(int(h))
+        self._h_sp.setSuffix(" pt")
+        self._r_sp = QSpinBox(); self._r_sp.setRange(-360, 360); self._r_sp.setValue(int(rot))
+        self._r_sp.setSuffix(" °")
+        form.addRow("Bredd:", self._w_sp)
+        form.addRow("Höjd:", self._h_sp)
+        form.addRow("Rotation:", self._r_sp)
+        outer.addLayout(form)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        outer.addWidget(btns)
+
+    def get_dims(self):
+        return float(self._w_sp.value()), float(self._h_sp.value()), float(self._r_sp.value())
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # TREE PANEL
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -4069,6 +4650,7 @@ class TreePanel(QWidget):
     add_consequences_on_pid_requested = pyqtSignal(int)   # cause_id
     add_safeguards_on_pid_requested   = pyqtSignal(int)   # consequence_id
     edit_node_markup_requested        = pyqtSignal(int)        # node_id
+    edit_red_markup_requested         = pyqtSignal(int)        # node_id
     node_markup_vis_requested         = pyqtSignal(int, bool)  # node_id, visible
     node_jump_to_markup               = pyqtSignal(int)         # node_id
     structure_changed           = pyqtSignal()
@@ -4378,6 +4960,8 @@ class TreePanel(QWidget):
             menu.addAction("+ Lägg till avvikelse", self.add_deviation)
             menu.addAction("✏️ Editera nodmarkup",
                            lambda i=id_: self.edit_node_markup_requested.emit(i))
+            menu.addAction("🔴 Editera redmarkup",
+                           lambda i=id_: self.edit_red_markup_requested.emit(i))
             if self.db.has_node_markups(id_):
                 is_vis = self.db.has_visible_node_markups(id_)
                 if is_vis:
@@ -11291,7 +11875,11 @@ class MainWindow(QMainWindow):
         self.node_markup_panel.setVisible(False)
         self._h_splitter.addWidget(self.node_markup_panel)
 
-        self._h_splitter.setSizes([260, 650, 370, 0])
+        self.red_markup_panel = RedMarkupPanel(self.db)
+        self.red_markup_panel.setVisible(False)
+        self._h_splitter.addWidget(self.red_markup_panel)
+
+        self._h_splitter.setSizes([260, 650, 370, 0, 0])
         self._v_splitter.addWidget(self._h_splitter)
 
         self.scenario_panel = ScenarioTablePanel(self.db)
@@ -11301,7 +11889,11 @@ class MainWindow(QMainWindow):
         self.markup_table_panel.setVisible(False)
         self._v_splitter.addWidget(self.markup_table_panel)
 
-        self._v_splitter.setSizes([640, 220, 0])
+        self.red_markup_table_panel = RedMarkupTablePanel(self.db)
+        self.red_markup_table_panel.setVisible(False)
+        self._v_splitter.addWidget(self.red_markup_table_panel)
+
+        self._v_splitter.setSizes([640, 220, 0, 0])
         self.view_stack.addWidget(pid_page)
 
         # ── Page 1: Worksheet ─────────────────────────────────────────────────
@@ -11373,6 +11965,7 @@ class MainWindow(QMainWindow):
         self.tree_panel.add_safeguards_on_pid_requested.connect(
             self._on_add_safeguards_on_pid)
         self.tree_panel.edit_node_markup_requested.connect(self._on_edit_node_markup)
+        self.tree_panel.edit_red_markup_requested.connect(self._on_edit_red_markup)
         self.tree_panel.node_markup_vis_requested.connect(self._on_node_markup_vis)
         self.tree_panel.node_jump_to_markup.connect(self._on_jump_to_node_markup)
 
@@ -11388,6 +11981,23 @@ class MainWindow(QMainWindow):
                 color, width, int(opacity * 210)))
         self.node_markup_panel.snap_changed.connect(
             self.pid_panel.viewer.set_snap)
+        # Red markup ribbon signals
+        self.red_markup_panel.closed.connect(self._on_close_red_markup)
+        self.red_markup_panel.tool_changed.connect(
+            lambda t: self.pid_panel.set_red_markup_tool(
+                t, *self.red_markup_panel.get_current_style()[:3],
+                symbol_id=self.red_markup_panel.get_selected_symbol()))
+        self.red_markup_panel.symbol_selected.connect(
+            lambda sid: self.pid_panel.set_red_markup_tool(
+                'symbol', *self.red_markup_panel.get_current_style()[:3],
+                symbol_id=sid))
+        self.red_markup_panel.all_vis_toggled.connect(
+            lambda _: self.pid_panel.refresh_red_markup_overlays())
+        self.red_markup_panel.style_changed.connect(
+            lambda color, opacity, width: self.pid_panel.viewer.set_pen_style(
+                color, width, int(opacity * 210)))
+        self.red_markup_panel.snap_changed.connect(
+            self.pid_panel.viewer.set_snap)
         # Markup table panel signals
         self.markup_table_panel.item_deleted.connect(
             lambda _: self.pid_panel.refresh_markup_overlays())
@@ -11395,6 +12005,15 @@ class MainWindow(QMainWindow):
             lambda mu_id, vis: self.pid_panel.viewer.set_markup_item_visible(mu_id, vis))
         self.markup_table_panel.item_selected.connect(
             lambda mu_id: self.pid_panel.viewer.highlight_markup(mu_id))
+        # Red markup table panel signals
+        self.red_markup_table_panel.item_deleted.connect(
+            lambda _: self.pid_panel.refresh_red_markup_overlays())
+        self.red_markup_table_panel.item_vis_toggled.connect(
+            lambda mu_id, vis: self.pid_panel.viewer.set_red_markup_item_visible(mu_id, vis))
+        self.red_markup_table_panel.item_selected.connect(
+            lambda mu_id: self.pid_panel.refresh_red_markup_overlays())
+        self.red_markup_table_panel.item_style_changed.connect(
+            lambda _: self.pid_panel.refresh_red_markup_overlays())
 
         self.pid_panel.markup_label_edited.connect(self._on_markup_label_edited)
         self.pid_panel.markup_duplicate_requested.connect(self._on_duplicate_markup)
@@ -11405,6 +12024,10 @@ class MainWindow(QMainWindow):
         self.pid_panel.markup_moved.connect(self._on_markup_moved)
         self.pid_panel.markup_item_selected.connect(
             self.markup_table_panel.select_markup)
+        self.pid_panel.red_markup_draw_finished.connect(self._on_red_markup_draw_finished)
+        self.pid_panel.red_markup_moved.connect(self._on_red_markup_moved)
+        self.pid_panel.red_markup_item_selected.connect(
+            self.red_markup_table_panel.select_markup)
         self.tree_panel.exit_pid_mode_requested.connect(
             lambda: self.pid_panel._set_mode(MODE_NAV))
 
@@ -11771,8 +12394,8 @@ class MainWindow(QMainWindow):
         self.node_markup_panel.setVisible(True)
         self.scenario_panel.setVisible(False)
         self.markup_table_panel.setVisible(True)
-        self._h_splitter.setSizes([0, 800, 0, 64])
-        self._v_splitter.setSizes([560, 0, 200])
+        self._h_splitter.setSizes([0, 800, 0, 64, 0])
+        self._v_splitter.setSizes([560, 0, 200, 0])
         self.pid_panel.enter_markup_edit(node_id)
         self._markup_undo_stack.clear()
         self._undo_shortcut.setEnabled(True)
@@ -11786,11 +12409,60 @@ class MainWindow(QMainWindow):
         self.node_markup_panel.setVisible(False)
         self.scenario_panel.setVisible(True)
         self.markup_table_panel.setVisible(False)
-        self._h_splitter.setSizes([260, 650, 370, 0])
-        self._v_splitter.setSizes([640, 220, 0])
+        self._h_splitter.setSizes([260, 650, 370, 0, 0])
+        self._v_splitter.setSizes([640, 220, 0, 0])
         self.stack.setCurrentWidget(self.welcome_panel)
         self._markup_undo_stack.clear()
         self._undo_shortcut.setEnabled(False)
+
+    def _on_edit_red_markup(self, node_id):
+        """Tree right-click NODE → 'Editera redmarkup'."""
+        self._switch_view(0)
+        self.red_markup_panel.load(node_id)
+        self.red_markup_table_panel.load(node_id)
+        self.tree_panel.setVisible(False)
+        self._right_scroll.setVisible(False)
+        self.red_markup_panel.setVisible(True)
+        self.scenario_panel.setVisible(False)
+        self.red_markup_table_panel.setVisible(True)
+        self._h_splitter.setSizes([0, 800, 0, 0, 64])
+        self._v_splitter.setSizes([560, 0, 0, 200])
+        self.pid_panel.enter_red_markup_edit(node_id)
+
+    def _on_close_red_markup(self):
+        """Red markup ribbon close button clicked — leave red markup edit mode."""
+        self.pid_panel.exit_red_markup_mode()
+        self.pid_panel.reload_overlays()
+        self.tree_panel.setVisible(True)
+        self._right_scroll.setVisible(True)
+        self.red_markup_panel.setVisible(False)
+        self.scenario_panel.setVisible(True)
+        self.red_markup_table_panel.setVisible(False)
+        self._h_splitter.setSizes([260, 650, 370, 0, 0])
+        self._v_splitter.setSizes([640, 220, 0, 0])
+        self.stack.setCurrentWidget(self.welcome_panel)
+
+    def _on_red_markup_draw_finished(self, type_, node_id, pts, page, label):
+        """New red markup drawn on P&ID — save to DB and refresh."""
+        color, opacity, line_width, font_size = self.red_markup_panel.get_current_style()
+        if type_ == 'symbol':
+            symbol_id = label  # label holds the symbol_id for symbol type
+            sw, sh, sr = self.red_markup_panel.get_symbol_dims()
+            mu_id = self.db.add_node_red_markup(
+                node_id, type_, pts, symbol_id, color, opacity, line_width,
+                page, font_size, sw, sh, sr)
+        else:
+            mu_id = self.db.add_node_red_markup(
+                node_id, type_, pts, label, color, opacity, line_width, page, font_size)
+        self.pid_panel.viewer._pending_path_item = None
+        self.pid_panel.refresh_red_markup_overlays()
+        self.red_markup_table_panel.refresh()
+        self.red_markup_table_panel.select_markup(mu_id)
+
+    def _on_red_markup_moved(self, mu_id, new_pts):
+        """Red markup item dragged to new position — save to DB."""
+        self.db.update_node_red_markup(mu_id, points=new_pts)
+        self.red_markup_table_panel.refresh()
 
     def _on_node_markup_vis(self, node_id, visible):
         """Tree context menu hide/show all markups for a node."""
