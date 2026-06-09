@@ -9308,6 +9308,29 @@ class SettingsPanel(QWidget):
         pl.addRow("Revision:", self._proj_rev)
         tabs.addTab(proj_tab, "Projekt")
 
+        # ── Tab: P&ID ─────────────────────────────────────────────────────────
+        pid_tab = QWidget()
+        pid_l = QVBoxLayout(pid_tab)
+        pid_l.setContentsMargins(16, 16, 16, 16)
+        pid_l.setSpacing(12)
+
+        tag_grp = QGroupBox("Tagg-identifiering")
+        tag_gl = QVBoxLayout(tag_grp)
+        tag_gl.setSpacing(6)
+
+        self._strip_spaces_chk = QCheckBox(
+            "Ta bort mellanslag i tagg-nummer  (t.ex. \"P 101\" → \"P101\")")
+        self._strip_spaces_chk.setToolTip(
+            "När ett tagg-nummer identifieras via klick eller gummiband på P&ID\n"
+            "tas alla mellanslag bort automatiskt innan det fylls i tag-fältet.")
+        self._strip_spaces_chk.toggled.connect(
+            lambda on: self.db.set_config('tag_strip_spaces', '1' if on else '0'))
+        tag_gl.addWidget(self._strip_spaces_chk)
+
+        pid_l.addWidget(tag_grp)
+        pid_l.addStretch()
+        tabs.addTab(pid_tab, "P&ID")
+
         # ── Tab: Tagdatabas ───────────────────────────────────────────────────
         self._tag_db_panel = TagDatabasePanel(self.db)
         self._tag_db_panel.settings_changed.connect(self.matrix_changed.emit)
@@ -9330,6 +9353,8 @@ class SettingsPanel(QWidget):
         self._proj_name.setText(self.db.get_config('project_name', ''))
         self._proj_date.setText(self.db.get_config('project_date', ''))
         self._proj_rev.setText(self.db.get_config('project_revision', ''))
+        self._strip_spaces_chk.setChecked(
+            self.db.get_config('tag_strip_spaces', '1') == '1')
 
     # ── Palette ───────────────────────────────────────────────────────────────
 
@@ -11680,6 +11705,8 @@ class MainWindow(QMainWindow):
 
         # OCR/detected text goes into the tag field, not description
         effective_tag = suggested_desc or suggested_tag
+        if self.db.get_config('tag_strip_spaces', '1') == '1':
+            effective_tag = effective_tag.replace(' ', '')
 
         popup = CauseObjectPopup(
             detected_type, effective_tag, self.db,
