@@ -7,6 +7,7 @@ import os
 import shutil
 import tempfile
 import datetime
+import math
 from pathlib import Path
 
 # Suppress Qt SVG parser warnings (font references, path truncations)
@@ -27,7 +28,7 @@ from PyQt6.QtWidgets import (
     QLineEdit, QLabel, QPushButton, QDialogButtonBox, QRadioButton,
     QGraphicsView, QGraphicsScene, QGraphicsItem,
     QGraphicsPixmapItem, QGraphicsPathItem, QGraphicsEllipseItem,
-    QGraphicsRectItem, QGraphicsSimpleTextItem, QFrame, QSpinBox, QAbstractSpinBox, QCheckBox, QGroupBox,
+    QGraphicsRectItem, QGraphicsLineItem, QGraphicsSimpleTextItem, QFrame, QSpinBox, QAbstractSpinBox, QCheckBox, QGroupBox,
     QSlider, QColorDialog, QFileDialog, QMessageBox, QInputDialog,
     QSizePolicy, QMenu, QTableWidget, QTableWidgetItem, QHeaderView,
     QProgressDialog, QApplication, QGridLayout, QTextEdit, QButtonGroup,
@@ -2314,6 +2315,7 @@ class PIDGraphicsView(QGraphicsView):
     markup_moved            = pyqtSignal(int, list)        # mu_id, new PDF points [[x,y],...]
     markup_label_edited     = pyqtSignal(int, str)         # mu_id, new_label
     markup_duplicate_requested = pyqtSignal(int)           # mu_id
+    markup_symbol_dims_changed = pyqtSignal(int, float, float, float)  # mu_id, w, h, rot_deg
     zone_drawn    = pyqtSignal(object, int)                # (QRectF pdf_coords, page)
     zone_resized  = pyqtSignal(str, int, float, float, float, float)  # type_,id_,cx,cy,w,h
     cause_at_marker_requested       = pyqtSignal(int)   # cause_id
@@ -2327,6 +2329,9 @@ class PIDGraphicsView(QGraphicsView):
     _DATA_MARKUP_PTS = 3   # stores PDF points list on path/text items
     _DATA_ZONE_KEY  = 4    # (marker_type, marker_id) on zone rect/handle items
     _DATA_ZONE_CIDX = 5    # corner index 0=TL,1=TR,2=BR,3=BL on zone handle items
+    _DATA_SYMBOL_W   = 6   # float PDF-unit width stored on symbol items
+    _DATA_SYMBOL_H   = 7   # float PDF-unit height stored on symbol items
+    _DATA_SYMBOL_ROT = 8   # float rotation degrees stored on symbol items
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2412,13 +2417,26 @@ class PIDGraphicsView(QGraphicsView):
         self._red_markup_types: dict = {}
         self._edit_mu_id            = None
         self._vertex_handles: list  = []
-        self._drag_mode             = None   # 'vertex' | 'item' | None
+        self._drag_mode             = None   # 'vertex' | 'item' | 'symbol_transform' | None
         self._drag_vertex_idx       = None
         self._drag_start_scene      = None
         self._drag_original_pts: list = []
         self._drag_current_pts: list  = []
         self._drag_threshold_exceeded = False
         self._drag_item_origins: list = []  # [(QGraphicsItem, QPointF)] for text/comment
+        # Symbol resize/rotate handles and live state
+        self._corner_handles: list   = []
+        self._rot_handle              = None   # QGraphicsEllipseItem
+        self._rot_handle_line         = None   # QGraphicsLineItem
+        self._symbol_bbox_proxy       = None   # QGraphicsPathItem (live preview)
+        self._symbol_drag_mode        = None   # 'nw'|'ne'|'sw'|'se'|'rotate'
+        self._symbol_orig_w           = 40.0
+        self._symbol_orig_h           = 40.0
+        self._symbol_orig_rot         = 0.0
+        self._symbol_orig_center      = None   # QPointF scene coords
+        self._symbol_live_w           = 40.0
+        self._symbol_live_h           = 40.0
+        self._symbol_live_rot         = 0.0
         self._inline_edit_widget = None
 
         self._smart_start_pdf   = None   # (pdf_x, pdf_y) first click
@@ -2904,6 +2922,7 @@ class PIDGraphicsView(QGraphicsView):
 
     def clear_red_markup_overlays(self):
         """Remove all red markup overlay items from the scene."""
+        self._clear_edit_handles()
         self._red_markup_types.clear()
         for mu_id, items in self._red_markup_items.items():
             for gi in items:
@@ -2950,6 +2969,9 @@ class PIDGraphicsView(QGraphicsView):
         gi.setData(self._DATA_MARKUP_ID, mu_id)
         gi.setData(self._DATA_TYPE, 'red_markup')
         gi.setData(self._DATA_MARKUP_PTS, [[pos_pdf[0], pos_pdf[1]]])
+        gi.setData(self._DATA_SYMBOL_W, float(symbol_w))
+        gi.setData(self._DATA_SYMBOL_H, float(symbol_h))
+        gi.setData(self._DATA_SYMBOL_ROT, float(symbol_rot))
         gi.setCursor(Qt.CursorShape.PointingHandCursor)
         gi.setToolTip(f"Symbol: {label}" if label else "P&ID-symbol")
         self._scene.addItem(gi)
@@ -2959,14 +2981,31 @@ class PIDGraphicsView(QGraphicsView):
         for h in self._vertex_handles:
             try: self._scene.removeItem(h)
             except Exception: pass
-        self._vertex_handles  = []
-        self._edit_mu_id      = None
-        self._drag_mode       = None
-        self._drag_vertex_idx = None
-        self._drag_original_pts = []
-        self._drag_current_pts  = []
-        self._drag_item_origins = []
+        for h in self._corner_handles:
+            try: self._scene.removeItem(h)
+            except Exception: pass
+        if self._rot_handle is not None:
+            try: self._scene.removeItem(self._rot_handle)
+            except Exception: pass
+            self._rot_handle = None
+        if self._rot_handle_line is not None:
+            try: self._scene.removeItem(self._rot_handle_line)
+            except Exception: pass
+            self._rot_handle_line = None
+        if self._symbol_bbox_proxy is not None:
+            try: self._scene.removeItem(self._symbol_bbox_proxy)
+            except Exception: pass
+            self._symbol_bbox_proxy = None
+        self._corner_handles          = []
+        self._vertex_handles          = []
+        self._edit_mu_id              = None
+        self._drag_mode               = None
+        self._drag_vertex_idx         = None
+        self._drag_original_pts       = []
+        self._drag_current_pts        = []
+        self._drag_item_origins       = []
         self._drag_threshold_exceeded = False
+        self._symbol_drag_mode        = None
 
     def _select_for_edit(self, mu_id):
         """Select a markup item and show vertex handles."""
@@ -3003,13 +3042,173 @@ class PIDGraphicsView(QGraphicsView):
                 h.setZValue(Z_OVERLAY + 5)
                 self._scene.addItem(h)
                 self._vertex_handles.append(h)
-        elif typ in ('text', 'comment', 'symbol'):
+        elif typ in ('text', 'comment'):
+            self._drag_item_origins = [
+                (gi, QPointF(gi.pos()))
+                for gi in items_dict.get(mu_id, [])
+            ]
+        elif typ == 'symbol':
+            sw_pdf = sh_pdf = rot_deg = None
+            for gi in items_dict.get(mu_id, []):
+                sw_pdf  = gi.data(self._DATA_SYMBOL_W)
+                sh_pdf  = gi.data(self._DATA_SYMBOL_H)
+                rot_deg = gi.data(self._DATA_SYMBOL_ROT)
+                break
+            sw_pdf  = float(sw_pdf  if sw_pdf  is not None else 40.0)
+            sh_pdf  = float(sh_pdf  if sh_pdf  is not None else 40.0)
+            rot_deg = float(rot_deg if rot_deg is not None else 0.0)
+            cx, cy = pts_scene[0].x(), pts_scene[0].y()
+            self._symbol_orig_w      = sw_pdf
+            self._symbol_orig_h      = sh_pdf
+            self._symbol_orig_rot    = rot_deg
+            self._symbol_orig_center = QPointF(cx, cy)
+            self._symbol_live_w      = sw_pdf
+            self._symbol_live_h      = sh_pdf
+            self._symbol_live_rot    = rot_deg
+            self._add_symbol_handles(cx, cy, sw_pdf, sh_pdf, rot_deg)
             self._drag_item_origins = [
                 (gi, QPointF(gi.pos()))
                 for gi in items_dict.get(mu_id, [])
             ]
 
         self.highlight_markup(mu_id)
+
+    # ── Symbol resize/rotate helpers ─────────────────────────────────────────
+
+    def _sym_rpt(self, cx, cy, lx, ly, rot_deg):
+        """Rotate local (lx,ly) by rot_deg around (cx,cy) in screen coords."""
+        a = math.radians(rot_deg)
+        ca, sa = math.cos(a), math.sin(a)
+        return QPointF(cx + lx * ca - ly * sa, cy + lx * sa + ly * ca)
+
+    def _add_symbol_handles(self, cx, cy, sw_pdf, sh_pdf, rot_deg):
+        """Create resize corner handles and rotation handle for a symbol."""
+        rs = self.render_scale
+        sw = sw_pdf * rs
+        sh = sh_pdf * rs
+        SZ = 5
+        ROT_DIST = max(22.0, sh / 2 + 18.0)
+        corners_local = [(-sw/2, -sh/2), (sw/2, -sh/2), (-sw/2, sh/2), (sw/2, sh/2)]
+        for lx, ly in corners_local:
+            pt = self._sym_rpt(cx, cy, lx, ly, rot_deg)
+            h = QGraphicsRectItem(-SZ, -SZ, SZ * 2, SZ * 2)
+            h.setBrush(QBrush(QColor(255, 140, 0, 220)))
+            h.setPen(QPen(QColor(180, 80, 0), 1.5))
+            h.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+            h.setPos(pt)
+            h.setZValue(Z_OVERLAY + 6)
+            self._scene.addItem(h)
+            self._corner_handles.append(h)
+        rot_pt = self._sym_rpt(cx, cy, 0, -ROT_DIST, rot_deg)
+        line = QGraphicsLineItem(cx, cy, rot_pt.x(), rot_pt.y())
+        line.setPen(QPen(QColor(100, 80, 200, 160), 1.5, Qt.PenStyle.DashLine))
+        line.setZValue(Z_OVERLAY + 5)
+        self._scene.addItem(line)
+        self._rot_handle_line = line
+        ROT_R = 6
+        rh = QGraphicsEllipseItem(-ROT_R, -ROT_R, ROT_R * 2, ROT_R * 2)
+        rh.setBrush(QBrush(QColor(100, 80, 200, 200)))
+        rh.setPen(QPen(QColor(60, 40, 180), 1.5))
+        rh.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+        rh.setPos(rot_pt)
+        rh.setZValue(Z_OVERLAY + 6)
+        self._scene.addItem(rh)
+        self._rot_handle = rh
+
+    def _update_symbol_handles(self, cx, cy, sw_pdf, sh_pdf, rot_deg):
+        """Reposition corner handles and rotation handle to match new symbol state."""
+        rs = self.render_scale
+        sw = sw_pdf * rs
+        sh = sh_pdf * rs
+        ROT_DIST = max(22.0, sh / 2 + 18.0)
+        corners_local = [(-sw/2, -sh/2), (sw/2, -sh/2), (-sw/2, sh/2), (sw/2, sh/2)]
+        for i, (lx, ly) in enumerate(corners_local):
+            if i < len(self._corner_handles):
+                self._corner_handles[i].setPos(self._sym_rpt(cx, cy, lx, ly, rot_deg))
+        rot_pt = self._sym_rpt(cx, cy, 0, -ROT_DIST, rot_deg)
+        if self._rot_handle is not None:
+            self._rot_handle.setPos(rot_pt)
+        if self._rot_handle_line is not None:
+            self._rot_handle_line.setLine(cx, cy, rot_pt.x(), rot_pt.y())
+
+    def _update_symbol_bbox_proxy(self, cx, cy, sw_pdf, sh_pdf, rot_deg):
+        """Show/update the dashed bounding-box preview during resize/rotate."""
+        rs = self.render_scale
+        sw = sw_pdf * rs
+        sh = sh_pdf * rs
+        corners = [
+            self._sym_rpt(cx, cy, -sw/2, -sh/2, rot_deg),
+            self._sym_rpt(cx, cy,  sw/2, -sh/2, rot_deg),
+            self._sym_rpt(cx, cy,  sw/2,  sh/2, rot_deg),
+            self._sym_rpt(cx, cy, -sw/2,  sh/2, rot_deg),
+        ]
+        path = QPainterPath()
+        path.moveTo(corners[0])
+        for p in corners[1:]:
+            path.lineTo(p)
+        path.closeSubpath()
+        if self._symbol_bbox_proxy is None:
+            proxy = QGraphicsPathItem(path)
+            proxy.setPen(QPen(QColor(255, 140, 0, 200), 2.0, Qt.PenStyle.DashLine))
+            proxy.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            proxy.setZValue(Z_OVERLAY + 4)
+            self._scene.addItem(proxy)
+            self._symbol_bbox_proxy = proxy
+        else:
+            self._symbol_bbox_proxy.setPath(path)
+
+    def _do_symbol_transform(self, sp):
+        """Apply live resize or rotate of symbol during handle drag."""
+        cx = self._symbol_orig_center.x()
+        cy = self._symbol_orig_center.y()
+        dx = sp.x() - cx
+        dy = sp.y() - cy
+        rs = self.render_scale
+        if self._symbol_drag_mode == 'rotate':
+            self._symbol_live_rot = math.degrees(math.atan2(dy, dx)) + 90.0
+        else:
+            a = math.radians(self._symbol_live_rot)
+            ca, sa = math.cos(a), math.sin(a)
+            lx =  dx * ca + dy * sa   # inverse rotation
+            ly = -dx * sa + dy * ca
+            min_pdf = 10.0
+            if self._symbol_drag_mode == 'se':
+                self._symbol_live_w = max(min_pdf, lx * 2 / rs)
+                self._symbol_live_h = max(min_pdf, ly * 2 / rs)
+            elif self._symbol_drag_mode == 'nw':
+                self._symbol_live_w = max(min_pdf, -lx * 2 / rs)
+                self._symbol_live_h = max(min_pdf, -ly * 2 / rs)
+            elif self._symbol_drag_mode == 'ne':
+                self._symbol_live_w = max(min_pdf, lx * 2 / rs)
+                self._symbol_live_h = max(min_pdf, -ly * 2 / rs)
+            elif self._symbol_drag_mode == 'sw':
+                self._symbol_live_w = max(min_pdf, -lx * 2 / rs)
+                self._symbol_live_h = max(min_pdf, ly * 2 / rs)
+        self._update_symbol_bbox_proxy(
+            cx, cy, self._symbol_live_w, self._symbol_live_h, self._symbol_live_rot)
+        self._update_symbol_handles(
+            cx, cy, self._symbol_live_w, self._symbol_live_h, self._symbol_live_rot)
+
+    def _finish_symbol_transform(self):
+        """Save new symbol dims/rotation, emit signal for DB save."""
+        mu_id = self._edit_mu_id
+        if mu_id is None:
+            return
+        # Update stored data on item so it survives until the next render
+        items_dict = (self._red_markup_items if mu_id in self._red_markup_items
+                      else self._markup_items)
+        for gi in items_dict.get(mu_id, []):
+            gi.setData(self._DATA_SYMBOL_W,   self._symbol_live_w)
+            gi.setData(self._DATA_SYMBOL_H,   self._symbol_live_h)
+            gi.setData(self._DATA_SYMBOL_ROT, self._symbol_live_rot)
+        self.markup_symbol_dims_changed.emit(
+            mu_id,
+            float(self._symbol_live_w),
+            float(self._symbol_live_h),
+            float(self._symbol_live_rot))
+        self._clear_edit_handles()
+
+    # ── Edit path / drag helpers ──────────────────────────────────────────────
 
     def _update_edit_path(self, pts_scene):
         """Rebuild the path/positions of the currently edited markup."""
@@ -3034,10 +3233,19 @@ class PIDGraphicsView(QGraphicsView):
                     gi.setPath(path)
                     break
 
-        elif typ in ('text', 'comment', 'symbol') and pts_scene and self._drag_original_pts:
+        elif typ in ('text', 'comment') and pts_scene and self._drag_original_pts:
             delta = pts_scene[0] - self._drag_original_pts[0]
             for gi, orig in self._drag_item_origins:
                 gi.setPos(orig + delta)
+
+        elif typ == 'symbol' and pts_scene and self._drag_original_pts:
+            delta = pts_scene[0] - self._drag_original_pts[0]
+            for gi, orig in self._drag_item_origins:
+                gi.setPos(orig + delta)
+            # Also move the resize/rotate handles to follow the symbol
+            self._update_symbol_handles(
+                pts_scene[0].x(), pts_scene[0].y(),
+                self._symbol_live_w, self._symbol_live_h, self._symbol_live_rot)
 
     def _update_handle_positions(self, pts_scene):
         for i, handle in enumerate(self._vertex_handles):
@@ -3051,11 +3259,15 @@ class PIDGraphicsView(QGraphicsView):
         mu_id = self._edit_mu_id
         is_red = mu_id in self._red_markup_items
         items_dict = self._red_markup_items if is_red else self._markup_items
+        types_dict = self._red_markup_types if is_red else self._markup_types
         new_pdf_pts = [list(self.scene_to_pdf(pt)) for pt in self._drag_current_pts]
         for gi in items_dict.get(mu_id, []):
             if gi.data(self._DATA_MARKUP_PTS) is not None:
                 gi.setData(self._DATA_MARKUP_PTS, new_pdf_pts)
                 break
+        # For symbols moved via 'item' drag, keep _symbol_orig_center in sync
+        if types_dict.get(mu_id) == 'symbol' and new_pdf_pts:
+            self._symbol_orig_center = self.pdf_to_scene(*new_pdf_pts[0])
         self.markup_moved.emit(mu_id, new_pdf_pts)
 
     def _start_inline_label_edit(self, mu_id):
@@ -3738,6 +3950,36 @@ class PIDGraphicsView(QGraphicsView):
         elif self.mode == MODE_MARKUP_SELECT:
             if event.button() == Qt.MouseButton.LeftButton:
                 view_pos = event.position().toPoint()
+                # Priority 0a: corner resize handle (symbol)
+                _corner_cursors = [
+                    Qt.CursorShape.SizeFDiagCursor, Qt.CursorShape.SizeBDiagCursor,
+                    Qt.CursorShape.SizeBDiagCursor, Qt.CursorShape.SizeFDiagCursor,
+                ]
+                for i, handle in enumerate(self._corner_handles):
+                    hvp = self.mapFromScene(handle.scenePos())
+                    dx = view_pos.x() - hvp.x()
+                    dy = view_pos.y() - hvp.y()
+                    if dx * dx + dy * dy < 144:   # 12 screen-pixel radius
+                        self._symbol_drag_mode = ['nw', 'ne', 'sw', 'se'][i]
+                        self._drag_mode = 'symbol_transform'
+                        self._drag_start_scene = sp
+                        self._drag_original_pts = list(self._drag_current_pts)
+                        self._drag_threshold_exceeded = False
+                        self.setCursor(_corner_cursors[i])
+                        event.accept(); return
+                # Priority 0b: rotation handle (symbol)
+                if self._rot_handle is not None:
+                    hvp = self.mapFromScene(self._rot_handle.scenePos())
+                    dx = view_pos.x() - hvp.x()
+                    dy = view_pos.y() - hvp.y()
+                    if dx * dx + dy * dy < 196:   # 14 screen-pixel radius
+                        self._symbol_drag_mode = 'rotate'
+                        self._drag_mode = 'symbol_transform'
+                        self._drag_start_scene = sp
+                        self._drag_original_pts = list(self._drag_current_pts)
+                        self._drag_threshold_exceeded = False
+                        self.setCursor(Qt.CursorShape.OpenHandCursor)
+                        event.accept(); return
                 # Priority 1: vertex handle hit
                 for i, handle in enumerate(self._vertex_handles):
                     hvp = self.mapFromScene(handle.scenePos())
@@ -3872,9 +4114,13 @@ class PIDGraphicsView(QGraphicsView):
         if self.mode == MODE_MARKUP_SELECT and self._drag_mode is not None and \
                 event.button() == Qt.MouseButton.LeftButton:
             if self._drag_threshold_exceeded and self._edit_mu_id is not None:
-                self._finish_edit_drag()
+                if self._drag_mode == 'symbol_transform':
+                    self._finish_symbol_transform()
+                else:
+                    self._finish_edit_drag()
             elif not self._drag_threshold_exceeded and self._edit_mu_id is not None:
-                self.markup_item_clicked.emit(self._edit_mu_id)
+                if self._drag_mode != 'symbol_transform':
+                    self.markup_item_clicked.emit(self._edit_mu_id)
             self._drag_mode = None
             self._drag_vertex_idx = None
             self._drag_threshold_exceeded = False
@@ -3937,15 +4183,19 @@ class PIDGraphicsView(QGraphicsView):
                     self._drag_threshold_exceeded = True
             if self._drag_threshold_exceeded:
                 delta = sp - self._drag_start_scene
-                if self._drag_mode == 'vertex' and self._drag_vertex_idx is not None:
+                if self._drag_mode == 'symbol_transform':
+                    self._do_symbol_transform(sp)
+                elif self._drag_mode == 'vertex' and self._drag_vertex_idx is not None:
                     new_pts = list(self._drag_current_pts)
                     idx = self._drag_vertex_idx
                     new_pts[idx] = self._drag_original_pts[idx] + delta
                     self._drag_current_pts = new_pts
+                    self._update_edit_path(self._drag_current_pts)
+                    self._update_handle_positions(self._drag_current_pts)
                 elif self._drag_mode == 'item':
                     self._drag_current_pts = [p + delta for p in self._drag_original_pts]
-                self._update_edit_path(self._drag_current_pts)
-                self._update_handle_positions(self._drag_current_pts)
+                    self._update_edit_path(self._drag_current_pts)
+                    self._update_handle_positions(self._drag_current_pts)
                 event.accept()
                 return
         if self.mode in (MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE) \
@@ -4453,6 +4703,7 @@ class PIDPanel(QWidget):
     red_markup_draw_finished = pyqtSignal(str, int, list, int, str)  # type_, node_id, pts, page, label/symbol_id
     red_markup_item_selected = pyqtSignal(int)                        # mu_id
     red_markup_moved         = pyqtSignal(int, list)                  # mu_id, new PDF pts
+    markup_symbol_dims_changed = pyqtSignal(int, float, float, float)  # mu_id, w, h, rot_deg
 
     def __init__(self, db, parent=None):
         super().__init__(parent)
@@ -4685,6 +4936,7 @@ class PIDPanel(QWidget):
         self.viewer.markup_moved.connect(self.markup_moved)
         self.viewer.markup_label_edited.connect(self.markup_label_edited)
         self.viewer.markup_duplicate_requested.connect(self.markup_duplicate_requested)
+        self.viewer.markup_symbol_dims_changed.connect(self.markup_symbol_dims_changed)
 
         # Connect existing signals for scenario auto-progression
         self.cause_created.connect(self._sc_on_cause)

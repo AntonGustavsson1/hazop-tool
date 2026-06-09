@@ -12028,6 +12028,7 @@ class MainWindow(QMainWindow):
         self.pid_panel.red_markup_moved.connect(self._on_red_markup_moved)
         self.pid_panel.red_markup_item_selected.connect(
             self.red_markup_table_panel.select_markup)
+        self.pid_panel.markup_symbol_dims_changed.connect(self._on_markup_symbol_dims_changed)
         self.tree_panel.exit_pid_mode_requested.connect(
             lambda: self.pid_panel._set_mode(MODE_NAV))
 
@@ -12463,6 +12464,11 @@ class MainWindow(QMainWindow):
         """Red markup item dragged to new position — save to DB."""
         self.db.update_node_red_markup(mu_id, points=new_pts)
         self.red_markup_table_panel.refresh()
+
+    def _on_markup_symbol_dims_changed(self, mu_id, w, h, rot):
+        """Symbol resized or rotated — save new dims to DB and re-render."""
+        self.db.update_node_red_markup(mu_id, symbol_w=w, symbol_h=h, symbol_rot=rot)
+        self.pid_panel.refresh_red_markup_overlays()
 
     def _on_node_markup_vis(self, node_id, visible):
         """Tree context menu hide/show all markups for a node."""
