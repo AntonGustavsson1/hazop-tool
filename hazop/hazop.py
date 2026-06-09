@@ -5903,21 +5903,26 @@ class _PidDelegate(_ScenarioDelegate):
                 txt_rect = QRect(r.left() + _PID_ICON_W + _KON_CAT_W, r.top(),
                                  r.width() - _PID_ICON_W - _KON_CAT_W, r.height())
 
-                # Category badge
-                cat_info = index.data(Qt.ItemDataRole.UserRole + 3)
-                n_cats   = index.data(Qt.ItemDataRole.UserRole + 4) or 0
-                if cat_info:
-                    cat_id, sev_id, cat_name, cat_sev = cat_info
-                    _, cat_bg, _ = risk_info(3, cat_sev)
-                    badge = cat_rect.adjusted(3, 4, -3, -4)
-                    painter.fillRect(badge, QColor(cat_bg))
-                    painter.setPen(QColor(_contrast_fg(cat_bg)))
+                # Category badges — stacked vertically, one per category
+                n_cats      = index.data(Qt.ItemDataRole.UserRole + 4) or 0
+                all_cats    = index.data(Qt.ItemDataRole.UserRole + 5) or []
+                if all_cats:
+                    n         = len(all_cats)
+                    badge_h   = max(14, cat_rect.height() // n)
                     cf = QFont(option.font)
                     cf.setPointSize(max(6, option.font.pointSize() - 2))
                     cf.setBold(True)
                     painter.setFont(cf)
-                    painter.drawText(badge, Qt.AlignmentFlag.AlignCenter,
-                                     f"{cat_name[:3]} K{cat_sev}")
+                    for i, (cat_id, sev_id, cat_name, cat_sev) in enumerate(all_cats):
+                        _, cat_bg, _ = risk_info(3, cat_sev)
+                        badge = QRect(cat_rect.left() + 2,
+                                      cat_rect.top() + i * badge_h,
+                                      cat_rect.width() - 4,
+                                      badge_h - 1)
+                        painter.fillRect(badge, QColor(cat_bg))
+                        painter.setPen(QColor(_contrast_fg(cat_bg)))
+                        painter.drawText(badge, Qt.AlignmentFlag.AlignCenter,
+                                         f"{cat_name[:3]} K{cat_sev}")
                 else:
                     icon_clr = QColor('#1a56db') if n_cats > 0 else QColor('#aaa')
                     painter.setPen(icon_clr)
@@ -6557,6 +6562,9 @@ class ScenarioTablePanel(QWidget):
 
                     # Category list for the RRF popup: [(sev_id, cat_name), ...]
                     sev_cat_list = [(cr['id'], cr['name']) for cr in cat_rows]
+                    # Full category info for stacked badges in KON cell
+                    all_cat_infos = [(cr['category_id'], cr['id'],
+                                      cr['name'], cr['severity']) for cr in cat_rows]
 
                     for i in range(n_rows):
                         sg_i    = sgs[i]      if i < n_sgs  else None
@@ -6572,6 +6580,7 @@ class ScenarioTablePanel(QWidget):
                                       excl_cat_names=excl_cat_names,
                                       excl_for_cat=excl_for_cat,
                                       sev_cat_list=sev_cat_list,
+                                      all_cat_infos=all_cat_infos,
                                       n_cats=n_cats)
                 if self._table.rowCount() == first_row_for_cause:
                     self._add_empty_row(node_name, dev_d, cause_d, freq, freq_lbl)
@@ -6704,7 +6713,7 @@ class ScenarioTablePanel(QWidget):
 
     def _add_row(self, node_name, dev_d, cause_d, freq, freq_lbl, cons_d, all_sgs, sg,
                  cat_info=None, excl_cat_names=None, excl_for_cat=None,
-                 sev_cat_list=None, n_cats=0):
+                 sev_cat_list=None, all_cat_infos=None, n_cats=0):
         """One row in the scenario table.
 
         sg            – the safeguard for this row (None = no safeguard on this row).
@@ -6792,6 +6801,7 @@ class ScenarioTablePanel(QWidget):
         kon_item.setData(Qt.ItemDataRole.UserRole, ('consequence', cid))
         kon_item.setData(Qt.ItemDataRole.UserRole + 3, None)   # no per-row cat badge
         kon_item.setData(Qt.ItemDataRole.UserRole + 4, n_cats)
+        kon_item.setData(Qt.ItemDataRole.UserRole + 5, all_cat_infos or [])
         tip = ("Klicka på 📊-ikonen för att sätta konsekvens per kategori\n"
                "Dubbelklicka för att redigera\nEnter för att lägga till ny konsekvens")
         if display_desc != cons_d['description']:
