@@ -2246,7 +2246,9 @@ class PIDGraphicsView(QGraphicsView):
     markup_duplicate_requested = pyqtSignal(int)           # mu_id
     zone_drawn    = pyqtSignal(object, int)                # (QRectF pdf_coords, page)
     zone_resized  = pyqtSignal(str, int, float, float, float, float)  # type_,id_,cx,cy,w,h
-    cause_at_marker_requested = pyqtSignal(int)            # cause_id — add another cause here
+    cause_at_marker_requested       = pyqtSignal(int)   # cause_id
+    consequence_at_marker_requested = pyqtSignal(int)   # cons_id
+    safeguard_at_marker_requested   = pyqtSignal(int)   # sg_id
 
     # Keys for QGraphicsItem.setData / .data
     _DATA_TYPE      = 0    # 'cause' | 'consequence' | 'safeguard' | 'markup'
@@ -2321,6 +2323,8 @@ class PIDGraphicsView(QGraphicsView):
 
         # Zone rectangle overlays: (type_, id_) → {rect_item, handles:[4]}
         self._zone_rects: dict = {}
+        # Label slot tracker: (qx, qy) → next free row index (reset on clear_overlays)
+        self._label_slots: dict = {}
         # Zone corner resize state
         self._zone_resize_key   = None   # (type_, id_)
         self._zone_resize_cidx  = None   # 0=TL,1=TR,2=BR,3=BL
@@ -3205,17 +3209,28 @@ class PIDGraphicsView(QGraphicsView):
     def _show_context_menu(self, sp, global_pos):
         menu = QMenu(self.viewport())
 
-        # If cursor is on a cause marker, offer "add another cause here" at the top
-        hovered_cause_id = None
+        # If cursor is on an existing marker, offer "add another here" at the top
+        hovered_type = hovered_id = None
         for item in self._scene.items(sp):
-            if item.data(self._DATA_TYPE) == 'cause' and item.data(self._DATA_ID) is not None:
-                hovered_cause_id = int(item.data(self._DATA_ID))
+            t = item.data(self._DATA_TYPE)
+            i = item.data(self._DATA_ID)
+            if t in ('cause', 'consequence', 'safeguard') and i is not None:
+                hovered_type, hovered_id = t, int(i)
                 break
-        if hovered_cause_id is not None:
+        if hovered_type == 'cause':
             act = menu.addAction("⚙️ Lägg till ytterligare orsak här")
-            act.setToolTip("Skapa en ny orsak på samma P&ID-position som denna")
-            cid = hovered_cause_id
+            cid = hovered_id
             act.triggered.connect(lambda: self.cause_at_marker_requested.emit(cid))
+            menu.addSeparator()
+        elif hovered_type == 'consequence':
+            act = menu.addAction("⚠️ Lägg till ytterligare konsekvens här")
+            cid = hovered_id
+            act.triggered.connect(lambda: self.consequence_at_marker_requested.emit(cid))
+            menu.addSeparator()
+        elif hovered_type == 'safeguard':
+            act = menu.addAction("🛡️ Lägg till ytterligare safeguard här")
+            cid = hovered_id
+            act.triggered.connect(lambda: self.safeguard_at_marker_requested.emit(cid))
             menu.addSeparator()
 
         menu.addAction("⚙️ Orsak",
@@ -3231,6 +3246,35 @@ class PIDGraphicsView(QGraphicsView):
         menu.addAction("✏️ Rita Nodgräns",
                        lambda: self.context_action.emit('node', sp, self.current_page))
         menu.exec(global_pos)
+
+    def _place_label(self, text: str, x_pdf: float, y_pdf: float,
+                     r: float, color: QColor, marker_type: str):
+        """Add a text label to the right of a marker circle with white background
+        and automatic vertical offset when multiple markers share the same position."""
+        center = self.pdf_to_scene(x_pdf, y_pdf)
+        slot_key = (round(x_pdf * 5), round(y_pdf * 5))
+        slot = self._label_slots.get(slot_key, 0)
+        self._label_slots[slot_key] = slot + 1
+        ROW_H = 17.0
+        x0 = center.x() + r + 3
+        y0 = center.y() - 8 + slot * ROW_H
+
+        txt = QGraphicsSimpleTextItem(text[:35])
+        f = QFont(); f.setPointSize(8)
+        txt.setFont(f)
+        txt.setBrush(QBrush(color))
+        txt.setPos(x0, y0)
+        txt.setZValue(Z_OVERLAY + 2)
+
+        br = txt.boundingRect()
+        pad = 2.0
+        bg = QGraphicsRectItem(x0 - pad, y0 - pad, br.width() + 2 * pad, br.height() + 2 * pad)
+        bg.setPen(QPen(Qt.PenStyle.NoPen))
+        bg.setBrush(QBrush(QColor(255, 255, 255, 230)))
+        bg.setZValue(Z_OVERLAY + 1)
+
+        self._add_tracked(bg, marker_type)
+        self._add_tracked(txt, marker_type)
 
     def add_cause_marker(self, cause_id, x_pdf, y_pdf, comp_type, label, tag='',
                          rect_w=None, rect_h=None):
@@ -3260,14 +3304,7 @@ class PIDGraphicsView(QGraphicsView):
         self._add_tracked(inner, 'cause')
 
         if label:
-            short = label[:30]
-            txt = QGraphicsSimpleTextItem(short)
-            f2 = QFont(); f2.setPointSize(8)
-            txt.setFont(f2)
-            txt.setBrush(QBrush(QColor(120, 0, 0)))
-            txt.setPos(center.x() + r + 3, center.y() - 8)
-            txt.setZValue(Z_OVERLAY + 1)
-            self._add_tracked(txt, 'cause')
+            self._place_label(label, x_pdf, y_pdf, r, QColor(120, 0, 0), 'cause')
         if rect_w is not None and rect_h is not None and rect_w > 0 and rect_h > 0:
             self.add_zone_rect('cause', cause_id, x_pdf, y_pdf, rect_w, rect_h)
 
@@ -3293,6 +3330,8 @@ class PIDGraphicsView(QGraphicsView):
         inner.setPos(center.x() - ibr.width() / 2, center.y() - ibr.height() / 2)
         inner.setZValue(Z_OVERLAY + 1)
         self._add_tracked(inner, 'consequence')
+        if target:
+            self._place_label(target, x_pdf, y_pdf, r, QColor(130, 70, 0), 'consequence')
         if rect_w is not None and rect_h is not None and rect_w > 0 and rect_h > 0:
             self.add_zone_rect('consequence', cons_id, x_pdf, y_pdf, rect_w, rect_h)
 
@@ -3322,13 +3361,7 @@ class PIDGraphicsView(QGraphicsView):
         self._add_tracked(inner, 'safeguard')
 
         if description:
-            txt = QGraphicsSimpleTextItem(description[:30])
-            f2 = QFont(); f2.setPointSize(8)
-            txt.setFont(f2)
-            txt.setBrush(QBrush(QColor(20, 100, 20)))
-            txt.setPos(center.x() + r + 3, center.y() - 8)
-            txt.setZValue(Z_OVERLAY + 1)
-            self._add_tracked(txt, 'safeguard')
+            self._place_label(description, x_pdf, y_pdf, r, QColor(20, 100, 20), 'safeguard')
         if rect_w is not None and rect_h is not None and rect_w > 0 and rect_h > 0:
             self.add_zone_rect('safeguard', sg_id, x_pdf, y_pdf, rect_w, rect_h)
 
@@ -3475,10 +3508,11 @@ class PIDGraphicsView(QGraphicsView):
             try: self._scene.removeItem(self._pending_path_item)
             except Exception: pass
             self._pending_path_item = None
-        # Clear per-type item lists and zone rect dict (items gone from scene)
+        # Clear per-type item lists, zone rect dict, and label slots
         for key in self._type_items:
             self._type_items[key] = []
         self._zone_rects.clear()
+        self._label_slots.clear()
 
     def mousePressEvent(self, event):
         # ── Zone corner handle — intercept LEFT click in any mode ─────────────
@@ -4461,6 +4495,8 @@ class PIDPanel(QWidget):
         self.viewer.zone_drawn.connect(self._on_zone_drawn)
         self.viewer.zone_resized.connect(self._on_zone_resized)
         self.viewer.cause_at_marker_requested.connect(self._on_add_cause_at_marker)
+        self.viewer.consequence_at_marker_requested.connect(self._on_add_consequence_at_marker)
+        self.viewer.safeguard_at_marker_requested.connect(self._on_add_safeguard_at_marker)
         self._active_place_type  = None   # 'cause' | 'consequence' | 'safeguard'
         self._active_place_id    = None
         self._pending_zone_pdf   = None   # QRectF while zone dialog chain is open
@@ -5598,6 +5634,56 @@ class PIDPanel(QWidget):
 
         scene_pos = self.viewer.pdf_to_scene(pdf_x, pdf_y)
         self.cause_placement_requested.emit(dev_id, comp_tag, comp_type, scene_pos, page, '')
+
+    def _on_add_consequence_at_marker(self, cons_id: int):
+        """Right-click on existing consequence marker → add another consequence here."""
+        page = self.viewer.current_page
+        markers = self.db.consequence_markers_for_page(page)
+        marker = next((dict(m) for m in markers if m['consequence_id'] == cons_id), None)
+        if not marker:
+            return
+
+        pdf_x  = marker['x']
+        pdf_y  = marker['y']
+        rect_w = marker.get('rect_w')
+        rect_h = marker.get('rect_h')
+
+        if rect_w and rect_h:
+            self._pending_zone_pdf = QRectF(
+                pdf_x - rect_w / 2, pdf_y - rect_h / 2, rect_w, rect_h)
+
+        # Set active cause to the cause of the clicked consequence
+        cons = self.db.get_consequence(cons_id)
+        if cons:
+            self._active_cause_id = dict(cons).get('cause_id')
+
+        scene_pos = self.viewer.pdf_to_scene(pdf_x, pdf_y)
+        self._on_consequence_click(scene_pos, page)
+
+    def _on_add_safeguard_at_marker(self, sg_id: int):
+        """Right-click on existing safeguard marker → add another safeguard here."""
+        page = self.viewer.current_page
+        markers = self.db.safeguard_markers_for_page(page)
+        marker = next((dict(m) for m in markers if m['safeguard_id'] == sg_id), None)
+        if not marker:
+            return
+
+        pdf_x  = marker['x']
+        pdf_y  = marker['y']
+        rect_w = marker.get('rect_w')
+        rect_h = marker.get('rect_h')
+
+        if rect_w and rect_h:
+            self._pending_zone_pdf = QRectF(
+                pdf_x - rect_w / 2, pdf_y - rect_h / 2, rect_w, rect_h)
+
+        # Set active consequence to the consequence of the clicked safeguard
+        sg = self.db.get_safeguard(sg_id)
+        if sg:
+            self._active_consequence_id = dict(sg).get('consequence_id')
+
+        scene_pos = self.viewer.pdf_to_scene(pdf_x, pdf_y)
+        self._on_safeguard_click(scene_pos, page)
 
     def _place_secondary_marker(self, scene_pos, page, suggested_tag=''):
         """Place the queued secondary marker, then re-open the dialog for the same deviation."""
