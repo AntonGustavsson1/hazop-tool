@@ -1685,6 +1685,12 @@ class Database:
         return self.conn.execute(
             "SELECT * FROM causes WHERE deviation_id=? ORDER BY id", (deviation_id,)).fetchall()
 
+    def causes_linked_from_consequence(self, cons_id):
+        """Return all causes whose linked_consequence_id points to cons_id."""
+        return self.conn.execute(
+            "SELECT * FROM causes WHERE linked_consequence_id=? ORDER BY id",
+            (cons_id,)).fetchall()
+
     def causes_for_node_excluding_deviation(self, node_id, deviation_id):
         """Return causes for the node that belong to OTHER deviations (for reuse dialog)."""
         return self.conn.execute(
@@ -5836,9 +5842,12 @@ class _PidDelegate(_ScenarioDelegate):
                                    r.width() - _PID_ICON_W - cow - _ORS_FREQ_W, r.height())
 
                 # Object-tag zone background
+                is_chain = bool(index.data(Qt.ItemDataRole.UserRole + 4))
                 has_tag = bool(comp_tag or comp_type)
                 if sel:
                     obj_bg = option.palette.highlight().color().darker(120)
+                elif is_chain:
+                    obj_bg = QColor('#ede7f6')   # light purple tint for chained cause
                 elif has_tag:
                     obj_bg = QColor('#e8f0fe')
                 else:
@@ -5866,6 +5875,19 @@ class _PidDelegate(_ScenarioDelegate):
                                      fm2.elidedText(tag_label,
                                                     Qt.TextElideMode.ElideRight,
                                                     tag_rect.width() - 4))
+
+                # ⛓ small badge at bottom-right of obj zone for chain-linked causes
+                if is_chain:
+                    badge_sz = min(14, obj_rect.height() - 2)
+                    chain_badge = QRect(obj_rect.right() - badge_sz - 1,
+                                        obj_rect.bottom() - badge_sz - 1,
+                                        badge_sz, badge_sz)
+                    painter.fillRect(chain_badge, QColor('#5d5d5d'))
+                    cbf = QFont(option.font)
+                    cbf.setPointSize(max(6, option.font.pointSize() - 3))
+                    painter.setFont(cbf)
+                    painter.setPen(QColor('#ffffff'))
+                    painter.drawText(chain_badge, Qt.AlignmentFlag.AlignCenter, "⛓")
 
                 # Separator
                 painter.setPen(QPen(QColor('#ddd'), 1))
@@ -5976,14 +5998,23 @@ class _PidDelegate(_ScenarioDelegate):
                                                txt_rect.width() - 4))
 
                 # ⛓ chain-link zone on the right
-                chain_bg = QColor('#e8f5e9') if not sel else option.palette.highlight().color().darker(110)
+                has_linked = bool(index.data(Qt.ItemDataRole.UserRole + 6))
+                if sel:
+                    chain_bg = option.palette.highlight().color().darker(110)
+                    chain_fg = option.palette.highlightedText().color()
+                elif has_linked:
+                    chain_bg = QColor('#5d5d5d')   # dark grey — already has linked cause
+                    chain_fg = QColor('#ffffff')
+                else:
+                    chain_bg = QColor('#e8f5e9')   # light green — click to add
+                    chain_fg = QColor('#27ae60')
                 painter.fillRect(chain_rect, chain_bg)
-                painter.setPen(QPen(QColor('#ddd'), 1))
+                painter.setPen(QPen(QColor('#bbb'), 1))
                 painter.drawLine(chain_rect.left(), r.top(), chain_rect.left(), r.bottom())
                 cf2 = QFont(option.font)
                 cf2.setPointSize(max(7, option.font.pointSize()))
                 painter.setFont(cf2)
-                painter.setPen(QColor('#27ae60') if not sel else option.palette.highlightedText().color())
+                painter.setPen(chain_fg)
                 painter.drawText(chain_rect, Qt.AlignmentFlag.AlignCenter, "⛓")
 
                 # Pin icon
@@ -6575,7 +6606,13 @@ class ScenarioTablePanel(QWidget):
                 _fi = freq_to_idx(freq)
                 freq_lbl = _FREQ_LABELS[_fi] if _fi < len(_FREQ_LABELS) else f'F{freq}'
                 first_row_for_cause = self._table.rowCount()
-                all_cons = list(self.db.consequences(cause_d['id']))
+                # Chain-linked causes display the referenced consequence, not own consequences
+                is_chain_link = bool(cause_d.get('linked_consequence_id'))
+                if is_chain_link:
+                    linked_row = self.db.get_consequence(cause_d['linked_consequence_id'])
+                    all_cons = [linked_row] if linked_row else []
+                else:
+                    all_cons = list(self.db.consequences(cause_d['id']))
                 if self._cons_id is not None:
                     all_cons = [c for c in all_cons if dict(c)['id'] == self._cons_id]
                 for cons in all_cons:
@@ -6586,6 +6623,10 @@ class ScenarioTablePanel(QWidget):
                     n_cats = len(cat_rows)
                     n_sgs  = len(sgs)
                     n_rows = max(n_cats, n_sgs, 1)
+
+                    # Does this consequence have chain-linked causes?
+                    has_linked_causes = bool(
+                        self.db.causes_linked_from_consequence(cons_d['id']))
 
                     # Precompute exclusions per severity assessment
                     cat_excl_map = {}           # sev_id → set of excluded sg_ids
@@ -6620,7 +6661,9 @@ class ScenarioTablePanel(QWidget):
                                       excl_for_cat=excl_for_cat,
                                       sev_cat_list=sev_cat_list,
                                       all_cat_infos=all_cat_infos,
-                                      n_cats=n_cats)
+                                      n_cats=n_cats,
+                                      is_chain_link=is_chain_link,
+                                      has_linked_causes=has_linked_causes)
                 if self._table.rowCount() == first_row_for_cause:
                     self._add_empty_row(node_name, dev_d, cause_d, freq, freq_lbl)
             self._apply_spans()
@@ -6753,7 +6796,8 @@ class ScenarioTablePanel(QWidget):
 
     def _add_row(self, node_name, dev_d, cause_d, freq, freq_lbl, cons_d, all_sgs, sg,
                  cat_info=None, excl_cat_names=None, excl_for_cat=None,
-                 sev_cat_list=None, all_cat_infos=None, n_cats=0):
+                 sev_cat_list=None, all_cat_infos=None, n_cats=0,
+                 is_chain_link=False, has_linked_causes=False):
         """One row in the scenario table.
 
         sg            – the safeguard for this row (None = no safeguard on this row).
@@ -6828,6 +6872,7 @@ class ScenarioTablePanel(QWidget):
         ors.setData(Qt.ItemDataRole.UserRole + 2, (cause_d.get('comp_type') or '',
                                                     cause_d.get('comp_tag')  or ''))
         ors.setData(Qt.ItemDataRole.UserRole + 3, freq)
+        ors.setData(Qt.ItemDataRole.UserRole + 4, is_chain_link)
         ors.setToolTip("Dubbelklicka för att redigera\n"
                        "Klicka på objektzonen (vänster) för att sätta utrustnings-tag\n"
                        "Enter för att lägga till ny orsak")
@@ -6843,6 +6888,7 @@ class ScenarioTablePanel(QWidget):
         kon_item.setData(Qt.ItemDataRole.UserRole + 3, None)   # no per-row cat badge
         kon_item.setData(Qt.ItemDataRole.UserRole + 4, n_cats)
         kon_item.setData(Qt.ItemDataRole.UserRole + 5, all_cat_infos or [])
+        kon_item.setData(Qt.ItemDataRole.UserRole + 6, has_linked_causes)
         tip = ("Klicka på 📊-ikonen för att sätta konsekvens per kategori\n"
                "Dubbelklicka för att redigera\nEnter för att lägga till ny konsekvens")
         if display_desc != cons_d['description']:
