@@ -6990,18 +6990,19 @@ class ScenarioTablePanel(QWidget):
         kon_item.setToolTip(tip)
         self._table.setItem(r, self._C_KON, kon_item)
 
-        # ── Col 4: Risk före barriär ─────────────────────────────────────────
-        rb = QTableWidgetItem(f"{freq_axis_label(freq)}  {cons_axis_label(sev)}")
-        rb.setBackground(QBrush(QColor(bg_b)))
-        rb.setForeground(QBrush(QColor(_contrast_fg(bg_b))))
-        rb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        rb.setToolTip(f"🖱 Klicka för att ändra i riskmatrisen\n{level_b}")
+        # ── Col 4: Risk före barriär (only when a category is set) ──────────
         if cat_info:
+            rb = QTableWidgetItem(f"{freq_axis_label(freq)}  {cons_axis_label(sev)}")
+            rb.setBackground(QBrush(QColor(bg_b)))
+            rb.setForeground(QBrush(QColor(_contrast_fg(bg_b))))
+            rb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            rb.setToolTip(f"🖱 Klicka för att ändra i riskmatrisen\n{level_b}")
             rb.setData(Qt.ItemDataRole.UserRole,
                        ('risk_click_cat', cause_d['id'], cid, cat_id, sev_id, freq, sev))
         else:
-            rb.setData(Qt.ItemDataRole.UserRole, ('risk_click', cause_d['id'], cid, freq, sev))
+            rb = QTableWidgetItem('')
+            rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
         self._table.setItem(r, self._C_RFORE, rb)
 
         # ── Col 5: Barriär ───────────────────────────────────────────────────
@@ -7068,27 +7069,35 @@ class ScenarioTablePanel(QWidget):
         extra_btn.clicked.connect(lambda _, c=cid: self._edit_extra(c))
         self._table.setCellWidget(r, self._C_OVRIGA, extra_btn)
 
-        # ── Col 6: Risk efter barriärer ──────────────────────────────────────
-        sg_steps  = int(math.log10(max(1, sg_rrf))) if sg_rrf > 1 else 0
-        reft_text = (f"−{sg_steps} steg\n" if sg_steps else "") + \
-                    f"{freq_axis_label(f_eff)}  {cons_axis_label(sev)}"
-        ra = QTableWidgetItem(reft_text)
-        ra.setBackground(QBrush(QColor(bg_a)))
-        ra.setForeground(QBrush(QColor(_contrast_fg(bg_a))))
-        ra.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        ra.setFlags(ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        ra.setToolTip(f"{level_a} — {freq_axis_label(f_eff)}  {cons_axis_label(sev)}  (efter barriärer)")
+        # ── Col 6: Risk efter barriärer (only when a category is set) ────────
+        if cat_info:
+            sg_steps  = int(math.log10(max(1, sg_rrf))) if sg_rrf > 1 else 0
+            reft_text = (f"−{sg_steps} steg\n" if sg_steps else "") + \
+                        f"{freq_axis_label(f_eff)}  {cons_axis_label(sev)}"
+            ra = QTableWidgetItem(reft_text)
+            ra.setBackground(QBrush(QColor(bg_a)))
+            ra.setForeground(QBrush(QColor(_contrast_fg(bg_a))))
+            ra.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            ra.setFlags(ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            ra.setToolTip(f"{level_a} — {freq_axis_label(f_eff)}  {cons_axis_label(sev)}  (efter barriärer)")
+        else:
+            ra = QTableWidgetItem('')
+            ra.setFlags(ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
         self._table.setItem(r, self._C_REFT, ra)
 
-        # ── Col 10: Slutkonsekvens ────────────────────────────────────────────
-        slut_text = (f"−{total_steps} steg\n" if total_steps else "") + \
-                    f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}"
-        rs = QTableWidgetItem(slut_text)
-        rs.setBackground(QBrush(QColor(bg_s)))
-        rs.setForeground(QBrush(QColor(_contrast_fg(bg_s))))
-        rs.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        rs.setToolTip(f"{level_s} — {freq_axis_label(final_f)}  {cons_axis_label(sev)}  (−{total_steps} steg totalt)")
+        # ── Col 10: Slutkonsekvens (only when a category is set) ──────────────
+        if cat_info:
+            slut_text = (f"−{total_steps} steg\n" if total_steps else "") + \
+                        f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}"
+            rs = QTableWidgetItem(slut_text)
+            rs.setBackground(QBrush(QColor(bg_s)))
+            rs.setForeground(QBrush(QColor(_contrast_fg(bg_s))))
+            rs.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            rs.setToolTip(f"{level_s} — {freq_axis_label(final_f)}  {cons_axis_label(sev)}  (−{total_steps} steg totalt)")
+        else:
+            rs = QTableWidgetItem('')
+            rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
         self._table.setItem(r, self._C_SLUT, rs)
 
         self._table.setRowHeight(r, max(22, self._cell_font_size * 2 + 4))
