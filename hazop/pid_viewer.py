@@ -2244,12 +2244,16 @@ class PIDGraphicsView(QGraphicsView):
     markup_moved            = pyqtSignal(int, list)        # mu_id, new PDF points [[x,y],...]
     markup_label_edited     = pyqtSignal(int, str)         # mu_id, new_label
     markup_duplicate_requested = pyqtSignal(int)           # mu_id
+    zone_drawn    = pyqtSignal(object, int)                # (QRectF pdf_coords, page)
+    zone_resized  = pyqtSignal(str, int, float, float, float, float)  # type_,id_,cx,cy,w,h
 
     # Keys for QGraphicsItem.setData / .data
     _DATA_TYPE      = 0    # 'cause' | 'consequence' | 'safeguard' | 'markup'
     _DATA_ID        = 1    # database id
     _DATA_MARKUP_ID = 2    # markup id (for markup items)
     _DATA_MARKUP_PTS = 3   # stores PDF points list on path/text items
+    _DATA_ZONE_KEY  = 4    # (marker_type, marker_id) on zone rect/handle items
+    _DATA_ZONE_CIDX = 5    # corner index 0=TL,1=TR,2=BR,3=BL on zone handle items
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2308,6 +2312,19 @@ class PIDGraphicsView(QGraphicsView):
         self.draw_brush         = QBrush(QColor(255, 140, 0, 60))
         self.temp_items         = []
         self.rubber_line        = None
+
+        # Right-drag rubber-band (NAV mode)
+        self._rband_start_scene  = None
+        self._rband_preview_item = None
+        self._rband_dragging     = False
+
+        # Zone rectangle overlays: (type_, id_) → {rect_item, handles:[4]}
+        self._zone_rects: dict = {}
+        # Zone corner resize state
+        self._zone_resize_key   = None   # (type_, id_)
+        self._zone_resize_cidx  = None   # 0=TL,1=TR,2=BR,3=BL
+        self._zone_resize_start = None   # QPointF scene
+        self._zone_resize_orig  = None   # QRectF scene
         self._pending_path_item = None
 
         # Markup overlay tracking: markup_id → list of QGraphicsItems
@@ -3091,7 +3108,117 @@ class PIDGraphicsView(QGraphicsView):
             except Exception:
                 pass
 
-    def add_cause_marker(self, cause_id, x_pdf, y_pdf, comp_type, label, tag=''):
+    # ── Zone rectangle overlays ───────────────────────────────────────────────
+
+    def add_zone_rect(self, marker_type, marker_id, cx_pdf, cy_pdf, w_pdf, h_pdf):
+        """Draw a transparent green rectangle centered at (cx_pdf, cy_pdf) with corner handles."""
+        key = (marker_type, marker_id)
+        if key in self._zone_rects:
+            self._remove_zone_items(key)
+        rs = self.render_scale
+        cx = cx_pdf * rs;  cy = cy_pdf * rs
+        w  = w_pdf  * rs;  h  = h_pdf  * rs
+        scene_rect = QRectF(cx - w / 2, cy - h / 2, w, h)
+        pen = QPen(QColor(0, 180, 80, 220), 2)
+        pen.setCosmetic(True)
+        rect_item = self._scene.addRect(scene_rect, pen, QBrush(QColor(0, 200, 100, 40)))
+        rect_item.setZValue(Z_OVERLAY - 1)
+        rect_item.setData(self._DATA_ZONE_KEY, key)
+        handles = []
+        HR = 6.0
+        corners = [scene_rect.topLeft(), scene_rect.topRight(),
+                   scene_rect.bottomRight(), scene_rect.bottomLeft()]
+        for i, corner in enumerate(corners):
+            h_item = QGraphicsEllipseItem(-HR, -HR, 2 * HR, 2 * HR)
+            h_item.setBrush(QBrush(QColor(255, 255, 255, 220)))
+            h_item.setPen(QPen(QColor(0, 160, 70), 1.5))
+            h_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+            h_item.setPos(corner)
+            h_item.setZValue(Z_OVERLAY + 4)
+            h_item.setData(self._DATA_ZONE_KEY, key)
+            h_item.setData(self._DATA_ZONE_CIDX, i)
+            h_item.setCursor(Qt.CursorShape.SizeFDiagCursor)
+            self._scene.addItem(h_item)
+            handles.append(h_item)
+        self._zone_rects[key] = {'rect_item': rect_item, 'handles': handles}
+        self._add_tracked(rect_item, marker_type)
+        for h in handles:
+            self._add_tracked(h, marker_type)
+
+    def _remove_zone_items(self, key):
+        if key not in self._zone_rects:
+            return
+        info = self._zone_rects.pop(key)
+        for item in [info['rect_item']] + info['handles']:
+            try: self._scene.removeItem(item)
+            except Exception: pass
+
+    def _zone_handle_hit(self, view_point):
+        """Return (key, cidx) if view_point (QPoint) is within 12px of a zone corner handle."""
+        for key, info in self._zone_rects.items():
+            for cidx, h in enumerate(info['handles']):
+                hvp = self.mapFromScene(h.pos())
+                dx = view_point.x() - hvp.x()
+                dy = view_point.y() - hvp.y()
+                if dx * dx + dy * dy < 144:
+                    return (key, cidx)
+        return None
+
+    def _do_zone_resize(self, scene_pos):
+        key = self._zone_resize_key
+        if key not in self._zone_rects:
+            return
+        orig  = self._zone_resize_orig
+        delta = scene_pos - self._zone_resize_start
+        x0, y0 = orig.left(),  orig.top()
+        x1, y1 = orig.right(), orig.bottom()
+        cidx = self._zone_resize_cidx
+        if   cidx == 0: x0 += delta.x(); y0 += delta.y()
+        elif cidx == 1: x1 += delta.x(); y0 += delta.y()
+        elif cidx == 2: x1 += delta.x(); y1 += delta.y()
+        elif cidx == 3: x0 += delta.x(); y1 += delta.y()
+        new_rect = QRectF(QPointF(x0, y0), QPointF(x1, y1)).normalized()
+        self._zone_rects[key]['rect_item'].setRect(new_rect)
+        corners = [new_rect.topLeft(), new_rect.topRight(),
+                   new_rect.bottomRight(), new_rect.bottomLeft()]
+        for h, corner in zip(self._zone_rects[key]['handles'], corners):
+            h.setPos(corner)
+
+    def _finish_zone_resize(self):
+        key = self._zone_resize_key
+        if key and key in self._zone_rects:
+            scene_rect = self._zone_rects[key]['rect_item'].rect()
+            rs = self.render_scale
+            cx = scene_rect.center().x() / rs
+            cy = scene_rect.center().y() / rs
+            w  = scene_rect.width()       / rs
+            h  = scene_rect.height()      / rs
+            type_, id_ = key
+            self.zone_resized.emit(type_, id_, cx, cy, w, h)
+        self._zone_resize_key   = None
+        self._zone_resize_cidx  = None
+        self._zone_resize_start = None
+        self._zone_resize_orig  = None
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def _show_context_menu(self, sp, global_pos):
+        menu = QMenu(self.viewport())
+        menu.addAction("⚙️ Orsak",
+                       lambda: self.context_action.emit('cause', sp, self.current_page))
+        menu.addAction("⚠️ Konsekvens",
+                       lambda: self.context_action.emit('consequence', sp, self.current_page))
+        menu.addAction("🛡️ Safeguard",
+                       lambda: self.context_action.emit('safeguard', sp, self.current_page))
+        menu.addSeparator()
+        menu.addAction("🔀 Risk Scenario",
+                       lambda: self.context_action.emit('risk_scenario', sp, self.current_page))
+        menu.addSeparator()
+        menu.addAction("✏️ Rita Nodgräns",
+                       lambda: self.context_action.emit('node', sp, self.current_page))
+        menu.exec(global_pos)
+
+    def add_cause_marker(self, cause_id, x_pdf, y_pdf, comp_type, label, tag='',
+                         rect_w=None, rect_h=None):
         center = self.pdf_to_scene(x_pdf, y_pdf)
         r = 14.0
         circle = QGraphicsEllipseItem(center.x() - r, center.y() - r, 2 * r, 2 * r)
@@ -3126,8 +3253,11 @@ class PIDGraphicsView(QGraphicsView):
             txt.setPos(center.x() + r + 3, center.y() - 8)
             txt.setZValue(Z_OVERLAY + 1)
             self._add_tracked(txt, 'cause')
+        if rect_w is not None and rect_h is not None and rect_w > 0 and rect_h > 0:
+            self.add_zone_rect('cause', cause_id, x_pdf, y_pdf, rect_w, rect_h)
 
-    def add_consequence_marker(self, cons_id, x_pdf, y_pdf, target):
+    def add_consequence_marker(self, cons_id, x_pdf, y_pdf, target,
+                               rect_w=None, rect_h=None):
         center = self.pdf_to_scene(x_pdf, y_pdf)
         r = 12.0
         circle = QGraphicsEllipseItem(center.x() - r, center.y() - r, 2 * r, 2 * r)
@@ -3148,8 +3278,11 @@ class PIDGraphicsView(QGraphicsView):
         inner.setPos(center.x() - ibr.width() / 2, center.y() - ibr.height() / 2)
         inner.setZValue(Z_OVERLAY + 1)
         self._add_tracked(inner, 'consequence')
+        if rect_w is not None and rect_h is not None and rect_w > 0 and rect_h > 0:
+            self.add_zone_rect('consequence', cons_id, x_pdf, y_pdf, rect_w, rect_h)
 
-    def add_safeguard_marker(self, sg_id, x_pdf, y_pdf, tag, description):
+    def add_safeguard_marker(self, sg_id, x_pdf, y_pdf, tag, description,
+                             rect_w=None, rect_h=None):
         center = self.pdf_to_scene(x_pdf, y_pdf)
         r = 12.0
         circle = QGraphicsEllipseItem(center.x() - r, center.y() - r, 2 * r, 2 * r)
@@ -3181,6 +3314,8 @@ class PIDGraphicsView(QGraphicsView):
             txt.setPos(center.x() + r + 3, center.y() - 8)
             txt.setZValue(Z_OVERLAY + 1)
             self._add_tracked(txt, 'safeguard')
+        if rect_w is not None and rect_h is not None and rect_w > 0 and rect_h > 0:
+            self.add_zone_rect('safeguard', sg_id, x_pdf, y_pdf, rect_w, rect_h)
 
     def _extract_tag_from_rect(self, pdf_rect: QRectF) -> tuple:
         """Extract tag text AND classify the P&ID symbol inside the rectangle.
@@ -3286,6 +3421,18 @@ class PIDGraphicsView(QGraphicsView):
             self._type_items[key] = []
 
     def mousePressEvent(self, event):
+        # ── Zone corner handle — intercept LEFT click in any mode ─────────────
+        if event.button() == Qt.MouseButton.LeftButton:
+            hit = self._zone_handle_hit(event.position().toPoint())
+            if hit:
+                key, cidx = hit
+                sp2 = self.mapToScene(event.position().toPoint())
+                self._zone_resize_key   = key
+                self._zone_resize_cidx  = cidx
+                self._zone_resize_start = sp2
+                self._zone_resize_orig  = self._zone_rects[key]['rect_item'].rect()
+                event.accept(); return
+
         if self.mode in (MODE_NAV, MODE_MARKUP_SELECT):
             self._press_pos = event.position()
         sp = self.mapToScene(event.position().toPoint())
@@ -3359,20 +3506,9 @@ class PIDGraphicsView(QGraphicsView):
                 event.accept(); return
 
         if event.button() == Qt.MouseButton.RightButton and self.mode == MODE_NAV:
-            menu = QMenu(self.viewport())
-            menu.addAction("⚙️ Orsak",
-                           lambda: self.context_action.emit('cause', sp, self.current_page))
-            menu.addAction("⚠️ Konsekvens",
-                           lambda: self.context_action.emit('consequence', sp, self.current_page))
-            menu.addAction("🛡️ Safeguard",
-                           lambda: self.context_action.emit('safeguard', sp, self.current_page))
-            menu.addSeparator()
-            menu.addAction("🔀 Risk Scenario",
-                           lambda: self.context_action.emit('risk_scenario', sp, self.current_page))
-            menu.addSeparator()
-            menu.addAction("✏️ Rita Nodgräns",
-                           lambda: self.context_action.emit('node', sp, self.current_page))
-            menu.exec(event.globalPosition().toPoint())
+            # Start rubber-band drag; show context menu only if no drag occurs
+            self._rband_start_scene = sp
+            self._rband_dragging    = False
             event.accept()
             return
 
@@ -3398,6 +3534,34 @@ class PIDGraphicsView(QGraphicsView):
         super().mouseDoubleClickEvent(event)
 
     def mouseReleaseEvent(self, event):
+        # ── Zone corner resize end ────────────────────────────────────────────
+        if self._zone_resize_key is not None and event.button() == Qt.MouseButton.LeftButton:
+            self._finish_zone_resize()
+            event.accept(); return
+
+        # ── Right-drag rubber band end ────────────────────────────────────────
+        if event.button() == Qt.MouseButton.RightButton and self._rband_start_scene is not None:
+            if self._rband_dragging:
+                sp = self.mapToScene(event.position().toPoint())
+                if self._rband_preview_item is not None:
+                    try: self._scene.removeItem(self._rband_preview_item)
+                    except Exception: pass
+                    self._rband_preview_item = None
+                rect = QRectF(self._rband_start_scene, sp).normalized()
+                rs = self.render_scale
+                pdf_rect = QRectF(rect.x() / rs, rect.y() / rs,
+                                   rect.width() / rs, rect.height() / rs)
+                self._rband_start_scene = None
+                self._rband_dragging    = False
+                self.zone_drawn.emit(pdf_rect, self.current_page)
+            else:
+                # No drag — show context menu as usual
+                sp = self.mapToScene(event.position().toPoint())
+                self._rband_start_scene = None
+                self._rband_dragging    = False
+                self._show_context_menu(sp, event.globalPosition().toPoint())
+            event.accept(); return
+
         # ── Rect-select release for cause/consequence/safeguard ───────────────
         if (event.button() == Qt.MouseButton.LeftButton and
                 self.mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD,
@@ -3470,6 +3634,32 @@ class PIDGraphicsView(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def mouseMoveEvent(self, event):
+        # ── Zone corner resize drag ───────────────────────────────────────────
+        if self._zone_resize_key is not None:
+            self._do_zone_resize(self.mapToScene(event.position().toPoint()))
+            event.accept(); return
+
+        # ── Right-drag rubber band ────────────────────────────────────────────
+        if (self._rband_start_scene is not None and
+                event.buttons() & Qt.MouseButton.RightButton):
+            sp = self.mapToScene(event.position().toPoint())
+            dx = sp.x() - self._rband_start_scene.x()
+            dy = sp.y() - self._rband_start_scene.y()
+            if not self._rband_dragging and dx * dx + dy * dy > 100:
+                self._rband_dragging = True
+            if self._rband_dragging:
+                rect = QRectF(self._rband_start_scene, sp).normalized()
+                if self._rband_preview_item is not None:
+                    try: self._scene.removeItem(self._rband_preview_item)
+                    except Exception: pass
+                pen = QPen(QColor(0, 180, 80), 1.5)
+                pen.setStyle(Qt.PenStyle.DashLine)
+                pen.setCosmetic(True)
+                self._rband_preview_item = self._scene.addRect(
+                    rect, pen, QBrush(QColor(0, 200, 100, 40)))
+                self._rband_preview_item.setZValue(Z_TEMP)
+            event.accept(); return
+
         if self.mode == MODE_MARKUP_SELECT and self._drag_mode is not None:
             sp = self.mapToScene(event.position().toPoint())
             if not self._drag_threshold_exceeded:
@@ -4208,8 +4398,11 @@ class PIDPanel(QWidget):
         self.viewer.place_existing_clicked.connect(self._on_place_existing_click)
         self.viewer.cause_template_clicked.connect(self._on_cause_template_click)
         self.viewer.context_action.connect(self._on_context_action)
-        self._active_place_type = None   # 'cause' | 'consequence' | 'safeguard'
-        self._active_place_id   = None
+        self.viewer.zone_drawn.connect(self._on_zone_drawn)
+        self.viewer.zone_resized.connect(self._on_zone_resized)
+        self._active_place_type  = None   # 'cause' | 'consequence' | 'safeguard'
+        self._active_place_id    = None
+        self._pending_zone_pdf   = None   # QRectF while zone dialog chain is open
         self.viewer.marker_clicked.connect(
             lambda t, i: self.marker_navigated.emit(t, i))
         self.viewer.markup_moved.connect(self.markup_moved)
@@ -4894,9 +5087,17 @@ class PIDPanel(QWidget):
             except TypeError:
                 self.db.update_consequence(cons_id, full_desc, 1)
 
+        zone = self._pending_zone_pdf
+        rect_w = zone.width()  if zone else None
+        rect_h = zone.height() if zone else None
+        if zone:
+            pdf_x, pdf_y = zone.center().x(), zone.center().y()
+        self._pending_zone_pdf = None
         self.db.add_consequence_marker(cons_id, page, pdf_x, pdf_y,
-                                       dlg.target if not dlg.link_to_id else '')
-        self.viewer.add_consequence_marker(cons_id, pdf_x, pdf_y, display)
+                                       dlg.target if not dlg.link_to_id else '',
+                                       rect_w=rect_w, rect_h=rect_h)
+        self.viewer.add_consequence_marker(cons_id, pdf_x, pdf_y, display,
+                                           rect_w=rect_w, rect_h=rect_h)
         self.consequence_created.emit(cons_id)
 
     def _on_safeguard_click(self, scene_pos, page, suggested_tag=''):
@@ -4933,8 +5134,16 @@ class PIDPanel(QWidget):
             sg_id = self.db.add_safeguard(self._active_consequence_id)
             self.db.update_safeguard(sg_id, description, dlg.rrf, dlg.sg_type)
 
-        self.db.add_safeguard_marker(sg_id, page, pdf_x, pdf_y, tag)
-        self.viewer.add_safeguard_marker(sg_id, pdf_x, pdf_y, tag, description)
+        zone = self._pending_zone_pdf
+        rect_w = zone.width()  if zone else None
+        rect_h = zone.height() if zone else None
+        if zone:
+            pdf_x, pdf_y = zone.center().x(), zone.center().y()
+        self._pending_zone_pdf = None
+        self.db.add_safeguard_marker(sg_id, page, pdf_x, pdf_y, tag,
+                                     rect_w=rect_w, rect_h=rect_h)
+        self.viewer.add_safeguard_marker(sg_id, pdf_x, pdf_y, tag, description,
+                                         rect_w=rect_w, rect_h=rect_h)
         self.safeguard_created.emit(sg_id)
 
         # "Lägg till ytterligare" — reset banner to ready state for next safeguard
@@ -4943,6 +5152,43 @@ class PIDPanel(QWidget):
             self._sc_add_sg_btn.setVisible(False)
             self._sc_finish_btn.setVisible(False)
             self._set_mode(MODE_SAFEGUARD)
+
+    def _on_zone_drawn(self, pdf_rect, page):
+        """Right-drag rubber band completed — let user pick cause/consequence/safeguard."""
+        menu = QMenu(self)
+        a_cause = menu.addAction("⚙️ Orsak")
+        a_cons  = menu.addAction("⚠️ Konsekvens")
+        a_sg    = menu.addAction("🛡️ Safeguard")
+        chosen  = menu.exec(QCursor.pos())
+        if chosen is None:
+            return
+
+        self._pending_zone_pdf = pdf_rect
+        rs = self.viewer.render_scale
+        center_scene = QPointF(pdf_rect.center().x() * rs, pdf_rect.center().y() * rs)
+
+        tag = comp_type = ''
+        if HAS_PYMUPDF and self.viewer.pdf_doc:
+            try:
+                result = self.viewer._extract_tag_from_rect(pdf_rect)
+                tag, comp_type = result[0], result[1]
+            except Exception:
+                pass
+
+        if chosen is a_cause:
+            dev_id   = self._active_deviation_id or 0
+            detected = self._db_comp_for_tag(tag) if tag else comp_type
+            self.cause_placement_requested.emit(dev_id, tag or '', detected, center_scene, page)
+        elif chosen is a_cons:
+            self._on_consequence_click(center_scene, page, tag)
+        elif chosen is a_sg:
+            self._on_safeguard_click(center_scene, page, tag)
+
+    def _on_zone_resized(self, marker_type, marker_id, cx, cy, w, h):
+        """Zone corner was dragged — update DB marker center and rect dimensions."""
+        if hasattr(self.db, 'update_marker_rect'):
+            self.db.update_marker_rect(marker_type, marker_id,
+                                       self.viewer.current_page, cx, cy, w, h)
 
     def _on_context_action(self, action, pos, page):
         if action == 'cause':
@@ -5086,13 +5332,15 @@ class PIDPanel(QWidget):
             label = dict(cause).get('description', '') if cause else ''
             self.viewer.add_cause_marker(
                 md['cause_id'], md['x'], md['y'],
-                md.get('component_type', ''), label, md.get('component_tag', ''))
+                md.get('component_type', ''), label, md.get('component_tag', ''),
+                rect_w=md.get('rect_w'), rect_h=md.get('rect_h'))
 
         for m in self.db.consequence_markers_for_page(page):
             md   = dict(m)
             cons = self.db.get_consequence(md['consequence_id'])
             desc = dict(cons).get('description', '') if cons else md.get('target_name', '')
-            self.viewer.add_consequence_marker(md['consequence_id'], md['x'], md['y'], desc)
+            self.viewer.add_consequence_marker(md['consequence_id'], md['x'], md['y'], desc,
+                                               rect_w=md.get('rect_w'), rect_h=md.get('rect_h'))
 
         for m in self.db.safeguard_markers_for_page(page):
             md = dict(m)
@@ -5101,7 +5349,8 @@ class PIDPanel(QWidget):
                 (md['safeguard_id'],)).fetchone()
             desc = sg['description'] if sg else ''
             self.viewer.add_safeguard_marker(
-                md['safeguard_id'], md['x'], md['y'], md.get('tag', ''), desc)
+                md['safeguard_id'], md['x'], md['y'], md.get('tag', ''), desc,
+                rect_w=md.get('rect_w'), rect_h=md.get('rect_h'))
 
         # Draw connections — use lists so multiple markers per item all get lines
         cause_pos = {}
@@ -5242,9 +5491,18 @@ class PIDPanel(QWidget):
         if frequency is not None:
             self.db.update_cause(cause_id, base_freq=frequency)
 
-        pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
-        self.db.add_cause_marker(cause_id, page, pdf_x, pdf_y, comp_type, comp_tag)
-        self.viewer.add_cause_marker(cause_id, pdf_x, pdf_y, comp_type, label, comp_tag)
+        zone = self._pending_zone_pdf
+        rect_w = zone.width()  if zone else None
+        rect_h = zone.height() if zone else None
+        if zone:
+            pdf_x, pdf_y = zone.center().x(), zone.center().y()
+        else:
+            pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
+        self._pending_zone_pdf = None
+        self.db.add_cause_marker(cause_id, page, pdf_x, pdf_y, comp_type, comp_tag,
+                                  rect_w, rect_h)
+        self.viewer.add_cause_marker(cause_id, pdf_x, pdf_y, comp_type, label, comp_tag,
+                                     rect_w, rect_h)
         self._load_overlays()
         self.cause_template_created.emit(cause_id)
         return cause_id

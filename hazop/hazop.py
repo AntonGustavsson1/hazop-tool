@@ -789,6 +789,12 @@ class Database:
             "ALTER TABLE causes ADD COLUMN linked_consequence_id INTEGER DEFAULT NULL",
             "ALTER TABLE safeguards ADD COLUMN sg_type TEXT DEFAULT 'Övrigt'",
             "ALTER TABLE node_markups ADD COLUMN font_size INTEGER DEFAULT 12",
+            "ALTER TABLE cause_markers ADD COLUMN rect_w REAL DEFAULT NULL",
+            "ALTER TABLE cause_markers ADD COLUMN rect_h REAL DEFAULT NULL",
+            "ALTER TABLE consequence_markers ADD COLUMN rect_w REAL DEFAULT NULL",
+            "ALTER TABLE consequence_markers ADD COLUMN rect_h REAL DEFAULT NULL",
+            "ALTER TABLE safeguard_markers ADD COLUMN rect_w REAL DEFAULT NULL",
+            "ALTER TABLE safeguard_markers ADD COLUMN rect_h REAL DEFAULT NULL",
         ]:
             try:
                 self.conn.execute(sql)
@@ -1571,22 +1577,51 @@ class Database:
         self.conn.commit()
         return cur.lastrowid
 
-    def add_cause_marker(self, cause_id, page, x, y, comp_type, tag=''):
+    def add_cause_marker(self, cause_id, page, x, y, comp_type, tag='',
+                         rect_w=None, rect_h=None):
         self.conn.execute(
-            "INSERT INTO cause_markers (cause_id,pid_page,x,y,component_type,component_tag) VALUES (?,?,?,?,?,?)",
-            (cause_id, page, x, y, comp_type, tag))
+            "INSERT INTO cause_markers "
+            "(cause_id,pid_page,x,y,component_type,component_tag,rect_w,rect_h) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (cause_id, page, x, y, comp_type, tag, rect_w, rect_h))
         self.conn.commit()
 
-    def add_consequence_marker(self, cons_id, page, x, y, target):
+    def add_consequence_marker(self, cons_id, page, x, y, target,
+                               rect_w=None, rect_h=None):
         self.conn.execute(
-            "INSERT INTO consequence_markers (consequence_id,pid_page,x,y,target_name) VALUES (?,?,?,?,?)",
-            (cons_id, page, x, y, target))
+            "INSERT INTO consequence_markers "
+            "(consequence_id,pid_page,x,y,target_name,rect_w,rect_h) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (cons_id, page, x, y, target, rect_w, rect_h))
         self.conn.commit()
 
-    def add_safeguard_marker(self, sg_id, page, x, y, tag=''):
+    def add_safeguard_marker(self, sg_id, page, x, y, tag='',
+                             rect_w=None, rect_h=None):
         self.conn.execute(
-            "INSERT INTO safeguard_markers (safeguard_id,pid_page,x,y,tag) VALUES (?,?,?,?,?)",
-            (sg_id, page, x, y, tag))
+            "INSERT INTO safeguard_markers "
+            "(safeguard_id,pid_page,x,y,tag,rect_w,rect_h) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (sg_id, page, x, y, tag, rect_w, rect_h))
+        self.conn.commit()
+
+    def update_marker_rect(self, marker_type, marker_id, page,
+                           cx, cy, rect_w, rect_h):
+        """Update center position + zone rect dimensions for a placed marker."""
+        if marker_type == 'cause':
+            self.conn.execute(
+                "UPDATE cause_markers SET x=?,y=?,rect_w=?,rect_h=? "
+                "WHERE cause_id=? AND pid_page=?",
+                (cx, cy, rect_w, rect_h, marker_id, page))
+        elif marker_type == 'consequence':
+            self.conn.execute(
+                "UPDATE consequence_markers SET x=?,y=?,rect_w=?,rect_h=? "
+                "WHERE consequence_id=? AND pid_page=?",
+                (cx, cy, rect_w, rect_h, marker_id, page))
+        elif marker_type == 'safeguard':
+            self.conn.execute(
+                "UPDATE safeguard_markers SET x=?,y=?,rect_w=?,rect_h=? "
+                "WHERE safeguard_id=? AND pid_page=?",
+                (cx, cy, rect_w, rect_h, marker_id, page))
         self.conn.commit()
 
     def cause_markers_for_page(self, page):
