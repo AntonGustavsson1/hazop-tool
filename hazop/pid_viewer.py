@@ -2777,7 +2777,7 @@ class PIDGraphicsView(QGraphicsView):
         elif type_ == 'symbol' and symbol_svg and len(points_pdf) >= 1:
             items.extend(self._add_markup_symbol_item(
                 mu_id, symbol_svg, points_pdf[0], c, opacity,
-                symbol_w, symbol_h, symbol_rot))
+                symbol_w, symbol_h, symbol_rot, label=label))
             if items:
                 items[0].setData(self._DATA_MARKUP_PTS, [[points_pdf[0][0], points_pdf[0][1]]])
 
@@ -2917,7 +2917,7 @@ class PIDGraphicsView(QGraphicsView):
             except Exception: pass
 
     def _add_markup_symbol_item(self, mu_id, svg_str, pos_pdf, color, opacity,
-                                symbol_w=40, symbol_h=40, symbol_rot=0):
+                                symbol_w=40, symbol_h=40, symbol_rot=0, label=''):
         """Render an SVG symbol at pos_pdf with given PDF-unit size and rotation."""
         if not HAS_SVG_RENDERER or QSvgRenderer is None:
             return []
