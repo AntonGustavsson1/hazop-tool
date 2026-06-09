@@ -5875,13 +5875,9 @@ class _PidDelegate(_ScenarioDelegate):
                     obj_bg = QColor('#f4f4f4') if row % 2 == 0 else QColor('#ececec')
                 painter.fillRect(obj_rect, obj_bg)
 
-                # Object zone: [icon _EQUIP_ICON_SZ px left] [tag text right]
+                # Object zone: tag text spans full obj_rect
                 tag_label  = comp_tag or ''
-                icon_rect  = QRect(obj_rect.left(), obj_rect.top(),
-                                   _EQUIP_ICON_SZ, obj_rect.height())
-                tag_rect   = QRect(obj_rect.left() + _EQUIP_ICON_SZ, obj_rect.top(),
-                                   obj_rect.width() - _EQUIP_ICON_SZ, obj_rect.height())
-                _draw_equip_icon(painter, icon_rect, comp_type if comp_type else '')
+                tag_rect   = obj_rect
                 if tag_label:
                     obj_font_t = QFont(option.font)
                     obj_font_t.setPointSize(max(6, option.font.pointSize() - 1))
