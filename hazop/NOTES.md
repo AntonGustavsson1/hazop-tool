@@ -94,6 +94,10 @@
 | Kategoribaserad konsekvensbedömning | 📊-knapp på KON-cellen öppnar matris-popup där användaren sätter konsekvensnivå (K1–K5) per konsekvenskategori. Varje vald kategori genererar EN rad i scenariotabellen (inte en rad per barriär). KON-cellen visar alltid textbeskrivningen; kategoribadgen visar "Per K3" etc. DB: `consequence_severities (id, consequence_id, category_id, severity)`. |
 | RRF-knapp per kategorirad | Barriär-cellen för kategoriraderna visar "RRF×n/tot: rrf"-knapp. Klick öppnar `CatSGSelectionPopup` där alla barriärer är ikryssade som default; avmarkering = "gäller ej" för den kategorin. DB: `consequence_severity_exclusions (severity_id, safeguard_id)`. |
 | Dubbelriktad RFORE ↔ kategorimatris | Risk-före-barriär-cellen för kategoriraderna lagrar `risk_click_cat`-metadata. Klick öppnar riskmatrisen och uppdaterar `consequence_severities.severity` (inte `consequences.severity`). Speglar också kategorimatrisens val. |
+| Redesign av kategoriraderna | En rad per safeguard (inte per kategori×safeguard). Rad i har sgs[i] som SG och cat_rows[i] som kategoribadge. `n_rows = max(n_cats, n_sgs, 1)`. Gul cirkel på RRF-brickan markerar safeguards uteslutna ur minst en kategori. |
+| RRF-popup med kategorikoppling | `SgRRFCategoryPopup` ersätter `CatSGSelectionPopup`. Visar typval (BPCS/SIS/Mekanisk/Administrativ/Övrigt), fritt RRF-belopp (SpinBox + preset-knappar 1/10/100/1000/10000) och checkbox per kategori "Gäller ej för [Kategori]". |
+| Risk-cellernas etikett förenklat | RFORE/REFT/SLUT visar inte längre riskklassens textlabel (t.ex. "Mellan") utan bara axlarna ("D1  K3", "−2 steg\nD1  K3"). |
+| P&ID real-time update | `_on_scenario_item_edited` anropar `reload_overlays()` så P&ID-markörer uppdateras direkt när orsak/konsekvens/safeguard-text redigeras. `_switch_view` anropar `reload_overlays()` vid byte till P&ID-flik. |
 
 ---
 
