@@ -915,6 +915,11 @@ class Database:
                 pid_page   INTEGER DEFAULT 0,
                 sort_order INTEGER DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS safeguard_cause_exclusions (
+                safeguard_id INTEGER NOT NULL REFERENCES safeguards(id) ON DELETE CASCADE,
+                cause_id     INTEGER NOT NULL REFERENCES causes(id)     ON DELETE CASCADE,
+                PRIMARY KEY (safeguard_id, cause_id)
+            );
         """)
 
         if not self.conn.execute("SELECT COUNT(*) FROM consequence_categories").fetchone()[0]:
@@ -1345,6 +1350,22 @@ class Database:
             self.conn.execute(
                 "INSERT OR IGNORE INTO consequence_severity_exclusions "
                 "(severity_id, safeguard_id) VALUES (?,?)", (severity_id, sg_id))
+        self.conn.commit()
+
+    def get_safeguard_excluded_causes(self, sg_id):
+        """Return set of cause_ids excluded from this safeguard."""
+        rows = self.conn.execute(
+            "SELECT cause_id FROM safeguard_cause_exclusions WHERE safeguard_id=?",
+            (sg_id,)).fetchall()
+        return {r[0] for r in rows}
+
+    def set_safeguard_excluded_causes(self, sg_id, cause_id_set):
+        self.conn.execute(
+            "DELETE FROM safeguard_cause_exclusions WHERE safeguard_id=?", (sg_id,))
+        for cid in cause_id_set:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO safeguard_cause_exclusions "
+                "(safeguard_id, cause_id) VALUES (?,?)", (sg_id, cid))
         self.conn.commit()
 
     def add_category(self, name):
@@ -5664,7 +5685,7 @@ class _ScenarioDelegate(QStyledItemDelegate):
 _PID_ICON_W  = 22          # pixels reserved on the left for the pin icon
 _KON_CAT_W   = 26          # pixels for the category badge zone in KON cells
 _KON_CHAIN_W = 24          # pixels for the ⛓ chain-link zone on the right of KON cells
-_ORS_FREQ_W  = 22          # pixels for the F-badge zone after obj zone in ORS cells
+_ORS_FREQ_W  = 50          # pixels for the frequency badge zone after obj zone in ORS cells
 _RRF_W       = 54          # pixel width of the RRF badge column on the right of safeguard cells
 
 _PID_ICON_RE = re.compile(r'^[🟢📌]\s*')   # strip any old emoji prefix
@@ -5893,8 +5914,9 @@ class _PidDelegate(_ScenarioDelegate):
                 painter.setPen(QPen(QColor('#ddd'), 1))
                 painter.drawLine(obj_rect.right(), r.top(), obj_rect.right(), r.bottom())
 
-                # F-badge zone
+                # Frequency badge zone — numeric if base_freq available, else F-level
                 if freq_val is not None:
+                    base_freq_val = index.data(Qt.ItemDataRole.UserRole + 5)
                     _, f_bg, _ = risk_info(freq_val, 3)
                     f_bg_clr = QColor(f_bg) if not sel else option.palette.highlight().color().darker(110)
                     painter.fillRect(freq_rect, f_bg_clr)
@@ -5904,9 +5926,29 @@ class _PidDelegate(_ScenarioDelegate):
                     painter.setFont(ff)
                     f_tc = QColor(_contrast_fg(f_bg)) if not sel else option.palette.highlightedText().color()
                     painter.setPen(f_tc)
-                    painter.drawText(freq_rect.adjusted(1, 0, -1, 0),
-                                     Qt.AlignmentFlag.AlignCenter,
-                                     f"F{freq_val}")
+                    if base_freq_val is not None:
+                        bfv = float(base_freq_val)
+                        if bfv >= 0.1:
+                            num_str = f"{bfv:.2g}"
+                        elif bfv >= 0.001:
+                            num_str = f"{bfv:.3g}"
+                        else:
+                            num_str = f"{bfv:.1e}".replace('e-0', 'e-').replace('e+0', 'e')
+                        freq_top = QRect(freq_rect.left(), freq_rect.top(),
+                                         freq_rect.width(), freq_rect.height() * 2 // 3)
+                        freq_bot = QRect(freq_rect.left(), freq_rect.top() + freq_rect.height() * 2 // 3,
+                                         freq_rect.width(), freq_rect.height() // 3)
+                        painter.drawText(freq_top.adjusted(1, 0, -1, 0),
+                                         Qt.AlignmentFlag.AlignCenter, num_str)
+                        tiny = QFont(option.font)
+                        tiny.setPointSize(max(5, option.font.pointSize() - 3))
+                        painter.setFont(tiny)
+                        painter.drawText(freq_bot.adjusted(1, 0, -1, 0),
+                                         Qt.AlignmentFlag.AlignCenter, "/år")
+                    else:
+                        painter.drawText(freq_rect.adjusted(1, 0, -1, 0),
+                                         Qt.AlignmentFlag.AlignCenter,
+                                         f"F{freq_val}")
                     painter.setPen(QPen(QColor('#ddd'), 1))
                     painter.drawLine(freq_rect.right(), r.top(), freq_rect.right(), r.bottom())
 
@@ -6045,30 +6087,34 @@ class _PidDelegate(_ScenarioDelegate):
 
 
 class SgRRFCategoryPopup(QDialog):
-    """Popup: change a safeguard's RRF, type, and toggle per-category exclusions."""
+    """Popup: change a safeguard's RRF, type, per-category and per-cause exclusions."""
 
-    def __init__(self, db, sg_id, current_rrf, current_sg_type, sev_cat_list, parent=None):
+    def __init__(self, db, sg_id, current_rrf, current_sg_type,
+                 sev_cat_list, cause_list=None, parent=None):
         super().__init__(parent)
         self.db              = db
         self._sg_id          = sg_id
         self._current_rrf    = current_rrf
         self._current_type   = current_sg_type or 'Övrigt'
-        self._sev_cat_list   = sev_cat_list   # [(sev_id, cat_name), ...]
-        self._checks: dict[int, QCheckBox] = {}
-        self.setWindowTitle("Barriär — RRF & kategorier")
+        self._sev_cat_list   = sev_cat_list    # [(sev_id, cat_name), ...]
+        self._cause_list     = cause_list or [] # [(cause_id, desc, is_chain), ...]
+        self._cat_checks:   dict[int, QCheckBox] = {}
+        self._cause_checks: dict[int, QCheckBox] = {}
+        self.setWindowTitle("Barriär — RRF & tillämpning")
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._build()
 
     def _build(self):
-        excl_by_sev = {sev_id: self._sg_id in self.db.get_severity_excluded_sgs(sev_id)
-                       for sev_id, _ in self._sev_cat_list}
+        excl_by_sev   = {sev_id: self._sg_id in self.db.get_severity_excluded_sgs(sev_id)
+                         for sev_id, _ in self._sev_cat_list}
+        excl_cause_ids = self.db.get_safeguard_excluded_causes(self._sg_id)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 8, 10, 8)
         outer.setSpacing(5)
 
-        title = QLabel("RRF & tillämpliga kategorier")
+        title = QLabel("RRF & tillämpning")
         tf = QFont(); tf.setBold(True); tf.setPointSize(9)
         title.setFont(tf)
         outer.addWidget(title)
@@ -6112,14 +6158,29 @@ class SgRRFCategoryPopup(QDialog):
         if self._sev_cat_list:
             sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
             sep.setStyleSheet("color:#ddd;"); outer.addWidget(sep)
-            lbl = QLabel("Gäller ej för:")
+            lbl = QLabel("Gäller ej för kategori:")
             lbl.setStyleSheet("font-size:9px; color:#666;")
             outer.addWidget(lbl)
             for sev_id, cat_name in self._sev_cat_list:
                 cb = QCheckBox(f"{cat_name}")
                 cb.setStyleSheet("font-size:10px;")
                 cb.setChecked(excl_by_sev.get(sev_id, False))
-                self._checks[sev_id] = cb
+                self._cat_checks[sev_id] = cb
+                outer.addWidget(cb)
+
+        if self._cause_list:
+            sep3 = QFrame(); sep3.setFrameShape(QFrame.Shape.HLine)
+            sep3.setStyleSheet("color:#ddd;"); outer.addWidget(sep3)
+            lbl2 = QLabel("Gäller ej för orsak:")
+            lbl2.setStyleSheet("font-size:9px; color:#666;")
+            outer.addWidget(lbl2)
+            for cause_id, desc, is_chain in self._cause_list:
+                prefix = "⛓ " if is_chain else "⚙ "
+                label  = f"{prefix}{desc[:40]}"
+                cb = QCheckBox(label)
+                cb.setStyleSheet("font-size:10px;")
+                cb.setChecked(cause_id in excl_cause_ids)
+                self._cause_checks[cause_id] = cb
                 outer.addWidget(cb)
 
         sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
@@ -6145,14 +6206,18 @@ class SgRRFCategoryPopup(QDialog):
         if new_rrf != self._current_rrf or new_type != self._current_type:
             self.db.update_safeguard(self._sg_id, rrf=new_rrf, sg_type=new_type)
 
-        # Save category exclusions: toggle this sg in each severity's exclusion set
-        for sev_id, cb in self._checks.items():
+        # Save category exclusions
+        for sev_id, cb in self._cat_checks.items():
             excl_set = self.db.get_severity_excluded_sgs(sev_id)
-            if cb.isChecked():           # checked = "gäller ej" = excluded
+            if cb.isChecked():
                 excl_set.add(self._sg_id)
             else:
                 excl_set.discard(self._sg_id)
             self.db.set_severity_excluded_sgs(sev_id, excl_set)
+
+        # Save cause exclusions
+        excl_cause_ids = {cid for cid, cb in self._cause_checks.items() if cb.isChecked()}
+        self.db.set_safeguard_excluded_causes(self._sg_id, excl_cause_ids)
 
         self.accept()
 
@@ -6640,14 +6705,33 @@ class ScenarioTablePanel(QWidget):
                             _cr['name'] for _cr in cat_rows
                             if _sg['id'] in cat_excl_map.get(_cr['id'], set())]
 
+                    # Which safeguards are excluded from this specific cause?
+                    cause_excl_sgs = set()
+                    for _sg in sgs:
+                        excl_causes = self.db.get_safeguard_excluded_causes(_sg['id'])
+                        if cause_d['id'] in excl_causes:
+                            cause_excl_sgs.add(_sg['id'])
+
                     # Category list for the RRF popup: [(sev_id, cat_name), ...]
                     sev_cat_list = [(cr['id'], cr['name']) for cr in cat_rows]
                     # Full category info for stacked badges in KON cell
                     all_cat_infos = [(cr['category_id'], cr['id'],
                                       cr['name'], cr['severity']) for cr in cat_rows]
+                    # Cause list for the RRF popup: build from direct + chain causes
+                    _chain_causes = [dict(c) for c in
+                                     self.db.causes_linked_from_consequence(cons_d['id'])]
+                    _direct_cause = self.db.get_cause(cons_d['cause_id'])
+                    cause_popup_list = []
+                    if _direct_cause:
+                        cause_popup_list.append((dict(_direct_cause)['id'],
+                                                 dict(_direct_cause)['description'], False))
+                    for _cc in _chain_causes:
+                        cause_popup_list.append((_cc['id'], _cc['description'], True))
 
-                    for i in range(n_rows):
-                        sg_i    = sgs[i]      if i < n_sgs  else None
+                    # Chain-linked cause rows don't repeat SG column
+                    display_n_rows = max(n_cats, 1) if is_chain_link else n_rows
+                    for i in range(display_n_rows):
+                        sg_i    = (sgs[i] if i < n_sgs else None) if not is_chain_link else None
                         cr_i    = cat_rows[i] if i < n_cats else None
                         cat_info_i = ((cr_i['category_id'], cr_i['id'],
                                        cr_i['name'], cr_i['severity'])
@@ -6659,8 +6743,10 @@ class ScenarioTablePanel(QWidget):
                                       cat_info=cat_info_i,
                                       excl_cat_names=excl_cat_names,
                                       excl_for_cat=excl_for_cat,
+                                      cause_excl_sgs=cause_excl_sgs,
                                       sev_cat_list=sev_cat_list,
                                       all_cat_infos=all_cat_infos,
+                                      cause_popup_list=cause_popup_list,
                                       n_cats=n_cats,
                                       is_chain_link=is_chain_link,
                                       has_linked_causes=has_linked_causes)
@@ -6796,7 +6882,8 @@ class ScenarioTablePanel(QWidget):
 
     def _add_row(self, node_name, dev_d, cause_d, freq, freq_lbl, cons_d, all_sgs, sg,
                  cat_info=None, excl_cat_names=None, excl_for_cat=None,
-                 sev_cat_list=None, all_cat_infos=None, n_cats=0,
+                 cause_excl_sgs=None, sev_cat_list=None, all_cat_infos=None,
+                 cause_popup_list=None, n_cats=0,
                  is_chain_link=False, has_linked_causes=False):
         """One row in the scenario table.
 
@@ -6814,8 +6901,12 @@ class ScenarioTablePanel(QWidget):
             excl_cat_names = []
         if excl_for_cat is None:
             excl_for_cat = set()
+        if cause_excl_sgs is None:
+            cause_excl_sgs = set()
         if sev_cat_list is None:
             sev_cat_list = []
+        if cause_popup_list is None:
+            cause_popup_list = []
 
         r      = self._table.rowCount()
         self._table.insertRow(r)
@@ -6830,7 +6921,8 @@ class ScenarioTablePanel(QWidget):
             cat_id, sev_id, cat_name, cat_sev = cat_info
             sev = cat_sev or 1
             # Effective RRF for this category (exclude excluded safeguards)
-            active_sgs = [s for s in all_sgs if s['id'] not in excl_for_cat]
+            active_sgs = [s for s in all_sgs
+                          if s['id'] not in excl_for_cat and s['id'] not in cause_excl_sgs]
             sg_rrf = 1
             for s in active_sgs:
                 sg_rrf *= (s.get('rrf') or 1)
@@ -6838,7 +6930,8 @@ class ScenarioTablePanel(QWidget):
             sev = cons_d['severity'] or 1
             sg_rrf = 1
             for s in all_sgs:
-                sg_rrf *= (s.get('rrf') or 1)
+                if s['id'] not in cause_excl_sgs:
+                    sg_rrf *= (s.get('rrf') or 1)
 
         rfs        = [dict(rf) for rf in self.db.reduction_factors(cid)]
         fa_active  = bool(cons_d.get('fa_active', 0))
@@ -6873,6 +6966,7 @@ class ScenarioTablePanel(QWidget):
                                                     cause_d.get('comp_tag')  or ''))
         ors.setData(Qt.ItemDataRole.UserRole + 3, freq)
         ors.setData(Qt.ItemDataRole.UserRole + 4, is_chain_link)
+        ors.setData(Qt.ItemDataRole.UserRole + 5, cause_d.get('base_freq'))
         ors.setToolTip("Dubbelklicka för att redigera\n"
                        "Klicka på objektzonen (vänster) för att sätta utrustnings-tag\n"
                        "Enter för att lägga till ny orsak")
@@ -6925,9 +7019,17 @@ class ScenarioTablePanel(QWidget):
             sg_item.setData(Qt.ItemDataRole.UserRole + 2, excl_cat_names)
             # Category data for extended RRF popup: (cons_id, [(sev_id, cat_name), ...])
             sg_item.setData(Qt.ItemDataRole.UserRole + 3, (cid, sev_cat_list) if sev_cat_list else None)
+            # Cause list for RRF popup cause-exclusion section
+            sg_item.setData(Qt.ItemDataRole.UserRole + 4, cause_popup_list)
+            excl_cause_ids = self.db.get_safeguard_excluded_causes(sg['id'])
+            excl_cause_names = [desc for cid2, desc, _ in cause_popup_list
+                                if cid2 in excl_cause_ids]
+            sg_item.setData(Qt.ItemDataRole.UserRole + 5, excl_cause_names)
             tip = "Dubbelklicka för att redigera\nEnter för att lägga till ny barriär\nKlicka på RRF-kolumnen för att ändra värdet"
             if excl_cat_names:
-                tip += "\n⚠ Gäller ej för: " + ", ".join(excl_cat_names)
+                tip += "\n⚠ Gäller ej för kategori: " + ", ".join(excl_cat_names)
+            if excl_cause_names:
+                tip += "\n⚠ Gäller ej för orsak: " + ", ".join(excl_cause_names)
             sg_item.setToolTip(tip)
         self._table.setItem(r, self._C_SG, sg_item)
 
@@ -7227,13 +7329,15 @@ class ScenarioTablePanel(QWidget):
         current_sg_type = sg_d.get('sg_type', 'Övrigt') or 'Övrigt'
 
         # Use extended popup when consequence has category assessments
-        item         = self._table.item(row, self._C_SG)
-        cat_pop_data = item.data(Qt.ItemDataRole.UserRole + 3) if item else None
+        item          = self._table.item(row, self._C_SG)
+        cat_pop_data  = item.data(Qt.ItemDataRole.UserRole + 3) if item else None
+        cause_pop_list = item.data(Qt.ItemDataRole.UserRole + 4) if item else None
 
-        if cat_pop_data:
-            _cons_id, sev_cat_list = cat_pop_data
+        if cat_pop_data or cause_pop_list:
+            _cons_id, sev_cat_list = cat_pop_data if cat_pop_data else (None, [])
             popup = SgRRFCategoryPopup(
-                self.db, sg_id, current_rrf, current_sg_type, sev_cat_list, self)
+                self.db, sg_id, current_rrf, current_sg_type,
+                sev_cat_list, cause_pop_list or [], self)
         else:
             popup = RRFPopup(current_rrf, current_sg_type, self)
             popup.rrf_selected.connect(
