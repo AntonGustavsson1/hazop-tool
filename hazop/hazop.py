@@ -786,6 +786,7 @@ class Database:
             "ALTER TABLE causes ADD COLUMN standard_cause_id INTEGER DEFAULT NULL",
             "ALTER TABLE causes ADD COLUMN comp_type TEXT DEFAULT ''",
             "ALTER TABLE causes ADD COLUMN comp_tag  TEXT DEFAULT ''",
+            "ALTER TABLE causes ADD COLUMN linked_consequence_id INTEGER DEFAULT NULL",
             "ALTER TABLE safeguards ADD COLUMN sg_type TEXT DEFAULT 'Övrigt'",
             "ALTER TABLE node_markups ADD COLUMN font_size INTEGER DEFAULT 12",
         ]:
@@ -1948,7 +1949,8 @@ class Database:
     _SENTINEL = object()
 
     def update_cause(self, id_, description=None, likelihood=None, base_freq=_SENTINEL,
-                     standard_cause_id=_SENTINEL, comp_type=_SENTINEL, comp_tag=_SENTINEL):
+                     standard_cause_id=_SENTINEL, comp_type=_SENTINEL, comp_tag=_SENTINEL,
+                     linked_consequence_id=_SENTINEL):
         sets, vals = [], []
         if description is not None:
             sets.append("description=?"); vals.append(description)
@@ -1962,6 +1964,8 @@ class Database:
             sets.append("comp_type=?"); vals.append(comp_type)
         if comp_tag is not Database._SENTINEL:
             sets.append("comp_tag=?"); vals.append(comp_tag)
+        if linked_consequence_id is not Database._SENTINEL:
+            sets.append("linked_consequence_id=?"); vals.append(linked_consequence_id)
         if sets:
             vals.append(id_)
             self.conn.execute(f"UPDATE causes SET {', '.join(sets)} WHERE id=?", vals)
@@ -4123,7 +4127,8 @@ class TreePanel(QWidget):
 
                 for ci, cause in enumerate(self.db.causes_for_deviation(dev['id']), 1):
                     placed_c = cause['id'] in marked_causes
-                    citem = QTreeWidgetItem([f"    ⚙  {ci}. {cause['description'][:50]}"])
+                    chain_icon = "⛓" if cause['linked_consequence_id'] else ""
+                    citem = QTreeWidgetItem([f"    ⚙ {chain_icon} {ci}. {cause['description'][:50]}"])
                     citem.setIcon(0, _make_pin_icon(placed_c))
                     citem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
                     citem.setData(0, Qt.ItemDataRole.UserRole + 1, CAUSE_T)
@@ -5652,6 +5657,8 @@ class _ScenarioDelegate(QStyledItemDelegate):
 
 _PID_ICON_W  = 22          # pixels reserved on the left for the pin icon
 _KON_CAT_W   = 26          # pixels for the category badge zone in KON cells
+_KON_CHAIN_W = 24          # pixels for the ⛓ chain-link zone on the right of KON cells
+_ORS_FREQ_W  = 22          # pixels for the F-badge zone after obj zone in ORS cells
 _RRF_W       = 54          # pixel width of the RRF badge column on the right of safeguard cells
 
 _PID_ICON_RE = re.compile(r'^[🟢📌]\s*')   # strip any old emoji prefix
@@ -5726,13 +5733,13 @@ class _PidDelegate(_ScenarioDelegate):
         r = option.rect
         col = index.column()
         if col == self._panel._C_ORS:
-            offset = _PID_ICON_W + self._panel._cause_obj_w
+            offset = _PID_ICON_W + self._panel._cause_obj_w + _ORS_FREQ_W
         elif col == self._panel._C_KON:
             offset = _PID_ICON_W + _KON_CAT_W
         else:
             offset = _PID_ICON_W
         editor.setGeometry(QRect(r.left() + offset, r.top(),
-                                 max(10, r.width() - offset), r.height()))
+                                 max(10, r.width() - offset - (0 if col != self._panel._C_KON else _KON_CHAIN_W)), r.height()))
 
     def paint(self, painter, option, index):
         row, col = index.row(), index.column()
@@ -5805,11 +5812,12 @@ class _PidDelegate(_ScenarioDelegate):
                 painter.restore()
                 return
 
-        # ── Cause cells: [pin][obj-tag zone][description] ─────────────────────
+        # ── Cause cells: [pin][obj-tag zone][F-badge][description] ──────────────
         if col == self._panel._C_ORS:
             obj_data = index.data(Qt.ItemDataRole.UserRole + 2)
             if obj_data is not None:
                 comp_type, comp_tag = obj_data
+                freq_val = index.data(Qt.ItemDataRole.UserRole + 3)
                 r = option.rect
                 painter.save()
                 if sel:
@@ -5820,10 +5828,12 @@ class _PidDelegate(_ScenarioDelegate):
                     painter.fillRect(r, option.palette.base())
 
                 cow = self._panel._cause_obj_w
-                pin_rect  = QRect(r.left(), r.top(), _PID_ICON_W, r.height())
-                obj_rect  = QRect(r.left() + _PID_ICON_W, r.top(), cow, r.height())
-                desc_rect = QRect(r.left() + _PID_ICON_W + cow, r.top(),
-                                  r.width() - _PID_ICON_W - cow, r.height())
+                pin_rect   = QRect(r.left(), r.top(), _PID_ICON_W, r.height())
+                obj_rect   = QRect(r.left() + _PID_ICON_W, r.top(), cow, r.height())
+                freq_rect  = QRect(r.left() + _PID_ICON_W + cow, r.top(),
+                                   _ORS_FREQ_W, r.height())
+                desc_rect  = QRect(r.left() + _PID_ICON_W + cow + _ORS_FREQ_W, r.top(),
+                                   r.width() - _PID_ICON_W - cow - _ORS_FREQ_W, r.height())
 
                 # Object-tag zone background
                 has_tag = bool(comp_tag or comp_type)
@@ -5861,6 +5871,23 @@ class _PidDelegate(_ScenarioDelegate):
                 painter.setPen(QPen(QColor('#ddd'), 1))
                 painter.drawLine(obj_rect.right(), r.top(), obj_rect.right(), r.bottom())
 
+                # F-badge zone
+                if freq_val is not None:
+                    _, f_bg, _ = risk_info(freq_val, 3)
+                    f_bg_clr = QColor(f_bg) if not sel else option.palette.highlight().color().darker(110)
+                    painter.fillRect(freq_rect, f_bg_clr)
+                    ff = QFont(option.font)
+                    ff.setPointSize(max(6, option.font.pointSize() - 1))
+                    ff.setBold(True)
+                    painter.setFont(ff)
+                    f_tc = QColor(_contrast_fg(f_bg)) if not sel else option.palette.highlightedText().color()
+                    painter.setPen(f_tc)
+                    painter.drawText(freq_rect.adjusted(1, 0, -1, 0),
+                                     Qt.AlignmentFlag.AlignCenter,
+                                     f"F{freq_val}")
+                    painter.setPen(QPen(QColor('#ddd'), 1))
+                    painter.drawLine(freq_rect.right(), r.top(), freq_rect.right(), r.bottom())
+
                 # Description text
                 desc = index.data(Qt.ItemDataRole.DisplayRole) or ''
                 tc = (option.palette.highlightedText().color() if sel
@@ -5885,7 +5912,7 @@ class _PidDelegate(_ScenarioDelegate):
                 painter.restore()
                 return
 
-        # ── Consequence cells: [pin][cat-badge][description] ──────────────────
+        # ── Consequence cells: [pin][cat-badge][description][⛓] ──────────────
         if col == self._panel._C_KON:
             con_data = index.data(Qt.ItemDataRole.UserRole)
             if con_data and con_data[0] == 'consequence':
@@ -5898,10 +5925,11 @@ class _PidDelegate(_ScenarioDelegate):
                 else:
                     painter.fillRect(r, option.palette.base())
 
-                pin_rect = QRect(r.left(), r.top(), _PID_ICON_W, r.height())
-                cat_rect = QRect(r.left() + _PID_ICON_W, r.top(), _KON_CAT_W, r.height())
-                txt_rect = QRect(r.left() + _PID_ICON_W + _KON_CAT_W, r.top(),
-                                 r.width() - _PID_ICON_W - _KON_CAT_W, r.height())
+                pin_rect   = QRect(r.left(), r.top(), _PID_ICON_W, r.height())
+                cat_rect   = QRect(r.left() + _PID_ICON_W, r.top(), _KON_CAT_W, r.height())
+                chain_rect = QRect(r.right() - _KON_CHAIN_W, r.top(), _KON_CHAIN_W, r.height())
+                txt_rect   = QRect(r.left() + _PID_ICON_W + _KON_CAT_W, r.top(),
+                                   r.width() - _PID_ICON_W - _KON_CAT_W - _KON_CHAIN_W, r.height())
 
                 # Category badges — stacked vertically, one per category
                 n_cats      = index.data(Qt.ItemDataRole.UserRole + 4) or 0
@@ -5946,6 +5974,17 @@ class _PidDelegate(_ScenarioDelegate):
                                  Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                                  fm.elidedText(display, Qt.TextElideMode.ElideRight,
                                                txt_rect.width() - 4))
+
+                # ⛓ chain-link zone on the right
+                chain_bg = QColor('#e8f5e9') if not sel else option.palette.highlight().color().darker(110)
+                painter.fillRect(chain_rect, chain_bg)
+                painter.setPen(QPen(QColor('#ddd'), 1))
+                painter.drawLine(chain_rect.left(), r.top(), chain_rect.left(), r.bottom())
+                cf2 = QFont(option.font)
+                cf2.setPointSize(max(7, option.font.pointSize()))
+                painter.setFont(cf2)
+                painter.setPen(QColor('#27ae60') if not sel else option.palette.highlightedText().color())
+                painter.drawText(chain_rect, Qt.AlignmentFlag.AlignCenter, "⛓")
 
                 # Pin icon
                 meta = self._panel._row_meta
@@ -6699,6 +6738,7 @@ class ScenarioTablePanel(QWidget):
         ors.setData(Qt.ItemDataRole.UserRole,     ('cause', cause_d['id']))
         ors.setData(Qt.ItemDataRole.UserRole + 2, (cause_d.get('comp_type') or '',
                                                     cause_d.get('comp_tag')  or ''))
+        ors.setData(Qt.ItemDataRole.UserRole + 3, freq)
         self._table.setItem(r, self._C_ORS, ors)
 
         kon = _ro()
@@ -6787,6 +6827,7 @@ class ScenarioTablePanel(QWidget):
         ors.setData(Qt.ItemDataRole.UserRole,     ('cause', cause_d['id']))
         ors.setData(Qt.ItemDataRole.UserRole + 2, (cause_d.get('comp_type') or '',
                                                     cause_d.get('comp_tag')  or ''))
+        ors.setData(Qt.ItemDataRole.UserRole + 3, freq)
         ors.setToolTip("Dubbelklicka för att redigera\n"
                        "Klicka på objektzonen (vänster) för att sätta utrustnings-tag\n"
                        "Enter för att lägga till ny orsak")
@@ -7221,6 +7262,59 @@ class ScenarioTablePanel(QWidget):
             self._table.blockSignals(False)
             self._table.viewport().update()
 
+    def _add_cause_from_consequence(self, cons_id):
+        """Open CauseObjectPopup and create a new cause chain-linked from cons_id."""
+        cons = self.db.get_consequence(cons_id)
+        if not cons:
+            return
+        cons_d = dict(cons)
+        parent_cause = self.db.get_cause(cons_d['cause_id'])
+        if not parent_cause:
+            return
+        parent_cause_d = dict(parent_cause)
+        dev_id   = parent_cause_d.get('deviation_id')
+        dev_desc = None
+        if dev_id:
+            dev = self.db.get_deviation(dev_id)
+            if dev:
+                dev_desc = dev['description']
+
+        popup = CauseObjectPopup('', '', self.db,
+                                 dev_description=dev_desc,
+                                 current_description='',
+                                 parent=self)
+        popup.setWindowTitle("Kedjad orsak — skapad från konsekvens")
+
+        def _on_committed(comp_type, comp_tag, description, frequency):
+            if not dev_id:
+                return
+            new_cause_id = self.db.add_cause(dev_id)
+            desc = description or 'Ny kedjad orsak'
+            like = freq_to_f_level(frequency) if frequency is not None else 3
+            self.db.update_cause(new_cause_id,
+                                 description=desc,
+                                 likelihood=like,
+                                 comp_type=comp_type,
+                                 comp_tag=comp_tag,
+                                 linked_consequence_id=cons_id)
+            if frequency is not None:
+                self.db.conn.execute(
+                    "UPDATE causes SET base_freq=? WHERE id=?", (frequency, new_cause_id))
+                self.db.conn.commit()
+            self.new_item_created.emit(CAUSE_T, new_cause_id)
+            QTimer.singleShot(0, self._rebuild)
+
+        popup.committed.connect(_on_committed)
+        popup.adjustSize()
+        gp = QCursor.pos()
+        _scr   = QApplication.screenAt(gp) or QApplication.primaryScreen()
+        screen = _scr.availableGeometry()
+        pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
+        x = min(gp.x(), screen.right() - pw - 4)
+        y = min(gp.y() + 6, screen.bottom() - ph - 4)
+        popup.move(max(screen.left() + 4, x), max(screen.top() + 4, y))
+        popup.exec()
+
     def _update_sg_rrf(self, row, sg_id, rrf, sg_type=None):
         self.db.update_safeguard(sg_id, rrf=rrf, sg_type=sg_type)
         QTimer.singleShot(0, self._rebuild)
@@ -7327,6 +7421,16 @@ class ScenarioTablePanel(QWidget):
                         popup.move(max(scr.left(), x), max(scr.top(), y))
                         if popup.exec() == QDialog.DialogCode.Accepted:
                             QTimer.singleShot(0, self._rebuild)
+                    return True
+
+            # ⛓ Chain-link click — right _KON_CHAIN_W pixels of KON cell
+            if row >= 0 and col == self._C_KON and row < len(self._row_meta):
+                cell_idx = self._table.model().index(row, col)
+                cr = self._table.visualRect(cell_idx)
+                if pos.x() >= cr.right() - _KON_CHAIN_W:
+                    cons_id = self._row_meta[row][2]
+                    if cons_id is not None:
+                        self._add_cause_from_consequence(cons_id)
                     return True
 
             # ⚡ RRF badge click — right _RRF_W pixels of safeguard cell

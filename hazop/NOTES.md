@@ -98,6 +98,7 @@
 | RRF-popup med kategorikoppling | `SgRRFCategoryPopup` ersätter `CatSGSelectionPopup`. Visar typval (BPCS/SIS/Mekanisk/Administrativ/Övrigt), fritt RRF-belopp (SpinBox + preset-knappar 1/10/100/1000/10000) och checkbox per kategori "Gäller ej för [Kategori]". |
 | Risk-cellernas etikett förenklat | RFORE/REFT/SLUT visar inte längre riskklassens textlabel (t.ex. "Mellan") utan bara axlarna ("D1  K3", "−2 steg\nD1  K3"). |
 | P&ID real-time update | `_on_scenario_item_edited` anropar `reload_overlays()` så P&ID-markörer uppdateras direkt när orsak/konsekvens/safeguard-text redigeras. `_switch_view` anropar `reload_overlays()` vid byte till P&ID-flik. |
+| Kedjad orsak från konsekvens (⛓) | ⛓-ikon i höger kant av KON-cellen i scenariotabellen. Klick öppnar `CauseObjectPopup` för att ange tag, typ och orsaksbeskrivning. Ny orsak skapas under samma avvikelse som förälderorsaken och länkas via `causes.linked_consequence_id`. Orsaker med länk visas med ⛓-emoji i trädet. F-värdet visas nummeriskt som en färgad F-badge i ORS-cellen (efter obj-zonen). DB: `causes.linked_consequence_id INTEGER DEFAULT NULL`. |
 
 ---
 
