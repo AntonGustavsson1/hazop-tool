@@ -5272,15 +5272,21 @@ class PIDPanel(QWidget):
             except Exception:
                 pass
 
+        # Extract full text from rubber-banded area (native PDF text first, OCR fallback)
+        full_text = self.viewer._text_in_rect(pdf_rect) if HAS_PYMUPDF and self.viewer.pdf_doc else ''
+        strip = hasattr(self.db, 'get_config') and self.db.get_config('tag_strip_spaces', '1') == '1'
+
         if chosen is a_cause:
             dev_id   = self._active_deviation_id or 0
             detected = self._db_comp_for_tag(tag) if tag else comp_type
-            suggested_desc = self.viewer._text_in_rect(pdf_rect) if HAS_PYMUPDF and self.viewer.pdf_doc else ''
-            self.cause_placement_requested.emit(dev_id, tag or '', detected, center_scene, page, suggested_desc)
+            suggested = (full_text or tag or '').replace(' ', '') if strip else (full_text or tag or '')
+            self.cause_placement_requested.emit(dev_id, tag or '', detected, center_scene, page, suggested)
         elif chosen is a_cons:
-            self._on_consequence_click(center_scene, page, tag)
+            suggested = (full_text or tag or '').replace(' ', '') if strip else (full_text or tag or '')
+            self._on_consequence_click(center_scene, page, suggested)
         elif chosen is a_sg:
-            self._on_safeguard_click(center_scene, page, tag)
+            suggested = (full_text or tag or '').replace(' ', '') if strip else (full_text or tag or '')
+            self._on_safeguard_click(center_scene, page, suggested)
 
     def _on_zone_resized(self, marker_type, marker_id, cx, cy, w, h):
         """Zone corner was dragged — update DB marker center and rect dimensions."""
