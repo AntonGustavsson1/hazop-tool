@@ -2246,6 +2246,7 @@ class PIDGraphicsView(QGraphicsView):
     markup_duplicate_requested = pyqtSignal(int)           # mu_id
     zone_drawn    = pyqtSignal(object, int)                # (QRectF pdf_coords, page)
     zone_resized  = pyqtSignal(str, int, float, float, float, float)  # type_,id_,cx,cy,w,h
+    cause_at_marker_requested = pyqtSignal(int)            # cause_id — add another cause here
 
     # Keys for QGraphicsItem.setData / .data
     _DATA_TYPE      = 0    # 'cause' | 'consequence' | 'safeguard' | 'markup'
@@ -3203,6 +3204,20 @@ class PIDGraphicsView(QGraphicsView):
 
     def _show_context_menu(self, sp, global_pos):
         menu = QMenu(self.viewport())
+
+        # If cursor is on a cause marker, offer "add another cause here" at the top
+        hovered_cause_id = None
+        for item in self._scene.items(sp):
+            if item.data(self._DATA_TYPE) == 'cause' and item.data(self._DATA_ID) is not None:
+                hovered_cause_id = int(item.data(self._DATA_ID))
+                break
+        if hovered_cause_id is not None:
+            act = menu.addAction("⚙️ Lägg till ytterligare orsak här")
+            act.setToolTip("Skapa en ny orsak på samma P&ID-position som denna")
+            cid = hovered_cause_id
+            act.triggered.connect(lambda: self.cause_at_marker_requested.emit(cid))
+            menu.addSeparator()
+
         menu.addAction("⚙️ Orsak",
                        lambda: self.context_action.emit('cause', sp, self.current_page))
         menu.addAction("⚠️ Konsekvens",
@@ -4445,6 +4460,7 @@ class PIDPanel(QWidget):
         self.viewer.context_action.connect(self._on_context_action)
         self.viewer.zone_drawn.connect(self._on_zone_drawn)
         self.viewer.zone_resized.connect(self._on_zone_resized)
+        self.viewer.cause_at_marker_requested.connect(self._on_add_cause_at_marker)
         self._active_place_type  = None   # 'cause' | 'consequence' | 'safeguard'
         self._active_place_id    = None
         self._pending_zone_pdf   = None   # QRectF while zone dialog chain is open
@@ -5550,6 +5566,38 @@ class PIDPanel(QWidget):
         self._load_overlays()
         self.cause_template_created.emit(cause_id)
         return cause_id
+
+    def _on_add_cause_at_marker(self, cause_id: int):
+        """Right-click on existing cause marker → create another cause at the same position."""
+        page = self.viewer.current_page
+        markers = self.db.cause_markers_for_page(page)
+        marker = next((dict(m) for m in markers if m['cause_id'] == cause_id), None)
+        if not marker:
+            return
+
+        pdf_x  = marker['x']
+        pdf_y  = marker['y']
+        rect_w = marker.get('rect_w')
+        rect_h = marker.get('rect_h')
+
+        # Reuse the same zone rectangle
+        if rect_w and rect_h:
+            self._pending_zone_pdf = QRectF(
+                pdf_x - rect_w / 2, pdf_y - rect_h / 2, rect_w, rect_h)
+
+        # Pre-fill comp_type and comp_tag from the existing cause
+        cause = self.db.get_cause(cause_id)
+        cause_d = dict(cause) if cause else {}
+        dev_id   = cause_d.get('deviation_id') or 0
+        comp_tag = cause_d.get('comp_tag') or marker.get('component_tag', '')
+        comp_type = cause_d.get('comp_type') or marker.get('component_type', '')
+
+        node_id = cause_d.get('node_id')
+        if node_id:
+            self._active_node_id = node_id
+
+        scene_pos = self.viewer.pdf_to_scene(pdf_x, pdf_y)
+        self.cause_placement_requested.emit(dev_id, comp_tag, comp_type, scene_pos, page, '')
 
     def _place_secondary_marker(self, scene_pos, page, suggested_tag=''):
         """Place the queued secondary marker, then re-open the dialog for the same deviation."""
