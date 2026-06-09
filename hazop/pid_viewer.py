@@ -4946,12 +4946,17 @@ class PIDPanel(QWidget):
 
     def _on_context_action(self, action, pos, page):
         if action == 'cause':
-            self._set_mode(MODE_CAUSE)
-            # Point click from context menu — extract tag the old way
+            dev_id = self._active_deviation_id
+            if not dev_id:
+                QMessageBox.information(self, "Välj avvikelse",
+                    "Välj en avvikelse i scenariotabellen eller trädet "
+                    "innan du lägger till en orsak.")
+                return
             tag = find_tag_near_point(self.viewer.pdf_doc, page,
                                       *self.viewer.scene_to_pdf(pos)) \
                   if self.viewer.pdf_doc else ''
-            self._on_cause_click(pos, page, tag)
+            detected_type = self._db_comp_for_tag(tag) if tag else ''
+            self.cause_placement_requested.emit(dev_id, tag or '', detected_type, pos, page)
         elif action == 'consequence':
             self._set_mode(MODE_CONSEQUENCE)
             tag = find_tag_near_point(self.viewer.pdf_doc, page,
