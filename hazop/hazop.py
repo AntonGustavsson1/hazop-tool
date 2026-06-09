@@ -5028,10 +5028,12 @@ class CauseObjectPopup(QDialog):
     committed = pyqtSignal(str, str, str, object)  # (comp_type, comp_tag, description, freq|None)
 
     def __init__(self, comp_type: str, comp_tag: str, db,
-                 dev_description=None, current_description='', parent=None):
+                 dev_description=None, current_description='',
+                 node_id=None, deviation_id=None, parent=None):
         super().__init__(parent)
         self._db              = db
         self._dev_description = dev_description
+        self._dev_combo       = None
         self._cause_buttons   = []   # list of (QRadioButton, description, freq)
         self._freq_overrides  = {}   # QRadioButton → custom freq (overrides standard)
 
@@ -5063,11 +5065,39 @@ class CauseObjectPopup(QDialog):
         hdr.addStretch()
         layout.addLayout(hdr)
 
-        # ── Form: Tag-ID + Type ───────────────────────────────────────────────
+        # ── Form: (Avvikelse) + Tag-ID + Type ────────────────────────────────
         form = QFormLayout()
         form.setSpacing(3)
         form.setContentsMargins(0, 0, 0, 0)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        # Optional deviation picker — only shown when node_id is supplied
+        if node_id is not None and db:
+            self._dev_combo = QComboBox()
+            self._dev_combo.setFixedHeight(22)
+            self._dev_combo.setStyleSheet(_small)
+            self._dev_combo.setMaxVisibleItems(12)
+            try:
+                devs = db.deviations(node_id)
+            except Exception:
+                devs = []
+            for d in devs:
+                self._dev_combo.addItem(d['description'][:70], d['id'])
+            if deviation_id:
+                for i in range(self._dev_combo.count()):
+                    if self._dev_combo.itemData(i) == deviation_id:
+                        self._dev_combo.setCurrentIndex(i)
+                        break
+            dev_lbl = QLabel("Avvikelse:")
+            dev_lbl.setStyleSheet(_small)
+            form.addRow(dev_lbl, self._dev_combo)
+            # Keep _dev_description in sync and refresh cause list on change
+            if self._dev_combo.count() > 0:
+                self._dev_description = self._dev_combo.currentText()
+            def _on_dev_changed():
+                self._dev_description = self._dev_combo.currentText() or None
+                self._rebuild_causes(self._type_cb.currentText())
+            self._dev_combo.currentIndexChanged.connect(_on_dev_changed)
 
         self._tag_edit = QLineEdit(comp_tag)
         self._tag_edit.setPlaceholderText("t.ex. P-101")
@@ -5311,6 +5341,12 @@ class CauseObjectPopup(QDialog):
 
         self.committed.emit(comp_type, comp_tag, desc, freq)
         self.accept()
+
+    @property
+    def selected_deviation_id(self):
+        if self._dev_combo is not None:
+            return self._dev_combo.currentData()
+        return None
 
     def _clear(self):
         self.committed.emit('', '', '', None)
@@ -11595,21 +11631,24 @@ class MainWindow(QMainWindow):
 
     def _on_cause_placement_requested(self, dev_id, suggested_tag, detected_type,
                                        scene_pos, page):
-        """P&ID clicked in template mode — show popup anchored to the ORS cell,
-        pre-filled with OCR tag/type; then place on confirm."""
-        dev_row  = self.db.get_deviation(dev_id)
+        """P&ID clicked in template/context mode — show CauseObjectPopup anchored
+        to the ORS cell; includes deviation picker when no deviation is pre-selected."""
+        dev_row  = self.db.get_deviation(dev_id) if dev_id else None
         dev_desc = dev_row['description'] if dev_row else None
+        node_id  = getattr(self.pid_panel, '_active_node_id', None)
 
         popup = CauseObjectPopup(
             detected_type, suggested_tag, self.db,
             dev_description=dev_desc,
             current_description='',
+            node_id=node_id,
+            deviation_id=dev_id or None,
             parent=self)
         popup.setWindowFlags(popup.windowFlags() | Qt.WindowType.Window)
         popup.adjustSize()
 
         # Anchor to the ORS cell in the scenario table; fall back to cursor position
-        gp = self.scenario_panel.ors_cell_global_pos(dev_id)
+        gp = self.scenario_panel.ors_cell_global_pos(dev_id) if dev_id else None
         if gp is None:
             gp = QCursor.pos()
         screen = (QApplication.screenAt(gp) or QApplication.primaryScreen()).availableGeometry()
@@ -11618,9 +11657,13 @@ class MainWindow(QMainWindow):
         y = min(gp.y(),       screen.bottom() - ph)
         popup.move(max(screen.left(), x), max(screen.top(), y))
 
-        popup.committed.connect(
-            lambda ct, tag, desc, freq: self.pid_panel.place_cause_from_template(
-                dev_id, scene_pos, page, ct, tag, desc, freq))
+        def _on_committed(ct, tag, desc, freq):
+            actual_dev = popup.selected_deviation_id or dev_id
+            if actual_dev:
+                self.pid_panel.place_cause_from_template(
+                    actual_dev, scene_pos, page, ct, tag, desc, freq)
+
+        popup.committed.connect(_on_committed)
         popup.exec()
 
     def _on_add_consequences_on_pid(self, cause_id):
