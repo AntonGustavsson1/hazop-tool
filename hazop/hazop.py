@@ -5914,17 +5914,15 @@ class _PidDelegate(_ScenarioDelegate):
                 painter.setPen(QPen(QColor('#ddd'), 1))
                 painter.drawLine(obj_rect.right(), r.top(), obj_rect.right(), r.bottom())
 
-                # Frequency badge zone — numeric if base_freq available, else F-level
+                # Frequency badge zone — numeric if base_freq available, else axis label
                 if freq_val is not None:
                     base_freq_val = index.data(Qt.ItemDataRole.UserRole + 5)
-                    _, f_bg, _ = risk_info(freq_val, 3)
-                    f_bg_clr = QColor(f_bg) if not sel else option.palette.highlight().color().darker(110)
-                    painter.fillRect(freq_rect, f_bg_clr)
                     ff = QFont(option.font)
                     ff.setPointSize(max(6, option.font.pointSize() - 1))
                     ff.setBold(True)
                     painter.setFont(ff)
-                    f_tc = QColor(_contrast_fg(f_bg)) if not sel else option.palette.highlightedText().color()
+                    f_tc = (option.palette.highlightedText().color() if sel
+                            else option.palette.text().color())
                     painter.setPen(f_tc)
                     if base_freq_val is not None:
                         bfv = float(base_freq_val)
@@ -5934,21 +5932,11 @@ class _PidDelegate(_ScenarioDelegate):
                             num_str = f"{bfv:.3g}"
                         else:
                             num_str = f"{bfv:.1e}".replace('e-0', 'e-').replace('e+0', 'e')
-                        freq_top = QRect(freq_rect.left(), freq_rect.top(),
-                                         freq_rect.width(), freq_rect.height() * 2 // 3)
-                        freq_bot = QRect(freq_rect.left(), freq_rect.top() + freq_rect.height() * 2 // 3,
-                                         freq_rect.width(), freq_rect.height() // 3)
-                        painter.drawText(freq_top.adjusted(1, 0, -1, 0),
-                                         Qt.AlignmentFlag.AlignCenter, num_str)
-                        tiny = QFont(option.font)
-                        tiny.setPointSize(max(5, option.font.pointSize() - 3))
-                        painter.setFont(tiny)
-                        painter.drawText(freq_bot.adjusted(1, 0, -1, 0),
-                                         Qt.AlignmentFlag.AlignCenter, "/år")
+                        display_str = f"{num_str}/år"
                     else:
-                        painter.drawText(freq_rect.adjusted(1, 0, -1, 0),
-                                         Qt.AlignmentFlag.AlignCenter,
-                                         f"F{freq_val}")
+                        display_str = freq_axis_label(freq_val)
+                    painter.drawText(freq_rect.adjusted(1, 0, -1, 0),
+                                     Qt.AlignmentFlag.AlignCenter, display_str)
                     painter.setPen(QPen(QColor('#ddd'), 1))
                     painter.drawLine(freq_rect.right(), r.top(), freq_rect.right(), r.bottom())
 
@@ -6006,15 +5994,15 @@ class _PidDelegate(_ScenarioDelegate):
                     cf.setBold(True)
                     painter.setFont(cf)
                     for i, (cat_id, sev_id, cat_name, cat_sev) in enumerate(all_cats):
-                        _, cat_bg, _ = risk_info(3, cat_sev)
                         badge = QRect(cat_rect.left() + 2,
                                       cat_rect.top() + i * badge_h,
                                       cat_rect.width() - 4,
                                       badge_h - 1)
-                        painter.fillRect(badge, QColor(cat_bg))
-                        painter.setPen(QColor(_contrast_fg(cat_bg)))
+                        badge_tc = (option.palette.highlightedText().color() if sel
+                                    else option.palette.text().color())
+                        painter.setPen(badge_tc)
                         painter.drawText(badge, Qt.AlignmentFlag.AlignCenter,
-                                         f"{cat_name[:3]} K{cat_sev}")
+                                         f"{cat_name[:3]} {cons_axis_label(cat_sev)}")
                 else:
                     icon_clr = QColor('#1a56db') if n_cats > 0 else QColor('#aaa')
                     painter.setPen(icon_clr)
