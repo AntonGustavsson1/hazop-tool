@@ -6886,26 +6886,28 @@ class PIDPanel(QWidget):
             fp_sheet = sheet_num_map.get(fp, '')
             tp_sheet = sheet_num_map.get(tp, '')
 
-            # Connectors on fp pointing to tp's sheet → source position
-            src_conns = conn_by_page_ref.get((fp, tp_sheet), [])
-            # Connectors on tp pointing back to fp's sheet → dest position
-            dst_conns = conn_by_page_ref.get((tp, fp_sheet), [])
+            # Connectors on fp pointing to tp's sheet → prefer 'out' (flow leaving fp)
+            src_conns_all = conn_by_page_ref.get((fp, tp_sheet), [])
+            src_conns = sorted(src_conns_all,
+                               key=lambda c: 0 if c.get('direction') == 'out' else 1)
+            # Connectors on tp pointing back to fp's sheet → prefer 'in' (flow arriving)
+            dst_conns_all = conn_by_page_ref.get((tp, fp_sheet), [])
+            dst_conns = sorted(dst_conns_all,
+                               key=lambda c: 0 if c.get('direction') == 'in' else 1)
 
             def edge_point(page_conns, ox, oy, pw, ph, default_edge):
                 if page_conns:
-                    ys = sorted(c['y_pdf'] for c in page_conns)
-                    med_y = ys[len(ys) // 2] * rs
-                    edge  = page_conns[0].get('edge', default_edge)
-                else:
-                    med_y = ph / 2
-                    edge  = default_edge
-                if edge == 'right':
-                    return QPointF(ox + pw, oy + med_y)
-                if edge == 'left':
-                    return QPointF(ox, oy + med_y)
-                if edge == 'top':
-                    return QPointF(ox + pw / 2, oy)
-                return QPointF(ox + pw / 2, oy + ph)   # bottom
+                    # Pick the median connector by Y so we land at the actual
+                    # symbol position on the P&ID rather than just the page edge.
+                    med = sorted(page_conns, key=lambda c: c.get('y_pdf', 0))
+                    med = med[len(med) // 2]
+                    return QPointF(ox + med['x_pdf'] * rs,
+                                   oy + med['y_pdf'] * rs)
+                # Fallback when no connector was detected: centre of the edge
+                if default_edge == 'right':  return QPointF(ox + pw,     oy + ph / 2)
+                if default_edge == 'left':   return QPointF(ox,           oy + ph / 2)
+                if default_edge == 'top':    return QPointF(ox + pw / 2,  oy)
+                return                              QPointF(ox + pw / 2,  oy + ph)
 
             # Guess default edges from relative page positions (horizontal or vertical)
             dx_pages = ox_tp - ox_fp
@@ -6917,8 +6919,8 @@ class PIDPanel(QWidget):
                 def_src = 'bottom' if dy_pages >= 0 else 'top'
                 def_dst = 'top'    if dy_pages >= 0 else 'bottom'
 
-            src_pt  = edge_point(src_conns, ox_fp, oy_fp, pw_fp, ph_fp, def_src)
-            dst_pt  = edge_point(dst_conns, ox_tp, oy_tp, pw_tp, ph_tp, def_dst)
+            src_pt   = edge_point(src_conns, ox_fp, oy_fp, pw_fp, ph_fp, def_src)
+            dst_pt   = edge_point(dst_conns, ox_tp, oy_tp, pw_tp, ph_tp, def_dst)
             src_edge = src_conns[0].get('edge', def_src) if src_conns else def_src
             dst_edge = dst_conns[0].get('edge', def_dst) if dst_conns else def_dst
 
