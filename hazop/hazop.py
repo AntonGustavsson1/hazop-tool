@@ -796,6 +796,7 @@ class Database:
             "ALTER TABLE consequence_markers ADD COLUMN rect_h REAL DEFAULT NULL",
             "ALTER TABLE safeguard_markers ADD COLUMN rect_w REAL DEFAULT NULL",
             "ALTER TABLE safeguard_markers ADD COLUMN rect_h REAL DEFAULT NULL",
+            "ALTER TABLE off_page_connector ADD COLUMN ref_page INTEGER DEFAULT NULL",
         ]:
             try:
                 self.conn.execute(sql)
@@ -1537,9 +1538,9 @@ class Database:
         self.conn.executemany(
             "INSERT INTO off_page_connector "
             "(pid_page,x_pdf,y_pdf,direction,edge,ref_text,ref_sheet,"
-            "ref_line_id,media_type,weight,confidence,raw_text,ocr_used,analyzed_at) "
+            "ref_line_id,media_type,weight,confidence,raw_text,ocr_used,analyzed_at,ref_page) "
             "VALUES(:pid_page,:x_pdf,:y_pdf,:direction,:edge,:ref_text,:ref_sheet,"
-            ":ref_line_id,:media_type,:weight,:confidence,:raw_text,:ocr_used,:analyzed_at)",
+            ":ref_line_id,:media_type,:weight,:confidence,:raw_text,:ocr_used,:analyzed_at,:ref_page)",
             rows)
         self.conn.commit()
 
@@ -1677,6 +1678,18 @@ class Database:
 
     def clear_sheets(self):
         self.conn.execute("DELETE FROM pid_sheets")
+        self.conn.commit()
+
+    def clear_all_pid_data(self):
+        """Remove all P&ID revisions, sheets, placements, markups and connectors."""
+        for table in (
+            "pid_sheets", "pid_revisions",
+            "cause_markers", "consequence_markers", "safeguard_markers",
+            "node_markups", "node_red_markups",
+            "off_page_connector", "pid_connection",
+        ):
+            self.conn.execute(f"DELETE FROM {table}")
+        self.conn.execute("DELETE FROM pid_config WHERE key='path'")
         self.conn.commit()
 
     def add_node_with_markup(self, name, points, style, page):
@@ -10705,6 +10718,12 @@ class PIDManagementPanel(QWidget):
         rev_hdr = QHBoxLayout()
         rev_hdr.addWidget(QLabel("Revisionshistorik:"))
         rev_hdr.addStretch()
+        clear_all_btn = QPushButton("🗑 Rensa samtliga P&ID och all data")
+        clear_all_btn.setStyleSheet(
+            "QPushButton{color:#fff;background:#C62828;border-radius:4px;padding:4px 10px;}"
+            "QPushButton:hover{background:#B71C1C;}")
+        clear_all_btn.clicked.connect(self._clear_all_pid)
+        rev_hdr.addWidget(clear_all_btn)
         rev_layout.addLayout(rev_hdr)
 
         self._rev_table = QTableWidget(0, 4)
@@ -10860,6 +10879,30 @@ class PIDManagementPanel(QWidget):
 
         self.db.delete_objects_on_pages(physical_pages)
         self.db.delete_sheets(ids)
+        self.refresh()
+        self.sheets_changed.emit()
+
+    def _clear_all_pid(self):
+        count = len(self.db.get_revisions())
+        n_sheets = self.db.conn.execute("SELECT COUNT(*) FROM pid_sheets").fetchone()[0]
+        box = QMessageBox(self)
+        box.setWindowTitle("Rensa samtliga P&ID och all data")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText(
+            f"Det finns <b>{count} P&ID-revision{'er' if count != 1 else ''}</b> "
+            f"och <b>{n_sheets} blad</b> inlagda.\n\n"
+            f"Vill du permanent ta bort <b>alla</b> P&ID, blad, markeringar och kopplingar?")
+        box.setInformativeText(
+            "Denna åtgärd kan inte ångras. HAZOP-analysen (noder, orsaker, konsekvenser) "
+            "berörs inte, men alla positioner på P&ID-vyn raderas.")
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        box.button(QMessageBox.StandardButton.Yes).setText("Rensa allt")
+        box.button(QMessageBox.StandardButton.No).setText("Avbryt")
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return
+        self.db.clear_all_pid_data()
         self.refresh()
         self.sheets_changed.emit()
 

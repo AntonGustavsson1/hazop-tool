@@ -2993,6 +2993,9 @@ class ConnectorAnalyzer(QThread):
             to_pn = resolve_page(ref)
             for oc in out_list:
                 fp = oc['pid_page']
+                # Store resolved target page directly on the connector so draw
+                # code can look up by (pid_page, ref_page) without sheet_num_map
+                oc['ref_page'] = to_pn
                 # Skip self-referential pairs (e.g. recirculation loops on same page)
                 if to_pn is not None and fp == to_pn:
                     continue
@@ -6876,19 +6879,26 @@ class PIDPanel(QWidget):
         except Exception:
             sheet_num_map = {}
 
-        # Group connectors: (pid_page, ref_sheet_upper) → list
-        # Each ref_sheet is also registered under its S-stripped/S-prefixed alias so
-        # that old DB data (digits-only '0000292') and new data ('S0000292') both match.
-        conn_by_page_ref: dict = {}
+        # Primary lookup: (pid_page, ref_page) — populated after Smart Layout re-run.
+        # Falls back to sheet_num_map + ref_sheet matching for old DB data.
+        conn_by_page_pair: dict = {}   # (pid_page, ref_page_idx) → [connectors]
+        conn_by_page_ref:  dict = {}   # (pid_page, ref_sheet_upper) → [connectors]
         for c in connectors:
             cd = dict(c)
+            rp = cd.get('ref_page')
+            if rp is not None:
+                conn_by_page_pair.setdefault((cd['pid_page'], int(rp)), []).append(cd)
             ref = (cd.get('ref_sheet') or '').upper()
             for _key_ref in _sheet_ref_variants(ref):
                 conn_by_page_ref.setdefault((cd['pid_page'], _key_ref), []).append(cd)
 
-        def _sheet_lookup(page, sheet_str):
-            """Return connectors on page whose ref_sheet matches sheet_str (fuzzy)."""
-            for v in _sheet_ref_variants(sheet_str):
+        def _get_connectors(page, target_page, target_sheet_str):
+            """Connectors on page whose ref_page == target_page.
+            Falls back to ref_sheet fuzzy-match for pre-migration data."""
+            r = conn_by_page_pair.get((page, target_page), [])
+            if r:
+                return r
+            for v in _sheet_ref_variants(target_sheet_str):
                 r = conn_by_page_ref.get((page, v), [])
                 if r:
                     return r
@@ -6948,9 +6958,10 @@ class PIDPanel(QWidget):
             fp_sheet = sheet_num_map.get(fp, '')
             tp_sheet = sheet_num_map.get(tp, '')
 
-            # All connectors on fp referencing tp's sheet, and vice-versa
-            src_list = _sheet_lookup(fp, tp_sheet)
-            dst_list = _sheet_lookup(tp, fp_sheet)
+            # Connectors on fp whose ref_page == tp (and vice-versa).
+            # ref_page is the authoritative lookup; sheet_str is the fallback for old data.
+            src_list = _get_connectors(fp, tp, tp_sheet)
+            dst_list = _get_connectors(tp, fp, fp_sheet)
 
             # Fallback edges from relative page positions (horizontal only)
             dx_pages = ox_tp - ox_fp
