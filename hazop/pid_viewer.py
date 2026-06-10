@@ -4591,8 +4591,8 @@ class PIDGraphicsView(QGraphicsView):
             # Collect bounding boxes for all placed pages
             page_bboxes = {}
             for pidx, (ox, oy) in self._page_offsets.items():
-                pw = self._page_widths_pdf.get(pidx, 800) * self._render_scale
-                ph = self._page_heights_pdf.get(pidx, 600) * self._render_scale
+                pw = self._page_widths_pdf.get(pidx, 800) * self.render_scale
+                ph = self._page_heights_pdf.get(pidx, 600) * self.render_scale
                 page_bboxes[pidx] = (ox, oy, ox + pw, oy + ph)
                 global_top    = min(global_top,    oy)
                 global_bottom = max(global_bottom, oy + ph)
