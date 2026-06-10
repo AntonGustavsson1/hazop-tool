@@ -422,7 +422,7 @@ _DIALECTS = {
     'lkab': {
         'name':         'LKAB (RDS + S-nummer)',
         'score_re':     re.compile(r'\bS\d{6,8}\b|=[A-Z][A-Z0-9./\-]{1,10}\s+S\d{6,8}', re.I),
-        'sheet_num_re': re.compile(r'\bS(\d{6,8})\b', re.I),
+        'sheet_num_re': re.compile(r'\b(S\d{6,8})\b', re.I),
         'title_area':   (0.45, 0.86, 1.0, 1.0),
     },
     'its': {
@@ -450,6 +450,23 @@ _DIALECTS = {
         'title_area':   (0.45, 0.75, 1.0, 1.0),
     },
 }
+
+def _sheet_ref_variants(ref: str):
+    """Return lookup variants for a sheet identifier string.
+
+    Handles the LKAB mismatch where page_sheet_nums stored '0000292' (digits only)
+    but ref_sheet is 'S0000292'.  Returns both forms so either DB format matches.
+    """
+    ref = (ref or '').upper().strip()
+    if not ref:
+        return (ref,)
+    variants = [ref]
+    if len(ref) > 1 and ref[0] == 'S' and ref[1:].isdigit():
+        variants.append(ref[1:])          # 'S0000292' → '0000292'
+    elif ref.isdigit():
+        variants.append('S' + ref)        # '0000292'  → 'S0000292'
+    return variants
+
 
 def _detect_dialect(sample_texts):
     """Score each dialect against sample text from the first few pages."""
@@ -6860,11 +6877,22 @@ class PIDPanel(QWidget):
             sheet_num_map = {}
 
         # Group connectors: (pid_page, ref_sheet_upper) → list
+        # Each ref_sheet is also registered under its S-stripped/S-prefixed alias so
+        # that old DB data (digits-only '0000292') and new data ('S0000292') both match.
         conn_by_page_ref: dict = {}
         for c in connectors:
             cd = dict(c)
-            key = (cd['pid_page'], (cd.get('ref_sheet') or '').upper())
-            conn_by_page_ref.setdefault(key, []).append(cd)
+            ref = (cd.get('ref_sheet') or '').upper()
+            for _key_ref in _sheet_ref_variants(ref):
+                conn_by_page_ref.setdefault((cd['pid_page'], _key_ref), []).append(cd)
+
+        def _sheet_lookup(page, sheet_str):
+            """Return connectors on page whose ref_sheet matches sheet_str (fuzzy)."""
+            for v in _sheet_ref_variants(sheet_str):
+                r = conn_by_page_ref.get((page, v), [])
+                if r:
+                    return r
+            return []
 
         drawn_pairs:      set  = set()
         gap_slot_counter: dict = {}
@@ -6921,8 +6949,8 @@ class PIDPanel(QWidget):
             tp_sheet = sheet_num_map.get(tp, '')
 
             # All connectors on fp referencing tp's sheet, and vice-versa
-            src_list = conn_by_page_ref.get((fp, tp_sheet), [])
-            dst_list = conn_by_page_ref.get((tp, fp_sheet), [])
+            src_list = _sheet_lookup(fp, tp_sheet)
+            dst_list = _sheet_lookup(tp, fp_sheet)
 
             # Fallback edges from relative page positions (horizontal only)
             dx_pages = ox_tp - ox_fp
