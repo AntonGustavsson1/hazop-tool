@@ -383,6 +383,7 @@ MODE_MARKUP_SELECT   = 11  # click existing markup items to select/edit
 MODE_SMART_POLYLINE  = 12  # click start+end, algorithm traces pipe path
 MODE_RED_MARKUP_SYMBOL = 13  # click to place a red markup P&ID symbol
 MODE_BOARD_LAYOUT    = 14  # drag pages to reposition on study board
+MODE_ADD_SHEET_LINK  = 15  # click target page to create a manual inter-sheet link
 
 # ── Off-page connector analysis ───────────────────────────────────────────────
 _RE_TO_FROM = re.compile(
@@ -2728,7 +2729,8 @@ class ConnectorAnalyzer(QThread):
 
 
 def _propose_layout(connections, page_count, page_widths_pdf, page_heights_pdf, render_scale):
-    """Force-directed layout proposal. Returns {page_idx: (scene_x, scene_y)}."""
+    """Force-directed layout proposal — left-to-right.
+    Returns {page_idx: (scene_x, scene_y)}."""
     import math
     from collections import deque
 
@@ -2738,12 +2740,12 @@ def _propose_layout(connections, page_count, page_widths_pdf, page_heights_pdf, 
     rs = render_scale
     W = max((page_widths_pdf.get(i, 800) * rs for i in range(page_count)), default=2400.0)
     H = max((page_heights_pdf.get(i, 600) * rs for i in range(page_count)), default=1800.0)
-    GAP_X = W * 0.15
-    GAP_Y = H * 0.10
+    GAP_X = W * 0.12
+    GAP_Y = H * 0.08
 
-    # Build directed edges (only non-ghost, both pages known)
-    out_edges = {i: [] for i in range(page_count)}
-    in_edges  = {i: [] for i in range(page_count)}
+    # Build undirected adjacency (handles bidirectional/cycle connections correctly)
+    adj = {i: set() for i in range(page_count)}
+    edge_weights = {}
     for c in connections:
         fp = c.get('from_page')
         tp = c.get('to_page')
@@ -2751,32 +2753,30 @@ def _propose_layout(connections, page_count, page_widths_pdf, page_heights_pdf, 
             continue
         if not (0 <= fp < page_count and 0 <= tp < page_count):
             continue
-        w = float(c.get('weight', 0.1))
-        out_edges[fp].append((tp, w))
-        in_edges[tp].append((fp, w))
-
-    # Topological levels via BFS (Kahn's algorithm)
-    in_deg = {i: len(in_edges[i]) for i in range(page_count)}
-    queue  = deque(i for i in range(page_count) if in_deg[i] == 0)
-    level  = {i: 0 for i in range(page_count)}
-    processed = set()
-    while queue:
-        node = queue.popleft()
-        if node in processed:
+        if fp == tp:
             continue
-        processed.add(node)
-        for tgt, _ in out_edges[node]:
-            level[tgt] = max(level[tgt], level[node] + 1)
-            in_deg[tgt] -= 1
-            if in_deg[tgt] <= 0 and tgt not in processed:
-                queue.append(tgt)
-    # Cycle nodes: assign max_level + 1
-    max_lv = max(level.values(), default=0)
-    for i in range(page_count):
-        if i not in processed:
-            level[i] = max_lv + 1
+        adj[fp].add(tp); adj[tp].add(fp)
+        key = (min(fp, tp), max(fp, tp))
+        edge_weights[key] = max(edge_weights.get(key, 0), float(c.get('weight', 0.1)))
 
-    # Group by level, assign initial grid positions
+    # Undirected BFS from the lowest-index connected node for left-to-right levels
+    visited = {}
+    for start in range(page_count):
+        if start in visited:
+            continue
+        queue = deque([(start, 0)])
+        while queue:
+            node, lv = queue.popleft()
+            if node in visited:
+                continue
+            visited[node] = lv
+            for nb in sorted(adj[node]):   # sorted → lower-index neighbours first
+                if nb not in visited:
+                    queue.append((nb, lv + 1))
+
+    level = visited  # page_idx → column index (0 = leftmost)
+
+    # Group nodes by level; within a level sort by page_idx for stable ordering
     level_groups = {}
     for i in range(page_count):
         level_groups.setdefault(level[i], []).append(i)
@@ -2784,55 +2784,59 @@ def _propose_layout(connections, page_count, page_widths_pdf, page_heights_pdf, 
     pos = {}
     for lv in sorted(level_groups):
         group = sorted(level_groups[lv])
+        col_count = len(group)
         for rank, node in enumerate(group):
-            pos[node] = [lv * (W + GAP_X), rank * (H + GAP_Y)]
+            # centre the group vertically around y=0
+            y_off = (rank - (col_count - 1) / 2.0) * (H + GAP_Y)
+            pos[node] = [lv * (W + GAP_X), y_off]
 
-    # Force-directed fine-tuning (80 iterations)
-    fd_edges = []
-    for c in connections:
-        fp = c.get('from_page')
-        tp = c.get('to_page')
-        if fp is not None and tp is not None and 0 <= fp < page_count and 0 <= tp < page_count:
-            fd_edges.append((fp, tp, float(c.get('weight', 0.1))))
+    # Force-directed fine-tuning (60 iterations)
+    # Strong left-to-right push, very weak vertical movement
+    fd_edges = [(min(fp, tp), max(fp, tp), w)
+                for (fp, tp), w in edge_weights.items()]
 
-    K = W * 0.9
-    for it in range(80):
+    K = W * 0.85
+    for it in range(60):
         forces = {i: [0.0, 0.0] for i in range(page_count)}
         nodes = list(range(page_count))
         for ai, a in enumerate(nodes):
-            for b in nodes[ai+1:]:
+            for b in nodes[ai + 1:]:
                 dx = pos[a][0] - pos[b][0]
                 dy = pos[a][1] - pos[b][1]
-                d2 = max(1.0, dx*dx + dy*dy)
+                d2 = max(1.0, dx * dx + dy * dy)
                 d  = d2 ** 0.5
                 f  = K * K / d2
                 forces[a][0] += f * dx / d
-                forces[a][1] += f * dy / d
+                forces[a][1] += f * dy / d * 0.12   # suppress vertical repulsion
                 forces[b][0] -= f * dx / d
-                forces[b][1] -= f * dy / d
+                forces[b][1] -= f * dy / d * 0.12
         for fp, tp, w in fd_edges:
             dx = pos[tp][0] - pos[fp][0]
             dy = pos[tp][1] - pos[fp][1]
-            d  = max(1.0, (dx*dx + dy*dy) ** 0.5)
+            d  = max(1.0, (dx * dx + dy * dy) ** 0.5)
             ideal = W + GAP_X
-            f = w * (d - ideal) / d * 0.4
-            forces[fp][0] += f * dx;  forces[fp][1] += f * dy * 0.25
-            forces[tp][0] -= f * dx;  forces[tp][1] -= f * dy * 0.25
-            dir_f = w * 25.0
-            forces[fp][0] -= dir_f;   forces[tp][0] += dir_f
-        temp = K * 0.4 * (1.0 - it / 80.0)
+            f_spring = w * (d - ideal) / d * 0.35
+            forces[fp][0] += f_spring * dx
+            forces[tp][0] -= f_spring * dx
+            forces[fp][1] += f_spring * dy * 0.08   # nearly no vertical spring
+            forces[tp][1] -= f_spring * dy * 0.08
+            # Directional push: tp right of fp
+            dir_f = w * 20.0
+            forces[fp][0] -= dir_f
+            forces[tp][0] += dir_f
+        temp = K * 0.35 * (1.0 - it / 60.0)
         for i in range(page_count):
             fx, fy = forces[i]
-            fmag = max(1.0, (fx*fx + fy*fy) ** 0.5)
+            fmag = max(1.0, (fx * fx + fy * fy) ** 0.5)
             step = min(temp, fmag)
             pos[i][0] += fx / fmag * step
             pos[i][1] += fy / fmag * step
 
-    # Normalize: shift so top-left = (40, 40)
+    # Normalize: shift so top-left = (GAP_X, GAP_Y)
     if not pos:
         return {}
-    min_x = min(p[0] for p in pos.values()) - 40
-    min_y = min(p[1] for p in pos.values()) - 40
+    min_x = min(p[0] for p in pos.values()) - GAP_X
+    min_y = min(p[1] for p in pos.values()) - GAP_Y
     return {i: (round(pos[i][0] - min_x, 1), round(pos[i][1] - min_y, 1))
             for i in range(page_count)}
 
@@ -2854,7 +2858,9 @@ class PIDGraphicsView(QGraphicsView):
     markup_label_edited     = pyqtSignal(int, str)         # mu_id, new_label
     markup_duplicate_requested = pyqtSignal(int)           # mu_id
     markup_symbol_dims_changed = pyqtSignal(int, float, float, float)  # mu_id, w, h, rot_deg
-    board_layout_changed = pyqtSignal(str)  # JSON {"0": [ox, oy], ...}
+    board_layout_changed     = pyqtSignal(str)  # JSON {"0": [ox, oy], ...}
+    sheet_conn_break_requested = pyqtSignal(int)          # connection row id
+    sheet_conn_add_requested   = pyqtSignal(int, int)     # (from_page, to_page)
     zone_drawn    = pyqtSignal(object, int)                # (QRectF pdf_coords, page)
     zone_resized  = pyqtSignal(str, int, float, float, float, float)  # type_,id_,cx,cy,w,h
     cause_at_marker_requested       = pyqtSignal(int)   # cause_id
@@ -2991,9 +2997,10 @@ class PIDGraphicsView(QGraphicsView):
         self._page_offsets: dict    = {}   # page_idx → (ox: float, oy: float)
         self._page_widths_pdf: dict = {}   # page_idx → float PDF width
         self._page_heights_pdf: dict = {}  # page_idx → float PDF height
-        self._dragging_page         = None # page_idx being dragged in MODE_BOARD_LAYOUT
-        self._drag_page_start_scene = None # QPointF where drag began
-        self._drag_page_orig_offset = None # (ox, oy) before drag
+        self._dragging_page         = None  # page_idx being dragged in MODE_BOARD_LAYOUT
+        self._drag_page_start_scene = None  # QPointF where drag began
+        self._drag_page_orig_offset = None  # (ox, oy) before drag
+        self._add_link_source_page  = None  # page_idx chosen in MODE_ADD_SHEET_LINK
 
         self._placeholder = None
         self._show_placeholder("Öppna en P&ID-fil (PDF) för att börja.")
@@ -3258,6 +3265,9 @@ class PIDGraphicsView(QGraphicsView):
         elif mode == MODE_BOARD_LAYOUT:
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.SizeAllCursor)
+        elif mode == MODE_ADD_SHEET_LINK:
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self.setCursor(Qt.CursorShape.CrossCursor)
         if mode not in (MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE, MODE_SMART_POLYLINE):
             self._cancel_drawing()
         self.setFocus()
@@ -4235,6 +4245,25 @@ class PIDGraphicsView(QGraphicsView):
     def _show_context_menu(self, sp, global_pos):
         menu = QMenu(self.viewport())
 
+        # ── Check if right-click landed on a sheet-connection arc ──────────────
+        for item in self._scene.items(sp):
+            conn_id = getattr(item, '_sheet_conn_id', None)
+            if conn_id is not None:
+                act = menu.addAction("✂️ Bryt länk")
+                _cid = conn_id
+                act.triggered.connect(lambda: self.sheet_conn_break_requested.emit(_cid))
+                menu.exec(global_pos)
+                return
+
+        # ── Check if right-click landed on a page (board layout) ───────────────
+        clicked_page = self._hit_test_page(sp)
+        if self.mode == MODE_BOARD_LAYOUT:
+            act = menu.addAction("🔗 Lägg till länk till annat blad…")
+            _cp = clicked_page
+            act.triggered.connect(lambda: self._start_add_sheet_link(_cp))
+            menu.exec(global_pos)
+            return
+
         # If cursor is on an existing marker, offer "add another here" at the top
         hovered_type = hovered_id = None
         for item in self._scene.items(sp):
@@ -4272,6 +4301,12 @@ class PIDGraphicsView(QGraphicsView):
         menu.addAction("✏️ Rita Nodgräns",
                        lambda: self.context_action.emit('node', sp, self.current_page))
         menu.exec(global_pos)
+
+    def _start_add_sheet_link(self, source_page: int):
+        """Enter MODE_ADD_SHEET_LINK — next left-click on a different page creates a link."""
+        self._add_link_source_page = source_page
+        self.set_mode(MODE_ADD_SHEET_LINK)
+        self.setCursor(Qt.CursorShape.CrossCursor)
 
     def _place_label(self, text: str, x_pdf: float, y_pdf: float,
                      r: float, color: QColor, marker_type: str):
@@ -4525,7 +4560,7 @@ class PIDGraphicsView(QGraphicsView):
 
     def add_sheet_conn_arc(self, src: QPointF, dst: QPointF,
                            color_hex: str, confidence: float, label: str,
-                           bidirectional: bool = False):
+                           bidirectional: bool = False, conn_id: int = -1):
         """Draw a bezier arc between two sheet edges with arrowhead and label."""
         import math
         color = QColor(color_hex)
@@ -4547,6 +4582,9 @@ class PIDGraphicsView(QGraphicsView):
         pi = QGraphicsPathItem(path)
         pi.setPen(pen)
         pi.setZValue(Z_SHEET_CONN)
+        pi._sheet_conn_id = conn_id   # used for right-click "break link"
+        # Widen the hit area so the arc is easy to click
+        pi.setFlag(pi.GraphicsItemFlag.ItemIsSelectable, False)
         self._scene.addItem(pi)
 
         # Arrowhead at dst
@@ -4619,6 +4657,24 @@ class PIDGraphicsView(QGraphicsView):
         if _detected != self.current_page:
             self.current_page = _detected
             self.page_item = self._all_page_items.get(_detected)
+
+        # ── Add sheet link: click target page ────────────────────────────────
+        if self.mode == MODE_ADD_SHEET_LINK and event.button() == Qt.MouseButton.LeftButton:
+            sp = self.mapToScene(event.position().toPoint())
+            target = self._hit_test_page(sp)
+            src = self._add_link_source_page
+            self._add_link_source_page = None
+            self.set_mode(MODE_BOARD_LAYOUT)
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+            if src is not None and target != src and target in self._all_page_items:
+                self.sheet_conn_add_requested.emit(src, target)
+            event.accept(); return
+        if self.mode == MODE_ADD_SHEET_LINK and event.button() == Qt.MouseButton.RightButton:
+            # Cancel add-link mode
+            self._add_link_source_page = None
+            self.set_mode(MODE_BOARD_LAYOUT)
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+            event.accept(); return
 
         # ── Board layout: drag page ───────────────────────────────────────────
         if self.mode == MODE_BOARD_LAYOUT and event.button() == Qt.MouseButton.LeftButton:
@@ -4756,7 +4812,7 @@ class PIDGraphicsView(QGraphicsView):
                 self._rect_item  = None
                 event.accept(); return
 
-        if event.button() == Qt.MouseButton.RightButton and self.mode == MODE_NAV:
+        if event.button() == Qt.MouseButton.RightButton and self.mode in (MODE_NAV, MODE_BOARD_LAYOUT):
             # Start rubber-band drag; show context menu only if no drag occurs
             self._rband_start_scene = sp
             self._rband_dragging    = False
@@ -5720,6 +5776,8 @@ class PIDPanel(QWidget):
         self.viewer.markup_symbol_dims_changed.connect(self.markup_symbol_dims_changed)
         self.viewer.board_layout_changed.connect(self.board_layout_changed)
         self.viewer.board_layout_changed.connect(lambda _: self._load_overlays())
+        self.viewer.sheet_conn_break_requested.connect(self._break_sheet_link)
+        self.viewer.sheet_conn_add_requested.connect(self._add_sheet_link)
 
         # Connect existing signals for scenario auto-progression
         self.cause_created.connect(self._sc_on_cause)
@@ -6309,6 +6367,18 @@ class PIDPanel(QWidget):
         else:
             self._set_mode(MODE_NAV)
 
+    def _break_sheet_link(self, conn_id: int):
+        """Delete a sheet connection from DB and redraw arcs."""
+        if conn_id < 0:
+            return
+        self.db.delete_pid_connection(conn_id)
+        self._load_overlays()
+
+    def _add_sheet_link(self, from_page: int, to_page: int):
+        """Create a manual sheet connection in DB and redraw arcs."""
+        self.db.add_manual_pid_connection(from_page, to_page)
+        self._load_overlays()
+
     def _draw_sheet_connections(self):
         """Draw bezier arcs between sheets on the board for all known inter-sheet links."""
         import json as _json
@@ -6401,7 +6471,8 @@ class PIDPanel(QWidget):
                     label = rt_clean
 
             self.viewer.add_sheet_conn_arc(src_pt, dst_pt, color_hex,
-                                           confidence, label, bidir)
+                                           confidence, label, bidir,
+                                           conn_id=conn.get('id', -1))
 
     def _run_smart_layout(self):
         if not HAS_PYMUPDF or self.viewer.pdf_doc is None:

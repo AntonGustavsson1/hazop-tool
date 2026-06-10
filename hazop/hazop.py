@@ -1561,6 +1561,21 @@ class Database:
     def get_connectors(self):
         return self.conn.execute("SELECT * FROM off_page_connector").fetchall()
 
+    def delete_pid_connection(self, conn_id):
+        self.conn.execute("DELETE FROM pid_connection WHERE id=?", (conn_id,))
+        self.conn.commit()
+
+    def add_manual_pid_connection(self, from_page, to_page):
+        """Insert a manual (user-defined) inter-sheet link with max confidence."""
+        import datetime
+        self.conn.execute(
+            "INSERT INTO pid_connection "
+            "(from_page,to_page,from_connector,to_connector,media_type,weight,"
+            "confidence,is_bidirectional,is_ghost,ghost_ref,warning) "
+            "VALUES (?,?,NULL,NULL,'unknown',1.0,1.0,1,0,NULL,'manual')",
+            (from_page, to_page))
+        self.conn.commit()
+
     # ── PID revisions & sheets ────────────────────────────────────────────────
     def add_revision(self, revision, notes, pdf_path, created_at=''):
         if not created_at:
