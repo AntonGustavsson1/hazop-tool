@@ -3155,6 +3155,58 @@ def _propose_layout(connections, active_pages, page_widths_pdf, page_heights_pdf
             pos[node] = [iso_x, y]
             y += hs[node] + GAP_Y
 
+    # ── Strength-aware horizontal compaction ──────────────────────────────────
+    # Build page → column mapping
+    page_to_col = {pn: lv for lv, pages in level_groups.items() for pn in pages}
+
+    # Max connection weight between any page pair
+    conn_w: dict = {}
+    for c in connections:
+        fp = c.get('from_page'); tp = c.get('to_page')
+        if fp in page_set and tp in page_set and fp != tp:
+            w = float(c.get('weight', 0.5) or 0.5)
+            conn_w[(fp, tp)] = max(conn_w.get((fp, tp), 0.0), w)
+            conn_w[(tp, fp)] = conn_w[(fp, tp)]
+
+    # Column-pair strength: max weight of any connection between the two columns
+    col_str: dict = {}
+    for (pa, pb), w in conn_w.items():
+        ca = page_to_col.get(pa); cb = page_to_col.get(pb)
+        if ca is not None and cb is not None and ca != cb:
+            k = (ca, cb)
+            col_str[k] = max(col_str.get(k, 0.0), w)
+            col_str[(cb, ca)] = col_str[k]
+
+    GAP_TIGHT = 80      # gap when columns are strongly connected
+    # GAP_X (700) is used for unconnected columns
+
+    def _gap(col_a, col_b):
+        w = col_str.get((col_a, col_b), 0.0)
+        if w <= 0:
+            return GAP_X
+        # Stronger connection → smaller gap (down to GAP_TIGHT)
+        return max(GAP_TIGHT, GAP_X / (1.0 + w * 3.0))
+
+    for _ in range(8):
+        moved = False
+        for idx, lv in enumerate(sorted_levels[1:], 1):
+            earlier_pages = [j for prev in sorted_levels[:idx]
+                             for j in level_groups[prev]]
+            min_x = GAP_TIGHT
+            for i in level_groups[lv]:
+                yi, hi = pos[i][1], hs[i]
+                for j in earlier_pages:
+                    xj, yj, wj, hj = pos[j][0], pos[j][1], ws[j], hs[j]
+                    if yj < yi + hi + GAP_Y and yj + hj + GAP_Y > yi:
+                        gap = _gap(lv, page_to_col[j])
+                        min_x = max(min_x, xj + wj + gap)
+            for i in level_groups[lv]:
+                if abs(pos[i][0] - min_x) > 0.5:
+                    moved = True
+                pos[i][0] = min_x
+        if not moved:
+            break
+
     return {i: (round(pos[i][0], 1), round(pos[i][1], 1)) for i in active_pages}
 
 
