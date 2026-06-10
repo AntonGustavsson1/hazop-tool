@@ -6859,11 +6859,12 @@ class PIDPanel(QWidget):
         connections = self.db.get_pid_connections() or []
         conn_style: dict = {}   # (min_pg, max_pg) → best connection row
         for row in connections:
-            fp, tp = row.get('from_page'), row.get('to_page')
+            rd = dict(row)
+            fp, tp = rd.get('from_page'), rd.get('to_page')
             if fp is not None and tp is not None:
                 k = (min(fp, tp), max(fp, tp))
                 if k not in conn_style:
-                    conn_style[k] = dict(row)
+                    conn_style[k] = rd
 
         rs = self.viewer.render_scale
         drawn_ids:    set = set()   # connector DB-ids already processed
