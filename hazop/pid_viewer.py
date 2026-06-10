@@ -2965,7 +2965,7 @@ class PIDGraphicsView(QGraphicsView):
                 pass
             self._placeholder = None
 
-    def load_pdf(self, path, page=0, layout_offsets=None):
+    def load_pdf(self, path, page=0, layout_offsets=None, active_pages=None):
         if not HAS_PYMUPDF:
             self._show_placeholder("Installera PyMuPDF:\n  pip install PyMuPDF")
             return False
@@ -2983,7 +2983,7 @@ class PIDGraphicsView(QGraphicsView):
         self._cache_order.clear()
         self._cancel_prefetch()
         self.current_page = max(0, min(page, self.pdf_doc.page_count - 1))
-        self._render_all_pages(layout_offsets=layout_offsets)
+        self._render_all_pages(layout_offsets=layout_offsets, active_pages=active_pages)
         return True
 
     def _render_page(self):
@@ -3023,8 +3023,8 @@ class PIDGraphicsView(QGraphicsView):
 
         self._prefetch_adjacent()
 
-    def _render_all_pages(self, layout_offsets=None):
-        """Render all PDF pages as scene items with left-to-right default layout."""
+    def _render_all_pages(self, layout_offsets=None, active_pages=None):
+        """Render PDF pages (only active_pages if given) as tiled scene items."""
         if not HAS_PYMUPDF or self.pdf_doc is None:
             return
         self._clear_placeholder()
@@ -3038,8 +3038,11 @@ class PIDGraphicsView(QGraphicsView):
         self.render_scale = self._RASTER_SCALE
         GAP = 30.0  # scene pixels between pages
 
+        pages_to_render = (sorted(active_pages)
+                           if active_pages is not None
+                           else range(self.pdf_doc.page_count))
         x_cursor = 0.0
-        for pn in range(self.pdf_doc.page_count):
+        for pn in pages_to_render:
             fitz_page = self.pdf_doc.load_page(pn)
             rect = fitz_page.rect
             pw_pdf = float(rect.width)
@@ -6579,10 +6582,10 @@ class PIDPanel(QWidget):
         if self.viewer.pdf_doc is None:
             return
         orig_page   = self.viewer.current_page
-        page_count  = self.viewer.pdf_doc.page_count
+        active_pages = sorted(self.viewer._all_page_items.keys())
         all_nodes   = list(self.db.nodes())
 
-        for page in range(page_count):
+        for page in active_pages:
             self.viewer.current_page = page  # ensures pdf_to_scene uses this page's offset
 
             for node in all_nodes:
@@ -6654,7 +6657,7 @@ class PIDPanel(QWidget):
         all_cause_pos = {}
         all_cons_pos  = {}
         all_sg_pos    = {}
-        for page in range(page_count):
+        for page in active_pages:
             for m in self.db.cause_markers_for_page(page):
                 all_cause_pos.setdefault(m['cause_id'], []).append(
                     self.viewer.pdf_to_scene(m['x'], m['y'], page=page))
@@ -6730,7 +6733,7 @@ class PIDPanel(QWidget):
         if self.viewer.pdf_doc is None:
             return
         orig_page = self.viewer.current_page
-        for page in range(self.viewer.pdf_doc.page_count):
+        for page in sorted(self.viewer._all_page_items.keys()):
             self.viewer.current_page = page
             if hasattr(self.db, 'node_markups_for_page'):
                 for mu in self.db.node_markups_for_page(page):
@@ -6789,7 +6792,7 @@ class PIDPanel(QWidget):
         if self.viewer.pdf_doc is None:
             return
         orig_page = self.viewer.current_page
-        for page in range(self.viewer.pdf_doc.page_count):
+        for page in sorted(self.viewer._all_page_items.keys()):
             self.viewer.current_page = page
             if hasattr(self.db, 'node_red_markups_for_page'):
                 for mu in self.db.node_red_markups_for_page(page):
@@ -7380,7 +7383,12 @@ class PIDPanel(QWidget):
                         layout_offsets = {int(k): v for k, v in data.items()}
                     except Exception:
                         layout_offsets = None
-            if self.viewer.load_pdf(path, page=0, layout_offsets=layout_offsets):
+            # Only render sheets that exist in pid_sheets; fall back to all pages
+            sheets = self.db.get_sheets()
+            active_pages = ([int(s['physical_page']) for s in sheets]
+                            if sheets else None)
+            if self.viewer.load_pdf(path, page=0, layout_offsets=layout_offsets,
+                                    active_pages=active_pages):
                 self.db.ensure_sheets_initialized(self.viewer.page_count())
                 self._rebuild_sheet_map()
                 self._current_display_page = 0

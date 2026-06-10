@@ -12247,15 +12247,8 @@ class MainWindow(QMainWindow):
         self.scenario_panel.clear()
 
     def _on_sheets_changed(self):
-        """Rebuild PID viewer sheet map and reload current page after sheets are deleted."""
-        pp = self.pid_panel
-        pp._rebuild_sheet_map()
-        total = len(pp._sheet_map)
-        if total == 0:
-            pp._update_page_label()
-            return
-        new_page = min(pp._current_display_page, total - 1)
-        pp._goto_page(new_page)
+        """Reload the study board after sheets are added or deleted."""
+        self.pid_panel.try_reload_pdf()
 
     def _on_pid_analysis_done(self):
         """Switch to Settings → Identifierade objekt after P&ID analysis."""
