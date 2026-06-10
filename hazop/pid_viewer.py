@@ -6576,15 +6576,9 @@ class PIDPanel(QWidget):
         has_existing = working.exists()
         created_at   = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
 
-        # Restore saved smart-layout positions so pages land in the right place
-        # immediately after render instead of using the sequential 100 px fallback.
-        _saved_layout = None
-        try:
-            raw = self.db.get_pid_config_value('board_layout')
-            if raw:
-                _saved_layout = {int(k): v for k, v in json.loads(raw).items()}
-        except Exception:
-            pass
+        # Import always starts with a fresh (sequential) layout so that
+        # smart layout can re-propose unbiased groupings afterwards.
+        # Positions are only restored from DB on project reload (try_reload_pdf).
 
         if has_existing:
             dlg = PIDImportDialog(has_existing=True, parent=self)
@@ -6624,7 +6618,7 @@ class PIDPanel(QWidget):
                 QApplication.processEvents()
                 if not self.viewer.load_pdf(
                         str(working), page=0,
-                        layout_offsets=_saved_layout,
+                        layout_offsets=None,
                         progress_cb=lambda cur, tot: prog.setValue(cur)):
                     prog.close()
                     QMessageBox.warning(self, "Fel", "Kunde inte öppna PDF-filen.")
@@ -6674,7 +6668,7 @@ class PIDPanel(QWidget):
                 keep_phys = self.viewer.current_page
                 if not self.viewer.load_pdf(
                         str(working), page=keep_phys,
-                        layout_offsets=_saved_layout,
+                        layout_offsets=None,
                         progress_cb=lambda cur, tot: prog.setValue(cur)):
                     prog.close()
                     QMessageBox.warning(self, "Fel", "Kunde inte öppna sammanfogad PDF.")
@@ -6718,7 +6712,7 @@ class PIDPanel(QWidget):
             QApplication.processEvents()
             if not self.viewer.load_pdf(
                     str(working), page=0,
-                    layout_offsets=_saved_layout,
+                    layout_offsets=None,
                     progress_cb=lambda cur, tot: prog.setValue(cur)):
                 prog.close()
                 QMessageBox.warning(self, "Fel", "Kunde inte öppna PDF-filen.")
