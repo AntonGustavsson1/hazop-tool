@@ -2461,6 +2461,7 @@ class PIDGraphicsView(QGraphicsView):
         self._placeholder = None
         self._show_placeholder("Öppna en P&ID-fil (PDF) för att börja.")
         self.set_mode(MODE_NAV)
+        self.setBackgroundBrush(QBrush(QColor(160, 160, 160)))
 
     def _show_placeholder(self, text):
         self._clear_placeholder()
@@ -4018,6 +4019,10 @@ class PIDGraphicsView(QGraphicsView):
                 self._drag_page_start_scene = sp
                 self.current_page           = page
                 self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                # Hide connection lines during drag (re-drawn on release)
+                for _ci in list(self._scene.items()):
+                    if _ci.zValue() == Z_CONNECT:
+                        _ci.setVisible(False)
                 event.accept(); return
             super().mousePressEvent(event); return
 
@@ -5094,6 +5099,7 @@ class PIDPanel(QWidget):
         self.viewer.markup_duplicate_requested.connect(self.markup_duplicate_requested)
         self.viewer.markup_symbol_dims_changed.connect(self.markup_symbol_dims_changed)
         self.viewer.board_layout_changed.connect(self.board_layout_changed)
+        self.viewer.board_layout_changed.connect(lambda _: self._load_overlays())
 
         # Connect existing signals for scenario auto-progression
         self.cause_created.connect(self._sc_on_cause)
@@ -6068,32 +6074,34 @@ class PIDPanel(QWidget):
                     md['safeguard_id'], md['x'], md['y'], md.get('tag', ''), desc,
                     rect_w=md.get('rect_w'), rect_h=md.get('rect_h'))
 
-            cause_pos = {}
+        # ── Draw ALL connections after all pages, so cross-page lines work ──────
+        all_cause_pos = {}
+        all_cons_pos  = {}
+        all_sg_pos    = {}
+        for page in range(page_count):
             for m in self.db.cause_markers_for_page(page):
-                cause_pos.setdefault(m['cause_id'], []).append(
-                    self.viewer.pdf_to_scene(m['x'], m['y']))
-            cons_pos = {}
+                all_cause_pos.setdefault(m['cause_id'], []).append(
+                    self.viewer.pdf_to_scene(m['x'], m['y'], page=page))
             for m in self.db.consequence_markers_for_page(page):
-                cons_pos.setdefault(m['consequence_id'], []).append(
-                    self.viewer.pdf_to_scene(m['x'], m['y']))
-            sg_pos = {}
+                all_cons_pos.setdefault(m['consequence_id'], []).append(
+                    self.viewer.pdf_to_scene(m['x'], m['y'], page=page))
             for m in self.db.safeguard_markers_for_page(page):
-                sg_pos.setdefault(m['safeguard_id'], []).append(
-                    self.viewer.pdf_to_scene(m['x'], m['y']))
+                all_sg_pos.setdefault(m['safeguard_id'], []).append(
+                    self.viewer.pdf_to_scene(m['x'], m['y'], page=page))
 
-            for cid, cpos_list in cons_pos.items():
-                c = self.db.get_consequence(cid)
-                if c and c['cause_id'] in cause_pos:
-                    for cpos in cpos_list:
-                        for capos in cause_pos[c['cause_id']]:
-                            self.viewer.add_connection_line(capos, cpos, '#c0392b')
+        for cid, cpos_list in all_cons_pos.items():
+            c = self.db.get_consequence(cid)
+            if c and c['cause_id'] in all_cause_pos:
+                for cpos in cpos_list:
+                    for capos in all_cause_pos[c['cause_id']]:
+                        self.viewer.add_connection_line(capos, cpos, '#c0392b')
 
-            for sid, spos_list in sg_pos.items():
-                s = self.db.get_safeguard(sid)
-                if s and s['consequence_id'] in cons_pos:
-                    for spos in spos_list:
-                        for kpos in cons_pos[s['consequence_id']]:
-                            self.viewer.add_connection_line(kpos, spos, '#27ae60', dashed=True)
+        for sid, spos_list in all_sg_pos.items():
+            s = self.db.get_safeguard(sid)
+            if s and s['consequence_id'] in all_cons_pos:
+                for spos in spos_list:
+                    for kpos in all_cons_pos[s['consequence_id']]:
+                        self.viewer.add_connection_line(kpos, spos, '#27ae60', dashed=True)
 
         self.viewer.current_page = orig_page
         self._draw_tag_highlights()
