@@ -381,6 +381,7 @@ MODE_MARKUP_COMMENT  = 10  # click to place a comment box markup
 MODE_MARKUP_SELECT   = 11  # click existing markup items to select/edit
 MODE_SMART_POLYLINE  = 12  # click start+end, algorithm traces pipe path
 MODE_RED_MARKUP_SYMBOL = 13  # click to place a red markup P&ID symbol
+MODE_BOARD_LAYOUT    = 14  # drag pages to reposition on study board
 
 _SG_TYPES    = ['BPCS', 'SIS', 'Mekanisk', 'Administrativ', 'Övrigt']
 _RRF_VALUES  = [1, 10, 100, 1000, 10000]
@@ -2316,6 +2317,7 @@ class PIDGraphicsView(QGraphicsView):
     markup_label_edited     = pyqtSignal(int, str)         # mu_id, new_label
     markup_duplicate_requested = pyqtSignal(int)           # mu_id
     markup_symbol_dims_changed = pyqtSignal(int, float, float, float)  # mu_id, w, h, rot_deg
+    board_layout_changed = pyqtSignal(str)  # JSON {"0": [ox, oy], ...}
     zone_drawn    = pyqtSignal(object, int)                # (QRectF pdf_coords, page)
     zone_resized  = pyqtSignal(str, int, float, float, float, float)  # type_,id_,cx,cy,w,h
     cause_at_marker_requested       = pyqtSignal(int)   # cause_id
@@ -2447,6 +2449,15 @@ class PIDGraphicsView(QGraphicsView):
         self._smart_tracer      = None   # SmartPipeTracer, cached per page
         self._smart_tracer_page = -1
 
+        # Study board: multi-page layout
+        self._all_page_items: dict  = {}   # page_idx → QGraphicsPixmapItem
+        self._page_offsets: dict    = {}   # page_idx → (ox: float, oy: float)
+        self._page_widths_pdf: dict = {}   # page_idx → float PDF width
+        self._page_heights_pdf: dict = {}  # page_idx → float PDF height
+        self._dragging_page         = None # page_idx being dragged in MODE_BOARD_LAYOUT
+        self._drag_page_start_scene = None # QPointF where drag began
+        self._drag_page_orig_offset = None # (ox, oy) before drag
+
         self._placeholder = None
         self._show_placeholder("Öppna en P&ID-fil (PDF) för att börja.")
         self.set_mode(MODE_NAV)
@@ -2469,7 +2480,7 @@ class PIDGraphicsView(QGraphicsView):
                 pass
             self._placeholder = None
 
-    def load_pdf(self, path, page=0):
+    def load_pdf(self, path, page=0, layout_offsets=None):
         if not HAS_PYMUPDF:
             self._show_placeholder("Installera PyMuPDF:\n  pip install PyMuPDF")
             return False
@@ -2487,7 +2498,7 @@ class PIDGraphicsView(QGraphicsView):
         self._cache_order.clear()
         self._cancel_prefetch()
         self.current_page = max(0, min(page, self.pdf_doc.page_count - 1))
-        self._render_page()
+        self._render_all_pages(layout_offsets=layout_offsets)
         return True
 
     def _render_page(self):
@@ -2526,6 +2537,74 @@ class PIDGraphicsView(QGraphicsView):
         self.render_scale = self._RASTER_SCALE
 
         self._prefetch_adjacent()
+
+    def _render_all_pages(self, layout_offsets=None):
+        """Render all PDF pages as scene items with left-to-right default layout."""
+        if not HAS_PYMUPDF or self.pdf_doc is None:
+            return
+        self._clear_placeholder()
+        for item in list(self._all_page_items.values()):
+            try: self._scene.removeItem(item)
+            except Exception: pass
+        self._all_page_items.clear()
+        self._page_offsets.clear()
+        self._page_widths_pdf.clear()
+        self._page_heights_pdf.clear()
+        self.render_scale = self._RASTER_SCALE
+        GAP = 30.0  # scene pixels between pages
+
+        x_cursor = 0.0
+        for pn in range(self.pdf_doc.page_count):
+            fitz_page = self.pdf_doc.load_page(pn)
+            rect = fitz_page.rect
+            pw_pdf = float(rect.width)
+            ph_pdf = float(rect.height)
+            pw_scene = pw_pdf * self.render_scale
+            self._page_widths_pdf[pn] = pw_pdf
+            self._page_heights_pdf[pn] = ph_pdf
+
+            if pn in self._page_cache:
+                pixmap = self._page_cache[pn]
+                self._update_lru(pn)
+            else:
+                mat = fitz.Matrix(self._RASTER_SCALE, self._RASTER_SCALE)
+                pix = fitz_page.get_pixmap(matrix=mat, alpha=False)
+                img = QImage(pix.samples, pix.width, pix.height,
+                             pix.stride, QImage.Format.Format_RGB888)
+                pixmap = QPixmap.fromImage(img.copy())
+                self._add_to_cache(pn, pixmap)
+
+            if layout_offsets and pn in layout_offsets:
+                ox, oy = float(layout_offsets[pn][0]), float(layout_offsets[pn][1])
+            else:
+                ox = x_cursor
+                oy = 0.0
+            x_cursor = ox + pw_scene + GAP
+            self._page_offsets[pn] = (ox, oy)
+
+            page_item = QGraphicsPixmapItem(pixmap)
+            page_item.setZValue(Z_PAGE)
+            page_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
+            page_item.setPos(ox, oy)
+            self._scene.addItem(page_item)
+            self._all_page_items[pn] = page_item
+
+        self.page_item = self._all_page_items.get(self.current_page)
+        self.page_rect_width  = self._page_widths_pdf.get(self.current_page, 0.0)
+        self.page_rect_height = self._page_heights_pdf.get(self.current_page, 0.0)
+        self._update_board_scene_rect()
+
+    def _update_board_scene_rect(self):
+        if not self._page_offsets:
+            return
+        rs = self.render_scale
+        min_x = min(ox for ox, oy in self._page_offsets.values()) - 40
+        min_y = min(oy for ox, oy in self._page_offsets.values()) - 40
+        max_x = max(ox + self._page_widths_pdf[p]  * rs
+                    for p, (ox, oy) in self._page_offsets.items()) + 40
+        max_y = max(oy + self._page_heights_pdf[p] * rs
+                    for p, (ox, oy) in self._page_offsets.items()) + 40
+        self._scene.setSceneRect(QRectF(min_x, min_y, max_x - min_x, max_y - min_y))
 
     def _cancel_prefetch(self):
         if self._prefetch_thread and self._prefetch_thread.isRunning():
@@ -2576,19 +2655,40 @@ class PIDGraphicsView(QGraphicsView):
         if self.pdf_doc is None:
             return
         n = max(0, min(n, self.pdf_doc.page_count - 1))
-        if n == self.current_page and self.page_item is not None:
-            return
         self.current_page = n
+        self.page_item = self._all_page_items.get(n)
+        self.page_rect_width  = self._page_widths_pdf.get(n, 0.0)
+        self.page_rect_height = self._page_heights_pdf.get(n, 0.0)
         self._cancel_drawing()
-        self._render_page()
+        if n in self._page_offsets:
+            ox, oy = self._page_offsets[n]
+            rs = self.render_scale
+            cx = ox + self._page_widths_pdf.get(n, 0.0) * rs / 2
+            cy = oy + self._page_heights_pdf.get(n, 0.0) * rs / 2
+            self.centerOn(QPointF(cx, cy))
+        else:
+            self._render_all_pages()
 
     def scene_to_pdf(self, point):
-        # With SVG rendering: scene coords == PDF coords (render_scale=1.0)
-        # With raster fallback: apply the raster scale
-        return (point.x() / self.render_scale, point.y() / self.render_scale)
+        p = self._hit_test_page(point)
+        ox, oy = self._page_offsets.get(p, (0.0, 0.0))
+        rs = self.render_scale
+        return ((point.x() - ox) / rs, (point.y() - oy) / rs)
 
-    def pdf_to_scene(self, x, y):
-        return QPointF(x * self.render_scale, y * self.render_scale)
+    def pdf_to_scene(self, x, y, page=None):
+        p = page if page is not None else self.current_page
+        ox, oy = self._page_offsets.get(p, (0.0, 0.0))
+        return QPointF(x * self.render_scale + ox, y * self.render_scale + oy)
+
+    def _hit_test_page(self, scene_pt):
+        """Return the page index whose rendered area contains scene_pt, or current_page."""
+        rs = self.render_scale
+        for pn, (ox, oy) in self._page_offsets.items():
+            pw = self._page_widths_pdf.get(pn, 0) * rs
+            ph = self._page_heights_pdf.get(pn, 0) * rs
+            if ox <= scene_pt.x() < ox + pw and oy <= scene_pt.y() < oy + ph:
+                return pn
+        return self.current_page
 
     def set_mode(self, mode):
         self.mode = mode
@@ -2614,6 +2714,9 @@ class PIDGraphicsView(QGraphicsView):
         elif mode == MODE_RED_MARKUP_SYMBOL:
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
+        elif mode == MODE_BOARD_LAYOUT:
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
         if mode not in (MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE, MODE_SMART_POLYLINE):
             self._cancel_drawing()
         self.setFocus()
@@ -3575,10 +3678,11 @@ class PIDGraphicsView(QGraphicsView):
         if key and key in self._zone_rects:
             scene_rect = self._zone_rects[key]['rect_item'].rect()
             rs = self.render_scale
-            cx = scene_rect.center().x() / rs
-            cy = scene_rect.center().y() / rs
-            w  = scene_rect.width()       / rs
-            h  = scene_rect.height()      / rs
+            ox, oy = self._page_offsets.get(self.current_page, (0.0, 0.0))
+            cx = (scene_rect.center().x() - ox) / rs
+            cy = (scene_rect.center().y() - oy) / rs
+            w  = scene_rect.width()              / rs
+            h  = scene_rect.height()             / rs
             type_, id_ = key
             self.zone_resized.emit(type_, id_, cx, cy, w, h)
         self._zone_resize_key   = None
@@ -3879,8 +3983,9 @@ class PIDGraphicsView(QGraphicsView):
         line.setZValue(Z_CONNECT)
 
     def clear_overlays(self):
+        _keep = set(self._all_page_items.values()) | {self._placeholder}
         for item in list(self._scene.items()):
-            if item is self.page_item or item is self._placeholder:
+            if item in _keep:
                 continue
             if item.zValue() >= Z_CONNECT:
                 try: self._scene.removeItem(item)
@@ -3896,6 +4001,26 @@ class PIDGraphicsView(QGraphicsView):
         self._label_slots.clear()
 
     def mousePressEvent(self, event):
+        # Update current_page to whichever page was clicked
+        _sp = self.mapToScene(event.position().toPoint())
+        _detected = self._hit_test_page(_sp)
+        if _detected != self.current_page:
+            self.current_page = _detected
+            self.page_item = self._all_page_items.get(_detected)
+
+        # ── Board layout: drag page ───────────────────────────────────────────
+        if self.mode == MODE_BOARD_LAYOUT and event.button() == Qt.MouseButton.LeftButton:
+            sp = self.mapToScene(event.position().toPoint())
+            page = self._hit_test_page(sp)
+            if page in self._all_page_items:
+                self._dragging_page        = page
+                self._drag_page_orig_offset = self._page_offsets.get(page, (0.0, 0.0))
+                self._drag_page_start_scene = sp
+                self.current_page           = page
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                event.accept(); return
+            super().mousePressEvent(event); return
+
         # ── Zone corner handle — intercept LEFT click in any mode ─────────────
         if event.button() == Qt.MouseButton.LeftButton:
             hit = self._zone_handle_hit(event.position().toPoint())
@@ -4044,6 +4169,16 @@ class PIDGraphicsView(QGraphicsView):
         super().mouseDoubleClickEvent(event)
 
     def mouseReleaseEvent(self, event):
+        # ── Board layout page drag release ────────────────────────────────────
+        if (self.mode == MODE_BOARD_LAYOUT and self._dragging_page is not None and
+                event.button() == Qt.MouseButton.LeftButton):
+            self._dragging_page = None
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+            self._update_board_scene_rect()
+            layout = {str(p): [off[0], off[1]] for p, off in self._page_offsets.items()}
+            self.board_layout_changed.emit(json.dumps(layout))
+            event.accept(); return
+
         # ── Zone corner resize end ────────────────────────────────────────────
         if self._zone_resize_key is not None and event.button() == Qt.MouseButton.LeftButton:
             self._finish_zone_resize()
@@ -4059,7 +4194,8 @@ class PIDGraphicsView(QGraphicsView):
                     self._rband_preview_item = None
                 rect = QRectF(self._rband_start_scene, sp).normalized()
                 rs = self.render_scale
-                pdf_rect = QRectF(rect.x() / rs, rect.y() / rs,
+                ox, oy = self._page_offsets.get(self.current_page, (0.0, 0.0))
+                pdf_rect = QRectF((rect.x() - ox) / rs, (rect.y() - oy) / rs,
                                    rect.width() / rs, rect.height() / rs)
                 self._rband_start_scene = None
                 self._rband_dragging    = False
@@ -4090,7 +4226,8 @@ class PIDGraphicsView(QGraphicsView):
 
             # Convert to PDF coordinates
             rs = self.render_scale
-            pdf_rect = QRectF(rect.x() / rs, rect.y() / rs,
+            ox, oy = self._page_offsets.get(self.current_page, (0.0, 0.0))
+            pdf_rect = QRectF((rect.x() - ox) / rs, (rect.y() - oy) / rs,
                                rect.width() / rs, rect.height() / rs)
 
             # Extract tag text from the selected rectangle
@@ -4148,6 +4285,18 @@ class PIDGraphicsView(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def mouseMoveEvent(self, event):
+        # ── Board layout page drag ────────────────────────────────────────────
+        if self.mode == MODE_BOARD_LAYOUT and self._dragging_page is not None:
+            sp = self.mapToScene(event.position().toPoint())
+            dx = sp.x() - self._drag_page_start_scene.x()
+            dy = sp.y() - self._drag_page_start_scene.y()
+            orig_ox, orig_oy = self._drag_page_orig_offset
+            new_ox = orig_ox + dx
+            new_oy = orig_oy + dy
+            self._page_offsets[self._dragging_page] = (new_ox, new_oy)
+            self._all_page_items[self._dragging_page].setPos(new_ox, new_oy)
+            event.accept(); return
+
         # ── Zone corner resize drag ───────────────────────────────────────────
         if self._zone_resize_key is not None:
             self._do_zone_resize(self.mapToScene(event.position().toPoint()))
@@ -4704,6 +4853,7 @@ class PIDPanel(QWidget):
     red_markup_item_selected = pyqtSignal(int)                        # mu_id
     red_markup_moved         = pyqtSignal(int, list)                  # mu_id, new PDF pts
     markup_symbol_dims_changed = pyqtSignal(int, float, float, float)  # mu_id, w, h, rot_deg
+    board_layout_changed = pyqtSignal(str)
 
     def __init__(self, db, parent=None):
         super().__init__(parent)
@@ -4827,6 +4977,12 @@ class PIDPanel(QWidget):
 
         self.style_widget.setVisible(False)
         bar.addWidget(self.style_widget)
+        bar.addWidget(_vline())
+        self.layout_btn = QPushButton("📐 Layout")
+        self.layout_btn.setCheckable(True)
+        self.layout_btn.setToolTip("Dra ritningsbladen för att ordna om dem")
+        self.layout_btn.toggled.connect(self._on_layout_mode_toggled)
+        bar.addWidget(self.layout_btn)
         bar.addStretch()
         layout.addLayout(bar)
 
@@ -4937,6 +5093,7 @@ class PIDPanel(QWidget):
         self.viewer.markup_label_edited.connect(self.markup_label_edited)
         self.viewer.markup_duplicate_requested.connect(self.markup_duplicate_requested)
         self.viewer.markup_symbol_dims_changed.connect(self.markup_symbol_dims_changed)
+        self.viewer.board_layout_changed.connect(self.board_layout_changed)
 
         # Connect existing signals for scenario auto-progression
         self.cause_created.connect(self._sc_on_cause)
@@ -5398,7 +5555,6 @@ class PIDPanel(QWidget):
         self._current_display_page = display_n
         self.viewer.goto_page(physical)
         self._update_page_label()
-        self._load_overlays()
 
     def _on_page_spin_changed(self):
         self._goto_page(self.page_spin.value() - 1)
@@ -5428,7 +5584,7 @@ class PIDPanel(QWidget):
             rev = {phys: disp for disp, phys in self._sheet_map.items()}
             display_n = rev.get(physical_page, physical_page)
         self._goto_page(display_n)
-        scene_pt = self.viewer.pdf_to_scene(x_pdf, y_pdf)
+        scene_pt = self.viewer.pdf_to_scene(x_pdf, y_pdf, page=physical_page)
         self.viewer.resetTransform()
         self.viewer.scale(2.5, 2.5)
         self.viewer.centerOn(scene_pt)
@@ -5490,6 +5646,12 @@ class PIDPanel(QWidget):
             btn.setChecked(m == mode)
         self.viewer.set_mode(mode)
         self.style_widget.setVisible(mode == MODE_NODE)
+
+    def _on_layout_mode_toggled(self, checked):
+        if checked:
+            self._set_mode(MODE_BOARD_LAYOUT)
+        else:
+            self._set_mode(MODE_NAV)
 
     def _update_pen(self):
         self.viewer.set_pen_style(
@@ -5832,109 +5994,108 @@ class PIDPanel(QWidget):
         self.viewer.clear_overlays()
         self.viewer.clear_markup_overlays()
         self.viewer.clear_red_markup_overlays()
-        page = self.viewer.current_page
+        if self.viewer.pdf_doc is None:
+            return
+        orig_page   = self.viewer.current_page
+        page_count  = self.viewer.pdf_doc.page_count
+        all_nodes   = list(self.db.nodes())
 
-        for node in self.db.nodes():
-            nd       = dict(node)
-            raw_pts  = nd.get('markup_points', '') or ''
-            nd_page  = int(nd.get('pid_page', 0) or 0)
-            if not raw_pts or nd_page != page:
-                continue
-            try:
-                points = [(float(p[0]), float(p[1])) for p in json.loads(raw_pts)]
-                style  = json.loads(nd.get('markup_style', '') or '{}')
-            except Exception:
-                continue
-            if points:
-                self.viewer.add_node_overlay(nd['id'], points, style, nd.get('name', ''))
+        for page in range(page_count):
+            self.viewer.current_page = page  # ensures pdf_to_scene uses this page's offset
 
-        # New-style node markup items
-        if hasattr(self.db, 'node_markups_for_page'):
-            for mu in self.db.node_markups_for_page(page):
-                m = dict(mu)
+            for node in all_nodes:
+                nd      = dict(node)
+                raw_pts = nd.get('markup_points', '') or ''
+                nd_page = int(nd.get('pid_page', 0) or 0)
+                if not raw_pts or nd_page != page:
+                    continue
                 try:
-                    pts = json.loads(m.get('points', '[]') or '[]')
+                    points = [(float(p[0]), float(p[1])) for p in json.loads(raw_pts)]
+                    style  = json.loads(nd.get('markup_style', '') or '{}')
                 except Exception:
-                    pts = []
-                self.viewer.add_markup_overlay(
-                    m['id'], m.get('type', 'polygon'), pts,
-                    m.get('label', ''), m.get('color', '#1565C0'),
-                    float(m.get('opacity', 0.45)), int(m.get('line_width', 2)),
-                    bool(m.get('visible', 1))
-                )
+                    continue
+                if points:
+                    self.viewer.add_node_overlay(nd['id'], points, style, nd.get('name', ''))
 
-        # Red markup items
-        if hasattr(self.db, 'node_red_markups_for_page'):
-            for mu in self.db.node_red_markups_for_page(page):
-                m = dict(mu)
-                try:
-                    pts = json.loads(m.get('points', '[]') or '[]')
-                except Exception:
-                    pts = []
-                self.viewer.add_red_markup_overlay(
-                    m['id'], m.get('type', 'polygon'), pts,
-                    m.get('label', ''), m.get('color', '#CC0000'),
-                    float(m.get('opacity', 1.0)), int(m.get('line_width', 4)),
-                    bool(m.get('visible', 1)), int(m.get('font_size', 12)),
-                    float(m.get('symbol_w', 40)), float(m.get('symbol_h', 40)),
-                    float(m.get('symbol_rot', 0))
-                )
+            if hasattr(self.db, 'node_markups_for_page'):
+                for mu in self.db.node_markups_for_page(page):
+                    m = dict(mu)
+                    try: pts = json.loads(m.get('points', '[]') or '[]')
+                    except Exception: pts = []
+                    self.viewer.add_markup_overlay(
+                        m['id'], m.get('type', 'polygon'), pts,
+                        m.get('label', ''), m.get('color', '#1565C0'),
+                        float(m.get('opacity', 0.45)), int(m.get('line_width', 2)),
+                        bool(m.get('visible', 1)))
 
-        for m in self.db.cause_markers_for_page(page):
-            md    = dict(m)
-            cause = self.db.get_cause(md['cause_id'])
-            label = dict(cause).get('description', '') if cause else ''
-            self.viewer.add_cause_marker(
-                md['cause_id'], md['x'], md['y'],
-                md.get('component_type', ''), label, md.get('component_tag', ''),
-                rect_w=md.get('rect_w'), rect_h=md.get('rect_h'))
+            if hasattr(self.db, 'node_red_markups_for_page'):
+                for mu in self.db.node_red_markups_for_page(page):
+                    m = dict(mu)
+                    try: pts = json.loads(m.get('points', '[]') or '[]')
+                    except Exception: pts = []
+                    self.viewer.add_red_markup_overlay(
+                        m['id'], m.get('type', 'polygon'), pts,
+                        m.get('label', ''), m.get('color', '#CC0000'),
+                        float(m.get('opacity', 1.0)), int(m.get('line_width', 4)),
+                        bool(m.get('visible', 1)), int(m.get('font_size', 12)),
+                        float(m.get('symbol_w', 40)), float(m.get('symbol_h', 40)),
+                        float(m.get('symbol_rot', 0)))
 
-        for m in self.db.consequence_markers_for_page(page):
-            md   = dict(m)
-            cons = self.db.get_consequence(md['consequence_id'])
-            desc = dict(cons).get('description', '') if cons else md.get('target_name', '')
-            self.viewer.add_consequence_marker(md['consequence_id'], md['x'], md['y'], desc,
-                                               rect_w=md.get('rect_w'), rect_h=md.get('rect_h'))
+            for m in self.db.cause_markers_for_page(page):
+                md    = dict(m)
+                cause = self.db.get_cause(md['cause_id'])
+                label = dict(cause).get('description', '') if cause else ''
+                self.viewer.add_cause_marker(
+                    md['cause_id'], md['x'], md['y'],
+                    md.get('component_type', ''), label, md.get('component_tag', ''),
+                    rect_w=md.get('rect_w'), rect_h=md.get('rect_h'))
 
-        for m in self.db.safeguard_markers_for_page(page):
-            md = dict(m)
-            sg = self.db.conn.execute(
-                "SELECT description FROM safeguards WHERE id=?",
-                (md['safeguard_id'],)).fetchone()
-            desc = sg['description'] if sg else ''
-            self.viewer.add_safeguard_marker(
-                md['safeguard_id'], md['x'], md['y'], md.get('tag', ''), desc,
-                rect_w=md.get('rect_w'), rect_h=md.get('rect_h'))
+            for m in self.db.consequence_markers_for_page(page):
+                md   = dict(m)
+                cons = self.db.get_consequence(md['consequence_id'])
+                desc = dict(cons).get('description', '') if cons else md.get('target_name', '')
+                self.viewer.add_consequence_marker(
+                    md['consequence_id'], md['x'], md['y'], desc,
+                    rect_w=md.get('rect_w'), rect_h=md.get('rect_h'))
 
-        # Draw connections — use lists so multiple markers per item all get lines
-        cause_pos = {}
-        for m in self.db.cause_markers_for_page(page):
-            cause_pos.setdefault(m['cause_id'], []).append(
-                self.viewer.pdf_to_scene(m['x'], m['y']))
-        cons_pos = {}
-        for m in self.db.consequence_markers_for_page(page):
-            cons_pos.setdefault(m['consequence_id'], []).append(
-                self.viewer.pdf_to_scene(m['x'], m['y']))
-        sg_pos = {}
-        for m in self.db.safeguard_markers_for_page(page):
-            sg_pos.setdefault(m['safeguard_id'], []).append(
-                self.viewer.pdf_to_scene(m['x'], m['y']))
+            for m in self.db.safeguard_markers_for_page(page):
+                md = dict(m)
+                sg = self.db.conn.execute(
+                    "SELECT description FROM safeguards WHERE id=?",
+                    (md['safeguard_id'],)).fetchone()
+                desc = sg['description'] if sg else ''
+                self.viewer.add_safeguard_marker(
+                    md['safeguard_id'], md['x'], md['y'], md.get('tag', ''), desc,
+                    rect_w=md.get('rect_w'), rect_h=md.get('rect_h'))
 
-        for cid, cpos_list in cons_pos.items():
-            c = self.db.get_consequence(cid)
-            if c and c['cause_id'] in cause_pos:
-                for cpos in cpos_list:
-                    for capos in cause_pos[c['cause_id']]:
-                        self.viewer.add_connection_line(capos, cpos, '#c0392b')
+            cause_pos = {}
+            for m in self.db.cause_markers_for_page(page):
+                cause_pos.setdefault(m['cause_id'], []).append(
+                    self.viewer.pdf_to_scene(m['x'], m['y']))
+            cons_pos = {}
+            for m in self.db.consequence_markers_for_page(page):
+                cons_pos.setdefault(m['consequence_id'], []).append(
+                    self.viewer.pdf_to_scene(m['x'], m['y']))
+            sg_pos = {}
+            for m in self.db.safeguard_markers_for_page(page):
+                sg_pos.setdefault(m['safeguard_id'], []).append(
+                    self.viewer.pdf_to_scene(m['x'], m['y']))
 
-        for sid, spos_list in sg_pos.items():
-            s = self.db.get_safeguard(sid)
-            if s and s['consequence_id'] in cons_pos:
-                for spos in spos_list:
-                    for kpos in cons_pos[s['consequence_id']]:
-                        self.viewer.add_connection_line(kpos, spos, '#27ae60', dashed=True)
+            for cid, cpos_list in cons_pos.items():
+                c = self.db.get_consequence(cid)
+                if c and c['cause_id'] in cause_pos:
+                    for cpos in cpos_list:
+                        for capos in cause_pos[c['cause_id']]:
+                            self.viewer.add_connection_line(capos, cpos, '#c0392b')
 
-        # Draw tag highlights (yellow = known, green = defined as cause)
+            for sid, spos_list in sg_pos.items():
+                s = self.db.get_safeguard(sid)
+                if s and s['consequence_id'] in cons_pos:
+                    for spos in spos_list:
+                        for kpos in cons_pos[s['consequence_id']]:
+                            self.viewer.add_connection_line(kpos, spos, '#27ae60', dashed=True)
+
+        self.viewer.current_page = orig_page
         self._draw_tag_highlights()
 
     def start_cause_template_mode(self, deviation_id):
@@ -5982,18 +6143,23 @@ class PIDPanel(QWidget):
     def refresh_markup_overlays(self):
         """Reload only the markup overlays (cheap — no cause/cons/sg reload)."""
         self.viewer.clear_markup_overlays()
-        page = self.viewer.current_page
-        if hasattr(self.db, 'node_markups_for_page'):
-            for mu in self.db.node_markups_for_page(page):
-                m = dict(mu)
-                try: pts = json.loads(m.get('points', '[]') or '[]')
-                except Exception: pts = []
-                self.viewer.add_markup_overlay(
-                    m['id'], m.get('type', 'polygon'), pts,
-                    m.get('label', ''), m.get('color', '#1565C0'),
-                    float(m.get('opacity', 0.45)), int(m.get('line_width', 12)),
-                    bool(m.get('visible', 1)),
-                    int(m.get('font_size', 12)))
+        if self.viewer.pdf_doc is None:
+            return
+        orig_page = self.viewer.current_page
+        for page in range(self.viewer.pdf_doc.page_count):
+            self.viewer.current_page = page
+            if hasattr(self.db, 'node_markups_for_page'):
+                for mu in self.db.node_markups_for_page(page):
+                    m = dict(mu)
+                    try: pts = json.loads(m.get('points', '[]') or '[]')
+                    except Exception: pts = []
+                    self.viewer.add_markup_overlay(
+                        m['id'], m.get('type', 'polygon'), pts,
+                        m.get('label', ''), m.get('color', '#1565C0'),
+                        float(m.get('opacity', 0.45)), int(m.get('line_width', 12)),
+                        bool(m.get('visible', 1)),
+                        int(m.get('font_size', 12)))
+        self.viewer.current_page = orig_page
 
     # ── Red markup editing API ────────────────────────────────────────────────
 
@@ -6036,19 +6202,24 @@ class PIDPanel(QWidget):
     def refresh_red_markup_overlays(self):
         """Reload only the red markup overlays."""
         self.viewer.clear_red_markup_overlays()
-        page = self.viewer.current_page
-        if hasattr(self.db, 'node_red_markups_for_page'):
-            for mu in self.db.node_red_markups_for_page(page):
-                m = dict(mu)
-                try: pts = json.loads(m.get('points', '[]') or '[]')
-                except Exception: pts = []
-                self.viewer.add_red_markup_overlay(
-                    m['id'], m.get('type', 'polygon'), pts,
-                    m.get('label', ''), m.get('color', '#CC0000'),
-                    float(m.get('opacity', 1.0)), int(m.get('line_width', 4)),
-                    bool(m.get('visible', 1)), int(m.get('font_size', 12)),
-                    float(m.get('symbol_w', 40)), float(m.get('symbol_h', 40)),
-                    float(m.get('symbol_rot', 0)))
+        if self.viewer.pdf_doc is None:
+            return
+        orig_page = self.viewer.current_page
+        for page in range(self.viewer.pdf_doc.page_count):
+            self.viewer.current_page = page
+            if hasattr(self.db, 'node_red_markups_for_page'):
+                for mu in self.db.node_red_markups_for_page(page):
+                    m = dict(mu)
+                    try: pts = json.loads(m.get('points', '[]') or '[]')
+                    except Exception: pts = []
+                    self.viewer.add_red_markup_overlay(
+                        m['id'], m.get('type', 'polygon'), pts,
+                        m.get('label', ''), m.get('color', '#CC0000'),
+                        float(m.get('opacity', 1.0)), int(m.get('line_width', 4)),
+                        bool(m.get('visible', 1)), int(m.get('font_size', 12)),
+                        float(m.get('symbol_w', 40)), float(m.get('symbol_h', 40)),
+                        float(m.get('symbol_rot', 0)))
+        self.viewer.current_page = orig_page
 
     def _on_viewer_markup_drawn(self, type_, pts, page):
         """Called when user finishes drawing in the viewer; route to appropriate panel."""
@@ -6616,7 +6787,16 @@ class PIDPanel(QWidget):
     def try_reload_pdf(self):
         path = self.db.get_pid_path()
         if path and Path(path).exists() and HAS_PYMUPDF:
-            if self.viewer.load_pdf(path, page=0):
+            layout_offsets = None
+            if hasattr(self.db, 'get_pid_config_value'):
+                raw = self.db.get_pid_config_value('board_layout')
+                if raw:
+                    try:
+                        data = json.loads(raw)
+                        layout_offsets = {int(k): v for k, v in data.items()}
+                    except Exception:
+                        layout_offsets = None
+            if self.viewer.load_pdf(path, page=0, layout_offsets=layout_offsets):
                 self.db.ensure_sheets_initialized(self.viewer.page_count())
                 self._rebuild_sheet_map()
                 self._current_display_page = 0

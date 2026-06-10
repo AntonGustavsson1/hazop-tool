@@ -1485,6 +1485,16 @@ class Database:
             "INSERT OR REPLACE INTO pid_config (key,value) VALUES ('path',?)", (str(path),))
         self.conn.commit()
 
+    def get_pid_config_value(self, key):
+        row = self.conn.execute(
+            "SELECT value FROM pid_config WHERE key=?", (key,)).fetchone()
+        return row['value'] if row else None
+
+    def set_pid_config_value(self, key, value):
+        self.conn.execute(
+            "INSERT OR REPLACE INTO pid_config (key,value) VALUES (?,?)", (key, str(value)))
+        self.conn.commit()
+
     # ── PID revisions & sheets ────────────────────────────────────────────────
     def add_revision(self, revision, notes, pdf_path, created_at=''):
         if not created_at:
@@ -12029,6 +12039,7 @@ class MainWindow(QMainWindow):
         self.pid_panel.red_markup_item_selected.connect(
             self.red_markup_table_panel.select_markup)
         self.pid_panel.markup_symbol_dims_changed.connect(self._on_markup_symbol_dims_changed)
+        self.pid_panel.board_layout_changed.connect(self._on_board_layout_changed)
         self.tree_panel.exit_pid_mode_requested.connect(
             lambda: self.pid_panel._set_mode(MODE_NAV))
 
@@ -12469,6 +12480,9 @@ class MainWindow(QMainWindow):
         """Symbol resized or rotated — save new dims to DB and re-render."""
         self.db.update_node_red_markup(mu_id, symbol_w=w, symbol_h=h, symbol_rot=rot)
         self.pid_panel.refresh_red_markup_overlays()
+
+    def _on_board_layout_changed(self, layout_json):
+        self.db.set_pid_config_value('board_layout', layout_json)
 
     def _on_node_markup_vis(self, node_id, visible):
         """Tree context menu hide/show all markups for a node."""
