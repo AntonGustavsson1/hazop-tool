@@ -1535,6 +1535,8 @@ class Database:
     def save_connectors(self, rows):
         if not rows:
             return
+        for r in rows:
+            r.setdefault('ref_page', None)
         self.conn.executemany(
             "INSERT INTO off_page_connector "
             "(pid_page,x_pdf,y_pdf,direction,edge,ref_text,ref_sheet,"
