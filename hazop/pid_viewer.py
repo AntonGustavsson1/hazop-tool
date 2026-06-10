@@ -2474,13 +2474,15 @@ class ConnectorAnalyzer(QThread):
     finished_analysis = pyqtSignal(list, list, dict, dict)
 
     def __init__(self, pdf_path, page_count, page_widths_pdf, page_heights_pdf,
-                 render_scale, parent=None):
+                 render_scale, active_pages=None, parent=None):
         super().__init__(parent)
         self._pdf_path        = str(pdf_path)
         self._page_count      = page_count
         self._page_widths_pdf = dict(page_widths_pdf)
         self._page_heights_pdf = dict(page_heights_pdf)
         self._render_scale    = render_scale
+        # active_pages: only these get laid out (others are scanned for connectors only)
+        self._active_pages    = list(active_pages) if active_pages is not None else None
         self._deadline        = 0.0
 
     def run(self):
@@ -2563,8 +2565,10 @@ class ConnectorAnalyzer(QThread):
         connections = self._match_connections(all_connectors, sheet_lookup,
                                               self._page_count, page_sheet_nums)
 
-        # ── Propose layout ──
-        layout = _propose_layout(connections, self._page_count,
+        # ── Propose layout (active pages only) ──
+        layout_pages = (self._active_pages if self._active_pages is not None
+                        else list(range(self._page_count)))
+        layout = _propose_layout(connections, layout_pages,
                                  self._page_widths_pdf, self._page_heights_pdf,
                                  self._render_scale)
 
@@ -2942,44 +2946,53 @@ class ConnectorAnalyzer(QThread):
         return connections
 
 
-def _propose_layout(connections, page_count, page_widths_pdf, page_heights_pdf, render_scale):
-    """Compact column layout — left-to-right, guaranteed no overlap.
+def _propose_layout(connections, active_pages, page_widths_pdf, page_heights_pdf, render_scale):
+    """Compact column layout for active_pages only — left-to-right, no overlap.
 
-    BFS level = column index.  Within each column pages are stacked top-to-bottom
-    with a small fixed gap.  No force-directed step so positions are deterministic
-    and can never overlap.
-    Returns {page_idx: (scene_x, scene_y)}.
+    Improvements over the original:
+    1. Barycenter vertical ordering within each column (minimises arc crossings)
+    2. Isolated pages (no connections) grouped into a separate rightmost column
+    3. Automatic column split when a column exceeds MAX_COL_PAGES
+    4. Multiple horizontal compaction passes until convergence
+    5. Directed BFS — starts from source pages (no incoming connections)
+
+    Returns {page_idx: (scene_x, scene_y)} for each page in active_pages.
     """
     from collections import deque
 
-    if page_count == 0:
+    if not active_pages:
         return {}
 
-    rs = render_scale
-    GAP_X = 24   # horizontal gap between columns (px in scene coords)
-    GAP_Y = 16   # vertical gap between pages in the same column
+    rs        = render_scale
+    GAP_X     = 24   # horizontal gap between columns (scene px)
+    GAP_Y     = 16   # vertical gap between pages in the same column
+    MAX_COL   = 8    # split a column if it exceeds this many pages
 
-    # Per-page dimensions
-    ws = {i: page_widths_pdf.get(i, 800) * rs  for i in range(page_count)}
-    hs = {i: page_heights_pdf.get(i, 600) * rs for i in range(page_count)}
+    page_set = set(active_pages)
+    ws = {i: page_widths_pdf.get(i,  800) * rs for i in active_pages}
+    hs = {i: page_heights_pdf.get(i, 600) * rs for i in active_pages}
 
-    # Build undirected adjacency
-    adj = {i: set() for i in range(page_count)}
+    # ── Build adjacency (active pages only) ───────────────────────────────────
+    adj_fwd = {i: set() for i in active_pages}   # directed forward
+    adj_bwd = {i: set() for i in active_pages}   # directed backward (incoming)
     for c in connections:
-        fp = c.get('from_page')
-        tp = c.get('to_page')
-        if fp is None or tp is None:
+        fp, tp = c.get('from_page'), c.get('to_page')
+        if fp not in page_set or tp not in page_set or fp == tp:
             continue
-        if not (0 <= fp < page_count and 0 <= tp < page_count):
-            continue
-        if fp == tp:
-            continue
-        adj[fp].add(tp)
-        adj[tp].add(fp)
+        adj_fwd[fp].add(tp)
+        adj_bwd[tp].add(fp)
 
-    # Undirected BFS — lowest-index unvisited node starts each component
+    # Undirected union used for connectivity and barycenter
+    adj_all = {i: adj_fwd[i] | adj_bwd[i] for i in active_pages}
+
+    # ── Improvement 5: directed BFS from source pages ─────────────────────────
+    # Sources = pages with no incoming connections (they start flows)
+    sources = sorted(i for i in active_pages if not adj_bwd[i] and adj_all[i])
+    if not sources:
+        sources = [min(active_pages)]   # fallback: smallest index
+
     level = {}
-    for start in range(page_count):
+    for start in sources:
         if start in level:
             continue
         queue = deque([(start, 0)])
@@ -2988,51 +3001,101 @@ def _propose_layout(connections, page_count, page_widths_pdf, page_heights_pdf, 
             if node in level:
                 continue
             level[node] = lv
-            for nb in sorted(adj[node]):
+            for nb in sorted(adj_all[node]):
+                if nb not in level:
+                    queue.append((nb, lv + 1))
+    # Assign remaining (isolated or disconnected sub-components)
+    for start in sorted(active_pages):
+        if start in level:
+            continue
+        queue = deque([(start, 0)])
+        while queue:
+            node, lv = queue.popleft()
+            if node in level:
+                continue
+            level[node] = lv
+            for nb in sorted(adj_all[node]):
                 if nb not in level:
                     queue.append((nb, lv + 1))
 
-    # Group pages by column (BFS level)
-    level_groups = {}
-    for i in range(page_count):
+    # ── Improvement 2: separate isolated pages ────────────────────────────────
+    isolated  = [i for i in active_pages if not adj_all[i]]
+    connected = [i for i in active_pages if adj_all[i]]
+
+    level_groups: dict = {}
+    for i in connected:
         level_groups.setdefault(level[i], []).append(i)
 
-    # Column X positions — each column is as wide as its widest page
-    col_x = {}
-    x = GAP_X
+    # ── Improvement 3: split tall columns ────────────────────────────────────
+    expanded: dict = {}
     for lv in sorted(level_groups):
+        pages = level_groups[lv]
+        if len(pages) <= MAX_COL:
+            expanded[float(lv)] = pages
+        else:
+            for chunk_idx, start in enumerate(range(0, len(pages), MAX_COL)):
+                expanded[lv + chunk_idx * 0.01] = pages[start:start + MAX_COL]
+    level_groups   = expanded
+    sorted_levels  = sorted(level_groups)
+
+    # ── Pass 1: initial column X + stack pages top-to-bottom ─────────────────
+    col_x: dict = {}
+    x = GAP_X
+    for lv in sorted_levels:
         col_x[lv] = x
         col_w = max(ws[i] for i in level_groups[lv])
         x += col_w + GAP_X
 
-    # Pass 1: stack pages top-to-bottom within each column
-    pos = {}
-    for lv in sorted(level_groups):
+    pos: dict = {}
+    for lv in sorted_levels:
         y = GAP_Y
         for node in sorted(level_groups[lv]):
             pos[node] = [col_x[lv], y]
             y += hs[node] + GAP_Y
 
-    # Pass 2: horizontal compaction — slide each column leftward as far as possible
-    # without any of its pages overlapping a page in any earlier column.
-    sorted_levels = sorted(level_groups)
-    for idx, lv in enumerate(sorted_levels[1:], 1):
-        earlier_pages = [j for prev_lv in sorted_levels[:idx] for j in level_groups[prev_lv]]
-        # For every page in this column find how close it can get to the pages on its left
-        min_x_for_col = GAP_X
-        for i in level_groups[lv]:
-            yi, hi = pos[i][1], hs[i]
-            for j in earlier_pages:
-                xj, yj = pos[j][0], pos[j][1]
-                wj, hj = ws[j], hs[j]
-                # Only pages that overlap vertically with i constrain i's X
-                if yj < yi + hi + GAP_Y and yj + hj + GAP_Y > yi:
-                    min_x_for_col = max(min_x_for_col, xj + wj + GAP_X)
-        # Shift the entire column to min_x_for_col
-        for i in level_groups[lv]:
-            pos[i][0] = min_x_for_col
+    # ── Improvement 1: barycenter reordering (forward sweep) ─────────────────
+    for lv in sorted_levels:
+        def _bary(node):
+            ny = [pos[nb][1] + hs[nb] / 2
+                  for nb in adj_all[node] if nb in pos]
+            return sum(ny) / len(ny) if ny else pos[node][1]
+        ordered = sorted(level_groups[lv], key=_bary)
+        y = GAP_Y
+        for node in ordered:
+            pos[node] = [col_x[lv], y]
+            y += hs[node] + GAP_Y
 
-    return {i: (round(pos[i][0], 1), round(pos[i][1], 1)) for i in range(page_count)}
+    # ── Isolated pages: rightmost dedicated column ────────────────────────────
+    if isolated:
+        if connected:
+            iso_x = max(pos[i][0] + ws[i] for i in connected) + GAP_X * 2
+        else:
+            iso_x = GAP_X
+        y = GAP_Y
+        for node in sorted(isolated):
+            pos[node] = [iso_x, y]
+            y += hs[node] + GAP_Y
+
+    # ── Improvement 4: multi-pass horizontal compaction ───────────────────────
+    for _ in range(6):
+        moved = False
+        for idx, lv in enumerate(sorted_levels[1:], 1):
+            earlier = [j for prev in sorted_levels[:idx] for j in level_groups[prev]]
+            min_x = GAP_X
+            for i in level_groups[lv]:
+                yi, hi = pos[i][1], hs[i]
+                for j in earlier:
+                    xj, yj, wj, hj = pos[j][0], pos[j][1], ws[j], hs[j]
+                    if yj < yi + hi + GAP_Y and yj + hj + GAP_Y > yi:
+                        min_x = max(min_x, xj + wj + GAP_X)
+            for i in level_groups[lv]:
+                if abs(pos[i][0] - min_x) > 0.5:
+                    moved = True
+                pos[i][0] = min_x
+        if not moved:
+            break
+
+    return {i: (round(pos[i][0], 1), round(pos[i][1], 1)) for i in active_pages}
 
 
 class PIDGraphicsView(QGraphicsView):
@@ -6705,18 +6768,26 @@ class PIDPanel(QWidget):
             return
         if self._analyzer_thread and self._analyzer_thread.isRunning():
             return
+        # Disconnect old thread's signal to prevent stale double-fires
+        if self._analyzer_thread is not None:
+            try:
+                self._analyzer_thread.finished_analysis.disconnect(self._on_smart_layout_done)
+            except Exception:
+                pass
         # Save current layout for undo
         self._smart_layout_prev = dict(self.viewer._page_offsets)
         self.smart_btn.setEnabled(False)
         self.smart_btn.setText("⏳ Analyserar…")
 
-        path = self.db.get_pid_path()
+        path         = self.db.get_pid_path()
+        active_pages = sorted(self.viewer._all_page_items.keys())
         self._analyzer_thread = ConnectorAnalyzer(
             path,
             self.viewer.pdf_doc.page_count,
             self.viewer._page_widths_pdf,
             self.viewer._page_heights_pdf,
             self.viewer.render_scale,
+            active_pages=active_pages,
         )
         self._analyzer_thread.progress.connect(
             lambda msg: self.smart_btn.setText(f"⏳ {msg}"))
