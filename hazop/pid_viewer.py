@@ -3155,25 +3155,6 @@ def _propose_layout(connections, active_pages, page_widths_pdf, page_heights_pdf
             pos[node] = [iso_x, y]
             y += hs[node] + GAP_Y
 
-    # ── Improvement 4: multi-pass horizontal compaction ───────────────────────
-    for _ in range(6):
-        moved = False
-        for idx, lv in enumerate(sorted_levels[1:], 1):
-            earlier = [j for prev in sorted_levels[:idx] for j in level_groups[prev]]
-            min_x = GAP_X
-            for i in level_groups[lv]:
-                yi, hi = pos[i][1], hs[i]
-                for j in earlier:
-                    xj, yj, wj, hj = pos[j][0], pos[j][1], ws[j], hs[j]
-                    if yj < yi + hi + GAP_Y and yj + hj + GAP_Y > yi:
-                        min_x = max(min_x, xj + wj + GAP_X)
-            for i in level_groups[lv]:
-                if abs(pos[i][0] - min_x) > 0.5:
-                    moved = True
-                pos[i][0] = min_x
-        if not moved:
-            break
-
     return {i: (round(pos[i][0], 1), round(pos[i][1], 1)) for i in active_pages}
 
 
