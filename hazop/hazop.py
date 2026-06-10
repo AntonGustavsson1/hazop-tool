@@ -1558,6 +1558,9 @@ class Database:
     def get_pid_connections(self):
         return self.conn.execute("SELECT * FROM pid_connection").fetchall()
 
+    def get_connectors(self):
+        return self.conn.execute("SELECT * FROM off_page_connector").fetchall()
+
     # ── PID revisions & sheets ────────────────────────────────────────────────
     def add_revision(self, revision, notes, pdf_path, created_at=''):
         if not created_at:

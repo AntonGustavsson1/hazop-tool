@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
     QLineEdit, QLabel, QPushButton, QDialogButtonBox, QRadioButton,
     QGraphicsView, QGraphicsScene, QGraphicsItem,
     QGraphicsPixmapItem, QGraphicsPathItem, QGraphicsEllipseItem,
+    QGraphicsPolygonItem,
     QGraphicsRectItem, QGraphicsLineItem, QGraphicsSimpleTextItem, QFrame, QSpinBox, QAbstractSpinBox, QCheckBox, QGroupBox,
     QSlider, QColorDialog, QFileDialog, QMessageBox, QInputDialog,
     QSizePolicy, QMenu, QTableWidget, QTableWidgetItem, QHeaderView,
@@ -36,7 +37,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QThread, QPoint
 from PyQt6.QtGui import (
-    QColor, QPen, QBrush, QPainterPath, QPixmap, QImage, QFont,
+    QColor, QPen, QBrush, QPainterPath, QPolygonF, QPixmap, QImage, QFont,
     QPainter, QPicture, QCursor,
 )
 
@@ -388,25 +389,48 @@ _RE_TO_FROM = re.compile(
     r'\b(TO|FROM|CONT\'?D\.?(?:\s+ON)?)\s+([A-Z0-9][A-Z0-9\-/\.]{1,25})', re.IGNORECASE)
 _RE_LINE_ID = re.compile(
     r'\b(\d{1,4}["\']\-[A-Z]{1,5}\-\d{3,6}[A-Z0-9\-]*|\d{1,4}\-[A-Z]{1,5}\-\d{3,6}[A-Z0-9\-]*)\b')
+# Matches S0000156 (LKAB-style) as well as classic A-01, P-101 formats
 _RE_SHEET_NUM = re.compile(
-    r'\b([A-Z]{1,5}\-\d{2,6}[A-Z]?\d?|\d{4,6}\-\d{2,4})\b', re.IGNORECASE)
+    r'\b(S\d{6,8}|[A-Z]{1,5}\-\d{2,6}[A-Z]?\d?|\d{4,6}\-\d{2,4})\b', re.IGNORECASE)
+# LKAB-specific: =M1.GPA3   S0000155 (RDS code + sheet number on same/adjacent span)
+_RE_RDS_SHEET = re.compile(
+    r'=([A-Z][A-Z0-9./\-]{1,25})\s+S(\d{6,8})', re.IGNORECASE)
 
 _MEDIA_PATTERNS = [
-    ('process',       re.compile(r'\b(FEED|PRODUCT|CRUDE|HC|PROCESS|RAW)\b', re.I)),
+    ('slurry',        re.compile(r'\b(SLURRY|PULP|MUD|SLUDGE|UNDERFLOW|THICKENER)\b', re.I)),
+    ('filtrate',      re.compile(r'\b(FILTRAT|FILTRATE|LEACH\s*FILTRAT)\b', re.I)),
+    ('chemical',      re.compile(r'\b(HCL|HCl|H[Cc][Ll]|CAUSTIC|ACID|MEG|NAOH|METHANOL|INHIBITOR|GLYCOL|KCL|KCl|FLOCCULANT)\b', re.I)),
+    ('leach_gas',     re.compile(r'\b(LEACH\s*GAS|LEACHING\s*GAS)\b', re.I)),
+    ('process',       re.compile(r'\b(FEED|PRODUCT|CRUDE|HC|PROCESS|RAW|APATITE|RESIDUE)\b', re.I)),
     ('gas',           re.compile(r'\b(GAS|VAPOR|VAPOUR|VG|FLUE)\b', re.I)),
-    ('chemical',      re.compile(r'\b(CAUSTIC|ACID|MEG|NAOH|METHANOL|INHIBITOR|GLYCOL)\b', re.I)),
     ('liquid',        re.compile(r'\b(LIQ|LIQUID)\b', re.I)),
-    ('slurry',        re.compile(r'\b(SLURRY|PULP|MUD|SLUDGE)\b', re.I)),
     ('utility_steam', re.compile(r'\b(STEAM|HP[\s\-]?STEAM|MP[\s\-]?STEAM|LP[\s\-]?STEAM)\b', re.I)),
-    ('utility_water', re.compile(r'\b(C\.?W\.?|F\.?W\.?|P\.?W\.?|BFW|COOLING\s*WATER|FIRE\s*WATER)\b', re.I)),
+    ('utility_water', re.compile(r'\b(C\.?W\.?|F\.?W\.?|P\.?W\.?|BFW|COOLING\s*WATER|FIRE\s*WATER|HEATING\s*WATER|PROCESS\s*WATER)\b', re.I)),
     ('utility_air',   re.compile(r'\b(I\.?A\.?|P\.?A\.?|C\.?A\.?|INSTRUMENT\s*AIR|PLANT\s*AIR)\b', re.I)),
     ('instrument',    re.compile(r'\b(SIG|SIGNAL|4[\.\-]20|ESD|SIS|INTERLOCK)\b', re.I)),
     ('drain_vent',    re.compile(r'\b(DRAIN|VENT|ATM|FLARE|BLOWDOWN)\b', re.I)),
 ]
 _MEDIA_WEIGHTS = {
     'process': 1.0, 'gas': 0.9, 'chemical': 0.8, 'liquid': 0.7,
-    'slurry': 0.6, 'utility_steam': 0.4, 'utility_water': 0.3,
+    'slurry': 0.6, 'filtrate': 0.6, 'leach_gas': 0.55,
+    'utility_steam': 0.4, 'utility_water': 0.3,
     'utility_air': 0.2, 'instrument': 0.15, 'drain_vent': 0.1, 'unknown': 0.05,
+}
+# Display colors per media type (used for sheet-connection arcs on the board)
+_MEDIA_COLORS = {
+    'process':       '#2855d4',   # blue
+    'gas':           '#9b59b6',   # purple
+    'chemical':      '#e74c3c',   # red
+    'filtrate':      '#e67e22',   # orange
+    'leach_gas':     '#8e44ad',   # dark purple
+    'liquid':        '#2980b9',   # steel blue
+    'slurry':        '#a0522d',   # brown
+    'utility_steam': '#c0392b',   # dark red
+    'utility_water': '#17a589',   # teal
+    'utility_air':   '#7f8c8d',   # grey
+    'instrument':    '#f39c12',   # yellow-orange
+    'drain_vent':    '#95a5a6',   # silver
+    'unknown':       '#5d6d7e',   # slate
 }
 
 _SG_TYPES    = ['BPCS', 'SIS', 'Mekanisk', 'Administrativ', 'Övrigt']
@@ -482,11 +506,12 @@ def _get_red_symbol_svg(symbol_id: str) -> str | None:
                 return svg
     return None
 
-Z_PAGE      = 0
-Z_HIGHLIGHT = 1   # tag highlights between page and connections
-Z_CONNECT   = 3
-Z_OVERLAY   = 5
-Z_TEMP      = 10
+Z_PAGE       = 0
+Z_HIGHLIGHT  = 1   # tag highlights (cleared separately by clear_highlights)
+Z_SHEET_CONN = 2   # inter-sheet connection arcs on the study board
+Z_CONNECT    = 3   # HAZOP cause/consequence/safeguard lines
+Z_OVERLAY    = 5
+Z_TEMP       = 10
 
 # Simple tag: 1-6 letters + separator + 1-5 digits + 0-3 suffix
 # Examples: PCV-101, FT201A, V-1, ESDV-1001AB
@@ -2329,7 +2354,8 @@ class SmartPipeTracer:
 class ConnectorAnalyzer(QThread):
     """Scans PDF pages for off-page connectors and proposes a board layout."""
     progress   = pyqtSignal(str)
-    finished_analysis = pyqtSignal(list, list, dict)  # connectors, connections, layout
+    # connectors, connections, layout, page_sheet_nums
+    finished_analysis = pyqtSignal(list, list, dict, dict)
 
     def __init__(self, pdf_path, page_count, page_widths_pdf, page_heights_pdf,
                  render_scale, parent=None):
@@ -2351,7 +2377,7 @@ class ConnectorAnalyzer(QThread):
             doc = fitz.open(self._pdf_path)
         except Exception as e:
             self.progress.emit(f"Kunde inte öppna PDF: {e}")
-            self.finished_analysis.emit([], [], {})
+            self.finished_analysis.emit([], [], {}, {})
             return
 
         for pn in range(doc.page_count):
@@ -2363,12 +2389,17 @@ class ConnectorAnalyzer(QThread):
             pw = float(page.rect.width)
             ph = float(page.rect.height)
 
-            # ── Extract sheet number from title block (bottom 12% of page) ──
-            title_rect = fitz.Rect(pw * 0.5, ph * 0.88, pw, ph)
+            # ── Extract sheet number from title block (bottom-right 12% of page) ──
+            title_rect = fitz.Rect(pw * 0.45, ph * 0.86, pw, ph)
             title_text = page.get_text("text", clip=title_rect)
-            m = _RE_SHEET_NUM.search(title_text)
-            if m:
-                page_sheet_nums[pn] = m.group(1).upper().strip()
+            # Prefer LKAB S-number format (S0000156), then classic A-01
+            m_lkab = re.search(r'\bS(\d{6,8})\b', title_text)
+            if m_lkab:
+                page_sheet_nums[pn] = ('S' + m_lkab.group(1)).upper()
+            else:
+                m = _RE_SHEET_NUM.search(title_text)
+                if m:
+                    page_sheet_nums[pn] = m.group(1).upper().strip()
 
             # ── Native text in edge zones ──
             spans = self._get_spans(page)
@@ -2395,14 +2426,16 @@ class ConnectorAnalyzer(QThread):
 
         # ── Match connectors into connections ──
         connections = self._match_connections(all_connectors, sheet_lookup,
-                                              self._page_count)
+                                              self._page_count, page_sheet_nums)
 
         # ── Propose layout ──
         layout = _propose_layout(connections, self._page_count,
                                  self._page_widths_pdf, self._page_heights_pdf,
                                  self._render_scale)
 
-        self.finished_analysis.emit(all_connectors, connections, layout)
+        # Convert int keys to str for JSON serialisation
+        sheet_num_map_str = {str(k): v for k, v in page_sheet_nums.items()}
+        self.finished_analysis.emit(all_connectors, connections, layout, sheet_num_map_str)
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -2486,16 +2519,24 @@ class ConnectorAnalyzer(QThread):
 
     def _parse_connector(self, text, edge, pn, cx, cy, pw, ph, ocr_used):
         m = _RE_TO_FROM.search(text)
-        keyword = ref_sheet = None
+        keyword = ref_sheet = rds_code = None
+        lkab_format = False
         if m:
             keyword   = m.group(1).upper()
             ref_sheet = m.group(2).upper().strip()
         else:
-            # No TO/FROM keyword — check if there's a sheet number near edge
-            m2 = _RE_SHEET_NUM.search(text)
-            if not m2:
-                return None
-            ref_sheet = m2.group(1).upper().strip()
+            # LKAB format: =M1.GPA3   S0000155
+            m_rds = _RE_RDS_SHEET.search(text)
+            if m_rds:
+                rds_code   = m_rds.group(1).upper()
+                ref_sheet  = ('S' + m_rds.group(2)).upper()
+                lkab_format = True
+            else:
+                # Fallback: bare sheet number near edge
+                m2 = _RE_SHEET_NUM.search(text)
+                if not m2:
+                    return None
+                ref_sheet = m2.group(1).upper().strip()
 
         # Direction
         if keyword in ('TO', "CONT'D", 'CONTD'):
@@ -2523,8 +2564,8 @@ class ConnectorAnalyzer(QThread):
                 media_type = mname
                 break
 
-        # Confidence
-        conf = 0.9 if keyword else 0.6
+        # Confidence — LKAB explicit RDS+S-number format is highly reliable
+        conf = 0.9 if keyword else (0.85 if lkab_format else 0.6)
         if not ref_sheet:
             conf -= 0.2
         if ref_line_id is None:
@@ -2588,10 +2629,16 @@ class ConnectorAnalyzer(QThread):
                 pass
         return result
 
-    def _match_connections(self, connectors, sheet_lookup, page_count):
+    def _match_connections(self, connectors, sheet_lookup, page_count,
+                          page_sheet_nums=None):
         """Match 'out' connectors to 'in' connectors via ref_sheet."""
         from collections import defaultdict
         import datetime
+
+        # Build own-sheet reverse map: pn → own sheet num (upper)
+        own_sheet = {}
+        if page_sheet_nums:
+            own_sheet = {int(k): v.upper() for k, v in page_sheet_nums.items()}
 
         out_by_ref = defaultdict(list)  # ref_sheet → list of connectors
         in_by_ref  = defaultdict(list)
@@ -2600,6 +2647,9 @@ class ConnectorAnalyzer(QThread):
             c['_idx'] = i
             ref = (c.get('ref_sheet') or '').upper().strip()
             if not ref:
+                continue
+            # Skip self-referential connectors (sheet references its own number)
+            if own_sheet.get(c['pid_page'], '__NONE__') == ref:
                 continue
             if c['direction'] == 'out':
                 out_by_ref[ref].append(c)
@@ -2628,6 +2678,9 @@ class ConnectorAnalyzer(QThread):
             to_pn = resolve_page(ref)
             for oc in out_list:
                 fp = oc['pid_page']
+                # Skip self-referential pairs (e.g. recirculation loops on same page)
+                if to_pn is not None and fp == to_pn:
+                    continue
                 is_ghost = 0
                 ghost_ref = None
                 if to_pn is None:
@@ -4470,12 +4523,83 @@ class PIDGraphicsView(QGraphicsView):
         line = self._scene.addLine(start.x(), start.y(), end.x(), end.y(), pen)
         line.setZValue(Z_CONNECT)
 
+    def add_sheet_conn_arc(self, src: QPointF, dst: QPointF,
+                           color_hex: str, confidence: float, label: str,
+                           bidirectional: bool = False):
+        """Draw a bezier arc between two sheet edges with arrowhead and label."""
+        import math
+        color = QColor(color_hex)
+        pen = QPen(color, 3)
+        pen.setCosmetic(True)
+        if confidence < 0.65:
+            pen.setStyle(Qt.PenStyle.DashLine)
+
+        dx = dst.x() - src.x()
+        dy = dst.y() - src.y()
+        dist = max(math.hypot(dx, dy), 200)
+
+        path = QPainterPath()
+        path.moveTo(src)
+        ctrl1 = QPointF(src.x() + dist * 0.38, src.y())
+        ctrl2 = QPointF(dst.x() - dist * 0.38, dst.y())
+        path.cubicTo(ctrl1, ctrl2, dst)
+
+        pi = QGraphicsPathItem(path)
+        pi.setPen(pen)
+        pi.setZValue(Z_SHEET_CONN)
+        self._scene.addItem(pi)
+
+        # Arrowhead at dst
+        angle = math.atan2(dst.y() - ctrl2.y(), dst.x() - ctrl2.x())
+        arrow_len, arrow_half = 18, 7
+        tip = dst
+        left  = QPointF(tip.x() - arrow_len * math.cos(angle) + arrow_half * math.sin(angle),
+                        tip.y() - arrow_len * math.sin(angle) - arrow_half * math.cos(angle))
+        right = QPointF(tip.x() - arrow_len * math.cos(angle) - arrow_half * math.sin(angle),
+                        tip.y() - arrow_len * math.sin(angle) + arrow_half * math.cos(angle))
+        arrow = QPolygonF([tip, left, right])
+        arrowhead = QGraphicsPolygonItem(arrow)
+        arrowhead.setBrush(QBrush(color))
+        arrowhead.setPen(QPen(Qt.PenStyle.NoPen))
+        arrowhead.setZValue(Z_SHEET_CONN)
+        self._scene.addItem(arrowhead)
+
+        if bidirectional:
+            # Second arrowhead at src
+            angle2 = math.atan2(src.y() - ctrl1.y(), src.x() - ctrl1.x())
+            l2 = QPointF(src.x() - arrow_len*math.cos(angle2) + arrow_half*math.sin(angle2),
+                         src.y() - arrow_len*math.sin(angle2) - arrow_half*math.cos(angle2))
+            r2 = QPointF(src.x() - arrow_len*math.cos(angle2) - arrow_half*math.sin(angle2),
+                         src.y() - arrow_len*math.sin(angle2) + arrow_half*math.cos(angle2))
+            arr2 = QGraphicsPolygonItem(QPolygonF([src, l2, r2]))
+            arr2.setBrush(QBrush(color))
+            arr2.setPen(QPen(Qt.PenStyle.NoPen))
+            arr2.setZValue(Z_SHEET_CONN)
+            self._scene.addItem(arr2)
+
+        # Label at arc midpoint
+        if label:
+            mid = path.pointAtPercent(0.5)
+            txt = QGraphicsSimpleTextItem(label)
+            txt.setBrush(QBrush(color.darker(130)))
+            fnt = txt.font(); fnt.setPointSize(8); fnt.setBold(True); txt.setFont(fnt)
+            tr = txt.boundingRect()
+            txt.setPos(mid.x() - tr.width() / 2, mid.y() - tr.height() / 2 - 10)
+            bg = QGraphicsRectItem(txt.pos().x() - 3, txt.pos().y() - 2,
+                                   tr.width() + 6, tr.height() + 4)
+            bg.setBrush(QBrush(QColor(250, 250, 250, 210)))
+            bg.setPen(QPen(Qt.PenStyle.NoPen))
+            bg.setZValue(Z_SHEET_CONN)
+            txt.setZValue(Z_SHEET_CONN + 0.1)
+            self._scene.addItem(bg)
+            self._scene.addItem(txt)
+
     def clear_overlays(self):
         _keep = set(self._all_page_items.values()) | {self._placeholder}
         for item in list(self._scene.items()):
             if item in _keep:
                 continue
-            if item.zValue() >= Z_CONNECT:
+            if item.zValue() >= Z_SHEET_CONN:
                 try: self._scene.removeItem(item)
                 except Exception: pass
         if self._pending_path_item is not None:
@@ -5376,8 +5500,8 @@ class PIDPanel(QWidget):
 
         bar = QHBoxLayout(); bar.setSpacing(4)
 
-        self.open_btn = QPushButton("📂 Öppna P&ID")
-        self.open_btn.clicked.connect(self._open_pdf)
+        self.open_btn = QPushButton("📂 Importera P&ID")
+        self.open_btn.clicked.connect(self._import_pdf)
         bar.addWidget(self.open_btn)
 
         self.analyze_btn = QPushButton("📋 Analysera P&ID")
@@ -5944,19 +6068,20 @@ class PIDPanel(QWidget):
             QMessageBox.critical(self, "Export misslyckades",
                                  f"Kunde inte spara PDF:\n{e}")
 
-    def _open_pdf(self):
+    def _import_pdf(self):
         if not HAS_PYMUPDF:
             QMessageBox.warning(self, "PyMuPDF saknas",
                 "Installera med:\n    pip install PyMuPDF\nStarta sedan om.")
             return
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Öppna P&ID", "", "PDF-dokument (*.pdf);;Alla filer (*.*)")
-        if not path:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Importera P&ID", "", "PDF-dokument (*.pdf);;Alla filer (*.*)")
+        if not paths:
             return
+        paths = sorted(paths)   # alphabetical merge order
 
-        working    = self._working_pdf_path()
+        working      = self._working_pdf_path()
         has_existing = working.exists()
-        created_at = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+        created_at   = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
 
         if has_existing:
             dlg = PIDImportDialog(has_existing=True, parent=self)
@@ -5966,11 +6091,25 @@ class PIDPanel(QWidget):
             rev_notes = dlg.notes()
 
             if dlg.is_new_revision():
-                # Copy source to working path and reset
+                # Merge all selected files into one new PDF → replace working copy
                 try:
-                    shutil.copy2(path, working)
+                    base_doc = fitz.open(paths[0])
+                    for p in paths[1:]:
+                        ext = fitz.open(p)
+                        base_doc.insert_pdf(ext)
+                        ext.close()
+                    if self.viewer.pdf_doc is not None:
+                        try: self.viewer.pdf_doc.close()
+                        except Exception: pass
+                        self.viewer.pdf_doc = None
+                    tmp_fd, tmp_path = tempfile.mkstemp(
+                        suffix='.pdf', dir=str(working.parent))
+                    os.close(tmp_fd)
+                    base_doc.save(tmp_path, garbage=4, deflate=True)
+                    base_doc.close()
+                    shutil.move(tmp_path, str(working))
                 except Exception as e:
-                    QMessageBox.critical(self, "Fel", f"Kunde inte kopiera PDF:\n{e}")
+                    QMessageBox.critical(self, "Fel", f"Kunde inte skapa PDF:\n{e}")
                     return
                 if not self.viewer.load_pdf(str(working), page=0):
                     QMessageBox.warning(self, "Fel", "Kunde inte öppna PDF-filen.")
@@ -5980,25 +6119,24 @@ class PIDPanel(QWidget):
                 self.db.add_revision(rev_label, rev_notes, str(working), created_at)
                 self.db.ensure_sheets_initialized(self.viewer.page_count())
                 self._current_display_page = 0
+
             else:
-                # Nya blad — merge new pages into working copy via temp file
+                # Append all selected files to the existing working PDF
                 try:
                     existing_doc    = fitz.open(str(working))
                     existing_pg_cnt = existing_doc.page_count
-                    new_doc         = fitz.open(path)
-                    n_new           = new_doc.page_count
-                    existing_doc.insert_pdf(new_doc)
-                    new_doc.close()
-
-                    # Close viewer before replacing the file
+                    n_new = 0
+                    for p in paths:
+                        ext = fitz.open(p)
+                        n_new += ext.page_count
+                        existing_doc.insert_pdf(ext)
+                        ext.close()
                     if self.viewer.pdf_doc is not None:
-                        try:
-                            self.viewer.pdf_doc.close()
-                        except Exception:
-                            pass
+                        try: self.viewer.pdf_doc.close()
+                        except Exception: pass
                         self.viewer.pdf_doc = None
-
-                    tmp_fd, tmp_path = tempfile.mkstemp(suffix='.pdf', dir=str(working.parent))
+                    tmp_fd, tmp_path = tempfile.mkstemp(
+                        suffix='.pdf', dir=str(working.parent))
                     os.close(tmp_fd)
                     existing_doc.save(tmp_path, garbage=4, deflate=True)
                     existing_doc.close()
@@ -6018,12 +6156,24 @@ class PIDPanel(QWidget):
 
                 rev_id = self.db.add_revision(rev_label, rev_notes, str(working), created_at)
                 physical_pages = list(range(existing_pg_cnt, existing_pg_cnt + n_new))
-                sheet_names    = [f"Blad {existing_pg_cnt + i + 1}" for i in range(n_new)]
+                sheet_names    = [f"Blad {existing_pg_cnt + i + 1}"
+                                  for i in range(n_new)]
                 self.db.append_sheets(physical_pages, sheet_names, rev_id)
+
         else:
-            # First import — copy to working path, no dialog
+            # First import — merge all selected files into working copy
             try:
-                shutil.copy2(path, working)
+                base_doc = fitz.open(paths[0])
+                for p in paths[1:]:
+                    ext = fitz.open(p)
+                    base_doc.insert_pdf(ext)
+                    ext.close()
+                tmp_fd, tmp_path = tempfile.mkstemp(
+                    suffix='.pdf', dir=str(working.parent))
+                os.close(tmp_fd)
+                base_doc.save(tmp_path, garbage=4, deflate=True)
+                base_doc.close()
+                shutil.move(tmp_path, str(working))
             except Exception as e:
                 QMessageBox.critical(self, "Fel", f"Kunde inte kopiera PDF:\n{e}")
                 return
@@ -6036,8 +6186,12 @@ class PIDPanel(QWidget):
             self.db.ensure_sheets_initialized(self.viewer.page_count())
             self._current_display_page = 0
 
+        # Re-render with only the sheets currently in pid_sheets (deleted pages stay gone)
         self._rebuild_sheet_map()
         self._update_page_label()
+        sheets = self.db.get_sheets()
+        active = [int(s['physical_page']) for s in sheets] if sheets else None
+        self.viewer._render_all_pages(active_pages=active)
         self._load_overlays()
         self.analyze_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
@@ -6155,6 +6309,100 @@ class PIDPanel(QWidget):
         else:
             self._set_mode(MODE_NAV)
 
+    def _draw_sheet_connections(self):
+        """Draw bezier arcs between sheets on the board for all known inter-sheet links."""
+        import json as _json
+        connections = self.db.get_pid_connections()
+        if not connections:
+            return
+        connectors  = self.db.get_connectors()
+        raw_map     = self.db.get_pid_config_value('sheet_num_map') or '{}'
+        try:
+            sheet_num_map = {int(k): v.upper()
+                             for k, v in _json.loads(raw_map).items()}
+        except Exception:
+            sheet_num_map = {}
+
+        # Group connectors: (pid_page, ref_sheet_upper) → list of connector dicts
+        conn_by_page_ref = {}
+        for c in connectors:
+            cd = dict(c)
+            key = (cd['pid_page'], (cd.get('ref_sheet') or '').upper())
+            conn_by_page_ref.setdefault(key, []).append(cd)
+
+        drawn_pairs = set()
+        rs = self.viewer.render_scale
+
+        for row in connections:
+            conn = dict(row)
+            fp = conn.get('from_page')
+            tp = conn.get('to_page')
+            if fp is None or tp is None:
+                continue
+            if fp == tp:
+                continue
+            if fp not in self.viewer._all_page_items or tp not in self.viewer._all_page_items:
+                continue
+            pair = (min(fp, tp), max(fp, tp))
+            if pair in drawn_pairs:
+                continue
+            drawn_pairs.add(pair)
+
+            pw_fp = self.viewer._page_widths_pdf.get(fp, 800) * rs
+            ph_fp = self.viewer._page_heights_pdf.get(fp, 600) * rs
+            pw_tp = self.viewer._page_widths_pdf.get(tp, 800) * rs
+            ph_tp = self.viewer._page_heights_pdf.get(tp, 600) * rs
+            ox_fp, oy_fp = self.viewer._page_offsets.get(fp, (0, 0))
+            ox_tp, oy_tp = self.viewer._page_offsets.get(tp, (0, 0))
+
+            fp_sheet = sheet_num_map.get(fp, '')
+            tp_sheet = sheet_num_map.get(tp, '')
+
+            # Connectors on fp pointing to tp's sheet → source position
+            src_conns = conn_by_page_ref.get((fp, tp_sheet), [])
+            # Connectors on tp pointing back to fp's sheet → dest position
+            dst_conns = conn_by_page_ref.get((tp, fp_sheet), [])
+
+            def edge_point(page_conns, ox, oy, pw, ph, default_edge):
+                if page_conns:
+                    ys = sorted(c['y_pdf'] for c in page_conns)
+                    med_y = ys[len(ys) // 2] * rs
+                    edge  = page_conns[0].get('edge', default_edge)
+                else:
+                    med_y = ph / 2
+                    edge  = default_edge
+                if edge == 'right':
+                    return QPointF(ox + pw, oy + med_y)
+                if edge == 'left':
+                    return QPointF(ox, oy + med_y)
+                if edge == 'top':
+                    return QPointF(ox + pw / 2, oy)
+                return QPointF(ox + pw / 2, oy + ph)   # bottom
+
+            # Guess default edges from relative page positions
+            def_src = 'right' if ox_tp >= ox_fp else 'left'
+            def_dst = 'left'  if ox_tp >= ox_fp else 'right'
+            src_pt = edge_point(src_conns, ox_fp, oy_fp, pw_fp, ph_fp, def_src)
+            dst_pt = edge_point(dst_conns, ox_tp, oy_tp, pw_tp, ph_tp, def_dst)
+
+            media = conn.get('media_type', 'unknown') or 'unknown'
+            color_hex  = _MEDIA_COLORS.get(media, _MEDIA_COLORS['unknown'])
+            confidence = float(conn.get('confidence', 0.5))
+            bidir      = bool(conn.get('is_bidirectional'))
+
+            # Build a clean label from raw_text of first source connector
+            label = media.replace('_', ' ').upper()
+            if src_conns:
+                rt = src_conns[0].get('raw_text', '')
+                rt_clean = re.sub(r'=[\w./\-]+', '', rt)
+                rt_clean = re.sub(r'\bS\d{6,8}\b', '', rt_clean, flags=re.I)
+                rt_clean = ' '.join(rt_clean.split())[:28].strip()
+                if rt_clean:
+                    label = rt_clean
+
+            self.viewer.add_sheet_conn_arc(src_pt, dst_pt, color_hex,
+                                           confidence, label, bidir)
+
     def _run_smart_layout(self):
         if not HAS_PYMUPDF or self.viewer.pdf_doc is None:
             QMessageBox.information(self, "Smart layout",
@@ -6180,7 +6428,7 @@ class PIDPanel(QWidget):
         self._analyzer_thread.finished_analysis.connect(self._on_smart_layout_done)
         self._analyzer_thread.start()
 
-    def _on_smart_layout_done(self, connectors, connections, layout):
+    def _on_smart_layout_done(self, connectors, connections, layout, sheet_num_map):
         self.smart_btn.setEnabled(True)
         self.smart_btn.setText("✨ Smart layout")
 
@@ -6194,8 +6442,11 @@ class PIDPanel(QWidget):
         self.db.save_connectors(connectors)
         self.db.save_pid_connections(connections)
 
+        import json as _json
+        # Save sheet-number map (page_idx → sheet_num_str) for visual arc drawing
+        self.db.set_pid_config_value('sheet_num_map', _json.dumps(sheet_num_map))
+
         # Apply layout (scene coords = pdf_coords * render_scale already in layout dict)
-        rs = self.viewer.render_scale
         for pn, (x, y) in layout.items():
             if pn in self.viewer._all_page_items:
                 self.viewer._page_offsets[pn] = (x, y)
@@ -6204,8 +6455,7 @@ class PIDPanel(QWidget):
         self.viewer._update_board_scene_rect()
         self._load_overlays()
 
-        # Save to DB
-        import json as _json
+        # Save board layout to DB
         layout_data = {str(p): list(off)
                        for p, off in self.viewer._page_offsets.items()}
         self.db.set_pid_config_value('board_layout', _json.dumps(layout_data))
@@ -6684,6 +6934,7 @@ class PIDPanel(QWidget):
 
         self.viewer.current_page = orig_page
         self._draw_tag_highlights()
+        self._draw_sheet_connections()
 
     def start_cause_template_mode(self, deviation_id):
         """Switch to template placement mode for the given deviation."""
