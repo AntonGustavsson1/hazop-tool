@@ -458,18 +458,54 @@ def _detect_dialect(sample_texts):
     return best if scores[best] > 0 else 'classic'
 
 _MEDIA_PATTERNS = [
-    ('slurry',        re.compile(r'\b(SLURRY|PULP|MUD|SLUDGE|UNDERFLOW|THICKENER)\b', re.I)),
-    ('filtrate',      re.compile(r'\b(FILTRAT|FILTRATE|LEACH\s*FILTRAT)\b', re.I)),
-    ('chemical',      re.compile(r'\b(HCL|HCl|H[Cc][Ll]|CAUSTIC|ACID|MEG|NAOH|METHANOL|INHIBITOR|GLYCOL|KCL|KCl|FLOCCULANT)\b', re.I)),
-    ('leach_gas',     re.compile(r'\b(LEACH\s*GAS|LEACHING\s*GAS)\b', re.I)),
-    ('process',       re.compile(r'\b(FEED|PRODUCT|CRUDE|HC|PROCESS|RAW|APATITE|RESIDUE)\b', re.I)),
-    ('gas',           re.compile(r'\b(GAS|VAPOR|VAPOUR|VG|FLUE)\b', re.I)),
-    ('liquid',        re.compile(r'\b(LIQ|LIQUID)\b', re.I)),
-    ('utility_steam', re.compile(r'\b(STEAM|HP[\s\-]?STEAM|MP[\s\-]?STEAM|LP[\s\-]?STEAM)\b', re.I)),
-    ('utility_water', re.compile(r'\b(C\.?W\.?|F\.?W\.?|P\.?W\.?|BFW|COOLING\s*WATER|FIRE\s*WATER|HEATING\s*WATER|PROCESS\s*WATER)\b', re.I)),
-    ('utility_air',   re.compile(r'\b(I\.?A\.?|P\.?A\.?|C\.?A\.?|INSTRUMENT\s*AIR|PLANT\s*AIR)\b', re.I)),
-    ('instrument',    re.compile(r'\b(SIG|SIGNAL|4[\.\-]20|ESD|SIS|INTERLOCK)\b', re.I)),
-    ('drain_vent',    re.compile(r'\b(DRAIN|VENT|ATM|FLARE|BLOWDOWN)\b', re.I)),
+    # Slurry / pulp
+    ('slurry',        re.compile(
+        r'\b(SLURRY|PULP|MUD|SLUDGE|UNDERFLOW|THICKENER'
+        r'|SLAM|MASSA|LERA)\b', re.I)),
+    # Filtrate / leach liquor
+    ('filtrate',      re.compile(
+        r'\b(FILTRAT|FILTRATE|LEACH\s*FILTRAT|LAKFILTRAT|LAKVÄTSKA)\b', re.I)),
+    # Chemicals
+    ('chemical',      re.compile(
+        r'\b(HCL|HCl|H[Cc][Ll]|CAUSTIC|ACID|MEG|NAOH|METHANOL|INHIBITOR'
+        r'|GLYCOL|KCL|KCl|FLOCCULANT|AMMONIAK|AMMONIA|KALK|LIME'
+        r'|KEMIKALIE|KEMIKALIER|SVAVELS?YRA|SALTSYRA)\b', re.I)),
+    # Leach gas
+    ('leach_gas',     re.compile(r'\b(LEACH\s*GAS|LEACHING\s*GAS|LAKGAS)\b', re.I)),
+    # Process fluid (general)
+    ('process',       re.compile(
+        r'\b(FEED|PRODUCT|CRUDE|HC|PROCESS|RAW|APATITE|RESIDUE'
+        r'|PANNVATTEN|KONDENSAT|CONDENSATE)\b', re.I)),
+    # Flue gas / combustion gas
+    ('gas',           re.compile(
+        r'\b(GAS|VAPOR|VAPOUR|VG|FLUE|RÖKGAS|RÖKGASER'
+        r'|FÖRBRÄNNINGSGAS|AVGASER)\b', re.I)),
+    # Liquid (general)
+    ('liquid',        re.compile(r'\b(LIQ|LIQUID|VÄTSKA)\b', re.I)),
+    # Steam
+    ('utility_steam', re.compile(
+        r'\b(STEAM|HP[\s\-]?STEAM|MP[\s\-]?STEAM|LP[\s\-]?STEAM'
+        r'|ÅNGA|HÖGTRYCKSÅNGA|LÅGTRYCKSÅNGA|MELLANTRYCKSÅNGA'
+        r'|SOTBLÅSNINGSÅNGA|ÖVERHETTAD)\b', re.I)),
+    # Water (utility)
+    ('utility_water', re.compile(
+        r'\b(C\.?W\.?|F\.?W\.?|P\.?W\.?|BFW|COOLING\s*WATER|FIRE\s*WATER'
+        r'|HEATING\s*WATER|PROCESS\s*WATER|MATARVATTEN|KONDENSATTANK'
+        r'|KYLVATTEN|DRICKSVATTEN|RÅVATTEN|PROCESSVATTEN|FJÄRRVÄRME)\b', re.I)),
+    # Combustion / instrument air
+    ('utility_air',   re.compile(
+        r'\b(I\.?A\.?|P\.?A\.?|C\.?A\.?|INSTRUMENT\s*AIR|PLANT\s*AIR'
+        r'|FÖRBRÄNNINGSLUFT|INSTRUMENTLUFT|TRYCKLUFT|VENTILATIONSLUFT)\b', re.I)),
+    # Instrument / signal
+    ('instrument',    re.compile(
+        r'\b(SIG|SIGNAL|4[\.\-]20|ESD|SIS|INTERLOCK|STYRSIGNAL)\b', re.I)),
+    # Biofuel / solid fuel
+    ('process',       re.compile(
+        r'\b(BIOBRÄNSLE|BRÄNSLE|BOTTENASKA|SANDSILO|SLAMINMATNING'
+        r'|REJEKTSILO|SANDÅTERVINNING)\b', re.I)),
+    # Drain / vent / flare
+    ('drain_vent',    re.compile(
+        r'\b(DRAIN|VENT|ATM|FLARE|BLOWDOWN|AVLOPP|AVLUFTNING|FACKEL)\b', re.I)),
 ]
 _MEDIA_WEIGHTS = {
     'process': 1.0, 'gas': 0.9, 'chemical': 0.8, 'liquid': 0.7,
@@ -733,6 +769,25 @@ KNOWN_PREFIXES = {
     'AIC':  ('Analysreglering',                  'Instrument / Sensor'),
     'ASH':  ('Högt analysalarm',                 'Instrument / Sensor'),
     'ASL':  ('Lågt analysalarm',                 'Instrument / Sensor'),
+    # Instrument – Primärelement (saknade)
+    'FE':   ('Flödesgivare / primärelement',     'Instrument / Sensor'),
+    'LE':   ('Nivågivare / primärelement',       'Instrument / Sensor'),
+    'PE':   ('Tryckelement / primärelement',     'Instrument / Sensor'),
+    'TE':   ('Temperaturelement',                'Instrument / Sensor'),
+    'AE':   ('Analyselement / primärelement',    'Instrument / Sensor'),
+    'AIT':  ('Analysind. + transmitter',         'Instrument / Sensor'),
+    # Instrument – Slutliga reglerenheter (saknade)
+    'FV':   ('Flödesventil / slutlig enhet',     'Ventil'),
+    'LV':   ('Nivåventil / slutlig enhet',       'Ventil'),
+    'PV':   ('Tryckventil / slutlig enhet',      'Ventil'),
+    'TV':   ('Temperaturventil / slutlig enhet', 'Ventil'),
+    'XCV':  ('Projektdef. styr-/on-off-ventil',  'Ventil'),
+    # Instrument – Lägesbrytare
+    'ZSC':  ('Lägesbrytare stängd',              'Instrument / Sensor'),
+    'ZSO':  ('Lägesbrytare öppen',               'Instrument / Sensor'),
+    'ZT':   ('Lägegstransmitter',                'Instrument / Sensor'),
+    # Instrument – Solenoid / pilot
+    'SOV':  ('Magnetventil / pilotventil',       'Ventil'),
     # Övrigt
     'M':    ('Motor / Drivverk',                 'Övrigt'),
     'AG':   ('Omrörare / Agitator',             'Övrigt'),
