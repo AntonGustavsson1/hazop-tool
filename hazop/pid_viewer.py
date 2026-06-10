@@ -2598,13 +2598,15 @@ class ConnectorAnalyzer(QThread):
         }
 
     def _ocr_edges(self, page, pw, ph):
-        """OCR left+right edges of the page. Returns {edge: text}."""
+        """OCR all four edges of the page. Returns {edge: text}."""
         if not HAS_PYMUPDF:
             return {}
         result = {}
         strips = {
-            'left':  fitz.Rect(0,       0, pw*0.28, ph),
-            'right': fitz.Rect(pw*0.72, 0, pw,      ph),
+            'left':   fitz.Rect(0,       0,       pw*0.28, ph),
+            'right':  fitz.Rect(pw*0.72, 0,       pw,      ph),
+            'top':    fitz.Rect(0,       0,       pw,      ph*0.22),
+            'bottom': fitz.Rect(0,       ph*0.78, pw,      ph),
         }
         scale = 2.0
         mat = fitz.Matrix(scale, scale)
@@ -4541,10 +4543,13 @@ class PIDGraphicsView(QGraphicsView):
     def add_sheet_conn_arc(self, src: QPointF, dst: QPointF,
                            color_hex: str, confidence: float, label: str,
                            bidirectional: bool = False, conn_id: int = -1,
+                           src_edge: str = 'right', dst_edge: str = 'left',
                            src_page: int = -1, dst_page: int = -1,
                            arc_index: int = 0):
         """Draw a bezier arc between two sheet edges with arrowhead and label.
         Arcs are drawn behind P&ID pages (z < Z_PAGE).
+        Control points follow the connector exit direction so top/bottom exits
+        curve vertically and left/right exits curve horizontally.
         """
         import math
         color = QColor(color_hex)
@@ -4556,13 +4561,20 @@ class PIDGraphicsView(QGraphicsView):
         dx = dst.x() - src.x()
         dy = dst.y() - src.y()
         dist = max(math.hypot(dx, dy), 200)
+        handle = dist * 0.30
 
-        handle = dist * 0.25
+        # Control point offset direction follows the exit/entry edge
+        _edge_vec = {
+            'right':  ( 1,  0), 'left':  (-1,  0),
+            'bottom': ( 0,  1), 'top':   ( 0, -1),
+        }
+        sv = _edge_vec.get(src_edge, (1, 0))
+        dv = _edge_vec.get(dst_edge, (-1, 0))
+        ctrl1 = QPointF(src.x() + sv[0] * handle, src.y() + sv[1] * handle)
+        ctrl2 = QPointF(dst.x() + dv[0] * handle, dst.y() + dv[1] * handle)
 
         path = QPainterPath()
         path.moveTo(src)
-        ctrl1 = QPointF(src.x() + handle, src.y())
-        ctrl2 = QPointF(dst.x() - handle, dst.y())
         path.cubicTo(ctrl1, ctrl2, dst)
 
         pi = QGraphicsPathItem(path)
@@ -6438,11 +6450,20 @@ class PIDPanel(QWidget):
                     return QPointF(ox + pw / 2, oy)
                 return QPointF(ox + pw / 2, oy + ph)   # bottom
 
-            # Guess default edges from relative page positions
-            def_src = 'right' if ox_tp >= ox_fp else 'left'
-            def_dst = 'left'  if ox_tp >= ox_fp else 'right'
-            src_pt = edge_point(src_conns, ox_fp, oy_fp, pw_fp, ph_fp, def_src)
-            dst_pt = edge_point(dst_conns, ox_tp, oy_tp, pw_tp, ph_tp, def_dst)
+            # Guess default edges from relative page positions (horizontal or vertical)
+            dx_pages = ox_tp - ox_fp
+            dy_pages = oy_tp - oy_fp
+            if abs(dx_pages) >= abs(dy_pages):
+                def_src = 'right'  if dx_pages >= 0 else 'left'
+                def_dst = 'left'   if dx_pages >= 0 else 'right'
+            else:
+                def_src = 'bottom' if dy_pages >= 0 else 'top'
+                def_dst = 'top'    if dy_pages >= 0 else 'bottom'
+
+            src_pt  = edge_point(src_conns, ox_fp, oy_fp, pw_fp, ph_fp, def_src)
+            dst_pt  = edge_point(dst_conns, ox_tp, oy_tp, pw_tp, ph_tp, def_dst)
+            src_edge = src_conns[0].get('edge', def_src) if src_conns else def_src
+            dst_edge = dst_conns[0].get('edge', def_dst) if dst_conns else def_dst
 
             media = conn.get('media_type', 'unknown') or 'unknown'
             color_hex  = _MEDIA_COLORS.get(media, _MEDIA_COLORS['unknown'])
@@ -6459,19 +6480,11 @@ class PIDPanel(QWidget):
                 if rt_clean:
                     label = rt_clean
 
-            # Determine arc_index for stacking above/below (forward vs backward)
-            forward = dst_pt.x() >= src_pt.x()
-            arc_idx = above_arc_count if forward else below_arc_count
-            if forward:
-                above_arc_count += 1
-            else:
-                below_arc_count += 1
-
+            # arc_index no longer used for routing (arcs are behind pages)
             self.viewer.add_sheet_conn_arc(src_pt, dst_pt, color_hex,
                                            confidence, label, bidir,
                                            conn_id=conn.get('id', -1),
-                                           src_page=fp, dst_page=tp,
-                                           arc_index=arc_idx)
+                                           src_edge=src_edge, dst_edge=dst_edge)
 
     def _run_smart_layout(self):
         if not HAS_PYMUPDF or self.viewer.pdf_doc is None:
