@@ -3043,8 +3043,8 @@ def _propose_layout(connections, active_pages, page_widths_pdf, page_heights_pdf
         return {}
 
     rs        = render_scale
-    GAP_X     = 400  # horizontal gap between columns (scene px)
-    GAP_Y     = 200  # vertical gap between pages in the same column
+    GAP_X     = 700  # horizontal gap between columns (scene px)
+    GAP_Y     = 350  # vertical gap between pages in the same column
     MAX_COL   = 8    # split a column if it exceeds this many pages
 
     page_set = set(active_pages)
@@ -4910,16 +4910,16 @@ class PIDGraphicsView(QGraphicsView):
                            src_edge: str = 'right', dst_edge: str = 'left',
                            src_page: int = -1, dst_page: int = -1,
                            arc_index: int = 0, weight: float = 0.5):
-        """Draw a straight line directly from one P&ID page edge to another.
+        """Draw a cubic bezier connection over the P&ID pages at 50% opacity.
 
-        Parallel connections are staggered perpendicular to the line direction.
-        Pen width scales with weight (connection strength).
-        Drawn behind P&ID pages (z < Z_PAGE).
+        Control points extend outward from each page edge so curves leave the
+        page cleanly. Parallel connections are staggered perpendicular to the
+        chord. Pen width scales with weight; drawn above all page pixmaps.
         """
         import math
         color = QColor(color_hex)
+        color.setAlpha(128)   # 50 % transparent
 
-        # Thickness: 2 px for weak connections, up to 6 px for strong ones
         pen_width = round(max(2.0, min(6.0, 2.0 + weight * 5.0)), 1)
         pen = QPen(color, pen_width)
         pen.setCosmetic(True)
@@ -4933,55 +4933,66 @@ class PIDGraphicsView(QGraphicsView):
         sx, sy = src.x(), src.y()
         ex, ey = dst.x(), dst.y()
 
-        # Stagger parallel lines perpendicular to the travel direction
-        STEP = 18
+        # Stagger parallel connections perpendicular to the chord
+        STEP = 20
         if arc_index == 0:
             slot_off = 0
         else:
             slot_off = ((arc_index + 1) // 2) * STEP * (1 if arc_index % 2 == 1 else -1)
 
-        dx, dy = ex - sx, ey - sy
-        length = math.hypot(dx, dy) or 1.0
-        perp_x, perp_y = -dy / length, dx / length
+        chord = math.hypot(ex - sx, ey - sy) or 1.0
+        perp_x = -(ey - sy) / chord
+        perp_y =  (ex - sx) / chord
         src_pt = QPointF(sx + perp_x * slot_off, sy + perp_y * slot_off)
         dst_pt = QPointF(ex + perp_x * slot_off, ey + perp_y * slot_off)
 
+        # Bezier control points: extend outward from each page edge
+        ctrl_dist = max(120.0, chord * 0.38)
+        _edx = {'right': 1, 'left': -1, 'top': 0, 'bottom': 0}
+        _edy = {'right': 0, 'left':  0, 'top': -1, 'bottom': 1}
+        cp1 = QPointF(src_pt.x() + _edx.get(src_edge, 1)  * ctrl_dist,
+                      src_pt.y() + _edy.get(src_edge, 0)  * ctrl_dist)
+        cp2 = QPointF(dst_pt.x() + _edx.get(dst_edge, -1) * ctrl_dist,
+                      dst_pt.y() + _edy.get(dst_edge,  0) * ctrl_dist)
+
         path = QPainterPath()
         path.moveTo(src_pt)
-        path.lineTo(dst_pt)
+        path.cubicTo(cp1, cp2, dst_pt)
 
         pi = QGraphicsPathItem(path)
         pi.setPen(pen)
-        pi.setZValue(Z_PAGE - 1)
+        pi.setZValue(Z_SHEET_CONN)   # above page pixmaps
         pi._sheet_conn_id = conn_id
         pi.setFlag(pi.GraphicsItemFlag.ItemIsSelectable, False)
         self._scene.addItem(pi)
 
-        arrow_angle = math.atan2(ey - sy, ex - sx)
+        # Arrowhead tangent follows the bezier end-slope (dst_pt − cp2)
+        arrow_angle = math.atan2(dst_pt.y() - cp2.y(), dst_pt.x() - cp2.x())
 
         def _arrowhead(tip_pt, angle, col):
             AL, AH = 16, 7
-            tip = tip_pt
-            lp = QPointF(tip.x() - AL * math.cos(angle) + AH * math.sin(angle),
-                         tip.y() - AL * math.sin(angle) - AH * math.cos(angle))
-            rp = QPointF(tip.x() - AL * math.cos(angle) - AH * math.sin(angle),
-                         tip.y() - AL * math.sin(angle) + AH * math.cos(angle))
-            ah = QGraphicsPolygonItem(QPolygonF([tip, lp, rp]))
+            lp = QPointF(tip_pt.x() - AL * math.cos(angle) + AH * math.sin(angle),
+                         tip_pt.y() - AL * math.sin(angle) - AH * math.cos(angle))
+            rp = QPointF(tip_pt.x() - AL * math.cos(angle) - AH * math.sin(angle),
+                         tip_pt.y() - AL * math.sin(angle) + AH * math.cos(angle))
+            ah = QGraphicsPolygonItem(QPolygonF([tip_pt, lp, rp]))
             ah.setBrush(QBrush(col))
             ah.setPen(QPen(Qt.PenStyle.NoPen))
-            ah.setZValue(Z_PAGE - 1)
+            ah.setZValue(Z_SHEET_CONN)
             self._scene.addItem(ah)
 
         _arrowhead(dst_pt, arrow_angle, color)
         if bidirectional:
-            _arrowhead(src_pt, arrow_angle + math.pi, color)
+            src_angle = math.atan2(src_pt.y() - cp1.y(), src_pt.x() - cp1.x())
+            _arrowhead(src_pt, src_angle, color)
 
-        # Label at midpoint with white background
+        # Label at bezier midpoint with white background
         if label:
-            mid = QPointF((src_pt.x() + dst_pt.x()) / 2,
-                          (src_pt.y() + dst_pt.y()) / 2)
+            mid = path.pointAtPercent(0.5)
             txt = QGraphicsSimpleTextItem(label)
-            txt.setBrush(QBrush(color.darker(130)))
+            label_color = QColor(color_hex)   # opaque for readability
+            label_color.setAlpha(200)
+            txt.setBrush(QBrush(label_color.darker(130)))
             fnt = txt.font(); fnt.setPointSize(8); fnt.setBold(True); txt.setFont(fnt)
             tr = txt.boundingRect()
             txt.setPos(mid.x() - tr.width() / 2, mid.y() - tr.height() / 2 - 10)
@@ -4989,8 +5000,8 @@ class PIDGraphicsView(QGraphicsView):
                                    tr.width() + 6, tr.height() + 4)
             bg.setBrush(QBrush(QColor(250, 250, 250, 210)))
             bg.setPen(QPen(Qt.PenStyle.NoPen))
-            bg.setZValue(Z_SHEET_CONN)
-            txt.setZValue(Z_SHEET_CONN + 0.1)
+            bg.setZValue(Z_SHEET_CONN + 0.1)
+            txt.setZValue(Z_SHEET_CONN + 0.2)
             self._scene.addItem(bg)
             self._scene.addItem(txt)
 
