@@ -4564,9 +4564,7 @@ class PIDGraphicsView(QGraphicsView):
                            src_page: int = -1, dst_page: int = -1,
                            arc_index: int = 0):
         """Draw a bezier arc between two sheet edges with arrowhead and label.
-
-        Routes above pages for forward arcs and below for backward/loop arcs
-        when intermediate sheets would otherwise block the direct path.
+        Arcs are drawn behind P&ID pages (z < Z_PAGE).
         """
         import math
         color = QColor(color_hex)
@@ -4579,65 +4577,15 @@ class PIDGraphicsView(QGraphicsView):
         dy = dst.y() - src.y()
         dist = max(math.hypot(dx, dy), 200)
 
-        # Determine routing: check if any page overlaps the direct horizontal corridor
-        go_above = False   # route above all sheets
-        go_below = False   # route below all sheets (backward/loop)
-        global_top    = src.y()
-        global_bottom = src.y()
-        MARGIN = 60
-        ARC_SPACING = 35
-
-        if self._page_offsets:
-            # Collect bounding boxes for all placed pages
-            page_bboxes = {}
-            for pidx, (ox, oy) in self._page_offsets.items():
-                pw = self._page_widths_pdf.get(pidx, 800) * self.render_scale
-                ph = self._page_heights_pdf.get(pidx, 600) * self.render_scale
-                page_bboxes[pidx] = (ox, oy, ox + pw, oy + ph)
-                global_top    = min(global_top,    oy)
-                global_bottom = max(global_bottom, oy + ph)
-
-            # The X corridor between src and dst (exclusive of src/dst pages)
-            x_left  = min(src.x(), dst.x())
-            x_right = max(src.x(), dst.x())
-            skip = {p for p in (src_page, dst_page) if p >= 0}
-
-            blocking = False
-            for pidx, (bx0, by0, bx1, by1) in page_bboxes.items():
-                if pidx in skip:
-                    continue
-                # Page overlaps the corridor if its X range intersects [x_left, x_right]
-                if bx0 < x_right and bx1 > x_left:
-                    blocking = True
-                    break
-
-            if blocking:
-                forward = dst.x() >= src.x()
-                if forward:
-                    go_above = True
-                else:
-                    go_below = True
-
         path = QPainterPath()
         path.moveTo(src)
-
-        if go_above:
-            route_y = global_top - MARGIN - arc_index * ARC_SPACING
-            ctrl1 = QPointF(src.x(), route_y)
-            ctrl2 = QPointF(dst.x(), route_y)
-        elif go_below:
-            route_y = global_bottom + MARGIN + arc_index * ARC_SPACING
-            ctrl1 = QPointF(src.x(), route_y)
-            ctrl2 = QPointF(dst.x(), route_y)
-        else:
-            ctrl1 = QPointF(src.x() + dist * 0.38, src.y())
-            ctrl2 = QPointF(dst.x() - dist * 0.38, dst.y())
-
+        ctrl1 = QPointF(src.x() + dist * 0.38, src.y())
+        ctrl2 = QPointF(dst.x() - dist * 0.38, dst.y())
         path.cubicTo(ctrl1, ctrl2, dst)
 
         pi = QGraphicsPathItem(path)
         pi.setPen(pen)
-        pi.setZValue(Z_SHEET_CONN)
+        pi.setZValue(Z_PAGE - 1)   # behind P&ID pages
         pi._sheet_conn_id = conn_id   # used for right-click "break link"
         # Widen the hit area so the arc is easy to click
         pi.setFlag(pi.GraphicsItemFlag.ItemIsSelectable, False)
@@ -4655,7 +4603,7 @@ class PIDGraphicsView(QGraphicsView):
         arrowhead = QGraphicsPolygonItem(arrow)
         arrowhead.setBrush(QBrush(color))
         arrowhead.setPen(QPen(Qt.PenStyle.NoPen))
-        arrowhead.setZValue(Z_SHEET_CONN)
+        arrowhead.setZValue(Z_PAGE - 1)
         self._scene.addItem(arrowhead)
 
         if bidirectional:
@@ -4668,10 +4616,10 @@ class PIDGraphicsView(QGraphicsView):
             arr2 = QGraphicsPolygonItem(QPolygonF([src, l2, r2]))
             arr2.setBrush(QBrush(color))
             arr2.setPen(QPen(Qt.PenStyle.NoPen))
-            arr2.setZValue(Z_SHEET_CONN)
+            arr2.setZValue(Z_PAGE - 1)
             self._scene.addItem(arr2)
 
-        # Label at arc midpoint
+        # Label at arc midpoint — keep above pages so it's always readable
         if label:
             mid = path.pointAtPercent(0.5)
             txt = QGraphicsSimpleTextItem(label)
@@ -4693,7 +4641,7 @@ class PIDGraphicsView(QGraphicsView):
         for item in list(self._scene.items()):
             if item in _keep:
                 continue
-            if item.zValue() >= Z_SHEET_CONN:
+            if item.zValue() >= Z_SHEET_CONN or item.zValue() < Z_PAGE:
                 try: self._scene.removeItem(item)
                 except Exception: pass
         if self._pending_path_item is not None:
