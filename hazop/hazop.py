@@ -944,6 +944,37 @@ class Database:
                 symbol_h   REAL DEFAULT 40,
                 symbol_rot REAL DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS off_page_connector (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                pid_page   INTEGER NOT NULL,
+                x_pdf      REAL,
+                y_pdf      REAL,
+                direction  TEXT,
+                edge       TEXT,
+                ref_text   TEXT,
+                ref_sheet  TEXT,
+                ref_line_id TEXT,
+                media_type TEXT,
+                weight     REAL DEFAULT 0.0,
+                confidence REAL DEFAULT 0.5,
+                raw_text   TEXT,
+                ocr_used   INTEGER DEFAULT 0,
+                analyzed_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS pid_connection (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_page       INTEGER,
+                to_page         INTEGER,
+                from_connector  INTEGER,
+                to_connector    INTEGER,
+                media_type      TEXT,
+                weight          REAL DEFAULT 0.0,
+                confidence      REAL DEFAULT 0.5,
+                is_bidirectional INTEGER DEFAULT 0,
+                is_ghost        INTEGER DEFAULT 0,
+                ghost_ref       TEXT,
+                warning         TEXT
+            );
         """)
 
         if not self.conn.execute("SELECT COUNT(*) FROM consequence_categories").fetchone()[0]:
@@ -1494,6 +1525,38 @@ class Database:
         self.conn.execute(
             "INSERT OR REPLACE INTO pid_config (key,value) VALUES (?,?)", (key, str(value)))
         self.conn.commit()
+
+    def clear_connector_analysis(self):
+        self.conn.execute("DELETE FROM off_page_connector")
+        self.conn.execute("DELETE FROM pid_connection")
+        self.conn.commit()
+
+    def save_connectors(self, rows):
+        if not rows:
+            return
+        self.conn.executemany(
+            "INSERT INTO off_page_connector "
+            "(pid_page,x_pdf,y_pdf,direction,edge,ref_text,ref_sheet,"
+            "ref_line_id,media_type,weight,confidence,raw_text,ocr_used,analyzed_at) "
+            "VALUES(:pid_page,:x_pdf,:y_pdf,:direction,:edge,:ref_text,:ref_sheet,"
+            ":ref_line_id,:media_type,:weight,:confidence,:raw_text,:ocr_used,:analyzed_at)",
+            rows)
+        self.conn.commit()
+
+    def save_pid_connections(self, rows):
+        if not rows:
+            return
+        self.conn.executemany(
+            "INSERT INTO pid_connection "
+            "(from_page,to_page,from_connector,to_connector,media_type,weight,"
+            "confidence,is_bidirectional,is_ghost,ghost_ref,warning) "
+            "VALUES(:from_page,:to_page,:from_connector,:to_connector,:media_type,"
+            ":weight,:confidence,:is_bidirectional,:is_ghost,:ghost_ref,:warning)",
+            rows)
+        self.conn.commit()
+
+    def get_pid_connections(self):
+        return self.conn.execute("SELECT * FROM pid_connection").fetchall()
 
     # ── PID revisions & sheets ────────────────────────────────────────────────
     def add_revision(self, revision, notes, pdf_path, created_at=''):

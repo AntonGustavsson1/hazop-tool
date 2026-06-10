@@ -383,6 +383,32 @@ MODE_SMART_POLYLINE  = 12  # click start+end, algorithm traces pipe path
 MODE_RED_MARKUP_SYMBOL = 13  # click to place a red markup P&ID symbol
 MODE_BOARD_LAYOUT    = 14  # drag pages to reposition on study board
 
+# ── Off-page connector analysis ───────────────────────────────────────────────
+_RE_TO_FROM = re.compile(
+    r'\b(TO|FROM|CONT\'?D\.?(?:\s+ON)?)\s+([A-Z0-9][A-Z0-9\-/\.]{1,25})', re.IGNORECASE)
+_RE_LINE_ID = re.compile(
+    r'\b(\d{1,4}["\']\-[A-Z]{1,5}\-\d{3,6}[A-Z0-9\-]*|\d{1,4}\-[A-Z]{1,5}\-\d{3,6}[A-Z0-9\-]*)\b')
+_RE_SHEET_NUM = re.compile(
+    r'\b([A-Z]{1,5}\-\d{2,6}[A-Z]?\d?|\d{4,6}\-\d{2,4})\b', re.IGNORECASE)
+
+_MEDIA_PATTERNS = [
+    ('process',       re.compile(r'\b(FEED|PRODUCT|CRUDE|HC|PROCESS|RAW)\b', re.I)),
+    ('gas',           re.compile(r'\b(GAS|VAPOR|VAPOUR|VG|FLUE)\b', re.I)),
+    ('chemical',      re.compile(r'\b(CAUSTIC|ACID|MEG|NAOH|METHANOL|INHIBITOR|GLYCOL)\b', re.I)),
+    ('liquid',        re.compile(r'\b(LIQ|LIQUID)\b', re.I)),
+    ('slurry',        re.compile(r'\b(SLURRY|PULP|MUD|SLUDGE)\b', re.I)),
+    ('utility_steam', re.compile(r'\b(STEAM|HP[\s\-]?STEAM|MP[\s\-]?STEAM|LP[\s\-]?STEAM)\b', re.I)),
+    ('utility_water', re.compile(r'\b(C\.?W\.?|F\.?W\.?|P\.?W\.?|BFW|COOLING\s*WATER|FIRE\s*WATER)\b', re.I)),
+    ('utility_air',   re.compile(r'\b(I\.?A\.?|P\.?A\.?|C\.?A\.?|INSTRUMENT\s*AIR|PLANT\s*AIR)\b', re.I)),
+    ('instrument',    re.compile(r'\b(SIG|SIGNAL|4[\.\-]20|ESD|SIS|INTERLOCK)\b', re.I)),
+    ('drain_vent',    re.compile(r'\b(DRAIN|VENT|ATM|FLARE|BLOWDOWN)\b', re.I)),
+]
+_MEDIA_WEIGHTS = {
+    'process': 1.0, 'gas': 0.9, 'chemical': 0.8, 'liquid': 0.7,
+    'slurry': 0.6, 'utility_steam': 0.4, 'utility_water': 0.3,
+    'utility_air': 0.2, 'instrument': 0.15, 'drain_vent': 0.1, 'unknown': 0.05,
+}
+
 _SG_TYPES    = ['BPCS', 'SIS', 'Mekanisk', 'Administrativ', 'Övrigt']
 _RRF_VALUES  = [1, 10, 100, 1000, 10000]
 _RRF_LABELS  = ['1 – Ingen', '10 – RRF10', '100 – RRF100', '1000 – RRF1000', '10000 – RRF10000']
@@ -2298,6 +2324,464 @@ class SmartPipeTracer:
             blocked.update(px_path[lo:hi])
 
         return results
+
+
+class ConnectorAnalyzer(QThread):
+    """Scans PDF pages for off-page connectors and proposes a board layout."""
+    progress   = pyqtSignal(str)
+    finished_analysis = pyqtSignal(list, list, dict)  # connectors, connections, layout
+
+    def __init__(self, pdf_path, page_count, page_widths_pdf, page_heights_pdf,
+                 render_scale, parent=None):
+        super().__init__(parent)
+        self._pdf_path        = str(pdf_path)
+        self._page_count      = page_count
+        self._page_widths_pdf = dict(page_widths_pdf)
+        self._page_heights_pdf = dict(page_heights_pdf)
+        self._render_scale    = render_scale
+        self._deadline        = 0.0
+
+    def run(self):
+        import time
+        self._deadline = time.time() + 13.0
+        all_connectors = []
+        page_sheet_nums = {}  # pn → sheet number string (best guess)
+
+        try:
+            doc = fitz.open(self._pdf_path)
+        except Exception as e:
+            self.progress.emit(f"Kunde inte öppna PDF: {e}")
+            self.finished_analysis.emit([], [], {})
+            return
+
+        for pn in range(doc.page_count):
+            if time.time() > self._deadline:
+                self.progress.emit(f"Tidsgräns — {pn}/{doc.page_count} blad klara")
+                break
+            self.progress.emit(f"Blad {pn + 1}/{doc.page_count}…")
+            page = doc.load_page(pn)
+            pw = float(page.rect.width)
+            ph = float(page.rect.height)
+
+            # ── Extract sheet number from title block (bottom 12% of page) ──
+            title_rect = fitz.Rect(pw * 0.5, ph * 0.88, pw, ph)
+            title_text = page.get_text("text", clip=title_rect)
+            m = _RE_SHEET_NUM.search(title_text)
+            if m:
+                page_sheet_nums[pn] = m.group(1).upper().strip()
+
+            # ── Native text in edge zones ──
+            spans = self._get_spans(page)
+            connectors = self._find_in_zones(spans, pn, pw, ph, ocr_used=False)
+
+            # ── OCR fallback on left+right edges ──
+            if not connectors and HAS_PYMUPDF and time.time() < self._deadline - 1.5:
+                ocr_text_lr = self._ocr_edges(page, pw, ph)
+                if ocr_text_lr:
+                    ocr_spans = self._text_to_spans(ocr_text_lr, pw, ph)
+                    connectors = self._find_in_zones(ocr_spans, pn, pw, ph, ocr_used=True)
+
+            all_connectors.extend(connectors)
+
+        doc.close()
+
+        # ── Build sheet-number lookup: sheet_str → pn ──
+        sheet_lookup = {v.upper(): k for k, v in page_sheet_nums.items()}
+        # Also try partial match: last component of "UNIT-P-101" → "P-101"
+        for k, v in list(sheet_lookup.items()):
+            parts = k.split('-')
+            if len(parts) >= 2:
+                sheet_lookup.setdefault('-'.join(parts[-2:]), list(sheet_lookup.values())[0])
+
+        # ── Match connectors into connections ──
+        connections = self._match_connections(all_connectors, sheet_lookup,
+                                              self._page_count)
+
+        # ── Propose layout ──
+        layout = _propose_layout(connections, self._page_count,
+                                 self._page_widths_pdf, self._page_heights_pdf,
+                                 self._render_scale)
+
+        self.finished_analysis.emit(all_connectors, connections, layout)
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+
+    def _get_spans(self, page):
+        spans = []
+        for block in page.get_text("dict").get("blocks", []):
+            if block.get("type") != 0:
+                continue
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    t = span.get("text", "").strip()
+                    if not t:
+                        continue
+                    b = span["bbox"]
+                    spans.append({"text": t, "x": (b[0]+b[2])/2, "y": (b[1]+b[3])/2,
+                                  "x0": b[0], "y0": b[1], "x1": b[2], "y1": b[3]})
+        return spans
+
+    def _text_to_spans(self, text_dict, pw, ph):
+        """Convert OCR output dict {edge: str} into pseudo-spans with edge positions."""
+        spans = []
+        for edge, text in text_dict.items():
+            if not text.strip():
+                continue
+            if edge == 'left':
+                cx, cy = pw * 0.12, ph * 0.5
+            elif edge == 'right':
+                cx, cy = pw * 0.88, ph * 0.5
+            elif edge == 'top':
+                cx, cy = pw * 0.5, ph * 0.06
+            else:
+                cx, cy = pw * 0.5, ph * 0.94
+            for line in text.split('\n'):
+                line = line.strip()
+                if line:
+                    spans.append({"text": line, "x": cx, "y": cy,
+                                  "x0": cx-10, "y0": cy-5, "x1": cx+10, "y1": cy+5})
+        return spans
+
+    def _find_in_zones(self, spans, pn, pw, ph, ocr_used):
+        edge_zones = {
+            'left':   (0,        0,    pw*0.28, ph),
+            'right':  (pw*0.72,  0,    pw,      ph),
+            'top':    (0,        0,    pw,      ph*0.22),
+            'bottom': (0,  ph*0.78,    pw,      ph),
+        }
+        results = []
+        for edge, (x0, y0, x1, y1) in edge_zones.items():
+            zone_spans = [s for s in spans
+                          if x0 <= s["x"] <= x1 and y0 <= s["y"] <= y1]
+            if not zone_spans:
+                continue
+            # Cluster nearby spans
+            clusters = self._cluster_spans(zone_spans, gap=60.0)
+            for cluster in clusters:
+                combined = ' '.join(s["text"] for s in cluster)
+                cx = sum(s["x"] for s in cluster) / len(cluster)
+                cy = sum(s["y"] for s in cluster) / len(cluster)
+                conn = self._parse_connector(combined, edge, pn, cx, cy,
+                                             pw, ph, ocr_used)
+                if conn:
+                    results.append(conn)
+        return results
+
+    def _cluster_spans(self, spans, gap=60.0):
+        if not spans:
+            return []
+        spans = sorted(spans, key=lambda s: (s["y"], s["x"]))
+        clusters, current = [], [spans[0]]
+        for s in spans[1:]:
+            prev = current[-1]
+            dy = abs(s["y"] - prev["y"])
+            dx = abs(s["x"] - prev["x"])
+            if dy < gap and dx < gap * 3:
+                current.append(s)
+            else:
+                clusters.append(current)
+                current = [s]
+        clusters.append(current)
+        return clusters
+
+    def _parse_connector(self, text, edge, pn, cx, cy, pw, ph, ocr_used):
+        m = _RE_TO_FROM.search(text)
+        keyword = ref_sheet = None
+        if m:
+            keyword   = m.group(1).upper()
+            ref_sheet = m.group(2).upper().strip()
+        else:
+            # No TO/FROM keyword — check if there's a sheet number near edge
+            m2 = _RE_SHEET_NUM.search(text)
+            if not m2:
+                return None
+            ref_sheet = m2.group(1).upper().strip()
+
+        # Direction
+        if keyword in ('TO', "CONT'D", 'CONTD'):
+            dir_kw = 'out'
+        elif keyword == 'FROM':
+            dir_kw = 'in'
+        else:
+            dir_kw = None
+
+        edge_dir_map = {'right': 'out', 'left': 'in', 'top': 'unknown', 'bottom': 'unknown'}
+        direction = dir_kw or edge_dir_map.get(edge, 'unknown')
+
+        dir_factor = {'out': 1.0, 'in': 1.0, 'unknown': 0.4}.get(direction, 0.4)
+        if edge in ('top', 'bottom'):
+            dir_factor = 0.5
+
+        # Line ID
+        lm = _RE_LINE_ID.search(text)
+        ref_line_id = lm.group(1) if lm else None
+
+        # Media
+        media_type = 'unknown'
+        for mname, pat in _MEDIA_PATTERNS:
+            if pat.search(text):
+                media_type = mname
+                break
+
+        # Confidence
+        conf = 0.9 if keyword else 0.6
+        if not ref_sheet:
+            conf -= 0.2
+        if ref_line_id is None:
+            conf -= 0.1
+        if ocr_used:
+            conf -= 0.1
+        if media_type == 'unknown':
+            conf -= 0.1
+        conf = max(0.1, conf)
+
+        mw = _MEDIA_WEIGHTS.get(media_type, 0.05)
+        weight = round(mw * conf * dir_factor, 3)
+
+        import datetime
+        return {
+            "pid_page": pn,
+            "x_pdf": cx, "y_pdf": cy,
+            "direction": direction,
+            "edge": edge,
+            "ref_text": text[:200],
+            "ref_sheet": ref_sheet,
+            "ref_line_id": ref_line_id,
+            "media_type": media_type,
+            "weight": weight,
+            "confidence": conf,
+            "raw_text": text[:500],
+            "ocr_used": int(ocr_used),
+            "analyzed_at": datetime.datetime.now().isoformat(),
+        }
+
+    def _ocr_edges(self, page, pw, ph):
+        """OCR left+right edges of the page. Returns {edge: text}."""
+        if not HAS_PYMUPDF:
+            return {}
+        result = {}
+        strips = {
+            'left':  fitz.Rect(0,       0, pw*0.28, ph),
+            'right': fitz.Rect(pw*0.72, 0, pw,      ph),
+        }
+        scale = 2.0
+        mat = fitz.Matrix(scale, scale)
+        for edge, clip in strips.items():
+            try:
+                pix = page.get_pixmap(matrix=mat, clip=clip, alpha=False)
+                img = QImage(pix.samples, pix.width, pix.height,
+                             pix.stride, QImage.Format.Format_RGB888)
+                # Try pytesseract
+                try:
+                    import pytesseract
+                    from PIL import Image as _PILImg
+                    import io as _io
+                    buf = _io.BytesIO()
+                    img.save(buf, format='PNG')  # QImage can't save to BytesIO directly
+                    # Use pix.tobytes() approach instead
+                    pil_img = _PILImg.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                    text = pytesseract.image_to_string(pil_img, config='--psm 6')
+                    result[edge] = text
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        return result
+
+    def _match_connections(self, connectors, sheet_lookup, page_count):
+        """Match 'out' connectors to 'in' connectors via ref_sheet."""
+        from collections import defaultdict
+        import datetime
+
+        out_by_ref = defaultdict(list)  # ref_sheet → list of connectors
+        in_by_ref  = defaultdict(list)
+
+        for i, c in enumerate(connectors):
+            c['_idx'] = i
+            ref = (c.get('ref_sheet') or '').upper().strip()
+            if not ref:
+                continue
+            if c['direction'] == 'out':
+                out_by_ref[ref].append(c)
+            elif c['direction'] == 'in':
+                in_by_ref[ref].append(c)
+            else:
+                # unknown direction — try both buckets
+                out_by_ref[ref].append(c)
+
+        connections = []
+        seen_pairs = {}  # (from_page, to_page) → connection index for dedup
+
+        def resolve_page(ref):
+            if ref in sheet_lookup:
+                return sheet_lookup[ref]
+            # Fuzzy: try suffix match
+            for k, v in sheet_lookup.items():
+                if k.endswith(ref) or ref.endswith(k):
+                    return v
+            return None
+
+        ts = datetime.datetime.now().isoformat()
+
+        for ref, out_list in out_by_ref.items():
+            # Find the page this ref points TO
+            to_pn = resolve_page(ref)
+            for oc in out_list:
+                fp = oc['pid_page']
+                is_ghost = 0
+                ghost_ref = None
+                if to_pn is None:
+                    is_ghost = 1
+                    ghost_ref = ref
+                    tp = None
+                else:
+                    tp = to_pn
+
+                w = oc['weight']
+                conf = oc['confidence']
+                key = (fp, tp)
+
+                if key in seen_pairs:
+                    idx = seen_pairs[key]
+                    # Accumulate weight: w_new = 1 - (1-w_old)*(1-w_new)
+                    old_w = connections[idx]['weight']
+                    connections[idx]['weight'] = round(1.0 - (1.0 - old_w) * (1.0 - w), 3)
+                    connections[idx]['warning'] = 'duplicate'
+                else:
+                    seen_pairs[key] = len(connections)
+                    connections.append({
+                        'from_page': fp,
+                        'to_page': tp,
+                        'from_connector': oc.get('_idx'),
+                        'to_connector': None,
+                        'media_type': oc['media_type'],
+                        'weight': w,
+                        'confidence': conf,
+                        'is_bidirectional': 0,
+                        'is_ghost': is_ghost,
+                        'ghost_ref': ghost_ref,
+                        'warning': None,
+                    })
+
+        # Check for bidirectional pairs
+        existing_keys = set(seen_pairs.keys())
+        for conn in connections:
+            fp, tp = conn['from_page'], conn['to_page']
+            if tp is not None and (tp, fp) in existing_keys:
+                conn['is_bidirectional'] = 1
+                connections[seen_pairs[(tp, fp)]]['is_bidirectional'] = 1
+
+        return connections
+
+
+def _propose_layout(connections, page_count, page_widths_pdf, page_heights_pdf, render_scale):
+    """Force-directed layout proposal. Returns {page_idx: (scene_x, scene_y)}."""
+    import math
+    from collections import deque
+
+    if page_count == 0:
+        return {}
+
+    rs = render_scale
+    W = max((page_widths_pdf.get(i, 800) * rs for i in range(page_count)), default=2400.0)
+    H = max((page_heights_pdf.get(i, 600) * rs for i in range(page_count)), default=1800.0)
+    GAP_X = W * 0.15
+    GAP_Y = H * 0.10
+
+    # Build directed edges (only non-ghost, both pages known)
+    out_edges = {i: [] for i in range(page_count)}
+    in_edges  = {i: [] for i in range(page_count)}
+    for c in connections:
+        fp = c.get('from_page')
+        tp = c.get('to_page')
+        if fp is None or tp is None:
+            continue
+        if not (0 <= fp < page_count and 0 <= tp < page_count):
+            continue
+        w = float(c.get('weight', 0.1))
+        out_edges[fp].append((tp, w))
+        in_edges[tp].append((fp, w))
+
+    # Topological levels via BFS (Kahn's algorithm)
+    in_deg = {i: len(in_edges[i]) for i in range(page_count)}
+    queue  = deque(i for i in range(page_count) if in_deg[i] == 0)
+    level  = {i: 0 for i in range(page_count)}
+    processed = set()
+    while queue:
+        node = queue.popleft()
+        if node in processed:
+            continue
+        processed.add(node)
+        for tgt, _ in out_edges[node]:
+            level[tgt] = max(level[tgt], level[node] + 1)
+            in_deg[tgt] -= 1
+            if in_deg[tgt] <= 0 and tgt not in processed:
+                queue.append(tgt)
+    # Cycle nodes: assign max_level + 1
+    max_lv = max(level.values(), default=0)
+    for i in range(page_count):
+        if i not in processed:
+            level[i] = max_lv + 1
+
+    # Group by level, assign initial grid positions
+    level_groups = {}
+    for i in range(page_count):
+        level_groups.setdefault(level[i], []).append(i)
+
+    pos = {}
+    for lv in sorted(level_groups):
+        group = sorted(level_groups[lv])
+        for rank, node in enumerate(group):
+            pos[node] = [lv * (W + GAP_X), rank * (H + GAP_Y)]
+
+    # Force-directed fine-tuning (80 iterations)
+    fd_edges = []
+    for c in connections:
+        fp = c.get('from_page')
+        tp = c.get('to_page')
+        if fp is not None and tp is not None and 0 <= fp < page_count and 0 <= tp < page_count:
+            fd_edges.append((fp, tp, float(c.get('weight', 0.1))))
+
+    K = W * 0.9
+    for it in range(80):
+        forces = {i: [0.0, 0.0] for i in range(page_count)}
+        nodes = list(range(page_count))
+        for ai, a in enumerate(nodes):
+            for b in nodes[ai+1:]:
+                dx = pos[a][0] - pos[b][0]
+                dy = pos[a][1] - pos[b][1]
+                d2 = max(1.0, dx*dx + dy*dy)
+                d  = d2 ** 0.5
+                f  = K * K / d2
+                forces[a][0] += f * dx / d
+                forces[a][1] += f * dy / d
+                forces[b][0] -= f * dx / d
+                forces[b][1] -= f * dy / d
+        for fp, tp, w in fd_edges:
+            dx = pos[tp][0] - pos[fp][0]
+            dy = pos[tp][1] - pos[fp][1]
+            d  = max(1.0, (dx*dx + dy*dy) ** 0.5)
+            ideal = W + GAP_X
+            f = w * (d - ideal) / d * 0.4
+            forces[fp][0] += f * dx;  forces[fp][1] += f * dy * 0.25
+            forces[tp][0] -= f * dx;  forces[tp][1] -= f * dy * 0.25
+            dir_f = w * 25.0
+            forces[fp][0] -= dir_f;   forces[tp][0] += dir_f
+        temp = K * 0.4 * (1.0 - it / 80.0)
+        for i in range(page_count):
+            fx, fy = forces[i]
+            fmag = max(1.0, (fx*fx + fy*fy) ** 0.5)
+            step = min(temp, fmag)
+            pos[i][0] += fx / fmag * step
+            pos[i][1] += fy / fmag * step
+
+    # Normalize: shift so top-left = (40, 40)
+    if not pos:
+        return {}
+    min_x = min(p[0] for p in pos.values()) - 40
+    min_y = min(p[1] for p in pos.values()) - 40
+    return {i: (round(pos[i][0] - min_x, 1), round(pos[i][1] - min_y, 1))
+            for i in range(page_count)}
 
 
 class PIDGraphicsView(QGraphicsView):
@@ -4879,6 +5363,8 @@ class PIDPanel(QWidget):
         self._pending_secondary_deviation_id   = None   # for re-opening dialog after secondary placement
         self._pending_secondary_preselect_type = ''
         self._current_display_page  = 0
+        self._smart_layout_prev  = None   # {page: (ox, oy)} for undo
+        self._analyzer_thread    = None
         self._sheet_map: dict       = {}
 
         layout = QVBoxLayout(self)
@@ -4988,6 +5474,13 @@ class PIDPanel(QWidget):
         self.layout_btn.setToolTip("Dra ritningsbladen för att ordna om dem")
         self.layout_btn.toggled.connect(self._on_layout_mode_toggled)
         bar.addWidget(self.layout_btn)
+
+        self.smart_btn = QPushButton("✨ Smart layout")
+        self.smart_btn.setToolTip(
+            "Analyserar off-page connectors och föreslår optimal bladlayout (max 15 s)")
+        self.smart_btn.clicked.connect(self._run_smart_layout)
+        bar.addWidget(self.smart_btn)
+
         bar.addStretch()
         layout.addLayout(bar)
 
@@ -5658,6 +6151,89 @@ class PIDPanel(QWidget):
             self._set_mode(MODE_BOARD_LAYOUT)
         else:
             self._set_mode(MODE_NAV)
+
+    def _run_smart_layout(self):
+        if not HAS_PYMUPDF or self.viewer.pdf_doc is None:
+            QMessageBox.information(self, "Smart layout",
+                "Öppna en P&ID-fil (PDF) först.")
+            return
+        if self._analyzer_thread and self._analyzer_thread.isRunning():
+            return
+        # Save current layout for undo
+        self._smart_layout_prev = dict(self.viewer._page_offsets)
+        self.smart_btn.setEnabled(False)
+        self.smart_btn.setText("⏳ Analyserar…")
+
+        path = self.db.get_pid_path()
+        self._analyzer_thread = ConnectorAnalyzer(
+            path,
+            self.viewer.pdf_doc.page_count,
+            self.viewer._page_widths_pdf,
+            self.viewer._page_heights_pdf,
+            self.viewer.render_scale,
+        )
+        self._analyzer_thread.progress.connect(
+            lambda msg: self.smart_btn.setText(f"⏳ {msg}"))
+        self._analyzer_thread.finished_analysis.connect(self._on_smart_layout_done)
+        self._analyzer_thread.start()
+
+    def _on_smart_layout_done(self, connectors, connections, layout):
+        self.smart_btn.setEnabled(True)
+        self.smart_btn.setText("✨ Smart layout")
+
+        if not layout:
+            QMessageBox.information(self, "Smart layout",
+                "Inga off-page connectors hittades — kan inte föreslå layout.")
+            return
+
+        # Save to DB
+        self.db.clear_connector_analysis()
+        self.db.save_connectors(connectors)
+        self.db.save_pid_connections(connections)
+
+        # Apply layout (scene coords = pdf_coords * render_scale already in layout dict)
+        rs = self.viewer.render_scale
+        for pn, (x, y) in layout.items():
+            if pn in self.viewer._all_page_items:
+                self.viewer._page_offsets[pn] = (x, y)
+                self.viewer._all_page_items[pn].setPos(x, y)
+
+        self.viewer._update_board_scene_rect()
+        self._load_overlays()
+
+        # Save to DB
+        import json as _json
+        layout_data = {str(p): list(off)
+                       for p, off in self.viewer._page_offsets.items()}
+        self.db.set_pid_config_value('board_layout', _json.dumps(layout_data))
+
+        n_conn   = sum(1 for c in connections if not c.get('is_ghost'))
+        n_ghost  = sum(1 for c in connections if c.get('is_ghost'))
+        n_sheets = self.viewer.pdf_doc.page_count
+        msg = (f"Layout klar — {len(connectors)} connectors, "
+               f"{n_conn} kopplingar, {n_ghost} externa")
+        if n_ghost:
+            msg += f"\n({n_ghost} ritningar refererade men ej i workboard)"
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Smart layout")
+        box.setText(msg)
+        undo_btn = box.addButton("↩ Ångra", QMessageBox.ButtonRole.ResetRole)
+        box.addButton("OK", QMessageBox.ButtonRole.AcceptRole)
+        box.exec()
+        if box.clickedButton() == undo_btn:
+            self._undo_smart_layout()
+
+    def _undo_smart_layout(self):
+        if self._smart_layout_prev is None:
+            return
+        for pn, (ox, oy) in self._smart_layout_prev.items():
+            if pn in self.viewer._all_page_items:
+                self.viewer._page_offsets[pn] = (ox, oy)
+                self.viewer._all_page_items[pn].setPos(ox, oy)
+        self.viewer._update_board_scene_rect()
+        self._load_overlays()
+        self._smart_layout_prev = None
 
     def _update_pen(self):
         self.viewer.set_pen_style(
