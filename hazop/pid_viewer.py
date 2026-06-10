@@ -390,12 +390,72 @@ _RE_TO_FROM = re.compile(
     r'\b(TO|FROM|CONT\'?D\.?(?:\s+ON)?)\s+([A-Z0-9][A-Z0-9\-/\.]{1,25})', re.IGNORECASE)
 _RE_LINE_ID = re.compile(
     r'\b(\d{1,4}["\']\-[A-Z]{1,5}\-\d{3,6}[A-Z0-9\-]*|\d{1,4}\-[A-Z]{1,5}\-\d{3,6}[A-Z0-9\-]*)\b')
-# Matches S0000156 (LKAB-style) as well as classic A-01, P-101 formats
+# Universal sheet-number regex — covers all known customer formats
 _RE_SHEET_NUM = re.compile(
-    r'\b(S\d{6,8}|[A-Z]{1,5}\-\d{2,6}[A-Z]?\d?|\d{4,6}\-\d{2,4})\b', re.IGNORECASE)
-# LKAB-specific: =M1.GPA3   S0000155 (RDS code + sheet number on same/adjacent span)
+    r'\b('
+    r'S\d{6,8}'                              # LKAB:   S0000155
+    r'|[A-Z]{2,6}_\d{4,8}'                  # ITS:    XFB_11338
+    r'|[A-Z]{2,4}_[A-Z]{2,4}_\d{3,6}'      # Gryaab: AD_PFS_0003
+    r'|[A-Z]{2,4}[-_][A-Z]{2,4}[-_]\d{3,6}'# Gryaab: AD-PFS-0003
+    r'|[A-Z]{1,5}\-\d{2,6}[A-Z]?\d?'       # classic: P-101
+    r'|\d{3}-\d{4}-\d{3}'                   # Hybrit: 242-0000-001
+    r'|\d{4,6}\-\d{2,4}'                    # old:    1234-01
+    r')\b', re.IGNORECASE)
+# LKAB-specific: =M1.GPA3   S0000155
 _RE_RDS_SHEET = re.compile(
     r'=([A-Z][A-Z0-9./\-]{1,25})\s+S(\d{6,8})', re.IGNORECASE)
+# ITS: XFB_40208/001.2F  — extract the drawing code as the sheet reference
+_RE_ITS_CONN = re.compile(
+    r'\b([A-Z]{2,6}_\d{4,8})/\d{3,6}\.\w{1,4}\b', re.IGNORECASE)
+# Gryaab: AD_DP76, AD_PFS_0003, AD_RR0032-350
+_RE_GRYAAB_CONN = re.compile(
+    r'\b([A-Z]{2,4}[_-][A-Z]{1,4}\d{2,5}(?:[_-]\d+)?)\b', re.IGNORECASE)
+
+# ── Dialect definitions ────────────────────────────────────────────────────────
+# Each dialect describes how to recognise sheet numbers and cross-references for
+# a particular P&ID style.  ConnectorAnalyzer auto-detects the best-fitting
+# dialect from the first few pages before parsing begins.
+_DIALECTS = {
+    'lkab': {
+        'name':         'LKAB (RDS + S-nummer)',
+        'score_re':     re.compile(r'\bS\d{6,8}\b|=[A-Z][A-Z0-9./\-]{1,10}\s+S\d{6,8}', re.I),
+        'sheet_num_re': re.compile(r'\bS(\d{6,8})\b', re.I),
+        'title_area':   (0.45, 0.86, 1.0, 1.0),
+    },
+    'its': {
+        'name':         'ITS (XFB_NNNNN/NNN.NN)',
+        'score_re':     re.compile(r'[A-Z]{2,6}_\d{4,8}/\d{3,6}\.\w', re.I),
+        'sheet_num_re': re.compile(r'\b([A-Z]{2,6}_\d{4,8})\b', re.I),
+        'title_area':   (0.5, 0.7, 1.0, 1.0),
+    },
+    'gryaab': {
+        'name':         'Gryaab (AD_COMPONENT)',
+        'score_re':     re.compile(r'\b[A-Z]{2,4}[_-][A-Z]{1,4}\d{2,5}\b', re.I),
+        'sheet_num_re': re.compile(r'\b([A-Z]{2,4}[-_][A-Z]{2,4}[-_]\d{3,6})\b', re.I),
+        'title_area':   (0.5, 0.7, 1.0, 1.0),
+    },
+    'hybrit': {
+        'name':         'Hybrit (NNN-NNNN-NNN)',
+        'score_re':     re.compile(r'\b\d{3}-\d{4}-\d{3}\b'),
+        'sheet_num_re': re.compile(r'\b(\d{3}-\d{4}-\d{3})\b'),
+        'title_area':   (0.0, 0.85, 1.0, 1.0),
+    },
+    'classic': {
+        'name':         'Classic (TO/FROM DWG)',
+        'score_re':     re.compile(r'\b(TO|FROM|CONT\'?D)\b', re.I),
+        'sheet_num_re': _RE_SHEET_NUM,
+        'title_area':   (0.45, 0.75, 1.0, 1.0),
+    },
+}
+
+def _detect_dialect(sample_texts):
+    """Score each dialect against sample text from the first few pages."""
+    scores = {d: 0 for d in _DIALECTS}
+    for text in sample_texts:
+        for dname, dconf in _DIALECTS.items():
+            scores[dname] += len(dconf['score_re'].findall(text))
+    best = max(scores, key=lambda d: scores[d])
+    return best if scores[best] > 0 else 'classic'
 
 _MEDIA_PATTERNS = [
     ('slurry',        re.compile(r'\b(SLURRY|PULP|MUD|SLUDGE|UNDERFLOW|THICKENER)\b', re.I)),
@@ -2370,7 +2430,7 @@ class ConnectorAnalyzer(QThread):
 
     def run(self):
         import time
-        self._deadline = time.time() + 13.0
+        self._deadline = time.time() + 45.0   # longer for OCR-heavy sets
         all_connectors = []
         page_sheet_nums = {}  # pn → sheet number string (best guess)
 
@@ -2381,6 +2441,14 @@ class ConnectorAnalyzer(QThread):
             self.finished_analysis.emit([], [], {}, {})
             return
 
+        # ── Auto-detect dialect from first 5 pages ────────────────────────────
+        sample_texts = []
+        for pn in range(min(5, doc.page_count)):
+            sample_texts.append(doc.load_page(pn).get_text("text"))
+        self._dialect = _detect_dialect(sample_texts)
+        dialect_conf  = _DIALECTS[self._dialect]
+        self.progress.emit(f"Dialekt: {dialect_conf['name']}")
+
         for pn in range(doc.page_count):
             if time.time() > self._deadline:
                 self.progress.emit(f"Tidsgräns — {pn}/{doc.page_count} blad klara")
@@ -2390,28 +2458,39 @@ class ConnectorAnalyzer(QThread):
             pw = float(page.rect.width)
             ph = float(page.rect.height)
 
-            # ── Extract sheet number from title block (bottom-right 12% of page) ──
-            title_rect = fitz.Rect(pw * 0.45, ph * 0.86, pw, ph)
+            # ── Extract sheet number using dialect title area ──────────────────
+            ta = dialect_conf['title_area']
+            title_rect = fitz.Rect(pw*ta[0], ph*ta[1], pw*ta[2], ph*ta[3])
             title_text = page.get_text("text", clip=title_rect)
-            # Prefer LKAB S-number format (S0000156), then classic A-01
-            m_lkab = re.search(r'\bS(\d{6,8})\b', title_text)
-            if m_lkab:
-                page_sheet_nums[pn] = ('S' + m_lkab.group(1)).upper()
-            else:
-                m = _RE_SHEET_NUM.search(title_text)
-                if m:
-                    page_sheet_nums[pn] = m.group(1).upper().strip()
+            m = dialect_conf['sheet_num_re'].search(title_text)
+            if m:
+                page_sheet_nums[pn] = m.group(1).upper().strip()
 
-            # ── Native text in edge zones ──
+            # ── Native text in edge zones ──────────────────────────────────────
             spans = self._get_spans(page)
+            native_word_count = len(spans)
             connectors = self._find_in_zones(spans, pn, pw, ph, ocr_used=False)
 
-            # ── OCR fallback on left+right edges ──
-            if not connectors and HAS_PYMUPDF and time.time() < self._deadline - 1.5:
-                ocr_text_lr = self._ocr_edges(page, pw, ph)
-                if ocr_text_lr:
-                    ocr_spans = self._text_to_spans(ocr_text_lr, pw, ph)
-                    connectors = self._find_in_zones(ocr_spans, pn, pw, ph, ocr_used=True)
+            # ── OCR: trigger when page has few native words (scanned PDF) ──────
+            needs_ocr = (not connectors or native_word_count < 30)
+            if needs_ocr and HAS_PYMUPDF and time.time() < self._deadline - 2.0:
+                if native_word_count < 30:
+                    # Full-page OCR split into 4 edge strips
+                    ocr_text = self._ocr_edges(page, pw, ph)
+                else:
+                    # Edge-only OCR (has native text but no connectors found)
+                    ocr_text = self._ocr_edges(page, pw, ph)
+                if ocr_text:
+                    ocr_spans = self._text_to_spans(ocr_text, pw, ph)
+                    ocr_conns = self._find_in_zones(ocr_spans, pn, pw, ph, ocr_used=True)
+                    if ocr_conns:
+                        connectors = ocr_conns
+                    # Also try to extract sheet number from OCR if not found yet
+                    if pn not in page_sheet_nums:
+                        all_ocr = ' '.join(ocr_text.values())
+                        m2 = dialect_conf['sheet_num_re'].search(all_ocr)
+                        if m2:
+                            page_sheet_nums[pn] = m2.group(1).upper().strip()
 
             all_connectors.extend(connectors)
 
@@ -2519,27 +2598,78 @@ class ConnectorAnalyzer(QThread):
         return clusters
 
     def _parse_connector(self, text, edge, pn, cx, cy, pw, ph, ocr_used):
-        m = _RE_TO_FROM.search(text)
+        dialect = getattr(self, '_dialect', 'classic')
         keyword = ref_sheet = rds_code = None
-        lkab_format = False
-        if m:
-            keyword   = m.group(1).upper()
-            ref_sheet = m.group(2).upper().strip()
-        else:
-            # LKAB format: =M1.GPA3   S0000155
+        lkab_format = its_format = gryaab_format = False
+
+        # ── Dialect-specific primary detection ────────────────────────────────
+        if dialect == 'lkab':
             m_rds = _RE_RDS_SHEET.search(text)
             if m_rds:
-                rds_code   = m_rds.group(1).upper()
-                ref_sheet  = ('S' + m_rds.group(2)).upper()
+                rds_code    = m_rds.group(1).upper()
+                ref_sheet   = ('S' + m_rds.group(2)).upper()
                 lkab_format = True
             else:
-                # Fallback: bare sheet number near edge
-                m2 = _RE_SHEET_NUM.search(text)
-                if not m2:
-                    return None
-                ref_sheet = m2.group(1).upper().strip()
+                m_kw = _RE_TO_FROM.search(text)
+                if m_kw:
+                    keyword   = m_kw.group(1).upper()
+                    ref_sheet = m_kw.group(2).upper().strip()
+                else:
+                    m2 = re.search(r'\bS(\d{6,8})\b', text, re.I)
+                    if m2:
+                        ref_sheet = ('S' + m2.group(1)).upper()
 
-        # Direction
+        elif dialect == 'its':
+            m_its = _RE_ITS_CONN.search(text)
+            if m_its:
+                ref_sheet  = m_its.group(1).upper()   # e.g. XFB_40208
+                its_format = True
+            else:
+                m_kw = _RE_TO_FROM.search(text)
+                if m_kw:
+                    keyword   = m_kw.group(1).upper()
+                    ref_sheet = m_kw.group(2).upper().strip()
+                else:
+                    m2 = _DIALECTS['its']['sheet_num_re'].search(text)
+                    if m2:
+                        ref_sheet = m2.group(1).upper()
+
+        elif dialect == 'gryaab':
+            m_kw = _RE_TO_FROM.search(text)
+            if m_kw:
+                keyword   = m_kw.group(1).upper()
+                ref_sheet = m_kw.group(2).upper().strip()
+            else:
+                m_gr = _RE_GRYAAB_CONN.search(text)
+                if m_gr:
+                    ref_sheet     = m_gr.group(1).upper()
+                    gryaab_format = True
+
+        elif dialect == 'hybrit':
+            m2 = _DIALECTS['hybrit']['sheet_num_re'].search(text)
+            if m2:
+                ref_sheet = m2.group(1).upper()
+
+        else:  # classic / fallback
+            m_kw = _RE_TO_FROM.search(text)
+            if m_kw:
+                keyword   = m_kw.group(1).upper()
+                ref_sheet = m_kw.group(2).upper().strip()
+            else:
+                m_rds = _RE_RDS_SHEET.search(text)
+                if m_rds:
+                    rds_code    = m_rds.group(1).upper()
+                    ref_sheet   = ('S' + m_rds.group(2)).upper()
+                    lkab_format = True
+                else:
+                    m2 = _RE_SHEET_NUM.search(text)
+                    if m2:
+                        ref_sheet = m2.group(1).upper().strip()
+
+        if not ref_sheet:
+            return None
+
+        # ── Direction ─────────────────────────────────────────────────────────
         if keyword in ('TO', "CONT'D", 'CONTD'):
             dir_kw = 'out'
         elif keyword == 'FROM':
@@ -2548,34 +2678,37 @@ class ConnectorAnalyzer(QThread):
             dir_kw = None
 
         edge_dir_map = {'right': 'out', 'left': 'in', 'top': 'unknown', 'bottom': 'unknown'}
-        direction = dir_kw or edge_dir_map.get(edge, 'unknown')
-
+        direction  = dir_kw or edge_dir_map.get(edge, 'unknown')
         dir_factor = {'out': 1.0, 'in': 1.0, 'unknown': 0.4}.get(direction, 0.4)
         if edge in ('top', 'bottom'):
             dir_factor = 0.5
 
-        # Line ID
+        # ── Line ID & media ───────────────────────────────────────────────────
         lm = _RE_LINE_ID.search(text)
         ref_line_id = lm.group(1) if lm else None
 
-        # Media
         media_type = 'unknown'
         for mname, pat in _MEDIA_PATTERNS:
             if pat.search(text):
                 media_type = mname
                 break
 
-        # Confidence — LKAB explicit RDS+S-number format is highly reliable
-        conf = 0.9 if keyword else (0.85 if lkab_format else 0.6)
-        if not ref_sheet:
-            conf -= 0.2
+        # ── Confidence ────────────────────────────────────────────────────────
+        if lkab_format or its_format:
+            conf = 0.85
+        elif keyword:
+            conf = 0.90
+        elif gryaab_format:
+            conf = 0.70
+        else:
+            conf = 0.55
         if ref_line_id is None:
-            conf -= 0.1
+            conf -= 0.08
         if ocr_used:
-            conf -= 0.1
+            conf -= 0.10
         if media_type == 'unknown':
-            conf -= 0.1
-        conf = max(0.1, conf)
+            conf -= 0.08
+        conf = max(0.10, conf)
 
         mw = _MEDIA_WEIGHTS.get(media_type, 0.05)
         weight = round(mw * conf * dir_factor, 3)
@@ -2598,39 +2731,63 @@ class ConnectorAnalyzer(QThread):
         }
 
     def _ocr_edges(self, page, pw, ph):
-        """OCR all four edges of the page. Returns {edge: text}."""
+        """OCR all four edges. Returns {edge: text}. Uses 3× scale + preprocessing."""
         if not HAS_PYMUPDF:
             return {}
-        result = {}
         strips = {
             'left':   fitz.Rect(0,       0,       pw*0.28, ph),
             'right':  fitz.Rect(pw*0.72, 0,       pw,      ph),
             'top':    fitz.Rect(0,       0,       pw,      ph*0.22),
             'bottom': fitz.Rect(0,       ph*0.78, pw,      ph),
         }
-        scale = 2.0
-        mat = fitz.Matrix(scale, scale)
+        mat = fitz.Matrix(3.0, 3.0)
+        result = {}
         for edge, clip in strips.items():
             try:
                 pix = page.get_pixmap(matrix=mat, clip=clip, alpha=False)
-                img = QImage(pix.samples, pix.width, pix.height,
-                             pix.stride, QImage.Format.Format_RGB888)
-                # Try pytesseract
-                try:
-                    import pytesseract
-                    from PIL import Image as _PILImg
-                    import io as _io
-                    buf = _io.BytesIO()
-                    img.save(buf, format='PNG')  # QImage can't save to BytesIO directly
-                    # Use pix.tobytes() approach instead
-                    pil_img = _PILImg.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                    text = pytesseract.image_to_string(pil_img, config='--psm 6')
+                text = self._ocr_strip(pix)
+                if text:
                     result[edge] = text
-                except Exception:
-                    pass
             except Exception:
                 pass
         return result
+
+    def _ocr_strip(self, pix):
+        """OCR one pixmap strip. Tries tesseract (multi-PSM + preprocessing) then easyocr."""
+        try:
+            from PIL import Image as _PILImg, ImageEnhance, ImageFilter
+            pil_img = _PILImg.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            gray    = pil_img.convert('L')
+            gray    = ImageEnhance.Contrast(gray).enhance(2.5)
+            gray    = gray.filter(ImageFilter.SHARPEN)
+
+            try:
+                import pytesseract
+                for psm in (6, 11, 3):
+                    text = pytesseract.image_to_string(
+                        gray, config=f'--psm {psm} --oem 1').strip()
+                    if text:
+                        return text
+            except Exception:
+                pass
+
+            # easyocr fallback (lazy-init reader on first use)
+            try:
+                import easyocr as _easyocr
+                if not hasattr(self, '_easyocr_reader'):
+                    self._easyocr_reader = _easyocr.Reader(['en', 'sv'],
+                                                           verbose=False)
+                hits = self._easyocr_reader.readtext(pil_img,
+                                                     detail=0,
+                                                     paragraph=True)
+                text = ' '.join(hits).strip()
+                if text:
+                    return text
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return ''
 
     def _match_connections(self, connectors, sheet_lookup, page_count,
                           page_sheet_nums=None):
