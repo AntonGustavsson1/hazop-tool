@@ -6685,22 +6685,29 @@ class PIDPanel(QWidget):
             self.db.ensure_sheets_initialized(self.viewer.page_count())
             self._current_display_page = 0
 
-        # Phase 2: apply active-page filter, then load markers/connections
+        # Phase 2: apply active-page filter if needed, then load markers/connections
         self._rebuild_sheet_map()
         self._update_page_label()
         sheets = self.db.get_sheets()
-        active = [int(s['physical_page']) for s in sheets] if sheets else None
-        n_active = len(active) if active else 0
-        prog.setMaximum(n_active)
-        prog.setValue(0)
-        prog.setLabelText(f"Bygger P&ID-vy ({n_active} sidor)…")
-        QApplication.processEvents()
-        self.viewer._render_all_pages(
-            active_pages=active,
-            progress_cb=lambda cur, tot: prog.setValue(cur))
+        active = sorted(int(s['physical_page']) for s in sheets) if sheets else None
+        already = sorted(self.viewer._all_page_items.keys())
         prog.setMaximum(0)
         prog.setLabelText("Laddar markeringar…")
         QApplication.processEvents()
+        if active != already:
+            # Active-page set differs from what was rendered (e.g. some sheets
+            # were deleted before appending) — re-render to apply the filter.
+            n_active = len(active) if active else 0
+            prog.setMaximum(n_active)
+            prog.setValue(0)
+            prog.setLabelText(f"Bygger P&ID-vy ({n_active} sidor)…")
+            QApplication.processEvents()
+            self.viewer._render_all_pages(
+                active_pages=active,
+                progress_cb=lambda cur, tot: prog.setValue(cur))
+            prog.setMaximum(0)
+            prog.setLabelText("Laddar markeringar…")
+            QApplication.processEvents()
         self._load_overlays()
         prog.close()
         self.analyze_btn.setEnabled(True)
