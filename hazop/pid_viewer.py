@@ -387,19 +387,22 @@ MODE_ADD_SHEET_LINK  = 15  # click target page to create a manual inter-sheet li
 
 # ── Off-page connector analysis ───────────────────────────────────────────────
 _RE_TO_FROM = re.compile(
-    r'\b(TO|FROM|CONT\'?D\.?(?:\s+ON)?)\s+([A-Z0-9][A-Z0-9\-/\.]{1,25})', re.IGNORECASE)
+    r'\b(TO|FROM|CONT\'?D\.?(?:\s+ON)?|TILL|FR[ÅA]N|FRAN)\s+'
+    r'([A-Z0-9\+][A-Z0-9\-/\.\+]{1,30})', re.IGNORECASE)
 _RE_LINE_ID = re.compile(
     r'\b(\d{1,4}["\']\-[A-Z]{1,5}\-\d{3,6}[A-Z0-9\-]*|\d{1,4}\-[A-Z]{1,5}\-\d{3,6}[A-Z0-9\-]*)\b')
 # Universal sheet-number regex — covers all known customer formats
 _RE_SHEET_NUM = re.compile(
     r'\b('
-    r'S\d{6,8}'                              # LKAB:   S0000155
-    r'|[A-Z]{2,6}_\d{4,8}'                  # ITS:    XFB_11338
-    r'|[A-Z]{2,4}_[A-Z]{2,4}_\d{3,6}'      # Gryaab: AD_PFS_0003
-    r'|[A-Z]{2,4}[-_][A-Z]{2,4}[-_]\d{3,6}'# Gryaab: AD-PFS-0003
-    r'|[A-Z]{1,5}\-\d{2,6}[A-Z]?\d?'       # classic: P-101
-    r'|\d{3}-\d{4}-\d{3}'                   # Hybrit: 242-0000-001
-    r'|\d{4,6}\-\d{2,4}'                    # old:    1234-01
+    r'S\d{6,8}'                                 # LKAB:    S0000155
+    r'|[A-Z]{2,6}_\d{4,8}'                      # ITS:     XFB_11338
+    r'|[A-Z]{2,4}_[A-Z]{2,4}_\d{3,6}'          # Gryaab:  AD_PFS_0003
+    r'|[A-Z]{2,4}[-_][A-Z]{2,4}[-_]\d{3,6}'   # Gryaab:  AD-PFS-0003
+    r'|[A-Z]{1,5}\-\d{2,6}[A-Z]?\d?'           # classic: P-101
+    r'|\d{3}-\d{4}-\d{3}(?:-[A-Z]{1,4})?'      # Hybrit:  242-0000-001, 253-0000-002-PS
+    r'|[A-Z]\d{1,2}-\d{3}-\d{3,4}'             # Smurfit: R1-077-012
+    r'|\+\d{2,4}[A-Z]\d{3}'                    # Loket:   +100D001
+    r'|\d{4,6}\-\d{2,4}'                        # old:     1234-01
     r')\b', re.IGNORECASE)
 # LKAB-specific: =M1.GPA3   S0000155
 _RE_RDS_SHEET = re.compile(
@@ -436,13 +439,13 @@ _DIALECTS = {
     },
     'hybrit': {
         'name':         'Hybrit (NNN-NNNN-NNN)',
-        'score_re':     re.compile(r'\b\d{3}-\d{4}-\d{3}\b'),
-        'sheet_num_re': re.compile(r'\b(\d{3}-\d{4}-\d{3})\b'),
+        'score_re':     re.compile(r'\b\d{3}-\d{4}-\d{3}|\b(TILL|FR[ÅA]N)\b', re.I),
+        'sheet_num_re': re.compile(r'\b(\d{3}-\d{4}-\d{3})(?:-[A-Z]{1,4})?\b'),
         'title_area':   (0.0, 0.85, 1.0, 1.0),
     },
     'classic': {
-        'name':         'Classic (TO/FROM DWG)',
-        'score_re':     re.compile(r'\b(TO|FROM|CONT\'?D)\b', re.I),
+        'name':         'Classic (TO/FROM/TILL/FRÅN DWG)',
+        'score_re':     re.compile(r'\b(TO|FROM|CONT\'?D|TILL|FR[ÅA]N)\b', re.I),
         'sheet_num_re': _RE_SHEET_NUM,
         'title_area':   (0.45, 0.75, 1.0, 1.0),
     },
@@ -476,10 +479,11 @@ _MEDIA_PATTERNS = [
     ('process',       re.compile(
         r'\b(FEED|PRODUCT|CRUDE|HC|PROCESS|RAW|APATITE|RESIDUE'
         r'|PANNVATTEN|KONDENSAT|CONDENSATE)\b', re.I)),
-    # Flue gas / combustion gas
+    # Flue gas / combustion gas / pure gases
     ('gas',           re.compile(
         r'\b(GAS|VAPOR|VAPOUR|VG|FLUE|RÖKGAS|RÖKGASER'
-        r'|FÖRBRÄNNINGSGAS|AVGASER)\b', re.I)),
+        r'|FÖRBRÄNNINGSGAS|AVGASER|KVÄVGAS|NITROGEN|VÄTGAS|HYDROGEN|H2'
+        r'|SYRGAS|OXYGEN|O2|NATURGAS|BIOGAS|SYNGAS)\b', re.I)),
     # Liquid (general)
     ('liquid',        re.compile(r'\b(LIQ|LIQUID|VÄTSKA)\b', re.I)),
     # Steam
@@ -491,7 +495,8 @@ _MEDIA_PATTERNS = [
     ('utility_water', re.compile(
         r'\b(C\.?W\.?|F\.?W\.?|P\.?W\.?|BFW|COOLING\s*WATER|FIRE\s*WATER'
         r'|HEATING\s*WATER|PROCESS\s*WATER|MATARVATTEN|KONDENSATTANK'
-        r'|KYLVATTEN|DRICKSVATTEN|RÅVATTEN|PROCESSVATTEN|FJÄRRVÄRME)\b', re.I)),
+        r'|KYLVATTEN|DRICKSVATTEN|RÅVATTEN|PROCESSVATTEN|FJÄRRVÄRME'
+        r'|SPÄDVATTEN|KYLARVATTEN|SPOLVATTEN|AVJONISERAT)\b', re.I)),
     # Combustion / instrument air
     ('utility_air',   re.compile(
         r'\b(I\.?A\.?|P\.?A\.?|C\.?A\.?|INSTRUMENT\s*AIR|PLANT\s*AIR'
@@ -2526,20 +2531,17 @@ class ConnectorAnalyzer(QThread):
             # ── Native text in edge zones ──────────────────────────────────────
             spans = self._get_spans(page)
             native_word_count = len(spans)
-            connectors = self._find_in_zones(spans, pn, pw, ph, ocr_used=False)
+            connectors = self._find_in_zones(spans, pn, pw, ph,
+                                             ocr_used=False, page=page)
 
             # ── OCR: trigger when page has few native words (scanned PDF) ──────
             needs_ocr = (not connectors or native_word_count < 30)
             if needs_ocr and HAS_PYMUPDF and time.time() < self._deadline - 2.0:
-                if native_word_count < 30:
-                    # Full-page OCR split into 4 edge strips
-                    ocr_text = self._ocr_edges(page, pw, ph)
-                else:
-                    # Edge-only OCR (has native text but no connectors found)
-                    ocr_text = self._ocr_edges(page, pw, ph)
+                ocr_text = self._ocr_edges(page, pw, ph)
                 if ocr_text:
                     ocr_spans = self._text_to_spans(ocr_text, pw, ph)
-                    ocr_conns = self._find_in_zones(ocr_spans, pn, pw, ph, ocr_used=True)
+                    ocr_conns = self._find_in_zones(ocr_spans, pn, pw, ph,
+                                                    ocr_used=True, page=page)
                     if ocr_conns:
                         connectors = ocr_conns
                     # Also try to extract sheet number from OCR if not found yet
@@ -2614,20 +2616,67 @@ class ConnectorAnalyzer(QThread):
                                   "x0": cx-10, "y0": cy-5, "x1": cx+10, "y1": cy+5})
         return spans
 
-    def _find_in_zones(self, spans, pn, pw, ph, ocr_used):
+    def _find_arrow_shapes(self, page, pw, ph):
+        """Detect pentagon/arrow connector shapes near page edges using vector graphics.
+        Returns list of (cx, cy, edge) tuples in PDF coordinates."""
+        results = []
+        try:
+            drawings = page.get_drawings()
+        except Exception:
+            return results
+        for d in drawings:
+            r = d.get('rect')
+            if r is None:
+                continue
+            w = r.x1 - r.x0
+            h = r.y1 - r.y0
+            # Skip tiny marks and huge blocks (title boxes etc.)
+            if w < 15 or h < 6 or w > pw * 0.55 or h > ph * 0.25:
+                continue
+            # Must be near an edge
+            at_left   = r.x1 < pw * 0.32
+            at_right  = r.x0 > pw * 0.68
+            at_top    = r.y1 < ph * 0.26
+            at_bottom = r.y0 > ph * 0.74
+            if not (at_left or at_right or at_top or at_bottom):
+                continue
+            # Arrow-like aspect ratio: for left/right edges wide>tall; top/bottom tall>wide
+            if (at_left or at_right) and not (1.5 < w / max(h, 1) < 20):
+                continue
+            if (at_top or at_bottom) and not (0.3 < w / max(h, 1) < 3):
+                continue
+            n_items = len(d.get('items', []))
+            if not (3 <= n_items <= 10):
+                continue
+            cx = (r.x0 + r.x1) / 2
+            cy = (r.y0 + r.y1) / 2
+            if at_left:
+                edge = 'left'
+            elif at_right:
+                edge = 'right'
+            elif at_top:
+                edge = 'top'
+            else:
+                edge = 'bottom'
+            results.append((cx, cy, edge, r))
+        return results
+
+    def _find_in_zones(self, spans, pn, pw, ph, ocr_used, page=None):
         edge_zones = {
-            'left':   (0,        0,    pw*0.28, ph),
-            'right':  (pw*0.72,  0,    pw,      ph),
-            'top':    (0,        0,    pw,      ph*0.22),
-            'bottom': (0,  ph*0.78,    pw,      ph),
+            'left':   (0,        0,    pw*0.32, ph),
+            'right':  (pw*0.68,  0,    pw,      ph),
+            'top':    (0,        0,    pw,      ph*0.26),
+            'bottom': (0,  ph*0.74,    pw,      ph),
         }
         results = []
+        seen_refs = set()   # deduplicate same ref_sheet at same (edge, approx_y)
+
+        # ── Pass 1: text-in-edge-zone (as before) ─────────────────────────────
         for edge, (x0, y0, x1, y1) in edge_zones.items():
             zone_spans = [s for s in spans
                           if x0 <= s["x"] <= x1 and y0 <= s["y"] <= y1]
             if not zone_spans:
                 continue
-            # Cluster nearby spans
             clusters = self._cluster_spans(zone_spans, gap=60.0)
             for cluster in clusters:
                 combined = ' '.join(s["text"] for s in cluster)
@@ -2636,7 +2685,31 @@ class ConnectorAnalyzer(QThread):
                 conn = self._parse_connector(combined, edge, pn, cx, cy,
                                              pw, ph, ocr_used)
                 if conn:
-                    results.append(conn)
+                    key = (edge, conn['ref_sheet'], round(cy / max(ph, 1) * 20))
+                    if key not in seen_refs:
+                        seen_refs.add(key)
+                        results.append(conn)
+
+        # ── Pass 2: vector-shape anchored search ──────────────────────────────
+        if page is not None:
+            for shape_cx, shape_cy, edge, shape_rect in self._find_arrow_shapes(page, pw, ph):
+                # Collect all text within 1.5× the shape bounding box
+                margin_x = max(shape_rect.width * 1.5, 40)
+                margin_y = max(shape_rect.height * 2.0, 40)
+                nearby = [s for s in spans
+                          if abs(s["x"] - shape_cx) < margin_x + shape_rect.width
+                          and abs(s["y"] - shape_cy) < margin_y + shape_rect.height]
+                if not nearby:
+                    continue
+                combined = ' '.join(s["text"] for s in nearby)
+                conn = self._parse_connector(combined, edge, pn,
+                                             shape_cx, shape_cy,
+                                             pw, ph, ocr_used)
+                if conn:
+                    key = (edge, conn['ref_sheet'], round(shape_cy / max(ph, 1) * 20))
+                    if key not in seen_refs:
+                        seen_refs.add(key)
+                        results.append(conn)
         return results
 
     def _cluster_spans(self, spans, gap=60.0):
@@ -2705,9 +2778,14 @@ class ConnectorAnalyzer(QThread):
                     gryaab_format = True
 
         elif dialect == 'hybrit':
-            m2 = _DIALECTS['hybrit']['sheet_num_re'].search(text)
-            if m2:
-                ref_sheet = m2.group(1).upper()
+            m_kw = _RE_TO_FROM.search(text)
+            if m_kw:
+                keyword   = m_kw.group(1).upper()
+                ref_sheet = m_kw.group(2).upper().strip()
+            else:
+                m2 = _DIALECTS['hybrit']['sheet_num_re'].search(text)
+                if m2:
+                    ref_sheet = m2.group(1).upper()
 
         else:  # classic / fallback
             m_kw = _RE_TO_FROM.search(text)
@@ -2729,9 +2807,10 @@ class ConnectorAnalyzer(QThread):
             return None
 
         # ── Direction ─────────────────────────────────────────────────────────
-        if keyword in ('TO', "CONT'D", 'CONTD'):
+        kw_upper = (keyword or '').upper().replace('Å', 'A').replace('Ä', 'A')
+        if kw_upper in ('TO', "CONT'D", 'CONTD', 'TILL'):
             dir_kw = 'out'
-        elif keyword == 'FROM':
+        elif kw_upper in ('FROM', 'FRAN', 'FRAAN'):
             dir_kw = 'in'
         else:
             dir_kw = None
@@ -2964,8 +3043,8 @@ def _propose_layout(connections, active_pages, page_widths_pdf, page_heights_pdf
         return {}
 
     rs        = render_scale
-    GAP_X     = 24   # horizontal gap between columns (scene px)
-    GAP_Y     = 16   # vertical gap between pages in the same column
+    GAP_X     = 160  # horizontal gap between columns (scene px)
+    GAP_Y     = 100  # vertical gap between pages in the same column
     MAX_COL   = 8    # split a column if it exceeds this many pages
 
     page_set = set(active_pages)
@@ -3282,7 +3361,8 @@ class PIDGraphicsView(QGraphicsView):
                 pass
             self._placeholder = None
 
-    def load_pdf(self, path, page=0, layout_offsets=None, active_pages=None):
+    def load_pdf(self, path, page=0, layout_offsets=None, active_pages=None,
+                 progress_cb=None):
         if not HAS_PYMUPDF:
             self._show_placeholder("Installera PyMuPDF:\n  pip install PyMuPDF")
             return False
@@ -3300,7 +3380,8 @@ class PIDGraphicsView(QGraphicsView):
         self._cache_order.clear()
         self._cancel_prefetch()
         self.current_page = max(0, min(page, self.pdf_doc.page_count - 1))
-        self._render_all_pages(layout_offsets=layout_offsets, active_pages=active_pages)
+        self._render_all_pages(layout_offsets=layout_offsets, active_pages=active_pages,
+                               progress_cb=progress_cb)
         return True
 
     def _render_page(self):
@@ -3340,7 +3421,8 @@ class PIDGraphicsView(QGraphicsView):
 
         self._prefetch_adjacent()
 
-    def _render_all_pages(self, layout_offsets=None, active_pages=None):
+    def _render_all_pages(self, layout_offsets=None, active_pages=None,
+                          progress_cb=None):
         """Render PDF pages (only active_pages if given) as tiled scene items."""
         if not HAS_PYMUPDF or self.pdf_doc is None:
             return
@@ -3353,13 +3435,14 @@ class PIDGraphicsView(QGraphicsView):
         self._page_widths_pdf.clear()
         self._page_heights_pdf.clear()
         self.render_scale = self._RASTER_SCALE
-        GAP = 30.0  # scene pixels between pages
+        GAP = 100.0  # scene pixels between pages
 
         pages_to_render = (sorted(active_pages)
                            if active_pages is not None
-                           else range(self.pdf_doc.page_count))
+                           else list(range(self.pdf_doc.page_count)))
+        total_pages = len(pages_to_render)
         x_cursor = 0.0
-        for pn in pages_to_render:
+        for render_idx, pn in enumerate(pages_to_render):
             fitz_page = self.pdf_doc.load_page(pn)
             rect = fitz_page.rect
             pw_pdf = float(rect.width)
@@ -3393,6 +3476,10 @@ class PIDGraphicsView(QGraphicsView):
             page_item.setPos(ox, oy)
             self._scene.addItem(page_item)
             self._all_page_items[pn] = page_item
+
+            if progress_cb is not None:
+                progress_cb(render_idx + 1, total_pages)
+                QApplication.processEvents()
 
         self.page_item = self._all_page_items.get(self.current_page)
         self.page_rect_width  = self._page_widths_pdf.get(self.current_page, 0.0)
@@ -4820,75 +4907,98 @@ class PIDGraphicsView(QGraphicsView):
                            bidirectional: bool = False, conn_id: int = -1,
                            src_edge: str = 'right', dst_edge: str = 'left',
                            src_page: int = -1, dst_page: int = -1,
-                           arc_index: int = 0):
-        """Draw a bezier arc between two sheet edges with arrowhead and label.
-        Arcs are drawn behind P&ID pages (z < Z_PAGE).
-        Control points follow the connector exit direction so top/bottom exits
-        curve vertically and left/right exits curve horizontally.
+                           arc_index: int = 0, weight: float = 0.5):
+        """Draw an orthogonal (90-degree bend) connection between two sheet edges.
+
+        Lines are staggered by arc_index so parallel connections don't overlap.
+        Pen width scales with weight (connection strength).
+        Drawn behind P&ID pages (z < Z_PAGE).
         """
         import math
         color = QColor(color_hex)
-        pen = QPen(color, 3)
+
+        # Thickness: 2 px for weak connections, up to 6 px for strong ones
+        pen_width = round(max(2.0, min(6.0, 2.0 + weight * 5.0)), 1)
+        pen = QPen(color, pen_width)
         pen.setCosmetic(True)
-        if confidence < 0.65:
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        if confidence < 0.50:
             pen.setStyle(Qt.PenStyle.DashLine)
+        elif confidence < 0.70:
+            pen.setStyle(Qt.PenStyle.DotLine)
 
-        dx = dst.x() - src.x()
-        dy = dst.y() - src.y()
-        dist = max(math.hypot(dx, dy), 200)
-        handle = dist * 0.30
+        sx, sy = src.x(), src.y()
+        ex, ey = dst.x(), dst.y()
 
-        # Control point offset direction follows the exit/entry edge
-        _edge_vec = {
-            'right':  ( 1,  0), 'left':  (-1,  0),
-            'bottom': ( 0,  1), 'top':   ( 0, -1),
-        }
-        sv = _edge_vec.get(src_edge, (1, 0))
-        dv = _edge_vec.get(dst_edge, (-1, 0))
-        ctrl1 = QPointF(src.x() + sv[0] * handle, src.y() + sv[1] * handle)
-        ctrl2 = QPointF(dst.x() + dv[0] * handle, dst.y() + dv[1] * handle)
+        # Slot offset separates parallel lines through the same gap.
+        # arc_index 0 → center, 1 → +STEP, 2 → −STEP, 3 → +2*STEP …
+        STEP = 14
+        if arc_index == 0:
+            slot_off = 0
+        else:
+            slot_off = ((arc_index + 1) // 2) * STEP * (1 if arc_index % 2 == 1 else -1)
+
+        horiz_src = src_edge in ('right', 'left')
+        horiz_dst = dst_edge in ('right', 'left')
 
         path = QPainterPath()
         path.moveTo(src)
-        path.cubicTo(ctrl1, ctrl2, dst)
+
+        if horiz_src and horiz_dst:
+            # S-shape: ─ then │ then ─
+            # Vertical spine sits at the midpoint X, offset laterally by slot
+            mid_x = (sx + ex) / 2 + slot_off
+            path.lineTo(mid_x, sy)
+            path.lineTo(mid_x, ey)
+            path.lineTo(ex, ey)
+            arrow_angle = math.atan2(ey - sy, ex - sx)   # horizontal ≈ 0
+            arrow_angle = 0.0 if ex >= sx else math.pi   # snap to pure horizontal
+        elif not horiz_src and not horiz_dst:
+            # U-shape: │ then ─ then │
+            # Horizontal rail sits at midpoint Y, offset by slot
+            mid_y = (sy + ey) / 2 + slot_off
+            path.lineTo(sx, mid_y)
+            path.lineTo(ex, mid_y)
+            path.lineTo(ex, ey)
+            arrow_angle = math.pi / 2 if ey >= sy else -math.pi / 2
+        elif horiz_src and not horiz_dst:
+            # L-shape: ─ then │
+            path.lineTo(ex, sy)
+            path.lineTo(ex, ey)
+            arrow_angle = math.pi / 2 if ey >= sy else -math.pi / 2
+        else:
+            # L-shape: │ then ─
+            path.lineTo(sx, ey)
+            path.lineTo(ex, ey)
+            arrow_angle = 0.0 if ex >= sx else math.pi
 
         pi = QGraphicsPathItem(path)
         pi.setPen(pen)
-        pi.setZValue(Z_PAGE - 1)   # behind P&ID pages
-        pi._sheet_conn_id = conn_id   # used for right-click "break link"
-        # Widen the hit area so the arc is easy to click
+        pi.setZValue(Z_PAGE - 1)
+        pi._sheet_conn_id = conn_id
         pi.setFlag(pi.GraphicsItemFlag.ItemIsSelectable, False)
         self._scene.addItem(pi)
 
-        # Arrowhead at dst
-        angle = math.atan2(dst.y() - ctrl2.y(), dst.x() - ctrl2.x())
-        arrow_len, arrow_half = 18, 7
-        tip = dst
-        left  = QPointF(tip.x() - arrow_len * math.cos(angle) + arrow_half * math.sin(angle),
-                        tip.y() - arrow_len * math.sin(angle) - arrow_half * math.cos(angle))
-        right = QPointF(tip.x() - arrow_len * math.cos(angle) - arrow_half * math.sin(angle),
-                        tip.y() - arrow_len * math.sin(angle) + arrow_half * math.cos(angle))
-        arrow = QPolygonF([tip, left, right])
-        arrowhead = QGraphicsPolygonItem(arrow)
-        arrowhead.setBrush(QBrush(color))
-        arrowhead.setPen(QPen(Qt.PenStyle.NoPen))
-        arrowhead.setZValue(Z_PAGE - 1)
-        self._scene.addItem(arrowhead)
+        def _arrowhead(tip_pt, angle, col):
+            AL, AH = 14, 6
+            tip = tip_pt
+            lp = QPointF(tip.x() - AL * math.cos(angle) + AH * math.sin(angle),
+                         tip.y() - AL * math.sin(angle) - AH * math.cos(angle))
+            rp = QPointF(tip.x() - AL * math.cos(angle) - AH * math.sin(angle),
+                         tip.y() - AL * math.sin(angle) + AH * math.cos(angle))
+            ah = QGraphicsPolygonItem(QPolygonF([tip, lp, rp]))
+            ah.setBrush(QBrush(col))
+            ah.setPen(QPen(Qt.PenStyle.NoPen))
+            ah.setZValue(Z_PAGE - 1)
+            self._scene.addItem(ah)
 
+        _arrowhead(dst, arrow_angle, color)
         if bidirectional:
-            # Second arrowhead at src
-            angle2 = math.atan2(src.y() - ctrl1.y(), src.x() - ctrl1.x())
-            l2 = QPointF(src.x() - arrow_len*math.cos(angle2) + arrow_half*math.sin(angle2),
-                         src.y() - arrow_len*math.sin(angle2) - arrow_half*math.cos(angle2))
-            r2 = QPointF(src.x() - arrow_len*math.cos(angle2) - arrow_half*math.sin(angle2),
-                         src.y() - arrow_len*math.sin(angle2) + arrow_half*math.cos(angle2))
-            arr2 = QGraphicsPolygonItem(QPolygonF([src, l2, r2]))
-            arr2.setBrush(QBrush(color))
-            arr2.setPen(QPen(Qt.PenStyle.NoPen))
-            arr2.setZValue(Z_PAGE - 1)
-            self._scene.addItem(arr2)
+            back_angle = arrow_angle + math.pi
+            _arrowhead(src, back_angle, color)
 
-        # Label at arc midpoint — keep above pages so it's always readable
+        # Label at path midpoint with white background
         if label:
             mid = path.pointAtPercent(0.5)
             txt = QGraphicsSimpleTextItem(label)
@@ -5819,8 +5929,9 @@ class PIDPanel(QWidget):
         self._pending_secondary_deviation_id   = None   # for re-opening dialog after secondary placement
         self._pending_secondary_preselect_type = ''
         self._current_display_page  = 0
-        self._smart_layout_prev  = None   # {page: (ox, oy)} for undo
-        self._analyzer_thread    = None
+        self._smart_layout_prev      = None   # {page: (ox, oy)} for undo
+        self._analyzer_thread        = None
+        self._analyzer_progress_dlg  = None
         self._sheet_map: dict       = {}
 
         layout = QVBoxLayout(self)
@@ -6429,6 +6540,7 @@ class PIDPanel(QWidget):
                         ext = fitz.open(p)
                         base_doc.insert_pdf(ext)
                         ext.close()
+                    total_pages = base_doc.page_count
                     if self.viewer.pdf_doc is not None:
                         try: self.viewer.pdf_doc.close()
                         except Exception: pass
@@ -6442,9 +6554,21 @@ class PIDPanel(QWidget):
                 except Exception as e:
                     QMessageBox.critical(self, "Fel", f"Kunde inte skapa PDF:\n{e}")
                     return
-                if not self.viewer.load_pdf(str(working), page=0):
+                prog = QProgressDialog(
+                    f"Renderar P&ID ({total_pages} sidor)…", None, 0, total_pages, self)
+                prog.setWindowTitle("Importerar P&ID")
+                prog.setWindowModality(Qt.WindowModality.WindowModal)
+                prog.setMinimumDuration(0)
+                prog.setValue(0)
+                QApplication.processEvents()
+                if not self.viewer.load_pdf(
+                        str(working), page=0,
+                        progress_cb=lambda cur, tot: prog.setValue(cur)):
+                    prog.close()
                     QMessageBox.warning(self, "Fel", "Kunde inte öppna PDF-filen.")
                     return
+                prog.setAutoClose(False)
+                prog.setValue(total_pages)
                 self.db.set_pid_path(str(working))
                 self.db.clear_sheets()
                 self.db.add_revision(rev_label, rev_notes, str(working), created_at)
@@ -6462,6 +6586,7 @@ class PIDPanel(QWidget):
                         n_new += ext.page_count
                         existing_doc.insert_pdf(ext)
                         ext.close()
+                    total_pages = existing_pg_cnt + n_new
                     if self.viewer.pdf_doc is not None:
                         try: self.viewer.pdf_doc.close()
                         except Exception: pass
@@ -6477,10 +6602,22 @@ class PIDPanel(QWidget):
                                          f"Kunde inte sammanfoga PDF:\n{e}")
                     return
 
+                prog = QProgressDialog(
+                    f"Renderar P&ID ({total_pages} sidor)…", None, 0, total_pages, self)
+                prog.setWindowTitle("Importerar P&ID")
+                prog.setWindowModality(Qt.WindowModality.WindowModal)
+                prog.setMinimumDuration(0)
+                prog.setValue(0)
+                QApplication.processEvents()
                 keep_phys = self.viewer.current_page
-                if not self.viewer.load_pdf(str(working), page=keep_phys):
+                if not self.viewer.load_pdf(
+                        str(working), page=keep_phys,
+                        progress_cb=lambda cur, tot: prog.setValue(cur)):
+                    prog.close()
                     QMessageBox.warning(self, "Fel", "Kunde inte öppna sammanfogad PDF.")
                     return
+                prog.setAutoClose(False)
+                prog.setValue(total_pages)
 
                 if self.db.get_display_page_count() == 0:
                     self.db.ensure_sheets_initialized(existing_pg_cnt)
@@ -6499,6 +6636,7 @@ class PIDPanel(QWidget):
                     ext = fitz.open(p)
                     base_doc.insert_pdf(ext)
                     ext.close()
+                total_pages = base_doc.page_count
                 tmp_fd, tmp_path = tempfile.mkstemp(
                     suffix='.pdf', dir=str(working.parent))
                 os.close(tmp_fd)
@@ -6508,22 +6646,45 @@ class PIDPanel(QWidget):
             except Exception as e:
                 QMessageBox.critical(self, "Fel", f"Kunde inte kopiera PDF:\n{e}")
                 return
-            if not self.viewer.load_pdf(str(working), page=0):
+            prog = QProgressDialog(
+                f"Renderar P&ID ({total_pages} sidor)…", None, 0, total_pages, self)
+            prog.setWindowTitle("Importerar P&ID")
+            prog.setWindowModality(Qt.WindowModality.WindowModal)
+            prog.setMinimumDuration(0)
+            prog.setValue(0)
+            QApplication.processEvents()
+            if not self.viewer.load_pdf(
+                    str(working), page=0,
+                    progress_cb=lambda cur, tot: prog.setValue(cur)):
+                prog.close()
                 QMessageBox.warning(self, "Fel", "Kunde inte öppna PDF-filen.")
                 return
+            prog.setAutoClose(False)
+            prog.setValue(total_pages)
             self.db.set_pid_path(str(working))
             self.db.clear_sheets()
             self.db.add_revision(created_at, '', str(working), created_at)
             self.db.ensure_sheets_initialized(self.viewer.page_count())
             self._current_display_page = 0
 
-        # Re-render with only the sheets currently in pid_sheets (deleted pages stay gone)
+        # Phase 2: apply active-page filter, then load markers/connections
         self._rebuild_sheet_map()
         self._update_page_label()
         sheets = self.db.get_sheets()
         active = [int(s['physical_page']) for s in sheets] if sheets else None
-        self.viewer._render_all_pages(active_pages=active)
+        n_active = len(active) if active else 0
+        prog.setMaximum(n_active)
+        prog.setValue(0)
+        prog.setLabelText(f"Bygger P&ID-vy ({n_active} sidor)…")
+        QApplication.processEvents()
+        self.viewer._render_all_pages(
+            active_pages=active,
+            progress_cb=lambda cur, tot: prog.setValue(cur))
+        prog.setMaximum(0)
+        prog.setLabelText("Laddar markeringar…")
+        QApplication.processEvents()
         self._load_overlays()
+        prog.close()
         self.analyze_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
 
@@ -6674,9 +6835,9 @@ class PIDPanel(QWidget):
             conn_by_page_ref.setdefault(key, []).append(cd)
 
         drawn_pairs = set()
-        # Track how many arcs have been routed above vs below (for vertical spacing)
-        above_arc_count = 0
-        below_arc_count = 0
+        # Track slot index per directed gap so parallel lines don't overlap.
+        # Key: (left_page, right_page) sorted — value: next slot index to use.
+        gap_slot_counter = {}
         rs = self.viewer.render_scale
 
         for row in connections:
@@ -6755,11 +6916,18 @@ class PIDPanel(QWidget):
                 if rt_clean:
                     label = rt_clean
 
-            # arc_index no longer used for routing (arcs are behind pages)
+            # Assign a slot index for this gap so lines don't overlap
+            gap_key = (min(fp, tp), max(fp, tp))
+            arc_idx = gap_slot_counter.get(gap_key, 0)
+            gap_slot_counter[gap_key] = arc_idx + 1
+
+            weight = float(conn.get('weight', 0.5) or 0.5)
+
             self.viewer.add_sheet_conn_arc(src_pt, dst_pt, color_hex,
                                            confidence, label, bidir,
                                            conn_id=conn.get('id', -1),
-                                           src_edge=src_edge, dst_edge=dst_edge)
+                                           src_edge=src_edge, dst_edge=dst_edge,
+                                           arc_index=arc_idx, weight=weight)
 
     def _run_smart_layout(self):
         if not HAS_PYMUPDF or self.viewer.pdf_doc is None:
@@ -6794,7 +6962,21 @@ class PIDPanel(QWidget):
         self._analyzer_thread.finished_analysis.connect(self._on_smart_layout_done)
         self._analyzer_thread.start()
 
+        self._analyzer_progress_dlg = QProgressDialog(
+            "Analyserar P&ID-kopplingar…", None, 0, 0, self)
+        self._analyzer_progress_dlg.setWindowTitle("Smart layout")
+        self._analyzer_progress_dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        self._analyzer_progress_dlg.setMinimumDuration(0)
+        self._analyzer_progress_dlg.show()
+        self._analyzer_thread.progress.connect(
+            lambda msg: self._analyzer_progress_dlg.setLabelText(msg)
+            if self._analyzer_progress_dlg else None)
+        QApplication.processEvents()
+
     def _on_smart_layout_done(self, connectors, connections, layout, sheet_num_map):
+        if self._analyzer_progress_dlg is not None:
+            self._analyzer_progress_dlg.close()
+            self._analyzer_progress_dlg = None
         self.smart_btn.setEnabled(True)
         self.smart_btn.setText("✨ Smart layout")
 
@@ -8012,4 +8194,29 @@ class PIDPanel(QWidget):
                 self._update_page_label()
                 self._load_overlays()
                 self.analyze_btn.setEnabled(True)
+        else:
+            # No P&ID in database — clear the canvas completely
+            if self.viewer.pdf_doc is not None:
+                try:
+                    self.viewer.pdf_doc.close()
+                except Exception:
+                    pass
+                self.viewer.pdf_doc = None
+            for item in list(self.viewer._all_page_items.values()):
+                try:
+                    self.viewer._scene.removeItem(item)
+                except Exception:
+                    pass
+            self.viewer._all_page_items.clear()
+            self.viewer._page_offsets.clear()
+            self.viewer._page_cache.clear()
+            self.viewer._cache_order.clear()
+            self.viewer.page_item = None
+            self._load_overlays()   # clears all overlay items (pdf_doc is None → returns early)
+            self._rebuild_sheet_map()
+            self._current_display_page = 0
+            self._update_page_label()
+            self.viewer._show_placeholder(
+                "Ingen P&ID inläst.\nImportera en PDF-fil med knappen ovan.")
+            self.analyze_btn.setEnabled(False)
         self.export_btn.setEnabled(True)
