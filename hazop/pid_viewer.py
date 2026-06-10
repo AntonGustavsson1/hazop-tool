@@ -3043,8 +3043,8 @@ def _propose_layout(connections, active_pages, page_widths_pdf, page_heights_pdf
         return {}
 
     rs        = render_scale
-    GAP_X     = 160  # horizontal gap between columns (scene px)
-    GAP_Y     = 100  # vertical gap between pages in the same column
+    GAP_X     = 400  # horizontal gap between columns (scene px)
+    GAP_Y     = 200  # vertical gap between pages in the same column
     MAX_COL   = 8    # split a column if it exceeds this many pages
 
     page_set = set(active_pages)
@@ -4908,9 +4908,9 @@ class PIDGraphicsView(QGraphicsView):
                            src_edge: str = 'right', dst_edge: str = 'left',
                            src_page: int = -1, dst_page: int = -1,
                            arc_index: int = 0, weight: float = 0.5):
-        """Draw an orthogonal (90-degree bend) connection between two sheet edges.
+        """Draw a straight line directly from one P&ID page edge to another.
 
-        Lines are staggered by arc_index so parallel connections don't overlap.
+        Parallel connections are staggered perpendicular to the line direction.
         Pen width scales with weight (connection strength).
         Drawn behind P&ID pages (z < Z_PAGE).
         """
@@ -4931,47 +4931,22 @@ class PIDGraphicsView(QGraphicsView):
         sx, sy = src.x(), src.y()
         ex, ey = dst.x(), dst.y()
 
-        # Slot offset separates parallel lines through the same gap.
-        # arc_index 0 → center, 1 → +STEP, 2 → −STEP, 3 → +2*STEP …
-        STEP = 14
+        # Stagger parallel lines perpendicular to the travel direction
+        STEP = 18
         if arc_index == 0:
             slot_off = 0
         else:
             slot_off = ((arc_index + 1) // 2) * STEP * (1 if arc_index % 2 == 1 else -1)
 
-        horiz_src = src_edge in ('right', 'left')
-        horiz_dst = dst_edge in ('right', 'left')
+        dx, dy = ex - sx, ey - sy
+        length = math.hypot(dx, dy) or 1.0
+        perp_x, perp_y = -dy / length, dx / length
+        src_pt = QPointF(sx + perp_x * slot_off, sy + perp_y * slot_off)
+        dst_pt = QPointF(ex + perp_x * slot_off, ey + perp_y * slot_off)
 
         path = QPainterPath()
-        path.moveTo(src)
-
-        if horiz_src and horiz_dst:
-            # S-shape: ─ then │ then ─
-            # Vertical spine sits at the midpoint X, offset laterally by slot
-            mid_x = (sx + ex) / 2 + slot_off
-            path.lineTo(mid_x, sy)
-            path.lineTo(mid_x, ey)
-            path.lineTo(ex, ey)
-            arrow_angle = math.atan2(ey - sy, ex - sx)   # horizontal ≈ 0
-            arrow_angle = 0.0 if ex >= sx else math.pi   # snap to pure horizontal
-        elif not horiz_src and not horiz_dst:
-            # U-shape: │ then ─ then │
-            # Horizontal rail sits at midpoint Y, offset by slot
-            mid_y = (sy + ey) / 2 + slot_off
-            path.lineTo(sx, mid_y)
-            path.lineTo(ex, mid_y)
-            path.lineTo(ex, ey)
-            arrow_angle = math.pi / 2 if ey >= sy else -math.pi / 2
-        elif horiz_src and not horiz_dst:
-            # L-shape: ─ then │
-            path.lineTo(ex, sy)
-            path.lineTo(ex, ey)
-            arrow_angle = math.pi / 2 if ey >= sy else -math.pi / 2
-        else:
-            # L-shape: │ then ─
-            path.lineTo(sx, ey)
-            path.lineTo(ex, ey)
-            arrow_angle = 0.0 if ex >= sx else math.pi
+        path.moveTo(src_pt)
+        path.lineTo(dst_pt)
 
         pi = QGraphicsPathItem(path)
         pi.setPen(pen)
@@ -4980,8 +4955,10 @@ class PIDGraphicsView(QGraphicsView):
         pi.setFlag(pi.GraphicsItemFlag.ItemIsSelectable, False)
         self._scene.addItem(pi)
 
+        arrow_angle = math.atan2(ey - sy, ex - sx)
+
         def _arrowhead(tip_pt, angle, col):
-            AL, AH = 14, 6
+            AL, AH = 16, 7
             tip = tip_pt
             lp = QPointF(tip.x() - AL * math.cos(angle) + AH * math.sin(angle),
                          tip.y() - AL * math.sin(angle) - AH * math.cos(angle))
@@ -4993,14 +4970,14 @@ class PIDGraphicsView(QGraphicsView):
             ah.setZValue(Z_PAGE - 1)
             self._scene.addItem(ah)
 
-        _arrowhead(dst, arrow_angle, color)
+        _arrowhead(dst_pt, arrow_angle, color)
         if bidirectional:
-            back_angle = arrow_angle + math.pi
-            _arrowhead(src, back_angle, color)
+            _arrowhead(src_pt, arrow_angle + math.pi, color)
 
-        # Label at path midpoint with white background
+        # Label at midpoint with white background
         if label:
-            mid = path.pointAtPercent(0.5)
+            mid = QPointF((src_pt.x() + dst_pt.x()) / 2,
+                          (src_pt.y() + dst_pt.y()) / 2)
             txt = QGraphicsSimpleTextItem(label)
             txt.setBrush(QBrush(color.darker(130)))
             fnt = txt.font(); fnt.setPointSize(8); fnt.setBold(True); txt.setFont(fnt)
@@ -6834,9 +6811,10 @@ class PIDPanel(QWidget):
             key = (cd['pid_page'], (cd.get('ref_sheet') or '').upper())
             conn_by_page_ref.setdefault(key, []).append(cd)
 
+        # drawn_pairs keys on (fp, tp, media) so each distinct connection type
+        # gets its own line, but identical directional duplicates are suppressed.
         drawn_pairs = set()
-        # Track slot index per directed gap so parallel lines don't overlap.
-        # Key: (left_page, right_page) sorted — value: next slot index to use.
+        # Track slot index per undirected gap so parallel lines are staggered.
         gap_slot_counter = {}
         rs = self.viewer.render_scale
 
@@ -6850,10 +6828,12 @@ class PIDPanel(QWidget):
                 continue
             if fp not in self.viewer._all_page_items or tp not in self.viewer._all_page_items:
                 continue
-            pair = (min(fp, tp), max(fp, tp))
-            if pair in drawn_pairs:
+            media = conn.get('media_type', 'unknown') or 'unknown'
+            pair_key = (fp, tp, media)
+            if pair_key in drawn_pairs:
                 continue
-            drawn_pairs.add(pair)
+            drawn_pairs.add(pair_key)
+            drawn_pairs.add((tp, fp, media))   # suppress the exact reverse too
 
             pw_fp = self.viewer._page_widths_pdf.get(fp, 800) * rs
             ph_fp = self.viewer._page_heights_pdf.get(fp, 600) * rs
@@ -6901,7 +6881,6 @@ class PIDPanel(QWidget):
             src_edge = src_conns[0].get('edge', def_src) if src_conns else def_src
             dst_edge = dst_conns[0].get('edge', def_dst) if dst_conns else def_dst
 
-            media = conn.get('media_type', 'unknown') or 'unknown'
             color_hex  = _MEDIA_COLORS.get(media, _MEDIA_COLORS['unknown'])
             confidence = float(conn.get('confidence', 0.5))
             bidir      = bool(conn.get('is_bidirectional'))
