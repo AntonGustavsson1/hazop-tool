@@ -4964,6 +4964,19 @@ class PIDGraphicsView(QGraphicsView):
             src_angle = math.atan2(src_pt.y() - cp1.y(), src_pt.x() - cp1.x())
             _arrowhead(src_pt, src_angle, color)
 
+        # Anchor dots: pin at the raw connector symbol position (constant screen size)
+        _dot_r = 5.0
+        _dot_color = QColor(color_hex)
+        _dot_color.setAlpha(210)
+        for _apt in (src, dst):
+            _dot = QGraphicsEllipseItem(-_dot_r, -_dot_r, _dot_r * 2, _dot_r * 2)
+            _dot.setPos(_apt)
+            _dot.setBrush(QBrush(_dot_color))
+            _dot.setPen(QPen(Qt.PenStyle.NoPen))
+            _dot.setZValue(Z_SHEET_CONN + 0.5)
+            _dot.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+            self._scene.addItem(_dot)
+
         # Label at bezier midpoint with white background
         if label:
             mid = path.pointAtPercent(0.5)
