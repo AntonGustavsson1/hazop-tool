@@ -2791,13 +2791,32 @@ def _propose_layout(connections, page_count, page_widths_pdf, page_heights_pdf, 
         col_w = max(ws[i] for i in level_groups[lv])
         x += col_w + GAP_X
 
-    # Place pages: stack them top-to-bottom within each column
+    # Pass 1: stack pages top-to-bottom within each column
     pos = {}
     for lv in sorted(level_groups):
         y = GAP_Y
         for node in sorted(level_groups[lv]):
-            pos[node] = (col_x[lv], y)
+            pos[node] = [col_x[lv], y]
             y += hs[node] + GAP_Y
+
+    # Pass 2: horizontal compaction — slide each column leftward as far as possible
+    # without any of its pages overlapping a page in any earlier column.
+    sorted_levels = sorted(level_groups)
+    for idx, lv in enumerate(sorted_levels[1:], 1):
+        earlier_pages = [j for prev_lv in sorted_levels[:idx] for j in level_groups[prev_lv]]
+        # For every page in this column find how close it can get to the pages on its left
+        min_x_for_col = GAP_X
+        for i in level_groups[lv]:
+            yi, hi = pos[i][1], hs[i]
+            for j in earlier_pages:
+                xj, yj = pos[j][0], pos[j][1]
+                wj, hj = ws[j], hs[j]
+                # Only pages that overlap vertically with i constrain i's X
+                if yj < yi + hi + GAP_Y and yj + hj + GAP_Y > yi:
+                    min_x_for_col = max(min_x_for_col, xj + wj + GAP_X)
+        # Shift the entire column to min_x_for_col
+        for i in level_groups[lv]:
+            pos[i][0] = min_x_for_col
 
     return {i: (round(pos[i][0], 1), round(pos[i][1], 1)) for i in range(page_count)}
 
