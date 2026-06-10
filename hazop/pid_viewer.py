@@ -3177,7 +3177,7 @@ def _propose_layout(connections, active_pages, page_widths_pdf, page_heights_pdf
             col_str[k] = max(col_str.get(k, 0.0), w)
             col_str[(cb, ca)] = col_str[k]
 
-    GAP_TIGHT = 80      # gap when columns are strongly connected
+    GAP_TIGHT = 300     # minimum gap even between strongly connected columns
     # GAP_X (700) is used for unconnected columns
 
     def _gap(col_a, col_b):
@@ -6948,34 +6948,55 @@ class PIDPanel(QWidget):
             dst_conns = sorted(dst_conns_all,
                                key=lambda c: 0 if c.get('direction') == 'in' else 1)
 
-            def edge_point(page_conns, ox, oy, pw, ph, default_edge):
+            def edge_point(page_conns, ox, oy, pw, ph, edge):
                 if page_conns:
-                    # Pick the median connector by Y so we land at the actual
-                    # symbol position on the P&ID rather than just the page edge.
+                    # Pick the median connector (by position along the edge axis)
                     med = sorted(page_conns, key=lambda c: c.get('y_pdf', 0))
                     med = med[len(med) // 2]
-                    return QPointF(ox + med['x_pdf'] * rs,
-                                   oy + med['y_pdf'] * rs)
-                # Fallback when no connector was detected: centre of the edge
-                if default_edge == 'right':  return QPointF(ox + pw,     oy + ph / 2)
-                if default_edge == 'left':   return QPointF(ox,           oy + ph / 2)
-                if default_edge == 'top':    return QPointF(ox + pw / 2,  oy)
-                return                              QPointF(ox + pw / 2,  oy + ph)
+                    # Snap to the page edge; preserve the perpendicular coordinate
+                    # from the connector's detected position.
+                    if edge == 'right':  return QPointF(ox + pw,           oy + med['y_pdf'] * rs)
+                    if edge == 'left':   return QPointF(ox,                oy + med['y_pdf'] * rs)
+                    if edge == 'top':    return QPointF(ox + med['x_pdf'] * rs, oy)
+                    return                      QPointF(ox + med['x_pdf'] * rs, oy + ph)
+                # Fallback: centre of the specified edge
+                if edge == 'right':  return QPointF(ox + pw,     oy + ph / 2)
+                if edge == 'left':   return QPointF(ox,           oy + ph / 2)
+                if edge == 'top':    return QPointF(ox + pw / 2,  oy)
+                return                      QPointF(ox + pw / 2,  oy + ph)
 
-            # Guess default edges from relative page positions (horizontal or vertical)
+            # Determine attachment edges.
+            # Rule: if a detected connector has an explicit edge, use that.
+            # Vertical (top/bottom) connections are only used when at least one
+            # side has an actual detected vertical connector — never inferred
+            # from page positions alone.
             dx_pages = ox_tp - ox_fp
             dy_pages = oy_tp - oy_fp
-            if abs(dx_pages) >= abs(dy_pages):
-                def_src = 'right'  if dx_pages >= 0 else 'left'
-                def_dst = 'left'   if dx_pages >= 0 else 'right'
-            else:
-                def_src = 'bottom' if dy_pages >= 0 else 'top'
-                def_dst = 'top'    if dy_pages >= 0 else 'bottom'
 
-            src_pt   = edge_point(src_conns, ox_fp, oy_fp, pw_fp, ph_fp, def_src)
-            dst_pt   = edge_point(dst_conns, ox_tp, oy_tp, pw_tp, ph_tp, def_dst)
-            src_edge = src_conns[0].get('edge', def_src) if src_conns else def_src
-            dst_edge = dst_conns[0].get('edge', def_dst) if dst_conns else def_dst
+            src_detected_edge = src_conns[0].get('edge') if src_conns else None
+            dst_detected_edge = dst_conns[0].get('edge') if dst_conns else None
+
+            has_vert_src = src_detected_edge in ('top', 'bottom')
+            has_vert_dst = dst_detected_edge in ('top', 'bottom')
+
+            if has_vert_src or has_vert_dst:
+                # At least one side has a real vertical connector — allow vertical
+                if abs(dx_pages) >= abs(dy_pages):
+                    def_src = 'right'  if dx_pages >= 0 else 'left'
+                    def_dst = 'left'   if dx_pages >= 0 else 'right'
+                else:
+                    def_src = 'bottom' if dy_pages >= 0 else 'top'
+                    def_dst = 'top'    if dy_pages >= 0 else 'bottom'
+            else:
+                # No vertical connectors detected — always use horizontal
+                def_src = 'right' if dx_pages >= 0 else 'left'
+                def_dst = 'left'  if dx_pages >= 0 else 'right'
+
+            src_edge = src_detected_edge or def_src
+            dst_edge = dst_detected_edge or def_dst
+
+            src_pt = edge_point(src_conns, ox_fp, oy_fp, pw_fp, ph_fp, src_edge)
+            dst_pt = edge_point(dst_conns, ox_tp, oy_tp, pw_tp, ph_tp, dst_edge)
 
             color_hex  = _MEDIA_COLORS.get(media, _MEDIA_COLORS['unknown'])
             confidence = float(conn.get('confidence', 0.5))
