@@ -4560,8 +4560,14 @@ class PIDGraphicsView(QGraphicsView):
 
     def add_sheet_conn_arc(self, src: QPointF, dst: QPointF,
                            color_hex: str, confidence: float, label: str,
-                           bidirectional: bool = False, conn_id: int = -1):
-        """Draw a bezier arc between two sheet edges with arrowhead and label."""
+                           bidirectional: bool = False, conn_id: int = -1,
+                           src_page: int = -1, dst_page: int = -1,
+                           arc_index: int = 0):
+        """Draw a bezier arc between two sheet edges with arrowhead and label.
+
+        Routes above pages for forward arcs and below for backward/loop arcs
+        when intermediate sheets would otherwise block the direct path.
+        """
         import math
         color = QColor(color_hex)
         pen = QPen(color, 3)
@@ -4573,10 +4579,60 @@ class PIDGraphicsView(QGraphicsView):
         dy = dst.y() - src.y()
         dist = max(math.hypot(dx, dy), 200)
 
+        # Determine routing: check if any page overlaps the direct horizontal corridor
+        go_above = False   # route above all sheets
+        go_below = False   # route below all sheets (backward/loop)
+        global_top    = src.y()
+        global_bottom = src.y()
+        MARGIN = 60
+        ARC_SPACING = 35
+
+        if self._page_offsets:
+            # Collect bounding boxes for all placed pages
+            page_bboxes = {}
+            for pidx, (ox, oy) in self._page_offsets.items():
+                pw = self._page_widths_pdf.get(pidx, 800) * self._render_scale
+                ph = self._page_heights_pdf.get(pidx, 600) * self._render_scale
+                page_bboxes[pidx] = (ox, oy, ox + pw, oy + ph)
+                global_top    = min(global_top,    oy)
+                global_bottom = max(global_bottom, oy + ph)
+
+            # The X corridor between src and dst (exclusive of src/dst pages)
+            x_left  = min(src.x(), dst.x())
+            x_right = max(src.x(), dst.x())
+            skip = {p for p in (src_page, dst_page) if p >= 0}
+
+            blocking = False
+            for pidx, (bx0, by0, bx1, by1) in page_bboxes.items():
+                if pidx in skip:
+                    continue
+                # Page overlaps the corridor if its X range intersects [x_left, x_right]
+                if bx0 < x_right and bx1 > x_left:
+                    blocking = True
+                    break
+
+            if blocking:
+                forward = dst.x() >= src.x()
+                if forward:
+                    go_above = True
+                else:
+                    go_below = True
+
         path = QPainterPath()
         path.moveTo(src)
-        ctrl1 = QPointF(src.x() + dist * 0.38, src.y())
-        ctrl2 = QPointF(dst.x() - dist * 0.38, dst.y())
+
+        if go_above:
+            route_y = global_top - MARGIN - arc_index * ARC_SPACING
+            ctrl1 = QPointF(src.x(), route_y)
+            ctrl2 = QPointF(dst.x(), route_y)
+        elif go_below:
+            route_y = global_bottom + MARGIN + arc_index * ARC_SPACING
+            ctrl1 = QPointF(src.x(), route_y)
+            ctrl2 = QPointF(dst.x(), route_y)
+        else:
+            ctrl1 = QPointF(src.x() + dist * 0.38, src.y())
+            ctrl2 = QPointF(dst.x() - dist * 0.38, dst.y())
+
         path.cubicTo(ctrl1, ctrl2, dst)
 
         pi = QGraphicsPathItem(path)
@@ -6401,6 +6457,9 @@ class PIDPanel(QWidget):
             conn_by_page_ref.setdefault(key, []).append(cd)
 
         drawn_pairs = set()
+        # Track how many arcs have been routed above vs below (for vertical spacing)
+        above_arc_count = 0
+        below_arc_count = 0
         rs = self.viewer.render_scale
 
         for row in connections:
@@ -6470,9 +6529,19 @@ class PIDPanel(QWidget):
                 if rt_clean:
                     label = rt_clean
 
+            # Determine arc_index for stacking above/below (forward vs backward)
+            forward = dst_pt.x() >= src_pt.x()
+            arc_idx = above_arc_count if forward else below_arc_count
+            if forward:
+                above_arc_count += 1
+            else:
+                below_arc_count += 1
+
             self.viewer.add_sheet_conn_arc(src_pt, dst_pt, color_hex,
                                            confidence, label, bidir,
-                                           conn_id=conn.get('id', -1))
+                                           conn_id=conn.get('id', -1),
+                                           src_page=fp, dst_page=tp,
+                                           arc_index=arc_idx)
 
     def _run_smart_layout(self):
         if not HAS_PYMUPDF or self.viewer.pdf_doc is None:
