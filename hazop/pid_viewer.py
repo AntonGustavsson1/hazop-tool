@@ -3338,6 +3338,8 @@ class PIDGraphicsView(QGraphicsView):
         self._drag_page_orig_offset = None  # (ox, oy) before drag
         self._add_link_source_page  = None  # page_idx chosen in MODE_ADD_SHEET_LINK
 
+        self._lod_overview = None   # None = unset; True/False = current LOD
+
         self._placeholder = None
         self._show_placeholder("Öppna en P&ID-fil (PDF) för att börja.")
         self.set_mode(MODE_NAV)
@@ -5402,6 +5404,33 @@ class PIDGraphicsView(QGraphicsView):
             event.accept(); return
         super().mouseMoveEvent(event)
 
+    _LOD_THRESHOLD = 0.12   # view scale below which overview mode activates
+
+    def _apply_lod(self, scale: float, force: bool = False):
+        """Switch rendering quality based on zoom level.
+
+        Only iterates scene items when the LOD tier actually changes so there
+        is no per-frame overhead on continuous zoom within the same tier.
+        """
+        overview = scale < self._LOD_THRESHOLD
+        if not force and overview == self._lod_overview:
+            return
+        self._lod_overview = overview
+
+        aa = not overview
+        self.setRenderHint(QPainter.RenderHint.Antialiasing, aa)
+        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, aa)
+
+        mode = (Qt.TransformationMode.FastTransformation if overview
+                else Qt.TransformationMode.SmoothTransformation)
+        for item in self._all_page_items.values():
+            item.setTransformationMode(mode)
+
+        # Overlay items (markers, labels, handles): invisible at overview zoom
+        for item in self._scene.items():
+            if item.zValue() >= Z_OVERLAY:
+                item.setVisible(not overview)
+
     def wheelEvent(self, event):
         # Smooth zoom: scale by a factor proportional to the wheel delta
         # so trackpad pinch-zoom gives fine-grained control
@@ -5417,6 +5446,7 @@ class PIDGraphicsView(QGraphicsView):
         elif cur * factor > 200:
             factor = 200 / cur
         self.scale(factor, factor)
+        self._apply_lod(self.transform().m11())
         event.accept()
 
     def keyPressEvent(self, event):
@@ -7462,6 +7492,8 @@ class PIDPanel(QWidget):
         self.viewer.current_page = orig_page
         self._draw_tag_highlights()
         self._draw_sheet_connections()
+        # Reapply LOD so newly added items get correct visibility at current zoom
+        self.viewer._apply_lod(self.viewer.transform().m11(), force=True)
 
     def start_cause_template_mode(self, deviation_id):
         """Switch to template placement mode for the given deviation."""
