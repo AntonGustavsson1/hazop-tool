@@ -6826,27 +6826,21 @@ class PIDPanel(QWidget):
     def _draw_sheet_connections(self):
         """Draw one bezier arc per connector symbol.
 
-        Each off-page connector on a P&ID sheet gets its own line, exiting
-        from the edge where the symbol was detected (right/left/top/bottom).
-        The line anchors at the matching connector on the target sheet if one
-        exists, or at the target sheet's nearest edge otherwise.
+        Iterates over pid_connection records (reliable from_page/to_page pairs),
+        then for each page-pair draws one line per individual connector symbol —
+        exiting from the edge where the symbol was detected.
         """
         import json as _json
-        connectors = self.db.get_connectors()
-        if not connectors:
+        connections = self.db.get_pid_connections()
+        if not connections:
             return
+        connectors = self.db.get_connectors()
         raw_map = self.db.get_pid_config_value('sheet_num_map') or '{}'
         try:
             sheet_num_map = {int(k): v.upper()
                              for k, v in _json.loads(raw_map).items()}
         except Exception:
             sheet_num_map = {}
-
-        if not sheet_num_map:
-            return
-
-        # Reverse: sheet string → page index
-        sheet_to_page = {v: k for k, v in sheet_num_map.items()}
 
         # Group connectors: (pid_page, ref_sheet_upper) → list
         conn_by_page_ref: dict = {}
@@ -6855,114 +6849,116 @@ class PIDPanel(QWidget):
             key = (cd['pid_page'], (cd.get('ref_sheet') or '').upper())
             conn_by_page_ref.setdefault(key, []).append(cd)
 
-        # Connection records for style look-up (color, confidence, weight)
-        connections = self.db.get_pid_connections() or []
-        conn_style: dict = {}   # (min_pg, max_pg) → best connection row
-        for row in connections:
-            rd = dict(row)
-            fp, tp = rd.get('from_page'), rd.get('to_page')
-            if fp is not None and tp is not None:
-                k = (min(fp, tp), max(fp, tp))
-                if k not in conn_style:
-                    conn_style[k] = rd
-
-        rs = self.viewer.render_scale
-        drawn_ids:    set = set()   # connector DB-ids already processed
+        drawn_pairs:      set  = set()
         gap_slot_counter: dict = {}
+        rs = self.viewer.render_scale
 
-        def _fallback_edge_point(ox, oy, pw, ph, edge):
-            if edge == 'right':  return QPointF(ox + pw,    oy + ph / 2)
-            if edge == 'left':   return QPointF(ox,          oy + ph / 2)
-            if edge == 'top':    return QPointF(ox + pw / 2, oy)
-            return                      QPointF(ox + pw / 2, oy + ph)
+        def _edge_pt(c, ox, oy, pw, ph, fallback_edge):
+            """Scene point for a connector dict, or midpoint of fallback_edge."""
+            if c:
+                return QPointF(ox + c['x_pdf'] * rs, oy + c['y_pdf'] * rs)
+            if fallback_edge == 'right':  return QPointF(ox + pw,    oy + ph / 2)
+            if fallback_edge == 'left':   return QPointF(ox,          oy + ph / 2)
+            if fallback_edge == 'top':    return QPointF(ox + pw / 2, oy)
+            return                               QPointF(ox + pw / 2, oy + ph)
 
-        for c in connectors:
-            cd = dict(c)
-            src_page  = cd.get('pid_page')
-            ref_sheet = (cd.get('ref_sheet') or '').upper()
-
-            if not ref_sheet:
+        for row in connections:
+            conn = dict(row)
+            fp = conn.get('from_page')
+            tp = conn.get('to_page')
+            if fp is None or tp is None or fp == tp:
                 continue
-            if src_page not in self.viewer._all_page_items:
-                continue
-
-            dst_page = sheet_to_page.get(ref_sheet)
-            if dst_page is None or dst_page not in self.viewer._all_page_items:
-                continue
-            if src_page == dst_page:
+            if fp not in self.viewer._all_page_items or tp not in self.viewer._all_page_items:
                 continue
 
-            cid = cd.get('id', id(cd))
-            if cid in drawn_ids:
-                continue
-            drawn_ids.add(cid)
-
-            # Find the best matching connector on dst_page pointing back here
-            src_sheet    = sheet_num_map.get(src_page, '').upper()
-            dst_candidates = conn_by_page_ref.get((dst_page, src_sheet), [])
-            if dst_candidates:
-                # Closest by Y position on dst page
-                src_y_pdf = cd.get('y_pdf', 0)
-                dst_conn  = min(dst_candidates,
-                                key=lambda d: abs(d.get('y_pdf', 0) - src_y_pdf))
-                drawn_ids.add(dst_conn.get('id', id(dst_conn)))
-            else:
-                dst_conn = None
-
-            # Source: connector's own position and edge
-            src_edge = cd.get('edge') or 'right'
-            ox_s, oy_s = self.viewer._page_offsets.get(src_page, (0, 0))
-            src_pt = QPointF(ox_s + cd['x_pdf'] * rs, oy_s + cd['y_pdf'] * rs)
-
-            # Destination: matched connector or nearest edge fallback
-            ox_d, oy_d = self.viewer._page_offsets.get(dst_page, (0, 0))
-            pw_d = self.viewer._page_widths_pdf.get(dst_page, 800) * rs
-            ph_d = self.viewer._page_heights_pdf.get(dst_page, 600) * rs
-            if dst_conn:
-                dst_edge = dst_conn.get('edge') or 'left'
-                dst_pt   = QPointF(ox_d + dst_conn['x_pdf'] * rs,
-                                   oy_d + dst_conn['y_pdf'] * rs)
-            else:
-                # No matching connector — aim at the nearest edge of dst_page
-                cx_s = ox_s + self.viewer._page_widths_pdf.get(src_page, 800) * rs / 2
-                cy_s = oy_s + self.viewer._page_heights_pdf.get(src_page, 600) * rs / 2
-                cx_d, cy_d = ox_d + pw_d / 2, oy_d + ph_d / 2
-                dx, dy = cx_d - cx_s, cy_d - cy_s
-                if abs(dx) >= abs(dy):
-                    dst_edge = 'left' if dx >= 0 else 'right'
-                else:
-                    dst_edge = 'top'  if dy >= 0 else 'bottom'
-                dst_pt = _fallback_edge_point(ox_d, oy_d, pw_d, ph_d, dst_edge)
-
-            # Style from connection table or defaults
-            style      = conn_style.get((min(src_page, dst_page),
-                                         max(src_page, dst_page)), {})
-            media      = (cd.get('media_type') or style.get('media_type')
-                          or 'unknown')
+            media      = conn.get('media_type', 'unknown') or 'unknown'
             color_hex  = _MEDIA_COLORS.get(media, _MEDIA_COLORS['unknown'])
-            confidence = float(style.get('confidence', 0.7))
-            bidir      = bool(style.get('is_bidirectional', False))
-            weight     = float(style.get('weight', 0.5) or 0.5)
+            confidence = float(conn.get('confidence', 0.5))
+            bidir      = bool(conn.get('is_bidirectional'))
+            weight     = float(conn.get('weight', 0.5) or 0.5)
+            conn_id    = conn.get('id', -1)
 
-            # Label from connector raw_text
-            rt       = cd.get('raw_text', '')
-            rt_clean = re.sub(r'=[\w./\-]+', '', rt)
-            rt_clean = re.sub(r'\bS\d{6,8}\b', '', rt_clean, flags=re.I)
-            label    = ' '.join(rt_clean.split())[:28].strip() or \
-                       media.replace('_', ' ').upper()
+            ox_fp, oy_fp = self.viewer._page_offsets.get(fp, (0, 0))
+            ox_tp, oy_tp = self.viewer._page_offsets.get(tp, (0, 0))
+            pw_fp = self.viewer._page_widths_pdf.get(fp, 800) * rs
+            ph_fp = self.viewer._page_heights_pdf.get(fp, 600) * rs
+            pw_tp = self.viewer._page_widths_pdf.get(tp, 800) * rs
+            ph_tp = self.viewer._page_heights_pdf.get(tp, 600) * rs
 
-            # Arc slot for staggering parallel lines between the same page pair
-            gap_key = (min(src_page, dst_page), max(src_page, dst_page))
-            arc_idx = gap_slot_counter.get(gap_key, 0)
-            gap_slot_counter[gap_key] = arc_idx + 1
+            fp_sheet = sheet_num_map.get(fp, '')
+            tp_sheet = sheet_num_map.get(tp, '')
 
-            self.viewer.add_sheet_conn_arc(
-                src_pt, dst_pt, color_hex,
-                confidence, label, bidir,
-                conn_id=style.get('id', -1),
-                src_edge=src_edge, dst_edge=dst_edge,
-                arc_index=arc_idx, weight=weight,
-            )
+            # All connectors on fp referencing tp's sheet, and vice-versa
+            src_list = conn_by_page_ref.get((fp, tp_sheet), [])
+            dst_list = conn_by_page_ref.get((tp, fp_sheet), [])
+
+            # Fallback edges from relative page positions (horizontal only)
+            dx_pages = ox_tp - ox_fp
+            def_src = 'right' if dx_pages >= 0 else 'left'
+            def_dst = 'left'  if dx_pages >= 0 else 'right'
+
+            if not src_list:
+                # No connectors detected on fp side — draw one fallback line
+                pair_key = (fp, tp, media)
+                if pair_key in drawn_pairs:
+                    continue
+                drawn_pairs.add(pair_key)
+                drawn_pairs.add((tp, fp, media))
+                dst_c  = dst_list[0] if dst_list else None
+                src_pt = _edge_pt(None, ox_fp, oy_fp, pw_fp, ph_fp, def_src)
+                dst_pt = _edge_pt(dst_c, ox_tp, oy_tp, pw_tp, ph_tp,
+                                  dst_c.get('edge', def_dst) if dst_c else def_dst)
+                src_edge = def_src
+                dst_edge = dst_c.get('edge', def_dst) if dst_c else def_dst
+                label = media.replace('_', ' ').upper()
+                gap_key = (min(fp, tp), max(fp, tp))
+                arc_idx = gap_slot_counter.get(gap_key, 0)
+                gap_slot_counter[gap_key] = arc_idx + 1
+                self.viewer.add_sheet_conn_arc(
+                    src_pt, dst_pt, color_hex, confidence, label, bidir,
+                    conn_id=conn_id, src_edge=src_edge, dst_edge=dst_edge,
+                    arc_index=arc_idx, weight=weight)
+                continue
+
+            # One line per src connector — match to nearest dst connector by Y
+            used_dst = set()
+            for sc in src_list:
+                pair_key = (fp, id(sc), media)
+                if pair_key in drawn_pairs:
+                    continue
+                drawn_pairs.add(pair_key)
+
+                # Find nearest unmatched dst connector
+                avail = [d for d in dst_list if id(d) not in used_dst]
+                if avail:
+                    sy = sc.get('y_pdf', 0)
+                    dc = min(avail, key=lambda d: abs(d.get('y_pdf', 0) - sy))
+                    used_dst.add(id(dc))
+                else:
+                    dc = None
+
+                src_edge = sc.get('edge') or def_src
+                dst_edge = dc.get('edge') if dc else def_dst
+                if not dst_edge:
+                    dst_edge = def_dst
+
+                src_pt = _edge_pt(sc, ox_fp, oy_fp, pw_fp, ph_fp, src_edge)
+                dst_pt = _edge_pt(dc, ox_tp, oy_tp, pw_tp, ph_tp, dst_edge)
+
+                rt = sc.get('raw_text', '')
+                rt_clean = re.sub(r'=[\w./\-]+', '', rt)
+                rt_clean = re.sub(r'\bS\d{6,8}\b', '', rt_clean, flags=re.I)
+                label = ' '.join(rt_clean.split())[:28].strip() or \
+                        media.replace('_', ' ').upper()
+
+                gap_key = (min(fp, tp), max(fp, tp))
+                arc_idx = gap_slot_counter.get(gap_key, 0)
+                gap_slot_counter[gap_key] = arc_idx + 1
+
+                self.viewer.add_sheet_conn_arc(
+                    src_pt, dst_pt, color_hex, confidence, label, bidir,
+                    conn_id=conn_id, src_edge=src_edge, dst_edge=dst_edge,
+                    arc_index=arc_idx, weight=weight)
 
     def _run_smart_layout(self):
         if not HAS_PYMUPDF or self.viewer.pdf_doc is None:
