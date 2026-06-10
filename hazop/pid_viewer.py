@@ -2729,23 +2729,28 @@ class ConnectorAnalyzer(QThread):
 
 
 def _propose_layout(connections, page_count, page_widths_pdf, page_heights_pdf, render_scale):
-    """Force-directed layout proposal — left-to-right.
-    Returns {page_idx: (scene_x, scene_y)}."""
-    import math
+    """Compact column layout — left-to-right, guaranteed no overlap.
+
+    BFS level = column index.  Within each column pages are stacked top-to-bottom
+    with a small fixed gap.  No force-directed step so positions are deterministic
+    and can never overlap.
+    Returns {page_idx: (scene_x, scene_y)}.
+    """
     from collections import deque
 
     if page_count == 0:
         return {}
 
     rs = render_scale
-    W = max((page_widths_pdf.get(i, 800) * rs for i in range(page_count)), default=2400.0)
-    H = max((page_heights_pdf.get(i, 600) * rs for i in range(page_count)), default=1800.0)
-    GAP_X = W * 0.12
-    GAP_Y = H * 0.08
+    GAP_X = 24   # horizontal gap between columns (px in scene coords)
+    GAP_Y = 16   # vertical gap between pages in the same column
 
-    # Build undirected adjacency (handles bidirectional/cycle connections correctly)
+    # Per-page dimensions
+    ws = {i: page_widths_pdf.get(i, 800) * rs  for i in range(page_count)}
+    hs = {i: page_heights_pdf.get(i, 600) * rs for i in range(page_count)}
+
+    # Build undirected adjacency
     adj = {i: set() for i in range(page_count)}
-    edge_weights = {}
     for c in connections:
         fp = c.get('from_page')
         tp = c.get('to_page')
@@ -2755,90 +2760,46 @@ def _propose_layout(connections, page_count, page_widths_pdf, page_heights_pdf, 
             continue
         if fp == tp:
             continue
-        adj[fp].add(tp); adj[tp].add(fp)
-        key = (min(fp, tp), max(fp, tp))
-        edge_weights[key] = max(edge_weights.get(key, 0), float(c.get('weight', 0.1)))
+        adj[fp].add(tp)
+        adj[tp].add(fp)
 
-    # Undirected BFS from the lowest-index connected node for left-to-right levels
-    visited = {}
+    # Undirected BFS — lowest-index unvisited node starts each component
+    level = {}
     for start in range(page_count):
-        if start in visited:
+        if start in level:
             continue
         queue = deque([(start, 0)])
         while queue:
             node, lv = queue.popleft()
-            if node in visited:
+            if node in level:
                 continue
-            visited[node] = lv
-            for nb in sorted(adj[node]):   # sorted → lower-index neighbours first
-                if nb not in visited:
+            level[node] = lv
+            for nb in sorted(adj[node]):
+                if nb not in level:
                     queue.append((nb, lv + 1))
 
-    level = visited  # page_idx → column index (0 = leftmost)
-
-    # Group nodes by level; within a level sort by page_idx for stable ordering
+    # Group pages by column (BFS level)
     level_groups = {}
     for i in range(page_count):
         level_groups.setdefault(level[i], []).append(i)
 
+    # Column X positions — each column is as wide as its widest page
+    col_x = {}
+    x = GAP_X
+    for lv in sorted(level_groups):
+        col_x[lv] = x
+        col_w = max(ws[i] for i in level_groups[lv])
+        x += col_w + GAP_X
+
+    # Place pages: stack them top-to-bottom within each column
     pos = {}
     for lv in sorted(level_groups):
-        group = sorted(level_groups[lv])
-        col_count = len(group)
-        for rank, node in enumerate(group):
-            # centre the group vertically around y=0
-            y_off = (rank - (col_count - 1) / 2.0) * (H + GAP_Y)
-            pos[node] = [lv * (W + GAP_X), y_off]
+        y = GAP_Y
+        for node in sorted(level_groups[lv]):
+            pos[node] = (col_x[lv], y)
+            y += hs[node] + GAP_Y
 
-    # Force-directed fine-tuning (60 iterations)
-    # Strong left-to-right push, very weak vertical movement
-    fd_edges = [(min(fp, tp), max(fp, tp), w)
-                for (fp, tp), w in edge_weights.items()]
-
-    K = W * 0.85
-    for it in range(60):
-        forces = {i: [0.0, 0.0] for i in range(page_count)}
-        nodes = list(range(page_count))
-        for ai, a in enumerate(nodes):
-            for b in nodes[ai + 1:]:
-                dx = pos[a][0] - pos[b][0]
-                dy = pos[a][1] - pos[b][1]
-                d2 = max(1.0, dx * dx + dy * dy)
-                d  = d2 ** 0.5
-                f  = K * K / d2
-                forces[a][0] += f * dx / d
-                forces[a][1] += f * dy / d * 0.12   # suppress vertical repulsion
-                forces[b][0] -= f * dx / d
-                forces[b][1] -= f * dy / d * 0.12
-        for fp, tp, w in fd_edges:
-            dx = pos[tp][0] - pos[fp][0]
-            dy = pos[tp][1] - pos[fp][1]
-            d  = max(1.0, (dx * dx + dy * dy) ** 0.5)
-            ideal = W + GAP_X
-            f_spring = w * (d - ideal) / d * 0.35
-            forces[fp][0] += f_spring * dx
-            forces[tp][0] -= f_spring * dx
-            forces[fp][1] += f_spring * dy * 0.08   # nearly no vertical spring
-            forces[tp][1] -= f_spring * dy * 0.08
-            # Directional push: tp right of fp
-            dir_f = w * 20.0
-            forces[fp][0] -= dir_f
-            forces[tp][0] += dir_f
-        temp = K * 0.35 * (1.0 - it / 60.0)
-        for i in range(page_count):
-            fx, fy = forces[i]
-            fmag = max(1.0, (fx * fx + fy * fy) ** 0.5)
-            step = min(temp, fmag)
-            pos[i][0] += fx / fmag * step
-            pos[i][1] += fy / fmag * step
-
-    # Normalize: shift so top-left = (GAP_X, GAP_Y)
-    if not pos:
-        return {}
-    min_x = min(p[0] for p in pos.values()) - GAP_X
-    min_y = min(p[1] for p in pos.values()) - GAP_Y
-    return {i: (round(pos[i][0] - min_x, 1), round(pos[i][1] - min_y, 1))
-            for i in range(page_count)}
+    return {i: (round(pos[i][0], 1), round(pos[i][1], 1)) for i in range(page_count)}
 
 
 class PIDGraphicsView(QGraphicsView):
@@ -4577,10 +4538,12 @@ class PIDGraphicsView(QGraphicsView):
         dy = dst.y() - src.y()
         dist = max(math.hypot(dx, dy), 200)
 
+        handle = dist * 0.25
+
         path = QPainterPath()
         path.moveTo(src)
-        ctrl1 = QPointF(src.x() + dist * 0.38, src.y())
-        ctrl2 = QPointF(dst.x() - dist * 0.38, dst.y())
+        ctrl1 = QPointF(src.x() + handle, src.y())
+        ctrl2 = QPointF(dst.x() - handle, dst.y())
         path.cubicTo(ctrl1, ctrl2, dst)
 
         pi = QGraphicsPathItem(path)
