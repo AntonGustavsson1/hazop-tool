@@ -6950,15 +6950,11 @@ class PIDPanel(QWidget):
 
             def edge_point(page_conns, ox, oy, pw, ph, edge):
                 if page_conns:
-                    # Pick the median connector (by position along the edge axis)
+                    # Use the actual connector symbol position so the bezier
+                    # looks like the process pipe continuing between pages.
                     med = sorted(page_conns, key=lambda c: c.get('y_pdf', 0))
                     med = med[len(med) // 2]
-                    # Snap to the page edge; preserve the perpendicular coordinate
-                    # from the connector's detected position.
-                    if edge == 'right':  return QPointF(ox + pw,           oy + med['y_pdf'] * rs)
-                    if edge == 'left':   return QPointF(ox,                oy + med['y_pdf'] * rs)
-                    if edge == 'top':    return QPointF(ox + med['x_pdf'] * rs, oy)
-                    return                      QPointF(ox + med['x_pdf'] * rs, oy + ph)
+                    return QPointF(ox + med['x_pdf'] * rs, oy + med['y_pdf'] * rs)
                 # Fallback: centre of the specified edge
                 if edge == 'right':  return QPointF(ox + pw,     oy + ph / 2)
                 if edge == 'left':   return QPointF(ox,           oy + ph / 2)
