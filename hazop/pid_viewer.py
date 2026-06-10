@@ -4964,15 +4964,19 @@ class PIDGraphicsView(QGraphicsView):
             src_angle = math.atan2(src_pt.y() - cp1.y(), src_pt.x() - cp1.x())
             _arrowhead(src_pt, src_angle, color)
 
-        # Anchor dots: pin at the raw connector symbol position (constant screen size)
-        _dot_r = 5.0
+        # Anchor dots: filled circle + white ring at the raw connector symbol position.
+        # ItemIgnoresTransformations keeps the dot the same screen size at all zoom levels.
+        # White ring makes them visible on both light and dark P&ID backgrounds.
+        _dot_r = 7.0
         _dot_color = QColor(color_hex)
-        _dot_color.setAlpha(210)
+        _dot_color.setAlpha(230)
+        _dot_ring = QPen(QColor(255, 255, 255, 220), 2.0)
+        _dot_ring.setCosmetic(True)
         for _apt in (src, dst):
             _dot = QGraphicsEllipseItem(-_dot_r, -_dot_r, _dot_r * 2, _dot_r * 2)
             _dot.setPos(_apt)
             _dot.setBrush(QBrush(_dot_color))
-            _dot.setPen(QPen(Qt.PenStyle.NoPen))
+            _dot.setPen(_dot_ring)
             _dot.setZValue(Z_SHEET_CONN + 0.5)
             _dot.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
             self._scene.addItem(_dot)
@@ -6867,9 +6871,18 @@ class PIDPanel(QWidget):
         rs = self.viewer.render_scale
 
         def _edge_pt(c, ox, oy, pw, ph, fallback_edge):
-            """Scene point for a connector dict, or midpoint of fallback_edge."""
+            """Scene point for a connector dict, or midpoint of fallback_edge.
+
+            Preserves the full (x_pdf, y_pdf) position so that:
+            - left/right connectors land at the correct Y on the page
+            - top/bottom connectors land at the correct X on the page
+            Falls back to the edge midpoint if coordinates are missing.
+            """
             if c:
-                return QPointF(ox + c['x_pdf'] * rs, oy + c['y_pdf'] * rs)
+                xp = c.get('x_pdf')
+                yp = c.get('y_pdf')
+                if xp is not None and yp is not None:
+                    return QPointF(ox + xp * rs, oy + yp * rs)
             if fallback_edge == 'right':  return QPointF(ox + pw,    oy + ph / 2)
             if fallback_edge == 'left':   return QPointF(ox,          oy + ph / 2)
             if fallback_edge == 'top':    return QPointF(ox + pw / 2, oy)
