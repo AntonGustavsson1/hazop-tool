@@ -6871,17 +6871,23 @@ class PIDPanel(QWidget):
         rs = self.viewer.render_scale
 
         def _edge_pt(c, ox, oy, pw, ph, fallback_edge):
-            """Scene point for a connector dict, or midpoint of fallback_edge.
+            """Scene point at the connector symbol tip on the page edge.
 
-            Preserves the full (x_pdf, y_pdf) position so that:
-            - left/right connectors land at the correct Y on the page
-            - top/bottom connectors land at the correct X on the page
-            Falls back to the edge midpoint if coordinates are missing.
+            Snaps to the page boundary in the connector's edge direction while
+            preserving the detected position along that edge:
+              right/left  → x snapped to page edge, y from y_pdf (correct height)
+              top/bottom  → y snapped to page edge, x from x_pdf (correct column)
+            Falls back to the edge midpoint when coordinates are missing.
             """
             if c:
                 xp = c.get('x_pdf')
                 yp = c.get('y_pdf')
                 if xp is not None and yp is not None:
+                    edge = c.get('edge') or fallback_edge
+                    if edge == 'right':  return QPointF(ox + pw,      oy + yp * rs)
+                    if edge == 'left':   return QPointF(ox,            oy + yp * rs)
+                    if edge == 'top':    return QPointF(ox + xp * rs,  oy)
+                    if edge == 'bottom': return QPointF(ox + xp * rs,  oy + ph)
                     return QPointF(ox + xp * rs, oy + yp * rs)
             if fallback_edge == 'right':  return QPointF(ox + pw,    oy + ph / 2)
             if fallback_edge == 'left':   return QPointF(ox,          oy + ph / 2)
