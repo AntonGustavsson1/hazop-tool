@@ -3026,164 +3026,133 @@ class ConnectorAnalyzer(QThread):
 
 
 def _propose_layout(connections, active_pages, page_widths_pdf, page_heights_pdf, render_scale):
-    """Compact column layout for active_pages only — left-to-right, no overlap.
+    """Force-directed organic layout.
 
-    Improvements over the original:
-    1. Barycenter vertical ordering within each column (minimises arc crossings)
-    2. Isolated pages (no connections) grouped into a separate rightmost column
-    3. Automatic column split when a column exceeds MAX_COL_PAGES
-    4. Multiple horizontal compaction passes until convergence
-    5. Directed BFS — starts from source pages (no incoming connections)
+    Pages repel each other (no overlap) and connected pages attract
+    (cluster by connection weight). Result is organic placement in
+    both X and Y — no column constraints.
 
     Returns {page_idx: (scene_x, scene_y)} for each page in active_pages.
     """
+    import math
     from collections import deque
 
     if not active_pages:
         return {}
 
-    rs        = render_scale
-    GAP_X     = 700  # horizontal gap between columns (scene px)
-    GAP_Y     = 350  # vertical gap between pages in the same column
-    MAX_COL   = 8    # split a column if it exceeds this many pages
-
+    rs      = render_scale
+    GAP     = 450   # desired minimum gap between page edges (scene px)
     page_set = set(active_pages)
     ws = {i: page_widths_pdf.get(i,  800) * rs for i in active_pages}
     hs = {i: page_heights_pdf.get(i, 600) * rs for i in active_pages}
 
-    # ── Build adjacency (active pages only) ───────────────────────────────────
-    adj_fwd = {i: set() for i in active_pages}   # directed forward
-    adj_bwd = {i: set() for i in active_pages}   # directed backward (incoming)
+    # ── Connection weights (undirected) ───────────────────────────────────────
+    conn_w: dict = {}   # (min, max) page pair → weight
+    adj    = {i: set() for i in active_pages}
     for c in connections:
         fp, tp = c.get('from_page'), c.get('to_page')
         if fp not in page_set or tp not in page_set or fp == tp:
             continue
-        adj_fwd[fp].add(tp)
-        adj_bwd[tp].add(fp)
+        w = float(c.get('weight', 0.5) or 0.5)
+        k = (min(fp, tp), max(fp, tp))
+        conn_w[k] = max(conn_w.get(k, 0.0), w)
+        adj[fp].add(tp); adj[tp].add(fp)
 
-    # Undirected union used for connectivity and barycenter
-    adj_all = {i: adj_fwd[i] | adj_bwd[i] for i in active_pages}
-
-    # ── Improvement 5: directed BFS from source pages ─────────────────────────
-    # Sources = pages with no incoming connections (they start flows)
-    sources = sorted(i for i in active_pages if not adj_bwd[i] and adj_all[i])
-    if not sources:
-        sources = [min(active_pages)]   # fallback: smallest index
-
-    level = {}
-    for start in sources:
+    # ── BFS levels for initial seed positions ─────────────────────────────────
+    level: dict = {}
+    for start in sorted(active_pages, key=lambda x: -len(adj[x])):
         if start in level:
             continue
-        queue = deque([(start, 0)])
-        while queue:
-            node, lv = queue.popleft()
+        q = deque([(start, 0)])
+        while q:
+            node, lv = q.popleft()
             if node in level:
                 continue
             level[node] = lv
-            for nb in sorted(adj_all[node]):
+            for nb in sorted(adj[node]):
                 if nb not in level:
-                    queue.append((nb, lv + 1))
-    # Assign remaining (isolated or disconnected sub-components)
-    for start in sorted(active_pages):
-        if start in level:
-            continue
-        queue = deque([(start, 0)])
-        while queue:
-            node, lv = queue.popleft()
-            if node in level:
-                continue
-            level[node] = lv
-            for nb in sorted(adj_all[node]):
-                if nb not in level:
-                    queue.append((nb, lv + 1))
+                    q.append((nb, lv + 1))
 
-    # ── Improvement 2: separate isolated pages ────────────────────────────────
-    isolated  = [i for i in active_pages if not adj_all[i]]
-    connected = [i for i in active_pages if adj_all[i]]
+    typ_w = sum(ws.values()) / len(ws)
+    typ_h = sum(hs.values()) / len(hs)
+    COL_PITCH = typ_w * 1.8 + GAP
+    ROW_PITCH = typ_h * 1.8 + GAP
 
-    level_groups: dict = {}
-    for i in connected:
-        level_groups.setdefault(level[i], []).append(i)
-
-    # ── Improvement 3: split tall columns ────────────────────────────────────
-    expanded: dict = {}
-    for lv in sorted(level_groups):
-        pages = level_groups[lv]
-        if len(pages) <= MAX_COL:
-            expanded[float(lv)] = pages
-        else:
-            for chunk_idx, start in enumerate(range(0, len(pages), MAX_COL)):
-                expanded[lv + chunk_idx * 0.01] = pages[start:start + MAX_COL]
-    level_groups   = expanded
-    sorted_levels  = sorted(level_groups)
-
-    # ── Build column-pair connection strength (needed for organic gap) ─────────
-    page_to_col = {pn: lv for lv, pages in level_groups.items() for pn in pages}
-    conn_w: dict = {}
-    for c in connections:
-        fp = c.get('from_page'); tp = c.get('to_page')
-        if fp in page_set and tp in page_set and fp != tp:
-            w = float(c.get('weight', 0.5) or 0.5)
-            conn_w[(fp, tp)] = max(conn_w.get((fp, tp), 0.0), w)
-            conn_w[(tp, fp)] = conn_w[(fp, tp)]
-    col_str: dict = {}
-    for (pa, pb), w in conn_w.items():
-        ca = page_to_col.get(pa); cb = page_to_col.get(pb)
-        if ca is not None and cb is not None and ca != cb:
-            k = (ca, cb)
-            col_str[k] = max(col_str.get(k, 0.0), w)
-            col_str[(cb, ca)] = col_str[k]
-
-    # Linear interpolation: strong connection → 450 px, no connection → 700 px.
-    # Gradual curve preserves organic variation (not a binary snap to minimum).
-    GAP_MIN = 450
-    def _gap(col_a, col_b):
-        w = col_str.get((col_a, col_b), 0.0)
-        return max(GAP_MIN, GAP_X - w * (GAP_X - GAP_MIN))
-
-    # ── Pass 1: column X using strength-aware gaps between adjacent levels ─────
-    col_x: dict = {}
-    x = GAP_X
-    prev_lv = None
-    for lv in sorted_levels:
-        if prev_lv is not None:
-            prev_w = max(ws[i] for i in level_groups[prev_lv])
-            gap = _gap(lv, prev_lv)
-            x = col_x[prev_lv] + prev_w + gap
-        col_x[lv] = x
-        prev_lv = lv
-
+    # Staggered initial positions: BFS level → X seed, row within level → Y seed.
+    # Deterministic golden-ratio offset per page index breaks column symmetry.
+    level_cnt: dict = {}
     pos: dict = {}
-    for lv in sorted_levels:
-        y = GAP_Y
-        for node in sorted(level_groups[lv]):
-            pos[node] = [col_x[lv], y]
-            y += hs[node] + GAP_Y
+    for i in sorted(active_pages, key=lambda x: (level.get(x, 0), x)):
+        lv  = level.get(i, 0)
+        row = level_cnt.get(lv, 0)
+        level_cnt[lv] = row + 1
+        xo = (i * 1618) % (typ_w * 0.5)   # deterministic X jitter
+        yo = (i * 2718) % (typ_h * 0.5)   # deterministic Y jitter
+        pos[i] = [lv * COL_PITCH + xo + GAP,
+                  row * ROW_PITCH + yo + GAP]
 
-    # ── Improvement 1: barycenter reordering (forward sweep) ─────────────────
-    for lv in sorted_levels:
-        def _bary(node):
-            ny = [pos[nb][1] + hs[nb] / 2
-                  for nb in adj_all[node] if nb in pos]
-            return sum(ny) / len(ny) if ny else pos[node][1]
-        ordered = sorted(level_groups[lv], key=_bary)
-        y = GAP_Y
-        for node in ordered:
-            pos[node] = [col_x[lv], y]
-            y += hs[node] + GAP_Y
+    # ── Spring simulation ──────────────────────────────────────────────────────
+    pages_list = list(active_pages)
+    N_ITER     = 150
 
-    # ── Isolated pages: rightmost dedicated column ────────────────────────────
-    if isolated:
-        if connected:
-            iso_x = max(pos[i][0] + ws[i] for i in connected) + GAP_X * 2
-        else:
-            iso_x = GAP_X
-        y = GAP_Y
-        for node in sorted(isolated):
-            pos[node] = [iso_x, y]
-            y += hs[node] + GAP_Y
+    for iteration in range(N_ITER):
+        t        = max(0.05, 1.0 - iteration / N_ITER)   # cooling
+        max_step = 700.0 * t
+        forces   = {i: [0.0, 0.0] for i in active_pages}
 
-    return {i: (round(pos[i][0], 1), round(pos[i][1], 1)) for i in active_pages}
+        for ai, a in enumerate(pages_list):
+            cxa = pos[a][0] + ws[a] / 2
+            cya = pos[a][1] + hs[a] / 2
+
+            for b in pages_list[ai + 1:]:
+                cxb = pos[b][0] + ws[b] / 2
+                cyb = pos[b][1] + hs[b] / 2
+                dx  = cxb - cxa
+                dy  = cyb - cya
+                dist = math.hypot(dx, dy) or 1.0
+                ux, uy = dx / dist, dy / dist
+
+                # Edge gap: center dist minus projected half-extents a→b
+                half_a = ws[a] / 2 * abs(ux) + hs[a] / 2 * abs(uy)
+                half_b = ws[b] / 2 * abs(ux) + hs[b] / 2 * abs(uy)
+                edge_gap = dist - half_a - half_b
+
+                # Repulsion — linear from 0 at (GAP*3.5) to max at edge overlap
+                rep_range = GAP * 3.5
+                if edge_gap < rep_range:
+                    rep = (rep_range - edge_gap) * 1.8
+                    forces[a][0] -= ux * rep;  forces[a][1] -= uy * rep
+                    forces[b][0] += ux * rep;  forces[b][1] += uy * rep
+
+                # Attraction — spring toward GAP for connected pairs
+                k = (min(a, b), max(a, b))
+                w = conn_w.get(k, 0.0)
+                if w > 0 and edge_gap > GAP:
+                    att = w * (edge_gap - GAP) * 0.22
+                    forces[a][0] += ux * att;  forces[a][1] += uy * att
+                    forces[b][0] -= ux * att;  forces[b][1] -= uy * att
+
+        # Apply forces, capped by temperature
+        for i in active_pages:
+            fx, fy = forces[i]
+            mag = math.hypot(fx, fy) or 1.0
+            if mag > max_step:
+                fx *= max_step / mag
+                fy *= max_step / mag
+            pos[i][0] += fx
+            pos[i][1] += fy
+
+        # Keep all pages in positive space
+        mx = min(pos[i][0] for i in active_pages)
+        my = min(pos[i][1] for i in active_pages)
+        if mx < GAP:
+            d = GAP - mx
+            for i in active_pages: pos[i][0] += d
+        if my < GAP:
+            d = GAP - my
+            for i in active_pages: pos[i][1] += d
+
+    return {i: (round(pos[i][0]), round(pos[i][1])) for i in active_pages}
 
 
 class PIDGraphicsView(QGraphicsView):
