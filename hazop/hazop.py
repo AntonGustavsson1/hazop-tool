@@ -502,189 +502,698 @@ _RISK_ICON   = {'Låg': '🟢', 'Medium': '🟡', 'Hög': '🟠', 'Kritisk': '�
 _COMP_STD_CAUSES = {
     "Lågt flöde": {
         "Pump": [
-            "Pump stopp",
-            "Kavitation (reducerat flöde)",
+            "Pump stopp (elfel / motorskydd utlöst)",
+            "Kavitation — lågt NPSH (hög temperatur / låg inloppsnivå)",
             "Slitet impeller / reducerad kapacitet",
-            "Pumptätning havererar (intern läcka)",
+            "Pumptätning havererar (intern återcirkulation)",
+            "Pump kör baklänges (felkopplad motor, backventil saknas)",
+            "Pump igensatt (avlagringar på impeller)",
+            "Felaktig pump installerad (för liten kapacitet)",
+            "Driftsäkerhetsventil fastnar öppen (intern bypass)",
+            "Parallellpump stannar — flöde delas inte längre",
+            "Gasig vätska (ångbildning vid lågt tryck)",
+            "Läckage på trycksida (reducerat nettoutflöde)",
+            "Strypt utloppsventil (fel inställd)",
+            "Pump i manuell styrning, operatör reducerar flöde",
+            "Motorövertemperatur — termoskydd bryter",
+            "Frekvensomformare ger för låg varvtal (referenssignalfel)",
         ],
         "Kompressor": [
-            "Kompressorstopp",
-            "Kompressorsurge (reducerat flöde)",
+            "Kompressorstopp (elfel / nödavstängning)",
+            "Kompressorsurge (reducerat flöde vid lågt mottryck)",
+            "Igensatt inloppsfilter",
+            "Slitna kolvpackningar / ventilläckage (intern bypass)",
+            "Strypt inloppsreglerventil (fail-closed)",
+            "Kylning otillräcklig — kompressor överhettningsskydd stänger",
+            "Felaktig kompressor installerad (för liten kapacitet)",
+            "Bypassventil fastnar öppen (del av flöde återcirkuleras)",
+            "Lager haveri — kompressor trips",
+            "Axeltätning havererar (gasläcka minskar kapacitet)",
         ],
         "Ventil": [
-            "Reglerventil fastnar stängd (fail-closed)",
-            "Spjäll stängt — kvarglömt efter underhåll",
-            "FCV delvis stängd (stiction / positioneringsfel)",
+            "Reglerventil fastnar stängd (fail-closed vid luftfall)",
+            "Isolationsventil stängd / kvarglömd efter underhåll",
+            "Blindplatta kvarglömd efter reparation",
+            "FCV delvis stängd — stiction / positioneringsfel",
             "Backventil fastnad stängd",
+            "Manuell ventil felaktigt stängd av operatör",
+            "Ventilsäte igensatt av partiklar",
+            "Aktuatorsignal förlorad — ventil faller till fail-position",
+            "Handventil felmarkörd — stängs vid provdrift",
+            "Urtätad ventilspindel — ventil kärvar i stängt läge",
+            "Säkerhetsventil öppen (trycksidan tappar flöde till mottagare)",
+            "Dräneringsventil felaktigt öppen (flöde försvinner)",
         ],
         "Rörledning": [
-            "Igensatt filter / sil",
-            "Rörblockering (avlagringar, hydrater)",
+            "Igensatt filter / sil (avlagringar, korrosion)",
+            "Rörblockering — hydrater / vax",
+            "Rörblockering — korrosionsprodukter / sand",
             "Blindplatta kvar efter underhåll",
+            "Rörbrott — flöde läcker ut",
+            "Flanskläckage — partiellt flödesfall",
+            "Termisk expansion i avspärrat avsnitt (flöde stängs av tryckskydd)",
+            "Luftlås i rörledning (hög punkt utan avluftning)",
+            "Slambildning / sediment blockerar rör",
+            "Felaktig rörkonfiguration — backflöde stör driftsflödet",
         ],
         "Instrument / Sensor": [
-            "Signalfel högt",
-            "Signalfel lågt",
+            "Signalfel högt (FT mäter för högt → FCV stänger)",
+            "Signalfel lågt (FT mäter för lågt → FCV stänger)",
+            "Flödesmätare igensatt / smutsigt",
+            "Flödesmätaren ger pulsfel (kavitationsbubblor)",
+            "Transmitterledning igensatt / utfryst",
+            "DCS-styrning ger felaktig styrsignal",
+            "Kalibreringsfel — börvärde satt för lågt",
+            "Missad provning av styrventilsposition",
         ],
         "Tank / Kärl": [
-            "Låg nivå i matningskärl",
-            "Kärl tömt / dränerat",
+            "Låg nivå i matningskärl (startar torrkörningsskydd)",
+            "Kärl tömt / dränerat (operatörsfel)",
+            "Utloppspump i kärl havererar",
+            "Nivåstyrning i matningskärl felar — stänger utloppet",
+            "Kärl under vätskeytan sätts under undertryck (vakuumkollaps)",
+            "Inloppsventil till kärl stängs — kärl töms snabbt av nedströmspump",
         ],
         "Värmeväxlare": [
-            "Igensatta rör (processsida)",
+            "Igensatta rör processsida (beläggningar / korrosion)",
+            "Igensatta rör nyttasida (biofouling)",
             "Vakuumbrott / tömning av värmeväxlare",
+            "Läckage processsida → nyttasida (tryckfall)",
+            "Läckage nyttasida → processsida",
+            "Ventil på kylvattensida stängs (VX blandning ändras)",
+            "Differenstrycksskydd stänger processsida",
         ],
     },
     "Högt flöde": {
         "Pump": [
-            "Pump kör mot lågt mottryck (hög kapacitet)",
-            "Felaktig pump installerad (för stor)",
+            "Pump kör mot lågt mottryck (utloppstryck faller)",
+            "Felaktig pump installerad (för stor kapacitet)",
+            "Pump kör i parallell utan nödvändig backventil",
+            "Frekvensomformare ger för hög varvtal",
+            "Pump kör mot öppen utloppsventil (operatörsfel)",
+            "Tryckreducerande ventil på trycksida fastnar öppen",
+            "Dubbelansluten pump — en pump bidrar oväntat",
+            "Kavitationseffekt ger tillfälligt högt flöde (pumpning av ånga)",
         ],
         "Kompressor": [
-            "Kompressor kör mot reducerat mottryck",
+            "Kompressor kör mot reducerat mottryck (utloppstryck faller)",
+            "Bypassventil fastnar stängd — all kapacitet till process",
+            "Felaktig kompressor installerad (för stor)",
+            "Nödöverkapacitet — reservkompressor startar utan behovssignal",
         ],
         "Ventil": [
-            "Reglerventil fastnar öppen (fail-open)",
-            "Spjäll öppnat av misstag",
-            "FCV sitter kvar öppen (stiction)",
-            "Backventil saknas / defekt (backflöde adderas)",
+            "Reglerventil fastnar öppen (fail-open vid luftfall)",
+            "Isolationsventil öppnas av misstag",
+            "FCV stöter på stiction — sitter kvar öppen",
+            "Backventil defekt — backflöde läggs till framåtflödet",
+            "Parallellventil öppnas utan att huvudventil stängs",
+            "Manuell ventil felaktigt öppnad av operatör",
+            "Tryckreducerventil ur balans — för högt differenstryck",
+            "Begränsningsventil saknas / underdimensionerad",
         ],
         "Instrument / Sensor": [
-            "Signalfel högt",
-            "Signalfel lågt",
+            "Signalfel högt (FT mäter för högt → FCV öppnar mer)",
+            "Signalfel lågt (FT mäter för lågt → FCV öppnar)",
+            "Differenstryckmätare blockerad — FC öppnar ventilen",
+            "Kalibreringsfel — börvärde satt för högt",
+        ],
+        "Tank / Kärl": [
+            "Högt nivå i matningskärl — utloppspump ökar kapacitet",
+            "Övertrycksventil öppnar — flöde till nedströms ökar",
         ],
     },
     "Omvänt flöde": {
         "Pump": [
-            "Pump stopp + defekt backventil",
-            "Pump roterar baklänges (felkopplad motor)",
+            "Pump stopp + defekt/saknad backventil",
+            "Pump roterar baklänges (felkopplad motor vid nyinstallation)",
+            "Parallellpump stannar — tryckskillnad driver backflöde",
+            "Pumptätning havererar helt — backflöde via axelpackning",
+            "Pumptestventil öppnas vid pågående drift",
+            "Differenstrycket i rörsystemet inverteras (tryckhöjning nedströms)",
         ],
         "Ventil": [
-            "Backventil defekt / saknas",
+            "Backventil defekt (säteslips / fjäder trasig)",
             "Backventil fastnad öppen",
+            "Backventil saknas i ritning / inte monterad",
+            "Fel bakåt-backventil installerad (monterad i fel riktning)",
+            "Isolationsventil öppnas mot tryckkälla uppströms",
+            "Tryckutjämningsventil öppnar mot lägretryckssystem",
         ],
         "Rörledning": [
-            "Sifonverkan",
-            "Felaktig rörledningsdragning",
+            "Sifonverkan vid rördragning med hög punkt",
+            "Felaktig rörledningsdragning (U-form utan avluftning)",
+            "Rörbrott på trycksida — bakflöde från högtryckssystem",
         ],
     },
     "Missriktat flöde": {
         "Ventil": [
             "Felöppen ventil på alternativ flödesväg",
-            "Backventil saknas / defekt",
+            "Backventil saknas / defekt på alternativ väg",
+            "Manuell ventil på bypass öppnas utan att stänga huvudledning",
+            "Automatisk växlingsventil fastnar i fel position",
+            "Felaktigt öppnad tankanslutning (fel tank fylls)",
+            "Kross-koppling vid tillfällig röranslutning (underhåll)",
         ],
         "Rörledning": [
-            "Felaktig rörkoppling (monteringsfel)",
+            "Felaktig rörkoppling vid nyinstallation / modifiering",
+            "Felaktig flödesriktning märkt på rör",
+            "Slangen ansluten till fel tappanslutning",
+            "Blindplatta borttagen på fel grenanslutning",
+        ],
+        "Pump": [
+            "Pumpen matar till fel tank (fel utloppsventil öppen)",
+            "Återcirkulationsledning öppnad — produkt pumpas tillbaka",
         ],
     },
     "Högt tryck": {
         "Pump": [
-            "Pump deadhead (strypt utlopp)",
-            "Pump mot stängd utloppsventil",
+            "Pump deadhead — strypt utlopp / stängd ventil",
+            "Pump mot stängd utloppsventil (operatörsfel)",
+            "Pump med hög avlastningstryck (fel konfiguration)",
+            "Tryckhöjning p.g.a. backflöde (backventil havererar)",
+            "Pump i serie — kapaciteten adderas vid lägre flöde",
+            "Vattenhammare: pump startar mot stängd utloppsventil",
         ],
         "Kompressor": [
             "Kompressor mot stängd utloppsventil",
             "Kompressor utan flödesavlastning (PD-typ)",
+            "Kompressor antisurgeventil stänger oväntat",
+            "Kylning bortfaller — trycket stiger med temperaturen",
+            "Kompressionssteg täpps till — differenstryck stiger",
         ],
         "Ventil": [
-            "Utloppsventil stängd / blockerad",
+            "Utloppsventil stängd / blockerad (operatörsfel)",
             "Reglerventil på trycksida fastnar stängd",
+            "Säkerhetsventil avspärrad (underhåll — ingen avlastning)",
+            "Tryckreducerventil fastnar stängd",
+            "Isolationsventil stängs under drift",
+            "Kontrollventil i fel fail-position",
         ],
         "Rörledning": [
-            "Vattenhammare (snabb stängning av ventil)",
+            "Vattenhammare — snabb stängning av ventil",
             "Termisk expansion i avspärrat rörledningsavsnitt",
+            "Rörblockering — tryck byggs upp uppströms",
+            "Differenstryck vid igensatt filter / sil",
+            "Vakuumbrott uppströms ger trycktransient",
         ],
         "Instrument / Sensor": [
-            "Signalfel högt",
-            "Signalfel lågt",
+            "Signalfel högt (PIC öppnar kompressionsventil)",
+            "Signalfel lågt (PIC stänger avblåsning)",
+            "Tryckmätare igensatt (felläsning, felstyrning)",
+            "Säkerhetsinstrumenterat system testat med ventil avspärrad",
         ],
         "Tank / Kärl": [
             "Säkerhetsventil avspärrad (underhåll)",
-            "Yttre brand (ångbildning)",
+            "Yttre brand — ångbildning, kärlet trycks upp",
+            "Exoterm reaktion i kärl",
+            "Inert gasförsörjning övertrycksätter kärlet",
+            "Blandning av reaktiva kemikalier",
+            "Värme tillförs avspärrat kärl (termisk expansion)",
         ],
     },
     "Lågt tryck": {
         "Pump": [
-            "Pump stopp (trycksidan faller)",
-            "Pumphaveri",
+            "Pump stopp — trycksidan faller",
+            "Pumphaveri (mekanisk skada)",
+            "Kavitation — pumpkapaciteten minskar",
+            "Pump kör med för högt flöde (DP faller)",
+            "Backventil havererar — tryck utjämnas",
         ],
         "Ventil": [
-            "Utloppsventil öppnar (okontrollerat)",
+            "Utloppsventil öppnar okontrollerat",
             "Tryckreducerande ventil fastnar öppen",
+            "Säkerhetsventil öppnar vid fel lägre tryck",
+            "Inloppsventil till kärl stänger — undantryck skapas",
+            "Manuell dräneringsventil felaktigt öppnad",
         ],
         "Rörledning": [
-            "Yttre läcka / rörbrott",
+            "Yttre läcka — rörbrott",
             "Flanskläckage",
+            "Korrosionsgenomslag",
+            "Tätningsläcka på anslutningspunkt",
+            "Vakuumbildning vid snabb tömning (utan ventilering)",
         ],
         "Instrument / Sensor": [
-            "Signalfel högt",
-            "Signalfel lågt",
+            "Signalfel högt (PIC öppnar avblåsning i onödan)",
+            "Signalfel lågt (PIC stänger inlopp)",
+            "Trycktransmitter igensatt",
+            "Kalibreringsfel — lågtrycklarm triggas för sent",
         ],
         "Tank / Kärl": [
             "Dräneringsventil öppen / läckande",
-            "Vakuum (för snabb tömning utan ventilering)",
+            "Vakuum p.g.a. för snabb tömning utan ventilering",
+            "Inertgasförsörjning bortfaller — vakuum bildas",
+            "Kärl kyls ner snabbt — kondensering skapar vakuum",
+            "Yttre läcka från kärl (korrosion / sprucken svets)",
         ],
     },
     "Hög nivå": {
         "Pump": [
             "Utloppspump stopp",
+            "Utloppspump reducerad kapacitet (kavitation)",
+            "Felaktig pump installerad (för liten utloppskapacitet)",
+            "Utloppspumpens frekvensomformare ger för låg varvtal",
         ],
         "Ventil": [
             "Utloppsventil stängd / fastnad stängd",
-            "Inloppsventil öppen (okontrollerat)",
+            "Inloppsventil öppen okontrollerat (fail-open)",
+            "Flödeskontrollventil inlopp fastnar öppen",
+            "Backventil defekt — backflöde från nedströms",
+            "Utloppsisolationsventil stängd under underhåll",
         ],
         "Instrument / Sensor": [
-            "Signalfel högt",
-            "Signalfel lågt",
+            "Signalfel högt (LIC stänger utlopp i onödan)",
+            "Signalfel lågt (LIC öppnar inlopp för mycket)",
+            "Nivågivare igensatt / falskt mätvärde",
+            "Differenstrycksnivå påverkas av densitetsändring",
+            "Nivålarm ej kalibrerat — triggar för sent",
         ],
         "Tank / Kärl": [
-            "Skumbildning (skenbar hög nivå)",
-            "Densitetsminskning (kokning / flash)",
+            "Skumbildning (skenbar hög nivå — luftinblandning)",
+            "Densitetsminskning (kokning / flash ger skenbar hög nivå)",
+            "Inlopp utan styrsignal (fel driftläge)",
+            "Fel kärl fylls (felöppnad inloppsventil)",
+            "Överfyllt vid manuell fyllning",
         ],
     },
     "Låg nivå": {
         "Pump": [
             "Utloppspump kör med för högt flöde",
+            "Utloppspump startar utan att inlopp öppnas",
+            "Felaktig utloppspump installerad (för hög kapacitet)",
+            "Pump kör tömt kärl — sugningstorrkörning",
         ],
         "Ventil": [
             "Inloppsventil stängd / fastnad stängd",
             "Dräneringsventil öppen / läckande",
+            "Utloppsventil fastnar öppen",
+            "Inloppsventil fail-position stängd vid luft/signalfall",
+            "Manuell by-pass öppnad utan att stänga inlopp",
         ],
         "Instrument / Sensor": [
-            "Signalfel högt",
-            "Signalfel lågt",
+            "Signalfel högt (LIC stänger inlopp i onödan)",
+            "Signalfel lågt (LIC öppnar utlopp i onödan)",
+            "Nivågivare igensatt (undanträngd bubbla)",
+            "Nivålarm ej kalibrerat — triggar för sent",
+            "Falskt högt signalvärde — inlopp stängs",
         ],
         "Tank / Kärl": [
-            "Yttre läcka från kärlet",
+            "Yttre läcka från kärlet (korrosion / spricka)",
             "Avrinning via öppet dräneringsuttag",
+            "Snabb tömning utan automatisk stoppfunktion",
+            "Fel kärl töms (felöppnad utloppsventil)",
+            "Exoterm reaktion förgasar vätskefas",
         ],
     },
     "Hög temperatur": {
         "Värmeväxlare": [
-            "Otillräcklig kylning (kylmedelsflöde avbrutet)",
+            "Otillräcklig kylning — kylmedelsflöde avbrutet",
             "Luftkylare (fin-fan) fläktstopp",
-            "Kylventil fastnar stängd",
+            "Kylventil fastnar stängd (fail-closed)",
+            "Kylvatteninlopp blockerat (igensatt / stängt)",
+            "Kylvattentemperaturen stigit (externa orsaker)",
+            "Fouling på kylesidan — reducerad värmeöverföring",
+            "Korrosion på värmeöverföringsytan — dålig effekt",
+            "Kort-cirkulation i kylsystem",
         ],
         "Instrument / Sensor": [
-            "Signalfel högt",
-            "Signalfel lågt",
+            "Signalfel högt (TIC stänger kylning i onödan)",
+            "Signalfel lågt (TIC reducerar kylflöde)",
+            "Temperaturgivare igensatt / falskt mätvärde",
+            "Högtemperlarm kalibrerat för högt",
         ],
         "Tank / Kärl": [
             "Exoterm reaktion / okontrollerad kemisk process",
+            "Blandning av reaktiva kemikalier",
+            "Isolering av kärl utan kylning",
+            "Yttre värmekälla (brand / solexponering av metallkärl)",
+            "Ångning / destillationseffekt utan kylning",
+        ],
+        "Pump": [
+            "Kavitation — friktion höjer temperaturen",
+            "Pump deadhead — energi omvandlas till värme",
+            "Pump utan flöde kör varm (torrkörning)",
+        ],
+        "Rörledning": [
+            "Hett medium kontaminerar processledning (cross-connection)",
+            "Värmeförsörjning från tracingledning havererar (överhettning)",
         ],
     },
     "Låg temperatur": {
         "Värmeväxlare": [
-            "Överkylning (för högt kylmedelsflöde)",
+            "Överkylning — för högt kylmedelsflöde",
             "Ångförlust (värmemedium bortfaller)",
-            "Värmeventil fastnar stängd",
+            "Värmeventil fastnar stängd (fail-closed)",
+            "Kylvattenflöde ökar okontrollerat",
+            "Fouling på värmesidan — dålig värmeöverföring",
+            "Ångkondensatansamling blockerar ångcirkulation",
+            "Värmeväxlare dränerad utan att stänga kylsidan",
         ],
         "Instrument / Sensor": [
-            "Signalfel högt",
-            "Signalfel lågt",
+            "Signalfel högt (TIC öppnar kylflöde)",
+            "Signalfel lågt (TIC stänger värmeflöde)",
+            "Temperaturgivare i fel position — mäter fel",
+            "Frysning av instrumentledning",
         ],
         "Rörledning": [
             "Yttre kyla utan värmespårning — isbildning",
+            "Värmespårning havererar — rör kyls ned",
+            "Isolationsskada — rör exponeras för kyla",
+            "Kall inertgas tillförs — temperatur sjunker",
+            "Tillfällig körning med kallt medium under uppstart",
+        ],
+        "Tank / Kärl": [
+            "Kärl utan uppvärmning körs vid låg omgivningstemperatur",
+            "Inertning med flytande kväve — lokal överkylning",
+            "Snabb trycksänkning i kärl — Joule-Thomson avkylning",
+            "Kontaminering med kalt medium från felkopplat rör",
+        ],
+    },
+    "Avvikande sammansättning": {
+        "": [
+            "Kontaminering från uppströms system (rörläckage / cross-connection)",
+            "Felaktig kemikaliedosering (fel kemikalie / för hög dos)",
+            "Insufficiens rening av återcirkulerat flöde",
+            "Inläckage av kylvatten i processsida (VX läckage)",
+            "Luft-inläckage vid vakuumoperation",
+            "Ändringar i råvarusammansättning (leverantörsbyte)",
+            "Ackumulering av föroreningar vid lång drifttid",
+            "Reaktant fattas — reaktionsprodukt bildas ej",
+            "Överdosering av reaktant — okontrollerat reaktionsförlopp",
+            "Felaktiga blandningsförhållanden (flödeskontrollfel)",
+            "Sediment / partiklar i flöde (erosion, korrosion)",
+            "Mikrobiologisk kontaminering (biologisk film)",
+        ],
+    },
+    "Bortfall av hjälpsystem": {
+        "": [
+            "Strömavbrott — instrumentluft / el bortfaller",
+            "Instrumentluft bortfaller — ventiler faller till fail-position",
+            "Kylvattenbortfall (pump, nät, läckage)",
+            "Ångtillförsel bortfaller (för uppvärmning / drivning)",
+            "Nitrogenförsörjning bortfaller (inertning bryts)",
+            "DCS/SCADA kommunikationsavbrott",
+            "Hydrauloljeförsörjning bortfaller",
+            "Brand / nödavstängning utlöser hjälpsystemstopp",
+            "Nätspänningsfall — drivna enheter tappar kapacitet",
+            "Generator startar ej vid nätbortfall",
+            "UPS-batteri uttömt (längre strömavbrott)",
+            "Kontrollrumssystem havererar — blind drift",
+        ],
+    },
+    "Drift": {
+        "": [
+            "Felaktig manöver av operatör (fel ventil öppnad/stängd)",
+            "Underhållsarbete pågår — ej tagget enhet manövreras",
+            "Kommunikationsfel mellan skift (nyckelinfo ej överlämnad)",
+            "Felaktig procedur följd",
+            "Otillräcklig utbildning / kompetens",
+            "Tidsbrist — operatören hoppar över steg",
+            "Trötthet / distraherat tillstånd (nattskift)",
+            "Felaktig identifiering av ventil (märkning saknas / felaktig)",
+            "Manuell körning utan återkoppling (instrument ur drift)",
+            "Tillfällig överbryggning (bypass) av larm/skydd glöms kvar",
+        ],
+    },
+    "Underhåll": {
+        "": [
+            "Blindplatta kvarglömd efter underhåll",
+            "Ventil stängd / kvar i fel läge efter arbete",
+            "Instrument felkalibrerat / ansluten till fel intag",
+            "Rörledning felkopplad vid återmontering",
+            "Icke-godkänt material installerat",
+            "Lyftstöd / fixtur kvar i enhet efter inspektion",
+            "Svetsarbete utan explosionsskydd nära brandfarlig gas",
+            "Provning av nödsystem utan isolering av process",
+            "Felaktig torkkörning vid uppstart efter service",
+            "ESD/säkerhetsventil testad med spärr kvar",
+        ],
+    },
+    "Start-up / Shut-down": {
+        "": [
+            "Kall enhet startas med hett medium (termisk chock)",
+            "Otillräcklig rensning av inert gas — brandfarlig blandning kvar",
+            "Fel sekvens vid uppstart — trycksättning utan flöde",
+            "Kondensatbank i ångledning vid uppstart",
+            "Temperaturgradienter spränger tätningar vid uppstart",
+            "Felaktigt tömningsprocedur — vätska kvar vid nedstängning",
+            "ESD-system ej återaktiverat efter test",
+            "Provkörning utan korrekt processmedium — kavitation / torrkörning",
+            "Uppstart av pump mot stängd utloppsventil",
+            "Snabb trycksänkning vid nedstängning — flash / kylning",
+        ],
+    },
+}
+
+# ── Standard consequence steps ────────────────────────────────────────────────
+# Hierarkin är: Del1 = direkt konsekvens av avvikelse+orsak,
+#               Del2 = nästa skalsteg om Del1 inte stoppas, osv.
+# Nyckeln är (avvikelse, objekt/komponentstyp) → per steg → lista med text-alternativ.
+# Används av ConsequenceChainPickerDialog för kontextbaserade förslag.
+# '*' som objekt = generisk, gäller alla objekttyper.
+_STD_CONSEQUENCE_STEPS: dict = {
+    # ── Lågt / inget flöde ────────────────────────────────────────────────────
+    ("Lågt flöde", "*"): {
+        1: [
+            "Reducerat flöde till nedströms utrustning",
+            "Inget flöde — processmålet nås inte",
+            "Låg flödesskillnad mot design",
+        ],
+        2: [
+            "Låg nivå i mottagarkärl",
+            "Processtemperatur stiger (kylflöde otillräckligt)",
+            "Reaktant fattas — reaktionsgrad minskar",
+            "Produktkvalitet försämras",
+        ],
+        3: [
+            "Torrkörning av pump nedströms",
+            "Högt tryck uppströms (backpressure)",
+            "Processutrustning överhettning",
+        ],
+        4: [
+            "Mekanisk skada på pump (lagerhaveri, impellerslitage)",
+            "Instrumentavläsning missvisande (process utanför mätintervall)",
+            "Reaktionen stoppar — produkt ej uppnådd",
+        ],
+        5: [
+            "Produktion stoppad",
+            "Risk för brand / explosion (heta ytor möter läckt produkt)",
+            "Miljöutsläpp (tryckökning brister tätning)",
+        ],
+    },
+    ("Högt flöde", "*"): {
+        1: [
+            "Överskridande flöde till nedströms utrustning",
+            "Hög nivå i mottagarkärl",
+            "Processtemperatur sjunker (kylflödet för högt)",
+        ],
+        2: [
+            "Överfyllning av kärl",
+            "Oönskad reaktion (för hög reaktantkoncentration)",
+            "Produktkvalitet utanför specifikation",
+        ],
+        3: [
+            "Övertrycksättning av nedströms utrustning",
+            "Spill / overflow",
+            "Erosion i rör (hög hastighet)",
+        ],
+        4: [
+            "Strukturell skada på utrustning",
+            "Läckage / utsläpp",
+            "Säkerhetsventil öppnar",
+        ],
+        5: [
+            "Brand / explosion (brandfarlig vätska spills)",
+            "Miljöutsläpp",
+            "Personskada (spill / tryckskada)",
+        ],
+    },
+    ("Högt tryck", "*"): {
+        1: [
+            "Trycket överstiger driftsgränsen",
+            "Differenstrycket i systemet ökar",
+        ],
+        2: [
+            "Säkerhetsventil öppnar — systemet avlastas",
+            "Tätning havererar — läckage uppstår",
+            "Rörledning / kärl belastas mot konstruktionsgränsen",
+        ],
+        3: [
+            "Okontrollerat utsläpp av process till atmosfären",
+            "Mekanisk skada (sprickor i svets / flänsläckage)",
+            "Rör / kärl brister",
+        ],
+        4: [
+            "Utsläpp av brandfarligt / giftigt ämne",
+            "Kontaminering av omgivning",
+        ],
+        5: [
+            "Brand / explosion",
+            "Toxisk exponering för personal",
+            "Katastrofal strukturell kollaps",
+        ],
+    },
+    ("Lågt tryck", "*"): {
+        1: [
+            "Trycket understiger driftsgränsen",
+            "Flödet reduceras (pumpkurvan sjunker)",
+        ],
+        2: [
+            "Luft-inläckage (vakuumbildning)",
+            "Processvätska flashar / förångas",
+            "Destillationskolonnen tappar separation",
+        ],
+        3: [
+            "Vakuumkollaps av kärl (om ej konstruerat för det)",
+            "Syrekoncentration stiger i process",
+            "Produkt kontamineras",
+        ],
+        4: [
+            "Strukturell skada på kärl / utrustning",
+            "Brand / explosion (luft möter brandfarlig gas)",
+        ],
+        5: [
+            "Katastrofalt haveri av kärl",
+            "Personskada",
+        ],
+    },
+    ("Hög nivå", "*"): {
+        1: [
+            "Nivå i kärl/tank stiger mot höglarm",
+            "Vätska börjar stiga mot utloppsledning",
+        ],
+        2: [
+            "Högnivålarm triggas — operatörsåtgärd krävs",
+            "Kärlets bufferttid minskar kraftigt",
+        ],
+        3: [
+            "Vätska träder in i ångled/gasfas — vätskeslag risk",
+            "Kärl fylls till overflow",
+        ],
+        4: [
+            "Spill / overflow — miljöutsläpp",
+            "Vätskeslag i kompressor / ångturbin — katastrofal skada",
+        ],
+        5: [
+            "Brand (brandfarlig vätska spills)",
+            "Personskada (frätande / giftig vätska)",
+            "Produktion stoppad",
+        ],
+    },
+    ("Låg nivå", "*"): {
+        1: [
+            "Nivå i kärl/tank sjunker mot låglarm",
+            "Bufferttiden minskar",
+        ],
+        2: [
+            "Lågnivålarm triggas — operatörsåtgärd krävs",
+            "Utloppspump riskerar torrkörning",
+        ],
+        3: [
+            "Pump torrkör — kavitation / lagerhaveri",
+            "Sugningstorrkörning — pumpspänne havererar",
+        ],
+        4: [
+            "Mekanisk skada på pump",
+            "Processmålet nås inte (flödet upphör)",
+        ],
+        5: [
+            "Produktion stoppad",
+            "Läckage (vakuumsug i kärlet spränger tätning)",
+        ],
+    },
+    ("Hög temperatur", "*"): {
+        1: [
+            "Processbetingelserna avviker från design (T stiger)",
+            "Produktkvalitet försämras (termisk nedbrytning)",
+        ],
+        2: [
+            "Materialgränsen för tätningar / packningar nås",
+            "Reaktionshastigheten ökar — oönskade sidoreaktioner",
+            "Ångtrycket stiger i slutet system",
+        ],
+        3: [
+            "Tryckökning i slutet system — säkerhetsventil öppnar",
+            "Metallurgisk skada (krypning, fastbränning)",
+            "Tätningsläckage — utsläpp",
+        ],
+        4: [
+            "Brand / explosion (brandfarlig produkt läcker till het yta)",
+            "Kontaminering",
+        ],
+        5: [
+            "Okontrollerad exoterm reaktion (runaway)",
+            "Katastrofalt haveri",
+            "Personskada / dödsfall",
+        ],
+    },
+    ("Låg temperatur", "*"): {
+        1: [
+            "Temperatur sjunker under designgränsen",
+            "Viskositet stiger — flödet reduceras",
+        ],
+        2: [
+            "Isbildning i rör / instrument (blockering risk)",
+            "Hydratbildning i gasledning",
+            "Materialets seghet försämras (brittbrott risk)",
+        ],
+        3: [
+            "Rörblockering",
+            "Embrittlement — sprickor vid normal last",
+        ],
+        4: [
+            "Rörbrott",
+            "Utsläpp av farlig vätska / gas",
+        ],
+        5: [
+            "Brand / explosion (kryogent utsläpp antänds)",
+            "Personskada (köldskada / kryogen exponering)",
+        ],
+    },
+    ("Omvänt flöde", "*"): {
+        1: [
+            "Flödet vänder riktning mot uppströms utrustning",
+            "Korsflöde från högre tryckssystem",
+        ],
+        2: [
+            "Kontaminering av uppströmsprocess",
+            "Pump körs i backflödesriktning — mekanisk skada",
+        ],
+        3: [
+            "Skada på utrustning uppströms (tryckhöjning)",
+            "Produktkvalitetsproblem (blandning av flöden)",
+        ],
+        4: [
+            "Utrustningshaveri",
+            "Utsläpp via övertryckat uppströmssystem",
+        ],
+        5: [
+            "Brand / explosion",
+            "Personskada",
+        ],
+    },
+    ("Missriktat flöde", "*"): {
+        1: [
+            "Flödet når fel destination / utrustning",
+            "Planerat kärl / reaktor mottar inte produkten",
+        ],
+        2: [
+            "Fel utrustning överfylls / övertrycksätts",
+            "Reaktion med inkompatibelt medium",
+            "Destillationssystem störs",
+        ],
+        3: [
+            "Utrustningsskada (övertryck / inkompatibelt medium)",
+            "Produktkontaminering",
+        ],
+        4: [
+            "Utsläpp (övertrycksatt fel enhet)",
+            "Kemisk reaktion — exoterm / gasbildning",
+        ],
+        5: [
+            "Brand / explosion",
+            "Personskada",
+            "Miljöutsläpp",
         ],
     },
 }
@@ -799,6 +1308,9 @@ class Database:
             "ALTER TABLE off_page_connector ADD COLUMN ref_page INTEGER DEFAULT NULL",
             "ALTER TABLE off_page_connector ADD COLUMN dot_scene_x REAL DEFAULT NULL",
             "ALTER TABLE off_page_connector ADD COLUMN dot_scene_y REAL DEFAULT NULL",
+        ] + [
+            # consequence_steps table (added as executescript below but listed here
+            # so attempts on old DBs are silently ignored like everything else)
         ]:
             try:
                 self.conn.execute(sql)
@@ -910,6 +1422,13 @@ class Database:
                 deviation_id INTEGER NOT NULL REFERENCES standard_deviations(id) ON DELETE CASCADE,
                 description  TEXT NOT NULL,
                 sort_order   INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS consequence_steps (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                consequence_id INTEGER NOT NULL REFERENCES consequences(id) ON DELETE CASCADE,
+                step           INTEGER NOT NULL,   -- 1..5
+                text           TEXT    NOT NULL DEFAULT '',
+                ref_tag        TEXT    DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS node_markups (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2287,6 +2806,39 @@ class Database:
 
     def delete_consequence(self, id_):
         self.conn.execute("DELETE FROM consequences WHERE id=?", (id_,)); self.conn.commit()
+
+    # ── Consequence steps (Del1-Del5 escalation chain) ────────────────────────
+    def get_consequence_steps(self, consequence_id):
+        """Return list of dicts: {step, text, ref_tag} sorted by step."""
+        rows = self.conn.execute(
+            "SELECT step, text, ref_tag FROM consequence_steps "
+            "WHERE consequence_id=? ORDER BY step", (consequence_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def set_consequence_steps(self, consequence_id, steps):
+        """Replace all steps for a consequence.
+
+        steps: list of dicts with keys step(int), text(str), ref_tag(str).
+        Empty text entries are omitted.
+        """
+        self.conn.execute(
+            "DELETE FROM consequence_steps WHERE consequence_id=?",
+            (consequence_id,))
+        for s in steps:
+            text = (s.get('text') or '').strip()
+            if text:
+                self.conn.execute(
+                    "INSERT INTO consequence_steps (consequence_id, step, text, ref_tag)"
+                    " VALUES (?,?,?,?)",
+                    (consequence_id, int(s['step']), text,
+                     (s.get('ref_tag') or '').strip()))
+        self.conn.commit()
+
+    def consequence_steps_as_text(self, consequence_id):
+        """Return 'Del1 → Del2 → …' string built from stored steps."""
+        rows = self.get_consequence_steps(consequence_id)
+        parts = [r['text'] for r in rows if r['text']]
+        return ' → '.join(parts) if parts else ''
 
     def delete_safeguard(self, id_):
         self.conn.execute("DELETE FROM safeguards WHERE id=?", (id_,)); self.conn.commit()
@@ -6283,7 +6835,7 @@ class RiskMatrixPopup(QDialog):
 
 
 class ConsequenceChainDialog(QDialog):
-    """Popup chain editor with QCheckBoxes — safe because it's a QDialog, not a table cell."""
+    """Popup chain editor with QCheckBoxes — kept for legacy compatibility."""
 
     def __init__(self, db: Database, cons_id: int, parent=None):
         super().__init__(parent)
@@ -6299,7 +6851,6 @@ class ConsequenceChainDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
-        # Base event text (editable)
         form = QFormLayout(); form.setSpacing(8)
         self._base_edit = QLineEdit(raw_desc)
         self._base_edit.setPlaceholderText("Händelse / direkt konsekvens")
@@ -6307,7 +6858,6 @@ class ConsequenceChainDialog(QDialog):
         form.addRow("Händelse:", self._base_edit)
         layout.addLayout(form)
 
-        # Chain checkboxes — grouped, QCheckBox is safe here
         chain_box = QGroupBox("Konsekvenskedja — välj eskalering")
         chain_lay = QGridLayout(chain_box)
         chain_lay.setSpacing(4)
@@ -6335,7 +6885,6 @@ class ConsequenceChainDialog(QDialog):
 
         layout.addWidget(chain_box)
 
-        # Generated chain preview
         preview_lbl = QLabel("Genererad text:")
         preview_lbl.setStyleSheet("color:#555; font-size:10px;")
         layout.addWidget(preview_lbl)
@@ -6352,7 +6901,6 @@ class ConsequenceChainDialog(QDialog):
         btns.accepted.connect(self._save_and_accept)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
-
         self._update_preview()
 
     def _update_preview(self):
@@ -6372,6 +6920,310 @@ class ConsequenceChainDialog(QDialog):
                 cons['category'] or '',
                 json.dumps(chain))
         self.accept()
+
+
+# ── NEW: column-based step picker ─────────────────────────────────────────────
+_N_STEPS = 5
+
+class ConsequenceStepPickerDialog(QDialog):
+    """Konsekvenskedja Del1 → Del2 → Del3 → Del4 → Del5.
+
+    Varje del visas i en separat kolumn med numrerade alternativ.
+    Klicka på ett alternativ för att välja det — det markeras med blå ram.
+    Ange en sifferkombination (t.ex. 142) i fältet längst upp för att
+    välja Del1=1, Del2=4, Del3=2 på en gång.
+    Längst ned i varje kolumn finns ett Ref-tag-fält.
+    Nytt fritext-alternativ kan skrivas in i rutan under listan.
+    """
+
+    def __init__(self, db: 'Database', cons_id: int,
+                 deviation: str = '', comp_type: str = '',
+                 cause_text: str = '', parent=None):
+        super().__init__(parent)
+        self.db       = db
+        self.cons_id  = cons_id
+        self._dev     = deviation
+        self._comp    = comp_type
+        self._cause   = cause_text
+
+        self.setWindowTitle("Konsekvenskedja — Del 1–5")
+        self.setMinimumWidth(min(QApplication.primaryScreen().availableGeometry().width() - 80,
+                                 _N_STEPS * 200 + 40))
+        self.setMinimumHeight(560)
+
+        # Existing steps from DB
+        existing = {s['step']: s for s in db.get_consequence_steps(cons_id)}
+
+        # Context header
+        cons_row = db.get_consequence(cons_id)
+        self._orig_desc = cons_row['description'] if cons_row else ''
+
+        main = QVBoxLayout(self)
+        main.setSpacing(6)
+
+        # ── Context info ──────────────────────────────────────────────────────
+        if deviation or comp_type or cause_text:
+            ctx_parts = []
+            if deviation:  ctx_parts.append(f"<b>Avvikelse:</b> {deviation}")
+            if comp_type:  ctx_parts.append(f"<b>Objekt:</b> {comp_type}")
+            if cause_text: ctx_parts.append(f"<b>Orsak:</b> {cause_text[:80]}")
+            ctx = QLabel("  ·  ".join(ctx_parts))
+            ctx.setStyleSheet("color:#1F4E79; font-size:10px; padding:2px 4px;"
+                              "background:#eef4fb; border-radius:3px;")
+            ctx.setWordWrap(True)
+            main.addWidget(ctx)
+
+        # ── Quick-select bar ──────────────────────────────────────────────────
+        qs_row = QHBoxLayout()
+        qs_lbl = QLabel("Snabbval (t.ex. 142 = Del1→rad1, Del2→rad4, Del3→rad2):")
+        qs_lbl.setStyleSheet("color:#555; font-size:10px;")
+        self._qs_edit = QLineEdit()
+        self._qs_edit.setMaximumWidth(100)
+        self._qs_edit.setPlaceholderText("t.ex. 142")
+        self._qs_btn  = QPushButton("Välj")
+        self._qs_btn.setMaximumWidth(60)
+        self._qs_btn.clicked.connect(self._apply_quickselect)
+        self._qs_edit.returnPressed.connect(self._apply_quickselect)
+        qs_row.addWidget(qs_lbl)
+        qs_row.addWidget(self._qs_edit)
+        qs_row.addWidget(self._qs_btn)
+        qs_row.addStretch()
+        main.addLayout(qs_row)
+
+        # ── Column grid ───────────────────────────────────────────────────────
+        cols_widget = QWidget()
+        cols_layout = QHBoxLayout(cols_widget)
+        cols_layout.setSpacing(6)
+        cols_layout.setContentsMargins(0, 0, 0, 0)
+
+        self._cols: list = []      # per-step state
+        self._options: list = []   # list of option texts per step
+
+        for step in range(1, _N_STEPS + 1):
+            opts = self._build_options(step, existing)
+            self._options.append(opts)
+
+            col_w = QWidget()
+            col_w.setMinimumWidth(175)
+            col_l = QVBoxLayout(col_w)
+            col_l.setContentsMargins(0, 0, 0, 0)
+            col_l.setSpacing(3)
+
+            hdr = QLabel(f"Del {step}")
+            hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            hdr.setStyleSheet("font-weight:bold; color:#1F4E79; font-size:11px;"
+                              "background:#dbeafe; border-radius:3px; padding:2px;")
+            col_l.addWidget(hdr)
+
+            # Scrollable list of numbered buttons
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+            btn_container = QWidget()
+            btn_layout = QVBoxLayout(btn_container)
+            btn_layout.setSpacing(2)
+            btn_layout.setContentsMargins(2, 2, 2, 2)
+
+            btns_list = []
+            sel_idx = -1
+            cur_text = existing.get(step, {}).get('text', '') if existing else ''
+            for i, opt in enumerate(opts):
+                b = QPushButton(f"{i+1}. {opt}")
+                b.setCheckable(True)
+                b.setStyleSheet(_STEP_BTN_STYLE)
+                b.setWordWrap(True)
+                b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+                b.clicked.connect(lambda checked, s=step-1, idx=i: self._btn_clicked(s, idx))
+                btn_layout.addWidget(b)
+                btns_list.append(b)
+                if cur_text and opt == cur_text:
+                    sel_idx = i
+
+            btn_layout.addStretch()
+            scroll.setWidget(btn_container)
+            col_l.addWidget(scroll, 1)
+
+            # Free-text input
+            ft_edit = QLineEdit()
+            ft_edit.setPlaceholderText("Fritext (eget alternativ)")
+            col_l.addWidget(ft_edit)
+
+            # Ref-tag
+            ref_lbl = QLabel("Ref-tag:")
+            ref_lbl.setStyleSheet("color:#666; font-size:10px;")
+            ref_edit = QLineEdit()
+            ref_edit.setPlaceholderText("t.ex. T-101")
+            ref_edit.setMaximumHeight(24)
+            if step in existing:
+                ref_edit.setText(existing[step].get('ref_tag', '') or '')
+            col_l.addWidget(ref_lbl)
+            col_l.addWidget(ref_edit)
+
+            cols_layout.addWidget(col_w)
+
+            col_state = {
+                'btns':    btns_list,
+                'sel':     sel_idx,
+                'ft_edit': ft_edit,
+                'ref_edit':ref_edit,
+            }
+            self._cols.append(col_state)
+
+            if sel_idx >= 0:
+                self._set_selection(step - 1, sel_idx, silent=True)
+
+        main.addWidget(cols_widget, 1)
+
+        # ── Preview strip ─────────────────────────────────────────────────────
+        prev_frame = QFrame()
+        prev_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        prev_frame.setStyleSheet("background:#f0f9ff; border-radius:4px;")
+        prev_lay = QVBoxLayout(prev_frame)
+        prev_lay.setContentsMargins(6, 4, 6, 4)
+        lbl = QLabel("Genererad kedjetext:")
+        lbl.setStyleSheet("color:#555; font-size:10px;")
+        prev_lay.addWidget(lbl)
+        self._preview = QLabel("—")
+        self._preview.setWordWrap(True)
+        self._preview.setStyleSheet(
+            "color:#1F4E79; font-weight:bold; font-size:11px;")
+        prev_lay.addWidget(self._preview)
+        main.addWidget(prev_frame)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self._save_and_accept)
+        btns.rejected.connect(self.reject)
+        main.addWidget(btns)
+
+        self._update_preview()
+
+    # ── Option builder ────────────────────────────────────────────────────────
+    def _build_options(self, step: int, existing: dict) -> list:
+        """Return the list of text options for *step* using the standard library."""
+        key_exact  = (self._dev, self._comp)
+        key_wild   = (self._dev, '*')
+        key_blank  = (self._dev, '')
+
+        entry = (
+            _STD_CONSEQUENCE_STEPS.get(key_exact) or
+            _STD_CONSEQUENCE_STEPS.get(key_wild) or
+            _STD_CONSEQUENCE_STEPS.get(key_blank)
+        )
+        opts = list(entry.get(step, [])) if entry else []
+
+        # Prepend "Inget / hoppa över" for steps 2+
+        if step > 1:
+            opts = ["(Hoppa över detta steg)"] + opts
+
+        # Also show previously saved value if not already in list
+        saved = (existing.get(step) or {}).get('text', '')
+        if saved and saved not in opts:
+            opts = [saved] + opts
+
+        return opts
+
+    # ── Selection logic ───────────────────────────────────────────────────────
+    def _btn_clicked(self, step_idx: int, btn_idx: int):
+        old = self._cols[step_idx]['sel']
+        if old == btn_idx:
+            # Deselect
+            self._cols[step_idx]['btns'][old].setChecked(False)
+            self._cols[step_idx]['btns'][old].setStyleSheet(_STEP_BTN_STYLE)
+            self._cols[step_idx]['sel'] = -1
+        else:
+            self._set_selection(step_idx, btn_idx)
+        self._update_preview()
+
+    def _set_selection(self, step_idx: int, btn_idx: int, silent: bool = False):
+        old = self._cols[step_idx]['sel']
+        btns = self._cols[step_idx]['btns']
+        if 0 <= old < len(btns):
+            btns[old].setChecked(False)
+            btns[old].setStyleSheet(_STEP_BTN_STYLE)
+        if 0 <= btn_idx < len(btns):
+            btns[btn_idx].setChecked(True)
+            btns[btn_idx].setStyleSheet(_STEP_BTN_SEL_STYLE)
+        self._cols[step_idx]['sel'] = btn_idx
+        if not silent:
+            self._update_preview()
+
+    def _apply_quickselect(self):
+        text = self._qs_edit.text().strip()
+        for i, ch in enumerate(text[:_N_STEPS]):
+            if ch.isdigit():
+                idx = int(ch) - 1
+                opts = self._options[i]
+                if 0 <= idx < len(opts):
+                    self._set_selection(i, idx)
+        self._qs_edit.clear()
+
+    # ── Preview ───────────────────────────────────────────────────────────────
+    def _selected_text(self, step_idx: int) -> str:
+        col = self._cols[step_idx]
+        ft  = col['ft_edit'].text().strip()
+        if ft:
+            return ft
+        sel = col['sel']
+        opts = self._options[step_idx]
+        if 0 <= sel < len(opts):
+            t = opts[sel]
+            if t.startswith("("):
+                return ''
+            return t
+        return ''
+
+    def _update_preview(self):
+        parts = []
+        for i in range(_N_STEPS):
+            t = self._selected_text(i)
+            if t:
+                parts.append(t)
+        self._preview.setText(' → '.join(parts) if parts else '—')
+
+    # ── Save ──────────────────────────────────────────────────────────────────
+    def _save_and_accept(self):
+        steps = []
+        for i in range(_N_STEPS):
+            text = self._selected_text(i)
+            ref  = self._cols[i]['ref_edit'].text().strip()
+            if text or ref:
+                steps.append({'step': i + 1, 'text': text, 'ref_tag': ref})
+        self.db.set_consequence_steps(self.cons_id, steps)
+
+        # Also write the joined text into consequences.description
+        parts = [s['text'] for s in steps if s['text']]
+        full  = ' → '.join(parts) if parts else (self._orig_desc or 'Ny konsekvens')
+        cons = self.db.get_consequence(self.cons_id)
+        if cons:
+            self.db.update_consequence(
+                self.cons_id, full,
+                cons['severity'] or 1,
+                cons['category'] or '',
+                cons['consequence_chain'] or '')
+        self.accept()
+
+
+_STEP_BTN_STYLE = (
+    "QPushButton {"
+    "  text-align: left; padding: 4px 6px;"
+    "  border: 1px solid #d1d5db; border-radius: 4px;"
+    "  background: #f9fafb; color: #111;"
+    "  font-size: 10px;"
+    "}"
+    "QPushButton:hover {"
+    "  background: #eff6ff; border-color: #93c5fd;"
+    "}"
+)
+_STEP_BTN_SEL_STYLE = (
+    "QPushButton {"
+    "  text-align: left; padding: 4px 6px;"
+    "  border: 2px solid #2563eb; border-radius: 4px;"
+    "  background: #dbeafe; color: #1e3a8a;"
+    "  font-size: 10px; font-weight: bold;"
+    "}"
+)
 
 
 class ReductionFactorsDialog(QDialog):
@@ -7856,18 +8708,33 @@ class ScenarioTablePanel(QWidget):
 
         self._table.setRowHeight(r, max(22, self._cell_font_size * 2 + 4))
 
+    def _get_cons_context(self, cons_id: int):
+        """Return (deviation, comp_type, cause_text) for the consequence."""
+        cons = self.db.get_consequence(cons_id)
+        if not cons:
+            return '', '', ''
+        cause = self.db.get_cause(cons['cause_id'])
+        if not cause:
+            return '', '', ''
+        cause_d  = dict(cause)
+        comp     = cause_d.get('comp_type', '') or ''
+        cause_tx = cause_d.get('description', '') or ''
+        dev_id   = cause_d.get('deviation_id')
+        dev_desc = ''
+        if dev_id:
+            dev = self.db.get_deviation(dev_id)
+            if dev:
+                dev_desc = dev['description'] or ''
+        return dev_desc, comp, cause_tx
+
     def _open_chain_editor(self, cons_id: int, label_widget=None):
-        """Open the consequence chain dialog; refresh the label on accept."""
-        dlg = ConsequenceChainDialog(self.db, cons_id, self)
+        """Open the consequence step picker dialog; refresh the cell on accept."""
+        dev, comp, cause_tx = self._get_cons_context(cons_id)
+        dlg = ConsequenceStepPickerDialog(
+            self.db, cons_id,
+            deviation=dev, comp_type=comp, cause_text=cause_tx,
+            parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            # Update the label in the cell without full rebuild
-            if label_widget is not None:
-                row = self.db.get_consequence(cons_id)
-                if row:
-                    chain = parse_chain_from_json(
-                        row['consequence_chain'] if 'consequence_chain' in row.keys() else '')
-                    text = build_consequence_text(row['description'], chain) or row['description']
-                    label_widget.setText(text)
             # Rebuild risk cells (description changed)
             QTimer.singleShot(0, self._rebuild)
 
@@ -7974,6 +8841,12 @@ class ScenarioTablePanel(QWidget):
             a1.triggered.connect(lambda: self._place_from_table(row, col))
             a2 = menu.addAction("🗑 Ta bort från P&ID")
             a2.triggered.connect(lambda: self._remove_from_pid(row, col))
+        if col == self._C_KON and row < len(self._row_meta):
+            cons_id = self._row_meta[row][2]
+            if cons_id is not None:
+                menu.addSeparator()
+                a_chain = menu.addAction("📋 Redigera konsekvenskedja (Del1–Del5)…")
+                a_chain.triggered.connect(lambda: self._open_chain_editor(cons_id))
         if col == self._C_SG and row < len(self._row_meta):
             sg_id = self._row_meta[row][3]
             if sg_id is not None:
@@ -8068,7 +8941,13 @@ class ScenarioTablePanel(QWidget):
             return
         row = item.row()
         col = item.column()
-        if col in (self._C_ORS, self._C_KON, self._C_SG):
+        # Double-click on KON opens step picker instead of inline text edit
+        if col == self._C_KON and row < len(self._row_meta):
+            cons_id = self._row_meta[row][2]
+            if cons_id is not None:
+                self._open_chain_editor(cons_id)
+            return
+        if col in (self._C_ORS, self._C_SG):
             if not bool(item.flags() & Qt.ItemFlag.ItemIsEditable):
                 return
             self._table.setFocus()
