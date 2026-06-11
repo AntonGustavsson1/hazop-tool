@@ -951,222 +951,225 @@ _COMP_STD_CAUSES = {
 # Nyckeln är (avvikelse, objekt/komponentstyp) → per steg → lista med text-alternativ.
 # Används av ConsequenceChainPickerDialog för kontextbaserade förslag.
 # '*' som objekt = generisk, gäller alla objekttyper.
+# [objekt] is a placeholder replaced at display/save time with the column's ref-tag.
+# It marks wherever a specific equipment tag improves readability, e.g.
+#   "Låg nivå i [objekt]" → "Låg nivå i T-101"
 _STD_CONSEQUENCE_STEPS: dict = {
     # ── Lågt / inget flöde ────────────────────────────────────────────────────
     ("Lågt flöde", "*"): {
         1: [
-            "Reducerat flöde till nedströms utrustning",
-            "Inget flöde — processmålet nås inte",
-            "Låg flödesskillnad mot design",
+            "Reducerat flöde till [objekt]",
+            "Inget flöde till [objekt]",
+            "Processmålet nås inte",
         ],
         2: [
-            "Låg nivå i mottagarkärl",
-            "Processtemperatur stiger (kylflöde otillräckligt)",
+            "Låg nivå i [objekt]",
+            "Processtemperatur stiger (kylflöde otillräckligt till [objekt])",
             "Reaktant fattas — reaktionsgrad minskar",
             "Produktkvalitet försämras",
         ],
         3: [
-            "Torrkörning av pump nedströms",
-            "Högt tryck uppströms (backpressure)",
-            "Processutrustning överhettning",
+            "Torrkörning av [objekt]",
+            "Högt tryck uppströms (backpressure mot [objekt])",
+            "[objekt] överhettning",
         ],
         4: [
-            "Mekanisk skada på pump (lagerhaveri, impellerslitage)",
-            "Instrumentavläsning missvisande (process utanför mätintervall)",
+            "Mekanisk skada på [objekt] (lagerhaveri / slitage)",
             "Reaktionen stoppar — produkt ej uppnådd",
+            "Instrumentavläsning missvisande (process utanför mätintervall)",
         ],
         5: [
             "Produktion stoppad",
-            "Risk för brand / explosion (heta ytor möter läckt produkt)",
-            "Miljöutsläpp (tryckökning brister tätning)",
+            "Brand / explosion (heta ytor möter läckt produkt)",
+            "Miljöutsläpp",
         ],
     },
     ("Högt flöde", "*"): {
         1: [
-            "Överskridande flöde till nedströms utrustning",
-            "Hög nivå i mottagarkärl",
-            "Processtemperatur sjunker (kylflödet för högt)",
+            "Överskridande flöde till [objekt]",
+            "Hög nivå i [objekt]",
+            "Processtemperatur sjunker (kylflödet för högt till [objekt])",
         ],
         2: [
-            "Överfyllning av kärl",
-            "Oönskad reaktion (för hög reaktantkoncentration)",
+            "Överfyllning av [objekt]",
+            "Oönskad reaktion i [objekt] (för hög reaktantkoncentration)",
             "Produktkvalitet utanför specifikation",
         ],
         3: [
-            "Övertrycksättning av nedströms utrustning",
-            "Spill / overflow",
-            "Erosion i rör (hög hastighet)",
+            "Övertrycksättning av [objekt]",
+            "Spill / overflow från [objekt]",
+            "Erosion i [objekt] (hög hastighet)",
         ],
         4: [
-            "Strukturell skada på utrustning",
-            "Läckage / utsläpp",
+            "Strukturell skada på [objekt]",
+            "Läckage / utsläpp från [objekt]",
         ],
         5: [
-            "Brand / explosion (brandfarlig vätska spills)",
+            "Brand / explosion (brandfarlig vätska spills från [objekt])",
             "Miljöutsläpp",
             "Personskada (spill / tryckskada)",
         ],
     },
     ("Högt tryck", "*"): {
         1: [
-            "Trycket överstiger driftsgränsen",
-            "Differenstrycket i systemet ökar",
+            "Trycket i [objekt] överstiger driftsgränsen",
+            "Differenstrycket mot [objekt] ökar",
         ],
         2: [
-            "Tätning havererar — läckage uppstår",
-            "Rörledning / kärl belastas mot konstruktionsgränsen",
+            "Tätning i [objekt] havererar — läckage uppstår",
+            "[objekt] belastas mot konstruktionsgränsen",
         ],
         3: [
-            "Okontrollerat utsläpp av process till atmosfären",
-            "Mekanisk skada (sprickor i svets / flänsläckage)",
-            "Rör / kärl brister",
+            "Okontrollerat utsläpp från [objekt] till atmosfären",
+            "Mekanisk skada på [objekt] (sprickor i svets / flänsläckage)",
+            "[objekt] brister",
         ],
         4: [
-            "Utsläpp av brandfarligt / giftigt ämne",
+            "Utsläpp av brandfarligt / giftigt ämne från [objekt]",
             "Kontaminering av omgivning",
         ],
         5: [
             "Brand / explosion",
             "Toxisk exponering för personal",
-            "Katastrofal strukturell kollaps",
+            "Katastrofal strukturell kollaps av [objekt]",
         ],
     },
     ("Lågt tryck", "*"): {
         1: [
-            "Trycket understiger driftsgränsen",
+            "Trycket i [objekt] understiger driftsgränsen",
             "Flödet reduceras (pumpkurvan sjunker)",
         ],
         2: [
-            "Luft-inläckage (vakuumbildning)",
-            "Processvätska flashar / förångas",
-            "Destillationskolonnen tappar separation",
+            "Luft-inläckage i [objekt] (vakuumbildning)",
+            "Processvätska i [objekt] flashar / förångas",
+            "[objekt] tappar separation",
         ],
         3: [
-            "Vakuumkollaps av kärl (om ej konstruerat för det)",
+            "Vakuumkollaps av [objekt]",
             "Syrekoncentration stiger i process",
-            "Produkt kontamineras",
+            "Produkt kontamineras i [objekt]",
         ],
         4: [
-            "Strukturell skada på kärl / utrustning",
-            "Brand / explosion (luft möter brandfarlig gas)",
+            "Strukturell skada på [objekt]",
+            "Brand / explosion (luft möter brandfarlig gas i [objekt])",
         ],
         5: [
-            "Katastrofalt haveri av kärl",
+            "Katastrofalt haveri av [objekt]",
             "Personskada",
         ],
     },
     ("Hög nivå", "*"): {
         1: [
-            "Nivå i kärl/tank stiger",
-            "Vätska börjar stiga mot utloppsledning",
+            "Nivå i [objekt] stiger",
+            "Vätska börjar stiga mot utloppsledning i [objekt]",
         ],
         2: [
-            "Kärlets bufferttid minskar kraftigt",
-            "Vätska träder in i ångfas / gasledning — vätskeslag risk",
-            "Kärl fylls till overflow",
+            "Bufferttid i [objekt] minskar kraftigt",
+            "Vätska träder in i gasfas / ångledning från [objekt] — vätskeslag",
+            "[objekt] fylls till overflow",
         ],
         3: [
-            "Spill / overflow — miljöutsläpp",
-            "Vätskeslag i kompressor / ångturbin — katastrofal skada",
-            "Övertrycksättning av nedströms utrustning",
+            "Spill / overflow från [objekt] — miljöutsläpp",
+            "Vätskeslag i [objekt] — katastrofal skada",
+            "Övertrycksättning av [objekt]",
         ],
         4: [
-            "Brand (brandfarlig vätska spills)",
-            "Personskada (frätande / giftig vätska)",
-            "Strukturell skada på utrustning",
+            "Brand (brandfarlig vätska spills från [objekt])",
+            "Personskada (frätande / giftig vätska från [objekt])",
+            "Strukturell skada på [objekt]",
         ],
         5: [
             "Produktion stoppad",
-            "Katastrofalt haveri",
+            "Katastrofalt haveri av [objekt]",
         ],
     },
     ("Låg nivå", "*"): {
         1: [
-            "Nivå i kärl/tank sjunker",
-            "Bufferttiden minskar",
+            "Nivå i [objekt] sjunker",
+            "Bufferttid i [objekt] minskar",
         ],
         2: [
-            "Utloppspump riskerar torrkörning",
-            "Flöde till nedströms upphör",
+            "[objekt] riskerar torrkörning",
+            "Flöde från [objekt] till nedströms upphör",
         ],
         3: [
-            "Pump torrkör — kavitation / lagerhaveri",
-            "Sugningstorrkörning — pumpspänne havererar",
+            "[objekt] torrkör — kavitation / lagerhaveri",
+            "Sugningstorrkörning — pumpspänne i [objekt] havererar",
         ],
         4: [
-            "Mekanisk skada på pump",
+            "Mekanisk skada på [objekt]",
             "Processmålet nås inte (flödet upphör)",
-            "Läckage (vakuumsug i kärlet spränger tätning)",
+            "Läckage vid tätningshaveri i [objekt]",
         ],
         5: [
             "Produktion stoppad",
-            "Utsläpp vid tätningshaveri",
+            "Utsläpp vid haveri av [objekt]",
         ],
     },
     ("Hög temperatur", "*"): {
         1: [
-            "Processbetingelserna avviker från design (T stiger)",
-            "Produktkvalitet försämras (termisk nedbrytning)",
+            "Temperaturen i [objekt] överstiger designgränsen",
+            "Produktkvalitet försämras (termisk nedbrytning i [objekt])",
         ],
         2: [
-            "Materialgränsen för tätningar / packningar nås",
-            "Reaktionshastigheten ökar — oönskade sidoreaktioner",
-            "Ångtrycket stiger i slutet system",
+            "Materialgränsen för tätningar / packningar i [objekt] nås",
+            "Reaktionshastigheten i [objekt] ökar — oönskade sidoreaktioner",
+            "Ångtrycket stiger i [objekt]",
         ],
         3: [
-            "Tryckökning i slutet system — trycket överstiger konstruktionsgränsen",
-            "Metallurgisk skada (krypning, fastbränning)",
-            "Tätningsläckage — utsläpp",
+            "Trycket i [objekt] överstiger konstruktionsgränsen",
+            "Metallurgisk skada på [objekt] (krypning, fastbränning)",
+            "Tätningsläckage i [objekt] — utsläpp",
         ],
         4: [
-            "Brand / explosion (brandfarlig produkt läcker till het yta)",
+            "Brand / explosion (brandfarlig produkt läcker från [objekt] till het yta)",
             "Kontaminering",
         ],
         5: [
-            "Okontrollerad exoterm reaktion (runaway)",
-            "Katastrofalt haveri",
+            "Okontrollerad exoterm reaktion i [objekt] (runaway)",
+            "Katastrofalt haveri av [objekt]",
             "Personskada / dödsfall",
         ],
     },
     ("Låg temperatur", "*"): {
         1: [
-            "Temperatur sjunker under designgränsen",
-            "Viskositet stiger — flödet reduceras",
+            "Temperaturen i [objekt] sjunker under designgränsen",
+            "Viskositet stiger — flödet i [objekt] reduceras",
         ],
         2: [
-            "Isbildning i rör / instrument (blockering risk)",
-            "Hydratbildning i gasledning",
-            "Materialets seghet försämras (brittbrott risk)",
+            "Isbildning i [objekt] (blockering)",
+            "Hydratbildning i [objekt]",
+            "Materialets seghet i [objekt] försämras (brittbrott)",
         ],
         3: [
-            "Rörblockering",
-            "Embrittlement — sprickor vid normal last",
+            "Rörblockering i [objekt]",
+            "Sprickor i [objekt] vid normal last (embrittlement)",
         ],
         4: [
-            "Rörbrott",
-            "Utsläpp av farlig vätska / gas",
+            "[objekt] brister",
+            "Utsläpp av farlig vätska / gas från [objekt]",
         ],
         5: [
-            "Brand / explosion (kryogent utsläpp antänds)",
+            "Brand / explosion (kryogent utsläpp från [objekt] antänds)",
             "Personskada (köldskada / kryogen exponering)",
         ],
     },
     ("Omvänt flöde", "*"): {
         1: [
-            "Flödet vänder riktning mot uppströms utrustning",
-            "Korsflöde från högre tryckssystem",
+            "Flödet vänder riktning — [objekt] utsätts för backflöde",
+            "Korsflöde från högre tryckssystem till [objekt]",
         ],
         2: [
-            "Kontaminering av uppströmsprocess",
-            "Pump körs i backflödesriktning — mekanisk skada",
+            "Kontaminering av [objekt]",
+            "[objekt] körs i backflödesriktning — mekanisk skada",
         ],
         3: [
-            "Skada på utrustning uppströms (tryckhöjning)",
-            "Produktkvalitetsproblem (blandning av flöden)",
+            "Skada på [objekt] (tryckhöjning vid backflöde)",
+            "Produktkvalitetsproblem (blandning av flöden i [objekt])",
         ],
         4: [
-            "Utrustningshaveri",
-            "Utsläpp via övertryckat uppströmssystem",
+            "Haveri av [objekt]",
+            "Utsläpp via övertryckat [objekt]",
         ],
         5: [
             "Brand / explosion",
@@ -1175,21 +1178,21 @@ _STD_CONSEQUENCE_STEPS: dict = {
     },
     ("Missriktat flöde", "*"): {
         1: [
-            "Flödet når fel destination / utrustning",
-            "Planerat kärl / reaktor mottar inte produkten",
+            "Flödet når [objekt] istället för avsedd destination",
+            "Avsedd mottagare [objekt] mottar inte produkten",
         ],
         2: [
-            "Fel utrustning överfylls / övertrycksätts",
-            "Reaktion med inkompatibelt medium",
-            "Destillationssystem störs",
+            "[objekt] överfylls / övertrycksätts",
+            "Reaktion med inkompatibelt medium i [objekt]",
+            "Processstörning i [objekt]",
         ],
         3: [
-            "Utrustningsskada (övertryck / inkompatibelt medium)",
-            "Produktkontaminering",
+            "Utrustningsskada på [objekt] (övertryck / inkompatibelt medium)",
+            "Produktkontaminering i [objekt]",
         ],
         4: [
-            "Utsläpp (övertrycksatt fel enhet)",
-            "Kemisk reaktion — exoterm / gasbildning",
+            "Utsläpp från [objekt]",
+            "Kemisk reaktion i [objekt] — exoterm / gasbildning",
         ],
         5: [
             "Brand / explosion",
@@ -7034,10 +7037,13 @@ class ConsequenceStepPickerDialog(QDialog):
                 "  border:1px solid #2563eb; }"
                 "QListWidget::item:hover:!selected { background:#eff6ff; }"
             )
-            cur_text = existing.get(step, {}).get('text', '') if existing else ''
-            sel_idx  = -1
+            cur_text  = existing.get(step, {}).get('text', '') if existing else ''
+            init_tag  = (existing.get(step, {}).get('ref_tag', '') if existing else '') or \
+                        (self._initial_ref_tag if step == 1 else '')
+            sel_idx   = -1
             for i, opt in enumerate(opts):
-                item = QListWidgetItem(f"{i+1}. {opt}")
+                display = self._resolve(opt, init_tag)
+                item = QListWidgetItem(f"{i+1}. {display}")
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
                 lst.addItem(item)
                 if cur_text and opt == cur_text:
@@ -7056,7 +7062,7 @@ class ConsequenceStepPickerDialog(QDialog):
             ft_edit.textChanged.connect(self._update_preview)
             col_l.addWidget(ft_edit)
 
-            # Ref-tag row: label + field + pin button
+            # Ref-tag row: label + field + pin button (placed below)
             ref_row = QHBoxLayout()
             ref_row.setContentsMargins(0, 0, 0, 0)
             ref_row.setSpacing(2)
@@ -7083,6 +7089,10 @@ class ConsequenceStepPickerDialog(QDialog):
             ref_row.addWidget(ref_edit)
             ref_row.addWidget(pin_btn)
             col_l.addLayout(ref_row)
+            # Connect after layout so step-1 index is correct
+            ref_edit.textChanged.connect(
+                lambda tag, s=step-1: (self._refresh_list_labels(s, tag),
+                                       self._update_preview()))
 
             cols_layout.addWidget(col_w)
 
@@ -7208,16 +7218,17 @@ class ConsequenceStepPickerDialog(QDialog):
     # ── Preview ───────────────────────────────────────────────────────────────
     def _selected_text(self, step_idx: int) -> str:
         col = self._cols[step_idx]
+        tag = col['ref_edit'].text().strip()
         ft  = col['ft_edit'].text().strip()
         if ft:
-            return ft
+            return self._resolve(ft, tag)
         sel = col['list'].currentRow()
         opts = self._options[step_idx]
         if 0 <= sel < len(opts):
             t = opts[sel]
             if t.startswith("("):
                 return ''
-            return t
+            return self._resolve(t, tag)
         return ''
 
     def _update_preview(self):
@@ -7227,6 +7238,26 @@ class ConsequenceStepPickerDialog(QDialog):
             if t:
                 parts.append(t)
         self._preview.setText(' → '.join(parts) if parts else '—')
+
+    # ── [objekt] substitution ─────────────────────────────────────────────────
+    @staticmethod
+    def _resolve(text: str, tag: str) -> str:
+        """Replace [objekt] with tag if tag is non-empty, else strip the placeholder."""
+        if not text:
+            return text
+        if tag:
+            return text.replace('[objekt]', tag)
+        # No tag yet — remove the placeholder token cleanly
+        return text.replace(' [objekt]', '').replace('[objekt] ', '').replace('[objekt]', '')
+
+    def _refresh_list_labels(self, step_idx: int, tag: str):
+        """Update list item display text when ref-tag changes for this column."""
+        lst  = self._cols[step_idx]['list']
+        opts = self._options[step_idx]
+        for i, opt in enumerate(opts):
+            item = lst.item(i)
+            if item is not None:
+                item.setText(f"{i+1}. {self._resolve(opt, tag)}")
 
     # ── Pin button: pick ref-tag from P&ID ────────────────────────────────────
     def _request_pick_for_col(self, col_idx: int):
