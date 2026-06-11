@@ -11,7 +11,7 @@ from pathlib import Path
 
 from pid_viewer import (
     PIDPanel, COMPONENT_TYPES, CONSEQUENCE_TEMPLATES, HAS_PYMUPDF,
-    MODE_NAV, MODE_NODE, MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD,
+    MODE_NAV, MODE_NODE, MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD, MODE_PICK_REF_TAG,
     scan_pdf_for_equipment, ocr_status, KNOWN_PREFIXES, invert_cause_text,
     _RED_MARKUP_SYMBOLS, _get_red_symbol_svg,
 )
@@ -7056,9 +7056,10 @@ class ConsequenceStepPickerDialog(QDialog):
             ft_edit.textChanged.connect(self._update_preview)
             col_l.addWidget(ft_edit)
 
-            # Ref-tag
-            ref_lbl = QLabel("Ref-tag:")
-            ref_lbl.setStyleSheet("color:#666; font-size:10px;")
+            # Ref-tag row: label + field + pin button
+            ref_row = QHBoxLayout()
+            ref_row.setContentsMargins(0, 0, 0, 0)
+            ref_row.setSpacing(2)
             ref_edit = QLineEdit()
             ref_edit.setPlaceholderText("t.ex. T-101")
             ref_edit.setMaximumHeight(24)
@@ -7066,8 +7067,22 @@ class ConsequenceStepPickerDialog(QDialog):
                 ref_edit.setText(existing[step].get('ref_tag', '') or '')
             elif step == 1 and self._initial_ref_tag:
                 ref_edit.setText(self._initial_ref_tag)
+            pin_btn = QPushButton("📍")
+            pin_btn.setMaximumWidth(28)
+            pin_btn.setMaximumHeight(24)
+            pin_btn.setToolTip("Klicka på P&ID för att välja referensobjekt")
+            pin_btn.setStyleSheet(
+                "QPushButton { border:1px solid #dc2626; border-radius:3px;"
+                "  background:#fee2e2; color:#dc2626; font-size:11px; }"
+                "QPushButton:hover { background:#fca5a5; }")
+            pin_btn.clicked.connect(
+                lambda _checked, s=step-1: self._request_pick_for_col(s))
+            ref_lbl = QLabel("Ref-tag:")
+            ref_lbl.setStyleSheet("color:#666; font-size:10px;")
             col_l.addWidget(ref_lbl)
-            col_l.addWidget(ref_edit)
+            ref_row.addWidget(ref_edit)
+            ref_row.addWidget(pin_btn)
+            col_l.addLayout(ref_row)
 
             cols_layout.addWidget(col_w)
 
@@ -7101,8 +7116,8 @@ class ConsequenceStepPickerDialog(QDialog):
         btn_row = QHBoxLayout()
         add_more_btn = QPushButton("📍 Lägg till ytterligare objekt")
         add_more_btn.setToolTip(
-            "Spara denna konsekvenskedja och gå tillbaka till P&ID\n"
-            "för att markera ytterligare ett objekt.")
+            "Spara denna kedja och återgå till P&ID-läge\n"
+            "för att omedelbart markera ytterligare ett objekt.")
         add_more_btn.setStyleSheet(
             "background:#1d4ed8; color:white; border:none;"
             "border-radius:4px; padding:4px 10px;")
@@ -7116,6 +7131,8 @@ class ConsequenceStepPickerDialog(QDialog):
         std_btns.rejected.connect(self.reject)
         btn_row.addWidget(std_btns)
         main.addLayout(btn_row)
+
+        self._waiting_col_idx = None
 
         # ── Tab-key navigation between columns ────────────────────────────────
         # Tab in ft_edit or ref_edit of column N → focus ft_edit of column N+1
@@ -7210,6 +7227,19 @@ class ConsequenceStepPickerDialog(QDialog):
             if t:
                 parts.append(t)
         self._preview.setText(' → '.join(parts) if parts else '—')
+
+    # ── Pin button: pick ref-tag from P&ID ────────────────────────────────────
+    def _request_pick_for_col(self, col_idx: int):
+        """Hide dialog, enter MODE_PICK_REF_TAG; MainWindow refills col on pick."""
+        self._waiting_col_idx = col_idx
+        self.hide()
+        # Walk up to MainWindow and trigger the pick mode
+        p = self.parent()
+        while p is not None:
+            if hasattr(p, 'pid_panel') and hasattr(p.pid_panel, '_set_mode'):
+                p.pid_panel._set_mode(MODE_PICK_REF_TAG)
+                break
+            p = p.parent() if hasattr(p, 'parent') else None
 
     # ── Tab navigation event filter ───────────────────────────────────────────
     def eventFilter(self, obj, event):
@@ -13112,6 +13142,7 @@ class MainWindow(QMainWindow):
                          self._on_selected(CONS_T, cid),
                          self.scenario_panel.refresh_placed(),
                          self._open_consequence_step_picker(cid)))
+        self.pid_panel.ref_tag_picked.connect(self._on_ref_tag_picked)
         self.pid_panel.safeguard_created.connect(self._on_safeguard_created)
         self.pid_panel.existing_marker_placed.connect(self._on_existing_marker_placed)
         self.pid_panel.cause_template_created.connect(
@@ -13464,7 +13495,6 @@ class MainWindow(QMainWindow):
                 if dev:
                     dev_desc = dev['description'] or ''
 
-        # Suggested tag from the P&ID click, stored temporarily on the panel
         initial_tag = getattr(self.pid_panel, '_pending_cons_tag', '') or ''
 
         dlg = ConsequenceStepPickerDialog(
@@ -13472,11 +13502,28 @@ class MainWindow(QMainWindow):
             deviation=dev_desc, comp_type=comp, cause_text=cause_tx,
             initial_ref_tag=initial_tag,
             parent=self)
+        # Keep a reference so _on_ref_tag_picked can fill in the right column
+        self._active_step_picker = dlg
         if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._active_step_picker = None
             self.scenario_panel._rebuild()
             if dlg.add_more_requested:
-                # Stay in consequence-placement mode so the user can click another object
                 self.pid_panel._set_mode(MODE_CONSEQUENCE)
+        else:
+            self._active_step_picker = None
+
+    def _on_ref_tag_picked(self, tag: str):
+        """Called when user clicks P&ID in MODE_PICK_REF_TAG — fill the waiting column."""
+        dlg = getattr(self, '_active_step_picker', None)
+        if dlg is None or not dlg.isVisible():
+            return
+        col_idx = getattr(dlg, '_waiting_col_idx', None)
+        if col_idx is not None and 0 <= col_idx < len(dlg._cols):
+            dlg._cols[col_idx]['ref_edit'].setText(tag)
+        dlg._waiting_col_idx = None
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def _on_edit_node_markup(self, node_id):
         """Tree right-click NODE → 'Editera nodmarkup'."""

@@ -384,6 +384,7 @@ MODE_SMART_POLYLINE  = 12  # click start+end, algorithm traces pipe path
 MODE_RED_MARKUP_SYMBOL = 13  # click to place a red markup P&ID symbol
 MODE_BOARD_LAYOUT    = 14  # drag pages to reposition on study board
 MODE_ADD_SHEET_LINK  = 15  # click target page to create a manual inter-sheet link
+MODE_PICK_REF_TAG   = 16  # one-shot click: detect tag near point → emit ref_tag_picked
 
 # ── Off-page connector analysis ───────────────────────────────────────────────
 _RE_TO_FROM = re.compile(
@@ -3425,6 +3426,7 @@ class PIDGraphicsView(QGraphicsView):
     cause_template_clicked  = pyqtSignal(object, int, str)
     context_action          = pyqtSignal(str, object, int)
     marker_clicked          = pyqtSignal(str, int)
+    ref_tag_picked          = pyqtSignal(str)   # MODE_PICK_REF_TAG one-shot result
     # Markup editing signals
     markup_draw_finished    = pyqtSignal(str, list, int)   # type_, pdf_pts, page
     markup_item_clicked     = pyqtSignal(int)              # markup_id
@@ -3935,6 +3937,9 @@ class PIDGraphicsView(QGraphicsView):
             self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
             self.setCursor(Qt.CursorShape.ArrowCursor)
             self._clear_edit_handles()
+        elif mode == MODE_PICK_REF_TAG:
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self.setCursor(Qt.CursorShape.CrossCursor)
         elif mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD,
                       MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE):
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
@@ -5745,6 +5750,11 @@ class PIDGraphicsView(QGraphicsView):
                 self.place_existing_clicked.emit(center, self.current_page)
             elif self.mode == MODE_CAUSE_TEMPLATE:
                 self.cause_template_clicked.emit(center, self.current_page, suggested)
+            elif self.mode == MODE_PICK_REF_TAG:
+                # One-shot: emit picked tag and return to NAV mode
+                self.ref_tag_picked.emit(suggested or '')
+                self.mode = MODE_NAV
+                self.setCursor(Qt.CursorShape.ArrowCursor)
             event.accept()
             return
 
@@ -6376,6 +6386,7 @@ class PIDPanel(QWidget):
     # MainWindow shows CauseObjectPopup then calls place_cause_from_template()
     cause_placement_requested = pyqtSignal(int, str, str, object, int, str)
     # (deviation_id, suggested_tag, detected_comp_type, scene_pos, page)
+    ref_tag_picked            = pyqtSignal(str)   # forwarded from viewer after MODE_PICK_REF_TAG
     # Node markup signals
     markup_draw_finished    = pyqtSignal(str, int, list, int, str)  # type_, node_id, pts, page, label
     markup_item_selected    = pyqtSignal(int)                        # markup_id
@@ -6628,6 +6639,7 @@ class PIDPanel(QWidget):
         self.viewer.cause_at_marker_requested.connect(self._on_add_cause_at_marker)
         self.viewer.consequence_at_marker_requested.connect(self._on_add_consequence_at_marker)
         self.viewer.safeguard_at_marker_requested.connect(self._on_add_safeguard_at_marker)
+        self.viewer.ref_tag_picked.connect(self.ref_tag_picked)
         self._active_place_type  = None   # 'cause' | 'consequence' | 'safeguard'
         self._active_place_id    = None
         self._pending_zone_pdf   = None   # QRectF while zone dialog chain is open
