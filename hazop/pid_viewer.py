@@ -6924,27 +6924,20 @@ class PIDPanel(QWidget):
         rs = self.viewer.render_scale
 
         def _edge_pt(c, ox, oy, pw, ph, fallback_edge):
-            """Scene point for the connecting end of a connector symbol.
+            """Scene point at the connector symbol position on the P&ID.
 
-            Outgoing (pentagon/arrow): tip faces the page edge → snap x/y to edge.
-            Incoming (rectangle): rear end faces INTO the page → use raw x_pdf/y_pdf
-              (the detected centre of the rectangle, which lies inside the page).
+            Uses the raw x_pdf/y_pdf coordinates — the actual location of the
+            connector symbol on the drawing.  The bezier control points (in
+            add_sheet_conn_arc) still use src_edge/dst_edge to push the curve
+            outward in the correct direction, so the bezier exits cleanly even
+            though it starts/ends at the symbol rather than the page edge.
+
             Falls back to the edge midpoint when coordinates are missing.
             """
             if c:
                 xp = c.get('x_pdf')
                 yp = c.get('y_pdf')
                 if xp is not None and yp is not None:
-                    edge      = c.get('edge')      or fallback_edge
-                    direction = c.get('direction') or 'out'
-                    if direction == 'in':
-                        # Incoming rectangle: raw position (rear/inner end)
-                        return QPointF(ox + xp * rs, oy + yp * rs)
-                    # Outgoing pentagon: tip snapped to page edge, position along edge from y/x_pdf
-                    if edge == 'right':  return QPointF(ox + pw,      oy + yp * rs)
-                    if edge == 'left':   return QPointF(ox,            oy + yp * rs)
-                    if edge == 'top':    return QPointF(ox + xp * rs,  oy)
-                    if edge == 'bottom': return QPointF(ox + xp * rs,  oy + ph)
                     return QPointF(ox + xp * rs, oy + yp * rs)
             if fallback_edge == 'right':  return QPointF(ox + pw,    oy + ph / 2)
             if fallback_edge == 'left':   return QPointF(ox,          oy + ph / 2)
@@ -6987,18 +6980,25 @@ class PIDPanel(QWidget):
             def_src = 'right' if dx_pages >= 0 else 'left'
             def_dst = 'left'  if dx_pages >= 0 else 'right'
 
-            def _make_dot(c, scene_pt, c_hex):
-                """Create a draggable ConnectorDotItem, using saved position if available."""
+            def _make_dot(c, fallback_pt, page_ox, page_oy, c_hex):
+                """Create a draggable ConnectorDotItem at the connector's P&ID position.
+
+                Priority: 1) manually saved position, 2) x_pdf/y_pdf on the drawing,
+                3) fallback to the bezier endpoint.
+                """
                 if c is not None:
                     sx = c.get('dot_scene_x')
                     sy = c.get('dot_scene_y')
                     if sx is not None and sy is not None:
                         pos = QPointF(sx, sy)
                     else:
-                        pos = scene_pt
+                        xp = c.get('x_pdf')
+                        yp = c.get('y_pdf')
+                        pos = QPointF(page_ox + xp * rs, page_oy + yp * rs) \
+                              if xp is not None and yp is not None else fallback_pt
                     cid = c.get('id', -1)
                 else:
-                    pos = scene_pt
+                    pos = fallback_pt
                     cid = -1
                 dot = ConnectorDotItem(cid, self.db, c_hex, pos)
                 self.viewer._scene.addItem(dot)
@@ -7024,8 +7024,8 @@ class PIDPanel(QWidget):
                     src_pt, dst_pt, color_hex, confidence, label, bidir,
                     conn_id=conn_id, src_edge=src_edge, dst_edge=dst_edge,
                     arc_index=arc_idx, weight=weight)
-                _make_dot(None,  src_pt, color_hex)
-                _make_dot(dst_c, dst_pt, color_hex)
+                _make_dot(None,  src_pt, ox_fp, oy_fp, color_hex)
+                _make_dot(dst_c, dst_pt, ox_tp, oy_tp, color_hex)
                 continue
 
             # One line per src connector — match to nearest dst connector by Y
@@ -7067,8 +7067,8 @@ class PIDPanel(QWidget):
                     src_pt, dst_pt, color_hex, confidence, label, bidir,
                     conn_id=conn_id, src_edge=src_edge, dst_edge=dst_edge,
                     arc_index=arc_idx, weight=weight)
-                _make_dot(sc, src_pt, color_hex)
-                _make_dot(dc, dst_pt, color_hex)
+                _make_dot(sc, src_pt, ox_fp, oy_fp, color_hex)
+                _make_dot(dc, dst_pt, ox_tp, oy_tp, color_hex)
 
     def _run_smart_layout(self):
         if not HAS_PYMUPDF or self.viewer.pdf_doc is None:
