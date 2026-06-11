@@ -3175,6 +3175,38 @@ def _propose_layout(connections, active_pages, page_widths_pdf, page_heights_pdf
     return {i: (round(pos[i][0]), round(pos[i][1])) for i in active_pages}
 
 
+class ConnectorDotItem(QGraphicsEllipseItem):
+    """Draggable dot marking an off-page connector symbol on the P&ID.
+
+    Position is saved back to DB on every drag-release so the user's
+    manual adjustment survives across sessions.
+    """
+    _R = 7.0
+
+    def __init__(self, connector_id: int, db, color_hex: str, scene_pos):
+        r = self._R
+        super().__init__(-r, -r, r * 2, r * 2)
+        self._conn_id = connector_id
+        self._db      = db
+        self.setPos(scene_pos)
+        dot_color = QColor(color_hex); dot_color.setAlpha(230)
+        self.setBrush(QBrush(dot_color))
+        ring = QPen(QColor(255, 255, 255, 220), 2.0); ring.setCosmetic(True)
+        self.setPen(ring)
+        self.setZValue(Z_SHEET_CONN + 0.5)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable,            True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
+        self.setToolTip("Flytta connectorn — dra för att justera position")
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        if self._conn_id >= 0 and self._db is not None:
+            p = self.pos()
+            self._db.update_connector_dot_position(self._conn_id, p.x(), p.y())
+
+
 class PIDGraphicsView(QGraphicsView):
     node_markup_finished    = pyqtSignal(list, int)
     # Third parameter = extracted tag text from drawn rectangle (may be empty)
@@ -4983,23 +5015,6 @@ class PIDGraphicsView(QGraphicsView):
         if bidirectional:
             src_angle = math.atan2(src_pt.y() - cp1.y(), src_pt.x() - cp1.x())
             _arrowhead(src_pt, src_angle, color)
-
-        # Anchor dots: filled circle + white ring at the raw connector symbol position.
-        # ItemIgnoresTransformations keeps the dot the same screen size at all zoom levels.
-        # White ring makes them visible on both light and dark P&ID backgrounds.
-        _dot_r = 7.0
-        _dot_color = QColor(color_hex)
-        _dot_color.setAlpha(230)
-        _dot_ring = QPen(QColor(255, 255, 255, 220), 2.0)
-        _dot_ring.setCosmetic(True)
-        for _apt in (src, dst):
-            _dot = QGraphicsEllipseItem(-_dot_r, -_dot_r, _dot_r * 2, _dot_r * 2)
-            _dot.setPos(_apt)
-            _dot.setBrush(QBrush(_dot_color))
-            _dot.setPen(_dot_ring)
-            _dot.setZValue(Z_SHEET_CONN + 0.5)
-            _dot.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
-            self._scene.addItem(_dot)
 
         # Label at bezier midpoint with white background
         if label:
@@ -6909,19 +6924,23 @@ class PIDPanel(QWidget):
         rs = self.viewer.render_scale
 
         def _edge_pt(c, ox, oy, pw, ph, fallback_edge):
-            """Scene point at the connector symbol tip on the page edge.
+            """Scene point for the connecting end of a connector symbol.
 
-            Snaps to the page boundary in the connector's edge direction while
-            preserving the detected position along that edge:
-              right/left  → x snapped to page edge, y from y_pdf (correct height)
-              top/bottom  → y snapped to page edge, x from x_pdf (correct column)
+            Outgoing (pentagon/arrow): tip faces the page edge → snap x/y to edge.
+            Incoming (rectangle): rear end faces INTO the page → use raw x_pdf/y_pdf
+              (the detected centre of the rectangle, which lies inside the page).
             Falls back to the edge midpoint when coordinates are missing.
             """
             if c:
                 xp = c.get('x_pdf')
                 yp = c.get('y_pdf')
                 if xp is not None and yp is not None:
-                    edge = c.get('edge') or fallback_edge
+                    edge      = c.get('edge')      or fallback_edge
+                    direction = c.get('direction') or 'out'
+                    if direction == 'in':
+                        # Incoming rectangle: raw position (rear/inner end)
+                        return QPointF(ox + xp * rs, oy + yp * rs)
+                    # Outgoing pentagon: tip snapped to page edge, position along edge from y/x_pdf
                     if edge == 'right':  return QPointF(ox + pw,      oy + yp * rs)
                     if edge == 'left':   return QPointF(ox,            oy + yp * rs)
                     if edge == 'top':    return QPointF(ox + xp * rs,  oy)
@@ -6968,6 +6987,22 @@ class PIDPanel(QWidget):
             def_src = 'right' if dx_pages >= 0 else 'left'
             def_dst = 'left'  if dx_pages >= 0 else 'right'
 
+            def _make_dot(c, scene_pt, c_hex):
+                """Create a draggable ConnectorDotItem, using saved position if available."""
+                if c is not None:
+                    sx = c.get('dot_scene_x')
+                    sy = c.get('dot_scene_y')
+                    if sx is not None and sy is not None:
+                        pos = QPointF(sx, sy)
+                    else:
+                        pos = scene_pt
+                    cid = c.get('id', -1)
+                else:
+                    pos = scene_pt
+                    cid = -1
+                dot = ConnectorDotItem(cid, self.db, c_hex, pos)
+                self.viewer._scene.addItem(dot)
+
             if not src_list:
                 # No connectors detected on fp side — draw one fallback line
                 pair_key = (fp, tp, media)
@@ -6989,6 +7024,8 @@ class PIDPanel(QWidget):
                     src_pt, dst_pt, color_hex, confidence, label, bidir,
                     conn_id=conn_id, src_edge=src_edge, dst_edge=dst_edge,
                     arc_index=arc_idx, weight=weight)
+                _make_dot(None,  src_pt, color_hex)
+                _make_dot(dst_c, dst_pt, color_hex)
                 continue
 
             # One line per src connector — match to nearest dst connector by Y
@@ -7030,6 +7067,8 @@ class PIDPanel(QWidget):
                     src_pt, dst_pt, color_hex, confidence, label, bidir,
                     conn_id=conn_id, src_edge=src_edge, dst_edge=dst_edge,
                     arc_index=arc_idx, weight=weight)
+                _make_dot(sc, src_pt, color_hex)
+                _make_dot(dc, dst_pt, color_hex)
 
     def _run_smart_layout(self):
         if not HAS_PYMUPDF or self.viewer.pdf_doc is None:

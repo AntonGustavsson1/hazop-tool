@@ -797,6 +797,8 @@ class Database:
             "ALTER TABLE safeguard_markers ADD COLUMN rect_w REAL DEFAULT NULL",
             "ALTER TABLE safeguard_markers ADD COLUMN rect_h REAL DEFAULT NULL",
             "ALTER TABLE off_page_connector ADD COLUMN ref_page INTEGER DEFAULT NULL",
+            "ALTER TABLE off_page_connector ADD COLUMN dot_scene_x REAL DEFAULT NULL",
+            "ALTER TABLE off_page_connector ADD COLUMN dot_scene_y REAL DEFAULT NULL",
         ]:
             try:
                 self.conn.execute(sql)
@@ -1544,6 +1546,13 @@ class Database:
             "VALUES(:pid_page,:x_pdf,:y_pdf,:direction,:edge,:ref_text,:ref_sheet,"
             ":ref_line_id,:media_type,:weight,:confidence,:raw_text,:ocr_used,:analyzed_at,:ref_page)",
             rows)
+        self.conn.commit()
+
+    def update_connector_dot_position(self, connector_id, x, y):
+        """Persist a manually dragged dot position for one off-page connector."""
+        self.conn.execute(
+            "UPDATE off_page_connector SET dot_scene_x=?, dot_scene_y=? WHERE id=?",
+            (x, y, connector_id))
         self.conn.commit()
 
     def save_pid_connections(self, rows):
