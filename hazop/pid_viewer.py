@@ -389,6 +389,10 @@ MODE_ADD_SHEET_LINK  = 15  # click target page to create a manual inter-sheet li
 _RE_TO_FROM = re.compile(
     r'\b(TO|FROM|CONT\'?D\.?(?:\s+ON)?|TILL|FR[ÅA]N|FRAN)\s+'
     r'([A-Z0-9\+][A-Z0-9\-/\.\+]{1,30})', re.IGNORECASE)
+# Direction keyword alone (no ref capture) — used to classify in/out when the
+# sheet reference was found via a dialect pattern instead of TO/FROM capture.
+_RE_DIR_KW = re.compile(
+    r"\b(TO|FROM|CONT'?D\.?(?:\s+ON)?|TILL|FR[ÅA]N|FRAN)\b", re.IGNORECASE)
 _RE_LINE_ID = re.compile(
     r'\b(\d{1,4}["\']\-[A-Z]{1,5}\-\d{3,6}[A-Z0-9\-]*|\d{1,4}\-[A-Z]{1,5}\-\d{3,6}[A-Z0-9\-]*)\b')
 # Universal sheet-number regex — covers all known customer formats
@@ -2572,13 +2576,11 @@ class ConnectorAnalyzer(QThread):
 
         doc.close()
 
-        # ── Build sheet-number lookup: sheet_str → pn ──
-        sheet_lookup = {v.upper(): k for k, v in page_sheet_nums.items()}
-        # Also try partial match: last component of "UNIT-P-101" → "P-101"
-        for k, v in list(sheet_lookup.items()):
-            parts = k.split('-')
-            if len(parts) >= 2:
-                sheet_lookup.setdefault('-'.join(parts[-2:]), list(sheet_lookup.values())[0])
+        # ── Build sheet-number lookup: sheet_str (and variants) → pn ──
+        sheet_lookup = {}
+        for k, v in page_sheet_nums.items():
+            for variant in _sheet_ref_variants(v.upper()):
+                sheet_lookup.setdefault(variant, k)
 
         # ── Match connectors into connections ──
         connections = self._match_connections(all_connectors, sheet_lookup,
@@ -2679,55 +2681,68 @@ class ConnectorAnalyzer(QThread):
         return results
 
     def _find_in_zones(self, spans, pn, pw, ph, ocr_used, page=None):
-        edge_zones = {
-            'left':   (0,        0,    pw*0.32, ph),
-            'right':  (pw*0.68,  0,    pw,      ph),
-            'top':    (0,        0,    pw,      ph*0.26),
-            'bottom': (0,  ph*0.74,    pw,      ph),
-        }
-        results = []
-        seen_refs = set()   # deduplicate same ref_sheet at same (edge, approx_y)
+        """Find off-page connectors in the page's edge band.
 
-        # ── Pass 1: text-in-edge-zone (as before) ─────────────────────────────
-        for edge, (x0, y0, x1, y1) in edge_zones.items():
-            zone_spans = [s for s in spans
-                          if x0 <= s["x"] <= x1 and y0 <= s["y"] <= y1]
-            if not zone_spans:
-                continue
-            clusters = self._cluster_spans(zone_spans, gap=60.0)
-            for cluster in clusters:
-                combined = ' '.join(s["text"] for s in cluster)
-                cx = sum(s["x"] for s in cluster) / len(cluster)
-                cy = sum(s["y"] for s in cluster) / len(cluster)
-                conn = self._parse_connector(combined, edge, pn, cx, cy,
-                                             pw, ph, ocr_used)
-                if conn:
-                    key = (edge, conn['ref_sheet'], round(cy / max(ph, 1) * 20))
-                    if key not in seen_refs:
-                        seen_refs.add(key)
-                        results.append(conn)
+        Each candidate is assigned to its NEAREST page edge — a connector in
+        the top-left corner belongs to whichever edge it is closest to — and
+        candidates are deduplicated by (ref_sheet, position) across all
+        detection passes, so the same physical symbol can never appear as two
+        connectors on different edges (the old per-zone scan produced corner
+        duplicates: one 'left'/'in' + one 'top'/'unknown' for the same symbol).
+        """
+        accepted = []
+
+        ta = _DIALECTS.get(getattr(self, '_dialect', 'classic'), {}).get('title_area')
+
+        def in_title_area(x, y):
+            return (ta is not None
+                    and pw*ta[0] <= x <= pw*ta[2]
+                    and ph*ta[1] <= y <= ph*ta[3])
+
+        def nearest_edge(x, y):
+            d = {'left': x, 'right': pw - x, 'top': y, 'bottom': ph - y}
+            return min(d, key=d.get)
+
+        def consider(text, x, y):
+            conn = self._parse_connector(text, nearest_edge(x, y), pn, x, y,
+                                         pw, ph, ocr_used)
+            if not conn:
+                return
+            # Directionless refs inside the title block are almost always the
+            # drawing-reference list / title text, not flow connectors.
+            if conn['direction'] == 'unknown' and in_title_area(x, y):
+                return
+            for i, old in enumerate(accepted):
+                if (old['ref_sheet'] == conn['ref_sheet']
+                        and abs(old['x_pdf'] - x) < pw * 0.05
+                        and abs(old['y_pdf'] - y) < ph * 0.05):
+                    if conn['confidence'] > old['confidence']:
+                        accepted[i] = conn
+                    return
+            accepted.append(conn)
+
+        # ── Pass 1: text clusters in the edge band ────────────────────────────
+        band = [s for s in spans
+                if s["x"] <= pw*0.32 or s["x"] >= pw*0.68
+                or s["y"] <= ph*0.26 or s["y"] >= ph*0.74]
+        for cluster in self._cluster_spans(band, gap=60.0):
+            combined = ' '.join(s["text"] for s in cluster)
+            cx = sum(s["x"] for s in cluster) / len(cluster)
+            cy = sum(s["y"] for s in cluster) / len(cluster)
+            consider(combined, cx, cy)
 
         # ── Pass 2: vector-shape anchored search ──────────────────────────────
         if page is not None:
-            for shape_cx, shape_cy, edge, shape_rect in self._find_arrow_shapes(page, pw, ph):
-                # Collect all text within 1.5× the shape bounding box
+            for shape_cx, shape_cy, _edge, shape_rect in self._find_arrow_shapes(page, pw, ph):
                 margin_x = max(shape_rect.width * 1.5, 40)
                 margin_y = max(shape_rect.height * 2.0, 40)
                 nearby = [s for s in spans
                           if abs(s["x"] - shape_cx) < margin_x + shape_rect.width
                           and abs(s["y"] - shape_cy) < margin_y + shape_rect.height]
-                if not nearby:
-                    continue
-                combined = ' '.join(s["text"] for s in nearby)
-                conn = self._parse_connector(combined, edge, pn,
-                                             shape_cx, shape_cy,
-                                             pw, ph, ocr_used)
-                if conn:
-                    key = (edge, conn['ref_sheet'], round(shape_cy / max(ph, 1) * 20))
-                    if key not in seen_refs:
-                        seen_refs.add(key)
-                        results.append(conn)
-        return results
+                if nearby:
+                    consider(' '.join(s["text"] for s in nearby),
+                             shape_cx, shape_cy)
+        return accepted
 
     def _cluster_spans(self, spans, gap=60.0):
         if not spans:
@@ -2750,80 +2765,94 @@ class ConnectorAnalyzer(QThread):
         dialect = getattr(self, '_dialect', 'classic')
         keyword = ref_sheet = rds_code = None
         lkab_format = its_format = gryaab_format = False
+        ref_span = None          # char span of the sheet ref inside text
+        pattern_hit = False      # ref found via dialect pattern (not TO/FROM capture)
 
-        # ── Dialect-specific primary detection ────────────────────────────────
+        # ── Sheet reference: dialect pattern FIRST ────────────────────────────
+        # The drawing number itself (S0000155, 346-0000-001, XFB_40208…) is far
+        # more reliable than the word after TILL/FRÅN — Hybrit connectors say
+        # "346-0000-001-PS / TILL FACKLA" where FACKLA is equipment, not a sheet.
         if dialect == 'lkab':
             m_rds = _RE_RDS_SHEET.search(text)
             if m_rds:
                 rds_code    = m_rds.group(1).upper()
                 ref_sheet   = ('S' + m_rds.group(2)).upper()
-                lkab_format = True
+                ref_span    = m_rds.span()
+                lkab_format = pattern_hit = True
             else:
-                m_kw = _RE_TO_FROM.search(text)
-                if m_kw:
-                    keyword   = m_kw.group(1).upper()
-                    ref_sheet = m_kw.group(2).upper().strip()
-                else:
-                    m2 = re.search(r'\bS(\d{6,8})\b', text, re.I)
-                    if m2:
-                        ref_sheet = ('S' + m2.group(1)).upper()
+                m2 = re.search(r'\bS(\d{6,8})\b', text, re.I)
+                if m2:
+                    ref_sheet   = ('S' + m2.group(1)).upper()
+                    ref_span    = m2.span()
+                    pattern_hit = True
 
         elif dialect == 'its':
             m_its = _RE_ITS_CONN.search(text)
             if m_its:
                 ref_sheet  = m_its.group(1).upper()   # e.g. XFB_40208
-                its_format = True
+                ref_span   = m_its.span()
+                its_format = pattern_hit = True
             else:
-                m_kw = _RE_TO_FROM.search(text)
-                if m_kw:
-                    keyword   = m_kw.group(1).upper()
-                    ref_sheet = m_kw.group(2).upper().strip()
-                else:
-                    m2 = _DIALECTS['its']['sheet_num_re'].search(text)
-                    if m2:
-                        ref_sheet = m2.group(1).upper()
+                m2 = _DIALECTS['its']['sheet_num_re'].search(text)
+                if m2:
+                    ref_sheet   = m2.group(1).upper()
+                    ref_span    = m2.span()
+                    pattern_hit = True
 
         elif dialect == 'gryaab':
-            m_kw = _RE_TO_FROM.search(text)
-            if m_kw:
-                keyword   = m_kw.group(1).upper()
-                ref_sheet = m_kw.group(2).upper().strip()
-            else:
-                m_gr = _RE_GRYAAB_CONN.search(text)
-                if m_gr:
-                    ref_sheet     = m_gr.group(1).upper()
-                    gryaab_format = True
+            m_gr = _RE_GRYAAB_CONN.search(text)
+            if m_gr:
+                ref_sheet     = m_gr.group(1).upper()
+                ref_span      = m_gr.span()
+                gryaab_format = pattern_hit = True
 
         elif dialect == 'hybrit':
-            m_kw = _RE_TO_FROM.search(text)
-            if m_kw:
-                keyword   = m_kw.group(1).upper()
-                ref_sheet = m_kw.group(2).upper().strip()
-            else:
-                m2 = _DIALECTS['hybrit']['sheet_num_re'].search(text)
-                if m2:
-                    ref_sheet = m2.group(1).upper()
+            m2 = _DIALECTS['hybrit']['sheet_num_re'].search(text)
+            if m2:
+                ref_sheet   = m2.group(1).upper()
+                ref_span    = m2.span()
+                pattern_hit = True
 
         else:  # classic / fallback
+            m_rds = _RE_RDS_SHEET.search(text)
+            if m_rds:
+                rds_code    = m_rds.group(1).upper()
+                ref_sheet   = ('S' + m_rds.group(2)).upper()
+                ref_span    = m_rds.span()
+                lkab_format = pattern_hit = True
+            else:
+                m2 = _RE_SHEET_NUM.search(text)
+                if m2:
+                    ref_sheet   = m2.group(1).upper().strip()
+                    ref_span    = m2.span()
+                    pattern_hit = True
+
+        # Fallback: capture the word after TO/FROM/TILL/FRÅN as the reference
+        if ref_sheet is None:
             m_kw = _RE_TO_FROM.search(text)
             if m_kw:
                 keyword   = m_kw.group(1).upper()
                 ref_sheet = m_kw.group(2).upper().strip()
-            else:
-                m_rds = _RE_RDS_SHEET.search(text)
-                if m_rds:
-                    rds_code    = m_rds.group(1).upper()
-                    ref_sheet   = ('S' + m_rds.group(2)).upper()
-                    lkab_format = True
-                else:
-                    m2 = _RE_SHEET_NUM.search(text)
-                    if m2:
-                        ref_sheet = m2.group(1).upper().strip()
+                ref_span  = m_kw.span(2)
 
         if not ref_sheet:
             return None
 
         # ── Direction ─────────────────────────────────────────────────────────
+        # A TILL/FRÅN keyword decides direction only when it clearly belongs to
+        # the reference: first word of the connector text, or directly adjacent
+        # to the sheet ref ("TO S0000162", "258-0000-001-PS TILL FACKLA").
+        # A keyword inside a service description ("KVÄVE TILL ELFILTER") refers
+        # to equipment, not the sheet — there the edge convention decides.
+        if keyword is None and ref_span is not None:
+            for m_kw in _RE_DIR_KW.finditer(text):
+                at_start   = m_kw.start() <= 1
+                before_ref = 0 <= ref_span[0] - m_kw.end() <= 2
+                after_ref  = 0 <= m_kw.start() - ref_span[1] <= 2
+                if at_start or before_ref or after_ref:
+                    keyword = m_kw.group(1).upper()
+                    break
+
         kw_upper = (keyword or '').upper().replace('Å', 'A').replace('Ä', 'A')
         if kw_upper in ('TO', "CONT'D", 'CONTD', 'TILL'):
             dir_kw = 'out'
@@ -2851,10 +2880,14 @@ class ConnectorAnalyzer(QThread):
         # ── Confidence ────────────────────────────────────────────────────────
         if lkab_format or its_format:
             conf = 0.85
-        elif keyword:
+        elif keyword and pattern_hit:
             conf = 0.90
+        elif keyword:
+            conf = 0.85          # ref captured via TO/FROM keyword
         elif gryaab_format:
             conf = 0.70
+        elif pattern_hit:
+            conf = 0.75          # dialect-specific drawing number, no keyword
         else:
             conf = 0.55
         if ref_line_id is None:
@@ -2946,17 +2979,30 @@ class ConnectorAnalyzer(QThread):
 
     def _match_connections(self, connectors, sheet_lookup, page_count,
                           page_sheet_nums=None):
-        """Match 'out' connectors to 'in' connectors via ref_sheet."""
-        from collections import defaultdict
-        import datetime
+        """Build page→page connections from BOTH ends of each documented flow.
 
+        A physical flow A→B is documented twice on the drawings: an OUT
+        connector on sheet A referencing B, and an IN connector on sheet B
+        referencing A.  Both ends are used — if extraction missed one end the
+        other still creates the connection, and when both were found the
+        confidence is boosted (flow confirmed from both sheets).
+        """
         # Build own-sheet reverse map: pn → own sheet num (upper)
         own_sheet = {}
         if page_sheet_nums:
             own_sheet = {int(k): v.upper() for k, v in page_sheet_nums.items()}
 
-        out_by_ref = defaultdict(list)  # ref_sheet → list of connectors
-        in_by_ref  = defaultdict(list)
+        def resolve_page(ref):
+            for v in _sheet_ref_variants(ref):
+                if v in sheet_lookup:
+                    return sheet_lookup[v]
+            # Fuzzy: try suffix match
+            for k, v in sheet_lookup.items():
+                if k.endswith(ref) or ref.endswith(k):
+                    return v
+            return None
+
+        flows = {}   # ('ghost', page, ref) or (from_page, to_page) → record
 
         for i, c in enumerate(connectors):
             c['_idx'] = i
@@ -2964,223 +3010,375 @@ class ConnectorAnalyzer(QThread):
             if not ref:
                 continue
             # Skip self-referential connectors (sheet references its own number)
-            if own_sheet.get(c['pid_page'], '__NONE__') == ref:
+            own = own_sheet.get(c['pid_page'], '__NONE__')
+            if ref in _sheet_ref_variants(own):
                 continue
-            if c['direction'] == 'out':
-                out_by_ref[ref].append(c)
-            elif c['direction'] == 'in':
-                in_by_ref[ref].append(c)
+
+            tp = resolve_page(ref)
+            # Store resolved page directly on the connector so draw code can
+            # look up by (pid_page, ref_page) without the sheet_num_map
+            c['ref_page'] = tp
+
+            if tp is None:
+                key = ('ghost', c['pid_page'], ref)
+                rec = flows.get(key)
+                if rec is None:
+                    flows[key] = {
+                        'from_page': c['pid_page'], 'to_page': None,
+                        'from_connector': c['_idx'], 'to_connector': None,
+                        'media_type': c['media_type'], 'weight': c['weight'],
+                        'confidence': c['confidence'], 'is_bidirectional': 0,
+                        'is_ghost': 1, 'ghost_ref': ref, 'warning': None,
+                        'from_edge': c.get('edge'), 'to_edge': None,
+                        'n_out': 0, 'n_in': 0,
+                    }
+                else:
+                    rec['weight'] = round(
+                        1.0 - (1.0 - rec['weight']) * (1.0 - c['weight']), 3)
+                continue
+
+            if tp == c['pid_page']:
+                continue   # recirculation on the same sheet
+
+            # IN connector on B referencing A means flow A→B
+            is_in = (c['direction'] == 'in')
+            a, b = (tp, c['pid_page']) if is_in else (c['pid_page'], tp)
+
+            rec = flows.get((a, b))
+            if rec is None:
+                rec = flows[(a, b)] = {
+                    'from_page': a, 'to_page': b,
+                    'from_connector': None, 'to_connector': None,
+                    'media_type': None, 'weight': 0.0, 'confidence': 0.0,
+                    'is_bidirectional': 0, 'is_ghost': 0, 'ghost_ref': None,
+                    'warning': None, 'from_edge': None, 'to_edge': None,
+                    'n_out': 0, 'n_in': 0,
+                }
+            if is_in:
+                rec['n_in'] += 1
+                if rec['to_connector'] is None:
+                    rec['to_connector'] = c['_idx']
+                    rec['to_edge']      = c.get('edge')
             else:
-                # unknown direction — try both buckets
-                out_by_ref[ref].append(c)
+                rec['n_out'] += 1
+                if rec['from_connector'] is None:
+                    rec['from_connector'] = c['_idx']
+                    rec['from_edge']      = c.get('edge')
+            # Accumulate weight: w = 1 - (1-w_old)*(1-w_new)
+            rec['weight']     = round(
+                1.0 - (1.0 - rec['weight']) * (1.0 - c['weight']), 3)
+            rec['confidence'] = max(rec['confidence'], c['confidence'])
+            if rec['media_type'] in (None, 'unknown') and c['media_type']:
+                rec['media_type'] = c['media_type']
 
-        connections = []
-        seen_pairs = {}  # (from_page, to_page) → connection index for dedup
-
-        def resolve_page(ref):
-            if ref in sheet_lookup:
-                return sheet_lookup[ref]
-            # Fuzzy: try suffix match
-            for k, v in sheet_lookup.items():
-                if k.endswith(ref) or ref.endswith(k):
-                    return v
-            return None
-
-        ts = datetime.datetime.now().isoformat()
-
-        for ref, out_list in out_by_ref.items():
-            # Find the page this ref points TO
-            to_pn = resolve_page(ref)
-            for oc in out_list:
-                fp = oc['pid_page']
-                # Store resolved target page directly on the connector so draw
-                # code can look up by (pid_page, ref_page) without sheet_num_map
-                oc['ref_page'] = to_pn
-                # Skip self-referential pairs (e.g. recirculation loops on same page)
-                if to_pn is not None and fp == to_pn:
-                    continue
-                is_ghost = 0
-                ghost_ref = None
-                if to_pn is None:
-                    is_ghost = 1
-                    ghost_ref = ref
-                    tp = None
-                else:
-                    tp = to_pn
-
-                w = oc['weight']
-                conf = oc['confidence']
-                key = (fp, tp)
-
-                if key in seen_pairs:
-                    idx = seen_pairs[key]
-                    # Accumulate weight: w_new = 1 - (1-w_old)*(1-w_new)
-                    old_w = connections[idx]['weight']
-                    connections[idx]['weight'] = round(1.0 - (1.0 - old_w) * (1.0 - w), 3)
-                    connections[idx]['warning'] = 'duplicate'
-                else:
-                    seen_pairs[key] = len(connections)
-                    connections.append({
-                        'from_page': fp,
-                        'to_page': tp,
-                        'from_connector': oc.get('_idx'),
-                        'to_connector': None,
-                        'media_type': oc['media_type'],
-                        'weight': w,
-                        'confidence': conf,
-                        'is_bidirectional': 0,
-                        'is_ghost': is_ghost,
-                        'ghost_ref': ghost_ref,
-                        'warning': None,
-                    })
-
-        # Check for bidirectional pairs
-        existing_keys = set(seen_pairs.keys())
-        for conn in connections:
-            fp, tp = conn['from_page'], conn['to_page']
-            if tp is not None and (tp, fp) in existing_keys:
-                conn['is_bidirectional'] = 1
-                connections[seen_pairs[(tp, fp)]]['is_bidirectional'] = 1
+        connections = list(flows.values())
+        real_keys = {(r['from_page'], r['to_page'])
+                     for r in connections if not r['is_ghost']}
+        for r in connections:
+            if r['media_type'] is None:
+                r['media_type'] = 'unknown'
+            if r['is_ghost']:
+                continue
+            if r['n_out'] and r['n_in']:
+                # Flow documented on both sheets — high trust
+                r['confidence'] = round(min(0.99, r['confidence'] + 0.08), 3)
+            if r['n_out'] > 1 or r['n_in'] > 1:
+                r['warning'] = 'multiple'
+            if (r['to_page'], r['from_page']) in real_keys:
+                r['is_bidirectional'] = 1
 
         return connections
 
 
 def _propose_layout(connections, active_pages, page_widths_pdf, page_heights_pdf, render_scale):
-    """Force-directed organic layout.
+    """Layered process-flow layout (Sugiyama-style).
 
-    Three-phase simulation for readable, well-spaced placement:
-      1. Warm phase  (iter  0–99): large steps, quick global organisation
-      2. Cool phase  (iter 100–249): medium steps, fine-tune clusters
-      3. Polish pass (iter 250–299): tiny steps, settle overlaps
+    P&ID sheets follow the convention that flow enters on the left and leaves
+    on the right.  The board is arranged the same way so a human reads it like
+    the process itself: every sheet sits one column to the right of the sheets
+    that feed it, parallel branches stack vertically, and connected sheets are
+    aligned so the connection lines run as straight as possible.
 
-    Pages repel with a non-linear force so they spread generously.
-    Connected pages attract only when further than 2×GAP apart, keeping
-    bezier lines short without squishing clusters.
+    Per connected component:
+      1. break cycles            (DFS back-edge removal; recirculation loops)
+      2. longest-path layering   → column per sheet (vertical-edge links may
+                                   share a column and stack instead)
+      3. barycenter sweeps       → row order within each column
+      4. alignment passes        → connected sheets line up horizontally
+    Very long chains wrap serpentine-style into bands.  Components are stacked
+    below each other, largest first; sheets without any connections are placed
+    in a grid at the bottom.
     """
     import math
-    from collections import deque
+    from collections import deque, defaultdict
 
     if not active_pages:
         return {}
 
-    rs       = render_scale
-    GAP      = 700          # minimum gap between page edges (scene px)
+    rs     = render_scale
+    H_GAP  = 650.0    # gap between columns (scene px)
+    V_GAP  = 420.0    # gap between sheets in a column
+    C_GAP  = 1300.0   # gap between disconnected components
+    MARGIN = 300.0
     page_set = set(active_pages)
     ws = {i: page_widths_pdf.get(i,  800) * rs for i in active_pages}
     hs = {i: page_heights_pdf.get(i, 600) * rs for i in active_pages}
 
-    # ── Connection weights (undirected) ───────────────────────────────────────
-    conn_w: dict = {}
-    adj    = {i: set() for i in active_pages}
+    # ── Directed edges between active pages ───────────────────────────────────
+    edge_w   = {}     # (a, b) → max weight
+    vertical = set()  # pairs connected via top/bottom connectors
     for c in connections:
-        fp, tp = c.get('from_page'), c.get('to_page')
-        if fp not in page_set or tp not in page_set or fp == tp:
+        a, b = c.get('from_page'), c.get('to_page')
+        if a not in page_set or b is None or b not in page_set or a == b:
             continue
         w = float(c.get('weight', 0.5) or 0.5)
-        k = (min(fp, tp), max(fp, tp))
-        conn_w[k] = max(conn_w.get(k, 0.0), w)
-        adj[fp].add(tp); adj[tp].add(fp)
+        edge_w[(a, b)] = max(edge_w.get((a, b), 0.0), w)
+        if (c.get('from_edge') in ('top', 'bottom')
+                or c.get('to_edge') in ('top', 'bottom')):
+            vertical.add((a, b))
 
-    # ── BFS levels from most-connected hub ────────────────────────────────────
-    level: dict = {}
-    for start in sorted(active_pages, key=lambda x: -len(adj[x])):
-        if start in level:
+    # For mutual pairs (A⇄B) keep only the dominant direction for layering
+    drop = set()
+    for (a, b), w in edge_w.items():
+        if (b, a) in edge_w and (a, b) not in drop and (b, a) not in drop:
+            wr = edge_w[(b, a)]
+            drop.add((a, b) if (wr > w or (wr == w and b < a)) else (b, a))
+
+    succ = defaultdict(set)
+    und  = defaultdict(set)
+    for (a, b) in edge_w:
+        und[a].add(b); und[b].add(a)
+        if (a, b) not in drop:
+            succ[a].add(b)
+
+    # ── Utility hubs ───────────────────────────────────────────────────────────
+    # Collection sheets (flare/vent header, effluent, drain) are wired to a
+    # large share of the plant.  Kept in the flow they pull long lines through
+    # everything; humans park them in a row below the process — so do we.
+    und_full  = {i: set(und[i]) for i in active_pages}
+    n_connected = sum(1 for i in active_pages if und[i])
+    hub_thresh  = max(7, int(n_connected * 0.10))
+    hubs = [i for i in sorted(active_pages) if len(und[i]) >= hub_thresh]
+    hub_set = set(hubs)
+    for h in hubs:
+        for nb in list(und[h]):
+            und[nb].discard(h)
+            succ[nb].discard(h)
+        und[h]  = set()
+        succ[h] = set()
+
+    def med(vals):
+        vals = sorted(vals)
+        m = len(vals) // 2
+        return vals[m] if len(vals) % 2 else 0.5 * (vals[m - 1] + vals[m])
+
+    def delta(a, b):
+        # Vertical connectors may share a column (stacked); horizontal flow
+        # always advances one column to the right.
+        return 0 if (a, b) in vertical else 1
+
+    # ── Connected components, largest first ───────────────────────────────────
+    comps, seen = [], set()
+    for start in sorted(active_pages):
+        if start in seen or not und[start]:
             continue
-        q = deque([(start, 0)])
+        comp, q = [], deque([start])
+        seen.add(start)
         while q:
-            node, lv = q.popleft()
-            if node in level:
-                continue
-            level[node] = lv
-            for nb in sorted(adj[node]):
-                if nb not in level:
-                    q.append((nb, lv + 1))
+            n = q.popleft()
+            comp.append(n)
+            for nb in sorted(und[n]):
+                if nb not in seen:
+                    seen.add(nb)
+                    q.append(nb)
+        comps.append(sorted(comp))
+    comps.sort(key=len, reverse=True)
+    isolated = [i for i in sorted(active_pages)
+                if not und[i] and i not in hub_set]
 
-    typ_w = sum(ws.values()) / len(ws)
-    typ_h = sum(hs.values()) / len(hs)
+    pos = {}              # page → (x_topleft, y_topleft)
+    cursor_y = MARGIN
 
-    # ── Initial positions on a wide grid (3× typical size + GAP) ─────────────
-    # Pages are sorted by BFS level so connected ones start near each other,
-    # then the simulation fine-tunes distances.  Large jitter breaks symmetry
-    # so the simulation explores a wider part of solution space.
-    n        = len(active_pages)
-    COLS     = max(2, math.ceil(math.sqrt(n * 1.5)))   # slightly wide grid
-    CPITCH   = typ_w + GAP * 2.5
-    RPITCH   = typ_h + GAP * 2.5
-    pos: dict = {}
-    for idx, i in enumerate(sorted(active_pages, key=lambda x: (level.get(x, 0), x))):
-        col = idx % COLS
-        row = idx // COLS
-        # Deterministic but varied jitter so symmetry breaks differently each run
-        xo = ((i * 2654435761) & 0xFFFFF) / 0xFFFFF * typ_w * 0.6
-        yo = ((i * 2246822519) & 0xFFFFF) / 0xFFFFF * typ_h * 0.6
-        pos[i] = [col * CPITCH + xo + GAP,
-                  row * RPITCH + yo + GAP]
+    for comp in comps:
+        cset = set(comp)
+        dag  = {n: sorted(s for s in succ[n] if s in cset) for n in comp}
 
-    # ── Three-phase spring simulation ─────────────────────────────────────────
-    pages_list = list(active_pages)
-    N_ITER     = 300
+        # ── 1. Break cycles: greedy feedback-arc-set ordering (Eades) ─────────
+        # Arrange the sheets in a linear order with as few edges as possible
+        # pointing backwards; the backward edges are the recycle/return lines
+        # and are cut for layering, so the MAIN flow always runs left→right.
+        # (Plain DFS back-edge removal can cut the main line instead and push
+        # the whole feed chain deep to the right.)
+        g_succ = {n: set(dag[n]) for n in comp}
+        g_pred = defaultdict(set)
+        for n, ss in g_succ.items():
+            for s in ss:
+                g_pred[s].add(n)
+        remaining = set(comp)
+        s1, s2 = [], []
+        while remaining:
+            changed = True
+            while changed:
+                changed = False
+                for n in sorted(remaining):           # sinks → right end
+                    if not (g_succ[n] & remaining):
+                        s2.append(n); remaining.discard(n); changed = True
+                for n in sorted(remaining):           # sources → left end
+                    if n in remaining and not (g_pred[n] & remaining):
+                        s1.append(n); remaining.discard(n); changed = True
+            if remaining:
+                # Strongest net outflow first; page number breaks ties —
+                # sheet numbering normally follows the process order.
+                def net_out(n):
+                    o = sum(edge_w.get((n, s), 0.5) for s in g_succ[n] & remaining)
+                    i = sum(edge_w.get((p, n), 0.5) for p in g_pred[n] & remaining)
+                    return o - i
+                n = max(sorted(remaining), key=net_out)
+                s1.append(n); remaining.discard(n)
+        order_idx = {n: i for i, n in enumerate(s1 + list(reversed(s2)))}
+        back = {(a, b) for a in comp for b in dag[a]
+                if order_idx[a] > order_idx[b]}
+        fwd   = {n: [s for s in dag[n] if (n, s) not in back] for n in comp}
+        fpred = defaultdict(list)
+        for n, ss in fwd.items():
+            for s in ss:
+                fpred[s].append(n)
 
-    for iteration in range(N_ITER):
-        # Temperature schedule: fast → medium → slow
-        if iteration < 100:
-            t = 1.0 - iteration / 100 * 0.5        # 1.0 → 0.5
-        elif iteration < 250:
-            t = 0.5 - (iteration - 100) / 150 * 0.4  # 0.5 → 0.1
-        else:
-            t = 0.1 - (iteration - 250) / 50 * 0.08  # 0.1 → 0.02
-        max_step = 1200.0 * t
+        # ── 2. Longest-path layering (relaxation; components are small) ───────
+        layer = {n: 0 for n in comp}
+        for _ in range(len(comp)):
+            changed = False
+            for n in comp:
+                for s in fwd[n]:
+                    need = layer[n] + delta(n, s)
+                    if layer[s] < need:
+                        layer[s] = need
+                        changed = True
+            if not changed:
+                break
+        # Pull pure feeders right, next to their first consumer, so utility
+        # sheets don't all pile up in column 0 with long lines across the board
+        for n in sorted(comp, key=lambda v: -layer[v]):
+            if fwd[n] and not fpred[n]:
+                layer[n] = min(layer[s] - delta(n, s) for s in fwd[n])
 
-        forces = {i: [0.0, 0.0] for i in active_pages}
+        # ── 3. Serpentine wrap for very long chains ───────────────────────────
+        max_cols = max(8, math.ceil(math.sqrt(len(comp)) * 2.2))
+        band, col = {}, {}
+        for n in comp:
+            b  = layer[n] // max_cols
+            c_ = layer[n] % max_cols
+            if b % 2 == 1:                 # odd bands run right→left so the
+                c_ = max_cols - 1 - c_     # chain stays adjacent at the fold
+            band[n], col[n] = b, c_
 
-        for ai, a in enumerate(pages_list):
-            cxa = pos[a][0] + ws[a] / 2
-            cya = pos[a][1] + hs[a] / 2
+        # ── 4. Row order within each column: barycenter sweeps ────────────────
+        cols = defaultdict(list)
+        for n in comp:
+            cols[(band[n], col[n])].append(n)
+        order = {}
+        for key in cols:
+            cols[key].sort()
+            for i, n in enumerate(cols[key]):
+                order[n] = i
+        col_keys = sorted(cols.keys())
+        for sweep in range(6):
+            keys = col_keys if sweep % 2 == 0 else list(reversed(col_keys))
+            for key in keys:
+                members = cols[key]
 
-            for b in pages_list[ai + 1:]:
-                cxb = pos[b][0] + ws[b] / 2
-                cyb = pos[b][1] + hs[b] / 2
-                dx  = cxb - cxa;  dy  = cyb - cya
-                dist = math.hypot(dx, dy) or 1.0
-                ux, uy = dx / dist, dy / dist
+                def bary(n, _key=key):
+                    nbs = [order[m] for m in und[n]
+                           if m in cset and (band[m], col[m]) != _key]
+                    return med(nbs) if nbs else float(order[n])
 
-                half_a = ws[a] / 2 * abs(ux) + hs[a] / 2 * abs(uy)
-                half_b = ws[b] / 2 * abs(ux) + hs[b] / 2 * abs(uy)
-                edge_gap = dist - half_a - half_b
+                members.sort(key=lambda n: (bary(n), order[n]))
+                for i, n in enumerate(members):
+                    order[n] = i
+        # Vertical links in the same column: source stacks above target
+        for (a, b) in vertical:
+            if (a in cset and b in cset
+                    and (band[a], col[a]) == (band[b], col[b])
+                    and order[a] > order[b]):
+                members = cols[(band[a], col[a])]
+                members[order[a]], members[order[b]] = \
+                    members[order[b]], members[order[a]]
+                order[a], order[b] = order[b], order[a]
 
-                # Non-linear repulsion: quadratic blow-up below rep_range
-                rep_range = GAP * 4.5
-                if edge_gap < rep_range:
-                    ratio = max(0.0, (rep_range - edge_gap) / rep_range)
-                    rep   = ratio ** 2 * GAP * 12.0
-                    forces[a][0] -= ux * rep;  forces[a][1] -= uy * rep
-                    forces[b][0] += ux * rep;  forces[b][1] += uy * rep
+        # ── 5. Coordinates ─────────────────────────────────────────────────────
+        band_top = cursor_y
+        for b in range(max(band.values()) + 1):
+            bcols = sorted(c2 for (bb, c2) in cols if bb == b)
+            x = MARGIN
+            col_x, col_w = {}, {}
+            for c2 in bcols:
+                wmax = max(ws[n] for n in cols[(b, c2)])
+                col_x[c2], col_w[c2] = x, wmax
+                x += wmax + H_GAP
+            # initial y: stack in barycenter order
+            cy = {}
+            for c2 in bcols:
+                yy = band_top
+                for n in sorted(cols[(b, c2)], key=lambda n: order[n]):
+                    cy[n] = yy + hs[n] / 2
+                    yy += hs[n] + V_GAP
+            # alignment passes: move toward neighbour average, keep order,
+            # resolve overlaps top-down
+            for _pass in range(5):
+                for c2 in bcols:
+                    members = sorted(cols[(b, c2)], key=lambda n: order[n])
+                    desired = []
+                    for n in members:
+                        nbs = [cy[m] for m in und[n]
+                               if m in cy and (band[m], col[m]) != (b, c2)]
+                        desired.append(med(nbs) if nbs else cy[n])
+                    prev_bottom = None
+                    for n, d in zip(members, desired):
+                        top = d - hs[n] / 2
+                        if prev_bottom is None:
+                            top = max(top, band_top)
+                        elif top < prev_bottom + V_GAP:
+                            top = prev_bottom + V_GAP
+                        cy[n] = top + hs[n] / 2
+                        prev_bottom = top + hs[n]
+            band_nodes = [n for n in comp if band[n] == b]
+            for n in band_nodes:
+                c2 = col[n]
+                px = col_x[c2] + (col_w[c2] - ws[n]) / 2   # centred in column
+                pos[n] = (px, cy[n] - hs[n] / 2)
+            band_top = max(pos[n][1] + hs[n] for n in band_nodes) + C_GAP * 0.7
+        cursor_y = band_top - C_GAP * 0.7 + C_GAP
 
-                # Attraction: only for connected pairs beyond 2×GAP
-                k = (min(a, b), max(a, b))
-                w = conn_w.get(k, 0.0)
-                if w > 0 and edge_gap > GAP * 2.0:
-                    att = w * (edge_gap - GAP * 2.0) * 0.10
-                    forces[a][0] += ux * att;  forces[a][1] += uy * att
-                    forces[b][0] -= ux * att;  forces[b][1] -= uy * att
+    # ── 6. Utility-hub row below the process flow ──────────────────────────────
+    if hubs:
+        hub_y, row_h = cursor_y, 0.0
+        entries = []
+        for h in hubs:
+            nb_x = [pos[m][0] + ws[m] / 2 for m in und_full[h] if m in pos]
+            entries.append((med(nb_x) if nb_x else MARGIN, h))
+        entries.sort()
+        x_next = MARGIN
+        for cx, h in entries:
+            x = max(x_next, cx - ws[h] / 2)
+            pos[h] = (x, hub_y)
+            x_next = x + ws[h] + H_GAP
+            row_h  = max(row_h, hs[h])
+        cursor_y = hub_y + row_h + C_GAP
 
-        # Apply capped forces
-        for i in active_pages:
-            fx, fy = forces[i]
-            mag = math.hypot(fx, fy) or 1.0
-            if mag > max_step:
-                fx *= max_step / mag;  fy *= max_step / mag
-            pos[i][0] += fx;  pos[i][1] += fy
-
-        # Keep pages in positive space
-        mx = min(pos[i][0] for i in active_pages)
-        my = min(pos[i][1] for i in active_pages)
-        if mx < GAP:
-            d = GAP - mx
-            for i in active_pages: pos[i][0] += d
-        if my < GAP:
-            d = GAP - my
-            for i in active_pages: pos[i][1] += d
+    # ── 7. Isolated sheets: grid at the bottom ─────────────────────────────────
+    if isolated:
+        board_right = max((pos[n][0] + ws[n] for n in pos), default=MARGIN)
+        typ_w = sum(ws.values()) / len(ws)
+        target_w = max(board_right, 3 * (typ_w + H_GAP) + MARGIN)
+        x, y, row_h = MARGIN, cursor_y, 0.0
+        for i in isolated:
+            if x > MARGIN and x + ws[i] > target_w:
+                x = MARGIN
+                y += row_h + V_GAP
+                row_h = 0.0
+            pos[i] = (x, y)
+            x += ws[i] + H_GAP
+            row_h = max(row_h, hs[i])
 
     return {i: (round(pos[i][0]), round(pos[i][1])) for i in active_pages}
 
