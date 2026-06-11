@@ -6921,14 +6921,14 @@ class PIDPanel(QWidget):
             ref  = (cd.get('ref_sheet') or '').upper()
             # direction buckets: unknown goes into both out AND in
             buckets_pair = (
-                {_pair_out, _pair_any} if dirn == 'out' else
-                {_pair_in,  _pair_any} if dirn == 'in'  else
-                {_pair_out, _pair_in, _pair_any}
+                [_pair_out, _pair_any] if dirn == 'out' else
+                [_pair_in,  _pair_any] if dirn == 'in'  else
+                [_pair_out, _pair_in, _pair_any]
             )
             buckets_ref = (
-                {_ref_out, _ref_any} if dirn == 'out' else
-                {_ref_in,  _ref_any} if dirn == 'in'  else
-                {_ref_out, _ref_in, _ref_any}
+                [_ref_out, _ref_any] if dirn == 'out' else
+                [_ref_in,  _ref_any] if dirn == 'in'  else
+                [_ref_out, _ref_in, _ref_any]
             )
             if rp is not None:
                 key_p = (cd['pid_page'], int(rp))
