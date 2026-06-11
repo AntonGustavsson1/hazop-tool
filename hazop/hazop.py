@@ -945,262 +945,313 @@ _COMP_STD_CAUSES = {
     },
 }
 
-# ── Standard consequence steps ────────────────────────────────────────────────
-# Hierarkin är: Del1 = direkt konsekvens av avvikelse+orsak,
-#               Del2 = nästa skalsteg om Del1 inte stoppas, osv.
-# Nyckeln är (avvikelse, objekt/komponentstyp) → per steg → lista med text-alternativ.
-# Används av ConsequenceChainPickerDialog för kontextbaserade förslag.
-# '*' som objekt = generisk, gäller alla objekttyper.
-# [objekt] is a placeholder replaced at display/save time with the column's ref-tag.
-# It marks wherever a specific equipment tag improves readability, e.g.
-#   "Låg nivå i [objekt]" → "Låg nivå i T-101"
-_STD_CONSEQUENCE_STEPS: dict = {
-    # ── Lågt / inget flöde ────────────────────────────────────────────────────
-    ("Lågt flöde", "*"): {
-        1: [
-            "Reducerat flöde till [objekt]",
-            "Inget flöde till [objekt]",
-            "Processmålet nås inte",
-        ],
-        2: [
-            "Låg nivå i [objekt]",
-            "Processtemperatur stiger (kylflöde otillräckligt till [objekt])",
-            "Reaktant fattas — reaktionsgrad minskar",
-            "Produktkvalitet försämras",
-        ],
-        3: [
-            "Torrkörning av [objekt]",
-            "Högt tryck uppströms (backpressure mot [objekt])",
-            "[objekt] överhettning",
-        ],
-        4: [
-            "Mekanisk skada på [objekt] (lagerhaveri / slitage)",
-            "Reaktionen stoppar — produkt ej uppnådd",
-            "Instrumentavläsning missvisande (process utanför mätintervall)",
-        ],
-        5: [
-            "Produktion stoppad",
-            "Brand / explosion (heta ytor möter läckt produkt)",
-            "Miljöutsläpp",
-        ],
+# ── Konsekvensgraf (event-tree-logik) ────────────────────────────────────────────
+# Varje nod är EN konsekvenshändelse. 'next' listar de logiska eskalerings-
+# stegen om händelsen inte stoppas — så Del2-alternativen beror på valt Del1,
+# Del3 på Del2 osv. Grafen följer klassisk event tree-analys (CCPS/DNV):
+#   LOC → direktantändning (jetbrand/pölbrand) | fördröjd (flash fire/VCE)
+#       | ingen antändning (toxisk dispersion / miljö)
+#   Brandpåverkan på intilliggande utrustning → BLEVE / domino.
+# Allt är OMITIGERAT — inga säkerhetsventiler, larm eller operatörsåtgärder
+# krediteras (de är barriärer och hör hemma i barriärkolumnen).
+# [objekt] ersätts med kolumnens Ref-tag vid visning/sparning.
+_CONSEQ_NODES: dict = {
+    # ── Flöde / nivå / mekanik ────────────────────────────────────────
+    'reduced_flow': {
+        'text': 'Reducerat flöde till [objekt]',
+        'next': ['low_level', 'hx_overheat', 'reaction_upset',
+                 'quality_offspec', 'backpressure_upstream'],
     },
-    ("Högt flöde", "*"): {
-        1: [
-            "Överskridande flöde till [objekt]",
-            "Hög nivå i [objekt]",
-            "Processtemperatur sjunker (kylflödet för högt till [objekt])",
-        ],
-        2: [
-            "Överfyllning av [objekt]",
-            "Oönskad reaktion i [objekt] (för hög reaktantkoncentration)",
-            "Produktkvalitet utanför specifikation",
-        ],
-        3: [
-            "Övertrycksättning av [objekt]",
-            "Spill / overflow från [objekt]",
-            "Erosion i [objekt] (hög hastighet)",
-        ],
-        4: [
-            "Strukturell skada på [objekt]",
-            "Läckage / utsläpp från [objekt]",
-        ],
-        5: [
-            "Brand / explosion (brandfarlig vätska spills från [objekt])",
-            "Miljöutsläpp",
-            "Personskada (spill / tryckskada)",
-        ],
+    'no_flow': {
+        'text': 'Inget flöde till [objekt]',
+        'next': ['low_level', 'hx_overheat', 'pump_dryrun',
+                 'reaction_upset', 'production_stop'],
     },
-    ("Högt tryck", "*"): {
-        1: [
-            "Trycket i [objekt] överstiger driftsgränsen",
-            "Differenstrycket mot [objekt] ökar",
-        ],
-        2: [
-            "Tätning i [objekt] havererar — läckage uppstår",
-            "[objekt] belastas mot konstruktionsgränsen",
-        ],
-        3: [
-            "Okontrollerat utsläpp från [objekt] till atmosfären",
-            "Mekanisk skada på [objekt] (sprickor i svets / flänsläckage)",
-            "[objekt] brister",
-        ],
-        4: [
-            "Utsläpp av brandfarligt / giftigt ämne från [objekt]",
-            "Kontaminering av omgivning",
-        ],
-        5: [
-            "Brand / explosion",
-            "Toxisk exponering för personal",
-            "Katastrofal strukturell kollaps av [objekt]",
-        ],
+    'high_flow': {
+        'text': 'För högt flöde till [objekt]',
+        'next': ['high_level', 'erosion', 'hx_undercool', 'carryover'],
     },
-    ("Lågt tryck", "*"): {
-        1: [
-            "Trycket i [objekt] understiger driftsgränsen",
-            "Flödet reduceras (pumpkurvan sjunker)",
-        ],
-        2: [
-            "Luft-inläckage i [objekt] (vakuumbildning)",
-            "Processvätska i [objekt] flashar / förångas",
-            "[objekt] tappar separation",
-        ],
-        3: [
-            "Vakuumkollaps av [objekt]",
-            "Syrekoncentration stiger i process",
-            "Produkt kontamineras i [objekt]",
-        ],
-        4: [
-            "Strukturell skada på [objekt]",
-            "Brand / explosion (luft möter brandfarlig gas i [objekt])",
-        ],
-        5: [
-            "Katastrofalt haveri av [objekt]",
-            "Personskada",
-        ],
+    'low_level': {
+        'text': 'Låg nivå i [objekt]',
+        'next': ['pump_dryrun', 'vortex_gas', 'no_flow'],
     },
-    ("Hög nivå", "*"): {
-        1: [
-            "Nivå i [objekt] stiger",
-            "Vätska börjar stiga mot utloppsledning i [objekt]",
-        ],
-        2: [
-            "Bufferttid i [objekt] minskar kraftigt",
-            "Vätska träder in i gasfas / ångledning från [objekt] — vätskeslag",
-            "[objekt] fylls till overflow",
-        ],
-        3: [
-            "Spill / overflow från [objekt] — miljöutsläpp",
-            "Vätskeslag i [objekt] — katastrofal skada",
-            "Övertrycksättning av [objekt]",
-        ],
-        4: [
-            "Brand (brandfarlig vätska spills från [objekt])",
-            "Personskada (frätande / giftig vätska från [objekt])",
-            "Strukturell skada på [objekt]",
-        ],
-        5: [
-            "Produktion stoppad",
-            "Katastrofalt haveri av [objekt]",
-        ],
+    'high_level': {
+        'text': 'Hög nivå i [objekt]',
+        'next': ['overfill', 'carryover'],
     },
-    ("Låg nivå", "*"): {
-        1: [
-            "Nivå i [objekt] sjunker",
-            "Bufferttid i [objekt] minskar",
-        ],
-        2: [
-            "[objekt] riskerar torrkörning",
-            "Flöde från [objekt] till nedströms upphör",
-        ],
-        3: [
-            "[objekt] torrkör — kavitation / lagerhaveri",
-            "Sugningstorrkörning — pumpspänne i [objekt] havererar",
-        ],
-        4: [
-            "Mekanisk skada på [objekt]",
-            "Processmålet nås inte (flödet upphör)",
-            "Läckage vid tätningshaveri i [objekt]",
-        ],
-        5: [
-            "Produktion stoppad",
-            "Utsläpp vid haveri av [objekt]",
-        ],
+    'overfill': {
+        'text': 'Överfyllnad av [objekt] — vätska tränger ut',
+        'next': ['pool_formation', 'env_release'],
     },
-    ("Hög temperatur", "*"): {
-        1: [
-            "Temperaturen i [objekt] överstiger designgränsen",
-            "Produktkvalitet försämras (termisk nedbrytning i [objekt])",
-        ],
-        2: [
-            "Materialgränsen för tätningar / packningar i [objekt] nås",
-            "Reaktionshastigheten i [objekt] ökar — oönskade sidoreaktioner",
-            "Ångtrycket stiger i [objekt]",
-        ],
-        3: [
-            "Trycket i [objekt] överstiger konstruktionsgränsen",
-            "Metallurgisk skada på [objekt] (krypning, fastbränning)",
-            "Tätningsläckage i [objekt] — utsläpp",
-        ],
-        4: [
-            "Brand / explosion (brandfarlig produkt läcker från [objekt] till het yta)",
-            "Kontaminering",
-        ],
-        5: [
-            "Okontrollerad exoterm reaktion i [objekt] (runaway)",
-            "Katastrofalt haveri av [objekt]",
-            "Personskada / dödsfall",
-        ],
+    'carryover': {
+        'text': 'Vätskemedryckning från [objekt] till gas-/ångsystem',
+        'next': ['liquid_slug'],
     },
-    ("Låg temperatur", "*"): {
-        1: [
-            "Temperaturen i [objekt] sjunker under designgränsen",
-            "Viskositet stiger — flödet i [objekt] reduceras",
-        ],
-        2: [
-            "Isbildning i [objekt] (blockering)",
-            "Hydratbildning i [objekt]",
-            "Materialets seghet i [objekt] försämras (brittbrott)",
-        ],
-        3: [
-            "Rörblockering i [objekt]",
-            "Sprickor i [objekt] vid normal last (embrittlement)",
-        ],
-        4: [
-            "[objekt] brister",
-            "Utsläpp av farlig vätska / gas från [objekt]",
-        ],
-        5: [
-            "Brand / explosion (kryogent utsläpp från [objekt] antänds)",
-            "Personskada (köldskada / kryogen exponering)",
-        ],
+    'liquid_slug': {
+        'text': 'Vätskeslag i [objekt]',
+        'next': ['equipment_catastrophic', 'loc_large'],
     },
-    ("Omvänt flöde", "*"): {
-        1: [
-            "Flödet vänder riktning — [objekt] utsätts för backflöde",
-            "Korsflöde från högre tryckssystem till [objekt]",
-        ],
-        2: [
-            "Kontaminering av [objekt]",
-            "[objekt] körs i backflödesriktning — mekanisk skada",
-        ],
-        3: [
-            "Skada på [objekt] (tryckhöjning vid backflöde)",
-            "Produktkvalitetsproblem (blandning av flöden i [objekt])",
-        ],
-        4: [
-            "Haveri av [objekt]",
-            "Utsläpp via övertryckat [objekt]",
-        ],
-        5: [
-            "Brand / explosion",
-            "Personskada",
-        ],
+    'vortex_gas': {
+        'text': 'Gasmedryckning i utlopp från [objekt] (vortex)',
+        'next': ['pump_dryrun'],
     },
-    ("Missriktat flöde", "*"): {
-        1: [
-            "Flödet når [objekt] istället för avsedd destination",
-            "Avsedd mottagare [objekt] mottar inte produkten",
-        ],
-        2: [
-            "[objekt] överfylls / övertrycksätts",
-            "Reaktion med inkompatibelt medium i [objekt]",
-            "Processstörning i [objekt]",
-        ],
-        3: [
-            "Utrustningsskada på [objekt] (övertryck / inkompatibelt medium)",
-            "Produktkontaminering i [objekt]",
-        ],
-        4: [
-            "Utsläpp från [objekt]",
-            "Kemisk reaktion i [objekt] — exoterm / gasbildning",
-        ],
-        5: [
-            "Brand / explosion",
-            "Personskada",
-            "Miljöutsläpp",
-        ],
+    'pump_dryrun': {
+        'text': '[objekt] torrkör / kaviterar',
+        'next': ['seal_fail', 'bearing_fail'],
+    },
+    'seal_fail': {
+        'text': 'Tätningshaveri på [objekt]',
+        'next': ['loc_small'],
+    },
+    'bearing_fail': {
+        'text': 'Mekanisk skada på [objekt] (lager / impeller)',
+        'next': ['pump_breakdown'],
+    },
+    'pump_breakdown': {
+        'text': '[objekt] havererar',
+        'next': ['production_stop', 'no_flow'],
+    },
+    'backpressure_upstream': {
+        'text': 'Mottryck byggs upp uppströms [objekt]',
+        'next': ['overpressure'],
+    },
+    'erosion': {
+        'text': 'Erosion i [objekt] (hög strömningshastighet)',
+        'next': ['loc_small'],
+    },
+    'hx_overheat': {
+        'text': 'Otillräcklig kylning — temperaturen i [objekt] stiger',
+        'next': ['vapor_pressure_rise', 'runaway', 'seal_degradation',
+                 'quality_offspec'],
+    },
+    'hx_undercool': {
+        'text': 'Överkylning av [objekt]',
+        'next': ['quality_offspec', 'freeze_damage', 'hydrate_blockage'],
+    },
+    'reaction_upset': {
+        'text': 'Reaktionsstörning i [objekt] (fel stökiometri / uppehållstid)',
+        'next': ['quality_offspec', 'runaway', 'toxic_gas_generation'],
+    },
+    'quality_offspec': {
+        'text': 'Produkt utanför specifikation',
+        'next': ['production_stop'],
+    },
+
+    # ── Tryck ──────────────────────────────────────────────────────────────────
+    'overpressure': {
+        'text': 'Trycket i [objekt] överstiger designtrycket',
+        'next': ['flange_leak', 'rupture'],
+    },
+    'flange_leak': {
+        'text': 'Fläns-/packningsläckage på [objekt]',
+        'next': ['loc_small'],
+    },
+    'rupture': {
+        'text': '[objekt] brister (fullbordsbrott)',
+        'next': ['loc_large', 'equipment_catastrophic'],
+    },
+    'vacuum': {
+        'text': 'Undertryck i [objekt] under designgräns',
+        'next': ['vacuum_collapse', 'air_ingress'],
+    },
+    'vacuum_collapse': {
+        'text': '[objekt] imploderar (vakuumkollaps)',
+        'next': ['equipment_catastrophic', 'loc_small'],
+    },
+    'air_ingress': {
+        'text': 'Luftinträngning i [objekt]',
+        'next': ['internal_flammable', 'quality_offspec'],
+    },
+    'internal_flammable': {
+        'text': 'Brännbar atmosfär bildas inne i [objekt]',
+        'next': ['internal_explosion'],
+    },
+    'internal_explosion': {
+        'text': 'Intern explosion i [objekt]',
+        'next': ['equipment_catastrophic', 'loc_large', 'personnel_injury'],
+    },
+    'flashing': {
+        'text': 'Processvätska flashar / förångas i [objekt]',
+        'next': ['pump_dryrun', 'quality_offspec'],
+    },
+
+    # ── Temperatur ────────────────────────────────────────────────────────────
+    'temp_above_design': {
+        'text': 'Temperaturen i [objekt] överstiger designgränsen',
+        'next': ['vapor_pressure_rise', 'runaway', 'seal_degradation',
+                 'material_creep', 'quality_offspec'],
+    },
+    'vapor_pressure_rise': {
+        'text': 'Ångtrycket i [objekt] stiger',
+        'next': ['overpressure'],
+    },
+    'runaway': {
+        'text': 'Okontrollerad exoterm reaktion i [objekt] (runaway)',
+        'next': ['rapid_pressure_rise', 'toxic_gas_generation'],
+    },
+    'rapid_pressure_rise': {
+        'text': 'Snabb tryck-/temperaturstegring i [objekt]',
+        'next': ['rupture'],
+    },
+    'material_creep': {
+        'text': 'Hållfastheten i [objekt] degraderas (krypning)',
+        'next': ['rupture'],
+    },
+    'seal_degradation': {
+        'text': 'Tätningar/packningar i [objekt] degraderas termiskt',
+        'next': ['seal_fail', 'flange_leak'],
+    },
+    'temp_below_design': {
+        'text': 'Temperaturen i [objekt] understiger designgränsen',
+        'next': ['brittle_fracture', 'hydrate_blockage', 'freeze_damage'],
+    },
+    'brittle_fracture': {
+        'text': 'Försprödning av [objekt] — sprödbrott vid normal last',
+        'next': ['rupture'],
+    },
+    'hydrate_blockage': {
+        'text': 'Hydrat-/isproppsbildning blockerar [objekt]',
+        'next': ['no_flow', 'overpressure'],
+    },
+    'freeze_damage': {
+        'text': 'Sönderfrysning av [objekt]',
+        'next': ['loc_small'],
+    },
+
+    # ── Omvänt / missriktat flöde / sammansättning ────────────────────────
+    'reverse_flow': {
+        'text': 'Backflöde genom [objekt]',
+        'next': ['upstream_contamination', 'pump_reverse',
+                 'incompatible_mixing'],
+    },
+    'upstream_contamination': {
+        'text': 'Kontaminering av uppströmssystem via [objekt]',
+        'next': ['quality_offspec', 'incompatible_mixing'],
+    },
+    'pump_reverse': {
+        'text': '[objekt] roterar baklänges',
+        'next': ['bearing_fail'],
+    },
+    'misdirected_flow': {
+        'text': 'Flödet når [objekt] istället för avsedd destination',
+        'next': ['high_level', 'incompatible_mixing', 'no_flow'],
+    },
+    'incompatible_mixing': {
+        'text': 'Inkompatibla medier blandas i [objekt]',
+        'next': ['runaway', 'toxic_gas_generation', 'overpressure'],
+    },
+    'contamination_feed': {
+        'text': 'Avvikande sammansättning i flöde till [objekt]',
+        'next': ['quality_offspec', 'incompatible_mixing', 'reaction_upset'],
+    },
+    'toxic_gas_generation': {
+        'text': 'Giftig/frätande gas utvecklas i [objekt]',
+        'next': ['overpressure', 'toxic_exposure'],
+    },
+    'utility_loss': {
+        'text': 'Hjälpsystem till [objekt] bortfaller',
+        'next': ['hx_overheat', 'no_flow', 'production_stop'],
+    },
+
+    # ── Loss of containment & utfall (event tree) ─────────────────────────
+    'loc_small': {
+        'text': 'Begränsat utsläpp (läcka) från [objekt]',
+        'next': ['jet_fire', 'pool_formation', 'flash_fire',
+                 'toxic_exposure', 'env_release'],
+    },
+    'loc_large': {
+        'text': 'Stort okontrollerat utsläpp från [objekt]',
+        'next': ['jet_fire', 'pool_formation', 'vce', 'flash_fire',
+                 'toxic_exposure', 'env_release'],
+    },
+    'pool_formation': {
+        'text': 'Vätskepöl bildas vid [objekt]',
+        'next': ['pool_fire', 'env_release', 'toxic_exposure'],
+    },
+    'jet_fire': {
+        'text': 'Jetbrand vid [objekt] (direktantändning av trycksatt läcka)',
+        'next': ['escalation_bleve', 'personnel_injury', 'equipment_damage'],
+    },
+    'pool_fire': {
+        'text': 'Pölbrand vid [objekt]',
+        'next': ['escalation_bleve', 'personnel_injury', 'equipment_damage'],
+    },
+    'flash_fire': {
+        'text': 'Flash fire (fördröjd antändning av gasmoln)',
+        'next': ['personnel_injury'],
+    },
+    'vce': {
+        'text': 'Gasmolnsexplosion (VCE)',
+        'next': ['fatality', 'equipment_catastrophic'],
+    },
+    'escalation_bleve': {
+        'text': 'Brandpåverkan på intilliggande utrustning — BLEVE / domino',
+        'next': ['fatality', 'equipment_catastrophic'],
+    },
+    'toxic_exposure': {
+        'text': 'Toxisk exponering av personal (dispersion av gasmoln)',
+        'next': ['personnel_injury', 'fatality'],
+    },
+    'env_release': {
+        'text': 'Miljöutsläpp till mark / vatten / luft',
+        'next': ['env_impact'],
+    },
+
+    # ── Terminala skadenoder ──────────────────────────────────────────────────
+    'personnel_injury': {
+        'text': 'Personskada',
+        'next': ['fatality'],
+    },
+    'fatality': {
+        'text': 'Dödsfall',
+        'next': [],
+    },
+    'equipment_damage': {
+        'text': 'Utrustningsskada',
+        'next': ['production_stop'],
+    },
+    'equipment_catastrophic': {
+        'text': 'Omfattande skada på utrustning / struktur',
+        'next': ['production_stop'],
+    },
+    'production_stop': {
+        'text': 'Produktionsbortfall / driftstopp',
+        'next': [],
+    },
+    'env_impact': {
+        'text': 'Miljöpåverkan med sanering / myndighetsrapportering',
+        'next': [],
     },
 }
+
+# Del1-ingångar per avvikelse. '*' = alla objektstyper.
+_CONSEQ_ENTRY: dict = {
+    ('Lågt flöde', '*'):              ['reduced_flow', 'no_flow'],
+    ('Högt flöde', '*'):              ['high_flow', 'high_level', 'erosion'],
+    ('Högt tryck', '*'):              ['overpressure'],
+    ('Lågt tryck', '*'):              ['vacuum', 'flashing', 'reduced_flow'],
+    ('Hög nivå', '*'):                ['high_level', 'carryover'],
+    ('Låg nivå', '*'):                ['low_level'],
+    ('Hög temperatur', '*'):          ['temp_above_design'],
+    ('Låg temperatur', '*'):          ['temp_below_design'],
+    ('Omvänt flöde', '*'):            ['reverse_flow'],
+    ('Missriktat flöde', '*'):        ['misdirected_flow'],
+    ('Avvikande sammansättning', '*'): ['contamination_feed'],
+    ('Bortfall av hjälpsystem', '*'): ['utility_loss'],
+    ('Drift', '*'):                   ['no_flow', 'high_level', 'overpressure',
+                                       'loc_small', 'misdirected_flow'],
+    ('Underhåll', '*'):               ['loc_small', 'no_flow', 'overpressure',
+                                       'internal_flammable'],
+    ('Start-up / Shut-down', '*'):    ['loc_small', 'overpressure',
+                                       'internal_flammable', 'liquid_slug',
+                                       'brittle_fracture'],
+}
+
+# Fallback-alternativ när föregående steg är fritext (okänd nod)
+_CONSEQ_GENERIC_NEXT = [
+    'loc_small', 'overpressure', 'equipment_damage',
+    'personnel_injury', 'env_release', 'production_stop',
+]
 
 
 def _fix_instrument_causes_v2(conn):
@@ -1273,6 +1324,15 @@ class Database:
         self._migrate()
 
     def _migrate(self):
+        # Kolumnmigreringarna körs TVÅ gånger: före executescript (befintliga
+        # databaser) och efter (färska databaser där CREATE TABLE just skapat
+        # bastabellerna utan de migrerade kolumnerna — annars kraschar
+        # seedningen på t.ex. standard_causes.comp_type). Alla satser är
+        # idempotenta; fel ignoreras.
+        self._column_migrations()
+        self._migrate_tables_and_seed()
+
+    def _column_migrations(self):
         for sql in [
             "ALTER TABLE nodes ADD COLUMN markup_points TEXT DEFAULT ''",
             "ALTER TABLE nodes ADD COLUMN markup_style TEXT DEFAULT ''",
@@ -1312,15 +1372,14 @@ class Database:
             "ALTER TABLE off_page_connector ADD COLUMN ref_page INTEGER DEFAULT NULL",
             "ALTER TABLE off_page_connector ADD COLUMN dot_scene_x REAL DEFAULT NULL",
             "ALTER TABLE off_page_connector ADD COLUMN dot_scene_y REAL DEFAULT NULL",
-        ] + [
-            # consequence_steps table (added as executescript below but listed here
-            # so attempts on old DBs are silently ignored like everything else)
+            "ALTER TABLE consequence_steps ADD COLUMN node_key TEXT DEFAULT ''",
         ]:
             try:
                 self.conn.execute(sql)
             except Exception:
                 pass
 
+    def _migrate_tables_and_seed(self):
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS pid_config (
                 key TEXT PRIMARY KEY, value TEXT
@@ -1432,7 +1491,8 @@ class Database:
                 consequence_id INTEGER NOT NULL REFERENCES consequences(id) ON DELETE CASCADE,
                 step           INTEGER NOT NULL,   -- 1..5
                 text           TEXT    NOT NULL DEFAULT '',
-                ref_tag        TEXT    DEFAULT ''
+                ref_tag        TEXT    DEFAULT '',
+                node_key       TEXT    DEFAULT ''  -- konsekvensgraf-nod (för beroende kolumner)
             );
             CREATE TABLE IF NOT EXISTS node_markups (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1502,6 +1562,9 @@ class Database:
                 warning         TEXT
             );
         """)
+
+        # Second pass: fresh DBs now have all base tables — add migrated columns
+        self._column_migrations()
 
         if not self.conn.execute("SELECT COUNT(*) FROM consequence_categories").fetchone()[0]:
             for i, name in enumerate(['Person', 'Miljö', 'Ekonomi', 'Anläggning', 'Rykte']):
@@ -2813,16 +2876,18 @@ class Database:
 
     # ── Consequence steps (Del1-Del5 escalation chain) ────────────────────────
     def get_consequence_steps(self, consequence_id):
-        """Return list of dicts: {step, text, ref_tag} sorted by step."""
+        """Return list of dicts: {step, text, ref_tag, node_key} sorted by step."""
         rows = self.conn.execute(
-            "SELECT step, text, ref_tag FROM consequence_steps "
+            "SELECT step, text, ref_tag, node_key FROM consequence_steps "
             "WHERE consequence_id=? ORDER BY step", (consequence_id,)).fetchall()
         return [dict(r) for r in rows]
 
     def set_consequence_steps(self, consequence_id, steps):
         """Replace all steps for a consequence.
 
-        steps: list of dicts with keys step(int), text(str), ref_tag(str).
+        steps: list of dicts with keys step(int), text(str), ref_tag(str)
+        and optional node_key(str) — the consequence-graph node id, used to
+        restore dependent column options when the chain is reopened.
         Empty text entries are omitted.
         """
         self.conn.execute(
@@ -2832,10 +2897,12 @@ class Database:
             text = (s.get('text') or '').strip()
             if text:
                 self.conn.execute(
-                    "INSERT INTO consequence_steps (consequence_id, step, text, ref_tag)"
-                    " VALUES (?,?,?,?)",
+                    "INSERT INTO consequence_steps "
+                    "(consequence_id, step, text, ref_tag, node_key)"
+                    " VALUES (?,?,?,?,?)",
                     (consequence_id, int(s['step']), text,
-                     (s.get('ref_tag') or '').strip()))
+                     (s.get('ref_tag') or '').strip(),
+                     (s.get('node_key') or '').strip()))
         self.conn.commit()
 
     def consequence_steps_as_text(self, consequence_id):
@@ -7006,11 +7073,12 @@ class ConsequenceStepPickerDialog(QDialog):
         cols_layout.setContentsMargins(0, 0, 0, 0)
 
         self._cols: list = []      # per-step state
-        self._options: list = []   # list of option texts per step
+        self._options: list = []   # option texts per step (graph node texts)
+        self._opt_keys: list = []  # parallel node keys (None = free/saved text)
 
         for step in range(1, _N_STEPS + 1):
-            opts = self._build_options(step, existing)
-            self._options.append(opts)
+            self._options.append([])
+            self._opt_keys.append([])
 
             col_w = QWidget()
             col_w.setMinimumWidth(175)
@@ -7037,21 +7105,6 @@ class ConsequenceStepPickerDialog(QDialog):
                 "  border:1px solid #2563eb; }"
                 "QListWidget::item:hover:!selected { background:#eff6ff; }"
             )
-            cur_text  = existing.get(step, {}).get('text', '') if existing else ''
-            init_tag  = (existing.get(step, {}).get('ref_tag', '') if existing else '') or \
-                        (self._initial_ref_tag if step == 1 else '')
-            sel_idx   = -1
-            for i, opt in enumerate(opts):
-                display = self._resolve(opt, init_tag)
-                item = QListWidgetItem(f"{i+1}. {display}")
-                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
-                lst.addItem(item)
-                if cur_text and opt == cur_text:
-                    sel_idx = i
-
-            if sel_idx >= 0:
-                lst.setCurrentRow(sel_idx)
-
             lst.itemClicked.connect(
                 lambda it, s=step-1, lw=lst: self._list_clicked(s, lw))
             col_l.addWidget(lst, 1)
@@ -7059,7 +7112,9 @@ class ConsequenceStepPickerDialog(QDialog):
             # Free-text input
             ft_edit = QLineEdit()
             ft_edit.setPlaceholderText("Fritext (eget alternativ)")
-            ft_edit.textChanged.connect(self._update_preview)
+            ft_edit.textChanged.connect(
+                lambda _t, s=step-1: (self._cascade_from(s),
+                                      self._update_preview()))
             col_l.addWidget(ft_edit)
 
             # Ref-tag row: label + field + pin button (placed below)
@@ -7098,11 +7153,15 @@ class ConsequenceStepPickerDialog(QDialog):
 
             col_state = {
                 'list':    lst,
-                'sel':     sel_idx,
+                'sel':     -1,
                 'ft_edit': ft_edit,
                 'ref_edit':ref_edit,
             }
             self._cols.append(col_state)
+
+        # Fill columns: Del1 from entry nodes, Del2+ cascades from selections.
+        # Saved chains are restored selection by selection.
+        self._init_columns(existing)
 
         main.addWidget(cols_widget, 1)
 
@@ -7156,30 +7215,106 @@ class ConsequenceStepPickerDialog(QDialog):
 
         self._update_preview()
 
-    # ── Option builder ────────────────────────────────────────────────────────
-    def _build_options(self, step: int, existing: dict) -> list:
-        """Return the list of text options for *step* using the standard library."""
-        key_exact  = (self._dev, self._comp)
-        key_wild   = (self._dev, '*')
-        key_blank  = (self._dev, '')
+    # ── Graf-baserade alternativ ──────────────────────────────────────────────
+    def _entry_pairs(self):
+        """[(node_key, text)] for Del1, looked up per deviation (+comp)."""
+        keys = (_CONSEQ_ENTRY.get((self._dev, self._comp)) or
+                _CONSEQ_ENTRY.get((self._dev, '*')) or
+                _CONSEQ_ENTRY.get((self._dev, '')) or
+                _CONSEQ_GENERIC_NEXT)
+        return [(k, _CONSEQ_NODES[k]['text']) for k in keys if k in _CONSEQ_NODES]
 
-        entry = (
-            _STD_CONSEQUENCE_STEPS.get(key_exact) or
-            _STD_CONSEQUENCE_STEPS.get(key_wild) or
-            _STD_CONSEQUENCE_STEPS.get(key_blank)
-        )
-        opts = list(entry.get(step, [])) if entry else []
+    @staticmethod
+    def _successor_pairs(node_key):
+        node = _CONSEQ_NODES.get(node_key)
+        if not node:
+            return []
+        return [(k, _CONSEQ_NODES[k]['text'])
+                for k in node['next'] if k in _CONSEQ_NODES]
 
-        # Prepend "Inget / hoppa över" for steps 2+
-        if step > 1:
-            opts = ["(Hoppa över detta steg)"] + opts
+    @staticmethod
+    def _generic_pairs():
+        return [(k, _CONSEQ_NODES[k]['text'])
+                for k in _CONSEQ_GENERIC_NEXT if k in _CONSEQ_NODES]
 
-        # Also show previously saved value if not already in list
-        saved = (existing.get(step) or {}).get('text', '')
-        if saved and saved not in opts:
-            opts = [saved] + opts
+    def _populate_column(self, step_idx: int, pairs):
+        """Fill column step_idx with (key, text) pairs; clears selection."""
+        col = self._cols[step_idx]
+        lst = col['list']
+        tag = col['ref_edit'].text().strip()
+        lst.clear()
+        keys, texts = [], []
+        for k, t in pairs:
+            keys.append(k)
+            texts.append(t)
+            lst.addItem(QListWidgetItem(
+                f"{len(texts)}. {self._resolve(t, tag)}"))
+        self._options[step_idx]  = texts
+        self._opt_keys[step_idx] = keys
+        col['sel'] = -1
+        lst.setCurrentRow(-1)
 
-        return opts
+    def _selected_key(self, step_idx: int):
+        """Node key of the column's selection, or None (free text / none)."""
+        col = self._cols[step_idx]
+        if col['ft_edit'].text().strip():
+            return None
+        sel = col['list'].currentRow()
+        keys = self._opt_keys[step_idx]
+        if 0 <= sel < len(keys):
+            return keys[sel]
+        return None
+
+    def _cascade_from(self, step_idx: int):
+        """Repopulate column step_idx+1 based on this column's state; clear rest."""
+        if step_idx + 1 >= _N_STEPS:
+            return
+        col  = self._cols[step_idx]
+        ft   = col['ft_edit'].text().strip()
+        key  = self._selected_key(step_idx)
+        has_sel = (col['list'].currentRow() >= 0) or bool(ft)
+        if key:
+            pairs = self._successor_pairs(key)
+        elif has_sel:
+            pairs = self._generic_pairs()   # free text / unknown node
+        else:
+            pairs = []                       # nothing chosen → chain ends here
+        self._populate_column(step_idx + 1, pairs)
+        self._cascade_from(step_idx + 1)     # downstream columns reset too
+
+    def _init_columns(self, existing: dict):
+        """Initial fill: entry nodes in Del1, then walk saved chain if any."""
+        self._populate_column(0, self._entry_pairs())
+        for i in range(_N_STEPS):
+            step  = i + 1
+            saved = existing.get(step) if existing else None
+            if not saved or not (saved.get('text') or '').strip():
+                break
+            s_text = saved['text']
+            s_key  = (saved.get('node_key') or '').strip() or None
+            s_tag  = (saved.get('ref_tag') or '').strip()
+            keys   = self._opt_keys[i]
+            texts  = self._options[i]
+            sel = -1
+            if s_key and s_key in keys:
+                sel = keys.index(s_key)
+            else:
+                for j, t in enumerate(texts):
+                    if self._resolve(t, s_tag) == s_text or t == s_text:
+                        sel = j
+                        break
+            if sel < 0:
+                # Saved text not among graph options — prepend it
+                pairs = [(s_key, s_text)] + list(zip(keys, texts))
+                self._populate_column(i, pairs)
+                # Restore ref-tag wiped by repopulation label resolve
+                sel = 0
+            self._cols[i]['sel'] = sel
+            self._cols[i]['list'].setCurrentRow(sel)
+            if i + 1 < _N_STEPS:
+                nxt_key = self._opt_keys[i][sel] if sel < len(self._opt_keys[i]) else None
+                pairs = self._successor_pairs(nxt_key) if nxt_key else self._generic_pairs()
+                self._populate_column(i + 1, pairs)
 
     # ── Selection logic ───────────────────────────────────────────────────────
     def _list_clicked(self, step_idx: int, listwidget):
@@ -7192,6 +7327,8 @@ class ConsequenceStepPickerDialog(QDialog):
             self._cols[step_idx]['sel'] = -1
         else:
             self._cols[step_idx]['sel'] = row
+        # Dependent columns: repopulate Del(n+1) from the new selection
+        self._cascade_from(step_idx)
         self._update_preview()
 
     def _set_selection(self, step_idx: int, btn_idx: int, silent: bool = False):
@@ -7202,6 +7339,7 @@ class ConsequenceStepPickerDialog(QDialog):
             lst.clearSelection()
             lst.setCurrentRow(-1)
         self._cols[step_idx]['sel'] = btn_idx
+        self._cascade_from(step_idx)
         if not silent:
             self._update_preview()
 
@@ -7242,13 +7380,15 @@ class ConsequenceStepPickerDialog(QDialog):
     # ── [objekt] substitution ─────────────────────────────────────────────────
     @staticmethod
     def _resolve(text: str, tag: str) -> str:
-        """Replace [objekt] with tag if tag is non-empty, else strip the placeholder."""
+        """Replace [objekt] with the ref-tag, or 'objektet' when no tag is set
+        (keeps prepositions readable: 'Låg nivå i objektet')."""
         if not text:
             return text
-        if tag:
-            return text.replace('[objekt]', tag)
-        # No tag yet — remove the placeholder token cleanly
-        return text.replace(' [objekt]', '').replace('[objekt] ', '').replace('[objekt]', '')
+        out = text.replace('[objekt]', tag if tag else 'objektet')
+        # Capitalize if the placeholder sat at the start of the sentence
+        if out and out[0].islower():
+            out = out[0].upper() + out[1:]
+        return out
 
     def _refresh_list_labels(self, step_idx: int, tag: str):
         """Update list item display text when ref-tag changes for this column."""
@@ -7288,15 +7428,6 @@ class ConsequenceStepPickerDialog(QDialog):
         return super().eventFilter(obj, event)
 
     # ── Save helpers ──────────────────────────────────────────────────────────
-    def _collect_steps(self):
-        steps = []
-        for i in range(_N_STEPS):
-            text = self._selected_text(i)
-            ref  = self._cols[i]['ref_edit'].text().strip()
-            if text or ref:
-                steps.append({'step': i + 1, 'text': text, 'ref_tag': ref})
-        return steps
-
     def _save_and_add_more(self):
         self.add_more_requested = True
         self._do_save()
@@ -7314,7 +7445,8 @@ class ConsequenceStepPickerDialog(QDialog):
             text = self._selected_text(i)
             ref  = self._cols[i]['ref_edit'].text().strip()
             if text or ref:
-                steps.append({'step': i + 1, 'text': text, 'ref_tag': ref})
+                steps.append({'step': i + 1, 'text': text, 'ref_tag': ref,
+                              'node_key': self._selected_key(i) or ''})
         self.db.set_consequence_steps(self.cons_id, steps)
 
         parts = [s['text'] for s in steps if s['text']]
