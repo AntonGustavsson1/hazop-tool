@@ -1313,6 +1313,96 @@ def _seed_component_causes(conn):
                     sort_i += 1
 
 
+# ── Standard objects (from orsaker.txt) ───────────────────────────────────────
+_STD_OBJECTS = [
+    "Manuell ventil",
+    "On-off ventil",
+    "Reglerventil",
+    "Backventil",
+    "Säkerhetsventil / sprängbleck",
+    "Pump",
+    "Kompressor / fläkt",
+    "Filter / sil",
+    "Värmeväxlare / kylare / värmare",
+    "Tank / kärl / kolonn",
+    "Rörledning / slang",
+    "Fläns / koppling / packning",
+    "Instrument",
+    "Styrsystem / PLC / DCS",
+    "Elförsörjning",
+    "Tryckluft / instrumentluft",
+    "Kylsystem / värmesystem",
+    "Blandare / omrörare",
+    "Operatör / procedur / underhåll",
+    "Övrigt",
+]
+
+
+def _seed_standard_objects(conn):
+    for i, name in enumerate(_STD_OBJECTS):
+        conn.execute(
+            "INSERT OR IGNORE INTO standard_objects (name, sort_order) VALUES (?,?)",
+            (name, i))
+    conn.commit()
+
+
+# ── Default cause descriptions per component-type cause ───────────────────────
+# Keyed by normalized cause text prefix; each value is a list of short phrases
+# that describe *how* this cause manifests. These are the third hierarchy level
+# shown in the TemplateCausePickerDialog.
+_CAUSE_DESCRIPTIONS: dict = {
+    # Ventiler
+    "Manuell ventil":          ["Felaktigt stängd", "Felaktigt öppnad", "Kvarglömd i fel läge efter underhåll", "Inte märkt / fel märkning"],
+    "On-off ventil":           ["Felar stängd (fail-close)", "Felar öppen (fail-open)", "Fastnar i mellanlage", "Aktuatorsignal förlorad"],
+    "Reglerventil":            ["Felar stängd (fail-close)", "Felar öppen (fail-open)", "Stiction — fastnar i fel läge", "Positioneringsfel (signal/kalibrering)"],
+    "Backventil":              ["Defekt sätestätning — ej tätt", "Fastnar öppen", "Fastnar stängd", "Monterad baklänges"],
+    "Säkerhetsventil / sprängbleck": ["Öppnar vid för lågt tryck (felkalibrerad)", "Öppnar inte (igensatt / rostfri)", "Avspärrad under underhåll", "Sprängbleck har brustit"],
+    # Roterande utrustning
+    "Pump":                    ["Pump stopp (elfel / motorskydd)", "Kavitation (lågt NPSH)", "Tätningsläckage", "Lagerhaveri", "Deadhead (stängt utlopp)", "Felkopplad motor — roterar baklänges"],
+    "Kompressor / fläkt":      ["Kompressorstopp", "Surge (instabilt flöde)", "Tätningsläckage", "Igensatt inloppsfilter", "Deadhead (stängt utlopp)"],
+    "Blandare / omrörare":     ["Motor stopp", "Rörverksbrott", "Lagerhaveri", "Tätningsläckage"],
+    # Statisk utrustning
+    "Filter / sil":            ["Igensatt (högt DP)", "Felaktig installation", "Bristande underhåll"],
+    "Värmeväxlare / kylare / värmare": ["Igensatta rör (fouling)", "Intern läcka (rörbrott)", "Kylvattenflöde avbryts", "Värmekällan faller bort", "Differenstrycksskydd stänger"],
+    "Tank / kärl / kolonn":    ["Yttre läcka (korrosion / spricka)", "Överfyllnad", "Undertryck (vakuumkollaps)", "Exoterm reaktion / polymerisation", "Nivåmätning felaktig"],
+    # Rör och kopplingar
+    "Rörledning / slang":      ["Korrosionsgenomslag", "Mekanisk skada", "Isblockering / hydratblockering", "Felaktig rörkoppling (monteringsfel)", "Slangbrott"],
+    "Fläns / koppling / packning": ["Packningsläckage", "Felåtdragen fläns", "Fel packningsmaterial", "Korroderad flänsbult"],
+    # Instrument och styrning
+    "Instrument":              ["Signalfel högt", "Signalfel lågt", "Igensatt mätintag", "Felkalibrerad", "Mätledning bruten / läckande"],
+    "Styrsystem / PLC / DCS":  ["Styrsignalfel (hög signal)", "Styrsignalfel (låg signal)", "Kommunikationsavbrott", "Felaktig styrlogik", "Operatörsinmatning felaktig"],
+    # Hjälpsystem
+    "Elförsörjning":           ["Strömavbrott (nätfel)", "Säkring / jordfelsbrytare löser ut", "UPS-batteri tömt", "Generator startar ej"],
+    "Tryckluft / instrumentluft": ["Lufttryck faller (kompressorstopp)", "Läckage i luftledning", "Fukt / föroreningar i luft", "Instrument-air-torkare havererar"],
+    "Kylsystem / värmesystem": ["Kylvattenpump stopp", "Kylmedelsläckage", "Blockeringsventil stängd", "Värmekällan faller bort"],
+    # Övrigt
+    "Operatör / procedur / underhåll": ["Felaktig manöver", "Procedurfel / steg utelämnat", "Fel enhet manövrerad", "Kommunikationsfel vid skiftbyte", "Otillräcklig utbildning"],
+    "Övrigt":                  ["Se kommentar", "Utredning pågår"],
+}
+
+
+def _seed_cause_descriptions(conn):
+    """Add default cause descriptions under matching standard_causes (idempotent)."""
+    for i, cause_row in enumerate(
+            conn.execute("SELECT id, description, comp_type FROM standard_causes").fetchall()):
+        cid   = cause_row[0]
+        cdesc = cause_row[1] or ''
+        comp  = cause_row[2] or ''
+        # Match by comp_type first, then by description prefix
+        descs = _CAUSE_DESCRIPTIONS.get(comp) or _CAUSE_DESCRIPTIONS.get(cdesc.split()[0] if cdesc else '')
+        if not descs:
+            continue
+        # Only insert if none exist yet
+        if conn.execute("SELECT COUNT(*) FROM cause_descriptions WHERE cause_id=?",
+                        (cid,)).fetchone()[0]:
+            continue
+        for j, d in enumerate(descs):
+            conn.execute(
+                "INSERT INTO cause_descriptions (cause_id, description, sort_order) VALUES (?,?,?)",
+                (cid, d, j))
+    conn.commit()
+
+
 class Database:
     def __init__(self, path=DB_PATH):
         self.path = Path(path)
@@ -1485,6 +1575,17 @@ class Database:
                 deviation_id INTEGER NOT NULL REFERENCES standard_deviations(id) ON DELETE CASCADE,
                 description  TEXT NOT NULL,
                 sort_order   INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS standard_objects (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT NOT NULL UNIQUE,
+                sort_order INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS cause_descriptions (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                cause_id        INTEGER NOT NULL REFERENCES standard_causes(id) ON DELETE CASCADE,
+                description     TEXT NOT NULL,
+                sort_order      INTEGER DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS consequence_steps (
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1693,6 +1794,20 @@ class Database:
             _fix_instrument_causes_v3(self.conn)
             self.conn.execute(
                 "INSERT OR REPLACE INTO app_config (key,value) VALUES ('comp_causes_seeded_v3','1')")
+
+        # Seed standard objects from orsaker.txt list (idempotent)
+        if not self.conn.execute(
+                "SELECT value FROM app_config WHERE key='std_objects_seeded_v1'").fetchone():
+            _seed_standard_objects(self.conn)
+            self.conn.execute(
+                "INSERT OR REPLACE INTO app_config (key,value) VALUES ('std_objects_seeded_v1','1')")
+
+        # Seed default cause descriptions per standard cause (idempotent)
+        if not self.conn.execute(
+                "SELECT value FROM app_config WHERE key='cause_descs_seeded_v1'").fetchone():
+            _seed_cause_descriptions(self.conn)
+            self.conn.execute(
+                "INSERT OR REPLACE INTO app_config (key,value) VALUES ('cause_descs_seeded_v1','1')")
 
         # Ensure every node has all standard deviations from template library
         std_devs = [r[0] for r in self.conn.execute(
@@ -2614,6 +2729,62 @@ class Database:
             " VALUES (?,?,?,?)", (deviation_id, description, max_ord + 1, comp_type))
         self.conn.commit()
         return cur.lastrowid
+
+    # ── Standard objects ──────────────────────────────────────────────────────
+    def standard_objects(self):
+        return [dict(r) for r in self.conn.execute(
+            "SELECT id, name, sort_order FROM standard_objects ORDER BY sort_order, id")]
+
+    def add_standard_object(self, name):
+        max_ord = (self.conn.execute(
+            "SELECT COALESCE(MAX(sort_order),0) FROM standard_objects").fetchone()[0] or 0)
+        cur = self.conn.execute(
+            "INSERT INTO standard_objects (name, sort_order) VALUES (?,?)", (name, max_ord + 1))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def update_standard_object(self, id_, name):
+        self.conn.execute("UPDATE standard_objects SET name=? WHERE id=?", (name, id_))
+        self.conn.commit()
+
+    def delete_standard_object(self, id_):
+        self.conn.execute("DELETE FROM standard_objects WHERE id=?", (id_,))
+        self.conn.commit()
+
+    def reorder_standard_objects(self, ordered_ids):
+        for i, id_ in enumerate(ordered_ids):
+            self.conn.execute("UPDATE standard_objects SET sort_order=? WHERE id=?", (i, id_))
+        self.conn.commit()
+
+    # ── Cause descriptions ────────────────────────────────────────────────────
+    def cause_descriptions(self, cause_id):
+        return [dict(r) for r in self.conn.execute(
+            "SELECT id, description, sort_order FROM cause_descriptions "
+            "WHERE cause_id=? ORDER BY sort_order, id", (cause_id,))]
+
+    def add_cause_description(self, cause_id, description):
+        max_ord = (self.conn.execute(
+            "SELECT COALESCE(MAX(sort_order),0) FROM cause_descriptions WHERE cause_id=?",
+            (cause_id,)).fetchone()[0] or 0)
+        cur = self.conn.execute(
+            "INSERT INTO cause_descriptions (cause_id, description, sort_order) VALUES (?,?,?)",
+            (cause_id, description, max_ord + 1))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def update_cause_description(self, id_, description):
+        self.conn.execute("UPDATE cause_descriptions SET description=? WHERE id=?",
+                          (description, id_))
+        self.conn.commit()
+
+    def delete_cause_description(self, id_):
+        self.conn.execute("DELETE FROM cause_descriptions WHERE id=?", (id_,))
+        self.conn.commit()
+
+    def reorder_cause_descriptions(self, ordered_ids):
+        for i, id_ in enumerate(ordered_ids):
+            self.conn.execute("UPDATE cause_descriptions SET sort_order=? WHERE id=?", (i, id_))
+        self.conn.commit()
 
     def add_cause(self, deviation_id):
         dev = self.get_deviation(deviation_id)
@@ -10662,6 +10833,8 @@ class StandardCausesSettingsPanel(QWidget):
         self._cause_table.setSelectionBehavior(
             QTableWidget.SelectionBehavior.SelectRows)
         self._cause_table.itemChanged.connect(self._on_cause_cell_changed)
+        self._cause_table.currentCellChanged.connect(
+            lambda row, *_: self._load_descriptions(self._cause_id_at(row)))
         right.addWidget(self._cause_table)
 
         cause_btns = QHBoxLayout()
@@ -10691,8 +10864,35 @@ class StandardCausesSettingsPanel(QWidget):
         btn_sync.clicked.connect(self._sync_freqs)
         right.addWidget(btn_sync)
 
+        # ── Far right: cause descriptions for selected cause ──────────────────
+        far = QVBoxLayout()
+        self._desc_label = QLabel("<b>Orsaksbeskrivningar</b>")
+        far.addWidget(self._desc_label)
+        self._desc_list = QListWidget()
+        self._desc_list.setAlternatingRowColors(True)
+        far.addWidget(self._desc_list)
+
+        desc_btns = QHBoxLayout()
+        btn_add_d = QPushButton("+")
+        btn_add_d.setFixedWidth(28)
+        btn_add_d.clicked.connect(self._add_desc)
+        btn_del_d = QPushButton("−")
+        btn_del_d.setFixedWidth(28)
+        btn_del_d.clicked.connect(self._del_desc)
+        btn_up_d  = QPushButton("↑")
+        btn_up_d.setFixedWidth(28)
+        btn_up_d.clicked.connect(lambda: self._move_desc(-1))
+        btn_dn_d  = QPushButton("↓")
+        btn_dn_d.setFixedWidth(28)
+        btn_dn_d.clicked.connect(lambda: self._move_desc(1))
+        for b in (btn_add_d, btn_del_d, btn_up_d, btn_dn_d):
+            desc_btns.addWidget(b)
+        desc_btns.addStretch()
+        far.addLayout(desc_btns)
+
         layout.addLayout(left, 1)
         layout.addLayout(right, 2)
+        layout.addLayout(far, 1)
 
         self._loading = False
         self._load_deviations()
@@ -10901,6 +11101,160 @@ class StandardCausesSettingsPanel(QWidget):
         if ret == QMessageBox.StandardButton.Yes:
             n = self.db.update_cause_freqs_from_standard()
             QMessageBox.information(self, "Klart", f"{n} orsak(er) uppdaterades.")
+
+    # ── Cause-description column helpers ─────────────────────────────────────
+    def _cause_id_at(self, row):
+        item = self._cause_table.item(row, 0)
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def _load_descriptions(self, cause_id):
+        self._desc_list.clear()
+        if cause_id is None:
+            return
+        self._desc_label.setText(
+            f"<b>Orsaksbeskrivningar</b> — {self._cause_table.item(self._cause_table.currentRow(), 0).text() if self._cause_table.currentRow() >= 0 else ''}")
+        for d in self.db.cause_descriptions(cause_id):
+            item = QListWidgetItem(d['description'])
+            item.setData(Qt.ItemDataRole.UserRole, d['id'])
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+            self._desc_list.addItem(item)
+        self._desc_list.itemChanged.connect(self._on_desc_changed)
+
+    def _on_desc_changed(self, item):
+        id_ = item.data(Qt.ItemDataRole.UserRole)
+        if id_ is not None:
+            self.db.update_cause_description(id_, item.text().strip())
+
+    def _add_desc(self):
+        cid = self._cause_id_at(self._cause_table.currentRow())
+        if cid is None:
+            return
+        new_id = self.db.add_cause_description(cid, 'Ny beskrivning')
+        item = QListWidgetItem('Ny beskrivning')
+        item.setData(Qt.ItemDataRole.UserRole, new_id)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+        self._desc_list.addItem(item)
+        self._desc_list.editItem(item)
+
+    def _del_desc(self):
+        item = self._desc_list.currentItem()
+        if not item:
+            return
+        id_ = item.data(Qt.ItemDataRole.UserRole)
+        if id_ is not None:
+            self.db.delete_cause_description(id_)
+        self._desc_list.takeItem(self._desc_list.row(item))
+
+    def _move_desc(self, direction):
+        row   = self._desc_list.currentRow()
+        count = self._desc_list.count()
+        new_row = row + direction
+        if not (0 <= new_row < count):
+            return
+        a = self._desc_list.takeItem(row)
+        self._desc_list.insertItem(new_row, a)
+        self._desc_list.setCurrentRow(new_row)
+        ids = [self._desc_list.item(i).data(Qt.ItemDataRole.UserRole)
+               for i in range(count)]
+        self.db.reorder_cause_descriptions(ids)
+
+
+# ── Standard-objects settings panel ───────────────────────────────────────────
+class StandardObjectsSettingsPanel(QWidget):
+    """Editable list of standard object types (from orsaker.txt)."""
+
+    def __init__(self, db, parent=None):
+        super().__init__(parent)
+        self.db = db
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(
+            "<b>Standardobjekt</b> — dessa objekttyper är tillgängliga i orsaksformulären "
+            "och kan kopplas till orsaksbeskrivningar."))
+
+        self._list = QListWidget()
+        self._list.setAlternatingRowColors(True)
+        layout.addWidget(self._list)
+
+        btns = QHBoxLayout()
+        btn_add = QPushButton("+ Lägg till")
+        btn_add.clicked.connect(self._add)
+        btn_del = QPushButton("− Ta bort")
+        btn_del.clicked.connect(self._delete)
+        btn_up  = QPushButton("↑")
+        btn_up.setFixedWidth(28)
+        btn_up.clicked.connect(lambda: self._move(-1))
+        btn_dn  = QPushButton("↓")
+        btn_dn.setFixedWidth(28)
+        btn_dn.clicked.connect(lambda: self._move(1))
+        btn_reset = QPushButton("Återställ standard")
+        btn_reset.setToolTip("Lägger tillbaka alla standardobjekt från ursprungslistan (lägger inte till dubbletter)")
+        btn_reset.clicked.connect(self._reset)
+        for b in (btn_add, btn_del, btn_up, btn_dn, btn_reset):
+            btns.addWidget(b)
+        btns.addStretch()
+        layout.addLayout(btns)
+
+        self._loading = False
+        self._load()
+
+    def _load(self):
+        self._loading = True
+        cur = self._list.currentRow()
+        self._list.clear()
+        for obj in self.db.standard_objects():
+            item = QListWidgetItem(obj['name'])
+            item.setData(Qt.ItemDataRole.UserRole, obj['id'])
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+            self._list.addItem(item)
+        self._list.itemChanged.connect(self._on_changed)
+        self._loading = False
+        if cur >= 0:
+            self._list.setCurrentRow(min(cur, self._list.count() - 1))
+
+    def _on_changed(self, item):
+        if self._loading:
+            return
+        id_ = item.data(Qt.ItemDataRole.UserRole)
+        if id_ is not None:
+            self.db.update_standard_object(id_, item.text().strip())
+
+    def _add(self):
+        new_id = self.db.add_standard_object('Nytt objekt')
+        item = QListWidgetItem('Nytt objekt')
+        item.setData(Qt.ItemDataRole.UserRole, new_id)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+        self._list.addItem(item)
+        self._list.editItem(item)
+
+    def _delete(self):
+        item = self._list.currentItem()
+        if not item:
+            return
+        id_ = item.data(Qt.ItemDataRole.UserRole)
+        if id_ is not None:
+            self.db.delete_standard_object(id_)
+        self._list.takeItem(self._list.row(item))
+
+    def _move(self, direction):
+        row = self._list.currentRow()
+        new_row = row + direction
+        if not (0 <= new_row < self._list.count()):
+            return
+        a = self._list.takeItem(row)
+        self._list.insertItem(new_row, a)
+        self._list.setCurrentRow(new_row)
+        ids = [self._list.item(i).data(Qt.ItemDataRole.UserRole)
+               for i in range(self._list.count())]
+        self.db.reorder_standard_objects(ids)
+
+    def _reset(self):
+        for name in _STD_OBJECTS:
+            exists = self.db.conn.execute(
+                "SELECT id FROM standard_objects WHERE name=?", (name,)).fetchone()
+            if not exists:
+                self.db.add_standard_object(name)
+        self._load()
 
 
 class SeverityDefinitionsPanel(QWidget):
@@ -11217,6 +11571,10 @@ class SettingsPanel(QWidget):
         # ── Tab: Standardavvikelser & Orsaker ─────────────────────────────────
         self._std_causes_panel = StandardCausesSettingsPanel(self.db)
         tabs.addTab(self._std_causes_panel, "Standardorsaker")
+
+        # ── Tab: Standardobjekt ───────────────────────────────────────────────
+        self._std_objects_panel = StandardObjectsSettingsPanel(self.db)
+        tabs.addTab(self._std_objects_panel, "Standardobjekt")
 
         self._load_all()
 
