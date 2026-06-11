@@ -3526,6 +3526,7 @@ class PIDGraphicsView(QGraphicsView):
         self.draw_brush         = QBrush(QColor(255, 140, 0, 60))
         self.temp_items         = []
         self.rubber_line        = None
+        self._rect_label        = None   # QGraphicsTextItem — live tag inside rubber band
 
         # Right-drag rubber-band (NAV mode)
         self._rband_start_scene  = None
@@ -5723,11 +5724,15 @@ class PIDGraphicsView(QGraphicsView):
             end_sp = self.mapToScene(event.position().toPoint())
             rect   = QRectF(self._rect_start, end_sp).normalized()
 
-            # Remove rubber-band rect
+            # Remove rubber-band rect + label
             if self._rect_item is not None:
                 try: self._scene.removeItem(self._rect_item)
                 except Exception: pass
                 self._rect_item = None
+            if self._rect_label is not None:
+                try: self._scene.removeItem(self._rect_label)
+                except Exception: pass
+                self._rect_label = None
             self._rect_start = None
 
             # Convert to PDF coordinates
@@ -5872,12 +5877,34 @@ class PIDGraphicsView(QGraphicsView):
             if self._rect_item is not None:
                 try: self._scene.removeItem(self._rect_item)
                 except Exception: pass
+            if self._rect_label is not None:
+                try: self._scene.removeItem(self._rect_label)
+                except Exception: pass
+                self._rect_label = None
             pen = QPen(QColor(0, 100, 220), 1.5)
             pen.setStyle(Qt.PenStyle.DashLine)
             pen.setCosmetic(True)
             self._rect_item = self._scene.addRect(
                 rect, pen, QBrush(QColor(0, 100, 220, 30)))
             self._rect_item.setZValue(Z_TEMP)
+            # Live tag label inside the rubber band
+            if rect.width() > 20 and rect.height() > 10 and self.pdf_doc is not None:
+                rs = self.render_scale
+                ox, oy = self._page_offsets.get(self.current_page, (0.0, 0.0))
+                pdf_r = QRectF((rect.x()-ox)/rs, (rect.y()-oy)/rs,
+                               rect.width()/rs, rect.height()/rs)
+                tag = self._extract_tag_from_rect(pdf_r)
+                if tag:
+                    from PyQt6.QtWidgets import QGraphicsTextItem
+                    lbl = self._scene.addText(tag)
+                    lbl.setDefaultTextColor(QColor(0, 60, 180))
+                    f = lbl.font(); f.setBold(True); f.setPointSizeF(max(7.0, 11.0 / self.transform().m11())); lbl.setFont(f)
+                    # Centre the label inside the rect
+                    br = lbl.boundingRect()
+                    lbl.setPos(rect.center().x() - br.width()/2,
+                               rect.center().y() - br.height()/2)
+                    lbl.setZValue(Z_TEMP + 1)
+                    self._rect_label = lbl
             event.accept(); return
         super().mouseMoveEvent(event)
 

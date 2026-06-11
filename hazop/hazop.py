@@ -32,7 +32,7 @@ from PyQt6.QtWidgets import (
     QButtonGroup, QRadioButton,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF, QRect, QTimer, QMimeData, QEvent
-from PyQt6.QtGui import QFont, QColor, QAction, QBrush, QPen, QPainter, QDrag, QPainterPath, QPixmap, QIcon, QPolygonF, QShortcut, QKeySequence, QCursor
+from PyQt6.QtGui import QFont, QFontMetrics, QColor, QAction, QBrush, QPen, QPainter, QDrag, QPainterPath, QPixmap, QIcon, QPolygonF, QShortcut, QKeySequence, QCursor
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DATABASE
@@ -7543,6 +7543,27 @@ class _ScenarioDelegate(QStyledItemDelegate):
 _PID_ICON_W  = 22          # pixels reserved on the left for the pin icon
 _KON_CAT_W   = 26          # pixels for the category badge zone in KON cells
 _KON_CHAIN_W = 24          # pixels for the ⛓ chain-link zone on the right of KON cells
+
+# Matches equipment tags embedded in consequence text, e.g. T-101, P-201, 323-HV-101
+_CONS_TAG_RE = re.compile(
+    r'(?<![A-Za-z0-9])([A-Z]{1,6}[-./]?\d{2,5}[A-Z]?[0-9]?)(?![A-Za-z0-9])')
+
+def _bold_segments(text: str):
+    """Split *text* into [(fragment, is_tag), ...] for custom bold rendering.
+
+    Tags matching equipment-tag pattern are flagged is_tag=True so the
+    painter can draw them bold; surrounding text is is_tag=False.
+    """
+    parts = []
+    last = 0
+    for m in _CONS_TAG_RE.finditer(text):
+        if m.start() > last:
+            parts.append((text[last:m.start()], False))
+        parts.append((m.group(1), True))
+        last = m.end()
+    if last < len(text):
+        parts.append((text[last:], False))
+    return parts if parts else [(text, False)]
 _ORS_FREQ_W  = 50          # pixels for the frequency badge zone after obj zone in ORS cells
 _RRF_W       = 54          # pixel width of the RRF badge column on the right of safeguard cells
 
@@ -7869,17 +7890,34 @@ class _PidDelegate(_ScenarioDelegate):
                 painter.setPen(QPen(QColor('#ddd'), 1))
                 painter.drawLine(cat_rect.right(), r.top(), cat_rect.right(), r.bottom())
 
-                # Description text — always show the actual consequence description
+                # Description text — render tags in bold, rest in normal weight
                 display = index.data(Qt.ItemDataRole.DisplayRole) or ''
                 tc = (option.palette.highlightedText().color() if sel
                       else option.palette.text().color())
-                painter.setFont(option.font)
                 painter.setPen(tc)
-                fm = painter.fontMetrics()
-                painter.drawText(txt_rect.adjusted(2, 0, -2, 0),
-                                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                                 fm.elidedText(display, Qt.TextElideMode.ElideRight,
-                                               txt_rect.width() - 4))
+                segs = _bold_segments(display)
+                # Two fonts: normal and bold
+                fn  = QFont(option.font)
+                fb  = QFont(option.font); fb.setBold(True)
+                fmn = QFontMetrics(fn); fmb = QFontMetrics(fb)
+                avail_w = txt_rect.width() - 4
+                # Measure total width; elide from the end if too wide
+                total_w = sum((fmb if tag else fmn).horizontalAdvance(t) for t, tag in segs)
+                if total_w > avail_w:
+                    # Fall back to single-pass elided plain draw
+                    painter.setFont(fn)
+                    painter.drawText(txt_rect.adjusted(2, 0, -2, 0),
+                                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                                     fmn.elidedText(display, Qt.TextElideMode.ElideRight, avail_w))
+                else:
+                    x = txt_rect.left() + 2
+                    y = txt_rect.top() + (txt_rect.height() + fmn.ascent() - fmn.descent()) // 2
+                    for t, is_tag in segs:
+                        f = fb if is_tag else fn
+                        fm_ = fmb if is_tag else fmn
+                        painter.setFont(f)
+                        painter.drawText(x, y, t)
+                        x += fm_.horizontalAdvance(t)
 
                 # ⛓ chain-link zone on the right
                 has_linked = bool(index.data(Qt.ItemDataRole.UserRole + 6))
