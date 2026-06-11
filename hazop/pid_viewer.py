@@ -5244,17 +5244,115 @@ class PIDGraphicsView(QGraphicsView):
         line = self._scene.addLine(start.x(), start.y(), end.x(), end.y(), pen)
         line.setZValue(Z_CONNECT)
 
+    def _conn_obstacles(self, src_page, dst_page):
+        """Inflated scene rects of every page except the connection's own two."""
+        rs = self.render_scale
+        rects = []
+        for pn, (ox, oy) in self._page_offsets.items():
+            if pn == src_page or pn == dst_page:
+                continue
+            w = self._page_widths_pdf.get(pn, 0.0) * rs
+            h = self._page_heights_pdf.get(pn, 0.0) * rs
+            rects.append(QRectF(ox - 60, oy - 60, w + 120, h + 120))
+        return rects
+
+    @staticmethod
+    def _seg_rect_entry(p0, p1, r):
+        """Liang-Barsky: param t where segment p0→p1 first enters rect, else None."""
+        dx = p1.x() - p0.x()
+        dy = p1.y() - p0.y()
+        t0, t1 = 0.0, 1.0
+        for p, q in ((-dx, p0.x() - r.left()), (dx, r.right() - p0.x()),
+                     (-dy, p0.y() - r.top()),  (dy, r.bottom() - p0.y())):
+            if abs(p) < 1e-9:
+                if q < 0:
+                    return None
+            else:
+                t = q / p
+                if p < 0:
+                    if t > t1:
+                        return None
+                    if t > t0:
+                        t0 = t
+                else:
+                    if t < t0:
+                        return None
+                    if t < t1:
+                        t1 = t
+        return t0 if t0 < t1 else None
+
+    def _route_around_pages(self, p0, p1, obstacles, depth=0, wiggle=0.0):
+        """Waypoint list p0→p1 detouring around page rects (greedy, recursive).
+
+        Each blocking page is passed on its nearest free side; the two detour
+        corners are then routed recursively. Depth-capped — when the board
+        truly forces a crossing the direct segment is kept.
+        """
+        if depth >= 8:
+            return [p0, p1]
+        best_t, best_r = None, None
+        for r in obstacles:
+            if r.contains(p0) and r.contains(p1):
+                continue
+            t = self._seg_rect_entry(p0, p1, r)
+            if t is not None and 0.0 < t < 1.0 and (best_t is None or t < best_t):
+                best_t, best_r = t, r
+        if best_r is None:
+            return [p0, p1]
+        r = best_r
+        M = 28.0 + abs(wiggle) * 0.5   # clearance beyond the inflated rect
+        horiz = abs(p1.x() - p0.x()) >= abs(p1.y() - p0.y())
+        if horiz:
+            y = (r.top() - M if (p0.y() + p1.y()) / 2 <= r.center().y()
+                 else r.bottom() + M) + wiggle
+            x_in, x_out = ((r.left() - M, r.right() + M)
+                           if p0.x() <= p1.x() else
+                           (r.right() + M, r.left() - M))
+            w1, w2 = QPointF(x_in, y), QPointF(x_out, y)
+        else:
+            x = (r.left() - M if (p0.x() + p1.x()) / 2 <= r.center().x()
+                 else r.right() + M) + wiggle
+            y_in, y_out = ((r.top() - M, r.bottom() + M)
+                           if p0.y() <= p1.y() else
+                           (r.bottom() + M, r.top() - M))
+            w1, w2 = QPointF(x, y_in), QPointF(x, y_out)
+        a = self._route_around_pages(p0, w1, obstacles, depth + 1, wiggle)
+        b = self._route_around_pages(w2, p1, obstacles, depth + 1, wiggle)
+        return a + b
+
+    @staticmethod
+    def _rounded_path(pts, radius=130.0):
+        """QPainterPath through waypoints with rounded (quad-bezier) corners."""
+        import math
+        path = QPainterPath()
+        path.moveTo(pts[0])
+        for i in range(1, len(pts) - 1):
+            prev, p, nxt = pts[i - 1], pts[i], pts[i + 1]
+            v1x, v1y = p.x() - prev.x(), p.y() - prev.y()
+            v2x, v2y = nxt.x() - p.x(), nxt.y() - p.y()
+            l1 = math.hypot(v1x, v1y) or 1.0
+            l2 = math.hypot(v2x, v2y) or 1.0
+            r1 = min(radius, l1 * 0.5)
+            r2 = min(radius, l2 * 0.5)
+            a = QPointF(p.x() - v1x / l1 * r1, p.y() - v1y / l1 * r1)
+            b = QPointF(p.x() + v2x / l2 * r2, p.y() + v2y / l2 * r2)
+            path.lineTo(a)
+            path.quadTo(p, b)
+        path.lineTo(pts[-1])
+        return path
+
     def add_sheet_conn_arc(self, src: QPointF, dst: QPointF,
                            color_hex: str, confidence: float, label: str,
                            bidirectional: bool = False, conn_id: int = -1,
                            src_edge: str = 'right', dst_edge: str = 'left',
                            src_page: int = -1, dst_page: int = -1,
                            arc_index: int = 0, weight: float = 0.5):
-        """Draw a cubic bezier connection over the P&ID pages at 50% opacity.
+        """Draw a routed connection line over the board at 50% opacity.
 
-        Control points extend outward from each page edge so curves leave the
-        page cleanly. Parallel connections are staggered perpendicular to the
-        chord. Pen width scales with weight; drawn above all page pixmaps.
+        Short edge stubs let the line turn steeply toward its target; the
+        middle leg detours around other pages (rounded corners) so lines do
+        not cut straight across P&IDs. Parallel connections are staggered.
+        Pen width scales with weight; drawn above all page pixmaps.
         """
         import math
         color = QColor(color_hex)
@@ -5286,18 +5384,34 @@ class PIDGraphicsView(QGraphicsView):
         src_pt = QPointF(sx + perp_x * slot_off, sy + perp_y * slot_off)
         dst_pt = QPointF(ex + perp_x * slot_off, ey + perp_y * slot_off)
 
-        # Bezier control points: extend outward from each page edge
-        ctrl_dist = max(120.0, chord * 0.38)
+        # Short edge stubs — the line may turn steeply once clear of the page
+        stub = max(70.0, min(260.0, chord * 0.18))
         _edx = {'right': 1, 'left': -1, 'top': 0, 'bottom': 0}
         _edy = {'right': 0, 'left':  0, 'top': -1, 'bottom': 1}
-        cp1 = QPointF(src_pt.x() + _edx.get(src_edge, 1)  * ctrl_dist,
-                      src_pt.y() + _edy.get(src_edge, 0)  * ctrl_dist)
-        cp2 = QPointF(dst_pt.x() + _edx.get(dst_edge, -1) * ctrl_dist,
-                      dst_pt.y() + _edy.get(dst_edge,  0) * ctrl_dist)
+        src_stub = QPointF(src_pt.x() + _edx.get(src_edge, 1)  * stub,
+                           src_pt.y() + _edy.get(src_edge, 0)  * stub)
+        dst_stub = QPointF(dst_pt.x() + _edx.get(dst_edge, -1) * stub,
+                           dst_pt.y() + _edy.get(dst_edge,  0) * stub)
 
-        path = QPainterPath()
-        path.moveTo(src_pt)
-        path.cubicTo(cp1, cp2, dst_pt)
+        # Route the middle leg around other pages for a cleaner board;
+        # fall back to the direct curve when the detour grows absurd.
+        obstacles = self._conn_obstacles(src_page, dst_page)
+        mids = self._route_around_pages(src_stub, dst_stub, obstacles,
+                                        wiggle=float(slot_off))
+        pts = [src_pt] + mids + [dst_pt]
+        clean = [pts[0]]
+        for p in pts[1:]:
+            if abs(p.x() - clean[-1].x()) + abs(p.y() - clean[-1].y()) > 3.0:
+                clean.append(p)
+        if len(clean) < 2:
+            clean = [src_pt, dst_pt]
+        total = sum(math.hypot(clean[i + 1].x() - clean[i].x(),
+                               clean[i + 1].y() - clean[i].y())
+                    for i in range(len(clean) - 1))
+        if total > chord * 3.0 + 1200.0:
+            clean = [src_pt, src_stub, dst_stub, dst_pt]
+
+        path = self._rounded_path(clean)
 
         pi = QGraphicsPathItem(path)
         pi.setPen(pen)
@@ -5306,8 +5420,9 @@ class PIDGraphicsView(QGraphicsView):
         pi.setFlag(pi.GraphicsItemFlag.ItemIsSelectable, False)
         self._scene.addItem(pi)
 
-        # Arrowhead tangent follows the bezier end-slope (dst_pt − cp2)
-        arrow_angle = math.atan2(dst_pt.y() - cp2.y(), dst_pt.x() - cp2.x())
+        # Arrowhead tangent follows the final segment into the dot
+        arrow_angle = math.atan2(clean[-1].y() - clean[-2].y(),
+                                 clean[-1].x() - clean[-2].x())
 
         def _arrowhead(tip_pt, angle, col):
             AL, AH = 16, 7
@@ -5323,7 +5438,8 @@ class PIDGraphicsView(QGraphicsView):
 
         _arrowhead(dst_pt, arrow_angle, color)
         if bidirectional:
-            src_angle = math.atan2(src_pt.y() - cp1.y(), src_pt.x() - cp1.x())
+            src_angle = math.atan2(clean[0].y() - clean[1].y(),
+                                   clean[0].x() - clean[1].x())
             _arrowhead(src_pt, src_angle, color)
 
         # Label at bezier midpoint with white background
