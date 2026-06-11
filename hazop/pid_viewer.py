@@ -3048,11 +3048,14 @@ class ConnectorAnalyzer(QThread):
 def _propose_layout(connections, active_pages, page_widths_pdf, page_heights_pdf, render_scale):
     """Force-directed organic layout.
 
-    Pages repel each other (no overlap) and connected pages attract
-    (cluster by connection weight). Result is organic placement in
-    both X and Y — no column constraints.
+    Three-phase simulation for readable, well-spaced placement:
+      1. Warm phase  (iter  0–99): large steps, quick global organisation
+      2. Cool phase  (iter 100–249): medium steps, fine-tune clusters
+      3. Polish pass (iter 250–299): tiny steps, settle overlaps
 
-    Returns {page_idx: (scene_x, scene_y)} for each page in active_pages.
+    Pages repel with a non-linear force so they spread generously.
+    Connected pages attract only when further than 2×GAP apart, keeping
+    bezier lines short without squishing clusters.
     """
     import math
     from collections import deque
@@ -3060,14 +3063,14 @@ def _propose_layout(connections, active_pages, page_widths_pdf, page_heights_pdf
     if not active_pages:
         return {}
 
-    rs      = render_scale
-    GAP     = 450   # desired minimum gap between page edges (scene px)
+    rs       = render_scale
+    GAP      = 700          # minimum gap between page edges (scene px)
     page_set = set(active_pages)
     ws = {i: page_widths_pdf.get(i,  800) * rs for i in active_pages}
     hs = {i: page_heights_pdf.get(i, 600) * rs for i in active_pages}
 
     # ── Connection weights (undirected) ───────────────────────────────────────
-    conn_w: dict = {}   # (min, max) page pair → weight
+    conn_w: dict = {}
     adj    = {i: set() for i in active_pages}
     for c in connections:
         fp, tp = c.get('from_page'), c.get('to_page')
@@ -3078,7 +3081,7 @@ def _propose_layout(connections, active_pages, page_widths_pdf, page_heights_pdf
         conn_w[k] = max(conn_w.get(k, 0.0), w)
         adj[fp].add(tp); adj[tp].add(fp)
 
-    # ── BFS levels for initial seed positions ─────────────────────────────────
+    # ── BFS levels from most-connected hub ────────────────────────────────────
     level: dict = {}
     for start in sorted(active_pages, key=lambda x: -len(adj[x])):
         if start in level:
@@ -3095,30 +3098,40 @@ def _propose_layout(connections, active_pages, page_widths_pdf, page_heights_pdf
 
     typ_w = sum(ws.values()) / len(ws)
     typ_h = sum(hs.values()) / len(hs)
-    COL_PITCH = typ_w * 1.8 + GAP
-    ROW_PITCH = typ_h * 1.8 + GAP
 
-    # Staggered initial positions: BFS level → X seed, row within level → Y seed.
-    # Deterministic golden-ratio offset per page index breaks column symmetry.
-    level_cnt: dict = {}
+    # ── Initial positions on a wide grid (3× typical size + GAP) ─────────────
+    # Pages are sorted by BFS level so connected ones start near each other,
+    # then the simulation fine-tunes distances.  Large jitter breaks symmetry
+    # so the simulation explores a wider part of solution space.
+    n        = len(active_pages)
+    COLS     = max(2, math.ceil(math.sqrt(n * 1.5)))   # slightly wide grid
+    CPITCH   = typ_w + GAP * 2.5
+    RPITCH   = typ_h + GAP * 2.5
     pos: dict = {}
-    for i in sorted(active_pages, key=lambda x: (level.get(x, 0), x)):
-        lv  = level.get(i, 0)
-        row = level_cnt.get(lv, 0)
-        level_cnt[lv] = row + 1
-        xo = (i * 1618) % (typ_w * 0.5)   # deterministic X jitter
-        yo = (i * 2718) % (typ_h * 0.5)   # deterministic Y jitter
-        pos[i] = [lv * COL_PITCH + xo + GAP,
-                  row * ROW_PITCH + yo + GAP]
+    for idx, i in enumerate(sorted(active_pages, key=lambda x: (level.get(x, 0), x))):
+        col = idx % COLS
+        row = idx // COLS
+        # Deterministic but varied jitter so symmetry breaks differently each run
+        xo = ((i * 2654435761) & 0xFFFFF) / 0xFFFFF * typ_w * 0.6
+        yo = ((i * 2246822519) & 0xFFFFF) / 0xFFFFF * typ_h * 0.6
+        pos[i] = [col * CPITCH + xo + GAP,
+                  row * RPITCH + yo + GAP]
 
-    # ── Spring simulation ──────────────────────────────────────────────────────
+    # ── Three-phase spring simulation ─────────────────────────────────────────
     pages_list = list(active_pages)
-    N_ITER     = 150
+    N_ITER     = 300
 
     for iteration in range(N_ITER):
-        t        = max(0.05, 1.0 - iteration / N_ITER)   # cooling
-        max_step = 700.0 * t
-        forces   = {i: [0.0, 0.0] for i in active_pages}
+        # Temperature schedule: fast → medium → slow
+        if iteration < 100:
+            t = 1.0 - iteration / 100 * 0.5        # 1.0 → 0.5
+        elif iteration < 250:
+            t = 0.5 - (iteration - 100) / 150 * 0.4  # 0.5 → 0.1
+        else:
+            t = 0.1 - (iteration - 250) / 50 * 0.08  # 0.1 → 0.02
+        max_step = 1200.0 * t
+
+        forces = {i: [0.0, 0.0] for i in active_pages}
 
         for ai, a in enumerate(pages_list):
             cxa = pos[a][0] + ws[a] / 2
@@ -3127,42 +3140,39 @@ def _propose_layout(connections, active_pages, page_widths_pdf, page_heights_pdf
             for b in pages_list[ai + 1:]:
                 cxb = pos[b][0] + ws[b] / 2
                 cyb = pos[b][1] + hs[b] / 2
-                dx  = cxb - cxa
-                dy  = cyb - cya
+                dx  = cxb - cxa;  dy  = cyb - cya
                 dist = math.hypot(dx, dy) or 1.0
                 ux, uy = dx / dist, dy / dist
 
-                # Edge gap: center dist minus projected half-extents a→b
                 half_a = ws[a] / 2 * abs(ux) + hs[a] / 2 * abs(uy)
                 half_b = ws[b] / 2 * abs(ux) + hs[b] / 2 * abs(uy)
                 edge_gap = dist - half_a - half_b
 
-                # Repulsion — linear from 0 at (GAP*3.5) to max at edge overlap
-                rep_range = GAP * 3.5
+                # Non-linear repulsion: quadratic blow-up below rep_range
+                rep_range = GAP * 4.5
                 if edge_gap < rep_range:
-                    rep = (rep_range - edge_gap) * 1.8
+                    ratio = max(0.0, (rep_range - edge_gap) / rep_range)
+                    rep   = ratio ** 2 * GAP * 12.0
                     forces[a][0] -= ux * rep;  forces[a][1] -= uy * rep
                     forces[b][0] += ux * rep;  forces[b][1] += uy * rep
 
-                # Attraction — spring toward GAP for connected pairs
+                # Attraction: only for connected pairs beyond 2×GAP
                 k = (min(a, b), max(a, b))
                 w = conn_w.get(k, 0.0)
-                if w > 0 and edge_gap > GAP:
-                    att = w * (edge_gap - GAP) * 0.22
+                if w > 0 and edge_gap > GAP * 2.0:
+                    att = w * (edge_gap - GAP * 2.0) * 0.10
                     forces[a][0] += ux * att;  forces[a][1] += uy * att
                     forces[b][0] -= ux * att;  forces[b][1] -= uy * att
 
-        # Apply forces, capped by temperature
+        # Apply capped forces
         for i in active_pages:
             fx, fy = forces[i]
             mag = math.hypot(fx, fy) or 1.0
             if mag > max_step:
-                fx *= max_step / mag
-                fy *= max_step / mag
-            pos[i][0] += fx
-            pos[i][1] += fy
+                fx *= max_step / mag;  fy *= max_step / mag
+            pos[i][0] += fx;  pos[i][1] += fy
 
-        # Keep all pages in positive space
+        # Keep pages in positive space
         mx = min(pos[i][0] for i in active_pages)
         my = min(pos[i][1] for i in active_pages)
         if mx < GAP:
@@ -6894,29 +6904,57 @@ class PIDPanel(QWidget):
         except Exception:
             sheet_num_map = {}
 
-        # Primary lookup: (pid_page, ref_page) — populated after Smart Layout re-run.
-        # Falls back to sheet_num_map + ref_sheet matching for old DB data.
-        conn_by_page_pair: dict = {}   # (pid_page, ref_page_idx) → [connectors]
-        conn_by_page_ref:  dict = {}   # (pid_page, ref_sheet_upper) → [connectors]
+        # Build direction-aware lookups.
+        # 'out' = outgoing connector (pentagon leaving the page)
+        # 'in'  = incoming connector (rectangle receiving flow)
+        # 'any' = unknown direction — included in both buckets
+        _pair_out: dict = {}  # (pid_page, ref_page) → [out connectors]
+        _pair_in:  dict = {}  # (pid_page, ref_page) → [in  connectors]
+        _pair_any: dict = {}  # (pid_page, ref_page) → [all connectors]
+        _ref_out:  dict = {}  # (pid_page, ref_sheet) → [out]
+        _ref_in:   dict = {}  # (pid_page, ref_sheet) → [in]
+        _ref_any:  dict = {}  # (pid_page, ref_sheet) → [all]
         for c in connectors:
-            cd = dict(c)
-            rp = cd.get('ref_page')
+            cd   = dict(c)
+            dirn = (cd.get('direction') or '').lower()
+            rp   = cd.get('ref_page')
+            ref  = (cd.get('ref_sheet') or '').upper()
+            # direction buckets: unknown goes into both out AND in
+            buckets_pair = (
+                {_pair_out, _pair_any} if dirn == 'out' else
+                {_pair_in,  _pair_any} if dirn == 'in'  else
+                {_pair_out, _pair_in, _pair_any}
+            )
+            buckets_ref = (
+                {_ref_out, _ref_any} if dirn == 'out' else
+                {_ref_in,  _ref_any} if dirn == 'in'  else
+                {_ref_out, _ref_in, _ref_any}
+            )
             if rp is not None:
-                conn_by_page_pair.setdefault((cd['pid_page'], int(rp)), []).append(cd)
-            ref = (cd.get('ref_sheet') or '').upper()
-            for _key_ref in _sheet_ref_variants(ref):
-                conn_by_page_ref.setdefault((cd['pid_page'], _key_ref), []).append(cd)
+                key_p = (cd['pid_page'], int(rp))
+                for d in buckets_pair:
+                    d.setdefault(key_p, []).append(cd)
+            for v in _sheet_ref_variants(ref):
+                key_r = (cd['pid_page'], v)
+                for d in buckets_ref:
+                    d.setdefault(key_r, []).append(cd)
 
-        def _get_connectors(page, target_page, target_sheet_str):
-            """Connectors on page whose ref_page == target_page.
-            Falls back to ref_sheet fuzzy-match for pre-migration data."""
-            r = conn_by_page_pair.get((page, target_page), [])
-            if r:
-                return r
-            for v in _sheet_ref_variants(target_sheet_str):
-                r = conn_by_page_ref.get((page, v), [])
+        def _get_connectors(page, target_page, target_sheet_str, prefer='out'):
+            """Direction-aware connector lookup.
+            prefer='out' for src_list, 'in' for dst_list.
+            Falls back: preferred direction → any direction → ref_sheet fuzzy.
+            """
+            pref_pair = _pair_out if prefer == 'out' else _pair_in
+            pref_ref  = _ref_out  if prefer == 'out' else _ref_in
+            for lookup_pair, lookup_ref in [(pref_pair, pref_ref),
+                                            (_pair_any, _ref_any)]:
+                r = lookup_pair.get((page, target_page), [])
                 if r:
                     return r
+                for v in _sheet_ref_variants(target_sheet_str):
+                    r = lookup_ref.get((page, v), [])
+                    if r:
+                        return r
             return []
 
         drawn_pairs:      set  = set()
@@ -6970,10 +7008,10 @@ class PIDPanel(QWidget):
             fp_sheet = sheet_num_map.get(fp, '')
             tp_sheet = sheet_num_map.get(tp, '')
 
-            # Connectors on fp whose ref_page == tp (and vice-versa).
-            # ref_page is the authoritative lookup; sheet_str is the fallback for old data.
-            src_list = _get_connectors(fp, tp, tp_sheet)
-            dst_list = _get_connectors(tp, fp, fp_sheet)
+            # Outgoing connectors on fp (departure symbols) and
+            # incoming connectors on tp (arrival symbols).
+            src_list = _get_connectors(fp, tp, tp_sheet, prefer='out')
+            dst_list = _get_connectors(tp, fp, fp_sheet, prefer='in')
 
             # Fallback edges from relative page positions (horizontal only)
             dx_pages = ox_tp - ox_fp
