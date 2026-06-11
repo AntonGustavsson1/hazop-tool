@@ -7015,37 +7015,39 @@ class ConsequenceStepPickerDialog(QDialog):
                               "background:#dbeafe; border-radius:3px; padding:2px;")
             col_l.addWidget(hdr)
 
-            # Scrollable list of numbered buttons
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-            btn_container = QWidget()
-            btn_layout = QVBoxLayout(btn_container)
-            btn_layout.setSpacing(2)
-            btn_layout.setContentsMargins(2, 2, 2, 2)
-
-            btns_list = []
-            sel_idx = -1
+            # QListWidget — supports word wrap natively
+            lst = QListWidget()
+            lst.setWordWrap(True)
+            lst.setSpacing(1)
+            lst.setAlternatingRowColors(False)
+            lst.setStyleSheet(
+                "QListWidget { border:1px solid #d1d5db; border-radius:4px; }"
+                "QListWidget::item { padding:4px 6px; border-radius:3px; font-size:10px; }"
+                "QListWidget::item:selected {"
+                "  background:#dbeafe; color:#1e3a8a; font-weight:bold;"
+                "  border:1px solid #2563eb; }"
+                "QListWidget::item:hover:!selected { background:#eff6ff; }"
+            )
             cur_text = existing.get(step, {}).get('text', '') if existing else ''
+            sel_idx  = -1
             for i, opt in enumerate(opts):
-                b = QPushButton(f"{i+1}. {opt}")
-                b.setCheckable(True)
-                b.setStyleSheet(_STEP_BTN_STYLE)
-                b.setWordWrap(True)
-                b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-                b.clicked.connect(lambda checked, s=step-1, idx=i: self._btn_clicked(s, idx))
-                btn_layout.addWidget(b)
-                btns_list.append(b)
+                item = QListWidgetItem(f"{i+1}. {opt}")
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+                lst.addItem(item)
                 if cur_text and opt == cur_text:
                     sel_idx = i
 
-            btn_layout.addStretch()
-            scroll.setWidget(btn_container)
-            col_l.addWidget(scroll, 1)
+            if sel_idx >= 0:
+                lst.setCurrentRow(sel_idx)
+
+            lst.itemClicked.connect(
+                lambda it, s=step-1, lw=lst: self._list_clicked(s, lw))
+            col_l.addWidget(lst, 1)
 
             # Free-text input
             ft_edit = QLineEdit()
             ft_edit.setPlaceholderText("Fritext (eget alternativ)")
+            ft_edit.textChanged.connect(self._update_preview)
             col_l.addWidget(ft_edit)
 
             # Ref-tag
@@ -7062,15 +7064,12 @@ class ConsequenceStepPickerDialog(QDialog):
             cols_layout.addWidget(col_w)
 
             col_state = {
-                'btns':    btns_list,
+                'list':    lst,
                 'sel':     sel_idx,
                 'ft_edit': ft_edit,
                 'ref_edit':ref_edit,
             }
             self._cols.append(col_state)
-
-            if sel_idx >= 0:
-                self._set_selection(step - 1, sel_idx, silent=True)
 
         main.addWidget(cols_widget, 1)
 
@@ -7125,26 +7124,25 @@ class ConsequenceStepPickerDialog(QDialog):
         return opts
 
     # ── Selection logic ───────────────────────────────────────────────────────
-    def _btn_clicked(self, step_idx: int, btn_idx: int):
+    def _list_clicked(self, step_idx: int, listwidget):
+        row = listwidget.currentRow()
         old = self._cols[step_idx]['sel']
-        if old == btn_idx:
-            # Deselect
-            self._cols[step_idx]['btns'][old].setChecked(False)
-            self._cols[step_idx]['btns'][old].setStyleSheet(_STEP_BTN_STYLE)
+        if old == row:
+            # Second click deselects
+            listwidget.clearSelection()
+            listwidget.setCurrentRow(-1)
             self._cols[step_idx]['sel'] = -1
         else:
-            self._set_selection(step_idx, btn_idx)
+            self._cols[step_idx]['sel'] = row
         self._update_preview()
 
     def _set_selection(self, step_idx: int, btn_idx: int, silent: bool = False):
-        old = self._cols[step_idx]['sel']
-        btns = self._cols[step_idx]['btns']
-        if 0 <= old < len(btns):
-            btns[old].setChecked(False)
-            btns[old].setStyleSheet(_STEP_BTN_STYLE)
-        if 0 <= btn_idx < len(btns):
-            btns[btn_idx].setChecked(True)
-            btns[btn_idx].setStyleSheet(_STEP_BTN_SEL_STYLE)
+        lst = self._cols[step_idx]['list']
+        if 0 <= btn_idx < lst.count():
+            lst.setCurrentRow(btn_idx)
+        else:
+            lst.clearSelection()
+            lst.setCurrentRow(-1)
         self._cols[step_idx]['sel'] = btn_idx
         if not silent:
             self._update_preview()
@@ -7165,7 +7163,7 @@ class ConsequenceStepPickerDialog(QDialog):
         ft  = col['ft_edit'].text().strip()
         if ft:
             return ft
-        sel = col['sel']
+        sel = col['list'].currentRow()
         opts = self._options[step_idx]
         if 0 <= sel < len(opts):
             t = opts[sel]
@@ -7205,25 +7203,6 @@ class ConsequenceStepPickerDialog(QDialog):
         self.accept()
 
 
-_STEP_BTN_STYLE = (
-    "QPushButton {"
-    "  text-align: left; padding: 4px 6px;"
-    "  border: 1px solid #d1d5db; border-radius: 4px;"
-    "  background: #f9fafb; color: #111;"
-    "  font-size: 10px;"
-    "}"
-    "QPushButton:hover {"
-    "  background: #eff6ff; border-color: #93c5fd;"
-    "}"
-)
-_STEP_BTN_SEL_STYLE = (
-    "QPushButton {"
-    "  text-align: left; padding: 4px 6px;"
-    "  border: 2px solid #2563eb; border-radius: 4px;"
-    "  background: #dbeafe; color: #1e3a8a;"
-    "  font-size: 10px; font-weight: bold;"
-    "}"
-)
 
 
 class ReductionFactorsDialog(QDialog):
@@ -13067,7 +13046,8 @@ class MainWindow(QMainWindow):
         self.pid_panel.consequence_created.connect(
             lambda cid: (self.tree_panel.refresh(CONS_T, cid),
                          self._on_selected(CONS_T, cid),
-                         self.scenario_panel.refresh_placed()))
+                         self.scenario_panel.refresh_placed(),
+                         self._open_consequence_step_picker(cid)))
         self.pid_panel.safeguard_created.connect(self._on_safeguard_created)
         self.pid_panel.existing_marker_placed.connect(self._on_existing_marker_placed)
         self.pid_panel.cause_template_created.connect(
@@ -13402,6 +13382,29 @@ class MainWindow(QMainWindow):
         self.pid_panel.set_active_consequence(cons_id)
         self._switch_view(0)
         self.pid_panel._set_mode(MODE_SAFEGUARD)
+
+    def _open_consequence_step_picker(self, cons_id: int):
+        """Open ConsequenceStepPickerDialog after a new consequence is created on P&ID."""
+        cons = self.db.get_consequence(cons_id)
+        if not cons:
+            return
+        cause = self.db.get_cause(cons['cause_id'])
+        dev_desc = comp = cause_tx = ''
+        if cause:
+            cause_d = dict(cause)
+            comp    = cause_d.get('comp_type', '') or ''
+            cause_tx = cause_d.get('description', '') or ''
+            dev_id  = cause_d.get('deviation_id')
+            if dev_id:
+                dev = self.db.get_deviation(dev_id)
+                if dev:
+                    dev_desc = dev['description'] or ''
+        dlg = ConsequenceStepPickerDialog(
+            self.db, cons_id,
+            deviation=dev_desc, comp_type=comp, cause_text=cause_tx,
+            parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.scenario_panel._rebuild()
 
     def _on_edit_node_markup(self, node_id):
         """Tree right-click NODE → 'Editera nodmarkup'."""
