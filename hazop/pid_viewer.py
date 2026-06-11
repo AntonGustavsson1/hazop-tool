@@ -35,7 +35,7 @@ from PyQt6.QtWidgets import (
     QProgressDialog, QApplication, QGridLayout, QTextEdit, QButtonGroup,
     QScrollArea,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QThread, QPoint
+from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QThread, QPoint, QTimer
 from PyQt6.QtGui import (
     QColor, QPen, QBrush, QPainterPath, QPolygonF, QPixmap, QImage, QFont,
     QPainter, QPicture, QCursor,
@@ -3503,6 +3503,21 @@ class PIDGraphicsView(QGraphicsView):
         self._CACHE_SIZE      = 10
         self._prefetch_thread = None
 
+        # ── Page level-of-detail (study board) ────────────────────────────────
+        # Board pages render at _LOW_SCALE (cheap, small) and are scaled up to
+        # the same scene footprint; only pages visible at high zoom are swapped
+        # to full _RASTER_SCALE pixmaps in the background. Keeps zoomed-out
+        # panning fast and memory flat regardless of page count.
+        self._LOW_SCALE       = 0.5
+        self._MAX_HIRES       = 6
+        self._low_pixmaps: dict = {}    # pn → low-res QPixmap
+        self._hires_pages: set  = set() # pages currently showing hi-res
+        self._lod_renderer    = None    # background _PageRenderer for hi-res
+        self._lod_timer       = QTimer(self)
+        self._lod_timer.setSingleShot(True)
+        self._lod_timer.setInterval(150)
+        self._lod_timer.timeout.connect(self._update_page_lod)
+
         self.draw_points        = []
         self.draw_pen           = QPen(QColor(255, 140, 0), 3)
         self.draw_pen.setCosmetic(True)
@@ -3667,10 +3682,13 @@ class PIDGraphicsView(QGraphicsView):
         if not HAS_PYMUPDF or self.pdf_doc is None:
             return
         self._clear_placeholder()
+        self._cancel_lod_render()
         for item in list(self._all_page_items.values()):
             try: self._scene.removeItem(item)
             except Exception: pass
         self._all_page_items.clear()
+        self._low_pixmaps.clear()
+        self._hires_pages.clear()
         self._page_offsets.clear()
         self._page_widths_pdf.clear()
         self._page_heights_pdf.clear()
@@ -3691,16 +3709,15 @@ class PIDGraphicsView(QGraphicsView):
             self._page_widths_pdf[pn] = pw_pdf
             self._page_heights_pdf[pn] = ph_pdf
 
-            if pn in self._page_cache:
-                pixmap = self._page_cache[pn]
-                self._update_lru(pn)
-            else:
-                mat = fitz.Matrix(self._RASTER_SCALE, self._RASTER_SCALE)
-                pix = fitz_page.get_pixmap(matrix=mat, alpha=False)
-                img = QImage(pix.samples, pix.width, pix.height,
-                             pix.stride, QImage.Format.Format_RGB888)
-                pixmap = QPixmap.fromImage(img.copy())
-                self._add_to_cache(pn, pixmap)
+            # Low-res base render: ~36× fewer pixels than _RASTER_SCALE.
+            # The item is scaled up so the scene footprint (and every saved
+            # coordinate) stays identical to a full-res render.
+            mat = fitz.Matrix(self._LOW_SCALE, self._LOW_SCALE)
+            pix = fitz_page.get_pixmap(matrix=mat, alpha=False)
+            img = QImage(pix.samples, pix.width, pix.height,
+                         pix.stride, QImage.Format.Format_RGB888)
+            pixmap = QPixmap.fromImage(img.copy())
+            self._low_pixmaps[pn] = pixmap
 
             if layout_offsets and pn in layout_offsets:
                 ox, oy = float(layout_offsets[pn][0]), float(layout_offsets[pn][1])
@@ -3713,6 +3730,7 @@ class PIDGraphicsView(QGraphicsView):
             page_item = QGraphicsPixmapItem(pixmap)
             page_item.setZValue(Z_PAGE)
             page_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
+            page_item.setScale(self.render_scale / self._LOW_SCALE)
             page_item.setPos(ox, oy)
             self._scene.addItem(page_item)
             self._all_page_items[pn] = page_item
@@ -3725,6 +3743,7 @@ class PIDGraphicsView(QGraphicsView):
         self.page_rect_width  = self._page_widths_pdf.get(self.current_page, 0.0)
         self.page_rect_height = self._page_heights_pdf.get(self.current_page, 0.0)
         self._update_board_scene_rect()
+        self._schedule_lod_update()
 
     def _update_board_scene_rect(self):
         if not self._page_offsets:
@@ -3780,6 +3799,86 @@ class PIDGraphicsView(QGraphicsView):
             img = QImage(raw, width, height, stride, QImage.Format.Format_RGB888)
             self._add_to_cache(pn, QPixmap.fromImage(img))
 
+    # ── Page LOD: hi-res swap-in for visible pages at high zoom ──────────────
+
+    def _schedule_lod_update(self):
+        """Debounced trigger — call after any zoom/pan/layout change."""
+        if self._all_page_items:
+            self._lod_timer.start()
+
+    def _cancel_lod_render(self):
+        if self._lod_renderer and self._lod_renderer.isRunning():
+            self._lod_renderer.requestInterruption()
+            self._lod_renderer.wait(300)
+        self._lod_renderer = None
+
+    def _hires_worthwhile(self):
+        # Hi-res pays off once one low-res pixel covers >1.25 screen pixels
+        zoom = self.transform().m11()
+        return zoom > 1.25 * self._LOW_SCALE / self._RASTER_SCALE
+
+    def _update_page_lod(self):
+        if not self._all_page_items or self.pdf_doc is None:
+            return
+        needed = []
+        if self._hires_worthwhile():
+            vis = self.mapToScene(self.viewport().rect()).boundingRect()
+            vis = vis.adjusted(-vis.width() * 0.25, -vis.height() * 0.25,
+                               vis.width() * 0.25,  vis.height() * 0.25)
+            c = vis.center()
+            for pn, item in self._all_page_items.items():
+                r = item.sceneBoundingRect()
+                if r.intersects(vis):
+                    d = abs(r.center().x() - c.x()) + abs(r.center().y() - c.y())
+                    needed.append((d, pn))
+            needed.sort()
+            needed = [pn for _, pn in needed[:self._MAX_HIRES]]
+        needed_set = set(needed)
+
+        # Demote pages that left the viewport or are no longer zoomed in
+        for pn in list(self._hires_pages):
+            if pn not in needed_set:
+                item = self._all_page_items.get(pn)
+                low  = self._low_pixmaps.get(pn)
+                if item is not None and low is not None:
+                    item.setPixmap(low)
+                    item.setScale(self.render_scale / self._LOW_SCALE)
+                self._hires_pages.discard(pn)
+
+        # Promote: use cached full-res pixmaps directly, render the rest async
+        to_render = []
+        for pn in needed:
+            if pn in self._hires_pages:
+                continue
+            if pn in self._page_cache:
+                self._promote_page(pn, self._page_cache[pn])
+                self._update_lru(pn)
+            else:
+                to_render.append(pn)
+        if to_render and self._pdf_path:
+            self._cancel_lod_render()
+            self._lod_renderer = _PageRenderer(self._pdf_path, to_render,
+                                               self._RASTER_SCALE)
+            self._lod_renderer.page_ready.connect(self._on_lod_page_ready)
+            self._lod_renderer.start()
+
+    def _promote_page(self, pn, pixmap):
+        item = self._all_page_items.get(pn)
+        if item is None:
+            return
+        item.setPixmap(pixmap)
+        item.setScale(1.0)
+        self._hires_pages.add(pn)
+
+    def _on_lod_page_ready(self, pn, raw, width, height, stride):
+        img = QImage(raw, width, height, stride, QImage.Format.Format_RGB888)
+        pm  = QPixmap.fromImage(img)
+        self._add_to_cache(pn, pm)
+        # Zoom may have changed while rendering — only promote if still useful;
+        # a follow-up _update_page_lod demotes anything that became stale.
+        if self._hires_worthwhile():
+            self._promote_page(pn, pm)
+
     def page_count(self):
         return self.pdf_doc.page_count if self.pdf_doc else 0
 
@@ -3798,6 +3897,7 @@ class PIDGraphicsView(QGraphicsView):
             cx = ox + self._page_widths_pdf.get(n, 0.0) * rs / 2
             cy = oy + self._page_heights_pdf.get(n, 0.0) * rs / 2
             self.centerOn(QPointF(cx, cy))
+            self._schedule_lod_update()
         else:
             self._render_all_pages()
 
@@ -4687,6 +4787,8 @@ class PIDGraphicsView(QGraphicsView):
         if not combined.isNull():
             combined.adjust(-60, -60, 60, 60)
             self.fitInView(combined, Qt.AspectRatioMode.KeepAspectRatio)
+            self._apply_lod(self.transform().m11())
+            self._schedule_lod_update()
 
     def contextMenuEvent(self, event):
         if self.mode == MODE_MARKUP_SELECT and self._edit_mu_id is not None:
@@ -5696,7 +5798,12 @@ class PIDGraphicsView(QGraphicsView):
             factor = 200 / cur
         self.scale(factor, factor)
         self._apply_lod(self.transform().m11())
+        self._schedule_lod_update()
         event.accept()
+
+    def scrollContentsBy(self, dx, dy):
+        super().scrollContentsBy(dx, dy)
+        self._schedule_lod_update()
 
     def keyPressEvent(self, event):
         if self.mode in (MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE):
@@ -7006,6 +7113,8 @@ class PIDPanel(QWidget):
         self.viewer.resetTransform()
         self.viewer.scale(2.5, 2.5)
         self.viewer.centerOn(scene_pt)
+        self.viewer._apply_lod(self.viewer.transform().m11())
+        self.viewer._schedule_lod_update()
 
     def start_place_existing(self, type_str, id_):
         """Enter placement mode for a pre-existing item (no new item created)."""
