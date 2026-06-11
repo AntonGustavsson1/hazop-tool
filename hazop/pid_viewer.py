@@ -7733,46 +7733,31 @@ class PIDPanel(QWidget):
                 "Välj en cause i trädet innan du placerar en konsekvens.")
             return
 
-        dlg = TargetPickerDialog(self, suggested_tag=suggested_tag, db=self.db)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-
         pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
-
-        if dlg.link_to_id:
-            # ── Link to existing consequence ──────────────────────────────────
-            cons_id = self.db.copy_consequence(dlg.link_to_id, self._active_cause_id)
-            if cons_id is None:
-                return
-            cons = self.db.get_consequence(cons_id)
-            display = cons['description'] if cons else '🔗 Länkad konsekvens'
-        else:
-            # ── Create new consequence ────────────────────────────────────────
-            template  = dlg.template
-            target    = dlg.target
-            chain     = dlg.selected_chain
-            base_desc = template.format(target) if target else template.replace('{}', '[okänt objekt]')
-            full_desc = _pid_build_chain_text(base_desc, chain) or base_desc
-            display   = full_desc
-
-            import json as _json
-            chain_json = _json.dumps(chain) if chain else ''
-            cons_id = self.db.add_consequence(self._active_cause_id)
-            try:
-                self.db.update_consequence(cons_id, full_desc, 1, '', chain_json)
-            except TypeError:
-                self.db.update_consequence(cons_id, full_desc, 1)
-
         zone = self._pending_zone_pdf
         rect_w = zone.width()  if zone else None
         rect_h = zone.height() if zone else None
         if zone:
             pdf_x, pdf_y = zone.center().x(), zone.center().y()
         self._pending_zone_pdf = None
+
+        # Store the clicked tag so the step picker can pre-fill it
+        self._pending_cons_tag = suggested_tag or ''
+
+        # Create the consequence with a placeholder description;
+        # ConsequenceStepPickerDialog (opened from consequence_created signal)
+        # will set the real description and steps.
+        placeholder = suggested_tag if suggested_tag else 'Ny konsekvens'
+        cons_id = self.db.add_consequence(self._active_cause_id)
+        try:
+            self.db.update_consequence(cons_id, placeholder, 1, '', '')
+        except TypeError:
+            self.db.update_consequence(cons_id, placeholder, 1)
+
         self.db.add_consequence_marker(cons_id, page, pdf_x, pdf_y,
-                                       dlg.target if not dlg.link_to_id else '',
+                                       suggested_tag,
                                        rect_w=rect_w, rect_h=rect_h)
-        self.viewer.add_consequence_marker(cons_id, pdf_x, pdf_y, display,
+        self.viewer.add_consequence_marker(cons_id, pdf_x, pdf_y, placeholder,
                                            rect_w=rect_w, rect_h=rect_h)
         self.consequence_created.emit(cons_id)
 

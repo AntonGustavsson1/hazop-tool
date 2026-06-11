@@ -1000,7 +1000,6 @@ _STD_CONSEQUENCE_STEPS: dict = {
         4: [
             "Strukturell skada på utrustning",
             "Läckage / utsläpp",
-            "Säkerhetsventil öppnar",
         ],
         5: [
             "Brand / explosion (brandfarlig vätska spills)",
@@ -1014,7 +1013,6 @@ _STD_CONSEQUENCE_STEPS: dict = {
             "Differenstrycket i systemet ökar",
         ],
         2: [
-            "Säkerhetsventil öppnar — systemet avlastas",
             "Tätning havererar — läckage uppstår",
             "Rörledning / kärl belastas mot konstruktionsgränsen",
         ],
@@ -1059,35 +1057,37 @@ _STD_CONSEQUENCE_STEPS: dict = {
     },
     ("Hög nivå", "*"): {
         1: [
-            "Nivå i kärl/tank stiger mot höglarm",
+            "Nivå i kärl/tank stiger",
             "Vätska börjar stiga mot utloppsledning",
         ],
         2: [
-            "Högnivålarm triggas — operatörsåtgärd krävs",
             "Kärlets bufferttid minskar kraftigt",
-        ],
-        3: [
-            "Vätska träder in i ångled/gasfas — vätskeslag risk",
+            "Vätska träder in i ångfas / gasledning — vätskeslag risk",
             "Kärl fylls till overflow",
         ],
-        4: [
+        3: [
             "Spill / overflow — miljöutsläpp",
             "Vätskeslag i kompressor / ångturbin — katastrofal skada",
+            "Övertrycksättning av nedströms utrustning",
         ],
-        5: [
+        4: [
             "Brand (brandfarlig vätska spills)",
             "Personskada (frätande / giftig vätska)",
+            "Strukturell skada på utrustning",
+        ],
+        5: [
             "Produktion stoppad",
+            "Katastrofalt haveri",
         ],
     },
     ("Låg nivå", "*"): {
         1: [
-            "Nivå i kärl/tank sjunker mot låglarm",
+            "Nivå i kärl/tank sjunker",
             "Bufferttiden minskar",
         ],
         2: [
-            "Lågnivålarm triggas — operatörsåtgärd krävs",
             "Utloppspump riskerar torrkörning",
+            "Flöde till nedströms upphör",
         ],
         3: [
             "Pump torrkör — kavitation / lagerhaveri",
@@ -1096,10 +1096,11 @@ _STD_CONSEQUENCE_STEPS: dict = {
         4: [
             "Mekanisk skada på pump",
             "Processmålet nås inte (flödet upphör)",
+            "Läckage (vakuumsug i kärlet spränger tätning)",
         ],
         5: [
             "Produktion stoppad",
-            "Läckage (vakuumsug i kärlet spränger tätning)",
+            "Utsläpp vid tätningshaveri",
         ],
     },
     ("Hög temperatur", "*"): {
@@ -1113,7 +1114,7 @@ _STD_CONSEQUENCE_STEPS: dict = {
             "Ångtrycket stiger i slutet system",
         ],
         3: [
-            "Tryckökning i slutet system — säkerhetsventil öppnar",
+            "Tryckökning i slutet system — trycket överstiger konstruktionsgränsen",
             "Metallurgisk skada (krypning, fastbränning)",
             "Tätningsläckage — utsläpp",
         ],
@@ -6929,27 +6930,32 @@ class ConsequenceStepPickerDialog(QDialog):
     """Konsekvenskedja Del1 → Del2 → Del3 → Del4 → Del5.
 
     Varje del visas i en separat kolumn med numrerade alternativ.
-    Klicka på ett alternativ för att välja det — det markeras med blå ram.
-    Ange en sifferkombination (t.ex. 142) i fältet längst upp för att
-    välja Del1=1, Del2=4, Del3=2 på en gång.
-    Längst ned i varje kolumn finns ett Ref-tag-fält.
-    Nytt fritext-alternativ kan skrivas in i rutan under listan.
+    Klicka på ett alternativ för att välja det — blå markering.
+    Snabbval: skriv t.ex. '142' för Del1=1, Del2=4, Del3=2.
+    Tab hoppar till nästa kolonns fritext-/tag-fält.
+    'Lägg till ytterligare objekt' sparar och går tillbaka till P&ID-läge.
     """
+    # Set when the "add more objects" button is clicked
+    add_more_requested = False
 
     def __init__(self, db: 'Database', cons_id: int,
                  deviation: str = '', comp_type: str = '',
-                 cause_text: str = '', parent=None):
+                 cause_text: str = '', initial_ref_tag: str = '',
+                 parent=None):
         super().__init__(parent)
         self.db       = db
         self.cons_id  = cons_id
         self._dev     = deviation
         self._comp    = comp_type
         self._cause   = cause_text
+        self.add_more_requested = False
 
         self.setWindowTitle("Konsekvenskedja — Del 1–5")
         self.setMinimumWidth(min(QApplication.primaryScreen().availableGeometry().width() - 80,
                                  _N_STEPS * 200 + 40))
         self.setMinimumHeight(560)
+        # initial_ref_tag is pre-filled in Del1's ref-tag from the P&ID click
+        self._initial_ref_tag = initial_ref_tag
 
         # Existing steps from DB
         existing = {s['step']: s for s in db.get_consequence_steps(cons_id)}
@@ -7058,6 +7064,8 @@ class ConsequenceStepPickerDialog(QDialog):
             ref_edit.setMaximumHeight(24)
             if step in existing:
                 ref_edit.setText(existing[step].get('ref_tag', '') or '')
+            elif step == 1 and self._initial_ref_tag:
+                ref_edit.setText(self._initial_ref_tag)
             col_l.addWidget(ref_lbl)
             col_l.addWidget(ref_edit)
 
@@ -7089,12 +7097,35 @@ class ConsequenceStepPickerDialog(QDialog):
         prev_lay.addWidget(self._preview)
         main.addWidget(prev_frame)
 
-        btns = QDialogButtonBox(
+        # ── Buttons ───────────────────────────────────────────────────────────
+        btn_row = QHBoxLayout()
+        add_more_btn = QPushButton("📍 Lägg till ytterligare objekt")
+        add_more_btn.setToolTip(
+            "Spara denna konsekvenskedja och gå tillbaka till P&ID\n"
+            "för att markera ytterligare ett objekt.")
+        add_more_btn.setStyleSheet(
+            "background:#1d4ed8; color:white; border:none;"
+            "border-radius:4px; padding:4px 10px;")
+        add_more_btn.clicked.connect(self._save_and_add_more)
+        btn_row.addWidget(add_more_btn)
+        btn_row.addStretch()
+        std_btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |
             QDialogButtonBox.StandardButton.Cancel)
-        btns.accepted.connect(self._save_and_accept)
-        btns.rejected.connect(self.reject)
-        main.addWidget(btns)
+        std_btns.accepted.connect(self._save_and_accept)
+        std_btns.rejected.connect(self.reject)
+        btn_row.addWidget(std_btns)
+        main.addLayout(btn_row)
+
+        # ── Tab-key navigation between columns ────────────────────────────────
+        # Tab in ft_edit or ref_edit of column N → focus ft_edit of column N+1
+        for i, col in enumerate(self._cols):
+            for field in (col['ft_edit'], col['ref_edit']):
+                field.installEventFilter(self)
+        self._field_order = []
+        for col in self._cols:
+            self._field_order.append(col['ft_edit'])
+            self._field_order.append(col['ref_edit'])
 
         self._update_preview()
 
@@ -7180,8 +7211,43 @@ class ConsequenceStepPickerDialog(QDialog):
                 parts.append(t)
         self._preview.setText(' → '.join(parts) if parts else '—')
 
+    # ── Tab navigation event filter ───────────────────────────────────────────
+    def eventFilter(self, obj, event):
+        from PyQt6.QtCore import QEvent
+        if (event.type() == QEvent.Type.KeyPress and
+                event.key() == Qt.Key.Key_Tab):
+            try:
+                idx = self._field_order.index(obj)
+                nxt = self._field_order[(idx + 1) % len(self._field_order)]
+                nxt.setFocus()
+                nxt.selectAll()
+                return True
+            except ValueError:
+                pass
+        return super().eventFilter(obj, event)
+
+    # ── Save helpers ──────────────────────────────────────────────────────────
+    def _collect_steps(self):
+        steps = []
+        for i in range(_N_STEPS):
+            text = self._selected_text(i)
+            ref  = self._cols[i]['ref_edit'].text().strip()
+            if text or ref:
+                steps.append({'step': i + 1, 'text': text, 'ref_tag': ref})
+        return steps
+
+    def _save_and_add_more(self):
+        self.add_more_requested = True
+        self._do_save()
+        self.accept()
+
     # ── Save ──────────────────────────────────────────────────────────────────
     def _save_and_accept(self):
+        self.add_more_requested = False
+        self._do_save()
+        self.accept()
+
+    def _do_save(self):
         steps = []
         for i in range(_N_STEPS):
             text = self._selected_text(i)
@@ -7190,7 +7256,6 @@ class ConsequenceStepPickerDialog(QDialog):
                 steps.append({'step': i + 1, 'text': text, 'ref_tag': ref})
         self.db.set_consequence_steps(self.cons_id, steps)
 
-        # Also write the joined text into consequences.description
         parts = [s['text'] for s in steps if s['text']]
         full  = ' → '.join(parts) if parts else (self._orig_desc or 'Ny konsekvens')
         cons = self.db.get_consequence(self.cons_id)
@@ -7200,7 +7265,6 @@ class ConsequenceStepPickerDialog(QDialog):
                 cons['severity'] or 1,
                 cons['category'] or '',
                 cons['consequence_chain'] or '')
-        self.accept()
 
 
 
@@ -13399,12 +13463,20 @@ class MainWindow(QMainWindow):
                 dev = self.db.get_deviation(dev_id)
                 if dev:
                     dev_desc = dev['description'] or ''
+
+        # Suggested tag from the P&ID click, stored temporarily on the panel
+        initial_tag = getattr(self.pid_panel, '_pending_cons_tag', '') or ''
+
         dlg = ConsequenceStepPickerDialog(
             self.db, cons_id,
             deviation=dev_desc, comp_type=comp, cause_text=cause_tx,
+            initial_ref_tag=initial_tag,
             parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.scenario_panel._rebuild()
+            if dlg.add_more_requested:
+                # Stay in consequence-placement mode so the user can click another object
+                self.pid_panel._set_mode(MODE_CONSEQUENCE)
 
     def _on_edit_node_markup(self, node_id):
         """Tree right-click NODE → 'Editera nodmarkup'."""
