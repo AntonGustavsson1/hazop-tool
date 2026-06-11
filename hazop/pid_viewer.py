@@ -3531,6 +3531,7 @@ class PIDGraphicsView(QGraphicsView):
         # Right-drag rubber-band (NAV mode)
         self._rband_start_scene  = None
         self._rband_preview_item = None
+        self._rband_label_item   = None   # QGraphicsTextItem in right-drag rband
         self._rband_dragging     = False
 
         # Zone rectangle overlays: (type_, id_) → {rect_item, handles:[4]}
@@ -5699,6 +5700,10 @@ class PIDGraphicsView(QGraphicsView):
                     try: self._scene.removeItem(self._rband_preview_item)
                     except Exception: pass
                     self._rband_preview_item = None
+                if self._rband_label_item is not None:
+                    try: self._scene.removeItem(self._rband_label_item)
+                    except Exception: pass
+                    self._rband_label_item = None
                 rect = QRectF(self._rband_start_scene, sp).normalized()
                 rs = self.render_scale
                 ox, oy = self._page_offsets.get(self.current_page, (0.0, 0.0))
@@ -5831,12 +5836,34 @@ class PIDGraphicsView(QGraphicsView):
                 if self._rband_preview_item is not None:
                     try: self._scene.removeItem(self._rband_preview_item)
                     except Exception: pass
-                pen = QPen(QColor(0, 180, 80), 1.5)
+                if self._rband_label_item is not None:
+                    try: self._scene.removeItem(self._rband_label_item)
+                    except Exception: pass
+                    self._rband_label_item = None
+                pen = QPen(QColor(0, 100, 200), 1.5)
                 pen.setStyle(Qt.PenStyle.DashLine)
                 pen.setCosmetic(True)
                 self._rband_preview_item = self._scene.addRect(
-                    rect, pen, QBrush(QColor(0, 200, 100, 40)))
+                    rect, pen, QBrush(QColor(0, 100, 200, 28)))
                 self._rband_preview_item.setZValue(Z_TEMP)
+                # Live tag label inside the right-click rubber band
+                if rect.width() > 20 and rect.height() > 10 and self.pdf_doc is not None:
+                    rs = self.render_scale
+                    ox, oy = self._page_offsets.get(self.current_page, (0.0, 0.0))
+                    pdf_r = QRectF((rect.x()-ox)/rs, (rect.y()-oy)/rs,
+                                   rect.width()/rs, rect.height()/rs)
+                    tag = self._extract_tag_from_rect(pdf_r)
+                    if tag:
+                        lbl = self._scene.addText(tag)
+                        lbl.setDefaultTextColor(QColor(0, 60, 180))
+                        f = lbl.font(); f.setBold(True)
+                        f.setPointSizeF(max(7.0, 11.0 / self.transform().m11()))
+                        lbl.setFont(f)
+                        br = lbl.boundingRect()
+                        lbl.setPos(rect.center().x() - br.width()/2,
+                                   rect.center().y() - br.height()/2)
+                        lbl.setZValue(Z_TEMP + 1)
+                        self._rband_label_item = lbl
             event.accept(); return
 
         if self.mode == MODE_MARKUP_SELECT and self._drag_mode is not None:
@@ -5881,13 +5908,21 @@ class PIDGraphicsView(QGraphicsView):
                 try: self._scene.removeItem(self._rect_label)
                 except Exception: pass
                 self._rect_label = None
-            pen = QPen(QColor(0, 100, 220), 1.5)
+            # Color matches tree-panel visibility button: cause=red, cons=orange, sg=green
+            _mode_colors = {
+                MODE_CAUSE:           (QColor(0xe7, 0x4c, 0x3c), QColor(0xe7, 0x4c, 0x3c, 35)),
+                MODE_CONSEQUENCE:     (QColor(0xe6, 0x7e, 0x22), QColor(0xe6, 0x7e, 0x22, 35)),
+                MODE_SAFEGUARD:       (QColor(0x27, 0xae, 0x60), QColor(0x27, 0xae, 0x60, 35)),
+                MODE_CAUSE_TEMPLATE:  (QColor(0xe7, 0x4c, 0x3c), QColor(0xe7, 0x4c, 0x3c, 35)),
+                MODE_PLACE_EXISTING:  (QColor(0x14, 0x6e, 0xbe), QColor(0x14, 0x6e, 0xbe, 30)),
+            }
+            rc, fc = _mode_colors.get(self.mode, (QColor(0, 100, 220), QColor(0, 100, 220, 30)))
+            pen = QPen(rc, 1.5)
             pen.setStyle(Qt.PenStyle.DashLine)
             pen.setCosmetic(True)
-            self._rect_item = self._scene.addRect(
-                rect, pen, QBrush(QColor(0, 100, 220, 30)))
+            self._rect_item = self._scene.addRect(rect, pen, QBrush(fc))
             self._rect_item.setZValue(Z_TEMP)
-            # Live tag label inside the rubber band
+            # Live tag label inside the rubber band (same color as border)
             if rect.width() > 20 and rect.height() > 10 and self.pdf_doc is not None:
                 rs = self.render_scale
                 ox, oy = self._page_offsets.get(self.current_page, (0.0, 0.0))
@@ -5895,11 +5930,11 @@ class PIDGraphicsView(QGraphicsView):
                                rect.width()/rs, rect.height()/rs)
                 tag = self._extract_tag_from_rect(pdf_r)
                 if tag:
-                    from PyQt6.QtWidgets import QGraphicsTextItem
                     lbl = self._scene.addText(tag)
-                    lbl.setDefaultTextColor(QColor(0, 60, 180))
-                    f = lbl.font(); f.setBold(True); f.setPointSizeF(max(7.0, 11.0 / self.transform().m11())); lbl.setFont(f)
-                    # Centre the label inside the rect
+                    lbl.setDefaultTextColor(rc)
+                    f = lbl.font(); f.setBold(True)
+                    f.setPointSizeF(max(7.0, 11.0 / self.transform().m11()))
+                    lbl.setFont(f)
                     br = lbl.boundingRect()
                     lbl.setPos(rect.center().x() - br.width()/2,
                                rect.center().y() - br.height()/2)

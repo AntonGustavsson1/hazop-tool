@@ -980,11 +980,11 @@ _CONSEQ_NODES: dict = {
         'next': ['overfill', 'carryover'],
     },
     'overfill': {
-        'text': 'Överfyllnad av [objekt] — vätska tränger ut',
+        'text': 'Överfyllnad av [objekt]',
         'next': ['pool_formation', 'env_release'],
     },
     'carryover': {
-        'text': 'Vätskemedryckning från [objekt] till gas-/ångsystem',
+        'text': 'Vätskedroppar förs med gasen från [objekt]',
         'next': ['liquid_slug'],
     },
     'liquid_slug': {
@@ -992,7 +992,7 @@ _CONSEQ_NODES: dict = {
         'next': ['equipment_catastrophic', 'loc_large'],
     },
     'vortex_gas': {
-        'text': 'Gasmedryckning i utlopp från [objekt] (vortex)',
+        'text': 'Gasinblandning i utlopp från [objekt] (vortexbildning)',
         'next': ['pump_dryrun'],
     },
     'pump_dryrun': {
@@ -1000,11 +1000,11 @@ _CONSEQ_NODES: dict = {
         'next': ['seal_fail', 'bearing_fail'],
     },
     'seal_fail': {
-        'text': 'Tätningshaveri på [objekt]',
+        'text': 'Tätningsläckage på [objekt]',
         'next': ['loc_small'],
     },
     'bearing_fail': {
-        'text': 'Mekanisk skada på [objekt] (lager / impeller)',
+        'text': 'Mekanisk skada på [objekt] (lager / löphjul)',
         'next': ['pump_breakdown'],
     },
     'pump_breakdown': {
@@ -1012,7 +1012,7 @@ _CONSEQ_NODES: dict = {
         'next': ['production_stop', 'no_flow'],
     },
     'backpressure_upstream': {
-        'text': 'Mottryck byggs upp uppströms [objekt]',
+        'text': 'Ökat mottryck uppströms [objekt]',
         'next': ['overpressure'],
     },
     'erosion': {
@@ -1025,11 +1025,11 @@ _CONSEQ_NODES: dict = {
                  'quality_offspec'],
     },
     'hx_undercool': {
-        'text': 'Överkylning av [objekt]',
+        'text': 'Överkylning av processmedium i [objekt]',
         'next': ['quality_offspec', 'freeze_damage', 'hydrate_blockage'],
     },
     'reaction_upset': {
-        'text': 'Reaktionsstörning i [objekt] (fel stökiometri / uppehållstid)',
+        'text': 'Reaktionsstörning i [objekt] (felaktig stökiometri / uppehållstid)',
         'next': ['quality_offspec', 'runaway', 'toxic_gas_generation'],
     },
     'quality_offspec': {
@@ -1039,23 +1039,23 @@ _CONSEQ_NODES: dict = {
 
     # ── Tryck ──────────────────────────────────────────────────────────────────
     'overpressure': {
-        'text': 'Trycket i [objekt] överstiger designtrycket',
+        'text': 'Trycket i [objekt] överstiger konstruktionstrycket',
         'next': ['flange_leak', 'rupture'],
     },
     'flange_leak': {
-        'text': 'Fläns-/packningsläckage på [objekt]',
+        'text': 'Fläns- / packningsläckage vid [objekt]',
         'next': ['loc_small'],
     },
     'rupture': {
-        'text': '[objekt] brister (fullbordsbrott)',
+        'text': '[objekt] brister',
         'next': ['loc_large', 'equipment_catastrophic'],
     },
     'vacuum': {
-        'text': 'Undertryck i [objekt] under designgräns',
+        'text': 'Undertryck i [objekt] under lägsta tillåtna driftstryck',
         'next': ['vacuum_collapse', 'air_ingress'],
     },
     'vacuum_collapse': {
-        'text': '[objekt] imploderar (vakuumkollaps)',
+        'text': '[objekt] kollapsas av undertrycket',
         'next': ['equipment_catastrophic', 'loc_small'],
     },
     'air_ingress': {
@@ -1063,7 +1063,7 @@ _CONSEQ_NODES: dict = {
         'next': ['internal_flammable', 'quality_offspec'],
     },
     'internal_flammable': {
-        'text': 'Brännbar atmosfär bildas inne i [objekt]',
+        'text': 'Brännbar atmosfär inuti [objekt]',
         'next': ['internal_explosion'],
     },
     'internal_explosion': {
@@ -1071,46 +1071,46 @@ _CONSEQ_NODES: dict = {
         'next': ['equipment_catastrophic', 'loc_large', 'personnel_injury'],
     },
     'flashing': {
-        'text': 'Processvätska flashar / förångas i [objekt]',
+        'text': 'Processvätska förångas / flashar i [objekt]',
         'next': ['pump_dryrun', 'quality_offspec'],
     },
 
     # ── Temperatur ────────────────────────────────────────────────────────────
     'temp_above_design': {
-        'text': 'Temperaturen i [objekt] överstiger designgränsen',
+        'text': 'Temperaturen i [objekt] överstiger konstruktionsgränsen',
         'next': ['vapor_pressure_rise', 'runaway', 'seal_degradation',
                  'material_creep', 'quality_offspec'],
     },
     'vapor_pressure_rise': {
-        'text': 'Ångtrycket i [objekt] stiger',
+        'text': 'Ångbildning — trycket i [objekt] stiger',
         'next': ['overpressure'],
     },
     'runaway': {
-        'text': 'Okontrollerad exoterm reaktion i [objekt] (runaway)',
+        'text': 'Okontrollerad exoterm reaktion i [objekt]',
         'next': ['rapid_pressure_rise', 'toxic_gas_generation'],
     },
     'rapid_pressure_rise': {
-        'text': 'Snabb tryck-/temperaturstegring i [objekt]',
+        'text': 'Snabb tryck- och temperaturökning i [objekt]',
         'next': ['rupture'],
     },
     'material_creep': {
-        'text': 'Hållfastheten i [objekt] degraderas (krypning)',
+        'text': 'Reducerad hållfasthet i [objekt] (krypning)',
         'next': ['rupture'],
     },
     'seal_degradation': {
-        'text': 'Tätningar/packningar i [objekt] degraderas termiskt',
+        'text': 'Tätningar och packningar i [objekt] degraderas av värmen',
         'next': ['seal_fail', 'flange_leak'],
     },
     'temp_below_design': {
-        'text': 'Temperaturen i [objekt] understiger designgränsen',
+        'text': 'Temperaturen i [objekt] understiger konstruktionsgränsen',
         'next': ['brittle_fracture', 'hydrate_blockage', 'freeze_damage'],
     },
     'brittle_fracture': {
-        'text': 'Försprödning av [objekt] — sprödbrott vid normal last',
+        'text': 'Försprödning av [objekt] — risk för sprödbrott',
         'next': ['rupture'],
     },
     'hydrate_blockage': {
-        'text': 'Hydrat-/isproppsbildning blockerar [objekt]',
+        'text': 'Hydrat- / isproppsbildning i [objekt]',
         'next': ['no_flow', 'overpressure'],
     },
     'freeze_damage': {
@@ -1125,7 +1125,7 @@ _CONSEQ_NODES: dict = {
                  'incompatible_mixing'],
     },
     'upstream_contamination': {
-        'text': 'Kontaminering av uppströmssystem via [objekt]',
+        'text': 'Kontaminering av uppströmssystemet via [objekt]',
         'next': ['quality_offspec', 'incompatible_mixing'],
     },
     'pump_reverse': {
@@ -1133,7 +1133,7 @@ _CONSEQ_NODES: dict = {
         'next': ['bearing_fail'],
     },
     'misdirected_flow': {
-        'text': 'Flödet når [objekt] istället för avsedd destination',
+        'text': 'Flödet leds till [objekt] i stället för avsedd destination',
         'next': ['high_level', 'incompatible_mixing', 'no_flow'],
     },
     'incompatible_mixing': {
@@ -1141,26 +1141,26 @@ _CONSEQ_NODES: dict = {
         'next': ['runaway', 'toxic_gas_generation', 'overpressure'],
     },
     'contamination_feed': {
-        'text': 'Avvikande sammansättning i flöde till [objekt]',
+        'text': 'Avvikande sammansättning i inflödet till [objekt]',
         'next': ['quality_offspec', 'incompatible_mixing', 'reaction_upset'],
     },
     'toxic_gas_generation': {
-        'text': 'Giftig/frätande gas utvecklas i [objekt]',
+        'text': 'Giftig eller korrosiv gas bildas i [objekt]',
         'next': ['overpressure', 'toxic_exposure'],
     },
     'utility_loss': {
-        'text': 'Hjälpsystem till [objekt] bortfaller',
+        'text': 'Hjälpmedier till [objekt] faller bort',
         'next': ['hx_overheat', 'no_flow', 'production_stop'],
     },
 
-    # ── Loss of containment & utfall (event tree) ─────────────────────────
+    # ── Utsläpp och utfall (event tree) ──────────────────────────────────────
     'loc_small': {
-        'text': 'Begränsat utsläpp (läcka) från [objekt]',
+        'text': 'Läckage från [objekt]',
         'next': ['jet_fire', 'pool_formation', 'flash_fire',
                  'toxic_exposure', 'env_release'],
     },
     'loc_large': {
-        'text': 'Stort okontrollerat utsläpp från [objekt]',
+        'text': 'Okontrollerat utsläpp från [objekt]',
         'next': ['jet_fire', 'pool_formation', 'vce', 'flash_fire',
                  'toxic_exposure', 'env_release'],
     },
@@ -1169,7 +1169,7 @@ _CONSEQ_NODES: dict = {
         'next': ['pool_fire', 'env_release', 'toxic_exposure'],
     },
     'jet_fire': {
-        'text': 'Jetbrand vid [objekt] (direktantändning av trycksatt läcka)',
+        'text': 'Jetbrand vid [objekt]',
         'next': ['escalation_bleve', 'personnel_injury', 'equipment_damage'],
     },
     'pool_fire': {
@@ -1177,23 +1177,23 @@ _CONSEQ_NODES: dict = {
         'next': ['escalation_bleve', 'personnel_injury', 'equipment_damage'],
     },
     'flash_fire': {
-        'text': 'Flash fire (fördröjd antändning av gasmoln)',
+        'text': 'Fördröjd antändning — flash fire',
         'next': ['personnel_injury'],
     },
     'vce': {
-        'text': 'Gasmolnsexplosion (VCE)',
+        'text': 'Ångmolnsexplosion (VCE)',
         'next': ['fatality', 'equipment_catastrophic'],
     },
     'escalation_bleve': {
-        'text': 'Brandpåverkan på intilliggande utrustning — BLEVE / domino',
+        'text': 'Brandpåverkan på intilliggande kärl — BLEVE / dominoeffekt',
         'next': ['fatality', 'equipment_catastrophic'],
     },
     'toxic_exposure': {
-        'text': 'Toxisk exponering av personal (dispersion av gasmoln)',
+        'text': 'Exponering av personal för giftig gas',
         'next': ['personnel_injury', 'fatality'],
     },
     'env_release': {
-        'text': 'Miljöutsläpp till mark / vatten / luft',
+        'text': 'Utsläpp till mark, vatten eller luft',
         'next': ['env_impact'],
     },
 
@@ -1203,7 +1203,7 @@ _CONSEQ_NODES: dict = {
         'next': ['fatality'],
     },
     'fatality': {
-        'text': 'Dödsfall',
+        'text': 'Dödsolycka',
         'next': [],
     },
     'equipment_damage': {
@@ -1211,15 +1211,15 @@ _CONSEQ_NODES: dict = {
         'next': ['production_stop'],
     },
     'equipment_catastrophic': {
-        'text': 'Omfattande skada på utrustning / struktur',
+        'text': 'Allvarlig skada på utrustning och struktur',
         'next': ['production_stop'],
     },
     'production_stop': {
-        'text': 'Produktionsbortfall / driftstopp',
+        'text': 'Produktionsavbrott',
         'next': [],
     },
     'env_impact': {
-        'text': 'Miljöpåverkan med sanering / myndighetsrapportering',
+        'text': 'Miljöpåverkan — sanering och myndighetsrapportering krävs',
         'next': [],
     },
 }
@@ -7380,15 +7380,37 @@ class ConsequenceStepPickerDialog(QDialog):
     # ── [objekt] substitution ─────────────────────────────────────────────────
     @staticmethod
     def _resolve(text: str, tag: str) -> str:
-        """Replace [objekt] with the ref-tag, or 'objektet' when no tag is set
-        (keeps prepositions readable: 'Låg nivå i objektet')."""
+        """Replace [objekt] with the ref-tag when a tag is known.
+        When no tag is set, strip the placeholder and trailing preposition
+        so the text reads naturally without a dangling noun.
+
+        Examples:
+          tag='T-101':  'Låg nivå i [objekt]'      → 'Låg nivå i T-101'
+          tag='':       'Låg nivå i [objekt]'      → 'Låg nivå'
+          tag='T-101':  '[objekt] torrkör'          → 'T-101 torrkör'
+          tag='':       '[objekt] torrkör'          → 'Torrkörning'
+          tag='T-101':  'Trycket överstiger gränsen'→ 'Trycket överstiger gränsen'
+        """
         if not text:
             return text
-        out = text.replace('[objekt]', tag if tag else 'objektet')
-        # Capitalize if the placeholder sat at the start of the sentence
-        if out and out[0].islower():
-            out = out[0].upper() + out[1:]
-        return out
+        if tag:
+            out = text.replace('[objekt]', tag)
+            if out and out[0].islower():
+                out = out[0].upper() + out[1:]
+            return out
+        # No tag — strip placeholder + any preceding OR following preposition phrase
+        # so "Flödet leds till [objekt] i stället för avsedd destination"
+        # → "Flödet leds" (not "Flödet leds i stället för avsedd destination")
+        import re as _re
+        # Remove "till [objekt] i stället för <something>" as a unit
+        stripped = _re.sub(
+            r'\s+(?:i\s+stället\s+för|inuti|i\s+inflödet\s+till|från|till|vid|av|för|mot|ur|på|i)\s+\[objekt\](?:\s+i\s+stället\s+för\s+[^,—]*)?',
+            '', text, flags=_re.IGNORECASE)
+        stripped = stripped.replace(' [objekt]', '').replace('[objekt] ', '').replace('[objekt]', '')
+        stripped = stripped.rstrip(' \t,;—')
+        if stripped and stripped[0].islower():
+            stripped = stripped[0].upper() + stripped[1:]
+        return stripped
 
     def _refresh_list_labels(self, step_idx: int, tag: str):
         """Update list item display text when ref-tag changes for this column."""
