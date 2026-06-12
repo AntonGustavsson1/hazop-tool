@@ -1288,7 +1288,7 @@ def _fix_instrument_causes_v3(conn):
 
 
 def _seed_component_causes(conn):
-    """Insert component-type-specific standard causes (idempotent)."""
+    """Insert component-type-specific standard causes with object_id FK (idempotent)."""
     for dev_name, by_type in _COMP_STD_CAUSES.items():
         row = conn.execute(
             "SELECT id FROM standard_deviations WHERE description=?", (dev_name,)).fetchone()
@@ -1300,6 +1300,14 @@ def _seed_component_causes(conn):
             (dev_id,)).fetchone()[0] or 0)
         sort_i = max_sort + 1
         for comp_type, causes in by_type.items():
+            # Resolve object_id from comp_type → standard_objects name mapping
+            obj_name = _COMP_KEY_TO_OBJ.get(comp_type)
+            obj_id   = None
+            if obj_name:
+                obj_row = conn.execute(
+                    "SELECT id FROM standard_objects WHERE name=?", (obj_name,)).fetchone()
+                if obj_row:
+                    obj_id = obj_row[0]
             for c_desc in causes:
                 exists = conn.execute(
                     "SELECT id FROM standard_causes "
@@ -1308,9 +1316,15 @@ def _seed_component_causes(conn):
                 if not exists:
                     conn.execute(
                         "INSERT INTO standard_causes "
-                        "(deviation_id, description, sort_order, comp_type) VALUES (?,?,?,?)",
-                        (dev_id, c_desc, sort_i, comp_type))
+                        "(deviation_id, description, sort_order, comp_type, object_id)"
+                        " VALUES (?,?,?,?,?)",
+                        (dev_id, c_desc, sort_i, comp_type, obj_id))
                     sort_i += 1
+                elif obj_id is not None:
+                    # Backfill object_id for existing rows
+                    conn.execute(
+                        "UPDATE standard_causes SET object_id=? WHERE id=? AND object_id IS NULL",
+                        (obj_id, exists[0]))
 
 
 # ── Standard objects (from orsaker.txt) ───────────────────────────────────────
@@ -1337,12 +1351,47 @@ _STD_OBJECTS = [
     "Övrigt",
 ]
 
+# Maps legacy comp_type strings → standard_objects.name for migration
+_COMP_TYPE_TO_OBJ: dict = {
+    'Pump':                'Pump',
+    'Kompressor':          'Kompressor / fläkt',
+    'Ventil':              'Reglerventil',        # generic → closest specific
+    'Rörledning':          'Rörledning / slang',
+    'Tank / Kärl':         'Tank / kärl / kolonn',
+    'Instrument / Sensor': 'Instrument',
+    'Värmeväxlare':        'Värmeväxlare / kylare / värmare',
+}
+
+# Maps _COMP_STD_CAUSES keys → standard_objects.name
+_COMP_KEY_TO_OBJ: dict = {
+    'Pump':                    'Pump',
+    'Kompressor':              'Kompressor / fläkt',
+    'Ventil':                  'Reglerventil',
+    'Rörledning':              'Rörledning / slang',
+    'Instrument / Sensor':     'Instrument',
+    'Tank / Kärl':             'Tank / kärl / kolonn',
+    'Värmeväxlare':            'Värmeväxlare / kylare / värmare',
+}
+
 
 def _seed_standard_objects(conn):
     for i, name in enumerate(_STD_OBJECTS):
         conn.execute(
             "INSERT OR IGNORE INTO standard_objects (name, sort_order) VALUES (?,?)",
             (name, i))
+    conn.commit()
+
+
+def _migrate_causes_to_object_id(conn):
+    """Populate standard_causes.object_id from comp_type using _COMP_TYPE_TO_OBJ mapping."""
+    for comp, obj_name in _COMP_TYPE_TO_OBJ.items():
+        row = conn.execute(
+            "SELECT id FROM standard_objects WHERE name=?", (obj_name,)).fetchone()
+        if not row:
+            continue
+        conn.execute(
+            "UPDATE standard_causes SET object_id=? WHERE comp_type=? AND object_id IS NULL",
+            (row[0], comp))
     conn.commit()
 
 
@@ -1463,6 +1512,7 @@ class Database:
             "ALTER TABLE off_page_connector ADD COLUMN dot_scene_x REAL DEFAULT NULL",
             "ALTER TABLE off_page_connector ADD COLUMN dot_scene_y REAL DEFAULT NULL",
             "ALTER TABLE consequence_steps ADD COLUMN node_key TEXT DEFAULT ''",
+            "ALTER TABLE standard_causes ADD COLUMN object_id INTEGER REFERENCES standard_objects(id)",
         ]:
             try:
                 self.conn.execute(sql)
@@ -1574,7 +1624,8 @@ class Database:
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 deviation_id INTEGER NOT NULL REFERENCES standard_deviations(id) ON DELETE CASCADE,
                 description  TEXT NOT NULL,
-                sort_order   INTEGER DEFAULT 0
+                sort_order   INTEGER DEFAULT 0,
+                object_id    INTEGER REFERENCES standard_objects(id) ON DELETE SET NULL
             );
             CREATE TABLE IF NOT EXISTS standard_objects (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1801,6 +1852,13 @@ class Database:
             _seed_standard_objects(self.conn)
             self.conn.execute(
                 "INSERT OR REPLACE INTO app_config (key,value) VALUES ('std_objects_seeded_v1','1')")
+
+        # Migrate comp_type → object_id FK (idempotent)
+        if not self.conn.execute(
+                "SELECT value FROM app_config WHERE key='causes_object_id_migrated_v1'").fetchone():
+            _migrate_causes_to_object_id(self.conn)
+            self.conn.execute(
+                "INSERT OR REPLACE INTO app_config (key,value) VALUES ('causes_object_id_migrated_v1','1')")
 
         # Seed default cause descriptions per standard cause (idempotent)
         if not self.conn.execute(
@@ -2727,6 +2785,60 @@ class Database:
         cur = self.conn.execute(
             "INSERT INTO standard_causes (deviation_id, description, sort_order, comp_type)"
             " VALUES (?,?,?,?)", (deviation_id, description, max_ord + 1, comp_type))
+        self.conn.commit()
+        return cur.lastrowid
+
+    # ── Hierarchy: deviation → object → causes ────────────────────────────────
+    def objects_for_deviation(self, deviation_id):
+        """Standard objects that have at least one cause for this deviation, sorted."""
+        rows = self.conn.execute(
+            """SELECT so.id, so.name, so.sort_order,
+                      COUNT(sc.id) AS n_causes
+               FROM standard_objects so
+               JOIN standard_causes sc ON sc.object_id = so.id
+               WHERE sc.deviation_id = ?
+               GROUP BY so.id
+               ORDER BY so.sort_order, so.name""",
+            (deviation_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def all_objects_with_cause_counts(self, deviation_id):
+        """All standard objects with cause count for this deviation (0 = no causes yet)."""
+        rows = self.conn.execute(
+            """SELECT so.id, so.name, so.sort_order,
+                      COALESCE(cnt.n, 0) AS n_causes
+               FROM standard_objects so
+               LEFT JOIN (
+                   SELECT object_id, COUNT(*) AS n
+                   FROM standard_causes WHERE deviation_id=?
+                   GROUP BY object_id
+               ) cnt ON cnt.object_id = so.id
+               ORDER BY so.sort_order, so.name""",
+            (deviation_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def standard_causes_for_object(self, deviation_id, object_id):
+        """Standard causes for a specific deviation + object combination."""
+        return [dict(r) for r in self.conn.execute(
+            """SELECT sc.id, sc.description, sc.sort_order, sc.comp_type,
+                      sc.frequency, sc.use_in_cause_form, sc.object_id
+               FROM standard_causes sc
+               WHERE sc.deviation_id=? AND sc.object_id=?
+               ORDER BY sc.sort_order, sc.id""",
+            (deviation_id, object_id))]
+
+    def add_standard_cause_with_object(self, deviation_id, object_id, description):
+        max_ord = (self.conn.execute(
+            "SELECT COALESCE(MAX(sort_order),0) FROM standard_causes WHERE deviation_id=?",
+            (deviation_id,)).fetchone()[0] or 0)
+        # Look up comp_type from object name for backwards compat
+        obj = self.conn.execute(
+            "SELECT name FROM standard_objects WHERE id=?", (object_id,)).fetchone()
+        comp = obj[0] if obj else ''
+        cur = self.conn.execute(
+            "INSERT INTO standard_causes (deviation_id, description, sort_order, comp_type, object_id)"
+            " VALUES (?,?,?,?,?)",
+            (deviation_id, description, max_ord + 1, comp, object_id))
         self.conn.commit()
         return cur.lastrowid
 
@@ -6380,95 +6492,167 @@ def _draw_equip_icon(painter, rect, comp_type):
 
 
 class StandardCausesPickerPopup(QDialog):
-    """Frameless popup listing standard causes for a given comp_type."""
+    """Three-level popup: Objekt -> Standardorsak -> Orsaksbeskrivning.
+
+    Shows objects with causes for the given deviation. User picks object,
+    then cause, then optionally a cause description sub-phrase.
+    """
     cause_picked = pyqtSignal(str, object)   # (description, frequency_or_None)
 
-    def __init__(self, comp_type: str, rows, parent=None):
+    def __init__(self, db, deviation_id: int, deviation_name: str = '',
+                 comp_type: str = '', parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Standardorsaker")
-        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
-        self.setMinimumWidth(420)
-        layout = QVBoxLayout(self)
-        layout.setSpacing(4)
-        layout.setContentsMargins(8, 8, 8, 8)
+        self._db = db
+        self._dev_id = deviation_id
+        self.setWindowTitle("Välj orsak")
+        self.setMinimumWidth(540)
+        self.setMinimumHeight(480)
+        main = QVBoxLayout(self)
+        main.setSpacing(6)
+        main.setContentsMargins(8, 8, 8, 8)
 
-        # Header row: drawn icon + comp_type label
-        hdr_row = QHBoxLayout()
-        hdr_row.setSpacing(6)
-        icon_px = QPixmap(28, 28)
-        icon_px.fill(Qt.GlobalColor.transparent)
-        _p = QPainter(icon_px)
-        _draw_equip_icon(_p, QRect(0, 0, 28, 28), comp_type)
-        _p.end()
-        icon_lbl = QLabel()
-        icon_lbl.setPixmap(icon_px)
-        hdr_row.addWidget(icon_lbl)
-        hdr_lbl = QLabel(f"<b>{comp_type}</b> — välj standardorsak")
-        hdr_lbl.setStyleSheet("color:#1F4E79;")
-        hdr_row.addWidget(hdr_lbl)
-        hdr_row.addStretch()
-        layout.addLayout(hdr_row)
+        hdr = QLabel(f"<b>Avvikelse:</b> {deviation_name}")
+        hdr.setStyleSheet("color:#1F4E79; font-size:11px; padding:2px 0;")
+        main.addWidget(hdr)
 
-        # Group by deviation_name
-        groups = {}
-        for r in rows:
-            r = dict(r)
-            groups.setdefault(r['deviation_name'], []).append(r)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        inner = QWidget()
-        vbox  = QVBoxLayout(inner)
-        vbox.setSpacing(2)
-        vbox.setContentsMargins(0, 0, 0, 0)
+        # ── Object list ───────────────────────────────────────────────────────
+        obj_w = QWidget()
+        obj_l = QVBoxLayout(obj_w)
+        obj_l.setContentsMargins(0, 0, 0, 0)
+        obj_l.addWidget(QLabel("<b>Objekttyp:</b>"))
+        self._obj_list = QListWidget()
+        self._obj_list.setAlternatingRowColors(True)
+        obj_l.addWidget(self._obj_list)
+        splitter.addWidget(obj_w)
 
-        for dev_name, causes in groups.items():
-            lbl = QLabel(f"<i>{dev_name}</i>")
-            lbl.setStyleSheet("color:#555; font-size:10px; margin-top:4px;")
-            vbox.addWidget(lbl)
-            for c in causes:
-                freq = c.get('frequency')
-                # Row widget: description left, freq badge right
-                row_w  = QWidget()
-                row_h  = QHBoxLayout(row_w)
-                row_h.setContentsMargins(0, 0, 0, 0)
-                row_h.setSpacing(4)
-                desc_btn = QPushButton(c['description'])
-                desc_btn.setFlat(True)
-                desc_btn.setStyleSheet(
-                    "QPushButton{text-align:left;padding:3px 6px;border-radius:3px;}"
-                    "QPushButton:hover{background:#e8f0fe;}")
-                desc_btn.clicked.connect(
-                    lambda _, d=c['description'], f=freq: self._pick(d, f))
-                row_h.addWidget(desc_btn, stretch=1)
-                if freq is not None:
-                    if freq < 0.01:
-                        freq_str = f"{freq:.2e} /år"
-                    elif freq < 1:
-                        freq_str = f"{freq:.3g} /år"
-                    else:
-                        freq_str = f"{freq:.3g} /år"
-                    freq_lbl = QLabel(freq_str)
-                    freq_lbl.setStyleSheet(
-                        "color:#1F4E79; background:#dce8f5; border-radius:3px;"
-                        "padding:2px 6px; font-size:10px; font-weight:bold;")
-                    freq_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                    freq_lbl.setWordWrap(False)
-                    row_h.addWidget(freq_lbl)
-                vbox.addWidget(row_w)
+        # ── Cause + desc ──────────────────────────────────────────────────────
+        right_w = QWidget()
+        right_l = QVBoxLayout(right_w)
+        right_l.setContentsMargins(4, 0, 0, 0)
+        right_l.addWidget(QLabel("<b>Orsaker:</b>"))
+        self._cause_list = QListWidget()
+        self._cause_list.setAlternatingRowColors(True)
+        right_l.addWidget(self._cause_list, 2)
+        self._desc_hdr = QLabel("<b>Orsaksbeskrivning</b> (dubbelklicka för att använda):")
+        self._desc_hdr.setStyleSheet("color:#555; font-size:10px; margin-top:4px;")
+        right_l.addWidget(self._desc_hdr)
+        self._desc_list = QListWidget()
+        self._desc_list.setMaximumHeight(110)
+        self._desc_list.setStyleSheet("font-size:10px;")
+        right_l.addWidget(self._desc_list, 1)
+        splitter.addWidget(right_w)
+        splitter.setSizes([170, 370])
+        main.addWidget(splitter, 1)
 
-        vbox.addStretch()
-        scroll.setWidget(inner)
-        scroll.setMaximumHeight(300)
-        layout.addWidget(scroll)
+        # Free-text row
+        ft_row = QHBoxLayout()
+        ft_row.addWidget(QLabel("Fritext:"))
+        self._ft_edit = QLineEdit()
+        self._ft_edit.setPlaceholderText("Ange orsak manuellt…")
+        ft_row.addWidget(self._ft_edit, 1)
+        main.addLayout(ft_row)
 
-        close_btn = QPushButton("Avbryt")
-        close_btn.clicked.connect(self.reject)
-        layout.addWidget(close_btn)
+        # Buttons
+        btn_row = QHBoxLayout()
+        self._ok_btn = QPushButton("Välj markerad orsak")
+        self._ok_btn.setDefault(True)
+        self._ok_btn.setStyleSheet(
+            "background:#1d4ed8; color:white; border:none;"
+            "border-radius:4px; padding:4px 12px;")
+        self._ok_btn.clicked.connect(self._pick_selected)
+        cancel_btn = QPushButton("Avbryt")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(self._ok_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(cancel_btn)
+        main.addLayout(btn_row)
 
-    def _pick(self, description, frequency):
-        self.cause_picked.emit(description, frequency)
+        self._obj_list.currentRowChanged.connect(self._on_obj_changed)
+        self._cause_list.currentRowChanged.connect(self._on_cause_changed)
+        self._cause_list.itemDoubleClicked.connect(lambda _: self._pick_selected())
+        self._desc_list.itemDoubleClicked.connect(lambda _: self._pick_desc())
+        self._ft_edit.returnPressed.connect(self._pick_selected)
+
+        self._populate_objects(comp_type)
+
+    def _populate_objects(self, preselect_comp: str = ''):
+        self._obj_list.clear()
+        objs = self._db.objects_for_deviation(self._dev_id)
+        sel_row = 0
+        for i, obj in enumerate(objs):
+            icon_px = QPixmap(20, 20)
+            icon_px.fill(Qt.GlobalColor.transparent)
+            _p = QPainter(icon_px)
+            _draw_equip_icon(_p, QRect(0, 0, 20, 20), obj['name'])
+            _p.end()
+            item = QListWidgetItem(QIcon(icon_px),
+                                   f"{obj['name']}  ({obj['n_causes']})")
+            item.setData(Qt.ItemDataRole.UserRole,     obj['id'])
+            item.setData(Qt.ItemDataRole.UserRole + 1, obj['name'])
+            self._obj_list.addItem(item)
+            if preselect_comp and preselect_comp.lower() in obj['name'].lower():
+                sel_row = i
+        if self._obj_list.count():
+            self._obj_list.setCurrentRow(sel_row)
+
+    def _on_obj_changed(self, row):
+        self._cause_list.clear()
+        self._desc_list.clear()
+        item = self._obj_list.item(row)
+        if not item: return
+        obj_id = item.data(Qt.ItemDataRole.UserRole)
+        for c in self._db.standard_causes_for_object(self._dev_id, obj_id):
+            freq  = c.get('frequency')
+            label = c['description']
+            if freq is not None:
+                label += f"  [{freq:g}/år]"
+            ci = QListWidgetItem(label)
+            ci.setData(Qt.ItemDataRole.UserRole,     c['id'])
+            ci.setData(Qt.ItemDataRole.UserRole + 1, c['description'])
+            ci.setData(Qt.ItemDataRole.UserRole + 2, freq)
+            self._cause_list.addItem(ci)
+        if self._cause_list.count():
+            self._cause_list.setCurrentRow(0)
+
+    def _on_cause_changed(self, row):
+        self._desc_list.clear()
+        item = self._cause_list.item(row)
+        if not item: return
+        cid  = item.data(Qt.ItemDataRole.UserRole)
+        freq = item.data(Qt.ItemDataRole.UserRole + 2)
+        for d in self._db.cause_descriptions(cid):
+            di = QListWidgetItem(d['description'])
+            di.setData(Qt.ItemDataRole.UserRole,     d['description'])
+            di.setData(Qt.ItemDataRole.UserRole + 1, freq)
+            self._desc_list.addItem(di)
+
+    def _pick_selected(self):
+        ft = self._ft_edit.text().strip()
+        if ft:
+            self.cause_picked.emit(ft, None)
+            self.accept(); return
+        desc_item = self._desc_list.currentItem()
+        if desc_item:
+            self._pick_desc(); return
+        cause_item = self._cause_list.currentItem()
+        if not cause_item: return
+        desc = cause_item.data(Qt.ItemDataRole.UserRole + 1) or cause_item.text()
+        freq = cause_item.data(Qt.ItemDataRole.UserRole + 2)
+        self.cause_picked.emit(desc, freq)
+        self.accept()
+
+    def _pick_desc(self):
+        desc_item = self._desc_list.currentItem()
+        if not desc_item: return
+        cause_item = self._cause_list.currentItem()
+        cause_text = (cause_item.data(Qt.ItemDataRole.UserRole + 1)
+                      if cause_item else '') or ''
+        desc_text  = desc_item.data(Qt.ItemDataRole.UserRole) or desc_item.text()
+        freq       = cause_item.data(Qt.ItemDataRole.UserRole + 2) if cause_item else None
+        full = f"{cause_text} — {desc_text}" if cause_text else desc_text
+        self.cause_picked.emit(full, freq)
         self.accept()
 
 
@@ -6561,6 +6745,7 @@ class CauseObjectPopup(QDialog):
         super().__init__(parent)
         self._db              = db
         self._dev_description = dev_description
+        self._deviation_id    = deviation_id   # preferred: used for new hierarchy lookup
         self._dev_combo       = None
         self._cause_buttons   = []   # list of (QRadioButton, description, freq)
         self._freq_overrides  = {}   # QRadioButton → custom freq (overrides standard)
@@ -6755,10 +6940,30 @@ class CauseObjectPopup(QDialog):
         if self._freetext_radio in self._btn_group.buttons():
             self._btn_group.removeButton(self._freetext_radio)
 
-        # Query causes filtered to current deviation, fall back to all
+        # Query causes: prefer new hierarchy (deviation + object), fall back to comp_type
         rows = []
-        if comp_type:
-            rows = self._db.standard_causes_for_comp_type(comp_type, self._dev_description)
+        if comp_type and self._db is not None:
+            # Resolve object_id from object name matching comp_type string
+            dev_id = self._deviation_id
+            if dev_id is None and self._dev_description:
+                r = self._db.conn.execute(
+                    "SELECT id FROM standard_deviations WHERE description=? LIMIT 1",
+                    (self._dev_description,)).fetchone()
+                if r:
+                    dev_id = r[0]
+                    self._deviation_id = dev_id
+            if dev_id is not None:
+                # Find best-matching standard_object for this comp_type string
+                all_objs = self._db.standard_objects()
+                obj_id = None
+                for o in all_objs:
+                    if comp_type.lower() in o['name'].lower() or o['name'].lower() in comp_type.lower():
+                        obj_id = o['id']
+                        break
+                if obj_id is not None:
+                    rows = self._db.standard_causes_for_object(dev_id, obj_id)
+            if not rows:
+                rows = self._db.standard_causes_for_comp_type(comp_type, self._dev_description)
             if not rows:
                 rows = self._db.standard_causes_for_comp_type(comp_type)
 
@@ -10781,354 +10986,260 @@ class MatrixCellButton(QPushButton):
 
 
 class StandardCausesSettingsPanel(QWidget):
-    """Editable library of standard deviations and their template causes."""
+    """3-level editable hierarchy: Avvikelse → Objekt → Orsaker (+Orsaksbeskrivningar)."""
 
     def __init__(self, db, parent=None):
         super().__init__(parent)
         self.db = db
+        self._loading = False
 
         layout = QHBoxLayout(self)
 
-        # ── Left: standard deviations list ───────────────────────────────────
-        left = QVBoxLayout()
-        left.addWidget(QLabel("<b>Standardavvikelser</b>"))
+        # ── Col 1: Avvikelse ──────────────────────────────────────────────────
+        c1 = QVBoxLayout()
+        c1.addWidget(QLabel("<b>Avvikelse</b>"))
         self._dev_list = QListWidget()
-        self._dev_list.currentRowChanged.connect(self._on_dev_selected)
-        left.addWidget(self._dev_list)
-        dev_btns = QHBoxLayout()
-        btn_add_dev = QPushButton("+")
-        btn_add_dev.setFixedWidth(28)
-        btn_add_dev.clicked.connect(self._add_deviation)
-        btn_del_dev = QPushButton("−")
-        btn_del_dev.setFixedWidth(28)
-        btn_del_dev.clicked.connect(self._del_deviation)
-        btn_up_dev = QPushButton("↑")
-        btn_up_dev.setFixedWidth(28)
-        btn_up_dev.clicked.connect(lambda: self._move_deviation(-1))
-        btn_dn_dev = QPushButton("↓")
-        btn_dn_dev.setFixedWidth(28)
-        btn_dn_dev.clicked.connect(lambda: self._move_deviation(1))
-        for b in (btn_add_dev, btn_del_dev, btn_up_dev, btn_dn_dev):
-            dev_btns.addWidget(b)
-        dev_btns.addStretch()
-        left.addLayout(dev_btns)
+        self._dev_list.currentRowChanged.connect(self._on_dev_sel)
+        c1.addWidget(self._dev_list)
+        c1b = QHBoxLayout()
+        for icon, slot in (('+', self._add_dev), ('−', self._del_dev),
+                           ('↑', lambda: self._move_dev(-1)), ('↓', lambda: self._move_dev(1))):
+            b = QPushButton(icon); b.setFixedWidth(28); b.clicked.connect(slot); c1b.addWidget(b)
+        c1b.addStretch(); c1.addLayout(c1b)
 
-        # ── Right: standard causes for selected deviation ─────────────────────
-        right = QVBoxLayout()
-        self._causes_label = QLabel("<b>Standardorsaker</b>")
-        right.addWidget(self._causes_label)
+        # ── Col 2: Objekt ─────────────────────────────────────────────────────
+        c2 = QVBoxLayout()
+        self._obj_lbl = QLabel("<b>Objekt</b>")
+        c2.addWidget(self._obj_lbl)
+        self._obj_list = QListWidget()
+        self._obj_list.currentRowChanged.connect(self._on_obj_sel)
+        c2.addWidget(self._obj_list)
+        # Show all objects; objects with causes are highlighted
+        self._show_all_obj_chk = QCheckBox("Visa alla objekt")
+        self._show_all_obj_chk.setChecked(True)
+        self._show_all_obj_chk.stateChanged.connect(lambda _: self._load_objects())
+        c2.addWidget(self._show_all_obj_chk)
 
-        self._cause_table = QTableWidget(0, 4)
-        self._cause_table.setHorizontalHeaderLabels(
-            ["Beskrivning", "Frekvens/år", "F-nivå", "Orsaksformulär"])
-        chdr = self._cause_table.horizontalHeader()
-        chdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        chdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-        chdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        chdr.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        self._cause_table.setColumnWidth(1, 90)
-        self._cause_table.setColumnWidth(2, 72)
-        self._cause_table.setColumnWidth(3, 110)
-        self._cause_table.verticalHeader().setVisible(False)
-        self._cause_table.setSelectionBehavior(
-            QTableWidget.SelectionBehavior.SelectRows)
-        self._cause_table.itemChanged.connect(self._on_cause_cell_changed)
-        self._cause_table.currentCellChanged.connect(
-            lambda row, *_: self._load_descriptions(self._cause_id_at(row)))
-        right.addWidget(self._cause_table)
-
-        cause_btns = QHBoxLayout()
-        btn_add_c = QPushButton("+")
-        btn_add_c.setFixedWidth(28)
-        btn_add_c.clicked.connect(self._add_cause)
-        btn_del_c = QPushButton("−")
-        btn_del_c.setFixedWidth(28)
-        btn_del_c.clicked.connect(self._del_cause)
-        btn_up_c = QPushButton("↑")
-        btn_up_c.setFixedWidth(28)
-        btn_up_c.clicked.connect(lambda: self._move_cause(-1))
-        btn_dn_c = QPushButton("↓")
-        btn_dn_c.setFixedWidth(28)
-        btn_dn_c.clicked.connect(lambda: self._move_cause(1))
-        for b in (btn_add_c, btn_del_c, btn_up_c, btn_dn_c):
-            cause_btns.addWidget(b)
-        cause_btns.addStretch()
-        right.addLayout(cause_btns)
-
-        btn_sync = QPushButton("Synkronisera frekvenser → orsaker")
-        btn_sync.setToolTip(
-            "Skriver över frekvensen på alla orsaker som skapades från standardorsaker "
-            "med det aktuella värdet i denna lista.\n"
-            "Orsaker utan koppling till standardorsak påverkas inte.\n"
-            "Standardorsaker utan frekvens påverkas inte.")
+        # ── Col 3: Orsaker ────────────────────────────────────────────────────
+        c3 = QVBoxLayout()
+        self._cause_lbl = QLabel("<b>Orsaker</b>")
+        c3.addWidget(self._cause_lbl)
+        self._cause_list = QListWidget()
+        self._cause_list.currentRowChanged.connect(self._on_cause_sel)
+        c3.addWidget(self._cause_list)
+        c3b = QHBoxLayout()
+        for icon, slot in (('+', self._add_cause), ('−', self._del_cause),
+                           ('↑', lambda: self._move_cause(-1)), ('↓', lambda: self._move_cause(1))):
+            b = QPushButton(icon); b.setFixedWidth(28); b.clicked.connect(slot); c3b.addWidget(b)
+        c3b.addStretch(); c3.addLayout(c3b)
+        btn_sync = QPushButton("Synka frekvenser →")
+        btn_sync.setToolTip("Uppdaterar frekvensen på alla orsaker kopplade till standardorsaker.")
         btn_sync.clicked.connect(self._sync_freqs)
-        right.addWidget(btn_sync)
+        c3.addWidget(btn_sync)
 
-        # ── Far right: cause descriptions for selected cause ──────────────────
-        far = QVBoxLayout()
-        self._desc_label = QLabel("<b>Orsaksbeskrivningar</b>")
-        far.addWidget(self._desc_label)
+        # ── Col 4: Orsaksbeskrivningar ────────────────────────────────────────
+        c4 = QVBoxLayout()
+        self._desc_lbl = QLabel("<b>Orsaksbeskrivningar</b>")
+        c4.addWidget(self._desc_lbl)
         self._desc_list = QListWidget()
-        self._desc_list.setAlternatingRowColors(True)
-        far.addWidget(self._desc_list)
+        c4.addWidget(self._desc_list)
+        c4b = QHBoxLayout()
+        for icon, slot in (('+', self._add_desc), ('−', self._del_desc),
+                           ('↑', lambda: self._move_desc(-1)), ('↓', lambda: self._move_desc(1))):
+            b = QPushButton(icon); b.setFixedWidth(28); b.clicked.connect(slot); c4b.addWidget(b)
+        c4b.addStretch(); c4.addLayout(c4b)
 
-        desc_btns = QHBoxLayout()
-        btn_add_d = QPushButton("+")
-        btn_add_d.setFixedWidth(28)
-        btn_add_d.clicked.connect(self._add_desc)
-        btn_del_d = QPushButton("−")
-        btn_del_d.setFixedWidth(28)
-        btn_del_d.clicked.connect(self._del_desc)
-        btn_up_d  = QPushButton("↑")
-        btn_up_d.setFixedWidth(28)
-        btn_up_d.clicked.connect(lambda: self._move_desc(-1))
-        btn_dn_d  = QPushButton("↓")
-        btn_dn_d.setFixedWidth(28)
-        btn_dn_d.clicked.connect(lambda: self._move_desc(1))
-        for b in (btn_add_d, btn_del_d, btn_up_d, btn_dn_d):
-            desc_btns.addWidget(b)
-        desc_btns.addStretch()
-        far.addLayout(desc_btns)
-
-        layout.addLayout(left, 1)
-        layout.addLayout(right, 2)
-        layout.addLayout(far, 1)
-
-        self._loading = False
+        layout.addLayout(c1, 1)
+        layout.addLayout(c2, 1)
+        layout.addLayout(c3, 1)
+        layout.addLayout(c4, 1)
         self._load_deviations()
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    # ── Load helpers ──────────────────────────────────────────────────────────
     def _load_deviations(self):
         self._loading = True
-        cur_row = self._dev_list.currentRow()
+        cur = self._dev_list.currentRow()
         self._dev_list.clear()
-        for dev in self.db.standard_deviations():
-            item = QListWidgetItem(dev['description'])
-            item.setData(Qt.ItemDataRole.UserRole, dev['id'])
+        for d in self.db.standard_deviations():
+            item = QListWidgetItem(d['description'])
+            item.setData(Qt.ItemDataRole.UserRole, d['id'])
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
             self._dev_list.addItem(item)
         self._loading = False
-        if cur_row >= 0:
-            self._dev_list.setCurrentRow(min(cur_row, self._dev_list.count() - 1))
-        elif self._dev_list.count():
-            self._dev_list.setCurrentRow(0)
-
-    @staticmethod
-    def _f_label(freq):
-        """Return the risk matrix frequency label for a given frequency (or '—')."""
-        if freq is None:
-            return "—"
-        return freq_axis_label(freq_to_f_level(freq))
-
-    def _load_causes(self, dev_id):
-        self._loading = True
-        self._cause_table.blockSignals(True)
-        self._cause_table.setRowCount(0)
-        for c in self.db.standard_causes(dev_id):
-            cd   = dict(c)
-            comp = cd.get('comp_type', '') or ''
-            freq = cd.get('frequency')
-            use_in_form = bool(cd.get('use_in_cause_form', 1))
-            label = f"[{comp}]  {cd['description']}" if comp else cd['description']
-
-            row = self._cause_table.rowCount()
-            self._cause_table.insertRow(row)
-
-            item0 = QTableWidgetItem(label)
-            item0.setData(Qt.ItemDataRole.UserRole, cd['id'])
-            if comp:
-                item0.setForeground(QColor('#1F4E79'))
-            self._cause_table.setItem(row, 0, item0)
-
-            item1 = QTableWidgetItem("" if freq is None else f"{freq:g}")
-            item1.setData(Qt.ItemDataRole.UserRole, cd['id'])
-            item1.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._cause_table.setItem(row, 1, item1)
-
-            item2 = QTableWidgetItem(self._f_label(freq))
-            item2.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            item2.setFlags(item2.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self._cause_table.setItem(row, 2, item2)
-
-            # Checkbox for "Använd i orsaksformulär"
-            chk = QCheckBox()
-            chk.setChecked(use_in_form)
-            cid_ = cd['id']
-            chk.stateChanged.connect(
-                lambda state, _cid=cid_:
-                    self.db.update_standard_cause(_cid, use_in_cause_form=1 if state else 0))
-            cell_w = QWidget()
-            cell_lay = QHBoxLayout(cell_w)
-            cell_lay.setContentsMargins(0, 0, 0, 0)
-            cell_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            cell_lay.addWidget(chk)
-            self._cause_table.setCellWidget(row, 3, cell_w)
-
-        self._cause_table.blockSignals(False)
-        self._loading = False
+        self._dev_list.setCurrentRow(max(0, min(cur, self._dev_list.count()-1)))
 
     def _current_dev_id(self):
         item = self._dev_list.currentItem()
         return item.data(Qt.ItemDataRole.UserRole) if item else None
 
-    def _current_cause_id(self):
-        row = self._cause_table.currentRow()
-        if row < 0:
-            return None
-        item = self._cause_table.item(row, 0)
+    def _load_objects(self, dev_id=None):
+        if dev_id is None:
+            dev_id = self._current_dev_id()
+        self._loading = True
+        cur = self._obj_list.currentRow()
+        self._obj_list.clear()
+        if dev_id is None:
+            self._loading = False; return
+        show_all = self._show_all_obj_chk.isChecked()
+        if show_all:
+            rows = self.db.all_objects_with_cause_counts(dev_id)
+        else:
+            rows = self.db.objects_for_deviation(dev_id)
+        for r in rows:
+            label = r['name']
+            n = r.get('n_causes', 0)
+            if n:
+                label = f"{r['name']}  ({n})"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, r['id'])
+            item.setData(Qt.ItemDataRole.UserRole + 1, r['name'])
+            if n:
+                item.setForeground(QColor('#1F4E79'))
+            self._obj_list.addItem(item)
+        self._loading = False
+        self._obj_list.setCurrentRow(max(0, min(cur, self._obj_list.count()-1)))
+
+    def _current_obj_id(self):
+        item = self._obj_list.currentItem()
         return item.data(Qt.ItemDataRole.UserRole) if item else None
 
-    # ── Deviation slots ───────────────────────────────────────────────────────
-    def _on_dev_selected(self, row):
-        item = self._dev_list.item(row)
-        if item:
-            dev_id = item.data(Qt.ItemDataRole.UserRole)
-            self._causes_label.setText(f"<b>Standardorsaker — {item.text()}</b>")
-            self._load_causes(dev_id)
-        else:
-            self._cause_table.setRowCount(0)
+    def _load_causes(self, dev_id=None, obj_id=None):
+        if dev_id is None: dev_id = self._current_dev_id()
+        if obj_id is None: obj_id = self._current_obj_id()
+        self._loading = True
+        cur = self._cause_list.currentRow()
+        self._cause_list.clear()
+        if dev_id is None or obj_id is None:
+            self._loading = False; return
+        dev_item = self._dev_list.currentItem()
+        obj_item = self._obj_list.currentItem()
+        dev_name = dev_item.text() if dev_item else ''
+        obj_name = obj_item.data(Qt.ItemDataRole.UserRole + 1) if obj_item else ''
+        self._cause_lbl.setText(f"<b>Orsaker</b> — {dev_name} / {obj_name}")
+        for c in self.db.standard_causes_for_object(dev_id, obj_id):
+            freq = c.get('frequency')
+            label = c['description']
+            if freq is not None:
+                label += f"  [{freq:g}/år]"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole,     c['id'])
+            item.setData(Qt.ItemDataRole.UserRole + 1, c['description'])
+            item.setData(Qt.ItemDataRole.UserRole + 2, freq)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+            self._cause_list.addItem(item)
+        self._loading = False
+        self._cause_list.setCurrentRow(max(0, min(cur, self._cause_list.count()-1)))
 
-    def _add_deviation(self):
-        name, ok = QInputDialog.getText(self, "Ny avvikelse", "Namn:")
-        if not ok or not name.strip():
-            return
-        self.db.add_standard_deviation(name.strip())
-        self._load_deviations()
-        self._dev_list.setCurrentRow(self._dev_list.count() - 1)
-
-    def _del_deviation(self):
-        dev_id = self._current_dev_id()
-        if dev_id is None:
-            return
-        if QMessageBox.question(self, "Ta bort",
-                "Ta bort avvikelsen och alla dess standardorsaker?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                ) != QMessageBox.StandardButton.Yes:
-            return
-        self.db.delete_standard_deviation(dev_id)
-        self._load_deviations()
-        self._cause_table.setRowCount(0)
-
-    def _move_deviation(self, direction):
-        row = self._dev_list.currentRow()
-        new_row = row + direction
-        if new_row < 0 or new_row >= self._dev_list.count():
-            return
-        ids = [self._dev_list.item(i).data(Qt.ItemDataRole.UserRole)
-               for i in range(self._dev_list.count())]
-        ids[row], ids[new_row] = ids[new_row], ids[row]
-        self.db.reorder_standard_deviations(ids)
-        self._load_deviations()
-        self._dev_list.setCurrentRow(new_row)
-
-    # ── Cause slots ───────────────────────────────────────────────────────────
-    def _on_cause_cell_changed(self, item):
-        if self._loading:
-            return
-        col = item.column()
-        cid = item.data(Qt.ItemDataRole.UserRole)
-        if not cid:
-            return
-        if col == 0:
-            text = item.text().strip()
-            if ']  ' in text:   # strip "[comp_type]  " prefix
-                text = text.split(']  ', 1)[1]
-            if text:
-                self.db.update_standard_cause(cid, description=text)
-        elif col == 1:
-            raw = item.text().strip().replace(',', '.')
-            try:
-                freq = float(raw) if raw else None
-            except ValueError:
-                freq = None
-            self.db.update_standard_cause(cid, frequency=freq)
-            # Refresh F-nivå column (col 2) in same row
-            self._loading = True
-            item2 = self._cause_table.item(item.row(), 2)
-            if item2 is None:
-                item2 = QTableWidgetItem()
-                item2.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item2.setFlags(item2.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                self._cause_table.setItem(item.row(), 2, item2)
-            item2.setText(self._f_label(freq))
-            self._loading = False
-
-    def _add_cause(self):
-        dev_id = self._current_dev_id()
-        if dev_id is None:
-            return
-        name, ok = QInputDialog.getText(self, "Ny standardorsak", "Beskrivning:")
-        if not ok or not name.strip():
-            return
-        self.db.add_standard_cause(dev_id, name.strip())
-        self._load_causes(dev_id)
-        self._cause_table.setCurrentCell(self._cause_table.rowCount() - 1, 0)
-
-    def _del_cause(self):
-        cid = self._current_cause_id()
-        if cid is None:
-            return
-        self.db.delete_standard_cause(cid)
-        dev_id = self._current_dev_id()
-        if dev_id:
-            self._load_causes(dev_id)
-
-    def _move_cause(self, direction):
-        row = self._cause_table.currentRow()
-        new_row = row + direction
-        if new_row < 0 or new_row >= self._cause_table.rowCount():
-            return
-        ids = [self._cause_table.item(i, 0).data(Qt.ItemDataRole.UserRole)
-               for i in range(self._cause_table.rowCount())]
-        ids[row], ids[new_row] = ids[new_row], ids[row]
-        self.db.reorder_standard_causes(ids)
-        dev_id = self._current_dev_id()
-        if dev_id:
-            self._load_causes(dev_id)
-        self._cause_table.setCurrentCell(new_row, 0)
-
-    def _sync_freqs(self):
-        ret = QMessageBox.warning(
-            self, "Synkronisera frekvenser",
-            "Alla orsaker som skapades från standardorsaker kommer att få sin frekvens "
-            "uppdaterad till det aktuella värdet i standardorsakslistan.\n\n"
-            "Orsaker utan koppling till standardorsak påverkas inte.\n"
-            "Standardorsaker utan frekvens påverkas inte.\n\n"
-            "Vill du fortsätta?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if ret == QMessageBox.StandardButton.Yes:
-            n = self.db.update_cause_freqs_from_standard()
-            QMessageBox.information(self, "Klart", f"{n} orsak(er) uppdaterades.")
-
-    # ── Cause-description column helpers ─────────────────────────────────────
-    def _cause_id_at(self, row):
-        item = self._cause_table.item(row, 0)
+    def _current_cause_id(self):
+        item = self._cause_list.currentItem()
         return item.data(Qt.ItemDataRole.UserRole) if item else None
 
     def _load_descriptions(self, cause_id):
+        self._desc_list.blockSignals(True)
         self._desc_list.clear()
         if cause_id is None:
-            return
-        self._desc_label.setText(
-            f"<b>Orsaksbeskrivningar</b> — {self._cause_table.item(self._cause_table.currentRow(), 0).text() if self._cause_table.currentRow() >= 0 else ''}")
+            self._desc_list.blockSignals(False); return
         for d in self.db.cause_descriptions(cause_id):
             item = QListWidgetItem(d['description'])
             item.setData(Qt.ItemDataRole.UserRole, d['id'])
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
             self._desc_list.addItem(item)
+        self._desc_list.blockSignals(False)
         self._desc_list.itemChanged.connect(self._on_desc_changed)
 
-    def _on_desc_changed(self, item):
-        id_ = item.data(Qt.ItemDataRole.UserRole)
-        if id_ is not None:
-            self.db.update_cause_description(id_, item.text().strip())
+    # ── Slot chains ───────────────────────────────────────────────────────────
+    def _on_dev_sel(self, row):
+        if self._loading: return
+        dev_item = self._dev_list.item(row)
+        if dev_item:
+            self._obj_lbl.setText(f"<b>Objekt</b> — {dev_item.text()}")
+        self._load_objects()
 
+    def _on_obj_sel(self, row):
+        if self._loading: return
+        self._load_causes()
+
+    def _on_cause_sel(self, row):
+        if self._loading: return
+        item = self._cause_list.item(row)
+        cid = item.data(Qt.ItemDataRole.UserRole) if item else None
+        self._load_descriptions(cid)
+
+    # ── Deviation CRUD ────────────────────────────────────────────────────────
+    def _add_dev(self):
+        new_id = self.db.add_standard_deviation('Ny avvikelse')
+        item = QListWidgetItem('Ny avvikelse')
+        item.setData(Qt.ItemDataRole.UserRole, new_id)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+        self._dev_list.addItem(item)
+        self._dev_list.editItem(item)
+
+    def _del_dev(self):
+        item = self._dev_list.currentItem()
+        if not item: return
+        id_ = item.data(Qt.ItemDataRole.UserRole)
+        if id_ and QMessageBox.question(self, 'Ta bort', 'Ta bort avvikelse och alla dess orsaker?',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                ) == QMessageBox.StandardButton.Yes:
+            self.db.delete_standard_deviation(id_)
+            self._load_deviations()
+
+    def _move_dev(self, d):
+        row = self._dev_list.currentRow()
+        new_row = row + d
+        if not (0 <= new_row < self._dev_list.count()): return
+        a = self._dev_list.takeItem(row)
+        self._dev_list.insertItem(new_row, a)
+        self._dev_list.setCurrentRow(new_row)
+        ids = [self._dev_list.item(i).data(Qt.ItemDataRole.UserRole)
+               for i in range(self._dev_list.count())]
+        self.db.reorder_standard_deviations(ids)
+
+    # ── Cause CRUD ────────────────────────────────────────────────────────────
+    def _add_cause(self):
+        dev_id = self._current_dev_id()
+        obj_id = self._current_obj_id()
+        if dev_id is None or obj_id is None: return
+        new_id = self.db.add_standard_cause_with_object(dev_id, obj_id, 'Ny orsak')
+        item = QListWidgetItem('Ny orsak')
+        item.setData(Qt.ItemDataRole.UserRole, new_id)
+        item.setData(Qt.ItemDataRole.UserRole + 1, 'Ny orsak')
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+        self._cause_list.addItem(item)
+        self._cause_list.editItem(item)
+        self._load_objects()   # refresh object cause counts
+
+    def _del_cause(self):
+        item = self._cause_list.currentItem()
+        if not item: return
+        id_ = item.data(Qt.ItemDataRole.UserRole)
+        if id_:
+            self.db.delete_standard_cause(id_)
+            row = self._cause_list.row(item)
+            self._cause_list.takeItem(row)
+            self._load_objects()
+
+    def _move_cause(self, d):
+        row = self._cause_list.currentRow()
+        new_row = row + d
+        if not (0 <= new_row < self._cause_list.count()): return
+        a = self._cause_list.takeItem(row)
+        self._cause_list.insertItem(new_row, a)
+        self._cause_list.setCurrentRow(new_row)
+        ids = [self._cause_list.item(i).data(Qt.ItemDataRole.UserRole)
+               for i in range(self._cause_list.count())]
+        self.db.reorder_standard_causes(ids)
+
+    def _on_cause_changed(self, item):
+        if self._loading: return
+        id_ = item.data(Qt.ItemDataRole.UserRole)
+        if id_:
+            self.db.update_standard_cause(id_, description=item.text().strip())
+
+    # ── Description CRUD ──────────────────────────────────────────────────────
     def _add_desc(self):
-        cid = self._cause_id_at(self._cause_table.currentRow())
-        if cid is None:
-            return
+        cid = self._current_cause_id()
+        if cid is None: return
         new_id = self.db.add_cause_description(cid, 'Ny beskrivning')
         item = QListWidgetItem('Ny beskrivning')
         item.setData(Qt.ItemDataRole.UserRole, new_id)
@@ -11138,28 +11249,37 @@ class StandardCausesSettingsPanel(QWidget):
 
     def _del_desc(self):
         item = self._desc_list.currentItem()
-        if not item:
-            return
+        if not item: return
         id_ = item.data(Qt.ItemDataRole.UserRole)
-        if id_ is not None:
-            self.db.delete_cause_description(id_)
+        if id_: self.db.delete_cause_description(id_)
         self._desc_list.takeItem(self._desc_list.row(item))
 
-    def _move_desc(self, direction):
-        row   = self._desc_list.currentRow()
-        count = self._desc_list.count()
-        new_row = row + direction
-        if not (0 <= new_row < count):
-            return
+    def _move_desc(self, d):
+        row = self._desc_list.currentRow()
+        new_row = row + d
+        if not (0 <= new_row < self._desc_list.count()): return
         a = self._desc_list.takeItem(row)
         self._desc_list.insertItem(new_row, a)
         self._desc_list.setCurrentRow(new_row)
         ids = [self._desc_list.item(i).data(Qt.ItemDataRole.UserRole)
-               for i in range(count)]
+               for i in range(self._desc_list.count())]
         self.db.reorder_cause_descriptions(ids)
 
+    def _on_desc_changed(self, item):
+        id_ = item.data(Qt.ItemDataRole.UserRole)
+        if id_: self.db.update_cause_description(id_, item.text().strip())
 
-# ── Standard-objects settings panel ───────────────────────────────────────────
+    # ── Sync ──────────────────────────────────────────────────────────────────
+    def _sync_freqs(self):
+        ret = QMessageBox.question(self, 'Synka frekvenser',
+            'Uppdatera frekvenser på alla kopplade orsaker?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if ret == QMessageBox.StandardButton.Yes:
+            n = self.db.update_cause_freqs_from_standard()
+            QMessageBox.information(self, 'Klart', f'{n} orsak(er) uppdaterades.')
+
+
 class StandardObjectsSettingsPanel(QWidget):
     """Editable list of standard object types (from orsaker.txt)."""
 
