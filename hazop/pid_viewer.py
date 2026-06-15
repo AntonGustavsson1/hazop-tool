@@ -385,6 +385,7 @@ MODE_RED_MARKUP_SYMBOL = 13  # click to place a red markup P&ID symbol
 MODE_BOARD_LAYOUT    = 14  # drag pages to reposition on study board
 MODE_ADD_SHEET_LINK  = 15  # click target page to create a manual inter-sheet link
 MODE_PICK_REF_TAG   = 16  # one-shot click: detect tag near point → emit ref_tag_picked
+MODE_ANNOTATION     = 17  # click on board to place a sticky note
 
 # ── Off-page connector analysis ───────────────────────────────────────────────
 _RE_TO_FROM = re.compile(
@@ -3427,6 +3428,7 @@ class PIDGraphicsView(QGraphicsView):
     context_action          = pyqtSignal(str, object, int)
     marker_clicked          = pyqtSignal(str, int)
     ref_tag_picked          = pyqtSignal(str)   # MODE_PICK_REF_TAG one-shot result
+    annotation_clicked      = pyqtSignal(object)  # QPointF — MODE_ANNOTATION click
     # Markup editing signals
     markup_draw_finished    = pyqtSignal(str, list, int)   # type_, pdf_pts, page
     markup_item_clicked     = pyqtSignal(int)              # markup_id
@@ -3940,6 +3942,9 @@ class PIDGraphicsView(QGraphicsView):
             self.setCursor(Qt.CursorShape.ArrowCursor)
             self._clear_edit_handles()
         elif mode == MODE_PICK_REF_TAG:
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        elif mode == MODE_ANNOTATION:
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
         elif mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD,
@@ -5765,6 +5770,8 @@ class PIDGraphicsView(QGraphicsView):
                 self.ref_tag_picked.emit(suggested or '')
                 self.mode = MODE_NAV
                 self.setCursor(Qt.CursorShape.ArrowCursor)
+            elif self.mode == MODE_ANNOTATION:
+                self.annotation_clicked.emit(center)
             event.accept()
             return
 
@@ -6449,6 +6456,7 @@ class PIDPanel(QWidget):
     cause_placement_requested = pyqtSignal(int, str, str, object, int, str)
     # (deviation_id, suggested_tag, detected_comp_type, scene_pos, page)
     ref_tag_picked            = pyqtSignal(str)   # forwarded from viewer after MODE_PICK_REF_TAG
+    annotation_placed         = pyqtSignal(int)   # annotation id (feature 8)
     # Node markup signals
     markup_draw_finished    = pyqtSignal(str, int, list, int, str)  # type_, node_id, pts, page, label
     markup_item_selected    = pyqtSignal(int)                        # markup_id
@@ -6594,6 +6602,14 @@ class PIDPanel(QWidget):
         self.layout_btn.toggled.connect(self._on_layout_mode_toggled)
         bar.addWidget(self.layout_btn)
 
+        self._annot_btn = QPushButton("📝 Notering")
+        self._annot_btn.setCheckable(True)
+        self._annot_btn.setToolTip("Klicka på brädet för att lägga till en klisterlapps-notering")
+        self._annot_btn.toggled.connect(
+            lambda on: (self._set_mode(MODE_ANNOTATION) if on
+                        else self._set_mode(MODE_NAV)))
+        bar.addWidget(self._annot_btn)
+
         self.smart_btn = QPushButton("✨ Smart layout")
         self.smart_btn.setToolTip(
             "Analyserar off-page connectors och föreslår optimal bladlayout (max 15 s)")
@@ -6702,6 +6718,7 @@ class PIDPanel(QWidget):
         self.viewer.consequence_at_marker_requested.connect(self._on_add_consequence_at_marker)
         self.viewer.safeguard_at_marker_requested.connect(self._on_add_safeguard_at_marker)
         self.viewer.ref_tag_picked.connect(self.ref_tag_picked)
+        self.viewer.annotation_clicked.connect(self._on_annotation_click)
         self._active_place_type  = None   # 'cause' | 'consequence' | 'safeguard'
         self._active_place_id    = None
         self._pending_zone_pdf   = None   # QRectF while zone dialog chain is open
@@ -7261,6 +7278,8 @@ class PIDPanel(QWidget):
         total = len(self._sheet_map) if self._sheet_map else (
             self.db.get_display_page_count() or self.viewer.page_count())
         display_n = max(0, min(display_n, total - 1))
+        # Feature 10: save zoom/scroll for the page we're leaving
+        self._save_page_view(self._current_display_page)
         if self._sheet_map:
             physical = self._sheet_map.get(display_n, display_n)
         elif self.db.get_display_page_count() > 0:
@@ -7270,6 +7289,8 @@ class PIDPanel(QWidget):
         self._current_display_page = display_n
         self.viewer.goto_page(physical)
         self._update_page_label()
+        # Feature 10: restore saved zoom/scroll for new page
+        self._restore_page_view(display_n)
 
     def _on_page_spin_changed(self):
         self._goto_page(self.page_spin.value() - 1)
@@ -7289,6 +7310,27 @@ class PIDPanel(QWidget):
             self.page_spin.setValue(1)
             self.page_spin.blockSignals(False)
             self.page_total_label.setText("/ —")
+
+    # ── Feature 10: per-page zoom/scroll state ────────────────────────────────
+    _page_views: dict = {}   # display_n → (m11, m12, m21, m22, dx, dy)
+
+    def _save_page_view(self, display_n):
+        t = self.viewer.transform()
+        self._page_views[display_n] = (t.m11(), t.m12(), t.m21(), t.m22(),
+                                       self.viewer.horizontalScrollBar().value(),
+                                       self.viewer.verticalScrollBar().value())
+
+    def _restore_page_view(self, display_n):
+        state = self._page_views.get(display_n)
+        if not state:
+            return
+        from PyQt6.QtGui import QTransform
+        m11, m12, m21, m22, hv, vv = state
+        self.viewer.setTransform(QTransform(m11, m12, m21, m22, 0, 0))
+        self.viewer.horizontalScrollBar().setValue(hv)
+        self.viewer.verticalScrollBar().setValue(vv)
+        self.viewer._apply_lod(self.viewer.transform().m11())
+        self.viewer._schedule_lod_update()
 
     def navigate_to_marker(self, physical_page, x_pdf, y_pdf):
         """Navigate to the page containing a marker and zoom in on it."""
@@ -7926,6 +7968,33 @@ class PIDPanel(QWidget):
             suggested = (full_text or tag or '').replace(' ', '') if strip else (full_text or tag or '')
             self._on_safeguard_click(center_scene, page, suggested)
 
+    def _on_annotation_click(self, scene_pos):
+        """Feature 8: create a sticky note annotation at scene_pos."""
+        from PyQt6.QtWidgets import QInputDialog
+        text, ok = QInputDialog.getText(self, 'Ny notering', 'Anteckning:')
+        if not ok or not text.strip():
+            self._set_mode(MODE_NAV); self._annot_btn.setChecked(False); return
+        ann_id = self.db.add_board_annotation(
+            scene_pos.x(), scene_pos.y(), text=text.strip())
+        self._draw_annotation(ann_id, scene_pos.x(), scene_pos.y(),
+                              200.0, 80.0, text.strip(), '#fff9c4')
+        self._set_mode(MODE_NAV); self._annot_btn.setChecked(False)
+        self.annotation_placed.emit(ann_id)
+
+    def _draw_annotation(self, ann_id, x, y, w, h, text, color):
+        rect = self.viewer._scene.addRect(
+            QRectF(x, y, w, h),
+            QPen(QColor('#f9a825'), 2),
+            QBrush(QColor(color)))
+        rect.setFlag(rect.GraphicsItemFlag.ItemIsMovable, True)
+        rect.setZValue(Z_TEMP + 2)
+        rect.setData(0, ('annotation', ann_id))
+        txt = self.viewer._scene.addText(text)
+        txt.setPos(x + 6, y + 4)
+        txt.setTextWidth(w - 12)
+        txt.setZValue(Z_TEMP + 3)
+        txt.setData(0, ('annotation_text', ann_id))
+
     def _on_zone_resized(self, marker_type, marker_id, cx, cy, w, h):
         """Zone corner was dragged — update DB marker center and rect dimensions."""
         if hasattr(self.db, 'update_marker_rect'):
@@ -8140,6 +8209,12 @@ class PIDPanel(QWidget):
                 for spos in spos_list:
                     for kpos in all_cons_pos[s['consequence_id']]:
                         self.viewer.add_connection_line(kpos, spos, '#27ae60', dashed=True)
+
+        # Feature 8: load sticky note annotations
+        if hasattr(self.db, 'get_board_annotations'):
+            for ann in self.db.get_board_annotations():
+                self._draw_annotation(ann['id'], ann['x'], ann['y'],
+                                      ann['w'], ann['h'], ann['text'], ann['color'])
 
         self.viewer.current_page = orig_page
         self._draw_tag_highlights()
@@ -8458,45 +8533,60 @@ class PIDPanel(QWidget):
             self._open_template_dialog_for_deviation(reopen_dev, reopen_type)
 
     def _open_template_dialog_for_deviation(self, dev_id, preselect_type=''):
-        """Open TemplateCausePickerDialog without a click position (cause gets no P&ID marker)."""
+        """Open StandardCausesPickerPopup (new 2-col Objekt→Orsak picker) for a deviation."""
         dev = self.db.get_deviation(dev_id)
         if not dev:
             return
         dev_name = dev['description']
-        std_causes = (self.db.standard_causes_for_name(dev_name)
-                      if hasattr(self.db, 'standard_causes_for_name') else [])
-        comp_type_names = sorted({
-            dict(c).get('comp_type', '') for c in std_causes
-            if dict(c).get('comp_type', '')
-        })
-        dlg = TemplateCausePickerDialog(
-            dev_name, std_causes,
-            component_types=comp_type_names,
-            suggested_tag='',
-            preselect_type=preselect_type,
-            parent=self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
+
+        # Use the new object-first picker (StandardCausesPickerPopup from hazop.py)
+        try:
+            from hazop import StandardCausesPickerPopup as _SP
+            dlg = _SP(self.db, dev_id, deviation_name=dev_name,
+                      comp_type=preselect_type, parent=self)
+        except Exception:
+            # Fallback to old dialog if import fails
+            dlg = None
+
+        if dlg is None:
             return
 
-        cause_desc = dlg.chosen_description
-        comp_type  = dlg.component_type
-        tag        = dlg.component_tag
-        if not cause_desc:
+        picked = {}
+        def _on_pick(desc, freq):
+            picked['desc'] = desc
+            picked['freq'] = freq
+
+        dlg.cause_picked.connect(_on_pick)
+        if dlg.exec() != QDialog.DialogCode.Accepted or not picked.get('desc'):
             return
 
-        label = cause_desc
+        cause_desc = picked['desc']
+        std_freq   = picked.get('freq')
+
+        # Feature 2: auto-fill tag from equipment catalog based on selected object type
+        obj_item   = dlg._obj_list.currentItem()
+        comp_type  = obj_item.data(Qt.ItemDataRole.UserRole + 1) if obj_item else ''
+        tag        = ''
+        if comp_type:
+            page = self.viewer.current_page
+            try:
+                rows = self.db.conn.execute(
+                    "SELECT tag FROM equipment_catalog "
+                    "WHERE pid_page=? AND equipment_type=? AND include=1 LIMIT 1",
+                    (page, comp_type)).fetchone()
+                if rows:
+                    tag = rows[0]
+            except Exception:
+                pass
 
         try:
             cause_id = self.db.add_cause(dev_id)
         except Exception as e:
             QMessageBox.critical(self, "Databasfel", f"Kunde inte skapa orsak:\n{e}")
             return
-        self.db.update_cause(cause_id, label)
-        std_freq     = dlg.chosen_std_cause_freq
-        std_cause_id = dlg.chosen_std_cause_id
-        if std_freq is not None or std_cause_id is not None:
-            self.db.update_cause(cause_id, base_freq=std_freq,
-                                 standard_cause_id=std_cause_id)
+        self.db.update_cause(cause_id, cause_desc, comp_type=comp_type, comp_tag=tag)
+        if std_freq is not None:
+            self.db.update_cause(cause_id, base_freq=std_freq)
         self.cause_template_created.emit(cause_id)
 
         # If user wants secondary again, queue it

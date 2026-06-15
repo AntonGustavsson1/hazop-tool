@@ -1285,6 +1285,8 @@ class Database:
             "ALTER TABLE nodes ADD COLUMN media TEXT DEFAULT ''",
             "ALTER TABLE nodes ADD COLUMN pressure TEXT DEFAULT ''",
             "ALTER TABLE nodes ADD COLUMN temperature TEXT DEFAULT ''",
+            "ALTER TABLE nodes ADD COLUMN updated_at TEXT DEFAULT ''",
+            "ALTER TABLE nodes ADD COLUMN updated_by TEXT DEFAULT ''",
             "ALTER TABLE causes ADD COLUMN likelihood INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE causes ADD COLUMN source_id INTEGER DEFAULT NULL",
             "ALTER TABLE causes ADD COLUMN base_freq REAL DEFAULT NULL",
@@ -1443,6 +1445,15 @@ class Database:
                 cause_id        INTEGER NOT NULL REFERENCES standard_causes(id) ON DELETE CASCADE,
                 description     TEXT NOT NULL,
                 sort_order      INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS board_annotations (
+                id     INTEGER PRIMARY KEY AUTOINCREMENT,
+                x      REAL DEFAULT 0,
+                y      REAL DEFAULT 0,
+                w      REAL DEFAULT 200,
+                h      REAL DEFAULT 80,
+                text   TEXT DEFAULT '',
+                color  TEXT DEFAULT '#fff9c4'
             );
             CREATE TABLE IF NOT EXISTS consequence_steps (
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2118,6 +2129,34 @@ class Database:
             rows)
         self.conn.commit()
 
+    # ── Board annotations (sticky notes, feature 8) ──────────────────────────
+    def get_board_annotations(self):
+        return [dict(r) for r in self.conn.execute(
+            "SELECT id,x,y,w,h,text,color FROM board_annotations")]
+
+    def add_board_annotation(self, x, y, text='', color='#fff9c4', w=200, h=80):
+        cur = self.conn.execute(
+            "INSERT INTO board_annotations (x,y,w,h,text,color) VALUES (?,?,?,?,?,?)",
+            (x, y, w, h, text, color))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def update_board_annotation(self, id_, x=None, y=None, w=None, h=None,
+                                 text=None, color=None):
+        sets, vals = [], []
+        for col, val in (('x',x),('y',y),('w',w),('h',h),('text',text),('color',color)):
+            if val is not None:
+                sets.append(f"{col}=?"); vals.append(val)
+        if sets:
+            self.conn.execute(
+                f"UPDATE board_annotations SET {', '.join(sets)} WHERE id=?",
+                vals + [id_])
+            self.conn.commit()
+
+    def delete_board_annotation(self, id_):
+        self.conn.execute("DELETE FROM board_annotations WHERE id=?", (id_,))
+        self.conn.commit()
+
     def get_pid_connections(self):
         return self.conn.execute("SELECT * FROM pid_connection").fetchall()
 
@@ -2381,6 +2420,13 @@ class Database:
         return self.conn.execute(
             "SELECT * FROM consequences WHERE cause_id=? ORDER BY id", (cause_id,)).fetchall()
 
+    def safeguards_for_cause(self, cause_id):
+        """Return all safeguards attached to any consequence of cause_id."""
+        return self.conn.execute(
+            "SELECT s.id FROM safeguards s "
+            "JOIN consequences c ON c.id=s.consequence_id "
+            "WHERE c.cause_id=?", (cause_id,)).fetchall()
+
     def safeguards(self, consequence_id):
         return self.conn.execute(
             "SELECT * FROM safeguards WHERE consequence_id=? ORDER BY id", (consequence_id,)).fetchall()
@@ -2420,6 +2466,21 @@ class Database:
 
     def get_deviation(self, id_):
         return self.conn.execute("SELECT * FROM deviations WHERE id=?", (id_,)).fetchone()
+
+    def causes_for_node_all(self, node_id):
+        """All causes for a node across all deviations."""
+        return self.conn.execute(
+            "SELECT c.* FROM causes c "
+            "JOIN deviations d ON d.id=c.deviation_id "
+            "WHERE d.node_id=?", (node_id,)).fetchall()
+
+    def consequences_for_node(self, node_id):
+        """All consequences for a node across all causes."""
+        return self.conn.execute(
+            "SELECT k.* FROM consequences k "
+            "JOIN causes c ON c.id=k.cause_id "
+            "JOIN deviations d ON d.id=c.deviation_id "
+            "WHERE d.node_id=?", (node_id,)).fetchall()
 
     def causes_for_deviation(self, deviation_id):
         return self.conn.execute(
@@ -2719,6 +2780,15 @@ class Database:
         return cur.lastrowid
 
     # ── Update ────────────────────────────────────────────────────────────────
+    def touch_node(self, node_id):
+        """Update updated_at/updated_by on node (feature 20)."""
+        import datetime as _dt
+        user = (self.get_config('user_name', '') or '').strip() or 'okänd'
+        self.conn.execute(
+            "UPDATE nodes SET updated_at=?,updated_by=? WHERE id=?",
+            (_dt.datetime.now().strftime('%Y-%m-%d %H:%M'), user, node_id))
+        self.conn.commit()
+
     def update_node(self, id_, name, description, pid_ref,
                     media='', pressure='', temperature=''):
         self.conn.execute(
@@ -2726,6 +2796,7 @@ class Database:
             "media=?,pressure=?,temperature=? WHERE id=?",
             (name, description, pid_ref, media, pressure, temperature, id_))
         self.conn.commit()
+        self.touch_node(id_)
 
     # ── Node markup CRUD ──────────────────────────────────────────────────────
     def add_node_markup(self, node_id, type_, pts, label, color, opacity, line_width, page,
@@ -3450,6 +3521,11 @@ class NodePanel(QWidget):
         form.addRow("Temperatur:", self.temperature_edit)
 
         layout.addLayout(form)
+
+        # Feature 20: timestamp + responsible
+        self._ts_lbl = QLabel('')
+        self._ts_lbl.setStyleSheet("color:#999; font-size:9px; margin-top:4px;")
+        layout.addWidget(self._ts_lbl)
         layout.addStretch()
 
     def load(self, node_id):
@@ -3465,6 +3541,12 @@ class NodePanel(QWidget):
             self.media_edit.setText(row['media'] or '')
             self.pressure_edit.setText(row['pressure'] or '')
             self.temperature_edit.setText(row['temperature'] or '')
+            at = row['updated_at'] if 'updated_at' in row.keys() else ''
+            by = row['updated_by'] if 'updated_by' in row.keys() else ''
+            if at:
+                self._ts_lbl.setText(f"Senast redigerad: {at}" + (f" av {by}" if by else ""))
+            else:
+                self._ts_lbl.setText('')
             self._loading = False
 
     def _save(self):
@@ -5492,6 +5574,7 @@ class TreePanel(QWidget):
         self.tree.customContextMenuRequested.connect(self._context_menu)
         self.tree.currentItemChanged.connect(self._on_select)
         self.tree.itemDoubleClicked.connect(self._on_item_double_click)
+        self.tree.installEventFilter(self)   # keyboard navigation (feature 17)
         layout.addWidget(self.tree)
 
         btn_row = QHBoxLayout()
@@ -5866,6 +5949,65 @@ class TreePanel(QWidget):
             if new_id:
                 self.refresh(SG_T, new_id)
                 self.structure_changed.emit()
+
+    # ── Feature 17: keyboard navigation ───────────────────────────────────────
+    def eventFilter(self, obj, event):
+        from PyQt6.QtCore import QEvent
+        if obj is not self.tree or event.type() != QEvent.Type.KeyPress:
+            return super().eventFilter(obj, event)
+        key  = event.key()
+        item = self.tree.currentItem()
+        if item is None:
+            return False
+        type_ = item.data(0, Qt.ItemDataRole.UserRole + 1)
+        id_   = item.data(0, Qt.ItemDataRole.UserRole)
+
+        if key == Qt.Key.Key_Right:
+            if item.childCount():
+                item.setExpanded(True)
+                self.tree.setCurrentItem(item.child(0))
+            return True
+        if key == Qt.Key.Key_Left:
+            if item.isExpanded():
+                item.setExpanded(False)
+            elif item.parent():
+                self.tree.setCurrentItem(item.parent())
+            return True
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            # Add child at next level
+            if type_ == NODE_T:
+                self.add_cause()
+            elif type_ == DEV_T and id_ is not None:
+                self._add_cause_for_deviation(id_)
+            elif type_ == CAUSE_T and id_ is not None:
+                new_id = self.db.add_consequence(id_)
+                self.refresh(CONS_T, new_id); self.structure_changed.emit()
+            elif type_ == CONS_T and id_ is not None:
+                new_id = self.db.add_safeguard(id_)
+                self.refresh(SG_T, new_id); self.structure_changed.emit()
+            return True
+        if key == Qt.Key.Key_Delete and id_ is not None:
+            label = {NODE_T: 'nod', DEV_T: 'avvikelse', CAUSE_T: 'orsak',
+                     CONS_T: 'konsekvens', SG_T: 'safeguard'}.get(type_, 'objekt')
+            if QMessageBox.question(
+                    self, 'Ta bort', f'Ta bort {label}?',
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            ) == QMessageBox.StandardButton.Yes:
+                self._delete_item(type_, id_)
+            return True
+        return False
+
+    def _add_cause_for_deviation(self, dev_id):
+        new_id = self.db.add_cause(dev_id)
+        self.refresh(CAUSE_T, new_id); self.structure_changed.emit()
+
+    def _delete_item(self, type_, id_):
+        if type_ == NODE_T:      self.db.delete_node(id_)
+        elif type_ == DEV_T:     self.db.delete_deviation(id_)
+        elif type_ == CAUSE_T:   self.db.delete_cause(id_)
+        elif type_ == CONS_T:    self.db.delete_consequence(id_)
+        elif type_ == SG_T:      self.db.delete_safeguard(id_)
+        self.refresh(); self.structure_changed.emit()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -6310,6 +6452,16 @@ class StandardCausesPickerPopup(QDialog):
             "background:#eef4fb; border-radius:3px;")
         main.addWidget(hdr)
 
+        # Search bar (feature 14)
+        search_row = QHBoxLayout()
+        search_row.setSpacing(4)
+        self._search_edit = QLineEdit()
+        self._search_edit.setPlaceholderText("🔍  Sök bland orsaker…")
+        self._search_edit.setClearButtonEnabled(True)
+        self._search_edit.textChanged.connect(self._on_search)
+        search_row.addWidget(self._search_edit)
+        main.addLayout(search_row)
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
         # ── Left: Object list ─────────────────────────────────────────────────
@@ -6375,6 +6527,7 @@ class StandardCausesPickerPopup(QDialog):
         self._obj_list.currentRowChanged.connect(self._on_obj_changed)
         self._cause_list.itemDoubleClicked.connect(lambda _: self._pick_selected())
         self._ft_edit.returnPressed.connect(self._pick_selected)
+        self._search_edit.installEventFilter(self)
 
         self._populate_objects(comp_type)
 
@@ -6404,17 +6557,56 @@ class StandardCausesPickerPopup(QDialog):
         obj_id   = item.data(Qt.ItemDataRole.UserRole)
         obj_name = item.data(Qt.ItemDataRole.UserRole + 1)
         self._cause_hdr.setText(f"<b>Orsaker — {obj_name}:</b>")
+        filt = self._search_edit.text().strip().lower()
         for c in self._db.standard_causes_for_object(self._dev_id, obj_id):
             freq  = c.get('frequency')
             label = c['description']
+            if filt and filt not in label.lower():
+                continue
             ci = QListWidgetItem(label)
             ci.setData(Qt.ItemDataRole.UserRole + 1, c['description'])
             ci.setData(Qt.ItemDataRole.UserRole + 2, freq)
             if freq is not None:
-                ci.setToolTip(f"Frekvens: {freq:g} händelser/år")
+                fl = f"{freq:g}/år"
+                ci.setToolTip(f"Frekvens: {fl}")
+                fi = QFont(ci.font()); fi.setItalic(True)
+                ci.setForeground(QColor('#1F4E79'))
+                ci.setText(f"{label}   [{fl}]")
             self._cause_list.addItem(ci)
         if self._cause_list.count():
             self._cause_list.setCurrentRow(0)
+
+    def _on_search(self, text):
+        """Filter current cause list; if text crosses objects, search all."""
+        filt = text.strip().lower()
+        if not filt:
+            # Restore current object's list
+            self._on_obj_changed(self._obj_list.currentRow())
+            return
+        # Search across ALL objects for this deviation
+        self._cause_list.clear()
+        self._cause_hdr.setText(f"<b>Sökresultat:</b>")
+        for obj in self._db.objects_for_deviation(self._dev_id):
+            for c in self._db.standard_causes_for_object(self._dev_id, obj['id']):
+                if filt in c['description'].lower():
+                    freq  = c.get('frequency')
+                    label = f"{c['description']}  · {obj['name']}"
+                    ci = QListWidgetItem(label)
+                    ci.setData(Qt.ItemDataRole.UserRole + 1, c['description'])
+                    ci.setData(Qt.ItemDataRole.UserRole + 2, freq)
+                    self._cause_list.addItem(ci)
+        if self._cause_list.count():
+            self._cause_list.setCurrentRow(0)
+
+    def eventFilter(self, obj, event):
+        from PyQt6.QtCore import QEvent
+        if obj is self._search_edit and event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Down, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self._cause_list.setFocus()
+                if self._cause_list.count():
+                    self._cause_list.setCurrentRow(0)
+                return True
+        return super().eventFilter(obj, event)
 
     def _pick_selected(self):
         ft = self._ft_edit.text().strip()
@@ -7986,6 +8178,14 @@ class _PidDelegate(_ScenarioDelegate):
                     painter.setPen(QPen(QColor('#ddd'), 1))
                     painter.drawLine(freq_rect.right(), r.top(), freq_rect.right(), r.bottom())
 
+                # Status icon (feature 5) — right-most 18px of desc area
+                status_icon = index.data(Qt.ItemDataRole.UserRole + 6) or ''
+                _STATUS_W = 18
+                icon_rect = QRect(desc_rect.right() - _STATUS_W, desc_rect.top(),
+                                  _STATUS_W, desc_rect.height())
+                text_rect_adj = QRect(desc_rect.left(), desc_rect.top(),
+                                      desc_rect.width() - _STATUS_W, desc_rect.height())
+
                 # Description text
                 desc = index.data(Qt.ItemDataRole.DisplayRole) or ''
                 tc = (option.palette.highlightedText().color() if sel
@@ -7994,10 +8194,14 @@ class _PidDelegate(_ScenarioDelegate):
                 painter.setFont(option.font)
                 fm = painter.fontMetrics()
                 elided = fm.elidedText(desc, Qt.TextElideMode.ElideRight,
-                                       desc_rect.width() - 4)
-                painter.drawText(desc_rect.adjusted(2, 0, -2, 0),
+                                       text_rect_adj.width() - 4)
+                painter.drawText(text_rect_adj.adjusted(2, 0, -2, 0),
                                  Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                                  elided)
+                if status_icon:
+                    sf = QFont(option.font); sf.setPointSize(max(7, option.font.pointSize() - 1))
+                    painter.setFont(sf)
+                    painter.drawText(icon_rect, Qt.AlignmentFlag.AlignCenter, status_icon)
 
                 # Pin icon — always shown in ORS column (red if placeholder)
                 meta = self._panel._row_meta
@@ -9011,6 +9215,25 @@ class ScenarioTablePanel(QWidget):
         self._table.setItem(r, self._C_DEV, dev_item)
 
         # ── Col 2: Orsak ─────────────────────────────────────────────────────
+        # Status icon (feature 5): green=complete, orange=partial, red=empty
+        _cons_list   = self.db.consequences(cause_d['id'])
+        _has_cons    = len(_cons_list) > 0
+        _has_sev     = any(c.get('severity', 0) and c.get('severity', 0) > 0
+                           for c in [dict(x) for x in _cons_list])
+        _has_sg      = bool(self.db.safeguards_for_cause(cause_d['id']))
+        if _has_cons and _has_sev and _has_sg:
+            _status_icon = '🟢'
+            _status_tip  = 'Komplett: konsekvens + allvarlighet + barriär'
+        elif _has_cons and _has_sev:
+            _status_icon = '🟡'
+            _status_tip  = 'Saknar barriär'
+        elif _has_cons:
+            _status_icon = '🟠'
+            _status_tip  = 'Saknar allvarlighetsgradering'
+        else:
+            _status_icon = '🔴'
+            _status_tip  = 'Ingen konsekvens angiven'
+
         ors = QTableWidgetItem(cause_d['description'])
         ors.setData(Qt.ItemDataRole.UserRole,     ('cause', cause_d['id']))
         ors.setData(Qt.ItemDataRole.UserRole + 2, (cause_d.get('comp_type') or '',
@@ -9018,7 +9241,9 @@ class ScenarioTablePanel(QWidget):
         ors.setData(Qt.ItemDataRole.UserRole + 3, freq)
         ors.setData(Qt.ItemDataRole.UserRole + 4, is_chain_link)
         ors.setData(Qt.ItemDataRole.UserRole + 5, cause_d.get('base_freq'))
-        ors.setToolTip("Dubbelklicka för att redigera\n"
+        ors.setData(Qt.ItemDataRole.UserRole + 6, _status_icon)
+        ors.setToolTip(f"{_status_icon} {_status_tip}\n"
+                       "Dubbelklicka för att redigera\n"
                        "Klicka på objektzonen (vänster) för att sätta utrustnings-tag\n"
                        "Enter för att lägga till ny orsak")
         self._table.setItem(r, self._C_ORS, ors)
@@ -9298,6 +9523,13 @@ class ScenarioTablePanel(QWidget):
                 menu.addSeparator()
                 a_rrf = menu.addAction("⚙ Ändra RRF...")
                 a_rrf.triggered.connect(lambda: self._show_rrf_popup(row, sg_id))
+        # Feature 4: clone scenario to another deviation
+        if col == self._C_ORS and row < len(self._row_meta):
+            cause_id = self._row_meta[row][1]
+            if cause_id is not None:
+                menu.addSeparator()
+                a_clone = menu.addAction("📋 Duplicera scenario till annan avvikelse…")
+                a_clone.triggered.connect(lambda: self._clone_scenario(cause_id))
         menu.exec(self._table.viewport().mapToGlobal(pos))
 
     def _on_cell_clicked(self, row, col):
@@ -9554,6 +9786,34 @@ class ScenarioTablePanel(QWidget):
 
     def _update_sg_rrf(self, row, sg_id, rrf, sg_type=None):
         self.db.update_safeguard(sg_id, rrf=rrf, sg_type=sg_type)
+        QTimer.singleShot(0, self._rebuild)
+
+    # ── Feature 4: clone scenario ─────────────────────────────────────────────
+    def _clone_scenario(self, cause_id):
+        cause = self.db.get_cause(cause_id)
+        if not cause: return
+        dev_id = cause['deviation_id']
+        node_id = cause['node_id']
+        devs = [d for d in self.db.deviations(node_id) if d['id'] != dev_id]
+        if not devs:
+            QMessageBox.information(self, 'Duplicera scenario',
+                'Inga andra avvikelser att duplicera till på denna nod.')
+            return
+        items = [d['description'] for d in devs]
+        choice, ok = QInputDialog.getItem(self, 'Duplicera scenario',
+            'Välj avvikelse att kopiera scenario till:', items, 0, False)
+        if not ok: return
+        target_dev = next(d for d in devs if d['description'] == choice)
+        # Copy cause
+        new_cid = self.db.add_cause(target_dev['id'])
+        self.db.update_cause(new_cid,
+            description=cause['description'],
+            comp_type=cause.get('comp_type', ''),
+            comp_tag=cause.get('comp_tag', ''))
+        # Copy consequences + safeguards
+        for cons in self.db.consequences(cause_id):
+            new_oid = self.db.copy_consequence(cons['id'], new_cid)
+        self.new_item_created.emit(CAUSE_T, new_cid)
         QTimer.singleShot(0, self._rebuild)
 
     # ── Enter-tangent: snabblägg-till ─────────────────────────────────────────
@@ -10809,6 +11069,16 @@ class StandardCausesSettingsPanel(QWidget):
         btn_sync.setToolTip("Uppdaterar frekvensen på alla orsaker kopplade till standardorsaker.")
         btn_sync.clicked.connect(self._sync_freqs)
         c3.addWidget(btn_sync)
+        # Feature 16: export/import buttons
+        io_row = QHBoxLayout()
+        btn_exp = QPushButton("↑ Exportera")
+        btn_exp.setToolTip("Exportera hela standardbiblioteket till JSON")
+        btn_exp.clicked.connect(self._export_library)
+        btn_imp = QPushButton("↓ Importera")
+        btn_imp.setToolTip("Importera standardbibliotek från JSON (lägger till, skriver ej över)")
+        btn_imp.clicked.connect(self._import_library)
+        io_row.addWidget(btn_exp); io_row.addWidget(btn_imp)
+        c3.addLayout(io_row)
 
         # ── Col 4: Orsaksbeskrivningar ────────────────────────────────────────
         c4 = QVBoxLayout()
@@ -11051,6 +11321,62 @@ class StandardCausesSettingsPanel(QWidget):
         if ret == QMessageBox.StandardButton.Yes:
             n = self.db.update_cause_freqs_from_standard()
             QMessageBox.information(self, 'Klart', f'{n} orsak(er) uppdaterades.')
+
+    # ── Feature 16: Export/import standard library ────────────────────────────
+    def _export_library(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Exportera standardbibliotek', '', 'JSON (*.json)')
+        if not path: return
+        data = {'deviations': [], 'objects': []}
+        for dev in self.db.standard_deviations():
+            dd = {'description': dev['description'], 'causes': []}
+            for c in self.db.standard_causes(dev['id']):
+                cd = dict(c)
+                cd['descriptions'] = [d['description']
+                                       for d in self.db.cause_descriptions(cd['id'])]
+                dd['causes'].append({k: cd.get(k) for k in
+                    ['description', 'comp_type', 'frequency', 'object_id', 'descriptions']})
+            data['deviations'].append(dd)
+        for obj in self.db.standard_objects():
+            data['objects'].append(obj['name'])
+        import json as _json
+        open(path, 'w', encoding='utf-8').write(_json.dumps(data, ensure_ascii=False, indent=2))
+        QMessageBox.information(self, 'Exporterat', f'Sparat till:\n{path}')
+
+    def _import_library(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Importera standardbibliotek', '', 'JSON (*.json)')
+        if not path: return
+        import json as _json
+        try:
+            data = _json.loads(open(path, encoding='utf-8').read())
+        except Exception as e:
+            QMessageBox.critical(self, 'Fel', str(e)); return
+        added_devs = added_causes = added_objs = 0
+        for obj_name in data.get('objects', []):
+            if not self.db.conn.execute(
+                    "SELECT id FROM standard_objects WHERE name=?", (obj_name,)).fetchone():
+                self.db.add_standard_object(obj_name); added_objs += 1
+        for dev_d in data.get('deviations', []):
+            dev_row = self.db.conn.execute(
+                "SELECT id FROM standard_deviations WHERE description=?",
+                (dev_d['description'],)).fetchone()
+            if not dev_row:
+                dev_id = self.db.add_standard_deviation(dev_d['description'])
+                added_devs += 1
+            else:
+                dev_id = dev_row[0]
+            for c in dev_d.get('causes', []):
+                obj_id = c.get('object_id')
+                if not self.db.conn.execute(
+                        "SELECT id FROM standard_causes WHERE deviation_id=? AND description=?",
+                        (dev_id, c['description'])).fetchone():
+                    self.db.add_standard_cause_with_object(dev_id, obj_id or 0, c['description'])
+                    added_causes += 1
+        self.db.conn.commit()
+        self._load_deviations()
+        QMessageBox.information(self, 'Importerat',
+            f'Lagt till: {added_devs} avvikelser, {added_causes} orsaker, {added_objs} objekt.')
 
 
 class StandardObjectsSettingsPanel(QWidget):
@@ -13320,6 +13646,103 @@ class ReuseDeviationCausesDialog(QDialog):
                  v[5] if len(v) > 5 else '') for v in sorted_vals]
 
 
+# ── Feature 19: Global search dialog ──────────────────────────────────────────
+class GlobalSearchDialog(QDialog):
+    """Ctrl+F floating search across all nodes, causes, consequences, safeguards."""
+    navigate_requested = pyqtSignal(int, int)   # (type_, id_)
+
+    def __init__(self, db, parent=None):
+        super().__init__(parent)
+        self._db = db
+        self.setWindowTitle("Sök i HAZOP-data")
+        self.setWindowFlags(
+            Qt.WindowType.Dialog | Qt.WindowType.WindowStaysOnTopHint)
+        self.setMinimumWidth(520)
+        self.setMinimumHeight(360)
+        lay = QVBoxLayout(self)
+        lay.setSpacing(6); lay.setContentsMargins(8, 8, 8, 8)
+
+        row = QHBoxLayout()
+        self._edit = QLineEdit()
+        self._edit.setPlaceholderText("Sök i noder, orsaker, konsekvenser, barriärer…")
+        self._edit.textChanged.connect(self._search)
+        self._edit.setClearButtonEnabled(True)
+        row.addWidget(self._edit)
+        lay.addLayout(row)
+
+        self._list = QListWidget()
+        self._list.setAlternatingRowColors(True)
+        self._list.itemDoubleClicked.connect(self._navigate)
+        lay.addWidget(self._list)
+
+        self._count = QLabel('')
+        self._count.setStyleSheet("color:#888; font-size:10px;")
+        lay.addWidget(self._count)
+
+        close_btn = QPushButton("Stäng")
+        close_btn.clicked.connect(self.close)
+        lay.addWidget(close_btn)
+
+        self._edit.setFocus()
+        self._edit.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        from PyQt6.QtCore import QEvent
+        if obj is self._edit and event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Down, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self._list.setFocus()
+                if self._list.count():
+                    self._list.setCurrentRow(0)
+                if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self._list.currentItem():
+                    self._navigate(self._list.currentItem())
+                return True
+        return super().eventFilter(obj, event)
+
+    def _search(self, text):
+        self._list.clear()
+        q = text.strip()
+        if len(q) < 2:
+            self._count.setText('')
+            return
+        q_low = q.lower()
+        results = []
+        for node in self._db.nodes():
+            nd = dict(node)
+            if q_low in nd['name'].lower():
+                results.append((NODE_T, nd['id'], nd['name'], f"🏭 Nod: {nd['name']}"))
+            for dev in self._db.deviations(nd['id']):
+                for c in self._db.causes_for_deviation(dev['id']):
+                    cd = dict(c)
+                    if q_low in cd['description'].lower():
+                        results.append((CAUSE_T, cd['id'], cd['description'],
+                                        f"⚙ {nd['name']} / {dev['description'][:30]}: {cd['description']}"))
+                    for cons in self._db.consequences(cd['id']):
+                        kd = dict(cons)
+                        if q_low in kd['description'].lower():
+                            results.append((CONS_T, kd['id'], kd['description'],
+                                            f"⚠ {nd['name']} / {cd['description'][:25]}: {kd['description']}"))
+                        for sg in self._db.safeguards(kd['id']):
+                            sd = dict(sg)
+                            if q_low in sd['description'].lower():
+                                results.append((SG_T, sd['id'], sd['description'],
+                                                f"🛡 {nd['name']} / {cd['description'][:20]}: {sd['description']}"))
+            if len(results) > 200:
+                break
+        for type_, id_, _, label in results[:200]:
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, type_)
+            item.setData(Qt.ItemDataRole.UserRole + 1, id_)
+            self._list.addItem(item)
+        self._count.setText(f"{min(len(results),200)} träffar" + (" (begränsat till 200)" if len(results)>200 else ""))
+
+    def _navigate(self, item):
+        if item is None: return
+        type_ = item.data(Qt.ItemDataRole.UserRole)
+        id_   = item.data(Qt.ItemDataRole.UserRole + 1)
+        if type_ is not None and id_ is not None:
+            self.navigate_requested.emit(type_, id_)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN WINDOW
 # ══════════════════════════════════════════════════════════════════════════════
@@ -13488,6 +13911,11 @@ class MainWindow(QMainWindow):
         self._undo_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)
         self._undo_shortcut.setEnabled(False)
         self._undo_shortcut.activated.connect(self._undo_last_markup)
+
+        # ── Global search Ctrl+F (feature 19) ────────────────────────────────
+        _search_sc = QShortcut(QKeySequence("Ctrl+F"), self)
+        _search_sc.activated.connect(self._open_global_search)
+        self._search_dialog = None
 
         # ── Wire signals ──────────────────────────────────────────────────────
         self.tree_panel.item_selected.connect(self._on_selected)
@@ -13675,6 +14103,9 @@ class MainWindow(QMainWindow):
             self.stack.setCurrentWidget(self.node_panel)
             self.pid_panel.set_active_node(id_)
             self.scenario_panel.load_node(id_)
+            # Feature 6: auto-zoom to node's markers when switching to P&ID
+            if self.view_stack.currentIndex() == 0:
+                QTimer.singleShot(80, lambda nid=id_: self.zoom_to_node(nid))
         elif type_ == DEV_T:
             self.deviation_panel.load(id_)
             self.stack.setCurrentWidget(self.deviation_panel)
@@ -14240,6 +14671,61 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Klar", f"Exporterad till:\n{path}")
         else:
             QMessageBox.critical(self, "Fel vid export", err)
+
+    # ── Feature 6: zoom to active node ────────────────────────────────────────
+    def zoom_to_node(self, node_id):
+        """Collect all markers for node_id and fit the board view to them."""
+        if self.pid_panel.viewer.pdf_doc is None:
+            return
+        rs = self.pid_panel.viewer.render_scale
+        offsets = self.pid_panel.viewer._page_offsets
+        pts = []
+        for c in self.db.causes_for_node_all(node_id):
+            for m in self.db.cause_markers_for_cause(c['id']):
+                ox, oy = offsets.get(m['pid_page'], (0.0, 0.0))
+                pts.append((ox + m['x'] * rs, oy + m['y'] * rs))
+        for cons in self.db.consequences_for_node(node_id):
+            for m in self.db.conn.execute(
+                    "SELECT pid_page,x,y FROM consequence_markers WHERE consequence_id=?",
+                    (cons['id'],)).fetchall():
+                ox, oy = offsets.get(m['pid_page'], (0.0, 0.0))
+                pts.append((ox + m['x'] * rs, oy + m['y'] * rs))
+        if not pts:
+            return
+        PAD = 150
+        min_x = min(p[0] for p in pts) - PAD
+        min_y = min(p[1] for p in pts) - PAD
+        max_x = max(p[0] for p in pts) + PAD
+        max_y = max(p[1] for p in pts) + PAD
+        from PyQt6.QtCore import QRectF
+        self.pid_panel.viewer.fitInView(
+            QRectF(min_x, min_y, max_x - min_x, max_y - min_y),
+            Qt.AspectRatioMode.KeepAspectRatio)
+        self.pid_panel.viewer._apply_lod(self.pid_panel.viewer.transform().m11())
+        self.pid_panel.viewer._schedule_lod_update()
+
+    # ── Feature 19: global search ─────────────────────────────────────────────
+    def _open_global_search(self):
+        if self._search_dialog is not None:
+            self._search_dialog.raise_()
+            self._search_dialog.activateWindow()
+            return
+        dlg = GlobalSearchDialog(self.db, self)
+        dlg.navigate_requested.connect(self._on_search_navigate)
+        dlg.finished.connect(lambda _: setattr(self, '_search_dialog', None))
+        self._search_dialog = dlg
+        dlg.show()
+
+    def _on_search_navigate(self, type_, id_):
+        self._on_selected(type_, id_)
+        self._switch_view(0)
+        if type_ == CAUSE_T:
+            c = self.db.get_cause(id_)
+            if c:
+                markers = self.db.cause_markers_for_cause(id_)
+                if markers:
+                    m = markers[0]
+                    self.pid_panel.navigate_to_marker(m['pid_page'], m['x'], m['y'])
 
 
 if __name__ == '__main__':
