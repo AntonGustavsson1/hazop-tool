@@ -8951,8 +8951,8 @@ class PIDPanel(QWidget):
                 return i - 1
         return len(boundaries) - 1
 
-    def try_reload_pdf(self):
-        path = self.db.get_pid_path()
+    def try_reload_pdf(self, override_path=None):
+        path = override_path or self.db.get_pid_path()
         if path and Path(path).exists() and HAS_PYMUPDF:
             layout_offsets = None
             if hasattr(self.db, 'get_pid_config_value'):

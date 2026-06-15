@@ -14301,13 +14301,26 @@ class GlobalSearchDialog(QDialog):
 # ══════════════════════════════════════════════════════════════════════════════
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, hzp_path: str = None):
         super().__init__()
+        self._hzp_path    = None   # path to the currently open .hzp file (or None)
+        self._search_dialog = None
         self.db = Database()
         load_matrix(self.db)
         self._markup_undo_stack  = []
-        self.setWindowTitle(f"HAZOP Tool  —  {self.db.path.name}")
         self.resize(1440, 900)
+
+        # ── File menu ─────────────────────────────────────────────────────────
+        mb = self.menuBar()
+        file_menu = mb.addMenu("Fil")
+        file_menu.addAction("📄 Nytt projekt",      self._hzp_new)
+        file_menu.addAction("📂 Öppna (.hzp)…",     self._hzp_open)
+        file_menu.addSeparator()
+        self._act_save = file_menu.addAction("💾 Spara",         self._hzp_save)
+        file_menu.addAction("💾 Spara som…",         self._hzp_save_as)
+        file_menu.addSeparator()
+        file_menu.addAction("❌ Avsluta",            self.close)
+        self._update_title()
 
         # ── Toolbar ───────────────────────────────────────────────────────────
         tb = self.addToolBar("Verktyg")
@@ -15559,6 +15572,196 @@ class MainWindow(QMainWindow):
                 if markers:
                     m = markers[0]
                     self.pid_panel.navigate_to_marker(m['pid_page'], m['x'], m['y'])
+
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # HZP file format  (ZIP archive renamed to .hzp)
+    # Contents:
+    #   hazop_project.db   — the SQLite database
+    #   pid/<filename>.pdf — the P&ID PDF (if one is loaded)
+    #   meta.json          — {"hzp_version":1, "created":..., "pdf_name":...}
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _update_title(self):
+        name = Path(self._hzp_path).name if self._hzp_path else "Osparad"
+        self.setWindowTitle(f"HAZOP Tool  —  {name}")
+
+    def _hzp_new(self):
+        if not self._confirm_discard():
+            return
+        import shutil, tempfile
+        # Create a fresh DB at DB_PATH
+        self.db.conn.close()
+        DB_PATH.unlink(missing_ok=True)
+        self.db = Database(DB_PATH)
+        self._hzp_path = None
+        self._update_title()
+        self._reload_all_panels(pdf_path=None)
+
+    def _hzp_open(self):
+        if not self._confirm_discard():
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Öppna HAZOP-projekt", "", "HAZOP-filer (*.hzp);;Alla filer (*)")
+        if not path:
+            return
+        self._load_hzp(path)
+
+    def _hzp_save(self):
+        if not self._hzp_path:
+            self._hzp_save_as()
+        else:
+            self._write_hzp(self._hzp_path)
+
+    def _hzp_save_as(self):
+        default = (Path(self._hzp_path).stem if self._hzp_path
+                   else "nytt_projekt") + ".hzp"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Spara HAZOP-projekt", default, "HAZOP-filer (*.hzp)")
+        if not path:
+            return
+        if not path.lower().endswith('.hzp'):
+            path += '.hzp'
+        self._write_hzp(path)
+        self._hzp_path = path
+        self._update_title()
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _confirm_discard(self):
+        if self._hzp_path:
+            r = QMessageBox.question(
+                self, "Osparade ändringar",
+                "Vill du spara det nuvarande projektet innan du fortsätter?",
+                QMessageBox.StandardButton.Save |
+                QMessageBox.StandardButton.Discard |
+                QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Save)
+            if r == QMessageBox.StandardButton.Cancel:
+                return False
+            if r == QMessageBox.StandardButton.Save:
+                self._hzp_save()
+        return True
+
+    def _write_hzp(self, path: str):
+        import zipfile, json, shutil, tempfile, datetime
+        self.db.conn.commit()   # flush all pending writes
+
+        # Copy DB to a temp file so we don't hold it open exclusively
+        tmp_db = Path(tempfile.mktemp(suffix='.db'))
+        shutil.copy2(self.db.path, tmp_db)
+
+        # Collect PDF path from pid_config
+        pdf_src = None
+        try:
+            pdf_str = self.db.get_pid_path()
+            if pdf_str and Path(pdf_str).exists():
+                pdf_src = Path(pdf_str)
+        except Exception:
+            pass
+
+        meta = {
+            "hzp_version": 1,
+            "created": datetime.datetime.now().isoformat(timespec='seconds'),
+            "app": "HAZOP Tool",
+            "pdf_name": pdf_src.name if pdf_src else None,
+        }
+
+        with zipfile.ZipFile(path, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.write(tmp_db, "hazop_project.db")
+            if pdf_src:
+                zf.write(pdf_src, f"pid/{pdf_src.name}")
+            zf.writestr("meta.json", json.dumps(meta, ensure_ascii=False, indent=2))
+
+        tmp_db.unlink(missing_ok=True)
+        self.status_bar.showMessage(f"Sparat: {path}", 5000)
+        self._hzp_path = path
+        self._update_title()
+
+    def _load_hzp(self, path: str):
+        import zipfile, json, shutil, tempfile
+
+        # Extract to a persistent work dir next to the hzp file
+        work_dir = Path(path).parent / (Path(path).stem + "_files")
+        work_dir.mkdir(exist_ok=True)
+
+        try:
+            with zipfile.ZipFile(path, 'r') as zf:
+                zf.extractall(work_dir)
+        except zipfile.BadZipFile:
+            QMessageBox.critical(self, "Fel", f"Filen är inte en giltig .hzp-fil:\n{path}")
+            return
+
+        # Load meta
+        pdf_name = None
+        try:
+            meta = json.loads((work_dir / "meta.json").read_text(encoding='utf-8'))
+            pdf_name = meta.get("pdf_name")
+        except Exception:
+            pass
+
+        # Copy extracted DB over the active DB_PATH
+        extracted_db = work_dir / "hazop_project.db"
+        if not extracted_db.exists():
+            QMessageBox.critical(self, "Fel", "Projektet saknar databasfil.")
+            return
+        self.db.conn.close()
+        shutil.copy2(extracted_db, DB_PATH)
+
+        # Reopen DB at same path
+        new_db = Database(DB_PATH)
+        self.db = new_db
+
+        # Resolve PDF
+        pdf_path = None
+        if pdf_name:
+            candidate = work_dir / "pid" / pdf_name
+            if candidate.exists():
+                # Keep PDF in work_dir and update pid_config to point there
+                pdf_path = str(candidate)
+                try:
+                    new_db.set_pid_config_value('path', pdf_path)
+                except Exception:
+                    pass
+
+        self._hzp_path = path
+        self._update_title()
+        self._reload_all_panels(pdf_path=pdf_path)
+        self.status_bar.showMessage(f"Öppnat: {path}", 5000)
+
+    def _reload_all_panels(self, pdf_path=None):
+        """Swap self.db on every panel and refresh all content."""
+        db = self.db
+        load_matrix(db)
+
+        # Update db reference on every panel
+        for panel in [self.tree_panel, self.node_panel, self.deviation_panel,
+                      self.cause_panel, self.cons_panel, self.sg_panel,
+                      self.scenario_panel, self.equipment_panel,
+                      self.admin_panel, self.settings_panel,
+                      self.node_markup_panel, self.markup_table_panel]:
+            try:
+                panel.db = db
+            except Exception:
+                pass
+
+        # PIDPanel wires differently — it holds db on itself and the viewer
+        try:
+            self.pid_panel.db = db
+            self.pid_panel.viewer.db = db
+        except Exception:
+            pass
+
+        # Reload tree + scenario
+        self.tree_panel.refresh()
+        self.scenario_panel.clear()
+        self.stack.setCurrentWidget(self.welcome_panel)
+
+        # Reload P&ID
+        if pdf_path:
+            self.pid_panel.try_reload_pdf(pdf_path)
+        else:
+            self.pid_panel.try_reload_pdf()
 
 
 if __name__ == '__main__':
