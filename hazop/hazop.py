@@ -499,796 +499,661 @@ _RISK_ICON   = {'Låg': '🟢', 'Medium': '🟡', 'Hög': '🟠', 'Kritisk': '�
 
 # Component-specific standard causes seeded on first run.
 # comp_type must match keys in COMPONENT_TYPES (pid_viewer.py).
+# ── Standardorsaker per avvikelse och objekt ──────────────────────────────────
+# Nyckel: (avvikelse, objektnamn) — objektnamnen matchar _STD_OBJECTS exakt.
+# Orsakerna är kompletta, specifika fraser — inga separata "beskrivningar" behövs.
+# Varje fras ska kunna stå ensam som orsaksbeskrivning i HAZOP-protokollet.
 _COMP_STD_CAUSES = {
     "Lågt flöde": {
-        "Pump": [
-            "Pump stopp (elfel / motorskydd utlöst)",
-            "Kavitation — lågt NPSH (hög temperatur / låg inloppsnivå)",
-            "Slitet impeller / reducerad kapacitet",
-            "Pumptätning havererar (intern återcirkulation)",
-            "Pump kör baklänges (felkopplad motor, backventil saknas)",
-            "Pump igensatt (avlagringar på impeller)",
-            "Felaktig pump installerad (för liten kapacitet)",
-            "Driftsäkerhetsventil fastnar öppen (intern bypass)",
-            "Parallellpump stannar — flöde delas inte längre",
-            "Gasig vätska (ångbildning vid lågt tryck)",
-            "Läckage på trycksida (reducerat nettoutflöde)",
-            "Strypt utloppsventil (fel inställd)",
-            "Pump i manuell styrning, operatör reducerar flöde",
-            "Motorövertemperatur — termoskydd bryter",
-            "Frekvensomformare ger för låg varvtal (referenssignalfel)",
+        "Manuell ventil": [
+            "Handventil felaktigt stängd av operatör",
+            "Handventil kvarglömd stängd efter underhåll eller rensning",
+            "Handventil delvis stängd — ej fullt öppnad",
+            "Fel ventil identifierad och stängd (märkningsfel)",
+            "Handventil kärvar i stängt läge (korrosion / igensatt spindel)",
+            "Blind platta kvarglömd efter blindningsarbete",
         ],
-        "Kompressor": [
-            "Kompressorstopp (elfel / nödavstängning)",
-            "Kompressorsurge (reducerat flöde vid lågt mottryck)",
+        "On-off ventil": [
+            "Felar stängd vid strömavbrott (fail-closed)",
+            "Fastnar i stängt läge — aktuatorfel",
+            "Manöversignal uteblir — ventil stänger",
+            "Magnetventil havererar i stängt läge",
+            "Ventil ej återöppnad efter test eller nödstängning",
+        ],
+        "Reglerventil": [
+            "Reglerventil felar stängd (fail-closed vid luftfall)",
+            "Fastnar i stängt läge — stiction eller spindelkärvar",
+            "Positioneringsfel — styrsignal felar mot stängt läge",
+            "PID-styrning ger felaktig låg utgångssignal",
+            "Reglersling i manuellt läge — operatör reducerar flöde",
+            "Urtätad spindel — ventil kärvar stängd",
+        ],
+        "Backventil": [
+            "Backventil fastnar stängd — sätesigensättning",
+            "Backventil fastnar stängd — trasig fjäder",
+            "Backventil monterad baklänges vid underhåll",
+            "Backventil saknas eller har avlägsnats",
+            "Backventil för litet differenstryck — öppnar ej",
+        ],
+        "Pump": [
+            "Pump stopp — elfel, motorskydd utlöst",
+            "Kavitation — för lågt NPSH (hög temperatur eller låg inloppsnivå)",
+            "Slitet löphjul — reducerad kapacitet",
+            "Pumptätning havererar — intern återcirkulation",
+            "Pump roterar baklänges — felkopplad motor",
+            "Pump deadhead — utloppssida stängd",
+            "Frekvensomformare ger för låg varvtal",
+            "Inlopp till pump blockat — filter igensatt",
+            "Luftinblandning i pumpsump (vortex) — kavitationsliknande symptom",
+        ],
+        "Kompressor / fläkt": [
+            "Kompressor/fläkt stopp — elfel eller nödavstängning",
+            "Kompressorsurge — instabilt driftpunkt",
             "Igensatt inloppsfilter",
-            "Slitna kolvpackningar / ventilläckage (intern bypass)",
-            "Strypt inloppsreglerventil (fail-closed)",
-            "Kylning otillräcklig — kompressor överhettningsskydd stänger",
-            "Felaktig kompressor installerad (för liten kapacitet)",
-            "Bypassventil fastnar öppen (del av flöde återcirkuleras)",
-            "Lager haveri — kompressor trips",
-            "Axeltätning havererar (gasläcka minskar kapacitet)",
+            "Slitna kolvpackningar eller ventilläckage",
+            "Bypassventil fastnar öppen — flöde återcirkuleras",
+            "Frekvensomformare felar mot låg hastighet",
         ],
-        "Ventil": [
-            "Reglerventil fastnar stängd (fail-closed vid luftfall)",
-            "Isolationsventil stängd / kvarglömd efter underhåll",
-            "Blindplatta kvarglömd efter reparation",
-            "FCV delvis stängd — stiction / positioneringsfel",
-            "Backventil fastnad stängd",
-            "Manuell ventil felaktigt stängd av operatör",
-            "Ventilsäte igensatt av partiklar",
-            "Aktuatorsignal förlorad — ventil faller till fail-position",
-            "Handventil felmarkörd — stängs vid provdrift",
-            "Urtätad ventilspindel — ventil kärvar i stängt läge",
-            "Säkerhetsventil öppen (trycksidan tappar flöde till mottagare)",
-            "Dräneringsventil felaktigt öppen (flöde försvinner)",
+        "Filter / sil": [
+            "Filter igensatt av avlagringar, slam eller korrosion",
+            "Filterelement bristfälligt monterat efter service",
+            "Filter för liten kapacitet för aktuellt flöde",
         ],
-        "Rörledning": [
-            "Igensatt filter / sil (avlagringar, korrosion)",
-            "Rörblockering — hydrater / vax",
-            "Rörblockering — korrosionsprodukter / sand",
-            "Blindplatta kvar efter underhåll",
-            "Rörbrott — flöde läcker ut",
-            "Flanskläckage — partiellt flödesfall",
-            "Termisk expansion i avspärrat avsnitt (flöde stängs av tryckskydd)",
-            "Luftlås i rörledning (hög punkt utan avluftning)",
-            "Slambildning / sediment blockerar rör",
-            "Felaktig rörkonfiguration — backflöde stör driftsflödet",
+        "Värmeväxlare / kylare / värmare": [
+            "Igensatta rör — fouling på processida",
+            "Igensatta rör — fouling på nyttasida",
+            "Vakuumbrott — värmeväxlare tömmer sig",
+            "Differenstrycksskydd stänger processflödet",
         ],
-        "Instrument / Sensor": [
-            "Signalfel högt (FT mäter för högt → FCV stänger)",
-            "Signalfel lågt (FT mäter för lågt → FCV stänger)",
-            "Flödesmätare igensatt / smutsigt",
-            "Flödesmätaren ger pulsfel (kavitationsbubblor)",
-            "Transmitterledning igensatt / utfryst",
-            "DCS-styrning ger felaktig styrsignal",
-            "Kalibreringsfel — börvärde satt för lågt",
-            "Missad provning av styrventilsposition",
+        "Tank / kärl / kolonn": [
+            "Låg nivå i matningskärl — inloppspump startar torrkörning",
+            "Kärl tömt — operatör har dränerat utan att stänga utlopp",
+            "Nivåstyrning felaktig — stänger utloppet i onödan",
         ],
-        "Tank / Kärl": [
-            "Låg nivå i matningskärl (startar torrkörningsskydd)",
-            "Kärl tömt / dränerat (operatörsfel)",
-            "Utloppspump i kärl havererar",
-            "Nivåstyrning i matningskärl felar — stänger utloppet",
-            "Kärl under vätskeytan sätts under undertryck (vakuumkollaps)",
-            "Inloppsventil till kärl stängs — kärl töms snabbt av nedströmspump",
+        "Rörledning / slang": [
+            "Igensatt av hydrater, is eller vaxavlagringar",
+            "Igensatt av korrosionsprodukter eller sand",
+            "Blind platta kvarglömd efter underhåll",
+            "Luftlås i rörledning — hög punkt utan avluftning",
+            "Slangkollaps vid undertryck",
         ],
-        "Värmeväxlare": [
-            "Igensatta rör processsida (beläggningar / korrosion)",
-            "Igensatta rör nyttasida (biofouling)",
-            "Vakuumbrott / tömning av värmeväxlare",
-            "Läckage processsida → nyttasida (tryckfall)",
-            "Läckage nyttasida → processsida",
-            "Ventil på kylvattensida stängs (VX blandning ändras)",
-            "Differenstrycksskydd stänger processsida",
+        "Fläns / koppling / packning": [
+            "Packningsläckage — reducerat nettoutflöde",
+            "Flansbult lös — flöde minskar",
+        ],
+        "Instrument": [
+            "Flödesgivare felar högt — styrventil stänger i onödan",
+            "Flödesgivare felar lågt — styrventil stänger",
+            "Flödesmätare igensatt eller smutsig",
+            "Börvärde satt för lågt av operatör",
+        ],
+        "Styrsystem / PLC / DCS": [
+            "Styrsignal till styrventil felar mot stängt läge",
+            "DCS-kommunikationsavbrott — ventil faller till fail-position",
+            "Felaktig styrlogik ger onödigt stoppkommando",
         ],
     },
+
     "Högt flöde": {
+        "Manuell ventil": [
+            "Handventil felaktigt öppnad av operatör",
+            "Handventil öppnad utan att stänga parallellventil",
+            "Bypassventil öppnad utan att begränsningsorgan är på plats",
+        ],
+        "On-off ventil": [
+            "Felar öppen vid strömavbrott (fail-open)",
+            "Fastnar i öppet läge — aktuatorfel",
+            "Manöversignal felaktig — ventil öppnar",
+        ],
+        "Reglerventil": [
+            "Reglerventil felar öppen (fail-open vid luftfall)",
+            "Fastnar i öppet läge — stiction",
+            "Positioneringsfel — styrsignal felar mot öppet läge",
+            "PID-styrning ger felaktig hög utgångssignal",
+        ],
+        "Backventil": [
+            "Backventil defekt — tillåter backflöde som adderas till framflödet",
+            "Backventil saknas — flöde från parallell krets tillkommer",
+        ],
         "Pump": [
-            "Pump kör mot lågt mottryck (utloppstryck faller)",
-            "Felaktig pump installerad (för stor kapacitet)",
-            "Pump kör i parallell utan nödvändig backventil",
+            "Pump kör mot lågt mottryck — kapaciteten ökar",
+            "Felaktig pump installerad — för hög kapacitet",
             "Frekvensomformare ger för hög varvtal",
-            "Pump kör mot öppen utloppsventil (operatörsfel)",
-            "Tryckreducerande ventil på trycksida fastnar öppen",
-            "Dubbelansluten pump — en pump bidrar oväntat",
-            "Kavitationseffekt ger tillfälligt högt flöde (pumpning av ånga)",
+            "Parallellpump startar utan att utjämna flödet",
         ],
-        "Kompressor": [
-            "Kompressor kör mot reducerat mottryck (utloppstryck faller)",
+        "Kompressor / fläkt": [
+            "Kompressor mot reducerat mottryck",
             "Bypassventil fastnar stängd — all kapacitet till process",
-            "Felaktig kompressor installerad (för stor)",
-            "Nödöverkapacitet — reservkompressor startar utan behovssignal",
         ],
-        "Ventil": [
-            "Reglerventil fastnar öppen (fail-open vid luftfall)",
-            "Isolationsventil öppnas av misstag",
-            "FCV stöter på stiction — sitter kvar öppen",
-            "Backventil defekt — backflöde läggs till framåtflödet",
-            "Parallellventil öppnas utan att huvudventil stängs",
-            "Manuell ventil felaktigt öppnad av operatör",
-            "Tryckreducerventil ur balans — för högt differenstryck",
-            "Begränsningsventil saknas / underdimensionerad",
+        "Instrument": [
+            "Flödesgivare felar högt — styrventil öppnar mer",
+            "Flödesgivare felar lågt — styrventil öppnar",
+            "Börvärde satt för högt av operatör",
         ],
-        "Instrument / Sensor": [
-            "Signalfel högt (FT mäter för högt → FCV öppnar mer)",
-            "Signalfel lågt (FT mäter för lågt → FCV öppnar)",
-            "Differenstryckmätare blockerad — FC öppnar ventilen",
-            "Kalibreringsfel — börvärde satt för högt",
-        ],
-        "Tank / Kärl": [
-            "Högt nivå i matningskärl — utloppspump ökar kapacitet",
-            "Övertrycksventil öppnar — flöde till nedströms ökar",
+        "Styrsystem / PLC / DCS": [
+            "Styrsignal till styrventil felar mot öppet läge",
+            "Felaktig styrlogik ger onödigt öppningskommando",
         ],
     },
-    "Omvänt flöde": {
-        "Pump": [
-            "Pump stopp + defekt/saknad backventil",
-            "Pump roterar baklänges (felkopplad motor vid nyinstallation)",
-            "Parallellpump stannar — tryckskillnad driver backflöde",
-            "Pumptätning havererar helt — backflöde via axelpackning",
-            "Pumptestventil öppnas vid pågående drift",
-            "Differenstrycket i rörsystemet inverteras (tryckhöjning nedströms)",
-        ],
-        "Ventil": [
-            "Backventil defekt (säteslips / fjäder trasig)",
-            "Backventil fastnad öppen",
-            "Backventil saknas i ritning / inte monterad",
-            "Fel bakåt-backventil installerad (monterad i fel riktning)",
-            "Isolationsventil öppnas mot tryckkälla uppströms",
-            "Tryckutjämningsventil öppnar mot lägretryckssystem",
-        ],
-        "Rörledning": [
-            "Sifonverkan vid rördragning med hög punkt",
-            "Felaktig rörledningsdragning (U-form utan avluftning)",
-            "Rörbrott på trycksida — bakflöde från högtryckssystem",
-        ],
-    },
-    "Missriktat flöde": {
-        "Ventil": [
-            "Felöppen ventil på alternativ flödesväg",
-            "Backventil saknas / defekt på alternativ väg",
-            "Manuell ventil på bypass öppnas utan att stänga huvudledning",
-            "Automatisk växlingsventil fastnar i fel position",
-            "Felaktigt öppnad tankanslutning (fel tank fylls)",
-            "Kross-koppling vid tillfällig röranslutning (underhåll)",
-        ],
-        "Rörledning": [
-            "Felaktig rörkoppling vid nyinstallation / modifiering",
-            "Felaktig flödesriktning märkt på rör",
-            "Slangen ansluten till fel tappanslutning",
-            "Blindplatta borttagen på fel grenanslutning",
-        ],
-        "Pump": [
-            "Pumpen matar till fel tank (fel utloppsventil öppen)",
-            "Återcirkulationsledning öppnad — produkt pumpas tillbaka",
-        ],
-    },
+
     "Högt tryck": {
-        "Pump": [
-            "Pump deadhead — strypt utlopp / stängd ventil",
-            "Pump mot stängd utloppsventil (operatörsfel)",
-            "Pump med hög avlastningstryck (fel konfiguration)",
-            "Tryckhöjning p.g.a. backflöde (backventil havererar)",
-            "Pump i serie — kapaciteten adderas vid lägre flöde",
-            "Vattenhammare: pump startar mot stängd utloppsventil",
-        ],
-        "Kompressor": [
-            "Kompressor mot stängd utloppsventil",
-            "Kompressor utan flödesavlastning (PD-typ)",
-            "Kompressor antisurgeventil stänger oväntat",
-            "Kylning bortfaller — trycket stiger med temperaturen",
-            "Kompressionssteg täpps till — differenstryck stiger",
-        ],
-        "Ventil": [
-            "Utloppsventil stängd / blockerad (operatörsfel)",
-            "Reglerventil på trycksida fastnar stängd",
-            "Säkerhetsventil avspärrad (underhåll — ingen avlastning)",
-            "Tryckreducerventil fastnar stängd",
+        "Manuell ventil": [
+            "Utloppsventil stängd — tryck byggs upp",
+            "Utloppsventil kvarglömd stängd efter underhåll",
             "Isolationsventil stängs under drift",
-            "Kontrollventil i fel fail-position",
         ],
-        "Rörledning": [
-            "Vattenhammare — snabb stängning av ventil",
+        "On-off ventil": [
+            "Utloppssida felar stängd — tryck byggs upp",
+            "Fastnar i stängt läge på utloppssida",
+        ],
+        "Reglerventil": [
+            "Reglerventil på utloppssida felar stängd",
+            "Tryckreduceringsventil fastnar stängd",
+        ],
+        "Säkerhetsventil / sprängbleck": [
+            "Säkerhetsventil avspärrad under underhåll — ingen avlastning",
+            "Säkerhetsventil igensatt eller fastrostad — öppnar inte",
+            "Sprängbleck brustit — tryck avlastas okontrollerat",
+            "Felkalibrerad säkerhetsventil — öppnar vid för högt tryck",
+        ],
+        "Pump": [
+            "Pump deadhead — utloppssida stängd eller blockerad",
+            "Pump kör mot stängd utloppsventil",
+        ],
+        "Kompressor / fläkt": [
+            "Kompressor mot stängd utloppsventil",
+            "PD-kompressor utan avlastning — trycket stiger utan gräns",
+            "Kylaggregat sviktar — kompressionstemperatur stiger",
+        ],
+        "Rörledning / slang": [
+            "Vattenhammare — snabb stängning av ventil uppströms",
             "Termisk expansion i avspärrat rörledningsavsnitt",
-            "Rörblockering — tryck byggs upp uppströms",
-            "Differenstryck vid igensatt filter / sil",
-            "Vakuumbrott uppströms ger trycktransient",
+            "Blockering uppströms — tryck byggs upp",
         ],
-        "Instrument / Sensor": [
-            "Signalfel högt (PIC öppnar kompressionsventil)",
-            "Signalfel lågt (PIC stänger avblåsning)",
-            "Tryckmätare igensatt (felläsning, felstyrning)",
-            "Säkerhetsinstrumenterat system testat med ventil avspärrad",
+        "Filter / sil": [
+            "Filter igensatt — högt differenstryck uppströms",
         ],
-        "Tank / Kärl": [
-            "Säkerhetsventil avspärrad (underhåll)",
-            "Yttre brand — ångbildning, kärlet trycks upp",
-            "Exoterm reaktion i kärl",
-            "Inert gasförsörjning övertrycksätter kärlet",
-            "Blandning av reaktiva kemikalier",
-            "Värme tillförs avspärrat kärl (termisk expansion)",
+        "Tank / kärl / kolonn": [
+            "Yttre brand — ångbildning höjer trycket i kärlet",
+            "Inertgasförsörjning övertrycksätter kärlet",
+            "Exoterm reaktion i kärlet",
+            "Värmekällan havererar okontrollerat",
+        ],
+        "Instrument": [
+            "Trycktransmitter felar högt — systemet tror trycket är lägre",
+            "Trycktransmitter felar lågt — avblåsning öppnas i onödan",
+            "Trycktransmitter igensatt — felläsning",
+        ],
+        "Styrsystem / PLC / DCS": [
+            "Tryckreglering felar — stänger avblåsning i onödan",
+            "Felaktig styrlogik — öppnar inlopp utan att öppna utlopp",
+        ],
+        "Värmeväxlare / kylare / värmare": [
+            "Kylning bortfaller — ångbildning höjer trycket",
+        ],
+        "Blandare / omrörare": [
+            "Överhettning vid stopp — exoterm reaktion ger tryckökning",
         ],
     },
+
     "Lågt tryck": {
+        "Manuell ventil": [
+            "Dräneringsventil felaktigt öppnad",
+            "Provtappningsventil öppnad utan att stänga inlopp",
+        ],
+        "On-off ventil": [
+            "Utloppsventil felar öppen — tryck faller",
+            "Avblåsningsventil fastnar öppen",
+        ],
+        "Reglerventil": [
+            "Tryckreduceringsventil fastnar öppen",
+            "Reglerventil på inloppssida felar stängd — trycket faller",
+        ],
+        "Säkerhetsventil / sprängbleck": [
+            "Säkerhetsventil öppnar vid för lågt tryck — felkalibrerad",
+            "Sprängbleck brustit — tryck faller okontrollerat",
+        ],
         "Pump": [
             "Pump stopp — trycksidan faller",
-            "Pumphaveri (mekanisk skada)",
-            "Kavitation — pumpkapaciteten minskar",
-            "Pump kör med för högt flöde (DP faller)",
-            "Backventil havererar — tryck utjämnas",
+            "Kavitation — pumpkapaciteten minskar kraftigt",
         ],
-        "Ventil": [
-            "Utloppsventil öppnar okontrollerat",
-            "Tryckreducerande ventil fastnar öppen",
-            "Säkerhetsventil öppnar vid fel lägre tryck",
-            "Inloppsventil till kärl stänger — undantryck skapas",
-            "Manuell dräneringsventil felaktigt öppnad",
-        ],
-        "Rörledning": [
+        "Rörledning / slang": [
             "Yttre läcka — rörbrott",
-            "Flanskläckage",
-            "Korrosionsgenomslag",
-            "Tätningsläcka på anslutningspunkt",
-            "Vakuumbildning vid snabb tömning (utan ventilering)",
+            "Korrosionsgenomslag i rörvägg",
+            "Slangbrott",
+            "Vakuumbildning vid snabb tömning utan ventilering",
         ],
-        "Instrument / Sensor": [
-            "Signalfel högt (PIC öppnar avblåsning i onödan)",
-            "Signalfel lågt (PIC stänger inlopp)",
-            "Trycktransmitter igensatt",
-            "Kalibreringsfel — lågtrycklarm triggas för sent",
+        "Fläns / koppling / packning": [
+            "Packningsläckage — trycket faller",
+            "Flansbultar lossnar",
         ],
-        "Tank / Kärl": [
+        "Tank / kärl / kolonn": [
             "Dräneringsventil öppen / läckande",
-            "Vakuum p.g.a. för snabb tömning utan ventilering",
+            "Yttre läcka i kärlet",
             "Inertgasförsörjning bortfaller — vakuum bildas",
-            "Kärl kyls ner snabbt — kondensering skapar vakuum",
-            "Yttre läcka från kärl (korrosion / sprucken svets)",
+            "Snabb tömning utan ventilering — vakuumkollaps",
+        ],
+        "Instrument": [
+            "Trycktransmitter felar högt — system tror trycket är högt",
+            "Trycktransmitter igensatt — falskt högt värde",
         ],
     },
+
     "Hög nivå": {
+        "Manuell ventil": [
+            "Utloppsventil felaktigt stängd av operatör",
+            "Inloppsventil öppnad utan att öppna utlopp",
+            "Utloppsventil kvarglömd stängd efter underhåll",
+        ],
+        "On-off ventil": [
+            "Utloppsventil felar stängd (fail-closed)",
+            "Inloppsventil felar öppen (fail-open)",
+        ],
+        "Reglerventil": [
+            "Nivåstyrd utloppsventil felar stängd",
+            "Nivåstyrd inloppsventil felar öppen",
+        ],
         "Pump": [
             "Utloppspump stopp",
-            "Utloppspump reducerad kapacitet (kavitation)",
-            "Felaktig pump installerad (för liten utloppskapacitet)",
-            "Utloppspumpens frekvensomformare ger för låg varvtal",
+            "Utloppspump reducerad kapacitet — kavitation",
         ],
-        "Ventil": [
-            "Utloppsventil stängd / fastnad stängd",
-            "Inloppsventil öppen okontrollerat (fail-open)",
-            "Flödeskontrollventil inlopp fastnar öppen",
-            "Backventil defekt — backflöde från nedströms",
-            "Utloppsisolationsventil stängd under underhåll",
+        "Blandare / omrörare": [
+            "Skumbildning — skenbar hög nivå",
         ],
-        "Instrument / Sensor": [
-            "Signalfel högt (LIC stänger utlopp i onödan)",
-            "Signalfel lågt (LIC öppnar inlopp för mycket)",
-            "Nivågivare igensatt / falskt mätvärde",
+        "Tank / kärl / kolonn": [
+            "Densitetsminskning (kokning / flash) — skenbar hög nivå",
+            "Felaktig matning — fel kärl fylls",
+        ],
+        "Instrument": [
+            "Nivågivare felar högt — stänger utlopp i onödan",
+            "Nivågivare felar lågt — öppnar inlopp för mycket",
+            "Nivåmätare igensatt — falskt värde",
             "Differenstrycksnivå påverkas av densitetsändring",
-            "Nivålarm ej kalibrerat — triggar för sent",
         ],
-        "Tank / Kärl": [
-            "Skumbildning (skenbar hög nivå — luftinblandning)",
-            "Densitetsminskning (kokning / flash ger skenbar hög nivå)",
-            "Inlopp utan styrsignal (fel driftläge)",
-            "Fel kärl fylls (felöppnad inloppsventil)",
-            "Överfyllt vid manuell fyllning",
+        "Styrsystem / PLC / DCS": [
+            "Nivåreglering felar — stänger utlopp",
         ],
     },
+
     "Låg nivå": {
+        "Manuell ventil": [
+            "Inloppsventil felaktigt stängd av operatör",
+            "Dräneringsventil felaktigt öppnad",
+        ],
+        "On-off ventil": [
+            "Inloppsventil felar stängd (fail-closed)",
+            "Utloppsventil felar öppen (fail-open)",
+            "Dräneringsventil fastnar öppen",
+        ],
+        "Reglerventil": [
+            "Nivåstyrd inloppsventil felar stängd",
+            "Nivåstyrd utloppsventil felar öppen",
+        ],
         "Pump": [
             "Utloppspump kör med för högt flöde",
-            "Utloppspump startar utan att inlopp öppnas",
-            "Felaktig utloppspump installerad (för hög kapacitet)",
-            "Pump kör tömt kärl — sugningstorrkörning",
+            "Utloppspump startar utan att inloppet öppnats",
         ],
-        "Ventil": [
-            "Inloppsventil stängd / fastnad stängd",
-            "Dräneringsventil öppen / läckande",
-            "Utloppsventil fastnar öppen",
-            "Inloppsventil fail-position stängd vid luft/signalfall",
-            "Manuell by-pass öppnad utan att stänga inlopp",
-        ],
-        "Instrument / Sensor": [
-            "Signalfel högt (LIC stänger inlopp i onödan)",
-            "Signalfel lågt (LIC öppnar utlopp i onödan)",
-            "Nivågivare igensatt (undanträngd bubbla)",
-            "Nivålarm ej kalibrerat — triggar för sent",
-            "Falskt högt signalvärde — inlopp stängs",
-        ],
-        "Tank / Kärl": [
-            "Yttre läcka från kärlet (korrosion / spricka)",
+        "Tank / kärl / kolonn": [
+            "Yttre läcka från kärlet",
             "Avrinning via öppet dräneringsuttag",
-            "Snabb tömning utan automatisk stoppfunktion",
-            "Fel kärl töms (felöppnad utloppsventil)",
-            "Exoterm reaktion förgasar vätskefas",
+            "Fel kärl töms — operatörsfel",
+        ],
+        "Instrument": [
+            "Nivågivare felar högt — stänger inlopp i onödan",
+            "Nivågivare felar lågt — öppnar utlopp i onödan",
+            "Nivåmätare igensatt — falskt värde",
+        ],
+        "Styrsystem / PLC / DCS": [
+            "Nivåreglering felar — öppnar utlopp",
         ],
     },
+
     "Hög temperatur": {
-        "Värmeväxlare": [
-            "Otillräcklig kylning — kylmedelsflöde avbrutet",
+        "Manuell ventil": [
+            "Kylvattenventil felaktigt stängd",
+            "Kylmediumventil stängd under underhåll",
+        ],
+        "Reglerventil": [
+            "Kylventil felar stängd — kylning bortfaller",
+            "Värmeventil felar öppen — för mycket tillförd värme",
+        ],
+        "Värmeväxlare / kylare / värmare": [
+            "Kylmedelsflöde avbrutet",
             "Luftkylare (fin-fan) fläktstopp",
-            "Kylventil fastnar stängd (fail-closed)",
-            "Kylvatteninlopp blockerat (igensatt / stängt)",
-            "Kylvattentemperaturen stigit (externa orsaker)",
-            "Fouling på kylesidan — reducerad värmeöverföring",
-            "Korrosion på värmeöverföringsytan — dålig effekt",
-            "Kort-cirkulation i kylsystem",
-        ],
-        "Instrument / Sensor": [
-            "Signalfel högt (TIC stänger kylning i onödan)",
-            "Signalfel lågt (TIC reducerar kylflöde)",
-            "Temperaturgivare igensatt / falskt mätvärde",
-            "Högtemperlarm kalibrerat för högt",
-        ],
-        "Tank / Kärl": [
-            "Exoterm reaktion / okontrollerad kemisk process",
-            "Blandning av reaktiva kemikalier",
-            "Isolering av kärl utan kylning",
-            "Yttre värmekälla (brand / solexponering av metallkärl)",
-            "Ångning / destillationseffekt utan kylning",
+            "Fouling på kylesidan — reducerad kylkapacitet",
+            "Kort-cirkulation i kylsystem — kyleffekten uteblir",
         ],
         "Pump": [
-            "Kavitation — friktion höjer temperaturen",
             "Pump deadhead — energi omvandlas till värme",
-            "Pump utan flöde kör varm (torrkörning)",
+            "Pump torrkör — friktionsvärme stiger",
         ],
-        "Rörledning": [
-            "Hett medium kontaminerar processledning (cross-connection)",
-            "Värmeförsörjning från tracingledning havererar (överhettning)",
+        "Tank / kärl / kolonn": [
+            "Exoterm reaktion / okontrollerad kemisk process",
+            "Yttre värmekälla — brand eller stark solexponering",
+        ],
+        "Blandare / omrörare": [
+            "Omrörare stopp — stratifiering ger lokal överhettning",
+            "Exoterm reaktion accelereras utan kylning",
+        ],
+        "Instrument": [
+            "Temperaturgivare felar högt — kylning stängs av i onödan",
+            "Temperaturgivare felar lågt — värme tillförs i onödan",
+        ],
+        "Styrsystem / PLC / DCS": [
+            "Temperaturreglering felar — stänger kylning",
+        ],
+        "Kylsystem / värmesystem": [
+            "Kylvattenpump stopp",
+            "Kylmedelsläckage — kylkapaciteten minskar",
+            "Kylsystemets blockeringsventil stängd",
         ],
     },
+
     "Låg temperatur": {
-        "Värmeväxlare": [
-            "Överkylning — för högt kylmedelsflöde",
-            "Ångförlust (värmemedium bortfaller)",
-            "Värmeventil fastnar stängd (fail-closed)",
-            "Kylvattenflöde ökar okontrollerat",
+        "Manuell ventil": [
+            "Värmemediumventil felaktigt stängd",
+            "Kylvattenventil felaktigt öppnad för mycket",
+        ],
+        "Reglerventil": [
+            "Värmeventil felar stängd — värme bortfaller",
+            "Kylventil felar öppen — för kraftig kylning",
+        ],
+        "Värmeväxlare / kylare / värmare": [
+            "Kylmedelsflödet för högt — överkylning",
+            "Värmemedium (ånga) bortfaller",
+            "Ångkondensatansamling blockerar ångcirkulationen",
             "Fouling på värmesidan — dålig värmeöverföring",
-            "Ångkondensatansamling blockerar ångcirkulation",
-            "Värmeväxlare dränerad utan att stänga kylsidan",
         ],
-        "Instrument / Sensor": [
-            "Signalfel högt (TIC öppnar kylflöde)",
-            "Signalfel lågt (TIC stänger värmeflöde)",
-            "Temperaturgivare i fel position — mäter fel",
-            "Frysning av instrumentledning",
+        "Rörledning / slang": [
+            "Yttre kyla utan värmespårning — isbildning och blockering",
+            "Värmespårning havererar",
+            "Isoleringsskada — exponering för kyla",
         ],
-        "Rörledning": [
-            "Yttre kyla utan värmespårning — isbildning",
-            "Värmespårning havererar — rör kyls ned",
-            "Isolationsskada — rör exponeras för kyla",
-            "Kall inertgas tillförs — temperatur sjunker",
-            "Tillfällig körning med kallt medium under uppstart",
+        "Tank / kärl / kolonn": [
+            "Kärl utan uppvärmning vid låg omgivningstemperatur",
+            "Snabb trycksänkning — Joule-Thomson-avkylning",
         ],
-        "Tank / Kärl": [
-            "Kärl utan uppvärmning körs vid låg omgivningstemperatur",
-            "Inertning med flytande kväve — lokal överkylning",
-            "Snabb trycksänkning i kärl — Joule-Thomson avkylning",
-            "Kontaminering med kalt medium från felkopplat rör",
+        "Kylsystem / värmesystem": [
+            "Värmemedium (ånga/varmvatten) bortfaller",
+            "Värmecentral havererar",
+        ],
+        "Instrument": [
+            "Temperaturgivare felar lågt — värmetillförseln stängs",
         ],
     },
+
+    "Omvänt flöde": {
+        "Manuell ventil": [
+            "Isolationsventil öppnas mot tryckkälla uppströms",
+            "Trycksatt system kopplas till avlastat system utan backventil",
+        ],
+        "Backventil": [
+            "Backventil defekt — sätestätning läcker",
+            "Backventil fjäder trasig — stänger inte vid backflöde",
+            "Backventil saknas där den krävs",
+            "Backventil monterad baklänges",
+            "Backventil fastnar öppen",
+        ],
+        "Pump": [
+            "Pump stopp — trycksidan faller, backflöde möjligt",
+            "Pump roterar baklänges — felkopplad motor vid nyinstallation",
+            "Parallellpump stannar — tryckskillnad driver backflöde",
+        ],
+        "Rörledning / slang": [
+            "Sifonverkan vid rördragning med hög punkt",
+            "Felaktig rörledningsdragning — tryckfall ger backflöde",
+        ],
+        "Kompressor / fläkt": [
+            "Kompressor stopp — bakåtflöde via kompressorn",
+        ],
+    },
+
+    "Missriktat flöde": {
+        "Manuell ventil": [
+            "Felöppen ventil på alternativ flödesväg",
+            "Bypassventil öppnad — flöde går via bypass",
+            "Fel kärl valts — felöppnad inloppsventil",
+            "Tillfällig slang ansluten till fel tappanslutning",
+        ],
+        "On-off ventil": [
+            "Automatstyrd ventil öppnar fel flödesväg",
+            "Växlingsventil fastnar i fel läge",
+        ],
+        "Reglerventil": [
+            "Reglerventil öppnar på felaktig sida av förgreningspunkten",
+        ],
+        "Backventil": [
+            "Backventil saknas — korsflöde från parallell krets",
+            "Backventil defekt — flöde tar fel väg",
+        ],
+        "Rörledning / slang": [
+            "Felaktig rörkoppling vid nyinstallation",
+            "Blindplatta borttagen på fel grenanslutning",
+            "Rörmärkning felaktig eller saknas",
+        ],
+        "Pump": [
+            "Pump matar till fel destination — felöppen utloppsventil",
+        ],
+    },
+
     "Avvikande sammansättning": {
-        "": [
-            "Kontaminering från uppströms system (rörläckage / cross-connection)",
-            "Felaktig kemikaliedosering (fel kemikalie / för hög dos)",
-            "Insufficiens rening av återcirkulerat flöde",
-            "Inläckage av kylvatten i processsida (VX läckage)",
-            "Luft-inläckage vid vakuumoperation",
-            "Ändringar i råvarusammansättning (leverantörsbyte)",
+        "Manuell ventil": [
+            "Felöppnad ventil till inkompatibelt system — korsflöde",
+            "Blandningsventil i fel läge",
+        ],
+        "Reglerventil": [
+            "Dos- eller blandningsventil i fel läge",
+            "Kontrollventil på kemikalielinje felar öppen",
+        ],
+        "Värmeväxlare / kylare / värmare": [
+            "Intern läcka — kylmedel kontaminerar processflödet",
+            "Intern läcka — process kontaminerar kylmedlet",
+        ],
+        "Tank / kärl / kolonn": [
+            "Fel kemikalie fylls på — operatör väljer fel kärl",
             "Ackumulering av föroreningar vid lång drifttid",
-            "Reaktant fattas — reaktionsprodukt bildas ej",
-            "Överdosering av reaktant — okontrollerat reaktionsförlopp",
-            "Felaktiga blandningsförhållanden (flödeskontrollfel)",
-            "Sediment / partiklar i flöde (erosion, korrosion)",
-            "Mikrobiologisk kontaminering (biologisk film)",
+            "Sediment eller slam resuspenderas",
+        ],
+        "Rörledning / slang": [
+            "Felaktig rörkoppling — inkompatibla medier blandas",
+            "Tillfällig kopplingssläng ansluten till fel linje",
+        ],
+        "Blandare / omrörare": [
+            "Felaktig blandningssekvens — reaktiva komponenter möts",
+            "Omrörare stopp — stratifiering, segregerade skikt möts vid start",
+        ],
+        "Instrument": [
+            "Analysmätare felar — felaktig kemikaliedosering",
+            "pH/konduktivitetsmätare felar — doseringen korrigeras fel",
+        ],
+        "Operatör / procedur / underhåll": [
+            "Fel kemikalie eller råvara används",
+            "Fel blandningsförhållanden — procedur ej följd",
+            "Kontamination vid underhåll — ej ordentligt rengjort",
         ],
     },
+
     "Bortfall av hjälpsystem": {
-        "": [
-            "Strömavbrott — instrumentluft / el bortfaller",
-            "Instrumentluft bortfaller — ventiler faller till fail-position",
-            "Kylvattenbortfall (pump, nät, läckage)",
-            "Ångtillförsel bortfaller (för uppvärmning / drivning)",
-            "Nitrogenförsörjning bortfaller (inertning bryts)",
+        "Elförsörjning": [
+            "Strömavbrott — alla eldrivna enheter stannar",
+            "Säkring / jordfelsbrytare löser ut",
+            "UPS-batteri uttömt vid längre strömavbrott",
+            "Generator startar inte vid nätbortfall",
+            "Nätspänningsfall — utrustning tappar kapacitet",
+        ],
+        "Tryckluft / instrumentluft": [
+            "Instrumentlufttryck faller — ventiler faller till fail-position",
+            "Luftkompressor stopp",
+            "Läckage i luftledning — trycket sjunker",
+            "Fukt eller föroreningar i luften — instrument felaktiga",
+            "Lufttork havererar — kondens i instrumentluft",
+        ],
+        "Kylsystem / värmesystem": [
+            "Kylvattenpump stopp",
+            "Kylmedelsläckage",
+            "Blockering i kylvattensystem",
+            "Värmecentralen havererar",
+        ],
+        "Styrsystem / PLC / DCS": [
             "DCS/SCADA kommunikationsavbrott",
-            "Hydrauloljeförsörjning bortfaller",
-            "Brand / nödavstängning utlöser hjälpsystemstopp",
-            "Nätspänningsfall — drivna enheter tappar kapacitet",
-            "Generator startar ej vid nätbortfall",
-            "UPS-batteri uttömt (längre strömavbrott)",
+            "PLC havererar — styrning tappar kontroll",
+            "Nätverksavbrott — fjärrstyrning uteblir",
             "Kontrollrumssystem havererar — blind drift",
         ],
     },
+
     "Drift": {
-        "": [
-            "Felaktig manöver av operatör (fel ventil öppnad/stängd)",
-            "Underhållsarbete pågår — ej tagget enhet manövreras",
-            "Kommunikationsfel mellan skift (nyckelinfo ej överlämnad)",
-            "Felaktig procedur följd",
-            "Otillräcklig utbildning / kompetens",
+        "Manuell ventil": [
+            "Felaktig manöver av ventil — fel ventil öppnad eller stängd",
+            "Operatör identifierar fel ventil (märkningsfel)",
+        ],
+        "Operatör / procedur / underhåll": [
+            "Felaktig manöver — fel sekvens i procedur",
+            "Proceduren är oklar eller saknas",
+            "Kommunikationsfel vid skiftbyte",
+            "Trötthet eller distraherat tillstånd",
+            "Otillräcklig utbildning",
             "Tidsbrist — operatören hoppar över steg",
-            "Trötthet / distraherat tillstånd (nattskift)",
-            "Felaktig identifiering av ventil (märkning saknas / felaktig)",
-            "Manuell körning utan återkoppling (instrument ur drift)",
-            "Tillfällig överbryggning (bypass) av larm/skydd glöms kvar",
+            "Ogiltig bypassning av larm eller skyddssystem",
+        ],
+        "Styrsystem / PLC / DCS": [
+            "Felaktig inmatning i DCS av operatör",
+            "Övergång till manuellt läge utan kontroll av processläge",
         ],
     },
+
     "Underhåll": {
-        "": [
-            "Blindplatta kvarglömd efter underhåll",
-            "Ventil stängd / kvar i fel läge efter arbete",
-            "Instrument felkalibrerat / ansluten till fel intag",
+        "Manuell ventil": [
+            "Isolationsventil stängd men ej blindad — läcker igenom",
+            "Ventil i fel läge efter arbete",
+        ],
+        "Fläns / koppling / packning": [
+            "Felaktig packning installerad — fel material eller storlek",
+            "Flansbultar ej åtdragna efter montering",
+            "Tillfällig koppling ej borttagen",
+        ],
+        "Säkerhetsventil / sprängbleck": [
+            "Säkerhetsventil testad med spärr kvarglömd",
+            "Säkerhetsventil ej återmonterad efter kalibrering",
+        ],
+        "Rörledning / slang": [
             "Rörledning felkopplad vid återmontering",
-            "Icke-godkänt material installerat",
-            "Lyftstöd / fixtur kvar i enhet efter inspektion",
-            "Svetsarbete utan explosionsskydd nära brandfarlig gas",
-            "Provning av nödsystem utan isolering av process",
-            "Felaktig torkkörning vid uppstart efter service",
-            "ESD/säkerhetsventil testad med spärr kvar",
+            "Blind platta kvarglömd efter underhåll",
+            "Spyglass eller provpunkt ej återmonterad",
+        ],
+        "Instrument": [
+            "Instrument felkalibrerat efter service",
+            "Transmitterledning felkopplad",
+            "Instrument ur drift utan ersättningsindikering",
+        ],
+        "Operatör / procedur / underhåll": [
+            "Ogiltig isolering — energi ej säkrad",
+            "Icke-godkänt ersättningsmaterial installerat",
+            "Svetsarbete utan explosionsskydd nära brandfarlig atmosfär",
+            "Provtryckning utan korrekt isolering",
         ],
     },
+
     "Start-up / Shut-down": {
-        "": [
-            "Kall enhet startas med hett medium (termisk chock)",
-            "Otillräcklig rensning av inert gas — brandfarlig blandning kvar",
-            "Fel sekvens vid uppstart — trycksättning utan flöde",
-            "Kondensatbank i ångledning vid uppstart",
-            "Temperaturgradienter spränger tätningar vid uppstart",
-            "Felaktigt tömningsprocedur — vätska kvar vid nedstängning",
+        "Manuell ventil": [
+            "Fel ventilsekvens vid uppstart — trycksättning utan flöde",
+            "Utloppsventil stängd vid pumpstart",
+        ],
+        "Rörledning / slang": [
+            "Kondensatbank i ångledning vid uppstart — vätskeslag",
+            "Luftlås i system — blockerar flöde vid start",
+        ],
+        "Tank / kärl / kolonn": [
+            "Otillräcklig inertning — brännbar atmosfär kvarstår",
+            "Kallt kärl startas med hett medium — termisk chock",
+        ],
+        "Säkerhetsventil / sprängbleck": [
+            "Säkerhetsventil ej aktiverad efter provtestning",
+        ],
+        "Pump": [
+            "Pump startar mot stängd utloppsventil",
+            "Pump torrkör vid start — vätska saknas i inlopp",
+        ],
+        "Instrument": [
+            "Instrument ej kalibrerat efter underhåll — felaktig start",
+        ],
+        "Operatör / procedur / underhåll": [
+            "Felaktig uppstartsprocedur — steg hoppade",
+            "Snabb nedstängning utan korrekt avluftning",
             "ESD-system ej återaktiverat efter test",
-            "Provkörning utan korrekt processmedium — kavitation / torrkörning",
-            "Uppstart av pump mot stängd utloppsventil",
-            "Snabb trycksänkning vid nedstängning — flash / kylning",
         ],
     },
 }
 
-# ── Konsekvensgraf (event-tree-logik) ────────────────────────────────────────────
-# Varje nod är EN konsekvenshändelse. 'next' listar de logiska eskalerings-
-# stegen om händelsen inte stoppas — så Del2-alternativen beror på valt Del1,
-# Del3 på Del2 osv. Grafen följer klassisk event tree-analys (CCPS/DNV):
-#   LOC → direktantändning (jetbrand/pölbrand) | fördröjd (flash fire/VCE)
-#       | ingen antändning (toxisk dispersion / miljö)
-#   Brandpåverkan på intilliggande utrustning → BLEVE / domino.
-# Allt är OMITIGERAT — inga säkerhetsventiler, larm eller operatörsåtgärder
-# krediteras (de är barriärer och hör hemma i barriärkolumnen).
-# [objekt] ersätts med kolumnens Ref-tag vid visning/sparning.
-_CONSEQ_NODES: dict = {
-    # ── Flöde / nivå / mekanik ────────────────────────────────────────
-    'reduced_flow': {
-        'text': 'Reducerat flöde till [objekt]',
-        'next': ['low_level', 'hx_overheat', 'reaction_upset',
-                 'quality_offspec', 'backpressure_upstream'],
-    },
-    'no_flow': {
-        'text': 'Inget flöde till [objekt]',
-        'next': ['low_level', 'hx_overheat', 'pump_dryrun',
-                 'reaction_upset', 'production_stop'],
-    },
-    'high_flow': {
-        'text': 'För högt flöde till [objekt]',
-        'next': ['high_level', 'erosion', 'hx_undercool', 'carryover'],
-    },
-    'low_level': {
-        'text': 'Låg nivå i [objekt]',
-        'next': ['pump_dryrun', 'vortex_gas', 'no_flow'],
-    },
-    'high_level': {
-        'text': 'Hög nivå i [objekt]',
-        'next': ['overfill', 'carryover'],
-    },
-    'overfill': {
-        'text': 'Överfyllnad av [objekt]',
-        'next': ['pool_formation', 'env_release'],
-    },
-    'carryover': {
-        'text': 'Vätskedroppar förs med gasen från [objekt]',
-        'next': ['liquid_slug'],
-    },
-    'liquid_slug': {
-        'text': 'Vätskeslag i [objekt]',
-        'next': ['equipment_catastrophic', 'loc_large'],
-    },
-    'vortex_gas': {
-        'text': 'Gasinblandning i utlopp från [objekt] (vortexbildning)',
-        'next': ['pump_dryrun'],
-    },
-    'pump_dryrun': {
-        'text': '[objekt] torrkör / kaviterar',
-        'next': ['seal_fail', 'bearing_fail'],
-    },
-    'seal_fail': {
-        'text': 'Tätningsläckage på [objekt]',
-        'next': ['loc_small'],
-    },
-    'bearing_fail': {
-        'text': 'Mekanisk skada på [objekt] (lager / löphjul)',
-        'next': ['pump_breakdown'],
-    },
-    'pump_breakdown': {
-        'text': '[objekt] havererar',
-        'next': ['production_stop', 'no_flow'],
-    },
-    'backpressure_upstream': {
-        'text': 'Ökat mottryck uppströms [objekt]',
-        'next': ['overpressure'],
-    },
-    'erosion': {
-        'text': 'Erosion i [objekt] (hög strömningshastighet)',
-        'next': ['loc_small'],
-    },
-    'hx_overheat': {
-        'text': 'Otillräcklig kylning — temperaturen i [objekt] stiger',
-        'next': ['vapor_pressure_rise', 'runaway', 'seal_degradation',
-                 'quality_offspec'],
-    },
-    'hx_undercool': {
-        'text': 'Överkylning av processmedium i [objekt]',
-        'next': ['quality_offspec', 'freeze_damage', 'hydrate_blockage'],
-    },
-    'reaction_upset': {
-        'text': 'Reaktionsstörning i [objekt] (felaktig stökiometri / uppehållstid)',
-        'next': ['quality_offspec', 'runaway', 'toxic_gas_generation'],
-    },
-    'quality_offspec': {
-        'text': 'Produkt utanför specifikation',
-        'next': ['production_stop'],
-    },
-
-    # ── Tryck ──────────────────────────────────────────────────────────────────
-    'overpressure': {
-        'text': 'Trycket i [objekt] överstiger konstruktionstrycket',
-        'next': ['flange_leak', 'rupture'],
-    },
-    'flange_leak': {
-        'text': 'Fläns- / packningsläckage vid [objekt]',
-        'next': ['loc_small'],
-    },
-    'rupture': {
-        'text': '[objekt] brister',
-        'next': ['loc_large', 'equipment_catastrophic'],
-    },
-    'vacuum': {
-        'text': 'Undertryck i [objekt] under lägsta tillåtna driftstryck',
-        'next': ['vacuum_collapse', 'air_ingress'],
-    },
-    'vacuum_collapse': {
-        'text': '[objekt] kollapsas av undertrycket',
-        'next': ['equipment_catastrophic', 'loc_small'],
-    },
-    'air_ingress': {
-        'text': 'Luftinträngning i [objekt]',
-        'next': ['internal_flammable', 'quality_offspec'],
-    },
-    'internal_flammable': {
-        'text': 'Brännbar atmosfär inuti [objekt]',
-        'next': ['internal_explosion'],
-    },
-    'internal_explosion': {
-        'text': 'Intern explosion i [objekt]',
-        'next': ['equipment_catastrophic', 'loc_large', 'personnel_injury'],
-    },
-    'flashing': {
-        'text': 'Processvätska förångas / flashar i [objekt]',
-        'next': ['pump_dryrun', 'quality_offspec'],
-    },
-
-    # ── Temperatur ────────────────────────────────────────────────────────────
-    'temp_above_design': {
-        'text': 'Temperaturen i [objekt] överstiger konstruktionsgränsen',
-        'next': ['vapor_pressure_rise', 'runaway', 'seal_degradation',
-                 'material_creep', 'quality_offspec'],
-    },
-    'vapor_pressure_rise': {
-        'text': 'Ångbildning — trycket i [objekt] stiger',
-        'next': ['overpressure'],
-    },
-    'runaway': {
-        'text': 'Okontrollerad exoterm reaktion i [objekt]',
-        'next': ['rapid_pressure_rise', 'toxic_gas_generation'],
-    },
-    'rapid_pressure_rise': {
-        'text': 'Snabb tryck- och temperaturökning i [objekt]',
-        'next': ['rupture'],
-    },
-    'material_creep': {
-        'text': 'Reducerad hållfasthet i [objekt] (krypning)',
-        'next': ['rupture'],
-    },
-    'seal_degradation': {
-        'text': 'Tätningar och packningar i [objekt] degraderas av värmen',
-        'next': ['seal_fail', 'flange_leak'],
-    },
-    'temp_below_design': {
-        'text': 'Temperaturen i [objekt] understiger konstruktionsgränsen',
-        'next': ['brittle_fracture', 'hydrate_blockage', 'freeze_damage'],
-    },
-    'brittle_fracture': {
-        'text': 'Försprödning av [objekt] — risk för sprödbrott',
-        'next': ['rupture'],
-    },
-    'hydrate_blockage': {
-        'text': 'Hydrat- / isproppsbildning i [objekt]',
-        'next': ['no_flow', 'overpressure'],
-    },
-    'freeze_damage': {
-        'text': 'Sönderfrysning av [objekt]',
-        'next': ['loc_small'],
-    },
-
-    # ── Omvänt / missriktat flöde / sammansättning ────────────────────────
-    'reverse_flow': {
-        'text': 'Backflöde genom [objekt]',
-        'next': ['upstream_contamination', 'pump_reverse',
-                 'incompatible_mixing'],
-    },
-    'upstream_contamination': {
-        'text': 'Kontaminering av uppströmssystemet via [objekt]',
-        'next': ['quality_offspec', 'incompatible_mixing'],
-    },
-    'pump_reverse': {
-        'text': '[objekt] roterar baklänges',
-        'next': ['bearing_fail'],
-    },
-    'misdirected_flow': {
-        'text': 'Flödet leds till [objekt] i stället för avsedd destination',
-        'next': ['high_level', 'incompatible_mixing', 'no_flow'],
-    },
-    'incompatible_mixing': {
-        'text': 'Inkompatibla medier blandas i [objekt]',
-        'next': ['runaway', 'toxic_gas_generation', 'overpressure'],
-    },
-    'contamination_feed': {
-        'text': 'Avvikande sammansättning i inflödet till [objekt]',
-        'next': ['quality_offspec', 'incompatible_mixing', 'reaction_upset'],
-    },
-    'toxic_gas_generation': {
-        'text': 'Giftig eller korrosiv gas bildas i [objekt]',
-        'next': ['overpressure', 'toxic_exposure'],
-    },
-    'utility_loss': {
-        'text': 'Hjälpmedier till [objekt] faller bort',
-        'next': ['hx_overheat', 'no_flow', 'production_stop'],
-    },
-
-    # ── Utsläpp och utfall (event tree) ──────────────────────────────────────
-    'loc_small': {
-        'text': 'Läckage från [objekt]',
-        'next': ['jet_fire', 'pool_formation', 'flash_fire',
-                 'toxic_exposure', 'env_release'],
-    },
-    'loc_large': {
-        'text': 'Okontrollerat utsläpp från [objekt]',
-        'next': ['jet_fire', 'pool_formation', 'vce', 'flash_fire',
-                 'toxic_exposure', 'env_release'],
-    },
-    'pool_formation': {
-        'text': 'Vätskepöl bildas vid [objekt]',
-        'next': ['pool_fire', 'env_release', 'toxic_exposure'],
-    },
-    'jet_fire': {
-        'text': 'Jetbrand vid [objekt]',
-        'next': ['escalation_bleve', 'personnel_injury', 'equipment_damage'],
-    },
-    'pool_fire': {
-        'text': 'Pölbrand vid [objekt]',
-        'next': ['escalation_bleve', 'personnel_injury', 'equipment_damage'],
-    },
-    'flash_fire': {
-        'text': 'Fördröjd antändning — flash fire',
-        'next': ['personnel_injury'],
-    },
-    'vce': {
-        'text': 'Ångmolnsexplosion (VCE)',
-        'next': ['fatality', 'equipment_catastrophic'],
-    },
-    'escalation_bleve': {
-        'text': 'Brandpåverkan på intilliggande kärl — BLEVE / dominoeffekt',
-        'next': ['fatality', 'equipment_catastrophic'],
-    },
-    'toxic_exposure': {
-        'text': 'Exponering av personal för giftig gas',
-        'next': ['personnel_injury', 'fatality'],
-    },
-    'env_release': {
-        'text': 'Utsläpp till mark, vatten eller luft',
-        'next': ['env_impact'],
-    },
-
-    # ── Terminala skadenoder ──────────────────────────────────────────────────
-    'personnel_injury': {
-        'text': 'Personskada',
-        'next': ['fatality'],
-    },
-    'fatality': {
-        'text': 'Dödsolycka',
-        'next': [],
-    },
-    'equipment_damage': {
-        'text': 'Utrustningsskada',
-        'next': ['production_stop'],
-    },
-    'equipment_catastrophic': {
-        'text': 'Allvarlig skada på utrustning och struktur',
-        'next': ['production_stop'],
-    },
-    'production_stop': {
-        'text': 'Produktionsavbrott',
-        'next': [],
-    },
-    'env_impact': {
-        'text': 'Miljöpåverkan — sanering och myndighetsrapportering krävs',
-        'next': [],
-    },
-}
-
-# Del1-ingångar per avvikelse. '*' = alla objektstyper.
-_CONSEQ_ENTRY: dict = {
-    ('Lågt flöde', '*'):              ['reduced_flow', 'no_flow'],
-    ('Högt flöde', '*'):              ['high_flow', 'high_level', 'erosion'],
-    ('Högt tryck', '*'):              ['overpressure'],
-    ('Lågt tryck', '*'):              ['vacuum', 'flashing', 'reduced_flow'],
-    ('Hög nivå', '*'):                ['high_level', 'carryover'],
-    ('Låg nivå', '*'):                ['low_level'],
-    ('Hög temperatur', '*'):          ['temp_above_design'],
-    ('Låg temperatur', '*'):          ['temp_below_design'],
-    ('Omvänt flöde', '*'):            ['reverse_flow'],
-    ('Missriktat flöde', '*'):        ['misdirected_flow'],
-    ('Avvikande sammansättning', '*'): ['contamination_feed'],
-    ('Bortfall av hjälpsystem', '*'): ['utility_loss'],
-    ('Drift', '*'):                   ['no_flow', 'high_level', 'overpressure',
-                                       'loc_small', 'misdirected_flow'],
-    ('Underhåll', '*'):               ['loc_small', 'no_flow', 'overpressure',
-                                       'internal_flammable'],
-    ('Start-up / Shut-down', '*'):    ['loc_small', 'overpressure',
-                                       'internal_flammable', 'liquid_slug',
-                                       'brittle_fracture'],
-}
-
-# Fallback-alternativ när föregående steg är fritext (okänd nod)
-_CONSEQ_GENERIC_NEXT = [
-    'loc_small', 'overpressure', 'equipment_damage',
-    'personnel_injury', 'env_release', 'production_stop',
+_STD_OBJECTS = [
+    "Manuell ventil", "On-off ventil", "Reglerventil", "Backventil",
+    "Säkerhetsventil / sprängbleck", "Pump", "Kompressor / fläkt",
+    "Filter / sil", "Värmeväxlare / kylare / värmare", "Tank / kärl / kolonn",
+    "Rörledning / slang", "Fläns / koppling / packning", "Instrument",
+    "Styrsystem / PLC / DCS", "Elförsörjning", "Tryckluft / instrumentluft",
+    "Kylsystem / värmesystem", "Blandare / omrörare",
+    "Operatör / procedur / underhåll", "Övrigt",
 ]
+
+_COMP_TYPE_TO_OBJ: dict = {
+    'Pump': 'Pump', 'Kompressor': 'Kompressor / fläkt',
+    'Ventil': 'Reglerventil', 'Rörledning': 'Rörledning / slang',
+    'Instrument / Sensor': 'Instrument', 'Tank / Kärl': 'Tank / kärl / kolonn',
+    'Värmeväxlare': 'Värmeväxlare / kylare / värmare',
+}
+
+_COMP_KEY_TO_OBJ: dict = {
+    # Legacy comp_type keys from old _COMP_STD_CAUSES
+    'Pump':                    'Pump',
+    'Kompressor':              'Kompressor / fläkt',
+    'Ventil':                  'Reglerventil',
+    'Rörledning':              'Rörledning / slang',
+    'Instrument / Sensor':     'Instrument',
+    'Tank / Kärl':             'Tank / kärl / kolonn',
+    'Värmeväxlare':            'Värmeväxlare / kylare / värmare',
+    # New exact keys matching _STD_OBJECTS names (no mapping needed — identity)
+    'Manuell ventil':               'Manuell ventil',
+    'On-off ventil':                'On-off ventil',
+    'Reglerventil':                 'Reglerventil',
+    'Backventil':                   'Backventil',
+    'Säkerhetsventil / sprängbleck':'Säkerhetsventil / sprängbleck',
+    'Kompressor / fläkt':           'Kompressor / fläkt',
+    'Filter / sil':                 'Filter / sil',
+    'Värmeväxlare / kylare / värmare':'Värmeväxlare / kylare / värmare',
+    'Tank / kärl / kolonn':         'Tank / kärl / kolonn',
+    'Rörledning / slang':           'Rörledning / slang',
+    'Fläns / koppling / packning':  'Fläns / koppling / packning',
+    'Instrument':                   'Instrument',
+    'Styrsystem / PLC / DCS':       'Styrsystem / PLC / DCS',
+    'Elförsörjning':                'Elförsörjning',
+    'Tryckluft / instrumentluft':   'Tryckluft / instrumentluft',
+    'Kylsystem / värmesystem':      'Kylsystem / värmesystem',
+    'Blandare / omrörare':          'Blandare / omrörare',
+    'Operatör / procedur / underhåll':'Operatör / procedur / underhåll',
+    'Övrigt':                       'Övrigt',
+}
 
 
 def _fix_instrument_causes_v2(conn):
-    """Replace verbose v1 instrument cause descriptions with 'Felar högt' / 'Felar lågt'."""
-    conn.execute("DELETE FROM standard_causes WHERE comp_type='Instrument / Sensor'")
-    instrument_devs = [
-        "Lågt flöde", "Högt flöde", "Högt tryck", "Lågt tryck",
-        "Hög nivå", "Låg nivå", "Hög temperatur", "Låg temperatur",
-    ]
-    for dev_name in instrument_devs:
-        row = conn.execute(
-            "SELECT id FROM standard_deviations WHERE description=?", (dev_name,)).fetchone()
-        if not row:
-            continue
-        dev_id = row[0]
-        max_sort = (conn.execute(
-            "SELECT COALESCE(MAX(sort_order),0) FROM standard_causes WHERE deviation_id=?",
-            (dev_id,)).fetchone()[0] or 0)
-        for i, desc in enumerate(["Felar högt", "Felar lågt"]):
-            conn.execute(
-                "INSERT INTO standard_causes (deviation_id, description, sort_order, comp_type)"
-                " VALUES (?,?,?,?)",
-                (dev_id, desc, max_sort + 1 + i, 'Instrument / Sensor'))
+    """No-op: instrument causes now seeded correctly via _COMP_STD_CAUSES."""
+    pass
 
 
 def _fix_instrument_causes_v3(conn):
-    """Rename 'Felar högt/lågt' back to 'Signalfel högt/lågt'."""
-    conn.execute(
-        "UPDATE standard_causes SET description='Signalfel högt' "
-        "WHERE comp_type='Instrument / Sensor' AND description='Felar högt'")
-    conn.execute(
-        "UPDATE standard_causes SET description='Signalfel lågt' "
-        "WHERE comp_type='Instrument / Sensor' AND description='Felar lågt'")
+    """No-op: instrument causes now seeded correctly via _COMP_STD_CAUSES."""
+    pass
+
+
+def _seed_standard_objects(conn):
+    for i, name in enumerate(_STD_OBJECTS):
+        conn.execute(
+            "INSERT OR IGNORE INTO standard_objects (name, sort_order) VALUES (?,?)",
+            (name, i))
+    conn.commit()
 
 
 def _seed_component_causes(conn):
-    """Insert component-type-specific standard causes with object_id FK (idempotent)."""
+    """Insert standard causes into standard_causes table with object_id FK (idempotent)."""
     for dev_name, by_type in _COMP_STD_CAUSES.items():
         row = conn.execute(
             "SELECT id FROM standard_deviations WHERE description=?", (dev_name,)).fetchone()
@@ -1299,86 +1164,27 @@ def _seed_component_causes(conn):
             "SELECT COALESCE(MAX(sort_order),0) FROM standard_causes WHERE deviation_id=?",
             (dev_id,)).fetchone()[0] or 0)
         sort_i = max_sort + 1
-        for comp_type, causes in by_type.items():
-            # Resolve object_id from comp_type → standard_objects name mapping
-            obj_name = _COMP_KEY_TO_OBJ.get(comp_type)
-            obj_id   = None
-            if obj_name:
-                obj_row = conn.execute(
-                    "SELECT id FROM standard_objects WHERE name=?", (obj_name,)).fetchone()
-                if obj_row:
-                    obj_id = obj_row[0]
+        for comp_key, causes in by_type.items():
+            obj_name = _COMP_KEY_TO_OBJ.get(comp_key, comp_key)
+            obj_row  = conn.execute(
+                "SELECT id FROM standard_objects WHERE name=?", (obj_name,)).fetchone()
+            obj_id   = obj_row[0] if obj_row else None
             for c_desc in causes:
                 exists = conn.execute(
                     "SELECT id FROM standard_causes "
-                    "WHERE deviation_id=? AND description=? AND comp_type=?",
-                    (dev_id, c_desc, comp_type)).fetchone()
+                    "WHERE deviation_id=? AND description=?",
+                    (dev_id, c_desc)).fetchone()
                 if not exists:
                     conn.execute(
                         "INSERT INTO standard_causes "
                         "(deviation_id, description, sort_order, comp_type, object_id)"
                         " VALUES (?,?,?,?,?)",
-                        (dev_id, c_desc, sort_i, comp_type, obj_id))
+                        (dev_id, c_desc, sort_i, comp_key, obj_id))
                     sort_i += 1
                 elif obj_id is not None:
-                    # Backfill object_id for existing rows
                     conn.execute(
                         "UPDATE standard_causes SET object_id=? WHERE id=? AND object_id IS NULL",
                         (obj_id, exists[0]))
-
-
-# ── Standard objects (from orsaker.txt) ───────────────────────────────────────
-_STD_OBJECTS = [
-    "Manuell ventil",
-    "On-off ventil",
-    "Reglerventil",
-    "Backventil",
-    "Säkerhetsventil / sprängbleck",
-    "Pump",
-    "Kompressor / fläkt",
-    "Filter / sil",
-    "Värmeväxlare / kylare / värmare",
-    "Tank / kärl / kolonn",
-    "Rörledning / slang",
-    "Fläns / koppling / packning",
-    "Instrument",
-    "Styrsystem / PLC / DCS",
-    "Elförsörjning",
-    "Tryckluft / instrumentluft",
-    "Kylsystem / värmesystem",
-    "Blandare / omrörare",
-    "Operatör / procedur / underhåll",
-    "Övrigt",
-]
-
-# Maps legacy comp_type strings → standard_objects.name for migration
-_COMP_TYPE_TO_OBJ: dict = {
-    'Pump':                'Pump',
-    'Kompressor':          'Kompressor / fläkt',
-    'Ventil':              'Reglerventil',        # generic → closest specific
-    'Rörledning':          'Rörledning / slang',
-    'Tank / Kärl':         'Tank / kärl / kolonn',
-    'Instrument / Sensor': 'Instrument',
-    'Värmeväxlare':        'Värmeväxlare / kylare / värmare',
-}
-
-# Maps _COMP_STD_CAUSES keys → standard_objects.name
-_COMP_KEY_TO_OBJ: dict = {
-    'Pump':                    'Pump',
-    'Kompressor':              'Kompressor / fläkt',
-    'Ventil':                  'Reglerventil',
-    'Rörledning':              'Rörledning / slang',
-    'Instrument / Sensor':     'Instrument',
-    'Tank / Kärl':             'Tank / kärl / kolonn',
-    'Värmeväxlare':            'Värmeväxlare / kylare / värmare',
-}
-
-
-def _seed_standard_objects(conn):
-    for i, name in enumerate(_STD_OBJECTS):
-        conn.execute(
-            "INSERT OR IGNORE INTO standard_objects (name, sort_order) VALUES (?,?)",
-            (name, i))
     conn.commit()
 
 
@@ -1825,40 +1631,26 @@ class Database:
                         "INSERT INTO standard_causes (deviation_id, description, sort_order)"
                         " VALUES (?,?,?)", (dev_tmpl_id, c_desc, cause_i))
 
-        # Seed component-type-specific standard causes (one-time, idempotent)
-        if not self.conn.execute(
-                "SELECT value FROM app_config WHERE key='comp_causes_seeded_v1'").fetchone():
-            _seed_component_causes(self.conn)
-            self.conn.execute(
-                "INSERT OR REPLACE INTO app_config (key,value) VALUES ('comp_causes_seeded_v1','1')")
-
-        # Replace verbose v1 instrument causes with simple "Felar högt" / "Felar lågt"
-        if not self.conn.execute(
-                "SELECT value FROM app_config WHERE key='comp_causes_seeded_v2'").fetchone():
-            _fix_instrument_causes_v2(self.conn)
-            self.conn.execute(
-                "INSERT OR REPLACE INTO app_config (key,value) VALUES ('comp_causes_seeded_v2','1')")
-
-        # Rename "Felar högt/lågt" → "Signalfel högt/lågt"
-        if not self.conn.execute(
-                "SELECT value FROM app_config WHERE key='comp_causes_seeded_v3'").fetchone():
-            _fix_instrument_causes_v3(self.conn)
-            self.conn.execute(
-                "INSERT OR REPLACE INTO app_config (key,value) VALUES ('comp_causes_seeded_v3','1')")
-
-        # Seed standard objects from orsaker.txt list (idempotent)
+        # Seed standard objects FIRST — causes need object IDs
         if not self.conn.execute(
                 "SELECT value FROM app_config WHERE key='std_objects_seeded_v1'").fetchone():
             _seed_standard_objects(self.conn)
             self.conn.execute(
                 "INSERT OR REPLACE INTO app_config (key,value) VALUES ('std_objects_seeded_v1','1')")
 
-        # Migrate comp_type → object_id FK (idempotent)
-        if not self.conn.execute(
-                "SELECT value FROM app_config WHERE key='causes_object_id_migrated_v1'").fetchone():
-            _migrate_causes_to_object_id(self.conn)
+        # Seed v1/v2/v3 legacy sentinels (mark as done so old code doesn't re-run)
+        for sv in ('comp_causes_seeded_v1', 'comp_causes_seeded_v2', 'comp_causes_seeded_v3',
+                   'causes_object_id_migrated_v1'):
             self.conn.execute(
-                "INSERT OR REPLACE INTO app_config (key,value) VALUES ('causes_object_id_migrated_v1','1')")
+                f"INSERT OR IGNORE INTO app_config (key,value) VALUES ('{sv}','legacy')")
+
+        # Seed full object-keyed causes (v4) — replaces old comp_type seeding
+        if not self.conn.execute(
+                "SELECT value FROM app_config WHERE key='comp_causes_seeded_v4'").fetchone():
+            _seed_component_causes(self.conn)
+            _migrate_causes_to_object_id(self.conn)   # backfill existing rows
+            self.conn.execute(
+                "INSERT OR REPLACE INTO app_config (key,value) VALUES ('comp_causes_seeded_v4','1')")
 
         # Seed default cause descriptions per standard cause (idempotent)
         if not self.conn.execute(
@@ -6492,10 +6284,10 @@ def _draw_equip_icon(painter, rect, comp_type):
 
 
 class StandardCausesPickerPopup(QDialog):
-    """Three-level popup: Objekt -> Standardorsak -> Orsaksbeskrivning.
+    """Two-column popup: Objekt (left) → Orsaker (right).
 
-    Shows objects with causes for the given deviation. User picks object,
-    then cause, then optionally a cause description sub-phrase.
+    Causes are already fully descriptive — no separate sub-description panel.
+    Double-click a cause or press Enter to select it.
     """
     cause_picked = pyqtSignal(str, object)   # (description, frequency_or_None)
 
@@ -6505,62 +6297,73 @@ class StandardCausesPickerPopup(QDialog):
         self._db = db
         self._dev_id = deviation_id
         self.setWindowTitle("Välj orsak")
-        self.setMinimumWidth(540)
-        self.setMinimumHeight(480)
+        self.setMinimumWidth(560)
+        self.setMinimumHeight(440)
         main = QVBoxLayout(self)
         main.setSpacing(6)
         main.setContentsMargins(8, 8, 8, 8)
 
+        # Header
         hdr = QLabel(f"<b>Avvikelse:</b> {deviation_name}")
-        hdr.setStyleSheet("color:#1F4E79; font-size:11px; padding:2px 0;")
+        hdr.setStyleSheet(
+            "color:#1F4E79; font-size:11px; padding:3px 6px;"
+            "background:#eef4fb; border-radius:3px;")
         main.addWidget(hdr)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # ── Object list ───────────────────────────────────────────────────────
+        # ── Left: Object list ─────────────────────────────────────────────────
         obj_w = QWidget()
         obj_l = QVBoxLayout(obj_w)
         obj_l.setContentsMargins(0, 0, 0, 0)
-        obj_l.addWidget(QLabel("<b>Objekttyp:</b>"))
+        obj_l.setSpacing(3)
+        obj_lbl = QLabel("<b>Objekttyp:</b>")
+        obj_lbl.setStyleSheet("font-size:10px; color:#444;")
+        obj_l.addWidget(obj_lbl)
         self._obj_list = QListWidget()
         self._obj_list.setAlternatingRowColors(True)
+        self._obj_list.setStyleSheet(
+            "QListWidget::item { padding: 4px 6px; }"
+            "QListWidget::item:selected { background:#1d4ed8; color:white; font-weight:bold; }")
         obj_l.addWidget(self._obj_list)
         splitter.addWidget(obj_w)
 
-        # ── Cause + desc ──────────────────────────────────────────────────────
-        right_w = QWidget()
-        right_l = QVBoxLayout(right_w)
-        right_l.setContentsMargins(4, 0, 0, 0)
-        right_l.addWidget(QLabel("<b>Orsaker:</b>"))
+        # ── Right: Cause list ─────────────────────────────────────────────────
+        cause_w = QWidget()
+        cause_l = QVBoxLayout(cause_w)
+        cause_l.setContentsMargins(4, 0, 0, 0)
+        cause_l.setSpacing(3)
+        self._cause_hdr = QLabel("<b>Orsaker:</b>")
+        self._cause_hdr.setStyleSheet("font-size:10px; color:#444;")
+        cause_l.addWidget(self._cause_hdr)
         self._cause_list = QListWidget()
         self._cause_list.setAlternatingRowColors(True)
-        right_l.addWidget(self._cause_list, 2)
-        self._desc_hdr = QLabel("<b>Orsaksbeskrivning</b> (dubbelklicka för att använda):")
-        self._desc_hdr.setStyleSheet("color:#555; font-size:10px; margin-top:4px;")
-        right_l.addWidget(self._desc_hdr)
-        self._desc_list = QListWidget()
-        self._desc_list.setMaximumHeight(110)
-        self._desc_list.setStyleSheet("font-size:10px;")
-        right_l.addWidget(self._desc_list, 1)
-        splitter.addWidget(right_w)
-        splitter.setSizes([170, 370])
+        self._cause_list.setWordWrap(True)
+        self._cause_list.setStyleSheet(
+            "QListWidget::item { padding: 4px 8px; border-bottom: 1px solid #f0f0f0; }"
+            "QListWidget::item:selected { background:#dbeafe; color:#1e3a8a; font-weight:bold; }")
+        cause_l.addWidget(self._cause_list)
+        splitter.addWidget(cause_w)
+        splitter.setSizes([180, 380])
         main.addWidget(splitter, 1)
 
-        # Free-text row
+        # Free-text fallback
         ft_row = QHBoxLayout()
-        ft_row.addWidget(QLabel("Fritext:"))
+        ft_lbl = QLabel("Fritext:")
+        ft_lbl.setStyleSheet("font-size:10px; color:#666;")
+        ft_row.addWidget(ft_lbl)
         self._ft_edit = QLineEdit()
-        self._ft_edit.setPlaceholderText("Ange orsak manuellt…")
+        self._ft_edit.setPlaceholderText("Ange orsak manuellt om inget alternativ passar…")
         ft_row.addWidget(self._ft_edit, 1)
         main.addLayout(ft_row)
 
         # Buttons
         btn_row = QHBoxLayout()
-        self._ok_btn = QPushButton("Välj markerad orsak")
+        self._ok_btn = QPushButton("Välj")
         self._ok_btn.setDefault(True)
         self._ok_btn.setStyleSheet(
             "background:#1d4ed8; color:white; border:none;"
-            "border-radius:4px; padding:4px 12px;")
+            "border-radius:4px; padding:5px 16px; font-weight:bold;")
         self._ok_btn.clicked.connect(self._pick_selected)
         cancel_btn = QPushButton("Avbryt")
         cancel_btn.clicked.connect(self.reject)
@@ -6570,9 +6373,7 @@ class StandardCausesPickerPopup(QDialog):
         main.addLayout(btn_row)
 
         self._obj_list.currentRowChanged.connect(self._on_obj_changed)
-        self._cause_list.currentRowChanged.connect(self._on_cause_changed)
         self._cause_list.itemDoubleClicked.connect(lambda _: self._pick_selected())
-        self._desc_list.itemDoubleClicked.connect(lambda _: self._pick_desc())
         self._ft_edit.returnPressed.connect(self._pick_selected)
 
         self._populate_objects(comp_type)
@@ -6587,8 +6388,7 @@ class StandardCausesPickerPopup(QDialog):
             _p = QPainter(icon_px)
             _draw_equip_icon(_p, QRect(0, 0, 20, 20), obj['name'])
             _p.end()
-            item = QListWidgetItem(QIcon(icon_px),
-                                   f"{obj['name']}  ({obj['n_causes']})")
+            item = QListWidgetItem(QIcon(icon_px), obj['name'])
             item.setData(Qt.ItemDataRole.UserRole,     obj['id'])
             item.setData(Qt.ItemDataRole.UserRole + 1, obj['name'])
             self._obj_list.addItem(item)
@@ -6599,60 +6399,33 @@ class StandardCausesPickerPopup(QDialog):
 
     def _on_obj_changed(self, row):
         self._cause_list.clear()
-        self._desc_list.clear()
         item = self._obj_list.item(row)
         if not item: return
-        obj_id = item.data(Qt.ItemDataRole.UserRole)
+        obj_id   = item.data(Qt.ItemDataRole.UserRole)
+        obj_name = item.data(Qt.ItemDataRole.UserRole + 1)
+        self._cause_hdr.setText(f"<b>Orsaker — {obj_name}:</b>")
         for c in self._db.standard_causes_for_object(self._dev_id, obj_id):
             freq  = c.get('frequency')
             label = c['description']
-            if freq is not None:
-                label += f"  [{freq:g}/år]"
             ci = QListWidgetItem(label)
-            ci.setData(Qt.ItemDataRole.UserRole,     c['id'])
             ci.setData(Qt.ItemDataRole.UserRole + 1, c['description'])
             ci.setData(Qt.ItemDataRole.UserRole + 2, freq)
+            if freq is not None:
+                ci.setToolTip(f"Frekvens: {freq:g} händelser/år")
             self._cause_list.addItem(ci)
         if self._cause_list.count():
             self._cause_list.setCurrentRow(0)
-
-    def _on_cause_changed(self, row):
-        self._desc_list.clear()
-        item = self._cause_list.item(row)
-        if not item: return
-        cid  = item.data(Qt.ItemDataRole.UserRole)
-        freq = item.data(Qt.ItemDataRole.UserRole + 2)
-        for d in self._db.cause_descriptions(cid):
-            di = QListWidgetItem(d['description'])
-            di.setData(Qt.ItemDataRole.UserRole,     d['description'])
-            di.setData(Qt.ItemDataRole.UserRole + 1, freq)
-            self._desc_list.addItem(di)
 
     def _pick_selected(self):
         ft = self._ft_edit.text().strip()
         if ft:
             self.cause_picked.emit(ft, None)
             self.accept(); return
-        desc_item = self._desc_list.currentItem()
-        if desc_item:
-            self._pick_desc(); return
         cause_item = self._cause_list.currentItem()
         if not cause_item: return
         desc = cause_item.data(Qt.ItemDataRole.UserRole + 1) or cause_item.text()
         freq = cause_item.data(Qt.ItemDataRole.UserRole + 2)
         self.cause_picked.emit(desc, freq)
-        self.accept()
-
-    def _pick_desc(self):
-        desc_item = self._desc_list.currentItem()
-        if not desc_item: return
-        cause_item = self._cause_list.currentItem()
-        cause_text = (cause_item.data(Qt.ItemDataRole.UserRole + 1)
-                      if cause_item else '') or ''
-        desc_text  = desc_item.data(Qt.ItemDataRole.UserRole) or desc_item.text()
-        freq       = cause_item.data(Qt.ItemDataRole.UserRole + 2) if cause_item else None
-        full = f"{cause_text} — {desc_text}" if cause_text else desc_text
-        self.cause_picked.emit(full, freq)
         self.accept()
 
 
