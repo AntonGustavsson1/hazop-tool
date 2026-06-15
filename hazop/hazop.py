@@ -4743,6 +4743,7 @@ class PropertiesRibbon(QWidget):
         if not self._id: return
         n = self.db.get_node(self._id)
         if not n: return
+        n = dict(n)
         dlg = QDialog(self)
         dlg.setWindowTitle("Nod")
         dlg.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
@@ -4773,6 +4774,7 @@ class PropertiesRibbon(QWidget):
         if not self._id: return
         n = self.db.get_node(self._id)
         if not n: return
+        n = dict(n)
         val = self._text_popup(btn, "Beskrivning", n.get('description','') or '',
                                multiline=True, placeholder="Beskriv noden...")
         if val is not None:
@@ -4785,6 +4787,7 @@ class PropertiesRibbon(QWidget):
         if not self._id: return
         n = self.db.get_node(self._id)
         if not n: return
+        n = dict(n)
         dlg = QDialog(self)
         dlg.setWindowTitle("Processparametrar")
         dlg.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
@@ -4828,6 +4831,7 @@ class PropertiesRibbon(QWidget):
         if not self._id: return
         d = self.db.get_deviation(self._id)
         if not d: return
+        d = dict(d)
         val = self._text_popup(btn, "Avvikelse", d['description'] or '')
         if val is not None:
             self.db.conn.execute(
@@ -4840,6 +4844,7 @@ class PropertiesRibbon(QWidget):
         if not self._id: return
         c = self.db.get_cause(self._id)
         if not c: return
+        c = dict(c)
         val = self._text_popup(btn, "Orsaksbeskrivning",
                                dict(c).get('description','') or '',
                                multiline=True, placeholder="Beskriv orsaken...")
@@ -4964,6 +4969,7 @@ class PropertiesRibbon(QWidget):
         if not self._id: return
         sg = self.db.get_safeguard(self._id)
         if not sg: return
+        sg = dict(sg)
         val = self._text_popup(btn, "Barriär", dict(sg).get('description','') or '',
                                multiline=True, placeholder="Beskriv barriären...")
         if val is not None:
