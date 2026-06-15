@@ -6269,18 +6269,8 @@ class TreePanel(QWidget):
 
         self.tree.blockSignals(False)
         if target:
-            # Block signals during setCurrentItem so item_selected doesn't fire
-            # synchronously inside a signal handler (can cause double _rebuild crash).
-            self.tree.blockSignals(True)
             self.tree.setCurrentItem(target)
-            self.tree.blockSignals(False)
             self.tree.scrollToItem(target)
-            # Emit item_selected deferred so the caller's signal chain completes first
-            type_v = target.data(0, Qt.ItemDataRole.UserRole + 1)
-            id_v   = target.data(0, Qt.ItemDataRole.UserRole)
-            if type_v is not None and id_v is not None:
-                QTimer.singleShot(0, lambda t=type_v, i=id_v:
-                    self.item_selected.emit(t, i))
 
     def _current(self):
         item = self.tree.currentItem()
@@ -15142,14 +15132,16 @@ class MainWindow(QMainWindow):
         self.pid_panel.cause_created.connect(
             lambda cid: (self.tree_panel.refresh(CAUSE_T, cid),
                          self.scenario_panel.refresh_placed()))
-        self.pid_panel.consequence_created.connect(
-            lambda cid: (self.tree_panel.refresh(CONS_T, cid),
-                         self.scenario_panel.refresh_placed(),
-                         # Open step picker via timer so the deferred _on_selected
-                         # (timer 0ms from tree.refresh) completes its _rebuild
-                         # before the modal dialog starts its own event loop.
-                         QTimer.singleShot(20, lambda c=cid:
-                             self._open_consequence_step_picker(c))))
+        def _on_consequence_created(cid):
+            # Open the step picker FIRST (before tree refresh).
+            # tree_panel.refresh triggers _on_selected → _rebuild.  If we did
+            # that first, _rebuild would run inside the picker's nested event
+            # loop (exec()) and crash Qt.  By opening the picker first, the
+            # tree refresh runs AFTER exec() returns — safe normal event loop.
+            self._open_consequence_step_picker(cid)
+            self.tree_panel.refresh(CONS_T, cid)
+            self.scenario_panel.refresh_placed()
+        self.pid_panel.consequence_created.connect(_on_consequence_created)
         self.pid_panel.ref_tag_picked.connect(self._on_ref_tag_picked)
         self.pid_panel.safeguard_created.connect(self._on_safeguard_created)
         self.pid_panel.existing_marker_placed.connect(self._on_existing_marker_placed)
