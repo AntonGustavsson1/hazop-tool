@@ -8205,8 +8205,9 @@ class ReductionFactorsDialog(QDialog):
 
 
 class _ScenarioDelegate(QStyledItemDelegate):
-    """Delegates that installs the parent panel's eventFilter on every inline editor
-    so Ctrl+Enter works even while a cell is being edited."""
+    """Custom delegate: word-wrap for ORS/KON/SG cells; passes eventFilter to editors."""
+
+    _WRAP_COLS = None   # set after panel constants are known
 
     def __init__(self, panel):
         super().__init__(panel)
@@ -8219,6 +8220,29 @@ class _ScenarioDelegate(QStyledItemDelegate):
             editor.setProperty('editing_col', index.column())
             editor.installEventFilter(self._panel)
         return editor
+
+    def sizeHint(self, option, index):
+        col = index.column()
+        panel = self._panel
+        wrap_cols = {panel._C_ORS, panel._C_KON, panel._C_SG}
+        if col not in wrap_cols:
+            return super().sizeHint(option, index)
+        text = index.data(Qt.ItemDataRole.DisplayRole) or ''
+        if not text:
+            return super().sizeHint(option, index)
+        w = option.rect.width() if option.rect.width() > 0 else 200
+        fm = QFontMetrics(option.font)
+        # Subtract icon zones from available width
+        if col == panel._C_ORS:
+            w -= _PID_ICON_W + panel._cause_obj_w + 40   # icons right
+        elif col == panel._C_KON:
+            w -= _PID_ICON_W + _KON_CAT_W + _KON_CHAIN_W
+        elif col == panel._C_SG:
+            w -= _PID_ICON_W + _RRF_W
+        w = max(40, w)
+        rect = fm.boundingRect(0, 0, w, 10000,
+                               Qt.TextFlag.TextWordWrap, text)
+        return QSize(option.rect.width(), max(22, rect.height() + 8))
 
 
 _PID_ICON_W  = 22          # pixels reserved on the left for the pin icon
@@ -8528,12 +8552,10 @@ class _PidDelegate(_ScenarioDelegate):
                       else option.palette.text().color())
                 painter.setPen(tc)
                 painter.setFont(option.font)
-                fm = painter.fontMetrics()
-                elided = fm.elidedText(desc, Qt.TextElideMode.ElideRight,
-                                       text_rect_adj.width() - 4)
-                painter.drawText(text_rect_adj.adjusted(2, 0, -2, 0),
-                                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                                 elided)
+                painter.drawText(text_rect_adj.adjusted(2, 2, -2, -2),
+                                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop |
+                                 Qt.TextFlag.TextWordWrap,
+                                 desc)
 
                 sf = QFont(option.font); sf.setPointSize(max(7, option.font.pointSize() - 1))
                 painter.setFont(sf)
@@ -8607,34 +8629,16 @@ class _PidDelegate(_ScenarioDelegate):
                 painter.setPen(QPen(QColor('#ddd'), 1))
                 painter.drawLine(cat_rect.right(), r.top(), cat_rect.right(), r.bottom())
 
-                # Description text — render tags in bold, rest in normal weight
+                # Description text — word-wrapped, tags in bold
                 display = index.data(Qt.ItemDataRole.DisplayRole) or ''
                 tc = (option.palette.highlightedText().color() if sel
                       else option.palette.text().color())
                 painter.setPen(tc)
-                segs = _bold_segments(display)
-                # Two fonts: normal and bold
-                fn  = QFont(option.font)
-                fb  = QFont(option.font); fb.setBold(True)
-                fmn = QFontMetrics(fn); fmb = QFontMetrics(fb)
-                avail_w = txt_rect.width() - 4
-                # Measure total width; elide from the end if too wide
-                total_w = sum((fmb if tag else fmn).horizontalAdvance(t) for t, tag in segs)
-                if total_w > avail_w:
-                    # Fall back to single-pass elided plain draw
-                    painter.setFont(fn)
-                    painter.drawText(txt_rect.adjusted(2, 0, -2, 0),
-                                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                                     fmn.elidedText(display, Qt.TextElideMode.ElideRight, avail_w))
-                else:
-                    x = txt_rect.left() + 2
-                    y = txt_rect.top() + (txt_rect.height() + fmn.ascent() - fmn.descent()) // 2
-                    for t, is_tag in segs:
-                        f = fb if is_tag else fn
-                        fm_ = fmb if is_tag else fmn
-                        painter.setFont(f)
-                        painter.drawText(x, y, t)
-                        x += fm_.horizontalAdvance(t)
+                painter.setFont(option.font)
+                painter.drawText(txt_rect.adjusted(2, 2, -2, -2),
+                                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop |
+                                 Qt.TextFlag.TextWordWrap,
+                                 display)
 
                 # ⛓ chain-link zone on the right
                 has_linked = bool(index.data(Qt.ItemDataRole.UserRole + 6))
@@ -9355,6 +9359,9 @@ class ScenarioTablePanel(QWidget):
             self._table.blockSignals(False)
             self._table.cellChanged.connect(self._on_cell_changed)
             self._rebuilding = False
+        # Re-fit row heights now that column widths are known
+        for row in range(self._table.rowCount()):
+            self._table.resizeRowToContents(row)
 
     def _apply_spans(self):
         """Merge consecutive rows that share the same Nod or Orsak."""
@@ -9436,7 +9443,7 @@ class ScenarioTablePanel(QWidget):
         for col in (self._C_KON, self._C_RFORE, self._C_SG, self._C_REFT,
                     self._C_FA, self._C_IGN, self._C_OVRIGA, self._C_SLUT):
             self._table.setItem(r, col, _ro())
-        self._table.setRowHeight(r, max(22, self._cell_font_size * 2 + 4))
+        self._table.resizeRowToContents(r)
 
     def _add_empty_row(self, node_name, dev_d, cause_d, freq, freq_lbl):
         """Placeholder row when a cause has no consequences yet."""
@@ -9474,7 +9481,7 @@ class ScenarioTablePanel(QWidget):
                     self._C_FA, self._C_IGN, self._C_OVRIGA, self._C_SLUT):
             self._table.setItem(r, col, _ro())
 
-        self._table.setRowHeight(r, max(22, self._cell_font_size * 2 + 4))
+        self._table.resizeRowToContents(r)
 
     def _add_row(self, node_name, dev_d, cause_d, freq, freq_lbl, cons_d, all_sgs, sg,
                  cat_info=None, excl_cat_names=None, excl_for_cat=None,
@@ -9717,7 +9724,7 @@ class ScenarioTablePanel(QWidget):
             rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
         self._table.setItem(r, self._C_SLUT, rs)
 
-        self._table.setRowHeight(r, max(22, self._cell_font_size * 2 + 4))
+        self._table.resizeRowToContents(r)
 
     def _get_cons_context(self, cons_id: int):
         """Return (deviation, comp_type, cause_text) for the consequence."""
