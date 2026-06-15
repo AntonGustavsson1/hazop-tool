@@ -4957,8 +4957,11 @@ class PropertiesRibbon(QWidget):
 
 # Populate _TYPE_BUTTONS now that all method objects exist
 def _init_ribbon_buttons(cls):
+    # NODE_T=1, DEV_T=5, CAUSE_T=2, CONS_T=3, SG_T=4 — use literals because
+    # the type constants are defined later in the module and aren't yet in scope
+    # when this initialiser runs.
     cls._TYPE_BUTTONS = {
-        NODE_T:  [
+        1: [   # NODE_T
             "NOD",
             ("🏷", "Redigera namn och P&ID-referens",    cls._edit_node_name),
             ("📄", "Redigera beskrivning",                cls._edit_node_desc),
@@ -4968,11 +4971,11 @@ def _init_ribbon_buttons(cls):
             ("✅", "Sätt status / godkänn nod",          cls._edit_node_status),
             ("📍", "Visa nod på P&ID",                   cls._zoom_to_node),
         ],
-        DEV_T:   [
+        5: [   # DEV_T
             "AVVIK.",
             ("📝", "Redigera avvikelsebeskrivning",       cls._edit_dev_desc),
         ],
-        CAUSE_T: [
+        2: [   # CAUSE_T
             "ORSAK",
             ("📝", "Redigera orsaksbeskrivning",          cls._edit_cause_desc),
             ("🏷", "Redigera objekttyp och tag-ID",       cls._edit_cause_obj),
@@ -4981,14 +4984,14 @@ def _init_ribbon_buttons(cls):
             None,
             ("📍", "Visa orsak på P&ID",                 cls._zoom_to_cause),
         ],
-        CONS_T:  [
+        3: [   # CONS_T
             "KONS.",
             ("📋", "Redigera konsekvenskedja (Del1–Del5)", cls._edit_cons_chain),
             ("📊", "Sätt allvarlighet per kategori",      cls._edit_cons_sev),
             None,
             ("📍", "Visa konsekvens på P&ID",            cls._zoom_to_cons),
         ],
-        SG_T:    [
+        4: [   # SG_T
             "BARRIÄR",
             ("📝", "Redigera barriärsbeskrivning",        cls._edit_sg_desc),
             ("⚡", "Ange RRF och typ",                    cls._edit_sg_rrf),
