@@ -8224,17 +8224,23 @@ class _ScenarioDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
         col = index.column()
         panel = self._panel
+        fm = QFontMetrics(option.font)
+        one_line_h = fm.height() + 6   # compact single-line height
+
         wrap_cols = {panel._C_ORS, panel._C_KON, panel._C_SG}
         if col not in wrap_cols:
-            return super().sizeHint(option, index)
+            # Non-wrap columns never drive row height above one line
+            base = super().sizeHint(option, index)
+            return QSize(base.width(), one_line_h)
+
         text = index.data(Qt.ItemDataRole.DisplayRole) or ''
         if not text:
-            return super().sizeHint(option, index)
+            return QSize(option.rect.width(), one_line_h)
+
         w = option.rect.width() if option.rect.width() > 0 else 200
-        fm = QFontMetrics(option.font)
-        # Subtract icon zones from available width
+        # Subtract icon zones
         if col == panel._C_ORS:
-            w -= _PID_ICON_W + panel._cause_obj_w + 40   # icons right
+            w -= _PID_ICON_W + getattr(panel, '_cause_obj_w', 64) + 40
         elif col == panel._C_KON:
             w -= _PID_ICON_W + _KON_CAT_W + _KON_CHAIN_W
         elif col == panel._C_SG:
@@ -8242,7 +8248,7 @@ class _ScenarioDelegate(QStyledItemDelegate):
         w = max(40, w)
         rect = fm.boundingRect(0, 0, w, 10000,
                                Qt.TextFlag.TextWordWrap, text)
-        return QSize(option.rect.width(), max(22, rect.height() + 8))
+        return QSize(option.rect.width(), max(one_line_h, rect.height() + 8))
 
 
 _PID_ICON_W  = 22          # pixels reserved on the left for the pin icon
@@ -9094,6 +9100,10 @@ class ScenarioTablePanel(QWidget):
             self._table.setColumnWidth(col, width)
         self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._table.verticalHeader().setVisible(False)
+        # Allow rows to shrink freely — resizeRowsToContents sets actual heights
+        _init_fm = QFontMetrics(self._table.font())
+        self._table.verticalHeader().setDefaultSectionSize(_init_fm.height() + 6)
+        self._table.verticalHeader().setMinimumSectionSize(_init_fm.height() + 4)
         self._table.setAlternatingRowColors(True)
         self._table.setWordWrap(True)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -9165,7 +9175,12 @@ class ScenarioTablePanel(QWidget):
         f = QFont()
         f.setPointSize(size)
         self._table.setFont(f)
-        self._table.verticalHeader().setDefaultSectionSize(max(22, size * 2 + 4))
+        # Keep default section size at one-line height so resizeRowToContents
+        # can shrink rows freely.  Row heights are set by resizeRowsToContents
+        # at the end of _rebuild.
+        fm = QFontMetrics(f)
+        self._table.verticalHeader().setDefaultSectionSize(fm.height() + 6)
+        self._table.verticalHeader().setMinimumSectionSize(fm.height() + 4)
         self._rebuild()
 
     # ── Build ─────────────────────────────────────────────────────────────────
@@ -9443,7 +9458,7 @@ class ScenarioTablePanel(QWidget):
         for col in (self._C_KON, self._C_RFORE, self._C_SG, self._C_REFT,
                     self._C_FA, self._C_IGN, self._C_OVRIGA, self._C_SLUT):
             self._table.setItem(r, col, _ro())
-        self._table.resizeRowToContents(r)
+        pass  # row height set by resizeRowsToContents at end of _rebuild
 
     def _add_empty_row(self, node_name, dev_d, cause_d, freq, freq_lbl):
         """Placeholder row when a cause has no consequences yet."""
@@ -9481,7 +9496,7 @@ class ScenarioTablePanel(QWidget):
                     self._C_FA, self._C_IGN, self._C_OVRIGA, self._C_SLUT):
             self._table.setItem(r, col, _ro())
 
-        self._table.resizeRowToContents(r)
+        pass  # row height set by resizeRowsToContents at end of _rebuild
 
     def _add_row(self, node_name, dev_d, cause_d, freq, freq_lbl, cons_d, all_sgs, sg,
                  cat_info=None, excl_cat_names=None, excl_for_cat=None,
@@ -9724,7 +9739,7 @@ class ScenarioTablePanel(QWidget):
             rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
         self._table.setItem(r, self._C_SLUT, rs)
 
-        self._table.resizeRowToContents(r)
+        pass  # row height set by resizeRowsToContents at end of _rebuild
 
     def _get_cons_context(self, cons_id: int):
         """Return (deviation, comp_type, cause_text) for the consequence."""
