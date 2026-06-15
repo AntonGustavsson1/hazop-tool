@@ -8557,19 +8557,23 @@ class PIDPanel(QWidget):
             self._open_template_dialog_for_deviation(reopen_dev, reopen_type)
 
     def _open_template_dialog_for_deviation(self, dev_id, preselect_type=''):
-        """Open StandardCausesPickerPopup (new 2-col Objekt→Orsak picker) for a deviation."""
+        """Open StandardCausesPickerPopup (Avvikelse→Objekt→Orsak) for a deviation."""
         dev = self.db.get_deviation(dev_id)
         if not dev:
             return
         dev_name = dev['description']
 
-        # Use the new object-first picker (StandardCausesPickerPopup from hazop.py)
+        # dev_id is from 'deviations' (node instance); we need 'standard_deviations' id
+        std_row = self.db.conn.execute(
+            "SELECT id FROM standard_deviations WHERE description=? COLLATE NOCASE LIMIT 1",
+            (dev_name,)).fetchone()
+        std_dev_id = std_row[0] if std_row else None
+
         try:
             from hazop import StandardCausesPickerPopup as _SP
-            dlg = _SP(self.db, dev_id, deviation_name=dev_name,
+            dlg = _SP(self.db, std_dev_id, deviation_name=dev_name,
                       comp_type=preselect_type, parent=self)
         except Exception:
-            # Fallback to old dialog if import fails
             dlg = None
 
         if dlg is None:

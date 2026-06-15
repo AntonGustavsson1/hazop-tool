@@ -6608,7 +6608,16 @@ class StandardCausesPickerPopup(QDialog):
             btn.setParent(None)
         self._obj_btn_group.clear()
 
-        objs = self._db.objects_for_deviation(self._dev_id)
+        if self._dev_id is None:
+            # No matching standard deviation — show all objects as fallback
+            objs = self._db.standard_objects()
+        else:
+            objs = self._db.objects_for_deviation(self._dev_id)
+
+        if not objs and self._dev_id is not None:
+            # Deviation exists in standard_deviations but has no causes yet
+            # Fall back to showing all standard objects so user can still pick
+            objs = self._db.standard_objects()
         sel_btn = None
         for obj in objs:
             icon_px = QPixmap(18, 18)
@@ -6645,7 +6654,17 @@ class StandardCausesPickerPopup(QDialog):
         self._cause_list.clear()
         self._cause_hdr.setText(f"<b>Orsaker</b> — {obj_name}")
         filt = self._search_edit.text().strip().lower()
-        for c in self._db.standard_causes_for_object(self._dev_id, obj_id):
+        # When no standard deviation is matched, show ALL causes for this object
+        if self._dev_id is None:
+            rows = self._db.conn.execute(
+                "SELECT sc.id, sc.description, sc.frequency "
+                "FROM standard_causes sc "
+                "WHERE sc.object_id=? ORDER BY sc.deviation_id, sc.sort_order",
+                (obj_id,)).fetchall()
+            causes = [dict(r) for r in rows]
+        else:
+            causes = self._db.standard_causes_for_object(self._dev_id, obj_id)
+        for c in causes:
             freq  = c.get('frequency')
             label = c['description']
             if filt and filt not in label.lower():
@@ -14568,13 +14587,21 @@ class MainWindow(QMainWindow):
         dev_row  = self.db.get_deviation(dev_id) if dev_id else None
         dev_desc = dev_row['description'] if dev_row else '—'
 
+        # dev_id is from the 'deviations' table (node-specific instance).
+        # StandardCausesPickerPopup needs a 'standard_deviations' ID instead
+        # — look it up by matching the description string.
+        std_dev_row = self.db.conn.execute(
+            "SELECT id FROM standard_deviations WHERE description=? COLLATE NOCASE LIMIT 1",
+            (dev_desc,)).fetchone()
+        std_dev_id = std_dev_row[0] if std_dev_row else None
+
         # Clean up the OCR'd tag
         effective_tag = (suggested_desc or suggested_tag or '').strip()
         if self.db.get_config('tag_strip_spaces', '1') == '1':
             effective_tag = effective_tag.replace(' ', '')
 
         popup = StandardCausesPickerPopup(
-            self.db, dev_id,
+            self.db, std_dev_id,
             deviation_name=dev_desc,
             comp_type=detected_type or '',
             initial_tag=effective_tag,
