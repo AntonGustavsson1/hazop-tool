@@ -9788,6 +9788,16 @@ class ScenarioTablePanel(QWidget):
             pass
         self._table.viewport().update()
 
+    def select_cause(self, cause_id: int):
+        """Scroll to and select the first row for *cause_id* in the scenario table."""
+        for row, (dev_id, cid, cons_id, sg_id) in enumerate(self._row_meta):
+            if cid == cause_id:
+                self._table.setCurrentCell(row, self._C_ORS)
+                self._table.scrollTo(
+                    self._table.model().index(row, self._C_ORS),
+                    QAbstractItemView.ScrollHint.PositionAtCenter)
+                return
+
     def ors_cell_global_pos(self, dev_id):
         """Return global top-right corner of the first placeholder ORS cell for dev_id."""
         for row, meta in enumerate(self._row_meta):
@@ -14541,7 +14551,9 @@ class MainWindow(QMainWindow):
         self.pid_panel.cause_template_created.connect(
             lambda cid: (self.tree_panel.refresh(CAUSE_T, cid),
                          self._on_selected(CAUSE_T, cid),
-                         self.scenario_panel.refresh_placed()))
+                         self.scenario_panel.refresh_placed(),
+                         QTimer.singleShot(50, lambda c=cid:
+                             self.scenario_panel.select_cause(c))))
         self.pid_panel.cause_placement_requested.connect(self._on_cause_placement_requested)
         self.pid_panel.risk_scenario_requested.connect(self._on_pid_risk_scenario)
         self.pid_panel.marker_navigated.connect(self._on_marker_navigate)
