@@ -1264,9 +1264,11 @@ class Database:
         self.conn = sqlite3.connect(str(self.path))
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
+        self.conn.execute("PRAGMA journal_mode = WAL")   # faster concurrent reads
         self.conn.executescript(SCHEMA)
         self.conn.commit()
         self._migrate()
+        self._auto_backup()
 
     def _migrate(self):
         # Kolumnmigreringarna körs TVÅ gånger: före executescript (befintliga
@@ -1321,6 +1323,10 @@ class Database:
             "ALTER TABLE off_page_connector ADD COLUMN dot_scene_y REAL DEFAULT NULL",
             "ALTER TABLE consequence_steps ADD COLUMN node_key TEXT DEFAULT ''",
             "ALTER TABLE standard_causes ADD COLUMN object_id INTEGER REFERENCES standard_objects(id)",
+            "ALTER TABLE causes ADD COLUMN comment TEXT DEFAULT ''",
+            "ALTER TABLE nodes ADD COLUMN approved_by TEXT DEFAULT ''",
+            "ALTER TABLE nodes ADD COLUMN approved_at TEXT DEFAULT ''",
+            "ALTER TABLE nodes ADD COLUMN study_status TEXT DEFAULT 'draft'",
         ]:
             try:
                 self.conn.execute(sql)
@@ -2780,6 +2786,44 @@ class Database:
         return cur.lastrowid
 
     # ── Update ────────────────────────────────────────────────────────────────
+    def set_cause_comment(self, cause_id, comment):
+        self.conn.execute("UPDATE causes SET comment=? WHERE id=?", (comment, cause_id))
+        self.conn.commit()
+
+    def get_cause_comment(self, cause_id):
+        r = self.conn.execute("SELECT comment FROM causes WHERE id=?", (cause_id,)).fetchone()
+        return r[0] if r else ''
+
+    def approve_node(self, node_id, user):
+        import datetime as _dt
+        self.conn.execute(
+            "UPDATE nodes SET study_status='approved', approved_by=?, approved_at=? WHERE id=?",
+            (user, _dt.datetime.now().strftime('%Y-%m-%d %H:%M'), node_id))
+        self.conn.commit()
+
+    def set_node_status(self, node_id, status):
+        self.conn.execute("UPDATE nodes SET study_status=? WHERE id=?", (status, node_id))
+        self.conn.commit()
+
+    def _auto_backup(self):
+        """Keep a rolling 7-day backup next to the project file."""
+        import shutil, datetime as _dt
+        try:
+            stamp = _dt.date.today().isoformat()
+            backup = self.path.parent / f"{self.path.stem}_backup_{stamp}.db"
+            if not backup.exists():
+                shutil.copy2(self.path, backup)
+            # Remove backups older than 7 days
+            for f in self.path.parent.glob(f"{self.path.stem}_backup_*.db"):
+                try:
+                    d = _dt.date.fromisoformat(f.stem.rsplit('_', 1)[-1])
+                    if (_dt.date.today() - d).days > 7:
+                        f.unlink()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     def touch_node(self, node_id):
         """Update updated_at/updated_by on node (feature 20)."""
         import datetime as _dt
@@ -5587,6 +5631,17 @@ class TreePanel(QWidget):
         for b in [self.btn_node, self.btn_cause, self.btn_cons, self.btn_del]:
             b.setFixedHeight(26)
             btn_row.addWidget(b)
+        # Collapse / expand all
+        btn_collapse = QPushButton("⊟")
+        btn_collapse.setFixedSize(26, 26)
+        btn_collapse.setToolTip("Kollapsa alla")
+        btn_collapse.clicked.connect(lambda: self.tree.collapseAll())
+        btn_expand = QPushButton("⊞")
+        btn_expand.setFixedSize(26, 26)
+        btn_expand.setToolTip("Expandera alla")
+        btn_expand.clicked.connect(lambda: self.tree.expandAll())
+        btn_row.addWidget(btn_collapse)
+        btn_row.addWidget(btn_expand)
         layout.addLayout(btn_row)
 
         self.btn_node.clicked.connect(self.add_node)
@@ -8169,6 +8224,8 @@ class _ScenarioDelegate(QStyledItemDelegate):
 _PID_ICON_W  = 22          # pixels reserved on the left for the pin icon
 _KON_CAT_W   = 26          # pixels for the category badge zone in KON cells
 _KON_CHAIN_W = 24          # pixels for the ⛓ chain-link zone on the right of KON cells
+_ORS_COMMENT_W = 22        # 💬 comment icon zone (rightmost of ORS)
+_ORS_CLONE_W   = 22        # 📋 clone-scenario icon zone
 
 # Matches equipment tags embedded in consequence text, e.g. T-101, P-201, 323-HV-101
 _CONS_TAG_RE = re.compile(
@@ -8441,13 +8498,29 @@ class _PidDelegate(_ScenarioDelegate):
                     painter.setPen(QPen(QColor('#ddd'), 1))
                     painter.drawLine(freq_rect.right(), r.top(), freq_rect.right(), r.bottom())
 
-                # Status icon (feature 5) — right-most 18px of desc area
+                # Right-side icon zones: [💬comment][📋clone][🟢status]
+                meta_ = self._panel._row_meta
+                _cause_id = meta_[row][1] if row < len(meta_) else None
+                _has_comment = False
+                if _cause_id:
+                    try:
+                        c = self._panel.db.get_cause_comment(_cause_id)
+                        _has_comment = bool(c and c.strip())
+                    except Exception:
+                        pass
+                _STATUS_W  = 18
+                _CMT_W     = 20
+                _CLONE_W   = 18
+                _right_w   = _STATUS_W + _CMT_W + _CLONE_W
                 status_icon = index.data(Qt.ItemDataRole.UserRole + 6) or ''
-                _STATUS_W = 18
-                icon_rect = QRect(desc_rect.right() - _STATUS_W, desc_rect.top(),
-                                  _STATUS_W, desc_rect.height())
+                status_rect = QRect(desc_rect.right() - _STATUS_W, desc_rect.top(),
+                                    _STATUS_W, desc_rect.height())
+                cmt_rect    = QRect(desc_rect.right() - _STATUS_W - _CMT_W, desc_rect.top(),
+                                    _CMT_W, desc_rect.height())
+                clone_rect  = QRect(desc_rect.right() - _right_w, desc_rect.top(),
+                                    _CLONE_W, desc_rect.height())
                 text_rect_adj = QRect(desc_rect.left(), desc_rect.top(),
-                                      desc_rect.width() - _STATUS_W, desc_rect.height())
+                                      desc_rect.width() - _right_w - 2, desc_rect.height())
 
                 # Description text
                 desc = index.data(Qt.ItemDataRole.DisplayRole) or ''
@@ -8461,18 +8534,24 @@ class _PidDelegate(_ScenarioDelegate):
                 painter.drawText(text_rect_adj.adjusted(2, 0, -2, 0),
                                  Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                                  elided)
-                if status_icon:
-                    sf = QFont(option.font); sf.setPointSize(max(7, option.font.pointSize() - 1))
-                    painter.setFont(sf)
-                    painter.drawText(icon_rect, Qt.AlignmentFlag.AlignCenter, status_icon)
 
-                # Pin icon — always shown in ORS column (red if placeholder)
-                meta = self._panel._row_meta
-                _cause_id = meta[row][1] if row < len(meta) else None
+                sf = QFont(option.font); sf.setPointSize(max(7, option.font.pointSize() - 1))
+                painter.setFont(sf)
+                if status_icon:
+                    painter.drawText(status_rect, Qt.AlignmentFlag.AlignCenter, status_icon)
+                # 💬 comment icon — filled if comment exists
+                cmt_col = QColor('#2563eb') if _has_comment else QColor('#cbd5e1')
+                painter.setPen(cmt_col)
+                painter.drawText(cmt_rect, Qt.AlignmentFlag.AlignCenter, '💬')
+                # 📋 clone icon
+                painter.setPen(QColor('#9ca3af'))
+                painter.drawText(clone_rect, Qt.AlignmentFlag.AlignCenter, '📋')
+
+                # Pin icon
                 if _cause_id is not None:
                     _draw_pid_pin(painter, pin_rect, self._panel._is_cell_placed(row, col))
                 else:
-                    _draw_pid_pin(painter, pin_rect, False)   # placeholder → red
+                    _draw_pid_pin(painter, pin_rect, False)
 
                 painter.restore()
                 return
@@ -9019,8 +9098,7 @@ class ScenarioTablePanel(QWidget):
         self._table.cellChanged.connect(self._on_cell_changed)
         self._table.cellClicked.connect(self._on_cell_clicked)
         self._table.itemDoubleClicked.connect(self._on_cell_double_clicked)
-        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._table.customContextMenuRequested.connect(self._on_table_context_menu)
+        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         self._table.installEventFilter(self)
         self._delegate = _ScenarioDelegate(self)
         self._table.setItemDelegate(self._delegate)
@@ -10051,6 +10129,37 @@ class ScenarioTablePanel(QWidget):
         self.db.update_safeguard(sg_id, rrf=rrf, sg_type=sg_type)
         QTimer.singleShot(0, self._rebuild)
 
+    def _open_comment_popup(self, row, cause_id, global_pos):
+        """Floating comment editor for a cause row."""
+        current = self.db.get_cause_comment(cause_id) or ''
+        popup = QDialog(self)
+        popup.setWindowTitle("Kommentar")
+        popup.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        popup.setMinimumWidth(340)
+        lay = QVBoxLayout(popup)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lbl = QLabel("💬  Kommentar till orsaksraden:")
+        lbl.setStyleSheet("font-weight:bold; font-size:10px; color:#1F4E79;")
+        lay.addWidget(lbl)
+        txt = QTextEdit(current)
+        txt.setPlaceholderText("Ange notering, beslut eller referens…")
+        txt.setFixedHeight(100)
+        lay.addWidget(txt)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
+                                QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(popup.accept)
+        btns.rejected.connect(popup.reject)
+        lay.addWidget(btns)
+        popup.adjustSize()
+        scr = (QApplication.screenAt(global_pos) or QApplication.primaryScreen()).availableGeometry()
+        pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
+        x = min(global_pos.x(), scr.right() - pw)
+        y = min(global_pos.y() + 4, scr.bottom() - ph)
+        popup.move(max(scr.left(), x), max(scr.top(), y))
+        if popup.exec() == QDialog.DialogCode.Accepted:
+            self.db.set_cause_comment(cause_id, txt.toPlainText().strip())
+            QTimer.singleShot(0, self._rebuild)
+
     # ── Feature 4: clone scenario ─────────────────────────────────────────────
     def _clone_scenario(self, cause_id):
         cause = self.db.get_cause(cause_id)
@@ -10106,6 +10215,23 @@ class ScenarioTablePanel(QWidget):
                 self.db.set_config('cause_obj_w', str(self._cause_obj_w))
                 return True
 
+        # Right-click on pin icon → remove from P&ID (replaces context menu)
+        if (obj is self._table.viewport() and
+                event.type() == QEvent.Type.MouseButtonPress and
+                event.button() == Qt.MouseButton.RightButton):
+            pos = event.pos()
+            col = self._table.columnAt(pos.x())
+            row = self._table.rowAt(pos.y())
+            if row >= 0 and col in (self._C_ORS, self._C_KON, self._C_SG):
+                col_x = self._table.columnViewportPosition(col)
+                if pos.x() - col_x < _PID_ICON_W and self._cell_has_item(row, col):
+                    if self._is_cell_placed(row, col):
+                        self._remove_from_pid(row, col)
+                    else:
+                        self._place_from_table(row, col)
+                    return True
+            return False  # no context menu
+
         # Viewport mouse: detect LEFT-click in icon strip or RRF row
         if (obj is self._table.viewport() and
                 event.type() == QEvent.Type.MouseButtonPress and
@@ -10155,6 +10281,25 @@ class ScenarioTablePanel(QWidget):
                         gp = self._table.viewport().mapToGlobal(pos)
                         self._show_cause_obj_popup(row, cause_id, gp)
                     return True
+
+            # 💬 Comment + 📋 Clone icon clicks in ORS cell (inline, replaces context menu)
+            if row >= 0 and col == self._C_ORS and row < len(self._row_meta):
+                cause_id = self._row_meta[row][1]
+                if cause_id is not None:
+                    ci = self._table.model().index(row, col)
+                    cr = self._table.visualRect(ci)
+                    # rightmost zones: [📋clone:18][💬comment:20][🟢status:18]
+                    clone_right  = cr.right() - 18 - 20        # start of 📋 zone
+                    cmt_right    = cr.right() - 18              # start of 💬 zone
+                    if pos.x() >= clone_right and pos.x() < cmt_right:
+                        # 📋 Clone scenario
+                        self._clone_scenario(cause_id)
+                        return True
+                    if pos.x() >= cmt_right and pos.x() < cr.right() - 18:
+                        # 💬 Comment popup
+                        self._open_comment_popup(row, cause_id,
+                                                  self._table.viewport().mapToGlobal(pos))
+                        return True
 
             # 📊 Category badge click in KON cell
             if row >= 0 and col == self._C_KON and row < len(self._row_meta):
@@ -14092,8 +14237,13 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
         act("🔀 Risk Scenario", "Starta risk scenario-guide", self._open_risk_scenario_wizard)
         tb.addSeparator()
-        act("📊 Excel",      "Exportera till Excel",   self._export_excel)
+        act("📊 Excel",      "Exportera till Excel (IEC 61511)", self._export_excel)
         act("📄 PDF",        "Exportera till PDF",     self._export_pdf)
+        act("📋 Åtgärder",   "Exportera åtgärdsrapport (PDF)", self._export_actions_pdf)
+        act("🖨 Skriv ut",   "Skriv ut scenariotabell",        self._print_scenario_table)
+        act("📈 Statistik",  "Visa projekstatistik",           self._show_statistics)
+        act("✅ Godkänn",    "Godkänn / byt status på nod",    self._approve_node)
+        act("🌙 Mörkt läge", "Växla mörkt/ljust läge",        self._toggle_dark_mode)
 
         # ── Status bar ────────────────────────────────────────────────────────
         self.status_bar = QStatusBar()
@@ -15005,6 +15155,263 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Klar", f"Exporterad till:\n{path}")
         else:
             QMessageBox.critical(self, "Fel vid export", err)
+
+    # ── Dark mode ─────────────────────────────────────────────────────────────
+    _dark_mode = False
+
+    def _toggle_dark_mode(self):
+        self._dark_mode = not self._dark_mode
+        if self._dark_mode:
+            p = QApplication.instance().palette()
+            dark = QColor(30, 30, 30); mid = QColor(50, 50, 50)
+            text = QColor(220, 220, 220); accent = QColor(99, 155, 255)
+            p.setColor(p.ColorRole.Window,      dark)
+            p.setColor(p.ColorRole.WindowText,  text)
+            p.setColor(p.ColorRole.Base,        mid)
+            p.setColor(p.ColorRole.AlternateBase, QColor(40, 40, 40))
+            p.setColor(p.ColorRole.Text,        text)
+            p.setColor(p.ColorRole.Button,      mid)
+            p.setColor(p.ColorRole.ButtonText,  text)
+            p.setColor(p.ColorRole.Highlight,   accent)
+            p.setColor(p.ColorRole.HighlightedText, QColor(0,0,0))
+            p.setColor(p.ColorRole.ToolTipBase, dark)
+            p.setColor(p.ColorRole.ToolTipText, text)
+            QApplication.instance().setPalette(p)
+        else:
+            QApplication.instance().setPalette(QApplication.style().standardPalette())
+
+    # ── Excel export (IEC 61511 layout) ──────────────────────────────────────
+    def _export_excel(self):
+        try:
+            import openpyxl
+            from openpyxl.styles import (PatternFill, Font, Alignment, Border, Side)
+            from openpyxl.utils import get_column_letter
+        except ImportError:
+            QMessageBox.critical(self, "Saknar beroende",
+                "openpyxl krävs: pip install openpyxl")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Exportera Excel", "hazop_rapport.xlsx", "Excel (*.xlsx)")
+        if not path: return
+
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
+
+        thin = Side(style='thin')
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        hdr_fill = PatternFill("solid", fgColor="1F4E79")
+        hdr_font = Font(color="FFFFFF", bold=True, size=10)
+        hdr_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+        risk_colors = {'Låg': 'C6EFCE', 'Mellan': 'FFEB9C',
+                       'Hög': 'FFC7CE', 'Kritisk': 'FF0000'}
+
+        def make_sheet(wb, node):
+            title = node['name'][:25].replace('/', '-').replace('\\', '-')
+            ws = wb.create_sheet(title=title)
+            ws.sheet_view.showGridLines = True
+            cols = ['Nod', 'Avvikelse', 'Orsak', 'Konsekvens',
+                    'Risk före', 'Barriär', 'RRF', 'Risk efter', 'Åtgärd']
+            for ci, col in enumerate(cols, 1):
+                c = ws.cell(row=1, column=ci, value=col)
+                c.fill = hdr_fill; c.font = hdr_font
+                c.alignment = hdr_align; c.border = border
+            ws.row_dimensions[1].height = 28
+            ws.column_dimensions['A'].width = 14
+            ws.column_dimensions['B'].width = 18
+            ws.column_dimensions['C'].width = 30
+            ws.column_dimensions['D'].width = 35
+            ws.column_dimensions['E'].width = 12
+            ws.column_dimensions['F'].width = 28
+            ws.column_dimensions['G'].width = 8
+            ws.column_dimensions['H'].width = 12
+            ws.column_dimensions['I'].width = 30
+            return ws
+
+        for node in self.db.nodes():
+            nd = dict(node)
+            ws = make_sheet(wb, nd)
+            r = 2
+            for dev in self.db.deviations(nd['id']):
+                for cause in self.db.causes_for_deviation(dev['id']):
+                    cd = dict(cause)
+                    cons_list = list(self.db.consequences(cd['id']))
+                    if not cons_list:
+                        ws.cell(r, 1, nd['name']); ws.cell(r, 2, dev['description'])
+                        ws.cell(r, 3, cd['description']); r += 1
+                        continue
+                    for cons in cons_list:
+                        kd = dict(cons)
+                        sgs = list(self.db.safeguards(kd['id']))
+                        if not sgs:
+                            ws.cell(r, 1, nd['name']); ws.cell(r, 2, dev['description'])
+                            ws.cell(r, 3, cd['description']); ws.cell(r, 4, kd['description'])
+                            r += 1; continue
+                        for sg in sgs:
+                            sd = dict(sg)
+                            ws.cell(r, 1, nd['name']); ws.cell(r, 2, dev['description'])
+                            ws.cell(r, 3, cd['description']); ws.cell(r, 4, kd['description'])
+                            ws.cell(r, 6, sd['description']); ws.cell(r, 7, sd.get('rrf', 1))
+                            for c in range(1, 10):
+                                ws.cell(r, c).border = border
+                                ws.cell(r, c).alignment = Alignment(wrap_text=True, vertical='top')
+                            r += 1
+            ws.freeze_panes = 'A2'
+        wb.save(path)
+        self.status_bar.showMessage(f"Excel sparad: {path}", 6000)
+        QMessageBox.information(self, "Klar", f"Exporterad till:\n{path}")
+
+    # ── Action report PDF ─────────────────────────────────────────────────────
+    def _export_actions_pdf(self):
+        try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib import colors
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+            from reportlab.lib.styles import getSampleStyleSheet
+        except ImportError:
+            QMessageBox.critical(self, "Saknar beroende",
+                "reportlab krävs: pip install reportlab")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Åtgärdsrapport", "hazop_atgarder.pdf", "PDF (*.pdf)")
+        if not path: return
+
+        styles = getSampleStyleSheet()
+        doc = SimpleDocTemplate(path, pagesize=A4)
+        elements = []
+        elements.append(Paragraph("HAZOP Åtgärdsrapport", styles['Title']))
+        elements.append(Spacer(1, 12))
+        data = [['Nod', 'Orsak/Konsekvens', 'Åtgärd', 'Ansvarig', 'Deadline', 'Status']]
+        for node in self.db.nodes():
+            nd = dict(node)
+            for dev in self.db.deviations(nd['id']):
+                for cause in self.db.causes_for_deviation(dev['id']):
+                    for cons in self.db.consequences(cause['id']):
+                        for act in self.db.actions(cons['id']):
+                            ad = dict(act)
+                            data.append([
+                                nd['name'][:20],
+                                f"{cause['description'][:25]} → {cons['description'][:25]}",
+                                ad.get('description', '')[:40],
+                                ad.get('responsible', ''),
+                                ad.get('due_date', ''),
+                                ad.get('status', ''),
+                            ])
+        if len(data) == 1:
+            elements.append(Paragraph("Inga åtgärder registrerade.", styles['Normal']))
+        else:
+            t = Table(data, colWidths=[80, 130, 140, 70, 60, 55])
+            t.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1F4E79')),
+                ('TEXTCOLOR',  (0,0), (-1,0), colors.white),
+                ('FONTSIZE',   (0,0), (-1,-1), 7),
+                ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#f0f4f8')]),
+                ('GRID', (0,0), (-1,-1), 0.25, colors.grey),
+                ('VALIGN', (0,0), (-1,-1), 'TOP'),
+            ]))
+            elements.append(t)
+        doc.build(elements)
+        self.status_bar.showMessage(f"Åtgärdsrapport sparad: {path}", 6000)
+        QMessageBox.information(self, "Klar", f"Sparad till:\n{path}")
+
+    # ── Print scenario table ──────────────────────────────────────────────────
+    def _print_scenario_table(self):
+        from PyQt6.QtPrintSupport import QPrinter, QPrintPreviewDialog
+        from PyQt6.QtGui import QTextDocument
+
+        html = ['<html><body style="font-family:Arial;font-size:9pt;">',
+                '<h2>HAZOP Scenariotabell</h2>',
+                '<table border="1" cellspacing="0" cellpadding="3" width="100%">',
+                '<tr style="background:#1F4E79;color:white;font-weight:bold;">',
+                '<th>Nod</th><th>Avvikelse</th><th>Orsak</th>',
+                '<th>Konsekvens</th><th>Barriär</th><th>Risk</th></tr>']
+        alt = False
+        for node in self.db.nodes():
+            nd = dict(node)
+            for dev in self.db.deviations(nd['id']):
+                for cause in self.db.causes_for_deviation(dev['id']):
+                    cons_list = list(self.db.consequences(cause['id']))
+                    for cons in (cons_list or [None]):
+                        kd = dict(cons) if cons else {}
+                        sgs = list(self.db.safeguards(kd['id'])) if kd else []
+                        bg = '#f8f9fa' if alt else '#ffffff'
+                        html.append(f'<tr style="background:{bg}">')
+                        html.append(f'<td>{nd["name"]}</td>')
+                        html.append(f'<td>{dev["description"]}</td>')
+                        html.append(f'<td>{cause["description"]}</td>')
+                        html.append(f'<td>{kd.get("description","")}</td>')
+                        html.append(f'<td>{"<br>".join(s["description"] for s in sgs)}</td>')
+                        html.append(f'<td></td></tr>')
+                        alt = not alt
+        html.append('</table></body></html>')
+
+        doc = QTextDocument()
+        doc.setHtml(''.join(html))
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        printer.setPageSize(QPrinter.PageSize.A4)
+        printer.setPageOrientation(QPrinter.Orientation.Landscape)
+        preview = QPrintPreviewDialog(printer, self)
+        preview.paintRequested.connect(doc.print_)
+        preview.exec()
+
+    # ── Statistics ────────────────────────────────────────────────────────────
+    def _show_statistics(self):
+        db = self.db
+        nodes  = list(db.nodes())
+        n_devs = sum(len(list(db.deviations(n['id']))) for n in nodes)
+        n_caus = db.conn.execute("SELECT COUNT(*) FROM causes").fetchone()[0]
+        n_cons = db.conn.execute("SELECT COUNT(*) FROM consequences").fetchone()[0]
+        n_sg   = db.conn.execute("SELECT COUNT(*) FROM safeguards").fetchone()[0]
+        n_act  = db.conn.execute("SELECT COUNT(*) FROM actions").fetchone()[0]
+        # Completeness: causes with ≥1 consequence with severity
+        n_complete = db.conn.execute(
+            "SELECT COUNT(DISTINCT c.id) FROM causes c "
+            "JOIN consequences k ON k.cause_id=c.id "
+            "WHERE k.severity > 0").fetchone()[0]
+        pct = round(100 * n_complete / max(n_caus, 1))
+        high_risk = db.conn.execute(
+            "SELECT COUNT(*) FROM consequences WHERE severity >= 4").fetchone()[0]
+
+        msg = (f"<h3>Projektstatistik</h3>"
+               f"<table cellspacing='4'>"
+               f"<tr><td><b>Noder:</b></td><td>{len(nodes)}</td></tr>"
+               f"<tr><td><b>Avvikelser:</b></td><td>{n_devs}</td></tr>"
+               f"<tr><td><b>Orsaker:</b></td><td>{n_caus}</td></tr>"
+               f"<tr><td><b>Konsekvenser:</b></td><td>{n_cons}</td></tr>"
+               f"<tr><td><b>Barriärer:</b></td><td>{n_sg}</td></tr>"
+               f"<tr><td><b>Åtgärder:</b></td><td>{n_act}</td></tr>"
+               f"<tr><td><b>Täckningsgrad:</b></td><td>{pct}% ({n_complete}/{n_caus})</td></tr>"
+               f"<tr><td><b>Hög/Kritisk risk:</b></td>"
+               f"<td style='color:#c0392b;font-weight:bold'>{high_risk}</td></tr>"
+               f"</table>")
+        box = QMessageBox(self)
+        box.setWindowTitle("Statistik")
+        box.setText(msg)
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.exec()
+
+    # ── Sign-off / approval ───────────────────────────────────────────────────
+    def _approve_node(self):
+        node_id = self._cur_id if self._cur_type == NODE_T else None
+        if node_id is None:
+            QMessageBox.information(self, "Välj nod",
+                "Välj en nod i trädet innan du godkänner den.")
+            return
+        node = self.db.get_node(node_id)
+        status = node['study_status'] if node and 'study_status' in node.keys() else 'draft'
+        statuses = ['draft', 'under_review', 'approved']
+        labels   = ['Utkast', 'Under granskning', 'Godkänd']
+        choice, ok = QInputDialog.getItem(
+            self, 'Status', f'Nod: {node["name"]}\nSätt status:',
+            labels, statuses.index(status) if status in statuses else 0, False)
+        if not ok: return
+        new_status = statuses[labels.index(choice)]
+        user = self.db.get_config('user_name', '') or 'okänd'
+        self.db.set_node_status(node_id, new_status)
+        if new_status == 'approved':
+            self.db.approve_node(node_id, user)
+        self.tree_panel.refresh(NODE_T, node_id)
+        self.status_bar.showMessage(f"Status satt till: {choice}", 4000)
 
     # ── Feature 6: zoom to active node ────────────────────────────────────────
     def zoom_to_node(self, node_id):
