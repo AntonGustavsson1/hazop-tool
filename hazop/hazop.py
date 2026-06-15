@@ -15131,11 +15131,9 @@ class MainWindow(QMainWindow):
                          self._on_selected(NODE_T, nid)))
         self.pid_panel.cause_created.connect(
             lambda cid: (self.tree_panel.refresh(CAUSE_T, cid),
-                         self._on_selected(CAUSE_T, cid),
                          self.scenario_panel.refresh_placed()))
         self.pid_panel.consequence_created.connect(
             lambda cid: (self.tree_panel.refresh(CONS_T, cid),
-                         self._on_selected(CONS_T, cid),
                          self.scenario_panel.refresh_placed(),
                          self._open_consequence_step_picker(cid)))
         self.pid_panel.ref_tag_picked.connect(self._on_ref_tag_picked)
