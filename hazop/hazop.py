@@ -4647,11 +4647,54 @@ class PropertiesRibbon(QWidget):
                 self._btns.append(btn)
         self._outer.addStretch()
 
-    # Class-level button spec dict — avoids repeated if-chain on every rebuild
-    _TYPE_BUTTONS: dict = {}   # populated after method definitions via _init_buttons()
-
     def _buttons_for_type(self) -> list:
-        return self._TYPE_BUTTONS.get(self._type, [])
+        # Returns bound-method references (self.method) so the lambda in
+        # _rebuild fires correctly.  A class-level dict with cls.method
+        # (unbound) was tried but broke: s(btn) passed btn as self.
+        T = self._type
+        if T == 1:   # NODE_T
+            return [
+                "NOD",
+                ("🏷", "Redigera namn och P&ID-referens",    self._edit_node_name),
+                ("📄", "Redigera beskrivning",                self._edit_node_desc),
+                ("⚗", "Redigera processparametrar\n(media, tryck, temperatur)",
+                                                              self._edit_node_params),
+                None,
+                ("✅", "Sätt status / godkänn nod",          self._edit_node_status),
+                ("📍", "Visa nod på P&ID",                   self._zoom_to_node),
+            ]
+        if T == 5:   # DEV_T
+            return [
+                "AVVIK.",
+                ("📝", "Redigera avvikelsebeskrivning",       self._edit_dev_desc),
+            ]
+        if T == 2:   # CAUSE_T
+            return [
+                "ORSAK",
+                ("📝", "Redigera orsaksbeskrivning",          self._edit_cause_desc),
+                ("🏷", "Redigera objekttyp och tag-ID",       self._edit_cause_obj),
+                ("📊", "Ange frekvens / F-nivå",              self._edit_cause_freq),
+                ("💬", "Redigera kommentar",                  self._edit_cause_comment),
+                None,
+                ("📍", "Visa orsak på P&ID",                 self._zoom_to_cause),
+            ]
+        if T == 3:   # CONS_T
+            return [
+                "KONS.",
+                ("📋", "Redigera konsekvenskedja (Del1–Del5)", self._edit_cons_chain),
+                ("📊", "Sätt allvarlighet per kategori",      self._edit_cons_sev),
+                None,
+                ("📍", "Visa konsekvens på P&ID",            self._zoom_to_cons),
+            ]
+        if T == 4:   # SG_T
+            return [
+                "BARRIÄR",
+                ("📝", "Redigera barriärsbeskrivning",        self._edit_sg_desc),
+                ("⚡", "Ange RRF och typ",                    self._edit_sg_rrf),
+                None,
+                ("📍", "Visa barriär på P&ID",               self._zoom_to_sg),
+            ]
+        return []
 
     # ── Popup helper ──────────────────────────────────────────────────────────
     def _popup_near(self, btn):
@@ -4953,53 +4996,6 @@ class PropertiesRibbon(QWidget):
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(50, lambda: self._mw.pid_panel.navigate_to_marker(
                 rows[0], rows[1], rows[2]))
-
-
-# Populate _TYPE_BUTTONS now that all method objects exist
-def _init_ribbon_buttons(cls):
-    # NODE_T=1, DEV_T=5, CAUSE_T=2, CONS_T=3, SG_T=4 — use literals because
-    # the type constants are defined later in the module and aren't yet in scope
-    # when this initialiser runs.
-    cls._TYPE_BUTTONS = {
-        1: [   # NODE_T
-            "NOD",
-            ("🏷", "Redigera namn och P&ID-referens",    cls._edit_node_name),
-            ("📄", "Redigera beskrivning",                cls._edit_node_desc),
-            ("⚗", "Redigera processparametrar\n(media, tryck, temperatur)",
-                                                          cls._edit_node_params),
-            None,
-            ("✅", "Sätt status / godkänn nod",          cls._edit_node_status),
-            ("📍", "Visa nod på P&ID",                   cls._zoom_to_node),
-        ],
-        5: [   # DEV_T
-            "AVVIK.",
-            ("📝", "Redigera avvikelsebeskrivning",       cls._edit_dev_desc),
-        ],
-        2: [   # CAUSE_T
-            "ORSAK",
-            ("📝", "Redigera orsaksbeskrivning",          cls._edit_cause_desc),
-            ("🏷", "Redigera objekttyp och tag-ID",       cls._edit_cause_obj),
-            ("📊", "Ange frekvens / F-nivå",              cls._edit_cause_freq),
-            ("💬", "Redigera kommentar",                  cls._edit_cause_comment),
-            None,
-            ("📍", "Visa orsak på P&ID",                 cls._zoom_to_cause),
-        ],
-        3: [   # CONS_T
-            "KONS.",
-            ("📋", "Redigera konsekvenskedja (Del1–Del5)", cls._edit_cons_chain),
-            ("📊", "Sätt allvarlighet per kategori",      cls._edit_cons_sev),
-            None,
-            ("📍", "Visa konsekvens på P&ID",            cls._zoom_to_cons),
-        ],
-        4: [   # SG_T
-            "BARRIÄR",
-            ("📝", "Redigera barriärsbeskrivning",        cls._edit_sg_desc),
-            ("⚡", "Ange RRF och typ",                    cls._edit_sg_rrf),
-            None,
-            ("📍", "Visa barriär på P&ID",               cls._zoom_to_sg),
-        ],
-    }
-_init_ribbon_buttons(PropertiesRibbon)
 
 
 class NodeMarkupPanel(QWidget):
