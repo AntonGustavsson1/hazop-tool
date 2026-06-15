@@ -6426,137 +6426,224 @@ def _draw_equip_icon(painter, rect, comp_type):
 
 
 class StandardCausesPickerPopup(QDialog):
-    """Two-column popup: Objekt (left) → Orsaker (right).
+    """Orsaksväljare: Avvikelse (header) → Objekt (vänster) → Orsaker (höger).
 
-    Causes are already fully descriptive — no separate sub-description panel.
-    Double-click a cause or press Enter to select it.
+    Visas vid P&ID-klick och från knappen 'Orsak' ovanför P&ID-vyn.
+    Innehåller sökfält, tag-ID-fält, frekvensvisning och fritext-fallback.
     """
     cause_picked = pyqtSignal(str, object)   # (description, frequency_or_None)
 
+    _OBJ_BTN_STYLE = (
+        "QPushButton { text-align:left; padding:5px 8px; border:1px solid #d1d5db;"
+        " border-radius:4px; background:#f9fafb; font-size:10px; }"
+        "QPushButton:hover { background:#eff6ff; border-color:#93c5fd; }"
+        "QPushButton:checked { background:#1d4ed8; color:white; border-color:#1d4ed8;"
+        " font-weight:bold; }")
+
     def __init__(self, db, deviation_id: int, deviation_name: str = '',
-                 comp_type: str = '', parent=None):
+                 comp_type: str = '', initial_tag: str = '', parent=None):
         super().__init__(parent)
         self._db = db
         self._dev_id = deviation_id
-        self.setWindowTitle("Välj orsak")
-        self.setMinimumWidth(560)
-        self.setMinimumHeight(440)
+        self.setWindowTitle("Lägg till orsak")
+        self.setMinimumWidth(620)
+        self.setMinimumHeight(500)
         main = QVBoxLayout(self)
-        main.setSpacing(6)
-        main.setContentsMargins(8, 8, 8, 8)
+        main.setSpacing(0)
+        main.setContentsMargins(0, 0, 0, 0)
 
-        # Header
-        hdr = QLabel(f"<b>Avvikelse:</b> {deviation_name}")
-        hdr.setStyleSheet(
-            "color:#1F4E79; font-size:11px; padding:3px 6px;"
-            "background:#eef4fb; border-radius:3px;")
-        main.addWidget(hdr)
+        # ── Coloured header band ──────────────────────────────────────────────
+        hdr_w = QWidget()
+        hdr_w.setStyleSheet("background:#1d4ed8;")
+        hdr_l = QVBoxLayout(hdr_w)
+        hdr_l.setContentsMargins(12, 8, 12, 8)
+        hdr_l.setSpacing(3)
+        title = QLabel("Lägg till orsak på P&ID")
+        title.setStyleSheet("color:white; font-size:13px; font-weight:bold;")
+        sub = QLabel(f"Avvikelse: {deviation_name}")
+        sub.setStyleSheet("color:#bfdbfe; font-size:10px;")
+        hdr_l.addWidget(title)
+        hdr_l.addWidget(sub)
+        main.addWidget(hdr_w)
 
-        # Search bar (feature 14)
-        search_row = QHBoxLayout()
-        search_row.setSpacing(4)
+        body = QWidget()
+        body_l = QVBoxLayout(body)
+        body_l.setContentsMargins(10, 10, 10, 10)
+        body_l.setSpacing(8)
+        main.addWidget(body, 1)
+
+        # ── Tag + search row ──────────────────────────────────────────────────
+        top_row = QHBoxLayout()
+        top_row.setSpacing(8)
+
+        tag_lbl = QLabel("Tag-ID:")
+        tag_lbl.setStyleSheet("font-size:10px; color:#555;")
+        top_row.addWidget(tag_lbl)
+        self._tag_edit = QLineEdit(initial_tag)
+        self._tag_edit.setPlaceholderText("t.ex. P-101")
+        self._tag_edit.setMaximumWidth(110)
+        # Autocomplete from equipment catalog
+        try:
+            tags = [r[0] for r in db.conn.execute(
+                "SELECT DISTINCT tag FROM equipment_catalog ORDER BY tag").fetchall()]
+            comp = QCompleter(tags, self)
+            comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+            self._tag_edit.setCompleter(comp)
+        except Exception:
+            pass
+        top_row.addWidget(self._tag_edit)
+
+        top_row.addSpacing(8)
+        search_lbl = QLabel("Sök:")
+        search_lbl.setStyleSheet("font-size:10px; color:#555;")
+        top_row.addWidget(search_lbl)
         self._search_edit = QLineEdit()
-        self._search_edit.setPlaceholderText("🔍  Sök bland orsaker…")
+        self._search_edit.setPlaceholderText("Filtrera orsaker…")
         self._search_edit.setClearButtonEnabled(True)
         self._search_edit.textChanged.connect(self._on_search)
-        search_row.addWidget(self._search_edit)
-        main.addLayout(search_row)
+        top_row.addWidget(self._search_edit, 1)
+        body_l.addLayout(top_row)
 
+        # ── Main split: objects (left) + causes (right) ───────────────────────
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # ── Left: Object list ─────────────────────────────────────────────────
-        obj_w = QWidget()
-        obj_l = QVBoxLayout(obj_w)
-        obj_l.setContentsMargins(0, 0, 0, 0)
-        obj_l.setSpacing(3)
-        obj_lbl = QLabel("<b>Objekttyp:</b>")
-        obj_lbl.setStyleSheet("font-size:10px; color:#444;")
-        obj_l.addWidget(obj_lbl)
-        self._obj_list = QListWidget()
-        self._obj_list.setAlternatingRowColors(True)
-        self._obj_list.setStyleSheet(
-            "QListWidget::item { padding: 4px 6px; }"
-            "QListWidget::item:selected { background:#1d4ed8; color:white; font-weight:bold; }")
-        obj_l.addWidget(self._obj_list)
-        splitter.addWidget(obj_w)
+        # Left: object buttons (scrollable)
+        obj_frame = QFrame()
+        obj_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        obj_frame.setStyleSheet(
+            "QFrame { border:1px solid #e5e7eb; border-radius:6px; background:#f9fafb; }")
+        obj_fl = QVBoxLayout(obj_frame)
+        obj_fl.setContentsMargins(4, 4, 4, 4)
+        obj_fl.setSpacing(2)
+        obj_hdr = QLabel("<b>Objekttyp</b>")
+        obj_hdr.setStyleSheet("font-size:10px; color:#1F4E79; padding:2px 4px;")
+        obj_fl.addWidget(obj_hdr)
+        obj_scroll = QScrollArea()
+        obj_scroll.setWidgetResizable(True)
+        obj_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self._obj_inner = QWidget()
+        self._obj_inner_l = QVBoxLayout(self._obj_inner)
+        self._obj_inner_l.setContentsMargins(0, 0, 0, 0)
+        self._obj_inner_l.setSpacing(2)
+        obj_scroll.setWidget(self._obj_inner)
+        obj_fl.addWidget(obj_scroll)
+        self._obj_btn_group = []   # list of QPushButton
+        splitter.addWidget(obj_frame)
 
-        # ── Right: Cause list ─────────────────────────────────────────────────
-        cause_w = QWidget()
-        cause_l = QVBoxLayout(cause_w)
-        cause_l.setContentsMargins(4, 0, 0, 0)
-        cause_l.setSpacing(3)
-        self._cause_hdr = QLabel("<b>Orsaker:</b>")
-        self._cause_hdr.setStyleSheet("font-size:10px; color:#444;")
-        cause_l.addWidget(self._cause_hdr)
+        # Right: cause list
+        cause_frame = QFrame()
+        cause_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        cause_frame.setStyleSheet(
+            "QFrame { border:1px solid #e5e7eb; border-radius:6px; background:white; }")
+        cause_fl = QVBoxLayout(cause_frame)
+        cause_fl.setContentsMargins(4, 4, 4, 4)
+        cause_fl.setSpacing(2)
+        self._cause_hdr = QLabel("<b>Orsaker</b>")
+        self._cause_hdr.setStyleSheet("font-size:10px; color:#1F4E79; padding:2px 4px;")
+        cause_fl.addWidget(self._cause_hdr)
         self._cause_list = QListWidget()
-        self._cause_list.setAlternatingRowColors(True)
+        self._cause_list.setAlternatingRowColors(False)
         self._cause_list.setWordWrap(True)
+        self._cause_list.setSpacing(1)
         self._cause_list.setStyleSheet(
-            "QListWidget::item { padding: 4px 8px; border-bottom: 1px solid #f0f0f0; }"
-            "QListWidget::item:selected { background:#dbeafe; color:#1e3a8a; font-weight:bold; }")
-        cause_l.addWidget(self._cause_list)
-        splitter.addWidget(cause_w)
-        splitter.setSizes([180, 380])
-        main.addWidget(splitter, 1)
+            "QListWidget { border:none; }"
+            "QListWidget::item { padding:6px 10px; border-bottom:1px solid #f3f4f6; }"
+            "QListWidget::item:selected { background:#dbeafe; color:#1e3a8a;"
+            "  border-left:3px solid #1d4ed8; font-weight:bold; }"
+            "QListWidget::item:hover:!selected { background:#f0f9ff; }")
+        cause_fl.addWidget(self._cause_list)
+        splitter.addWidget(cause_frame)
+        splitter.setSizes([200, 420])
+        body_l.addWidget(splitter, 1)
 
-        # Free-text fallback
-        ft_row = QHBoxLayout()
+        # ── Free-text + bottom row ────────────────────────────────────────────
+        ft_frame = QFrame()
+        ft_frame.setStyleSheet(
+            "QFrame { background:#f8fafc; border:1px solid #e2e8f0; border-radius:4px; }")
+        ft_l = QHBoxLayout(ft_frame)
+        ft_l.setContentsMargins(8, 4, 8, 4)
+        ft_l.setSpacing(6)
         ft_lbl = QLabel("Fritext:")
-        ft_lbl.setStyleSheet("font-size:10px; color:#666;")
-        ft_row.addWidget(ft_lbl)
+        ft_lbl.setStyleSheet("font-size:10px; color:#64748b;")
+        ft_l.addWidget(ft_lbl)
         self._ft_edit = QLineEdit()
-        self._ft_edit.setPlaceholderText("Ange orsak manuellt om inget alternativ passar…")
-        ft_row.addWidget(self._ft_edit, 1)
-        main.addLayout(ft_row)
+        self._ft_edit.setPlaceholderText("Ange orsak manuellt om inget standardalternativ passar…")
+        self._ft_edit.setStyleSheet("border:none; background:transparent;")
+        ft_l.addWidget(self._ft_edit, 1)
+        body_l.addWidget(ft_frame)
 
         # Buttons
         btn_row = QHBoxLayout()
-        self._ok_btn = QPushButton("Välj")
+        self._ok_btn = QPushButton("✓  Välj orsak")
         self._ok_btn.setDefault(True)
+        self._ok_btn.setMinimumHeight(34)
         self._ok_btn.setStyleSheet(
-            "background:#1d4ed8; color:white; border:none;"
-            "border-radius:4px; padding:5px 16px; font-weight:bold;")
+            "QPushButton { background:#1d4ed8; color:white; border:none;"
+            " border-radius:5px; padding:6px 20px; font-weight:bold; font-size:11px; }"
+            "QPushButton:hover { background:#1e40af; }"
+            "QPushButton:pressed { background:#1e3a8a; }")
         self._ok_btn.clicked.connect(self._pick_selected)
         cancel_btn = QPushButton("Avbryt")
+        cancel_btn.setMinimumHeight(34)
+        cancel_btn.setStyleSheet(
+            "QPushButton { background:#f1f5f9; color:#374151; border:1px solid #cbd5e1;"
+            " border-radius:5px; padding:6px 16px; }"
+            "QPushButton:hover { background:#e2e8f0; }")
         cancel_btn.clicked.connect(self.reject)
-        btn_row.addWidget(self._ok_btn)
         btn_row.addStretch()
         btn_row.addWidget(cancel_btn)
-        main.addLayout(btn_row)
+        btn_row.addWidget(self._ok_btn)
+        body_l.addLayout(btn_row)
 
-        self._obj_list.currentRowChanged.connect(self._on_obj_changed)
         self._cause_list.itemDoubleClicked.connect(lambda _: self._pick_selected())
         self._ft_edit.returnPressed.connect(self._pick_selected)
         self._search_edit.installEventFilter(self)
 
         self._populate_objects(comp_type)
 
+    # ── Object buttons ────────────────────────────────────────────────────────
     def _populate_objects(self, preselect_comp: str = ''):
-        self._obj_list.clear()
+        # Remove old buttons
+        for btn in self._obj_btn_group:
+            btn.setParent(None)
+        self._obj_btn_group.clear()
+
         objs = self._db.objects_for_deviation(self._dev_id)
-        sel_row = 0
-        for i, obj in enumerate(objs):
-            icon_px = QPixmap(20, 20)
+        sel_btn = None
+        for obj in objs:
+            icon_px = QPixmap(18, 18)
             icon_px.fill(Qt.GlobalColor.transparent)
             _p = QPainter(icon_px)
-            _draw_equip_icon(_p, QRect(0, 0, 20, 20), obj['name'])
+            _draw_equip_icon(_p, QRect(0, 0, 18, 18), obj['name'])
             _p.end()
-            item = QListWidgetItem(QIcon(icon_px), obj['name'])
-            item.setData(Qt.ItemDataRole.UserRole,     obj['id'])
-            item.setData(Qt.ItemDataRole.UserRole + 1, obj['name'])
-            self._obj_list.addItem(item)
+            btn = QPushButton(QIcon(icon_px), f"  {obj['name']}")
+            btn.setCheckable(True)
+            btn.setStyleSheet(self._OBJ_BTN_STYLE)
+            btn.setProperty('obj_id',   obj['id'])
+            btn.setProperty('obj_name', obj['name'])
+            btn.clicked.connect(lambda _checked, b=btn: self._on_obj_btn(b))
+            self._obj_inner_l.addWidget(btn)
+            self._obj_btn_group.append(btn)
             if preselect_comp and preselect_comp.lower() in obj['name'].lower():
-                sel_row = i
-        if self._obj_list.count():
-            self._obj_list.setCurrentRow(sel_row)
+                sel_btn = btn
+        self._obj_inner_l.addStretch()
 
-    def _on_obj_changed(self, row):
+        # Select the first button (or the pre-selected one)
+        target = sel_btn or (self._obj_btn_group[0] if self._obj_btn_group else None)
+        if target:
+            target.setChecked(True)
+            self._load_causes_for_obj(target.property('obj_id'), target.property('obj_name'))
+
+    def _on_obj_btn(self, clicked_btn):
+        for btn in self._obj_btn_group:
+            btn.setChecked(btn is clicked_btn)
+        self._search_edit.clear()
+        self._load_causes_for_obj(clicked_btn.property('obj_id'),
+                                   clicked_btn.property('obj_name'))
+
+    def _load_causes_for_obj(self, obj_id, obj_name):
         self._cause_list.clear()
-        item = self._obj_list.item(row)
-        if not item: return
-        obj_id   = item.data(Qt.ItemDataRole.UserRole)
-        obj_name = item.data(Qt.ItemDataRole.UserRole + 1)
-        self._cause_hdr.setText(f"<b>Orsaker — {obj_name}:</b>")
+        self._cause_hdr.setText(f"<b>Orsaker</b> — {obj_name}")
         filt = self._search_edit.text().strip().lower()
         for c in self._db.standard_causes_for_object(self._dev_id, obj_id):
             freq  = c.get('frequency')
@@ -6567,47 +6654,64 @@ class StandardCausesPickerPopup(QDialog):
             ci.setData(Qt.ItemDataRole.UserRole + 1, c['description'])
             ci.setData(Qt.ItemDataRole.UserRole + 2, freq)
             if freq is not None:
+                f_level = freq_to_f_level(freq) if freq else None
                 fl = f"{freq:g}/år"
+                if f_level is not None:
+                    fl += f"  ·  {freq_axis_label(f_level)}"
                 ci.setToolTip(f"Frekvens: {fl}")
-                fi = QFont(ci.font()); fi.setItalic(True)
-                ci.setForeground(QColor('#1F4E79'))
-                ci.setText(f"{label}   [{fl}]")
+                ci.setForeground(QColor('#374151'))
+                # Show freq as a small badge via tooltip + slightly different color
+                ci.setText(f"{label}")
+                # Store freq string for display
+                ci.setData(Qt.ItemDataRole.UserRole + 3, f"  [{freq:g}/år]")
             self._cause_list.addItem(ci)
         if self._cause_list.count():
             self._cause_list.setCurrentRow(0)
 
+    # ── Search ────────────────────────────────────────────────────────────────
     def _on_search(self, text):
-        """Filter current cause list; if text crosses objects, search all."""
         filt = text.strip().lower()
         if not filt:
-            # Restore current object's list
-            self._on_obj_changed(self._obj_list.currentRow())
+            # Restore current object
+            for btn in self._obj_btn_group:
+                if btn.isChecked():
+                    self._load_causes_for_obj(btn.property('obj_id'), btn.property('obj_name'))
+                    return
             return
-        # Search across ALL objects for this deviation
         self._cause_list.clear()
-        self._cause_hdr.setText(f"<b>Sökresultat:</b>")
+        self._cause_hdr.setText("<b>Sökresultat</b>")
         for obj in self._db.objects_for_deviation(self._dev_id):
             for c in self._db.standard_causes_for_object(self._dev_id, obj['id']):
                 if filt in c['description'].lower():
                     freq  = c.get('frequency')
-                    label = f"{c['description']}  · {obj['name']}"
-                    ci = QListWidgetItem(label)
+                    ci = QListWidgetItem(f"{c['description']}  ·  {obj['name']}")
                     ci.setData(Qt.ItemDataRole.UserRole + 1, c['description'])
                     ci.setData(Qt.ItemDataRole.UserRole + 2, freq)
+                    ci.setForeground(QColor('#374151'))
                     self._cause_list.addItem(ci)
         if self._cause_list.count():
             self._cause_list.setCurrentRow(0)
 
+    # ── Keyboard shortcuts ────────────────────────────────────────────────────
     def eventFilter(self, obj, event):
         from PyQt6.QtCore import QEvent
-        if obj is self._search_edit and event.type() == QEvent.Type.KeyPress:
-            if event.key() in (Qt.Key.Key_Down, Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                self._cause_list.setFocus()
-                if self._cause_list.count():
-                    self._cause_list.setCurrentRow(0)
-                return True
+        if event.type() == QEvent.Type.KeyPress:
+            if obj is self._search_edit:
+                if event.key() in (Qt.Key.Key_Down, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                    self._cause_list.setFocus()
+                    if self._cause_list.count():
+                        self._cause_list.setCurrentRow(0)
+                    if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) \
+                            and self._cause_list.currentItem():
+                        self._pick_selected()
+                    return True
+            if obj is self._cause_list:
+                if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                    self._pick_selected()
+                    return True
         return super().eventFilter(obj, event)
 
+    # ── Pick ──────────────────────────────────────────────────────────────────
     def _pick_selected(self):
         ft = self._ft_edit.text().strip()
         if ft:
@@ -11152,6 +11256,24 @@ class StandardCausesSettingsPanel(QWidget):
         self._cause_list = QListWidget()
         self._cause_list.currentRowChanged.connect(self._on_cause_sel)
         c3.addWidget(self._cause_list)
+
+        # Frequency field for selected cause
+        freq_row = QHBoxLayout()
+        freq_lbl = QLabel("Frekvens (/år):")
+        freq_lbl.setStyleSheet("font-size:10px; color:#555;")
+        freq_row.addWidget(freq_lbl)
+        self._freq_edit = QLineEdit()
+        self._freq_edit.setPlaceholderText("t.ex. 0.01")
+        self._freq_edit.setMaximumWidth(90)
+        self._freq_edit.setToolTip("Basfrekvens för vald orsak (händelser/år). Lämna tomt om okänd.")
+        self._freq_edit.editingFinished.connect(self._save_freq)
+        freq_row.addWidget(self._freq_edit)
+        self._freq_level_lbl = QLabel("")
+        self._freq_level_lbl.setStyleSheet("color:#1F4E79; font-size:10px;")
+        freq_row.addWidget(self._freq_level_lbl)
+        freq_row.addStretch()
+        c3.addLayout(freq_row)
+
         c3b = QHBoxLayout()
         for icon, slot in (('+', self._add_cause), ('−', self._del_cause),
                            ('↑', lambda: self._move_cause(-1)), ('↓', lambda: self._move_cause(1))):
@@ -11264,6 +11386,10 @@ class StandardCausesSettingsPanel(QWidget):
             self._cause_list.addItem(item)
         self._loading = False
         self._cause_list.setCurrentRow(max(0, min(cur, self._cause_list.count()-1)))
+        # Clear freq field if no cause selected after reload
+        if self._cause_list.currentRow() < 0:
+            self._freq_edit.clear()
+            self._freq_level_lbl.setText('')
 
     def _current_cause_id(self):
         item = self._cause_list.currentItem()
@@ -11299,6 +11425,39 @@ class StandardCausesSettingsPanel(QWidget):
         item = self._cause_list.item(row)
         cid = item.data(Qt.ItemDataRole.UserRole) if item else None
         self._load_descriptions(cid)
+        # Populate freq field
+        freq = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
+        self._freq_edit.blockSignals(True)
+        self._freq_edit.setText(f"{freq:g}" if freq is not None else '')
+        self._freq_edit.blockSignals(False)
+        self._freq_level_lbl.setText(
+            freq_axis_label(freq_to_f_level(freq)) if freq is not None else '')
+
+    def _save_freq(self):
+        """Save the edited frequency for the currently selected standard cause."""
+        item = self._cause_list.currentItem()
+        if not item: return
+        cid = item.data(Qt.ItemDataRole.UserRole)
+        if cid is None: return
+        text = self._freq_edit.text().strip()
+        if not text:
+            freq = None
+            self._freq_level_lbl.setText('')
+        else:
+            try:
+                freq = float(text)
+                self._freq_level_lbl.setText(freq_axis_label(freq_to_f_level(freq)))
+            except ValueError:
+                self._freq_level_lbl.setText('Ogiltigt')
+                return
+        self.db.update_standard_cause(cid, frequency=freq)
+        # Update display label in list
+        item.setData(Qt.ItemDataRole.UserRole + 2, freq)
+        desc = item.data(Qt.ItemDataRole.UserRole + 1) or item.text()
+        if freq is not None:
+            item.setText(f"{desc}  [{freq:g}/år]")
+        else:
+            item.setText(desc)
 
     # ── Deviation CRUD ────────────────────────────────────────────────────────
     def _add_dev(self):
@@ -14405,50 +14564,42 @@ class MainWindow(QMainWindow):
 
     def _on_cause_placement_requested(self, dev_id, suggested_tag, detected_type,
                                        scene_pos, page, suggested_desc=''):
-        """P&ID clicked in template/context mode — show CauseObjectPopup anchored
-        to the ORS cell; includes deviation picker when no deviation is pre-selected."""
+        """P&ID clicked in cause-template mode — show StandardCausesPickerPopup."""
         dev_row  = self.db.get_deviation(dev_id) if dev_id else None
-        dev_desc = dev_row['description'] if dev_row else None
-        node_id  = getattr(self.pid_panel, '_active_node_id', None)
-        # Fallback: if no node is active, use first node in DB so the deviation
-        # picker is always shown when rubber-banding from P&ID NAV mode
-        if node_id is None:
-            all_nodes = self.db.nodes()
-            if all_nodes:
-                node_id = all_nodes[0]['id']
+        dev_desc = dev_row['description'] if dev_row else '—'
 
-        # OCR/detected text goes into the tag field, not description
-        effective_tag = suggested_desc or suggested_tag
+        # Clean up the OCR'd tag
+        effective_tag = (suggested_desc or suggested_tag or '').strip()
         if self.db.get_config('tag_strip_spaces', '1') == '1':
             effective_tag = effective_tag.replace(' ', '')
 
-        popup = CauseObjectPopup(
-            detected_type, effective_tag, self.db,
-            dev_description=dev_desc,
-            current_description='',
-            node_id=node_id,
-            deviation_id=dev_id or None,
+        popup = StandardCausesPickerPopup(
+            self.db, dev_id,
+            deviation_name=dev_desc,
+            comp_type=detected_type or '',
+            initial_tag=effective_tag,
             parent=self)
         popup.setWindowFlags(popup.windowFlags() | Qt.WindowType.Window)
-        popup.adjustSize()
 
-        # Anchor to the ORS cell in the scenario table; fall back to cursor position
+        # Position: prefer near the ORS cell, fall back to cursor
         gp = self.scenario_panel.ors_cell_global_pos(dev_id) if dev_id else None
         if gp is None:
             gp = QCursor.pos()
         screen = (QApplication.screenAt(gp) or QApplication.primaryScreen()).availableGeometry()
+        popup.adjustSize()
         pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
-        x = min(gp.x() + 4,  screen.right()  - pw)
-        y = min(gp.y(),       screen.bottom() - ph)
+        x = min(gp.x() + 4, screen.right()  - pw)
+        y = min(gp.y(),      screen.bottom() - ph)
         popup.move(max(screen.left(), x), max(screen.top(), y))
 
-        def _on_committed(ct, tag, desc, freq):
-            actual_dev = popup.selected_deviation_id or dev_id
-            if actual_dev:
-                self.pid_panel.place_cause_from_template(
-                    actual_dev, scene_pos, page, ct, tag, desc, freq)
+        def _on_picked(desc, freq):
+            obj_item  = popup._obj_list.currentItem()
+            comp_type = obj_item.data(Qt.ItemDataRole.UserRole + 1) if obj_item else ''
+            tag_text  = popup._tag_edit.text().strip() if hasattr(popup, '_tag_edit') else effective_tag
+            self.pid_panel.place_cause_from_template(
+                dev_id, scene_pos, page, comp_type, tag_text, desc, freq)
 
-        popup.committed.connect(_on_committed)
+        popup.cause_picked.connect(_on_picked)
         popup.exec()
 
     def _on_add_consequences_on_pid(self, cause_id):
