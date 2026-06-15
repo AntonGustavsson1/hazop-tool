@@ -10171,6 +10171,7 @@ class ScenarioTablePanel(QWidget):
     def _clone_scenario(self, cause_id):
         cause = self.db.get_cause(cause_id)
         if not cause: return
+        cause = dict(cause)   # sqlite3.Row → dict so .get() works
         dev_id = cause['deviation_id']
         node_id = cause['node_id']
         devs = [d for d in self.db.deviations(node_id) if d['id'] != dev_id]
