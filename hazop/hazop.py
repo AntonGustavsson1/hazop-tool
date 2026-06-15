@@ -15132,10 +15132,19 @@ class MainWindow(QMainWindow):
         self.pid_panel.cause_created.connect(
             lambda cid: (self.tree_panel.refresh(CAUSE_T, cid),
                          self.scenario_panel.refresh_placed()))
-        self.pid_panel.consequence_created.connect(
-            lambda cid: (self.tree_panel.refresh(CONS_T, cid),
-                         self.scenario_panel.refresh_placed(),
-                         self._open_consequence_step_picker(cid)))
+        def _on_consequence_created(cid):
+            import logging as _log
+            try:
+                _log.info('consequence_created step 1: tree refresh')
+                self.tree_panel.refresh(CONS_T, cid)
+                _log.info('consequence_created step 2: refresh_placed')
+                self.scenario_panel.refresh_placed()
+                _log.info('consequence_created step 3: step picker')
+                self._open_consequence_step_picker(cid)
+                _log.info('consequence_created done')
+            except Exception:
+                _log.exception('consequence_created crashed')
+        self.pid_panel.consequence_created.connect(_on_consequence_created)
         self.pid_panel.ref_tag_picked.connect(self._on_ref_tag_picked)
         self.pid_panel.safeguard_created.connect(self._on_safeguard_created)
         self.pid_panel.existing_marker_placed.connect(self._on_existing_marker_placed)
