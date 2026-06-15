@@ -7343,16 +7343,21 @@ class StandardCausesPickerPopup(QDialog):
 
     # ── Pick ──────────────────────────────────────────────────────────────────
     def _pick_selected(self):
-        ft = self._ft_edit.text().strip()
-        if ft:
-            self.cause_picked.emit(ft, None)
-            self.accept(); return
-        cause_item = self._cause_list.currentItem()
-        if not cause_item: return
-        desc = cause_item.data(Qt.ItemDataRole.UserRole + 1) or cause_item.text()
-        freq = cause_item.data(Qt.ItemDataRole.UserRole + 2)
-        self.cause_picked.emit(desc, freq)
-        self.accept()
+        try:
+            ft = self._ft_edit.text().strip()
+            if ft:
+                self.cause_picked.emit(ft, None)
+                self.accept(); return
+            cause_item = self._cause_list.currentItem()
+            if not cause_item: return
+            desc = cause_item.data(Qt.ItemDataRole.UserRole + 1) or cause_item.text()
+            freq = cause_item.data(Qt.ItemDataRole.UserRole + 2)
+            self.cause_picked.emit(desc, freq)
+            self.accept()
+        except Exception as e:
+            import traceback
+            QMessageBox.critical(self, "Fel i orsakspickern",
+                                 f"{type(e).__name__}: {e}\n\n{traceback.format_exc()}")
 
 
 class ObjectTagPopup(QDialog):
@@ -15431,17 +15436,21 @@ class MainWindow(QMainWindow):
         popup.move(max(screen.left(), x), max(screen.top(), y))
 
         def _on_picked(desc, freq):
-            # Use the deviation selected in the combo (may differ from dev_id arg)
-            actual_dev_id = popup.selected_node_dev_id or dev_id
-            if not actual_dev_id:
-                QMessageBox.warning(popup, "Välj avvikelse",
-                                    "Välj en avvikelse innan du lägger till orsaken.")
-                return
-            checked   = next((b for b in popup._obj_btn_group if b.isChecked()), None)
-            comp_type = checked.property('obj_name') if checked else ''
-            tag_text  = popup._tag_edit.text().strip() if hasattr(popup, '_tag_edit') else effective_tag
-            self.pid_panel.place_cause_from_template(
-                actual_dev_id, scene_pos, page, comp_type, tag_text, desc, freq)
+            try:
+                actual_dev_id = popup.selected_node_dev_id or dev_id
+                if not actual_dev_id:
+                    QMessageBox.warning(popup, "Välj avvikelse",
+                                        "Välj en avvikelse innan du lägger till orsaken.")
+                    return
+                checked   = next((b for b in popup._obj_btn_group if b.isChecked()), None)
+                comp_type = checked.property('obj_name') if checked else ''
+                tag_text  = popup._tag_edit.text().strip() if hasattr(popup, '_tag_edit') else effective_tag
+                self.pid_panel.place_cause_from_template(
+                    actual_dev_id, scene_pos, page, comp_type, tag_text, desc, freq)
+            except Exception as e:
+                import traceback
+                QMessageBox.critical(self, "Fel vid tillägg av orsak",
+                                     f"{type(e).__name__}: {e}\n\n{traceback.format_exc()}")
 
         popup.cause_picked.connect(_on_picked)
         popup.exec()
