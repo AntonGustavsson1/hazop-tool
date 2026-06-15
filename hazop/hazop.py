@@ -15145,7 +15145,11 @@ class MainWindow(QMainWindow):
         self.pid_panel.consequence_created.connect(
             lambda cid: (self.tree_panel.refresh(CONS_T, cid),
                          self.scenario_panel.refresh_placed(),
-                         self._open_consequence_step_picker(cid)))
+                         # Open step picker via timer so the deferred _on_selected
+                         # (timer 0ms from tree.refresh) completes its _rebuild
+                         # before the modal dialog starts its own event loop.
+                         QTimer.singleShot(20, lambda c=cid:
+                             self._open_consequence_step_picker(c))))
         self.pid_panel.ref_tag_picked.connect(self._on_ref_tag_picked)
         self.pid_panel.safeguard_created.connect(self._on_safeguard_created)
         self.pid_panel.existing_marker_placed.connect(self._on_existing_marker_placed)
