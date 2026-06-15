@@ -1266,7 +1266,7 @@ class Database:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")   # faster concurrent reads
         self.conn.executescript(SCHEMA)
-        self.conn.commit()
+        self.commit()
         self._migrate()
         self._auto_backup()
 
@@ -1691,7 +1691,7 @@ class Database:
                         "INSERT INTO deviations (node_id, description) VALUES (?,?)",
                         (nid, dev_type))
 
-        self.conn.commit()
+        self.commit()
 
     # ── Config ────────────────────────────────────────────────────────────────
     def get_config(self, key, default=None):
@@ -1700,7 +1700,7 @@ class Database:
 
     def set_config(self, key, value):
         self.conn.execute("INSERT OR REPLACE INTO app_config (key,value) VALUES (?,?)", (key, value))
-        self.conn.commit()
+        self.commit()
 
     _DEFAULT_PALETTE = [
         {'name': 'Kritisk', 'color': '#e74c3c', 'fg_color': '#ffffff'},
@@ -1813,7 +1813,7 @@ class Database:
                     (code, sv, en, cat, standard))
                 imported += 1
 
-        self.conn.commit()
+        self.commit()
         return imported, ''
 
     def tag_db_setting(self, key, default=None):
@@ -1825,7 +1825,7 @@ class Database:
         self.conn.execute(
             "INSERT OR REPLACE INTO tag_database_settings (key,value) VALUES (?,?)",
             (key, str(value)))
-        self.conn.commit()
+        self.commit()
 
     def tag_code_lookup(self, prefix: str) -> dict:
         """Look up a tag prefix in the active tag databases. Returns best match."""
@@ -1861,13 +1861,13 @@ class Database:
                 "INSERT INTO pid_identified_tags "
                 "(tag_code,examples,name_sv,comp_type,confirmed) VALUES (?,?,?,?,0)",
                 (tag_code, examples, name_sv, comp_type))
-        self.conn.commit()
+        self.commit()
 
     def confirm_pid_tag(self, tag_code, comp_type, confirmed):
         self.conn.execute(
             "UPDATE pid_identified_tags SET comp_type=?,confirmed=? WHERE tag_code=?",
             (comp_type, int(confirmed), tag_code))
-        self.conn.commit()
+        self.commit()
 
     def confirmed_comp_for_tag(self, prefix: str) -> str:
         """Return confirmed component type for a tag prefix, or ''."""
@@ -1899,22 +1899,22 @@ class Database:
             "(tag,original_tag,prefix,pid_page,equipment_type,description,is_ocr,include) "
             "VALUES (?,?,?,?,?,?,?,1)",
             (tag, original_tag, prefix, page, eq_type, desc, is_ocr))
-        self.conn.commit()
+        self.commit()
         return cur.lastrowid
 
     def update_equipment_item(self, id_, tag, prefix, eq_type, desc):
         self.conn.execute(
             "UPDATE equipment_catalog SET tag=?,prefix=?,equipment_type=?,description=? WHERE id=?",
             (tag, prefix, eq_type, desc, id_))
-        self.conn.commit()
+        self.commit()
 
     def delete_equipment_item(self, id_):
         self.conn.execute("DELETE FROM equipment_catalog WHERE id=?", (id_,))
-        self.conn.commit()
+        self.commit()
 
     def clear_equipment_catalog(self):
         self.conn.execute("DELETE FROM equipment_catalog")
-        self.conn.commit()
+        self.commit()
 
     # ── Equipment types ───────────────────────────────────────────────────────
     def get_equipment_type(self, prefix: str):
@@ -1927,7 +1927,7 @@ class Database:
         self.conn.execute(
             "INSERT OR REPLACE INTO equipment_types (prefix, equipment_type, display_name) "
             "VALUES (?,?,?)", (prefix, equipment_type, display_name))
-        self.conn.commit()
+        self.commit()
 
     def all_equipment_types(self):
         return self.conn.execute(
@@ -1959,7 +1959,7 @@ class Database:
                 "INSERT OR REPLACE INTO consequence_severities "
                 "(consequence_id, category_id, severity) VALUES (?,?,?)",
                 (consequence_id, category_id, severity))
-        self.conn.commit()
+        self.commit()
 
     def get_severity_excluded_sgs(self, severity_id):
         """Return set of safeguard_ids excluded from this category assessment."""
@@ -1976,7 +1976,7 @@ class Database:
             self.conn.execute(
                 "INSERT OR IGNORE INTO consequence_severity_exclusions "
                 "(severity_id, safeguard_id) VALUES (?,?)", (severity_id, sg_id))
-        self.conn.commit()
+        self.commit()
 
     def get_safeguard_excluded_causes(self, sg_id):
         """Return set of cause_ids excluded from this safeguard."""
@@ -1992,21 +1992,21 @@ class Database:
             self.conn.execute(
                 "INSERT OR IGNORE INTO safeguard_cause_exclusions "
                 "(safeguard_id, cause_id) VALUES (?,?)", (sg_id, cid))
-        self.conn.commit()
+        self.commit()
 
     def add_category(self, name):
         cur = self.conn.execute(
             "INSERT INTO consequence_categories (name) VALUES (?)", (name,))
-        self.conn.commit()
+        self.commit()
         return cur.lastrowid
 
     def update_category(self, id_, name):
         self.conn.execute("UPDATE consequence_categories SET name=? WHERE id=?", (name, id_))
-        self.conn.commit()
+        self.commit()
 
     def delete_category(self, id_):
         self.conn.execute("DELETE FROM consequence_categories WHERE id=?", (id_,))
-        self.conn.commit()
+        self.commit()
 
     def get_severity_definitions(self):
         """Return dict: severity_level (1-based int) -> {category_id -> description}."""
@@ -2026,7 +2026,7 @@ class Database:
             "INSERT INTO severity_definitions (severity_level, category_id, description) "
             "VALUES (?,?,?) ON CONFLICT(severity_level,category_id) DO UPDATE SET description=excluded.description",
             (severity_level, category_id, description))
-        self.conn.commit()
+        self.commit()
 
     # ── Component types & failure modes ───────────────────────────────────────
     def component_types(self):
@@ -2041,33 +2041,33 @@ class Database:
     def add_component_type(self, name):
         cur = self.conn.execute(
             "INSERT INTO component_types (name) VALUES (?)", (name,))
-        self.conn.commit()
+        self.commit()
         return cur.lastrowid
 
     def update_component_type(self, id_, name):
         self.conn.execute("UPDATE component_types SET name=? WHERE id=?", (name, id_))
-        self.conn.commit()
+        self.commit()
 
     def delete_component_type(self, id_):
         self.conn.execute("DELETE FROM component_types WHERE id=?", (id_,))
-        self.conn.commit()
+        self.commit()
 
     def add_failure_mode(self, component_id, description, freq=None):
         cur = self.conn.execute(
             "INSERT INTO failure_modes (component_id, description, freq_per_year) VALUES (?,?,?)",
             (component_id, description, freq))
-        self.conn.commit()
+        self.commit()
         return cur.lastrowid
 
     def update_failure_mode(self, id_, description, freq=None):
         self.conn.execute(
             "UPDATE failure_modes SET description=?, freq_per_year=? WHERE id=?",
             (description, freq, id_))
-        self.conn.commit()
+        self.commit()
 
     def delete_failure_mode(self, id_):
         self.conn.execute("DELETE FROM failure_modes WHERE id=?", (id_,))
-        self.conn.commit()
+        self.commit()
 
     def all_component_types_dict(self):
         """Return dict {type_name: [mode_description, ...]} for ComponentPickerDialog."""
@@ -2085,7 +2085,7 @@ class Database:
     def set_pid_path(self, path):
         self.conn.execute(
             "INSERT OR REPLACE INTO pid_config (key,value) VALUES ('path',?)", (str(path),))
-        self.conn.commit()
+        self.commit()
 
     def get_pid_config_value(self, key):
         row = self.conn.execute(
@@ -2095,12 +2095,12 @@ class Database:
     def set_pid_config_value(self, key, value):
         self.conn.execute(
             "INSERT OR REPLACE INTO pid_config (key,value) VALUES (?,?)", (key, str(value)))
-        self.conn.commit()
+        self.commit()
 
     def clear_connector_analysis(self):
         self.conn.execute("DELETE FROM off_page_connector")
         self.conn.execute("DELETE FROM pid_connection")
-        self.conn.commit()
+        self.commit()
 
     def save_connectors(self, rows):
         if not rows:
@@ -2114,14 +2114,14 @@ class Database:
             "VALUES(:pid_page,:x_pdf,:y_pdf,:direction,:edge,:ref_text,:ref_sheet,"
             ":ref_line_id,:media_type,:weight,:confidence,:raw_text,:ocr_used,:analyzed_at,:ref_page)",
             rows)
-        self.conn.commit()
+        self.commit()
 
     def update_connector_dot_position(self, connector_id, x, y):
         """Persist a manually dragged dot position for one off-page connector."""
         self.conn.execute(
             "UPDATE off_page_connector SET dot_scene_x=?, dot_scene_y=? WHERE id=?",
             (x, y, connector_id))
-        self.conn.commit()
+        self.commit()
 
     def save_pid_connections(self, rows):
         if not rows:
@@ -2133,7 +2133,7 @@ class Database:
             "VALUES(:from_page,:to_page,:from_connector,:to_connector,:media_type,"
             ":weight,:confidence,:is_bidirectional,:is_ghost,:ghost_ref,:warning)",
             rows)
-        self.conn.commit()
+        self.commit()
 
     # ── Board annotations (sticky notes, feature 8) ──────────────────────────
     def get_board_annotations(self):
@@ -2144,7 +2144,7 @@ class Database:
         cur = self.conn.execute(
             "INSERT INTO board_annotations (x,y,w,h,text,color) VALUES (?,?,?,?,?,?)",
             (x, y, w, h, text, color))
-        self.conn.commit()
+        self.commit()
         return cur.lastrowid
 
     def update_board_annotation(self, id_, x=None, y=None, w=None, h=None,
@@ -2157,11 +2157,11 @@ class Database:
             self.conn.execute(
                 f"UPDATE board_annotations SET {', '.join(sets)} WHERE id=?",
                 vals + [id_])
-            self.conn.commit()
+            self.commit()
 
     def delete_board_annotation(self, id_):
         self.conn.execute("DELETE FROM board_annotations WHERE id=?", (id_,))
-        self.conn.commit()
+        self.commit()
 
     def get_pid_connections(self):
         return self.conn.execute("SELECT * FROM pid_connection").fetchall()
@@ -2171,7 +2171,7 @@ class Database:
 
     def delete_pid_connection(self, conn_id):
         self.conn.execute("DELETE FROM pid_connection WHERE id=?", (conn_id,))
-        self.conn.commit()
+        self.commit()
 
     def add_manual_pid_connection(self, from_page, to_page):
         """Insert a manual (user-defined) inter-sheet link with max confidence."""
@@ -2182,7 +2182,7 @@ class Database:
             "confidence,is_bidirectional,is_ghost,ghost_ref,warning) "
             "VALUES (?,?,NULL,NULL,'unknown',1.0,1.0,1,0,NULL,'manual')",
             (from_page, to_page))
-        self.conn.commit()
+        self.commit()
 
     # ── PID revisions & sheets ────────────────────────────────────────────────
     def add_revision(self, revision, notes, pdf_path, created_at=''):
@@ -2191,7 +2191,7 @@ class Database:
         cur = self.conn.execute(
             "INSERT INTO pid_revisions (revision,notes,created_at,pdf_path) VALUES (?,?,?,?)",
             (revision, notes, created_at, str(pdf_path)))
-        self.conn.commit()
+        self.commit()
         return cur.lastrowid
 
     def get_revisions(self):
@@ -2205,7 +2205,7 @@ class Database:
                 self.conn.execute(
                     "INSERT INTO pid_sheets (display_order,physical_page,sheet_name) VALUES (?,?,?)",
                     (i, i, f"Blad {i + 1}"))
-            self.conn.commit()
+            self.commit()
 
     def get_sheets(self):
         return self.conn.execute(
@@ -2220,18 +2220,18 @@ class Database:
                 "INSERT INTO pid_sheets (display_order,physical_page,sheet_name,revision_id) "
                 "VALUES (?,?,?,?)",
                 (start_order + i, phys, name, revision_id))
-        self.conn.commit()
+        self.commit()
 
     def reorder_sheets(self, ordered_ids):
         for disp_order, sheet_id in enumerate(ordered_ids):
             self.conn.execute(
                 "UPDATE pid_sheets SET display_order=? WHERE id=?",
                 (disp_order, sheet_id))
-        self.conn.commit()
+        self.commit()
 
     def update_sheet_name(self, id_, name):
         self.conn.execute("UPDATE pid_sheets SET sheet_name=? WHERE id=?", (name, id_))
-        self.conn.commit()
+        self.commit()
 
     def delete_sheets(self, ids):
         for id_ in ids:
@@ -2242,7 +2242,7 @@ class Database:
             self.conn.execute(
                 "UPDATE pid_sheets SET display_order=? WHERE id=?",
                 (disp_order, row['id']))
-        self.conn.commit()
+        self.commit()
 
     def delete_objects_on_pages(self, physical_pages):
         """Delete all P&ID placements (markers and node markups) on the given physical pages."""
@@ -2251,7 +2251,7 @@ class Database:
             self.conn.execute("DELETE FROM cause_markers WHERE pid_page=?", (page,))
             self.conn.execute("DELETE FROM consequence_markers WHERE pid_page=?", (page,))
             self.conn.execute("DELETE FROM safeguard_markers WHERE pid_page=?", (page,))
-        self.conn.commit()
+        self.commit()
 
     def objects_on_pages(self, physical_pages):
         """Return counts of HAZOP objects on the given physical page numbers.
@@ -2285,7 +2285,7 @@ class Database:
 
     def clear_sheets(self):
         self.conn.execute("DELETE FROM pid_sheets")
-        self.conn.commit()
+        self.commit()
 
     def clear_all_pid_data(self):
         """Remove all P&ID revisions, sheets, placements, markups and connectors."""
@@ -2297,13 +2297,13 @@ class Database:
         ):
             self.conn.execute(f"DELETE FROM {table}")
         self.conn.execute("DELETE FROM pid_config WHERE key='path'")
-        self.conn.commit()
+        self.commit()
 
     def add_node_with_markup(self, name, points, style, page):
         cur = self.conn.execute(
             "INSERT INTO nodes (name, markup_points, markup_style, pid_page) VALUES (?,?,?,?)",
             (name, json.dumps(points), json.dumps(style), page))
-        self.conn.commit()
+        self.commit()
         return cur.lastrowid
 
     def add_cause_marker(self, cause_id, page, x, y, comp_type, tag='',
@@ -2313,7 +2313,7 @@ class Database:
             "(cause_id,pid_page,x,y,component_type,component_tag,rect_w,rect_h) "
             "VALUES (?,?,?,?,?,?,?,?)",
             (cause_id, page, x, y, comp_type, tag, rect_w, rect_h))
-        self.conn.commit()
+        self.commit()
 
     def add_consequence_marker(self, cons_id, page, x, y, target,
                                rect_w=None, rect_h=None):
@@ -2322,7 +2322,7 @@ class Database:
             "(consequence_id,pid_page,x,y,target_name,rect_w,rect_h) "
             "VALUES (?,?,?,?,?,?,?)",
             (cons_id, page, x, y, target, rect_w, rect_h))
-        self.conn.commit()
+        self.commit()
 
     def add_safeguard_marker(self, sg_id, page, x, y, tag='',
                              rect_w=None, rect_h=None):
@@ -2331,7 +2331,7 @@ class Database:
             "(safeguard_id,pid_page,x,y,tag,rect_w,rect_h) "
             "VALUES (?,?,?,?,?,?,?)",
             (sg_id, page, x, y, tag, rect_w, rect_h))
-        self.conn.commit()
+        self.commit()
 
     def update_marker_rect(self, marker_type, marker_id, page,
                            cx, cy, rect_w, rect_h):
@@ -2351,7 +2351,7 @@ class Database:
                 "UPDATE safeguard_markers SET x=?,y=?,rect_w=?,rect_h=? "
                 "WHERE safeguard_id=? AND pid_page=?",
                 (cx, cy, rect_w, rect_h, marker_id, page))
-        self.conn.commit()
+        self.commit()
 
     def cause_markers_for_page(self, page):
         return self.conn.execute(
@@ -2379,15 +2379,15 @@ class Database:
 
     def remove_cause_marker(self, cause_id):
         self.conn.execute("DELETE FROM cause_markers WHERE cause_id=?", (cause_id,))
-        self.conn.commit()
+        self.commit()
 
     def remove_consequence_marker(self, consequence_id):
         self.conn.execute("DELETE FROM consequence_markers WHERE consequence_id=?", (consequence_id,))
-        self.conn.commit()
+        self.commit()
 
     def remove_safeguard_marker(self, safeguard_id):
         self.conn.execute("DELETE FROM safeguard_markers WHERE safeguard_id=?", (safeguard_id,))
-        self.conn.commit()
+        self.commit()
 
     def get_cause_marker(self, cause_id):
         row = self.conn.execute(
@@ -2463,7 +2463,7 @@ class Database:
             self.conn.execute(
                 "INSERT INTO deviations (node_id, description) VALUES (?,?)",
                 (node_id, dev_type))
-        self.conn.commit()
+        self.commit()
         return node_id
 
     def deviations(self, node_id):
@@ -2512,18 +2512,18 @@ class Database:
     def add_deviation(self, node_id, description="Övrigt"):
         cur = self.conn.execute(
             "INSERT INTO deviations (node_id, description) VALUES (?,?)", (node_id, description))
-        self.conn.commit()
+        self.commit()
         return cur.lastrowid
 
     def update_deviation(self, id_, description):
         self.conn.execute("UPDATE deviations SET description=? WHERE id=?", (description, id_))
-        self.conn.commit()
+        self.commit()
 
     def delete_deviation(self, id_):
         for cause in self.causes_for_deviation(id_):
             self.delete_cause(cause['id'])
         self.conn.execute("DELETE FROM deviations WHERE id=?", (id_,))
-        self.conn.commit()
+        self.commit()
 
     def get_or_create_deviation(self, node_id, description="Övrigt"):
         row = self.conn.execute(
@@ -2542,23 +2542,23 @@ class Database:
         cur = self.conn.execute(
             "INSERT INTO standard_deviations (description, sort_order) VALUES (?,?)",
             (description, max_ord + 1))
-        self.conn.commit()
+        self.commit()
         return cur.lastrowid
 
     def update_standard_deviation(self, id_, description):
         self.conn.execute(
             "UPDATE standard_deviations SET description=? WHERE id=?", (description, id_))
-        self.conn.commit()
+        self.commit()
 
     def delete_standard_deviation(self, id_):
         self.conn.execute("DELETE FROM standard_deviations WHERE id=?", (id_,))
-        self.conn.commit()
+        self.commit()
 
     def reorder_standard_deviations(self, ordered_ids):
         for i, id_ in enumerate(ordered_ids):
             self.conn.execute(
                 "UPDATE standard_deviations SET sort_order=? WHERE id=?", (i, id_))
-        self.conn.commit()
+        self.commit()
 
     def get_standard_cause(self, id_):
         row = self.conn.execute(
@@ -2585,7 +2585,7 @@ class Database:
         cur = self.conn.execute(
             "INSERT INTO standard_causes (deviation_id, description, sort_order) VALUES (?,?,?)",
             (deviation_id, description, max_ord + 1))
-        self.conn.commit()
+        self.commit()
         return cur.lastrowid
 
     def update_standard_cause(self, id_, description=None, **kwargs):
@@ -2599,17 +2599,17 @@ class Database:
         if sets:
             vals.append(id_)
             self.conn.execute(f"UPDATE standard_causes SET {', '.join(sets)} WHERE id=?", vals)
-            self.conn.commit()
+            self.commit()
 
     def delete_standard_cause(self, id_):
         self.conn.execute("DELETE FROM standard_causes WHERE id=?", (id_,))
-        self.conn.commit()
+        self.commit()
 
     def reorder_standard_causes(self, ordered_ids):
         for i, id_ in enumerate(ordered_ids):
             self.conn.execute(
                 "UPDATE standard_causes SET sort_order=? WHERE id=?", (i, id_))
-        self.conn.commit()
+        self.commit()
 
     def distinct_comp_types(self):
         """Return sorted list of all comp_type values used in standard_causes (excl. empty)."""
@@ -2644,7 +2644,7 @@ class Database:
         cur = self.conn.execute(
             "INSERT INTO standard_causes (deviation_id, description, sort_order, comp_type)"
             " VALUES (?,?,?,?)", (deviation_id, description, max_ord + 1, comp_type))
-        self.conn.commit()
+        self.commit()
         return cur.lastrowid
 
     # ── Hierarchy: deviation → object → causes ────────────────────────────────
@@ -2698,7 +2698,7 @@ class Database:
             "INSERT INTO standard_causes (deviation_id, description, sort_order, comp_type, object_id)"
             " VALUES (?,?,?,?,?)",
             (deviation_id, description, max_ord + 1, comp, object_id))
-        self.conn.commit()
+        self.commit()
         return cur.lastrowid
 
     # ── Standard objects ──────────────────────────────────────────────────────
@@ -2711,21 +2711,21 @@ class Database:
             "SELECT COALESCE(MAX(sort_order),0) FROM standard_objects").fetchone()[0] or 0)
         cur = self.conn.execute(
             "INSERT INTO standard_objects (name, sort_order) VALUES (?,?)", (name, max_ord + 1))
-        self.conn.commit()
+        self.commit()
         return cur.lastrowid
 
     def update_standard_object(self, id_, name):
         self.conn.execute("UPDATE standard_objects SET name=? WHERE id=?", (name, id_))
-        self.conn.commit()
+        self.commit()
 
     def delete_standard_object(self, id_):
         self.conn.execute("DELETE FROM standard_objects WHERE id=?", (id_,))
-        self.conn.commit()
+        self.commit()
 
     def reorder_standard_objects(self, ordered_ids):
         for i, id_ in enumerate(ordered_ids):
             self.conn.execute("UPDATE standard_objects SET sort_order=? WHERE id=?", (i, id_))
-        self.conn.commit()
+        self.commit()
 
     # ── Cause descriptions ────────────────────────────────────────────────────
     def cause_descriptions(self, cause_id):
@@ -2740,22 +2740,22 @@ class Database:
         cur = self.conn.execute(
             "INSERT INTO cause_descriptions (cause_id, description, sort_order) VALUES (?,?,?)",
             (cause_id, description, max_ord + 1))
-        self.conn.commit()
+        self.commit()
         return cur.lastrowid
 
     def update_cause_description(self, id_, description):
         self.conn.execute("UPDATE cause_descriptions SET description=? WHERE id=?",
                           (description, id_))
-        self.conn.commit()
+        self.commit()
 
     def delete_cause_description(self, id_):
         self.conn.execute("DELETE FROM cause_descriptions WHERE id=?", (id_,))
-        self.conn.commit()
+        self.commit()
 
     def reorder_cause_descriptions(self, ordered_ids):
         for i, id_ in enumerate(ordered_ids):
             self.conn.execute("UPDATE cause_descriptions SET sort_order=? WHERE id=?", (i, id_))
-        self.conn.commit()
+        self.commit()
 
     def add_cause(self, deviation_id):
         dev = self.get_deviation(deviation_id)
@@ -2763,32 +2763,32 @@ class Database:
         cur = self.conn.execute(
             "INSERT INTO causes (node_id,deviation_id,description,likelihood) VALUES (?,?,'Ny orsak',1)",
             (node_id, deviation_id))
-        self.conn.commit()
+        self.commit()
         return cur.lastrowid
 
     def add_consequence(self, cause_id):
         cur = self.conn.execute(
             "INSERT INTO consequences (cause_id,description,severity) VALUES (?,'Ny konsekvens',1)", (cause_id,))
-        self.conn.commit()
+        self.commit()
         return cur.lastrowid
 
     def add_safeguard(self, consequence_id):
         cur = self.conn.execute(
             "INSERT INTO safeguards (consequence_id,description,rrf) VALUES (?,'Ny safeguard',1)", (consequence_id,))
-        self.conn.commit()
+        self.commit()
         return cur.lastrowid
 
     def add_action(self, consequence_id):
         cur = self.conn.execute(
             "INSERT INTO actions (consequence_id,description,status) VALUES (?,'Ny åtgärd','Öppen')",
             (consequence_id,))
-        self.conn.commit()
+        self.commit()
         return cur.lastrowid
 
     # ── Update ────────────────────────────────────────────────────────────────
     def set_cause_comment(self, cause_id, comment):
         self.conn.execute("UPDATE causes SET comment=? WHERE id=?", (comment, cause_id))
-        self.conn.commit()
+        self.commit()
 
     def get_cause_comment(self, cause_id):
         r = self.conn.execute("SELECT comment FROM causes WHERE id=?", (cause_id,)).fetchone()
@@ -2799,30 +2799,98 @@ class Database:
         self.conn.execute(
             "UPDATE nodes SET study_status='approved', approved_by=?, approved_at=? WHERE id=?",
             (user, _dt.datetime.now().strftime('%Y-%m-%d %H:%M'), node_id))
-        self.conn.commit()
+        self.commit()
 
     def set_node_status(self, node_id, status):
         self.conn.execute("UPDATE nodes SET study_status=? WHERE id=?", (status, node_id))
-        self.conn.commit()
+        self.commit()
+
+    # ── Backup system ─────────────────────────────────────────────────────────
+    # Backups live in  <project_dir>/hazop_backups/  so they never clutter the
+    # project folder itself.  Two tiers:
+    #   • Hourly snapshots  kept 48 h  — cover accidental data loss within a day
+    #   • Daily  snapshots  kept 30 d  — cover longer-term "I need last week"
+    # The DB uses SQLite's built-in BACKUP API so the copy is always consistent
+    # even while the connection is live.
+
+    _BACKUP_DIR_NAME   = "hazop_backups"
+    _HOURLY_KEEP_H     = 48      # keep hourly backups for this many hours
+    _DAILY_KEEP_D      = 30      # keep daily backups for this many days
+    _COMMIT_INTERVAL_S = 120     # write a new hourly backup at most every N seconds
+    _last_backup_ts: float = 0.0  # class-level throttle (shared across instances)
+
+    def _backup_dir(self) -> 'Path':
+        d = self.path.parent / self._BACKUP_DIR_NAME
+        d.mkdir(exist_ok=True)
+        return d
 
     def _auto_backup(self):
-        """Keep a rolling 7-day backup next to the project file."""
-        import shutil, datetime as _dt
+        """Create startup backup and prune old ones."""
+        self._write_backup(startup=True)
+
+    def _write_backup(self, startup: bool = False):
+        """Write a timestamped backup using SQLite's online backup API.
+
+        Throttled to at most once per _COMMIT_INTERVAL_S seconds so that
+        frequent commits don't hammer the disk, but startup always writes.
+        """
+        import time, sqlite3, datetime as _dt
+        now = time.monotonic()
+        if not startup and (now - Database._last_backup_ts) < self._COMMIT_INTERVAL_S:
+            return
+        Database._last_backup_ts = now
         try:
-            stamp = _dt.date.today().isoformat()
-            backup = self.path.parent / f"{self.path.stem}_backup_{stamp}.db"
-            if not backup.exists():
-                shutil.copy2(self.path, backup)
-            # Remove backups older than 7 days
-            for f in self.path.parent.glob(f"{self.path.stem}_backup_*.db"):
-                try:
-                    d = _dt.date.fromisoformat(f.stem.rsplit('_', 1)[-1])
-                    if (_dt.date.today() - d).days > 7:
-                        f.unlink()
-                except Exception:
-                    pass
+            d   = self._backup_dir()
+            ts  = _dt.datetime.now().strftime('%Y-%m-%dT%H-%M-%S-%f')
+            dst = d / f"backup_{ts}.db"
+            # SQLite online backup — safe while the DB is open and being written
+            bk_conn = sqlite3.connect(str(dst))
+            with bk_conn:
+                self.conn.backup(bk_conn)
+            bk_conn.close()
+            self._prune_backups(d)
         except Exception:
-            pass
+            pass   # never crash the app due to backup failure
+
+    def _prune_backups(self, d: 'Path'):
+        """Remove old backups according to retention policy."""
+        import datetime as _dt
+        now = _dt.datetime.now()
+        # Collect all backup files, newest first
+        files = sorted(d.glob("backup_*.db"), reverse=True)
+        # Parse timestamp from filename; skip files that don't match
+        def parse_ts(f):
+            for fmt in ("backup_%Y-%m-%dT%H-%M-%S-%f", "backup_%Y-%m-%dT%H-%M-%S"):
+                try:
+                    return _dt.datetime.strptime(f.stem, fmt)
+                except ValueError:
+                    pass
+            return None
+        kept_dates = set()   # dates for which we already have a daily backup
+        for f in files:
+            ts = parse_ts(f)
+            if ts is None:
+                continue
+            age_h = (now - ts).total_seconds() / 3600
+            date_key = ts.date()
+            # Always keep if within hourly window
+            if age_h <= self._HOURLY_KEEP_H:
+                continue
+            # Outside hourly window — keep ONE per calendar day for the daily window
+            if (now - ts).days <= self._DAILY_KEEP_D:
+                if date_key not in kept_dates:
+                    kept_dates.add(date_key)
+                    continue   # keep this one as the day's representative
+            # Otherwise delete
+            try:
+                f.unlink()
+            except Exception:
+                pass
+
+    def commit(self):
+        """Write-through commit: flush DB, then write a throttled backup."""
+        self.conn.commit()
+        self._write_backup()
 
     def touch_node(self, node_id):
         """Update updated_at/updated_by on node (feature 20)."""
@@ -2831,7 +2899,7 @@ class Database:
         self.conn.execute(
             "UPDATE nodes SET updated_at=?,updated_by=? WHERE id=?",
             (_dt.datetime.now().strftime('%Y-%m-%d %H:%M'), user, node_id))
-        self.conn.commit()
+        self.commit()
 
     def update_node(self, id_, name, description, pid_ref,
                     media='', pressure='', temperature=''):
@@ -2839,7 +2907,7 @@ class Database:
             "UPDATE nodes SET name=?,description=?,pid_ref=?,"
             "media=?,pressure=?,temperature=? WHERE id=?",
             (name, description, pid_ref, media, pressure, temperature, id_))
-        self.conn.commit()
+        self.commit()
         self.touch_node(id_)
 
     # ── Node markup CRUD ──────────────────────────────────────────────────────
@@ -2850,7 +2918,7 @@ class Database:
             "font_size,pid_page) VALUES (?,?,?,?,?,?,?,?,?)",
             (node_id, type_, json.dumps(pts), label, color, opacity, line_width,
              font_size, page))
-        self.conn.commit()
+        self.commit()
         return cur.lastrowid
 
     def node_markups_for_node(self, node_id):
@@ -2880,16 +2948,16 @@ class Database:
         if sets:
             vals.append(mu_id)
             self.conn.execute(f"UPDATE node_markups SET {','.join(sets)} WHERE id=?", vals)
-            self.conn.commit()
+            self.commit()
 
     def delete_node_markup(self, mu_id):
         self.conn.execute("DELETE FROM node_markups WHERE id=?", (mu_id,))
-        self.conn.commit()
+        self.commit()
 
     def set_all_node_markups_visible(self, node_id, visible):
         self.conn.execute("UPDATE node_markups SET visible=? WHERE node_id=?",
                           (int(visible), node_id))
-        self.conn.commit()
+        self.commit()
 
     def has_node_markups(self, node_id) -> bool:
         r = self.conn.execute(
@@ -2912,7 +2980,7 @@ class Database:
             "symbol_w,symbol_h,symbol_rot) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (node_id, type_, json.dumps(pts), label, color, opacity, line_width,
              font_size, page, symbol_w, symbol_h, symbol_rot))
-        self.conn.commit()
+        self.commit()
         return cur.lastrowid
 
     def node_red_markups_for_node(self, node_id):
@@ -2947,17 +3015,17 @@ class Database:
             vals.append(mu_id)
             self.conn.execute(
                 f"UPDATE node_red_markups SET {','.join(sets)} WHERE id=?", vals)
-            self.conn.commit()
+            self.commit()
 
     def delete_node_red_markup(self, mu_id):
         self.conn.execute("DELETE FROM node_red_markups WHERE id=?", (mu_id,))
-        self.conn.commit()
+        self.commit()
 
     def set_all_node_red_markups_visible(self, node_id, visible):
         self.conn.execute(
             "UPDATE node_red_markups SET visible=? WHERE node_id=?",
             (int(visible), node_id))
-        self.conn.commit()
+        self.commit()
 
     def has_node_red_markups(self, node_id) -> bool:
         r = self.conn.execute(
@@ -2983,7 +3051,7 @@ class Database:
         self.conn.execute(
             "UPDATE node_markups SET label=? WHERE node_id=? AND type='text'",
             (new_name, node_id))
-        self.conn.commit()
+        self.commit()
 
     _SENTINEL = object()
 
@@ -3008,7 +3076,7 @@ class Database:
         if sets:
             vals.append(id_)
             self.conn.execute(f"UPDATE causes SET {', '.join(sets)} WHERE id=?", vals)
-            self.conn.commit()
+            self.commit()
 
     def update_cause_freqs_from_standard(self):
         """Overwrite base_freq on all causes linked to a standard cause that has a frequency."""
@@ -3023,7 +3091,7 @@ class Database:
                 WHERE id = causes.standard_cause_id AND frequency IS NOT NULL
               )
         """)
-        self.conn.commit()
+        self.commit()
         return self.conn.execute("SELECT changes()").fetchone()[0]
 
     def update_consequence(self, id_, description, severity, category='',
@@ -3032,7 +3100,7 @@ class Database:
             "UPDATE consequences SET description=?,severity=?,category=?,"
             "consequence_chain=? WHERE id=?",
             (description, severity, category, consequence_chain, id_))
-        self.conn.commit()
+        self.commit()
 
     def update_safeguard(self, id_, description=None, rrf=None, sg_type=None):
         if description is None and rrf is None and sg_type is None:
@@ -3046,23 +3114,23 @@ class Database:
             parts.append("sg_type=?"); vals.append(sg_type)
         vals.append(id_)
         self.conn.execute(f"UPDATE safeguards SET {', '.join(parts)} WHERE id=?", vals)
-        self.conn.commit()
+        self.commit()
 
     def update_action(self, id_, description, responsible, due_date, status):
         self.conn.execute(
             "UPDATE actions SET description=?,responsible=?,due_date=?,status=? WHERE id=?",
             (description, responsible, due_date, status, id_))
-        self.conn.commit()
+        self.commit()
 
     # ── Delete ────────────────────────────────────────────────────────────────
     def delete_node(self, id_):
-        self.conn.execute("DELETE FROM nodes WHERE id=?", (id_,)); self.conn.commit()
+        self.conn.execute("DELETE FROM nodes WHERE id=?", (id_,)); self.commit()
 
     def delete_cause(self, id_):
-        self.conn.execute("DELETE FROM causes WHERE id=?", (id_,)); self.conn.commit()
+        self.conn.execute("DELETE FROM causes WHERE id=?", (id_,)); self.commit()
 
     def delete_consequence(self, id_):
-        self.conn.execute("DELETE FROM consequences WHERE id=?", (id_,)); self.conn.commit()
+        self.conn.execute("DELETE FROM consequences WHERE id=?", (id_,)); self.commit()
 
     # ── Consequence steps (Del1-Del5 escalation chain) ────────────────────────
     def get_consequence_steps(self, consequence_id):
@@ -3093,7 +3161,7 @@ class Database:
                     (consequence_id, int(s['step']), text,
                      (s.get('ref_tag') or '').strip(),
                      (s.get('node_key') or '').strip()))
-        self.conn.commit()
+        self.commit()
 
     def consequence_steps_as_text(self, consequence_id):
         """Return 'Del1 → Del2 → …' string built from stored steps."""
@@ -3102,10 +3170,10 @@ class Database:
         return ' → '.join(parts) if parts else ''
 
     def delete_safeguard(self, id_):
-        self.conn.execute("DELETE FROM safeguards WHERE id=?", (id_,)); self.conn.commit()
+        self.conn.execute("DELETE FROM safeguards WHERE id=?", (id_,)); self.commit()
 
     def delete_action(self, id_):
-        self.conn.execute("DELETE FROM actions WHERE id=?", (id_,)); self.conn.commit()
+        self.conn.execute("DELETE FROM actions WHERE id=?", (id_,)); self.commit()
 
     # ── Reduction factors ─────────────────────────────────────────────────────
     def reduction_factors(self, consequence_id):
@@ -3117,24 +3185,24 @@ class Database:
         cur = self.conn.execute(
             "INSERT INTO reduction_factors (consequence_id,description,rrf,active) VALUES (?,?,?,1)",
             (consequence_id, description, rrf))
-        self.conn.commit()
+        self.commit()
         return cur.lastrowid
 
     def update_reduction_factor(self, id_, description, rrf, active):
         self.conn.execute(
             "UPDATE reduction_factors SET description=?,rrf=?,active=? WHERE id=?",
             (description, rrf, int(active), id_))
-        self.conn.commit()
+        self.commit()
 
     def delete_reduction_factor(self, id_):
         self.conn.execute("DELETE FROM reduction_factors WHERE id=?", (id_,))
-        self.conn.commit()
+        self.commit()
 
     def update_consequence_factors(self, id_, fa_active, fa_rrf, ignition_active, ignition_rrf):
         self.conn.execute(
             "UPDATE consequences SET fa_active=?,fa_rrf=?,ignition_active=?,ignition_rrf=? WHERE id=?",
             (int(fa_active), fa_rrf, int(ignition_active), ignition_rrf, id_))
-        self.conn.commit()
+        self.commit()
 
     # ── Copy support ──────────────────────────────────────────────────────────
     def copy_cause(self, cause_id, target_deviation_id):
@@ -3146,7 +3214,7 @@ class Database:
         cur = self.conn.execute(
             "INSERT INTO causes (node_id,deviation_id,description,likelihood,source_id) VALUES (?,?,?,?,?)",
             (node_id, target_deviation_id, orig['description'], orig['likelihood'], cause_id))
-        self.conn.commit()
+        self.commit()
         return cur.lastrowid
 
     def copy_consequence(self, cons_id, target_cause_id):
@@ -3159,7 +3227,7 @@ class Database:
             (target_cause_id, orig['description'], orig['severity'], orig['category'] or '',
              orig['fa_active'] or 0, orig['fa_rrf'] or 10,
              orig['ignition_active'] or 0, orig['ignition_rrf'] or 10, cons_id))
-        self.conn.commit()
+        self.commit()
         new_id = cur.lastrowid
         # Copy safeguards
         for sg in self.safeguards(cons_id):
@@ -3171,7 +3239,7 @@ class Database:
             self.conn.execute(
                 "INSERT INTO reduction_factors (consequence_id,description,rrf,active) VALUES (?,?,?,?)",
                 (new_id, rf['description'], rf['rrf'], rf['active']))
-        self.conn.commit()
+        self.commit()
         return new_id
 
     def copy_safeguard(self, sg_id, target_cons_id):
@@ -3182,24 +3250,24 @@ class Database:
             "INSERT INTO safeguards (consequence_id,description,rrf,sg_type,source_id) VALUES (?,?,?,?,?)",
             (target_cons_id, orig['description'], orig['rrf'],
              dict(orig).get('sg_type', 'Övrigt'), sg_id))
-        self.conn.commit()
+        self.commit()
         return cur.lastrowid
 
     # ── Move support ──────────────────────────────────────────────────────────
     def move_cause(self, cause_id, target_node_id):
         self.conn.execute("UPDATE causes SET node_id=? WHERE id=?",
                           (target_node_id, cause_id))
-        self.conn.commit()
+        self.commit()
 
     def move_consequence(self, cons_id, target_cause_id):
         self.conn.execute("UPDATE consequences SET cause_id=? WHERE id=?",
                           (target_cause_id, cons_id))
-        self.conn.commit()
+        self.commit()
 
     def move_safeguard(self, sg_id, target_cons_id):
         self.conn.execute("UPDATE safeguards SET consequence_id=? WHERE id=?",
                           (target_cons_id, sg_id))
-        self.conn.commit()
+        self.commit()
 
     def stats(self):
         return {
@@ -15646,6 +15714,7 @@ class MainWindow(QMainWindow):
     def _write_hzp(self, path: str):
         import zipfile, json, shutil, tempfile, datetime
         self.db.conn.commit()   # flush all pending writes
+        self.db._write_backup(startup=True)   # force immediate backup snapshot
 
         # Copy DB to a temp file so we don't hold it open exclusively
         tmp_db = Path(tempfile.mktemp(suffix='.db'))
@@ -15727,6 +15796,8 @@ class MainWindow(QMainWindow):
         self._hzp_path = path
         self._update_title()
         self._reload_all_panels(pdf_path=pdf_path)
+        # Immediately create a startup backup of the freshly loaded project
+        self.db._write_backup(startup=True)
         self.status_bar.showMessage(f"Öppnat: {path}", 5000)
 
     def _reload_all_panels(self, pdf_path=None):
