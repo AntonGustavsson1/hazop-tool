@@ -15142,19 +15142,12 @@ class MainWindow(QMainWindow):
         self.pid_panel.safeguard_created.connect(self._on_safeguard_created)
         self.pid_panel.existing_marker_placed.connect(self._on_existing_marker_placed)
         def _on_cause_template_created(cid):
-            import logging as _log
-            try:
-                _log.info('cause_template_created step 1: tree_panel.refresh')
-                self.tree_panel.refresh(CAUSE_T, cid)
-                _log.info('cause_template_created step 2: _on_selected')
-                self._on_selected(CAUSE_T, cid)
-                _log.info('cause_template_created step 3: refresh_placed')
-                self.scenario_panel.refresh_placed()
-                _log.info('cause_template_created step 4: QTimer.singleShot')
-                QTimer.singleShot(50, lambda c=cid: self.scenario_panel.select_cause(c))
-                _log.info('cause_template_created done')
-            except Exception:
-                _log.exception('cause_template_created crashed')
+            # tree_panel.refresh fires item_selected → _on_selected (1st call).
+            # We defer the scenario refresh to avoid a 2nd _rebuild call on top
+            # of the one already triggered by the tree selection signal.
+            self.tree_panel.refresh(CAUSE_T, cid)
+            self.scenario_panel.refresh_placed()
+            QTimer.singleShot(50, lambda c=cid: self.scenario_panel.select_cause(c))
         self.pid_panel.cause_template_created.connect(_on_cause_template_created)
         self.pid_panel.cause_placement_requested.connect(self._on_cause_placement_requested)
         self.pid_panel.risk_scenario_requested.connect(self._on_pid_risk_scenario)

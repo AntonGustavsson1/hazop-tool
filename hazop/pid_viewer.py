@@ -8480,12 +8480,8 @@ class PIDPanel(QWidget):
                                   rect_w, rect_h)
         self.viewer.add_cause_marker(cause_id, pdf_x, pdf_y, comp_type, label, comp_tag,
                                      rect_w, rect_h)
-        import logging as _log
-        _log.info('place_cause_from_template: calling _load_overlays')
         self._load_overlays()
-        _log.info('place_cause_from_template: emitting cause_template_created')
         self.cause_template_created.emit(cause_id)
-        _log.info('place_cause_from_template: done')
         return cause_id
 
     def _on_add_cause_at_marker(self, cause_id: int):
