@@ -14620,8 +14620,9 @@ class MainWindow(QMainWindow):
         popup.move(max(screen.left(), x), max(screen.top(), y))
 
         def _on_picked(desc, freq):
-            obj_item  = popup._obj_list.currentItem()
-            comp_type = obj_item.data(Qt.ItemDataRole.UserRole + 1) if obj_item else ''
+            # _obj_btn_group replaces _obj_list in the redesigned popup
+            checked = next((b for b in popup._obj_btn_group if b.isChecked()), None)
+            comp_type = checked.property('obj_name') if checked else ''
             tag_text  = popup._tag_edit.text().strip() if hasattr(popup, '_tag_edit') else effective_tag
             self.pid_panel.place_cause_from_template(
                 dev_id, scene_pos, page, comp_type, tag_text, desc, freq)

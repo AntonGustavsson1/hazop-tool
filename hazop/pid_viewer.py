@@ -8592,8 +8592,8 @@ class PIDPanel(QWidget):
         std_freq   = picked.get('freq')
 
         # Feature 2: auto-fill tag from equipment catalog based on selected object type
-        obj_item   = dlg._obj_list.currentItem()
-        comp_type  = obj_item.data(Qt.ItemDataRole.UserRole + 1) if obj_item else ''
+        checked   = next((b for b in dlg._obj_btn_group if b.isChecked()), None)
+        comp_type = checked.property('obj_name') if checked else ''
         tag        = ''
         if comp_type:
             page = self.viewer.current_page
