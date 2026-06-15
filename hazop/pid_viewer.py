@@ -3928,9 +3928,12 @@ class PIDGraphicsView(QGraphicsView):
                 return pn
         return self.current_page
 
-    def set_mode(self, mode):
-        # Clean up any dangling rubber-band items from the previous mode
-        # (e.g. user switches mode before releasing the mouse button)
+    def _purge_rubber_band_state(self):
+        """Remove any dangling rubber-band scene items and reset drag state.
+
+        Called from both set_mode() and clear_overlays() so there is a single
+        canonical cleanup location; add new rubber-band attributes here only.
+        """
         for attr in ('_rect_item', '_rect_label',
                      '_rband_preview_item', '_rband_label_item'):
             item = getattr(self, attr, None)
@@ -3940,9 +3943,12 @@ class PIDGraphicsView(QGraphicsView):
                 except Exception:
                     pass
                 setattr(self, attr, None)
-        self._rect_start      = None
+        self._rect_start        = None
         self._rband_start_scene = None
         self._rband_dragging    = False
+
+    def set_mode(self, mode):
+        self._purge_rubber_band_state()
 
         self.mode = mode
         if mode == MODE_NAV:
@@ -5489,18 +5495,7 @@ class PIDGraphicsView(QGraphicsView):
             self._scene.addItem(txt)
 
     def clear_overlays(self):
-        # Always purge tracked rubber-band items first — they may have leaked
-        # if mode changed before mouse release
-        for attr in ('_rect_item', '_rect_label',
-                     '_rband_preview_item', '_rband_label_item'):
-            item = getattr(self, attr, None)
-            if item is not None:
-                try: self._scene.removeItem(item)
-                except Exception: pass
-                setattr(self, attr, None)
-        self._rect_start      = None
-        self._rband_start_scene = None
-        self._rband_dragging    = False
+        self._purge_rubber_band_state()
 
         _keep = set(self._all_page_items.values()) | {self._placeholder}
         for item in list(self._scene.items()):

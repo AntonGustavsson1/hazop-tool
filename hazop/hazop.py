@@ -1268,7 +1268,7 @@ class Database:
         self.conn.executescript(SCHEMA)
         self.commit()
         self._migrate()
-        self._auto_backup()
+        self._write_backup(startup=True)   # unconditional startup snapshot
 
     def _migrate(self):
         # Kolumnmigreringarna körs TVÅ gånger: före executescript (befintliga
@@ -2816,17 +2816,15 @@ class Database:
     _BACKUP_DIR_NAME   = "hazop_backups"
     _HOURLY_KEEP_H     = 48      # keep hourly backups for this many hours
     _DAILY_KEEP_D      = 30      # keep daily backups for this many days
-    _COMMIT_INTERVAL_S = 120     # write a new hourly backup at most every N seconds
-    _last_backup_ts: float = 0.0  # class-level throttle (shared across instances)
+    _COMMIT_INTERVAL_S  = 120    # write a new hourly backup at most every N seconds
+    _PRUNE_INTERVAL_S   = 3600   # prune at most once per hour
+    _last_backup_ts: float = 0.0
+    _last_prune_ts:  float = 0.0
 
     def _backup_dir(self) -> 'Path':
         d = self.path.parent / self._BACKUP_DIR_NAME
         d.mkdir(exist_ok=True)
         return d
-
-    def _auto_backup(self):
-        """Create startup backup and prune old ones."""
-        self._write_backup(startup=True)
 
     def _write_backup(self, startup: bool = False):
         """Write a timestamped backup using SQLite's online backup API.
@@ -2853,11 +2851,18 @@ class Database:
             pass   # never crash the app due to backup failure
 
     def _prune_backups(self, d: 'Path'):
-        """Remove old backups according to retention policy."""
-        import datetime as _dt
-        now = _dt.datetime.now()
-        # Collect all backup files, newest first
+        """Remove old backups according to retention policy (rate-limited to once/hour)."""
+        import time, datetime as _dt
+        now_ts = time.monotonic()
+        if (now_ts - Database._last_prune_ts) < self._PRUNE_INTERVAL_S:
+            return
+        Database._last_prune_ts = now_ts
+
+        now   = _dt.datetime.now()
         files = sorted(d.glob("backup_*.db"), reverse=True)
+        # Skip entirely if the directory is too small to prune anything
+        if len(files) <= self._HOURLY_KEEP_H + self._DAILY_KEEP_D:
+            return
         # Parse timestamp from filename; skip files that don't match
         def parse_ts(f):
             for fmt in ("backup_%Y-%m-%dT%H-%M-%S-%f", "backup_%Y-%m-%dT%H-%M-%S"):
@@ -4576,6 +4581,9 @@ class PropertiesRibbon(QWidget):
         "QPushButton:pressed{background:#dbeafe;}"
     )
     _GRP_SS  = "font-size:8px;color:#888;margin:0px;padding:0px;"
+    # Shared style for the OK button inside floating popups
+    _OK_BTN_SS = ("background:#1d4ed8;color:white;border:none;"
+                  "border-radius:4px;padding:4px 16px;")
 
     def __init__(self, db, main_window=None, parent=None):
         super().__init__(parent)
@@ -4594,9 +4602,11 @@ class PropertiesRibbon(QWidget):
 
     # ── Public API ────────────────────────────────────────────────────────────
     def set_item(self, type_: int, id_: int):
+        old_type = self._type
         self._type = type_
         self._id   = id_
-        self._rebuild()
+        if type_ != old_type:   # skip widget churn when type is unchanged
+            self._rebuild()
 
     def clear(self):
         self._type = None
@@ -4605,16 +4615,13 @@ class PropertiesRibbon(QWidget):
 
     # ── Internal ──────────────────────────────────────────────────────────────
     def _rebuild(self):
-        # Remove old buttons
-        for w in self._btns:
-            self._outer.removeWidget(w)
-            w.deleteLater()
-        self._btns.clear()
-        # Also remove stretch before re-adding
+        # Single-pass teardown: drain the layout, deleting widgets only
         while self._outer.count():
             item = self._outer.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        self._btns.clear()
 
         buttons = self._buttons_for_type()
         for spec in buttons:
@@ -4640,51 +4647,11 @@ class PropertiesRibbon(QWidget):
                 self._btns.append(btn)
         self._outer.addStretch()
 
-    def _buttons_for_type(self):
-        T = self._type
-        if T == NODE_T:
-            return [
-                "NOD",
-                ("🏷", "Redigera namn och P&ID-referens",    self._edit_node_name),
-                ("📄", "Redigera beskrivning",                self._edit_node_desc),
-                ("⚗", "Redigera processparametrar\n(media, tryck, temperatur)",
-                                                              self._edit_node_params),
-                None,
-                ("✅", "Sätt status / godkänn nod",          self._edit_node_status),
-                ("📍", "Visa nod på P&ID",                   self._zoom_to_node),
-            ]
-        if T == DEV_T:
-            return [
-                "AVVIK.",
-                ("📝", "Redigera avvikelsebeskrivning",       self._edit_dev_desc),
-            ]
-        if T == CAUSE_T:
-            return [
-                "ORSAK",
-                ("📝", "Redigera orsaksbeskrivning",          self._edit_cause_desc),
-                ("🏷", "Redigera objekttyp och tag-ID",       self._edit_cause_obj),
-                ("📊", "Ange frekvens / F-nivå",              self._edit_cause_freq),
-                ("💬", "Redigera kommentar",                  self._edit_cause_comment),
-                None,
-                ("📍", "Visa orsak på P&ID",                 self._zoom_to_cause),
-            ]
-        if T == CONS_T:
-            return [
-                "KONS.",
-                ("📋", "Redigera konsekvenskedja (Del1–Del5)", self._edit_cons_chain),
-                ("📊", "Sätt allvarlighet per kategori",      self._edit_cons_sev),
-                None,
-                ("📍", "Visa konsekvens på P&ID",            self._zoom_to_cons),
-            ]
-        if T == SG_T:
-            return [
-                "BARRIÄR",
-                ("📝", "Redigera barrärsbeskrivning",         self._edit_sg_desc),
-                ("⚡", "Ange RRF och typ",                    self._edit_sg_rrf),
-                None,
-                ("📍", "Visa barriär på P&ID",               self._zoom_to_sg),
-            ]
-        return []
+    # Class-level button spec dict — avoids repeated if-chain on every rebuild
+    _TYPE_BUTTONS: dict = {}   # populated after method definitions via _init_buttons()
+
+    def _buttons_for_type(self) -> list:
+        return self._TYPE_BUTTONS.get(self._type, [])
 
     # ── Popup helper ──────────────────────────────────────────────────────────
     def _popup_near(self, btn):
@@ -4726,8 +4693,7 @@ class PropertiesRibbon(QWidget):
         lay.addWidget(ed)
         row = QHBoxLayout()
         ok = QPushButton("OK"); ok.setDefault(True)
-        ok.setStyleSheet("background:#1d4ed8;color:white;border:none;"
-                         "border-radius:4px;padding:4px 16px;")
+        ok.setStyleSheet(self._OK_BTN_SS)
         ok.clicked.connect(dlg.accept)
         cancel = QPushButton("Avbryt"); cancel.clicked.connect(dlg.reject)
         row.addStretch(); row.addWidget(cancel); row.addWidget(ok)
@@ -4755,8 +4721,7 @@ class PropertiesRibbon(QWidget):
         lay.addRow("P&ID-ref:", pid_e)
         row = QHBoxLayout()
         ok = QPushButton("OK"); ok.setDefault(True)
-        ok.setStyleSheet("background:#1d4ed8;color:white;border:none;"
-                         "border-radius:4px;padding:4px 16px;")
+        ok.setStyleSheet(self._OK_BTN_SS)
         ok.clicked.connect(dlg.accept)
         cancel = QPushButton("Avbryt"); cancel.clicked.connect(dlg.reject)
         row.addStretch(); row.addWidget(cancel); row.addWidget(ok)
@@ -4804,8 +4769,7 @@ class PropertiesRibbon(QWidget):
         lay.addRow("Temperatur:", te)
         row = QHBoxLayout()
         ok = QPushButton("OK"); ok.setDefault(True)
-        ok.setStyleSheet("background:#1d4ed8;color:white;border:none;"
-                         "border-radius:4px;padding:4px 16px;")
+        ok.setStyleSheet(self._OK_BTN_SS)
         ok.clicked.connect(dlg.accept); cancel = QPushButton("Avbryt")
         cancel.clicked.connect(dlg.reject)
         row.addStretch(); row.addWidget(cancel); row.addWidget(ok)
@@ -4900,8 +4864,7 @@ class PropertiesRibbon(QWidget):
         lay.addRow("F-nivå:", level_lbl)
         row = QHBoxLayout()
         ok = QPushButton("OK"); ok.setDefault(True)
-        ok.setStyleSheet("background:#1d4ed8;color:white;border:none;"
-                         "border-radius:4px;padding:4px 16px;")
+        ok.setStyleSheet(self._OK_BTN_SS)
         ok.clicked.connect(dlg.accept)
         cancel = QPushButton("Avbryt"); cancel.clicked.connect(dlg.reject)
         row.addStretch(); row.addWidget(cancel); row.addWidget(ok)
@@ -4941,16 +4904,8 @@ class PropertiesRibbon(QWidget):
 
     def _edit_cons_sev(self, btn):
         if not self._id or not self._mw: return
-        from PyQt6.QtCore import QTimer
         popup = ConsCategoryMatrixPopup(self.db, self._id, self)
-        gp, scr = self._popup_near(btn)
-        popup.adjustSize()
-        pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
-        x = gp.x() - pw - 6
-        if x < scr.left(): x = gp.x() + self._WIDTH + 6
-        y = min(gp.y(), scr.bottom() - ph)
-        popup.move(max(scr.left(), x), max(scr.top(), y))
-        if popup.exec() == QDialog.DialogCode.Accepted:
+        if self._show_popup(btn, popup) == QDialog.DialogCode.Accepted:
             self.item_changed.emit()
 
     def _zoom_to_cons(self, btn):
@@ -4981,18 +4936,12 @@ class PropertiesRibbon(QWidget):
         sg = self.db.get_safeguard(self._id)
         if not sg: return
         sgd = dict(sg)
-        popup = RRFPopup(int(sgd.get('rrf',1)), sgd.get('sg_type','Övrigt'), self)
-        gp, scr = self._popup_near(btn)
-        popup.adjustSize()
-        pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
-        x = gp.x() - pw - 6
-        if x < scr.left(): x = gp.x() + self._WIDTH + 6
-        y = min(gp.y(), scr.bottom() - ph)
-        popup.move(max(scr.left(), x), max(scr.top(), y))
+        sg_id = self._id   # capture by value for the signal lambda
+        popup = RRFPopup(int(sgd.get('rrf', 1)), sgd.get('sg_type', 'Övrigt'), self)
         popup.rrf_selected.connect(
-            lambda v, t: (self.db.update_safeguard(self._id, rrf=v, sg_type=t),
-                          self.item_changed.emit()))
-        popup.exec()
+            lambda v, t, sid=sg_id: (self.db.update_safeguard(sid, rrf=v, sg_type=t),
+                                     self.item_changed.emit()))
+        self._show_popup(btn, popup)
 
     def _zoom_to_sg(self, btn):
         if not self._id or not self._mw: return
@@ -5004,6 +4953,50 @@ class PropertiesRibbon(QWidget):
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(50, lambda: self._mw.pid_panel.navigate_to_marker(
                 rows[0], rows[1], rows[2]))
+
+
+# Populate _TYPE_BUTTONS now that all method objects exist
+def _init_ribbon_buttons(cls):
+    cls._TYPE_BUTTONS = {
+        NODE_T:  [
+            "NOD",
+            ("🏷", "Redigera namn och P&ID-referens",    cls._edit_node_name),
+            ("📄", "Redigera beskrivning",                cls._edit_node_desc),
+            ("⚗", "Redigera processparametrar\n(media, tryck, temperatur)",
+                                                          cls._edit_node_params),
+            None,
+            ("✅", "Sätt status / godkänn nod",          cls._edit_node_status),
+            ("📍", "Visa nod på P&ID",                   cls._zoom_to_node),
+        ],
+        DEV_T:   [
+            "AVVIK.",
+            ("📝", "Redigera avvikelsebeskrivning",       cls._edit_dev_desc),
+        ],
+        CAUSE_T: [
+            "ORSAK",
+            ("📝", "Redigera orsaksbeskrivning",          cls._edit_cause_desc),
+            ("🏷", "Redigera objekttyp och tag-ID",       cls._edit_cause_obj),
+            ("📊", "Ange frekvens / F-nivå",              cls._edit_cause_freq),
+            ("💬", "Redigera kommentar",                  cls._edit_cause_comment),
+            None,
+            ("📍", "Visa orsak på P&ID",                 cls._zoom_to_cause),
+        ],
+        CONS_T:  [
+            "KONS.",
+            ("📋", "Redigera konsekvenskedja (Del1–Del5)", cls._edit_cons_chain),
+            ("📊", "Sätt allvarlighet per kategori",      cls._edit_cons_sev),
+            None,
+            ("📍", "Visa konsekvens på P&ID",            cls._zoom_to_cons),
+        ],
+        SG_T:    [
+            "BARRIÄR",
+            ("📝", "Redigera barriärsbeskrivning",        cls._edit_sg_desc),
+            ("⚡", "Ange RRF och typ",                    cls._edit_sg_rrf),
+            None,
+            ("📍", "Visa barriär på P&ID",               cls._zoom_to_sg),
+        ],
+    }
+_init_ribbon_buttons(PropertiesRibbon)
 
 
 class NodeMarkupPanel(QWidget):
@@ -8727,7 +8720,9 @@ class _ScenarioDelegate(QStyledItemDelegate):
 
     def __init__(self, panel):
         super().__init__(panel)
-        self._panel = panel
+        self._panel   = panel
+        self._fm_font = None   # cached QFont
+        self._fm      = None   # cached QFontMetrics — rebuilt only when font changes
 
     def createEditor(self, parent, option, index):
         editor = super().createEditor(parent, option, index)
@@ -8740,8 +8735,12 @@ class _ScenarioDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
         col = index.column()
         panel = self._panel
-        fm = QFontMetrics(option.font)
-        one_line_h = fm.height() + 6   # compact single-line height
+        # Cache QFontMetrics — reconstructed only when the font changes
+        if option.font != self._fm_font:
+            self._fm_font = option.font
+            self._fm = QFontMetrics(option.font)
+        fm = self._fm
+        one_line_h = fm.height() + 6
 
         wrap_cols = {panel._C_ORS, panel._C_KON, panel._C_SG}
         if col not in wrap_cols:
@@ -9902,9 +9901,8 @@ class ScenarioTablePanel(QWidget):
             self._table.blockSignals(False)
             self._table.cellChanged.connect(self._on_cell_changed)
             self._rebuilding = False
-        # Re-fit row heights now that column widths are known
-        for row in range(self._table.rowCount()):
-            self._table.resizeRowToContents(row)
+        # Fit all row heights in one native Qt call (faster than a Python loop)
+        self._table.resizeRowsToContents()
         self._update_ctx_bar()
 
     def _apply_spans(self):
@@ -15224,8 +15222,6 @@ class MainWindow(QMainWindow):
             else:
                 self.scenario_panel.load_consequence(id_)
         elif type_ == SG_T:
-            self.sg_panel.load(id_)
-            self.stack.setCurrentWidget(self.sg_panel)
             sg = self.db.get_safeguard(id_)
             if sg:
                 cons = self.db.get_consequence(sg['consequence_id'])
@@ -15243,18 +15239,8 @@ class MainWindow(QMainWindow):
         self.tree_panel.structure_changed.emit()
 
     def _on_scenario_item_edited(self, type_, id_):
-        """Scenario table committed an edit — sync the tree, right panel, and P&ID labels."""
+        """Scenario table committed an edit — sync tree and P&ID labels."""
         self.tree_panel.refresh(type_, id_)
-        if type_ == CAUSE_T:
-            if self.cause_panel.cause_id == id_:
-                self.cause_panel.load(id_)
-        elif type_ == CONS_T:
-            if self.cons_panel.consequence_id == id_:
-                self.cons_panel.load(id_)
-        elif type_ == SG_T:
-            if self.sg_panel.safeguard_id == id_:
-                self.sg_panel.load(id_)
-        # Refresh P&ID marker labels immediately (description may have changed)
         self.pid_panel.reload_overlays()
 
     def _on_structure_changed(self):
@@ -15538,7 +15524,7 @@ class MainWindow(QMainWindow):
         self.node_markup_panel.load(node_id)
         self.markup_table_panel.load(node_id)
         self.tree_panel.setVisible(False)
-        self._right_scroll.setVisible(False)
+        self.props_ribbon.setVisible(False)
         self.node_markup_panel.setVisible(True)
         self.scenario_panel.setVisible(False)
         self.markup_table_panel.setVisible(True)
@@ -15553,7 +15539,7 @@ class MainWindow(QMainWindow):
         self.pid_panel.exit_markup_mode()
         self.pid_panel.reload_overlays()
         self.tree_panel.setVisible(True)
-        self._right_scroll.setVisible(True)
+        self.props_ribbon.setVisible(True)
         self.node_markup_panel.setVisible(False)
         self.scenario_panel.setVisible(True)
         self.markup_table_panel.setVisible(False)
@@ -15569,7 +15555,7 @@ class MainWindow(QMainWindow):
         self.red_markup_panel.load(node_id)
         self.red_markup_table_panel.load(node_id)
         self.tree_panel.setVisible(False)
-        self._right_scroll.setVisible(False)
+        self.props_ribbon.setVisible(False)
         self.red_markup_panel.setVisible(True)
         self.scenario_panel.setVisible(False)
         self.red_markup_table_panel.setVisible(True)
@@ -15582,7 +15568,7 @@ class MainWindow(QMainWindow):
         self.pid_panel.exit_red_markup_mode()
         self.pid_panel.reload_overlays()
         self.tree_panel.setVisible(True)
-        self._right_scroll.setVisible(True)
+        self.props_ribbon.setVisible(True)
         self.red_markup_panel.setVisible(False)
         self.scenario_panel.setVisible(True)
         self.red_markup_table_panel.setVisible(False)
@@ -16250,12 +16236,13 @@ class MainWindow(QMainWindow):
         db = self.db
         load_matrix(db)
 
-        # Update db reference on every panel
+        # Update db reference on every panel (props_ribbon included)
         for panel in [self.tree_panel, self.node_panel, self.deviation_panel,
                       self.cause_panel, self.cons_panel, self.sg_panel,
                       self.scenario_panel, self.equipment_panel,
                       self.admin_panel, self.settings_panel,
-                      self.node_markup_panel, self.markup_table_panel]:
+                      self.node_markup_panel, self.markup_table_panel,
+                      self.props_ribbon]:
             try:
                 panel.db = db
             except Exception:
