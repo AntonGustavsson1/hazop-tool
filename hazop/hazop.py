@@ -15280,7 +15280,6 @@ class MainWindow(QMainWindow):
 
     def _on_safeguard_created(self, _sg_id):
         if self._cur_type == CONS_T and self._cur_id is not None:
-            self.cons_panel.load(self._cur_id)
             self.scenario_panel.load_consequence(self._cur_id)
             self.tree_panel.refresh(CONS_T, self._cur_id)
         self.scenario_panel.refresh_placed()
