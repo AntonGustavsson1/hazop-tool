@@ -7312,25 +7312,32 @@ class PIDPanel(QWidget):
             self.page_total_label.setText("/ —")
 
     # ── Feature 10: per-page zoom/scroll state ────────────────────────────────
-    _page_views: dict = {}   # display_n → (m11, m12, m21, m22, dx, dy)
 
     def _save_page_view(self, display_n):
+        if not hasattr(self, '_page_views'):
+            self._page_views = {}
         t = self.viewer.transform()
         self._page_views[display_n] = (t.m11(), t.m12(), t.m21(), t.m22(),
                                        self.viewer.horizontalScrollBar().value(),
                                        self.viewer.verticalScrollBar().value())
 
     def _restore_page_view(self, display_n):
+        if not hasattr(self, '_page_views'):
+            return
         state = self._page_views.get(display_n)
         if not state:
             return
         from PyQt6.QtGui import QTransform
         m11, m12, m21, m22, hv, vv = state
         self.viewer.setTransform(QTransform(m11, m12, m21, m22, 0, 0))
+        # Block scrollContentsBy from firing _schedule_lod_update while we restore
+        self.viewer.horizontalScrollBar().blockSignals(True)
+        self.viewer.verticalScrollBar().blockSignals(True)
         self.viewer.horizontalScrollBar().setValue(hv)
         self.viewer.verticalScrollBar().setValue(vv)
+        self.viewer.horizontalScrollBar().blockSignals(False)
+        self.viewer.verticalScrollBar().blockSignals(False)
         self.viewer._apply_lod(self.viewer.transform().m11())
-        self.viewer._schedule_lod_update()
 
     def navigate_to_marker(self, physical_page, x_pdf, y_pdf):
         """Navigate to the page containing a marker and zoom in on it."""
@@ -7340,7 +7347,18 @@ class PIDPanel(QWidget):
         if self._sheet_map:
             rev = {phys: disp for disp, phys in self._sheet_map.items()}
             display_n = rev.get(physical_page, physical_page)
-        self._goto_page(display_n)
+        # Skip view-state save/restore for navigate_to_marker — we override the
+        # transform immediately with resetTransform + scale + centerOn anyway.
+        self._save_page_view(self._current_display_page)
+        if self._sheet_map:
+            physical = self._sheet_map.get(display_n, display_n)
+        elif self.db.get_display_page_count() > 0:
+            physical = self.db.get_sheet_physical_page(display_n)
+        else:
+            physical = display_n
+        self._current_display_page = display_n
+        self.viewer.goto_page(physical)
+        self._update_page_label()
         scene_pt = self.viewer.pdf_to_scene(x_pdf, y_pdf, page=physical_page)
         self.viewer.resetTransform()
         self.viewer.scale(2.5, 2.5)
@@ -7982,18 +8000,24 @@ class PIDPanel(QWidget):
         self.annotation_placed.emit(ann_id)
 
     def _draw_annotation(self, ann_id, x, y, w, h, text, color):
+        # Use QGraphicsRectItem + child QGraphicsTextItem so they move together
+        # and are treated as one unit by clear_overlays (remove parent = remove child)
         rect = self.viewer._scene.addRect(
-            QRectF(x, y, w, h),
+            QRectF(0, 0, w, h),        # local coords: origin at (0,0)
             QPen(QColor('#f9a825'), 2),
             QBrush(QColor(color)))
+        rect.setPos(x, y)
         rect.setFlag(rect.GraphicsItemFlag.ItemIsMovable, True)
+        rect.setFlag(rect.GraphicsItemFlag.ItemSendsGeometryChanges, True)
         rect.setZValue(Z_TEMP + 2)
         rect.setData(0, ('annotation', ann_id))
-        txt = self.viewer._scene.addText(text)
-        txt.setPos(x + 6, y + 4)
+
+        # Text as child of rect — moves with it, removed when rect is removed
+        from PyQt6.QtWidgets import QGraphicsTextItem
+        txt = QGraphicsTextItem(text, rect)   # rect is parent → child of scene via rect
+        txt.setPos(6, 4)
         txt.setTextWidth(w - 12)
-        txt.setZValue(Z_TEMP + 3)
-        txt.setData(0, ('annotation_text', ann_id))
+        txt.setZValue(0.1)   # slightly above parent (rect is at Z_TEMP+2 in scene coords)
 
     def _on_zone_resized(self, marker_type, marker_id, cx, cy, w, h):
         """Zone corner was dragged — update DB marker center and rect dimensions."""
