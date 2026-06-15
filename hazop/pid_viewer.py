@@ -3929,6 +3929,21 @@ class PIDGraphicsView(QGraphicsView):
         return self.current_page
 
     def set_mode(self, mode):
+        # Clean up any dangling rubber-band items from the previous mode
+        # (e.g. user switches mode before releasing the mouse button)
+        for attr in ('_rect_item', '_rect_label',
+                     '_rband_preview_item', '_rband_label_item'):
+            item = getattr(self, attr, None)
+            if item is not None:
+                try:
+                    self._scene.removeItem(item)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+        self._rect_start      = None
+        self._rband_start_scene = None
+        self._rband_dragging    = False
+
         self.mode = mode
         if mode == MODE_NAV:
             self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
@@ -5474,6 +5489,19 @@ class PIDGraphicsView(QGraphicsView):
             self._scene.addItem(txt)
 
     def clear_overlays(self):
+        # Always purge tracked rubber-band items first — they may have leaked
+        # if mode changed before mouse release
+        for attr in ('_rect_item', '_rect_label',
+                     '_rband_preview_item', '_rband_label_item'):
+            item = getattr(self, attr, None)
+            if item is not None:
+                try: self._scene.removeItem(item)
+                except Exception: pass
+                setattr(self, attr, None)
+        self._rect_start      = None
+        self._rband_start_scene = None
+        self._rband_dragging    = False
+
         _keep = set(self._all_page_items.values()) | {self._placeholder}
         for item in list(self._scene.items()):
             if item in _keep:
