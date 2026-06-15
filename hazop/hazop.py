@@ -16292,8 +16292,82 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == '__main__':
+    import logging, traceback as _tb, datetime as _dt
+
+    # ── Crash logger ───────────────────────────────────────────────────────────
+    # Every unhandled exception is written to hazop_crash.log next to hazop.py.
+    # Share the content of that file instead of a screenshot when reporting bugs.
+    _LOG = Path(__file__).parent / 'hazop_crash.log'
+    logging.basicConfig(
+        filename=str(_LOG),
+        level=logging.DEBUG,
+        format='%(asctime)s %(levelname)s %(message)s',
+        encoding='utf-8',
+    )
+    # Also echo to stderr (visible in the console window)
+    logging.getLogger().addHandler(logging.StreamHandler(sys.stderr))
+
+    def _excepthook(exc_type, exc_value, exc_tb):
+        msg = ''.join(_tb.format_exception(exc_type, exc_value, exc_tb))
+        ts  = _dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        logging.error('UNHANDLED EXCEPTION\n%s', msg)
+        # Show a dialog so the user knows something crashed
+        try:
+            dlg = QMessageBox()
+            dlg.setWindowTitle('Programmet kraschade')
+            dlg.setIcon(QMessageBox.Icon.Critical)
+            dlg.setText(
+                f'<b>{exc_type.__name__}:</b> {exc_value}<br><br>'
+                f'Fullständig info sparad i:<br>'
+                f'<code>{_LOG}</code><br><br>'
+                f'Klistra in innehållet från den filen när du rapporterar felet.')
+            dlg.setDetailedText(msg)
+            dlg.exec()
+        except Exception:
+            pass
+
+    sys.excepthook = _excepthook
+
+    # Catch exceptions raised inside Qt signal handlers (they bypass sys.excepthook)
+    def _qt_message_handler(mode, context, message):
+        if mode in (QtMsgType.QtWarningMsg,
+                    QtMsgType.QtCriticalMsg,
+                    QtMsgType.QtFatalMsg):
+            logging.warning('Qt [%s] %s', mode.name, message)
+        else:
+            logging.debug('Qt [%s] %s', mode.name, message)
+
+    try:
+        from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
+        qInstallMessageHandler(_qt_message_handler)
+    except ImportError:
+        pass
+
+    # Route all Python warnings through the log as well
+    import warnings
+    logging.captureWarnings(True)
+
+    logging.info('=== HAZOP Tool started ===')
+
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
-    win = MainWindow()
-    win.show()
-    sys.exit(app.exec())
+
+    # Catch exceptions in Qt event loop (slots/signals)
+    _original_notify = app.notify
+    def _safe_notify(receiver, event):
+        try:
+            return _original_notify(receiver, event)
+        except Exception:
+            logging.exception('Exception in Qt event loop (notify)')
+            return False
+    app.notify = _safe_notify
+
+    try:
+        win = MainWindow()
+        win.show()
+        code = app.exec()
+        logging.info('=== HAZOP Tool exited (code %d) ===', code)
+        sys.exit(code)
+    except Exception:
+        logging.exception('Fatal exception during startup or main loop')
+        raise
