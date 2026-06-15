@@ -3985,7 +3985,14 @@ class PIDGraphicsView(QGraphicsView):
         elif mode == MODE_ADD_SHEET_LINK:
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
-        if mode not in (MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE, MODE_SMART_POLYLINE):
+        # Cancel any in-progress freehand draw when leaving draw-modes.
+        # MODE_SMART_POLYLINE is only excluded when we're staying in it
+        # (e.g. toggling a sub-option); switching *into* it from another
+        # mode should still cancel the previous draw.
+        staying_in_draw = (mode in (MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE)
+                           or (mode == MODE_SMART_POLYLINE
+                               and self.mode == MODE_SMART_POLYLINE))
+        if not staying_in_draw:
             self._cancel_drawing()
         self.setFocus()
 

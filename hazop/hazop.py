@@ -4781,8 +4781,8 @@ class PropertiesRibbon(QWidget):
             self.item_changed.emit()
 
     def _edit_node_status(self, btn):
-        if not self._mw: return
-        self._mw._approve_node()
+        if not self._mw or not self._id: return
+        self._mw._approve_node(node_id=self._id)
 
     def _zoom_to_node(self, btn):
         if not self._mw or not self._id: return
@@ -4836,7 +4836,7 @@ class PropertiesRibbon(QWidget):
         popup.move(max(scr.left(), x), max(scr.top(), y))
         def _on_committed(ct, tag, desc, freq):
             self.db.update_cause(self._id, comp_type=ct, comp_tag=tag)
-            if desc: self.db.update_cause(self._id, description=desc)
+            if desc is not None: self.db.update_cause(self._id, description=desc)
             if freq is not None: self.db.update_cause(self._id, base_freq=freq)
             self.item_changed.emit()
         popup.committed.connect(_on_committed)
@@ -15995,8 +15995,9 @@ class MainWindow(QMainWindow):
         box.exec()
 
     # ── Sign-off / approval ───────────────────────────────────────────────────
-    def _approve_node(self):
-        node_id = self._cur_id if self._cur_type == NODE_T else None
+    def _approve_node(self, node_id: int = None):
+        if node_id is None:
+            node_id = self._cur_id if self._cur_type == NODE_T else None
         if node_id is None:
             QMessageBox.information(self, "Välj nod",
                 "Välj en nod i trädet innan du godkänner den.")
@@ -16143,37 +16144,44 @@ class MainWindow(QMainWindow):
         return True
 
     def _write_hzp(self, path: str):
-        import zipfile, json, shutil, tempfile, datetime
+        import zipfile, json, tempfile, datetime, sqlite3 as _sql
         self.db.conn.commit()   # flush all pending writes
         self.db._write_backup(startup=True)   # force immediate backup snapshot
 
-        # Copy DB to a temp file so we don't hold it open exclusively
-        tmp_db = Path(tempfile.mktemp(suffix='.db'))
-        shutil.copy2(self.db.path, tmp_db)
-
-        # Collect PDF path from pid_config
-        pdf_src = None
+        # Use SQLite online backup API (safe with WAL mode; consistent snapshot)
+        fd, tmp_path = tempfile.mkstemp(suffix='.db')
+        import os; os.close(fd)
+        tmp_db = Path(tmp_path)
         try:
-            pdf_str = self.db.get_pid_path()
-            if pdf_str and Path(pdf_str).exists():
-                pdf_src = Path(pdf_str)
-        except Exception:
-            pass
+            bk_conn = _sql.connect(str(tmp_db))
+            with bk_conn:
+                self.db.conn.backup(bk_conn)
+            bk_conn.close()
 
-        meta = {
-            "hzp_version": 1,
-            "created": datetime.datetime.now().isoformat(timespec='seconds'),
-            "app": "HAZOP Tool",
-            "pdf_name": pdf_src.name if pdf_src else None,
-        }
+            # Collect PDF path from pid_config
+            pdf_src = None
+            try:
+                pdf_str = self.db.get_pid_path()
+                if pdf_str and Path(pdf_str).exists():
+                    pdf_src = Path(pdf_str)
+            except Exception:
+                pass
 
-        with zipfile.ZipFile(path, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
-            zf.write(tmp_db, "hazop_project.db")
-            if pdf_src:
-                zf.write(pdf_src, f"pid/{pdf_src.name}")
-            zf.writestr("meta.json", json.dumps(meta, ensure_ascii=False, indent=2))
+            meta = {
+                "hzp_version": 1,
+                "created": datetime.datetime.now().isoformat(timespec='seconds'),
+                "app": "HAZOP Tool",
+                "pdf_name": pdf_src.name if pdf_src else None,
+            }
 
-        tmp_db.unlink(missing_ok=True)
+            with zipfile.ZipFile(path, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+                zf.write(tmp_db, "hazop_project.db")
+                if pdf_src:
+                    zf.write(pdf_src, f"pid/{pdf_src.name}")
+                zf.writestr("meta.json", json.dumps(meta, ensure_ascii=False, indent=2))
+        finally:
+            tmp_db.unlink(missing_ok=True)   # always clean up even on exception
+
         self.status_bar.showMessage(f"Sparat: {path}", 5000)
         self._hzp_path = path
         self._update_title()
@@ -16200,13 +16208,21 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # Copy extracted DB over the active DB_PATH
+        # Copy extracted DB over the active DB_PATH.
+        # Close the old connection AFTER the copy succeeds so a failed copy
+        # (permissions, disk full) leaves self.db in a working state.
         extracted_db = work_dir / "hazop_project.db"
         if not extracted_db.exists():
             QMessageBox.critical(self, "Fel", "Projektet saknar databasfil.")
             return
+        try:
+            shutil.copy2(extracted_db, DB_PATH)
+        except Exception as e:
+            QMessageBox.critical(self, "Fel vid inläsning",
+                                 f"Kunde inte kopiera databas:\n{e}")
+            return
+
         self.db.conn.close()
-        shutil.copy2(extracted_db, DB_PATH)
 
         # Reopen DB at same path
         new_db = Database(DB_PATH)
