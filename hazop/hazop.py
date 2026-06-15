@@ -4558,6 +4558,448 @@ class _StylePopup(QWidget):
         super().showEvent(event)
 
 
+class PropertiesRibbon(QWidget):
+    """Narrow (62 px) vertical ribbon replacing the right detail panel.
+
+    Shows icon buttons for each editable field of the selected item.
+    Each button opens a small floating popup for editing that field.
+    Style mirrors NodeMarkupPanel.
+    """
+    item_changed = pyqtSignal()   # emitted after any field is saved
+
+    _BTN_SZ  = 50
+    _WIDTH   = 62
+    _BTN_SS  = (
+        "QPushButton{border:1px solid #D0D4DA;border-radius:5px;"
+        "background:#FFFFFF;padding:0px;font-size:15px;}"
+        "QPushButton:hover{background:#E8EEF8;border-color:#A0AABB;}"
+        "QPushButton:pressed{background:#dbeafe;}"
+    )
+    _GRP_SS  = "font-size:8px;color:#888;margin:0px;padding:0px;"
+
+    def __init__(self, db, main_window=None, parent=None):
+        super().__init__(parent)
+        self.db          = db
+        self._mw         = main_window
+        self._type       = None
+        self._id         = None
+        self._btns       = []
+
+        self.setFixedWidth(self._WIDTH)
+        self.setStyleSheet("background:#F0F2F5;")
+        self._outer = QVBoxLayout(self)
+        self._outer.setContentsMargins(6, 8, 6, 8)
+        self._outer.setSpacing(3)
+        self._outer.addStretch()
+
+    # ── Public API ────────────────────────────────────────────────────────────
+    def set_item(self, type_: int, id_: int):
+        self._type = type_
+        self._id   = id_
+        self._rebuild()
+
+    def clear(self):
+        self._type = None
+        self._id   = None
+        self._rebuild()
+
+    # ── Internal ──────────────────────────────────────────────────────────────
+    def _rebuild(self):
+        # Remove old buttons
+        for w in self._btns:
+            self._outer.removeWidget(w)
+            w.deleteLater()
+        self._btns.clear()
+        # Also remove stretch before re-adding
+        while self._outer.count():
+            item = self._outer.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        buttons = self._buttons_for_type()
+        for spec in buttons:
+            if spec is None:
+                sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+                sep.setStyleSheet("background:#C8CDD5;max-height:1px;border:none;")
+                sep.setFixedHeight(1)
+                self._outer.addWidget(sep)
+                self._btns.append(sep)
+            elif isinstance(spec, str):
+                lbl = QLabel(spec); lbl.setStyleSheet(self._GRP_SS)
+                lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self._outer.addWidget(lbl)
+                self._btns.append(lbl)
+            else:
+                emoji, tip, slot = spec
+                btn = QPushButton(emoji)
+                btn.setFixedSize(self._BTN_SZ, self._BTN_SZ)
+                btn.setToolTip(tip)
+                btn.setStyleSheet(self._BTN_SS)
+                btn.clicked.connect(lambda _, s=slot, b=btn: s(b))
+                self._outer.addWidget(btn)
+                self._btns.append(btn)
+        self._outer.addStretch()
+
+    def _buttons_for_type(self):
+        T = self._type
+        if T == NODE_T:
+            return [
+                "NOD",
+                ("🏷", "Redigera namn och P&ID-referens",    self._edit_node_name),
+                ("📄", "Redigera beskrivning",                self._edit_node_desc),
+                ("⚗", "Redigera processparametrar\n(media, tryck, temperatur)",
+                                                              self._edit_node_params),
+                None,
+                ("✅", "Sätt status / godkänn nod",          self._edit_node_status),
+                ("📍", "Visa nod på P&ID",                   self._zoom_to_node),
+            ]
+        if T == DEV_T:
+            return [
+                "AVVIK.",
+                ("📝", "Redigera avvikelsebeskrivning",       self._edit_dev_desc),
+            ]
+        if T == CAUSE_T:
+            return [
+                "ORSAK",
+                ("📝", "Redigera orsaksbeskrivning",          self._edit_cause_desc),
+                ("🏷", "Redigera objekttyp och tag-ID",       self._edit_cause_obj),
+                ("📊", "Ange frekvens / F-nivå",              self._edit_cause_freq),
+                ("💬", "Redigera kommentar",                  self._edit_cause_comment),
+                None,
+                ("📍", "Visa orsak på P&ID",                 self._zoom_to_cause),
+            ]
+        if T == CONS_T:
+            return [
+                "KONS.",
+                ("📋", "Redigera konsekvenskedja (Del1–Del5)", self._edit_cons_chain),
+                ("📊", "Sätt allvarlighet per kategori",      self._edit_cons_sev),
+                None,
+                ("📍", "Visa konsekvens på P&ID",            self._zoom_to_cons),
+            ]
+        if T == SG_T:
+            return [
+                "BARRIÄR",
+                ("📝", "Redigera barrärsbeskrivning",         self._edit_sg_desc),
+                ("⚡", "Ange RRF och typ",                    self._edit_sg_rrf),
+                None,
+                ("📍", "Visa barriär på P&ID",               self._zoom_to_sg),
+            ]
+        return []
+
+    # ── Popup helper ──────────────────────────────────────────────────────────
+    def _popup_near(self, btn):
+        """Return global position to anchor a popup to the left of the ribbon."""
+        gp = btn.mapToGlobal(btn.rect().topLeft())
+        scr = (QApplication.screenAt(gp) or QApplication.primaryScreen()).availableGeometry()
+        return gp, scr
+
+    def _show_popup(self, btn, popup):
+        popup.adjustSize()
+        gp, scr = self._popup_near(btn)
+        pw, ph  = popup.sizeHint().width(), popup.sizeHint().height()
+        x = gp.x() - pw - 6
+        y = gp.y()
+        if x < scr.left(): x = gp.x() + self._WIDTH + 6
+        if y + ph > scr.bottom(): y = scr.bottom() - ph
+        popup.move(max(scr.left(), x), max(scr.top(), y))
+        return popup.exec()
+
+    def _text_popup(self, btn, title: str, current: str,
+                    multiline: bool = False, placeholder: str = ''):
+        """Generic text-editing popup. Returns new text or None on cancel."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        dlg.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        dlg.setMinimumWidth(320)
+        lay = QVBoxLayout(dlg)
+        lay.setSpacing(6); lay.setContentsMargins(10, 10, 10, 10)
+        hdr = QLabel(f"<b>{title}</b>")
+        hdr.setStyleSheet("color:#1F4E79;")
+        lay.addWidget(hdr)
+        if multiline:
+            ed = QTextEdit(); ed.setPlainText(current)
+            ed.setPlaceholderText(placeholder)
+            ed.setFixedHeight(100)
+        else:
+            ed = QLineEdit(current)
+            ed.setPlaceholderText(placeholder)
+        lay.addWidget(ed)
+        row = QHBoxLayout()
+        ok = QPushButton("OK"); ok.setDefault(True)
+        ok.setStyleSheet("background:#1d4ed8;color:white;border:none;"
+                         "border-radius:4px;padding:4px 16px;")
+        ok.clicked.connect(dlg.accept)
+        cancel = QPushButton("Avbryt"); cancel.clicked.connect(dlg.reject)
+        row.addStretch(); row.addWidget(cancel); row.addWidget(ok)
+        lay.addLayout(row)
+        if isinstance(ed, QLineEdit):
+            ed.returnPressed.connect(dlg.accept)
+        if self._show_popup(btn, dlg) == QDialog.DialogCode.Accepted:
+            return (ed.toPlainText() if multiline else ed.text()).strip()
+        return None
+
+    # ── NODE actions ──────────────────────────────────────────────────────────
+    def _edit_node_name(self, btn):
+        if not self._id: return
+        n = self.db.get_node(self._id)
+        if not n: return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Nod")
+        dlg.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        dlg.setMinimumWidth(300)
+        lay = QFormLayout(dlg); lay.setContentsMargins(10,10,10,10)
+        name_e = QLineEdit(n['name'] or '')
+        pid_e  = QLineEdit(n.get('pid_ref') or '')
+        lay.addRow("<b>Namn:</b>", name_e)
+        lay.addRow("P&ID-ref:", pid_e)
+        row = QHBoxLayout()
+        ok = QPushButton("OK"); ok.setDefault(True)
+        ok.setStyleSheet("background:#1d4ed8;color:white;border:none;"
+                         "border-radius:4px;padding:4px 16px;")
+        ok.clicked.connect(dlg.accept)
+        cancel = QPushButton("Avbryt"); cancel.clicked.connect(dlg.reject)
+        row.addStretch(); row.addWidget(cancel); row.addWidget(ok)
+        lay.addRow(row)
+        name_e.returnPressed.connect(dlg.accept)
+        if self._show_popup(btn, dlg) == QDialog.DialogCode.Accepted:
+            name = name_e.text().strip() or 'Ny nod'
+            self.db.update_node(self._id, name, n.get('description',''),
+                                pid_e.text().strip(),
+                                n.get('media',''), n.get('pressure',''),
+                                n.get('temperature',''))
+            self.item_changed.emit()
+
+    def _edit_node_desc(self, btn):
+        if not self._id: return
+        n = self.db.get_node(self._id)
+        if not n: return
+        val = self._text_popup(btn, "Beskrivning", n.get('description','') or '',
+                               multiline=True, placeholder="Beskriv noden...")
+        if val is not None:
+            self.db.update_node(self._id, n['name'], val,
+                                n.get('pid_ref',''), n.get('media',''),
+                                n.get('pressure',''), n.get('temperature',''))
+            self.item_changed.emit()
+
+    def _edit_node_params(self, btn):
+        if not self._id: return
+        n = self.db.get_node(self._id)
+        if not n: return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Processparametrar")
+        dlg.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        dlg.setMinimumWidth(300)
+        lay = QFormLayout(dlg); lay.setContentsMargins(10,10,10,10)
+        me = QLineEdit(n.get('media','') or '')
+        pe = QLineEdit(n.get('pressure','') or '')
+        te = QLineEdit(n.get('temperature','') or '')
+        me.setPlaceholderText("t.ex. Vätgas, Vatten")
+        pe.setPlaceholderText("t.ex. 10 bar g")
+        te.setPlaceholderText("t.ex. 150 °C")
+        lay.addRow("Media:", me)
+        lay.addRow("Tryck:", pe)
+        lay.addRow("Temperatur:", te)
+        row = QHBoxLayout()
+        ok = QPushButton("OK"); ok.setDefault(True)
+        ok.setStyleSheet("background:#1d4ed8;color:white;border:none;"
+                         "border-radius:4px;padding:4px 16px;")
+        ok.clicked.connect(dlg.accept); cancel = QPushButton("Avbryt")
+        cancel.clicked.connect(dlg.reject)
+        row.addStretch(); row.addWidget(cancel); row.addWidget(ok)
+        lay.addRow(row)
+        if self._show_popup(btn, dlg) == QDialog.DialogCode.Accepted:
+            self.db.update_node(self._id, n['name'], n.get('description',''),
+                                n.get('pid_ref',''),
+                                me.text().strip(), pe.text().strip(), te.text().strip())
+            self.item_changed.emit()
+
+    def _edit_node_status(self, btn):
+        if not self._mw: return
+        self._mw._approve_node()
+
+    def _zoom_to_node(self, btn):
+        if not self._mw or not self._id: return
+        self._mw._switch_view(0)
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(50, lambda: self._mw.zoom_to_node(self._id))
+
+    # ── DEVIATION actions ─────────────────────────────────────────────────────
+    def _edit_dev_desc(self, btn):
+        if not self._id: return
+        d = self.db.get_deviation(self._id)
+        if not d: return
+        val = self._text_popup(btn, "Avvikelse", d['description'] or '')
+        if val is not None:
+            self.db.conn.execute(
+                "UPDATE deviations SET description=? WHERE id=?", (val, self._id))
+            self.db.commit()
+            self.item_changed.emit()
+
+    # ── CAUSE actions ─────────────────────────────────────────────────────────
+    def _edit_cause_desc(self, btn):
+        if not self._id: return
+        c = self.db.get_cause(self._id)
+        if not c: return
+        val = self._text_popup(btn, "Orsaksbeskrivning",
+                               dict(c).get('description','') or '',
+                               multiline=True, placeholder="Beskriv orsaken...")
+        if val is not None:
+            self.db.update_cause(self._id, description=val)
+            self.item_changed.emit()
+
+    def _edit_cause_obj(self, btn):
+        """Open the CauseObjectPopup for editing comp_type + comp_tag."""
+        if not self._id or not self._mw: return
+        c = dict(self.db.get_cause(self._id) or {})
+        dev = self.db.get_deviation(c.get('deviation_id')) if c.get('deviation_id') else None
+        popup = CauseObjectPopup(
+            c.get('comp_type',''), c.get('comp_tag',''),
+            self.db, dev_description=dev['description'] if dev else None,
+            current_description=c.get('description',''), parent=self)
+        popup.setWindowFlags(popup.windowFlags() | Qt.WindowType.FramelessWindowHint)
+        gp, scr = self._popup_near(btn)
+        popup.adjustSize()
+        pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
+        x = gp.x() - pw - 6
+        y = gp.y()
+        if x < scr.left(): x = gp.x() + self._WIDTH + 6
+        if y + ph > scr.bottom(): y = scr.bottom() - ph
+        popup.move(max(scr.left(), x), max(scr.top(), y))
+        def _on_committed(ct, tag, desc, freq):
+            self.db.update_cause(self._id, comp_type=ct, comp_tag=tag)
+            if desc: self.db.update_cause(self._id, description=desc)
+            if freq is not None: self.db.update_cause(self._id, base_freq=freq)
+            self.item_changed.emit()
+        popup.committed.connect(_on_committed)
+        popup.exec()
+
+    def _edit_cause_freq(self, btn):
+        if not self._id: return
+        c = dict(self.db.get_cause(self._id) or {})
+        current_freq = c.get('base_freq')
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Frekvens")
+        dlg.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        dlg.setMinimumWidth(260)
+        lay = QFormLayout(dlg); lay.setContentsMargins(10,10,10,10)
+        freq_e = QLineEdit(f"{current_freq:g}" if current_freq else '')
+        freq_e.setPlaceholderText("t.ex. 0.01")
+        level_lbl = QLabel('')
+        level_lbl.setStyleSheet("color:#1F4E79;font-size:10px;")
+        def _upd(txt):
+            try: level_lbl.setText(freq_axis_label(freq_to_f_level(float(txt))))
+            except: level_lbl.setText('')
+        freq_e.textChanged.connect(_upd)
+        _upd(freq_e.text())
+        lay.addRow("Frekvens (/år):", freq_e)
+        lay.addRow("F-nivå:", level_lbl)
+        row = QHBoxLayout()
+        ok = QPushButton("OK"); ok.setDefault(True)
+        ok.setStyleSheet("background:#1d4ed8;color:white;border:none;"
+                         "border-radius:4px;padding:4px 16px;")
+        ok.clicked.connect(dlg.accept)
+        cancel = QPushButton("Avbryt"); cancel.clicked.connect(dlg.reject)
+        row.addStretch(); row.addWidget(cancel); row.addWidget(ok)
+        lay.addRow(row)
+        freq_e.returnPressed.connect(dlg.accept)
+        if self._show_popup(btn, dlg) == QDialog.DialogCode.Accepted:
+            try:
+                freq = float(freq_e.text().strip()) if freq_e.text().strip() else None
+            except ValueError:
+                freq = None
+            self.db.update_cause(self._id, base_freq=freq)
+            self.item_changed.emit()
+
+    def _edit_cause_comment(self, btn):
+        if not self._id: return
+        current = self.db.get_cause_comment(self._id) or ''
+        val = self._text_popup(btn, "Kommentar", current,
+                               multiline=True, placeholder="Notering, beslut, referens...")
+        if val is not None:
+            self.db.set_cause_comment(self._id, val)
+            self.item_changed.emit()
+
+    def _zoom_to_cause(self, btn):
+        if not self._id or not self._mw: return
+        self._mw._switch_view(0)
+        markers = self.db.cause_markers_for_cause(self._id)
+        if markers:
+            m = markers[0]
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(50, lambda: self._mw.pid_panel.navigate_to_marker(
+                m['pid_page'], m['x'], m['y']))
+
+    # ── CONSEQUENCE actions ───────────────────────────────────────────────────
+    def _edit_cons_chain(self, btn):
+        if not self._id or not self._mw: return
+        self._mw._open_consequence_step_picker(self._id)
+
+    def _edit_cons_sev(self, btn):
+        if not self._id or not self._mw: return
+        from PyQt6.QtCore import QTimer
+        popup = ConsCategoryMatrixPopup(self.db, self._id, self)
+        gp, scr = self._popup_near(btn)
+        popup.adjustSize()
+        pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
+        x = gp.x() - pw - 6
+        if x < scr.left(): x = gp.x() + self._WIDTH + 6
+        y = min(gp.y(), scr.bottom() - ph)
+        popup.move(max(scr.left(), x), max(scr.top(), y))
+        if popup.exec() == QDialog.DialogCode.Accepted:
+            self.item_changed.emit()
+
+    def _zoom_to_cons(self, btn):
+        if not self._id or not self._mw: return
+        self._mw._switch_view(0)
+        rows = self.db.conn.execute(
+            "SELECT pid_page,x,y FROM consequence_markers WHERE consequence_id=? LIMIT 1",
+            (self._id,)).fetchone()
+        if rows:
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(50, lambda: self._mw.pid_panel.navigate_to_marker(
+                rows[0], rows[1], rows[2]))
+
+    # ── SAFEGUARD actions ─────────────────────────────────────────────────────
+    def _edit_sg_desc(self, btn):
+        if not self._id: return
+        sg = self.db.get_safeguard(self._id)
+        if not sg: return
+        val = self._text_popup(btn, "Barriär", dict(sg).get('description','') or '',
+                               multiline=True, placeholder="Beskriv barriären...")
+        if val is not None:
+            self.db.update_safeguard(self._id, description=val)
+            self.item_changed.emit()
+
+    def _edit_sg_rrf(self, btn):
+        if not self._id or not self._mw: return
+        sg = self.db.get_safeguard(self._id)
+        if not sg: return
+        sgd = dict(sg)
+        popup = RRFPopup(int(sgd.get('rrf',1)), sgd.get('sg_type','Övrigt'), self)
+        gp, scr = self._popup_near(btn)
+        popup.adjustSize()
+        pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
+        x = gp.x() - pw - 6
+        if x < scr.left(): x = gp.x() + self._WIDTH + 6
+        y = min(gp.y(), scr.bottom() - ph)
+        popup.move(max(scr.left(), x), max(scr.top(), y))
+        popup.rrf_selected.connect(
+            lambda v, t: (self.db.update_safeguard(self._id, rrf=v, sg_type=t),
+                          self.item_changed.emit()))
+        popup.exec()
+
+    def _zoom_to_sg(self, btn):
+        if not self._id or not self._mw: return
+        self._mw._switch_view(0)
+        rows = self.db.conn.execute(
+            "SELECT pid_page,x,y FROM safeguard_markers WHERE safeguard_id=? LIMIT 1",
+            (self._id,)).fetchone()
+        if rows:
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(50, lambda: self._mw.pid_panel.navigate_to_marker(
+                rows[0], rows[1], rows[2]))
+
+
 class NodeMarkupPanel(QWidget):
     """Narrow vertical ribbon for node markup tool selection."""
     closed          = pyqtSignal()
@@ -14488,21 +14930,26 @@ class MainWindow(QMainWindow):
         self.pid_panel.setMinimumWidth(400)
         self._h_splitter.addWidget(self.pid_panel)
 
-        self._right_scroll = QScrollArea()
-        self._right_scroll.setWidgetResizable(True)
-        self._right_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        self.stack = QStackedWidget()
+        # Right panel replaced with narrow PropertiesRibbon (feature request)
+        # Keep the old panels instantiated so existing signal wiring still compiles,
+        # but they are not shown in the splitter.
         self.welcome_panel    = WelcomePanel()
         self.node_panel       = NodePanel(self.db)
         self.deviation_panel  = DeviationPanel(self.db)
         self.cause_panel      = CausePanel(self.db)
         self.cons_panel       = ConsequencePanel(self.db)
         self.sg_panel         = SafeguardPanel(self.db)
+        # Dummy stack kept so existing code that calls self.stack.setCurrentWidget() works
+        self.stack = QStackedWidget()
+        self._right_scroll = QScrollArea()   # kept for _reload_all_panels compatibility
         for panel in [self.welcome_panel, self.node_panel, self.deviation_panel,
                       self.cause_panel, self.cons_panel, self.sg_panel]:
             self.stack.addWidget(panel)
-        self._right_scroll.setWidget(self.stack)
-        self._h_splitter.addWidget(self._right_scroll)
+
+        # Narrow properties ribbon
+        self.props_ribbon = PropertiesRibbon(self.db, main_window=self)
+        self.props_ribbon.item_changed.connect(self._on_props_changed)
+        self._h_splitter.addWidget(self.props_ribbon)
 
         self.node_markup_panel = NodeMarkupPanel(self.db)
         self.node_markup_panel.setVisible(False)
@@ -14512,7 +14959,7 @@ class MainWindow(QMainWindow):
         self.red_markup_panel.setVisible(False)
         self._h_splitter.addWidget(self.red_markup_panel)
 
-        self._h_splitter.setSizes([260, 650, 370, 0, 0])
+        self._h_splitter.setSizes([260, 650, 62, 0, 0])
         self._v_splitter.addWidget(self._h_splitter)
 
         self.scenario_panel = ScenarioTablePanel(self.db)
@@ -14720,43 +15167,37 @@ class MainWindow(QMainWindow):
             self.admin_panel.refresh()
             self.admin_panel.refresh_pid()
 
+    def _on_props_changed(self):
+        """PropertiesRibbon saved a field — refresh tree + scenario."""
+        if self._cur_type is not None and self._cur_id is not None:
+            self.tree_panel.refresh(self._cur_type, self._cur_id)
+        self.scenario_panel._rebuild()
+
     def _on_scenario_item_selected(self, type_, id_):
-        """Scenario table cell click — update detail panel only; do NOT change scenario filter."""
+        """Scenario table cell click — update ribbon only; do NOT change scenario filter."""
         self._cur_type = type_
         self._cur_id   = id_
+        self.props_ribbon.set_item(type_, id_)
         if type_ == CAUSE_T:
-            self.cause_panel.load(id_)
-            self.stack.setCurrentWidget(self.cause_panel)
             self.pid_panel.set_active_cause(id_)
         elif type_ == CONS_T:
-            self.cons_panel.load(id_)
-            self.stack.setCurrentWidget(self.cons_panel)
             self.pid_panel.set_active_consequence(id_)
-        elif type_ == SG_T:
-            self.sg_panel.load(id_)
-            self.stack.setCurrentWidget(self.sg_panel)
 
     def _on_selected(self, type_, id_):
         self._cur_type = type_
         self._cur_id   = id_
+        self.props_ribbon.set_item(type_, id_)
         if type_ == NODE_T:
-            self.node_panel.load(id_)
-            self.stack.setCurrentWidget(self.node_panel)
             self.pid_panel.set_active_node(id_)
             self.scenario_panel.load_node(id_)
-            # Feature 6: auto-zoom to node's markers when switching to P&ID
             if self.view_stack.currentIndex() == 0:
                 QTimer.singleShot(80, lambda nid=id_: self.zoom_to_node(nid))
         elif type_ == DEV_T:
-            self.deviation_panel.load(id_)
-            self.stack.setCurrentWidget(self.deviation_panel)
             dev = self.db.get_deviation(id_)
             if dev:
                 self.pid_panel.set_active_node(dev['node_id'])
             self.scenario_panel.load_deviation(id_)
         elif type_ == CAUSE_T:
-            self.cause_panel.load(id_)
-            self.stack.setCurrentWidget(self.cause_panel)
             self.pid_panel.set_active_cause(id_)
             _row = self.db.get_cause(id_); cause = dict(_row) if _row else None
             if cause and cause.get('deviation_id'):
@@ -14764,8 +15205,6 @@ class MainWindow(QMainWindow):
             else:
                 self.scenario_panel.load_cause(id_)
         elif type_ == CONS_T:
-            self.cons_panel.load(id_)
-            self.stack.setCurrentWidget(self.cons_panel)
             self.pid_panel.set_active_consequence(id_)
             _cons = self.db.get_consequence(id_)
             cons = dict(_cons) if _cons else None
