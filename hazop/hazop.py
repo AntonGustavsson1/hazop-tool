@@ -9123,7 +9123,19 @@ class ScenarioTablePanel(QWidget):
         self._placed_causes       = set()
         self._placed_consequences = set()
         self._placed_safeguards   = set()
+
+        # ── Sticky context bar — always shows current Nod + Avvikelse ──────────
+        self._ctx_bar = QLabel()
+        self._ctx_bar.setStyleSheet(
+            "QLabel { background:#1F4E79; color:white; font-size:10px;"
+            " padding:3px 8px; border-bottom:1px solid #163d61; }")
+        self._ctx_bar.setWordWrap(False)
+        self._ctx_bar.hide()   # hidden until content is loaded
+        outer.addWidget(self._ctx_bar)
         outer.addWidget(self._table)
+
+        self._table.verticalScrollBar().valueChanged.connect(
+            self._update_ctx_bar)
 
     # ── Load ──────────────────────────────────────────────────────────────────
 
@@ -9377,6 +9389,7 @@ class ScenarioTablePanel(QWidget):
         # Re-fit row heights now that column widths are known
         for row in range(self._table.rowCount()):
             self._table.resizeRowToContents(row)
+        self._update_ctx_bar()
 
     def _apply_spans(self):
         """Merge consecutive rows that share the same Nod or Orsak."""
@@ -9777,6 +9790,50 @@ class ScenarioTablePanel(QWidget):
         self._rebuild()
 
     # ── P&ID placement helpers ─────────────────────────────────────────────────
+
+    def _update_ctx_bar(self, *_):
+        """Refresh the sticky context bar to show Nod + Avvikelse of the topmost visible row."""
+        if not self._row_meta:
+            self._ctx_bar.hide()
+            return
+        # Find the first row whose top edge is at or below the viewport top
+        vp = self._table.viewport()
+        top_row = self._table.rowAt(0)   # row at y=0 of the viewport
+        if top_row < 0:
+            top_row = 0
+        if top_row >= len(self._row_meta):
+            top_row = len(self._row_meta) - 1
+
+        dev_id, cause_id, _, _ = self._row_meta[top_row]
+
+        # Resolve Nod name from cause or deviation
+        node_name = ''
+        dev_desc  = ''
+        try:
+            if cause_id:
+                cause = self.db.get_cause(cause_id)
+                if cause:
+                    node = self.db.get_node(cause['node_id'])
+                    if node:
+                        node_name = node['name']
+            if dev_id:
+                dev = self.db.get_deviation(dev_id)
+                if dev:
+                    dev_desc = dev['description']
+        except Exception:
+            pass
+
+        if not node_name and not dev_desc:
+            self._ctx_bar.hide()
+            return
+
+        parts = []
+        if node_name:
+            parts.append(f"🏭 <b>{node_name}</b>")
+        if dev_desc:
+            parts.append(f"⬡ {dev_desc}")
+        self._ctx_bar.setText("   " + "     ›     ".join(parts))
+        self._ctx_bar.show()
 
     def refresh_placed(self):
         """Reload which IDs are placed on the P&ID and repaint the table."""
