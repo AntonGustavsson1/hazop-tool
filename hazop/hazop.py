@@ -6441,13 +6441,37 @@ class StandardCausesPickerPopup(QDialog):
         " font-weight:bold; }")
 
     def __init__(self, db, deviation_id: int, deviation_name: str = '',
-                 comp_type: str = '', initial_tag: str = '', parent=None):
+                 comp_type: str = '', initial_tag: str = '',
+                 node_id: int = None, parent=None):
         super().__init__(parent)
         self._db = db
-        self._dev_id = deviation_id
+        self._dev_id = deviation_id   # standard_deviations.id
+        self.selected_node_dev_id = None  # deviations.id to use in add_cause()
+        self._dev_items = []   # [(deviations.id, desc, standard_deviations.id)]
+        self._dev_combo = None
+
+        # Resolve selected_node_dev_id from node's deviations
+        if node_id is not None:
+            for d in db.deviations(node_id):
+                std_row = db.conn.execute(
+                    "SELECT id FROM standard_deviations WHERE description=? COLLATE NOCASE LIMIT 1",
+                    (d['description'],)).fetchone()
+                self._dev_items.append((d['id'], d['description'],
+                                        std_row[0] if std_row else None))
+            # Pre-select by deviation_name
+            match = next((item for item in self._dev_items
+                          if item[1] == deviation_name), None)
+            if match:
+                self.selected_node_dev_id = match[0]
+                self._dev_id = match[2]
+            elif self._dev_items:
+                self.selected_node_dev_id = self._dev_items[0][0]
+                self._dev_id = self._dev_items[0][2]
+                deviation_name = self._dev_items[0][1]
+
         self.setWindowTitle("Lägg till orsak")
-        self.setMinimumWidth(620)
-        self.setMinimumHeight(500)
+        self.setMinimumWidth(640)
+        self.setMinimumHeight(520)
         main = QVBoxLayout(self)
         main.setSpacing(0)
         main.setContentsMargins(0, 0, 0, 0)
@@ -6460,9 +6484,9 @@ class StandardCausesPickerPopup(QDialog):
         hdr_l.setSpacing(3)
         title = QLabel("Lägg till orsak på P&ID")
         title.setStyleSheet("color:white; font-size:13px; font-weight:bold;")
+        hdr_l.addWidget(title)
         sub = QLabel(f"Avvikelse: {deviation_name}")
         sub.setStyleSheet("color:#bfdbfe; font-size:10px;")
-        hdr_l.addWidget(title)
         hdr_l.addWidget(sub)
         main.addWidget(hdr_w)
 
@@ -6471,6 +6495,23 @@ class StandardCausesPickerPopup(QDialog):
         body_l.setContentsMargins(10, 10, 10, 10)
         body_l.setSpacing(8)
         main.addWidget(body, 1)
+
+        # ── Deviation picker (shown when node has multiple deviations) ─────────
+        if len(self._dev_items) > 1:
+            dev_row = QHBoxLayout()
+            dev_row.setSpacing(6)
+            dev_lbl = QLabel("Avvikelse:")
+            dev_lbl.setStyleSheet("font-size:10px; color:#555; font-weight:bold;")
+            dev_row.addWidget(dev_lbl)
+            self._dev_combo = QComboBox()
+            for _, desc, _ in self._dev_items:
+                self._dev_combo.addItem(desc)
+            cur_idx = next((i for i, (nid, _, _) in enumerate(self._dev_items)
+                            if nid == self.selected_node_dev_id), 0)
+            self._dev_combo.setCurrentIndex(cur_idx)
+            self._dev_combo.currentIndexChanged.connect(self._on_dev_combo_changed)
+            dev_row.addWidget(self._dev_combo, 1)
+            body_l.addLayout(dev_row)
 
         # ── Tag + search row ──────────────────────────────────────────────────
         top_row = QHBoxLayout()
@@ -6602,6 +6643,13 @@ class StandardCausesPickerPopup(QDialog):
         self._populate_objects(comp_type)
 
     # ── Object buttons ────────────────────────────────────────────────────────
+    def _on_dev_combo_changed(self, idx):
+        """Deviation combo changed — update selected IDs and reload object list."""
+        if 0 <= idx < len(self._dev_items):
+            self.selected_node_dev_id = self._dev_items[idx][0]
+            self._dev_id              = self._dev_items[idx][2]
+        self._populate_objects()
+
     def _populate_objects(self, preselect_comp: str = ''):
         # Remove old buttons
         for btn in self._obj_btn_group:
@@ -14585,15 +14633,24 @@ class MainWindow(QMainWindow):
                                        scene_pos, page, suggested_desc=''):
         """P&ID clicked in cause-template mode — show StandardCausesPickerPopup."""
         dev_row  = self.db.get_deviation(dev_id) if dev_id else None
-        dev_desc = dev_row['description'] if dev_row else '—'
+        dev_desc = dev_row['description'] if dev_row else ''
+        node_id  = dev_row['node_id'] if dev_row else getattr(
+            self.pid_panel, '_active_node_id', None)
 
-        # dev_id is from the 'deviations' table (node-specific instance).
-        # StandardCausesPickerPopup needs a 'standard_deviations' ID instead
-        # — look it up by matching the description string.
-        std_dev_row = self.db.conn.execute(
-            "SELECT id FROM standard_deviations WHERE description=? COLLATE NOCASE LIMIT 1",
-            (dev_desc,)).fetchone()
-        std_dev_id = std_dev_row[0] if std_dev_row else None
+        # Fallback: use first available node when no node is active
+        if node_id is None:
+            first_node = next(iter(self.db.nodes()), None)
+            if first_node:
+                node_id = first_node['id']
+
+        # Look up standard_deviations.id from the description
+        std_dev_id = None
+        if dev_desc:
+            row = self.db.conn.execute(
+                "SELECT id FROM standard_deviations WHERE description=? COLLATE NOCASE LIMIT 1",
+                (dev_desc,)).fetchone()
+            if row:
+                std_dev_id = row[0]
 
         # Clean up the OCR'd tag
         effective_tag = (suggested_desc or suggested_tag or '').strip()
@@ -14605,10 +14662,11 @@ class MainWindow(QMainWindow):
             deviation_name=dev_desc,
             comp_type=detected_type or '',
             initial_tag=effective_tag,
+            node_id=node_id,
             parent=self)
         popup.setWindowFlags(popup.windowFlags() | Qt.WindowType.Window)
 
-        # Position: prefer near the ORS cell, fall back to cursor
+        # Position near the ORS cell or cursor
         gp = self.scenario_panel.ors_cell_global_pos(dev_id) if dev_id else None
         if gp is None:
             gp = QCursor.pos()
@@ -14620,12 +14678,17 @@ class MainWindow(QMainWindow):
         popup.move(max(screen.left(), x), max(screen.top(), y))
 
         def _on_picked(desc, freq):
-            # _obj_btn_group replaces _obj_list in the redesigned popup
-            checked = next((b for b in popup._obj_btn_group if b.isChecked()), None)
+            # Use the deviation selected in the combo (may differ from dev_id arg)
+            actual_dev_id = popup.selected_node_dev_id or dev_id
+            if not actual_dev_id:
+                QMessageBox.warning(popup, "Välj avvikelse",
+                                    "Välj en avvikelse innan du lägger till orsaken.")
+                return
+            checked   = next((b for b in popup._obj_btn_group if b.isChecked()), None)
             comp_type = checked.property('obj_name') if checked else ''
             tag_text  = popup._tag_edit.text().strip() if hasattr(popup, '_tag_edit') else effective_tag
             self.pid_panel.place_cause_from_template(
-                dev_id, scene_pos, page, comp_type, tag_text, desc, freq)
+                actual_dev_id, scene_pos, page, comp_type, tag_text, desc, freq)
 
         popup.cause_picked.connect(_on_picked)
         popup.exec()
