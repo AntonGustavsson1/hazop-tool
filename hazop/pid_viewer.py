@@ -1227,10 +1227,18 @@ def find_tag_near_point(pdf_doc, page_num, x_pdf, y_pdf, radius=50):
 
         words_sorted = sorted(words, key=dist)
         for w in words_sorted[:12]:
-            text = w[4].strip()
+            raw = w[4].strip()
+            # Strip RDS-PP '=' designation prefix (LKAB, IEC 81346)
+            text = raw.lstrip('=')
+            # Simple tag: PCV-101, HV200, E-101
             if _TAG_RE.match(text):
                 return text
-        return words_sorted[0][4].strip()
+            # Compound tag: M1.GPA4, E1.M1.HXA1, E1.M1.WPA001
+            m = _EXT_TAG_RE.search(text)
+            if m:
+                return m.group(1)
+        # Fallback: return closest word, stripping '=' prefix
+        return words_sorted[0][4].strip().lstrip('=')
     except Exception:
         return ''
 
