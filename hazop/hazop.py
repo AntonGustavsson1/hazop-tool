@@ -9576,6 +9576,101 @@ class ConsCategoryMatrixPopup(QDialog):
         self.accept()
 
 
+class _LopaWidget(QWidget):
+    """Compact stacked FA / Antändning / Övriga cell widget for ScenarioTablePanel."""
+
+    changed = pyqtSignal(int)   # emits cons_id after any save
+
+    def __init__(self, db: 'Database', cons_id: int,
+                 fa_active: bool, fa_rrf,
+                 ign_active: bool, ign_rrf,
+                 n_extra: int, parent=None):
+        super().__init__(parent)
+        self.db       = db
+        self.cons_id  = cons_id
+        self._saving  = False
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(3, 1, 3, 1)
+        lay.setSpacing(1)
+
+        def _pct_edit(val):
+            e = QLineEdit(str(val))
+            e.setMaximumWidth(40)
+            e.setMinimumWidth(32)
+            e.setAlignment(Qt.AlignmentFlag.AlignRight)
+            return e
+
+        # FA row
+        fa_row = QHBoxLayout()
+        fa_row.setContentsMargins(0, 0, 0, 0)
+        fa_row.setSpacing(2)
+        self._fa_cb   = QCheckBox("FA")
+        self._fa_cb.setChecked(bool(fa_active))
+        self._fa_cb.setToolTip("Närvaro/FA-sannolikhet\n10%=−1 steg, 1%=−2 steg")
+        self._fa_edit = _pct_edit(fa_rrf)
+        self._fa_edit.setToolTip("Sannolikhet i % (t.ex. 10 eller 1)")
+        fa_pct = QLabel("%"); fa_pct.setFixedWidth(12)
+        fa_row.addWidget(self._fa_cb)
+        fa_row.addStretch()
+        fa_row.addWidget(self._fa_edit)
+        fa_row.addWidget(fa_pct)
+        lay.addLayout(fa_row)
+
+        # Antändning row
+        ign_row = QHBoxLayout()
+        ign_row.setContentsMargins(0, 0, 0, 0)
+        ign_row.setSpacing(2)
+        self._ign_cb   = QCheckBox("Ant.")
+        self._ign_cb.setChecked(bool(ign_active))
+        self._ign_cb.setToolTip("Antändningssannolikhet\n10%=−1 steg, 1%=−2 steg")
+        self._ign_edit = _pct_edit(ign_rrf)
+        self._ign_edit.setToolTip("Sannolikhet i % (t.ex. 10 eller 1)")
+        ign_pct = QLabel("%"); ign_pct.setFixedWidth(12)
+        ign_row.addWidget(self._ign_cb)
+        ign_row.addStretch()
+        ign_row.addWidget(self._ign_edit)
+        ign_row.addWidget(ign_pct)
+        lay.addLayout(ign_row)
+
+        # Övriga faktorer button
+        self._extra_btn = QPushButton(
+            f"+ {n_extra} övr." if n_extra else "+ övriga")
+        self._extra_btn.setFlat(True)
+        self._extra_btn.setMaximumHeight(18)
+        self._extra_btn.setStyleSheet(
+            "text-align:left; padding-left:2px; font-size:8pt;")
+        lay.addWidget(self._extra_btn)
+
+        self._fa_cb.toggled.connect(self._save)
+        self._fa_edit.editingFinished.connect(self._save)
+        self._ign_cb.toggled.connect(self._save)
+        self._ign_edit.editingFinished.connect(self._save)
+
+    def update_extra_count(self, n: int):
+        self._extra_btn.setText(f"+ {n} övr." if n else "+ övriga")
+
+    def _parse_pct(self, edit: 'QLineEdit') -> float:
+        try:
+            v = float(edit.text().replace('%', '').strip() or '10')
+            return max(0.001, min(99.9, v))
+        except ValueError:
+            return 10.0
+
+    def _save(self):
+        if self._saving:
+            return
+        self._saving = True
+        try:
+            self.db.update_consequence_factors(
+                self.cons_id,
+                self._fa_cb.isChecked(),  self._parse_pct(self._fa_edit),
+                self._ign_cb.isChecked(), self._parse_pct(self._ign_edit))
+            self.changed.emit(self.cons_id)
+        finally:
+            self._saving = False
+
+
 class ScenarioTablePanel(QWidget):
     """Extended scenario table with FA, Antändning, Övriga faktorer and Slutkonsekvens."""
 
@@ -9589,8 +9684,7 @@ class ScenarioTablePanel(QWidget):
 
     # Column indices
     _C_NOD, _C_DEV, _C_ORS, _C_KON, _C_RFORE = 0, 1, 2, 3, 4
-    _C_SG, _C_REFT, _C_FA, _C_IGN             = 5, 6, 7, 8
-    _C_OVRIGA, _C_SLUT                         = 9, 10
+    _C_SG, _C_REFT, _C_LOPA, _C_SLUT          = 5, 6, 7, 8
 
     _COLS = [
         'Nod',
@@ -9600,9 +9694,7 @@ class ScenarioTablePanel(QWidget):
         'Risk före barriär',
         'Barriärer  →',
         'Risk efter barriärer',
-        'FA ☑',
-        'Antändning ☑',
-        'Övriga faktorer',
+        'FA / Ant. / Övriga',
         'Slutkonsekvens',
     ]
 
@@ -9652,17 +9744,15 @@ class ScenarioTablePanel(QWidget):
         self._table.setHorizontalHeaderLabels(self._COLS)
         h = self._table.horizontalHeader()
         resize_modes = {
-            self._C_NOD:   (QHeaderView.ResizeMode.Interactive, 70),
+            self._C_NOD:   (QHeaderView.ResizeMode.Interactive,  70),
             self._C_DEV:   (QHeaderView.ResizeMode.Interactive, 120),
             self._C_ORS:   (QHeaderView.ResizeMode.Interactive, 180),
             self._C_KON:   (QHeaderView.ResizeMode.Interactive, 180),
-            self._C_RFORE: (QHeaderView.ResizeMode.Interactive, 130),
+            self._C_RFORE: (QHeaderView.ResizeMode.Interactive,  85),
             self._C_SG:    (QHeaderView.ResizeMode.Interactive, 160),
-            self._C_FA:    (QHeaderView.ResizeMode.Interactive, 140),
-            self._C_IGN:   (QHeaderView.ResizeMode.Interactive, 140),
-            self._C_OVRIGA:(QHeaderView.ResizeMode.Interactive, 120),
-            self._C_REFT:  (QHeaderView.ResizeMode.Interactive, 130),
-            self._C_SLUT:  (QHeaderView.ResizeMode.Interactive, 130),
+            self._C_REFT:  (QHeaderView.ResizeMode.Interactive,  85),
+            self._C_LOPA:  (QHeaderView.ResizeMode.Interactive, 130),
+            self._C_SLUT:  (QHeaderView.ResizeMode.Interactive,  85),
         }
         for col, (mode, width) in resize_modes.items():
             h.setSectionResizeMode(col, mode)
@@ -10001,8 +10091,8 @@ class ScenarioTablePanel(QWidget):
             cat_id   = cat_info[0] if cat_info else None
             return (cons_id, cat_id)
 
-        # KON, FA, IGN, OVRIGA: span by cons_id (whole consequence merged)
-        for col in (self._C_KON, self._C_FA, self._C_IGN, self._C_OVRIGA):
+        # KON and LOPA: span by cons_id (whole consequence merged)
+        for col in (self._C_KON, self._C_LOPA):
             _span_col(col, lambda r: _meta(r, 2))
 
         # RFORE, REFT, SLUT: span by (cons_id, cat_id)
@@ -10036,7 +10126,7 @@ class ScenarioTablePanel(QWidget):
         self._table.setItem(r, self._C_ORS, ors)
 
         for col in (self._C_KON, self._C_RFORE, self._C_SG, self._C_REFT,
-                    self._C_FA, self._C_IGN, self._C_OVRIGA, self._C_SLUT):
+                    self._C_LOPA, self._C_SLUT):
             self._table.setItem(r, col, _ro())
         pass  # row height set by resizeRowsToContents at end of _rebuild
 
@@ -10073,7 +10163,7 @@ class ScenarioTablePanel(QWidget):
         self._table.setItem(r, self._C_KON, kon)
 
         for col in (self._C_RFORE, self._C_SG, self._C_REFT,
-                    self._C_FA, self._C_IGN, self._C_OVRIGA, self._C_SLUT):
+                    self._C_LOPA, self._C_SLUT):
             self._table.setItem(r, col, _ro())
 
         pass  # row height set by resizeRowsToContents at end of _rebuild
@@ -10253,40 +10343,13 @@ class ScenarioTablePanel(QWidget):
             sg_item.setToolTip(tip)
         self._table.setItem(r, self._C_SG, sg_item)
 
-        # ── Col 7: FA ────────────────────────────────────────────────────────
-        fa_item = QTableWidgetItem(f"{fa_rrf}%")
-        fa_item.setCheckState(
-            Qt.CheckState.Checked if fa_active else Qt.CheckState.Unchecked)
-        fa_item.setFlags(Qt.ItemFlag.ItemIsEnabled |
-                         Qt.ItemFlag.ItemIsUserCheckable |
-                         Qt.ItemFlag.ItemIsEditable)
-        fa_item.setData(Qt.ItemDataRole.UserRole, ('fa', cid))
-        fa_item.setToolTip(
-            "Närvaro/FA-sannolikhet i %.\n"
-            "10% = −1 steg, 1% = −2 steg, 0.1% = −3 steg\n"
-            "Skriv ett nytt värde (t.ex. 10 eller 1) och tryck Enter.")
-        self._table.setItem(r, self._C_FA, fa_item)
-
-        # ── Col 8: Antändning ────────────────────────────────────────────────
-        ign_item = QTableWidgetItem(f"{ign_rrf}%")
-        ign_item.setCheckState(
-            Qt.CheckState.Checked if ign_active else Qt.CheckState.Unchecked)
-        ign_item.setFlags(Qt.ItemFlag.ItemIsEnabled |
-                          Qt.ItemFlag.ItemIsUserCheckable |
-                          Qt.ItemFlag.ItemIsEditable)
-        ign_item.setData(Qt.ItemDataRole.UserRole, ('ignition', cid))
-        ign_item.setToolTip(
-            "Antändningssannolikhet i %.\n"
-            "10% = −1 steg, 1% = −2 steg, 0.1% = −3 steg")
-        self._table.setItem(r, self._C_IGN, ign_item)
-
-        # ── Col 9: Övriga faktorer ────────────────────────────────────────────
+        # ── Col 7: FA / Antändning / Övriga (merged LOPA column) ─────────────
         n_active = sum(1 for rf in rfs if rf.get('active'))
-        extra_btn = QPushButton(
-            f"📋 {n_active} aktiv(a)" if n_active else "📋 Lägg till…")
-        extra_btn.setFlat(True)
-        extra_btn.clicked.connect(lambda _, c=cid: self._edit_extra(c))
-        self._table.setCellWidget(r, self._C_OVRIGA, extra_btn)
+        lopa_w = _LopaWidget(self.db, cid,
+                             fa_active, fa_rrf, ign_active, ign_rrf, n_active)
+        lopa_w._extra_btn.clicked.connect(lambda _, c=cid: self._edit_extra(c))
+        lopa_w.changed.connect(lambda _c: QTimer.singleShot(0, self._rebuild))
+        self._table.setCellWidget(r, self._C_LOPA, lopa_w)
 
         # ── Col 6: Risk efter barriärer (only when a category is set) ────────
         if cat_info:
@@ -11120,27 +11183,6 @@ class ScenarioTablePanel(QWidget):
             if sg:
                 self.db.update_safeguard(id_, desc, sg['rrf'] or 1)
             self.item_edited.emit(SG_T, id_)
-            QTimer.singleShot(0, self._rebuild)
-
-        elif kind in ('fa', 'ignition'):
-            # Checkbox state + editable probability % value
-            active = (item.checkState() == Qt.CheckState.Checked)
-            try:
-                # Strip '%' and any spaces, accept both "10" and "10%"
-                val_str = text.replace('%', '').strip()
-                prob = float(val_str) if val_str else 10.0
-                prob = max(0.001, min(99.9, prob))
-            except (ValueError, TypeError):
-                prob = 10.0
-            if kind == 'fa':
-                self.db.conn.execute(
-                    "UPDATE consequences SET fa_active=?,fa_rrf=? WHERE id=?",
-                    (int(active), prob, id_))
-            else:
-                self.db.conn.execute(
-                    "UPDATE consequences SET ignition_active=?,ignition_rrf=? WHERE id=?",
-                    (int(active), prob, id_))
-            self.db.conn.commit()
             QTimer.singleShot(0, self._rebuild)
 
         if (row, col) == (self._enter_row, self._enter_col):
