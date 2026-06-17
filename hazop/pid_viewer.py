@@ -640,74 +640,113 @@ Z_TEMP       = 10
 
 # Simple tag: 1-6 letters + separator + 1-5 digits + 0-3 suffix
 # Examples: PCV-101, FT201A, V-1, ESDV-1001AB
-# Stricter tag pattern: 2+ letter prefix (HV-101, PCV201) OR single letter with
-# mandatory separator and 2+ digits (P-101, E-201). Prevents area codes like "E1",
-# "A2", "N1" from being mistaken for equipment tags.
+# Separators used across different plant conventions:
+#   -  (hyphen)   : ISA standard, Loket, Sunpine
+#   .  (dot)      : LKAB RDS-PP (E1.M1.GPA4)
+#   /  (slash)    : some older Swedish conventions
+#   _  (underscore): ITS (XFB_31304)
+#   (none)        : Gryaab/Sunpine legacy (HV0063, TA0058)
+_SEP = r'[-./_ ]'
+
+# Strict single-word tag: 2+ letters + optional sep + 1-5 digits + 0-3 letters
+# OR single letter + mandatory sep + 2+ digits (P-101).
+# Also handles underscore separator (ITS: XFB_31304).
 _TAG_RE = re.compile(
-    r'^(?:[A-Z]{2,6}[-./]?\d{1,5}[A-Z]{0,3}|[A-Z]{1}[-./]\d{2,5}[A-Z]{0,3})$'
+    r'^(?:'
+    r'[A-Z]{2,6}[_\-./]?\d{1,5}[A-Z]{0,3}'   # HV0063, PCV-101, XFB_31304
+    r'|[A-Z]{1}[-./]\d{2,5}[A-Z]{0,3}'        # E-101, P-001
+    r')$'
 )
 
-# Tag within continuous text
-_FULL_TAG_RE = re.compile(r'(?<![A-Z0-9])([A-Z]{1,6})[-./]?(\d{1,5}[A-Z]{0,3})(?![A-Z0-9])')
-
-# Extended tag including area/facility/unit prefix:
-#   20-PCV-101,  K2.FT.201A,  A-20-HV-301,  HAV.PSV.101,  10.20.FT-201
-# Pattern: 1-3 prefix sections (digits or 1-4 letters) + equipment code + number
-_EXT_TAG_RE = re.compile(
+# Tag within continuous text (allows no separator between letters and digits)
+_FULL_TAG_RE = re.compile(
     r'(?<![A-Z0-9])'
-    # 1-3 area prefix sections: pure digits OR letter-led alphanumeric (K2, A1, HAV)
-    r'((?:(?:\d{1,4}|[A-Z][A-Z0-9]{0,3})[-./]){1,3}'
-    r'[A-Z]{1,6}[-./]?\d{1,5}[A-Z]{0,3})'       # equipment code + number
+    r'([A-Z]{1,6})[_\-./]?(\d{1,5}[A-Z]{0,3})'
+    r'(?![A-Z0-9])')
+
+# Extended tag with area/unit prefix — handles all plant conventions:
+#   LKAB RDS-PP  : E1.M1.GPA4,  M1.WPA182
+#   Loket        : 60-RV-009,   LS60.002
+#   Sunpine      : 2818-LX79,   100-MAS10A,  G45-100-EAS10A
+#   ITS          : XFB_31304 (matches as simple tag, no area prefix needed)
+#   Standard     : 20-PCV-101,  K2.FT.201A
+# Area sections: pure digits OR alphanumeric starting with letter/digit
+_EXT_TAG_RE = re.compile(
+    r'(?<![A-Z0-9=])'
+    r'(=?(?:(?:\d{1,4}|[A-Z][A-Z0-9]{0,3})[-./_ ]{1,2}){1,4}'
+    r'[A-Z]{1,6}[_\-./]?\d{1,5}[A-Z]{0,3})'
     r'(?![A-Z0-9])',
     re.IGNORECASE)
 
-# Simple area prefix stripping: 20-PCV-101 → PCV + 101
-_AREA_TAG_RE = re.compile(r'^\d{1,4}[-/]([A-Z]{1,6})[-./]?(\d{1,5}[A-Z]{0,3})$')
+# Simple numeric area prefix: 20-PCV-101 → PCV-101
+_AREA_TAG_RE = re.compile(r'^\d{1,4}[-/]([A-Z]{1,6})[_\-./]?(\d{1,5}[A-Z]{0,3})$')
 
 
 def _equip_prefix_from_tag(tag: str) -> str:
     """Extract the equipment-code letter prefix from a P&ID tag.
 
-    Handles compound tags where area/unit codes precede the instrument code:
-        'E1.M1.PU101'  → 'PU'   (E1, M1 are area codes; PU is instrument code)
-        'E1.M1.HV200'  → 'HV'
-        '20-PCV-101'   → 'PCV'
-        'K2.FT.201A'   → 'FT'
-        'A-20-HV-301'  → 'HV'
-        'PSV-101'      → 'PSV'
-        'E1'           → 'E'    (single segment, single letter — fall back)
-        'E-101'        → 'E'
+    Handles all plant naming conventions found in analysed P&IDs:
 
-    Strategy: split by separators, extract leading letters per segment.
-    Area-code segments have 1 letter + digits (E1, M1, K3).
-    Instrument-code segments have 2+ letters (PU101, HV200, PCV).
-    KNOWN_PREFIXES is used only to help identify segments, not to set types.
+    LKAB RDS-PP (dot-hierarchy):
+        'E1.M1.GPA4'  → 'GPA'    'M1.HXA1'  → 'HXA'
+    Loket (area-hyphen-ISA):
+        '60-RV-009'   → 'RV'     'LS60.002' → 'LS'
+    Sunpine (drawing-nr + code, unit-name, zero-padded):
+        '2818-LX79'   → 'LX'     '100-MAS10A' → 'MAS'
+        'G45-100-EAS10A' → 'EAS'  'HV0063'   → 'HV'
+    ITS (underscore separator):
+        'XFB_31304'   → 'XFB'    'TK_11338' → 'TK'
+    Standard ISA:
+        'PCV-101'     → 'PCV'    '20-FT-201' → 'FT'
+    Pipe-size prefix stripped:
+        '2"LS60.002'  → 'LS'     'DN100-HV-101' → 'HV'
+    RDS-PP '=' prefix stripped:
+        '=E1.M1.GPA4' → 'GPA'
+
+    KNOWN_PREFIXES is used only to identify which segment is the instrument
+    code — never to determine the component type.
     """
-    parts = re.split(r'[-./]', tag.upper())
+    if not tag:
+        return ''
+    t = tag.strip().upper()
+
+    # Strip RDS-PP '=' designation prefix
+    t = t.lstrip('=')
+
+    # Strip pipe-size prefix: 2", 4", 8" or DN100, DN125
+    t = re.sub(r'^\d+["\']+', '', t)          # 2"LS → LS
+    t = re.sub(r'^DN\d+[-./_ ]?', '', t)      # DN100-HV → HV
+
+    # Split by all common separators including underscore
+    parts = re.split(r'[-./_ ]', t)
 
     def _leading(s):
         m = re.match(r'^([A-Z]+)', s)
         return m.group(1) if m else ''
 
-    letters_per_part = [_leading(p) for p in parts]
+    letters_per_part = [_leading(p) for p in parts if p]
 
-    # 1. 2+ letter segment that is a known instrument prefix (most reliable)
+    # Skip 'DN' (pipe nominal diameter — not an instrument code)
+    skip = {'DN'}
+
+    # 1. 2+ letter segment known in KNOWN_PREFIXES (highest confidence)
     for ltrs in letters_per_part:
-        if len(ltrs) >= 2 and ltrs in KNOWN_PREFIXES:
+        if len(ltrs) >= 2 and ltrs not in skip and ltrs in KNOWN_PREFIXES:
             return ltrs
 
-    # 2. First 2+ letter segment (instrument code beats single-letter area codes)
+    # 2. First 2+ letter segment not in skip set
+    #    (instrument codes always have 2+ letters; single-letter area codes don't)
     for ltrs in letters_per_part:
-        if len(ltrs) >= 2:
+        if len(ltrs) >= 2 and ltrs not in skip:
             return ltrs
 
-    # 3. Single-letter segments — prefer one in KNOWN_PREFIXES
+    # 3. Single-letter known prefix (E, P, C, …)
     for ltrs in letters_per_part:
         if len(ltrs) == 1 and ltrs in KNOWN_PREFIXES:
             return ltrs
 
-    # 4. Any leading letters from the first part (e.g. 'E1' → 'E')
-    first = letters_per_part[0] if letters_per_part else ''
+    # 4. Any leading letters from the first non-empty part
+    first = next((l for l in letters_per_part if l), '')
     return first or (parts[0] if parts else tag)
 
 # ── Equipment prefix knowledge base ──────────────────────────────────────────
@@ -864,7 +903,7 @@ KNOWN_PREFIXES = {
     'TR':   ('Transformator',                    'Övrigt'),
     'BRN':  ('Brännare',                         'Övrigt'),
     'IG':   ('Tändare',                          'Övrigt'),
-    # LKAB RDS-PP specifika koder (identifierade från referens-P&ID)
+    # LKAB RDS-PP specifika koder
     'HXA':  ('Reaktor / omrörd tank (LKAB)',     'Övrigt'),
     'HMA':  ('Mixer / blandare (LKAB)',          'Övrigt'),
     'CMA':  ('Tank / kärl (LKAB)',              'Övrigt'),
@@ -876,6 +915,23 @@ KNOWN_PREFIXES = {
     'CLB':  ('Silo / ficka (LKAB)',             'Övrigt'),
     'GQB':  ('Fläkt / blåsmaskin (LKAB)',       'Övrigt'),
     'WPC':  ('Ledning / rörledning (LKAB)',      'Övrigt'),
+    'FLA':  ('Flödesgivare (LKAB FLA)',          'Instrument / Sensor'),
+    'HMC':  ('Cyklon (LKAB HMC)',               'Övrigt'),
+    # ITS-specifika koder
+    'XFB':  ('Rörledningssegment / block (ITS)', 'Övrigt'),
+    'XSS':  ('Säkerhetssystem (ITS)',            'Övrigt'),
+    # Sunpine-specifika koder (lärs in vid markering)
+    'LX':   ('Nivågivare (Sunpine LX)',          'Instrument / Sensor'),
+    'OX':   ('Syreanalysator (Sunpine OX)',      'Instrument / Sensor'),
+    'AX':   ('Analysgivare (Sunpine AX)',        'Instrument / Sensor'),
+    'GX':   ('Generell givare (Sunpine GX)',     'Instrument / Sensor'),
+    'DX':   ('Differentialgivare (Sunpine DX)',  'Instrument / Sensor'),
+    'MAS':  ('Processenhet (Sunpine MAS)',       'Övrigt'),
+    'EAS':  ('Processenhet (Sunpine EAS)',       'Övrigt'),
+    'MSS':  ('Processenhet (Sunpine MSS)',       'Övrigt'),
+    'DCS':  ('Styrsystem (Sunpine DCS)',         'Övrigt'),
+    'ESS':  ('Elsystem (Sunpine ESS)',           'Övrigt'),
+    'TA':   ('Temperaturlarm (TA)',              'Instrument / Sensor'),
 }
 
 def _spatial_combine(words: list, gap_limit: float = 18.0) -> list:
@@ -1037,13 +1093,17 @@ def _tags_from_full_text(fitz_page, page_num: int) -> list:
 
 
 def _parse_tag(text: str):
-    """Normalise an equipment tag string.
+    """Normalise an equipment tag string to (normalised_tag, prefix).
 
-    Handles:
-      - PCV-101, FT-201A, V-1, ESDV-1001AB   (with dash)
-      - PCV101, FT201A, V1                     (no dash)
-      - 20-PCV-101, 10/FT201                   (area prefix — stripped)
-      - PCV.101                                 (dot separator)
+    Handles all plant conventions found in analysed P&IDs:
+      Standard:   PCV-101, FT201A, V-1, PSV-101A
+      Area-prefix: 20-PCV-101, 10/FT201, 60-RV-009
+      Dot:        PCV.101, M1.GPA4, E1.M1.WPA001
+      Underscore: XFB_31304, TK_11338
+      Sunpine:    2818-LX79, 100-MAS10A, G45-100-EAS10A, HV0063
+      Zero-padded: HV0063, TA0058, PU0050
+      Pipe-size:  2"LS60.002 (stripped)
+      RDS-PP:     =E1.M1.GPA4 (= stripped)
 
     Returns (normalised_tag, prefix) or (None, None).
     """
@@ -1051,18 +1111,34 @@ def _parse_tag(text: str):
     if not text:
         return None, None
 
-    # Strip area prefix like "20-" or "10/"
+    # Strip RDS-PP '=' prefix and pipe-size prefix
+    text = text.lstrip('=')
+    text = re.sub(r'^\d+["\']+', '', text)
+    text = re.sub(r'^DN\d+[-./_ ]?', '', text)
+
+    if not text:
+        return None, None
+
+    # --- Extended compound tags (area prefix + instrument code) ---
+    m = _EXT_TAG_RE.search(text)
+    if m:
+        candidate = m.group(1).lstrip('=')
+        pfx = _equip_prefix_from_tag(candidate)
+        if pfx:
+            # Normalise separators in the instrument portion only
+            norm = candidate.replace('_', '-').replace('.', '-').replace('/', '-')
+            norm = re.sub(r'-+', '-', norm).strip('-')
+            return norm, pfx
+
+    # --- Strip numeric area prefix: 20-PCV-101 → PCV-101 ---
     am = _AREA_TAG_RE.match(text)
     if am:
         text = f"{am.group(1)}-{am.group(2)}"
 
-    # Already well-formed
+    # --- Simple well-formed tag (with or without separator) ---
     if _TAG_RE.match(text):
-        # Normalise separator to dash
-        norm = re.sub(r'[./]', '-', text)
-        # Remove doubled dashes
+        norm = re.sub(r'[./_]', '-', text)
         norm = re.sub(r'-+', '-', norm)
-        # Ensure dash between letters and digits
         m2 = re.match(r'^([A-Z]{1,6})-(\d{1,5}[A-Z]{0,3})$', norm)
         if not m2:
             m2 = re.match(r'^([A-Z]{1,6})(\d{1,5}[A-Z]{0,3})$', norm)
@@ -1070,11 +1146,21 @@ def _parse_tag(text: str):
                 norm = f"{m2.group(1)}-{m2.group(2)}"
         return norm, _extract_prefix(norm)
 
-    # No-dash: PCV101, FT201A
-    m = re.match(r'^([A-Z]{1,6})(\d{1,5}[A-Z]{0,3})$', text)
+    # --- No separator: PCV101, FT201A, HV0063 ---
+    m = re.match(r'^([A-Z]{2,6})(\d{1,5}[A-Z]{0,3})$', text)
     if m:
-        tag = f"{m.group(1)}-{m.group(2)}"
-        return tag, m.group(1)
+        return f"{m.group(1)}-{m.group(2)}", m.group(1)
+
+    # --- Embedded area number: LS60.002, TIA46.003 (letters+area+sep+number) ---
+    m = re.match(r'^([A-Z]{2,6})(\d{1,3})[./_ -](\d{1,4}[A-Z]{0,2})$', text)
+    if m:
+        code, area, num = m.group(1), m.group(2), m.group(3)
+        return f"{code}-{area}.{num}", code
+
+    # --- Last resort: extract prefix and use raw tag ---
+    pfx = _equip_prefix_from_tag(text)
+    if pfx and len(pfx) >= 2:
+        return text, pfx
 
     return None, None
 
@@ -1230,7 +1316,15 @@ class PDFVectorItem(QGraphicsItem):
         return self._rect.height()
 
 
-def find_tag_near_point(pdf_doc, page_num, x_pdf, y_pdf, radius=50):
+def find_tag_near_point(pdf_doc, page_num, x_pdf, y_pdf, radius=100):
+    """Find the nearest equipment tag in the PDF at the given point.
+
+    Handles all plant tag conventions:
+    - Simple: HV-101, PCV101, XFB_31304, HV0063
+    - Compound dot: =E1.M1.GPA4, M1.HXA1
+    - Area-hyphen: 60-RV-009, 2818-LX79, 100-MAS10A, G45-100-EAS10A
+    - Pipe-size prefix stripped: 2"LS60.002
+    """
     if pdf_doc is None or not HAS_PYMUPDF:
         return ''
     try:
@@ -1247,18 +1341,36 @@ def find_tag_near_point(pdf_doc, page_num, x_pdf, y_pdf, radius=50):
             return ((cx - x_pdf) ** 2 + (cy - y_pdf) ** 2) ** 0.5
 
         words_sorted = sorted(words, key=dist)
-        for w in words_sorted[:12]:
+
+        # Try up to 20 nearest words; prefer properly recognised tags
+        candidates = []
+        for w in words_sorted[:20]:
             raw = w[4].strip()
-            # Strip RDS-PP '=' designation prefix (LKAB, IEC 81346)
+            # Strip RDS-PP '=' and pipe-size prefixes
             text = raw.lstrip('=')
-            # Simple tag: PCV-101, HV200, E-101
+            text = re.sub(r'^\d+["\']+', '', text)
+
+            # Exact simple tag (highest confidence)
             if _TAG_RE.match(text):
                 return text
-            # Compound tag: M1.GPA4, E1.M1.HXA1, E1.M1.WPA001
+
+            # Compound/area-prefix tag
             m = _EXT_TAG_RE.search(text)
             if m:
-                return m.group(1)
-        # Fallback: return closest word, stripping '=' prefix
+                candidate = m.group(1).lstrip('=')
+                pfx = _equip_prefix_from_tag(candidate)
+                if pfx and len(pfx) >= 2:
+                    return candidate
+
+            # Keep as fallback if it has a recognisable prefix
+            pfx = _equip_prefix_from_tag(text) if text else ''
+            if pfx and len(pfx) >= 2:
+                candidates.append(text)
+
+        if candidates:
+            return candidates[0]
+
+        # Last resort: closest word stripped of '='
         return words_sorted[0][4].strip().lstrip('=')
     except Exception:
         return ''
