@@ -3312,6 +3312,14 @@ class Database:
                           (target_node_id, cause_id))
         self.commit()
 
+    def move_cause_to_deviation(self, cause_id, target_deviation_id):
+        dev = self.get_deviation(target_deviation_id)
+        if dev:
+            self.conn.execute(
+                "UPDATE causes SET deviation_id=?, node_id=? WHERE id=?",
+                (target_deviation_id, dev['node_id'], cause_id))
+            self.commit()
+
     def move_consequence(self, cons_id, target_cause_id):
         self.conn.execute("UPDATE consequences SET cause_id=? WHERE id=?",
                           (target_cause_id, cons_id))
@@ -9771,8 +9779,15 @@ class ScenarioTablePanel(QWidget):
         self._table.cellChanged.connect(self._on_cell_changed)
         self._table.cellClicked.connect(self._on_cell_clicked)
         self._table.itemDoubleClicked.connect(self._on_cell_double_clicked)
-        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._on_context_menu)
+        self._table.setAcceptDrops(True)
         self._table.installEventFilter(self)
+        self._table.viewport().installEventFilter(self)
+        # Drag state
+        self._drag_press_pos  = None
+        self._drag_press_row  = -1
+        self._drag_press_col  = -1
         self._delegate = _ScenarioDelegate(self)
         self._table.setItemDelegate(self._delegate)
         self._pid_delegate = _PidDelegate(self)
@@ -10592,6 +10607,9 @@ class ScenarioTablePanel(QWidget):
             cause_id = self._row_meta[row][1]
             if cause_id is not None:
                 self.item_selected.emit(CAUSE_T, cause_id)
+            # Feature 7: single-click on already-current ORS cell → start edit
+            if self._table.currentRow() == row and self._table.currentColumn() == col:
+                QTimer.singleShot(200, lambda r=row, c=col: self._try_start_edit(r, c))
             return
         if col == self._C_KON and row < len(self._row_meta):
             cons_id = self._row_meta[row][2]
@@ -10602,6 +10620,9 @@ class ScenarioTablePanel(QWidget):
             sg_id = self._row_meta[row][3]
             if sg_id is not None:
                 self.item_selected.emit(SG_T, sg_id)
+            # Feature 7: single-click on already-current SG cell → start edit
+            if self._table.currentRow() == row and self._table.currentColumn() == col:
+                QTimer.singleShot(200, lambda r=row, c=col: self._try_start_edit(r, c))
             return
         if col != self._C_RFORE:
             return
@@ -10930,7 +10951,7 @@ class ScenarioTablePanel(QWidget):
                 self.db.set_config('cause_obj_w', str(self._cause_obj_w))
                 return True
 
-        # Right-click on pin icon → remove from P&ID (replaces context menu)
+        # Right-click: pin-zone toggles P&ID placement; elsewhere → context menu
         if (obj is self._table.viewport() and
                 event.type() == QEvent.Type.MouseButtonPress and
                 event.button() == Qt.MouseButton.RightButton):
@@ -10945,7 +10966,53 @@ class ScenarioTablePanel(QWidget):
                     else:
                         self._place_from_table(row, col)
                     return True
-            return False  # no context menu
+            # Let Qt dispatch CustomContextMenu signal (falls through to _on_context_menu)
+            return False
+
+        # ── Drag: record press position for potential drag-start ─────────────────
+        if (obj is self._table.viewport() and
+                event.type() == QEvent.Type.MouseButtonPress and
+                event.button() == Qt.MouseButton.LeftButton):
+            pos = event.pos()
+            row = self._table.rowAt(pos.y())
+            col = self._table.columnAt(pos.x())
+            if row >= 0 and col in (self._C_ORS, self._C_KON, self._C_SG):
+                col_x = self._table.columnViewportPosition(col)
+                if pos.x() - col_x >= _PID_ICON_W:   # not in pin zone
+                    self._drag_press_pos = pos
+                    self._drag_press_row = row
+                    self._drag_press_col = col
+            else:
+                self._drag_press_pos = None
+
+        if (obj is self._table.viewport() and
+                event.type() == QEvent.Type.MouseButtonRelease):
+            self._drag_press_pos = None
+
+        if (obj is self._table.viewport() and
+                event.type() == QEvent.Type.MouseMove and
+                self._drag_press_pos is not None and
+                event.buttons() & Qt.MouseButton.LeftButton):
+            dist = (event.pos() - self._drag_press_pos).manhattanLength()
+            if dist >= QApplication.startDragDistance():
+                self._drag_press_pos = None
+                self._start_drag(self._drag_press_row, self._drag_press_col,
+                                 event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+                return True
+
+        # ── Drop events on table ──────────────────────────────────────────────
+        if obj is self._table and event.type() == QEvent.Type.DragEnter:
+            if event.mimeData().hasText() and event.mimeData().text().startswith('hzp:'):
+                event.acceptProposedAction()
+                return True
+        if obj is self._table and event.type() == QEvent.Type.DragMove:
+            if event.mimeData().hasText() and event.mimeData().text().startswith('hzp:'):
+                event.acceptProposedAction()
+                return True
+        if obj is self._table and event.type() == QEvent.Type.Drop:
+            if event.mimeData().hasText() and event.mimeData().text().startswith('hzp:'):
+                self._handle_drop(event)
+                return True
 
         # Viewport mouse: detect LEFT-click in icon strip or RRF row
         if (obj is self._table.viewport() and
@@ -11071,12 +11138,25 @@ class ScenarioTablePanel(QWidget):
                         self._ctrl_enter(row, col)
                     return True  # always consume Enter in editor — prevents table-level handler
 
-        # Table-level Enter key (no inline editor open — table itself has focus)
+        # Table-level keyboard shortcuts
         if obj is self._table and event.type() == QEvent.Type.KeyPress:
             if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 row = self._table.currentRow()
                 col = self._table.currentColumn()
                 self._ctrl_enter(row, col)
+                return True
+            if (event.key() == Qt.Key.Key_C and
+                    event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                self._copy_row_to_clipboard(self._table.currentRow())
+                return True
+            if event.key() == Qt.Key.Key_Delete:
+                self._delete_current_item()
+                return True
+            # F2 or any printable key → start inline edit on ORS/SG cells (feature 7)
+            if event.key() == Qt.Key.Key_F2:
+                row = self._table.currentRow()
+                col = self._table.currentColumn()
+                self._try_start_edit(row, col)
                 return True
         return False
 
@@ -11099,15 +11179,13 @@ class ScenarioTablePanel(QWidget):
         row = self._enter_row
         if row < 0 or row >= len(self._row_meta):
             return
-        # Editable cells (Orsak): only show menu after a real commit, not when starting to type.
-        # Non-editable cells (Barriär) and widget cells (Konsekvens): always show menu.
         item = self._table.item(row, self._enter_col)
         is_editable = item is not None and bool(item.flags() & Qt.ItemFlag.ItemIsEditable)
         if is_editable and not self._last_enter_committed:
             return
         self._last_enter_committed = False
-        dev_id, cause_id, cons_id, _sg_id = self._row_meta[row]
-        self._show_quick_add(row, dev_id, cause_id, cons_id)
+        # Directly add next item based on column (no menu, feature 3)
+        self._ctrl_enter(row, self._enter_col)
 
     def _show_quick_add(self, row, dev_id, cause_id, cons_id):
         cause = self.db.get_cause(cause_id)
@@ -11182,6 +11260,355 @@ class ScenarioTablePanel(QWidget):
 
         if (row, col) == (self._enter_row, self._enter_col):
             self._last_enter_committed = True
+
+    # ── Feature 7: try start inline edit ──────────────────────────────────────
+    def _try_start_edit(self, row, col):
+        if row < 0 or col not in (self._C_ORS, self._C_SG):
+            return
+        item = self._table.item(row, col)
+        if item and bool(item.flags() & Qt.ItemFlag.ItemIsEditable):
+            self._table.setFocus()
+            self._table.edit(self._table.model().index(row, col))
+
+    # ── Feature 2: Ctrl+C clipboard copy ─────────────────────────────────────
+    def _copy_row_to_clipboard(self, row):
+        if row < 0 or row >= len(self._row_meta):
+            return
+        dev_id, cause_id, cons_id, sg_id = self._row_meta[row]
+        parts = []
+        def _txt(col):
+            item = self._table.item(row, col)
+            return item.text().strip() if item else ''
+        parts.append(_txt(self._C_NOD))
+        parts.append(_txt(self._C_DEV))
+        c = self.db.get_cause(cause_id) if cause_id else None
+        parts.append(dict(c).get('description', '') if c else '')
+        k = self.db.get_consequence(cons_id) if cons_id else None
+        parts.append(dict(k).get('description', '') if k else '')
+        parts.append(_txt(self._C_RFORE))
+        sg = self.db.get_safeguard(sg_id) if sg_id else None
+        parts.append(dict(sg).get('description', '') if sg else '')
+        parts.append(_txt(self._C_REFT))
+        parts.append(_txt(self._C_SLUT))
+        QApplication.clipboard().setText('\t'.join(parts))
+
+    # ── Feature: Delete key ───────────────────────────────────────────────────
+    def _delete_current_item(self):
+        row = self._table.currentRow()
+        col = self._table.currentColumn()
+        if row < 0 or row >= len(self._row_meta):
+            return
+        dev_id, cause_id, cons_id, sg_id = self._row_meta[row]
+        if col == self._C_SG and sg_id:
+            if QMessageBox.question(self, "Ta bort barriär",
+                    "Ta bort denna barriär?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                    ) == QMessageBox.StandardButton.Yes:
+                self.db.delete_safeguard(sg_id)
+                self.structure_changed.emit()
+                QTimer.singleShot(0, self._rebuild)
+        elif col == self._C_KON and cons_id:
+            if QMessageBox.question(self, "Ta bort konsekvens",
+                    "Ta bort konsekvens och alla dess barriärer?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                    ) == QMessageBox.StandardButton.Yes:
+                self.db.delete_consequence(cons_id)
+                self.structure_changed.emit()
+                QTimer.singleShot(0, self._rebuild)
+        elif col == self._C_ORS and cause_id:
+            if QMessageBox.question(self, "Ta bort orsak",
+                    "Ta bort orsak och alla konsekvenser/barriärer?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                    ) == QMessageBox.StandardButton.Yes:
+                self.db.delete_cause(cause_id)
+                self.structure_changed.emit()
+                QTimer.singleShot(0, self._rebuild)
+
+    # ── Feature 1 & 6: Drag start ─────────────────────────────────────────────
+    def _start_drag(self, row, col, is_copy_modifier):
+        if row < 0 or row >= len(self._row_meta):
+            return
+        dev_id, cause_id, cons_id, sg_id = self._row_meta[row]
+        if col == self._C_SG and sg_id:
+            kind = 'sg'; item_id = sg_id
+        elif col == self._C_ORS and cause_id:
+            kind = 'cause'; item_id = cause_id
+        elif col == self._C_KON and cons_id:
+            kind = 'cons'; item_id = cons_id
+        else:
+            return
+
+        mime = QMimeData()
+        mime.setText(f'hzp:{kind}:{item_id}:{row}:{col}')
+
+        # Drag pixmap: render the source cell
+        idx = self._table.model().index(row, col)
+        cell_rect = self._table.visualRect(idx)
+        px = self._table.viewport().grab(cell_rect)
+        pm = QPixmap(px.size())
+        pm.fill(QColor(255, 255, 255, 180))
+        p = QPainter(pm)
+        p.drawPixmap(0, 0, px)
+        p.end()
+
+        drag = QDrag(self._table)
+        drag.setMimeData(mime)
+        drag.setPixmap(pm)
+        drag.setHotSpot(pm.rect().center())
+        action = (Qt.DropAction.CopyAction if is_copy_modifier
+                  else Qt.DropAction.MoveAction | Qt.DropAction.CopyAction)
+        drag.exec(action)
+
+    def _handle_drop(self, event):
+        text = event.mimeData().text()
+        if not text.startswith('hzp:'):
+            return
+        parts = text.split(':')
+        if len(parts) < 5:
+            return
+        kind, item_id_s, src_row_s = parts[1], parts[2], parts[3]
+        try:
+            item_id = int(item_id_s)
+            src_row = int(src_row_s)
+        except ValueError:
+            return
+        is_copy = bool(event.dropAction() == Qt.DropAction.CopyAction)
+
+        # Find target row/col from drop position
+        vp_pos = self._table.viewport().mapFrom(self._table,
+                 event.position().toPoint() if hasattr(event, 'position')
+                 else event.pos())
+        tgt_row = self._table.rowAt(vp_pos.y())
+        tgt_col = self._table.columnAt(vp_pos.x())
+        if tgt_row < 0 or tgt_row >= len(self._row_meta):
+            event.ignore(); return
+
+        tgt_dev, tgt_cause, tgt_cons, tgt_sg = self._row_meta[tgt_row]
+
+        if kind == 'sg':
+            if tgt_cons is None or tgt_cons == self._row_meta[src_row][2]:
+                event.ignore(); return
+            if is_copy:
+                self.db.copy_safeguard(item_id, tgt_cons)
+            else:
+                self.db.move_safeguard(item_id, tgt_cons)
+            self.structure_changed.emit()
+            QTimer.singleShot(0, self._rebuild)
+            event.acceptProposedAction()
+
+        elif kind == 'cons':
+            if tgt_cause is None or tgt_cause == self._row_meta[src_row][1]:
+                event.ignore(); return
+            if is_copy:
+                self.db.copy_consequence(item_id, tgt_cause)
+            else:
+                self.db.move_consequence(item_id, tgt_cause)
+            self.structure_changed.emit()
+            QTimer.singleShot(0, self._rebuild)
+            event.acceptProposedAction()
+
+        elif kind == 'cause':
+            if tgt_dev is None or tgt_dev == self._row_meta[src_row][0]:
+                event.ignore(); return
+            if is_copy:
+                self.db.copy_cause(item_id, tgt_dev)
+            else:
+                self.db.move_cause_to_deviation(item_id, tgt_dev)
+            self.structure_changed.emit()
+            QTimer.singleShot(0, self._rebuild)
+            event.acceptProposedAction()
+
+    # ── Feature 4 & 5: Context menu ───────────────────────────────────────────
+    def _on_context_menu(self, pos):
+        row = self._table.rowAt(pos.y())
+        col = self._table.columnAt(pos.x())
+        if row < 0 or row >= len(self._row_meta):
+            return
+        dev_id, cause_id, cons_id, sg_id = self._row_meta[row]
+
+        menu = QMenu(self)
+
+        # ── Ctrl+C shortcut hint ────────────────────────────────────────
+        copy_row = menu.addAction("📋  Kopiera rad  (Ctrl+C)")
+        copy_row.triggered.connect(lambda: self._copy_row_to_clipboard(row))
+        menu.addSeparator()
+
+        # ── Orsak-åtgärder ──────────────────────────────────────────────
+        if col in (self._C_ORS, self._C_NOD, self._C_DEV) and cause_id:
+            c = self.db.get_cause(cause_id)
+            c_desc = dict(c).get('description', '?')[:40] if c else '?'
+            menu.addSection(f"⚙ Orsak: {c_desc}")
+            menu.addAction("✏  Redigera",
+                lambda: self._try_start_edit(row, self._C_ORS))
+            a_dup = menu.addAction("📄  Duplicera orsak (med konsekvenser)")
+            a_dup.triggered.connect(
+                lambda: self._duplicate_cause(cause_id))
+            a_move = menu.addAction("↕  Flytta till annan avvikelse…")
+            a_move.triggered.connect(
+                lambda: self._move_cause_dialog(cause_id))
+            menu.addSeparator()
+            a_del = menu.addAction("🗑  Ta bort orsak")
+            a_del.triggered.connect(lambda cid=cause_id: self._confirm_delete('cause', cid))
+
+        # ── Konsekvens-åtgärder ─────────────────────────────────────────
+        elif col in (self._C_KON, self._C_RFORE) and cons_id:
+            k = self.db.get_consequence(cons_id)
+            k_desc = dict(k).get('description', '?')[:40] if k else '?'
+            menu.addSection(f"⚠ Konsekvens: {k_desc}")
+            a_dup = menu.addAction("📄  Duplicera konsekvens (med barriärer)")
+            a_dup.triggered.connect(
+                lambda: self._duplicate_consequence(cons_id, cause_id))
+            a_move = menu.addAction("↕  Flytta till annan orsak…")
+            a_move.triggered.connect(
+                lambda: self._move_consequence_dialog(cons_id))
+            menu.addSeparator()
+            a_del = menu.addAction("🗑  Ta bort konsekvens")
+            a_del.triggered.connect(lambda cid=cons_id: self._confirm_delete('cons', cid))
+
+        # ── Barriär-åtgärder ────────────────────────────────────────────
+        elif col in (self._C_SG, self._C_REFT, self._C_LOPA, self._C_SLUT) and sg_id:
+            sg = self.db.get_safeguard(sg_id)
+            sg_desc = dict(sg).get('description', '?')[:40] if sg else '?'
+            menu.addSection(f"🛡 Barriär: {sg_desc}")
+            menu.addAction("✏  Redigera",
+                lambda: self._try_start_edit(row, self._C_SG))
+            a_copy = menu.addAction("📋  Kopiera till annan konsekvens…")
+            a_copy.triggered.connect(
+                lambda: self._copy_safeguard_dialog(sg_id))
+            a_move = menu.addAction("↕  Flytta till annan konsekvens…")
+            a_move.triggered.connect(
+                lambda: self._move_safeguard_dialog(sg_id))
+            menu.addSeparator()
+            a_del = menu.addAction("🗑  Ta bort barriär")
+            a_del.triggered.connect(lambda sid=sg_id: self._confirm_delete('sg', sid))
+
+        if not menu.isEmpty():
+            menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    def _confirm_delete(self, kind, item_id):
+        labels = {'cause': ('orsak', 'cause'), 'cons': ('konsekvens', 'consequence'),
+                  'sg': ('barriär', 'safeguard')}
+        swe, db_kind = labels.get(kind, (kind, kind))
+        if QMessageBox.question(self, f"Ta bort {swe}",
+                f"Ta bort {swe}?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                ) == QMessageBox.StandardButton.Yes:
+            if db_kind == 'cause':
+                self.db.delete_cause(item_id)
+            elif db_kind == 'consequence':
+                self.db.delete_consequence(item_id)
+            else:
+                self.db.delete_safeguard(item_id)
+            self.structure_changed.emit()
+            QTimer.singleShot(0, self._rebuild)
+
+    # ── Feature 5: Duplicate ──────────────────────────────────────────────────
+    def _duplicate_consequence(self, cons_id, cause_id):
+        new_id = self.db.copy_consequence(cons_id, cause_id)
+        if new_id:
+            self.structure_changed.emit()
+            QTimer.singleShot(0, self._rebuild)
+
+    def _duplicate_cause(self, cause_id):
+        cause = self.db.get_cause(cause_id)
+        if not cause:
+            return
+        dev_id = dict(cause).get('deviation_id')
+        if dev_id is None:
+            return
+        new_id = self.db.copy_cause(cause_id, dev_id)
+        if new_id:
+            self.structure_changed.emit()
+            QTimer.singleShot(0, self._rebuild)
+
+    # ── Feature 6: Move dialogs ───────────────────────────────────────────────
+    def _move_cause_dialog(self, cause_id):
+        cause = self.db.get_cause(cause_id)
+        if not cause:
+            return
+        node_id = dict(cause)['node_id']
+        cur_dev = dict(cause).get('deviation_id')
+        devs = [d for d in self.db.deviations(node_id) if d['id'] != cur_dev]
+        if not devs:
+            QMessageBox.information(self, "Flytta orsak",
+                "Ingen annan avvikelse finns under denna nod.\n"
+                "Lägg till fler avvikelser i trädet först.")
+            return
+        items = [f"{d['description']}" for d in devs]
+        choice, ok = QInputDialog.getItem(self, "Flytta orsak",
+            "Välj målавvikelse:", items, 0, False)
+        if ok:
+            idx = items.index(choice)
+            self.db.move_cause_to_deviation(cause_id, devs[idx]['id'])
+            self.structure_changed.emit()
+            QTimer.singleShot(0, self._rebuild)
+
+    def _move_consequence_dialog(self, cons_id):
+        cons = self.db.get_consequence(cons_id)
+        if not cons:
+            return
+        cur_cause = dict(cons)['cause_id']
+        cur_cause_row = self.db.get_cause(cur_cause)
+        if not cur_cause_row:
+            return
+        node_id = dict(cur_cause_row)['node_id']
+        all_causes = []
+        for dev in self.db.deviations(node_id):
+            for c in self.db.causes_for_deviation(dev['id']):
+                if c['id'] != cur_cause:
+                    all_causes.append((c, dev))
+        if not all_causes:
+            QMessageBox.information(self, "Flytta konsekvens",
+                "Ingen annan orsak finns under denna nod.")
+            return
+        items = [f"{dev['description']} → {c['description']}"
+                 for c, dev in all_causes]
+        choice, ok = QInputDialog.getItem(self, "Flytta konsekvens",
+            "Välj målorsak:", items, 0, False)
+        if ok:
+            idx = items.index(choice)
+            tgt_cause_id = all_causes[idx][0]['id']
+            self.db.move_consequence(cons_id, tgt_cause_id)
+            self.structure_changed.emit()
+            QTimer.singleShot(0, self._rebuild)
+
+    def _copy_safeguard_dialog(self, sg_id):
+        self._pick_target_cons_dialog(sg_id, move=False)
+
+    def _move_safeguard_dialog(self, sg_id):
+        self._pick_target_cons_dialog(sg_id, move=True)
+
+    def _pick_target_cons_dialog(self, sg_id, move=False):
+        sg = self.db.get_safeguard(sg_id)
+        if not sg:
+            return
+        cur_cons = dict(sg)['consequence_id']
+        # Collect all consequences across all nodes
+        all_cons = []
+        for node in self.db.nodes():
+            for dev in self.db.deviations(node['id']):
+                for cause in self.db.causes_for_deviation(dev['id']):
+                    for cons in self.db.consequences(cause['id']):
+                        if cons['id'] != cur_cons:
+                            all_cons.append((cons, cause, dev, node))
+        if not all_cons:
+            QMessageBox.information(self, "Välj konsekvens",
+                "Inga andra konsekvenser finns.")
+            return
+        items = [f"{n['name']} / {d['description']} / {c['description'][:30]} / {k['description'][:30]}"
+                 for k, c, d, n in all_cons]
+        verb = "Flytta" if move else "Kopiera"
+        choice, ok = QInputDialog.getItem(self, f"{verb} barriär",
+            "Välj målkonsekvens:", items, 0, False)
+        if ok:
+            idx = items.index(choice)
+            tgt_cons_id = all_cons[idx][0]['id']
+            if move:
+                self.db.move_safeguard(sg_id, tgt_cons_id)
+            else:
+                self.db.copy_safeguard(sg_id, tgt_cons_id)
+            self.structure_changed.emit()
+            QTimer.singleShot(0, self._rebuild)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
