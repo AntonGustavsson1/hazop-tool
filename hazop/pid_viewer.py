@@ -4882,7 +4882,8 @@ class PIDGraphicsView(QGraphicsView):
         if key in self._zone_rects:
             self._remove_zone_items(key)
         rs = self.render_scale
-        cx = cx_pdf * rs;  cy = cy_pdf * rs
+        center = self.pdf_to_scene(cx_pdf, cy_pdf)
+        cx = center.x();   cy = center.y()
         w  = w_pdf  * rs;  h  = h_pdf  * rs
         scene_rect = QRectF(cx - w / 2, cy - h / 2, w, h)
         pen = QPen(QColor(0, 180, 80, 220), 2)
@@ -8466,7 +8467,8 @@ class PIDPanel(QWidget):
             return None
         self.db.update_cause(cause_id, label, comp_type=comp_type, comp_tag=comp_tag)
         if frequency is not None:
-            self.db.update_cause(cause_id, base_freq=frequency)
+            f_level = self._compute_f_level(frequency)
+            self.db.update_cause(cause_id, likelihood=f_level, base_freq=frequency)
 
         zone = self._pending_zone_pdf
         rect_w = zone.width()  if zone else None
@@ -8644,7 +8646,8 @@ class PIDPanel(QWidget):
             return
         self.db.update_cause(cause_id, cause_desc, comp_type=comp_type, comp_tag=tag)
         if std_freq is not None:
-            self.db.update_cause(cause_id, base_freq=std_freq)
+            f_level = self._compute_f_level(std_freq)
+            self.db.update_cause(cause_id, likelihood=f_level, base_freq=std_freq)
         self.cause_template_created.emit(cause_id)
 
         # If user wants secondary again, queue it
