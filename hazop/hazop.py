@@ -7381,6 +7381,7 @@ class StandardCausesPickerPopup(QDialog):
             self._tag_edit.setCompleter(comp)
         except Exception:
             pass
+        self._tag_edit.textChanged.connect(self._on_tag_id_changed)
         top_row.addWidget(self._tag_edit)
 
         top_row.addSpacing(8)
@@ -7489,10 +7490,37 @@ class StandardCausesPickerPopup(QDialog):
         self._ft_edit.returnPressed.connect(self._pick_selected)
         self._search_edit.installEventFilter(self)
 
-        self._initial_comp_type = comp_type   # remember for deviation changes
-        self._populate_objects(comp_type)
+        # Derive preselect from tag first (most reliable), fall back to comp_type
+        preselect = _lookup_comp_type_for_tag(initial_tag, db) if initial_tag else ''
+        if not preselect:
+            preselect = comp_type
+        self._initial_comp_type = preselect
+        self._populate_objects(preselect)
 
     # ── Object buttons ────────────────────────────────────────────────────────
+    def _on_tag_id_changed(self, text: str):
+        """Tag-ID field changed — look up type from smart recognition and pre-select."""
+        if not text.strip():
+            return
+        comp = _lookup_comp_type_for_tag(text.strip(), self._db)
+        if comp:
+            self._initial_comp_type = comp
+            self._select_obj_by_type(comp)
+
+    def _select_obj_by_type(self, comp_type: str):
+        """Check the object button that matches comp_type (case-insensitive substring)."""
+        if not comp_type:
+            return
+        for btn in self._obj_btn_group:
+            if comp_type.lower() in btn.property('obj_name').lower():
+                if not btn.isChecked():
+                    for b in self._obj_btn_group:
+                        b.setChecked(False)
+                    btn.setChecked(True)
+                    self._load_causes_for_obj(
+                        btn.property('obj_id'), btn.property('obj_name'))
+                return
+
     def _on_dev_combo_changed(self, idx):
         """Deviation combo changed — update selected IDs and reload object list."""
         if 0 <= idx < len(self._dev_items):

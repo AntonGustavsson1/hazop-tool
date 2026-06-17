@@ -8122,12 +8122,9 @@ class PIDPanel(QWidget):
             tag = find_tag_near_point(
                 self.viewer.pdf_doc, page, pdf_x, pdf_y, radius=100) \
                 if self.viewer.pdf_doc else ''
-            detected_type = self._db_comp_for_tag(tag) if tag else ''
-            # Fallback: look for an existing cause marker nearby and reuse its type
-            if not detected_type and hasattr(self.db, 'cause_markers_for_page'):
-                detected_type = self._type_from_nearest_marker(pdf_x, pdf_y, page)
+            # Pass the tag — the popup derives the type directly from its Tag-ID field
             dev_id = self._active_deviation_id or 0
-            self.cause_placement_requested.emit(dev_id, tag or '', detected_type, pos, page, '')
+            self.cause_placement_requested.emit(dev_id, tag or '', '', pos, page, '')
         elif action == 'consequence':
             self._set_mode(MODE_CONSEQUENCE)
             tag = find_tag_near_point(self.viewer.pdf_doc, page,
