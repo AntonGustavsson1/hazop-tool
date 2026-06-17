@@ -9695,6 +9695,7 @@ class ScenarioTablePanel(QWidget):
     navigate_to_pid            = pyqtSignal(int, int)   # (type_, id_) — navigate to existing marker
     remove_requested           = pyqtSignal(int, int)   # (type_, id_) — delete all markers
     add_causes_on_pid_requested = pyqtSignal(int)       # deviation_id — red pin click on empty ORS row
+    structure_changed          = pyqtSignal()           # item moved/deleted/duplicated → refresh tree
 
     # Column indices
     _C_NOD, _C_DEV, _C_ORS, _C_KON, _C_RFORE = 0, 1, 2, 3, 4
@@ -15570,6 +15571,8 @@ class MainWindow(QMainWindow):
         self.scenario_panel.navigate_to_pid.connect(self._on_scenario_navigate_to_pid)
         self.scenario_panel.remove_requested.connect(self._on_scenario_remove_from_pid)
         self.scenario_panel.add_causes_on_pid_requested.connect(self._on_add_causes_on_pid)
+        self.scenario_panel.structure_changed.connect(
+            lambda: (self.tree_panel.refresh(), self.pid_panel.reload_overlays()))
 
         self.tree_panel.add_causes_on_pid_requested.connect(self._on_add_causes_on_pid_tree)
         self.tree_panel.add_consequences_on_pid_requested.connect(
