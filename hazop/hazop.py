@@ -1201,6 +1201,27 @@ def _migrate_causes_to_object_id(conn):
     conn.commit()
 
 
+def _sync_cause_likelihoods_from_frequency(conn):
+    """Set causes.likelihood from standard_cause/base_freq when frequency data exists."""
+    updated = 0
+    rows = conn.execute("""
+        SELECT c.id, c.base_freq, c.likelihood, sc.frequency AS sc_freq
+        FROM causes c
+        LEFT JOIN standard_causes sc ON sc.id = c.standard_cause_id
+    """).fetchall()
+    for row in rows:
+        bf = row['sc_freq'] if row['sc_freq'] is not None else row['base_freq']
+        if bf is None or bf <= 0:
+            continue
+        f_level = freq_to_f_level(bf)
+        if row['likelihood'] != f_level or (row['base_freq'] is None and row['sc_freq'] is not None):
+            conn.execute(
+                "UPDATE causes SET likelihood=?, base_freq=COALESCE(base_freq, ?) WHERE id=?",
+                (f_level, bf, row['id']))
+            updated += 1
+    return updated
+
+
 # ── Default cause descriptions per component-type cause ───────────────────────
 # Keyed by normalized cause text prefix; each value is a list of short phrases
 # that describe *how* this cause manifests. These are the third hierarchy level
@@ -1691,6 +1712,7 @@ class Database:
                         "INSERT INTO deviations (node_id, description) VALUES (?,?)",
                         (nid, dev_type))
 
+        _sync_cause_likelihoods_from_frequency(self.conn)
         self.commit()
 
     # ── Config ────────────────────────────────────────────────────────────────
@@ -2453,6 +2475,29 @@ class Database:
     def get_safeguard(self, id_):
         return self.conn.execute("SELECT * FROM safeguards WHERE id=?", (id_,)).fetchone()
 
+    def cause_base_frequency(self, cause):
+        """Return frequency in events/year from standard cause or base_freq, or None."""
+        if cause is None:
+            return None
+        d = dict(cause)
+        std_id = d.get('standard_cause_id')
+        if std_id:
+            sc = self.get_standard_cause(std_id)
+            if sc and sc.get('frequency') is not None:
+                return sc['frequency']
+        bf = d.get('base_freq')
+        return bf if bf is not None else None
+
+    def cause_frequency_level(self, cause, default=3):
+        """Return F-level (-1..5): standard_cause/base_freq first, else manual likelihood."""
+        bf = self.cause_base_frequency(cause)
+        if bf is not None:
+            return freq_to_f_level(bf)
+        if cause is None:
+            return default
+        like = dict(cause).get('likelihood')
+        return like if like is not None else default
+
     # ── Add ───────────────────────────────────────────────────────────────────
     def add_node(self):
         cur = self.conn.execute("INSERT INTO nodes (name) VALUES ('Ny nod')")
@@ -3096,8 +3141,9 @@ class Database:
                 WHERE id = causes.standard_cause_id AND frequency IS NOT NULL
               )
         """)
+        n = _sync_cause_likelihoods_from_frequency(self.conn)
         self.commit()
-        return self.conn.execute("SELECT changes()").fetchone()[0]
+        return n
 
     def update_consequence(self, id_, description, severity, category='',
                            consequence_chain=''):
@@ -3296,7 +3342,7 @@ class Database:
                         'node_pid':       node['pid_ref'] or '',
                         'cause_id':       cause['id'],
                         'cause':          cause['description'],
-                        'likelihood':     cause['likelihood'] if cause['likelihood'] is not None else 3,
+                        'likelihood':     self.cause_frequency_level(cause),
                         'consequence_id': cons['id'],
                         'consequence':    cons['description'],
                         'severity':       cons['severity'],
@@ -3847,8 +3893,8 @@ class CausePanel(QWidget):
         else:
             self._db_freq_lbl.setText("—")
 
-        # Field 2: manual F-level (likelihood)
-        like = row['likelihood']
+        # Field 2: manual F-level (likelihood) — show resolved F when frequency data exists
+        like = self.db.cause_frequency_level(row)
         if like is not None:
             self.freq_combo.setCurrentIndex(freq_to_idx(like) + 1)  # +1 for the "—" item
         else:
@@ -4081,18 +4127,9 @@ class ConsequencePanel(QWidget):
         if cause_id:
             cause = self.db.get_cause(cause_id)
             if cause:
-                std_cause_id = cause['standard_cause_id'] if 'standard_cause_id' in cause.keys() else None
-                if std_cause_id:
-                    sc = self.db.get_standard_cause(std_cause_id)
-                    if sc and sc.get('frequency') is not None:
-                        base_freq = sc['frequency']
-                        std_linked = True
-                if base_freq is None:
-                    base_freq = cause['base_freq'] if 'base_freq' in cause.keys() else None
-                if base_freq is not None:
-                    freq = freq_to_f_level(base_freq)
-                elif cause['likelihood'] is not None:
-                    freq = cause['likelihood']
+                freq = self.db.cause_frequency_level(cause)
+                base_freq = self.db.cause_base_frequency(cause)
+                std_linked = bool(dict(cause).get('standard_cause_id') and base_freq is not None)
         sev = (row['severity'] or 1) if row else 1
         if base_freq is not None:
             self.risk_badge.update_risk(freq, sev, base_freq=base_freq if std_linked else None)
@@ -4223,7 +4260,7 @@ class SafeguardPanel(QWidget):
         if not cons:
             return
         cause = self.db.get_cause(cons['cause_id'])
-        freq = cause['likelihood'] if cause and cause['likelihood'] is not None else 3
+        freq = self.db.cause_frequency_level(cause)
         sev = cons['severity'] or 1
         rrf = _RRF_VALUES[self.rrf_combo.currentIndex()]
         eff_f = effective_frequency(freq, rrf)
@@ -6240,7 +6277,8 @@ class TreePanel(QWidget):
                     if select_type == CAUSE_T and select_id == cause['id']: target = citem
 
                     for ki, cons in enumerate(self.db.consequences(cause['id']), 1):
-                        level, _, _ = risk_info(cause['likelihood'], cons['severity'])
+                        cause_freq = self.db.cause_frequency_level(cause)
+                        level, _, _ = risk_info(cause_freq, cons['severity'])
                         risk_icon = _RISK_ICON.get(level, '⚪')
                         placed_k = cons['id'] in marked_consequences
                         kitem = QTreeWidgetItem([f"      {risk_icon}  {ki}. {cons['description'][:40]}"])
@@ -6655,7 +6693,8 @@ class EditableScenarioPanel(QWidget):
 
         like_combo = QComboBox()
         like_combo.addItems(_LIKE_LABELS)
-        like_combo.setCurrentIndex(freq_to_idx(cause_d['likelihood'] if cause_d['likelihood'] is not None else 3))
+        like_val = self.db.cause_frequency_level(cause_d)
+        like_combo.setCurrentIndex(freq_to_idx(like_val))
         like_combo.currentIndexChanged.connect(
             lambda idx, c=cid: (self.db.update_cause(c, likelihood=idx_to_freq(idx)),
                                 self.data_changed.emit()))
@@ -6668,8 +6707,8 @@ class EditableScenarioPanel(QWidget):
         cause_lay.addWidget(add_cons_btn)
         self._content_layout.addWidget(cause_box)
 
-        # Consequence rows — like_val is the actual frequency value (-1..5)
-        like_val = cause_d['likelihood'] if cause_d['likelihood'] is not None else 3
+        # Consequence rows — like_val is the resolved F-level (-1..5)
+        like_val = self.db.cause_frequency_level(cause_d)
         for cons in self.db.consequences(self.cause_id):
             cons_d = dict(cons)
             self._add_consequence_row(cons_d, like_val)
@@ -9799,21 +9838,7 @@ class ScenarioTablePanel(QWidget):
             for cause_d, dev_d in causes_to_show:
                 node = self.db.get_node(cause_d['node_id'])
                 node_name = node['name'] if node else '?'
-                # Resolve frequency: prefer live standard_causes lookup, then base_freq, then likelihood
-                std_id = cause_d.get('standard_cause_id')
-                base_freq = None
-                if std_id:
-                    sc = self.db.get_standard_cause(std_id)
-                    if sc and sc.get('frequency') is not None:
-                        base_freq = sc['frequency']
-                if base_freq is None:
-                    base_freq = cause_d.get('base_freq')
-                if base_freq is not None:
-                    freq = freq_to_f_level(base_freq)
-                elif cause_d['likelihood'] is not None:
-                    freq = cause_d['likelihood']
-                else:
-                    freq = 3
+                freq = self.db.cause_frequency_level(cause_d)
                 _fi = freq_to_idx(freq)
                 freq_lbl = _FREQ_LABELS[_fi] if _fi < len(_FREQ_LABELS) else f'F{freq}'
                 first_row_for_cause = self._table.rowCount()
@@ -15134,13 +15159,18 @@ class MainWindow(QMainWindow):
                          self.scenario_panel.refresh_placed()))
         def _on_consequence_created(cid):
             # Open the step picker FIRST (before tree refresh).
-            # tree_panel.refresh triggers _on_selected → _rebuild.  If we did
-            # that first, _rebuild would run inside the picker's nested event
-            # loop (exec()) and crash Qt.  By opening the picker first, the
-            # tree refresh runs AFTER exec() returns — safe normal event loop.
+            # tree_panel.refresh triggers setCurrentItem → currentItemChanged →
+            # item_selected → _on_selected → _rebuild → resizeRowsToContents.
+            # Calling resizeRowsToContents while the consequence_created signal
+            # handler is still on the call stack causes a Qt C++ crash (nested
+            # signal dispatch + resizeRowsToContents = dangling C++ state).
+            # Fix: open the picker synchronously (exec() blocks; no nested
+            # signal issues), then DEFER the tree refresh via QTimer.singleShot(0)
+            # so it runs after this slot returns and the call stack is clean.
             self._open_consequence_step_picker(cid)
-            self.tree_panel.refresh(CONS_T, cid)
-            self.scenario_panel.refresh_placed()
+            QTimer.singleShot(0, lambda c=cid: (
+                self.tree_panel.refresh(CONS_T, c),
+                self.scenario_panel.refresh_placed()))
         self.pid_panel.consequence_created.connect(_on_consequence_created)
         self.pid_panel.ref_tag_picked.connect(self._on_ref_tag_picked)
         self.pid_panel.safeguard_created.connect(self._on_safeguard_created)
