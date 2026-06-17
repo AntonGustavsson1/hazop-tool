@@ -1838,12 +1838,20 @@ class Database:
 
     # ── Config ────────────────────────────────────────────────────────────────
     def get_config(self, key, default=None):
-        row = self.conn.execute("SELECT value FROM app_config WHERE key=?", (key,)).fetchone()
-        return row['value'] if row else default
+        try:
+            row = self.conn.execute(
+                "SELECT value FROM app_config WHERE key=?", (key,)).fetchone()
+            return row['value'] if row else default
+        except Exception:
+            return default
 
     def set_config(self, key, value):
-        self.conn.execute("INSERT OR REPLACE INTO app_config (key,value) VALUES (?,?)", (key, value))
-        self.commit()
+        try:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO app_config (key,value) VALUES (?,?)", (key, value))
+            self.commit()
+        except Exception:
+            pass
 
     _DEFAULT_PALETTE = [
         {'name': 'Kritisk', 'color': '#e74c3c', 'fg_color': '#ffffff'},
@@ -3169,8 +3177,11 @@ class Database:
 
     def commit(self):
         """Write-through commit: flush DB, then write a throttled backup."""
-        self.conn.commit()
-        self._write_backup()
+        try:
+            self.conn.commit()
+            self._write_backup()
+        except Exception:
+            pass
 
     def touch_node(self, node_id):
         """Update updated_at/updated_by on node (feature 20)."""
@@ -17283,11 +17294,39 @@ class MainWindow(QMainWindow):
     def _hzp_new(self):
         if not self._confirm_discard():
             return
-        import shutil, tempfile
-        # Create a fresh DB at DB_PATH
-        self.db.conn.close()
-        DB_PATH.unlink(missing_ok=True)
-        self.db = Database(DB_PATH)
+        # Flush WAL and close before touching the file
+        try:
+            self.db.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:
+            pass
+        try:
+            self.db.conn.close()
+        except Exception:
+            pass
+
+        # Delete DB + WAL/SHM sidecars. On Windows/OneDrive, the file may be
+        # temporarily locked — retry a few times before giving up.
+        import time as _time
+        for ext in ('', '-shm', '-wal'):
+            p = Path(str(DB_PATH) + ext)
+            for _ in range(8):
+                try:
+                    p.unlink(missing_ok=True)
+                    break
+                except PermissionError:
+                    _time.sleep(0.15)
+            else:
+                # Still locked — open anyway; SQLite will re-use the existing file
+                pass
+
+        # Always create a fresh Database object so self.db is never left closed
+        try:
+            self.db = Database(DB_PATH)
+        except Exception as e:
+            QMessageBox.critical(self, "Nytt projekt",
+                                 f"Kunde inte skapa ny databas:\n{e}")
+            return
+
         self._hzp_path = None
         self._update_title()
         self._reload_all_panels(pdf_path=None)
