@@ -1281,6 +1281,76 @@ def _seed_cause_descriptions(conn):
     conn.commit()
 
 
+def _tag_letter_prefix(tag: str) -> str:
+    """Extract the leading letter(s) from a tag, stripping any numeric area prefix.
+    'E1' → 'E', 'PCV-101' → 'PCV', '20-FT-201' → 'FT', 'E-101' → 'E'
+    Numbers alone (e.g. '101') return ''.
+    """
+    t = tag.strip().upper()
+    # Strip leading area prefix: digits + separator, e.g. "20-" or "10/"
+    t = re.sub(r'^\d[\d]*[-/]', '', t)
+    m = re.match(r'^([A-Z]{1,6})', t)
+    return m.group(1) if m else ''
+
+
+def _lookup_comp_type_for_tag(tag: str, db) -> str:
+    """4-level cascade to find the best component type for a tag.
+    Priority: study memory (exact) → study memory (prefix) →
+              equipment_catalog → confirmed prefix mapping → KNOWN_PREFIXES.
+    Numbers are treated as sequence numbers; the letter prefix determines type.
+    """
+    if not tag:
+        return ''
+    pfx = _tag_letter_prefix(tag)
+    try:
+        # 1. Exact tag in study_tag_memory (user-confirmed in this study)
+        if hasattr(db, 'get_tag_memory'):
+            mem = db.get_tag_memory(tag)
+            if mem and mem.get('comp_type'):
+                return mem['comp_type']
+        # 2. Prefix-level memory (e.g. all E-tags → same type)
+        if pfx and hasattr(db, 'get_prefix_memory'):
+            learned = db.get_prefix_memory(pfx)
+            if learned:
+                return learned
+        # 3. Equipment catalog (scanned from P&ID)
+        row = db.conn.execute(
+            "SELECT equipment_type FROM equipment_catalog"
+            " WHERE tag=? COLLATE NOCASE LIMIT 1",
+            (tag,)).fetchone()
+        if row and row[0]:
+            return row[0]
+        # 4. Confirmed project prefix mapping (equipment_types table)
+        if pfx and hasattr(db, 'confirmed_comp_for_tag'):
+            confirmed = db.confirmed_comp_for_tag(pfx)
+            if confirmed:
+                return confirmed
+        # 5. KNOWN_PREFIXES built-in registry (lowest priority)
+        if pfx and pfx in KNOWN_PREFIXES:
+            _, eq_type = KNOWN_PREFIXES[pfx]
+            if eq_type:
+                return eq_type
+    except Exception:
+        pass
+    return ''
+
+
+def _save_tag_learning(tag: str, comp_type: str, db):
+    """Persist comp_type for an exact tag AND its letter-prefix so the next
+    tag in the same series is auto-recognised without KNOWN_PREFIXES fallback.
+    """
+    if not tag or not comp_type:
+        return
+    try:
+        if hasattr(db, 'upsert_tag_memory'):
+            db.upsert_tag_memory(tag, comp_type, comp_tag=tag)
+        pfx = _tag_letter_prefix(tag)
+        if pfx and hasattr(db, 'save_equipment_type'):
+            db.save_equipment_type(pfx, comp_type)
+    except Exception:
+        pass
+
+
 class Database:
     def __init__(self, path=DB_PATH):
         self.path = Path(path)
@@ -7588,16 +7658,11 @@ class ObjectTagPopup(QDialog):
     def _on_tag_changed(self, text):
         if not self._db or not text.strip():
             return
-        try:
-            row = self._db.conn.execute(
-                "SELECT equipment_type FROM equipment_catalog WHERE tag=? COLLATE NOCASE LIMIT 1",
-                (text.strip(),)).fetchone()
-            if row and row[0]:
-                idx = self._type_cb.findText(row[0])
-                if idx >= 0:
-                    self._type_cb.setCurrentIndex(idx)
-        except Exception:
-            pass
+        detected = _lookup_comp_type_for_tag(text.strip(), self._db)
+        if detected:
+            idx = self._type_cb.findText(detected)
+            if idx >= 0:
+                self._type_cb.setCurrentIndex(idx)
 
     def _ok(self):
         self.saved.emit(self._type_cb.currentText(), self._tag_edit.text().strip())
@@ -7790,17 +7855,12 @@ class CauseObjectPopup(QDialog):
     def _on_tag_changed(self, text):
         if not self._db or not text.strip():
             return
-        try:
-            row = self._db.conn.execute(
-                "SELECT equipment_type FROM equipment_catalog"
-                " WHERE tag=? COLLATE NOCASE LIMIT 1",
-                (text.strip(),)).fetchone()
-            if row and row[0]:
-                idx = self._type_cb.findText(row[0])
-                if idx >= 0:
-                    self._type_cb.setCurrentIndex(idx)
-        except Exception:
-            pass
+        detected = _lookup_comp_type_for_tag(text.strip(), self._db)
+        if detected:
+            idx = self._type_cb.findText(detected)
+            if idx >= 0:
+                self._type_cb.setCurrentIndex(idx)
+                self._rebuild_causes(detected)
 
     def _rebuild_causes(self, comp_type, pre_select=''):
         self._update_icon(comp_type)
@@ -11020,6 +11080,9 @@ class ScenarioTablePanel(QWidget):
     def _apply_cause_obj(self, row, cause_id, comp_type, comp_tag, description, frequency):
         # Do all DB writes first — before touching any QTableWidgetItem references
         self.db.update_cause(cause_id, comp_type=comp_type, comp_tag=comp_tag)
+        # Save learning so the same tag/prefix is recognised next time
+        if comp_type and comp_tag:
+            _save_tag_learning(comp_tag, comp_type, self.db)
         if description:
             kwargs = {'description': description}
             if frequency is not None:

@@ -666,23 +666,30 @@ _AREA_TAG_RE = re.compile(r'^\d{1,4}[-/]([A-Z]{1,6})[-./]?(\d{1,5}[A-Z]{0,3})$')
 
 
 def _equip_prefix_from_tag(tag: str) -> str:
-    """Extract the equipment letter code from a full/extended tag.
+    """Extract the equipment letter prefix from a full/extended tag.
 
     '20-PCV-101'  → 'PCV'
     'K2.FT.201A'  → 'FT'
     'A-20-HV-301' → 'HV'
     'PSV-101'     → 'PSV'
+    'E1'          → 'E'    (single-letter, no separator)
+    'E-101'       → 'E'
     """
     parts = re.split(r'[-./]', tag.upper())
-    # Prefer known KNOWN_PREFIXES keys (longest match first)
+    # 1. Prefer known KNOWN_PREFIXES keys among all-letter parts (any length)
     for part in parts:
-        if re.match(r'^[A-Z]{2,6}$', part) and part in KNOWN_PREFIXES:
+        if re.match(r'^[A-Z]{1,6}$', part) and part in KNOWN_PREFIXES:
             return part
-    # Fall back: first all-letter part of 2+ chars
+    # 2. First all-letter part of 2+ chars
     for part in parts:
         if re.match(r'^[A-Z]{2,6}$', part):
             return part
-    return parts[0] if parts else tag
+    # 3. Strip trailing digits from the first part (handles 'E1', 'P3A', etc.)
+    first = parts[0] if parts else tag
+    m = re.match(r'^([A-Z]{1,6})\d', first)
+    if m:
+        return m.group(1)
+    return first
 
 # ── Equipment prefix knowledge base ──────────────────────────────────────────
 # Format: prefix → (swedish_display_name, COMPONENT_TYPES key)
