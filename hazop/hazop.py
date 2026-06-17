@@ -9766,6 +9766,7 @@ class ScenarioTablePanel(QWidget):
         except Exception:
             pass
         self._table.blockSignals(True)
+        self._table.clearSpans()   # must clear before setRowCount(0) — Qt crashes if spans exist
         self._table.setRowCount(0)
         self._row_meta = []
         self._row_cat_info = []
