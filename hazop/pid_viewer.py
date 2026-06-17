@@ -8500,8 +8500,13 @@ class PIDPanel(QWidget):
                                           comp_tag=comp_tag, phash=phash)
             if phash and hasattr(self.db, 'store_fingerprint'):
                 self.db.store_fingerprint(phash, comp_type, comp_tag)
-            # Also update KNOWN_PREFIXES confirmation for this session
-            self._confirm_tag_type(comp_tag, comp_type)
+            # Also confirm prefix → type in equipment_types for future sessions
+            pfx = _equip_prefix_from_tag(comp_tag)
+            if pfx and hasattr(self.db, 'save_equipment_type'):
+                try:
+                    self.db.save_equipment_type(pfx, comp_type)
+                except Exception:
+                    pass
 
         self._load_overlays()
         self.cause_template_created.emit(cause_id)
