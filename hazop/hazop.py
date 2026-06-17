@@ -7,6 +7,8 @@ import json
 import sqlite3
 import math
 import datetime
+import logging
+import traceback
 from pathlib import Path
 
 from pid_viewer import (
@@ -15158,19 +15160,24 @@ class MainWindow(QMainWindow):
             lambda cid: (self.tree_panel.refresh(CAUSE_T, cid),
                          self.scenario_panel.refresh_placed()))
         def _on_consequence_created(cid):
-            # Open the step picker FIRST (before tree refresh).
-            # tree_panel.refresh triggers setCurrentItem → currentItemChanged →
-            # item_selected → _on_selected → _rebuild → resizeRowsToContents.
-            # Calling resizeRowsToContents while the consequence_created signal
-            # handler is still on the call stack causes a Qt C++ crash (nested
-            # signal dispatch + resizeRowsToContents = dangling C++ state).
-            # Fix: open the picker synchronously (exec() blocks; no nested
-            # signal issues), then DEFER the tree refresh via QTimer.singleShot(0)
-            # so it runs after this slot returns and the call stack is clean.
-            self._open_consequence_step_picker(cid)
-            QTimer.singleShot(0, lambda c=cid: (
-                self.tree_panel.refresh(CONS_T, c),
-                self.scenario_panel.refresh_placed()))
+            logging.info('consequence_created: cid=%s — entering handler', cid)
+            try:
+                logging.info('consequence_created: step 1 — calling _open_consequence_step_picker')
+                self._open_consequence_step_picker(cid)
+                logging.info('consequence_created: step 2 — picker returned, scheduling deferred refresh')
+                def _deferred(c=cid):
+                    logging.info('consequence_created: deferred step — tree_panel.refresh(%s)', c)
+                    try:
+                        self.tree_panel.refresh(CONS_T, c)
+                        logging.info('consequence_created: deferred step — tree refresh done')
+                        self.scenario_panel.refresh_placed()
+                        logging.info('consequence_created: deferred step — refresh_placed done')
+                    except Exception:
+                        logging.exception('consequence_created: CRASH in deferred refresh')
+                QTimer.singleShot(0, _deferred)
+                logging.info('consequence_created: handler done (deferred refresh scheduled)')
+            except Exception:
+                logging.exception('consequence_created: CRASH in handler')
         self.pid_panel.consequence_created.connect(_on_consequence_created)
         self.pid_panel.ref_tag_picked.connect(self._on_ref_tag_picked)
         self.pid_panel.safeguard_created.connect(self._on_safeguard_created)
@@ -15516,37 +15523,52 @@ class MainWindow(QMainWindow):
 
     def _open_consequence_step_picker(self, cons_id: int):
         """Open ConsequenceStepPickerDialog after a new consequence is created on P&ID."""
-        cons = self.db.get_consequence(cons_id)
-        if not cons:
-            return
-        cause = self.db.get_cause(cons['cause_id'])
-        dev_desc = comp = cause_tx = ''
-        if cause:
-            cause_d = dict(cause)
-            comp    = cause_d.get('comp_type', '') or ''
-            cause_tx = cause_d.get('description', '') or ''
-            dev_id  = cause_d.get('deviation_id')
-            if dev_id:
-                dev = self.db.get_deviation(dev_id)
-                if dev:
-                    dev_desc = dev['description'] or ''
+        logging.info('_open_consequence_step_picker: cons_id=%s', cons_id)
+        try:
+            cons = self.db.get_consequence(cons_id)
+            if not cons:
+                logging.warning('_open_consequence_step_picker: consequence %s not found in DB', cons_id)
+                return
+            cause = self.db.get_cause(cons['cause_id'])
+            dev_desc = comp = cause_tx = ''
+            if cause:
+                cause_d = dict(cause)
+                comp    = cause_d.get('comp_type', '') or ''
+                cause_tx = cause_d.get('description', '') or ''
+                dev_id  = cause_d.get('deviation_id')
+                if dev_id:
+                    dev = self.db.get_deviation(dev_id)
+                    if dev:
+                        dev_desc = dev['description'] or ''
 
-        initial_tag = getattr(self.pid_panel, '_pending_cons_tag', '') or ''
+            initial_tag = getattr(self.pid_panel, '_pending_cons_tag', '') or ''
+            logging.info('_open_consequence_step_picker: creating dialog (dev=%r comp=%r)', dev_desc, comp)
 
-        dlg = ConsequenceStepPickerDialog(
-            self.db, cons_id,
-            deviation=dev_desc, comp_type=comp, cause_text=cause_tx,
-            initial_ref_tag=initial_tag,
-            parent=self)
-        # Keep a reference so _on_ref_tag_picked can fill in the right column
-        self._active_step_picker = dlg
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._active_step_picker = None
-            self.scenario_panel._rebuild()
-            if dlg.add_more_requested:
-                self.pid_panel._set_mode(MODE_CONSEQUENCE)
-        else:
-            self._active_step_picker = None
+            dlg = ConsequenceStepPickerDialog(
+                self.db, cons_id,
+                deviation=dev_desc, comp_type=comp, cause_text=cause_tx,
+                initial_ref_tag=initial_tag,
+                parent=self)
+            self._active_step_picker = dlg
+            logging.info('_open_consequence_step_picker: calling dlg.exec()')
+            result = dlg.exec()
+            logging.info('_open_consequence_step_picker: dlg.exec() returned %s', result)
+            if result == QDialog.DialogCode.Accepted:
+                self._active_step_picker = None
+                logging.info('_open_consequence_step_picker: accepted — calling scenario_panel._rebuild()')
+                try:
+                    self.scenario_panel._rebuild()
+                    logging.info('_open_consequence_step_picker: _rebuild() done')
+                except Exception:
+                    logging.exception('_open_consequence_step_picker: CRASH in _rebuild()')
+                if dlg.add_more_requested:
+                    logging.info('_open_consequence_step_picker: add_more_requested — set MODE_CONSEQUENCE')
+                    self.pid_panel._set_mode(MODE_CONSEQUENCE)
+            else:
+                logging.info('_open_consequence_step_picker: cancelled/rejected')
+                self._active_step_picker = None
+        except Exception:
+            logging.exception('_open_consequence_step_picker: CRASH')
 
     def _on_ref_tag_picked(self, tag: str):
         """Called when user clicks P&ID in MODE_PICK_REF_TAG — fill the waiting column."""
