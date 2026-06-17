@@ -3331,6 +3331,23 @@ class Database:
             self.conn.execute(f"UPDATE causes SET {', '.join(sets)} WHERE id=?", vals)
             self.commit()
 
+        # Learn from every explicit tag+type assignment, regardless of which
+        # UI path triggered it.  Read back the current values if either param
+        # was not part of this call so we always have both.
+        effective_ct  = comp_type  if comp_type  is not Database._SENTINEL else None
+        effective_tag = comp_tag   if comp_tag   is not Database._SENTINEL else None
+        if effective_ct is None or effective_tag is None:
+            row = self.conn.execute(
+                "SELECT comp_type, comp_tag FROM causes WHERE id=?", (id_,)).fetchone()
+            if row:
+                if effective_ct  is None: effective_ct  = row['comp_type']  or ''
+                if effective_tag is None: effective_tag = row['comp_tag']   or ''
+        if effective_ct and effective_tag:
+            try:
+                self.upsert_tag_memory(effective_tag, effective_ct)
+            except Exception:
+                pass
+
     def update_cause_freqs_from_standard(self):
         """Overwrite base_freq on all causes linked to a standard cause that has a frequency."""
         self.conn.execute("""
