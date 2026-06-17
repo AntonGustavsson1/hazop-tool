@@ -10368,7 +10368,7 @@ class ScenarioTablePanel(QWidget):
         lopa_w = _LopaWidget(self.db, cid,
                              fa_active, fa_rrf, ign_active, ign_rrf, n_active)
         lopa_w._extra_btn.clicked.connect(lambda _, c=cid: self._edit_extra(c))
-        lopa_w.changed.connect(lambda _c: QTimer.singleShot(0, self._rebuild))
+        lopa_w.changed.connect(self._update_lopa_risk)
         self._table.setCellWidget(r, self._C_LOPA, lopa_w)
 
         # ── Col 6: Risk efter barriärer (only when a category is set) ────────
@@ -10480,6 +10480,79 @@ class ScenarioTablePanel(QWidget):
             parts.append(f"⬡ {dev_desc}")
         self._ctx_bar.setText("   " + "     ›     ".join(parts))
         self._ctx_bar.show()
+
+    def _update_lopa_risk(self, cons_id: int):
+        """Targeted update of REFT/SLUT cells when FA/IGN/Övriga changes.
+
+        Avoids a full _rebuild() — only recalculates risk values for the
+        rows belonging to *cons_id* and patches those cells in-place.
+        """
+        cons_d = self.db.get_consequence(cons_id)
+        if not cons_d:
+            return
+        cons_d = dict(cons_d)
+        cause_id = cons_d.get('cause_id')
+        cause = self.db.get_cause(cause_id) if cause_id else None
+        if not cause:
+            return
+        cause_d = dict(cause)
+        freq    = self.db.cause_frequency_level(cause_d)
+        rfs     = [dict(rf) for rf in self.db.reduction_factors(cons_id)]
+        fa_active  = bool(cons_d.get('fa_active', 0))
+        fa_rrf     = cons_d.get('fa_rrf', 10) or 10
+        ign_active = bool(cons_d.get('ignition_active', 0))
+        ign_rrf    = cons_d.get('ignition_rrf', 10) or 10
+        all_sgs = [dict(s) for s in self.db.safeguards(cons_id)]
+
+        cause_excl = set()
+        for sg in all_sgs:
+            ec = self.db.get_safeguard_excluded_causes(sg['id'])
+            if cause_d['id'] in ec:
+                cause_excl.add(sg['id'])
+
+        self._table.blockSignals(True)
+        for row, (_, cid_row, cid, sg_id) in enumerate(self._row_meta):
+            if cid != cons_id:
+                continue
+            cat_info = self._row_cat_info[row] if row < len(self._row_cat_info) else None
+
+            # Build sg_rrf for this row
+            if cat_info:
+                cat_id, sev_id, cat_name, cat_sev = cat_info
+                sev = cat_sev or 1
+                excl_for_cat = self.db.get_severity_excluded_sgs(sev_id)
+                active_sgs = [s for s in all_sgs
+                              if s['id'] not in excl_for_cat and s['id'] not in cause_excl]
+                sg_rrf = 1
+                for s in active_sgs:
+                    sg_rrf *= (s.get('rrf') or 1)
+            else:
+                sev = cons_d.get('severity') or 1
+                sg_rrf = 1
+                for s in all_sgs:
+                    if s['id'] not in cause_excl:
+                        sg_rrf *= (s.get('rrf') or 1)
+
+            final_f, total_rrf, total_steps = total_freq_reduction(
+                freq, sg_rrf, fa_active, fa_rrf, ign_active, ign_rrf, rfs)
+            f_eff               = effective_frequency(freq, sg_rrf)
+            _, bg_a, _          = risk_info(f_eff, sev)
+            _, bg_s, _          = risk_info(final_f, sev)
+
+            if cat_info:
+                sg_steps  = int(math.log10(max(1, sg_rrf))) if sg_rrf > 1 else 0
+                reft_text = (f"−{sg_steps} steg\n" if sg_steps else "") + \
+                            f"{freq_axis_label(f_eff)}  {cons_axis_label(sev)}"
+                ra = self._table.item(row, self._C_REFT)
+                if ra:
+                    ra.setText(reft_text)
+
+                slut_text = (f"−{total_steps} steg\n" if total_steps else "") + \
+                            f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}"
+                rs = self._table.item(row, self._C_SLUT)
+                if rs:
+                    rs.setText(slut_text)
+        self._table.blockSignals(False)
 
     def refresh_placed(self):
         """Reload which IDs are placed on the P&ID and repaint the table."""
