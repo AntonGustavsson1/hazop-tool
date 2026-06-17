@@ -1350,6 +1350,22 @@ class Database:
             "ALTER TABLE nodes ADD COLUMN approved_by TEXT DEFAULT ''",
             "ALTER TABLE nodes ADD COLUMN approved_at TEXT DEFAULT ''",
             "ALTER TABLE nodes ADD COLUMN study_status TEXT DEFAULT 'draft'",
+            # Smart object recognition (feature 1-4)
+            """CREATE TABLE IF NOT EXISTS study_tag_memory (
+                tag        TEXT PRIMARY KEY,
+                comp_type  TEXT NOT NULL DEFAULT '',
+                comp_tag   TEXT NOT NULL DEFAULT '',
+                phash      TEXT NOT NULL DEFAULT '',
+                usage_count INTEGER NOT NULL DEFAULT 1,
+                updated    TEXT NOT NULL DEFAULT ''
+            )""",
+            """CREATE TABLE IF NOT EXISTS symbol_fingerprints (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                phash       TEXT NOT NULL,
+                comp_type   TEXT NOT NULL DEFAULT '',
+                tag_example TEXT NOT NULL DEFAULT '',
+                usage_count INTEGER NOT NULL DEFAULT 1
+            )""",
         ]:
             try:
                 self.conn.execute(sql)
@@ -1956,6 +1972,80 @@ class Database:
     def all_equipment_types(self):
         return self.conn.execute(
             "SELECT * FROM equipment_types ORDER BY prefix").fetchall()
+
+    def get_equipment_by_tag(self, tag: str):
+        """Return equipment_catalog row for a full tag string (case-insensitive)."""
+        row = self.conn.execute(
+            "SELECT * FROM equipment_catalog WHERE UPPER(tag)=UPPER(?) AND include=1 LIMIT 1",
+            (tag,)).fetchone()
+        return dict(row) if row else None
+
+    # ── Smart object recognition: study tag memory ─────────────────────────────
+
+    def get_tag_memory(self, tag: str):
+        """Return study_tag_memory row for exact tag (case-insensitive)."""
+        row = self.conn.execute(
+            "SELECT * FROM study_tag_memory WHERE UPPER(tag)=UPPER(?) LIMIT 1",
+            (tag,)).fetchone()
+        return dict(row) if row else None
+
+    def upsert_tag_memory(self, tag: str, comp_type: str,
+                          comp_tag: str = '', phash: str = ''):
+        """Save or update the recognised component type for a tag."""
+        if not tag or not comp_type:
+            return
+        now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+        existing = self.conn.execute(
+            "SELECT usage_count FROM study_tag_memory WHERE UPPER(tag)=UPPER(?)",
+            (tag,)).fetchone()
+        if existing:
+            self.conn.execute(
+                "UPDATE study_tag_memory SET comp_type=?,comp_tag=?,phash=?,"
+                "usage_count=usage_count+1,updated=? WHERE UPPER(tag)=UPPER(?)",
+                (comp_type, comp_tag, phash, now, tag))
+        else:
+            self.conn.execute(
+                "INSERT INTO study_tag_memory (tag,comp_type,comp_tag,phash,updated)"
+                " VALUES (?,?,?,?,?)",
+                (tag, comp_type, comp_tag, phash, now))
+        self.commit()
+
+    def find_fingerprint(self, phash: str, max_distance: int = 50):
+        """Return best matching symbol_fingerprints row by Hamming distance, or None."""
+        if not phash:
+            return None
+        try:
+            h1 = int(phash, 16)
+        except ValueError:
+            return None
+        best = None; best_dist = max_distance + 1
+        rows = self.conn.execute(
+            "SELECT * FROM symbol_fingerprints ORDER BY usage_count DESC").fetchall()
+        for row in rows:
+            try:
+                h2 = int(row['phash'], 16)
+                dist = bin(h1 ^ h2).count('1')
+                if dist < best_dist:
+                    best_dist = dist
+                    best = dict(row)
+            except Exception:
+                continue
+        return best
+
+    def store_fingerprint(self, phash: str, comp_type: str, tag_example: str = ''):
+        """Save or increment usage count for a visual fingerprint."""
+        if not phash or not comp_type:
+            return
+        existing = self.find_fingerprint(phash, max_distance=30)
+        if existing:
+            self.conn.execute(
+                "UPDATE symbol_fingerprints SET usage_count=usage_count+1,comp_type=? WHERE id=?",
+                (comp_type, existing['id']))
+        else:
+            self.conn.execute(
+                "INSERT INTO symbol_fingerprints (phash,comp_type,tag_example) VALUES (?,?,?)",
+                (phash, comp_type, tag_example))
+        self.commit()
 
     # ── Categories ────────────────────────────────────────────────────────────
     def consequence_categories(self):

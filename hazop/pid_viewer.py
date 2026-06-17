@@ -8451,7 +8451,14 @@ class PIDPanel(QWidget):
         if not dev_id:
             return
 
-        detected_type = self._db_comp_for_tag(suggested_tag) if suggested_tag else ''
+        # Compute zone phash now (while _pending_zone_pdf still set) for fingerprint lookup
+        phash = ''
+        zone = self._pending_zone_pdf
+        if zone:
+            cx, cy = zone.center().x(), zone.center().y()
+            phash = self._compute_zone_phash(page, cx, cy, zone.width(), zone.height())
+
+        detected_type = self._db_comp_for_tag(suggested_tag or '', phash)
         self.cause_placement_requested.emit(
             dev_id, suggested_tag or '', detected_type, scene_pos, page, '')
 
@@ -8482,6 +8489,20 @@ class PIDPanel(QWidget):
                                   rect_w, rect_h)
         self.viewer.add_cause_marker(cause_id, pdf_x, pdf_y, comp_type, label, comp_tag,
                                      rect_w, rect_h)
+
+        # ── Smart recognition: save tag memory + visual fingerprint ───────────
+        if comp_type and comp_tag:
+            phash = ''
+            if rect_w and rect_h:
+                phash = self._compute_zone_phash(page, pdf_x, pdf_y, rect_w, rect_h)
+            if hasattr(self.db, 'upsert_tag_memory'):
+                self.db.upsert_tag_memory(comp_tag, comp_type,
+                                          comp_tag=comp_tag, phash=phash)
+            if phash and hasattr(self.db, 'store_fingerprint'):
+                self.db.store_fingerprint(phash, comp_type, comp_tag)
+            # Also update KNOWN_PREFIXES confirmation for this session
+            self._confirm_tag_type(comp_tag, comp_type)
+
         self._load_overlays()
         self.cause_template_created.emit(cause_id)
         return cause_id
@@ -8942,24 +8963,92 @@ class PIDPanel(QWidget):
         except Exception:
             pass
 
-    def _db_comp_for_tag(self, tag: str) -> str:
-        """Look up the tag prefix in confirmed PID analysis, then tag database."""
-        if not tag:
+    def _compute_zone_phash(self, page_num: int,
+                            cx_pdf: float, cy_pdf: float,
+                            w_pdf: float, h_pdf: float) -> str:
+        """Compute a 16×16 average-hash for the PDF zone. Returns hex string or ''."""
+        if not HAS_PYMUPDF or self.viewer.pdf_doc is None:
             return ''
-        # For extended tags like 20-PCV-101, extract equipment prefix PCV
-        pfx = _equip_prefix_from_tag(tag)
-        if not pfx:
-            m = re.match(r'^([A-Z]+)', tag.upper())
-            if not m:
+        try:
+            import fitz as _fitz
+            page = self.viewer.pdf_doc.load_page(page_num)
+            margin = max(4.0, min(w_pdf, h_pdf) * 0.15)
+            clip = _fitz.Rect(cx_pdf - w_pdf / 2 - margin,
+                              cy_pdf - h_pdf / 2 - margin,
+                              cx_pdf + w_pdf / 2 + margin,
+                              cy_pdf + h_pdf / 2 + margin)
+            if clip.width <= 0 or clip.height <= 0:
                 return ''
-            pfx = m.group(1)
-        # 1. Confirmed project-specific mapping (highest priority)
-        if hasattr(self.db, 'confirmed_comp_for_tag'):
+            SIZE = 16
+            mat = _fitz.Matrix(SIZE / clip.width, SIZE / clip.height)
+            pix = page.get_pixmap(matrix=mat, clip=clip,
+                                   colorspace=_fitz.csGRAY, alpha=False)
+            if pix.width == 0 or pix.height == 0:
+                return ''
+            pixels = list(pix.samples)
+            if not pixels:
+                return ''
+            mean = sum(pixels) / len(pixels)
+            bits = [1 if p >= mean else 0 for p in pixels]
+            val = 0
+            for b in bits:
+                val = (val << 1) | b
+            n_hex = (len(bits) + 3) // 4
+            return hex(val)[2:].zfill(n_hex)
+        except Exception:
+            return ''
+
+    def _db_comp_for_tag(self, tag: str, phash: str = '') -> str:
+        """Look up component type using 4-level cascade:
+        1. Study tag memory (exact tag learned in this study)
+        2. Equipment catalog (scanned from this P&ID)
+        3. Confirmed project mapping (equipment_types table)
+        4. KNOWN_PREFIXES built-in registry
+        5. Visual fingerprint (phash from zone rectangle)
+        """
+        if not tag and not phash:
+            return ''
+
+        pfx = ''
+        if tag:
+            pfx = _equip_prefix_from_tag(tag)
+            if not pfx:
+                m = re.match(r'^([A-Z]+)', tag.upper())
+                if m:
+                    pfx = m.group(1)
+
+        # 1. Study tag memory — highest priority (user confirmed in this study)
+        if tag and hasattr(self.db, 'get_tag_memory'):
+            mem = self.db.get_tag_memory(tag)
+            if mem and mem.get('comp_type'):
+                return mem['comp_type']
+
+        # 2. Equipment catalog (scanned tags with known type)
+        if tag and hasattr(self.db, 'get_equipment_by_tag'):
+            eq = self.db.get_equipment_by_tag(tag)
+            if eq and eq.get('equipment_type'):
+                return eq['equipment_type']
+
+        # 3. Confirmed project-specific prefix mapping
+        if pfx and hasattr(self.db, 'confirmed_comp_for_tag'):
             confirmed = self.db.confirmed_comp_for_tag(pfx)
             if confirmed:
                 return confirmed
-        # 2. Tag database lookup
-        if hasattr(self.db, 'tag_code_lookup'):
+
+        # 4. KNOWN_PREFIXES built-in registry (was missing — now added)
+        if pfx and pfx in KNOWN_PREFIXES:
+            _, eq_type = KNOWN_PREFIXES[pfx]
+            if eq_type:
+                return eq_type
+
+        # 5. Visual fingerprint match (when zone rectangle was drawn)
+        if phash and hasattr(self.db, 'find_fingerprint'):
+            match = self.db.find_fingerprint(phash)
+            if match and match.get('comp_type'):
+                return match['comp_type']
+
+        # Legacy: tag database lookup
+        if hasattr(self.db, 'tag_code_lookup') and pfx:
             entry = self.db.tag_code_lookup(pfx)
             result = self._comp_from_db_entry(entry)
             if result:
