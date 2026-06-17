@@ -9879,20 +9879,18 @@ class ScenarioTablePanel(QWidget):
     # ── Build ─────────────────────────────────────────────────────────────────
 
     def _rebuild(self):
-        logging.info('_rebuild: enter (rows=%s _rebuilding=%s)',
-                     self._table.rowCount(), getattr(self, '_rebuilding', False))
         if getattr(self, '_rebuilding', False):
-            logging.info('_rebuild: already rebuilding — return')
             return
         self._rebuilding = True
-        logging.info('_rebuild: A — disconnect cellChanged')
+        # Save scroll position and suppress visual updates to prevent jumping
+        _vscroll = self._table.verticalScrollBar().value()
+        _hscroll = self._table.horizontalScrollBar().value()
+        self._table.setUpdatesEnabled(False)
         try:
             self._table.cellChanged.disconnect()
         except Exception:
             pass
-        logging.info('_rebuild: B — blockSignals')
         self._table.blockSignals(True)
-        logging.info('_rebuild: C — clearSpans')
         self._table.clearSpans()
         logging.info('_rebuild: D — setRowCount(0)')
         self._table.setRowCount(0)
@@ -10060,15 +10058,16 @@ class ScenarioTablePanel(QWidget):
             logging.exception('_rebuild: Python exception in row-building loop')
             QMessageBox.critical(None, "Fel i scenariopanel", str(e))
         finally:
-            logging.info('_rebuild: F — unblock signals (rows=%s)', self._table.rowCount())
             self._table.blockSignals(False)
             self._table.cellChanged.connect(self._on_cell_changed)
             self._rebuilding = False
-        logging.info('_rebuild: G — schedule resizeRowsToContents (deferred)')
-        QTimer.singleShot(0, self._table.resizeRowsToContents)
-        logging.info('_rebuild: H — update_ctx_bar')
+        def _after_resize():
+            self._table.resizeRowsToContents()
+            self._table.verticalScrollBar().setValue(_vscroll)
+            self._table.horizontalScrollBar().setValue(_hscroll)
+            self._table.setUpdatesEnabled(True)
+        QTimer.singleShot(0, _after_resize)
         self._update_ctx_bar()
-        logging.info('_rebuild: done')
 
     def _apply_spans(self):
         """Merge consecutive rows that share the same Nod or Orsak."""
@@ -11399,8 +11398,8 @@ class ScenarioTablePanel(QWidget):
                 self.db.copy_safeguard(item_id, tgt_cons)
             else:
                 self.db.move_safeguard(item_id, tgt_cons)
-            self.structure_changed.emit()
             QTimer.singleShot(0, self._rebuild)
+            QTimer.singleShot(0, self.structure_changed.emit)
             event.acceptProposedAction()
 
         elif kind == 'cons':
@@ -11410,8 +11409,8 @@ class ScenarioTablePanel(QWidget):
                 self.db.copy_consequence(item_id, tgt_cause)
             else:
                 self.db.move_consequence(item_id, tgt_cause)
-            self.structure_changed.emit()
             QTimer.singleShot(0, self._rebuild)
+            QTimer.singleShot(0, self.structure_changed.emit)
             event.acceptProposedAction()
 
         elif kind == 'cause':
@@ -11421,8 +11420,8 @@ class ScenarioTablePanel(QWidget):
                 self.db.copy_cause(item_id, tgt_dev)
             else:
                 self.db.move_cause_to_deviation(item_id, tgt_dev)
-            self.structure_changed.emit()
             QTimer.singleShot(0, self._rebuild)
+            QTimer.singleShot(0, self.structure_changed.emit)
             event.acceptProposedAction()
 
     # ── Feature 4 & 5: Context menu ───────────────────────────────────────────
