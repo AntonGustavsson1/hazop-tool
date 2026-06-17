@@ -9035,31 +9035,21 @@ class PIDPanel(QWidget):
             return ''
 
     def _db_comp_for_tag(self, tag: str, phash: str = '') -> str:
-        """Look up component type using 4-level cascade:
-        1. Study tag memory (exact tag learned in this study)
-        2. Equipment catalog (scanned from this P&ID)
-        3. Confirmed project mapping (equipment_types table)
-        4. KNOWN_PREFIXES built-in registry
-        5. Visual fingerprint (phash from zone rectangle)
+        """Look up component type for a tag.
+        Numbers are ignored — only the letter prefix determines type.
+        Only returns types the user has explicitly confirmed; never falls back
+        to KNOWN_PREFIXES for type assignment.  Cascade:
+          1. study_tag_memory (keyed by letter prefix: PU, HV, PCV …)
+          2. equipment_catalog (scanned from this P&ID)
+          3. confirmed project prefix mapping (equipment_types table)
+          4. visual fingerprint (phash from zone rectangle)
         """
         if not tag and not phash:
             return ''
 
-        pfx = ''
-        if tag:
-            pfx = _equip_prefix_from_tag(tag)
-            if not pfx:
-                m = re.match(r'^([A-Z]+)', tag.upper())
-                if m:
-                    pfx = m.group(1)
+        pfx = _equip_prefix_from_tag(tag) if tag else ''
 
-        # 1. Study tag memory — exact tag (user confirmed in this study)
-        if tag and hasattr(self.db, 'get_tag_memory'):
-            mem = self.db.get_tag_memory(tag)
-            if mem and mem.get('comp_type'):
-                return mem['comp_type']
-
-        # 1b. Study tag memory — prefix level (e.g. QMA → Manuell ventil)
+        # 1. Prefix learned in this study
         if pfx and hasattr(self.db, 'get_prefix_memory'):
             learned = self.db.get_prefix_memory(pfx)
             if learned:

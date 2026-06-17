@@ -1292,35 +1292,30 @@ def _tag_letter_prefix(tag: str) -> str:
 
 def _lookup_comp_type_for_tag(tag: str, db) -> str:
     """Cascade lookup for the component type of a tag.
-    Only returns types that the user has explicitly confirmed — never guesses
-    from KNOWN_PREFIXES.  Cascade:
-      1. study_tag_memory exact tag
-      2. study_tag_memory prefix level (e.g. all PU-tags → Pump)
-      3. equipment_catalog (scanned from P&ID with confirmed types)
-      4. equipment_types table (prefix → type confirmed in project settings)
+    Only returns types the user has explicitly confirmed — never guesses
+    from KNOWN_PREFIXES.  Numbers in tags are ignored; only letter prefix matters.
+    Cascade:
+      1. study_tag_memory (keyed by letter prefix: PU, HV, PCV …)
+      2. equipment_catalog (scanned from P&ID with confirmed types)
+      3. equipment_types table (prefix → type confirmed in project settings)
     """
     if not tag:
         return ''
     pfx = _tag_letter_prefix(tag)
     try:
-        # 1. Exact tag learned in this study
-        if hasattr(db, 'get_tag_memory'):
-            mem = db.get_tag_memory(tag)
-            if mem and mem.get('comp_type'):
-                return mem['comp_type']
-        # 2. Prefix-level memory (PU → Pump, HV → Handventil, etc.)
+        # 1. Prefix learned in this study (get_tag_memory already extracts prefix)
         if pfx and hasattr(db, 'get_prefix_memory'):
             learned = db.get_prefix_memory(pfx)
             if learned:
                 return learned
-        # 3. Equipment catalog scanned from this P&ID
+        # 2. Equipment catalog scanned from this P&ID
         row = db.conn.execute(
             "SELECT equipment_type FROM equipment_catalog"
             " WHERE tag=? COLLATE NOCASE LIMIT 1",
             (tag,)).fetchone()
         if row and row[0]:
             return row[0]
-        # 4. Confirmed project prefix mapping
+        # 3. Confirmed project prefix mapping
         if pfx and hasattr(db, 'confirmed_comp_for_tag'):
             confirmed = db.confirmed_comp_for_tag(pfx)
             if confirmed:
@@ -1796,6 +1791,36 @@ class Database:
                         (nid, dev_type))
 
         _sync_cause_likelihoods_from_frequency(self.conn)
+
+        # Migrate study_tag_memory: collapse __PFX__ sentinel rows and full-tag
+        # rows (with numbers) into bare prefix rows (PU, HV, PCV, …).
+        if not self.conn.execute(
+                "SELECT value FROM app_config WHERE key='tag_memory_prefix_only_v1'").fetchone():
+            rows = self.conn.execute(
+                "SELECT tag, comp_type, phash, usage_count FROM study_tag_memory").fetchall()
+            self.conn.execute("DELETE FROM study_tag_memory")
+            merged: dict = {}  # prefix → (comp_type, phash, usage_count)
+            for r in rows:
+                raw = r[0]
+                # Strip __PFX__ sentinel if present
+                if raw.upper().startswith('__PFX__'):
+                    raw = raw[7:]
+                pfx = _tag_letter_prefix(raw) if raw else ''
+                if not pfx:
+                    continue
+                prev = merged.get(pfx)
+                if prev is None or r[3] > prev[2]:
+                    merged[pfx] = (r[1], r[2] or '', r[3] or 1)
+            now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+            for pfx, (ct, ph, cnt) in merged.items():
+                self.conn.execute(
+                    "INSERT INTO study_tag_memory (tag,comp_type,phash,usage_count,updated)"
+                    " VALUES (?,?,?,?,?)",
+                    (pfx, ct, ph, cnt, now))
+            self.conn.execute(
+                "INSERT OR REPLACE INTO app_config (key,value)"
+                " VALUES ('tag_memory_prefix_only_v1','1')")
+
         self.commit()
 
     # ── Config ────────────────────────────────────────────────────────────────
@@ -2048,58 +2073,52 @@ class Database:
     # ── Smart object recognition: study tag memory ─────────────────────────────
 
     def get_tag_memory(self, tag: str):
-        """Return study_tag_memory row for exact tag (case-insensitive)."""
+        """Look up study_tag_memory by the letter prefix of tag.
+        Numbers are sequence numbers and carry no type information, so
+        'PU101', 'PU102', 'E1.M1.PU103' all resolve to prefix 'PU'.
+        """
+        pfx = _tag_letter_prefix(tag) if tag else ''
+        if not pfx:
+            return None
         row = self.conn.execute(
             "SELECT * FROM study_tag_memory WHERE UPPER(tag)=UPPER(?) LIMIT 1",
-            (tag,)).fetchone()
+            (pfx,)).fetchone()
         return dict(row) if row else None
 
     def upsert_tag_memory(self, tag: str, comp_type: str,
                           comp_tag: str = '', phash: str = ''):
-        """Save or update the recognised component type for an exact tag AND its prefix.
-
-        Stores two rows:
-        - exact tag (e.g. 'QMA-101') for highest-priority exact match
-        - prefix key (e.g. '__PFX__QMA') so the next QMA-102 is pre-filled too
+        """Save comp_type keyed by the letter prefix of tag.
+        Numbers are ignored — 'PU101', 'PU102', 'E1.M1.PU103' all store under 'PU'.
         """
         if not comp_type:
             return
-        now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
-
-        def _upsert(key, ct, ctag, ph):
-            existing = self.conn.execute(
-                "SELECT usage_count FROM study_tag_memory WHERE UPPER(tag)=UPPER(?)",
-                (key,)).fetchone()
-            if existing:
-                self.conn.execute(
-                    "UPDATE study_tag_memory SET comp_type=?,comp_tag=?,phash=?,"
-                    "usage_count=usage_count+1,updated=? WHERE UPPER(tag)=UPPER(?)",
-                    (ct, ctag, ph, now, key))
-            else:
-                self.conn.execute(
-                    "INSERT INTO study_tag_memory (tag,comp_type,comp_tag,phash,updated)"
-                    " VALUES (?,?,?,?,?)",
-                    (key, ct, ctag, ph, now))
-
-        if tag:
-            _upsert(tag, comp_type, comp_tag, phash)
-
-        # Store prefix so the next tag in the same series is auto-recognised.
-        # _tag_letter_prefix correctly handles compound tags (E1.M1.PU101 → PU).
         pfx = _tag_letter_prefix(tag) if tag else ''
-        if pfx and pfx != tag.upper():
-            _upsert(f'__PFX__{pfx}', comp_type, '', phash)
-
+        if not pfx:
+            return
+        now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+        existing = self.conn.execute(
+            "SELECT usage_count FROM study_tag_memory WHERE UPPER(tag)=UPPER(?)",
+            (pfx,)).fetchone()
+        if existing:
+            self.conn.execute(
+                "UPDATE study_tag_memory SET comp_type=?,comp_tag=?,phash=?,"
+                "usage_count=usage_count+1,updated=? WHERE UPPER(tag)=UPPER(?)",
+                (comp_type, comp_tag, phash, now, pfx))
+        else:
+            self.conn.execute(
+                "INSERT INTO study_tag_memory (tag,comp_type,comp_tag,phash,updated)"
+                " VALUES (?,?,?,?,?)",
+                (pfx, comp_type, comp_tag, phash, now))
         self.commit()
 
     def get_prefix_memory(self, prefix: str) -> str:
-        """Return learned comp_type for a tag prefix, or ''."""
+        """Return learned comp_type for a letter prefix, or ''."""
         if not prefix:
             return ''
         row = self.conn.execute(
             "SELECT comp_type FROM study_tag_memory "
-            "WHERE tag=? ORDER BY usage_count DESC LIMIT 1",
-            (f'__PFX__{prefix.upper()}',)).fetchone()
+            "WHERE UPPER(tag)=UPPER(?) ORDER BY usage_count DESC LIMIT 1",
+            (prefix,)).fetchone()
         return row['comp_type'] if row else ''
 
     def find_fingerprint(self, phash: str, max_distance: int = 50):
@@ -13538,23 +13557,19 @@ class TagMemoryPanel(QWidget):
         for row in rows:
             r = self._tbl.rowCount()
             self._tbl.insertRow(r)
-            # Friendly display: strip __PFX__ prefix
-            tag_display = dict(row)['tag']
-            is_prefix = tag_display.startswith('__PFX__')
-            if is_prefix:
-                tag_display = f"[prefix] {tag_display[7:]}"
+            d = dict(row)
+            tag_display = d['tag']
             t = QTableWidgetItem(tag_display)
-            t.setData(Qt.ItemDataRole.UserRole, dict(row)['tag'])  # real key
-            if is_prefix:
-                t.setForeground(QBrush(QColor('#1a56db')))
+            t.setData(Qt.ItemDataRole.UserRole, tag_display)
+            t.setForeground(QBrush(QColor('#1a56db')))
             self._tbl.setItem(r, 0, t)
-            ct = QTableWidgetItem(dict(row)['comp_type'])
+            ct = QTableWidgetItem(d['comp_type'])
             self._tbl.setItem(r, 1, ct)
-            uc = QTableWidgetItem(str(dict(row)['usage_count']))
+            uc = QTableWidgetItem(str(d['usage_count']))
             uc.setFlags(uc.flags() & ~Qt.ItemFlag.ItemIsEditable)
             uc.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self._tbl.setItem(r, 2, uc)
-            upd = QTableWidgetItem(dict(row)['updated'] or '')
+            upd = QTableWidgetItem(d['updated'] or '')
             upd.setFlags(upd.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self._tbl.setItem(r, 3, upd)
         self._tbl.blockSignals(False)
