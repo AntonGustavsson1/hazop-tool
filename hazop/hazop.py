@@ -9598,57 +9598,63 @@ class _LopaWidget(QWidget):
         self.cons_id  = cons_id
         self._saving  = False
 
+        _ROW_H = 16   # fixed height per mini-row — keeps widget compact
+
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(3, 1, 3, 1)
-        lay.setSpacing(1)
+        lay.setContentsMargins(2, 0, 2, 0)
+        lay.setSpacing(0)
+
+        _cb_ss  = "font-size:8pt;"
+        _ed_ss  = "font-size:8pt; padding:0px 1px;"
+        _btn_ss = "font-size:7pt; text-align:left; padding:0px 2px; border:none;"
 
         def _pct_edit(val):
             e = QLineEdit(str(val))
-            e.setMaximumWidth(40)
-            e.setMinimumWidth(32)
+            e.setMaximumWidth(36); e.setMinimumWidth(28)
+            e.setFixedHeight(_ROW_H)
             e.setAlignment(Qt.AlignmentFlag.AlignRight)
+            e.setStyleSheet(_ed_ss)
             return e
+
+        def _cb(label, checked, tip):
+            c = QCheckBox(label)
+            c.setChecked(checked)
+            c.setToolTip(tip)
+            c.setFixedHeight(_ROW_H)
+            c.setStyleSheet(_cb_ss)
+            return c
 
         # FA row
         fa_row = QHBoxLayout()
-        fa_row.setContentsMargins(0, 0, 0, 0)
-        fa_row.setSpacing(2)
-        self._fa_cb   = QCheckBox("FA")
-        self._fa_cb.setChecked(bool(fa_active))
-        self._fa_cb.setToolTip("Närvaro/FA-sannolikhet\n10%=−1 steg, 1%=−2 steg")
+        fa_row.setContentsMargins(0, 0, 0, 0); fa_row.setSpacing(2)
+        self._fa_cb   = _cb("FA", bool(fa_active), "Närvaro/FA-sannolikhet\n10%=−1 steg")
         self._fa_edit = _pct_edit(fa_rrf)
         self._fa_edit.setToolTip("Sannolikhet i % (t.ex. 10 eller 1)")
-        fa_pct = QLabel("%"); fa_pct.setFixedWidth(12)
-        fa_row.addWidget(self._fa_cb)
-        fa_row.addStretch()
-        fa_row.addWidget(self._fa_edit)
-        fa_row.addWidget(fa_pct)
+        fa_pct = QLabel("%"); fa_pct.setFixedWidth(10); fa_pct.setStyleSheet(_cb_ss)
+        fa_row.addWidget(self._fa_cb); fa_row.addStretch()
+        fa_row.addWidget(self._fa_edit); fa_row.addWidget(fa_pct)
         lay.addLayout(fa_row)
 
         # Antändning row
         ign_row = QHBoxLayout()
-        ign_row.setContentsMargins(0, 0, 0, 0)
-        ign_row.setSpacing(2)
-        self._ign_cb   = QCheckBox("Ant.")
-        self._ign_cb.setChecked(bool(ign_active))
-        self._ign_cb.setToolTip("Antändningssannolikhet\n10%=−1 steg, 1%=−2 steg")
+        ign_row.setContentsMargins(0, 0, 0, 0); ign_row.setSpacing(2)
+        self._ign_cb   = _cb("Ant.", bool(ign_active), "Antändningssannolikhet\n10%=−1 steg")
         self._ign_edit = _pct_edit(ign_rrf)
         self._ign_edit.setToolTip("Sannolikhet i % (t.ex. 10 eller 1)")
-        ign_pct = QLabel("%"); ign_pct.setFixedWidth(12)
-        ign_row.addWidget(self._ign_cb)
-        ign_row.addStretch()
-        ign_row.addWidget(self._ign_edit)
-        ign_row.addWidget(ign_pct)
+        ign_pct = QLabel("%"); ign_pct.setFixedWidth(10); ign_pct.setStyleSheet(_cb_ss)
+        ign_row.addWidget(self._ign_cb); ign_row.addStretch()
+        ign_row.addWidget(self._ign_edit); ign_row.addWidget(ign_pct)
         lay.addLayout(ign_row)
 
         # Övriga faktorer button
         self._extra_btn = QPushButton(
-            f"+ {n_extra} övr." if n_extra else "+ övriga")
+            f"+{n_extra} övr." if n_extra else "+ övriga")
         self._extra_btn.setFlat(True)
-        self._extra_btn.setMaximumHeight(18)
-        self._extra_btn.setStyleSheet(
-            "text-align:left; padding-left:2px; font-size:8pt;")
+        self._extra_btn.setFixedHeight(_ROW_H)
+        self._extra_btn.setStyleSheet(_btn_ss)
         lay.addWidget(self._extra_btn)
+
+        self.setFixedHeight(_ROW_H * 3 + 2)
 
         self._fa_cb.toggled.connect(self._save)
         self._fa_edit.editingFinished.connect(self._save)
@@ -15730,9 +15736,7 @@ class MainWindow(QMainWindow):
             if self.view_stack.currentIndex() == 0:
                 QTimer.singleShot(80, lambda nid=id_: self.zoom_to_node(nid))
         elif type_ == DEV_T:
-            dev = self.db.get_deviation(id_)
-            if dev:
-                self.pid_panel.set_active_node(dev['node_id'])
+            self.pid_panel.set_active_deviation(id_)
             self.scenario_panel.load_deviation(id_)
         elif type_ == CAUSE_T:
             self.pid_panel.set_active_cause(id_)

@@ -8674,12 +8674,20 @@ class PIDPanel(QWidget):
         self._active_cause_id       = None
         self._active_consequence_id = None
 
+    def set_active_deviation(self, dev_id):
+        self._active_deviation_id = dev_id
+        dev = self.db.get_deviation(dev_id) if dev_id else None
+        if dev:
+            self._active_node_id = dict(dev).get('node_id')
+
     def set_active_cause(self, cause_id):
         self._active_cause_id       = cause_id
         self._active_consequence_id = None
         row = self.db.get_cause(cause_id)
         if row:
-            self._active_node_id = dict(row).get('node_id')
+            d = dict(row)
+            self._active_node_id      = d.get('node_id')
+            self._active_deviation_id = d.get('deviation_id')
 
     def set_active_consequence(self, cons_id):
         self._active_consequence_id = cons_id
