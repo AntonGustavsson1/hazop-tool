@@ -9736,6 +9736,12 @@ class ScenarioTablePanel(QWidget):
         self._hdr_lbl.setFont(f)
         hdr_row.addWidget(self._hdr_lbl)
         hdr_row.addStretch()
+        self._fill_chk = QCheckBox("Fyll skärm")
+        self._fill_chk.setChecked(True)
+        self._fill_chk.setToolTip("Sträck kolumnerna så tabellen fyller hela bredden")
+        self._fill_chk.toggled.connect(self._apply_fill_mode)
+        hdr_row.addWidget(self._fill_chk)
+        hdr_row.addSpacing(8)
         hdr_row.addWidget(QLabel("Textstorlek:"))
         self._fs_spin = QSpinBox()
         self._fs_spin.setRange(7, 16)
@@ -9750,6 +9756,9 @@ class ScenarioTablePanel(QWidget):
         self._table = QTableWidget(0, len(self._COLS))
         self._table.setHorizontalHeaderLabels(self._COLS)
         h = self._table.horizontalHeader()
+        # NOD and DEV are hidden — context is shown in the header label instead
+        self._table.setColumnHidden(self._C_NOD, True)
+        self._table.setColumnHidden(self._C_DEV, True)
         resize_modes = {
             self._C_NOD:   (QHeaderView.ResizeMode.Interactive,  70),
             self._C_DEV:   (QHeaderView.ResizeMode.Interactive, 120),
@@ -9793,6 +9802,7 @@ class ScenarioTablePanel(QWidget):
         for col in (self._C_ORS, self._C_KON, self._C_SG):
             self._table.setItemDelegateForColumn(col, self._pid_delegate)
         self._table.viewport().installEventFilter(self)
+        self._apply_fill_mode(True)   # default: stretch to fill screen
         self._placed_causes       = set()
         self._placed_consequences = set()
         self._placed_safeguards   = set()
@@ -9854,6 +9864,33 @@ class ScenarioTablePanel(QWidget):
         self._cons_id = None
         self._table.setRowCount(0)
         self._hdr_lbl.setText("HAZOP Scenario")
+
+    # Columns that stretch to fill remaining space in fill mode
+    _STRETCH_COLS = None  # set after class constants are known
+
+    def _apply_fill_mode(self, fill: bool = True):
+        """Toggle between stretch-to-fill and interactive column widths."""
+        h = self._table.horizontalHeader()
+        stretch_cols = {self._C_ORS, self._C_KON, self._C_SG}
+        fixed_widths = {
+            self._C_RFORE: 85, self._C_REFT: 85,
+            self._C_LOPA:  130, self._C_SLUT: 85,
+        }
+        if fill:
+            for col in stretch_cols:
+                h.setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)
+            for col, w in fixed_widths.items():
+                h.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
+                self._table.setColumnWidth(col, w)
+            self._table.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        else:
+            for col in stretch_cols:
+                h.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+            for col in fixed_widths:
+                h.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+            self._table.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
     def _on_font_size_changed(self, size):
         self._cell_font_size = size
