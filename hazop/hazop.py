@@ -2117,11 +2117,22 @@ class Database:
         """Return learned comp_type for a letter prefix (active entries only)."""
         if not prefix:
             return ''
-        row = self.conn.execute(
-            "SELECT comp_type FROM study_tag_memory "
-            "WHERE UPPER(tag)=UPPER(?) AND active=1 ORDER BY usage_count DESC LIMIT 1",
-            (prefix,)).fetchone()
-        return row['comp_type'] if row else ''
+        try:
+            row = self.conn.execute(
+                "SELECT comp_type FROM study_tag_memory "
+                "WHERE UPPER(tag)=UPPER(?) AND active=1 ORDER BY usage_count DESC LIMIT 1",
+                (prefix,)).fetchone()
+            return row['comp_type'] if row else ''
+        except Exception:
+            # Fallback without active filter (e.g. old DB missing the column)
+            try:
+                row = self.conn.execute(
+                    "SELECT comp_type FROM study_tag_memory "
+                    "WHERE UPPER(tag)=UPPER(?) ORDER BY usage_count DESC LIMIT 1",
+                    (prefix,)).fetchone()
+                return row['comp_type'] if row else ''
+            except Exception:
+                return ''
 
     def set_tag_memory_active(self, prefix: str, active: bool):
         self.conn.execute(
@@ -7478,6 +7489,7 @@ class StandardCausesPickerPopup(QDialog):
         self._ft_edit.returnPressed.connect(self._pick_selected)
         self._search_edit.installEventFilter(self)
 
+        self._initial_comp_type = comp_type   # remember for deviation changes
         self._populate_objects(comp_type)
 
     # ── Object buttons ────────────────────────────────────────────────────────
@@ -7486,7 +7498,7 @@ class StandardCausesPickerPopup(QDialog):
         if 0 <= idx < len(self._dev_items):
             self.selected_node_dev_id = self._dev_items[idx][0]
             self._dev_id              = self._dev_items[idx][2]
-        self._populate_objects()
+        self._populate_objects(getattr(self, '_initial_comp_type', ''))
 
     def _populate_objects(self, preselect_comp: str = ''):
         # Remove old buttons
@@ -7495,15 +7507,13 @@ class StandardCausesPickerPopup(QDialog):
         self._obj_btn_group.clear()
 
         if self._dev_id is None:
-            # No matching standard deviation — show all objects as fallback
             objs = self._db.standard_objects()
         else:
             objs = self._db.objects_for_deviation(self._dev_id)
 
         if not objs and self._dev_id is not None:
-            # Deviation exists in standard_deviations but has no causes yet
-            # Fall back to showing all standard objects so user can still pick
             objs = self._db.standard_objects()
+
         sel_btn = None
         for obj in objs:
             icon_px = QPixmap(18, 18)
@@ -7523,7 +7533,18 @@ class StandardCausesPickerPopup(QDialog):
                 sel_btn = btn
         self._obj_inner_l.addStretch()
 
-        # Select the first button (or the pre-selected one)
+        # If the learned type isn't in this deviation's objects, try all objects
+        if preselect_comp and sel_btn is None:
+            all_objs = self._db.standard_objects()
+            for obj in all_objs:
+                if preselect_comp.lower() in obj['name'].lower():
+                    # Find and select the matching button if it exists
+                    for btn in self._obj_btn_group:
+                        if btn.property('obj_name') == obj['name']:
+                            sel_btn = btn
+                            break
+                    break
+
         target = sel_btn or (self._obj_btn_group[0] if self._obj_btn_group else None)
         if target:
             target.setChecked(True)

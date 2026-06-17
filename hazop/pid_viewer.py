@@ -8118,10 +8118,14 @@ class PIDPanel(QWidget):
 
     def _on_context_action(self, action, pos, page):
         if action == 'cause':
-            tag = find_tag_near_point(self.viewer.pdf_doc, page,
-                                      *self.viewer.scene_to_pdf(pos)) \
-                  if self.viewer.pdf_doc else ''
+            pdf_x, pdf_y = self.viewer.scene_to_pdf(pos)
+            tag = find_tag_near_point(
+                self.viewer.pdf_doc, page, pdf_x, pdf_y, radius=100) \
+                if self.viewer.pdf_doc else ''
             detected_type = self._db_comp_for_tag(tag) if tag else ''
+            # Fallback: look for an existing cause marker nearby and reuse its type
+            if not detected_type and hasattr(self.db, 'cause_markers_for_page'):
+                detected_type = self._type_from_nearest_marker(pdf_x, pdf_y, page)
             dev_id = self._active_deviation_id or 0
             self.cause_placement_requested.emit(dev_id, tag or '', detected_type, pos, page, '')
         elif action == 'consequence':
@@ -8141,6 +8145,34 @@ class PIDPanel(QWidget):
         elif action == 'risk_scenario':
             node_id = self._active_node_id or 0
             self.risk_scenario_requested.emit(node_id, pos, page)
+
+    def _type_from_nearest_marker(self, pdf_x: float, pdf_y: float,
+                                   page: int, radius: float = 150) -> str:
+        """Return comp_type of the nearest existing cause marker within radius.
+        Used as fallback when tag text cannot be extracted from the PDF."""
+        try:
+            markers = self.db.cause_markers_for_page(page)
+            best_type = ''
+            best_dist = radius ** 2
+            for m in markers:
+                dx = m['x'] - pdf_x
+                dy = m['y'] - pdf_y
+                d2 = dx * dx + dy * dy
+                if d2 < best_dist:
+                    ct = m.get('comp_type', '') or ''
+                    tag = m.get('comp_tag', '') or m.get('component_tag', '') or ''
+                    if ct:
+                        best_dist = d2
+                        best_type = ct
+                    elif tag:
+                        # Derive type from tag memory
+                        looked_up = self._db_comp_for_tag(tag)
+                        if looked_up:
+                            best_dist = d2
+                            best_type = looked_up
+            return best_type
+        except Exception:
+            return ''
 
     def _draw_tag_highlights(self):
         """Highlight complete tag numbers found on the current PDF page.
