@@ -7516,9 +7516,13 @@ class StandardCausesPickerPopup(QDialog):
             self._select_obj_by_type(comp)
 
     def _select_obj_by_type(self, comp_type: str):
-        """Check the object button that matches comp_type (case-insensitive substring)."""
+        """Check the object button that matches comp_type (case-insensitive substring).
+        If the matching button doesn't exist yet (filtered out by deviation),
+        repopulates the list with all objects so the button is present.
+        """
         if not comp_type:
             return
+        # Try existing buttons first
         for btn in self._obj_btn_group:
             if comp_type.lower() in btn.property('obj_name').lower():
                 if not btn.isChecked():
@@ -7528,6 +7532,8 @@ class StandardCausesPickerPopup(QDialog):
                     self._load_causes_for_obj(
                         btn.property('obj_id'), btn.property('obj_name'))
                 return
+        # Button not found — expand the list to all objects and try again
+        self._populate_objects(comp_type)
 
     def _on_dev_combo_changed(self, idx):
         """Deviation combo changed — update selected IDs and reload object list."""
@@ -7547,11 +7553,17 @@ class StandardCausesPickerPopup(QDialog):
         else:
             objs = self._db.objects_for_deviation(self._dev_id)
 
-        if not objs and self._dev_id is not None:
+        if not objs:
             objs = self._db.standard_objects()
 
-        sel_btn = None
-        for obj in objs:
+        # If a preselect type is requested but absent from the filtered list,
+        # fall back to all objects so the button actually exists.
+        if preselect_comp:
+            names = [o['name'].lower() for o in objs]
+            if not any(preselect_comp.lower() in n for n in names):
+                objs = self._db.standard_objects()
+
+        def _make_btn(obj):
             icon_px = QPixmap(18, 18)
             icon_px.fill(Qt.GlobalColor.transparent)
             _p = QPainter(icon_px)
@@ -7563,23 +7575,16 @@ class StandardCausesPickerPopup(QDialog):
             btn.setProperty('obj_id',   obj['id'])
             btn.setProperty('obj_name', obj['name'])
             btn.clicked.connect(lambda _checked, b=btn: self._on_obj_btn(b))
+            return btn
+
+        sel_btn = None
+        for obj in objs:
+            btn = _make_btn(obj)
             self._obj_inner_l.addWidget(btn)
             self._obj_btn_group.append(btn)
             if preselect_comp and preselect_comp.lower() in obj['name'].lower():
                 sel_btn = btn
         self._obj_inner_l.addStretch()
-
-        # If the learned type isn't in this deviation's objects, try all objects
-        if preselect_comp and sel_btn is None:
-            all_objs = self._db.standard_objects()
-            for obj in all_objs:
-                if preselect_comp.lower() in obj['name'].lower():
-                    # Find and select the matching button if it exists
-                    for btn in self._obj_btn_group:
-                        if btn.property('obj_name') == obj['name']:
-                            sel_btn = btn
-                            break
-                    break
 
         target = sel_btn or (self._obj_btn_group[0] if self._obj_btn_group else None)
         if target:
