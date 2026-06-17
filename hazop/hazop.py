@@ -9943,8 +9943,8 @@ class ScenarioTablePanel(QWidget):
             self._table.blockSignals(False)
             self._table.cellChanged.connect(self._on_cell_changed)
             self._rebuilding = False
-        logging.info('_rebuild: G — resizeRowsToContents')
-        self._table.resizeRowsToContents()
+        logging.info('_rebuild: G — schedule resizeRowsToContents (deferred)')
+        QTimer.singleShot(0, self._table.resizeRowsToContents)
         logging.info('_rebuild: H — update_ctx_bar')
         self._update_ctx_bar()
         logging.info('_rebuild: done')
