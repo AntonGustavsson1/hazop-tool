@@ -13387,6 +13387,200 @@ class SeverityDefinitionsPanel(QWidget):
             self.db.set_severity_definition(lvl, cid, edit.text().strip())
 
 
+class TagMemoryPanel(QWidget):
+    """View and edit the smart object recognition memory for this project."""
+
+    def __init__(self, db: Database):
+        super().__init__()
+        self.db = db
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(6)
+
+        # Header
+        hdr = QHBoxLayout()
+        title = QLabel("Smart igenkänning — tagminne")
+        tf = QFont(); tf.setBold(True); tf.setPointSize(10)
+        title.setFont(tf)
+        hdr.addWidget(title)
+        hdr.addStretch()
+        btn_clear = QPushButton("🗑 Rensa allt")
+        btn_clear.setToolTip("Ta bort alla lärda mappningar för detta projekt")
+        btn_clear.clicked.connect(self._clear_all)
+        hdr.addWidget(btn_clear)
+        lay.addLayout(hdr)
+
+        info = QLabel(
+            "Programmet lär sig tagg → komponenttyp från dina val. "
+            "Varje projekt har sitt eget minne. "
+            "Markera rader och tryck Delete (eller knappen nedan) för att korrigera fel.")
+        info.setWordWrap(True)
+        info.setStyleSheet("color:#555; font-size:10px;")
+        lay.addWidget(info)
+
+        # Table
+        self._tbl = QTableWidget(0, 4)
+        self._tbl.setHorizontalHeaderLabels(
+            ["Tagg / prefix", "Komponenttyp", "Antal gånger", "Senast använd"])
+        h = self._tbl.horizontalHeader()
+        h.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        h.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        h.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        h.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self._tbl.setColumnWidth(0, 140)
+        self._tbl.verticalHeader().setVisible(False)
+        self._tbl.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._tbl.setAlternatingRowColors(True)
+        self._tbl.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
+        self._tbl.itemChanged.connect(self._on_item_changed)
+        lay.addWidget(self._tbl)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_del = QPushButton("🗑 Ta bort markerade")
+        btn_del.clicked.connect(self._delete_selected)
+        btn_row.addWidget(btn_del)
+        lay.addLayout(btn_row)
+
+        # Fingerprints section
+        fp_hdr = QHBoxLayout()
+        fp_title = QLabel("Visuella fingeravtryck (symbolmönster)")
+        fp_title.setFont(tf)
+        fp_hdr.addWidget(fp_title)
+        fp_hdr.addStretch()
+        btn_fp_clear = QPushButton("🗑 Rensa fingeravtryck")
+        btn_fp_clear.clicked.connect(self._clear_fingerprints)
+        fp_hdr.addWidget(btn_fp_clear)
+        lay.addLayout(fp_hdr)
+
+        self._fp_tbl = QTableWidget(0, 3)
+        self._fp_tbl.setHorizontalHeaderLabels(
+            ["Komponenttyp", "Exempeltagg", "Antal matchningar"])
+        fp_h = self._fp_tbl.horizontalHeader()
+        fp_h.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        fp_h.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        fp_h.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self._fp_tbl.setColumnWidth(1, 120)
+        self._fp_tbl.verticalHeader().setVisible(False)
+        self._fp_tbl.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._fp_tbl.setAlternatingRowColors(True)
+        self._fp_tbl.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._fp_tbl.setMaximumHeight(140)
+        lay.addWidget(self._fp_tbl)
+
+        self.refresh()
+
+    def refresh(self):
+        # Tag memory
+        self._tbl.blockSignals(True)
+        self._tbl.setRowCount(0)
+        try:
+            rows = self.db.conn.execute(
+                "SELECT tag, comp_type, usage_count, updated "
+                "FROM study_tag_memory ORDER BY usage_count DESC, tag").fetchall()
+        except Exception:
+            rows = []
+        for row in rows:
+            r = self._tbl.rowCount()
+            self._tbl.insertRow(r)
+            # Friendly display: strip __PFX__ prefix
+            tag_display = dict(row)['tag']
+            is_prefix = tag_display.startswith('__PFX__')
+            if is_prefix:
+                tag_display = f"[prefix] {tag_display[7:]}"
+            t = QTableWidgetItem(tag_display)
+            t.setData(Qt.ItemDataRole.UserRole, dict(row)['tag'])  # real key
+            if is_prefix:
+                t.setForeground(QBrush(QColor('#1a56db')))
+            self._tbl.setItem(r, 0, t)
+            ct = QTableWidgetItem(dict(row)['comp_type'])
+            self._tbl.setItem(r, 1, ct)
+            uc = QTableWidgetItem(str(dict(row)['usage_count']))
+            uc.setFlags(uc.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            uc.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._tbl.setItem(r, 2, uc)
+            upd = QTableWidgetItem(dict(row)['updated'] or '')
+            upd.setFlags(upd.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self._tbl.setItem(r, 3, upd)
+        self._tbl.blockSignals(False)
+
+        # Fingerprints
+        self._fp_tbl.setRowCount(0)
+        try:
+            fp_rows = self.db.conn.execute(
+                "SELECT comp_type, tag_example, usage_count "
+                "FROM symbol_fingerprints ORDER BY usage_count DESC").fetchall()
+        except Exception:
+            fp_rows = []
+        for row in fp_rows:
+            r = self._fp_tbl.rowCount()
+            self._fp_tbl.insertRow(r)
+            d = dict(row)
+            self._fp_tbl.setItem(r, 0, QTableWidgetItem(d['comp_type']))
+            self._fp_tbl.setItem(r, 1, QTableWidgetItem(d['tag_example']))
+            uc = QTableWidgetItem(str(d['usage_count']))
+            uc.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._fp_tbl.setItem(r, 2, uc)
+
+    def _on_item_changed(self, item):
+        if item.column() != 1:
+            return
+        row = item.row()
+        key_item = self._tbl.item(row, 0)
+        if not key_item:
+            return
+        real_key = key_item.data(Qt.ItemDataRole.UserRole) or key_item.text()
+        new_type = item.text().strip()
+        if new_type:
+            try:
+                self.db.conn.execute(
+                    "UPDATE study_tag_memory SET comp_type=? WHERE tag=?",
+                    (new_type, real_key))
+                self.db.commit()
+            except Exception:
+                pass
+
+    def _delete_selected(self):
+        rows = sorted({i.row() for i in self._tbl.selectedItems()}, reverse=True)
+        for r in rows:
+            key_item = self._tbl.item(r, 0)
+            if key_item:
+                real_key = key_item.data(Qt.ItemDataRole.UserRole) or key_item.text()
+                try:
+                    self.db.conn.execute(
+                        "DELETE FROM study_tag_memory WHERE tag=?", (real_key,))
+                except Exception:
+                    pass
+        self.db.commit()
+        self.refresh()
+
+    def _clear_all(self):
+        if QMessageBox.question(
+                self, "Rensa tagminne",
+                "Ta bort alla lärda tagg-mappningar för detta projekt?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        ) == QMessageBox.StandardButton.Yes:
+            try:
+                self.db.conn.execute("DELETE FROM study_tag_memory")
+                self.db.commit()
+            except Exception:
+                pass
+            self.refresh()
+
+    def _clear_fingerprints(self):
+        if QMessageBox.question(
+                self, "Rensa fingeravtryck",
+                "Ta bort alla visuella fingeravtryck?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        ) == QMessageBox.StandardButton.Yes:
+            try:
+                self.db.conn.execute("DELETE FROM symbol_fingerprints")
+                self.db.commit()
+            except Exception:
+                pass
+            self.refresh()
+
+
 class SettingsPanel(QWidget):
     matrix_changed = pyqtSignal()
 
@@ -13607,6 +13801,13 @@ class SettingsPanel(QWidget):
         # ── Tab: Standardobjekt ───────────────────────────────────────────────
         self._std_objects_panel = StandardObjectsSettingsPanel(self.db)
         tabs.addTab(self._std_objects_panel, "Standardobjekt")
+
+        # ── Tab: Smart igenkänning ────────────────────────────────────────────
+        self._tag_memory_panel = TagMemoryPanel(self.db)
+        tabs.addTab(self._tag_memory_panel, "🧠 Smart igenkänning")
+        tabs.currentChanged.connect(
+            lambda i: self._tag_memory_panel.refresh()
+            if tabs.widget(i) is self._tag_memory_panel else None)
 
         self._load_all()
 
