@@ -8956,8 +8956,8 @@ class _PidDelegate(_ScenarioDelegate):
                 painter.setFont(option.font)
                 fm = painter.fontMetrics()
                 elided = fm.elidedText(desc, Qt.TextElideMode.ElideRight, desc_w - 4)
-                painter.drawText(desc_rect.adjusted(2, 0, -2, 0),
-                                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                painter.drawText(desc_rect.adjusted(2, 2, -2, -2),
+                                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
                                  elided)
 
                 # RRF badge (right column)
@@ -9043,8 +9043,8 @@ class _PidDelegate(_ScenarioDelegate):
                     painter.setFont(obj_font_t)
                     painter.setPen(obj_tc)
                     fm2 = painter.fontMetrics()
-                    painter.drawText(tag_rect.adjusted(2, 0, -2, 0),
-                                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                    painter.drawText(tag_rect.adjusted(2, 2, -2, -2),
+                                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
                                      fm2.elidedText(tag_label,
                                                     Qt.TextElideMode.ElideRight,
                                                     tag_rect.width() - 4))
@@ -10066,7 +10066,7 @@ class ScenarioTablePanel(QWidget):
                     item = self._table.item(r, col)
                     if item:
                         item.setTextAlignment(
-                            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
+                            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
                 r += span
 
         def _meta(r, idx):
@@ -10116,7 +10116,7 @@ class ScenarioTablePanel(QWidget):
         nod = _ro(node_name)
         self._table.setItem(r, self._C_NOD, nod)
         dev_item = _ro(dev_d['description'] if dev_d else '')
-        dev_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
+        dev_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self._table.setItem(r, self._C_DEV, dev_item)
 
         # ORS cell shows the two-zone layout (with '+' in obj zone) but has no cause yet
@@ -10148,7 +10148,7 @@ class ScenarioTablePanel(QWidget):
         self._table.setItem(r, self._C_NOD, nod)
 
         dev_item = _ro(dev_d['description'] if dev_d else '')
-        dev_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
+        dev_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self._table.setItem(r, self._C_DEV, dev_item)
 
         ors = QTableWidgetItem(cause_d['description'])
@@ -10238,13 +10238,14 @@ class ScenarioTablePanel(QWidget):
         # ── Col 0: Nod ────────────────────────────────────────────────────────
         nod = QTableWidgetItem(node_name)
         nod.setFlags(nod.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        nod.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         nod.setData(Qt.ItemDataRole.UserRole, cause_d['node_id'])
         self._table.setItem(r, self._C_NOD, nod)
 
         # ── Col 1: Avvikelse ─────────────────────────────────────────────────
         dev_item = QTableWidgetItem(dev_d['description'] if dev_d else '')
         dev_item.setFlags(dev_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        dev_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
+        dev_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self._table.setItem(r, self._C_DEV, dev_item)
 
         # ── Col 2: Orsak ─────────────────────────────────────────────────────
@@ -10302,7 +10303,7 @@ class ScenarioTablePanel(QWidget):
         # ── Col 4: Risk före barriär (only when a category is set) ──────────
         if cat_info:
             rb = QTableWidgetItem(f"{freq_axis_label(freq)}  {cons_axis_label(sev)}")
-            rb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            rb.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
             rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
             rb.setToolTip(f"🖱 Klicka för att ändra i riskmatrisen\n{level_b}")
             rb.setData(Qt.ItemDataRole.UserRole,
@@ -10355,7 +10356,7 @@ class ScenarioTablePanel(QWidget):
             reft_text = (f"−{sg_steps} steg\n" if sg_steps else "") + \
                         f"{freq_axis_label(f_eff)}  {cons_axis_label(sev)}"
             ra = QTableWidgetItem(reft_text)
-            ra.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            ra.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
             ra.setFlags(ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
             ra.setToolTip(f"{level_a} — {freq_axis_label(f_eff)}  {cons_axis_label(sev)}  (efter barriärer)")
         else:
@@ -10368,7 +10369,7 @@ class ScenarioTablePanel(QWidget):
             slut_text = (f"−{total_steps} steg\n" if total_steps else "") + \
                         f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}"
             rs = QTableWidgetItem(slut_text)
-            rs.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            rs.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
             rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
             rs.setToolTip(f"{level_s} — {freq_axis_label(final_f)}  {cons_axis_label(sev)}  (−{total_steps} steg totalt)")
         else:
