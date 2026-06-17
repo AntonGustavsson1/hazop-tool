@@ -9206,19 +9206,22 @@ class PIDPanel(QWidget):
 
     def _db_comp_for_tag(self, tag: str, phash: str = '') -> str:
         """Look up component type for a tag.
-        Numbers are ignored — only the letter prefix determines type.
-        Only returns types the user has explicitly confirmed; never falls back
-        to KNOWN_PREFIXES for type assignment.  Cascade:
-          1. study_tag_memory (keyed by letter prefix: PU, HV, PCV …)
-          2. equipment_catalog (scanned from this P&ID)
-          3. confirmed project prefix mapping (equipment_types table)
-          4. visual fingerprint (phash from zone rectangle)
+
+        Only the letter prefix matters — numbers are always ignored.
+        PU0050 and PU9110 are the same prefix (PU = Pump).
+        GPA4 and GPA22 are the same prefix (GPA = whatever the user taught).
+
+        Priority (highest first):
+          1. study_tag_memory  — what the user confirmed for this prefix
+          2. equipment_catalog — types from P&ID scan dialog
+          3. equipment_types   — confirmed project prefix mapping
+          4. KNOWN_PREFIXES    — built-in codes (PU=Pump, HV=Ventil, …)
+          5. visual fingerprint (phash from drawn rectangle)
         Returns '' when smart recognition is globally disabled.
         """
         if not tag and not phash:
             return ''
 
-        # Respect the global "smart recognition enabled" toggle
         smart_on = True
         if hasattr(self.db, 'get_config'):
             smart_on = self.db.get_config('smart_recognition_enabled', '1') == '1'
@@ -9227,25 +9230,31 @@ class PIDPanel(QWidget):
 
         pfx = _equip_prefix_from_tag(tag) if tag else ''
 
-        # 1. Prefix learned in this study (active entries only)
+        # 1. Prefix learned in this study (user-confirmed, highest priority)
         if pfx and hasattr(self.db, 'get_prefix_memory'):
             learned = self.db.get_prefix_memory(pfx)
             if learned:
                 return learned
 
-        # 2. Equipment catalog (scanned tags with known type)
+        # 2. Equipment catalog (scanned from this P&ID)
         if tag and hasattr(self.db, 'get_equipment_by_tag'):
             eq = self.db.get_equipment_by_tag(tag)
             if eq and eq.get('equipment_type'):
                 return eq['equipment_type']
 
-        # 3. Confirmed project-specific prefix mapping
+        # 3. Confirmed project prefix mapping
         if pfx and hasattr(self.db, 'confirmed_comp_for_tag'):
             confirmed = self.db.confirmed_comp_for_tag(pfx)
             if confirmed:
                 return confirmed
 
-        # 4. Visual fingerprint match (when zone rectangle was drawn)
+        # 4. KNOWN_PREFIXES — letters determine type, numbers are irrelevant
+        if pfx and pfx in KNOWN_PREFIXES:
+            _, eq_type = KNOWN_PREFIXES[pfx]
+            if eq_type:
+                return eq_type
+
+        # 5. Visual fingerprint match
         if phash and hasattr(self.db, 'find_fingerprint'):
             match = self.db.find_fingerprint(phash)
             if match and match.get('comp_type'):
