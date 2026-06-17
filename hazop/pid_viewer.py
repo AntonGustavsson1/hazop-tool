@@ -640,7 +640,12 @@ Z_TEMP       = 10
 
 # Simple tag: 1-6 letters + separator + 1-5 digits + 0-3 suffix
 # Examples: PCV-101, FT201A, V-1, ESDV-1001AB
-_TAG_RE = re.compile(r'^[A-Z]{1,6}[-./]?\d{1,5}[A-Z]{0,3}$')
+# Stricter tag pattern: 2+ letter prefix (HV-101, PCV201) OR single letter with
+# mandatory separator and 2+ digits (P-101, E-201). Prevents area codes like "E1",
+# "A2", "N1" from being mistaken for equipment tags.
+_TAG_RE = re.compile(
+    r'^(?:[A-Z]{2,6}[-./]?\d{1,5}[A-Z]{0,3}|[A-Z]{1}[-./]\d{2,5}[A-Z]{0,3})$'
+)
 
 # Tag within continuous text
 _FULL_TAG_RE = re.compile(r'(?<![A-Z0-9])([A-Z]{1,6})[-./]?(\d{1,5}[A-Z]{0,3})(?![A-Z0-9])')
@@ -9022,11 +9027,17 @@ class PIDPanel(QWidget):
                 if m:
                     pfx = m.group(1)
 
-        # 1. Study tag memory — highest priority (user confirmed in this study)
+        # 1. Study tag memory — exact tag (user confirmed in this study)
         if tag and hasattr(self.db, 'get_tag_memory'):
             mem = self.db.get_tag_memory(tag)
             if mem and mem.get('comp_type'):
                 return mem['comp_type']
+
+        # 1b. Study tag memory — prefix level (e.g. QMA → Manuell ventil)
+        if pfx and hasattr(self.db, 'get_prefix_memory'):
+            learned = self.db.get_prefix_memory(pfx)
+            if learned:
+                return learned
 
         # 2. Equipment catalog (scanned tags with known type)
         if tag and hasattr(self.db, 'get_equipment_by_tag'):

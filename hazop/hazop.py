@@ -1991,24 +1991,54 @@ class Database:
 
     def upsert_tag_memory(self, tag: str, comp_type: str,
                           comp_tag: str = '', phash: str = ''):
-        """Save or update the recognised component type for a tag."""
-        if not tag or not comp_type:
+        """Save or update the recognised component type for an exact tag AND its prefix.
+
+        Stores two rows:
+        - exact tag (e.g. 'QMA-101') for highest-priority exact match
+        - prefix key (e.g. '__PFX__QMA') so the next QMA-102 is pre-filled too
+        """
+        if not comp_type:
             return
         now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
-        existing = self.conn.execute(
-            "SELECT usage_count FROM study_tag_memory WHERE UPPER(tag)=UPPER(?)",
-            (tag,)).fetchone()
-        if existing:
-            self.conn.execute(
-                "UPDATE study_tag_memory SET comp_type=?,comp_tag=?,phash=?,"
-                "usage_count=usage_count+1,updated=? WHERE UPPER(tag)=UPPER(?)",
-                (comp_type, comp_tag, phash, now, tag))
-        else:
-            self.conn.execute(
-                "INSERT INTO study_tag_memory (tag,comp_type,comp_tag,phash,updated)"
-                " VALUES (?,?,?,?,?)",
-                (tag, comp_type, comp_tag, phash, now))
+
+        def _upsert(key, ct, ctag, ph):
+            existing = self.conn.execute(
+                "SELECT usage_count FROM study_tag_memory WHERE UPPER(tag)=UPPER(?)",
+                (key,)).fetchone()
+            if existing:
+                self.conn.execute(
+                    "UPDATE study_tag_memory SET comp_type=?,comp_tag=?,phash=?,"
+                    "usage_count=usage_count+1,updated=? WHERE UPPER(tag)=UPPER(?)",
+                    (ct, ctag, ph, now, key))
+            else:
+                self.conn.execute(
+                    "INSERT INTO study_tag_memory (tag,comp_type,comp_tag,phash,updated)"
+                    " VALUES (?,?,?,?,?)",
+                    (key, ct, ctag, ph, now))
+
+        if tag:
+            _upsert(tag, comp_type, comp_tag, phash)
+
+        # Also store by prefix so similar tags are auto-recognised
+        import re as _re
+        pfx = None
+        m = _re.match(r'^(?:\d[\d\-/]*[-/])?([A-Z]{1,6})[-./]?\d', tag.upper() if tag else '')
+        if m:
+            pfx = m.group(1)
+        if pfx and pfx != tag.upper():
+            _upsert(f'__PFX__{pfx}', comp_type, '', phash)
+
         self.commit()
+
+    def get_prefix_memory(self, prefix: str) -> str:
+        """Return learned comp_type for a tag prefix, or ''."""
+        if not prefix:
+            return ''
+        row = self.conn.execute(
+            "SELECT comp_type FROM study_tag_memory "
+            "WHERE tag=? ORDER BY usage_count DESC LIMIT 1",
+            (f'__PFX__{prefix.upper()}',)).fetchone()
+        return row['comp_type'] if row else ''
 
     def find_fingerprint(self, phash: str, max_distance: int = 50):
         """Return best matching symbol_fingerprints row by Hamming distance, or None."""
