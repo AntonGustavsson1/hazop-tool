@@ -16,6 +16,7 @@ from pid_viewer import (
     MODE_NAV, MODE_NODE, MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD, MODE_PICK_REF_TAG,
     scan_pdf_for_equipment, ocr_status, KNOWN_PREFIXES, invert_cause_text,
     _RED_MARKUP_SYMBOLS, _get_red_symbol_svg,
+    _equip_prefix_from_tag,
 )
 
 from PyQt6.QtWidgets import (
@@ -1282,54 +1283,48 @@ def _seed_cause_descriptions(conn):
 
 
 def _tag_letter_prefix(tag: str) -> str:
-    """Extract the leading letter(s) from a tag, stripping any numeric area prefix.
-    'E1' → 'E', 'PCV-101' → 'PCV', '20-FT-201' → 'FT', 'E-101' → 'E'
-    Numbers alone (e.g. '101') return ''.
+    """Extract the instrument-code letter prefix from a P&ID tag.
+    Delegates to _equip_prefix_from_tag for compound-tag handling.
+    'E1.M1.PU101' → 'PU', 'E1' → 'E', 'PCV-101' → 'PCV', '20-FT-201' → 'FT'
     """
-    t = tag.strip().upper()
-    # Strip leading area prefix: digits + separator, e.g. "20-" or "10/"
-    t = re.sub(r'^\d[\d]*[-/]', '', t)
-    m = re.match(r'^([A-Z]{1,6})', t)
-    return m.group(1) if m else ''
+    return _equip_prefix_from_tag(tag) if tag else ''
 
 
 def _lookup_comp_type_for_tag(tag: str, db) -> str:
-    """4-level cascade to find the best component type for a tag.
-    Priority: study memory (exact) → study memory (prefix) →
-              equipment_catalog → confirmed prefix mapping → KNOWN_PREFIXES.
-    Numbers are treated as sequence numbers; the letter prefix determines type.
+    """Cascade lookup for the component type of a tag.
+    Only returns types that the user has explicitly confirmed — never guesses
+    from KNOWN_PREFIXES.  Cascade:
+      1. study_tag_memory exact tag
+      2. study_tag_memory prefix level (e.g. all PU-tags → Pump)
+      3. equipment_catalog (scanned from P&ID with confirmed types)
+      4. equipment_types table (prefix → type confirmed in project settings)
     """
     if not tag:
         return ''
     pfx = _tag_letter_prefix(tag)
     try:
-        # 1. Exact tag in study_tag_memory (user-confirmed in this study)
+        # 1. Exact tag learned in this study
         if hasattr(db, 'get_tag_memory'):
             mem = db.get_tag_memory(tag)
             if mem and mem.get('comp_type'):
                 return mem['comp_type']
-        # 2. Prefix-level memory (e.g. all E-tags → same type)
+        # 2. Prefix-level memory (PU → Pump, HV → Handventil, etc.)
         if pfx and hasattr(db, 'get_prefix_memory'):
             learned = db.get_prefix_memory(pfx)
             if learned:
                 return learned
-        # 3. Equipment catalog (scanned from P&ID)
+        # 3. Equipment catalog scanned from this P&ID
         row = db.conn.execute(
             "SELECT equipment_type FROM equipment_catalog"
             " WHERE tag=? COLLATE NOCASE LIMIT 1",
             (tag,)).fetchone()
         if row and row[0]:
             return row[0]
-        # 4. Confirmed project prefix mapping (equipment_types table)
+        # 4. Confirmed project prefix mapping
         if pfx and hasattr(db, 'confirmed_comp_for_tag'):
             confirmed = db.confirmed_comp_for_tag(pfx)
             if confirmed:
                 return confirmed
-        # 5. KNOWN_PREFIXES built-in registry (lowest priority)
-        if pfx and pfx in KNOWN_PREFIXES:
-            _, eq_type = KNOWN_PREFIXES[pfx]
-            if eq_type:
-                return eq_type
     except Exception:
         pass
     return ''
@@ -2089,12 +2084,9 @@ class Database:
         if tag:
             _upsert(tag, comp_type, comp_tag, phash)
 
-        # Also store by prefix so similar tags are auto-recognised
-        import re as _re
-        pfx = None
-        m = _re.match(r'^(?:\d[\d\-/]*[-/])?([A-Z]{1,6})[-./]?\d', tag.upper() if tag else '')
-        if m:
-            pfx = m.group(1)
+        # Store prefix so the next tag in the same series is auto-recognised.
+        # _tag_letter_prefix correctly handles compound tags (E1.M1.PU101 → PU).
+        pfx = _tag_letter_prefix(tag) if tag else ''
         if pfx and pfx != tag.upper():
             _upsert(f'__PFX__{pfx}', comp_type, '', phash)
 

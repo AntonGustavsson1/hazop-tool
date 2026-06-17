@@ -666,30 +666,49 @@ _AREA_TAG_RE = re.compile(r'^\d{1,4}[-/]([A-Z]{1,6})[-./]?(\d{1,5}[A-Z]{0,3})$')
 
 
 def _equip_prefix_from_tag(tag: str) -> str:
-    """Extract the equipment letter prefix from a full/extended tag.
+    """Extract the equipment-code letter prefix from a P&ID tag.
 
-    '20-PCV-101'  → 'PCV'
-    'K2.FT.201A'  → 'FT'
-    'A-20-HV-301' → 'HV'
-    'PSV-101'     → 'PSV'
-    'E1'          → 'E'    (single-letter, no separator)
-    'E-101'       → 'E'
+    Handles compound tags where area/unit codes precede the instrument code:
+        'E1.M1.PU101'  → 'PU'   (E1, M1 are area codes; PU is instrument code)
+        'E1.M1.HV200'  → 'HV'
+        '20-PCV-101'   → 'PCV'
+        'K2.FT.201A'   → 'FT'
+        'A-20-HV-301'  → 'HV'
+        'PSV-101'      → 'PSV'
+        'E1'           → 'E'    (single segment, single letter — fall back)
+        'E-101'        → 'E'
+
+    Strategy: split by separators, extract leading letters per segment.
+    Area-code segments have 1 letter + digits (E1, M1, K3).
+    Instrument-code segments have 2+ letters (PU101, HV200, PCV).
+    KNOWN_PREFIXES is used only to help identify segments, not to set types.
     """
     parts = re.split(r'[-./]', tag.upper())
-    # 1. Prefer known KNOWN_PREFIXES keys among all-letter parts (any length)
-    for part in parts:
-        if re.match(r'^[A-Z]{1,6}$', part) and part in KNOWN_PREFIXES:
-            return part
-    # 2. First all-letter part of 2+ chars
-    for part in parts:
-        if re.match(r'^[A-Z]{2,6}$', part):
-            return part
-    # 3. Strip trailing digits from the first part (handles 'E1', 'P3A', etc.)
-    first = parts[0] if parts else tag
-    m = re.match(r'^([A-Z]{1,6})\d', first)
-    if m:
-        return m.group(1)
-    return first
+
+    def _leading(s):
+        m = re.match(r'^([A-Z]+)', s)
+        return m.group(1) if m else ''
+
+    letters_per_part = [_leading(p) for p in parts]
+
+    # 1. 2+ letter segment that is a known instrument prefix (most reliable)
+    for ltrs in letters_per_part:
+        if len(ltrs) >= 2 and ltrs in KNOWN_PREFIXES:
+            return ltrs
+
+    # 2. First 2+ letter segment (instrument code beats single-letter area codes)
+    for ltrs in letters_per_part:
+        if len(ltrs) >= 2:
+            return ltrs
+
+    # 3. Single-letter segments — prefer one in KNOWN_PREFIXES
+    for ltrs in letters_per_part:
+        if len(ltrs) == 1 and ltrs in KNOWN_PREFIXES:
+            return ltrs
+
+    # 4. Any leading letters from the first part (e.g. 'E1' → 'E')
+    first = letters_per_part[0] if letters_per_part else ''
+    return first or (parts[0] if parts else tag)
 
 # ── Equipment prefix knowledge base ──────────────────────────────────────────
 # Format: prefix → (swedish_display_name, COMPONENT_TYPES key)
@@ -9058,24 +9077,12 @@ class PIDPanel(QWidget):
             if confirmed:
                 return confirmed
 
-        # 4. KNOWN_PREFIXES built-in registry (was missing — now added)
-        if pfx and pfx in KNOWN_PREFIXES:
-            _, eq_type = KNOWN_PREFIXES[pfx]
-            if eq_type:
-                return eq_type
-
-        # 5. Visual fingerprint match (when zone rectangle was drawn)
+        # 4. Visual fingerprint match (when zone rectangle was drawn)
         if phash and hasattr(self.db, 'find_fingerprint'):
             match = self.db.find_fingerprint(phash)
             if match and match.get('comp_type'):
                 return match['comp_type']
 
-        # Legacy: tag database lookup
-        if hasattr(self.db, 'tag_code_lookup') and pfx:
-            entry = self.db.tag_code_lookup(pfx)
-            result = self._comp_from_db_entry(entry)
-            if result:
-                return result
         return ''
 
     def _load_mode_freqs(self):
