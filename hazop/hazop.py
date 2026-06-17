@@ -9758,16 +9758,24 @@ class ScenarioTablePanel(QWidget):
     # ── Build ─────────────────────────────────────────────────────────────────
 
     def _rebuild(self):
+        logging.info('_rebuild: enter (rows=%s _rebuilding=%s)',
+                     self._table.rowCount(), getattr(self, '_rebuilding', False))
         if getattr(self, '_rebuilding', False):
+            logging.info('_rebuild: already rebuilding — return')
             return
         self._rebuilding = True
+        logging.info('_rebuild: A — disconnect cellChanged')
         try:
             self._table.cellChanged.disconnect()
         except Exception:
             pass
+        logging.info('_rebuild: B — blockSignals')
         self._table.blockSignals(True)
-        self._table.clearSpans()   # must clear before setRowCount(0) — Qt crashes if spans exist
+        logging.info('_rebuild: C — clearSpans')
+        self._table.clearSpans()
+        logging.info('_rebuild: D — setRowCount(0)')
         self._table.setRowCount(0)
+        logging.info('_rebuild: E — reset meta')
         self._row_meta = []
         self._row_cat_info = []
 
@@ -9928,14 +9936,18 @@ class ScenarioTablePanel(QWidget):
                     self._add_empty_row(node_name, dev_d, cause_d, freq, freq_lbl)
             self._apply_spans()
         except Exception as e:
+            logging.exception('_rebuild: Python exception in row-building loop')
             QMessageBox.critical(None, "Fel i scenariopanel", str(e))
         finally:
+            logging.info('_rebuild: F — unblock signals (rows=%s)', self._table.rowCount())
             self._table.blockSignals(False)
             self._table.cellChanged.connect(self._on_cell_changed)
             self._rebuilding = False
-        # Fit all row heights in one native Qt call (faster than a Python loop)
+        logging.info('_rebuild: G — resizeRowsToContents')
         self._table.resizeRowsToContents()
+        logging.info('_rebuild: H — update_ctx_bar')
         self._update_ctx_bar()
+        logging.info('_rebuild: done')
 
     def _apply_spans(self):
         """Merge consecutive rows that share the same Nod or Orsak."""
