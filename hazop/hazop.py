@@ -8787,7 +8787,7 @@ class _ScenarioDelegate(QStyledItemDelegate):
         fm = self._fm
         one_line_h = fm.height() + 6
 
-        wrap_cols = {panel._C_ORS, panel._C_KON, panel._C_SG}
+        wrap_cols = {panel._C_ORS, panel._C_KON}
         if col not in wrap_cols:
             # Non-wrap columns never drive row height above one line
             base = super().sizeHint(option, index)
@@ -10302,8 +10302,6 @@ class ScenarioTablePanel(QWidget):
         # ── Col 4: Risk före barriär (only when a category is set) ──────────
         if cat_info:
             rb = QTableWidgetItem(f"{freq_axis_label(freq)}  {cons_axis_label(sev)}")
-            rb.setBackground(QBrush(QColor(bg_b)))
-            rb.setForeground(QBrush(QColor(_contrast_fg(bg_b))))
             rb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
             rb.setToolTip(f"🖱 Klicka för att ändra i riskmatrisen\n{level_b}")
@@ -10357,8 +10355,6 @@ class ScenarioTablePanel(QWidget):
             reft_text = (f"−{sg_steps} steg\n" if sg_steps else "") + \
                         f"{freq_axis_label(f_eff)}  {cons_axis_label(sev)}"
             ra = QTableWidgetItem(reft_text)
-            ra.setBackground(QBrush(QColor(bg_a)))
-            ra.setForeground(QBrush(QColor(_contrast_fg(bg_a))))
             ra.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             ra.setFlags(ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
             ra.setToolTip(f"{level_a} — {freq_axis_label(f_eff)}  {cons_axis_label(sev)}  (efter barriärer)")
@@ -10372,8 +10368,6 @@ class ScenarioTablePanel(QWidget):
             slut_text = (f"−{total_steps} steg\n" if total_steps else "") + \
                         f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}"
             rs = QTableWidgetItem(slut_text)
-            rs.setBackground(QBrush(QColor(bg_s)))
-            rs.setForeground(QBrush(QColor(_contrast_fg(bg_s))))
             rs.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
             rs.setToolTip(f"{level_s} — {freq_axis_label(final_f)}  {cons_axis_label(sev)}  (−{total_steps} steg totalt)")
