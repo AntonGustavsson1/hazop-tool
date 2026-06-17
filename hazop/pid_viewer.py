@@ -9051,13 +9051,21 @@ class PIDPanel(QWidget):
           2. equipment_catalog (scanned from this P&ID)
           3. confirmed project prefix mapping (equipment_types table)
           4. visual fingerprint (phash from zone rectangle)
+        Returns '' when smart recognition is globally disabled.
         """
         if not tag and not phash:
             return ''
 
+        # Respect the global "smart recognition enabled" toggle
+        smart_on = True
+        if hasattr(self.db, 'get_config'):
+            smart_on = self.db.get_config('smart_recognition_enabled', '1') == '1'
+        if not smart_on:
+            return ''
+
         pfx = _equip_prefix_from_tag(tag) if tag else ''
 
-        # 1. Prefix learned in this study
+        # 1. Prefix learned in this study (active entries only)
         if pfx and hasattr(self.db, 'get_prefix_memory'):
             learned = self.db.get_prefix_memory(pfx)
             if learned:

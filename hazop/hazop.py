@@ -1294,6 +1294,7 @@ def _lookup_comp_type_for_tag(tag: str, db) -> str:
     """Cascade lookup for the component type of a tag.
     Only returns types the user has explicitly confirmed — never guesses
     from KNOWN_PREFIXES.  Numbers in tags are ignored; only letter prefix matters.
+    Returns '' when smart recognition is globally disabled.
     Cascade:
       1. study_tag_memory (keyed by letter prefix: PU, HV, PCV …)
       2. equipment_catalog (scanned from P&ID with confirmed types)
@@ -1301,9 +1302,12 @@ def _lookup_comp_type_for_tag(tag: str, db) -> str:
     """
     if not tag:
         return ''
+    if hasattr(db, 'get_config'):
+        if db.get_config('smart_recognition_enabled', '1') != '1':
+            return ''
     pfx = _tag_letter_prefix(tag)
     try:
-        # 1. Prefix learned in this study (get_tag_memory already extracts prefix)
+        # 1. Prefix learned in this study (active entries only)
         if pfx and hasattr(db, 'get_prefix_memory'):
             learned = db.get_prefix_memory(pfx)
             if learned:
@@ -1410,6 +1414,7 @@ class Database:
             "ALTER TABLE nodes ADD COLUMN approved_by TEXT DEFAULT ''",
             "ALTER TABLE nodes ADD COLUMN approved_at TEXT DEFAULT ''",
             "ALTER TABLE nodes ADD COLUMN study_status TEXT DEFAULT 'draft'",
+            "ALTER TABLE study_tag_memory ADD COLUMN active INTEGER DEFAULT 1",
             # Smart object recognition (feature 1-4)
             """CREATE TABLE IF NOT EXISTS study_tag_memory (
                 tag        TEXT PRIMARY KEY,
@@ -2073,15 +2078,12 @@ class Database:
     # ── Smart object recognition: study tag memory ─────────────────────────────
 
     def get_tag_memory(self, tag: str):
-        """Look up study_tag_memory by the letter prefix of tag.
-        Numbers are sequence numbers and carry no type information, so
-        'PU101', 'PU102', 'E1.M1.PU103' all resolve to prefix 'PU'.
-        """
+        """Look up study_tag_memory by the letter prefix of tag (active entries only)."""
         pfx = _tag_letter_prefix(tag) if tag else ''
         if not pfx:
             return None
         row = self.conn.execute(
-            "SELECT * FROM study_tag_memory WHERE UPPER(tag)=UPPER(?) LIMIT 1",
+            "SELECT * FROM study_tag_memory WHERE UPPER(tag)=UPPER(?) AND active=1 LIMIT 1",
             (pfx,)).fetchone()
         return dict(row) if row else None
 
@@ -2112,14 +2114,20 @@ class Database:
         self.commit()
 
     def get_prefix_memory(self, prefix: str) -> str:
-        """Return learned comp_type for a letter prefix, or ''."""
+        """Return learned comp_type for a letter prefix (active entries only)."""
         if not prefix:
             return ''
         row = self.conn.execute(
             "SELECT comp_type FROM study_tag_memory "
-            "WHERE UPPER(tag)=UPPER(?) ORDER BY usage_count DESC LIMIT 1",
+            "WHERE UPPER(tag)=UPPER(?) AND active=1 ORDER BY usage_count DESC LIMIT 1",
             (prefix,)).fetchone()
         return row['comp_type'] if row else ''
+
+    def set_tag_memory_active(self, prefix: str, active: bool):
+        self.conn.execute(
+            "UPDATE study_tag_memory SET active=? WHERE UPPER(tag)=UPPER(?)",
+            (1 if active else 0, prefix))
+        self.commit()
 
     def find_fingerprint(self, phash: str, max_distance: int = 50):
         """Return best matching symbol_fingerprints row by Hamming distance, or None."""
@@ -13481,6 +13489,13 @@ class SeverityDefinitionsPanel(QWidget):
 class TagMemoryPanel(QWidget):
     """View and edit the smart object recognition memory for this project."""
 
+    # Column indices
+    _C_USE  = 0   # "Använd" checkbox
+    _C_PFX  = 1   # prefix
+    _C_TYPE = 2   # comp_type (editable)
+    _C_CNT  = 3   # usage count
+    _C_UPD  = 4   # updated
+
     def __init__(self, db: Database):
         super().__init__()
         self.db = db
@@ -13488,37 +13503,45 @@ class TagMemoryPanel(QWidget):
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(6)
 
-        # Header
-        hdr = QHBoxLayout()
-        title = QLabel("Smart igenkänning — tagminne")
         tf = QFont(); tf.setBold(True); tf.setPointSize(10)
-        title.setFont(tf)
-        hdr.addWidget(title)
-        hdr.addStretch()
+
+        # ── Master toggle ──────────────────────────────────────────────────────
+        master_row = QHBoxLayout()
+        self._master_cb = QCheckBox("Använd smart igenkänning")
+        self._master_cb.setToolTip(
+            "När ikryssad föreslår programmet objekttyp automatiskt baserat på "
+            "tagg-prefixet (t.ex. GPA → Pump).")
+        self._master_cb.setChecked(
+            db.get_config('smart_recognition_enabled', '1') == '1')
+        self._master_cb.toggled.connect(self._on_master_toggled)
+        f = QFont(); f.setBold(True)
+        self._master_cb.setFont(f)
+        master_row.addWidget(self._master_cb)
+        master_row.addStretch()
         btn_clear = QPushButton("🗑 Rensa allt")
         btn_clear.setToolTip("Ta bort alla lärda mappningar för detta projekt")
         btn_clear.clicked.connect(self._clear_all)
-        hdr.addWidget(btn_clear)
-        lay.addLayout(hdr)
+        master_row.addWidget(btn_clear)
+        lay.addLayout(master_row)
 
         info = QLabel(
-            "Programmet lär sig tagg → komponenttyp från dina val. "
-            "Varje projekt har sitt eget minne. "
-            "Markera rader och tryck Delete (eller knappen nedan) för att korrigera fel.")
+            "Programmet lär sig prefix → komponenttyp från dina val på P&ID. "
+            "Avmarkera 'Använd' på en rad för att stänga av den mappningen utan att radera den.")
         info.setWordWrap(True)
         info.setStyleSheet("color:#555; font-size:10px;")
         lay.addWidget(info)
 
-        # Table
-        self._tbl = QTableWidget(0, 4)
+        # ── Tag memory table ───────────────────────────────────────────────────
+        self._tbl = QTableWidget(0, 5)
         self._tbl.setHorizontalHeaderLabels(
-            ["Tagg / prefix", "Komponenttyp", "Antal gånger", "Senast använd"])
+            ["Använd", "Prefix", "Komponenttyp", "Antal", "Senast"])
         h = self._tbl.horizontalHeader()
-        h.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        h.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        h.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        h.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        self._tbl.setColumnWidth(0, 140)
+        h.setSectionResizeMode(self._C_USE,  QHeaderView.ResizeMode.ResizeToContents)
+        h.setSectionResizeMode(self._C_PFX,  QHeaderView.ResizeMode.Interactive)
+        h.setSectionResizeMode(self._C_TYPE, QHeaderView.ResizeMode.Stretch)
+        h.setSectionResizeMode(self._C_CNT,  QHeaderView.ResizeMode.ResizeToContents)
+        h.setSectionResizeMode(self._C_UPD,  QHeaderView.ResizeMode.ResizeToContents)
+        self._tbl.setColumnWidth(self._C_PFX, 90)
         self._tbl.verticalHeader().setVisible(False)
         self._tbl.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._tbl.setAlternatingRowColors(True)
@@ -13533,7 +13556,7 @@ class TagMemoryPanel(QWidget):
         btn_row.addWidget(btn_del)
         lay.addLayout(btn_row)
 
-        # Fingerprints section
+        # ── Fingerprints ───────────────────────────────────────────────────────
         fp_hdr = QHBoxLayout()
         fp_title = QLabel("Visuella fingeravtryck (symbolmönster)")
         fp_title.setFont(tf)
@@ -13561,13 +13584,16 @@ class TagMemoryPanel(QWidget):
 
         self.refresh()
 
+    def _on_master_toggled(self, checked: bool):
+        self.db.set_config('smart_recognition_enabled', '1' if checked else '0')
+
     def refresh(self):
-        # Tag memory
         self._tbl.blockSignals(True)
         self._tbl.setRowCount(0)
         try:
             rows = self.db.conn.execute(
-                "SELECT tag, comp_type, usage_count, updated "
+                "SELECT tag, comp_type, usage_count, updated, "
+                "COALESCE(active,1) as active "
                 "FROM study_tag_memory ORDER BY usage_count DESC, tag").fetchall()
         except Exception:
             rows = []
@@ -13575,20 +13601,39 @@ class TagMemoryPanel(QWidget):
             r = self._tbl.rowCount()
             self._tbl.insertRow(r)
             d = dict(row)
-            tag_display = d['tag']
-            t = QTableWidgetItem(tag_display)
-            t.setData(Qt.ItemDataRole.UserRole, tag_display)
-            t.setForeground(QBrush(QColor('#1a56db')))
-            self._tbl.setItem(r, 0, t)
+
+            # Col 0 — "Använd" checkbox
+            use_item = QTableWidgetItem()
+            use_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+            use_item.setCheckState(
+                Qt.CheckState.Checked if d['active'] else Qt.CheckState.Unchecked)
+            use_item.setData(Qt.ItemDataRole.UserRole, d['tag'])  # key for DB update
+            self._tbl.setItem(r, self._C_USE, use_item)
+
+            # Col 1 — prefix
+            pfx_item = QTableWidgetItem(d['tag'])
+            pfx_item.setData(Qt.ItemDataRole.UserRole, d['tag'])
+            pfx_item.setForeground(QBrush(QColor('#1a56db') if d['active'] else QColor('#aaa')))
+            pfx_item.setFlags(pfx_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self._tbl.setItem(r, self._C_PFX, pfx_item)
+
+            # Col 2 — comp_type (editable)
             ct = QTableWidgetItem(d['comp_type'])
-            self._tbl.setItem(r, 1, ct)
+            if not d['active']:
+                ct.setForeground(QBrush(QColor('#aaa')))
+            self._tbl.setItem(r, self._C_TYPE, ct)
+
+            # Col 3 — count
             uc = QTableWidgetItem(str(d['usage_count']))
             uc.setFlags(uc.flags() & ~Qt.ItemFlag.ItemIsEditable)
             uc.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._tbl.setItem(r, 2, uc)
+            self._tbl.setItem(r, self._C_CNT, uc)
+
+            # Col 4 — updated
             upd = QTableWidgetItem(d['updated'] or '')
             upd.setFlags(upd.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self._tbl.setItem(r, 3, upd)
+            self._tbl.setItem(r, self._C_UPD, upd)
+
         self._tbl.blockSignals(False)
 
         # Fingerprints
@@ -13610,32 +13655,51 @@ class TagMemoryPanel(QWidget):
             self._fp_tbl.setItem(r, 2, uc)
 
     def _on_item_changed(self, item):
-        if item.column() != 1:
-            return
+        col = item.column()
         row = item.row()
-        key_item = self._tbl.item(row, 0)
+        key_item = self._tbl.item(row, self._C_USE)
         if not key_item:
             return
-        real_key = key_item.data(Qt.ItemDataRole.UserRole) or key_item.text()
-        new_type = item.text().strip()
-        if new_type:
+        real_key = key_item.data(Qt.ItemDataRole.UserRole)
+
+        if col == self._C_USE:
+            # "Använd" checkbox toggled
+            active = item.checkState() == Qt.CheckState.Checked
             try:
-                self.db.conn.execute(
-                    "UPDATE study_tag_memory SET comp_type=? WHERE tag=?",
-                    (new_type, real_key))
-                self.db.commit()
+                self.db.set_tag_memory_active(real_key, active)
             except Exception:
                 pass
+            # Grey out / restore the other cells without triggering itemChanged again
+            self._tbl.blockSignals(True)
+            colour = QColor('#1a56db') if active else QColor('#aaa')
+            grey   = QColor('#aaa')
+            for c in (self._C_PFX, self._C_TYPE):
+                it = self._tbl.item(row, c)
+                if it:
+                    it.setForeground(QBrush(colour if c == self._C_PFX else (
+                        QColor('#000') if active else grey)))
+            self._tbl.blockSignals(False)
+
+        elif col == self._C_TYPE:
+            new_type = item.text().strip()
+            if new_type and real_key:
+                try:
+                    self.db.conn.execute(
+                        "UPDATE study_tag_memory SET comp_type=? WHERE UPPER(tag)=UPPER(?)",
+                        (new_type, real_key))
+                    self.db.commit()
+                except Exception:
+                    pass
 
     def _delete_selected(self):
         rows = sorted({i.row() for i in self._tbl.selectedItems()}, reverse=True)
         for r in rows:
-            key_item = self._tbl.item(r, 0)
+            key_item = self._tbl.item(r, self._C_USE)
             if key_item:
-                real_key = key_item.data(Qt.ItemDataRole.UserRole) or key_item.text()
+                real_key = key_item.data(Qt.ItemDataRole.UserRole)
                 try:
                     self.db.conn.execute(
-                        "DELETE FROM study_tag_memory WHERE tag=?", (real_key,))
+                        "DELETE FROM study_tag_memory WHERE UPPER(tag)=UPPER(?)", (real_key,))
                 except Exception:
                     pass
         self.db.commit()
