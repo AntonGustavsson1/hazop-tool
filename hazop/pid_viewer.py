@@ -744,10 +744,13 @@ KNOWN_PREFIXES = {
     # Pumpar
     'P':    ('Pump',                             'Pump'),
     'PP':   ('Pump',                             'Pump'),
+    'PU':   ('Pump',                             'Pump'),   # Gryaab / svenska konventionen
     'DP':   ('Doseringspump',                    'Pump'),
     'CP':   ('Centrifugalpump',                  'Pump'),
     'VP':   ('Vakuumpump',                       'Pump'),
     'SP':   ('Skruvpump',                        'Pump'),
+    'GPA':  ('Pump (LKAB GPA)',                  'Pump'),   # LKAB RDS-PP
+    'WPA':  ('Pump (LKAB WPA)',                  'Pump'),   # LKAB RDS-PP
     # Kompressorer / fläktar
     'C':    ('Kompressor',                       'Kompressor'),
     'K':    ('Kompressor',                       'Kompressor'),
@@ -814,6 +817,8 @@ KNOWN_PREFIXES = {
     'LSHH': ('Högnivåalarm HH',                 'Instrument / Sensor'),
     'LSLL': ('Lågnivåalarm LL',                 'Instrument / Sensor'),
     'LG':   ('Nivåglas',                         'Instrument / Sensor'),
+    'LS':   ('Nivåbrytare (Level Switch)',       'Instrument / Sensor'),
+    'LW':   ('Nivåvarning (Level Warning)',      'Instrument / Sensor'),
     # Instrument – Temperatur
     'TI':   ('Temperaturrgivare (lokal)',        'Instrument / Sensor'),
     'TE':   ('Temperaturelement',                'Instrument / Sensor'),
@@ -822,12 +827,16 @@ KNOWN_PREFIXES = {
     'TIC':  ('Temperaturreglering',              'Instrument / Sensor'),
     'TSH':  ('Högt temperaturlarm',              'Instrument / Sensor'),
     'TSL':  ('Lågt temperaturlarm',              'Instrument / Sensor'),
+    'TIA':  ('Temperaturindik. + larm',          'Instrument / Sensor'),
     # Instrument – Analys
     'AI':   ('Analysinstrument',                 'Instrument / Sensor'),
     'AT':   ('Analystransmitter',                'Instrument / Sensor'),
     'AIC':  ('Analysreglering',                  'Instrument / Sensor'),
     'ASH':  ('Högt analysalarm',                 'Instrument / Sensor'),
     'ASL':  ('Lågt analysalarm',                 'Instrument / Sensor'),
+    'QA':   ('Kvalitetsanalysator / larm',       'Instrument / Sensor'),
+    'QMA':  ('Kvalitetsmätare (LKAB QMA)',       'Instrument / Sensor'),
+    'QMB':  ('Kvalitetsmätare (LKAB QMB)',       'Instrument / Sensor'),
     # Instrument – Primärelement (saknade)
     'FE':   ('Flödesgivare / primärelement',     'Instrument / Sensor'),
     'LE':   ('Nivågivare / primärelement',       'Instrument / Sensor'),
@@ -847,7 +856,7 @@ KNOWN_PREFIXES = {
     'ZT':   ('Lägegstransmitter',                'Instrument / Sensor'),
     # Instrument – Solenoid / pilot
     'SOV':  ('Magnetventil / pilotventil',       'Ventil'),
-    # Övrigt
+    # Övrigt / mekanisk utrustning
     'M':    ('Motor / Drivverk',                 'Övrigt'),
     'AG':   ('Omrörare / Agitator',             'Övrigt'),
     'MX':   ('Blandare',                         'Övrigt'),
@@ -855,6 +864,18 @@ KNOWN_PREFIXES = {
     'TR':   ('Transformator',                    'Övrigt'),
     'BRN':  ('Brännare',                         'Övrigt'),
     'IG':   ('Tändare',                          'Övrigt'),
+    # LKAB RDS-PP specifika koder (identifierade från referens-P&ID)
+    'HXA':  ('Reaktor / omrörd tank (LKAB)',     'Övrigt'),
+    'HMA':  ('Mixer / blandare (LKAB)',          'Övrigt'),
+    'CMA':  ('Tank / kärl (LKAB)',              'Övrigt'),
+    'EGC':  ('Värmeväxlare (LKAB)',             'Övrigt'),
+    'HQB':  ('Filter (LKAB)',                    'Övrigt'),
+    'HSB':  ('Skrubber (LKAB)',                  'Övrigt'),
+    'GLD':  ('Matare / doserare (LKAB)',         'Övrigt'),
+    'GLA':  ('Transportband (LKAB)',             'Övrigt'),
+    'CLB':  ('Silo / ficka (LKAB)',             'Övrigt'),
+    'GQB':  ('Fläkt / blåsmaskin (LKAB)',       'Övrigt'),
+    'WPC':  ('Ledning / rörledning (LKAB)',      'Övrigt'),
 }
 
 def _spatial_combine(words: list, gap_limit: float = 18.0) -> list:
