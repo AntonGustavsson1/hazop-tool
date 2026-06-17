@@ -8800,7 +8800,7 @@ class _ScenarioDelegate(QStyledItemDelegate):
         w = option.rect.width() if option.rect.width() > 0 else 200
         # Subtract icon zones
         if col == panel._C_ORS:
-            w -= _PID_ICON_W + getattr(panel, '_cause_obj_w', 64) + 40
+            w -= _PID_ICON_W + getattr(panel, '_cause_obj_w', 64) + _ORS_FREQ_W + 4
         elif col == panel._C_KON:
             w -= _PID_ICON_W + _KON_CAT_W + _KON_CHAIN_W
         elif col == panel._C_SG:
@@ -8912,7 +8912,11 @@ class _PidDelegate(_ScenarioDelegate):
         r = option.rect
         col = index.column()
         if col == self._panel._C_ORS:
-            offset = _PID_ICON_W + self._panel._cause_obj_w + _ORS_FREQ_W
+            obj_data = index.data(Qt.ItemDataRole.UserRole + 2)
+            has_tag  = bool(obj_data and (obj_data[0] or obj_data[1]))
+            is_chain = bool(index.data(Qt.ItemDataRole.UserRole + 4))
+            cow = self._panel._cause_obj_w if (has_tag or is_chain) else 0
+            offset = _PID_ICON_W + cow + _ORS_FREQ_W
         elif col == self._panel._C_KON:
             offset = _PID_ICON_W + _KON_CAT_W
         else:
@@ -9006,7 +9010,10 @@ class _PidDelegate(_ScenarioDelegate):
                 else:
                     painter.fillRect(r, option.palette.base())
 
-                cow = self._panel._cause_obj_w
+                is_chain = bool(index.data(Qt.ItemDataRole.UserRole + 4))
+                has_tag  = bool(comp_tag or comp_type)
+                # Obj zone is only shown when there is an actual tag/type to display
+                cow = self._panel._cause_obj_w if has_tag or is_chain else 0
                 pin_rect   = QRect(r.left(), r.top(), _PID_ICON_W, r.height())
                 obj_rect   = QRect(r.left() + _PID_ICON_W, r.top(), cow, r.height())
                 freq_rect  = QRect(r.left() + _PID_ICON_W + cow, r.top(),
@@ -9014,18 +9021,15 @@ class _PidDelegate(_ScenarioDelegate):
                 desc_rect  = QRect(r.left() + _PID_ICON_W + cow + _ORS_FREQ_W, r.top(),
                                    r.width() - _PID_ICON_W - cow - _ORS_FREQ_W, r.height())
 
-                # Object-tag zone background
-                is_chain = bool(index.data(Qt.ItemDataRole.UserRole + 4))
-                has_tag = bool(comp_tag or comp_type)
-                if sel:
-                    obj_bg = option.palette.highlight().color().darker(120)
-                elif is_chain:
-                    obj_bg = QColor('#ede7f6')   # light purple tint for chained cause
-                elif has_tag:
-                    obj_bg = QColor('#e8f0fe')
-                else:
-                    obj_bg = QColor('#f4f4f4') if row % 2 == 0 else QColor('#ececec')
-                painter.fillRect(obj_rect, obj_bg)
+                # Object-tag zone background (only painted when visible)
+                if cow > 0:
+                    if sel:
+                        obj_bg = option.palette.highlight().color().darker(120)
+                    elif is_chain:
+                        obj_bg = QColor('#ede7f6')
+                    else:
+                        obj_bg = QColor('#e8f0fe')
+                    painter.fillRect(obj_rect, obj_bg)
 
                 # Object zone: tag text spans full obj_rect
                 tag_label  = comp_tag or ''
@@ -9058,9 +9062,10 @@ class _PidDelegate(_ScenarioDelegate):
                     painter.setPen(QColor('#ffffff'))
                     painter.drawText(chain_badge, Qt.AlignmentFlag.AlignCenter, "⛓")
 
-                # Separator
-                painter.setPen(QPen(QColor('#ddd'), 1))
-                painter.drawLine(obj_rect.right(), r.top(), obj_rect.right(), r.bottom())
+                # Separator (only when obj zone is visible)
+                if cow > 0:
+                    painter.setPen(QPen(QColor('#ddd'), 1))
+                    painter.drawLine(obj_rect.right(), r.top(), obj_rect.right(), r.bottom())
 
                 # Frequency badge zone — numeric if base_freq available, else axis label
                 if freq_val is not None:
@@ -9088,7 +9093,7 @@ class _PidDelegate(_ScenarioDelegate):
                     painter.setPen(QPen(QColor('#ddd'), 1))
                     painter.drawLine(freq_rect.right(), r.top(), freq_rect.right(), r.bottom())
 
-                # Right-side icon zones: [💬comment][📋clone][🟢status]
+                # Fetch cause_id and comment flag for indicators in pin zone
                 meta_ = self._panel._row_meta
                 _cause_id = meta_[row][1] if row < len(meta_) else None
                 _has_comment = False
@@ -9098,48 +9103,52 @@ class _PidDelegate(_ScenarioDelegate):
                         _has_comment = bool(c and c.strip())
                     except Exception:
                         pass
-                _STATUS_W  = 18
-                _CMT_W     = 20
-                _CLONE_W   = 18
-                _right_w   = _STATUS_W + _CMT_W + _CLONE_W
                 status_icon = index.data(Qt.ItemDataRole.UserRole + 6) or ''
-                status_rect = QRect(desc_rect.right() - _STATUS_W, desc_rect.top(),
-                                    _STATUS_W, desc_rect.height())
-                cmt_rect    = QRect(desc_rect.right() - _STATUS_W - _CMT_W, desc_rect.top(),
-                                    _CMT_W, desc_rect.height())
-                clone_rect  = QRect(desc_rect.right() - _right_w, desc_rect.top(),
-                                    _CLONE_W, desc_rect.height())
-                text_rect_adj = QRect(desc_rect.left(), desc_rect.top(),
-                                      desc_rect.width() - _right_w - 2, desc_rect.height())
 
-                # Description text
+                # Description text — full desc_rect width (no right-side icon zones)
                 desc = index.data(Qt.ItemDataRole.DisplayRole) or ''
                 tc = (option.palette.highlightedText().color() if sel
                       else option.palette.text().color())
                 painter.setPen(tc)
                 painter.setFont(option.font)
-                painter.drawText(text_rect_adj.adjusted(2, 2, -2, -2),
+                painter.drawText(desc_rect.adjusted(2, 2, -2, -2),
                                  Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop |
                                  Qt.TextFlag.TextWordWrap,
                                  desc)
 
-                sf = QFont(option.font); sf.setPointSize(max(7, option.font.pointSize() - 1))
-                painter.setFont(sf)
-                if status_icon:
-                    painter.drawText(status_rect, Qt.AlignmentFlag.AlignCenter, status_icon)
-                # 💬 comment icon — filled if comment exists
-                cmt_col = QColor('#2563eb') if _has_comment else QColor('#cbd5e1')
-                painter.setPen(cmt_col)
-                painter.drawText(cmt_rect, Qt.AlignmentFlag.AlignCenter, '💬')
-                # 📋 clone icon
-                painter.setPen(QColor('#9ca3af'))
-                painter.drawText(clone_rect, Qt.AlignmentFlag.AlignCenter, '📋')
-
-                # Pin icon
+                # Pin icon (top ~60% of pin zone)
+                pin_top = QRect(pin_rect.left(), pin_rect.top(),
+                                pin_rect.width(), int(pin_rect.height() * 0.62))
                 if _cause_id is not None:
-                    _draw_pid_pin(painter, pin_rect, self._panel._is_cell_placed(row, col))
+                    _draw_pid_pin(painter, pin_top, self._panel._is_cell_placed(row, col))
                 else:
-                    _draw_pid_pin(painter, pin_rect, False)
+                    _draw_pid_pin(painter, pin_top, False)
+
+                # Status dot + comment dot stacked vertically in lower pin zone
+                dot_area_top = pin_rect.top() + int(pin_rect.height() * 0.64)
+                dot_area_h   = pin_rect.height() - int(pin_rect.height() * 0.64)
+                _STATUS_COLORS = {
+                    '🟢': QColor('#16a34a'), '🟡': QColor('#ca8a04'),
+                    '🟠': QColor('#ea580c'), '🔴': QColor('#dc2626'),
+                }
+                dot_r = max(3, min(5, dot_area_h // 3 - 1))
+                dot_x = pin_rect.left() + pin_rect.width() // 2
+                # status dot
+                if status_icon in _STATUS_COLORS:
+                    dot_y = dot_area_top + dot_r + 1
+                    painter.setBrush(QBrush(_STATUS_COLORS[status_icon]))
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.drawEllipse(QRect(dot_x - dot_r, dot_y - dot_r,
+                                              dot_r * 2, dot_r * 2))
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                # comment dot
+                cmt_dot_y = dot_area_top + dot_r * 2 + dot_r + 3
+                if _has_comment:
+                    painter.setBrush(QBrush(QColor('#2563eb')))
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.drawEllipse(QRect(dot_x - dot_r, cmt_dot_y - dot_r,
+                                              dot_r * 2, dot_r * 2))
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
 
                 painter.restore()
                 return
