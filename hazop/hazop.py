@@ -9515,12 +9515,11 @@ class ConsCategoryMatrixPopup(QDialog):
             name_l.setStyleSheet("font-size:10px;")
             row_l.addWidget(name_l)
             for s in range(1, n_sev + 1):
-                _, bg, _ = risk_info(3, s)
                 btn = QPushButton()
                 btn.setFixedSize(42, 22)
                 btn.setCheckable(True)
                 btn.setChecked(self._sel.get(cid, 0) == s)
-                btn.setStyleSheet(self._bstyle(bg, btn.isChecked()))
+                btn.setStyleSheet(self._bstyle(btn.isChecked()))
                 btn.clicked.connect(lambda _, ci=cid, sv=s: self._toggle(ci, sv))
                 self._buttons[(cid, s)] = btn
                 row_l.addWidget(btn)
@@ -9548,12 +9547,15 @@ class ConsCategoryMatrixPopup(QDialog):
         outer.addLayout(btn_row)
 
     @staticmethod
-    def _bstyle(bg: str, selected: bool) -> str:
-        border = "2px solid #222" if selected else "1px solid #ccc"
-        fw = "bold" if selected else "normal"
-        return (f"QPushButton{{background:{bg};border:{border};"
-                f"border-radius:3px;font-size:9px;font-weight:{fw};}}"
-                f"QPushButton:hover{{border:2px solid #555;}}")
+    def _bstyle(selected: bool) -> str:
+        if selected:
+            return ("QPushButton{background:#1F4E79;color:white;"
+                    "border:2px solid #163d61;border-radius:3px;"
+                    "font-size:9px;font-weight:bold;}"
+                    "QPushButton:hover{background:#2a6099;}")
+        return ("QPushButton{background:#f0f0f0;color:#333;"
+                "border:1px solid #ccc;border-radius:3px;font-size:9px;}"
+                "QPushButton:hover{background:#e0e8f5;border:1px solid #999;}")
 
     def _toggle(self, cat_id: int, sev: int):
         self._sel[cat_id] = 0 if self._sel.get(cat_id) == sev else sev
@@ -9565,10 +9567,9 @@ class ConsCategoryMatrixPopup(QDialog):
 
     def _refresh(self):
         for (cid, s), btn in self._buttons.items():
-            _, bg, _ = risk_info(3, s)
             selected = self._sel.get(cid, 0) == s
             btn.setChecked(selected)
-            btn.setStyleSheet(self._bstyle(bg, selected))
+            btn.setStyleSheet(self._bstyle(selected))
 
     def _ok(self):
         for cat_id, sev in self._sel.items():
