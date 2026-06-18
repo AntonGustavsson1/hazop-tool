@@ -16488,12 +16488,14 @@ class MainWindow(QMainWindow):
         self.pid_panel.safeguard_created.connect(self._on_safeguard_created)
         self.pid_panel.existing_marker_placed.connect(self._on_existing_marker_placed)
         def _on_cause_template_created(cid):
-            # tree_panel.refresh fires item_selected → _on_selected (1st call).
-            # We defer the scenario refresh to avoid a 2nd _rebuild call on top
-            # of the one already triggered by the tree selection signal.
             self.tree_panel.refresh(CAUSE_T, cid)
             self.scenario_panel.refresh_placed()
             QTimer.singleShot(50, lambda c=cid: self.scenario_panel.select_cause(c))
+            # Refresh Smart Recognition panel so new learning is immediately visible
+            try:
+                self.settings_panel._tag_memory_panel.refresh()
+            except Exception:
+                pass
         self.pid_panel.cause_template_created.connect(_on_cause_template_created)
         self.pid_panel.cause_placement_requested.connect(self._on_cause_placement_requested)
         self.pid_panel.risk_scenario_requested.connect(self._on_pid_risk_scenario)
@@ -16794,18 +16796,6 @@ class MainWindow(QMainWindow):
                 checked   = next((b for b in popup._obj_btn_group if b.isChecked()), None)
                 comp_type = checked.property('obj_name') if checked else ''
                 tag_text  = popup._tag_edit.text().strip() if hasattr(popup, '_tag_edit') else effective_tag
-
-                # If no tag was detected/typed, ask for the prefix so smart
-                # recognition can learn the mapping for next time.
-                if not tag_text and comp_type:
-                    pfx, ok = QInputDialog.getText(
-                        popup, "Smart igenkänning",
-                        f"Ingen tag-ID hittades automatiskt.\n"
-                        f"Ange prefixet för '{comp_type}' (t.ex. HV, PU, GPA)\n"
-                        f"så kommer den att föreslås automatiskt nästa gång.",
-                        QLineEdit.EchoMode.Normal, '')
-                    if ok and pfx.strip():
-                        tag_text = pfx.strip().upper()
 
                 self.pid_panel.place_cause_from_template(
                     actual_dev_id, scene_pos, page, comp_type, tag_text, desc, freq)
