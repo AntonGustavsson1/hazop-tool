@@ -16372,6 +16372,8 @@ class MainWindow(QMainWindow):
         if page == 3:
             self.admin_panel.refresh()
             self.admin_panel.refresh_pid()
+        if page == 4:
+            self.settings_panel._tag_memory_panel.refresh()
 
     def _on_props_changed(self):
         """PropertiesRibbon saved a field — refresh tree + scenario."""
