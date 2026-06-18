@@ -8240,11 +8240,12 @@ class PIDPanel(QWidget):
         rs = self.viewer.render_scale
         center_scene = QPointF(pdf_rect.center().x() * rs, pdf_rect.center().y() * rs)
 
-        tag = comp_type = ''
+        tag = ''
         if HAS_PYMUPDF and self.viewer.pdf_doc:
+            # _extract_tag_from_rect returns a string (the tag found inside the
+            # rectangle).  Do NOT index into it — that yields single characters.
             try:
-                result = self.viewer._extract_tag_from_rect(pdf_rect)
-                tag, comp_type = result[0], result[1]
+                tag = self.viewer._extract_tag_from_rect(pdf_rect) or ''
             except Exception:
                 pass
             # If no tag found inside the rectangle, search the full page from
@@ -8260,7 +8261,7 @@ class PIDPanel(QWidget):
 
         if chosen is a_cause:
             dev_id   = self._active_deviation_id or 0
-            detected = self._db_comp_for_tag(tag) if tag else comp_type
+            detected = self._db_comp_for_tag(tag) if tag else ''
             suggested = (full_text or tag or '').replace(' ', '') if strip else (full_text or tag or '')
             self.cause_placement_requested.emit(dev_id, tag or '', detected, center_scene, page, suggested)
         elif chosen is a_cons:
