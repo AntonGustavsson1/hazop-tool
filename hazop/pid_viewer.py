@@ -8247,6 +8247,12 @@ class PIDPanel(QWidget):
                 tag, comp_type = result[0], result[1]
             except Exception:
                 pass
+            # If no tag found inside the rectangle, search the full page from
+            # the rectangle's centre — tag labels often sit outside the symbol.
+            if not tag:
+                cx = pdf_rect.center().x()
+                cy = pdf_rect.center().y()
+                tag = find_tag_near_point(self.viewer.pdf_doc, page, cx, cy)
 
         # Extract full text from rubber-banded area (native PDF text first, OCR fallback)
         full_text = self.viewer._text_in_rect(pdf_rect) if HAS_PYMUPDF and self.viewer.pdf_doc else ''
