@@ -9287,10 +9287,9 @@ class PIDPanel(QWidget):
         Priority:
           1. study_tag_memory  ← MASTER: user's confirmed choices via P&ID markup
           2. equipment_catalog ← tag-based, from P&ID scan dialog
-          3. confirmed_comp_for_tag ← tag-based, project prefix table
           --- secondary / fallback below this line ---
-          4. KNOWN_PREFIXES    ← built-in ISA codes, used only when nothing learned
-          5. visual fingerprint ← non-tag, lowest priority
+          3. KNOWN_PREFIXES    ← built-in ISA codes, used only when nothing learned
+          4. visual fingerprint ← non-tag, lowest priority
         Returns '' when smart recognition is globally disabled.
         """
         if not tag and not phash:
@@ -9316,19 +9315,13 @@ class PIDPanel(QWidget):
             if eq and eq.get('equipment_type'):
                 return eq['equipment_type']
 
-        # 3. Confirmed project prefix mapping
-        if pfx and hasattr(self.db, 'confirmed_comp_for_tag'):
-            confirmed = self.db.confirmed_comp_for_tag(pfx)
-            if confirmed:
-                return confirmed
-
-        # 4. KNOWN_PREFIXES — letters determine type, numbers are irrelevant
+        # 3. KNOWN_PREFIXES — built-in ISA codes, secondary fallback only
         if pfx and pfx in KNOWN_PREFIXES:
             _, eq_type = KNOWN_PREFIXES[pfx]
             if eq_type:
                 return eq_type
 
-        # 5. Visual fingerprint match
+        # 4. Visual fingerprint match (lowest priority, non-tag-based)
         if phash and hasattr(self.db, 'find_fingerprint'):
             match = self.db.find_fingerprint(phash)
             if match and match.get('comp_type'):

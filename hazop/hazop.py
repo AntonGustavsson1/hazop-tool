@@ -1297,10 +1297,9 @@ def _lookup_comp_type_for_tag(tag: str, db) -> str:
     Returns '' when smart recognition is globally disabled.
 
     Priority (highest first):
-      1. study_tag_memory  — what YOU have confirmed for this prefix
-      2. equipment_catalog — types confirmed via P&ID scan dialog
-      3. equipment_types   — prefix→type confirmed in project settings
-      4. KNOWN_PREFIXES    — built-in ISA/plant standard codes (PU=Pump, HV=Ventil …)
+      1. study_tag_memory  — what YOU have confirmed via P&ID rubber-band markup
+      2. equipment_catalog — types set in the P&ID scan dialog
+      3. KNOWN_PREFIXES    — built-in ISA codes, secondary fallback only
     """
     if not tag:
         return ''
@@ -1321,13 +1320,7 @@ def _lookup_comp_type_for_tag(tag: str, db) -> str:
             (tag,)).fetchone()
         if row and row[0]:
             return row[0]
-        # 3. Confirmed project prefix mapping
-        if pfx and hasattr(db, 'confirmed_comp_for_tag'):
-            confirmed = db.confirmed_comp_for_tag(pfx)
-            if confirmed:
-                return confirmed
-        # 4. KNOWN_PREFIXES built-in registry (ISA + plant-specific codes)
-        #    Numbers are irrelevant — only the letter prefix matters here.
+        # 3. KNOWN_PREFIXES — secondary fallback, only when nothing learned yet
         if pfx and pfx in KNOWN_PREFIXES:
             _, eq_type = KNOWN_PREFIXES[pfx]
             if eq_type:
