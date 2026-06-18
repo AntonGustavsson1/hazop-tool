@@ -1337,22 +1337,6 @@ def _lookup_comp_type_for_tag(tag: str, db) -> str:
     return ''
 
 
-def _save_tag_learning(tag: str, comp_type: str, db):
-    """Persist comp_type for an exact tag AND its letter-prefix so the next
-    tag in the same series is auto-recognised without KNOWN_PREFIXES fallback.
-    """
-    if not tag or not comp_type:
-        return
-    try:
-        if hasattr(db, 'upsert_tag_memory'):
-            db.upsert_tag_memory(tag, comp_type, comp_tag=tag)
-        pfx = _tag_letter_prefix(tag)
-        if pfx and hasattr(db, 'save_equipment_type'):
-            db.save_equipment_type(pfx, comp_type)
-    except Exception:
-        pass
-
-
 class Database:
     def __init__(self, path=DB_PATH):
         self.path = Path(path)
@@ -1425,12 +1409,13 @@ class Database:
             "ALTER TABLE study_tag_memory ADD COLUMN active INTEGER DEFAULT 1",
             # Smart object recognition (feature 1-4)
             """CREATE TABLE IF NOT EXISTS study_tag_memory (
-                tag        TEXT PRIMARY KEY,
-                comp_type  TEXT NOT NULL DEFAULT '',
-                comp_tag   TEXT NOT NULL DEFAULT '',
-                phash      TEXT NOT NULL DEFAULT '',
+                tag         TEXT PRIMARY KEY,
+                comp_type   TEXT NOT NULL DEFAULT '',
+                comp_tag    TEXT NOT NULL DEFAULT '',
+                phash       TEXT NOT NULL DEFAULT '',
                 usage_count INTEGER NOT NULL DEFAULT 1,
-                updated    TEXT NOT NULL DEFAULT ''
+                updated     TEXT NOT NULL DEFAULT '',
+                active      INTEGER NOT NULL DEFAULT 1
             )""",
             """CREATE TABLE IF NOT EXISTS symbol_fingerprints (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -11200,11 +11185,8 @@ class ScenarioTablePanel(QWidget):
         popup.exec()
 
     def _apply_cause_obj(self, row, cause_id, comp_type, comp_tag, description, frequency):
-        # Do all DB writes first — before touching any QTableWidgetItem references
+        # Do all DB writes first — learning is handled inside update_cause
         self.db.update_cause(cause_id, comp_type=comp_type, comp_tag=comp_tag)
-        # Save learning so the same tag/prefix is recognised next time
-        if comp_type and comp_tag:
-            _save_tag_learning(comp_tag, comp_type, self.db)
         if description:
             kwargs = {'description': description}
             if frequency is not None:
@@ -13678,11 +13660,16 @@ class TagMemoryPanel(QWidget):
         self._tbl.setRowCount(0)
         try:
             rows = self.db.conn.execute(
-                "SELECT tag, comp_type, usage_count, updated, "
-                "COALESCE(active,1) as active "
+                "SELECT tag, comp_type, usage_count, updated, active "
                 "FROM study_tag_memory ORDER BY usage_count DESC, tag").fetchall()
         except Exception:
-            rows = []
+            # Fallback for old DBs missing the 'active' column
+            try:
+                rows = self.db.conn.execute(
+                    "SELECT tag, comp_type, usage_count, updated, 1 as active "
+                    "FROM study_tag_memory ORDER BY usage_count DESC, tag").fetchall()
+            except Exception:
+                rows = []
         for row in rows:
             r = self._tbl.rowCount()
             self._tbl.insertRow(r)

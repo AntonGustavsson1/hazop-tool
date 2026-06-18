@@ -8751,23 +8751,11 @@ class PIDPanel(QWidget):
         self.viewer.add_cause_marker(cause_id, pdf_x, pdf_y, comp_type, label, comp_tag,
                                      rect_w, rect_h)
 
-        # ── Smart recognition: save tag memory + visual fingerprint ───────────
-        if comp_type and comp_tag:
-            phash = ''
-            if rect_w and rect_h:
-                phash = self._compute_zone_phash(page, pdf_x, pdf_y, rect_w, rect_h)
-            if hasattr(self.db, 'upsert_tag_memory'):
-                self.db.upsert_tag_memory(comp_tag, comp_type,
-                                          comp_tag=comp_tag, phash=phash)
+        # ── Visual fingerprint (phash) only — tag memory written by update_cause ──
+        if comp_type and comp_tag and rect_w and rect_h:
+            phash = self._compute_zone_phash(page, pdf_x, pdf_y, rect_w, rect_h)
             if phash and hasattr(self.db, 'store_fingerprint'):
                 self.db.store_fingerprint(phash, comp_type, comp_tag)
-            # Also confirm prefix → type in equipment_types for future sessions
-            pfx = _equip_prefix_from_tag(comp_tag)
-            if pfx and hasattr(self.db, 'save_equipment_type'):
-                try:
-                    self.db.save_equipment_type(pfx, comp_type)
-                except Exception:
-                    pass
 
         self._load_overlays()
         self.cause_template_created.emit(cause_id)
