@@ -8310,9 +8310,11 @@ _CONSEQ_NODES: dict = {
     'equipment_catastrophic':{'text':'Allvarlig skada på utrustning och struktur','next': ['production_stop']},
     'production_stop':      {'text': 'Produktionsavbrott',                       'next': []},
     'env_impact':           {'text': 'Miljöpåverkan — sanering och myndighetsrapportering krävs', 'next': []},
+    'tube_failure':         {'text': 'Rörbrott i värmeväxlare — korsflöde',         'next': ['incompatible_mixing', 'overpressure', 'loc_small']},
 }
 
 _CONSEQ_ENTRY: dict = {
+    # ── Generic (wildcard object) ──────────────────────────────────────────────
     ('Lågt flöde', '*'):              ['reduced_flow', 'no_flow'],
     ('Högt flöde', '*'):              ['high_flow', 'high_level', 'erosion'],
     ('Högt tryck', '*'):              ['overpressure'],
@@ -8328,6 +8330,44 @@ _CONSEQ_ENTRY: dict = {
     ('Drift', '*'):                   ['no_flow', 'high_level', 'overpressure', 'loc_small', 'misdirected_flow'],
     ('Underhåll', '*'):               ['loc_small', 'no_flow', 'overpressure', 'internal_flammable'],
     ('Start-up / Shut-down', '*'):    ['loc_small', 'overpressure', 'internal_flammable', 'liquid_slug', 'brittle_fracture'],
+
+    # ── Pump ──────────────────────────────────────────────────────────────────
+    ('Lågt flöde',  'Pump'):          ['pump_dryrun', 'vortex_gas', 'reduced_flow'],
+    ('Högt flöde',  'Pump'):          ['erosion', 'bearing_fail'],
+    ('Högt tryck',  'Pump'):          ['seal_fail', 'overpressure'],
+    ('Lågt tryck',  'Pump'):          ['pump_dryrun', 'vacuum'],
+    ('Hög temperatur', 'Pump'):       ['seal_degradation', 'bearing_fail'],
+    ('Låg temperatur', 'Pump'):       ['freeze_damage', 'hydrate_blockage'],
+    ('Omvänt flöde',   'Pump'):       ['pump_reverse', 'bearing_fail'],
+
+    # ── Tank / kärl ───────────────────────────────────────────────────────────
+    ('Lågt flöde',  'Tank / kärl / kolonn'):  ['low_level', 'pump_dryrun'],
+    ('Högt flöde',  'Tank / kärl / kolonn'):  ['high_level', 'overfill'],
+    ('Högt tryck',  'Tank / kärl / kolonn'):  ['overpressure', 'rupture'],
+    ('Lågt tryck',  'Tank / kärl / kolonn'):  ['vacuum', 'vacuum_collapse'],
+    ('Hög nivå',    'Tank / kärl / kolonn'):  ['high_level', 'overfill', 'carryover'],
+    ('Låg nivå',    'Tank / kärl / kolonn'):  ['low_level', 'vortex_gas', 'pump_dryrun'],
+    ('Hög temperatur','Tank / kärl / kolonn'):['vapor_pressure_rise', 'runaway', 'temp_above_design'],
+    ('Låg temperatur','Tank / kärl / kolonn'):['brittle_fracture', 'freeze_damage', 'temp_below_design'],
+    ('Avvikande sammansättning','Tank / kärl / kolonn'): ['incompatible_mixing', 'reaction_upset', 'contamination_feed'],
+
+    # ── Rörledning ────────────────────────────────────────────────────────────
+    ('Lågt flöde',  'Rörledning / slang'):  ['reduced_flow', 'hydrate_blockage'],
+    ('Högt tryck',  'Rörledning / slang'):  ['flange_leak', 'loc_small'],
+    ('Lågt tryck',  'Rörledning / slang'):  ['vacuum', 'air_ingress'],
+    ('Hög temperatur','Rörledning / slang'):['seal_degradation', 'flange_leak'],
+    ('Låg temperatur','Rörledning / slang'):['freeze_damage', 'brittle_fracture'],
+    ('Omvänt flöde', 'Rörledning / slang'): ['upstream_contamination', 'reverse_flow'],
+
+    # ── Värmeväxlare ──────────────────────────────────────────────────────────
+    ('Lågt flöde',  'Värmeväxlare / kylare / värmare'): ['hx_overheat', 'reduced_flow'],
+    ('Högt flöde',  'Värmeväxlare / kylare / värmare'): ['hx_undercool', 'erosion'],
+    ('Hög temperatur','Värmeväxlare / kylare / värmare'):['tube_failure', 'overpressure'],
+    ('Låg temperatur','Värmeväxlare / kylare / värmare'):['hx_undercool', 'freeze_damage'],
+
+    # ── Instrument ────────────────────────────────────────────────────────────
+    ('Bortfall av hjälpsystem','Instrument'): ['no_flow', 'overpressure', 'production_stop'],
+    ('Drift',       'Instrument'):            ['quality_offspec', 'overpressure', 'no_flow'],
 }
 
 _CONSEQ_GENERIC_NEXT = [
@@ -8483,18 +8523,46 @@ class ConsequenceStepPickerDialog(QDialog):
             ref_row.addWidget(ref_edit)
             ref_row.addWidget(pin_btn)
             col_l.addLayout(ref_row)
+
+            # Object type dropdown — pre-filled from smart recognition on ref-tag change
+            obj_lbl = QLabel("Objekttyp:")
+            obj_lbl.setStyleSheet("color:#666; font-size:10px;")
+            col_l.addWidget(obj_lbl)
+            obj_combo = QComboBox()
+            obj_combo.setFixedHeight(22)
+            obj_combo.setStyleSheet("font-size:10px;")
+            obj_combo.addItem('')
+            try:
+                for o in db.standard_objects():
+                    obj_combo.addItem(o['name'])
+            except Exception:
+                pass
+            # Pre-select based on initial data
+            if step == 1 and comp_type:
+                _idx = obj_combo.findText(comp_type)
+                if _idx >= 0:
+                    obj_combo.setCurrentIndex(_idx)
+            col_l.addWidget(obj_combo)
+
             # Connect after layout so step-1 index is correct
             ref_edit.textChanged.connect(
-                lambda tag, s=step-1: (self._refresh_list_labels(s, tag),
-                                       self._update_preview()))
+                lambda tag, s=step-1, cb=obj_combo: (
+                    self._refresh_list_labels(s, tag),
+                    self._autofill_obj_combo(cb, tag),
+                    self._update_preview()))
+            obj_combo.currentTextChanged.connect(
+                lambda txt, s=step-1: (
+                    self._on_obj_type_changed(s, txt),
+                    self._update_preview()))
 
             cols_layout.addWidget(col_w)
 
             col_state = {
-                'list':    lst,
-                'sel':     -1,
-                'ft_edit': ft_edit,
-                'ref_edit':ref_edit,
+                'list':      lst,
+                'sel':       -1,
+                'ft_edit':   ft_edit,
+                'ref_edit':  ref_edit,
+                'obj_combo': obj_combo,
             }
             self._cols.append(col_state)
 
@@ -8555,13 +8623,35 @@ class ConsequenceStepPickerDialog(QDialog):
         self._update_preview()
 
     # ── Graf-baserade alternativ ──────────────────────────────────────────────
-    def _entry_pairs(self):
-        """[(node_key, text)] for Del1, looked up per deviation (+comp)."""
-        keys = (_CONSEQ_ENTRY.get((self._dev, self._comp)) or
+    def _entry_pairs(self, obj_type: str = ''):
+        """[(node_key, text)] for Del1, looked up per deviation + object type."""
+        comp = obj_type or (
+            self._cols[0]['obj_combo'].currentText()
+            if self._cols else self._comp) or self._comp
+        keys = (_CONSEQ_ENTRY.get((self._dev, comp)) or
                 _CONSEQ_ENTRY.get((self._dev, '*')) or
                 _CONSEQ_ENTRY.get((self._dev, '')) or
                 _CONSEQ_GENERIC_NEXT)
         return [(k, _CONSEQ_NODES[k]['text']) for k in keys if k in _CONSEQ_NODES]
+
+    def _autofill_obj_combo(self, combo: 'QComboBox', tag: str):
+        """Look up object type from smart recognition for this tag and set combo."""
+        if not tag.strip():
+            return
+        comp = _lookup_comp_type_for_tag(tag.strip(), self.db)
+        if comp:
+            idx = combo.findText(comp)
+            if idx >= 0 and combo.currentIndex() != idx:
+                combo.blockSignals(True)
+                combo.setCurrentIndex(idx)
+                combo.blockSignals(False)
+
+    def _on_obj_type_changed(self, step_idx: int, obj_type: str):
+        """Object type changed in a column — repopulate Del1 if this is col 0."""
+        if step_idx == 0:
+            # Re-initialise column 0 with deviation + new object type
+            self._populate_column(0, self._entry_pairs(obj_type))
+            self._cascade_from(0)
 
     @staticmethod
     def _successor_pairs(node_key):
