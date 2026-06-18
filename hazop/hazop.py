@@ -7535,7 +7535,7 @@ class StandardCausesPickerPopup(QDialog):
             return
         # Try existing buttons first
         for btn in self._obj_btn_group:
-            if comp_type.lower() in btn.property('obj_name').lower():
+            if self._type_matches(comp_type, btn.property('obj_name') or ''):
                 if not btn.isChecked():
                     for b in self._obj_btn_group:
                         b.setChecked(False)
@@ -7552,6 +7552,20 @@ class StandardCausesPickerPopup(QDialog):
             self.selected_node_dev_id = self._dev_items[idx][0]
             self._dev_id              = self._dev_items[idx][2]
         self._populate_objects(getattr(self, '_initial_comp_type', ''))
+
+    @staticmethod
+    def _type_matches(preselect: str, obj_name: str) -> bool:
+        """True when preselect and obj_name share a meaningful word.
+        Uses bidirectional substring so 'Instrument / Sensor' matches
+        'Instrument' and 'Pump' matches 'Pump'.
+        """
+        if not preselect or not obj_name:
+            return False
+        p, n = preselect.lower(), obj_name.lower()
+        if p in n or n in p:
+            return True
+        # Word-level match — any significant word (>3 chars) in common
+        return any(w in n for w in p.split() if len(w) > 3)
 
     def _populate_objects(self, preselect_comp: str = ''):
         # Remove old buttons
@@ -7570,8 +7584,7 @@ class StandardCausesPickerPopup(QDialog):
         # If a preselect type is requested but absent from the filtered list,
         # fall back to all objects so the button actually exists.
         if preselect_comp:
-            names = [o['name'].lower() for o in objs]
-            if not any(preselect_comp.lower() in n for n in names):
+            if not any(self._type_matches(preselect_comp, o['name']) for o in objs):
                 objs = self._db.standard_objects()
 
         def _make_btn(obj):
@@ -7593,7 +7606,7 @@ class StandardCausesPickerPopup(QDialog):
             btn = _make_btn(obj)
             self._obj_inner_l.addWidget(btn)
             self._obj_btn_group.append(btn)
-            if preselect_comp and preselect_comp.lower() in obj['name'].lower():
+            if preselect_comp and self._type_matches(preselect_comp, obj['name']):
                 sel_btn = btn
         self._obj_inner_l.addStretch()
 
