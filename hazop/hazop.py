@@ -6255,8 +6255,8 @@ class TreePanel(QWidget):
                 for ci, cause in enumerate(self.db.causes_for_deviation(dev['id']), 1):
                     placed_c = cause['id'] in marked_causes
                     chain_icon = "⛓" if cause['linked_consequence_id'] else ""
-                    tag    = (cause.get('comp_tag') or '').strip()
-                    c_label = tag if tag else cause['description'][:50]
+                    tag    = (cause['comp_tag'] or '').strip() if cause['comp_tag'] else ''
+                    c_label = tag if tag else (cause['description'] or '')[:50]
                     citem = QTreeWidgetItem([f"    ⚙ {chain_icon} {ci}. {c_label}"])
                     citem.setIcon(0, _make_pin_icon(placed_c))
                     citem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
