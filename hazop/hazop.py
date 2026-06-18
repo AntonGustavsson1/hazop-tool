@@ -7025,8 +7025,8 @@ class StandardCausesPickerPopup(QDialog):
     cause_picked = pyqtSignal(str, object)   # (description, frequency_or_None)
 
     _OBJ_BTN_STYLE = (
-        "QPushButton { text-align:left; padding:5px 8px; border:1px solid #d1d5db;"
-        " border-radius:4px; background:#f9fafb; font-size:10px; }"
+        "QPushButton { text-align:left; padding:2px 6px; border:1px solid #d1d5db;"
+        " border-radius:3px; background:#f9fafb; font-size:10px; }"
         "QPushButton:hover { background:#eff6ff; border-color:#93c5fd; }"
         "QPushButton:checked { background:#1d4ed8; color:white; border-color:#1d4ed8;"
         " font-weight:bold; }")
@@ -7150,16 +7150,28 @@ class StandardCausesPickerPopup(QDialog):
         obj_fl = QVBoxLayout(obj_frame)
         obj_fl.setContentsMargins(4, 4, 4, 4)
         obj_fl.setSpacing(2)
+        obj_hdr_row = QHBoxLayout()
         obj_hdr = QLabel("<b>Objekttyp</b>")
         obj_hdr.setStyleSheet("font-size:10px; color:#1F4E79; padding:2px 4px;")
-        obj_fl.addWidget(obj_hdr)
+        obj_hdr_row.addWidget(obj_hdr)
+        obj_hdr_row.addStretch()
+        btn_add_obj = QPushButton("+ Ny")
+        btn_add_obj.setFixedHeight(18)
+        btn_add_obj.setStyleSheet(
+            "QPushButton{font-size:9px;padding:1px 5px;border:1px solid #93c5fd;"
+            "border-radius:3px;background:#eff6ff;color:#1d4ed8;}"
+            "QPushButton:hover{background:#dbeafe;}")
+        btn_add_obj.setToolTip("Lägg till ny objekttyp (t.ex. Transportör)")
+        btn_add_obj.clicked.connect(self._add_object_type)
+        obj_hdr_row.addWidget(btn_add_obj)
+        obj_fl.addLayout(obj_hdr_row)
         obj_scroll = QScrollArea()
         obj_scroll.setWidgetResizable(True)
         obj_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self._obj_inner = QWidget()
         self._obj_inner_l = QVBoxLayout(self._obj_inner)
         self._obj_inner_l.setContentsMargins(0, 0, 0, 0)
-        self._obj_inner_l.setSpacing(2)
+        self._obj_inner_l.setSpacing(1)
         obj_scroll.setWidget(self._obj_inner)
         obj_fl.addWidget(obj_scroll)
         self._obj_btn_group = []   # list of QPushButton
@@ -7323,12 +7335,7 @@ class StandardCausesPickerPopup(QDialog):
                 objs = self._db.standard_objects()
 
         def _make_btn(obj):
-            icon_px = QPixmap(18, 18)
-            icon_px.fill(Qt.GlobalColor.transparent)
-            _p = QPainter(icon_px)
-            _draw_equip_icon(_p, QRect(0, 0, 18, 18), obj['name'])
-            _p.end()
-            btn = QPushButton(QIcon(icon_px), f"  {obj['name']}")
+            btn = QPushButton(obj['name'])
             btn.setCheckable(True)
             btn.setStyleSheet(self._OBJ_BTN_STYLE)
             btn.setProperty('obj_id',   obj['id'])
@@ -7358,6 +7365,30 @@ class StandardCausesPickerPopup(QDialog):
         self._search_edit.clear()
         self._load_causes_for_obj(clicked_btn.property('obj_id'),
                                    clicked_btn.property('obj_name'))
+
+    def _add_object_type(self):
+        """Add a new standard object type (e.g. Transportör) to the database."""
+        name, ok = QInputDialog.getText(
+            self, "Ny objekttyp",
+            "Ange namn på den nya objekttypen\n(t.ex. Transportör, Kross, Silovinagg):")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        try:
+            # Check if already exists
+            existing = self._db.conn.execute(
+                "SELECT id FROM standard_objects WHERE LOWER(name)=LOWER(?)",
+                (name,)).fetchone()
+            if existing:
+                new_id = existing[0]
+            else:
+                new_id = self._db.add_standard_object(name)
+            self._db.commit()
+        except Exception as e:
+            QMessageBox.warning(self, "Fel", f"Kunde inte lägga till objekttyp:\n{e}")
+            return
+        # Re-populate to include the new type and select it
+        self._populate_objects(name)
 
     def _load_causes_for_obj(self, obj_id, obj_name):
         self._cause_list.clear()
@@ -17427,6 +17458,17 @@ class MainWindow(QMainWindow):
                       self.props_ribbon]:
             try:
                 panel.db = db
+            except Exception:
+                pass
+
+        # Also update db on settings sub-panels (they have their own db reference)
+        sp = self.settings_panel
+        for attr in ('_std_causes_panel', '_std_objects_panel', '_tag_memory_panel',
+                     '_tag_db_panel', 'analysis_panel'):
+            try:
+                sub = getattr(sp, attr, None)
+                if sub is not None:
+                    sub.db = db
             except Exception:
                 pass
 
