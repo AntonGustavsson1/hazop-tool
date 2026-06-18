@@ -8911,7 +8911,7 @@ class _ScenarioDelegate(QStyledItemDelegate):
             self._fm_font = option.font
             self._fm = QFontMetrics(option.font)
         fm = self._fm
-        one_line_h = fm.height() + 4   # compact: +4 instead of +6
+        one_line_h = fm.height() + 6
 
         wrap_cols = {panel._C_ORS, panel._C_KON}
         if col not in wrap_cols:
@@ -8925,11 +8925,11 @@ class _ScenarioDelegate(QStyledItemDelegate):
 
         w = option.rect.width() if option.rect.width() > 0 else 200
         if col == panel._C_ORS:
-            _STRIP_H = 8    # thinner strip: 8px instead of 17
+            _STRIP_H = 14
             w = max(40, option.rect.width() - 6)
             rect = fm.boundingRect(0, 0, w, 10000, Qt.TextFlag.TextWordWrap, text)
             return QSize(option.rect.width(),
-                         _STRIP_H + max(one_line_h, rect.height() + 2))
+                         _STRIP_H + max(one_line_h, rect.height() + 4))
         elif col == panel._C_KON:
             w -= _PID_ICON_W + _KON_CAT_W + _KON_CHAIN_W
         elif col == panel._C_SG:
@@ -10210,11 +10210,16 @@ class ScenarioTablePanel(QWidget):
             self._rebuilding = False
         def _after_resize():
             self._table.resizeRowsToContents()
-            # Cap row heights so category sub-rows stay compact
             _fm  = QFontMetrics(self._table.font())
-            _max = _fm.height() * 4 + 12   # max ~4 text lines per row
+            _max = _fm.height() * 4 + 12   # cap: max ~4 text lines
+            _min_ors = _fm.height() * 2 + 20  # floor for ORS rows: ~2 lines + strip
             for _r in range(self._table.rowCount()):
-                if self._table.rowHeight(_r) > _max:
+                h = self._table.rowHeight(_r)
+                # ORS cell in this row has content → enforce minimum readable height
+                ors_item = self._table.item(_r, self._C_ORS)
+                if ors_item and ors_item.text() and h < _min_ors:
+                    self._table.setRowHeight(_r, _min_ors)
+                elif h > _max:
                     self._table.setRowHeight(_r, _max)
             self._table.verticalScrollBar().setValue(_vscroll)
             self._table.horizontalScrollBar().setValue(_hscroll)
