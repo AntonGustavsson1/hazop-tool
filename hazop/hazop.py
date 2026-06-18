@@ -1291,15 +1291,12 @@ def _tag_letter_prefix(tag: str) -> str:
 
 
 def _lookup_comp_type_for_tag(tag: str, db) -> str:
-    """Cascade lookup for the component type of a tag.
-    Only returns types the user has explicitly confirmed — never guesses
-    Numbers in tags are always ignored — only the letter prefix determines type.
-    Returns '' when smart recognition is globally disabled.
+    """Return the component type the user has taught for this tag's prefix.
 
-    Priority (highest first):
-      1. study_tag_memory  — what YOU have confirmed via P&ID rubber-band markup
-      2. equipment_catalog — types set in the P&ID scan dialog
-      3. KNOWN_PREFIXES    — built-in ISA codes, secondary fallback only
+    ONLY uses study_tag_memory — the smart recognition table that is built
+    exclusively from explicit user confirmations via rubber-band markup.
+    Numbers are ignored; the letter prefix is the key (321HV3333 → HV).
+    Returns '' if the prefix has not been taught or smart recognition is off.
     """
     if not tag:
         return ''
@@ -1307,27 +1304,12 @@ def _lookup_comp_type_for_tag(tag: str, db) -> str:
         if db.get_config('smart_recognition_enabled', '1') != '1':
             return ''
     pfx = _tag_letter_prefix(tag)
+    if not pfx:
+        return ''
     try:
-        # 1. Prefix learned in this study (active entries only)
-        if pfx and hasattr(db, 'get_prefix_memory'):
-            learned = db.get_prefix_memory(pfx)
-            if learned:
-                return learned
-        # 2. Equipment catalog scanned from this P&ID
-        row = db.conn.execute(
-            "SELECT equipment_type FROM equipment_catalog"
-            " WHERE tag=? COLLATE NOCASE LIMIT 1",
-            (tag,)).fetchone()
-        if row and row[0]:
-            return row[0]
-        # 3. KNOWN_PREFIXES — secondary fallback, only when nothing learned yet
-        if pfx and pfx in KNOWN_PREFIXES:
-            _, eq_type = KNOWN_PREFIXES[pfx]
-            if eq_type:
-                return eq_type
+        return db.get_prefix_memory(pfx) if hasattr(db, 'get_prefix_memory') else ''
     except Exception:
-        pass
-    return ''
+        return ''
 
 
 class Database:
@@ -2176,21 +2158,25 @@ class Database:
         self.commit()
 
     def get_prefix_memory(self, prefix: str) -> str:
-        """Return learned comp_type for a letter prefix (active entries only)."""
+        """Return the most-confirmed comp_type for a letter prefix.
+        Highest usage_count among active=1 entries wins.
+        Tie-broken by most recently updated (latest confirmation wins).
+        """
         if not prefix:
             return ''
         try:
             row = self.conn.execute(
                 "SELECT comp_type FROM study_tag_memory "
-                "WHERE UPPER(tag)=UPPER(?) AND active=1 ORDER BY usage_count DESC LIMIT 1",
+                "WHERE UPPER(tag)=UPPER(?) AND active=1 "
+                "ORDER BY usage_count DESC, updated DESC LIMIT 1",
                 (prefix,)).fetchone()
             return row['comp_type'] if row else ''
         except Exception:
-            # Fallback without active filter (e.g. old DB missing the column)
             try:
                 row = self.conn.execute(
                     "SELECT comp_type FROM study_tag_memory "
-                    "WHERE UPPER(tag)=UPPER(?) ORDER BY usage_count DESC LIMIT 1",
+                    "WHERE UPPER(tag)=UPPER(?) "
+                    "ORDER BY usage_count DESC, updated DESC LIMIT 1",
                     (prefix,)).fetchone()
                 return row['comp_type'] if row else ''
             except Exception:

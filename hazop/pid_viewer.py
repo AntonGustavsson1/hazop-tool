@@ -8337,34 +8337,6 @@ class PIDPanel(QWidget):
             node_id = self._active_node_id or 0
             self.risk_scenario_requested.emit(node_id, pos, page)
 
-    def _type_from_nearest_marker(self, pdf_x: float, pdf_y: float,
-                                   page: int, radius: float = 150) -> str:
-        """Return comp_type of the nearest existing cause marker within radius.
-        Used as fallback when tag text cannot be extracted from the PDF."""
-        try:
-            markers = self.db.cause_markers_for_page(page)
-            best_type = ''
-            best_dist = radius ** 2
-            for m in markers:
-                dx = m['x'] - pdf_x
-                dy = m['y'] - pdf_y
-                d2 = dx * dx + dy * dy
-                if d2 < best_dist:
-                    ct = m.get('comp_type', '') or ''
-                    tag = m.get('comp_tag', '') or m.get('component_tag', '') or ''
-                    if ct:
-                        best_dist = d2
-                        best_type = ct
-                    elif tag:
-                        # Derive type from tag memory
-                        looked_up = self._db_comp_for_tag(tag)
-                        if looked_up:
-                            best_dist = d2
-                            best_type = looked_up
-            return best_type
-        except Exception:
-            return ''
-
     def _draw_tag_highlights(self):
         """Highlight complete tag numbers found on the current PDF page.
 
@@ -8741,7 +8713,7 @@ class PIDPanel(QWidget):
             cx, cy = zone.center().x(), zone.center().y()
             phash = self._compute_zone_phash(page, cx, cy, zone.width(), zone.height())
 
-        detected_type = self._db_comp_for_tag(suggested_tag or '', phash)
+        detected_type = self._db_comp_for_tag(suggested_tag or '')
         self.cause_placement_requested.emit(
             dev_id, suggested_tag or '', detected_type, scene_pos, page, '')
 
@@ -9274,60 +9246,26 @@ class PIDPanel(QWidget):
         except Exception:
             return ''
 
-    def _db_comp_for_tag(self, tag: str, phash: str = '') -> str:
-        """Look up component type for a tag.
+    def _db_comp_for_tag(self, tag: str) -> str:
+        """Return the component type the user has taught for this tag's prefix.
 
-        DESIGN PRINCIPLE — tag-based recognition is master:
-          The primary input is rubber-band markup on the P&ID → tag extracted
-          from the area → prefix stored in study_tag_memory by the user's
-          explicit choice.  Everything else is a secondary fallback.
-
-        Numbers in tags are always ignored (PU0050 = PU9110 = prefix PU).
-
-        Priority:
-          1. study_tag_memory  ← MASTER: user's confirmed choices via P&ID markup
-          2. equipment_catalog ← tag-based, from P&ID scan dialog
-          --- secondary / fallback below this line ---
-          3. KNOWN_PREFIXES    ← built-in ISA codes, used only when nothing learned
-          4. visual fingerprint ← non-tag, lowest priority
-        Returns '' when smart recognition is globally disabled.
+        ONLY uses study_tag_memory — the single source of truth for smart
+        recognition.  Populated exclusively by the user's rubber-band markup
+        confirmations.  Numbers are ignored (321HV3333 → prefix HV).
+        Returns '' if not yet taught or smart recognition is disabled.
         """
-        if not tag and not phash:
+        if not tag:
             return ''
-
-        smart_on = True
         if hasattr(self.db, 'get_config'):
-            smart_on = self.db.get_config('smart_recognition_enabled', '1') == '1'
-        if not smart_on:
+            if self.db.get_config('smart_recognition_enabled', '1') != '1':
+                return ''
+        pfx = _equip_prefix_from_tag(tag)
+        if not pfx:
             return ''
-
-        pfx = _equip_prefix_from_tag(tag) if tag else ''
-
-        # 1. Prefix learned in this study (user-confirmed, highest priority)
-        if pfx and hasattr(self.db, 'get_prefix_memory'):
-            learned = self.db.get_prefix_memory(pfx)
-            if learned:
-                return learned
-
-        # 2. Equipment catalog (scanned from this P&ID)
-        if tag and hasattr(self.db, 'get_equipment_by_tag'):
-            eq = self.db.get_equipment_by_tag(tag)
-            if eq and eq.get('equipment_type'):
-                return eq['equipment_type']
-
-        # 3. KNOWN_PREFIXES — built-in ISA codes, secondary fallback only
-        if pfx and pfx in KNOWN_PREFIXES:
-            _, eq_type = KNOWN_PREFIXES[pfx]
-            if eq_type:
-                return eq_type
-
-        # 4. Visual fingerprint match (lowest priority, non-tag-based)
-        if phash and hasattr(self.db, 'find_fingerprint'):
-            match = self.db.find_fingerprint(phash)
-            if match and match.get('comp_type'):
-                return match['comp_type']
-
-        return ''
+        try:
+            return self.db.get_prefix_memory(pfx) if hasattr(self.db, 'get_prefix_memory') else ''
+        except Exception:
+            return ''
 
     def _load_mode_freqs(self):
         """Return {comp_type: {mode_desc: freq_per_year}} from DB."""
