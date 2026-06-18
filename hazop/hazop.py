@@ -16628,7 +16628,11 @@ class MainWindow(QMainWindow):
                         dev_desc = dev['description'] or ''
 
             initial_tag = getattr(self.pid_panel, '_pending_cons_tag', '') or ''
-            logging.info('_open_consequence_step_picker: creating dialog (dev=%r comp=%r)', dev_desc, comp)
+            # If the consequence tag is known, look up the object type via
+            # smart recognition so the dialog can pre-select the right category.
+            if initial_tag and not comp:
+                comp = _lookup_comp_type_for_tag(initial_tag, self.db)
+            logging.info('_open_consequence_step_picker: creating dialog (dev=%r comp=%r tag=%r)', dev_desc, comp, initial_tag)
 
             dlg = ConsequenceStepPickerDialog(
                 self.db, cons_id,

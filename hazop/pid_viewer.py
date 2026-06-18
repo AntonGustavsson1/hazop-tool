@@ -3782,6 +3782,8 @@ class PIDGraphicsView(QGraphicsView):
         self._rband_preview_item = None
         self._rband_label_item   = None   # QGraphicsTextItem in right-drag rband
         self._rband_dragging     = False
+        # Last rubber-band rect from left-click placement modes (PDF coords)
+        self._last_drawn_pdf_rect = None
 
         # Zone rectangle overlays: (type_, id_) → {rect_item, handles:[4]}
         self._zone_rects: dict = {}
@@ -6029,8 +6031,16 @@ class PIDGraphicsView(QGraphicsView):
             pdf_rect = QRectF((rect.x() - ox) / rs, (rect.y() - oy) / rs,
                                rect.width() / rs, rect.height() / rs)
 
-            # Extract tag text from the selected rectangle
-            suggested = self._extract_tag_from_rect(pdf_rect)
+            # Extract tag text from the selected rectangle, with full-page fallback
+            suggested = self._extract_tag_from_rect(pdf_rect) or ''
+            if not suggested:
+                suggested = find_tag_near_point(
+                    self.pdf_doc, self.current_page,
+                    pdf_rect.center().x(), pdf_rect.center().y()) or ''
+
+            # Store the drawn zone so PIDPanel handlers can use it for marker size
+            self._last_drawn_pdf_rect = pdf_rect if (
+                pdf_rect.width() > 4 or pdf_rect.height() > 4) else None
 
             center = rect.center()
             if self.mode == MODE_CAUSE:
@@ -8132,12 +8142,15 @@ class PIDPanel(QWidget):
             return
 
         pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
-        zone = self._pending_zone_pdf
+        # Use pending zone (right-drag) or last drawn zone (left rubber-band)
+        zone = self._pending_zone_pdf or getattr(self.viewer, '_last_drawn_pdf_rect', None)
         rect_w = zone.width()  if zone else None
         rect_h = zone.height() if zone else None
         if zone:
             pdf_x, pdf_y = zone.center().x(), zone.center().y()
         self._pending_zone_pdf = None
+        if hasattr(self.viewer, '_last_drawn_pdf_rect'):
+            self.viewer._last_drawn_pdf_rect = None
 
         # Store the clicked tag so the step picker can pre-fill it
         self._pending_cons_tag = suggested_tag or ''
@@ -8193,12 +8206,14 @@ class PIDPanel(QWidget):
             sg_id = self.db.add_safeguard(self._active_consequence_id)
             self.db.update_safeguard(sg_id, description, dlg.rrf, dlg.sg_type)
 
-        zone = self._pending_zone_pdf
+        zone = self._pending_zone_pdf or getattr(self.viewer, '_last_drawn_pdf_rect', None)
         rect_w = zone.width()  if zone else None
         rect_h = zone.height() if zone else None
         if zone:
             pdf_x, pdf_y = zone.center().x(), zone.center().y()
         self._pending_zone_pdf = None
+        if hasattr(self.viewer, '_last_drawn_pdf_rect'):
+            self.viewer._last_drawn_pdf_rect = None
         self.db.add_safeguard_marker(sg_id, page, pdf_x, pdf_y, tag,
                                      rect_w=rect_w, rect_h=rect_h)
         self.viewer.add_safeguard_marker(sg_id, pdf_x, pdf_y, tag, description,
