@@ -1852,6 +1852,23 @@ class Database:
                 "INSERT OR REPLACE INTO app_config (key,value)"
                 " VALUES ('tag_memory_composite_v1','1')")
 
+        # Fix accidental active=0 from a previous bad implementation that
+        # deactivated entries in upsert_tag_memory.  Restore active=1 for
+        # all rows so the count-based winner logic works correctly.
+        # Only runs once; user's intentional active=0 (via panel checkbox)
+        # is re-applied afterward if they choose to.
+        if not self.conn.execute(
+                "SELECT value FROM app_config "
+                "WHERE key='tag_memory_restore_active_v1'").fetchone():
+            try:
+                self.conn.execute(
+                    "UPDATE study_tag_memory SET active=1 WHERE usage_count > 0")
+            except Exception:
+                pass
+            self.conn.execute(
+                "INSERT OR REPLACE INTO app_config (key,value)"
+                " VALUES ('tag_memory_restore_active_v1','1')")
+
         self.commit()
 
     # ── Config ────────────────────────────────────────────────────────────────
@@ -2131,10 +2148,9 @@ class Database:
 
         Numbers are ignored: 'PU101', 'PU102', 'E1.M1.PU103' all update 'PU'.
 
-        Each confirmation makes THIS type the active/suggested one for the
-        prefix.  Other types for the same prefix are deactivated so they
-        don't interfere with the next suggestion.  Their usage counts are
-        preserved so the panel can show history.
+        Only increments the usage counter — never deactivates other types.
+        The winner is determined by highest count among active entries.
+        active=0 is only set manually via the Smart Recognition panel.
         """
         if not comp_type:
             return
@@ -2142,20 +2158,13 @@ class Database:
         if not pfx:
             return
         now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
-
-        # Deactivate all other types for this prefix (exclusive active)
-        self.conn.execute(
-            "UPDATE study_tag_memory SET active=0 "
-            "WHERE UPPER(tag)=UPPER(?) AND UPPER(comp_type)!=UPPER(?)",
-            (pfx, comp_type))
-
         existing = self.conn.execute(
             "SELECT usage_count FROM study_tag_memory "
             "WHERE UPPER(tag)=UPPER(?) AND UPPER(comp_type)=UPPER(?)",
             (pfx, comp_type)).fetchone()
         if existing:
             self.conn.execute(
-                "UPDATE study_tag_memory SET comp_tag=?,phash=?,active=1,"
+                "UPDATE study_tag_memory SET comp_tag=?,phash=?,"
                 "usage_count=usage_count+1,updated=? "
                 "WHERE UPPER(tag)=UPPER(?) AND UPPER(comp_type)=UPPER(?)",
                 (comp_tag, phash, now, pfx, comp_type))
