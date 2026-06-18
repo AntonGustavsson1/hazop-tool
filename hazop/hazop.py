@@ -7658,10 +7658,12 @@ class StandardCausesPickerPopup(QDialog):
                 sel_btn = btn
         self._obj_inner_l.addStretch()
 
-        target = sel_btn or (self._obj_btn_group[0] if self._obj_btn_group else None)
-        if target:
-            target.setChecked(True)
-            self._load_causes_for_obj(target.property('obj_id'), target.property('obj_name'))
+        # Only pre-select if smart recognition produced a match.
+        # If nothing was learned for this prefix, leave all buttons unchecked
+        # so the user clearly sees there is no suggestion — no random default.
+        if sel_btn:
+            sel_btn.setChecked(True)
+            self._load_causes_for_obj(sel_btn.property('obj_id'), sel_btn.property('obj_name'))
 
     def _on_obj_btn(self, clicked_btn):
         for btn in self._obj_btn_group:
