@@ -6118,37 +6118,23 @@ class PIDGraphicsView(QGraphicsView):
                 self._rband_dragging = True
             if self._rband_dragging:
                 rect = QRectF(self._rband_start_scene, sp).normalized()
-                if self._rband_preview_item is not None:
-                    try: self._scene.removeItem(self._rband_preview_item)
-                    except Exception: pass
+                # Reuse the existing preview item — just update its geometry.
+                # Creating/removing scene items on every mouseMoveEvent is slow.
+                if self._rband_preview_item is None:
+                    pen = QPen(QColor(0, 100, 200), 1.5)
+                    pen.setStyle(Qt.PenStyle.DashLine)
+                    pen.setCosmetic(True)
+                    self._rband_preview_item = self._scene.addRect(
+                        rect, pen, QBrush(QColor(0, 100, 200, 28)))
+                    self._rband_preview_item.setZValue(Z_TEMP)
+                else:
+                    self._rband_preview_item.setRect(rect)
+                # Remove live tag label during drag — tag is extracted on release.
+                # _extract_tag_from_rect reads the PDF on every move event which is slow.
                 if self._rband_label_item is not None:
                     try: self._scene.removeItem(self._rband_label_item)
                     except Exception: pass
                     self._rband_label_item = None
-                pen = QPen(QColor(0, 100, 200), 1.5)
-                pen.setStyle(Qt.PenStyle.DashLine)
-                pen.setCosmetic(True)
-                self._rband_preview_item = self._scene.addRect(
-                    rect, pen, QBrush(QColor(0, 100, 200, 28)))
-                self._rband_preview_item.setZValue(Z_TEMP)
-                # Live tag label inside the right-click rubber band
-                if rect.width() > 20 and rect.height() > 10 and self.pdf_doc is not None:
-                    rs = self.render_scale
-                    ox, oy = self._page_offsets.get(self.current_page, (0.0, 0.0))
-                    pdf_r = QRectF((rect.x()-ox)/rs, (rect.y()-oy)/rs,
-                                   rect.width()/rs, rect.height()/rs)
-                    tag = self._extract_tag_from_rect(pdf_r)
-                    if tag:
-                        lbl = self._scene.addText(tag)
-                        lbl.setDefaultTextColor(QColor(0, 60, 180))
-                        f = lbl.font(); f.setBold(True)
-                        f.setPointSizeF(max(7.0, 11.0 / self.transform().m11()))
-                        lbl.setFont(f)
-                        br = lbl.boundingRect()
-                        lbl.setPos(rect.center().x() - br.width()/2,
-                                   rect.center().y() - br.height()/2)
-                        lbl.setZValue(Z_TEMP + 1)
-                        self._rband_label_item = lbl
             event.accept(); return
 
         if self.mode == MODE_MARKUP_SELECT and self._drag_mode is not None:
