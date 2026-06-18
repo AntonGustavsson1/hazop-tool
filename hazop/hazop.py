@@ -8880,27 +8880,24 @@ class _ScenarioDelegate(QStyledItemDelegate):
             self._fm_font = option.font
             self._fm = QFontMetrics(option.font)
         fm = self._fm
-        one_line_h = fm.height() + 6
+        one_line_h = fm.height() + 4   # compact: +4 instead of +6
 
         wrap_cols = {panel._C_ORS, panel._C_KON}
         if col not in wrap_cols:
-            # Non-wrap columns never drive row height above one line
-            base = super().sizeHint(option, index)
-            return QSize(base.width(), one_line_h)
+            # Non-wrap columns (risk cells, SG) stay at one compact line
+            return QSize(0, one_line_h)
 
         text = index.data(Qt.ItemDataRole.DisplayRole) or ''
         if not text:
             return QSize(option.rect.width(), one_line_h)
 
         w = option.rect.width() if option.rect.width() > 0 else 200
-        # Subtract icon zones
         if col == panel._C_ORS:
-            # Description text gets full cell width; strip is a separate header row
-            _STRIP_H = 17
+            _STRIP_H = 8    # thinner strip: 8px instead of 17
             w = max(40, option.rect.width() - 6)
             rect = fm.boundingRect(0, 0, w, 10000, Qt.TextFlag.TextWordWrap, text)
             return QSize(option.rect.width(),
-                         _STRIP_H + max(one_line_h, rect.height() + 4))
+                         _STRIP_H + max(one_line_h, rect.height() + 2))
         elif col == panel._C_KON:
             w -= _PID_ICON_W + _KON_CAT_W + _KON_CHAIN_W
         elif col == panel._C_SG:
@@ -8908,7 +8905,7 @@ class _ScenarioDelegate(QStyledItemDelegate):
         w = max(40, w)
         rect = fm.boundingRect(0, 0, w, 10000,
                                Qt.TextFlag.TextWordWrap, text)
-        return QSize(option.rect.width(), max(one_line_h, rect.height() + 8))
+        return QSize(option.rect.width(), max(one_line_h, rect.height() + 4))
 
 
 _PID_ICON_W  = 22          # pixels reserved on the left for the pin icon
@@ -9863,10 +9860,11 @@ class ScenarioTablePanel(QWidget):
             self._table.setColumnWidth(col, width)
         self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._table.verticalHeader().setVisible(False)
-        # Allow rows to shrink freely — resizeRowsToContents sets actual heights
+        # Compact row heights — category sub-rows should be tight
         _init_fm = QFontMetrics(self._table.font())
-        self._table.verticalHeader().setDefaultSectionSize(_init_fm.height() + 2)
-        self._table.verticalHeader().setMinimumSectionSize(_init_fm.height() + 2)
+        _compact = _init_fm.height() + 4
+        self._table.verticalHeader().setDefaultSectionSize(_compact)
+        self._table.verticalHeader().setMinimumSectionSize(_compact)
         self._table.setAlternatingRowColors(True)
         self._table.setWordWrap(True)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -10180,6 +10178,12 @@ class ScenarioTablePanel(QWidget):
             self._rebuilding = False
         def _after_resize():
             self._table.resizeRowsToContents()
+            # Cap row heights so category sub-rows stay compact
+            _fm  = QFontMetrics(self._table.font())
+            _max = _fm.height() * 4 + 12   # max ~4 text lines per row
+            for _r in range(self._table.rowCount()):
+                if self._table.rowHeight(_r) > _max:
+                    self._table.setRowHeight(_r, _max)
             self._table.verticalScrollBar().setValue(_vscroll)
             self._table.horizontalScrollBar().setValue(_hscroll)
             self._table.setUpdatesEnabled(True)
