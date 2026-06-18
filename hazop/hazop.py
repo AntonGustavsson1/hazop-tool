@@ -13656,11 +13656,40 @@ class TagMemoryPanel(QWidget):
         lay.addLayout(master_row)
 
         info = QLabel(
-            "Programmet lär sig prefix → komponenttyp från dina val på P&ID. "
-            "Avmarkera 'Använd' på en rad för att stänga av den mappningen utan att radera den.")
+            "Ikryssad rad = aktiv förval för det prefixet. "
+            "Att kryssa i en rad inaktiverar automatiskt övriga för samma prefix. "
+            "Lägg till mappningar manuellt nedan — de gäller omedelbart.")
         info.setWordWrap(True)
         info.setStyleSheet("color:#555; font-size:10px;")
         lay.addWidget(info)
+
+        # ── Manual add row ─────────────────────────────────────────────────────
+        add_row = QHBoxLayout()
+        add_row.setSpacing(6)
+        self._pfx_edit  = QLineEdit()
+        self._pfx_edit.setPlaceholderText("Prefix  t.ex. QMA")
+        self._pfx_edit.setMaximumWidth(100)
+        self._pfx_edit.setFixedHeight(24)
+        add_row.addWidget(self._pfx_edit)
+        self._type_combo = QComboBox()
+        self._type_combo.setFixedHeight(24)
+        from pid_viewer import KNOWN_PREFIXES as _KP
+        obj_names = sorted({v[1] for v in _KP.values() if v[1]})
+        # Also add standard object names
+        for nm in ['Manuell ventil','On-off ventil','Reglerventil','Backventil',
+                   'Säkerhetsventil / sprängbleck','Pump','Kompressor / fläkt',
+                   'Värmeväxlare / kylare / värmare','Tank / kärl / kolonn',
+                   'Rörledning / slang','Instrument','Övrigt']:
+            if nm not in obj_names:
+                obj_names.append(nm)
+        obj_names.sort()
+        self._type_combo.addItems(obj_names)
+        add_row.addWidget(self._type_combo, 1)
+        btn_add = QPushButton("+ Lägg till")
+        btn_add.setFixedHeight(24)
+        btn_add.clicked.connect(self._add_manual_entry)
+        add_row.addWidget(btn_add)
+        lay.addLayout(add_row)
 
         # ── Tag memory table ───────────────────────────────────────────────────
         self._tbl = QTableWidget(0, 5)
@@ -13717,6 +13746,39 @@ class TagMemoryPanel(QWidget):
 
     def _on_master_toggled(self, checked: bool):
         self.db.set_config('smart_recognition_enabled', '1' if checked else '0')
+
+    def _add_manual_entry(self):
+        """Manually add/override a prefix→type mapping and make it the active choice."""
+        pfx = self._pfx_edit.text().strip().upper()
+        comp = self._type_combo.currentText().strip()
+        if not pfx or not comp:
+            return
+        # Deactivate all existing entries for this prefix
+        try:
+            self.db.conn.execute(
+                "UPDATE study_tag_memory SET active=0 WHERE UPPER(tag)=UPPER(?)",
+                (pfx,))
+            # Insert/update the chosen (prefix, type) with high count + active=1
+            existing = self.db.conn.execute(
+                "SELECT usage_count FROM study_tag_memory "
+                "WHERE UPPER(tag)=UPPER(?) AND UPPER(comp_type)=UPPER(?)",
+                (pfx, comp)).fetchone()
+            now = __import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M')
+            if existing:
+                self.db.conn.execute(
+                    "UPDATE study_tag_memory SET active=1, usage_count=usage_count+1, updated=? "
+                    "WHERE UPPER(tag)=UPPER(?) AND UPPER(comp_type)=UPPER(?)",
+                    (now, pfx, comp))
+            else:
+                self.db.conn.execute(
+                    "INSERT INTO study_tag_memory (tag,comp_type,active,updated) VALUES (?,?,1,?)",
+                    (pfx, comp, now))
+            self.db.commit()
+        except Exception as e:
+            QMessageBox.warning(self, "Fel", str(e))
+            return
+        self._pfx_edit.clear()
+        self.refresh()
 
     def refresh(self):
         self._tbl.blockSignals(True)
@@ -13821,17 +13883,42 @@ class TagMemoryPanel(QWidget):
 
         if col == self._C_USE:
             active = item.checkState() == Qt.CheckState.Checked
+            self._tbl.blockSignals(True)
             try:
-                self.db.set_tag_memory_active(prefix, comp_type, active)
+                if active:
+                    # Exclusive per prefix — deactivate all other types for this prefix
+                    self.db.conn.execute(
+                        "UPDATE study_tag_memory SET active=0 WHERE UPPER(tag)=UPPER(?)",
+                        (prefix,))
+                    self.db.conn.execute(
+                        "UPDATE study_tag_memory SET active=1 "
+                        "WHERE UPPER(tag)=UPPER(?) AND UPPER(comp_type)=UPPER(?)",
+                        (prefix, comp_type))
+                    self.db.commit()
+                    # Reflect the change visually for all rows of this prefix
+                    for r2 in range(self._tbl.rowCount()):
+                        ki2 = self._tbl.item(r2, self._C_USE)
+                        if ki2 and isinstance(ki2.data(Qt.ItemDataRole.UserRole), tuple):
+                            pfx2, ct2 = ki2.data(Qt.ItemDataRole.UserRole)
+                            if pfx2.upper() == prefix.upper():
+                                is_this_row = (ct2.upper() == comp_type.upper())
+                                ki2.setCheckState(
+                                    Qt.CheckState.Checked if is_this_row
+                                    else Qt.CheckState.Unchecked)
+                                colour = QColor('#1a56db') if is_this_row else QColor('#aaa')
+                                for c in (self._C_PFX, self._C_TYPE, self._C_CNT):
+                                    it2 = self._tbl.item(r2, c)
+                                    if it2:
+                                        it2.setForeground(QBrush(colour))
+                else:
+                    self.db.set_tag_memory_active(prefix, comp_type, False)
+                    grey = QColor('#aaa')
+                    for c in (self._C_PFX, self._C_TYPE, self._C_CNT):
+                        it = self._tbl.item(row, c)
+                        if it:
+                            it.setForeground(QBrush(grey))
             except Exception:
                 pass
-            self._tbl.blockSignals(True)
-            colour = QColor('#1a56db') if active else QColor('#aaa')
-            for c in (self._C_PFX, self._C_TYPE):
-                it = self._tbl.item(row, c)
-                if it:
-                    it.setForeground(QBrush(colour if c == self._C_PFX else (
-                        QColor('#000') if active else QColor('#aaa'))))
             self._tbl.blockSignals(False)
 
     def _delete_selected(self):
