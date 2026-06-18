@@ -6198,29 +6198,16 @@ class PIDGraphicsView(QGraphicsView):
                 MODE_PLACE_EXISTING:  (QColor(0x14, 0x6e, 0xbe), QColor(0x14, 0x6e, 0xbe, 30)),
             }
             rc, fc = _mode_colors.get(self.mode, (QColor(0, 100, 220), QColor(0, 100, 220, 30)))
-            pen = QPen(rc, 1.5)
-            pen.setStyle(Qt.PenStyle.DashLine)
-            pen.setCosmetic(True)
-            self._rect_item = self._scene.addRect(rect, pen, QBrush(fc))
-            self._rect_item.setZValue(Z_TEMP)
-            # Live tag label inside the rubber band (same color as border)
-            if rect.width() > 20 and rect.height() > 10 and self.pdf_doc is not None:
-                rs = self.render_scale
-                ox, oy = self._page_offsets.get(self.current_page, (0.0, 0.0))
-                pdf_r = QRectF((rect.x()-ox)/rs, (rect.y()-oy)/rs,
-                               rect.width()/rs, rect.height()/rs)
-                tag = self._extract_tag_from_rect(pdf_r)
-                if tag:
-                    lbl = self._scene.addText(tag)
-                    lbl.setDefaultTextColor(rc)
-                    f = lbl.font(); f.setBold(True)
-                    f.setPointSizeF(max(7.0, 11.0 / self.transform().m11()))
-                    lbl.setFont(f)
-                    br = lbl.boundingRect()
-                    lbl.setPos(rect.center().x() - br.width()/2,
-                               rect.center().y() - br.height()/2)
-                    lbl.setZValue(Z_TEMP + 1)
-                    self._rect_label = lbl
+            # Reuse existing item — just update geometry (same fix as right-drag rubber-band)
+            if self._rect_item is None:
+                pen = QPen(rc, 1.5)
+                pen.setStyle(Qt.PenStyle.DashLine)
+                pen.setCosmetic(True)
+                self._rect_item = self._scene.addRect(rect, pen, QBrush(fc))
+                self._rect_item.setZValue(Z_TEMP)
+            else:
+                self._rect_item.setRect(rect)
+            # No live tag extraction during drag (PDF read is slow — tag extracted on release)
             event.accept(); return
         super().mouseMoveEvent(event)
 

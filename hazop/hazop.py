@@ -8365,9 +8365,74 @@ _CONSEQ_ENTRY: dict = {
     ('Hög temperatur','Värmeväxlare / kylare / värmare'):['tube_failure', 'overpressure'],
     ('Låg temperatur','Värmeväxlare / kylare / värmare'):['hx_undercool', 'freeze_damage'],
 
+    # ── Manuell ventil ────────────────────────────────────────────────────────
+    ('Lågt flöde',     'Manuell ventil'):     ['reduced_flow', 'no_flow'],
+    ('Högt flöde',     'Manuell ventil'):     ['high_flow', 'erosion'],
+    ('Högt tryck',     'Manuell ventil'):     ['overpressure', 'flange_leak'],
+    ('Omvänt flöde',   'Manuell ventil'):     ['reverse_flow', 'upstream_contamination'],
+    ('Missriktat flöde','Manuell ventil'):    ['misdirected_flow'],
+    ('Underhåll',      'Manuell ventil'):     ['loc_small', 'no_flow', 'internal_flammable'],
+
+    # ── On-off ventil ─────────────────────────────────────────────────────────
+    ('Lågt flöde',     'On-off ventil'):      ['no_flow', 'reduced_flow'],
+    ('Högt tryck',     'On-off ventil'):      ['overpressure', 'flange_leak'],
+    ('Missriktat flöde','On-off ventil'):     ['misdirected_flow'],
+    ('Bortfall av hjälpsystem','On-off ventil'): ['no_flow', 'overpressure'],
+    ('Start-up / Shut-down','On-off ventil'): ['overpressure', 'loc_small', 'liquid_slug'],
+
+    # ── Reglerventil ──────────────────────────────────────────────────────────
+    ('Lågt flöde',     'Reglerventil'):       ['reduced_flow', 'no_flow'],
+    ('Högt flöde',     'Reglerventil'):       ['high_flow', 'high_level', 'erosion'],
+    ('Högt tryck',     'Reglerventil'):       ['overpressure', 'flange_leak'],
+    ('Missriktat flöde','Reglerventil'):      ['misdirected_flow', 'high_level'],
+    ('Bortfall av hjälpsystem','Reglerventil'): ['no_flow', 'overpressure', 'high_level'],
+    ('Drift',          'Reglerventil'):       ['no_flow', 'overpressure', 'misdirected_flow'],
+
+    # ── Backventil ────────────────────────────────────────────────────────────
+    ('Omvänt flöde',   'Backventil'):         ['reverse_flow', 'upstream_contamination', 'pump_reverse'],
+    ('Lågt flöde',     'Backventil'):         ['no_flow', 'reduced_flow'],
+    ('Drift',          'Backventil'):         ['reverse_flow', 'upstream_contamination'],
+    ('Underhåll',      'Backventil'):         ['reverse_flow', 'loc_small'],
+
+    # ── Fläns / koppling / packning ───────────────────────────────────────────
+    ('Högt tryck',     'Fläns / koppling / packning'): ['flange_leak', 'overpressure'],
+    ('Hög temperatur', 'Fläns / koppling / packning'): ['seal_degradation', 'flange_leak'],
+    ('Låg temperatur', 'Fläns / koppling / packning'): ['brittle_fracture', 'freeze_damage'],
+    ('Underhåll',      'Fläns / koppling / packning'): ['loc_small', 'internal_flammable'],
+    ('Drift',          'Fläns / koppling / packning'): ['flange_leak', 'loc_small'],
+
+    # ── Kompressor / fläkt ────────────────────────────────────────────────────
+    ('Lågt flöde',     'Kompressor / fläkt'): ['pump_dryrun', 'no_flow', 'bearing_fail'],
+    ('Högt flöde',     'Kompressor / fläkt'): ['erosion', 'bearing_fail'],
+    ('Högt tryck',     'Kompressor / fläkt'): ['overpressure', 'seal_fail'],
+    ('Lågt tryck',     'Kompressor / fläkt'): ['pump_dryrun', 'vacuum'],
+    ('Hög temperatur', 'Kompressor / fläkt'): ['seal_degradation', 'bearing_fail', 'temp_above_design'],
+    ('Bortfall av hjälpsystem','Kompressor / fläkt'): ['no_flow', 'production_stop'],
+    ('Start-up / Shut-down','Kompressor / fläkt'): ['liquid_slug', 'overpressure', 'bearing_fail'],
+
+    # ── Filter / sil ──────────────────────────────────────────────────────────
+    ('Lågt flöde',     'Filter / sil'):       ['reduced_flow', 'no_flow', 'backpressure_upstream'],
+    ('Högt tryck',     'Filter / sil'):       ['overpressure', 'flange_leak'],
+    ('Avvikande sammansättning','Filter / sil'): ['contamination_feed', 'quality_offspec'],
+    ('Underhåll',      'Filter / sil'):       ['loc_small', 'no_flow'],
+    ('Drift',          'Filter / sil'):       ['reduced_flow', 'backpressure_upstream'],
+
+    # ── Säkerhetsventil / sprängbleck ─────────────────────────────────────────
+    ('Högt tryck',     'Säkerhetsventil / sprängbleck'): ['loc_small', 'overpressure'],
+    ('Drift',          'Säkerhetsventil / sprängbleck'): ['loc_small', 'production_stop'],
+    ('Underhåll',      'Säkerhetsventil / sprängbleck'): ['loc_small', 'no_flow', 'overpressure'],
+    ('Bortfall av hjälpsystem','Säkerhetsventil / sprängbleck'): ['overpressure', 'rupture'],
+
     # ── Instrument ────────────────────────────────────────────────────────────
     ('Bortfall av hjälpsystem','Instrument'): ['no_flow', 'overpressure', 'production_stop'],
-    ('Drift',       'Instrument'):            ['quality_offspec', 'overpressure', 'no_flow'],
+    ('Drift',          'Instrument'):         ['quality_offspec', 'overpressure', 'no_flow'],
+    ('Underhåll',      'Instrument'):         ['no_flow', 'production_stop'],
+
+    # ── Styrsystem / PLC / DCS ────────────────────────────────────────────────
+    ('Bortfall av hjälpsystem','Styrsystem / PLC / DCS'): ['no_flow', 'overpressure', 'high_level', 'production_stop'],
+    ('Drift',          'Styrsystem / PLC / DCS'): ['misdirected_flow', 'overpressure', 'no_flow', 'high_level'],
+    ('Start-up / Shut-down','Styrsystem / PLC / DCS'): ['overpressure', 'no_flow', 'liquid_slug'],
+    ('Underhåll',      'Styrsystem / PLC / DCS'): ['no_flow', 'production_stop', 'overpressure'],
 }
 
 _CONSEQ_GENERIC_NEXT = [
