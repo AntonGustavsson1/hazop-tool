@@ -7386,6 +7386,8 @@ class StandardCausesPickerPopup(QDialog):
         except Exception:
             pass
         self._tag_edit.textChanged.connect(self._on_tag_id_changed)
+        self._tag_edit.textChanged.connect(self._update_tag_style)
+        self._update_tag_style(initial_tag)
         top_row.addWidget(self._tag_edit)
 
         top_row.addSpacing(8)
@@ -7510,6 +7512,18 @@ class StandardCausesPickerPopup(QDialog):
         if comp:
             self._initial_comp_type = comp
             self._select_obj_by_type(comp)
+
+    def _update_tag_style(self, text: str):
+        """Highlight tag field orange when empty — tag is required for smart learning."""
+        if text.strip():
+            self._tag_edit.setStyleSheet('')
+            self._tag_edit.setToolTip('')
+        else:
+            self._tag_edit.setStyleSheet(
+                'QLineEdit { background:#fff7ed; border:1px solid #f97316; border-radius:3px; }')
+            self._tag_edit.setToolTip(
+                'Fyll i Tag-ID för att programmet ska lära sig objekttypen.\n'
+                'Utan tag lagras ingen information i Smart igenkänning.')
 
     def _select_obj_by_type(self, comp_type: str):
         """Check the object button that matches comp_type (case-insensitive substring).

@@ -1370,11 +1370,40 @@ class PDFVectorItem(QGraphicsItem):
         return self._rect.height()
 
 
+def _score_tag_word(raw: str):
+    """Return (tag_string, score) for a raw word from the PDF, or (None, 0).
+    Higher score = more confident this is an equipment tag.
+    """
+    text = raw.strip().lstrip('=')
+    text = re.sub(r'^\d+["\']+', '', text)
+    if not text:
+        return None, 0
+    # Simple exact match
+    if _TAG_RE.match(text):
+        return text, 3
+    # Compound/area-prefix tag
+    m = _EXT_TAG_RE.search(text)
+    if m:
+        candidate = m.group(1).lstrip('=')
+        pfx = _equip_prefix_from_tag(candidate)
+        if pfx and len(pfx) >= 2:
+            return candidate, 2
+    # Any word with a recognisable 2+ letter prefix
+    pfx = _equip_prefix_from_tag(text)
+    if pfx and len(pfx) >= 2:
+        return text, 1
+    return None, 0
+
+
 def find_tag_near_point(pdf_doc, page_num, x_pdf, y_pdf, radius=100):
     """Find the nearest equipment tag in the PDF at the given point.
 
+    Strategy:
+    1. Search within `radius` — return immediately on a high-confidence match.
+    2. If nothing found, search the full page and return the nearest tag.
+
     Handles all plant tag conventions:
-    - Simple: HV-101, PCV101, XFB_31304, HV0063
+    - Simple: HV-101, PCV101, XFB_31304, HV0063, 300PU3222
     - Compound dot: =E1.M1.GPA4, M1.HXA1
     - Area-hyphen: 60-RV-009, 2818-LX79, 100-MAS10A, G45-100-EAS10A
     - Pipe-size prefix stripped: 2"LS60.002
@@ -1383,54 +1412,40 @@ def find_tag_near_point(pdf_doc, page_num, x_pdf, y_pdf, radius=100):
         return ''
     try:
         page = pdf_doc.load_page(page_num)
-        rect = fitz.Rect(x_pdf - radius, y_pdf - radius,
-                         x_pdf + radius, y_pdf + radius)
-        words = page.get_text("words", clip=rect)
-        if not words:
-            return ''
 
         def dist(w):
             cx = (w[0] + w[2]) / 2
             cy = (w[1] + w[3]) / 2
             return ((cx - x_pdf) ** 2 + (cy - y_pdf) ** 2) ** 0.5
 
-        words_sorted = sorted(words, key=dist)
+        # --- Pass 1: restricted radius ---
+        clip = fitz.Rect(x_pdf - radius, y_pdf - radius,
+                         x_pdf + radius, y_pdf + radius)
+        words = page.get_text("words", clip=clip)
+        if words:
+            for w in sorted(words, key=dist)[:20]:
+                tag, score = _score_tag_word(w[4])
+                if score >= 2:          # confident match → return immediately
+                    return tag
+            # Collect score-1 candidates from this radius
+            candidates = [(dist(w), t) for w in words
+                          for t, s in [_score_tag_word(w[4])] if s >= 1]
+            if candidates:
+                return min(candidates)[1]
 
-        # Try up to 20 nearest words; prefer properly recognised tags
-        candidates = []
-        for w in words_sorted[:20]:
-            raw = w[4].strip()
-            # Strip RDS-PP '=' and pipe-size prefixes
-            text = raw.lstrip('=')
-            text = re.sub(r'^\d+["\']+', '', text)
+        # --- Pass 2: full page (tag label may be positioned away from symbol) ---
+        all_words = page.get_text("words")
+        if not all_words:
+            return ''
+        tag_words = []
+        for w in all_words:
+            tag, score = _score_tag_word(w[4])
+            if score >= 1:
+                d = dist(w)
+                tag_words.append((d, tag))
+        if tag_words:
+            return min(tag_words)[1]   # nearest tag anywhere on page
 
-            # Exact simple tag (highest confidence)
-            if _TAG_RE.match(text):
-                return text
-
-            # Compound/area-prefix tag
-            m = _EXT_TAG_RE.search(text)
-            if m:
-                candidate = m.group(1).lstrip('=')
-                pfx = _equip_prefix_from_tag(candidate)
-                if pfx and len(pfx) >= 2:
-                    return candidate
-
-            # Keep as fallback if it has a recognisable prefix
-            pfx = _equip_prefix_from_tag(text) if text else ''
-            if pfx and len(pfx) >= 2:
-                candidates.append(text)
-
-        if candidates:
-            return candidates[0]
-
-        # Last resort: only return if the closest word has a recognisable
-        # letter prefix (≥2 letters).  Never return pure numbers — they
-        # carry no equipment-type information and break smart recognition.
-        fallback = words_sorted[0][4].strip().lstrip('=') if words_sorted else ''
-        fallback = re.sub(r'^\d+["\']+', '', fallback)
-        if fallback and len(_equip_prefix_from_tag(fallback)) >= 2:
-            return fallback
         return ''
     except Exception:
         return ''
