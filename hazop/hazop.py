@@ -16755,8 +16755,10 @@ class MainWindow(QMainWindow):
             if row:
                 std_dev_id = row[0]
 
-        # Clean up the OCR'd tag
-        effective_tag = (suggested_desc or suggested_tag or '').strip()
+        # Tag for the popup: prefer the parsed tag over raw area-text.
+        # suggested_tag is the clean parsed tag (e.g. 'E1.M1.GPA4').
+        # suggested_desc is full area text — used only when no tag was parsed.
+        effective_tag = (suggested_tag or suggested_desc or '').strip()
         if self.db.get_config('tag_strip_spaces', '1') == '1':
             effective_tag = effective_tag.replace(' ', '')
 

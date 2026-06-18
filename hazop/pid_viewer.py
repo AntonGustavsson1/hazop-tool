@@ -9277,16 +9277,20 @@ class PIDPanel(QWidget):
     def _db_comp_for_tag(self, tag: str, phash: str = '') -> str:
         """Look up component type for a tag.
 
-        Only the letter prefix matters — numbers are always ignored.
-        PU0050 and PU9110 are the same prefix (PU = Pump).
-        GPA4 and GPA22 are the same prefix (GPA = whatever the user taught).
+        DESIGN PRINCIPLE — tag-based recognition is master:
+          The primary input is rubber-band markup on the P&ID → tag extracted
+          from the area → prefix stored in study_tag_memory by the user's
+          explicit choice.  Everything else is a secondary fallback.
 
-        Priority (highest first):
-          1. study_tag_memory  — what the user confirmed for this prefix
-          2. equipment_catalog — types from P&ID scan dialog
-          3. equipment_types   — confirmed project prefix mapping
-          4. KNOWN_PREFIXES    — built-in codes (PU=Pump, HV=Ventil, …)
-          5. visual fingerprint (phash from drawn rectangle)
+        Numbers in tags are always ignored (PU0050 = PU9110 = prefix PU).
+
+        Priority:
+          1. study_tag_memory  ← MASTER: user's confirmed choices via P&ID markup
+          2. equipment_catalog ← tag-based, from P&ID scan dialog
+          3. confirmed_comp_for_tag ← tag-based, project prefix table
+          --- secondary / fallback below this line ---
+          4. KNOWN_PREFIXES    ← built-in ISA codes, used only when nothing learned
+          5. visual fingerprint ← non-tag, lowest priority
         Returns '' when smart recognition is globally disabled.
         """
         if not tag and not phash:
