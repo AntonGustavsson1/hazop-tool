@@ -2130,6 +2130,11 @@ class Database:
         the type with the highest count wins.
 
         Numbers are ignored: 'PU101', 'PU102', 'E1.M1.PU103' all update 'PU'.
+
+        Each confirmation makes THIS type the active/suggested one for the
+        prefix.  Other types for the same prefix are deactivated so they
+        don't interfere with the next suggestion.  Their usage counts are
+        preserved so the panel can show history.
         """
         if not comp_type:
             return
@@ -2137,20 +2142,27 @@ class Database:
         if not pfx:
             return
         now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+
+        # Deactivate all other types for this prefix (exclusive active)
+        self.conn.execute(
+            "UPDATE study_tag_memory SET active=0 "
+            "WHERE UPPER(tag)=UPPER(?) AND UPPER(comp_type)!=UPPER(?)",
+            (pfx, comp_type))
+
         existing = self.conn.execute(
             "SELECT usage_count FROM study_tag_memory "
             "WHERE UPPER(tag)=UPPER(?) AND UPPER(comp_type)=UPPER(?)",
             (pfx, comp_type)).fetchone()
         if existing:
             self.conn.execute(
-                "UPDATE study_tag_memory SET comp_tag=?,phash=?,"
+                "UPDATE study_tag_memory SET comp_tag=?,phash=?,active=1,"
                 "usage_count=usage_count+1,updated=? "
                 "WHERE UPPER(tag)=UPPER(?) AND UPPER(comp_type)=UPPER(?)",
                 (comp_tag, phash, now, pfx, comp_type))
         else:
             self.conn.execute(
-                "INSERT INTO study_tag_memory (tag,comp_type,comp_tag,phash,updated)"
-                " VALUES (?,?,?,?,?)",
+                "INSERT INTO study_tag_memory (tag,comp_type,comp_tag,phash,active,updated)"
+                " VALUES (?,?,?,?,1,?)",
                 (pfx, comp_type, comp_tag, phash, now))
         self.commit()
 
