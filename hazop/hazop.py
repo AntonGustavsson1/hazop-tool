@@ -7603,17 +7603,15 @@ class StandardCausesPickerPopup(QDialog):
 
     @staticmethod
     def _type_matches(preselect: str, obj_name: str) -> bool:
-        """True when preselect and obj_name share a meaningful word.
-        Uses bidirectional substring so 'Instrument / Sensor' matches
-        'Instrument' and 'Pump' matches 'Pump'.
+        """True when preselect and obj_name refer to the same object type.
+        Uses bidirectional whole-string substring only — no word-level
+        matching to avoid 'ventil' matching 'backventil' when preselect
+        is 'Manuell ventil'.
         """
         if not preselect or not obj_name:
             return False
         p, n = preselect.lower(), obj_name.lower()
-        if p in n or n in p:
-            return True
-        # Word-level match — any significant word (>3 chars) in common
-        return any(w in n for w in p.split() if len(w) > 3)
+        return p in n or n in p
 
     def _populate_objects(self, preselect_comp: str = ''):
         # Remove old buttons
@@ -7654,7 +7652,7 @@ class StandardCausesPickerPopup(QDialog):
             btn = _make_btn(obj)
             self._obj_inner_l.addWidget(btn)
             self._obj_btn_group.append(btn)
-            if preselect_comp and self._type_matches(preselect_comp, obj['name']):
+            if preselect_comp and sel_btn is None and self._type_matches(preselect_comp, obj['name']):
                 sel_btn = btn
         self._obj_inner_l.addStretch()
 
