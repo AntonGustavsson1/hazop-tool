@@ -8885,7 +8885,8 @@ class _ScenarioDelegate(QStyledItemDelegate):
         wrap_cols = {panel._C_ORS, panel._C_KON}
         if col not in wrap_cols:
             # Non-wrap columns (risk cells, SG) stay at one compact line
-            return QSize(0, one_line_h)
+            base = super().sizeHint(option, index)
+            return QSize(base.width(), one_line_h)
 
         text = index.data(Qt.ItemDataRole.DisplayRole) or ''
         if not text:
@@ -17203,7 +17204,35 @@ class MainWindow(QMainWindow):
     def _hzp_new(self):
         if not self._confirm_discard():
             return
-        # Flush WAL and close before touching the file
+
+        # Step 1: clear all project-specific tables using the existing connection.
+        # This guarantees a clean slate even if the DB file cannot be deleted.
+        _PROJECT_TABLES = [
+            'nodes', 'deviations', 'causes', 'consequences', 'safeguards',
+            'actions', 'cause_markers', 'consequence_markers', 'safeguard_markers',
+            'safeguard_markers', 'study_tag_memory', 'symbol_fingerprints',
+            'equipment_catalog', 'pid_identified_tags', 'pid_config',
+            'off_page_connector', 'board_annotations', 'pid_connection',
+            'node_markups', 'node_red_markups', 'pid_identified_tags',
+        ]
+        for tbl in _PROJECT_TABLES:
+            try:
+                self.db.conn.execute(f"DELETE FROM {tbl}")
+            except Exception:
+                pass
+        for key in ('project_name', 'project_date', 'project_revision',
+                    'pid_path', 'pid_layout', 'fill_screen'):
+            try:
+                self.db.conn.execute("DELETE FROM app_config WHERE key=?", (key,))
+            except Exception:
+                pass
+        try:
+            self.db.commit()
+        except Exception:
+            pass
+
+        # Step 2: flush WAL, close, then try to delete the file for a clean
+        # file (optional — data is already gone from step 1).
         try:
             self.db.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         except Exception:
@@ -17213,22 +17242,17 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # Delete DB + WAL/SHM sidecars. On Windows/OneDrive, the file may be
-        # temporarily locked — retry a few times before giving up.
         import time as _time
         for ext in ('', '-shm', '-wal'):
             p = Path(str(DB_PATH) + ext)
-            for _ in range(8):
+            for _ in range(5):
                 try:
                     p.unlink(missing_ok=True)
                     break
                 except PermissionError:
-                    _time.sleep(0.15)
-            else:
-                # Still locked — open anyway; SQLite will re-use the existing file
-                pass
+                    _time.sleep(0.1)
 
-        # Always create a fresh Database object so self.db is never left closed
+        # Step 3: open (or create) a fresh Database object
         try:
             self.db = Database(DB_PATH)
         except Exception as e:
