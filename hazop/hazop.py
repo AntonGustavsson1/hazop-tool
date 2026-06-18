@@ -1407,15 +1407,18 @@ class Database:
             "ALTER TABLE nodes ADD COLUMN approved_at TEXT DEFAULT ''",
             "ALTER TABLE nodes ADD COLUMN study_status TEXT DEFAULT 'draft'",
             "ALTER TABLE study_tag_memory ADD COLUMN active INTEGER DEFAULT 1",
-            # Smart object recognition (feature 1-4)
+            # Smart object recognition — composite key so the same prefix can
+            # map to multiple types (e.g. HV→Handventil×5, HV→Backventil×2).
+            # The type with the highest usage_count wins on lookup.
             """CREATE TABLE IF NOT EXISTS study_tag_memory (
-                tag         TEXT PRIMARY KEY,
+                tag         TEXT NOT NULL,
                 comp_type   TEXT NOT NULL DEFAULT '',
                 comp_tag    TEXT NOT NULL DEFAULT '',
                 phash       TEXT NOT NULL DEFAULT '',
                 usage_count INTEGER NOT NULL DEFAULT 1,
                 updated     TEXT NOT NULL DEFAULT '',
-                active      INTEGER NOT NULL DEFAULT 1
+                active      INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (tag, comp_type)
             )""",
             """CREATE TABLE IF NOT EXISTS symbol_fingerprints (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1790,34 +1793,71 @@ class Database:
 
         _sync_cause_likelihoods_from_frequency(self.conn)
 
-        # Migrate study_tag_memory: collapse __PFX__ sentinel rows and full-tag
-        # rows (with numbers) into bare prefix rows (PU, HV, PCV, …).
+        # Migration v1: collapse __PFX__ sentinels and full tags into bare prefixes
         if not self.conn.execute(
                 "SELECT value FROM app_config WHERE key='tag_memory_prefix_only_v1'").fetchone():
-            rows = self.conn.execute(
-                "SELECT tag, comp_type, phash, usage_count FROM study_tag_memory").fetchall()
-            self.conn.execute("DELETE FROM study_tag_memory")
-            merged: dict = {}  # prefix → (comp_type, phash, usage_count)
-            for r in rows:
-                raw = r[0]
-                # Strip __PFX__ sentinel if present
-                if raw.upper().startswith('__PFX__'):
-                    raw = raw[7:]
-                pfx = _tag_letter_prefix(raw) if raw else ''
-                if not pfx:
-                    continue
-                prev = merged.get(pfx)
-                if prev is None or r[3] > prev[2]:
-                    merged[pfx] = (r[1], r[2] or '', r[3] or 1)
-            now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
-            for pfx, (ct, ph, cnt) in merged.items():
-                self.conn.execute(
-                    "INSERT INTO study_tag_memory (tag,comp_type,phash,usage_count,updated)"
-                    " VALUES (?,?,?,?,?)",
-                    (pfx, ct, ph, cnt, now))
+            try:
+                rows = self.conn.execute(
+                    "SELECT tag, comp_type, phash, usage_count FROM study_tag_memory").fetchall()
+                self.conn.execute("DELETE FROM study_tag_memory")
+                merged: dict = {}
+                for r in rows:
+                    raw = r[0]
+                    if raw.upper().startswith('__PFX__'):
+                        raw = raw[7:]
+                    pfx = _tag_letter_prefix(raw) if raw else ''
+                    if not pfx:
+                        continue
+                    prev = merged.get(pfx)
+                    if prev is None or r[3] > prev[2]:
+                        merged[pfx] = (r[1], r[2] or '', r[3] or 1)
+                now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+                for pfx, (ct, ph, cnt) in merged.items():
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO study_tag_memory "
+                        "(tag,comp_type,phash,usage_count,updated) VALUES (?,?,?,?,?)",
+                        (pfx, ct, ph, cnt, now))
+            except Exception:
+                pass
             self.conn.execute(
                 "INSERT OR REPLACE INTO app_config (key,value)"
                 " VALUES ('tag_memory_prefix_only_v1','1')")
+
+        # Migration v2: change from single-key (tag PK) to composite key (tag,comp_type).
+        # Old DBs have tag as sole PRIMARY KEY — recreate with composite key so the
+        # same prefix can accumulate counts for multiple types independently.
+        if not self.conn.execute(
+                "SELECT value FROM app_config WHERE key='tag_memory_composite_v1'").fetchone():
+            try:
+                old_rows = self.conn.execute(
+                    "SELECT tag, comp_type, comp_tag, phash, usage_count, updated, "
+                    "COALESCE(active,1) FROM study_tag_memory").fetchall()
+                self.conn.executescript("""
+                    DROP TABLE IF EXISTS study_tag_memory_old;
+                    ALTER TABLE study_tag_memory RENAME TO study_tag_memory_old;
+                    CREATE TABLE study_tag_memory (
+                        tag         TEXT NOT NULL,
+                        comp_type   TEXT NOT NULL DEFAULT '',
+                        comp_tag    TEXT NOT NULL DEFAULT '',
+                        phash       TEXT NOT NULL DEFAULT '',
+                        usage_count INTEGER NOT NULL DEFAULT 1,
+                        updated     TEXT NOT NULL DEFAULT '',
+                        active      INTEGER NOT NULL DEFAULT 1,
+                        PRIMARY KEY (tag, comp_type)
+                    );
+                """)
+                for r in old_rows:
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO study_tag_memory "
+                        "(tag,comp_type,comp_tag,phash,usage_count,updated,active) "
+                        "VALUES (?,?,?,?,?,?,?)",
+                        (r[0], r[1], r[2], r[3], r[4], r[5], r[6]))
+                self.conn.execute("DROP TABLE IF EXISTS study_tag_memory_old")
+            except Exception:
+                pass
+            self.conn.execute(
+                "INSERT OR REPLACE INTO app_config (key,value)"
+                " VALUES ('tag_memory_composite_v1','1')")
 
         self.commit()
 
@@ -2090,8 +2130,13 @@ class Database:
 
     def upsert_tag_memory(self, tag: str, comp_type: str,
                           comp_tag: str = '', phash: str = ''):
-        """Save comp_type keyed by the letter prefix of tag.
-        Numbers are ignored — 'PU101', 'PU102', 'E1.M1.PU103' all store under 'PU'.
+        """Increment the usage counter for (prefix, comp_type).
+
+        Each (prefix, comp_type) pair has its own counter so the same prefix
+        can accumulate counts for multiple types independently.  On lookup,
+        the type with the highest count wins.
+
+        Numbers are ignored: 'PU101', 'PU102', 'E1.M1.PU103' all update 'PU'.
         """
         if not comp_type:
             return
@@ -2100,13 +2145,15 @@ class Database:
             return
         now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
         existing = self.conn.execute(
-            "SELECT usage_count FROM study_tag_memory WHERE UPPER(tag)=UPPER(?)",
-            (pfx,)).fetchone()
+            "SELECT usage_count FROM study_tag_memory "
+            "WHERE UPPER(tag)=UPPER(?) AND UPPER(comp_type)=UPPER(?)",
+            (pfx, comp_type)).fetchone()
         if existing:
             self.conn.execute(
-                "UPDATE study_tag_memory SET comp_type=?,comp_tag=?,phash=?,"
-                "usage_count=usage_count+1,updated=? WHERE UPPER(tag)=UPPER(?)",
-                (comp_type, comp_tag, phash, now, pfx))
+                "UPDATE study_tag_memory SET comp_tag=?,phash=?,"
+                "usage_count=usage_count+1,updated=? "
+                "WHERE UPPER(tag)=UPPER(?) AND UPPER(comp_type)=UPPER(?)",
+                (comp_tag, phash, now, pfx, comp_type))
         else:
             self.conn.execute(
                 "INSERT INTO study_tag_memory (tag,comp_type,comp_tag,phash,updated)"
@@ -2135,10 +2182,12 @@ class Database:
             except Exception:
                 return ''
 
-    def set_tag_memory_active(self, prefix: str, active: bool):
+    def set_tag_memory_active(self, prefix: str, comp_type: str, active: bool):
+        """Enable/disable a specific (prefix, comp_type) entry."""
         self.conn.execute(
-            "UPDATE study_tag_memory SET active=? WHERE UPPER(tag)=UPPER(?)",
-            (1 if active else 0, prefix))
+            "UPDATE study_tag_memory SET active=? "
+            "WHERE UPPER(tag)=UPPER(?) AND UPPER(comp_type)=UPPER(?)",
+            (1 if active else 0, prefix, comp_type))
         self.commit()
 
     def find_fingerprint(self, phash: str, max_distance: int = 50):
@@ -13675,45 +13724,63 @@ class TagMemoryPanel(QWidget):
         try:
             rows = self.db.conn.execute(
                 "SELECT tag, comp_type, usage_count, updated, active "
-                "FROM study_tag_memory ORDER BY usage_count DESC, tag").fetchall()
+                "FROM study_tag_memory ORDER BY tag, usage_count DESC").fetchall()
         except Exception:
-            # Fallback for old DBs missing the 'active' column
             try:
                 rows = self.db.conn.execute(
                     "SELECT tag, comp_type, usage_count, updated, 1 as active "
-                    "FROM study_tag_memory ORDER BY usage_count DESC, tag").fetchall()
+                    "FROM study_tag_memory ORDER BY tag, usage_count DESC").fetchall()
             except Exception:
                 rows = []
+
+        # Find the winning (highest-count active) type per prefix for highlighting
+        best: dict = {}  # prefix → max active usage_count
+        for row in rows:
+            d = dict(row)
+            if d['active']:
+                best[d['tag']] = max(best.get(d['tag'], 0), d['usage_count'])
+
         for row in rows:
             r = self._tbl.rowCount()
             self._tbl.insertRow(r)
             d = dict(row)
+            is_winner = d['active'] and d['usage_count'] == best.get(d['tag'], -1)
 
             # Col 0 — "Använd" checkbox
             use_item = QTableWidgetItem()
             use_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
             use_item.setCheckState(
                 Qt.CheckState.Checked if d['active'] else Qt.CheckState.Unchecked)
-            use_item.setData(Qt.ItemDataRole.UserRole, d['tag'])  # key for DB update
+            # Store both prefix AND comp_type for the DB update
+            use_item.setData(Qt.ItemDataRole.UserRole, (d['tag'], d['comp_type']))
             self._tbl.setItem(r, self._C_USE, use_item)
 
-            # Col 1 — prefix
+            # Col 1 — prefix (bold if this is the winning row)
             pfx_item = QTableWidgetItem(d['tag'])
             pfx_item.setData(Qt.ItemDataRole.UserRole, d['tag'])
-            pfx_item.setForeground(QBrush(QColor('#1a56db') if d['active'] else QColor('#aaa')))
+            colour = QColor('#1a56db') if d['active'] else QColor('#aaa')
+            pfx_item.setForeground(QBrush(colour))
+            if is_winner:
+                f = pfx_item.font(); f.setBold(True); pfx_item.setFont(f)
             pfx_item.setFlags(pfx_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self._tbl.setItem(r, self._C_PFX, pfx_item)
 
-            # Col 2 — comp_type (editable)
+            # Col 2 — comp_type (not editable — type is defined by what you pick)
             ct = QTableWidgetItem(d['comp_type'])
             if not d['active']:
                 ct.setForeground(QBrush(QColor('#aaa')))
+            elif is_winner:
+                f = ct.font(); f.setBold(True); ct.setFont(f)
+                ct.setToolTip('Används som förval (flest val)')
+            ct.setFlags(ct.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self._tbl.setItem(r, self._C_TYPE, ct)
 
             # Col 3 — count
             uc = QTableWidgetItem(str(d['usage_count']))
             uc.setFlags(uc.flags() & ~Qt.ItemFlag.ItemIsEditable)
             uc.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if is_winner:
+                f = uc.font(); f.setBold(True); uc.setFont(f)
             self._tbl.setItem(r, self._C_CNT, uc)
 
             # Col 4 — updated
@@ -13747,48 +13814,41 @@ class TagMemoryPanel(QWidget):
         key_item = self._tbl.item(row, self._C_USE)
         if not key_item:
             return
-        real_key = key_item.data(Qt.ItemDataRole.UserRole)
+        key_data = key_item.data(Qt.ItemDataRole.UserRole)  # (prefix, comp_type) tuple
+        if not isinstance(key_data, tuple) or len(key_data) != 2:
+            return
+        prefix, comp_type = key_data
 
         if col == self._C_USE:
-            # "Använd" checkbox toggled
             active = item.checkState() == Qt.CheckState.Checked
             try:
-                self.db.set_tag_memory_active(real_key, active)
+                self.db.set_tag_memory_active(prefix, comp_type, active)
             except Exception:
                 pass
-            # Grey out / restore the other cells without triggering itemChanged again
             self._tbl.blockSignals(True)
             colour = QColor('#1a56db') if active else QColor('#aaa')
-            grey   = QColor('#aaa')
             for c in (self._C_PFX, self._C_TYPE):
                 it = self._tbl.item(row, c)
                 if it:
                     it.setForeground(QBrush(colour if c == self._C_PFX else (
-                        QColor('#000') if active else grey)))
+                        QColor('#000') if active else QColor('#aaa'))))
             self._tbl.blockSignals(False)
-
-        elif col == self._C_TYPE:
-            new_type = item.text().strip()
-            if new_type and real_key:
-                try:
-                    self.db.conn.execute(
-                        "UPDATE study_tag_memory SET comp_type=? WHERE UPPER(tag)=UPPER(?)",
-                        (new_type, real_key))
-                    self.db.commit()
-                except Exception:
-                    pass
 
     def _delete_selected(self):
         rows = sorted({i.row() for i in self._tbl.selectedItems()}, reverse=True)
         for r in rows:
             key_item = self._tbl.item(r, self._C_USE)
             if key_item:
-                real_key = key_item.data(Qt.ItemDataRole.UserRole)
-                try:
-                    self.db.conn.execute(
-                        "DELETE FROM study_tag_memory WHERE UPPER(tag)=UPPER(?)", (real_key,))
-                except Exception:
-                    pass
+                key_data = key_item.data(Qt.ItemDataRole.UserRole)
+                if isinstance(key_data, tuple) and len(key_data) == 2:
+                    prefix, comp_type = key_data
+                    try:
+                        self.db.conn.execute(
+                            "DELETE FROM study_tag_memory "
+                            "WHERE UPPER(tag)=UPPER(?) AND UPPER(comp_type)=UPPER(?)",
+                            (prefix, comp_type))
+                    except Exception:
+                        pass
         self.db.commit()
         self.refresh()
 
