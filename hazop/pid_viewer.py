@@ -721,32 +721,50 @@ def _equip_prefix_from_tag(tag: str) -> str:
     parts = re.split(r'[-./_ ]', t)
 
     def _leading(s):
+        """Leading letter block: 'PU0050' → 'PU', '300PU3222' → ''"""
         m = re.match(r'^([A-Z]+)', s)
         return m.group(1) if m else ''
 
-    letters_per_part = [_leading(p) for p in parts if p]
+    def _embedded(s):
+        """Letter block embedded between digits: '300PU3222' → 'PU', 'PU0050' → ''
+        Handles format: <area-digits><LETTERS><seq-digits>
+        """
+        m = re.match(r'^\d+([A-Z]{2,6})\d', s)
+        return m.group(1) if m else ''
 
     # Skip 'DN' (pipe nominal diameter — not an instrument code)
     skip = {'DN'}
 
-    # 1. 2+ letter segment known in KNOWN_PREFIXES (highest confidence)
-    for ltrs in letters_per_part:
-        if len(ltrs) >= 2 and ltrs not in skip and ltrs in KNOWN_PREFIXES:
-            return ltrs
+    # Build candidates: (leading_letters, embedded_letters) per part
+    candidates = [(_leading(p), _embedded(p)) for p in parts if p]
 
-    # 2. First 2+ letter segment not in skip set
-    #    (instrument codes always have 2+ letters; single-letter area codes don't)
-    for ltrs in letters_per_part:
-        if len(ltrs) >= 2 and ltrs not in skip:
-            return ltrs
+    # 1. Leading 2+ letters in KNOWN_PREFIXES (highest confidence)
+    for lead, _ in candidates:
+        if len(lead) >= 2 and lead not in skip and lead in KNOWN_PREFIXES:
+            return lead
 
-    # 3. Single-letter known prefix (E, P, C, …)
-    for ltrs in letters_per_part:
-        if len(ltrs) == 1 and ltrs in KNOWN_PREFIXES:
-            return ltrs
+    # 2. Embedded letters in KNOWN_PREFIXES: '300PU3222' → 'PU'
+    for _, emb in candidates:
+        if len(emb) >= 2 and emb not in skip and emb in KNOWN_PREFIXES:
+            return emb
 
-    # 4. Any leading letters from the first non-empty part
-    first = next((l for l in letters_per_part if l), '')
+    # 3. First leading 2+ letter segment (instrument code beats single-letter area)
+    for lead, _ in candidates:
+        if len(lead) >= 2 and lead not in skip:
+            return lead
+
+    # 4. First embedded 2+ letter segment (no separator, digits sandwich)
+    for _, emb in candidates:
+        if len(emb) >= 2 and emb not in skip:
+            return emb
+
+    # 5. Single-letter known prefix (E, P, C, …)
+    for lead, _ in candidates:
+        if len(lead) == 1 and lead in KNOWN_PREFIXES:
+            return lead
+
+    # 6. Any leading letters from the first non-empty part
+    first = next((lead for lead, _ in candidates if lead), '')
     return first or (parts[0] if parts else tag)
 
 # ── Equipment prefix knowledge base ──────────────────────────────────────────
