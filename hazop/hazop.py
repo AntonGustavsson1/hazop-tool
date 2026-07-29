@@ -10945,7 +10945,7 @@ class ScenarioTablePanel(QWidget):
                 self._table.blockSignals(False)
         except Exception as e:
             logging.exception('_rebuild: Python exception')
-            QMessageBox.critical(None, "Fel i scenariopanel", str(e))
+            QMessageBox.critical(self, "Fel i scenariopanel", str(e))
         finally:
             self._rebuild_pending = False
             self._rebuilding = False
@@ -11076,7 +11076,7 @@ class ScenarioTablePanel(QWidget):
                 # Cause list for the RRF popup: build from direct + chain causes
                 _chain_causes = [dict(c) for c in
                                  self.db.causes_linked_from_consequence(cons_d['id'])]
-                _direct_cause = self.db.get_cause(cons_d['cause_id'])
+                _direct_cause = self.db.get_cause(cons_d.get('cause_id')) if cons_d.get('cause_id') else None
                 cause_popup_list = []
                 if _direct_cause:
                     cause_popup_list.append((dict(_direct_cause)['id'],
@@ -17284,7 +17284,7 @@ class MainWindow(QMainWindow):
             _cons = self.db.get_consequence(id_)
             cons = dict(_cons) if _cons else None
             if cons:
-                _cause = self.db.get_cause(cons['cause_id'])
+                _cause = self.db.get_cause(cons['cause_id']) if cons.get('cause_id') else None
                 cause = dict(_cause) if _cause else None
                 if cause and cause.get('deviation_id'):
                     self.scenario_panel.load_deviation(cause['deviation_id'])
@@ -17298,7 +17298,8 @@ class MainWindow(QMainWindow):
                 cons = self.db.get_consequence(sg['consequence_id'])
                 if cons:
                     self.pid_panel.set_active_consequence(cons['id'])
-                    _cr = self.db.get_cause(cons['cause_id']); cause = dict(_cr) if _cr else None
+                    _cr = self.db.get_cause(cons['cause_id']) if cons.get('cause_id') else None
+                    cause = dict(_cr) if _cr else None
                     if cause and cause.get('deviation_id'):
                         self.scenario_panel.load_deviation(cause['deviation_id'])
                     else:
