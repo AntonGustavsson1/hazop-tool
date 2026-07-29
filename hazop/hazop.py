@@ -11,6 +11,8 @@ import logging
 import traceback
 from pathlib import Path
 from functools import partial
+import platform
+import inspect
 
 from pid_viewer import (
     PIDPanel, COMPONENT_TYPES, CONSEQUENCE_TEMPLATES, HAS_PYMUPDF,
@@ -37,6 +39,158 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF, QRect, QTimer, QMimeData, QEvent
 from PyQt6.QtGui import QFont, QFontMetrics, QColor, QAction, QBrush, QPen, QPainter, QDrag, QPainterPath, QPixmap, QIcon, QPolygonF, QShortcut, QKeySequence, QCursor
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CRASH REPORTING & DIAGNOSTICS
+# ══════════════════════════════════════════════════════════════════════════════
+
+class CrashReporter:
+    """Automatic crash reporting with structured JSON output for easy analysis."""
+
+    CRASH_DIR = Path(__file__).parent / 'crashes'
+
+    @classmethod
+    def setup(cls):
+        """Install crash handler for uncaught exceptions."""
+        cls.CRASH_DIR.mkdir(exist_ok=True)
+        # Don't override sys.excepthook here; let the main block do it
+        logging.info(f"Crash reporting initialized: {cls.CRASH_DIR}")
+
+    @classmethod
+    def handle_exception(cls, exc_type, exc_value, exc_tb):
+        """Catch uncaught exceptions and generate detailed crash report."""
+        try:
+            report = cls.generate_report(exc_type, exc_value, exc_tb)
+            cls.save_report(report)
+            cls.log_report(report)
+        except Exception as e:
+            # If crash reporter itself fails, fall back to stderr
+            print(f"Failed to generate crash report: {e}", file=sys.stderr)
+            traceback.print_exception(exc_type, exc_value, exc_tb, file=sys.stderr)
+
+    @classmethod
+    def generate_report(cls, exc_type, exc_value, exc_tb):
+        """Generate structured crash report with all diagnostic data."""
+        # Extract full traceback with frames
+        tb_frames = []
+        tb = exc_tb
+        while tb is not None:
+            frame = tb.tb_frame
+            tb_frames.append({
+                'filename': frame.f_code.co_filename,
+                'function': frame.f_code.co_name,
+                'lineno': tb.tb_lineno,
+                'locals_preview': cls._format_locals(frame.f_locals),
+            })
+            tb = tb.tb_next
+
+        report = {
+            'timestamp': datetime.datetime.now().isoformat(),
+            'exception': {
+                'type': exc_type.__name__,
+                'message': str(exc_value),
+                'module': exc_type.__module__,
+            },
+            'traceback': {
+                'frames': tb_frames,
+                'full_text': ''.join(traceback.format_exception(exc_type, exc_value, exc_tb)),
+            },
+            'environment': {
+                'python_version': platform.python_version(),
+                'platform': platform.platform(),
+                'machine': platform.machine(),
+                'processor': platform.processor(),
+            },
+            'imports': cls._get_module_versions(),
+        }
+        return report
+
+    @classmethod
+    def _format_locals(cls, locals_dict, max_len=100):
+        """Format local variables for crash report (safe truncation)."""
+        result = {}
+        for key, val in locals_dict.items():
+            if key.startswith('_'):
+                continue
+            try:
+                val_str = repr(val)
+                if len(val_str) > max_len:
+                    val_str = val_str[:max_len] + '...'
+                result[key] = val_str
+            except Exception:
+                result[key] = f'<{type(val).__name__}>'
+        return result
+
+    @classmethod
+    def _get_module_versions(cls):
+        """Collect versions of key dependencies."""
+        versions = {}
+        for module_name in ['PyQt6', 'fitz', 'easyocr', 'rapidocr_onnxruntime', 'PIL']:
+            try:
+                mod = __import__(module_name.split('.')[0])
+                if hasattr(mod, '__version__'):
+                    versions[module_name] = mod.__version__
+            except (ImportError, AttributeError):
+                pass
+        return versions
+
+    @classmethod
+    def save_report(cls, report):
+        """Save crash report as JSON file."""
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        exc_type = report['exception']['type']
+        filename = cls.CRASH_DIR / f'crash_{timestamp}_{exc_type}.json'
+
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(report, f, indent=2, ensure_ascii=False)
+
+        logging.error(f"Crash report saved to: {filename}")
+
+    @classmethod
+    def log_report(cls, report):
+        """Log crash summary to console and file."""
+        exc = report['exception']
+        logging.error(f"=== CRASH REPORT ===")
+        logging.error(f"Exception: {exc['type']}: {exc['message']}")
+        logging.error(f"Location: {report['traceback']['frames'][-1]['filename']}:{report['traceback']['frames'][-1]['lineno']}")
+        logging.error(f"Function: {report['traceback']['frames'][-1]['function']}")
+
+    @classmethod
+    def list_crashes(cls):
+        """Return list of all crash reports, most recent first."""
+        if not cls.CRASH_DIR.exists():
+            return []
+        crashes = sorted(cls.CRASH_DIR.glob('crash_*.json'), reverse=True)
+        return crashes
+
+    @classmethod
+    def get_latest_crash_summary(cls):
+        """Get summary of the most recent crash (for CLI debugging)."""
+        crashes = cls.list_crashes()
+        if not crashes:
+            return None
+
+        latest = crashes[0]
+        try:
+            with open(latest, 'r', encoding='utf-8') as f:
+                report = json.load(f)
+
+            exc = report['exception']
+            frames = report['traceback']['frames']
+
+            return {
+                'file': str(latest),
+                'timestamp': report['timestamp'],
+                'type': exc['type'],
+                'message': exc['message'],
+                'location': f"{frames[-1]['filename']}:{frames[-1]['lineno']}",
+                'function': frames[-1]['function'],
+                'full_report': report,
+            }
+        except Exception as e:
+            logging.error(f"Failed to read crash report {latest}: {e}")
+            return None
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # WINDOWS 11 THEME — LJUST TEMA
@@ -18227,8 +18381,9 @@ if __name__ == '__main__':
     import logging, traceback as _tb, datetime as _dt
 
     # ── Crash logger ───────────────────────────────────────────────────────────
-    # Every unhandled exception is written to hazop_crash.log next to hazop.py.
-    # Share the content of that file instead of a screenshot when reporting bugs.
+    # Structured crash reporting: saves detailed diagnostic info to JSON files
+    # in hazop/crashes/ directory for automatic analysis. Also maintains legacy
+    # hazop_crash.log for backward compatibility.
     _LOG = Path(__file__).parent / 'hazop_crash.log'
     logging.basicConfig(
         filename=str(_LOG),
@@ -18239,20 +18394,31 @@ if __name__ == '__main__':
     # Also echo to stderr (visible in the console window)
     logging.getLogger().addHandler(logging.StreamHandler(sys.stderr))
 
+    # Setup structured crash reporting
+    CrashReporter.setup()
+
     def _excepthook(exc_type, exc_value, exc_tb):
+        # Generate structured crash report
+        try:
+            CrashReporter.handle_exception(exc_type, exc_value, exc_tb)
+        except Exception as e:
+            logging.error(f"Failed to generate crash report: {e}")
+
+        # Also log as text for backward compatibility
         msg = ''.join(_tb.format_exception(exc_type, exc_value, exc_tb))
-        ts  = _dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         logging.error('UNHANDLED EXCEPTION\n%s', msg)
+
         # Show a dialog so the user knows something crashed
         try:
+            crash_dir = CrashReporter.CRASH_DIR
             dlg = QMessageBox()
             dlg.setWindowTitle('Programmet kraschade')
             dlg.setIcon(QMessageBox.Icon.Critical)
             dlg.setText(
                 f'<b>{exc_type.__name__}:</b> {exc_value}<br><br>'
-                f'Fullständig info sparad i:<br>'
-                f'<code>{_LOG}</code><br><br>'
-                f'Klistra in innehållet från den filen när du rapporterar felet.')
+                f'Detaljerad rapport sparad i:<br>'
+                f'<code>{crash_dir}</code><br><br>'
+                f'Skicka innehållet från JSON-filen när du rapporterar felet.')
             dlg.setDetailedText(msg)
             dlg.exec()
         except Exception:
