@@ -7753,7 +7753,7 @@ class StandardCausesPickerPopup(QDialog):
         btn_row.addWidget(self._ok_btn)
         body_l.addLayout(btn_row)
 
-        self._cause_list.itemDoubleClicked.connect(lambda _: self._pick_selected())
+        self._cause_list.itemDoubleClicked.connect(self._pick_selected)
         self._ft_edit.returnPressed.connect(self._pick_selected)
         self._search_edit.installEventFilter(self)
 

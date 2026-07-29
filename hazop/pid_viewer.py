@@ -10,6 +10,7 @@ import datetime
 import math
 import logging
 from pathlib import Path
+from functools import partial
 
 # Suppress Qt SVG parser warnings (font references, path truncations)
 # These come from PyMuPDF's SVG output and are harmless display artefacts.
@@ -92,6 +93,21 @@ try:
 except ImportError:
     HAS_PIL = False
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CONFIGURATION & MAGIC NUMBER CONSTANTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+CONFIG = {
+    # ===== TIMERS (milliseconds) =====
+    'TIMER_PDF_EXTRACT_MS': 100,      # PDF line extraction
+
+    # ===== WIDGET DIMENSIONS (pixels) - shared with hazop.py =====
+    'W_ICON_BTN': 28,                 # Icon button
+    'W_SPINNER': 58,                  # Spinner width
+    'H_ROW_STD': 34,                  # Standard row (scenario banner)
+    'H_SMALL_BTN': 20,                # Small banner button
+}
 
 # ── OCR Reader Lifecycle Manager ──────────────────────────────────────────────
 # Centralized handling of OCR model caching and cleanup. Both EasyOCR and RapidOCR
@@ -631,9 +647,9 @@ _MEDIA_COLORS = {
     'unknown':       '#5d6d7e',   # slate
 }
 
-_SG_TYPES    = ['BPCS', 'SIS', 'Mekanisk', 'Administrativ', 'Övrigt']
+SG_TYPES    = ['BPCS', 'SIS', 'Mekanisk', 'Administrativ', 'Övrigt']
 _RRF_VALUES  = [1, 10, 100, 1000, 10000]
-_RRF_LABELS  = ['1 – Ingen', '10 – RRF10', '100 – RRF100', '1000 – RRF1000', '10000 – RRF10000']
+RRF_LABELS  = ['1 – Ingen', '10 – RRF10', '100 – RRF100', '1000 – RRF1000', '10000 – RRF10000']
 
 # ── Red Markup P&ID Symbols ───────────────────────────────────────────────────
 _RED_MARKUP_SYMBOLS = {
@@ -1683,8 +1699,8 @@ class EquipmentScanDialog(QDialog):
         desel_btn    = QPushButton("Avmarkera alla")
         ocr_only_btn = QPushButton("Visa OCR-taggar")
         ocr_only_btn.setCheckable(True)
-        sel_all_btn.clicked.connect(lambda: self._set_all_checked(True))
-        desel_btn.clicked.connect(lambda: self._set_all_checked(False))
+        sel_all_btn.clicked.connect(partial(self._set_all_checked, True))
+        desel_btn.clicked.connect(partial(self._set_all_checked, False))
         ocr_only_btn.toggled.connect(self._apply_tag_filter)
         self._ocr_only_btn = ocr_only_btn
         for b in [sel_all_btn, desel_btn, ocr_only_btn]:
@@ -1778,7 +1794,7 @@ class EquipmentScanDialog(QDialog):
                     combo.setCurrentIndex(idx)
             # Propagate combo choice to tag table
             combo.currentTextChanged.connect(
-                lambda typ, pfx=prefix: self._propagate_type_to_tags(pfx, typ))
+                partial(self._propagate_type_to_tags, prefix))
             self._pfx_table.setCellWidget(r, 4, combo)
             self._pfx_table.setRowHeight(r, 28)
 
@@ -2465,13 +2481,13 @@ class SafeguardPickerDialog(QDialog):
         form.addRow("Beskrivning:", self.desc_edit)
 
         self.type_combo = QComboBox()
-        self.type_combo.addItems(_SG_TYPES)
-        self.type_combo.setCurrentIndex(len(_SG_TYPES) - 1)  # default Övrigt
+        self.type_combo.addItems(SG_TYPES)
+        self.type_combo.setCurrentIndex(len(SG_TYPES) - 1)  # default Övrigt
         self.type_combo.currentIndexChanged.connect(self._on_type_changed)
         form.addRow("Typ av barriär:", self.type_combo)
 
         self.rrf_combo = QComboBox()
-        self.rrf_combo.addItems(_RRF_LABELS)
+        self.rrf_combo.addItems(RRF_LABELS)
         form.addRow("RRF:", self.rrf_combo)
 
         layout.addLayout(form)
@@ -2495,7 +2511,7 @@ class SafeguardPickerDialog(QDialog):
                 btn = QPushButton(sg_text)
                 btn.setFlat(True)
                 btn.setStyleSheet("text-align:left; color:#1a7a40; padding:2px; font-size:10px;")
-                btn.clicked.connect(lambda _, s=sg_text: self.desc_edit.setText(s))
+                btn.clicked.connect(partial(self.desc_edit.setText, sg_text))
                 layout.addWidget(btn)
 
         # Buttons: OK | + Lägg till ytterligare | Avbryt
@@ -2503,7 +2519,7 @@ class SafeguardPickerDialog(QDialog):
 
         ok_btn = QPushButton("✓ Spara")
         ok_btn.setDefault(True)
-        ok_btn.clicked.connect(lambda: self._on_accept(add_more=False))
+        ok_btn.clicked.connect(partial(self._on_accept, add_more=False))
         btn_row.addWidget(ok_btn)
 
         add_btn = QPushButton("➕ Spara och lägg till ytterligare")
@@ -2513,7 +2529,7 @@ class SafeguardPickerDialog(QDialog):
         add_btn.setStyleSheet(
             "background:#1F4E79; color:white; border:none;"
             "border-radius:4px; padding:4px 10px; font-weight:bold;")
-        add_btn.clicked.connect(lambda: self._on_accept(add_more=True))
+        add_btn.clicked.connect(partial(self._on_accept, add_more=True))
         btn_row.addWidget(add_btn)
 
         cancel_btn = QPushButton("Avbryt")
@@ -2526,7 +2542,7 @@ class SafeguardPickerDialog(QDialog):
         self._on_type_changed(self.type_combo.currentIndex())
 
     def _on_type_changed(self, idx):
-        selected = _SG_TYPES[idx] if idx < len(_SG_TYPES) else 'Övrigt'
+        selected = SG_TYPES[idx] if idx < len(SG_TYPES) else 'Övrigt'
         self._bpcs_warn.setVisible(selected == 'BPCS' and self._existing_bpcs >= 1)
 
     def _pick_existing(self):
@@ -2543,7 +2559,7 @@ class SafeguardPickerDialog(QDialog):
         self.description = self.desc_edit.text().strip()
         if not self.description:
             self.description = self.tag or 'Safeguard'
-        self.sg_type  = _SG_TYPES[self.type_combo.currentIndex()]
+        self.sg_type  = SG_TYPES[self.type_combo.currentIndex()]
         self.rrf      = _RRF_VALUES[self.rrf_combo.currentIndex()]
         self.add_more = add_more
         self.accept()
@@ -4221,7 +4237,8 @@ class PIDGraphicsView(QGraphicsView):
         self.page_rect_height = self._page_heights_pdf.get(n, 0.0)
         self._cancel_drawing()
         # Pre-extract PDF lines for smart snapping (background cache)
-        QTimer.singleShot(100, lambda: self._extract_pdf_lines_for_page(n))
+        QTimer.singleShot(CONFIG['TIMER_PDF_EXTRACT_MS'],
+                         partial(self._extract_pdf_lines_for_page, n))
         if n in self._page_offsets:
             ox, oy = self._page_offsets[n]
             rs = self.render_scale
@@ -5293,7 +5310,7 @@ class PIDGraphicsView(QGraphicsView):
                 if gi.data(self._DATA_MARKUP_ID) is not None:
                     menu = QMenu(self)
                     menu.addAction("📋 Duplicera",
-                                   lambda: self.markup_duplicate_requested.emit(self._edit_mu_id))
+                                   partial(self.markup_duplicate_requested.emit, self._edit_mu_id))
                     menu.exec(event.globalPos())
                     event.accept()
                     return
@@ -5434,7 +5451,7 @@ class PIDGraphicsView(QGraphicsView):
             if conn_id is not None:
                 act = menu.addAction("✂️ Bryt länk")
                 _cid = conn_id
-                act.triggered.connect(lambda: self.sheet_conn_break_requested.emit(_cid))
+                act.triggered.connect(partial(self.sheet_conn_break_requested.emit, _cid))
                 menu.exec(global_pos)
                 return
 
@@ -5443,7 +5460,7 @@ class PIDGraphicsView(QGraphicsView):
         if self.mode == MODE_BOARD_LAYOUT:
             act = menu.addAction("🔗 Lägg till länk till annat blad…")
             _cp = clicked_page
-            act.triggered.connect(lambda: self._start_add_sheet_link(_cp))
+            act.triggered.connect(partial(self._start_add_sheet_link, _cp))
             menu.exec(global_pos)
             return
 
@@ -5458,31 +5475,31 @@ class PIDGraphicsView(QGraphicsView):
         if hovered_type == 'cause':
             act = menu.addAction("⚙️ Lägg till ytterligare orsak här")
             cid = hovered_id
-            act.triggered.connect(lambda: self.cause_at_marker_requested.emit(cid))
+            act.triggered.connect(partial(self.cause_at_marker_requested.emit, cid))
             menu.addSeparator()
         elif hovered_type == 'consequence':
             act = menu.addAction("⚠️ Lägg till ytterligare konsekvens här")
             cid = hovered_id
-            act.triggered.connect(lambda: self.consequence_at_marker_requested.emit(cid))
+            act.triggered.connect(partial(self.consequence_at_marker_requested.emit, cid))
             menu.addSeparator()
         elif hovered_type == 'safeguard':
             act = menu.addAction("🛡️ Lägg till ytterligare safeguard här")
             cid = hovered_id
-            act.triggered.connect(lambda: self.safeguard_at_marker_requested.emit(cid))
+            act.triggered.connect(partial(self.safeguard_at_marker_requested.emit, cid))
             menu.addSeparator()
 
         menu.addAction("⚙️ Orsak",
-                       lambda: self.context_action.emit('cause', sp, self.current_page))
+                       partial(self.context_action.emit, 'cause', sp, self.current_page))
         menu.addAction("⚠️ Konsekvens",
-                       lambda: self.context_action.emit('consequence', sp, self.current_page))
+                       partial(self.context_action.emit, 'consequence', sp, self.current_page))
         menu.addAction("🛡️ Safeguard",
-                       lambda: self.context_action.emit('safeguard', sp, self.current_page))
+                       partial(self.context_action.emit, 'safeguard', sp, self.current_page))
         menu.addSeparator()
         menu.addAction("🔀 Risk Scenario",
-                       lambda: self.context_action.emit('risk_scenario', sp, self.current_page))
+                       partial(self.context_action.emit, 'risk_scenario', sp, self.current_page))
         menu.addSeparator()
         menu.addAction("✏️ Rita Nodgräns",
-                       lambda: self.context_action.emit('node', sp, self.current_page))
+                       partial(self.context_action.emit, 'node', sp, self.current_page))
         menu.exec(global_pos)
 
     def _start_add_sheet_link(self, source_page: int):
@@ -6717,7 +6734,7 @@ class TemplateCausePickerDialog(QDialog):
         layout.addWidget(self._rb_free)
         self._free_edit = QLineEdit()
         self._free_edit.setPlaceholderText("Fritext orsak…")
-        self._free_edit.textChanged.connect(lambda: self._rb_free.setChecked(True))
+        self._free_edit.textChanged.connect(partial(self._rb_free.setChecked, True))
         layout.addWidget(self._free_edit)
 
         # ── Instrument secondary section (hidden unless Instrument type) ───────
@@ -6738,7 +6755,7 @@ class TemplateCausePickerDialog(QDialog):
         instr_layout.addWidget(rb_sec_free)
         self._sec_free_edit = QLineEdit()
         self._sec_free_edit.setPlaceholderText("t.ex. Reglerventil XV-201 stänger")
-        self._sec_free_edit.textChanged.connect(lambda: rb_sec_free.setChecked(True))
+        self._sec_free_edit.textChanged.connect(partial(rb_sec_free.setChecked, True))
         instr_layout.addWidget(self._sec_free_edit)
 
         sec_form = QFormLayout()
@@ -6991,14 +7008,14 @@ class PIDPanel(QWidget):
         bar.addWidget(_vline())
 
         self.prev_btn = QPushButton("◀")
-        self.prev_btn.setFixedWidth(28)
+        self.prev_btn.setFixedWidth(CONFIG['W_ICON_BTN'])
         self.prev_btn.clicked.connect(lambda: self._goto_page(self._current_display_page - 1))
         bar.addWidget(self.prev_btn)
 
         self.page_spin = QSpinBox()
         self.page_spin.setRange(1, 1)
         self.page_spin.setValue(1)
-        self.page_spin.setFixedWidth(48)
+        self.page_spin.setFixedWidth(CONFIG['W_SPINNER'])
         self.page_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.page_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.page_spin.setToolTip("Skriv sidnummer och tryck Enter för att navigera")
@@ -7010,7 +7027,7 @@ class PIDPanel(QWidget):
         bar.addWidget(self.page_total_label)
 
         self.next_btn = QPushButton("▶")
-        self.next_btn.setFixedWidth(28)
+        self.next_btn.setFixedWidth(CONFIG['W_ICON_BTN'])
         self.next_btn.clicked.connect(lambda: self._goto_page(self._current_display_page + 1))
         bar.addWidget(self.next_btn)
 
@@ -7027,7 +7044,7 @@ class PIDPanel(QWidget):
         for mode, label in mode_defs:
             btn = QPushButton(label)
             btn.setCheckable(True)
-            btn.clicked.connect(lambda _checked, m=mode: self._set_mode(m))
+            btn.clicked.connect(partial(self._set_mode, mode))
             bar.addWidget(btn)
             self.mode_buttons[mode] = btn
 
@@ -7114,7 +7131,7 @@ class PIDPanel(QWidget):
         pill_row.addStretch()
 
         self._sc_abort_btn = QPushButton("✕ Avbryt")
-        self._sc_abort_btn.setFixedHeight(20)
+        self._sc_abort_btn.setFixedHeight(CONFIG['H_SMALL_BTN'])
         self._sc_abort_btn.setStyleSheet(
             "background:#c0392b; color:white; border:none; border-radius:3px; padding:0 8px;")
         self._sc_abort_btn.clicked.connect(self._scenario_abort)
@@ -7129,7 +7146,7 @@ class PIDPanel(QWidget):
         act_row.addStretch()
 
         self._sc_add_sg_btn = QPushButton("+ Fler safeguards")
-        self._sc_add_sg_btn.setFixedHeight(20)
+        self._sc_add_sg_btn.setFixedHeight(CONFIG['H_SMALL_BTN'])
         self._sc_add_sg_btn.setStyleSheet(
             "background:#27ae60; color:white; border:none; border-radius:3px; padding:0 8px;")
         self._sc_add_sg_btn.setVisible(False)
@@ -7139,7 +7156,7 @@ class PIDPanel(QWidget):
         act_row.addWidget(self._sc_add_sg_btn)
 
         self._sc_finish_btn = QPushButton("✓ Slutför")
-        self._sc_finish_btn.setFixedHeight(20)
+        self._sc_finish_btn.setFixedHeight(CONFIG['H_SMALL_BTN'])
         self._sc_finish_btn.setStyleSheet(
             "background:#2ecc71; color:white; border:none; border-radius:3px; padding:0 8px; font-weight:bold;")
         self._sc_finish_btn.setVisible(False)
@@ -7154,7 +7171,7 @@ class PIDPanel(QWidget):
         self._secondary_banner = QFrame()
         self._secondary_banner.setStyleSheet(
             "QFrame{background:#6c3483; border-radius:4px; padding:2px;}")
-        self._secondary_banner.setFixedHeight(34)
+        self._secondary_banner.setFixedHeight(CONFIG['H_ROW_STD'])
         sb2_lay = QHBoxLayout(self._secondary_banner)
         sb2_lay.setContentsMargins(8, 4, 8, 4)
         self._secondary_lbl = QLabel("")
@@ -7162,7 +7179,7 @@ class PIDPanel(QWidget):
         sb2_lay.addWidget(self._secondary_lbl)
         sb2_lay.addStretch()
         sb2_cancel = QPushButton("✕ Avbryt")
-        sb2_cancel.setFixedHeight(20)
+        sb2_cancel.setFixedHeight(CONFIG['H_SMALL_BTN'])
         sb2_cancel.setStyleSheet(
             "background:#c0392b; color:white; border:none; border-radius:3px; padding:0 8px;")
         sb2_cancel.clicked.connect(self._cancel_secondary_placement)
@@ -7197,7 +7214,7 @@ class PIDPanel(QWidget):
         self.viewer.markup_duplicate_requested.connect(self.markup_duplicate_requested)
         self.viewer.markup_symbol_dims_changed.connect(self.markup_symbol_dims_changed)
         self.viewer.board_layout_changed.connect(self.board_layout_changed)
-        self.viewer.board_layout_changed.connect(lambda _: self._load_overlays())
+        self.viewer.board_layout_changed.connect(self._load_overlays)
         self.viewer.sheet_conn_break_requested.connect(self._break_sheet_link)
         self.viewer.sheet_conn_add_requested.connect(self._add_sheet_link)
 
