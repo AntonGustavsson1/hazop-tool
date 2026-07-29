@@ -216,6 +216,8 @@ def _ocr_page_rapidocr(pil_image, scale: float):
             return []
         out = []
         for item in result:
+            if len(item) < 3:
+                continue
             box, text, conf = item[0], item[1], item[2]
             if not text or float(conf) < 0.3:
                 continue
@@ -1146,7 +1148,7 @@ def _pick_best_tag(text: str) -> str:
             return m.group(1)
         # 2. Simple tag (letter code + number)
         matches = _FULL_TAG_RE.findall(candidate)
-        if matches:
+        if matches and len(matches[0]) >= 2:
             return f"{matches[0][0]}-{matches[0][1]}"
         tag, _ = _parse_tag(candidate)
         if tag:
