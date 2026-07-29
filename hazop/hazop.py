@@ -41,6 +41,79 @@ from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF, QRect, QTimer, 
 from PyQt6.QtGui import QFont, QFontMetrics, QColor, QAction, QBrush, QPen, QPainter, QDrag, QPainterPath, QPixmap, QIcon, QPolygonF, QShortcut, QKeySequence, QCursor
 
 # ══════════════════════════════════════════════════════════════════════════════
+# SPLASH SCREEN — STARTUP PROGRESS
+# ══════════════════════════════════════════════════════════════════════════════
+
+class SplashScreen(QWidget):
+    """Modern splash screen with progress indicator during startup."""
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlags(Qt.WindowType.SplashScreen | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFixedSize(400, 300)
+
+        # Center on screen
+        screen = QApplication.primaryScreen()
+        geometry = screen.geometry()
+        x = (geometry.width() - 400) // 2
+        y = (geometry.height() - 300) // 2
+        self.move(x, y)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(20)
+        layout.addStretch()
+
+        # Logo/title
+        title = QLabel("HAZOP Tool")
+        title.setStyleSheet("font-size: 24px; font-weight: bold; color: #1F4E79;")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+
+        # Subtitle
+        subtitle = QLabel("Startar upp...")
+        subtitle.setStyleSheet("font-size: 12px; color: #666666;")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.subtitle = subtitle
+        layout.addWidget(subtitle)
+
+        # Spinner (simple rotating dots)
+        spinner = QLabel("●  ○  ○")
+        spinner.setStyleSheet("font-size: 16px; color: #0078D4; letter-spacing: 8px;")
+        spinner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.spinner = spinner
+        layout.addWidget(spinner)
+
+        self._spinner_state = 0
+        self._spinner_frames = [
+            "●  ○  ○",
+            "○  ●  ○",
+            "○  ○  ●",
+            "○  ●  ○",
+        ]
+
+        # Timer for spinner animation
+        self._timer = QTimer()
+        self._timer.timeout.connect(self._animate_spinner)
+        self._timer.start(200)
+
+        layout.addStretch()
+
+    def _animate_spinner(self):
+        self.spinner.setText(self._spinner_frames[self._spinner_state % len(self._spinner_frames)])
+        self._spinner_state += 1
+
+    def set_status(self, text):
+        self.subtitle.setText(text)
+        QApplication.processEvents()
+
+    def close_splash(self):
+        self._timer.stop()
+        self.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # CRASH REPORTING & DIAGNOSTICS
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -18392,7 +18465,10 @@ if __name__ == '__main__':
         encoding='utf-8',
     )
     # Also echo to stderr (visible in the console window)
-    logging.getLogger().addHandler(logging.StreamHandler(sys.stderr))
+    # During startup, suppress DEBUG output to console; keep to file
+    console_handler = logging.StreamHandler(sys.stderr)
+    console_handler.setLevel(logging.INFO)
+    logging.getLogger().addHandler(console_handler)
 
     # Setup structured crash reporting
     CrashReporter.setup()
@@ -18453,6 +18529,11 @@ if __name__ == '__main__':
     # Apply Windows 11 light theme
     app.setStyleSheet(_get_windows11_stylesheet())
 
+    # Show splash screen during startup
+    splash = SplashScreen()
+    splash.show()
+    app.processEvents()
+
     # Catch exceptions in Qt event loop (slots/signals)
     _original_notify = app.notify
     def _safe_notify(receiver, event):
@@ -18464,7 +18545,11 @@ if __name__ == '__main__':
     app.notify = _safe_notify
 
     try:
+        splash.set_status("Laddar databas...")
         win = MainWindow()
+        splash.set_status("Initialiserar gränssnitt...")
+        app.processEvents()
+        splash.close_splash()
         win.show()
         code = app.exec()
         logging.info('=== HAZOP Tool exited (code %d) ===', code)
