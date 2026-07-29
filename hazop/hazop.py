@@ -7429,7 +7429,8 @@ class EditableScenarioPanel(QWidget):
 
         def _save_cons():
             desc = cons_desc.text().strip() or 'Ny konsekvens'
-            sev = sev_combo.currentIndex() + 1
+            sev_idx = sev_combo.currentIndex()
+            sev = sev_idx + 1 if sev_idx >= 0 else 1
             cat = cons_d.get('category', '')
             self.db.update_consequence(cons_id, desc, sev, cat)
             badge.update_risk(like_val, sev)
