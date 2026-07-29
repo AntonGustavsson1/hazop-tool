@@ -1802,84 +1802,85 @@ class EquipmentScanDialog(QDialog):
 
     def _populate_tag_table(self):
         self._tag_table.blockSignals(True)
-        self._tag_table.setRowCount(0)
+        try:
+            self._tag_table.setRowCount(0)
 
-        # Collect all tags with metadata
-        all_tags = []
-        for prefix, data in self.scan_result.items():
-            known = KNOWN_PREFIXES.get(prefix)
-            saved = (self.db.get_equipment_type(prefix)
-                     if hasattr(self.db, 'get_equipment_type') else None)
-            suggested_type = saved or (known[1] if known else '')
-            ocr_pages = data.get('ocr_pages', set())
-            for tag in data['tags']:
-                page   = data['pages'].get(tag, 0)
-                is_ocr = page in ocr_pages
-                all_tags.append((tag, prefix, page, is_ocr, suggested_type))
+            # Collect all tags with metadata
+            all_tags = []
+            for prefix, data in self.scan_result.items():
+                known = KNOWN_PREFIXES.get(prefix)
+                saved = (self.db.get_equipment_type(prefix)
+                         if hasattr(self.db, 'get_equipment_type') else None)
+                suggested_type = saved or (known[1] if known else '')
+                ocr_pages = data.get('ocr_pages', set())
+                for tag in data['tags']:
+                    page   = data['pages'].get(tag, 0)
+                    is_ocr = page in ocr_pages
+                    all_tags.append((tag, prefix, page, is_ocr, suggested_type))
 
-        all_tags.sort(key=lambda x: (x[0]))  # sort by tag name
+            all_tags.sort(key=lambda x: (x[0]))  # sort by tag name
 
-        for tag, prefix, page, is_ocr, sug_type in all_tags:
-            r = self._tag_table.rowCount()
-            self._tag_table.insertRow(r)
+            for tag, prefix, page, is_ocr, sug_type in all_tags:
+                r = self._tag_table.rowCount()
+                self._tag_table.insertRow(r)
 
-            # Checkbox
-            chk = QTableWidgetItem()
-            chk.setCheckState(Qt.CheckState.Checked)
-            chk.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
-            self._tag_table.setItem(r, self._C_CHK, chk)
+                # Checkbox
+                chk = QTableWidgetItem()
+                chk.setCheckState(Qt.CheckState.Checked)
+                chk.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+                self._tag_table.setItem(r, self._C_CHK, chk)
 
-            # Original tag (read-only reference)
-            orig = QTableWidgetItem(tag)
-            orig.setFlags(orig.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            orig.setForeground(QBrush(QColor('#666')))
-            self._tag_table.setItem(r, self._C_TAG, orig)
+                # Original tag (read-only reference)
+                orig = QTableWidgetItem(tag)
+                orig.setFlags(orig.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                orig.setForeground(QBrush(QColor('#666')))
+                self._tag_table.setItem(r, self._C_TAG, orig)
 
-            # Editable corrected tag
-            edit = QTableWidgetItem(tag)
-            if is_ocr:
-                edit.setBackground(QBrush(QColor('#fff3cd')))
-                edit.setToolTip("Identifierad via OCR — kontrollera att taggen är korrekt")
-            self._tag_table.setItem(r, self._C_EDIT, edit)
+                # Editable corrected tag
+                edit = QTableWidgetItem(tag)
+                if is_ocr:
+                    edit.setBackground(QBrush(QColor('#fff3cd')))
+                    edit.setToolTip("Identifierad via OCR — kontrollera att taggen är korrekt")
+                self._tag_table.setItem(r, self._C_EDIT, edit)
 
-            # Prefix (read-only, derived)
-            pfx_item = QTableWidgetItem(prefix)
-            pfx_item.setFlags(pfx_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            pfx_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._tag_table.setItem(r, self._C_PFX, pfx_item)
+                # Prefix (read-only, derived)
+                pfx_item = QTableWidgetItem(prefix)
+                pfx_item.setFlags(pfx_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                pfx_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self._tag_table.setItem(r, self._C_PFX, pfx_item)
 
-            # Page
-            pg_item = QTableWidgetItem(str(page + 1))
-            pg_item.setFlags(pg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            pg_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._tag_table.setItem(r, self._C_PAGE, pg_item)
+                # Page
+                pg_item = QTableWidgetItem(str(page + 1))
+                pg_item.setFlags(pg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                pg_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self._tag_table.setItem(r, self._C_PAGE, pg_item)
 
-            # OCR indicator
-            ocr_item = QTableWidgetItem('🔬' if is_ocr else '')
-            ocr_item.setFlags(ocr_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            ocr_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            ocr_item.setToolTip("Hittad via OCR" if is_ocr else "Hittad via PDF-textlager")
-            self._tag_table.setItem(r, self._C_OCR, ocr_item)
+                # OCR indicator
+                ocr_item = QTableWidgetItem('🔬' if is_ocr else '')
+                ocr_item.setFlags(ocr_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                ocr_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                ocr_item.setToolTip("Hittad via OCR" if is_ocr else "Hittad via PDF-textlager")
+                self._tag_table.setItem(r, self._C_OCR, ocr_item)
 
-            # Type combo
-            combo = QComboBox()
-            for t in self._TYPE_ITEMS:
-                combo.addItem(t)
-            if sug_type:
-                idx = combo.findText(sug_type)
-                if idx >= 0:
-                    combo.setCurrentIndex(idx)
-            self._tag_table.setCellWidget(r, self._C_TYPE, combo)
+                # Type combo
+                combo = QComboBox()
+                for t in self._TYPE_ITEMS:
+                    combo.addItem(t)
+                if sug_type:
+                    idx = combo.findText(sug_type)
+                    if idx >= 0:
+                        combo.setCurrentIndex(idx)
+                self._tag_table.setCellWidget(r, self._C_TYPE, combo)
 
-            # Description (editable free text)
-            self._tag_table.setItem(r, self._C_DESC, QTableWidgetItem(''))
+                # Description (editable free text)
+                self._tag_table.setItem(r, self._C_DESC, QTableWidgetItem(''))
 
-            self._tag_table.setRowHeight(r, 26)
-
-        self._tag_table.blockSignals(False)
-        self._update_tag_count()
-        self._apply_tag_filter()
+                self._tag_table.setRowHeight(r, 26)
+        finally:
+            self._tag_table.blockSignals(False)
+            self._update_tag_count()
+            self._apply_tag_filter()
 
     # ── Signals / updates ─────────────────────────────────────────────────────
 
@@ -3960,6 +3961,15 @@ class PIDGraphicsView(QGraphicsView):
             except Exception:
                 pass
             self._placeholder = None
+
+    def __del__(self):
+        """Ensure PDF document is properly closed on object destruction."""
+        if hasattr(self, 'pdf_doc') and self.pdf_doc:
+            try:
+                self.pdf_doc.close()
+            except Exception:
+                pass
+            self.pdf_doc = None
 
     def load_pdf(self, path, page=0, layout_offsets=None, active_pages=None,
                  progress_cb=None):
@@ -7781,15 +7791,19 @@ class PIDPanel(QWidget):
             self.db.get_display_page_count() or self.viewer.page_count())
         if total > 0:
             self.page_spin.blockSignals(True)
-            self.page_spin.setRange(1, total)
-            self.page_spin.setValue(self._current_display_page + 1)
-            self.page_spin.blockSignals(False)
+            try:
+                self.page_spin.setRange(1, total)
+                self.page_spin.setValue(self._current_display_page + 1)
+            finally:
+                self.page_spin.blockSignals(False)
             self.page_total_label.setText(f"/ {total}")
         else:
             self.page_spin.blockSignals(True)
-            self.page_spin.setRange(1, 1)
-            self.page_spin.setValue(1)
-            self.page_spin.blockSignals(False)
+            try:
+                self.page_spin.setRange(1, 1)
+                self.page_spin.setValue(1)
+            finally:
+                self.page_spin.blockSignals(False)
             self.page_total_label.setText("/ —")
 
     # ── Feature 10: per-page zoom/scroll state ────────────────────────────────
@@ -8153,6 +8167,10 @@ class PIDPanel(QWidget):
             return
         if self._analyzer_thread and self._analyzer_thread.isRunning():
             return
+        # Stop and wait for old thread before starting new one
+        if hasattr(self, '_analyzer_thread') and self._analyzer_thread and self._analyzer_thread.isRunning():
+            self._analyzer_thread.quit()
+            self._analyzer_thread.wait()
         # Disconnect old thread's signal to prevent stale double-fires
         if self._analyzer_thread is not None:
             try:

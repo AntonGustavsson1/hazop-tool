@@ -4101,7 +4101,7 @@ class SafeguardEditor(QWidget):
         if self.consequence_id is None:
             return
         cons = self.db.get_consequence(self.consequence_id)
-        severity = dict(cons)['severity'] if cons else 1
+        severity = dict(cons).get('severity', 1) if cons else 1
         for sg in self.db.safeguards(self.consequence_id):
             row = self.table.rowCount()
             self.table.insertRow(row)
@@ -4796,7 +4796,8 @@ class ConsequencePanel(QWidget):
 
     def _update_criteria(self):
         """Show severity definitions for currently selected severity level."""
-        sev = self.sev_combo.currentIndex() + 1  # 1-based
+        sev_idx = self.sev_combo.currentIndex()
+        sev = sev_idx + 1 if sev_idx >= 0 else 1  # 1-based
         defs = self.db.get_severity_definitions()
         lvl_defs = defs.get(sev, {})
         if not lvl_defs:
@@ -4812,7 +4813,8 @@ class ConsequencePanel(QWidget):
     def _save(self):
         if self._loading or self.consequence_id is None:
             return
-        sev   = self.sev_combo.currentIndex() + 1
+        sev_idx = self.sev_combo.currentIndex()
+        sev   = sev_idx + 1 if sev_idx >= 0 else 1
         desc  = self.desc_edit.toPlainText().strip() or 'Ny konsekvens'
         cat   = self.cat_combo.currentText()
         chain = json.dumps(self._chain)
@@ -4894,13 +4896,14 @@ class SafeguardPanel(QWidget):
             sg = self.db.get_safeguard(self.safeguard_id)
             if not sg:
                 return
-        cons = self.db.get_consequence(sg['consequence_id'])
+        cons = self.db.get_consequence(sg.get('consequence_id') if sg else None)
         if not cons:
             return
-        cause = self.db.get_cause(cons['cause_id'])
+        cause = self.db.get_cause(cons.get('cause_id') if cons else None)
         freq = self.db.cause_frequency_level(cause)
-        sev = cons['severity'] or 1
-        rrf = RRF_VALUES[self.rrf_combo.currentIndex()]
+        sev = cons.get('severity') or 1 if cons else 1
+        rrf_idx = self.rrf_combo.currentIndex()
+        rrf = RRF_VALUES[rrf_idx] if 0 <= rrf_idx < len(RRF_VALUES) else 1
         eff_f = effective_frequency(freq, rrf)
         self.risk_badge.update_risk(eff_f, sev)
 
@@ -4908,8 +4911,10 @@ class SafeguardPanel(QWidget):
         if self._loading or self.safeguard_id is None:
             return
         desc    = self.desc_edit.toPlainText().strip() or 'Ny safeguard'
-        rrf     = RRF_VALUES[self.rrf_combo.currentIndex()]
-        sg_type = SG_TYPES[self.type_combo.currentIndex()]
+        rrf_idx = self.rrf_combo.currentIndex()
+        rrf     = RRF_VALUES[rrf_idx] if 0 <= rrf_idx < len(RRF_VALUES) else 1
+        type_idx = self.type_combo.currentIndex()
+        sg_type = SG_TYPES[type_idx] if 0 <= type_idx < len(SG_TYPES) else 'Övrigt'
         self.db.update_safeguard(self.safeguard_id, desc, rrf, sg_type)
         self._update_badge()
         self.saved.emit(self.safeguard_id)
@@ -10913,25 +10918,27 @@ class ScenarioTablePanel(QWidget):
             except Exception:
                 pass
             self._table.blockSignals(True)
-            self._table.clearSpans()
-            logging.info('_rebuild: D — setRowCount(0)')
-            self._table.setRowCount(0)
-            logging.info('_rebuild: E — reset meta')
-            self._row_meta = []
-            self._row_cat_info = []
+            try:
+                self._table.clearSpans()
+                logging.info('_rebuild: D — setRowCount(0)')
+                self._table.setRowCount(0)
+                logging.info('_rebuild: E — reset meta')
+                self._row_meta = []
+                self._row_cat_info = []
 
-            # Build rows with signals blocked
-            self._build_rows()
+                # Build rows with signals blocked
+                self._build_rows()
 
-            # Reconnect signals before calling _apply_spans
-            self._table.blockSignals(False)
-            self._table.cellChanged.connect(self._on_cell_changed)
+                # Reconnect signals before calling _apply_spans
+                self._table.cellChanged.connect(self._on_cell_changed)
 
-            # Apply row merging (spans)
-            self._apply_spans()
+                # Apply row merging (spans)
+                self._apply_spans()
 
-            # Finalize: resize rows and restore scroll position
-            self._resize_rows(_vscroll, _hscroll)
+                # Finalize: resize rows and restore scroll position
+                self._resize_rows(_vscroll, _hscroll)
+            finally:
+                self._table.blockSignals(False)
         except Exception as e:
             logging.exception('_rebuild: Python exception')
             QMessageBox.critical(None, "Fel i scenariopanel", str(e))
@@ -11562,48 +11569,50 @@ class ScenarioTablePanel(QWidget):
                 cause_excl.add(sg['id'])
 
         self._table.blockSignals(True)
-        for row, (_, cid_row, cid, sg_id) in enumerate(self._row_meta):
-            if cid != cons_id:
-                continue
-            cat_info = self._row_cat_info[row] if row < len(self._row_cat_info) else None
+        try:
+            for row, (_, cid_row, cid, sg_id) in enumerate(self._row_meta):
+                if cid != cons_id:
+                    continue
+                cat_info = self._row_cat_info[row] if row < len(self._row_cat_info) else None
 
-            # Build sg_rrf for this row
-            if cat_info:
-                cat_id, sev_id, cat_name, cat_sev = cat_info
-                sev = cat_sev or 1
-                excl_for_cat = self.db.get_severity_excluded_sgs(sev_id)
-                active_sgs = [s for s in all_sgs
-                              if s['id'] not in excl_for_cat and s['id'] not in cause_excl]
-                sg_rrf = 1
-                for s in active_sgs:
-                    sg_rrf *= (s.get('rrf') or 1)
-            else:
-                sev = cons_d.get('severity') or 1
-                sg_rrf = 1
-                for s in all_sgs:
-                    if s['id'] not in cause_excl:
+                # Build sg_rrf for this row
+                if cat_info:
+                    cat_id, sev_id, cat_name, cat_sev = cat_info
+                    sev = cat_sev or 1
+                    excl_for_cat = self.db.get_severity_excluded_sgs(sev_id)
+                    active_sgs = [s for s in all_sgs
+                                  if s['id'] not in excl_for_cat and s['id'] not in cause_excl]
+                    sg_rrf = 1
+                    for s in active_sgs:
                         sg_rrf *= (s.get('rrf') or 1)
+                else:
+                    sev = cons_d.get('severity') or 1
+                    sg_rrf = 1
+                    for s in all_sgs:
+                        if s['id'] not in cause_excl:
+                            sg_rrf *= (s.get('rrf') or 1)
 
-            final_f, total_rrf, total_steps = total_freq_reduction(
-                freq, sg_rrf, fa_active, fa_rrf, ign_active, ign_rrf, rfs)
-            f_eff               = effective_frequency(freq, sg_rrf)
-            _, bg_a, _          = risk_info(f_eff, sev)
-            _, bg_s, _          = risk_info(final_f, sev)
+                final_f, total_rrf, total_steps = total_freq_reduction(
+                    freq, sg_rrf, fa_active, fa_rrf, ign_active, ign_rrf, rfs)
+                f_eff               = effective_frequency(freq, sg_rrf)
+                _, bg_a, _          = risk_info(f_eff, sev)
+                _, bg_s, _          = risk_info(final_f, sev)
 
-            if cat_info:
-                sg_steps  = int(math.log10(max(1, sg_rrf))) if sg_rrf > 1 else 0
-                reft_text = (f"−{sg_steps} steg\n" if sg_steps else "") + \
-                            f"{freq_axis_label(f_eff)}  {cons_axis_label(sev)}"
-                ra = self._table.item(row, self._C_REFT)
-                if ra:
-                    ra.setText(reft_text)
+                if cat_info:
+                    sg_steps  = int(math.log10(max(1, sg_rrf))) if sg_rrf > 1 else 0
+                    reft_text = (f"−{sg_steps} steg\n" if sg_steps else "") + \
+                                f"{freq_axis_label(f_eff)}  {cons_axis_label(sev)}"
+                    ra = self._table.item(row, self._C_REFT)
+                    if ra:
+                        ra.setText(reft_text)
 
-                slut_text = (f"−{total_steps} steg\n" if total_steps else "") + \
-                            f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}"
-                rs = self._table.item(row, self._C_SLUT)
-                if rs:
-                    rs.setText(slut_text)
-        self._table.blockSignals(False)
+                    slut_text = (f"−{total_steps} steg\n" if total_steps else "") + \
+                                f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}"
+                    rs = self._table.item(row, self._C_SLUT)
+                    if rs:
+                        rs.setText(slut_text)
+        finally:
+            self._table.blockSignals(False)
 
     def refresh_placed(self):
         """Reload which IDs are placed on the P&ID and repaint the table."""
@@ -13038,10 +13047,12 @@ class RiskScenarioWizard(QDialog):
         self._go_to(self._stack.currentIndex() + 1)
 
     def _update_preview(self):
-        sev  = self._cons_sev.currentIndex() + 1
+        sev_idx = self._cons_sev.currentIndex()
+        sev  = sev_idx + 1 if sev_idx >= 0 else 1
         freq = idx_to_freq(self._cause_like.currentIndex())
         self._preview_badge.update_risk(freq, sev)
-        rrf   = RRF_VALUES[self._sg_rrf.currentIndex()]
+        rrf_idx = self._sg_rrf.currentIndex()
+        rrf   = RRF_VALUES[rrf_idx] if 0 <= rrf_idx < len(RRF_VALUES) else 1
         eff_f = effective_frequency(freq, rrf)
         self._sg_badge.update_risk(eff_f, sev)
 
