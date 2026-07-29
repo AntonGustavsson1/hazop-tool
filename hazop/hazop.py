@@ -4153,20 +4153,22 @@ class SafeguardEditor(QWidget):
         self.changed.emit()
 
     def _type_changed(self, sg_id, row, idx):
-        sg_type = SG_TYPES[idx]
+        sg_type = SG_TYPES[idx] if 0 <= idx < len(SG_TYPES) else 'Övrigt'
         item = self.table.item(row, 0)
         desc = item.text() if item else ''
         rrf_w = self.table.cellWidget(row, 2)
-        rrf = RRF_VALUES[rrf_w.currentIndex()] if rrf_w else 1
+        rrf_idx = rrf_w.currentIndex() if rrf_w else -1
+        rrf = RRF_VALUES[rrf_idx] if 0 <= rrf_idx < len(RRF_VALUES) else 1
         self.db.update_safeguard(sg_id, desc, rrf, sg_type)
         self.changed.emit()
 
     def _rrf_changed(self, sg_id, row, idx):
-        rrf = RRF_VALUES[idx]
+        rrf = RRF_VALUES[idx] if 0 <= idx < len(RRF_VALUES) else 1
         item = self.table.item(row, 0)
         desc = item.text() if item else ''
         type_w = self.table.cellWidget(row, 1)
-        sg_type = SG_TYPES[type_w.currentIndex()] if type_w else 'Övrigt'
+        type_idx = type_w.currentIndex() if type_w else -1
+        sg_type = SG_TYPES[type_idx] if 0 <= type_idx < len(SG_TYPES) else 'Övrigt'
         self.db.update_safeguard(sg_id, desc, rrf, sg_type)
         self._refresh()
         self.changed.emit()
@@ -4179,9 +4181,11 @@ class SafeguardEditor(QWidget):
             return
         sg_id = item.data(Qt.ItemDataRole.UserRole)
         type_w = self.table.cellWidget(row, 1)
-        sg_type = SG_TYPES[type_w.currentIndex()] if type_w else 'Övrigt'
+        type_idx = type_w.currentIndex() if type_w else -1
+        sg_type = SG_TYPES[type_idx] if 0 <= type_idx < len(SG_TYPES) else 'Övrigt'
         rrf_w = self.table.cellWidget(row, 2)
-        rrf = RRF_VALUES[rrf_w.currentIndex()] if rrf_w else 1
+        rrf_idx = rrf_w.currentIndex() if rrf_w else -1
+        rrf = RRF_VALUES[rrf_idx] if 0 <= rrf_idx < len(RRF_VALUES) else 1
         self.db.update_safeguard(sg_id, item.text(), rrf, sg_type)
 
 
@@ -6913,82 +6917,83 @@ class TreePanel(QWidget):
             it += 1
 
         self.tree.blockSignals(True)
-        self.tree.clear()
-        target = None
-        bold_font = QFont(); bold_font.setBold(True)
+        try:
+            self.tree.clear()
+            target = None
+            bold_font = QFont(); bold_font.setBold(True)
 
-        marked_causes = self.db.marked_cause_ids()
-        marked_consequences = self.db.marked_consequence_ids()
-        marked_safeguards = self.db.marked_safeguard_ids()
+            marked_causes = self.db.marked_cause_ids()
+            marked_consequences = self.db.marked_consequence_ids()
+            marked_safeguards = self.db.marked_safeguard_ids()
 
-        for ni, node in enumerate(self.db.nodes(), 1):
-            node_on_pid = bool(node['markup_points'])
-            pid_pin = " 📍" if node_on_pid else ""
-            nitem = QTreeWidgetItem([f"🏭  {ni}. {node['name']}{pid_pin}"])
-            nitem.setData(0, Qt.ItemDataRole.UserRole, node['id'])
-            nitem.setData(0, Qt.ItemDataRole.UserRole + 1, NODE_T)
-            nitem.setFont(0, bold_font)
-            nitem.setToolTip(0, node['pid_ref'] or '')
-            self.tree.addTopLevelItem(nitem)
-            if (NODE_T, node['id']) in expanded: nitem.setExpanded(True)
-            if select_type == NODE_T and select_id == node['id']: target = nitem
+            for ni, node in enumerate(self.db.nodes(), 1):
+                node_on_pid = bool(node['markup_points'])
+                pid_pin = " 📍" if node_on_pid else ""
+                nitem = QTreeWidgetItem([f"🏭  {ni}. {node['name']}{pid_pin}"])
+                nitem.setData(0, Qt.ItemDataRole.UserRole, node['id'])
+                nitem.setData(0, Qt.ItemDataRole.UserRole + 1, NODE_T)
+                nitem.setFont(0, bold_font)
+                nitem.setToolTip(0, node['pid_ref'] or '')
+                self.tree.addTopLevelItem(nitem)
+                if (NODE_T, node['id']) in expanded: nitem.setExpanded(True)
+                if select_type == NODE_T and select_id == node['id']: target = nitem
 
-            for di, dev in enumerate(self.db.deviations(node['id']), 1):
-                ditem = QTreeWidgetItem([f"  ⬡  {di}. {dev['description'][:55]}"])
-                ditem.setData(0, Qt.ItemDataRole.UserRole, dev['id'])
-                ditem.setData(0, Qt.ItemDataRole.UserRole + 1, DEV_T)
-                dev_font = QFont(); dev_font.setItalic(True)
-                ditem.setFont(0, dev_font)
-                nitem.addChild(ditem)
-                if (DEV_T, dev['id']) in expanded: ditem.setExpanded(True)
-                if select_type == DEV_T and select_id == dev['id']: target = ditem
+                for di, dev in enumerate(self.db.deviations(node['id']), 1):
+                    ditem = QTreeWidgetItem([f"  ⬡  {di}. {dev['description'][:55]}"])
+                    ditem.setData(0, Qt.ItemDataRole.UserRole, dev['id'])
+                    ditem.setData(0, Qt.ItemDataRole.UserRole + 1, DEV_T)
+                    dev_font = QFont(); dev_font.setItalic(True)
+                    ditem.setFont(0, dev_font)
+                    nitem.addChild(ditem)
+                    if (DEV_T, dev['id']) in expanded: ditem.setExpanded(True)
+                    if select_type == DEV_T and select_id == dev['id']: target = ditem
 
-                for ci, cause in enumerate(self.db.causes_for_deviation(dev['id']), 1):
-                    placed_c = cause['id'] in marked_causes
-                    chain_icon = "⛓" if cause['linked_consequence_id'] else ""
-                    tag    = (cause['comp_tag'] or '').strip() if cause['comp_tag'] else ''
-                    c_label = tag if tag else (cause['description'] or '')[:50]
-                    citem = QTreeWidgetItem([f"    ⚙ {chain_icon} {ci}. {c_label}"])
-                    citem.setIcon(0, _make_pin_icon(placed_c))
-                    citem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
-                    citem.setData(0, Qt.ItemDataRole.UserRole + 1, CAUSE_T)
-                    ditem.addChild(citem)
-                    if (CAUSE_T, cause['id']) in expanded: citem.setExpanded(True)
-                    if select_type == CAUSE_T and select_id == cause['id']: target = citem
+                    for ci, cause in enumerate(self.db.causes_for_deviation(dev['id']), 1):
+                        placed_c = cause['id'] in marked_causes
+                        chain_icon = "⛓" if cause['linked_consequence_id'] else ""
+                        tag    = (cause['comp_tag'] or '').strip() if cause['comp_tag'] else ''
+                        c_label = tag if tag else (cause['description'] or '')[:50]
+                        citem = QTreeWidgetItem([f"    ⚙ {chain_icon} {ci}. {c_label}"])
+                        citem.setIcon(0, _make_pin_icon(placed_c))
+                        citem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
+                        citem.setData(0, Qt.ItemDataRole.UserRole + 1, CAUSE_T)
+                        ditem.addChild(citem)
+                        if (CAUSE_T, cause['id']) in expanded: citem.setExpanded(True)
+                        if select_type == CAUSE_T and select_id == cause['id']: target = citem
 
-                    for ki, cons in enumerate(self.db.consequences(cause['id']), 1):
-                        cause_freq = self.db.cause_frequency_level(cause)
-                        level, _, _ = risk_info(cause_freq, cons['severity'])
-                        risk_icon = RISK_ICON.get(level, '⚪')
-                        placed_k = cons['id'] in marked_consequences
-                        kitem = QTreeWidgetItem([f"      {risk_icon}  {ki}. {cons['description'][:40]}"])
-                        kitem.setIcon(0, _make_pin_icon(placed_k))
-                        kitem.setData(0, Qt.ItemDataRole.UserRole, cons['id'])
-                        kitem.setData(0, Qt.ItemDataRole.UserRole + 1, CONS_T)
-                        citem.addChild(kitem)
-                        if (CONS_T, cons['id']) in expanded: kitem.setExpanded(True)
-                        if select_type == CONS_T and select_id == cons['id']: target = kitem
+                        for ki, cons in enumerate(self.db.consequences(cause['id']), 1):
+                            cause_freq = self.db.cause_frequency_level(cause)
+                            level, _, _ = risk_info(cause_freq, cons['severity'])
+                            risk_icon = RISK_ICON.get(level, '⚪')
+                            placed_k = cons['id'] in marked_consequences
+                            kitem = QTreeWidgetItem([f"      {risk_icon}  {ki}. {cons['description'][:40]}"])
+                            kitem.setIcon(0, _make_pin_icon(placed_k))
+                            kitem.setData(0, Qt.ItemDataRole.UserRole, cons['id'])
+                            kitem.setData(0, Qt.ItemDataRole.UserRole + 1, CONS_T)
+                            citem.addChild(kitem)
+                            if (CONS_T, cons['id']) in expanded: kitem.setExpanded(True)
+                            if select_type == CONS_T and select_id == cons['id']: target = kitem
 
-                        for si, sg in enumerate(self.db.safeguards(cons['id']), 1):
-                            rrf = (sg['rrf'] or 1) if sg['rrf'] is not None else 1
-                            rrf_str = f"RRF{rrf}" if rrf > 1 else "—"
-                            try:
-                                linked = bool(sg['source_id'])
-                            except (IndexError, KeyError):
-                                linked = False
-                            sg_icon = "🔗🛡" if linked else "🛡"
-                            placed_s = sg['id'] in marked_safeguards
-                            sgitem = QTreeWidgetItem([f"         {sg_icon}  {si}. {sg['description'][:35]}  [{rrf_str}]"])
-                            sgitem.setIcon(0, _make_pin_icon(placed_s))
-                            sgitem.setData(0, Qt.ItemDataRole.UserRole, sg['id'])
-                            sgitem.setData(0, Qt.ItemDataRole.UserRole + 1, SG_T)
-                            kitem.addChild(sgitem)
-                            if select_type == SG_T and select_id == sg['id']: target = sgitem
-
-        self.tree.blockSignals(False)
-        if target:
-            self.tree.setCurrentItem(target)
-            self.tree.scrollToItem(target)
+                            for si, sg in enumerate(self.db.safeguards(cons['id']), 1):
+                                rrf = (sg['rrf'] or 1) if sg['rrf'] is not None else 1
+                                rrf_str = f"RRF{rrf}" if rrf > 1 else "—"
+                                try:
+                                    linked = bool(sg['source_id'])
+                                except (IndexError, KeyError):
+                                    linked = False
+                                sg_icon = "🔗🛡" if linked else "🛡"
+                                placed_s = sg['id'] in marked_safeguards
+                                sgitem = QTreeWidgetItem([f"         {sg_icon}  {si}. {sg['description'][:35]}  [{rrf_str}]"])
+                                sgitem.setIcon(0, _make_pin_icon(placed_s))
+                                sgitem.setData(0, Qt.ItemDataRole.UserRole, sg['id'])
+                                sgitem.setData(0, Qt.ItemDataRole.UserRole + 1, SG_T)
+                                kitem.addChild(sgitem)
+                                if select_type == SG_T and select_id == sg['id']: target = sgitem
+        finally:
+            self.tree.blockSignals(False)
+            if target:
+                self.tree.setCurrentItem(target)
+                self.tree.scrollToItem(target)
 
     def _current(self):
         item = self.tree.currentItem()
@@ -13868,16 +13873,18 @@ class StandardCausesSettingsPanel(QWidget):
 
     def _load_descriptions(self, cause_id):
         self._desc_list.blockSignals(True)
-        self._desc_list.clear()
-        if cause_id is None:
-            self._desc_list.blockSignals(False); return
-        for d in self.db.cause_descriptions(cause_id):
-            item = QListWidgetItem(d['description'])
-            item.setData(Qt.ItemDataRole.UserRole, d['id'])
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
-            self._desc_list.addItem(item)
-        self._desc_list.blockSignals(False)
-        self._desc_list.itemChanged.connect(self._on_desc_changed)
+        try:
+            self._desc_list.clear()
+            if cause_id is None:
+                return
+            for d in self.db.cause_descriptions(cause_id):
+                item = QListWidgetItem(d['description'])
+                item.setData(Qt.ItemDataRole.UserRole, d['id'])
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+                self._desc_list.addItem(item)
+        finally:
+            self._desc_list.blockSignals(False)
+            self._desc_list.itemChanged.connect(self._on_desc_changed)
 
     # ── Slot chains ───────────────────────────────────────────────────────────
     def _on_dev_sel(self, row):
@@ -14062,7 +14069,8 @@ class StandardCausesSettingsPanel(QWidget):
         for obj in self.db.standard_objects():
             data['objects'].append(obj['name'])
         import json as _json
-        open(path, 'w', encoding='utf-8').write(_json.dumps(data, ensure_ascii=False, indent=2))
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(_json.dumps(data, ensure_ascii=False, indent=2))
         QMessageBox.information(self, 'Exporterat', f'Sparat till:\n{path}')
 
     def _import_library(self):
@@ -14071,7 +14079,8 @@ class StandardCausesSettingsPanel(QWidget):
         if not path: return
         import json as _json
         try:
-            data = _json.loads(open(path, encoding='utf-8').read())
+            with open(path, encoding='utf-8') as f:
+                data = _json.loads(f.read())
         except Exception as e:
             QMessageBox.critical(self, 'Fel', str(e)); return
         added_devs = added_causes = added_objs = 0
@@ -16849,21 +16858,19 @@ class MainWindow(QMainWindow):
         self._update_title()
 
         # ── Toolbar ───────────────────────────────────────────────────────────
-        tb = self.addToolBar("Verktyg")
-        tb.setMovable(False)
-        tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        # Toolbar actions that don't depend on tree_panel are created here.
+        # Actions that reference tree_panel are deferred to after tree_panel creation.
+        self._tb = self.addToolBar("Verktyg")
+        self._tb.setMovable(False)
+        self._tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
 
         def act(label, tip, slot):
             a = QAction(label, self); a.setToolTip(tip); a.triggered.connect(slot)
-            tb.addAction(a); return a
+            self._tb.addAction(a); return a
 
-        act("+ Nod",         "Lägg till ny nod",          lambda: self.tree_panel.add_node())
-        act("+ Avvikelse",   "Lägg till ny avvikelse",    lambda: self.tree_panel.add_deviation())
-        tb.addSeparator()
-        act("Ta bort",       "Ta bort markerat",       lambda: self.tree_panel.delete_selected())
-        tb.addSeparator()
+        # These actions don't reference tree_panel (safe to create now)
         act("🔀 Risk Scenario", "Starta risk scenario-guide", self._open_risk_scenario_wizard)
-        tb.addSeparator()
+        self._tb.addSeparator()
         act("📊 Excel",      "Exportera till Excel (IEC 61511)", self._export_excel)
         act("📄 PDF",        "Exportera till PDF",     self._export_pdf)
         act("📋 Åtgärder",   "Exportera åtgärdsrapport (PDF)", self._export_actions_pdf)
@@ -16871,6 +16878,8 @@ class MainWindow(QMainWindow):
         act("📈 Statistik",  "Visa projekstatistik",           self._show_statistics)
         act("✅ Godkänn",    "Godkänn / byt status på nod",    self._approve_node)
         act("🌙 Mörkt läge", "Växla mörkt/ljust läge",        self._toggle_dark_mode)
+
+        # Defer these toolbar actions to after tree_panel is created (below)
 
         # ── Status bar ────────────────────────────────────────────────────────
         self.status_bar = QStatusBar()
@@ -16939,6 +16948,17 @@ class MainWindow(QMainWindow):
         self.tree_panel.setMinimumWidth(220)
         self.tree_panel.setMaximumWidth(340)
         self._h_splitter.addWidget(self.tree_panel)
+
+        # Now that tree_panel exists, add the deferred toolbar actions
+        def act_deferred(label, tip, slot):
+            a = QAction(label, self); a.setToolTip(tip); a.triggered.connect(slot)
+            self._tb.addAction(a); return a
+
+        act_deferred("+ Nod",         "Lägg till ny nod",          lambda: self.tree_panel.add_node())
+        act_deferred("+ Avvikelse",   "Lägg till ny avvikelse",    lambda: self.tree_panel.add_deviation())
+        self._tb.addSeparator()
+        act_deferred("Ta bort",       "Ta bort markerat",          lambda: self.tree_panel.delete_selected())
+        self._tb.addSeparator()
 
         self.pid_panel = PIDPanel(self.db)
         self.pid_panel.setMinimumWidth(400)
@@ -17202,7 +17222,11 @@ class MainWindow(QMainWindow):
             self.admin_panel.refresh()
             self.admin_panel.refresh_pid()
         if page == 4:
-            self.settings_panel._tag_memory_panel.refresh()
+            # Guard against settings_panel or _tag_memory_panel not being initialized
+            if (hasattr(self, 'settings_panel') and self.settings_panel and
+                hasattr(self.settings_panel, '_tag_memory_panel') and
+                self.settings_panel._tag_memory_panel):
+                self.settings_panel._tag_memory_panel.refresh()
 
     def _on_props_changed(self):
         """PropertiesRibbon saved a field — refresh tree + scenario."""
