@@ -10,6 +10,7 @@ import datetime
 import logging
 import traceback
 from pathlib import Path
+from functools import partial
 
 from pid_viewer import (
     PIDPanel, COMPONENT_TYPES, CONSEQUENCE_TEMPLATES, HAS_PYMUPDF,
@@ -248,6 +249,74 @@ def _get_windows11_stylesheet():
         padding: 4px 8px;
     }
     """
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CONFIGURATION & MAGIC NUMBER CONSTANTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+CONFIG = {
+    # ===== TIMERS (milliseconds) =====
+    'TIMER_DEFERRED_MS': 0,           # Deferred execution
+    'TIMER_NAV_QUICK_MS': 50,         # Quick navigation/pan
+    'TIMER_ZOOM_MS': 80,              # Zoom animation
+    'TIMER_EDIT_START_MS': 200,       # Start edit deferred
+    'TIMER_PDF_EXTRACT_MS': 100,      # PDF line extraction
+
+    # ===== WIDGET HEIGHTS (pixels) =====
+    'H_SEP_LINE': 1,                  # Separator line
+    'H_COLOR_STRIP': 7,               # Color strip
+    'H_BADGE': 20,                    # Icon/badge
+    'H_BTN_SMALL': 22,                # Small buttons
+    'H_CTRL_STD': 24,                 # Standard control
+    'H_ROW_COMPACT': 26,              # Compact row
+    'H_ROW_STD': 28,                  # Standard row
+    'H_BTN_OK': 34,                   # OK/Cancel button
+    'H_DESC_SM': 55,                  # Small description
+    'H_DESC_MD': 65,                  # Medium description
+    'H_DESC_LG': 80,                  # Large description
+    'H_EDIT_LG': 100,                 # Large text editor
+    'H_PANEL_MIN_LG': 120,            # Large panel minimum
+    'H_FREQ_MAX': 140,                # Frequency panel max
+    'H_TABLE_MIN': 150,               # Table minimum
+    'H_TABLE_STD': 160,               # Standard table
+    'H_PANEL_MAX': 300,               # Panel maximum
+    'H_PANEL_MAX_ALT': 380,           # Alternative max
+    'H_PANEL_MIN_XL': 520,            # Extra-large panel
+    'H_PANEL_MIN_XXL': 560,           # XXL panel
+
+    # ===== WIDGET WIDTHS (pixels) =====
+    'W_LABEL_PCT': 10,                # Percentage label
+    'W_ICON_BTN': 28,                 # Icon button
+    'W_OPACITY_LBL': 36,              # Opacity label
+    'W_LABEL_MD': 42,                 # Medium label
+    'W_CORNER': 50,                   # Corner widget
+    'W_BTN_COMPACT': 52,              # Compact button
+    'W_SPINNER': 58,                  # Spinner width
+    'W_FREQ_LBL': 88,                 # Frequency label
+    'W_COL_MD': 100,                  # Medium column
+    'W_COL_LG': 120,                  # Large column
+    'W_CAT_LBL': 130,                 # Category label
+    'W_DIALOG_MIN': 260,              # Min dialog
+    'W_PANEL_MIN': 280,               # Min panel
+    'W_DIALOG_MD': 300,               # Medium dialog
+    'W_DIALOG_LG': 320,               # Large dialog
+    'W_DIALOG_XL': 340,               # Extra-large dialog
+    'W_PANEL_MIN_MD': 460,            # Medium panel min
+    'W_PANEL_MIN_LG': 480,            # Large panel min
+    'W_PANEL_MIN_XL': 500,            # XL panel min
+    'W_PANEL_MIN_XXL': 640,           # XXL panel min
+
+    # ===== SEMANTIC ZONE WIDTHS (pixel regions in cells) =====
+    'ZONE_PID_ICON': 22,              # P&ID pin icon
+    'ZONE_CONS_CAT': 26,              # Consequence category
+    'ZONE_CONS_CHAIN': 24,            # Consequence chain link
+    'ZONE_CAUSE_OBJ': 64,             # Cause object-tag
+    'ZONE_CAUSE_COMMENT': 22,         # Cause comment icon
+    'ZONE_CAUSE_CLONE': 22,           # Cause clone icon
+    'ZONE_CAUSE_FREQ': 50,            # Cause frequency badge
+    'ZONE_SG_RRF': 54,                # Safeguard RRF badge
+    'ZONE_EQUIP_ICON': 20,            # Equipment icon
+}
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DATABASE
@@ -635,7 +704,7 @@ def total_freq_reduction(base_f_level: int, safeguard_rrf: int,
 
 # ── Consequence chain definitions ────────────────────────────────────────────
 # Each entry: (key, display_label, group_header_or_None)
-_CHAIN_ITEMS = [
+CHAIN_ITEMS = [
     # Intermediate event
     ('loc',           'LOC — Utsläpp / läcka',                    'Intermediär händelse'),
     # Ignition outcomes
@@ -653,13 +722,13 @@ _CHAIN_ITEMS = [
     # User-defined
     ('custom',        'Övrigt (se text)',                          'Övrigt'),
 ]
-_CHAIN_KEYS = [k for k, _, _ in _CHAIN_ITEMS]
+CHAIN_KEYS = [k for k, _, _ in CHAIN_ITEMS]
 
 
 def build_consequence_text(base: str, chain: dict) -> str:
     """Build full consequence description from base event + chain selections."""
     parts = [base.strip()] if base.strip() else []
-    for key, label, _ in _CHAIN_ITEMS:
+    for key, label, _ in CHAIN_ITEMS:
         if chain.get(key):
             # Use short label for the chain (without parenthetical detail)
             short = label.split('(')[0].strip().split(' — ')[-1].strip()
@@ -678,7 +747,7 @@ def parse_chain_from_json(raw: str) -> dict:
 
 # Frequency F=-1..5, stored as integer in causes.likelihood
 _FREQ_VALUES = [-1, 0, 1, 2, 3, 4, 5]
-_FREQ_LABELS = [
+FREQ_LABELS = [
     'F-1 – Otänkbar',
     'F0 – Extremt sällan',
     'F1 – Sällan',
@@ -722,32 +791,32 @@ def idx_to_freq(i: int) -> int:
     """Combo-box index (0..6) → frequency value (-1..5)."""
     return i - 1
 
-# Keep old alias so existing code that references _LIKE_LABELS doesn't crash
-_LIKE_LABELS = _FREQ_LABELS
+# Keep old alias so existing code that references LIKE_LABELS doesn't crash
+LIKE_LABELS = FREQ_LABELS
 
-_SEV_LABELS  = ['C1 – Försumbar', 'C2 – Liten', 'C3 – Måttlig', 'C4 – Allvarlig', 'C5 – Katastrofal']
+SEV_LABELS  = ['C1 – Försumbar', 'C2 – Liten', 'C3 – Måttlig', 'C4 – Allvarlig', 'C5 – Katastrofal']
 
 
 def get_sev_labels():
-    """Return severity labels from current matrix config (y_labels), falling back to _SEV_LABELS."""
+    """Return severity labels from current matrix config (y_labels), falling back to SEV_LABELS."""
     cfg = get_matrix()
     y = cfg.get('y_labels', [])
     n = cfg.get('rows', 5)
     if y and len(y) >= n:
         return [f"C{i+1} – {y[i]}" if not y[i].startswith('C') else y[i] for i in range(n)]
-    return _SEV_LABELS[:n] if n <= len(_SEV_LABELS) else _SEV_LABELS + [f"C{i+1}" for i in range(len(_SEV_LABELS), n)]
+    return SEV_LABELS[:n] if n <= len(SEV_LABELS) else SEV_LABELS + [f"C{i+1}" for i in range(len(SEV_LABELS), n)]
 
 
-_RRF_VALUES  = [1, 10, 100, 1000, 10000]
-_RRF_LABELS  = ['1 – Ingen', '10 – RRF10', '100 – RRF100', '1000 – RRF1000', '10000 – RRF10000']
-_SG_TYPES      = ['BPCS', 'SIS', 'Mekanisk', 'Administrativ', 'Övrigt']
-_MARKUP_COLORS = ['#E53935', '#F57C00', '#F9A825', '#388E3C',
+RRF_VALUES  = [1, 10, 100, 1000, 10000]
+RRF_LABELS  = ['1 – Ingen', '10 – RRF10', '100 – RRF100', '1000 – RRF1000', '10000 – RRF10000']
+SG_TYPES      = ['BPCS', 'SIS', 'Mekanisk', 'Administrativ', 'Övrigt']
+MARKUP_COLORS = ['#E53935', '#F57C00', '#F9A825', '#388E3C',
                   '#00796B', '#1565C0', '#7B1FA2', '#FF4081']
-_RISK_ICON   = {'Låg': '🟢', 'Medium': '🟡', 'Hög': '🟠', 'Kritisk': '🔴'}
+RISK_ICON   = {'Låg': '🟢', 'Medium': '🟡', 'Hög': '🟠', 'Kritisk': '🔴'}
 
 def _get_node_color(node_id):
     """Get a unique color for a node based on its ID."""
-    return _MARKUP_COLORS[node_id % len(_MARKUP_COLORS)]
+    return MARKUP_COLORS[node_id % len(MARKUP_COLORS)]
 
 # Component-specific standard causes seeded on first run.
 # comp_type must match keys in COMPONENT_TYPES (pid_viewer.py).
@@ -1276,11 +1345,23 @@ class Database:
         # bastabellerna utan de migrerade kolumnerna — annars kraschar
         # seedningen på t.ex. standard_causes.comp_type). Alla satser är
         # idempotenta; fel ignoreras.
+        logging.info("Database: starting migration...")
         self._column_migrations()
         self._migrate_tables_and_seed()
+        logging.info("Database: migration complete")
+        self._validate_schema()
 
     def _column_migrations(self):
-        for sql in [
+        """Execute idempotent column migrations with proper error handling.
+
+        Distinguishes between benign errors (column already exists) and real failures
+        (syntax errors, permission issues) for accurate logging and diagnostics.
+        """
+        migration_count = 0
+        skipped_count = 0
+        error_count = 0
+
+        migrations = [
             "ALTER TABLE nodes ADD COLUMN markup_points TEXT DEFAULT ''",
             "ALTER TABLE nodes ADD COLUMN markup_style TEXT DEFAULT ''",
             "ALTER TABLE nodes ADD COLUMN pid_page INTEGER DEFAULT 0",
@@ -1348,11 +1429,40 @@ class Database:
                 tag_example TEXT NOT NULL DEFAULT '',
                 usage_count INTEGER NOT NULL DEFAULT 1
             )""",
-        ]:
+        ]
+
+        for sql in migrations:
             try:
+                logging.debug(f"Attempting migration: {sql[:70]}...")
                 self.conn.execute(sql)
-            except Exception:
-                pass
+                migration_count += 1
+                logging.debug(f"Migration complete: {sql[:70]}...")
+            except sqlite3.OperationalError as e:
+                error_msg = str(e).lower()
+                # Benign errors: column/table already exists
+                if "already exists" in error_msg or "no such table" in error_msg or "duplicate column" in error_msg:
+                    logging.debug(f"Skipping (already exists): {sql[:70]}")
+                    skipped_count += 1
+                else:
+                    # Real operational error (constraint violation, syntax error, etc.)
+                    logging.error(f"Operational error during migration: {str(e)}")
+                    logging.error(f"SQL: {sql[:100]}")
+                    error_count += 1
+            except sqlite3.DatabaseError as e:
+                # Database errors (corruption, permission, etc.)
+                logging.error(f"Database error during migration: {str(e)}")
+                logging.error(f"SQL: {sql[:100]}")
+                error_count += 1
+            except Exception as e:
+                # Unexpected errors
+                logging.error(f"Unexpected error during migration: {type(e).__name__}: {str(e)}")
+                logging.error(f"SQL: {sql[:100]}")
+                error_count += 1
+
+        logging.info(f"Column migrations: {migration_count} applied, {skipped_count} skipped, {error_count} errors")
+
+        if error_count > 0:
+            logging.warning(f"Migration had {error_count} real errors — database may be in inconsistent state")
 
     def _migrate_tables_and_seed(self):
         self.conn.executescript("""
@@ -1659,7 +1769,7 @@ class Database:
                                           "Instrument ej kalibrerade"],
                 "Övrigt":        [],
             }
-            for sort_i, dev_name in enumerate(_DEVIATION_TYPES):
+            for sort_i, dev_name in enumerate(DEVIATION_TYPES):
                 cur = self.conn.execute(
                     "INSERT INTO standard_deviations (description, sort_order) VALUES (?,?)",
                     (dev_name, sort_i))
@@ -1710,7 +1820,7 @@ class Database:
         std_devs = [r[0] for r in self.conn.execute(
             "SELECT description FROM standard_deviations ORDER BY sort_order").fetchall()]
         if not std_devs:
-            std_devs = _DEVIATION_TYPES
+            std_devs = DEVIATION_TYPES
         all_nodes = [r[0] for r in self.conn.execute("SELECT id FROM nodes").fetchall()]
         for nid in all_nodes:
             existing = {r[0] for r in self.conn.execute(
@@ -1807,6 +1917,72 @@ class Database:
                 " VALUES ('tag_memory_restore_active_v1','1')")
 
         self.commit()
+
+    def _validate_schema(self):
+        """Validate that all expected tables and critical columns exist.
+
+        Runs after migrations to ensure the database schema is complete.
+        Logs warnings for missing columns that are required for functionality.
+        """
+        logging.info("Database: validating schema...")
+
+        # Critical tables that must exist
+        critical_tables = {
+            'nodes', 'causes', 'consequences', 'safeguards', 'deviations',
+            'cause_markers', 'consequence_markers', 'safeguard_markers',
+            'standard_causes', 'standard_deviations', 'app_config'
+        }
+
+        # Map of table -> list of critical columns that should exist
+        critical_columns = {
+            'nodes': ['id', 'name', 'markup_points', 'markup_style', 'pid_page'],
+            'causes': ['id', 'description', 'likelihood', 'deviation_id', 'comp_type'],
+            'consequences': ['id', 'description', 'severity', 'category'],
+            'safeguards': ['id', 'description', 'rrf', 'sg_type'],
+            'deviations': ['id', 'node_id', 'description'],
+            'cause_markers': ['id', 'cause_id', 'pid_page', 'x', 'y'],
+            'consequence_markers': ['id', 'consequence_id', 'pid_page', 'x', 'y'],
+            'safeguard_markers': ['id', 'safeguard_id', 'pid_page', 'x', 'y'],
+            'standard_causes': ['id', 'deviation_id', 'description', 'comp_type'],
+            'standard_deviations': ['id', 'description'],
+            'app_config': ['key', 'value'],
+        }
+
+        missing_tables = []
+        for table in critical_tables:
+            try:
+                cursor = self.conn.execute(f"PRAGMA table_info({table})")
+                if not cursor.fetchall():
+                    missing_tables.append(table)
+            except sqlite3.OperationalError:
+                missing_tables.append(table)
+
+        if missing_tables:
+            logging.error(f"Database validation: missing tables: {', '.join(missing_tables)}")
+
+        # Check for critical columns
+        missing_columns = {}
+        for table, columns in critical_columns.items():
+            if table in missing_tables:
+                continue  # Skip tables that are already missing
+
+            try:
+                cursor = self.conn.execute(f"PRAGMA table_info({table})")
+                existing_cols = {row[1] for row in cursor.fetchall()}  # Column name is index 1
+                missing = [col for col in columns if col not in existing_cols]
+                if missing:
+                    missing_columns[table] = missing
+            except sqlite3.OperationalError as e:
+                logging.error(f"Database validation: cannot check {table}: {e}")
+
+        if missing_columns:
+            for table, cols in missing_columns.items():
+                logging.warning(f"Database validation: {table} missing columns: {', '.join(cols)}")
+
+        if not missing_tables and not missing_columns:
+            logging.info("Database: schema validation passed — all critical tables and columns present")
+        else:
+            logging.warning("Database: schema validation found issues — app may have reduced functionality")
 
     # ── Config ────────────────────────────────────────────────────────────────
     def get_config(self, key, default=None):
@@ -2738,7 +2914,7 @@ class Database:
         node_id = cur.lastrowid
         std = [r[0] for r in self.conn.execute(
             "SELECT description FROM standard_deviations ORDER BY sort_order").fetchall()]
-        for dev_type in (std or _DEVIATION_TYPES):
+        for dev_type in (std or DEVIATION_TYPES):
             self.conn.execute(
                 "INSERT INTO deviations (node_id, description) VALUES (?,?)",
                 (node_id, dev_type))
@@ -3681,7 +3857,7 @@ class SafeguardEditor(QWidget):
         self.table.setColumnWidth(4, 65)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
-        self.table.setFixedHeight(160)
+        self.table.setFixedHeight(CONFIG['H_TABLE_STD'])
         layout.addWidget(self.table)
 
     def load(self, consequence_id, cause_likelihood=1):
@@ -3710,17 +3886,17 @@ class SafeguardEditor(QWidget):
 
             sid = sg_d['id']
             type_combo = QComboBox()
-            type_combo.addItems(_SG_TYPES)
+            type_combo.addItems(SG_TYPES)
             sg_type = sg_d.get('sg_type', 'Övrigt') or 'Övrigt'
-            type_combo.setCurrentIndex(_SG_TYPES.index(sg_type) if sg_type in _SG_TYPES else len(_SG_TYPES)-1)
+            type_combo.setCurrentIndex(SG_TYPES.index(sg_type) if sg_type in SG_TYPES else len(SG_TYPES)-1)
             type_combo.currentIndexChanged.connect(
                 lambda idx, s=sid, r=row: self._type_changed(s, r, idx))
             self.table.setCellWidget(row, 1, type_combo)
 
             rrf_combo = QComboBox()
-            rrf_combo.addItems(_RRF_LABELS)
+            rrf_combo.addItems(RRF_LABELS)
             sg_rrf_val = sg_d['rrf'] if sg_d['rrf'] is not None else 1
-            rrf_idx = _RRF_VALUES.index(sg_rrf_val) if sg_rrf_val in _RRF_VALUES else 0
+            rrf_idx = RRF_VALUES.index(sg_rrf_val) if sg_rrf_val in RRF_VALUES else 0
             rrf_combo.setCurrentIndex(rrf_idx)
             rrf_combo.currentIndexChanged.connect(
                 lambda idx, s=sid, r=row: self._rrf_changed(s, r, idx))
@@ -3732,7 +3908,7 @@ class SafeguardEditor(QWidget):
             self.table.setCellWidget(row, 3, badge)
 
             del_btn = QPushButton("Ta bort")
-            del_btn.clicked.connect(lambda _, s=sid: self._delete(s))
+            del_btn.clicked.connect(partial(self._delete, sid))
             self.table.setCellWidget(row, 4, del_btn)
 
         self.table.cellChanged.connect(self._cell_changed)
@@ -3750,20 +3926,20 @@ class SafeguardEditor(QWidget):
         self.changed.emit()
 
     def _type_changed(self, sg_id, row, idx):
-        sg_type = _SG_TYPES[idx]
+        sg_type = SG_TYPES[idx]
         item = self.table.item(row, 0)
         desc = item.text() if item else ''
         rrf_w = self.table.cellWidget(row, 2)
-        rrf = _RRF_VALUES[rrf_w.currentIndex()] if rrf_w else 1
+        rrf = RRF_VALUES[rrf_w.currentIndex()] if rrf_w else 1
         self.db.update_safeguard(sg_id, desc, rrf, sg_type)
         self.changed.emit()
 
     def _rrf_changed(self, sg_id, row, idx):
-        rrf = _RRF_VALUES[idx]
+        rrf = RRF_VALUES[idx]
         item = self.table.item(row, 0)
         desc = item.text() if item else ''
         type_w = self.table.cellWidget(row, 1)
-        sg_type = _SG_TYPES[type_w.currentIndex()] if type_w else 'Övrigt'
+        sg_type = SG_TYPES[type_w.currentIndex()] if type_w else 'Övrigt'
         self.db.update_safeguard(sg_id, desc, rrf, sg_type)
         self._refresh()
         self.changed.emit()
@@ -3776,9 +3952,9 @@ class SafeguardEditor(QWidget):
             return
         sg_id = item.data(Qt.ItemDataRole.UserRole)
         type_w = self.table.cellWidget(row, 1)
-        sg_type = _SG_TYPES[type_w.currentIndex()] if type_w else 'Övrigt'
+        sg_type = SG_TYPES[type_w.currentIndex()] if type_w else 'Övrigt'
         rrf_w = self.table.cellWidget(row, 2)
-        rrf = _RRF_VALUES[rrf_w.currentIndex()] if rrf_w else 1
+        rrf = RRF_VALUES[rrf_w.currentIndex()] if rrf_w else 1
         self.db.update_safeguard(sg_id, item.text(), rrf, sg_type)
 
 
@@ -3804,7 +3980,7 @@ class ActionEditor(QWidget):
             hdr.setSectionResizeMode(i, QHeaderView.ResizeMode.Fixed)
             self.table.setColumnWidth(i, w)
         self.table.verticalHeader().setVisible(False)
-        self.table.setMinimumHeight(150)
+        self.table.setMinimumHeight(CONFIG['H_TABLE_MIN'])
         layout.addWidget(self.table)
 
     def load(self, consequence_id):
@@ -3834,7 +4010,7 @@ class ActionEditor(QWidget):
             combo.currentTextChanged.connect(lambda s, a=aid, r=row: self._save_row(r))
             self.table.setCellWidget(row, 3, combo)
             del_btn = QPushButton("Ta bort")
-            del_btn.clicked.connect(lambda _, a=aid: self._delete(a))
+            del_btn.clicked.connect(partial(self._delete, aid))
             self.table.setCellWidget(row, 4, del_btn)
         self.table.cellChanged.connect(self._cell_changed)
 
@@ -3899,7 +4075,7 @@ class NodePanel(QWidget):
         f = QFont(); f.setPointSize(12); f.setBold(True)
         self._title_lbl.setFont(f)
         layout.addWidget(self._title_lbl)
-        sep = QLabel(); sep.setFixedHeight(1); sep.setStyleSheet("background:#ddd;")
+        sep = QLabel(); sep.setFixedHeight(CONFIG['H_SEP_LINE']); sep.setStyleSheet("background:#ddd;")
         layout.addWidget(sep)
 
         form = QFormLayout()
@@ -3918,7 +4094,7 @@ class NodePanel(QWidget):
 
         self.desc_edit = QTextEdit()
         self.desc_edit.setPlaceholderText("Beskrivning av noden / systemgränsen...")
-        self.desc_edit.setFixedHeight(55)
+        self.desc_edit.setFixedHeight(CONFIG['H_DESC_SM'])
         _orig_foe = QTextEdit.focusOutEvent
         _w = self.desc_edit
         _s = self._save
@@ -4010,7 +4186,7 @@ class DeviationPanel(QWidget):
         f = QFont(); f.setPointSize(15); f.setBold(True)
         title.setFont(f)
         layout.addWidget(title)
-        sep = QLabel(); sep.setFixedHeight(1); sep.setStyleSheet("background:#ddd;")
+        sep = QLabel(); sep.setFixedHeight(CONFIG['H_SEP_LINE']); sep.setStyleSheet("background:#ddd;")
         layout.addWidget(sep)
 
         form = QFormLayout()
@@ -4071,7 +4247,7 @@ class CausePanel(QWidget):
         f = QFont(); f.setPointSize(15); f.setBold(True)
         title.setFont(f)
         layout.addWidget(title)
-        sep = QLabel(); sep.setFixedHeight(1); sep.setStyleSheet("background:#ddd;")
+        sep = QLabel(); sep.setFixedHeight(CONFIG['H_SEP_LINE']); sep.setStyleSheet("background:#ddd;")
         layout.addWidget(sep)
 
         form = QFormLayout()
@@ -4080,7 +4256,7 @@ class CausePanel(QWidget):
 
         self.desc_edit = QTextEdit()
         self.desc_edit.setPlaceholderText("Beskriv orsaken till avvikelsen / faran...")
-        self.desc_edit.setFixedHeight(80)
+        self.desc_edit.setFixedHeight(CONFIG['H_DESC_LG'])
         _orig_foe = QTextEdit.focusOutEvent
         _w = self.desc_edit
         _s = self._save
@@ -4115,7 +4291,7 @@ class CausePanel(QWidget):
         self.freq_combo = QComboBox()
         self.freq_combo.setMaximumWidth(180)
         self.freq_combo.addItem("— (välj)")
-        self.freq_combo.addItems(_FREQ_LABELS)
+        self.freq_combo.addItems(FREQ_LABELS)
         self.freq_combo.currentIndexChanged.connect(self._save)
         freq_lay.addRow("Manuell:", self.freq_combo)
 
@@ -4153,7 +4329,7 @@ class CausePanel(QWidget):
             base_freq_per_year = row['base_frequency'] if 'base_frequency' in row.keys() else None
         if base_freq_per_year is not None:
             f_auto = freq_to_f_level(base_freq_per_year)
-            f_lbl  = _FREQ_LABELS[freq_to_idx(f_auto)] if freq_to_idx(f_auto) < len(_FREQ_LABELS) else f'F={f_auto}'
+            f_lbl  = FREQ_LABELS[freq_to_idx(f_auto)] if freq_to_idx(f_auto) < len(FREQ_LABELS) else f'F={f_auto}'
             suffix = "  🗄️" if std_cause_id else ""
             self._db_freq_lbl.setText(f"F={f_auto} — {base_freq_per_year:.4g}/år  →  {f_lbl}{suffix}")
         else:
@@ -4203,7 +4379,7 @@ class ConsequencePanel(QWidget):
         f = QFont(); f.setPointSize(15); f.setBold(True)
         title.setFont(f)
         layout.addWidget(title)
-        sep = QLabel(); sep.setFixedHeight(1); sep.setStyleSheet("background:#ddd;")
+        sep = QLabel(); sep.setFixedHeight(CONFIG['H_SEP_LINE']); sep.setStyleSheet("background:#ddd;")
         layout.addWidget(sep)
 
         # ── Beskrivning (bas-händelse) ─────────────────────────────────────────
@@ -4213,7 +4389,7 @@ class ConsequencePanel(QWidget):
         self.desc_edit = QTextEdit()
         self.desc_edit.setPlaceholderText(
             "Beskriv den direkta händelsen, t.ex. 'Högt flöde till T-001'")
-        self.desc_edit.setFixedHeight(65)
+        self.desc_edit.setFixedHeight(CONFIG['H_DESC_MD'])
         _orig_foe = QTextEdit.focusOutEvent
         _w = self.desc_edit
         _s = self._save
@@ -4235,7 +4411,7 @@ class ConsequencePanel(QWidget):
         grid = QGridLayout(); grid.setSpacing(3)
         col, row_idx = 0, 0
 
-        for key, label, group in _CHAIN_ITEMS:
+        for key, label, group in CHAIN_ITEMS:
             if group and group != last_group:
                 if col > 0:
                     row_idx += 1; col = 0
@@ -4280,7 +4456,7 @@ class ConsequencePanel(QWidget):
         risk_lay.setSpacing(6)
 
         self.sev_combo = QComboBox()
-        self.sev_combo.addItems(_SEV_LABELS)
+        self.sev_combo.addItems(SEV_LABELS)
         self.sev_combo.currentIndexChanged.connect(self._risk_changed)
         risk_lay.addRow("Konsekvens (C):", self.sev_combo)
 
@@ -4454,7 +4630,7 @@ class SafeguardPanel(QWidget):
         f = QFont(); f.setPointSize(15); f.setBold(True)
         title.setFont(f)
         layout.addWidget(title)
-        sep = QLabel(); sep.setFixedHeight(1); sep.setStyleSheet("background:#ddd;")
+        sep = QLabel(); sep.setFixedHeight(CONFIG['H_SEP_LINE']); sep.setStyleSheet("background:#ddd;")
         layout.addWidget(sep)
 
         form = QFormLayout()
@@ -4463,7 +4639,7 @@ class SafeguardPanel(QWidget):
 
         self.desc_edit = QTextEdit()
         self.desc_edit.setPlaceholderText("Beskriv safeguarden...")
-        self.desc_edit.setFixedHeight(80)
+        self.desc_edit.setFixedHeight(CONFIG['H_DESC_LG'])
         _orig_foe = QTextEdit.focusOutEvent
         _w = self.desc_edit
         _s = self._save
@@ -4474,12 +4650,12 @@ class SafeguardPanel(QWidget):
         form.addRow("Beskrivning:", self.desc_edit)
 
         self.type_combo = QComboBox()
-        self.type_combo.addItems(_SG_TYPES)
+        self.type_combo.addItems(SG_TYPES)
         self.type_combo.currentIndexChanged.connect(self._save)
         form.addRow("Typ:", self.type_combo)
 
         self.rrf_combo = QComboBox()
-        self.rrf_combo.addItems(_RRF_LABELS)
+        self.rrf_combo.addItems(RRF_LABELS)
         self.rrf_combo.currentIndexChanged.connect(self._save)
         form.addRow("RRF:", self.rrf_combo)
 
@@ -4511,9 +4687,9 @@ class SafeguardPanel(QWidget):
         self.desc_edit.setPlainText(sg_d['description'])
         sg_type = sg_d.get('sg_type', 'Övrigt') or 'Övrigt'
         self.type_combo.setCurrentIndex(
-            _SG_TYPES.index(sg_type) if sg_type in _SG_TYPES else len(_SG_TYPES)-1)
-        rrf = sg_d['rrf'] if sg_d['rrf'] in _RRF_VALUES else 1
-        self.rrf_combo.setCurrentIndex(_RRF_VALUES.index(rrf))
+            SG_TYPES.index(sg_type) if sg_type in SG_TYPES else len(SG_TYPES)-1)
+        rrf = sg_d['rrf'] if sg_d['rrf'] in RRF_VALUES else 1
+        self.rrf_combo.setCurrentIndex(RRF_VALUES.index(rrf))
         self._update_badge(sg_d)
         self._loading = False
 
@@ -4528,7 +4704,7 @@ class SafeguardPanel(QWidget):
         cause = self.db.get_cause(cons['cause_id'])
         freq = self.db.cause_frequency_level(cause)
         sev = cons['severity'] or 1
-        rrf = _RRF_VALUES[self.rrf_combo.currentIndex()]
+        rrf = RRF_VALUES[self.rrf_combo.currentIndex()]
         eff_f = effective_frequency(freq, rrf)
         self.risk_badge.update_risk(eff_f, sev)
 
@@ -4536,8 +4712,8 @@ class SafeguardPanel(QWidget):
         if self._loading or self.safeguard_id is None:
             return
         desc    = self.desc_edit.toPlainText().strip() or 'Ny safeguard'
-        rrf     = _RRF_VALUES[self.rrf_combo.currentIndex()]
-        sg_type = _SG_TYPES[self.type_combo.currentIndex()]
+        rrf     = RRF_VALUES[self.rrf_combo.currentIndex()]
+        sg_type = SG_TYPES[self.type_combo.currentIndex()]
         self.db.update_safeguard(self.safeguard_id, desc, rrf, sg_type)
         self._update_badge()
         self.saved.emit(self.safeguard_id)
@@ -4736,7 +4912,7 @@ class _StylePopup(QWidget):
         self._title_lbl.setFont(f)
         outer.addWidget(self._title_lbl)
 
-        sep = QLabel(); sep.setFixedHeight(1)
+        sep = QLabel(); sep.setFixedHeight(CONFIG['H_SEP_LINE'])
         sep.setStyleSheet("background:#ddd;border:none;")
         outer.addWidget(sep)
 
@@ -4746,11 +4922,11 @@ class _StylePopup(QWidget):
         crow.setContentsMargins(0, 0, 0, 0); crow.setSpacing(3)
         crow.addWidget(QLabel("Färg:"))
         self._cbts = []
-        for hc in _MARKUP_COLORS:
+        for hc in MARKUP_COLORS:
             cb = QPushButton(); cb.setFixedSize(22, 22)
             cb.setStyleSheet(f"background:{hc};border:2px solid transparent;"
                              f"border-radius:3px;")
-            cb.clicked.connect(lambda _, c=hc: self._pick(c))
+            cb.clicked.connect(partial(self._pick, hc))
             crow.addWidget(cb); self._cbts.append((hc, cb))
         pal = QPushButton("···"); pal.setFixedSize(28, 22)
         pal.setStyleSheet("font-size:10px;border:1px solid #ccc;border-radius:3px;")
@@ -4758,11 +4934,11 @@ class _StylePopup(QWidget):
         crow.addWidget(pal); crow.addStretch()
         outer.addWidget(color_widget)
 
-        self._bar = QLabel(); self._bar.setFixedHeight(5)
+        self._bar = QLabel(); self._bar.setFixedHeight(CONFIG['H_COLOR_STRIP'])
         self._bar.setStyleSheet("border:none;")
         outer.addWidget(self._bar)
 
-        sep2 = QLabel(); sep2.setFixedHeight(1)
+        sep2 = QLabel(); sep2.setFixedHeight(CONFIG['H_SEP_LINE'])
         sep2.setStyleSheet("background:#eee;border:none;")
         outer.addWidget(sep2)
 
@@ -4774,7 +4950,7 @@ class _StylePopup(QWidget):
         self._op_sl = QSlider(Qt.Orientation.Horizontal)
         self._op_sl.setRange(10, 90)
         orow.addWidget(self._op_sl)
-        self._op_lbl = QLabel(); self._op_lbl.setFixedWidth(36)
+        self._op_lbl = QLabel(); self._op_lbl.setFixedWidth(CONFIG['W_OPACITY_LBL'])
         orow.addWidget(self._op_lbl)
         self._op_sl.valueChanged.connect(
             lambda v: (ribbon._apply_opacity(v), self._op_lbl.setText(f"{v}%")))
@@ -4812,7 +4988,7 @@ class _StylePopup(QWidget):
         srow.addWidget(self._snap_cb); srow.addStretch()
         outer.addWidget(self._snap_row)
 
-        self.setMinimumWidth(300)
+        self.setMinimumWidth(CONFIG['W_DIALOG_MD'])
 
     def _configure_for(self, tool):
         self._title_lbl.setText(self._TOOL_NAMES.get(tool, tool))
@@ -4931,7 +5107,7 @@ class PropertiesRibbon(QWidget):
             if spec is None:
                 sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
                 sep.setStyleSheet("background:#E8E8E8;max-height:1px;border:none;")
-                sep.setFixedHeight(1)
+                sep.setFixedHeight(CONFIG['H_SEP_LINE'])
                 self._outer.addWidget(sep)
                 self._btns.append(sep)
             elif isinstance(spec, str):
@@ -5023,7 +5199,7 @@ class PropertiesRibbon(QWidget):
         dlg = QDialog(self)
         dlg.setWindowTitle(title)
         dlg.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
-        dlg.setMinimumWidth(320)
+        dlg.setMinimumWidth(CONFIG['W_DIALOG_LG'])
         lay = QVBoxLayout(dlg)
         lay.setSpacing(6); lay.setContentsMargins(10, 10, 10, 10)
         hdr = QLabel(f"<b>{title}</b>")
@@ -5032,7 +5208,7 @@ class PropertiesRibbon(QWidget):
         if multiline:
             ed = QTextEdit(); ed.setPlainText(current)
             ed.setPlaceholderText(placeholder)
-            ed.setFixedHeight(100)
+            ed.setFixedHeight(CONFIG['H_EDIT_LG'])
         else:
             ed = QLineEdit(current)
             ed.setPlaceholderText(placeholder)
@@ -5059,7 +5235,7 @@ class PropertiesRibbon(QWidget):
         dlg = QDialog(self)
         dlg.setWindowTitle("Nod")
         dlg.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
-        dlg.setMinimumWidth(300)
+        dlg.setMinimumWidth(CONFIG['W_DIALOG_MD'])
         lay = QFormLayout(dlg); lay.setContentsMargins(10,10,10,10)
         name_e = QLineEdit(n['name'] or '')
         pid_e  = QLineEdit(n.get('pid_ref') or '')
@@ -5102,7 +5278,7 @@ class PropertiesRibbon(QWidget):
         dlg = QDialog(self)
         dlg.setWindowTitle("Processparametrar")
         dlg.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
-        dlg.setMinimumWidth(300)
+        dlg.setMinimumWidth(CONFIG['W_DIALOG_MD'])
         lay = QFormLayout(dlg); lay.setContentsMargins(10,10,10,10)
         me = QLineEdit(n.get('media','') or '')
         pe = QLineEdit(n.get('pressure','') or '')
@@ -5134,7 +5310,8 @@ class PropertiesRibbon(QWidget):
         if not self._mw or not self._id: return
         self._mw._switch_view(0)
         from PyQt6.QtCore import QTimer
-        QTimer.singleShot(50, lambda: self._mw.zoom_to_node(self._id))
+        QTimer.singleShot(CONFIG['TIMER_NAV_QUICK_MS'],
+                         partial(self._mw.zoom_to_node, self._id))
 
     # ── DEVIATION actions ─────────────────────────────────────────────────────
     def _edit_dev_desc(self, btn):
@@ -5195,7 +5372,7 @@ class PropertiesRibbon(QWidget):
         dlg = QDialog(self)
         dlg.setWindowTitle("Frekvens")
         dlg.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
-        dlg.setMinimumWidth(260)
+        dlg.setMinimumWidth(CONFIG['W_DIALOG_MIN'])
         lay = QFormLayout(dlg); lay.setContentsMargins(10,10,10,10)
         freq_e = QLineEdit(f"{current_freq:g}" if current_freq else '')
         freq_e.setPlaceholderText("t.ex. 0.01")
@@ -5240,8 +5417,9 @@ class PropertiesRibbon(QWidget):
         if markers:
             m = markers[0]
             from PyQt6.QtCore import QTimer
-            QTimer.singleShot(50, lambda: self._mw.pid_panel.navigate_to_marker(
-                m['pid_page'], m['x'], m['y']))
+            QTimer.singleShot(CONFIG['TIMER_NAV_QUICK_MS'],
+                             partial(self._mw.pid_panel.navigate_to_marker,
+                                    m['pid_page'], m['x'], m['y']))
 
     # ── CONSEQUENCE actions ───────────────────────────────────────────────────
     def _edit_cons_chain(self, btn):
@@ -5262,8 +5440,9 @@ class PropertiesRibbon(QWidget):
             (self._id,)).fetchone()
         if rows:
             from PyQt6.QtCore import QTimer
-            QTimer.singleShot(50, lambda: self._mw.pid_panel.navigate_to_marker(
-                rows[0], rows[1], rows[2]))
+            QTimer.singleShot(CONFIG['TIMER_NAV_QUICK_MS'],
+                             partial(self._mw.pid_panel.navigate_to_marker,
+                                    rows[0], rows[1], rows[2]))
 
     # ── SAFEGUARD actions ─────────────────────────────────────────────────────
     def _edit_sg_desc(self, btn):
@@ -5297,8 +5476,9 @@ class PropertiesRibbon(QWidget):
             (self._id,)).fetchone()
         if rows:
             from PyQt6.QtCore import QTimer
-            QTimer.singleShot(50, lambda: self._mw.pid_panel.navigate_to_marker(
-                rows[0], rows[1], rows[2]))
+            QTimer.singleShot(CONFIG['TIMER_NAV_QUICK_MS'],
+                             partial(self._mw.pid_panel.navigate_to_marker,
+                                    rows[0], rows[1], rows[2]))
 
 
 class NodeMarkupPanel(QWidget):
@@ -5323,7 +5503,7 @@ class NodeMarkupPanel(QWidget):
         super().__init__(parent)
         self.db            = db
         self.node_id       = None
-        self._color        = _MARKUP_COLORS[5]
+        self._color        = MARKUP_COLORS[5]
         self._opacity      = 0.45
         self._width        = 12
         self._font_size    = 24
@@ -5333,7 +5513,7 @@ class NodeMarkupPanel(QWidget):
 
         SZ = 48
         ISZ = 28   # icon size within button
-        self.setFixedWidth(58)
+        self.setFixedWidth(CONFIG['W_SPINNER'])
         self.setStyleSheet("background:#FFFFFF; border-right: 1px solid #E8E8E8;")
 
         outer = QVBoxLayout(self)
@@ -5409,7 +5589,7 @@ class NodeMarkupPanel(QWidget):
 
         # ── Color strip ───────────────────────────────────────────────────────
         self._color_strip = QLabel()
-        self._color_strip.setFixedHeight(7)
+        self._color_strip.setFixedHeight(CONFIG['H_COLOR_STRIP'])
         self._color_strip.setStyleSheet(
             f"background:{self._color};border-radius:3px;border:none;")
         outer.addWidget(self._color_strip)
@@ -5533,7 +5713,7 @@ class _MarkupStyleDialog(QDialog):
     def __init__(self, mu_type, color, opacity, line_width, font_size, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Ändra stil")
-        self.setFixedWidth(310)
+        self.setFixedWidth(CONFIG['W_DIALOG_LG'])
         self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
         outer = QVBoxLayout(self)
         outer.setSpacing(10)
@@ -5543,14 +5723,14 @@ class _MarkupStyleDialog(QDialog):
         color_row.addWidget(QLabel("Färg:"))
         self._color = color
         self._color_btns = []
-        for hc in _MARKUP_COLORS:
+        for hc in MARKUP_COLORS:
             btn = QPushButton()
             btn.setFixedSize(22, 22)
             sel = hc.lower() == color.lower()
             btn.setStyleSheet(
                 f"background:{hc};border:2px solid {'#222' if sel else 'transparent'};"
                 f"border-radius:3px;")
-            btn.clicked.connect(lambda _, c=hc: self._pick(c))
+            btn.clicked.connect(partial(self._pick, hc))
             color_row.addWidget(btn)
             self._color_btns.append((hc, btn))
         color_row.addStretch()
@@ -5913,7 +6093,7 @@ class RedMarkupPanel(QWidget):
 
         SZ = 48
         ISZ = 28
-        self.setFixedWidth(58)
+        self.setFixedWidth(CONFIG['W_SPINNER'])
         self.setStyleSheet("background:#FFFFFF; border-right: 1px solid #E8E8E8;")
 
         outer = QVBoxLayout(self)
@@ -5975,7 +6155,7 @@ class RedMarkupPanel(QWidget):
         outer.addWidget(sep2)
 
         self._color_strip = QLabel()
-        self._color_strip.setFixedHeight(7)
+        self._color_strip.setFixedHeight(CONFIG['H_COLOR_STRIP'])
         self._color_strip.setStyleSheet(
             f"background:{self._color};border-radius:3px;border:none;")
         outer.addWidget(self._color_strip)
@@ -6276,7 +6456,7 @@ class _SymbolDimsDialog(QDialog):
     def __init__(self, w=40, h=40, rot=0, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Symbolstorlek och rotation")
-        self.setFixedWidth(280)
+        self.setFixedWidth(CONFIG['W_PANEL_MIN'])
         self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
         outer = QVBoxLayout(self)
         outer.setSpacing(10)
@@ -6313,7 +6493,7 @@ CONS_T = 3
 SG_T = 4
 DEV_T = 5
 
-_DEVIATION_TYPES = [
+DEVIATION_TYPES = [
     "Lågt flöde",
     "Högt flöde",
     "Missriktat flöde",
@@ -6342,9 +6522,9 @@ class _PickDeviationDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Välj eller skriv en avvikelse:"))
         self.combo = QComboBox()
-        self.combo.addItems(_DEVIATION_TYPES)
+        self.combo.addItems(DEVIATION_TYPES)
         self.combo.setEditable(True)
-        self.combo.setCurrentText(_DEVIATION_TYPES[0])
+        self.combo.setCurrentText(DEVIATION_TYPES[0])
         layout.addWidget(self.combo)
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -6492,7 +6672,7 @@ class TreePanel(QWidget):
         self.btn_del.setToolTip("Ta bort markerat objekt")
         self.btn_del.setStyleSheet("color:#c0392b; font-weight:bold;")
         for b in [self.btn_node, self.btn_cause, self.btn_cons, self.btn_del]:
-            b.setFixedHeight(26)
+            b.setFixedHeight(CONFIG['H_ROW_COMPACT'])
             btn_row.addWidget(b)
         # Collapse / expand all
         btn_collapse = QPushButton("⊟")
@@ -6530,7 +6710,7 @@ class TreePanel(QWidget):
             btn = QPushButton(label)
             btn.setCheckable(True)
             btn.setChecked(True)
-            btn.setFixedHeight(24)
+            btn.setFixedHeight(CONFIG['H_CTRL_STD'])
             btn.setStyleSheet(
                 f"QPushButton{{background:{color_on}; color:white; border:none;"
                 f" border-radius:3px; font-size:10px; font-weight:bold; padding:0 4px;}}"
@@ -6599,7 +6779,7 @@ class TreePanel(QWidget):
                     for ki, cons in enumerate(self.db.consequences(cause['id']), 1):
                         cause_freq = self.db.cause_frequency_level(cause)
                         level, _, _ = risk_info(cause_freq, cons['severity'])
-                        risk_icon = _RISK_ICON.get(level, '⚪')
+                        risk_icon = RISK_ICON.get(level, '⚪')
                         placed_k = cons['id'] in marked_consequences
                         kitem = QTreeWidgetItem([f"      {risk_icon}  {ki}. {cons['description'][:40]}"])
                         kitem.setIcon(0, _make_pin_icon(placed_k))
@@ -6942,7 +7122,7 @@ class EditableScenarioPanel(QWidget):
         super().__init__()
         self.db = db
         self.cause_id = None
-        self.setMinimumHeight(120)
+        self.setMinimumHeight(CONFIG['H_PANEL_MIN_LG'])
         self.setMaximumHeight(300)
 
         outer = QVBoxLayout(self)
@@ -7012,7 +7192,7 @@ class EditableScenarioPanel(QWidget):
         cause_lay.addWidget(cause_desc, 3)
 
         like_combo = QComboBox()
-        like_combo.addItems(_LIKE_LABELS)
+        like_combo.addItems(LIKE_LABELS)
         like_val = self.db.cause_frequency_level(cause_d)
         like_combo.setCurrentIndex(freq_to_idx(like_val))
         like_combo.currentIndexChanged.connect(
@@ -7022,7 +7202,7 @@ class EditableScenarioPanel(QWidget):
         cause_lay.addWidget(like_combo, 2)
 
         add_cons_btn = QPushButton("+ Konsekvens")
-        add_cons_btn.setFixedHeight(24)
+        add_cons_btn.setFixedHeight(CONFIG['H_CTRL_STD'])
         add_cons_btn.clicked.connect(self._add_consequence)
         cause_lay.addWidget(add_cons_btn)
         self._content_layout.addWidget(cause_box)
@@ -7051,7 +7231,7 @@ class EditableScenarioPanel(QWidget):
         sev_start = cons_d['severity'] or 1
 
         sev_combo = QComboBox()
-        sev_combo.addItems(_SEV_LABELS)
+        sev_combo.addItems(SEV_LABELS)
         sev_combo.setCurrentIndex(max(0, sev_start - 1))
 
         badge = RiskBadge()
@@ -7094,8 +7274,8 @@ class EditableScenarioPanel(QWidget):
             sg_id = sg_d['id']
 
             rrf_combo = QComboBox()
-            rrf_combo.addItems(_RRF_LABELS)
-            rrf_idx = _RRF_VALUES.index(sg_d['rrf']) if sg_d['rrf'] in _RRF_VALUES else 0
+            rrf_combo.addItems(RRF_LABELS)
+            rrf_idx = RRF_VALUES.index(sg_d['rrf']) if sg_d['rrf'] in RRF_VALUES else 0
             rrf_combo.setCurrentIndex(rrf_idx)
 
             eff_badge = RiskBadge()
@@ -7105,7 +7285,7 @@ class EditableScenarioPanel(QWidget):
 
             def _save_sg(s=sg_id, dw=sg_desc, rw=rrf_combo, eb=eff_badge):
                 desc = dw.text().strip() or 'Ny safeguard'
-                rrf = _RRF_VALUES[rw.currentIndex()]
+                rrf = RRF_VALUES[rw.currentIndex()]
                 self.db.update_safeguard(s, desc, rrf)
                 eff = effective_frequency(like_val, rrf)
                 eb.update_risk(eff, sev_combo.currentIndex() + 1)
@@ -7130,7 +7310,7 @@ class EditableScenarioPanel(QWidget):
             sg_vlay.addWidget(w)
 
         add_sg_btn = QPushButton("+ Safeguard")
-        add_sg_btn.setFixedHeight(22)
+        add_sg_btn.setFixedHeight(CONFIG['H_BTN_SMALL'])
         add_sg_btn.clicked.connect(lambda _, cid=cons_id: (
             self.db.add_safeguard(cid), self._rebuild(), self.data_changed.emit()))
         sg_vlay.addWidget(add_sg_btn)
@@ -7152,7 +7332,7 @@ class EditableScenarioPanel(QWidget):
 
 _CAUSE_OBJ_W = 64   # width of the object-tag zone on the left of Orsak cells
 
-_OBJ_TYPES = [
+OBJ_TYPES = [
     '', 'Pump', 'Ventil', 'Kompressor', 'Tank / Kärl', 'Värmeväxlare',
     'Rörledning', 'Instrument / Sensor', 'Säkerhetsventil (PSV)', 'Övrigt',
 ]
@@ -7165,7 +7345,7 @@ def _draw_equip_icon(painter, rect, comp_type):
     """Draw a colorful QPainter icon for the given equipment type.
 
     rect  -- the QRect to draw inside (icon is centred/fitted)
-    comp_type -- one of _OBJ_TYPES strings (or empty / unknown)
+    comp_type -- one of OBJ_TYPES strings (or empty / unknown)
     """
     sz    = min(rect.width(), rect.height()) - 4
     sz    = max(6, sz)
@@ -7393,7 +7573,7 @@ class StandardCausesPickerPopup(QDialog):
 
         self.setWindowTitle("Lägg till orsak")
         self.setMinimumWidth(640)
-        self.setMinimumHeight(520)
+        self.setMinimumHeight(CONFIG['H_PANEL_MIN_XL'])
         main = QVBoxLayout(self)
         main.setSpacing(0)
         main.setContentsMargins(0, 0, 0, 0)
@@ -7487,7 +7667,7 @@ class StandardCausesPickerPopup(QDialog):
         obj_hdr_row.addWidget(obj_hdr)
         obj_hdr_row.addStretch()
         btn_add_obj = QPushButton("+ Ny")
-        btn_add_obj.setFixedHeight(18)
+        btn_add_obj.setFixedHeight(CONFIG['H_BADGE'])
         btn_add_obj.setStyleSheet(
             "QPushButton{font-size:9px;padding:1px 5px;border:1px solid #93c5fd;"
             "border-radius:3px;background:#eff6ff;color:#1d4ed8;}"
@@ -7554,7 +7734,7 @@ class StandardCausesPickerPopup(QDialog):
         btn_row = QHBoxLayout()
         self._ok_btn = QPushButton("✓  Välj orsak")
         self._ok_btn.setDefault(True)
-        self._ok_btn.setMinimumHeight(34)
+        self._ok_btn.setMinimumHeight(CONFIG['H_BTN_OK'])
         self._ok_btn.setStyleSheet(
             "QPushButton { background:#1d4ed8; color:white; border:none;"
             " border-radius:5px; padding:6px 20px; font-weight:bold; font-size:11px; }"
@@ -7562,7 +7742,7 @@ class StandardCausesPickerPopup(QDialog):
             "QPushButton:pressed { background:#1e3a8a; }")
         self._ok_btn.clicked.connect(self._pick_selected)
         cancel_btn = QPushButton("Avbryt")
-        cancel_btn.setMinimumHeight(34)
+        cancel_btn.setMinimumHeight(CONFIG['H_BTN_OK'])
         cancel_btn.setStyleSheet(
             "QPushButton { background:#f1f5f9; color:#374151; border:1px solid #cbd5e1;"
             " border-radius:5px; padding:6px 16px; }"
@@ -7671,7 +7851,7 @@ class StandardCausesPickerPopup(QDialog):
             btn.setStyleSheet(self._OBJ_BTN_STYLE)
             btn.setProperty('obj_id',   obj['id'])
             btn.setProperty('obj_name', obj['name'])
-            btn.clicked.connect(lambda _checked, b=btn: self._on_obj_btn(b))
+            btn.clicked.connect(partial(self._on_obj_btn, btn))
             return btn
 
         sel_btn = None
@@ -7900,7 +8080,7 @@ class ObjectTagPopup(QDialog):
 
         layout.addWidget(QLabel("<b>Utrustningstyp</b>"))
         self._type_cb = QComboBox()
-        self._type_cb.addItems(_OBJ_TYPES)
+        self._type_cb.addItems(OBJ_TYPES)
         idx = self._type_cb.findText(comp_type)
         self._type_cb.setCurrentIndex(max(0, idx))
         layout.addWidget(self._type_cb)
@@ -7959,7 +8139,7 @@ class CauseObjectPopup(QDialog):
 
         self.setWindowTitle("Objekt / Standardorsak")
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
-        self.setMinimumWidth(280)
+        self.setMinimumWidth(CONFIG['W_PANEL_MIN'])
         self.setMaximumWidth(340)
 
         _small = "font-size:10px;"
@@ -8021,7 +8201,7 @@ class CauseObjectPopup(QDialog):
 
         self._tag_edit = QLineEdit(comp_tag)
         self._tag_edit.setPlaceholderText("t.ex. P-101")
-        self._tag_edit.setFixedHeight(22)
+        self._tag_edit.setFixedHeight(CONFIG['H_BTN_SMALL'])
         self._tag_edit.setStyleSheet(_small)
         if db:
             try:
@@ -8038,8 +8218,8 @@ class CauseObjectPopup(QDialog):
         form.addRow(tag_lbl, self._tag_edit)
 
         self._type_cb = QComboBox()
-        self._type_cb.addItems(_OBJ_TYPES)
-        self._type_cb.setFixedHeight(22)
+        self._type_cb.addItems(OBJ_TYPES)
+        self._type_cb.setFixedHeight(CONFIG['H_BTN_SMALL'])
         self._type_cb.setStyleSheet(_small)
         idx = self._type_cb.findText(comp_type)
         self._type_cb.setCurrentIndex(max(0, idx))
@@ -8052,7 +8232,7 @@ class CauseObjectPopup(QDialog):
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
         sep.setStyleSheet("color:#e0e0e0; margin:0px;")
-        sep.setFixedHeight(1)
+        sep.setFixedHeight(CONFIG['H_SEP_LINE'])
         layout.addWidget(sep)
 
         # ── Standard causes section ───────────────────────────────────────────
@@ -8074,7 +8254,7 @@ class CauseObjectPopup(QDialog):
         self._freetext_radio.setStyleSheet(_small)
         self._freetext_edit  = QLineEdit(current_description)
         self._freetext_edit.setPlaceholderText("Beskriv orsaken…")
-        self._freetext_edit.setFixedHeight(22)
+        self._freetext_edit.setFixedHeight(CONFIG['H_BTN_SMALL'])
         self._freetext_edit.setStyleSheet(_small)
         self._freetext_radio.toggled.connect(
             lambda on: self._freetext_edit.setEnabled(on))
@@ -8084,15 +8264,15 @@ class CauseObjectPopup(QDialog):
         btns.setSpacing(4)
         ok  = QPushButton("OK")
         ok.setDefault(True)
-        ok.setFixedHeight(24)
+        ok.setFixedHeight(CONFIG['H_CTRL_STD'])
         ok.setStyleSheet(_btn_style)
         ok.clicked.connect(self._ok)
         clr = QPushButton("Rensa")
-        clr.setFixedHeight(24)
+        clr.setFixedHeight(CONFIG['H_CTRL_STD'])
         clr.setStyleSheet(_btn_style)
         clr.clicked.connect(self._clear)
         cancel = QPushButton("Avbryt")
-        cancel.setFixedHeight(24)
+        cancel.setFixedHeight(CONFIG['H_CTRL_STD'])
         cancel.setStyleSheet(_btn_style)
         cancel.clicked.connect(self.reject)
         btns.addWidget(ok)
@@ -8196,7 +8376,7 @@ class CauseObjectPopup(QDialog):
             if freq is not None:
                 freq_str = f"{freq:.3g} /år" if freq >= 0.01 else f"{freq:.2e} /år"
                 fb = QPushButton(freq_str)
-                fb.setFixedHeight(20)
+                fb.setFixedHeight(CONFIG['H_BADGE'])
                 fb.setStyleSheet(
                     "QPushButton{color:#1F4E79; background:#dce8f5; border-radius:3px;"
                     "padding:1px 5px; font-size:10px; font-weight:bold; border:none;}"
@@ -8306,7 +8486,7 @@ class RRFPopup(QDialog):
         type_row = QHBoxLayout()
         type_row.addWidget(QLabel("Typ:"))
         self._type_combo = QComboBox()
-        self._type_combo.addItems(_SG_TYPES)
+        self._type_combo.addItems(SG_TYPES)
         idx = self._type_combo.findText(current_sg_type)
         if idx >= 0:
             self._type_combo.setCurrentIndex(idx)
@@ -8323,7 +8503,7 @@ class RRFPopup(QDialog):
                 "QPushButton{background:#1F4E79;color:white;border:none;"
                 "border-radius:4px;padding:5px;font-weight:bold;}"
                 "QPushButton:hover{background:#2563a8;}")
-            btn.clicked.connect(lambda _, v=val: self._pick(v))
+            btn.clicked.connect(partial(self._pick, val))
             presets.addWidget(btn)
         layout.addLayout(presets)
 
@@ -8335,7 +8515,7 @@ class RRFPopup(QDialog):
         self._spin.setValue(current_rrf)
         custom_row.addWidget(self._spin)
         ok_btn = QPushButton("OK")
-        ok_btn.clicked.connect(lambda: self._pick(self._spin.value()))
+        ok_btn.clicked.connect(partial(self._pick, self._spin.value()))
         custom_row.addWidget(ok_btn)
         layout.addLayout(custom_row)
 
@@ -8491,7 +8671,7 @@ class ConsequenceChainDialog(QDialog):
         self.db      = db
         self.cons_id = cons_id
         self.setWindowTitle("Konsekvenskedja")
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(CONFIG['W_PANEL_MIN_MD'])
 
         row = db.get_consequence(cons_id)
         self._chain = parse_chain_from_json(
@@ -8513,7 +8693,7 @@ class ConsequenceChainDialog(QDialog):
         self._checks: dict = {}
         row_idx, col_idx, last_group = 0, 0, None
 
-        for key, label, group in _CHAIN_ITEMS:
+        for key, label, group in CHAIN_ITEMS:
             if group and group != last_group:
                 if col_idx > 0:
                     row_idx += 1; col_idx = 0
@@ -8912,7 +9092,7 @@ class ConsequenceStepPickerDialog(QDialog):
                 "  background:#fee2e2; color:#dc2626; font-size:11px; }"
                 "QPushButton:hover { background:#fca5a5; }")
             pin_btn.clicked.connect(
-                lambda _checked, s=step-1: self._request_pick_for_col(s))
+                partial(self._request_pick_for_col, step-1))
             ref_lbl = QLabel("Ref-tag:")
             ref_lbl.setStyleSheet("color:#666; font-size:10px;")
             col_l.addWidget(ref_lbl)
@@ -9901,7 +10081,7 @@ class SgRRFCategoryPopup(QDialog):
         type_row = QHBoxLayout()
         type_row.addWidget(QLabel("Typ:"))
         self._type_combo = QComboBox()
-        self._type_combo.addItems(_SG_TYPES)
+        self._type_combo.addItems(SG_TYPES)
         idx = self._type_combo.findText(self._current_type)
         if idx >= 0:
             self._type_combo.setCurrentIndex(idx)
@@ -10326,7 +10506,7 @@ class ScenarioTablePanel(QWidget):
         self._drag_obj_w_start_w = 0
         # Parallel list to _row_meta: None or (cat_id, cat_name, cat_sev)
         self._row_cat_info: list = []
-        self.setMinimumHeight(160)
+        self.setMinimumHeight(CONFIG['H_TABLE_STD'])
         self.setMaximumHeight(380)
 
         outer = QVBoxLayout(self)
@@ -10649,7 +10829,7 @@ class ScenarioTablePanel(QWidget):
             node_name = node['name'] if node else '?'
             freq = self.db.cause_frequency_level(cause_d)
             _fi = freq_to_idx(freq)
-            freq_lbl = _FREQ_LABELS[_fi] if _fi < len(_FREQ_LABELS) else f'F{freq}'
+            freq_lbl = FREQ_LABELS[_fi] if _fi < len(FREQ_LABELS) else f'F{freq}'
             first_row_for_cause = self._table.rowCount()
             # Chain-linked causes display the referenced consequence, not own consequences
             is_chain_link = bool(cause_d.get('linked_consequence_id'))
@@ -11053,7 +11233,7 @@ class ScenarioTablePanel(QWidget):
         n_active = sum(1 for rf in rfs if rf.get('active'))
         lopa_w = _LopaWidget(self.db, cid,
                              fa_active, fa_rrf, ign_active, ign_rrf, n_active)
-        lopa_w._extra_btn.clicked.connect(lambda _, c=cid: self._edit_extra(c))
+        lopa_w._extra_btn.clicked.connect(partial(self._edit_extra, cid))
         lopa_w.changed.connect(self._update_lopa_risk)
         self._table.setCellWidget(r, self._C_LOPA, lopa_w)
 
@@ -11643,7 +11823,7 @@ class ScenarioTablePanel(QWidget):
         lay.addWidget(lbl)
         txt = QTextEdit(current)
         txt.setPlaceholderText("Ange notering, beslut eller referens…")
-        txt.setFixedHeight(100)
+        txt.setFixedHeight(CONFIG['H_EDIT_LG'])
         lay.addWidget(txt)
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
                                 QDialogButtonBox.StandardButton.Cancel)
@@ -12493,7 +12673,7 @@ class HAZOPWorksheet(QWidget):
 
             # F — editable combo
             f_combo = QComboBox()
-            f_combo.addItems(_FREQ_LABELS)
+            f_combo.addItems(FREQ_LABELS)
             f_combo.setCurrentIndex(freq_to_idx(freq))
             cause_id = row.get('cause_id')
             f_combo.currentIndexChanged.connect(
@@ -12504,7 +12684,7 @@ class HAZOPWorksheet(QWidget):
 
             # C — editable combo
             c_combo = QComboBox()
-            c_combo.addItems(_SEV_LABELS)
+            c_combo.addItems(SEV_LABELS)
             c_combo.setCurrentIndex(max(0, sev - 1))
             cons_id = row.get('consequence_id')
             c_combo.currentIndexChanged.connect(
@@ -12571,7 +12751,7 @@ class RiskScenarioWizard(QDialog):
         self.created_cons_id  = None
 
         self.setWindowTitle("Risk Scenario — Guide")
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(CONFIG['W_PANEL_MIN_XL'])
 
         outer = QVBoxLayout(self)
 
@@ -12581,7 +12761,7 @@ class RiskScenarioWizard(QDialog):
         self._step_lbl.setStyleSheet("color:#1F4E79; padding:4px;")
         outer.addWidget(self._step_lbl)
 
-        sep = QLabel(); sep.setFixedHeight(1); sep.setStyleSheet("background:#ccc;")
+        sep = QLabel(); sep.setFixedHeight(CONFIG['H_SEP_LINE']); sep.setStyleSheet("background:#ccc;")
         outer.addWidget(sep)
 
         self._stack = QStackedWidget()
@@ -12592,10 +12772,10 @@ class RiskScenarioWizard(QDialog):
         f1 = QFormLayout(p1); f1.setSpacing(10)
         self._cause_desc = QTextEdit()
         self._cause_desc.setPlaceholderText("Beskriv orsaken till avvikelsen / faran...")
-        self._cause_desc.setFixedHeight(100)
+        self._cause_desc.setFixedHeight(CONFIG['H_EDIT_LG'])
         f1.addRow("Beskrivning:", self._cause_desc)
         self._cause_like = QComboBox()
-        self._cause_like.addItems(_FREQ_LABELS)
+        self._cause_like.addItems(FREQ_LABELS)
         self._cause_like.setCurrentIndex(freq_to_idx(3))
         f1.addRow("Frekvens (F):", self._cause_like)
         self._stack.addWidget(p1)
@@ -12605,10 +12785,10 @@ class RiskScenarioWizard(QDialog):
         f2 = QFormLayout(p2); f2.setSpacing(10)
         self._cons_desc = QTextEdit()
         self._cons_desc.setPlaceholderText("Beskriv konsekvensen...")
-        self._cons_desc.setFixedHeight(100)
+        self._cons_desc.setFixedHeight(CONFIG['H_EDIT_LG'])
         f2.addRow("Beskrivning:", self._cons_desc)
         self._cons_sev = QComboBox()
-        self._cons_sev.addItems(_SEV_LABELS)
+        self._cons_sev.addItems(SEV_LABELS)
         self._cons_sev.currentIndexChanged.connect(self._update_preview)
         f2.addRow("Allvarlighet (S):", self._cons_sev)
         self._cons_cat = QComboBox()
@@ -12630,7 +12810,7 @@ class RiskScenarioWizard(QDialog):
         self._sg_desc.setPlaceholderText("t.ex. Säkerhetsventil PSV-101")
         f3.addRow("Beskrivning:", self._sg_desc)
         self._sg_rrf = QComboBox()
-        self._sg_rrf.addItems(_RRF_LABELS)
+        self._sg_rrf.addItems(RRF_LABELS)
         self._sg_rrf.currentIndexChanged.connect(self._update_preview)
         f3.addRow("RRF:", self._sg_rrf)
         self._sg_badge = RiskBadge()
@@ -12676,7 +12856,7 @@ class RiskScenarioWizard(QDialog):
         sev  = self._cons_sev.currentIndex() + 1
         freq = idx_to_freq(self._cause_like.currentIndex())
         self._preview_badge.update_risk(freq, sev)
-        rrf   = _RRF_VALUES[self._sg_rrf.currentIndex()]
+        rrf   = RRF_VALUES[self._sg_rrf.currentIndex()]
         eff_f = effective_frequency(freq, rrf)
         self._sg_badge.update_risk(eff_f, sev)
 
@@ -12695,7 +12875,7 @@ class RiskScenarioWizard(QDialog):
 
         sg_desc = self._sg_desc.text().strip()
         if sg_desc:
-            rrf  = _RRF_VALUES[self._sg_rrf.currentIndex()]
+            rrf  = RRF_VALUES[self._sg_rrf.currentIndex()]
             s_id = self.db.add_safeguard(k_id)
             self.db.update_safeguard(s_id, sg_desc, rrf)
 
@@ -13988,10 +14168,10 @@ class TagMemoryPanel(QWidget):
         self._pfx_edit  = QLineEdit()
         self._pfx_edit.setPlaceholderText("Prefix  t.ex. QMA")
         self._pfx_edit.setMaximumWidth(100)
-        self._pfx_edit.setFixedHeight(24)
+        self._pfx_edit.setFixedHeight(CONFIG['H_CTRL_STD'])
         add_row.addWidget(self._pfx_edit)
         self._type_combo = QComboBox()
-        self._type_combo.setFixedHeight(24)
+        self._type_combo.setFixedHeight(CONFIG['H_CTRL_STD'])
         from pid_viewer import KNOWN_PREFIXES as _KP
         obj_names = sorted({v[1] for v in _KP.values() if v[1]})
         # Also add standard object names
@@ -14005,7 +14185,7 @@ class TagMemoryPanel(QWidget):
         self._type_combo.addItems(obj_names)
         add_row.addWidget(self._type_combo, 1)
         btn_add = QPushButton("+ Lägg till")
-        btn_add.setFixedHeight(24)
+        btn_add.setFixedHeight(CONFIG['H_CTRL_STD'])
         btn_add.clicked.connect(self._add_manual_entry)
         add_row.addWidget(btn_add)
         lay.addLayout(add_row)
@@ -14331,17 +14511,17 @@ class SettingsPanel(QWidget):
         self._palette_container = pal_lay
 
         add_col_btn = QPushButton("+ Lägg till")
-        add_col_btn.setFixedHeight(28)
+        add_col_btn.setFixedHeight(CONFIG['H_ROW_STD'])
         add_col_btn.clicked.connect(self._palette_add)
         pal_lay.addWidget(add_col_btn)
 
         edit_col_btn = QPushButton("✎ Redigera")
-        edit_col_btn.setFixedHeight(28)
+        edit_col_btn.setFixedHeight(CONFIG['H_ROW_STD'])
         edit_col_btn.clicked.connect(self._palette_edit)
         pal_lay.addWidget(edit_col_btn)
 
         del_col_btn = QPushButton("✕ Ta bort")
-        del_col_btn.setFixedHeight(28)
+        del_col_btn.setFixedHeight(CONFIG['H_ROW_STD'])
         del_col_btn.clicked.connect(self._palette_delete)
         pal_lay.addWidget(del_col_btn)
 
@@ -14632,8 +14812,8 @@ class SettingsPanel(QWidget):
         disp_x_rev    = disp.get('x_reversed', False)
         disp_y_rev    = disp.get('y_reversed', False)
 
-        freq_lbls = list(disp.get('x_labels', old.get('x_labels', _FREQ_LABELS[:n_freq])))
-        cons_lbls = list(disp.get('y_labels', old.get('y_labels', _SEV_LABELS[:n_cons])))
+        freq_lbls = list(disp.get('x_labels', old.get('x_labels', FREQ_LABELS[:n_freq])))
+        cons_lbls = list(disp.get('y_labels', old.get('y_labels', SEV_LABELS[:n_cons])))
 
         # Apply any manual text edits from display widgets by mapping each
         # widget directly to its data index (no reversal ambiguity).
@@ -14816,7 +14996,7 @@ class SettingsPanel(QWidget):
                 btn = MatrixCellButton(cons_idx, freq_idx, cc, cl, cf,
                                        is_top_row=(r == 0),
                                        is_left_col=(c == 0))
-                btn.clicked.connect(lambda _, b=btn: self._edit_cell(b))
+                btn.clicked.connect(partial(self._edit_cell, btn))
                 self._matrix_grid.addWidget(btn, r + 1, c + 1)
                 row_btns.append(btn)
             self._cell_buttons.append((disp_r, row_btns))
@@ -14921,7 +15101,7 @@ class SettingsPanel(QWidget):
                 cat_lbl = QLabel(cat['name'])
                 cat_lbl.setStyleSheet(_cat_hdr_style)
                 cat_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                cat_lbl.setMinimumHeight(28)
+                cat_lbl.setMinimumHeight(CONFIG['H_ROW_STD'])
                 self._matrix_grid.addWidget(cat_lbl, cat_row, 0)
 
                 for c in range(n_dcols):      # n_dcols = n_cons
@@ -14929,7 +15109,7 @@ class SettingsPanel(QWidget):
                     sev_level = data_c + 1
                     text = defs.get(sev_level, {}).get(cat_id, '')
                     e = QLineEdit(text)
-                    e.setMinimumHeight(28)
+                    e.setMinimumHeight(CONFIG['H_ROW_STD'])
                     e.setStyleSheet(_def_style)
                     e.setPlaceholderText("—")
                     e.editingFinished.connect(
@@ -14949,7 +15129,7 @@ class SettingsPanel(QWidget):
                 cat_hdr = QLabel(cat['name'])
                 cat_hdr.setStyleSheet(_cat_hdr_style)
                 cat_hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                cat_hdr.setMinimumHeight(28)
+                cat_hdr.setMinimumHeight(CONFIG['H_ROW_STD'])
                 cat_hdr.setMinimumWidth(130)
                 self._matrix_grid.addWidget(cat_hdr, 0, cat_col)
 
@@ -15814,8 +15994,8 @@ class EquipmentPanel(QWidget):
         self._tbl.setItem(r, _EC_DESC, QTableWidgetItem(item.get('description', '')))
 
         del_btn = QPushButton("Ta bort")
-        del_btn.setFixedHeight(22)
-        del_btn.clicked.connect(lambda _, i=iid: self._delete(i))
+        del_btn.setFixedHeight(CONFIG['H_BTN_SMALL'])
+        del_btn.clicked.connect(partial(self._delete, iid))
         self._tbl.setCellWidget(r, _EC_DEL, del_btn)
         self._tbl.setRowHeight(r, 26)
 
@@ -16377,7 +16557,7 @@ class GlobalSearchDialog(QDialog):
         self.setWindowFlags(
             Qt.WindowType.Dialog | Qt.WindowType.WindowStaysOnTopHint)
         self.setMinimumWidth(520)
-        self.setMinimumHeight(360)
+        self.setMinimumHeight(CONFIG['H_PANEL_MAX_ALT'])
         lay = QVBoxLayout(self)
         lay.setSpacing(6); lay.setContentsMargins(8, 8, 8, 8)
 
@@ -16542,7 +16722,7 @@ class MainWindow(QMainWindow):
         for btn in (self.btn_pid, self.btn_sheet, self.btn_equip,
                     self.btn_admin, self.btn_settings):
             btn.setCheckable(True)
-            btn.setFixedHeight(28)
+            btn.setFixedHeight(CONFIG['H_ROW_STD'])
             btn.setStyleSheet(
                 "QPushButton{color:#fff;background:#2d6ca3;border:none;"
                 "border-radius:4px;padding:0 12px;font-weight:bold;}"
