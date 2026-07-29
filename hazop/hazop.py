@@ -38,6 +38,218 @@ from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF, QRect, QTimer, 
 from PyQt6.QtGui import QFont, QFontMetrics, QColor, QAction, QBrush, QPen, QPainter, QDrag, QPainterPath, QPixmap, QIcon, QPolygonF, QShortcut, QKeySequence, QCursor
 
 # ══════════════════════════════════════════════════════════════════════════════
+# WINDOWS 11 THEME — LJUST TEMA
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _get_windows11_stylesheet():
+    """Return a complete Windows 11 light theme stylesheet."""
+    return """
+    /* Global font and defaults */
+    * {
+        font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+        font-size: 9pt;
+    }
+
+    QMainWindow, QDialog, QWidget {
+        background-color: #FFFFFF;
+        color: #1F1F1F;
+    }
+
+    /* Buttons */
+    QPushButton {
+        background-color: #E8E8E8;
+        color: #1F1F1F;
+        border: 1px solid #D0D0D0;
+        border-radius: 6px;
+        padding: 4px 10px;
+        font-weight: 500;
+    }
+    QPushButton:hover {
+        background-color: #E0E0E0;
+        border-color: #B0B0B0;
+    }
+    QPushButton:pressed {
+        background-color: #D0D0D0;
+        border-color: #A0A0A0;
+    }
+    QPushButton:checked {
+        background-color: #0078D4;
+        color: #FFFFFF;
+        border-color: #0078D4;
+    }
+    QPushButton:focus {
+        outline: 2px solid #0078D4;
+        outline-offset: 2px;
+    }
+
+    /* Line edits and text inputs */
+    QLineEdit, QTextEdit, QPlainTextEdit {
+        background-color: #FFFFFF;
+        color: #1F1F1F;
+        border: 1px solid #CACACA;
+        border-radius: 4px;
+        padding: 4px 6px;
+        selection-background-color: #0078D4;
+        selection-color: #FFFFFF;
+    }
+    QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {
+        border: 2px solid #0078D4;
+        padding: 5px 7px;
+    }
+
+    /* Combo box */
+    QComboBox {
+        background-color: #FFFFFF;
+        color: #1F1F1F;
+        border: 1px solid #CACACA;
+        border-radius: 4px;
+        padding: 4px 8px;
+    }
+    QComboBox:focus {
+        border: 2px solid #0078D4;
+    }
+    QComboBox::drop-down {
+        border: none;
+        width: 20px;
+    }
+    QComboBox::down-arrow {
+        image: none;
+    }
+
+    /* Tables */
+    QTableWidget, QTableView {
+        background-color: #FFFFFF;
+        alternate-background-color: #F5F5F5;
+        gridline-color: #E8E8E8;
+        border: 1px solid #CACACA;
+        border-radius: 4px;
+    }
+    QTableWidget::item, QTableView::item {
+        padding: 4px;
+        border: none;
+    }
+    QTableWidget::item:selected, QTableView::item:selected {
+        background-color: #0078D4;
+        color: #FFFFFF;
+    }
+    QHeaderView::section {
+        background-color: #F3F3F3;
+        color: #1F1F1F;
+        padding: 4px;
+        border: none;
+        border-bottom: 1px solid #E8E8E8;
+    }
+
+    /* Tree widget */
+    QTreeWidget, QTreeView {
+        background-color: #FFFFFF;
+        alternate-background-color: #F5F5F5;
+        border: 1px solid #CACACA;
+        border-radius: 4px;
+    }
+    QTreeWidget::item:hover, QTreeView::item:hover {
+        background-color: #F0F0F0;
+    }
+    QTreeWidget::item:selected, QTreeView::item:selected {
+        background-color: #0078D4;
+        color: #FFFFFF;
+    }
+
+    /* Frames and groups */
+    QFrame {
+        background-color: #FFFFFF;
+        border: none;
+    }
+    QGroupBox {
+        color: #1F1F1F;
+        border: 1px solid #E8E8E8;
+        border-radius: 6px;
+        margin-top: 8px;
+        padding-top: 8px;
+    }
+    QGroupBox::title {
+        subcontrol-origin: margin;
+        left: 10px;
+        padding: 0 3px;
+    }
+
+    /* Scroll bars */
+    QScrollBar:vertical {
+        background-color: #F3F3F3;
+        border: none;
+        width: 12px;
+    }
+    QScrollBar::handle:vertical {
+        background-color: #CACACA;
+        border-radius: 6px;
+        margin: 2px;
+        min-height: 20px;
+    }
+    QScrollBar::handle:vertical:hover {
+        background-color: #B0B0B0;
+    }
+    QScrollBar:horizontal {
+        background-color: #F3F3F3;
+        border: none;
+        height: 12px;
+    }
+    QScrollBar::handle:horizontal {
+        background-color: #CACACA;
+        border-radius: 6px;
+        margin: 2px;
+        min-width: 20px;
+    }
+    QScrollBar::handle:horizontal:hover {
+        background-color: #B0B0B0;
+    }
+    QScrollBar::add-line, QScrollBar::sub-line {
+        border: none;
+        background: none;
+    }
+
+    /* Dialogs */
+    QDialog {
+        background-color: #FFFFFF;
+    }
+
+    /* Splitter */
+    QSplitter::handle {
+        background-color: #E8E8E8;
+    }
+    QSplitter::handle:hover {
+        background-color: #D0D0D0;
+    }
+
+    /* Menu bar and menus */
+    QMenuBar {
+        background-color: #FFFFFF;
+        color: #1F1F1F;
+        border-bottom: 1px solid #E8E8E8;
+    }
+    QMenuBar::item:selected {
+        background-color: #E8E8E8;
+    }
+    QMenu {
+        background-color: #FFFFFF;
+        color: #1F1F1F;
+        border: 1px solid #CACACA;
+        border-radius: 4px;
+    }
+    QMenu::item:selected {
+        background-color: #E8E8E8;
+    }
+
+    /* Tool tips */
+    QToolTip {
+        background-color: #1F1F1F;
+        color: #FFFFFF;
+        border: none;
+        border-radius: 4px;
+        padding: 4px 8px;
+    }
+    """
+
+# ══════════════════════════════════════════════════════════════════════════════
 # DATABASE
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -218,7 +430,42 @@ DEFAULT_MATRIX = {
     ],
 }
 
-_current_matrix = None
+# ── Risk Matrix Caching with Automatic Invalidation ──────────────────────────
+# The risk matrix is read from the database and cached for performance. When a
+# matrix is updated via set_risk_matrix(), the cache must be invalidated to ensure
+# all subsequent get_matrix() calls reflect the new state. Using a dedicated
+# manager class ensures invalidation is automatic when the setter is called.
+
+class _RiskMatrixCache:
+    """Manager for risk matrix caching with automatic invalidation support."""
+    def __init__(self):
+        self._current_matrix = None
+        self._db = None
+
+    def load(self, db):
+        """Load and cache the risk matrix from database."""
+        self._db = db
+        cfg = db.get_risk_matrix()
+        if cfg:
+            self._current_matrix = _normalise_matrix(cfg)
+        else:
+            self._current_matrix = DEFAULT_MATRIX
+
+    def invalidate(self):
+        """Invalidate the cache; next get() will reload from DB."""
+        self._current_matrix = None
+
+    def get(self):
+        """Get the current cached matrix (or DEFAULT if not loaded)."""
+        return self._current_matrix or DEFAULT_MATRIX
+
+    def reload_from_db(self):
+        """Force reload from database (used after set_risk_matrix)."""
+        if self._db:
+            self.load(self._db)
+
+
+_risk_matrix_cache = _RiskMatrixCache()
 
 
 def _normalise_matrix(cfg: dict) -> dict:
@@ -261,16 +508,13 @@ def _normalise_matrix(cfg: dict) -> dict:
 
 
 def load_matrix(db):
-    global _current_matrix
-    cfg = db.get_risk_matrix()
-    if cfg:
-        _current_matrix = _normalise_matrix(cfg)
-    else:
-        _current_matrix = DEFAULT_MATRIX
+    """Load risk matrix from database into the cache."""
+    _risk_matrix_cache.load(db)
 
 
 def get_matrix():
-    return _current_matrix or DEFAULT_MATRIX
+    """Get the currently cached risk matrix."""
+    return _risk_matrix_cache.get()
 
 
 def risk_info(frequency, consequence):
@@ -336,16 +580,17 @@ def cons_axis_label(c_val: int) -> str:
     return full.split()[0] if full.strip() else f'C={c_val}'
 
 
-def effective_frequency(base_freq, rrf):
-    """Reduce frequency by floor(log10(rrf)) steps; minimum F=-1."""
+def effective_f_level(f_level, rrf):
+    """Reduce F-level by floor(log10(rrf)) steps; minimum F=-1."""
     if rrf <= 1:
-        return base_freq
+        return f_level
     reduction = int(math.log10(max(1, rrf)))
-    return max(-1, base_freq - reduction)
+    return max(-1, f_level - reduction)
 
 
-# Keep old name as alias so any remaining callers don't crash immediately
-effective_likelihood = effective_frequency
+# Keep old names as aliases for backward compatibility
+effective_frequency = effective_f_level
+effective_likelihood = effective_f_level
 
 
 def prob_to_reduction(prob_pct) -> int:
@@ -365,11 +610,11 @@ def prob_to_reduction(prob_pct) -> int:
     return int(math.floor(-math.log10(p / 100.0)))
 
 
-def total_freq_reduction(base_freq: int, safeguard_rrf: int,
+def total_freq_reduction(base_f_level: int, safeguard_rrf: int,
                          fa_active: bool, fa_prob,
                          ignition_active: bool, ignition_prob,
                          extra_rfactors) -> tuple:
-    """Return (final_freq, total_equivalent_rrf, total_steps).
+    """Return (final_f_level, total_equivalent_rrf, total_steps).
 
     fa_prob / ignition_prob: probability in % (10.0 = 10% = −1 step).
     extra_rfactors: iterable of dicts with 'rrf' (also treated as %) and 'active'.
@@ -385,7 +630,7 @@ def total_freq_reduction(base_freq: int, safeguard_rrf: int,
     )
     total_steps = sg_steps + fa_steps + ign_steps + extra_steps
     total_rrf   = 10 ** total_steps if total_steps > 0 else 1
-    return max(-1, base_freq - total_steps), total_rrf, total_steps
+    return max(-1, base_f_level - total_steps), total_rrf, total_steps
 
 
 # ── Consequence chain definitions ────────────────────────────────────────────
@@ -499,6 +744,10 @@ _SG_TYPES      = ['BPCS', 'SIS', 'Mekanisk', 'Administrativ', 'Övrigt']
 _MARKUP_COLORS = ['#E53935', '#F57C00', '#F9A825', '#388E3C',
                   '#00796B', '#1565C0', '#7B1FA2', '#FF4081']
 _RISK_ICON   = {'Låg': '🟢', 'Medium': '🟡', 'Hög': '🟠', 'Kritisk': '🔴'}
+
+def _get_node_color(node_id):
+    """Get a unique color for a node based on its ID."""
+    return _MARKUP_COLORS[node_id % len(_MARKUP_COLORS)]
 
 # Component-specific standard causes seeded on first run.
 # comp_type must match keys in COMPONENT_TYPES (pid_viewer.py).
@@ -882,25 +1131,29 @@ def _migrate_causes_to_object_id(conn):
     conn.commit()
 
 
-def _sync_cause_likelihoods_from_frequency(conn):
-    """Set causes.likelihood from standard_cause/base_freq when frequency data exists."""
+def _sync_f_levels_from_base_frequency(conn):
+    """Set causes.likelihood (F-level) from standard_cause/base_frequency when frequency data exists."""
     updated = 0
     rows = conn.execute("""
-        SELECT c.id, c.base_freq, c.likelihood, sc.frequency AS sc_freq
+        SELECT c.id, c.base_frequency, c.likelihood, sc.frequency AS sc_freq
         FROM causes c
         LEFT JOIN standard_causes sc ON sc.id = c.standard_cause_id
     """).fetchall()
     for row in rows:
-        bf = row['sc_freq'] if row['sc_freq'] is not None else row['base_freq']
-        if bf is None or bf <= 0:
+        base_freq_per_year = row['sc_freq'] if row['sc_freq'] is not None else row['base_frequency']
+        if base_freq_per_year is None or base_freq_per_year <= 0:
             continue
-        f_level = freq_to_f_level(bf)
-        if row['likelihood'] != f_level or (row['base_freq'] is None and row['sc_freq'] is not None):
+        f_level = freq_to_f_level(base_freq_per_year)
+        if row['likelihood'] != f_level or (row['base_frequency'] is None and row['sc_freq'] is not None):
             conn.execute(
-                "UPDATE causes SET likelihood=?, base_freq=COALESCE(base_freq, ?) WHERE id=?",
-                (f_level, bf, row['id']))
+                "UPDATE causes SET likelihood=?, base_frequency=COALESCE(base_frequency, ?) WHERE id=?",
+                (f_level, base_freq_per_year, row['id']))
             updated += 1
     return updated
+
+
+# Keep old name as alias for backward compatibility
+_sync_cause_likelihoods_from_frequency = _sync_f_levels_from_base_frequency
 
 
 # ── Default cause descriptions per component-type cause ───────────────────────
@@ -1002,6 +1255,21 @@ class Database:
         self._migrate()
         self._write_backup(startup=True)   # unconditional startup snapshot
 
+    def __del__(self):
+        """Clean up database connection on object destruction.
+
+        Ensures the SQLite connection is properly closed even if the Database
+        object is replaced or goes out of scope without explicit cleanup.
+        """
+        try:
+            if hasattr(self, 'conn') and self.conn:
+                # Flush WAL checkpoint before closing
+                self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                self.conn.close()
+        except Exception:
+            # Silently ignore errors during cleanup
+            pass
+
     def _migrate(self):
         # Kolumnmigreringarna körs TVÅ gånger: före executescript (befintliga
         # databaser) och efter (färska databaser där CREATE TABLE just skapat
@@ -1023,7 +1291,7 @@ class Database:
             "ALTER TABLE nodes ADD COLUMN updated_by TEXT DEFAULT ''",
             "ALTER TABLE causes ADD COLUMN likelihood INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE causes ADD COLUMN source_id INTEGER DEFAULT NULL",
-            "ALTER TABLE causes ADD COLUMN base_freq REAL DEFAULT NULL",
+            "ALTER TABLE causes ADD COLUMN base_frequency REAL DEFAULT NULL",
             "ALTER TABLE causes ADD COLUMN deviation_id INTEGER REFERENCES deviations(id)",
             "ALTER TABLE safeguards ADD COLUMN rrf INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE safeguards ADD COLUMN source_id INTEGER DEFAULT NULL",
@@ -1586,7 +1854,10 @@ class Database:
         return None
 
     def set_risk_matrix(self, cfg):
+        """Store risk matrix and invalidate the global cache."""
         self.set_config('risk_matrix', json.dumps(cfg))
+        # Invalidate the global cache so next get_matrix() reloads from DB
+        _risk_matrix_cache.invalidate()
 
     # ── Tag database ──────────────────────────────────────────────────────────
     def tag_database_entries(self, standard=None):
@@ -2434,8 +2705,8 @@ class Database:
     def get_safeguard(self, id_):
         return self.conn.execute("SELECT * FROM safeguards WHERE id=?", (id_,)).fetchone()
 
-    def cause_base_frequency(self, cause):
-        """Return frequency in events/year from standard cause or base_freq, or None."""
+    def cause_base_frequency_per_year(self, cause):
+        """Return frequency in events/year from standard cause or base_frequency, or None."""
         if cause is None:
             return None
         d = dict(cause)
@@ -2444,18 +2715,22 @@ class Database:
             sc = self.get_standard_cause(std_id)
             if sc and sc.get('frequency') is not None:
                 return sc['frequency']
-        bf = d.get('base_freq')
+        bf = d.get('base_frequency')
         return bf if bf is not None else None
 
-    def cause_frequency_level(self, cause, default=3):
-        """Return F-level (-1..5): standard_cause/base_freq first, else manual likelihood."""
-        bf = self.cause_base_frequency(cause)
-        if bf is not None:
-            return freq_to_f_level(bf)
+    def cause_f_level(self, cause, default=3):
+        """Return F-level (-1..5): standard_cause/base_frequency first, else manual likelihood."""
+        base_freq_per_year = self.cause_base_frequency_per_year(cause)
+        if base_freq_per_year is not None:
+            return freq_to_f_level(base_freq_per_year)
         if cause is None:
             return default
         like = dict(cause).get('likelihood')
         return like if like is not None else default
+
+    # Keep old names as aliases for backward compatibility
+    cause_base_frequency = cause_base_frequency_per_year
+    cause_frequency_level = cause_f_level
 
     # ── Add ───────────────────────────────────────────────────────────────────
     def add_node(self):
@@ -3067,16 +3342,20 @@ class Database:
 
     _SENTINEL = object()
 
-    def update_cause(self, id_, description=None, likelihood=None, base_freq=_SENTINEL,
+    def update_cause(self, id_, description=None, likelihood=None, base_frequency=_SENTINEL,
                      standard_cause_id=_SENTINEL, comp_type=_SENTINEL, comp_tag=_SENTINEL,
-                     linked_consequence_id=_SENTINEL):
+                     linked_consequence_id=_SENTINEL, base_freq=_SENTINEL):
+        # Support old parameter name for backward compatibility
+        if base_freq is not Database._SENTINEL and base_frequency is Database._SENTINEL:
+            base_frequency = base_freq
+
         sets, vals = [], []
         if description is not None:
             sets.append("description=?"); vals.append(description)
         if likelihood is not None:
             sets.append("likelihood=?"); vals.append(likelihood)
-        if base_freq is not Database._SENTINEL:
-            sets.append("base_freq=?"); vals.append(base_freq)
+        if base_frequency is not Database._SENTINEL:
+            sets.append("base_frequency=?"); vals.append(base_frequency)
         if standard_cause_id is not Database._SENTINEL:
             sets.append("standard_cause_id=?"); vals.append(standard_cause_id)
         if comp_type is not Database._SENTINEL:
@@ -3108,10 +3387,10 @@ class Database:
                 pass
 
     def update_cause_freqs_from_standard(self):
-        """Overwrite base_freq on all causes linked to a standard cause that has a frequency."""
+        """Overwrite base_frequency on all causes linked to a standard cause that has a frequency."""
         self.conn.execute("""
             UPDATE causes
-            SET base_freq = (
+            SET base_frequency = (
                 SELECT frequency FROM standard_causes WHERE id = causes.standard_cause_id
             )
             WHERE standard_cause_id IS NOT NULL
@@ -3120,7 +3399,7 @@ class Database:
                 WHERE id = causes.standard_cause_id AND frequency IS NOT NULL
               )
         """)
-        n = _sync_cause_likelihoods_from_frequency(self.conn)
+        n = _sync_f_levels_from_base_frequency(self.conn)
         self.commit()
         return n
 
@@ -3355,10 +3634,10 @@ class RiskBadge(QLabel):
         self.setFont(f)
         self.set_empty()
 
-    def update_risk(self, frequency, consequence, base_freq=None):
+    def update_risk(self, frequency, consequence, base_frequency_per_year=None):
         label, bg, fg = risk_info(frequency, consequence)
-        if base_freq is not None:
-            freq_str = f"{base_freq:g}/år"
+        if base_frequency_per_year is not None:
+            freq_str = f"{base_frequency_per_year:g}/år"
             self.setText(f"{label}  F={frequency} C={consequence}\n🗄️ {freq_str}")
         else:
             self.setText(f"{label}  F={frequency} C={consequence}")
@@ -3865,23 +4144,23 @@ class CausePanel(QWidget):
 
         # Field 1: frequency — prefer live standard_causes lookup if linked
         std_cause_id = row['standard_cause_id'] if 'standard_cause_id' in row.keys() else None
-        base_freq = None
+        base_freq_per_year = None
         if std_cause_id:
             sc = self.db.get_standard_cause(std_cause_id)
             if sc and sc.get('frequency') is not None:
-                base_freq = sc['frequency']
-        if base_freq is None:
-            base_freq = row['base_freq'] if 'base_freq' in row.keys() else None
-        if base_freq is not None:
-            f_auto = freq_to_f_level(base_freq)
+                base_freq_per_year = sc['frequency']
+        if base_freq_per_year is None:
+            base_freq_per_year = row['base_frequency'] if 'base_frequency' in row.keys() else None
+        if base_freq_per_year is not None:
+            f_auto = freq_to_f_level(base_freq_per_year)
             f_lbl  = _FREQ_LABELS[freq_to_idx(f_auto)] if freq_to_idx(f_auto) < len(_FREQ_LABELS) else f'F={f_auto}'
             suffix = "  🗄️" if std_cause_id else ""
-            self._db_freq_lbl.setText(f"F={f_auto} — {base_freq:.4g}/år  →  {f_lbl}{suffix}")
+            self._db_freq_lbl.setText(f"F={f_auto} — {base_freq_per_year:.4g}/år  →  {f_lbl}{suffix}")
         else:
             self._db_freq_lbl.setText("—")
 
         # Field 2: manual F-level (likelihood) — show resolved F when frequency data exists
-        like = self.db.cause_frequency_level(row)
+        like = self.db.cause_f_level(row)
         if like is not None:
             self.freq_combo.setCurrentIndex(freq_to_idx(like) + 1)  # +1 for the "—" item
         else:
@@ -4108,18 +4387,18 @@ class ConsequencePanel(QWidget):
         self._rebuild_preview()
 
         cause_id = dict(row)['cause_id'] if row else None
-        base_freq = None
+        base_freq_per_year = None
         std_linked = False
         freq = 3
         if cause_id:
             cause = self.db.get_cause(cause_id)
             if cause:
-                freq = self.db.cause_frequency_level(cause)
-                base_freq = self.db.cause_base_frequency(cause)
-                std_linked = bool(dict(cause).get('standard_cause_id') and base_freq is not None)
+                freq = self.db.cause_f_level(cause)
+                base_freq_per_year = self.db.cause_base_frequency_per_year(cause)
+                std_linked = bool(dict(cause).get('standard_cause_id') and base_freq_per_year is not None)
         sev = (row['severity'] or 1) if row else 1
-        if base_freq is not None:
-            self.risk_badge.update_risk(freq, sev, base_freq=base_freq if std_linked else None)
+        if base_freq_per_year is not None:
+            self.risk_badge.update_risk(freq, sev, base_frequency_per_year=base_freq_per_year if std_linked else None)
         else:
             self.risk_badge.set_empty()
         self.sg_editor.load(consequence_id, freq)
@@ -4651,7 +4930,7 @@ class PropertiesRibbon(QWidget):
         for spec in buttons:
             if spec is None:
                 sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
-                sep.setStyleSheet("background:#C8CDD5;max-height:1px;border:none;")
+                sep.setStyleSheet("background:#E8E8E8;max-height:1px;border:none;")
                 sep.setFixedHeight(1)
                 self._outer.addWidget(sep)
                 self._btns.append(sep)
@@ -4904,7 +5183,7 @@ class PropertiesRibbon(QWidget):
         def _on_committed(ct, tag, desc, freq):
             self.db.update_cause(self._id, comp_type=ct, comp_tag=tag)
             if desc is not None: self.db.update_cause(self._id, description=desc)
-            if freq is not None: self.db.update_cause(self._id, base_freq=freq)
+            if freq is not None: self.db.update_cause(self._id, base_frequency=freq)
             self.item_changed.emit()
         popup.committed.connect(_on_committed)
         popup.exec()
@@ -4912,7 +5191,7 @@ class PropertiesRibbon(QWidget):
     def _edit_cause_freq(self, btn):
         if not self._id: return
         c = dict(self.db.get_cause(self._id) or {})
-        current_freq = c.get('base_freq')
+        current_freq = c.get('base_frequency')
         dlg = QDialog(self)
         dlg.setWindowTitle("Frekvens")
         dlg.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
@@ -4942,7 +5221,7 @@ class PropertiesRibbon(QWidget):
                 freq = float(freq_e.text().strip()) if freq_e.text().strip() else None
             except ValueError:
                 freq = None
-            self.db.update_cause(self._id, base_freq=freq)
+            self.db.update_cause(self._id, base_frequency=freq)
             self.item_changed.emit()
 
     def _edit_cause_comment(self, btn):
@@ -5029,6 +5308,7 @@ class NodeMarkupPanel(QWidget):
     all_vis_toggled = pyqtSignal(bool)
     style_changed   = pyqtSignal(str, float, int)   # color, opacity, line_width
     snap_changed    = pyqtSignal(bool)
+    navigate_node_requested = pyqtSignal(int)  # node_id
 
     _TOOLS = [
         ('select',   'select',   'Välj/flytta'),
@@ -5054,7 +5334,7 @@ class NodeMarkupPanel(QWidget):
         SZ = 48
         ISZ = 28   # icon size within button
         self.setFixedWidth(58)
-        self.setStyleSheet("background:#F0F2F5;")
+        self.setStyleSheet("background:#FFFFFF; border-right: 1px solid #E8E8E8;")
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(5, 6, 5, 6)
@@ -5065,6 +5345,31 @@ class NodeMarkupPanel(QWidget):
             "background:#FFFFFF;padding:0px;}"
             "QPushButton:checked{background:#1565C0;border-color:#1565C0;}"
             "QPushButton:hover:!checked{background:#E8EEF8;border-color:#A0AABB;}")
+
+        # ── Navigation row ────────────────────────────────────────────────────
+        nav_lay = QHBoxLayout()
+        nav_lay.setContentsMargins(0, 0, 0, 0)
+        nav_lay.setSpacing(2)
+
+        self._prev_btn = QPushButton()
+        self._prev_btn.setFixedSize(24, SZ)
+        self._prev_btn.setToolTip("Föregående nod (⬆)")
+        self._prev_btn.setIcon(_mk_icon('arrow_up', 16))
+        self._prev_btn.setIconSize(QSize(16, 16))
+        self._prev_btn.setStyleSheet(_btn_ss)
+        self._prev_btn.clicked.connect(self._navigate_prev)
+        nav_lay.addWidget(self._prev_btn)
+
+        self._next_btn = QPushButton()
+        self._next_btn.setFixedSize(24, SZ)
+        self._next_btn.setToolTip("Nästa nod (⬇)")
+        self._next_btn.setIcon(_mk_icon('arrow_down', 16))
+        self._next_btn.setIconSize(QSize(16, 16))
+        self._next_btn.setStyleSheet(_btn_ss)
+        self._next_btn.clicked.connect(self._navigate_next)
+        nav_lay.addWidget(self._next_btn)
+
+        outer.addLayout(nav_lay)
 
         # ── Close button ──────────────────────────────────────────────────────
         close_btn = QPushButton()
@@ -5081,7 +5386,7 @@ class NodeMarkupPanel(QWidget):
         outer.addWidget(close_btn)
 
         sep1 = QFrame(); sep1.setFrameShape(QFrame.Shape.HLine)
-        sep1.setStyleSheet("background:#C8CDD5;max-height:1px;border:none;")
+        sep1.setStyleSheet("background:#E8E8E8;max-height:1px;border:none;")
         outer.addWidget(sep1)
 
         # ── Tool buttons — each click selects tool AND opens per-tool popup ───
@@ -5099,7 +5404,7 @@ class NodeMarkupPanel(QWidget):
             self._tool_btns[tool] = btn
 
         sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
-        sep2.setStyleSheet("background:#C8CDD5;max-height:1px;border:none;")
+        sep2.setStyleSheet("background:#E8E8E8;max-height:1px;border:none;")
         outer.addWidget(sep2)
 
         # ── Color strip ───────────────────────────────────────────────────────
@@ -5110,7 +5415,7 @@ class NodeMarkupPanel(QWidget):
         outer.addWidget(self._color_strip)
 
         sep3 = QFrame(); sep3.setFrameShape(QFrame.Shape.HLine)
-        sep3.setStyleSheet("background:#C8CDD5;max-height:1px;border:none;")
+        sep3.setStyleSheet("background:#E8E8E8;max-height:1px;border:none;")
         outer.addWidget(sep3)
 
         # ── Visibility toggle ─────────────────────────────────────────────────
@@ -5196,6 +5501,32 @@ class NodeMarkupPanel(QWidget):
     def _apply_snap(self, enabled):
         self._snap = enabled
         self.snap_changed.emit(enabled)
+
+    def _navigate_prev(self):
+        """Jump to previous node."""
+        if self.node_id is None:
+            return
+        all_nodes = [r[0] for r in self.db.nodes]
+        try:
+            current_idx = all_nodes.index(self.node_id)
+            if current_idx > 0:
+                next_node_id = all_nodes[current_idx - 1]
+                self.navigate_node_requested.emit(next_node_id)
+        except (ValueError, IndexError):
+            pass
+
+    def _navigate_next(self):
+        """Jump to next node."""
+        if self.node_id is None:
+            return
+        all_nodes = [r[0] for r in self.db.nodes]
+        try:
+            current_idx = all_nodes.index(self.node_id)
+            if current_idx < len(all_nodes) - 1:
+                next_node_id = all_nodes[current_idx + 1]
+                self.navigate_node_requested.emit(next_node_id)
+        except (ValueError, IndexError):
+            pass
 
 
 class _MarkupStyleDialog(QDialog):
@@ -5583,7 +5914,7 @@ class RedMarkupPanel(QWidget):
         SZ = 48
         ISZ = 28
         self.setFixedWidth(58)
-        self.setStyleSheet("background:#FFF5F5;")
+        self.setStyleSheet("background:#FFFFFF; border-right: 1px solid #E8E8E8;")
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(5, 6, 5, 6)
@@ -5610,7 +5941,7 @@ class RedMarkupPanel(QWidget):
         outer.addWidget(close_btn)
 
         sep1 = QFrame(); sep1.setFrameShape(QFrame.Shape.HLine)
-        sep1.setStyleSheet("background:#FFCDD2;max-height:1px;border:none;")
+        sep1.setStyleSheet("background:#E8E8E8;max-height:1px;border:none;")
         outer.addWidget(sep1)
 
         self._tool_btns = {}
@@ -5640,7 +5971,7 @@ class RedMarkupPanel(QWidget):
             self._tool_btns[tool] = btn
 
         sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
-        sep2.setStyleSheet("background:#FFCDD2;max-height:1px;border:none;")
+        sep2.setStyleSheet("background:#E8E8E8;max-height:1px;border:none;")
         outer.addWidget(sep2)
 
         self._color_strip = QLabel()
@@ -5650,7 +5981,7 @@ class RedMarkupPanel(QWidget):
         outer.addWidget(self._color_strip)
 
         sep3 = QFrame(); sep3.setFrameShape(QFrame.Shape.HLine)
-        sep3.setStyleSheet("background:#FFCDD2;max-height:1px;border:none;")
+        sep3.setStyleSheet("background:#E8E8E8;max-height:1px;border:none;")
         outer.addWidget(sep3)
 
         self._all_vis_btn = QPushButton()
@@ -9010,7 +9341,7 @@ class ReductionFactorsDialog(QDialog):
 
     def _refresh(self):
         try: self._tbl.cellChanged.disconnect()
-        except Exception: pass
+        except RuntimeError as e: logging.warning(f"Table cellChanged signal not connected: {e}")
         self._tbl.setRowCount(0)
         for rf in self.db.reduction_factors(self.consequence_id):
             r = self._tbl.rowCount(); self._tbl.insertRow(r)
@@ -9289,7 +9620,7 @@ class _PidDelegate(_ScenarioDelegate):
                 freq_val   = index.data(Qt.ItemDataRole.UserRole + 3)
                 is_chain   = bool(index.data(Qt.ItemDataRole.UserRole + 4))
                 has_tag    = bool(comp_tag or comp_type)
-                base_freq  = index.data(Qt.ItemDataRole.UserRole + 5)
+                base_freq_per_year  = index.data(Qt.ItemDataRole.UserRole + 5)
                 status_icon = index.data(Qt.ItemDataRole.UserRole + 6) or ''
 
                 meta_      = self._panel._row_meta
@@ -9368,8 +9699,8 @@ class _PidDelegate(_ScenarioDelegate):
                 # ── Frequency label (after tag, same strip) ────────────────────
                 freq_x = tag_x + tag_w
                 if freq_val is not None:
-                    if base_freq is not None:
-                        bfv = float(base_freq)
+                    if base_freq_per_year is not None:
+                        bfv = float(base_freq_per_year)
                         if bfv >= 0.1:    freq_str = f"{bfv:.2g}/år"
                         elif bfv >= 0.001: freq_str = f"{bfv:.3g}/år"
                         else:              freq_str = f"{bfv:.1e}".replace('e-0','e-') + "/år"
@@ -10093,6 +10424,9 @@ class ScenarioTablePanel(QWidget):
         self._table.verticalScrollBar().valueChanged.connect(
             self._update_ctx_bar)
 
+        # ── Deferred rebuild system (signal-based, not timer-based) ──────────────
+        self._rebuild_pending = False
+
     # ── Load ──────────────────────────────────────────────────────────────────
 
     def load_node(self, node_id):
@@ -10180,26 +10514,73 @@ class ScenarioTablePanel(QWidget):
 
     # ── Build ─────────────────────────────────────────────────────────────────
 
+    def _schedule_rebuild(self):
+        """
+        Schedule a deferred rebuild on the next event loop iteration.
+        Prevents cascading timer-based deferred calls and ensures proper event ordering.
+        Safe to call multiple times — queued as a single rebuild.
+        """
+        if self._rebuild_pending:
+            return  # Already scheduled
+        self._rebuild_pending = True
+        QTimer.singleShot(0, self._on_rebuild_scheduled)
+
+    def _on_rebuild_scheduled(self):
+        """Called when rebuild is scheduled. Executes the deferred rebuild."""
+        self._rebuild_pending = False
+        self._rebuild()
+
     def _rebuild(self):
+        """
+        Orchestrate full table rebuild: clear, build rows, apply spans, resize, restore state.
+        Re-entrancy safe via _rebuilding flag to prevent cascading rebuilds.
+        """
         if getattr(self, '_rebuilding', False):
             return
         self._rebuilding = True
-        # Save scroll position and suppress visual updates to prevent jumping
-        _vscroll = self._table.verticalScrollBar().value()
-        _hscroll = self._table.horizontalScrollBar().value()
-        self._table.setUpdatesEnabled(False)
         try:
-            self._table.cellChanged.disconnect()
-        except Exception:
-            pass
-        self._table.blockSignals(True)
-        self._table.clearSpans()
-        logging.info('_rebuild: D — setRowCount(0)')
-        self._table.setRowCount(0)
-        logging.info('_rebuild: E — reset meta')
-        self._row_meta = []
-        self._row_cat_info = []
+            # Save scroll position and suppress visual updates to prevent jumping
+            _vscroll = self._table.verticalScrollBar().value()
+            _hscroll = self._table.horizontalScrollBar().value()
+            self._table.setUpdatesEnabled(False)
+            try:
+                self._table.cellChanged.disconnect()
+            except Exception:
+                pass
+            self._table.blockSignals(True)
+            self._table.clearSpans()
+            logging.info('_rebuild: D — setRowCount(0)')
+            self._table.setRowCount(0)
+            logging.info('_rebuild: E — reset meta')
+            self._row_meta = []
+            self._row_cat_info = []
 
+            # Build rows with signals blocked
+            self._build_rows()
+
+            # Reconnect signals before calling _apply_spans
+            self._table.blockSignals(False)
+            self._table.cellChanged.connect(self._on_cell_changed)
+
+            # Apply row merging (spans)
+            self._apply_spans()
+
+            # Finalize: resize rows and restore scroll position
+            self._resize_rows(_vscroll, _hscroll)
+        except Exception as e:
+            logging.exception('_rebuild: Python exception')
+            QMessageBox.critical(None, "Fel i scenariopanel", str(e))
+        finally:
+            self._rebuild_pending = False
+            self._rebuilding = False
+            self._update_ctx_bar()
+
+    def _build_rows(self):
+        """
+        Build the scenario table rows from current filters (node, deviation, cause, consequence).
+        Modifies self._table, self._row_meta, self._row_cat_info in place.
+        Called with table signals blocked, so cellChanged won't fire during construction.
+        """
         # Build list of (cause_dict, deviation_dict) to display
         causes_to_show = []
         if self.cause_id is not None:
@@ -10239,9 +10620,6 @@ class ScenarioTablePanel(QWidget):
                         self._add_placeholder_row(nn, dict(dev))
                 else:
                     self._add_placeholder_row(nn, None)
-            self._table.blockSignals(False)
-            self._table.cellChanged.connect(self._on_cell_changed)
-            self._rebuilding = False
             return
 
         # Determine header title from first cause's node
@@ -10265,122 +10643,95 @@ class ScenarioTablePanel(QWidget):
         else:
             self._hdr_lbl.setText(f"HAZOP Scenario — {node_name_hdr}")
 
-        try:
-            self.refresh_placed()
-            for cause_d, dev_d in causes_to_show:
-                node = self.db.get_node(cause_d['node_id'])
-                node_name = node['name'] if node else '?'
-                freq = self.db.cause_frequency_level(cause_d)
-                _fi = freq_to_idx(freq)
-                freq_lbl = _FREQ_LABELS[_fi] if _fi < len(_FREQ_LABELS) else f'F{freq}'
-                first_row_for_cause = self._table.rowCount()
-                # Chain-linked causes display the referenced consequence, not own consequences
-                is_chain_link = bool(cause_d.get('linked_consequence_id'))
-                if is_chain_link:
-                    linked_row = self.db.get_consequence(cause_d['linked_consequence_id'])
-                    all_cons = [linked_row] if linked_row else []
-                else:
-                    all_cons = list(self.db.consequences(cause_d['id']))
-                if self._cons_id is not None:
-                    all_cons = [c for c in all_cons if dict(c)['id'] == self._cons_id]
-                for cons in all_cons:
-                    cons_d = dict(cons)
-                    sgs    = [dict(s) for s in self.db.safeguards(cons_d['id'])]
-                    cat_rows = [dict(r) for r in
-                                self.db.get_consequence_severities(cons_d['id'])]
-                    n_cats = len(cat_rows)
-                    n_sgs  = len(sgs)
-                    n_rows = max(n_cats, n_sgs, 1)
+        self.refresh_placed()
+        for cause_d, dev_d in causes_to_show:
+            node = self.db.get_node(cause_d['node_id'])
+            node_name = node['name'] if node else '?'
+            freq = self.db.cause_frequency_level(cause_d)
+            _fi = freq_to_idx(freq)
+            freq_lbl = _FREQ_LABELS[_fi] if _fi < len(_FREQ_LABELS) else f'F{freq}'
+            first_row_for_cause = self._table.rowCount()
+            # Chain-linked causes display the referenced consequence, not own consequences
+            is_chain_link = bool(cause_d.get('linked_consequence_id'))
+            if is_chain_link:
+                linked_row = self.db.get_consequence(cause_d['linked_consequence_id'])
+                all_cons = [linked_row] if linked_row else []
+            else:
+                all_cons = list(self.db.consequences(cause_d['id']))
+            if self._cons_id is not None:
+                all_cons = [c for c in all_cons if dict(c)['id'] == self._cons_id]
+            for cons in all_cons:
+                cons_d = dict(cons)
+                sgs    = [dict(s) for s in self.db.safeguards(cons_d['id'])]
+                cat_rows = [dict(r) for r in
+                            self.db.get_consequence_severities(cons_d['id'])]
+                n_cats = len(cat_rows)
+                n_sgs  = len(sgs)
+                n_rows = max(n_cats, n_sgs, 1)
 
-                    # Does this consequence have chain-linked causes?
-                    has_linked_causes = bool(
-                        self.db.causes_linked_from_consequence(cons_d['id']))
+                # Does this consequence have chain-linked causes?
+                has_linked_causes = bool(
+                    self.db.causes_linked_from_consequence(cons_d['id']))
 
-                    # Precompute exclusions per severity assessment
-                    cat_excl_map = {}           # sev_id → set of excluded sg_ids
-                    for _cr in cat_rows:
-                        cat_excl_map[_cr['id']] = self.db.get_severity_excluded_sgs(_cr['id'])
+                # Precompute exclusions per severity assessment
+                cat_excl_map = {}           # sev_id → set of excluded sg_ids
+                for _cr in cat_rows:
+                    cat_excl_map[_cr['id']] = self.db.get_severity_excluded_sgs(_cr['id'])
 
-                    # Which safeguards are excluded from at least one category?
-                    any_excl_map = {}           # sg_id → list of category names
-                    for _sg in sgs:
-                        any_excl_map[_sg['id']] = [
-                            _cr['name'] for _cr in cat_rows
-                            if _sg['id'] in cat_excl_map.get(_cr['id'], set())]
+                # Which safeguards are excluded from at least one category?
+                any_excl_map = {}           # sg_id → list of category names
+                for _sg in sgs:
+                    any_excl_map[_sg['id']] = [
+                        _cr['name'] for _cr in cat_rows
+                        if _sg['id'] in cat_excl_map.get(_cr['id'], set())]
 
-                    # Which safeguards are excluded from this specific cause?
-                    cause_excl_sgs = set()
-                    for _sg in sgs:
-                        excl_causes = self.db.get_safeguard_excluded_causes(_sg['id'])
-                        if cause_d['id'] in excl_causes:
-                            cause_excl_sgs.add(_sg['id'])
+                # Which safeguards are excluded from this specific cause?
+                cause_excl_sgs = set()
+                for _sg in sgs:
+                    excl_causes = self.db.get_safeguard_excluded_causes(_sg['id'])
+                    if cause_d['id'] in excl_causes:
+                        cause_excl_sgs.add(_sg['id'])
 
-                    # Category list for the RRF popup: [(sev_id, cat_name), ...]
-                    sev_cat_list = [(cr['id'], cr['name']) for cr in cat_rows]
-                    # Full category info for stacked badges in KON cell
-                    all_cat_infos = [(cr['category_id'], cr['id'],
-                                      cr['name'], cr['severity']) for cr in cat_rows]
-                    # Cause list for the RRF popup: build from direct + chain causes
-                    _chain_causes = [dict(c) for c in
-                                     self.db.causes_linked_from_consequence(cons_d['id'])]
-                    _direct_cause = self.db.get_cause(cons_d['cause_id'])
-                    cause_popup_list = []
-                    if _direct_cause:
-                        cause_popup_list.append((dict(_direct_cause)['id'],
-                                                 dict(_direct_cause)['description'], False))
-                    for _cc in _chain_causes:
-                        cause_popup_list.append((_cc['id'], _cc['description'], True))
+                # Category list for the RRF popup: [(sev_id, cat_name), ...]
+                sev_cat_list = [(cr['id'], cr['name']) for cr in cat_rows]
+                # Full category info for stacked badges in KON cell
+                all_cat_infos = [(cr['category_id'], cr['id'],
+                                  cr['name'], cr['severity']) for cr in cat_rows]
+                # Cause list for the RRF popup: build from direct + chain causes
+                _chain_causes = [dict(c) for c in
+                                 self.db.causes_linked_from_consequence(cons_d['id'])]
+                _direct_cause = self.db.get_cause(cons_d['cause_id'])
+                cause_popup_list = []
+                if _direct_cause:
+                    cause_popup_list.append((dict(_direct_cause)['id'],
+                                             dict(_direct_cause)['description'], False))
+                for _cc in _chain_causes:
+                    cause_popup_list.append((_cc['id'], _cc['description'], True))
 
-                    # Chain-linked cause rows don't repeat SG column
-                    display_n_rows = max(n_cats, 1) if is_chain_link else n_rows
-                    for i in range(display_n_rows):
-                        sg_i    = (sgs[i] if i < n_sgs else None) if not is_chain_link else None
-                        cr_i    = cat_rows[i] if i < n_cats else None
-                        cat_info_i = ((cr_i['category_id'], cr_i['id'],
-                                       cr_i['name'], cr_i['severity'])
-                                      if cr_i else None)
-                        excl_for_cat  = cat_excl_map.get(cr_i['id'], set()) if cr_i else set()
-                        excl_cat_names = any_excl_map.get(sg_i['id'], []) if sg_i else []
-                        self._add_row(node_name, dev_d, cause_d, freq, freq_lbl,
-                                      cons_d, sgs, sg_i,
-                                      cat_info=cat_info_i,
-                                      excl_cat_names=excl_cat_names,
-                                      excl_for_cat=excl_for_cat,
-                                      cause_excl_sgs=cause_excl_sgs,
-                                      sev_cat_list=sev_cat_list,
-                                      all_cat_infos=all_cat_infos,
-                                      cause_popup_list=cause_popup_list,
-                                      n_cats=n_cats,
-                                      is_chain_link=is_chain_link,
-                                      has_linked_causes=has_linked_causes)
-                if self._table.rowCount() == first_row_for_cause:
-                    self._add_empty_row(node_name, dev_d, cause_d, freq, freq_lbl)
-            self._apply_spans()
-        except Exception as e:
-            logging.exception('_rebuild: Python exception in row-building loop')
-            QMessageBox.critical(None, "Fel i scenariopanel", str(e))
-        finally:
-            self._table.blockSignals(False)
-            self._table.cellChanged.connect(self._on_cell_changed)
-            self._rebuilding = False
-        def _after_resize():
-            self._table.resizeRowsToContents()
-            _fm  = QFontMetrics(self._table.font())
-            _max = _fm.height() * 4 + 12   # cap: max ~4 text lines
-            _min_ors = _fm.height() * 2 + 20  # floor for ORS rows: ~2 lines + strip
-            for _r in range(self._table.rowCount()):
-                h = self._table.rowHeight(_r)
-                # ORS cell in this row has content → enforce minimum readable height
-                ors_item = self._table.item(_r, self._C_ORS)
-                if ors_item and ors_item.text() and h < _min_ors:
-                    self._table.setRowHeight(_r, _min_ors)
-                elif h > _max:
-                    self._table.setRowHeight(_r, _max)
-            self._table.verticalScrollBar().setValue(_vscroll)
-            self._table.horizontalScrollBar().setValue(_hscroll)
-            self._table.setUpdatesEnabled(True)
-        QTimer.singleShot(0, _after_resize)
-        self._update_ctx_bar()
+                # Chain-linked cause rows don't repeat SG column
+                display_n_rows = max(n_cats, 1) if is_chain_link else n_rows
+                for i in range(display_n_rows):
+                    sg_i    = (sgs[i] if i < n_sgs else None) if not is_chain_link else None
+                    cr_i    = cat_rows[i] if i < n_cats else None
+                    cat_info_i = ((cr_i['category_id'], cr_i['id'],
+                                   cr_i['name'], cr_i['severity'])
+                                  if cr_i else None)
+                    excl_for_cat  = cat_excl_map.get(cr_i['id'], set()) if cr_i else set()
+                    excl_cat_names = any_excl_map.get(sg_i['id'], []) if sg_i else []
+                    self._add_row(node_name, dev_d, cause_d, freq, freq_lbl,
+                                  cons_d, sgs, sg_i,
+                                  cat_info=cat_info_i,
+                                  excl_cat_names=excl_cat_names,
+                                  excl_for_cat=excl_for_cat,
+                                  cause_excl_sgs=cause_excl_sgs,
+                                  sev_cat_list=sev_cat_list,
+                                  all_cat_infos=all_cat_infos,
+                                  cause_popup_list=cause_popup_list,
+                                  n_cats=n_cats,
+                                  is_chain_link=is_chain_link,
+                                  has_linked_causes=has_linked_causes)
+            if self._table.rowCount() == first_row_for_cause:
+                self._add_empty_row(node_name, dev_d, cause_d, freq, freq_lbl)
 
     def _apply_spans(self):
         """Merge consecutive rows that share the same Nod or Orsak."""
@@ -10433,6 +10784,28 @@ class ScenarioTablePanel(QWidget):
         # → non-category rows all merge; per-category rows each stay separate
         for col in (self._C_RFORE, self._C_REFT, self._C_SLUT):
             _span_col(col, _cat_key)
+
+    def _resize_rows(self, vscroll_value, hscroll_value):
+        """
+        Apply row height constraints and restore scroll position.
+        Called after _apply_spans() to finalize table layout.
+        Extracted from _rebuild() closure for clarity and testability.
+        """
+        self._table.resizeRowsToContents()
+        _fm  = QFontMetrics(self._table.font())
+        _max = _fm.height() * 4 + 12   # cap: max ~4 text lines
+        _min_ors = _fm.height() * 2 + 20  # floor for ORS rows: ~2 lines + strip
+        for _r in range(self._table.rowCount()):
+            h = self._table.rowHeight(_r)
+            # ORS cell in this row has content → enforce minimum readable height
+            ors_item = self._table.item(_r, self._C_ORS)
+            if ors_item and ors_item.text() and h < _min_ors:
+                self._table.setRowHeight(_r, _min_ors)
+            elif h > _max:
+                self._table.setRowHeight(_r, _max)
+        self._table.verticalScrollBar().setValue(vscroll_value)
+        self._table.horizontalScrollBar().setValue(hscroll_value)
+        self._table.setUpdatesEnabled(True)
 
     def _add_placeholder_row(self, node_name, dev_d):
         """Empty row shown when a node/deviation has no causes yet."""
@@ -10608,7 +10981,7 @@ class ScenarioTablePanel(QWidget):
                                                     cause_d.get('comp_tag')  or ''))
         ors.setData(Qt.ItemDataRole.UserRole + 3, freq)
         ors.setData(Qt.ItemDataRole.UserRole + 4, is_chain_link)
-        ors.setData(Qt.ItemDataRole.UserRole + 5, cause_d.get('base_freq'))
+        ors.setData(Qt.ItemDataRole.UserRole + 5, cause_d.get('base_frequency'))
         ors.setData(Qt.ItemDataRole.UserRole + 6, _status_icon)
         ors.setToolTip(f"{_status_icon} {_status_tip}\n"
                        "Dubbelklicka för att redigera\n"
@@ -10741,7 +11114,7 @@ class ScenarioTablePanel(QWidget):
             parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             # Rebuild risk cells (description changed)
-            QTimer.singleShot(0, self._rebuild)
+            self._schedule_rebuild()
 
     def _edit_extra(self, cons_id):
         dlg = ReductionFactorsDialog(self.db, cons_id, self)
@@ -11060,13 +11433,13 @@ class ScenarioTablePanel(QWidget):
         if cons:
             self.db.update_consequence(
                 cons_id, cons['description'], new_cons, cons['category'] or '')
-        QTimer.singleShot(0, self._rebuild)
+        self._schedule_rebuild()
 
     def _apply_risk_from_matrix_cat(self, cause_id, cons_id, cat_id, new_freq, new_cons):
         """Bidirectional: update frequency on cause and category severity on consequence."""
         self.db.update_cause(cause_id, likelihood=new_freq)
         self.db.set_consequence_severity(cons_id, cat_id, new_cons)
-        QTimer.singleShot(0, self._rebuild)
+        self._schedule_rebuild()
 
     def _show_cat_sg_popup(self, sev_id, all_sgs):
         """Open the safeguard-selection popup for a category row."""
@@ -11079,7 +11452,7 @@ class ScenarioTablePanel(QWidget):
         y = min(gp.y() + 4, scr.bottom() - ph)
         popup.move(max(scr.left(), x), max(scr.top(), y))
         if popup.exec() == QDialog.DialogCode.Accepted:
-            QTimer.singleShot(0, self._rebuild)
+            self._schedule_rebuild()
 
     def _on_cell_double_clicked(self, item):
         if item is None:
@@ -11145,7 +11518,7 @@ class ScenarioTablePanel(QWidget):
         y = max(screen.top() + 4, y)
         popup.move(x, y)
         if popup.exec() == QDialog.DialogCode.Accepted:
-            QTimer.singleShot(0, self._rebuild)
+            self._schedule_rebuild()
 
     def _show_cause_obj_popup(self, row, cause_id, global_pos):
         item      = self._table.item(row, self._C_ORS)
@@ -11186,10 +11559,10 @@ class ScenarioTablePanel(QWidget):
         if description:
             kwargs = {'description': description}
             if frequency is not None:
-                kwargs['base_freq'] = frequency
+                kwargs['base_frequency'] = frequency
             self.db.update_cause(cause_id, **kwargs)
             # Description changed → full rebuild (item refs are stale after rebuild anyway)
-            QTimer.singleShot(0, self._rebuild)
+            self._schedule_rebuild()
         else:
             # Only tag/type changed → update item in-place with signals blocked
             self._table.blockSignals(True)
@@ -11236,10 +11609,10 @@ class ScenarioTablePanel(QWidget):
                                  linked_consequence_id=cons_id)
             if frequency is not None:
                 self.db.conn.execute(
-                    "UPDATE causes SET base_freq=? WHERE id=?", (frequency, new_cause_id))
+                    "UPDATE causes SET base_frequency=? WHERE id=?", (frequency, new_cause_id))
                 self.db.conn.commit()
             self.new_item_created.emit(CAUSE_T, new_cause_id)
-            QTimer.singleShot(0, self._rebuild)
+            self._schedule_rebuild()
 
         popup.committed.connect(_on_committed)
         popup.adjustSize()
@@ -11254,7 +11627,7 @@ class ScenarioTablePanel(QWidget):
 
     def _update_sg_rrf(self, row, sg_id, rrf, sg_type=None):
         self.db.update_safeguard(sg_id, rrf=rrf, sg_type=sg_type)
-        QTimer.singleShot(0, self._rebuild)
+        self._schedule_rebuild()
 
     def _open_comment_popup(self, row, cause_id, global_pos):
         """Floating comment editor for a cause row."""
@@ -11285,7 +11658,7 @@ class ScenarioTablePanel(QWidget):
         popup.move(max(scr.left(), x), max(scr.top(), y))
         if popup.exec() == QDialog.DialogCode.Accepted:
             self.db.set_cause_comment(cause_id, txt.toPlainText().strip())
-            QTimer.singleShot(0, self._rebuild)
+            self._schedule_rebuild()
 
     # ── Feature 4: clone scenario ─────────────────────────────────────────────
     def _clone_scenario(self, cause_id):
@@ -11314,7 +11687,7 @@ class ScenarioTablePanel(QWidget):
         for cons in self.db.consequences(cause_id):
             new_oid = self.db.copy_consequence(cons['id'], new_cid)
         self.new_item_created.emit(CAUSE_T, new_cid)
-        QTimer.singleShot(0, self._rebuild)
+        self._schedule_rebuild()
 
     # ── Enter-tangent: snabblägg-till ─────────────────────────────────────────
 
@@ -11492,7 +11865,7 @@ class ScenarioTablePanel(QWidget):
                         y = min(gp.y() + 4, scr.bottom() - ph)
                         popup.move(max(scr.left(), x), max(scr.top(), y))
                         if popup.exec() == QDialog.DialogCode.Accepted:
-                            QTimer.singleShot(0, self._rebuild)
+                            self._schedule_rebuild()
                     return True
 
             # ⛓ Chain-link click — right _KON_CHAIN_W pixels of KON cell
@@ -11631,7 +12004,20 @@ class ScenarioTablePanel(QWidget):
 
         if kind == 'cause':
             desc = text.split('\n')[0].strip()
-            self.db.update_cause(id_, desc)
+            cause = self.db.get_cause(id_)
+            if cause:
+                # Check if the text is comp_tag (component tag) or description
+                old_comp_tag = cause.get('comp_tag', '') or ''
+                old_desc = cause.get('description', '') or ''
+
+                # If the edited text matches old_comp_tag, we're editing comp_tag
+                # Otherwise, we're editing description
+                if desc and old_comp_tag and old_comp_tag.strip() == text:
+                    # User edited comp_tag
+                    self.db.update_cause(id_, comp_tag=desc)
+                else:
+                    # User edited description
+                    self.db.update_cause(id_, desc)
             self.item_edited.emit(CAUSE_T, id_)
 
         elif kind == 'consequence':
@@ -11648,7 +12034,7 @@ class ScenarioTablePanel(QWidget):
             if sg:
                 self.db.update_safeguard(id_, desc, sg['rrf'] or 1)
             self.item_edited.emit(SG_T, id_)
-            QTimer.singleShot(0, self._rebuild)
+            self._schedule_rebuild()
 
         if (row, col) == (self._enter_row, self._enter_col):
             self._last_enter_committed = True
@@ -11698,7 +12084,7 @@ class ScenarioTablePanel(QWidget):
                     ) == QMessageBox.StandardButton.Yes:
                 self.db.delete_safeguard(sg_id)
                 self.structure_changed.emit()
-                QTimer.singleShot(0, self._rebuild)
+                self._schedule_rebuild()
         elif col == self._C_KON and cons_id:
             if QMessageBox.question(self, "Ta bort konsekvens",
                     "Ta bort konsekvens och alla dess barriärer?",
@@ -11706,7 +12092,7 @@ class ScenarioTablePanel(QWidget):
                     ) == QMessageBox.StandardButton.Yes:
                 self.db.delete_consequence(cons_id)
                 self.structure_changed.emit()
-                QTimer.singleShot(0, self._rebuild)
+                self._schedule_rebuild()
         elif col == self._C_ORS and cause_id:
             if QMessageBox.question(self, "Ta bort orsak",
                     "Ta bort orsak och alla konsekvenser/barriärer?",
@@ -11714,7 +12100,7 @@ class ScenarioTablePanel(QWidget):
                     ) == QMessageBox.StandardButton.Yes:
                 self.db.delete_cause(cause_id)
                 self.structure_changed.emit()
-                QTimer.singleShot(0, self._rebuild)
+                self._schedule_rebuild()
 
     # ── Feature 1 & 6: Drag start ─────────────────────────────────────────────
     def _start_drag(self, row, col, is_copy_modifier):
@@ -11784,7 +12170,7 @@ class ScenarioTablePanel(QWidget):
                 self.db.copy_safeguard(item_id, tgt_cons)
             else:
                 self.db.move_safeguard(item_id, tgt_cons)
-            QTimer.singleShot(0, self._rebuild)
+            self._schedule_rebuild()
             QTimer.singleShot(0, self.structure_changed.emit)
             event.acceptProposedAction()
 
@@ -11795,7 +12181,7 @@ class ScenarioTablePanel(QWidget):
                 self.db.copy_consequence(item_id, tgt_cause)
             else:
                 self.db.move_consequence(item_id, tgt_cause)
-            QTimer.singleShot(0, self._rebuild)
+            self._schedule_rebuild()
             QTimer.singleShot(0, self.structure_changed.emit)
             event.acceptProposedAction()
 
@@ -11806,7 +12192,7 @@ class ScenarioTablePanel(QWidget):
                 self.db.copy_cause(item_id, tgt_dev)
             else:
                 self.db.move_cause_to_deviation(item_id, tgt_dev)
-            QTimer.singleShot(0, self._rebuild)
+            self._schedule_rebuild()
             QTimer.singleShot(0, self.structure_changed.emit)
             event.acceptProposedAction()
 
@@ -11892,14 +12278,14 @@ class ScenarioTablePanel(QWidget):
             else:
                 self.db.delete_safeguard(item_id)
             self.structure_changed.emit()
-            QTimer.singleShot(0, self._rebuild)
+            self._schedule_rebuild()
 
     # ── Feature 5: Duplicate ──────────────────────────────────────────────────
     def _duplicate_consequence(self, cons_id, cause_id):
         new_id = self.db.copy_consequence(cons_id, cause_id)
         if new_id:
             self.structure_changed.emit()
-            QTimer.singleShot(0, self._rebuild)
+            self._schedule_rebuild()
 
     def _duplicate_cause(self, cause_id):
         cause = self.db.get_cause(cause_id)
@@ -11911,7 +12297,7 @@ class ScenarioTablePanel(QWidget):
         new_id = self.db.copy_cause(cause_id, dev_id)
         if new_id:
             self.structure_changed.emit()
-            QTimer.singleShot(0, self._rebuild)
+            self._schedule_rebuild()
 
     # ── Feature 6: Move dialogs ───────────────────────────────────────────────
     def _move_cause_dialog(self, cause_id):
@@ -11933,7 +12319,7 @@ class ScenarioTablePanel(QWidget):
             idx = items.index(choice)
             self.db.move_cause_to_deviation(cause_id, devs[idx]['id'])
             self.structure_changed.emit()
-            QTimer.singleShot(0, self._rebuild)
+            self._schedule_rebuild()
 
     def _move_consequence_dialog(self, cons_id):
         cons = self.db.get_consequence(cons_id)
@@ -11962,7 +12348,7 @@ class ScenarioTablePanel(QWidget):
             tgt_cause_id = all_causes[idx][0]['id']
             self.db.move_consequence(cons_id, tgt_cause_id)
             self.structure_changed.emit()
-            QTimer.singleShot(0, self._rebuild)
+            self._schedule_rebuild()
 
     def _copy_safeguard_dialog(self, sg_id):
         self._pick_target_cons_dialog(sg_id, move=False)
@@ -12000,7 +12386,7 @@ class ScenarioTablePanel(QWidget):
             else:
                 self.db.copy_safeguard(sg_id, tgt_cons_id)
             self.structure_changed.emit()
-            QTimer.singleShot(0, self._rebuild)
+            self._schedule_rebuild()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -14712,7 +15098,8 @@ class SettingsPanel(QWidget):
 
         cfg = _normalise_matrix(cfg)   # ensure consistent before saving
         self.db.set_risk_matrix(cfg)
-        load_matrix(self.db)
+        # set_risk_matrix() automatically invalidates the cache; reload from DB
+        _risk_matrix_cache.reload_from_db()
         QMessageBox.information(self, "Sparat", "Riskmatris sparad.")
         self.matrix_changed.emit()
 
@@ -16337,6 +16724,7 @@ class MainWindow(QMainWindow):
                 color, width, int(opacity * 210)))
         self.node_markup_panel.snap_changed.connect(
             self.pid_panel.viewer.set_snap)
+        self.node_markup_panel.navigate_node_requested.connect(self._on_edit_node_markup)
         # Red markup ribbon signals
         self.red_markup_panel.closed.connect(self._on_close_red_markup)
         self.red_markup_panel.tool_changed.connect(
@@ -17716,6 +18104,9 @@ if __name__ == '__main__':
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
 
+    # Apply Windows 11 light theme
+    app.setStyleSheet(_get_windows11_stylesheet())
+
     # Catch exceptions in Qt event loop (slots/signals)
     _original_notify = app.notify
     def _safe_notify(receiver, event):
@@ -17731,6 +18122,14 @@ if __name__ == '__main__':
         win.show()
         code = app.exec()
         logging.info('=== HAZOP Tool exited (code %d) ===', code)
+
+        # Clean up global resources before exit (OCR models, DB connections)
+        try:
+            from pid_viewer import cleanup_ocr_resources
+            cleanup_ocr_resources()
+        except Exception:
+            pass
+
         sys.exit(code)
     except Exception:
         logging.exception('Fatal exception during startup or main loop')
