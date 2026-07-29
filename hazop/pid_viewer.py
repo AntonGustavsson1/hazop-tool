@@ -5498,9 +5498,6 @@ class PIDGraphicsView(QGraphicsView):
         menu.addSeparator()
         menu.addAction("🔀 Risk Scenario",
                        partial(self.context_action.emit, 'risk_scenario', sp, self.current_page))
-        menu.addSeparator()
-        menu.addAction("✏️ Rita Nodgräns",
-                       partial(self.context_action.emit, 'node', sp, self.current_page))
         menu.exec(global_pos)
 
     def _start_add_sheet_link(self, source_page: int):
@@ -7037,7 +7034,6 @@ class PIDPanel(QWidget):
         self.mode_buttons = {}
         mode_defs = [
             (MODE_NAV,         "🔍 Navigera"),
-            (MODE_NODE,        "✏️ Nodgräns"),
             (MODE_CAUSE,       "⚙️ Orsak"),
             (MODE_CONSEQUENCE, "⚠️ Konsekvens"),
             (MODE_SAFEGUARD,   "🛡️ Safeguard"),
