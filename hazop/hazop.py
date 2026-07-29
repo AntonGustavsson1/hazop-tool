@@ -7476,10 +7476,13 @@ class EditableScenarioPanel(QWidget):
 
             def _save_sg(s=sg_id, dw=sg_desc, rw=rrf_combo, eb=eff_badge):
                 desc = dw.text().strip() or 'Ny safeguard'
-                rrf = RRF_VALUES[rw.currentIndex()]
+                rrf_idx = rw.currentIndex()
+                rrf = RRF_VALUES[rrf_idx] if 0 <= rrf_idx < len(RRF_VALUES) else 1
                 self.db.update_safeguard(s, desc, rrf)
                 eff = effective_frequency(like_val, rrf)
-                eb.update_risk(eff, sev_combo.currentIndex() + 1)
+                sev_idx = sev_combo.currentIndex()
+                sev = sev_idx + 1 if sev_idx >= 0 else 1
+                eb.update_risk(eff, sev)
                 self.data_changed.emit()
 
             sg_desc.editingFinished.connect(_save_sg)
@@ -13072,7 +13075,8 @@ class RiskScenarioWizard(QDialog):
 
         sg_desc = self._sg_desc.text().strip()
         if sg_desc:
-            rrf  = RRF_VALUES[self._sg_rrf.currentIndex()]
+            rrf_idx = self._sg_rrf.currentIndex()
+            rrf  = RRF_VALUES[rrf_idx] if 0 <= rrf_idx < len(RRF_VALUES) else 1
             s_id = self.db.add_safeguard(k_id)
             self.db.update_safeguard(s_id, sg_desc, rrf)
 
