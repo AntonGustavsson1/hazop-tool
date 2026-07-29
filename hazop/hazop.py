@@ -4523,22 +4523,10 @@ class CausePanel(QWidget):
         freq_lay.addRow("Manuell:", self.freq_combo)
 
         layout.addWidget(freq_box)
-
-        self._pid_btn = QPushButton("📍 Lägg till på P&ID")
-        self._pid_btn.setEnabled(False)
-        self._pid_btn.setToolTip("Växla till P&ID-läge för att placera en orsaksmakör")
-        self._pid_btn.setStyleSheet(
-            "QPushButton{background:#1F4E79;color:white;border:none;"
-            "border-radius:4px;padding:7px;font-weight:bold;}"
-            "QPushButton:hover{background:#2563a8;}"
-            "QPushButton:disabled{background:#aaa;}")
-        self._pid_btn.clicked.connect(self.place_on_pid)
-        layout.addWidget(self._pid_btn)
         layout.addStretch()
 
     def load(self, cause_id):
         self.cause_id = cause_id
-        self._pid_btn.setEnabled(True)
         row = self.db.get_cause(cause_id)
         if not row:
             return
@@ -4720,16 +4708,6 @@ class ConsequencePanel(QWidget):
         act_lay.addWidget(self.act_editor)
         layout.addWidget(act_box)
 
-        self._pid_btn = QPushButton("📍 Lägg till på P&ID")
-        self._pid_btn.setEnabled(False)
-        self._pid_btn.setToolTip("Växla till P&ID-läge för att placera en konsekvensmarkör")
-        self._pid_btn.setStyleSheet(
-            "QPushButton{background:#1F4E79;color:white;border:none;"
-            "border-radius:4px;padding:7px;font-weight:bold;}"
-            "QPushButton:hover{background:#2563a8;}"
-            "QPushButton:disabled{background:#aaa;}")
-        self._pid_btn.clicked.connect(self.place_on_pid)
-        layout.addWidget(self._pid_btn)
         layout.addStretch()
 
     # ── Chain helpers ─────────────────────────────────────────────────────────
@@ -4770,7 +4748,6 @@ class ConsequencePanel(QWidget):
 
     def load(self, consequence_id):
         self.consequence_id = consequence_id
-        self._pid_btn.setEnabled(True)
         self._load_categories()
         row = self.db.get_consequence(consequence_id)
         if row:
@@ -4890,22 +4867,10 @@ class SafeguardPanel(QWidget):
         form.addRow("Effektiv risk:", self.risk_badge)
 
         layout.addLayout(form)
-
-        self._pid_btn = QPushButton("📍 Lägg till på P&ID")
-        self._pid_btn.setEnabled(False)
-        self._pid_btn.setToolTip("Växla till P&ID-läge för att placera en safeguardmarkör")
-        self._pid_btn.setStyleSheet(
-            "QPushButton{background:#1F4E79;color:white;border:none;"
-            "border-radius:4px;padding:7px;font-weight:bold;}"
-            "QPushButton:hover{background:#2563a8;}"
-            "QPushButton:disabled{background:#aaa;}")
-        self._pid_btn.clicked.connect(self.place_on_pid)
-        layout.addWidget(self._pid_btn)
         layout.addStretch()
 
     def load(self, safeguard_id):
         self.safeguard_id = safeguard_id
-        self._pid_btn.setEnabled(True)
         sg = self.db.get_safeguard(safeguard_id)
         if not sg:
             return
@@ -6881,49 +6846,7 @@ class TreePanel(QWidget):
         lbl.setFont(f)
         layout.addWidget(lbl)
 
-        self.tree = QTreeWidget()
-        self.tree.setHeaderHidden(True)
-        self.tree.setIndentation(16)
-        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.tree.customContextMenuRequested.connect(self._context_menu)
-        self.tree.currentItemChanged.connect(self._on_select)
-        self.tree.itemDoubleClicked.connect(self._on_item_double_click)
-        self.tree.installEventFilter(self)   # keyboard navigation (feature 17)
-        layout.addWidget(self.tree)
-
-        btn_row = QHBoxLayout()
-        self.btn_node  = QPushButton("+ Nod")
-        self.btn_cause = QPushButton("+ Cause")
-        self.btn_cons  = QPushButton("+ Cons.")
-        self.btn_del   = QPushButton("🗑")
-        self.btn_del.setToolTip("Ta bort markerat objekt")
-        self.btn_del.setStyleSheet("color:#c0392b; font-weight:bold;")
-        for b in [self.btn_node, self.btn_cause, self.btn_cons, self.btn_del]:
-            b.setFixedHeight(CONFIG['H_ROW_COMPACT'])
-            btn_row.addWidget(b)
-        # Collapse / expand all
-        btn_collapse = QPushButton("⊟")
-        btn_collapse.setFixedSize(26, 26)
-        btn_collapse.setToolTip("Kollapsa alla")
-        btn_collapse.clicked.connect(lambda: self.tree.collapseAll())
-        btn_expand = QPushButton("⊞")
-        btn_expand.setFixedSize(26, 26)
-        btn_expand.setToolTip("Expandera alla")
-        btn_expand.clicked.connect(lambda: self.tree.expandAll())
-        btn_row.addWidget(btn_collapse)
-        btn_row.addWidget(btn_expand)
-        layout.addLayout(btn_row)
-
-        self.btn_node.clicked.connect(self.add_node)
-        self.btn_cause.clicked.connect(self.add_cause)
-        self.btn_cons.clicked.connect(self.add_consequence)
-        self.btn_del.clicked.connect(self.delete_selected)
-
-        # ── Visibility toggle buttons for P&ID markers ────────────────────────
-        vis_lbl = QLabel("Visa på P&ID:")
-        vis_lbl.setStyleSheet("color:#555; font-size:10px;")
-        layout.addWidget(vis_lbl)
-
+        # ── Visibility toggle buttons at TOP (before tree) ──────────────────────
         vis_row = QHBoxLayout()
         vis_row.setSpacing(4)
 
@@ -6948,6 +6871,36 @@ class TreePanel(QWidget):
             self._vis_btns[type_key] = btn
 
         layout.addLayout(vis_row)
+
+        # ── Tree widget ──────────────────────────────────────────────────────────
+        self.tree = QTreeWidget()
+        self.tree.setHeaderHidden(True)
+        self.tree.setIndentation(16)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._context_menu)
+        self.tree.currentItemChanged.connect(self._on_select)
+        self.tree.itemDoubleClicked.connect(self._on_item_double_click)
+        self.tree.installEventFilter(self)   # keyboard navigation (feature 17)
+        layout.addWidget(self.tree)
+
+        # ── Collapse/Expand buttons (compact control bar) ───────────────────────
+        compact_row = QHBoxLayout()
+        compact_row.setSpacing(4)
+        compact_row.addStretch()
+
+        btn_collapse = QPushButton("⊟")
+        btn_collapse.setFixedSize(26, 26)
+        btn_collapse.setToolTip("Kollapsa alla")
+        btn_collapse.clicked.connect(lambda: self.tree.collapseAll())
+        compact_row.addWidget(btn_collapse)
+
+        btn_expand = QPushButton("⊞")
+        btn_expand.setFixedSize(26, 26)
+        btn_expand.setToolTip("Expandera alla")
+        btn_expand.clicked.connect(lambda: self.tree.expandAll())
+        compact_row.addWidget(btn_expand)
+
+        layout.addLayout(compact_row)
 
     def refresh(self, select_type=None, select_id=None):
         expanded = set()
