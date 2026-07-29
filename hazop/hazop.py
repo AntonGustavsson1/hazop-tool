@@ -16906,8 +16906,6 @@ class MainWindow(QMainWindow):
 
         act("+ Nod",         "Lägg till ny nod",          lambda: self.tree_panel.add_node())
         act("+ Avvikelse",   "Lägg till ny avvikelse",    lambda: self.tree_panel.add_deviation())
-        act("+ Orsak",       "Lägg till ny orsak",        lambda: self.tree_panel.add_cause())
-        act("+ Konsekvens",  "Lägg till ny konsekvens",   lambda: self.tree_panel.add_consequence())
         tb.addSeparator()
         act("Ta bort",       "Ta bort markerat",       lambda: self.tree_panel.delete_selected())
         tb.addSeparator()
