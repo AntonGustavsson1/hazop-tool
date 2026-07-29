@@ -7556,15 +7556,19 @@ class PIDPanel(QWidget):
             shape = page.new_shape()
             for cid, cpos in cons_pos.items():
                 c = self.db.get_consequence(cid)
-                if c and c['cause_id'] in cause_pos:
-                    shape.draw_line(fitz.Point(*cause_pos[c['cause_id']]),
-                                    fitz.Point(*cpos))
-                    shape.finish(color=(0.75, 0.18, 0.09), width=0.8)
+                if c:
+                    cause_id = c.get('cause_id')
+                    if cause_id and cause_id in cause_pos:
+                        shape.draw_line(fitz.Point(*cause_pos[cause_id]),
+                                        fitz.Point(*cpos))
+                        shape.finish(color=(0.75, 0.18, 0.09), width=0.8)
             for sid, spos in sg_pos.items():
                 s = self.db.get_safeguard(sid)
-                if s and s['consequence_id'] in cons_pos:
-                    shape.draw_line(fitz.Point(*cons_pos[s['consequence_id']]),
-                                    fitz.Point(*spos))
+                if s:
+                    cons_id = s.get('consequence_id')
+                    if cons_id and cons_id in cons_pos:
+                        shape.draw_line(fitz.Point(*cons_pos[cons_id]),
+                                        fitz.Point(*spos))
                     try:
                         shape.finish(color=(0.15, 0.62, 0.27), width=0.8,
                                      dashes="[3 3] 0")
@@ -8751,17 +8755,21 @@ class PIDPanel(QWidget):
 
         for cid, cpos_list in all_cons_pos.items():
             c = self.db.get_consequence(cid)
-            if c and c['cause_id'] in all_cause_pos:
-                for cpos in cpos_list:
-                    for capos in all_cause_pos[c['cause_id']]:
-                        self.viewer.add_connection_line(capos, cpos, '#c0392b')
+            if c:
+                cause_id = c.get('cause_id')
+                if cause_id and cause_id in all_cause_pos:
+                    for cpos in cpos_list:
+                        for capos in all_cause_pos[cause_id]:
+                            self.viewer.add_connection_line(capos, cpos, '#c0392b')
 
         for sid, spos_list in all_sg_pos.items():
             s = self.db.get_safeguard(sid)
-            if s and s['consequence_id'] in all_cons_pos:
-                for spos in spos_list:
-                    for kpos in all_cons_pos[s['consequence_id']]:
-                        self.viewer.add_connection_line(kpos, spos, '#27ae60', dashed=True)
+            if s:
+                cons_id = s.get('consequence_id')
+                if cons_id and cons_id in all_cons_pos:
+                    for spos in spos_list:
+                        for kpos in all_cons_pos[cons_id]:
+                            self.viewer.add_connection_line(kpos, spos, '#27ae60', dashed=True)
 
         # Feature 8: load sticky note annotations
         if hasattr(self.db, 'get_board_annotations'):
