@@ -7557,7 +7557,7 @@ class PIDPanel(QWidget):
             for cid, cpos in cons_pos.items():
                 c = self.db.get_consequence(cid)
                 if c:
-                    cause_id = c.get('cause_id')
+                    cause_id = dict(c).get('cause_id') if c else None
                     if cause_id and cause_id in cause_pos:
                         shape.draw_line(fitz.Point(*cause_pos[cause_id]),
                                         fitz.Point(*cpos))
@@ -7565,7 +7565,7 @@ class PIDPanel(QWidget):
             for sid, spos in sg_pos.items():
                 s = self.db.get_safeguard(sid)
                 if s:
-                    cons_id = s.get('consequence_id')
+                    cons_id = dict(s).get('consequence_id') if s else None
                     if cons_id and cons_id in cons_pos:
                         shape.draw_line(fitz.Point(*cons_pos[cons_id]),
                                         fitz.Point(*spos))
@@ -8756,7 +8756,7 @@ class PIDPanel(QWidget):
         for cid, cpos_list in all_cons_pos.items():
             c = self.db.get_consequence(cid)
             if c:
-                cause_id = c.get('cause_id')
+                cause_id = dict(c).get('cause_id') if c else None
                 if cause_id and cause_id in all_cause_pos:
                     for cpos in cpos_list:
                         for capos in all_cause_pos[cause_id]:
@@ -8765,7 +8765,7 @@ class PIDPanel(QWidget):
         for sid, spos_list in all_sg_pos.items():
             s = self.db.get_safeguard(sid)
             if s:
-                cons_id = s.get('consequence_id')
+                cons_id = dict(s).get('consequence_id') if s else None
                 if cons_id and cons_id in all_cons_pos:
                     for spos in spos_list:
                         for kpos in all_cons_pos[cons_id]:
