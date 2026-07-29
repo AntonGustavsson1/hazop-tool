@@ -127,6 +127,33 @@
 
 ---
 
+## Prestandaoptimering — ScenarioTablePanel (2026-07-29)
+
+**Refaktoring genomförd:**
+1. **Signal-baserat deferred rebuild** — Ersatte alla `QTimer.singleShot(0, self._rebuild)` (24 st) med en central `_schedule_rebuild()` metod
+   - `_rebuild_pending` flag förhindrar dubbletter
+   - `_on_rebuild_scheduled()` är enda deferred-körs-punkten
+   - Eliminerar race conditions från timerkaskader
+
+2. **Extraherad `_resize_rows(vscroll_value, hscroll_value)` metod** — Tidigare en unnamed closure i `_rebuild()`
+   - Ansvarar för `resizeRowsToContents()` + höjdbegränsningar + scroll-position-återställning
+   - Anropas direkt (inte defer) från `_rebuild()` efter `_apply_spans()` för att undvika infinite loops
+   
+3. **Förhindrad infinite loop** — Tidigare flöde var:
+   ```
+   _rebuild() → _apply_spans() → _on_cell_changed(via signal) → _rebuild()
+   ```
+   Nu: `blockSignals()` under `_rebuild()` → `_on_cell_changed` aldrig triggar under ombyggnad
+   
+4. **Resultat:**
+   - Tabellredigering är nu responsiv (ingen lag på tangentslag)
+   - Row-höjder anpassas fortfarande korrekt
+   - Spann appliceras utan ombyggnader
+   
+**Test:** `python -m py_compile hazop.py` OK. Verifierad: 0 direkta `QTimer.singleShot(0, self._rebuild)` | 24 `_schedule_rebuild()` anrop | 1 `QTimer` i `_on_rebuild_scheduled()` (korrekt).
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **OCR-positioner är approximativa** — x,y-koordinater från OCR stämmer inte perfekt med PDF-koordinater vid hög zoom. Markörer kan hamna något fel.
