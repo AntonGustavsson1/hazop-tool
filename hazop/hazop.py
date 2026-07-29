@@ -16969,27 +16969,6 @@ class MainWindow(QMainWindow):
         self.btn_admin.clicked.connect(lambda: self._switch_view(3))
         self.btn_settings.clicked.connect(lambda: self._switch_view(4))
 
-    def _ensure_panel(self, panel_type: str):
-        """Lazy-load panel on first access."""
-        if panel_type == 'welcome' and self.welcome_panel is None:
-            self.welcome_panel = WelcomePanel()
-            self.stack.replaceWidget(self.stack.widget(0), self.welcome_panel)
-        elif panel_type == 'node' and self.node_panel is None:
-            self.node_panel = NodePanel(self.db)
-            self.stack.replaceWidget(self.stack.widget(1), self.node_panel)
-        elif panel_type == 'deviation' and self.deviation_panel is None:
-            self.deviation_panel = DeviationPanel(self.db)
-            self.stack.replaceWidget(self.stack.widget(2), self.deviation_panel)
-        elif panel_type == 'cause' and self.cause_panel is None:
-            self.cause_panel = CausePanel(self.db)
-            self.stack.replaceWidget(self.stack.widget(3), self.cause_panel)
-        elif panel_type == 'consequence' and self.cons_panel is None:
-            self.cons_panel = ConsequencePanel(self.db)
-            self.stack.replaceWidget(self.stack.widget(4), self.cons_panel)
-        elif panel_type == 'safeguard' and self.sg_panel is None:
-            self.sg_panel = SafeguardPanel(self.db)
-            self.stack.replaceWidget(self.stack.widget(5), self.sg_panel)
-
         # View stack
         self.view_stack = QStackedWidget()
         root_layout.addWidget(self.view_stack)
@@ -17005,35 +16984,30 @@ class MainWindow(QMainWindow):
 
         self._h_splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # Lazy-load panels to speed up startup — only essential panels created immediately
-        self._panels_created = set()
         self.tree_panel = TreePanel(self.db)
         self.tree_panel.setMinimumWidth(220)
         self.tree_panel.setMaximumWidth(340)
         self._h_splitter.addWidget(self.tree_panel)
-        self._panels_created.add('tree')
 
         self.pid_panel = PIDPanel(self.db)
         self.pid_panel.setMinimumWidth(400)
         self._h_splitter.addWidget(self.pid_panel)
-        self._panels_created.add('pid')
 
         # Right panel replaced with narrow PropertiesRibbon (feature request)
-        # Defer creating unused panels until first access
-        self.welcome_panel    = None
-        self.node_panel       = None
-        self.deviation_panel  = None
-        self.cause_panel      = None
-        self.cons_panel       = None
-        self.sg_panel         = None
+        # Keep the old panels instantiated so existing signal wiring still compiles,
+        # but they are not shown in the splitter.
+        self.welcome_panel    = WelcomePanel()
+        self.node_panel       = NodePanel(self.db)
+        self.deviation_panel  = DeviationPanel(self.db)
+        self.cause_panel      = CausePanel(self.db)
+        self.cons_panel       = ConsequencePanel(self.db)
+        self.sg_panel         = SafeguardPanel(self.db)
         # Dummy stack kept so existing code that calls self.stack.setCurrentWidget() works
         self.stack = QStackedWidget()
         self._right_scroll = QScrollArea()   # kept for _reload_all_panels compatibility
-
-        # Add placeholder widgets for lazy-loaded panels
-        for i in range(6):
-            placeholder = QWidget()
-            self.stack.addWidget(placeholder)
+        for panel in [self.welcome_panel, self.node_panel, self.deviation_panel,
+                      self.cause_panel, self.cons_panel, self.sg_panel]:
+            self.stack.addWidget(panel)
 
         # Narrow properties ribbon
         self.props_ribbon = PropertiesRibbon(self.db, main_window=self)
@@ -17301,17 +17275,14 @@ class MainWindow(QMainWindow):
         self.props_ribbon.set_item(type_, id_)
         if type_ == NODE_T:
             self.pid_panel.set_active_node(id_)
-            self._ensure_panel('deviation')
             self.scenario_panel.load_node(id_)
             if self.view_stack.currentIndex() == 0:
                 QTimer.singleShot(80, lambda nid=id_: self.zoom_to_node(nid))
         elif type_ == DEV_T:
             self.pid_panel.set_active_deviation(id_)
-            self._ensure_panel('deviation')
             self.scenario_panel.load_deviation(id_)
         elif type_ == CAUSE_T:
             self.pid_panel.set_active_cause(id_)
-            self._ensure_panel('cause')
             _row = self.db.get_cause(id_); cause = dict(_row) if _row else None
             if cause and cause.get('deviation_id'):
                 self.scenario_panel.load_deviation(cause['deviation_id'])
@@ -17319,7 +17290,6 @@ class MainWindow(QMainWindow):
                 self.scenario_panel.load_cause(id_)
         elif type_ == CONS_T:
             self.pid_panel.set_active_consequence(id_)
-            self._ensure_panel('consequence')
             _cons = self.db.get_consequence(id_)
             cons = dict(_cons) if _cons else None
             if cons:
@@ -17332,7 +17302,6 @@ class MainWindow(QMainWindow):
             else:
                 self.scenario_panel.load_consequence(id_)
         elif type_ == SG_T:
-            self._ensure_panel('safeguard')
             sg = self.db.get_safeguard(id_)
             if sg:
                 cons = self.db.get_consequence(sg['consequence_id'])
@@ -18576,21 +18545,11 @@ if __name__ == '__main__':
     app.notify = _safe_notify
 
     try:
-        import time
-        t0 = time.time()
-
         splash.set_status("Laddar databas...")
-        t1 = time.time()
         win = MainWindow()
-        t2 = time.time()
-
         splash.set_status("Initialiserar gränssnitt...")
         app.processEvents()
         splash.close_splash()
-
-        t3 = time.time()
-        logging.info(f'Startup timing: DB={t1-t0:.2f}s, MainWindow={t2-t1:.2f}s, UI={t3-t2:.2f}s, Total={t3-t0:.2f}s')
-
         win.show()
         code = app.exec()
         logging.info('=== HAZOP Tool exited (code %d) ===', code)
