@@ -16913,16 +16913,16 @@ class MainWindow(QMainWindow):
         toggle_lay.addWidget(lbl_db)
         root_layout.addWidget(toggle_bar)
 
+        # View stack (init BEFORE setChecked to prevent signal before object exists)
+        self.view_stack = QStackedWidget()
+        root_layout.addWidget(self.view_stack)
+
         self.btn_pid.setChecked(True)
         self.btn_pid.clicked.connect(lambda: self._switch_view(0))
         self.btn_sheet.clicked.connect(lambda: self._switch_view(1))
         self.btn_equip.clicked.connect(lambda: self._switch_view(2))
         self.btn_admin.clicked.connect(lambda: self._switch_view(3))
         self.btn_settings.clicked.connect(lambda: self._switch_view(4))
-
-        # View stack
-        self.view_stack = QStackedWidget()
-        root_layout.addWidget(self.view_stack)
 
         # ── Page 0: P&ID view ─────────────────────────────────────────────────
         pid_page = QWidget()
