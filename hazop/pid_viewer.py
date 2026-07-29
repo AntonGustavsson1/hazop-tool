@@ -7036,7 +7036,6 @@ class PIDPanel(QWidget):
             (MODE_NAV,         "🔍 Navigera"),
             (MODE_CAUSE,       "⚙️ Orsak"),
             (MODE_CONSEQUENCE, "⚠️ Konsekvens"),
-            (MODE_SAFEGUARD,   "🛡️ Safeguard"),
         ]
         for mode, label in mode_defs:
             btn = QPushButton(label)
