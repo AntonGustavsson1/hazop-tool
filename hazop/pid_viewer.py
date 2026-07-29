@@ -2562,8 +2562,17 @@ class SafeguardPickerDialog(QDialog):
         self.description = self.desc_edit.text().strip()
         if not self.description:
             self.description = self.tag or 'Safeguard'
-        self.sg_type  = SG_TYPES[self.type_combo.currentIndex()]
-        self.rrf      = _RRF_VALUES[self.rrf_combo.currentIndex()]
+        # Bounds check before accessing arrays to avoid IndexError on -1 index
+        type_idx = self.type_combo.currentIndex()
+        if type_idx >= 0:
+            self.sg_type = SG_TYPES[type_idx]
+        else:
+            self.sg_type = SG_TYPES[0]  # Default to 'BPCS' if combo not initialized
+        rrf_idx = self.rrf_combo.currentIndex()
+        if rrf_idx >= 0:
+            self.rrf = _RRF_VALUES[rrf_idx]
+        else:
+            self.rrf = _RRF_VALUES[0]  # Default to RRF=1 if combo not initialized
         self.add_more = add_more
         self.accept()
 
@@ -2581,6 +2590,7 @@ class _PageRenderer(QThread):
     def run(self):
         if not HAS_PYMUPDF:
             return
+        doc = None
         try:
             doc = fitz.open(self._path)
             for pn in self._pages:
@@ -2590,9 +2600,14 @@ class _PageRenderer(QThread):
                 mat  = fitz.Matrix(self._scale, self._scale)
                 pix  = page.get_pixmap(matrix=mat, alpha=False)
                 self.page_ready.emit(pn, bytes(pix.samples), pix.width, pix.height, pix.stride)
-            doc.close()
-        except Exception:
-            pass
+        except Exception as e:
+            # Log exception silently — thread errors shouldn't crash main UI
+            import logging
+            logging.debug(f"_PageRenderer failed for {self._path}: {e}")
+        finally:
+            # Ensure PDF document is always closed, even if exception occurred
+            if doc is not None:
+                doc.close()
 
 
 class SmartPipeTracer:
