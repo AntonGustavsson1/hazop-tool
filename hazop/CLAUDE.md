@@ -32,6 +32,20 @@ python -m py_compile hazop.py && python -m py_compile pid_viewer.py
 
 **Always update `NOTES.md` at the end of every session** (or after each meaningful change) — add new decisions, move completed items into the implemented table, and record anything deferred. Commit it together with the changed source files.
 
+## Crash Reporting (Automatic)
+
+At the start of EVERY session, Claude automatically checks for new crash reports in `hazop/crashes/` and reports them:
+
+**What happens:**
+1. Crash reports are saved as JSON files: `crash_YYYYMMDD_HHMMSS_ExceptionType.json`
+2. Each report contains: exception type, message, full stack trace, local variables, Python version, OS, dependency versions
+3. Claude reads these automatically and says: "I found 2 new crashes since last time"
+4. User can ask Claude to analyze them in detail
+
+**Why JSON format?** Machine-readable for automated analysis, includes full diagnostic context in one file.
+
+**See also:** `CRASH_REPORTING.md` for detailed documentation.
+
 ## Git workflow
 
 After every meaningful change, commit and push so no work is ever lost:
