@@ -8,6 +8,7 @@ import shutil
 import tempfile
 import datetime
 import math
+import logging
 from pathlib import Path
 
 # Suppress Qt SVG parser warnings (font references, path truncations)
@@ -85,22 +86,94 @@ except ImportError:
     _RapidOCR = None
     HAS_RAPIDOCR = False
 
-_rapidocr_instance = None   # cached after first use
-
 try:
     from PIL import Image as _PILImage, ImageFilter, ImageEnhance, ImageOps
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
 
-_easyocr_reader_cache = None
+
+# ── OCR Reader Lifecycle Manager ──────────────────────────────────────────────
+# Centralized handling of OCR model caching and cleanup. Both EasyOCR and RapidOCR
+# load large ML models (~100-500MB) that must be explicitly deallocated to avoid
+# memory leaks on application exit.
+
+class _OCRLifecycleManager:
+    """Singleton managing OCR reader lifecycle with automatic cleanup."""
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._init()
+        return cls._instance
+
+    def _init(self):
+        self._easyocr_reader = None
+        self._rapidocr_instance = None
+
+    def get_easyocr_reader(self):
+        """Get or create EasyOCR reader; lazily initialized on first use."""
+        if self._easyocr_reader is None and HAS_EASYOCR:
+            try:
+                self._easyocr_reader = _easyocr_module.Reader(['en'], gpu=False, verbose=False)
+            except Exception:
+                return None
+        return self._easyocr_reader
+
+    def get_rapidocr_instance(self):
+        """Get or create RapidOCR instance; lazily initialized on first use."""
+        if self._rapidocr_instance is None and HAS_RAPIDOCR:
+            try:
+                self._rapidocr_instance = _RapidOCR()
+            except Exception:
+                return None
+        return self._rapidocr_instance
+
+    def cleanup(self):
+        """Explicitly release OCR resources. Safe to call multiple times."""
+        if self._easyocr_reader is not None:
+            try:
+                # EasyOCR has no explicit cleanup, but we null the reference
+                # to allow garbage collection of the model
+                self._easyocr_reader = None
+            except Exception:
+                pass
+
+        if self._rapidocr_instance is not None:
+            try:
+                # RapidOCR resources are released by Python's GC
+                self._rapidocr_instance = None
+            except Exception:
+                pass
+
+    def __del__(self):
+        """Cleanup on object destruction (at app exit or manual cleanup)."""
+        try:
+            self.cleanup()
+        except Exception:
+            pass
+
+
+# Global manager instance
+_ocr_manager = _OCRLifecycleManager()
 
 
 def _get_easyocr_reader():
-    global _easyocr_reader_cache
-    if _easyocr_reader_cache is None and HAS_EASYOCR:
-        _easyocr_reader_cache = _easyocr_module.Reader(['en'], gpu=False, verbose=False)
-    return _easyocr_reader_cache
+    """Get EasyOCR reader from the global lifecycle manager."""
+    return _ocr_manager.get_easyocr_reader()
+
+
+def _get_rapidocr_instance():
+    """Get RapidOCR instance from the global lifecycle manager."""
+    return _ocr_manager.get_rapidocr_instance()
+
+
+def cleanup_ocr_resources():
+    """Public API to manually cleanup OCR resources (called on app exit)."""
+    global _ocr_manager
+    if _ocr_manager:
+        _ocr_manager.cleanup()
 
 
 def ocr_status() -> dict:
@@ -115,14 +188,14 @@ def ocr_status() -> dict:
 
 def _ocr_page_rapidocr(pil_image, scale: float):
     """Run RapidOCR on a PIL image; return list of (text, x_pdf, y_pdf)."""
-    global _rapidocr_instance
     if not HAS_RAPIDOCR:
         return []
     try:
         import numpy as np
-        if _rapidocr_instance is None:
-            _rapidocr_instance = _RapidOCR()
-        result, _ = _rapidocr_instance(np.array(pil_image.convert('RGB')))
+        reader = _get_rapidocr_instance()
+        if reader is None:
+            return []
+        result, _ = reader(np.array(pil_image.convert('RGB')))
         if not result:
             return []
         out = []
@@ -3208,18 +3281,16 @@ class ConnectorAnalyzer(QThread):
             except Exception:
                 pass
 
-            # easyocr fallback (lazy-init reader on first use)
+            # easyocr fallback (uses centralized lifecycle manager)
             try:
-                import easyocr as _easyocr
-                if not hasattr(self, '_easyocr_reader'):
-                    self._easyocr_reader = _easyocr.Reader(['en', 'sv'],
-                                                           verbose=False)
-                hits = self._easyocr_reader.readtext(pil_img,
-                                                     detail=0,
-                                                     paragraph=True)
-                text = ' '.join(hits).strip()
-                if text:
-                    return text
+                reader = _get_easyocr_reader()
+                if reader is not None:
+                    hits = reader.readtext(pil_img,
+                                          detail=0,
+                                          paragraph=True)
+                    text = ' '.join(hits).strip()
+                    if text:
+                        return text
             except Exception:
                 pass
         except Exception:
@@ -3777,6 +3848,9 @@ class PIDGraphicsView(QGraphicsView):
         self.rubber_line        = None
         self._rect_label        = None   # QGraphicsTextItem — live tag inside rubber band
 
+        # Cache for PDF line segments (for smart snapping to drawing details)
+        self._pdf_line_segments: dict = {}  # page_num → list of line tuples (x1,y1,x2,y2)
+
         # Right-drag rubber-band (NAV mode)
         self._rband_start_scene  = None
         self._rband_preview_item = None
@@ -3940,7 +4014,7 @@ class PIDGraphicsView(QGraphicsView):
         self._cancel_lod_render()
         for item in list(self._all_page_items.values()):
             try: self._scene.removeItem(item)
-            except Exception: pass
+            except RuntimeError as e: logging.warning(f"Failed to remove page item from scene: {e}")
         self._all_page_items.clear()
         self._low_pixmaps.clear()
         self._hires_pages.clear()
@@ -4146,6 +4220,8 @@ class PIDGraphicsView(QGraphicsView):
         self.page_rect_width  = self._page_widths_pdf.get(n, 0.0)
         self.page_rect_height = self._page_heights_pdf.get(n, 0.0)
         self._cancel_drawing()
+        # Pre-extract PDF lines for smart snapping (background cache)
+        QTimer.singleShot(100, lambda: self._extract_pdf_lines_for_page(n))
         if n in self._page_offsets:
             ox, oy = self._page_offsets[n]
             rs = self.render_scale
@@ -4325,11 +4401,11 @@ class PIDGraphicsView(QGraphicsView):
     def _remove_temp_items(self):
         for item in self.temp_items:
             try: self._scene.removeItem(item)
-            except Exception: pass
+            except RuntimeError as e: logging.warning(f"Failed to remove temp item from scene: {e}")
         self.temp_items = []
         if self.rubber_line is not None:
             try: self._scene.removeItem(self.rubber_line)
-            except Exception: pass
+            except RuntimeError as e: logging.warning(f"Failed to remove rubber line from scene: {e}")
             self.rubber_line = None
 
     def add_node_overlay(self, node_id, points_pdf, style, label):
@@ -4487,13 +4563,131 @@ class PIDGraphicsView(QGraphicsView):
         items.append(txt)
         return items
 
+    def _line_segments_intersect(self, p1, p2, p3, p4):
+        """Check if line segment p1-p2 intersects p3-p4. Return (True, intersection_point) or (False, None)."""
+        x1, y1 = p1[0], p1[1]
+        x2, y2 = p2[0], p2[1]
+        x3, y3 = p3[0], p3[1]
+        x4, y4 = p4[0], p4[1]
+
+        denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+        if abs(denom) < 1e-10:
+            return False, None
+
+        t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
+        u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / denom
+
+        if 0 <= t <= 1 and 0 <= u <= 1:
+            ix = x1 + t * (x2 - x1)
+            iy = y1 + t * (y2 - y1)
+            return True, (ix, iy)
+        return False, None
+
+    def _get_boundary_crossings(self, boundary_polygon, pdf_lines):
+        """Find all points where PDF lines cross the boundary polygon.
+        Returns list of (crossing_point, line_seg) tuples."""
+        crossings = []
+
+        # Create boundary segments
+        boundary_segs = []
+        for i in range(len(boundary_polygon)):
+            p1 = boundary_polygon[i]
+            p2 = boundary_polygon[(i + 1) % len(boundary_polygon)]
+            boundary_segs.append((p1, p2))
+
+        # Find intersections
+        for line_seg in pdf_lines:
+            x0, y0, x1, y1 = line_seg
+            for b_p1, b_p2 in boundary_segs:
+                intersects, pt = self._line_segments_intersect((x0, y0), (x1, y1), b_p1, b_p2)
+                if intersects and pt:
+                    crossings.append((pt, line_seg))
+
+        return crossings
+
+    def _closest_point_on_line_segment(self, p, line_seg):
+        """Find closest point on a line segment to point p. Returns (closest_point, distance)."""
+        x, y = p.x(), p.y()
+        x0, y0, x1, y1 = line_seg
+
+        # Vector from start to end
+        dx = x1 - x0
+        dy = y1 - y0
+
+        # If line segment is a point
+        if dx == 0 and dy == 0:
+            dist = ((x - x0) ** 2 + (y - y0) ** 2) ** 0.5
+            return QPointF(x0, y0), dist
+
+        # Parameter t for the projection onto the line
+        t = ((x - x0) * dx + (y - y0) * dy) / (dx * dx + dy * dy)
+        t = max(0, min(1, t))  # Clamp to [0, 1] to stay on segment
+
+        # Closest point on segment
+        closest_x = x0 + t * dx
+        closest_y = y0 + t * dy
+
+        dist = ((x - closest_x) ** 2 + (y - closest_y) ** 2) ** 0.5
+        return QPointF(closest_x, closest_y), dist
+
+    def _extract_pdf_lines_for_page(self, page_num):
+        """Extract all visible line segments from a PDF page for snapping."""
+        if not HAS_PYMUPDF or self.pdf_doc is None:
+            return []
+        if page_num in self._pdf_line_segments:
+            return self._pdf_line_segments[page_num]
+
+        lines = []
+        try:
+            page = self.pdf_doc[page_num]
+            # Get all paths and shapes on the page
+            for path in page.get_drawings():
+                # Each drawing can contain lines, rectangles, etc.
+                rects = path.rects if hasattr(path, 'rects') else []
+                lines_in_path = path.lines if hasattr(path, 'lines') else []
+
+                # Add rectangle edges as line segments
+                for rect in rects:
+                    x0, y0, x1, y1 = rect
+                    lines.append((x0, y0, x1, y0))  # top
+                    lines.append((x1, y0, x1, y1))  # right
+                    lines.append((x1, y1, x0, y1))  # bottom
+                    lines.append((x0, y1, x0, y0))  # left
+
+                # Add line segments directly
+                for line in lines_in_path:
+                    x0, y0, x1, y1 = line
+                    lines.append((x0, y0, x1, y1))
+
+            self._pdf_line_segments[page_num] = lines
+        except Exception:
+            self._pdf_line_segments[page_num] = []
+
+        return self._pdf_line_segments[page_num]
+
     def _snap_to_nearest(self, scene_pos):
-        """Return nearest existing markup path point within snap threshold, else original pos."""
+        """Smart snapping: PDF lines (priority), markup paths, markers, and in-progress points."""
         if not self._snap_enabled:
             return scene_pos
         SNAP_PX = 18.0
         best_dist = SNAP_PX
         best_pos = scene_pos
+
+        # Convert scene position to PDF coordinates for line snapping
+        pdf_pos = self.scene_to_pdf(scene_pos)
+        pdf_x, pdf_y = pdf_pos[0], pdf_pos[1]
+        pdf_pt = QPointF(pdf_x, pdf_y)
+
+        # 1. PRIORITY: Snap to PDF drawing details (lines, rectangles) — MOST IMPORTANT
+        pdf_lines = self._extract_pdf_lines_for_page(self.current_page)
+        for line_seg in pdf_lines:
+            closest_pdf_pt, dist = self._closest_point_on_line_segment(pdf_pt, line_seg)
+            if dist < best_dist:
+                best_dist = dist
+                # Convert back to scene coordinates
+                best_pos = self.pdf_to_scene(closest_pdf_pt.x(), closest_pdf_pt.y())
+
+        # 2. Snap to existing node markup path points
         for mu_id, items in self._markup_items.items():
             for gi in items:
                 if not isinstance(gi, QGraphicsPathItem):
@@ -4508,7 +4702,19 @@ class PIDGraphicsView(QGraphicsView):
                     if dist < best_dist:
                         best_dist = dist
                         best_pos = pt
-        # Also snap to in-progress draw points
+
+        # 3. Snap to cause/consequence/safeguard marker centers
+        for marker_type in ('cause', 'consequence', 'safeguard'):
+            for item in self._type_items.get(marker_type, []):
+                center = item.pos() + item.boundingRect().center()
+                dx = center.x() - scene_pos.x()
+                dy = center.y() - scene_pos.y()
+                dist = (dx * dx + dy * dy) ** 0.5
+                if dist < best_dist:
+                    best_dist = dist
+                    best_pos = center
+
+        # 4. Snap to in-progress draw points
         for pt in self.draw_points:
             dx = pt.x() - scene_pos.x()
             dy = pt.y() - scene_pos.y()
@@ -4516,6 +4722,7 @@ class PIDGraphicsView(QGraphicsView):
             if dist < best_dist:
                 best_dist = dist
                 best_pos = pt
+
         return best_pos
 
     def clear_markup_overlays(self):
@@ -4525,14 +4732,14 @@ class PIDGraphicsView(QGraphicsView):
         for mu_id, items in self._markup_items.items():
             for gi in items:
                 try: self._scene.removeItem(gi)
-                except Exception: pass
+                except RuntimeError as e: logging.warning(f"Failed to remove markup item from scene: {e}")
         self._markup_items.clear()
         self._markup_highlighted = -1
 
     def set_markup_item_visible(self, mu_id, visible):
         for gi in self._markup_items.get(mu_id, []):
             try: gi.setVisible(visible)
-            except Exception: pass
+            except RuntimeError as e: logging.warning(f"Failed to set markup item visibility: {e}")
 
     # ── Red markup overlay methods ────────────────────────────────────────────
 
@@ -4554,13 +4761,13 @@ class PIDGraphicsView(QGraphicsView):
         for mu_id, items in self._red_markup_items.items():
             for gi in items:
                 try: self._scene.removeItem(gi)
-                except Exception: pass
+                except RuntimeError as e: logging.warning(f"Failed to remove red markup item from scene: {e}")
         self._red_markup_items.clear()
 
     def set_red_markup_item_visible(self, mu_id, visible):
         for gi in self._red_markup_items.get(mu_id, []):
             try: gi.setVisible(visible)
-            except Exception: pass
+            except RuntimeError as e: logging.warning(f"Failed to set red markup item visibility: {e}")
 
     def _add_markup_symbol_item(self, mu_id, svg_str, pos_pdf, color, opacity,
                                 symbol_w=40, symbol_h=40, symbol_rot=0, label=''):
@@ -4607,21 +4814,21 @@ class PIDGraphicsView(QGraphicsView):
     def _clear_edit_handles(self):
         for h in self._vertex_handles:
             try: self._scene.removeItem(h)
-            except Exception: pass
+            except RuntimeError as e: logging.warning(f"Failed to remove vertex handle: {e}")
         for h in self._corner_handles:
             try: self._scene.removeItem(h)
-            except Exception: pass
+            except RuntimeError as e: logging.warning(f"Failed to remove corner handle: {e}")
         if self._rot_handle is not None:
             try: self._scene.removeItem(self._rot_handle)
-            except Exception: pass
+            except RuntimeError as e: logging.warning(f"Failed to remove rotation handle: {e}")
             self._rot_handle = None
         if self._rot_handle_line is not None:
             try: self._scene.removeItem(self._rot_handle_line)
-            except Exception: pass
+            except RuntimeError as e: logging.warning(f"Failed to remove rotation handle line: {e}")
             self._rot_handle_line = None
         if self._symbol_bbox_proxy is not None:
             try: self._scene.removeItem(self._symbol_bbox_proxy)
-            except Exception: pass
+            except RuntimeError as e: logging.warning(f"Failed to remove symbol bounding box: {e}")
             self._symbol_bbox_proxy = None
         self._corner_handles          = []
         self._vertex_handles          = []
@@ -4943,7 +5150,7 @@ class PIDGraphicsView(QGraphicsView):
     def _clear_smart_preview(self):
         for gi in self._smart_preview:
             try: self._scene.removeItem(gi)
-            except Exception: pass
+            except RuntimeError as e: logging.warning(f"Failed to remove smart preview item: {e}")
         self._smart_preview.clear()
 
     def _draw_smart_marker(self, scene_pos, role):
@@ -5001,7 +5208,7 @@ class PIDGraphicsView(QGraphicsView):
         markers = self._smart_preview[:2]
         for gi in self._smart_preview[2:]:
             try: self._scene.removeItem(gi)
-            except Exception: pass
+            except RuntimeError as e: logging.warning(f"Failed to remove smart path item: {e}")
         self._smart_preview = markers
 
         if not self._smart_paths or idx >= len(self._smart_paths):
@@ -5167,7 +5374,7 @@ class PIDGraphicsView(QGraphicsView):
         info = self._zone_rects.pop(key)
         for item in [info['rect_item']] + info['handles']:
             try: self._scene.removeItem(item)
-            except Exception: pass
+            except RuntimeError as e: logging.warning(f"Failed to remove zone item: {e}")
 
     def _zone_handle_hit(self, view_point):
         """Return (key, cidx) if view_point (QPoint) is within 12px of a zone corner handle."""
@@ -5524,7 +5731,7 @@ class PIDGraphicsView(QGraphicsView):
         for item in list(self._scene.items()):
             if item.zValue() == Z_HIGHLIGHT:
                 try: self._scene.removeItem(item)
-                except Exception: pass
+                except RuntimeError as e: logging.warning(f"Failed to remove highlight item: {e}")
 
     def add_connection_line(self, start: QPointF, end: QPointF, color: str, dashed=False):
         pen = QPen(QColor(color), 1.5)
@@ -5760,10 +5967,10 @@ class PIDGraphicsView(QGraphicsView):
                 continue
             if item.zValue() >= Z_SHEET_CONN or item.zValue() < Z_PAGE:
                 try: self._scene.removeItem(item)
-                except Exception: pass
+                except RuntimeError as e: logging.warning(f"Failed to remove overlay item: {e}")
         if self._pending_path_item is not None:
             try: self._scene.removeItem(self._pending_path_item)
-            except Exception: pass
+            except RuntimeError as e: logging.warning(f"Failed to remove pending path item: {e}")
             self._pending_path_item = None
         # Clear per-type item lists, zone rect dict, and label slots
         for key in self._type_items:
@@ -5838,7 +6045,7 @@ class PIDGraphicsView(QGraphicsView):
             if event.button() == Qt.MouseButton.LeftButton:
                 self._add_draw_point(self._snap_to_nearest(sp)); event.accept(); return
             elif event.button() == Qt.MouseButton.RightButton:
-                self._cancel_drawing(); event.accept(); return
+                self._finish_markup_drawing(); event.accept(); return
         elif self.mode == MODE_SMART_POLYLINE:
             if event.button() == Qt.MouseButton.LeftButton:
                 if self._smart_start_pdf is None:
@@ -5983,11 +6190,11 @@ class PIDGraphicsView(QGraphicsView):
                 sp = self.mapToScene(event.position().toPoint())
                 if self._rband_preview_item is not None:
                     try: self._scene.removeItem(self._rband_preview_item)
-                    except Exception: pass
+                    except RuntimeError as e: logging.warning(f"Failed to remove rubber-band preview: {e}")
                     self._rband_preview_item = None
                 if self._rband_label_item is not None:
                     try: self._scene.removeItem(self._rband_label_item)
-                    except Exception: pass
+                    except RuntimeError as e: logging.warning(f"Failed to remove rubber-band label: {e}")
                     self._rband_label_item = None
                 rect = QRectF(self._rband_start_scene, sp).normalized()
                 rs = self.render_scale
@@ -6017,11 +6224,11 @@ class PIDGraphicsView(QGraphicsView):
             # Remove rubber-band rect + label
             if self._rect_item is not None:
                 try: self._scene.removeItem(self._rect_item)
-                except Exception: pass
+                except RuntimeError as e: logging.warning(f"Failed to remove rect rubber-band: {e}")
                 self._rect_item = None
             if self._rect_label is not None:
                 try: self._scene.removeItem(self._rect_label)
-                except Exception: pass
+                except RuntimeError as e: logging.warning(f"Failed to remove rect label: {e}")
                 self._rect_label = None
             self._rect_start = None
 
@@ -6143,7 +6350,7 @@ class PIDGraphicsView(QGraphicsView):
                 # _extract_tag_from_rect reads the PDF on every move event which is slow.
                 if self._rband_label_item is not None:
                     try: self._scene.removeItem(self._rband_label_item)
-                    except Exception: pass
+                    except RuntimeError as e: logging.warning(f"Failed to remove dragged label: {e}")
                     self._rband_label_item = None
             event.accept(); return
 
@@ -6184,10 +6391,10 @@ class PIDGraphicsView(QGraphicsView):
             rect = QRectF(self._rect_start, current).normalized()
             if self._rect_item is not None:
                 try: self._scene.removeItem(self._rect_item)
-                except Exception: pass
+                except RuntimeError as e: logging.warning(f"Failed to remove motion rect item: {e}")
             if self._rect_label is not None:
                 try: self._scene.removeItem(self._rect_label)
-                except Exception: pass
+                except RuntimeError as e: logging.warning(f"Failed to remove motion rect label: {e}")
                 self._rect_label = None
             # Color matches tree-panel visibility button: cause=red, cons=orange, sg=green
             _mode_colors = {
@@ -7378,7 +7585,7 @@ class PIDPanel(QWidget):
                     total_pages = base_doc.page_count
                     if self.viewer.pdf_doc is not None:
                         try: self.viewer.pdf_doc.close()
-                        except Exception: pass
+                        except Exception as e: logging.error(f"Failed to close previous PDF document: {e}")
                         self.viewer.pdf_doc = None
                     tmp_fd, tmp_path = tempfile.mkstemp(
                         suffix='.pdf', dir=str(working.parent))
@@ -7425,7 +7632,7 @@ class PIDPanel(QWidget):
                     total_pages = existing_pg_cnt + n_new
                     if self.viewer.pdf_doc is not None:
                         try: self.viewer.pdf_doc.close()
-                        except Exception: pass
+                        except Exception as e: logging.error(f"Failed to close existing PDF document during merge: {e}")
                         self.viewer.pdf_doc = None
                     tmp_fd, tmp_path = tempfile.mkstemp(
                         suffix='.pdf', dir=str(working.parent))
@@ -8432,7 +8639,7 @@ class PIDPanel(QWidget):
                 for mu in self.db.node_markups_for_page(page):
                     m = dict(mu)
                     try: pts = json.loads(m.get('points', '[]') or '[]')
-                    except Exception: pts = []
+                    except ValueError as e: logging.warning(f"Failed to parse markup points JSON: {e}"); pts = []
                     self.viewer.add_markup_overlay(
                         m['id'], m.get('type', 'polygon'), pts,
                         m.get('label', ''), m.get('color', '#1565C0'),
@@ -8443,7 +8650,7 @@ class PIDPanel(QWidget):
                 for mu in self.db.node_red_markups_for_page(page):
                     m = dict(mu)
                     try: pts = json.loads(m.get('points', '[]') or '[]')
-                    except Exception: pts = []
+                    except ValueError as e: logging.warning(f"Failed to parse markup points JSON: {e}"); pts = []
                     self.viewer.add_red_markup_overlay(
                         m['id'], m.get('type', 'polygon'), pts,
                         m.get('label', ''), m.get('color', '#CC0000'),
@@ -8542,9 +8749,9 @@ class PIDPanel(QWidget):
     def exit_markup_mode(self):
         """Return to normal navigation mode."""
         try: self.viewer.markup_draw_finished.disconnect(self._on_viewer_markup_drawn)
-        except Exception: pass
+        except RuntimeError as e: logging.warning(f"Markup draw finished signal not connected: {e}")
         try: self.viewer.markup_item_clicked.disconnect(self._on_viewer_markup_clicked)
-        except Exception: pass
+        except RuntimeError as e: logging.warning(f"Markup item clicked signal not connected: {e}")
         self._active_markup_class = 'node'
         self._active_symbol_id = None
         self._set_mode(MODE_NAV)
@@ -8574,7 +8781,7 @@ class PIDPanel(QWidget):
                 for mu in self.db.node_markups_for_page(page):
                     m = dict(mu)
                     try: pts = json.loads(m.get('points', '[]') or '[]')
-                    except Exception: pts = []
+                    except ValueError as e: logging.warning(f"Failed to parse markup points JSON: {e}"); pts = []
                     self.viewer.add_markup_overlay(
                         m['id'], m.get('type', 'polygon'), pts,
                         m.get('label', ''), m.get('color', '#1565C0'),
@@ -8597,9 +8804,9 @@ class PIDPanel(QWidget):
     def exit_red_markup_mode(self):
         """Return to normal navigation mode from red markup."""
         try: self.viewer.markup_draw_finished.disconnect(self._on_viewer_markup_drawn)
-        except Exception: pass
+        except RuntimeError as e: logging.warning(f"Red markup draw finished signal not connected: {e}")
         try: self.viewer.markup_item_clicked.disconnect(self._on_viewer_markup_clicked)
-        except Exception: pass
+        except RuntimeError as e: logging.warning(f"Red markup item clicked signal not connected: {e}")
         self._active_markup_class = 'node'
         self._active_symbol_id = None
         self._set_mode(MODE_NAV)
@@ -8633,7 +8840,7 @@ class PIDPanel(QWidget):
                 for mu in self.db.node_red_markups_for_page(page):
                     m = dict(mu)
                     try: pts = json.loads(m.get('points', '[]') or '[]')
-                    except Exception: pts = []
+                    except ValueError as e: logging.warning(f"Failed to parse markup points JSON: {e}"); pts = []
                     self.viewer.add_red_markup_overlay(
                         m['id'], m.get('type', 'polygon'), pts,
                         m.get('label', ''), m.get('color', '#CC0000'),
