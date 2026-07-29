@@ -4032,6 +4032,7 @@ class PIDGraphicsView(QGraphicsView):
             try: self._scene.removeItem(item)
             except RuntimeError as e: logging.warning(f"Failed to remove page item from scene: {e}")
         self._all_page_items.clear()
+        self.page_item = None  # Clear reference to avoid double-removal errors
         self._low_pixmaps.clear()
         self._hires_pages.clear()
         self._page_offsets.clear()
