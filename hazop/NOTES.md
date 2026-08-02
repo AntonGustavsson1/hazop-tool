@@ -192,6 +192,32 @@
 
 ---
 
+## Tredje `_rebuild()`-kraschen — ny trigger hittad (2026-08-02, uppföljning)
+
+**Bakgrund:** Krascher i `ScenarioTablePanel._rebuild()` återkom en TREDJE gång trots två tidigare fixar (`84c8b7c`: `_LopaWidget`-focus-out-reentrancy-skydd i `_update_lopa_risk()`; `686e289`: dubbel `tree_panel.refresh()+_on_selected()`-mönster). Loggen (`hazop_crash.log`, 2026-08-02 12:08:46) visade `_rebuild: D — setRowCount(0)` och `_rebuild: E — reset meta` och sen inget mer — ingen Python-exception, processen dog tyst mitt i `_build_rows()`, som saknade all intern loggning.
+
+**Verifierat att de två tidigare fixarna fortfarande sitter korrekt:**
+- `_rebuild()` rensar fokus (`self._table.focusWidget().clearFocus()`, null-skyddat) före `setRowCount(0)` — oförändrat, korrekt.
+- `_update_lopa_risk()` har `if getattr(self, '_rebuilding', False): return` som allra första rad — oförändrat, korrekt.
+- `_LopaWidget` är fortfarande den ENDA `setCellWidget()` inuti `ScenarioTablePanel` — inga andra oskyddade cell-widgets hittades.
+
+**Ny grundorsak hittad:** `ScenarioTablePanel._edit_extra()` (kopplad till en `_LopaWidget`s "+ övriga"-knapp — en live cell-widget i tabellen) anropade `self._rebuild()` **direkt och synkront** efter `dlg.exec()` — den ENDA dialoghanteraren i hela klassen som gjorde så. Alla andra 24 `_schedule_rebuild()`-anrop (via `QTimer.singleShot(0, ...)`) är korrekt fördröjda. Problemet: `dlg.exec()` kör en nästlad Qt-eventloop, och en redan köad `_schedule_rebuild()`-timer (från en tidigare cellklick) kan trigga UNDER den nästlade loopen — inte efter. Det innebär att `_rebuild()` kan köras medan `_edit_extra()` (och knappens `clicked`-hanterare som anropade den) fortfarande ligger kvar på C++-anropsstacken, pausad inuti `dlg.exec()`. `_rebuild()`s `setRowCount(0)` förstör då samma `_LopaWidget`/knapp som orsakade anropet — use-after-free utan Python-exception.
+
+**Fix:** `_edit_extra()` anropar nu `self._schedule_rebuild()` istället för `self._rebuild()` direkt, i linje med alla andra dialoghanterare i klassen.
+
+**Även gjort (hårdning + diagnostik, inte bevisad grundorsak):**
+- `_ScenarioDelegate.sizeHint()` — hela kroppen omsluten av try/except med säker `QSize`-fallback. Databaskontroll visade inga patologiska data (max 132 tecken, inga kontrolltecken) så detta är sannolikt INTE den faktiska triggern, men kostar inget som skyddsnät.
+- `_resize_rows()` — `resizeRowsToContents()`-anropet loggar nu explicit före/efter och loggar+re-raise:ar vid Python-catchable exceptions.
+- Granulär loggning tillagd genomgående i `_build_rows()` (checkpoints F0/F1/F2/G0-G3/H0-H3/I0), `_apply_spans()` (J0-J6) och `_resize_rows()` (K0-K3) — om kraschen återkommer en fjärde gång pekar loggen exakt ut vilket delsteg som orsakade den, istället för att bara visa D/E som tidigare.
+
+**`QGraphicsScene::addItem`-varningsfloden (pid_viewer.py) utredd separat:** En bakgrundsagent uteslöt alla 6 konkreta hypoteser om objekt-återanvändning (reentrant `_load_overlays()`, dubblettrader i DB, dubbel connection-line-loop, etc.) — ingen bekräftad. Enligt Qt-semantik är `addItem()` på ett redan tillagt objekt ett no-op (loggar varning, kraschar inte, korrumperar inte i sig). Varningsfloden är sannolikt symptom på samma allmänna "dubbel-invocation"-mönster som de tidigare `_rebuild()`-buggarna, men den exakta triggern hittades inte den här gången — inget fixat i `pid_viewer.py` denna session.
+
+**Ärlighet om säkerhetsgrad:** Native (C++-nivå) krascher går per definition inte att bevisa 100% i efterhand utan en debugger/core dump. `_edit_extra()`-fixen är en konkret, verifierad, tidigare-ej-undersökt reentrancy-väg som matchar kraschsignaturen exakt (tyst död, inget Python-undantag, mitt i tabellombyggnad) — men det kan finnas ytterligare triggers av samma klass. Den nya granulära loggningen är den viktigaste förbättringen: nästa ocurrence (om någon) bör peka ut den exakta raden istället för att kräva ny gissning.
+
+**Test:** Ny testklass `EditExtraDeferredRebuildTests` i `test_regression.py` (2 tester) verifierar att `_edit_extra()` numera anropar `_schedule_rebuild()` istället för `_rebuild()` direkt, och att en redan köad rebuild-timer som triggar under dialogens nästlade eventloop inte orsakar en extra, direkt-stacked rebuild ovanpå den. Alla 46 tester (44 tidigare + 2 nya) passerar: `python test_regression.py -v`.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **OCR-positioner är approximativa** — x,y-koordinater från OCR stämmer inte perfekt med PDF-koordinater vid hög zoom. Markörer kan hamna något fel.

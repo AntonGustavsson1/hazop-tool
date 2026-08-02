@@ -1768,5 +1768,142 @@ class HAZOPWorksheetTests(unittest.TestCase):
             ws.deleteLater()
 
 
+class EditExtraDeferredRebuildTests(unittest.TestCase):
+    """Reproduces the THIRD occurrence of the silent-native-crash class in
+    ScenarioTablePanel._rebuild() (2026-08-02, hazop_crash.log: the log
+    always stops right after '_rebuild: E — reset meta', with no further
+    output and no Python exception — i.e. inside _build_rows()).
+
+    The first two fixes (84c8b7c: _LopaWidget focus-out reentrancy guard in
+    _update_lopa_risk(); 686e289: double tree_panel.refresh()+_on_selected()
+    anti-pattern) were both confirmed still correctly in place and did not
+    explain this third occurrence. This test documents and guards against a
+    THIRD, independent trigger of the same underlying reentrancy class,
+    found by auditing every dialog .exec() call inside ScenarioTablePanel:
+
+    ScenarioTablePanel._edit_extra() (wired to a live _LopaWidget's
+    "+ övriga" QPushButton.clicked signal, itself a cell widget embedded in
+    self._table) used to call `self._rebuild()` directly and synchronously
+    right after `dlg.exec()` returned — the ONLY handler in the whole class
+    to do so; every other popup/dialog handler defers via
+    `self._schedule_rebuild()` (a `QTimer.singleShot(0, ...)`), and there
+    are 24 such call sites.
+
+    `dlg.exec()` pumps a NESTED Qt event loop. Any `QTimer.singleShot(0, ...)`
+    already queued by an earlier `_schedule_rebuild()` call (e.g. from a
+    click on a different cell moments before) fires DURING that nested loop
+    -- not after it -- which means `_rebuild()` can run while _edit_extra()
+    (and the button's `clicked` handler that invoked it) is still executing,
+    paused inside `dlg.exec()`, on the C++ call stack. `_rebuild()`'s
+    `setRowCount(0)` then destroys the very `_LopaWidget`/button that
+    originated this call. The fix makes _edit_extra() defer via
+    `_schedule_rebuild()` like every other handler, so it can never itself
+    race a pending scheduled rebuild the way a direct call could.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def _make_full_chain(self, db):
+        node_id = db.add_node()
+        deviation_id = db.deviations(node_id)[0]['id']
+        cause_id = db.add_cause(deviation_id)
+        cons_id = db.add_consequence(cause_id)
+        sg_id = db.add_safeguard(cons_id)
+        return {
+            'node_id': node_id, 'deviation_id': deviation_id,
+            'cause_id': cause_id, 'cons_id': cons_id, 'sg_id': sg_id,
+        }
+
+    def test_edit_extra_defers_rebuild_instead_of_calling_it_directly(self):
+        """_edit_extra() must schedule a rebuild via _schedule_rebuild()
+        (deferred, coalesced, safe against a nested dlg.exec() event loop)
+        rather than calling self._rebuild() synchronously right after the
+        dialog closes -- the pattern used by every other dialog handler in
+        this class."""
+        from hazop import ReductionFactorsDialog
+
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            ids = self._make_full_chain(win.db)
+
+            # Avoid actually showing a modal dialog in the test run.
+            fake_dlg = unittest.mock.Mock()
+            fake_dlg.exec = unittest.mock.Mock(return_value=0)
+            with unittest.mock.patch(
+                    'hazop.ReductionFactorsDialog', return_value=fake_dlg):
+                rebuild_spy = unittest.mock.Mock()
+                schedule_spy = unittest.mock.Mock()
+                panel._rebuild = rebuild_spy
+                panel._schedule_rebuild = schedule_spy
+
+                panel._edit_extra(ids['cons_id'])
+
+                schedule_spy.assert_called_once()
+                rebuild_spy.assert_not_called()
+
+    def test_schedule_rebuild_pending_during_edit_extra_does_not_reenter_rebuild(self):
+        """End-to-end reproduction: a rebuild already scheduled via
+        _schedule_rebuild() (QTimer.singleShot(0, ...)) must not be able to
+        tear down the table (setRowCount(0), destroying the live
+        _LopaWidget/button that is the source of this very call) while
+        _edit_extra() is still on the call stack underneath a dialog's
+        exec(). Simulated by queuing a pending rebuild flag and firing the
+        timer synchronously (as the nested event loop would) from inside a
+        fake dlg.exec(), then confirming the panel survives and only one
+        additional _rebuild() happens afterward, not a nested one during
+        the dialog.
+        """
+        from hazop import ReductionFactorsDialog
+
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            ids = self._make_full_chain(win.db)
+            panel._cons_id = ids['cons_id']
+
+            # Stub _rebuild() itself (rather than calling through to the
+            # real implementation) -- see test_select_safeguard_in_tree_no_crash's
+            # docstring: the real _rebuild() ultimately calls
+            # QTableWidget.resizeRowsToContents(), which reproducibly hits a
+            # native access violation under this machine's headless Qt
+            # platform plugin, unrelated to the reentrancy behaviour under
+            # test here. Only the *call count/ordering* matters for this test.
+            rebuild_call_log = []
+
+            def _tracking_rebuild():
+                rebuild_call_log.append('rebuild')
+
+            panel._rebuild = _tracking_rebuild
+
+            # Simulate: a rebuild is already scheduled (as if the user had
+            # just clicked a different cell) and its QTimer.singleShot(0,...)
+            # fires DURING the modal dialog's nested event loop -- exactly
+            # what a real dlg.exec() call pumps for any already-queued timer.
+            def _fake_exec():
+                panel._on_rebuild_scheduled()  # what the pending timer runs
+                return 0
+
+            fake_dlg = unittest.mock.Mock()
+            fake_dlg.exec = unittest.mock.Mock(side_effect=_fake_exec)
+            with unittest.mock.patch(
+                    'hazop.ReductionFactorsDialog', return_value=fake_dlg):
+                panel._rebuild_pending = True  # a rebuild was already queued
+                panel._edit_extra(ids['cons_id'])
+
+            # The nested-loop rebuild ran once (via _fake_exec). Because
+            # _edit_extra() now defers through _schedule_rebuild() instead of
+            # calling self._rebuild() directly, no second, immediately-stacked
+            # rebuild races it while the dialog handler frame is still live.
+            self.assertEqual(
+                rebuild_call_log.count('rebuild'), 1,
+                "only the nested-loop's own scheduled rebuild should run "
+                "synchronously here; _edit_extra() must not additionally "
+                "call _rebuild() directly on top of it")
+            # A further rebuild is still scheduled for the next event-loop
+            # tick (coalesced with any other pending request), not skipped.
+            self.assertTrue(panel._rebuild_pending)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

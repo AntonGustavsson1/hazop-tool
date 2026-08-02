@@ -9907,6 +9907,24 @@ class _ScenarioDelegate(QStyledItemDelegate):
         return editor
 
     def sizeHint(self, option, index):
+        # Defensive hardening: sizeHint() is invoked for every visible cell
+        # during resizeRowsToContents(), including — in theory — cells whose
+        # backing _row_meta/_row_cat_info could be read mid-_build_rows() if
+        # Qt ever triggers a repaint/layout pass reentrantly while rows are
+        # still being constructed. A genuinely native (C++-level) crash here
+        # cannot be caught by Python try/except, but if any part of this path
+        # (QFontMetrics.boundingRect, index.data, attribute access on a
+        # transient state) raises a Python-level exception instead, falling
+        # back to a safe default size costs nothing and avoids compounding
+        # a silent failure with an unhandled Python exception on top.
+        try:
+            return self._size_hint_impl(option, index)
+        except Exception:
+            logging.exception('_ScenarioDelegate.sizeHint: fallback after exception '
+                              '(row=%d col=%d)', index.row(), index.column())
+            return QSize(max(40, option.rect.width()), 24)
+
+    def _size_hint_impl(self, option, index):
         col = index.column()
         panel = self._panel
         # Cache QFontMetrics — reconstructed only when the font changes
@@ -11114,15 +11132,19 @@ class ScenarioTablePanel(QWidget):
 
                 # Build rows with signals blocked
                 self._build_rows()
+                logging.info('_rebuild: F — _build_rows() done (rowCount=%d)',
+                             self._table.rowCount())
 
                 # Reconnect signals before calling _apply_spans
                 self._table.cellChanged.connect(self._on_cell_changed)
 
                 # Apply row merging (spans)
                 self._apply_spans()
+                logging.info('_rebuild: G — _apply_spans() done')
 
                 # Finalize: resize rows and restore scroll position
                 self._resize_rows(_vscroll, _hscroll)
+                logging.info('_rebuild: H — _resize_rows() done')
             finally:
                 self._table.blockSignals(False)
         except Exception as e:
@@ -11151,6 +11173,10 @@ class ScenarioTablePanel(QWidget):
         Modifies self._table, self._row_meta, self._row_cat_info in place.
         Called with table signals blocked, so cellChanged won't fire during construction.
         """
+        logging.info('_build_rows: F0 — entry (all_nodes=%s node_id=%s dev_id=%s '
+                     'cause_id=%s cons_id=%s)',
+                     self._all_nodes, self._node_id, self._deviation_id,
+                     self.cause_id, self._cons_id)
         # Build list of (cause_dict, deviation_dict) to display
         causes_to_show = []
         if self._all_nodes:
@@ -11169,6 +11195,8 @@ class ScenarioTablePanel(QWidget):
                 causes_to_show.append((dict(c), dev_d))
         elif self._node_id is not None:
             causes_to_show.extend(self._causes_for_node(self._node_id))
+
+        logging.info('_build_rows: F1 — causes_to_show resolved (n=%d)', len(causes_to_show))
 
         if not causes_to_show:
             # Show placeholder rows so the user can start adding content
@@ -11194,6 +11222,7 @@ class ScenarioTablePanel(QWidget):
                         self._add_placeholder_row(nn, dict(dev))
                 else:
                     self._add_placeholder_row(nn, None)
+            logging.info('_build_rows: F2 — placeholder-only branch done, returning')
             return
 
         # Determine header title from first cause's node
@@ -11219,8 +11248,14 @@ class ScenarioTablePanel(QWidget):
         else:
             self._hdr_lbl.setText(f"HAZOP Scenario — {node_name_hdr}")
 
+        logging.info('_build_rows: G0 — header set (%r)', self._hdr_lbl.text())
         self.refresh_placed()
-        for cause_d, dev_d in causes_to_show:
+        logging.info('_build_rows: G1 — refresh_placed done, entering cause loop (n=%d)',
+                     len(causes_to_show))
+        for _cause_idx, (cause_d, dev_d) in enumerate(causes_to_show):
+            if _cause_idx % 10 == 0 or _cause_idx == len(causes_to_show) - 1:
+                logging.info('_build_rows: G2 — cause loop iter %d/%d (cause_id=%s)',
+                             _cause_idx, len(causes_to_show), cause_d.get('id'))
             node = self.db.get_node(cause_d['node_id'])
             node_name = node['name'] if node else '?'
             freq = self.db.cause_frequency_level(cause_d)
@@ -11236,8 +11271,10 @@ class ScenarioTablePanel(QWidget):
                 all_cons = list(self.db.consequences(cause_d['id']))
             if self._cons_id is not None:
                 all_cons = [c for c in all_cons if dict(c)['id'] == self._cons_id]
-            for cons in all_cons:
+            for _cons_idx, cons in enumerate(all_cons):
                 cons_d = dict(cons)
+                logging.info('_build_rows: H0 — cause %s cons_idx %d/%d cons_id=%s',
+                             cause_d.get('id'), _cons_idx, len(all_cons), cons_d.get('id'))
                 sgs    = [dict(s) for s in self.db.safeguards(cons_d['id'])]
                 cat_rows = [dict(r) for r in
                             self.db.get_consequence_severities(cons_d['id'])]
@@ -11286,6 +11323,9 @@ class ScenarioTablePanel(QWidget):
 
                 # Chain-linked cause rows don't repeat SG column
                 display_n_rows = max(n_cats, 1) if is_chain_link else n_rows
+                logging.info('_build_rows: H1 — cons_id=%s about to add %d row(s) '
+                             '(n_cats=%d n_sgs=%d)',
+                             cons_d.get('id'), display_n_rows, n_cats, n_sgs)
                 for i in range(display_n_rows):
                     sg_i    = (sgs[i] if i < n_sgs else None) if not is_chain_link else None
                     cr_i    = cat_rows[i] if i < n_cats else None
@@ -11294,6 +11334,9 @@ class ScenarioTablePanel(QWidget):
                                   if cr_i else None)
                     excl_for_cat  = cat_excl_map.get(cr_i['id'], set()) if cr_i else set()
                     excl_cat_names = any_excl_map.get(sg_i['id'], []) if sg_i else []
+                    logging.info('_build_rows: H2 — _add_row cons_id=%s row_i=%d/%d '
+                                 '(will create _LopaWidget)',
+                                 cons_d.get('id'), i, display_n_rows)
                     self._add_row(node_name, dev_d, cause_d, freq, freq_lbl,
                                   cons_d, sgs, sg_i,
                                   cat_info=cat_info_i,
@@ -11306,13 +11349,21 @@ class ScenarioTablePanel(QWidget):
                                   n_cats=n_cats,
                                   is_chain_link=is_chain_link,
                                   has_linked_causes=has_linked_causes)
+                    logging.info('_build_rows: H3 — _add_row cons_id=%s row_i=%d done',
+                                 cons_d.get('id'), i)
             if self._table.rowCount() == first_row_for_cause:
+                logging.info('_build_rows: G3 — cause %s had no rows, adding empty row',
+                             cause_d.get('id'))
                 self._add_empty_row(node_name, dev_d, cause_d, freq, freq_lbl)
+        logging.info('_build_rows: I0 — cause loop complete, rowCount=%d',
+                     self._table.rowCount())
 
     def _apply_spans(self):
         """Merge consecutive rows that share the same Nod or Orsak."""
         n = self._table.rowCount()
+        logging.info('_apply_spans: J0 — entry (rowCount=%d)', n)
         if n < 2:
+            logging.info('_apply_spans: J1 — fewer than 2 rows, nothing to span')
             return
 
         def _span_col(col, key_fn):
@@ -11337,12 +11388,15 @@ class ScenarioTablePanel(QWidget):
         _span_col(self._C_NOD, lambda r: (
             self._table.item(r, self._C_NOD).data(Qt.ItemDataRole.UserRole)
             if self._table.item(r, self._C_NOD) else None))
+        logging.info('_apply_spans: J2 — NOD column spanned')
 
         # Avvikelse: group by dev_id (index 0 in row_meta)
         _span_col(self._C_DEV, lambda r: _meta(r, 0))
+        logging.info('_apply_spans: J3 — DEV column spanned')
 
         # Orsak: group by cause_id (index 1)
         _span_col(self._C_ORS, lambda r: _meta(r, 1))
+        logging.info('_apply_spans: J4 — ORS column spanned')
 
         # Consequence-level columns: group by (cons_id, cat_id) so each
         # category assessment forms its own span group
@@ -11355,11 +11409,13 @@ class ScenarioTablePanel(QWidget):
         # KON and LOPA: span by cons_id (whole consequence merged)
         for col in (self._C_KON, self._C_LOPA):
             _span_col(col, lambda r: _meta(r, 2))
+        logging.info('_apply_spans: J5 — KON/LOPA columns spanned')
 
         # RFORE, REFT, SLUT: span by (cons_id, cat_id)
         # → non-category rows all merge; per-category rows each stay separate
         for col in (self._C_RFORE, self._C_REFT, self._C_SLUT):
             _span_col(col, _cat_key)
+        logging.info('_apply_spans: J6 — RFORE/REFT/SLUT columns spanned, done')
 
     def _resize_rows(self, vscroll_value, hscroll_value):
         """
@@ -11367,7 +11423,20 @@ class ScenarioTablePanel(QWidget):
         Called after _apply_spans() to finalize table layout.
         Extracted from _rebuild() closure for clarity and testability.
         """
-        self._table.resizeRowsToContents()
+        logging.info('_resize_rows: K0 — entry (rowCount=%d), calling resizeRowsToContents',
+                     self._table.rowCount())
+        try:
+            self._table.resizeRowsToContents()
+        except Exception:
+            # Defensive: resizeRowsToContents() triggers sizeHint() for every
+            # visible cell via the delegate. sizeHint() calls QFontMetrics
+            # .boundingRect() on cell text — if that ever raises a genuinely
+            # Python-catchable exception (as opposed to a native/C++ crash,
+            # which this except block cannot help with at all), don't let it
+            # take down the whole rebuild silently.
+            logging.exception('_resize_rows: K0b — resizeRowsToContents() raised')
+            raise
+        logging.info('_resize_rows: K1 — resizeRowsToContents() done')
         _fm  = QFontMetrics(self._table.font())
         _max = _fm.height() * 4 + 12   # cap: max ~4 text lines
         _min_ors = _fm.height() * 2 + 20  # floor for ORS rows: ~2 lines + strip
@@ -11379,9 +11448,11 @@ class ScenarioTablePanel(QWidget):
                 self._table.setRowHeight(_r, _min_ors)
             elif h > _max:
                 self._table.setRowHeight(_r, _max)
+        logging.info('_resize_rows: K2 — row-height pass done, restoring scroll position')
         self._table.verticalScrollBar().setValue(vscroll_value)
         self._table.horizontalScrollBar().setValue(hscroll_value)
         self._table.setUpdatesEnabled(True)
+        logging.info('_resize_rows: K3 — done (setUpdatesEnabled True)')
 
     def _add_placeholder_row(self, node_name, dev_d):
         """Empty row shown when a node/deviation has no causes yet."""
@@ -11693,9 +11764,23 @@ class ScenarioTablePanel(QWidget):
             self._schedule_rebuild()
 
     def _edit_extra(self, cons_id):
+        # This slot runs on the call stack of a _LopaWidget's _extra_btn
+        # QPushButton.clicked signal — that button is a live cell widget
+        # embedded in self._table. dlg.exec() below pumps a NESTED Qt event
+        # loop; any QTimer.singleShot(0, ...) already queued by
+        # _schedule_rebuild() (24 call sites in this class) fires DURING
+        # that nested loop, not after it. If it fires here, it calls
+        # _rebuild() while THIS method (and the button's clicked handler)
+        # is still executing underneath dlg.exec() on the C++ call stack.
+        # _rebuild()'s setRowCount(0) then destroys the _LopaWidget/_extra_btn
+        # that originated this very call — a use-after-free once dlg.exec()
+        # returns and this frame resumes. Calling self._rebuild() directly
+        # here (as this used to do) compounds the same risk a second time.
+        # Every other dialog handler in this class defers via
+        # _schedule_rebuild() for exactly this reason — do the same here.
         dlg = ReductionFactorsDialog(self.db, cons_id, self)
         dlg.exec()
-        self._rebuild()
+        self._schedule_rebuild()
 
     # ── P&ID placement helpers ─────────────────────────────────────────────────
 
