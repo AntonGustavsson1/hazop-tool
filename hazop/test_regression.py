@@ -1449,5 +1449,324 @@ class EscapeCancelsPlacementTests(unittest.TestCase):
             panel.deleteLater()
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# 6. Worksheet page: ScenarioTablePanel "all nodes" mode + HAZOPWorksheet
+#    node-picker/checkbox wiring (feature: Worksheet mirrors the full HAZOP
+#    hierarchy per node, or the whole study at once).
+# ══════════════════════════════════════════════════════════════════════════
+
+class ScenarioTablePanelAllNodesTests(unittest.TestCase):
+    """ScenarioTablePanel.load_all() must show every node's full
+    deviation/cause/consequence/safeguard hierarchy concatenated, without
+    disturbing the existing single-filter load_node/load_deviation/load_cause/
+    load_consequence behaviour (that class is shared with the main P&ID
+    page's scenario_panel, so this must be additive only).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_allnodes_test_")
+        self.db_path = os.path.join(self._tmpdir, "test_project.db")
+        self.db = Database(path=self.db_path)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_full_chain(self, node_name=None):
+        node_id = self.db.add_node()
+        if node_name is not None:
+            # Direct SQL rename -- Database.update_node() requires several
+            # other positional fields (description, pid_ref, ...) that are
+            # irrelevant to these tests, so avoid coupling to that full
+            # signature just to set a display name.
+            self.db.conn.execute(
+                "UPDATE nodes SET name=? WHERE id=?", (node_name, node_id))
+            self.db.commit()
+        deviation_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(deviation_id)
+        cons_id = self.db.add_consequence(cause_id)
+        sg_id = self.db.add_safeguard(cons_id)
+        return {
+            'node_id': node_id, 'deviation_id': deviation_id,
+            'cause_id': cause_id, 'cons_id': cons_id, 'sg_id': sg_id,
+        }
+
+    def test_load_all_does_not_crash_and_spans_multiple_nodes(self):
+        from hazop import ScenarioTablePanel
+
+        ids1 = self._make_full_chain(node_name="Nod A")
+        ids2 = self._make_full_chain(node_name="Nod B")
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            try:
+                panel.load_all()
+            except Exception as e:
+                self.fail(f"load_all() raised: {e!r}")
+
+            self.assertTrue(panel._all_nodes)
+            cause_ids_in_rows = {meta[1] for meta in panel._row_meta if meta[1] is not None}
+            self.assertIn(ids1['cause_id'], cause_ids_in_rows,
+                          "load_all() rows must include node A's cause")
+            self.assertIn(ids2['cause_id'], cause_ids_in_rows,
+                          "load_all() rows must include node B's cause")
+
+            cons_ids_in_rows = {meta[2] for meta in panel._row_meta if meta[2] is not None}
+            self.assertIn(ids1['cons_id'], cons_ids_in_rows)
+            self.assertIn(ids2['cons_id'], cons_ids_in_rows)
+
+            # NOD/DEV columns must become visible in all-nodes mode (multiple
+            # nodes are interleaved, so the sticky header-bar shorthand no
+            # longer applies).
+            self.assertFalse(panel._table.isColumnHidden(panel._C_NOD))
+            self.assertFalse(panel._table.isColumnHidden(panel._C_DEV))
+        finally:
+            panel.deleteLater()
+
+    def test_load_all_on_empty_db_does_not_crash(self):
+        """No nodes at all yet — load_all() must not raise."""
+        from hazop import ScenarioTablePanel
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            try:
+                panel.load_all()
+            except Exception as e:
+                self.fail(f"load_all() on an empty study raised: {e!r}")
+            self.assertEqual(panel._table.rowCount(), 0)
+        finally:
+            panel.deleteLater()
+
+    def test_toggle_load_all_then_load_node_then_load_all_again(self):
+        """Switching all-nodes -> single-node -> all-nodes must not crash or
+        leave stale filter state (each load_* must fully reset the others)."""
+        from hazop import ScenarioTablePanel
+
+        ids1 = self._make_full_chain(node_name="Nod A")
+        ids2 = self._make_full_chain(node_name="Nod B")
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_all()
+            self.assertTrue(panel._all_nodes)
+            self.assertFalse(panel._table.isColumnHidden(panel._C_NOD))
+
+            panel.load_node(ids1['node_id'])
+            self.assertFalse(panel._all_nodes,
+                              "load_node() must clear _all_nodes")
+            self.assertIsNone(panel._deviation_id)
+            self.assertIsNone(panel.cause_id)
+            self.assertIsNone(panel._cons_id)
+            self.assertTrue(panel._table.isColumnHidden(panel._C_NOD),
+                             "NOD column must be hidden again in single-node mode")
+            cause_ids_in_rows = {meta[1] for meta in panel._row_meta if meta[1] is not None}
+            self.assertIn(ids1['cause_id'], cause_ids_in_rows)
+            self.assertNotIn(ids2['cause_id'], cause_ids_in_rows,
+                              "load_node() must show only the selected node's causes")
+
+            try:
+                panel.load_all()
+            except Exception as e:
+                self.fail(f"load_all() after load_node() raised: {e!r}")
+            self.assertTrue(panel._all_nodes)
+            cause_ids_in_rows = {meta[1] for meta in panel._row_meta if meta[1] is not None}
+            self.assertIn(ids1['cause_id'], cause_ids_in_rows)
+            self.assertIn(ids2['cause_id'], cause_ids_in_rows)
+        finally:
+            panel.deleteLater()
+
+    def test_single_node_filters_unchanged_by_all_nodes_feature(self):
+        """Sanity check that load_node/load_deviation/load_cause/
+        load_consequence still behave exactly as single-item filters (the
+        critical constraint: ScenarioTablePanel is shared with the main
+        P&ID page's scenario_panel, so Part 1 changes must be additive)."""
+        from hazop import ScenarioTablePanel
+
+        ids1 = self._make_full_chain(node_name="Nod A")
+        self._make_full_chain(node_name="Nod B")
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(ids1['node_id'])
+            self.assertEqual(panel._node_id, ids1['node_id'])
+            self.assertFalse(panel._all_nodes)
+            rows_node = panel._table.rowCount()
+            self.assertGreater(rows_node, 0)
+
+            panel.load_deviation(ids1['deviation_id'])
+            self.assertEqual(panel._deviation_id, ids1['deviation_id'])
+            self.assertEqual(panel._node_id, ids1['node_id'],
+                              "load_deviation() must set _node_id from the deviation's own node_id")
+            self.assertFalse(panel._all_nodes)
+
+            panel.load_cause(ids1['cause_id'])
+            self.assertEqual(panel.cause_id, ids1['cause_id'])
+            self.assertFalse(panel._all_nodes)
+
+            panel.load_consequence(ids1['cons_id'])
+            self.assertEqual(panel._cons_id, ids1['cons_id'])
+            self.assertFalse(panel._all_nodes)
+
+            panel.clear()
+            self.assertFalse(panel._all_nodes)
+            self.assertEqual(panel._table.rowCount(), 0)
+        finally:
+            panel.deleteLater()
+
+
+class HAZOPWorksheetTests(unittest.TestCase):
+    """HAZOPWorksheet: node-picker + 'Visa samtliga noder' checkbox wired to
+    the embedded ScenarioTablePanel's load_node()/load_all()."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_worksheet_test_")
+        self.db_path = os.path.join(self._tmpdir, "test_project.db")
+        self.db = Database(path=self.db_path)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_full_chain(self, node_name=None):
+        node_id = self.db.add_node()
+        if node_name is not None:
+            # Direct SQL rename -- Database.update_node() requires several
+            # other positional fields (description, pid_ref, ...) that are
+            # irrelevant to these tests, so avoid coupling to that full
+            # signature just to set a display name.
+            self.db.conn.execute(
+                "UPDATE nodes SET name=? WHERE id=?", (node_name, node_id))
+            self.db.commit()
+        deviation_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(deviation_id)
+        cons_id = self.db.add_consequence(cause_id)
+        sg_id = self.db.add_safeguard(cons_id)
+        return {
+            'node_id': node_id, 'deviation_id': deviation_id,
+            'cause_id': cause_id, 'cons_id': cons_id, 'sg_id': sg_id,
+        }
+
+    def test_instantiates_headless_and_refreshes_on_empty_db(self):
+        from hazop import HAZOPWorksheet
+
+        ws = HAZOPWorksheet(self.db)
+        try:
+            try:
+                ws.refresh()
+            except Exception as e:
+                self.fail(f"HAZOPWorksheet.refresh() on an empty DB raised: {e!r}")
+            self.assertEqual(ws._node_combo.count(), 0)
+        finally:
+            ws.deleteLater()
+
+    def test_refresh_after_creating_nodes_populates_and_loads(self):
+        from hazop import HAZOPWorksheet
+
+        ws = HAZOPWorksheet(self.db)
+        try:
+            ids = self._make_full_chain(node_name="Nod A")
+            try:
+                ws.refresh()
+            except Exception as e:
+                self.fail(f"HAZOPWorksheet.refresh() after adding a node raised: {e!r}")
+            self.assertEqual(ws._node_combo.count(), 1)
+            self.assertEqual(ws._node_combo.currentData(), ids['node_id'])
+        finally:
+            ws.deleteLater()
+
+    def test_node_combo_populates_from_db_nodes(self):
+        from hazop import HAZOPWorksheet
+
+        ids1 = self._make_full_chain(node_name="Nod A")
+        ids2 = self._make_full_chain(node_name="Nod B")
+
+        ws = HAZOPWorksheet(self.db)
+        try:
+            self.assertEqual(ws._node_combo.count(), 2)
+            self.assertEqual(ws._node_combo.itemText(0), "Nod A")
+            self.assertEqual(ws._node_combo.itemData(0), ids1['node_id'])
+            self.assertEqual(ws._node_combo.itemText(1), "Nod B")
+            self.assertEqual(ws._node_combo.itemData(1), ids2['node_id'])
+        finally:
+            ws.deleteLater()
+
+    def test_selecting_combo_entry_calls_load_node_with_right_id(self):
+        from hazop import HAZOPWorksheet
+
+        ids1 = self._make_full_chain(node_name="Nod A")
+        ids2 = self._make_full_chain(node_name="Nod B")
+
+        ws = HAZOPWorksheet(self.db)
+        try:
+            ws._table_panel.load_node = unittest.mock.Mock()
+            ws._node_combo.setCurrentIndex(1)
+            ws._table_panel.load_node.assert_called_once_with(ids2['node_id'])
+
+            ws._table_panel.load_node.reset_mock()
+            ws._node_combo.setCurrentIndex(0)
+            ws._table_panel.load_node.assert_called_once_with(ids1['node_id'])
+        finally:
+            ws.deleteLater()
+
+    def test_checking_all_nodes_disables_combo_and_calls_load_all(self):
+        from hazop import HAZOPWorksheet
+
+        self._make_full_chain(node_name="Nod A")
+        ids2 = self._make_full_chain(node_name="Nod B")
+
+        ws = HAZOPWorksheet(self.db)
+        try:
+            ws._node_combo.setCurrentIndex(1)  # select "Nod B" first
+            ws._table_panel.load_node = unittest.mock.Mock()
+            ws._table_panel.load_all = unittest.mock.Mock()
+
+            ws._all_nodes_cb.setChecked(True)
+            self.assertFalse(ws._node_combo.isEnabled(),
+                              "combo must be disabled while 'Visa samtliga noder' is checked")
+            ws._table_panel.load_all.assert_called_once()
+            ws._table_panel.load_node.assert_not_called()
+
+            ws._table_panel.load_all.reset_mock()
+            ws._all_nodes_cb.setChecked(False)
+            self.assertTrue(ws._node_combo.isEnabled(),
+                             "combo must be re-enabled after unchecking")
+            ws._table_panel.load_node.assert_called_once_with(ids2['node_id'])
+        finally:
+            ws.deleteLater()
+
+    def test_worksheet_refresh_respects_all_nodes_checkbox(self):
+        """refresh() (called by MainWindow._switch_view on page==1) must
+        re-load in whichever mode the checkbox currently reflects."""
+        from hazop import HAZOPWorksheet
+
+        self._make_full_chain(node_name="Nod A")
+
+        ws = HAZOPWorksheet(self.db)
+        try:
+            ws._all_nodes_cb.setChecked(True)
+            ws._table_panel.load_all = unittest.mock.Mock()
+            ws._table_panel.load_node = unittest.mock.Mock()
+
+            ws.refresh()
+            ws._table_panel.load_all.assert_called_once()
+            ws._table_panel.load_node.assert_not_called()
+        finally:
+            ws.deleteLater()
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

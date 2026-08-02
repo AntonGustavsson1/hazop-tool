@@ -10831,6 +10831,7 @@ class ScenarioTablePanel(QWidget):
         self.cause_id = None
         self._node_id = None
         self._deviation_id = None
+        self._all_nodes = False  # if True, show every node's full hierarchy (set by load_all)
         self._row_meta = []   # list of (dev_id, cause_id, cons_id, sg_id) per visible row
         self._cons_id  = None  # if set, show only this consequence (set by load_consequence)
         self._enter_row = -1
@@ -10951,6 +10952,8 @@ class ScenarioTablePanel(QWidget):
         self._deviation_id = None
         self.cause_id = None
         self._cons_id = None
+        self._all_nodes = False
+        self._set_all_nodes_columns_visible(False)
         self._rebuild()
 
     def load_deviation(self, deviation_id):
@@ -10959,6 +10962,8 @@ class ScenarioTablePanel(QWidget):
         self._deviation_id = deviation_id
         self.cause_id = None
         self._cons_id = None
+        self._all_nodes = False
+        self._set_all_nodes_columns_visible(False)
         self._rebuild()
 
     def load_cause(self, cause_id):
@@ -10966,6 +10971,8 @@ class ScenarioTablePanel(QWidget):
         self._deviation_id = None
         self.cause_id = cause_id
         self._cons_id = None
+        self._all_nodes = False
+        self._set_all_nodes_columns_visible(False)
         self._rebuild()
 
     def load_consequence(self, cons_id):
@@ -10975,7 +10982,19 @@ class ScenarioTablePanel(QWidget):
             self._deviation_id = None
             self.cause_id = dict(row)['cause_id']
             self._cons_id = cons_id
+            self._all_nodes = False
+            self._set_all_nodes_columns_visible(False)
             self._rebuild()
+
+    def load_all(self):
+        """Show the entire study: every node's full deviation/cause/consequence/safeguard hierarchy."""
+        self._node_id = None
+        self._deviation_id = None
+        self.cause_id = None
+        self._cons_id = None
+        self._all_nodes = True
+        self._set_all_nodes_columns_visible(True)
+        self._rebuild()
 
     def refresh(self):
         """Rebuild in place — keeps the current filter unchanged."""
@@ -10986,8 +11005,18 @@ class ScenarioTablePanel(QWidget):
         self._deviation_id = None
         self.cause_id = None
         self._cons_id = None
+        self._all_nodes = False
+        self._set_all_nodes_columns_visible(False)
         self._table.setRowCount(0)
         self._hdr_lbl.setText("HAZOP Scenario")
+
+    def _set_all_nodes_columns_visible(self, visible: bool):
+        """NOD/DEV columns are normally hidden (context shown in the sticky
+        header bar / _hdr_lbl instead). In "all nodes" mode multiple nodes
+        and deviations are interleaved in one table, so those columns must
+        become visible so rows remain identifiable."""
+        self._table.setColumnHidden(self._C_NOD, not visible)
+        self._table.setColumnHidden(self._C_DEV, not visible)
 
     # Columns that stretch to fill remaining space in fill mode
     _STRETCH_COLS = None  # set after class constants are known
@@ -11104,6 +11133,18 @@ class ScenarioTablePanel(QWidget):
             self._rebuilding = False
             self._update_ctx_bar()
 
+    def _causes_for_node(self, node_id):
+        """Return [(cause_dict, deviation_dict), ...] for every cause under
+        every deviation of node_id, in deviation/cause order. Shared by the
+        single-node branch of _build_rows() and the "all nodes" mode (used
+        once per node, in node order) so both walk the exact same hierarchy."""
+        result = []
+        for dev in self.db.deviations(node_id):
+            dev_d = dict(dev)
+            for c in self.db.causes_for_deviation(dev['id']):
+                result.append((dict(c), dev_d))
+        return result
+
     def _build_rows(self):
         """
         Build the scenario table rows from current filters (node, deviation, cause, consequence).
@@ -11112,7 +11153,10 @@ class ScenarioTablePanel(QWidget):
         """
         # Build list of (cause_dict, deviation_dict) to display
         causes_to_show = []
-        if self.cause_id is not None:
+        if self._all_nodes:
+            for node_row in self.db.nodes():
+                causes_to_show.extend(self._causes_for_node(node_row['id']))
+        elif self.cause_id is not None:
             c = self.db.get_cause(self.cause_id)
             if c:
                 c_d = dict(c)
@@ -11124,14 +11168,15 @@ class ScenarioTablePanel(QWidget):
             for c in self.db.causes_for_deviation(self._deviation_id):
                 causes_to_show.append((dict(c), dev_d))
         elif self._node_id is not None:
-            for dev in self.db.deviations(self._node_id):
-                dev_d = dict(dev)
-                for c in self.db.causes_for_deviation(dev['id']):
-                    causes_to_show.append((dict(c), dev_d))
+            causes_to_show.extend(self._causes_for_node(self._node_id))
 
         if not causes_to_show:
             # Show placeholder rows so the user can start adding content
-            if self._deviation_id is not None:
+            if self._all_nodes:
+                # No nodes (or no deviations/causes) anywhere in the study yet —
+                # nothing sensible to show as a placeholder across all nodes.
+                self._hdr_lbl.setText("HAZOP Scenario — Hela studien")
+            elif self._deviation_id is not None:
                 dev = self.db.get_deviation(self._deviation_id)
                 if dev:
                     dev_d = dict(dev)
@@ -11155,7 +11200,9 @@ class ScenarioTablePanel(QWidget):
         first_cause = causes_to_show[0][0]
         node = self.db.get_node(first_cause['node_id'])
         node_name_hdr = node['name'] if node else '?'
-        if self._cons_id is not None:
+        if self._all_nodes:
+            self._hdr_lbl.setText("HAZOP Scenario — Hela studien")
+        elif self._cons_id is not None:
             cons = self.db.get_consequence(self._cons_id)
             cons_desc = cons['description'] if cons else '?'
             self._hdr_lbl.setText(
@@ -11654,6 +11701,12 @@ class ScenarioTablePanel(QWidget):
 
     def _update_ctx_bar(self, *_):
         """Refresh the sticky context bar to show Nod + Avvikelse of the topmost visible row."""
+        if self._all_nodes:
+            # Multiple nodes are interleaved in one table in this mode, so a
+            # single "current node/deviation" context bar doesn't make sense
+            # — the now-visible NOD/DEV columns already show that per row.
+            self._ctx_bar.hide()
+            return
         if not self._row_meta:
             self._ctx_bar.hide()
             return
@@ -12929,168 +12982,105 @@ class ScenarioTablePanel(QWidget):
 # ══════════════════════════════════════════════════════════════════════════════
 
 class HAZOPWorksheet(QWidget):
-    # Columns: Nod | P&ID | Orsak | F | Konsekvens | C | Risk före | Safeguards | Risk efter | Kategori | Åtgärder
-    _HEADERS    = ['Nod', 'P&ID', 'Orsak', 'F', 'Konsekvens', 'C',
-                   'Risk före barriär', 'Safeguards', 'Risk efter barriär', 'Kategori', 'Åtgärder']
-    _COL_WIDTHS = [110, 55, 170, 38, 170, 38, 110, 170, 110, 65, 180]
+    """Worksheet page: mirrors the full HAZOP hierarchy (Nod → Avvikelse →
+    Orsak → Konsekvens → Barriärer) for one node at a time via a dropdown,
+    or the entire study at once via "Visa samtliga noder".
 
-    # Column indices
-    _C_NOD, _C_PID, _C_ORS, _C_F, _C_KON, _C_C = 0, 1, 2, 3, 4, 5
-    _C_RFORE, _C_SG, _C_REFT, _C_KAT, _C_ATG   = 6, 7, 8, 9, 10
+    Reuses ScenarioTablePanel (the same row-building/editing logic used on
+    the main P&ID page) instead of duplicating it in a second flat table —
+    see load_all()/_all_nodes on ScenarioTablePanel.
+    """
 
-    def __init__(self, db: Database):
+    def __init__(self, db: Database, main_window=None):
         super().__init__()
         self.db = db
-        self._loading = False
-        self._row_meta = []   # [(cause_id, consequence_id), ...]
+        # Optional back-reference to MainWindow, used only to wire the
+        # embedded ScenarioTablePanel's navigate_to_pid signal (jumping to
+        # the P&ID view from a row here). Left None-safe throughout so this
+        # widget still works standalone (e.g. in tests).
+        self._main_window = main_window
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
 
-        bar = QHBoxLayout()
-        title = QLabel("HAZOP Worksheet")
-        f = QFont(); f.setBold(True); f.setPointSize(13)
-        title.setFont(f)
-        bar.addWidget(title); bar.addStretch()
-        note = QLabel("Klicka en cell i F- eller C-kolumnen för att redigera")
-        note.setStyleSheet("color:#888; font-size:11px;")
-        bar.addWidget(note)
-        btn = QPushButton("🔄 Uppdatera")
-        btn.clicked.connect(self.refresh)
-        bar.addWidget(btn)
-        layout.addLayout(bar)
+        # Top bar: node picker + "show all nodes" checkbox
+        top_bar = QHBoxLayout()
+        top_bar.addWidget(QLabel("Nod:"))
+        self._node_combo = QComboBox()
+        self._node_combo.setMinimumWidth(240)
+        top_bar.addWidget(self._node_combo)
+        self._all_nodes_cb = QCheckBox("Visa samtliga noder")
+        top_bar.addWidget(self._all_nodes_cb)
+        top_bar.addStretch()
+        layout.addLayout(top_bar)
 
-        self.table = QTableWidget(0, len(self._HEADERS))
-        self.table.setHorizontalHeaderLabels(self._HEADERS)
-        hdr = self.table.horizontalHeader()
-        for i, w in enumerate(self._COL_WIDTHS):
-            hdr.setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
-            self.table.setColumnWidth(i, w)
-        hdr.setStretchLastSection(True)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setAlternatingRowColors(True)
-        self.table.setWordWrap(True)
-        self.table.setStyleSheet(
-            "QHeaderView::section{background:#1F4E79;color:#fff;font-weight:bold;padding:4px;}")
-        layout.addWidget(self.table)
+        # Embedded scenario table (full hierarchy for selected node, or all nodes)
+        self._table_panel = ScenarioTablePanel(db)
+        layout.addWidget(self._table_panel)
+
+        self._node_combo.currentIndexChanged.connect(self._on_node_combo_changed)
+        self._all_nodes_cb.toggled.connect(self._on_all_nodes_toggled)
+
+        # navigate_to_pid ("go to P&ID" pin click on a row): MainWindow's own
+        # scenario_panel wires this to _on_scenario_navigate_to_pid, which
+        # switches view_stack to the P&ID page and zooms to the marker. Reuse
+        # that exact handler here when a MainWindow reference is available,
+        # so the embedded worksheet instance behaves identically. Left
+        # unconnected when main_window is None (e.g. headless/unit tests).
+        if self._main_window is not None:
+            self._table_panel.navigate_to_pid.connect(
+                self._main_window._on_scenario_navigate_to_pid)
+        # place_requested (placing NEW markers on the P&ID canvas) is not
+        # wired: it only makes sense in the P&ID page's own placement-mode
+        # context, not from the Worksheet page.
+        # item_selected (row click -> update right-hand properties ribbon)
+        # is not wired for v1: the Worksheet page has no properties ribbon
+        # of its own, and piping it to MainWindow's ribbon would couple this
+        # page to P&ID-page-only UI state for little benefit.
+
+        self._populate_node_combo()
+
+    def _populate_node_combo(self):
+        """Refill the node dropdown from the DB, preserving the current selection if possible."""
+        current_id = self._node_combo.currentData() if self._node_combo.count() else None
+        self._node_combo.blockSignals(True)
+        try:
+            self._node_combo.clear()
+            for node in self.db.nodes():
+                self._node_combo.addItem(node['name'] or f"Nod {node['id']}", node['id'])
+            if current_id is not None:
+                idx = self._node_combo.findData(current_id)
+                if idx >= 0:
+                    self._node_combo.setCurrentIndex(idx)
+        finally:
+            self._node_combo.blockSignals(False)
+
+    def _on_node_combo_changed(self, idx):
+        if self._all_nodes_cb.isChecked():
+            return  # combo is disabled in all-nodes mode; ignore stray signals
+        node_id = self._node_combo.currentData()
+        if node_id is not None:
+            self._table_panel.load_node(node_id)
+
+    def _on_all_nodes_toggled(self, checked):
+        self._node_combo.setEnabled(not checked)
+        if checked:
+            self._table_panel.load_all()
+        else:
+            node_id = self._node_combo.currentData()
+            if node_id is not None:
+                self._table_panel.load_node(node_id)
 
     def refresh(self):
-        self._loading = True
-        self.table.blockSignals(True)
-        self.table.setRowCount(0)
-        self._row_meta = []
-        prev_node = prev_cause = None
-
-        for row in self.db.all_data():
-            freq = row['likelihood']   # stored in causes.likelihood, value -1..5
-            sev  = row['severity']     # stored in consequences.severity, value 1..5
-
-            # Risk before barriers
-            level_b, bg_b, fg_b = risk_info(freq, sev)
-
-            # Total RRF and risk after barriers
-            total_rrf = 1
-            for sg in row['safeguards']:
-                total_rrf *= sg.get('rrf', 1)
-            eff_f = effective_frequency(freq, total_rrf)
-            level_a, bg_a, fg_a = risk_info(eff_f, sev)
-
-            sg_lines = []
-            for sg in row['safeguards']:
-                rrf = sg.get('rrf', 1)
-                sg_lines.append(f"{sg['description']}" + (f"  RRF {rrf}" if rrf > 1 else ""))
-            if total_rrf > 1:
-                reduction = int(math.log10(total_rrf))
-                sg_lines.append(f"─── Total RRF {total_rrf:,}  (−{reduction} F-steg)")
-            sg_text = '\n'.join(sg_lines) or '—'
-
-            act_text = '\n'.join(
-                f"• {a['description']} ({a['status']})" for a in row['actions']) or '—'
-
-            r = self.table.rowCount()
-            self.table.insertRow(r)
-            self._row_meta.append((row.get('cause_id'), row.get('consequence_id')))
-
-            same_node  = row['node_name'] == prev_node
-            same_cause = same_node and row['cause'] == prev_cause
-
-            def _ro(text, center=False):
-                item = QTableWidgetItem(str(text))
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter if center else
-                                      Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-                return item
-
-            self.table.setItem(r, self._C_NOD, _ro('' if same_node  else row['node_name']))
-            self.table.setItem(r, self._C_PID, _ro('' if same_node  else row['node_pid']))
-            self.table.setItem(r, self._C_ORS, _ro('' if same_cause else row['cause']))
-
-            # F — editable combo
-            f_combo = QComboBox()
-            f_combo.addItems(FREQ_LABELS)
-            f_combo.setCurrentIndex(freq_to_idx(freq))
-            cause_id = row.get('cause_id')
-            f_combo.currentIndexChanged.connect(
-                lambda idx, cid=cause_id: self._freq_changed(cid, idx))
-            self.table.setCellWidget(r, self._C_F, f_combo)
-
-            self.table.setItem(r, self._C_KON, _ro(row['consequence']))
-
-            # C — editable combo
-            c_combo = QComboBox()
-            c_combo.addItems(SEV_LABELS)
-            c_combo.setCurrentIndex(max(0, sev - 1))
-            cons_id = row.get('consequence_id')
-            c_combo.currentIndexChanged.connect(
-                lambda idx, cid=cons_id, cat=row['category']: self._sev_changed(cid, idx, cat))
-            self.table.setCellWidget(r, self._C_C, c_combo)
-
-            # Risk before
-            rb = QTableWidgetItem(f"{level_b}\n{freq_axis_label(freq)}  {cons_axis_label(sev)}")
-            rb.setBackground(QBrush(QColor(bg_b)))
-            rb.setForeground(QBrush(QColor(_contrast_fg(bg_b))))
-            rb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table.setItem(r, self._C_RFORE, rb)
-
-            self.table.setItem(r, self._C_SG, _ro(sg_text))
-
-            # Risk after
-            ra = QTableWidgetItem(f"{level_a}\n{freq_axis_label(eff_f)}  {cons_axis_label(sev)}")
-            ra.setBackground(QBrush(QColor(bg_a)))
-            ra.setForeground(QBrush(QColor(_contrast_fg(bg_a))))
-            ra.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            ra.setFlags(ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table.setItem(r, self._C_REFT, ra)
-
-            self.table.setItem(r, self._C_KAT, _ro(row['category']))
-            self.table.setItem(r, self._C_ATG, _ro(act_text))
-
-            lines = max(2, sg_text.count('\n') + 1, act_text.count('\n') + 1)
-            self.table.setRowHeight(r, max(44, min(120, lines * 18)))
-
-            prev_node  = row['node_name']
-            prev_cause = row['cause']
-
-        self.table.blockSignals(False)
-        self._loading = False
-
-    def _freq_changed(self, cause_id, combo_idx):
-        if self._loading or not cause_id:
-            return
-        new_freq = idx_to_freq(combo_idx)
-        self.db.update_cause(cause_id, likelihood=new_freq)
-        self.refresh()
-
-    def _sev_changed(self, cons_id, combo_idx, category):
-        if self._loading or not cons_id:
-            return
-        new_sev = combo_idx + 1
-        cons = self.db.get_consequence(cons_id)
-        desc = dict(cons)['description'] if cons else ''
-        self.db.update_consequence(cons_id, desc, new_sev, category)
-        self.refresh()
+        """Called when the Worksheet page becomes visible (MainWindow._switch_view page==1)."""
+        self._populate_node_combo()
+        if self._all_nodes_cb.isChecked():
+            self._table_panel.load_all()
+        elif self._node_combo.count() > 0:
+            node_id = self._node_combo.currentData()
+            if node_id is not None:
+                self._table_panel.load_node(node_id)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -17197,7 +17187,7 @@ class MainWindow(QMainWindow):
         self.view_stack.addWidget(pid_page)
 
         # ── Page 1: Worksheet ─────────────────────────────────────────────────
-        self.worksheet = HAZOPWorksheet(self.db)
+        self.worksheet = HAZOPWorksheet(self.db, main_window=self)
         self.view_stack.addWidget(self.worksheet)
 
         # ── Page 2: Equipment ─────────────────────────────────────────────────
