@@ -17256,8 +17256,20 @@ class MainWindow(QMainWindow):
 
         self.scenario_panel.item_selected.connect(self._on_scenario_item_selected)
         self.scenario_panel.new_item_created.connect(
-            lambda type_, id_: (self.tree_panel.refresh(type_, id_),
-                                self.scenario_panel.refresh()))
+            lambda type_, id_: (
+                # emit_selection=False: the explicit scenario_panel.refresh()
+                # right after already rebuilds the table for the new item, so
+                # letting refresh()'s setCurrentItem cascade via
+                # currentItemChanged -> _on_select -> item_selected ->
+                # _on_selected would trigger a second, redundant
+                # scenario_panel._rebuild() (same anti-pattern fixed in
+                # _on_marker_navigate, commit 84c8b7c). This path is hit when
+                # quick-adding a cause/consequence/safeguard directly from the
+                # scenario table (e.g. via Enter-to-add-next-row), so a
+                # redundant rebuild here can race with a cell editor's
+                # focus-out mid-edit-commit.
+                self.tree_panel.refresh(type_, id_, emit_selection=False),
+                self.scenario_panel.refresh()))
         self.scenario_panel.item_edited.connect(self._on_scenario_item_edited)
         self.scenario_panel.place_requested.connect(self._on_scenario_place_requested)
         self.scenario_panel.navigate_to_pid.connect(self._on_scenario_navigate_to_pid)
@@ -17342,7 +17354,13 @@ class MainWindow(QMainWindow):
             lambda: self.pid_panel._set_mode(MODE_NAV))
 
         self.pid_panel.node_created.connect(
-            lambda nid: (self.tree_panel.refresh(NODE_T, nid),
+            # emit_selection=False: _on_selected() is called explicitly right
+            # after, so refresh()'s setCurrentItem must not also cascade via
+            # currentItemChanged -> _on_select -> item_selected ->
+            # _on_selected (same anti-pattern fixed in _on_marker_navigate,
+            # commit 84c8b7c) — that would double-fire scenario_panel.load_node()
+            # and schedule zoom_to_node() twice.
+            lambda nid: (self.tree_panel.refresh(NODE_T, nid, emit_selection=False),
                          self._on_selected(NODE_T, nid)))
         self.pid_panel.cause_created.connect(
             lambda cid: (self.tree_panel.refresh(CAUSE_T, cid),
@@ -17356,7 +17374,17 @@ class MainWindow(QMainWindow):
                 def _deferred(c=cid):
                     logging.info('consequence_created: deferred step — tree_panel.refresh(%s)', c)
                     try:
-                        self.tree_panel.refresh(CONS_T, c)
+                        # emit_selection=False: if the dialog was accepted,
+                        # _open_consequence_step_picker() above already called
+                        # scenario_panel._rebuild() directly. Letting this
+                        # refresh()'s setCurrentItem cascade via
+                        # currentItemChanged -> _on_select -> item_selected ->
+                        # _on_selected would trigger a second, redundant
+                        # scenario_panel._rebuild() on the next event-loop tick
+                        # (same anti-pattern fixed in _on_marker_navigate,
+                        # commit 84c8b7c) — extra rebuild volume that raises
+                        # the odds of racing a cell editor's focus-out.
+                        self.tree_panel.refresh(CONS_T, c, emit_selection=False)
                         logging.info('consequence_created: deferred step — tree refresh done')
                         self.scenario_panel.refresh_placed()
                         logging.info('consequence_created: deferred step — refresh_placed done')
@@ -17417,7 +17445,15 @@ class MainWindow(QMainWindow):
     def _on_props_changed(self):
         """PropertiesRibbon saved a field — refresh tree + scenario."""
         if self._cur_type is not None and self._cur_id is not None:
-            self.tree_panel.refresh(self._cur_type, self._cur_id)
+            # emit_selection=False: the explicit scenario_panel._rebuild()
+            # below already rebuilds the table for the current item, so
+            # letting refresh()'s setCurrentItem cascade via
+            # currentItemChanged -> _on_select -> item_selected ->
+            # _on_selected would trigger a second, redundant
+            # scenario_panel._rebuild() (same anti-pattern fixed in
+            # _on_marker_navigate, commit 84c8b7c). This handler fires on
+            # every properties-field save, so it is a frequent path.
+            self.tree_panel.refresh(self._cur_type, self._cur_id, emit_selection=False)
         self.scenario_panel._rebuild()
 
     def _on_scenario_item_selected(self, type_, id_):
@@ -17524,7 +17560,14 @@ class MainWindow(QMainWindow):
     def _on_safeguard_created(self, _sg_id):
         if self._cur_type == CONS_T and self._cur_id is not None:
             self.scenario_panel.load_consequence(self._cur_id)
-            self.tree_panel.refresh(CONS_T, self._cur_id)
+            # emit_selection=False: load_consequence() above already rebuilt the
+            # scenario panel for this item — letting refresh()'s setCurrentItem
+            # cascade via currentItemChanged -> _on_select -> item_selected ->
+            # _on_selected would redundantly call load_consequence() a second
+            # time (same anti-pattern fixed in _on_marker_navigate, commit
+            # 84c8b7c). The tree's current-item highlight is still updated
+            # inside refresh() while signals are blocked, so nothing is lost.
+            self.tree_panel.refresh(CONS_T, self._cur_id, emit_selection=False)
         self.scenario_panel.refresh_placed()
 
     def _on_scenario_place_requested(self, type_, id_):

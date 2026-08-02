@@ -1200,5 +1200,161 @@ class GlobalExceptHookTests(unittest.TestCase):
                 app.processEvents()
 
 
+class SafeguardCreatedDoubleRebuildTests(unittest.TestCase):
+    """Reproduces the second occurrence of the double-rebuild crash class,
+    this time triggered by *adding a safeguard* rather than clicking a P&ID
+    marker (the trigger the original `_on_marker_navigate` fix, commit
+    84c8b7c, addressed).
+
+    The `84c8b7c` fix only patched `TreePanel.refresh(..., emit_selection=
+    False)` at the one call site inside `_on_marker_navigate`. It left the
+    *general* anti-pattern — calling `tree_panel.refresh(type_, id_)` with
+    the default `emit_selection=True` (which cascades via
+    `setCurrentItem -> currentItemChanged -> _on_select -> item_selected ->
+    MainWindow._on_selected`) *and* separately calling an equivalent
+    scenario-rebuilding method for the same item — in several other call
+    sites. Each of those causes `ScenarioTablePanel._rebuild()` to run twice
+    per single user action, which is exactly the rapid-fire rebuild volume
+    that gave a reentrant cell-widget signal (e.g. a focused `_LopaWidget`
+    `QLineEdit`'s focus-out) a chance to corrupt `_rebuild()`'s teardown.
+
+    This class asserts each newly-fixed handler drives the scenario panel's
+    rebuild-equivalent call exactly once instead of twice:
+
+      - `MainWindow._on_safeguard_created()` (fired by
+        `PIDPanel.safeguard_created`, i.e. placing a safeguard marker on the
+        P&ID) — used to call `scenario_panel.load_consequence()` explicitly
+        *and* let `tree_panel.refresh(CONS_T, ...)`'s cascade call it again.
+      - The `scenario_panel.new_item_created` handler wired in
+        `MainWindow.__init__` (fired by `ScenarioTablePanel._quick_add_safeguard`
+        et al., i.e. adding a safeguard/cause/consequence directly from the
+        scenario table's quick-add flow) — used to let `tree_panel.refresh()`'s
+        cascade rebuild once, then call the explicit `scenario_panel.refresh()`
+        (== `_rebuild()`) a second time.
+      - `MainWindow._on_props_changed()` (fired whenever the PropertiesRibbon
+        saves a field) — used to let `tree_panel.refresh()`'s cascade rebuild
+        once, then call the explicit `scenario_panel._rebuild()` a second time.
+
+    All three now pass `emit_selection=False` to `tree_panel.refresh()`,
+    matching the established `84c8b7c` pattern exactly, since each is already
+    followed by an explicit rebuild-equivalent call.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def _make_full_chain(self, db):
+        node_id = db.add_node()
+        deviation_id = db.deviations(node_id)[0]['id']
+        cause_id = db.add_cause(deviation_id)
+        cons_id = db.add_consequence(cause_id)
+        sg_id = db.add_safeguard(cons_id)
+        return {
+            'node_id': node_id, 'deviation_id': deviation_id,
+            'cause_id': cause_id, 'cons_id': cons_id, 'sg_id': sg_id,
+        }
+
+    def test_on_safeguard_created_rebuilds_scenario_panel_exactly_once(self):
+        """Placing a new safeguard marker on the P&ID (PIDPanel.safeguard_created
+        -> MainWindow._on_safeguard_created) must rebuild the scenario table
+        exactly once, not twice.
+        """
+        with _TempDbMainWindow() as win:
+            ids = self._make_full_chain(win.db)
+            win._cur_type = CONS_T
+            win._cur_id = ids['cons_id']
+
+            rebuild_spy = unittest.mock.Mock(wraps=win.scenario_panel._rebuild)
+            win.scenario_panel._rebuild = rebuild_spy
+
+            win._on_safeguard_created(ids['sg_id'])
+
+            self.assertEqual(
+                rebuild_spy.call_count, 1,
+                "_on_safeguard_created() must rebuild the scenario panel "
+                "exactly once per safeguard creation (it used to rebuild "
+                "twice: once via the explicit scenario_panel.load_consequence() "
+                "call, once via tree_panel.refresh()'s setCurrentItem cascade "
+                "into _on_selected -> scenario_panel.load_consequence() again)")
+
+    def test_new_item_created_safeguard_rebuilds_scenario_panel_exactly_once(self):
+        """Quick-adding a safeguard directly from the scenario table (Enter-to
+        -add-next-row flow, ScenarioTablePanel._quick_add_safeguard ->
+        new_item_created(SG_T, id) -> the lambda wired in MainWindow.__init__)
+        must rebuild the scenario table exactly once. This is a second,
+        independent path to the same double-rebuild bug as
+        _on_safeguard_created above, and a very plausible real-world match
+        for "the crash happens when adding a safeguard" since it fires
+        synchronously from inside a table cell-edit-commit handler.
+        """
+        with _TempDbMainWindow() as win:
+            ids = self._make_full_chain(win.db)
+
+            rebuild_spy = unittest.mock.Mock(wraps=win.scenario_panel._rebuild)
+            win.scenario_panel._rebuild = rebuild_spy
+            win.scenario_panel.refresh = lambda: win.scenario_panel._rebuild()
+
+            win.scenario_panel.new_item_created.emit(SG_T, ids['sg_id'])
+
+            self.assertEqual(
+                rebuild_spy.call_count, 1,
+                "quick-adding a safeguard from the scenario table must "
+                "rebuild the table exactly once (it used to rebuild twice: "
+                "once via tree_panel.refresh()'s setCurrentItem cascade into "
+                "_on_selected, once via the explicit scenario_panel.refresh() "
+                "call right after)")
+
+    def test_on_props_changed_rebuilds_scenario_panel_exactly_once(self):
+        """Saving a field in the PropertiesRibbon (MainWindow._on_props_changed)
+        must rebuild the scenario table exactly once. This handler fires on
+        every properties-field save, making it one of the most frequent
+        triggers of the double-rebuild anti-pattern.
+        """
+        with _TempDbMainWindow() as win:
+            ids = self._make_full_chain(win.db)
+            win._cur_type = CAUSE_T
+            win._cur_id = ids['cause_id']
+
+            rebuild_spy = unittest.mock.Mock(wraps=win.scenario_panel._rebuild)
+            win.scenario_panel._rebuild = rebuild_spy
+
+            win._on_props_changed()
+
+            self.assertEqual(
+                rebuild_spy.call_count, 1,
+                "_on_props_changed() must rebuild the scenario panel exactly "
+                "once per properties save (it used to rebuild twice: once "
+                "via tree_panel.refresh()'s setCurrentItem cascade into "
+                "_on_selected, once via the explicit scenario_panel._rebuild() "
+                "call right after)")
+
+    def test_node_created_calls_on_selected_exactly_once(self):
+        """Creating a new node via the P&ID (PIDPanel.node_created) must
+        drive MainWindow._on_selected() exactly once, mirroring the original
+        _on_marker_navigate fix (commit 84c8b7c). Before this fix, the lambda
+        wired to node_created called tree_panel.refresh(NODE_T, nid) (default
+        emit_selection=True, cascading into _on_selected) *and* an explicit
+        self._on_selected(NODE_T, nid) right after.
+        """
+        with _TempDbMainWindow() as win:
+            win.scenario_panel.load_node = unittest.mock.Mock()
+
+            new_node_id = win.db.add_node()
+
+            on_selected_spy = unittest.mock.Mock(wraps=win._on_selected)
+            win.tree_panel.item_selected.disconnect(win._on_selected)
+            win.tree_panel.item_selected.connect(on_selected_spy)
+            win._on_selected = on_selected_spy
+
+            win.pid_panel.node_created.emit(new_node_id)
+
+            self.assertEqual(
+                on_selected_spy.call_count, 1,
+                "node_created must call _on_selected() exactly once per new "
+                "node (it used to fire twice: once via tree_panel.refresh()'s "
+                "setCurrentItem cascade, once via the explicit call)")
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
