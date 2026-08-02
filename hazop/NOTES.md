@@ -156,6 +156,42 @@
 
 ---
 
+## Stabilitetsgenomgång (2026-08-02)
+
+**Bakgrund:** En serie krascher (app stängdes tyst vid klick på orsak-markör, röd markup m.m.) spårades och åtgärdades i flera omgångar med parallella granskningsagenter, följt av en implementationsomgång och två oberoende slutgranskningar.
+
+**Grundorsak till de flesta krascherna:** `Database.get_node/get_cause/get_consequence/get_safeguard/get_deviation/get_node_markup/get_node_red_markup` returnerade rått `sqlite3.Row` (stödjer inte `.get(key, default)`), men flera anropsställen antog dict-beteende. Fixat vid källan (commit `267866f`) — alla dessa metoder returnerar nu `dict(row) if row else None`, vilket eliminerar hela buggklassen strukturellt istället för att patcha varje anropsplats.
+
+**Övriga fixade krascher/problem denna session:**
+- `view_stack` användes innan den initierats (setChecked triggade signal för tidigt)
+- Toolbar-lambdor refererade `tree_panel` innan den skapades
+- 6 `blockSignals()`-block utan try/finally kunde lämna signaler permanent blockerade vid exception
+- 13+ array/dict-access utan bounds-check (RRF_VALUES, SG_TYPES, currentIndex()==-1)
+- Saknade `dict()`-konverteringar av `sqlite3.Row` på 3 ytterligare ställen (`_update_badge`, `_on_cell_changed_inner`, `_on_selected` SG_T-gren)
+- Orphan-data vid radering: `consequence_severities`/`consequence_severity_exclusions` saknar FK helt — nu manuellt rensade i `delete_node/cause/consequence/safeguard`; `causes.linked_consequence_id` nollas när målkonsekvensen raderas
+- Trädraderingar triggade inte P&ID-overlay-refresh (stale markers) — nu wired till `reload_overlays()`
+- `SettingsPanel._cat_delete()` refererade `self._sev_def_panel` som aldrig skapades — garanterad krasch vid radering av konsekvenskategori
+- 4× `QMessageBox(None, ...)` istället för `self` som parent
+- `ConnectorAnalyzer`-tråden kunde hänga hela appen permanent (värre än krasch) om PDF-analys failade mitt i — saknade try/except runt merparten av `run()`
+- Röd markup-klick: `highlight_markup()`/`_start_inline_label_edit()`/`zoom_to_markup_items()` kollade bara `_markup_items`, aldrig `_red_markup_items` — **fixades, reverterades av misstag (trodde det orsakade en startup-krasch som i själva verket var sqlite3.Row-buggen ovan), återapplicerades sedan i slutgranskningen**
+- `_approve_node()` saknade None-guard på `node["name"]` — krasch vid godkännande av redan raderad nod
+- `_write_hzp()` (Spara som) läckte en sqlite3-anslutning vid backup-fel, vilket sedan gjorde att `unlink()` kastade `PermissionError` (reproducerat på detta Windows-system) och maskerade det ursprungliga felet
+- 3 paneler (`StandardCausesSettingsPanel`, `PIDAnalysisPanel`, `StandardObjectsSettingsPanel`) kopplade om samma signal vid varje anrop utan att koppla ur föregående — O(n²) redundanta DB-skrivningar över en lång session
+
+**Stabilitetsförbättringar (5 st, implementerade parallellt):**
+1. **Global `sys.excepthook`** (`hazop.py`) — fångar undantag i Qt-slots (knapptryck, trädval etc.) och visar felruta + loggar via `CrashReporter`, istället för att appen tyst stängs. Skiljer på startup-fel (fortfarande fatalt, tydligt fel) och runtime-fel efter att event loop startat (appen fortsätter köra).
+2. **DB-nivå orphan-cleanup** — manuell rensning i delete-metoderna för tabeller utan FK (`consequence_severities`, `consequence_severity_exclusions`, `causes.linked_consequence_id`), eftersom SQLite inte kan lägga till FK-constraints retroaktivt utan tabellombyggnad.
+3. **Enhetlig dict-baserad DB-helper** — se grundorsak ovan.
+4. **Regressionstestsvit** (`hazop/test_regression.py`, `python test_regression.py -v`) — 20 tester, headless via `QT_QPA_PLATFORM=offscreen`, täcker DB-lagret och GUI-smoke-tester för alla kända kraschmönster. Kör denna efter framtida ändringar i Database-klassen eller borttagningslogik.
+5. **Automatisk backup** — `Database._write_backup()` (fanns delvis sedan tidigare: hourly/daily rolling retention) utökad med forcerad backup före schema-migrering och före `delete_node()`.
+
+**Kvarvarande lågprioriterade poster (ej åtgärdade, ofarliga):**
+- `delete_deviation()` saknar samma forcerade pre-delete-backup som `delete_node()` fick (inkonsekvens, ej bugg)
+- Några ställen dubbel-wrappar redan-dict-värden i `dict(x) if x else None` (ofarligt no-op, kosmetiskt)
+- Ingen `closeEvent`/`aboutToQuit`-hantering stoppar bakgrundstrådar (`_prefetch_thread`, `_lod_renderer`, `_analyzer_thread`) vid appavslut — kan i sällsynta fall ge en Qt-varning vid stängning
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **OCR-positioner är approximativa** — x,y-koordinater från OCR stämmer inte perfekt med PDF-koordinater vid hög zoom. Markörer kan hamna något fel.
