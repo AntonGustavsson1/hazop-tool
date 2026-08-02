@@ -1356,5 +1356,98 @@ class SafeguardCreatedDoubleRebuildTests(unittest.TestCase):
                 "setCurrentItem cascade, once via the explicit call)")
 
 
+class EscapeCancelsPlacementTests(unittest.TestCase):
+    """Escape must abort an in-progress cause/consequence/safeguard placement
+    on the P&ID and return the viewer to MODE_NAV, mirroring the existing
+    Escape-cancels-drawing behavior for MODE_NODE/MARKUP_POLYGON.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_esc_test_")
+        self.db_path = os.path.join(self._tmpdir, "test_project.db")
+        self.db = Database(path=self.db_path)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _press_escape(self, view):
+        from PyQt6.QtCore import Qt as _Qt
+        from PyQt6.QtGui import QKeyEvent
+        from PyQt6.QtCore import QEvent as _QEvent
+        ev = QKeyEvent(_QEvent.Type.KeyPress, _Qt.Key.Key_Escape, _Qt.KeyboardModifier.NoModifier)
+        view.keyPressEvent(ev)
+
+    def test_escape_cancels_cause_mode(self):
+        from pid_viewer import PIDPanel, MODE_CAUSE, MODE_NAV
+        panel = PIDPanel(self.db)
+        try:
+            panel._set_mode(MODE_CAUSE)
+            self.assertEqual(panel.viewer.mode, MODE_CAUSE)
+            self._press_escape(panel.viewer)
+            self.assertEqual(panel.viewer.mode, MODE_NAV,
+                              "Escape must abort MODE_CAUSE back to MODE_NAV")
+        finally:
+            panel.deleteLater()
+
+    def test_escape_cancels_consequence_mode(self):
+        from pid_viewer import PIDPanel, MODE_CONSEQUENCE, MODE_NAV
+        panel = PIDPanel(self.db)
+        try:
+            panel._set_mode(MODE_CONSEQUENCE)
+            self._press_escape(panel.viewer)
+            self.assertEqual(panel.viewer.mode, MODE_NAV,
+                              "Escape must abort MODE_CONSEQUENCE back to MODE_NAV")
+        finally:
+            panel.deleteLater()
+
+    def test_escape_cancels_safeguard_mode(self):
+        from pid_viewer import PIDPanel, MODE_SAFEGUARD, MODE_NAV
+        panel = PIDPanel(self.db)
+        try:
+            panel._set_mode(MODE_SAFEGUARD)
+            self._press_escape(panel.viewer)
+            self.assertEqual(panel.viewer.mode, MODE_NAV,
+                              "Escape must abort MODE_SAFEGUARD back to MODE_NAV")
+        finally:
+            panel.deleteLater()
+
+    def test_escape_unchecks_mode_toolbar_button(self):
+        """Cancelling via Escape must also update the toolbar button state,
+        not just the internal viewer.mode — otherwise the UI would show the
+        cause/consequence/safeguard button as still active after cancelling.
+        """
+        from pid_viewer import PIDPanel, MODE_CAUSE, MODE_NAV
+        panel = PIDPanel(self.db)
+        try:
+            panel._set_mode(MODE_CAUSE)
+            self.assertTrue(panel.mode_buttons[MODE_CAUSE].isChecked())
+            self._press_escape(panel.viewer)
+            self.assertFalse(panel.mode_buttons[MODE_CAUSE].isChecked(),
+                              "Cause toolbar button must uncheck after Escape-cancel")
+            self.assertTrue(panel.mode_buttons[MODE_NAV].isChecked(),
+                             "Navigate toolbar button must become checked after Escape-cancel")
+        finally:
+            panel.deleteLater()
+
+    def test_escape_does_nothing_in_nav_mode(self):
+        """Escape while already navigating must not raise or change mode."""
+        from pid_viewer import PIDPanel, MODE_NAV
+        panel = PIDPanel(self.db)
+        try:
+            panel._set_mode(MODE_NAV)
+            self._press_escape(panel.viewer)
+            self.assertEqual(panel.viewer.mode, MODE_NAV)
+        finally:
+            panel.deleteLater()
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

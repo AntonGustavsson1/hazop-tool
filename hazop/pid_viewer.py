@@ -3808,6 +3808,7 @@ class PIDGraphicsView(QGraphicsView):
     cause_at_marker_requested       = pyqtSignal(int)   # cause_id
     consequence_at_marker_requested = pyqtSignal(int)   # cons_id
     safeguard_at_marker_requested   = pyqtSignal(int)   # sg_id
+    placement_cancelled = pyqtSignal()   # Escape pressed while in a cause/consequence/safeguard placement mode
 
     # Keys for QGraphicsItem.setData / .data
     _DATA_TYPE      = 0    # 'cause' | 'consequence' | 'safeguard' | 'markup'
@@ -6550,6 +6551,11 @@ class PIDGraphicsView(QGraphicsView):
                 self._finish_markup_drawing(); event.accept(); return
             elif event.key() == Qt.Key.Key_Escape:
                 self._cancel_drawing(); event.accept(); return
+        elif (self.mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD, MODE_CAUSE_TEMPLATE)
+                and event.key() == Qt.Key.Key_Escape):
+            self._cancel_drawing()
+            self.placement_cancelled.emit()
+            event.accept(); return
         elif self.mode == MODE_SMART_POLYLINE and self._smart_paths:
             k = event.key()
             if k in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
@@ -7259,6 +7265,7 @@ class PIDPanel(QWidget):
         self.viewer.cause_at_marker_requested.connect(self._on_add_cause_at_marker)
         self.viewer.consequence_at_marker_requested.connect(self._on_add_consequence_at_marker)
         self.viewer.safeguard_at_marker_requested.connect(self._on_add_safeguard_at_marker)
+        self.viewer.placement_cancelled.connect(self._on_placement_cancelled)
         self.viewer.ref_tag_picked.connect(self.ref_tag_picked)
         self.viewer.annotation_clicked.connect(self._on_annotation_click)
         self._active_place_type  = None   # 'cause' | 'consequence' | 'safeguard'
@@ -7973,6 +7980,10 @@ class PIDPanel(QWidget):
             btn.setChecked(m == mode)
         self.viewer.set_mode(mode)
         self.style_widget.setVisible(mode == MODE_NODE)
+
+    def _on_placement_cancelled(self):
+        """Escape was pressed while placing a cause/consequence/safeguard — abort back to navigation."""
+        self._set_mode(MODE_NAV)
 
     def _on_layout_mode_toggled(self, checked):
         if checked:
