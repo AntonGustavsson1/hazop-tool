@@ -11417,26 +11417,114 @@ class ScenarioTablePanel(QWidget):
             _span_col(col, _cat_key)
         logging.info('_apply_spans: J6 — RFORE/REFT/SLUT columns spanned, done')
 
+    def _resize_rows_manual(self):
+        """
+        Compute and apply each row's height directly in Python instead of
+        calling QTableWidget.resizeRowsToContents() (see _resize_rows()
+        docstring for why). Mirrors the logic _ScenarioDelegate.sizeHint()
+        uses per-cell, but:
+
+          - Only the columns that actually need wrapping-height computation
+            (_C_ORS, _C_KON — see _ScenarioDelegate._size_hint_impl) run the
+            expensive QFontMetrics.boundingRect() path; every other column
+            is known to always report a fixed one-line height, so it's used
+            directly without going through sizeHint()/the delegate at all.
+            This keeps the cost roughly proportional to the old native call
+            instead of paying full per-cell sizeHint() overhead for every
+            column in tables with hundreds of rows (e.g. "all nodes" mode).
+          - Hidden columns (_C_NOD/_C_DEV in single-node mode) are skipped.
+          - The _C_LOPA column uses a fixed-height cell widget (_LopaWidget,
+            setFixedHeight(_ROW_H*3+2) — see class _LopaWidget), not a
+            delegate-painted item, so its height is read directly from the
+            widget rather than computed via QFontMetrics.
+        """
+        table = self._table
+        row_count = table.rowCount()
+        col_count = table.columnCount()
+        fm_font = table.font()
+        fm = QFontMetrics(fm_font)
+        one_line_h = fm.height() + 6
+        wrap_cols = (self._C_ORS, self._C_KON)
+
+        logging.info('_resize_rows_manual: L0 — entry (rows=%d, cols=%d)',
+                     row_count, col_count)
+
+        for row in range(row_count):
+            max_h = one_line_h
+            try:
+                for col in range(col_count):
+                    if table.isColumnHidden(col):
+                        continue
+
+                    if col == self._C_LOPA:
+                        widget = table.cellWidget(row, col)
+                        if widget is not None:
+                            h = widget.sizeHint().height()
+                            if h > max_h:
+                                max_h = h
+                        continue
+
+                    if col not in wrap_cols:
+                        # Fixed one-line columns (matches _ScenarioDelegate's
+                        # non-wrap branch) — no font-metric work needed.
+                        continue
+
+                    item = table.item(row, col)
+                    text = item.text() if item is not None else ''
+                    if not text:
+                        continue
+
+                    w = table.columnWidth(col)
+                    if col == self._C_ORS:
+                        _STRIP_H = 14
+                        cell_w = max(40, w - 6)
+                        rect = fm.boundingRect(0, 0, cell_w, 10000,
+                                              Qt.TextFlag.TextWordWrap, text)
+                        h = _STRIP_H + max(one_line_h, rect.height() + 4)
+                    else:   # self._C_KON
+                        cell_w = max(40, w - _PID_ICON_W - _KON_CAT_W - _KON_CHAIN_W)
+                        rect = fm.boundingRect(0, 0, cell_w, 10000,
+                                              Qt.TextFlag.TextWordWrap, text)
+                        h = max(one_line_h, rect.height() + 4)
+                    if h > max_h:
+                        max_h = h
+            except Exception:
+                # Defensive: this is user-facing rebuild code and a single
+                # row's height computation should never take down the whole
+                # rebuild. This can only catch genuine Python-level
+                # exceptions (attribute errors, etc.) — it is not a safety
+                # net for native crashes, since the whole point of this
+                # method is to avoid the native resizeRowsToContents() path
+                # that was pinpointed as the actual crash site.
+                logging.exception('_resize_rows_manual: L1 — row %d height calc raised', row)
+                max_h = max(max_h, one_line_h)
+
+            if max_h > 0:
+                table.setRowHeight(row, max_h)
+
+        logging.info('_resize_rows_manual: L2 — done (%d rows sized)', row_count)
+
     def _resize_rows(self, vscroll_value, hscroll_value):
         """
         Apply row height constraints and restore scroll position.
         Called after _apply_spans() to finalize table layout.
         Extracted from _rebuild() closure for clarity and testability.
+
+        NOTE: this deliberately does NOT call QTableWidget.resizeRowsToContents().
+        That native Qt call was pinpointed (via the K0/K1 checkpoint logging
+        added in 2aba0b4) as the exact site of a silent native (C++-level)
+        crash after rapid rebuild cycles — the process died inside the C++
+        call with no Python exception and no further log output. Since a
+        native crash can't be fixed with a Python try/except (there's nothing
+        to catch), the fix is to never invoke that specific machinery at all:
+        the per-row/per-cell height is instead computed directly in Python
+        below, using the same logic _ScenarioDelegate.sizeHint() uses
+        internally, and applied via the plain (safe) setRowHeight() API.
         """
-        logging.info('_resize_rows: K0 — entry (rowCount=%d), calling resizeRowsToContents',
+        logging.info('_resize_rows: K0 — entry (rowCount=%d), computing row heights manually',
                      self._table.rowCount())
-        try:
-            self._table.resizeRowsToContents()
-        except Exception:
-            # Defensive: resizeRowsToContents() triggers sizeHint() for every
-            # visible cell via the delegate. sizeHint() calls QFontMetrics
-            # .boundingRect() on cell text — if that ever raises a genuinely
-            # Python-catchable exception (as opposed to a native/C++ crash,
-            # which this except block cannot help with at all), don't let it
-            # take down the whole rebuild silently.
-            logging.exception('_resize_rows: K0b — resizeRowsToContents() raised')
-            raise
-        logging.info('_resize_rows: K1 — resizeRowsToContents() done')
+        self._resize_rows_manual()
+        logging.info('_resize_rows: K1 — manual row-height loop done')
         _fm  = QFontMetrics(self._table.font())
         _max = _fm.height() * 4 + 12   # cap: max ~4 text lines
         _min_ors = _fm.height() * 2 + 20  # floor for ORS rows: ~2 lines + strip

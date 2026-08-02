@@ -1905,5 +1905,131 @@ class EditExtraDeferredRebuildTests(unittest.TestCase):
             self.assertTrue(panel._rebuild_pending)
 
 
+class ResizeRowsManualNoNativeCrashTests(unittest.TestCase):
+    """_resize_rows() used to call QTableWidget.resizeRowsToContents(), which
+    was pinpointed via diagnostic K0/K1 checkpoint logging (commit 2aba0b4)
+    as the exact site of a silent native (C++-level) crash: the process died
+    inside that call with no Python exception, after several rapid rebuild
+    cycles in quick succession (e.g. the Worksheet node-picker dropdown being
+    switched quickly between nodes). Elsewhere in this suite,
+    scenario_panel.load_deviation()/load_consequence()/load_cause() are
+    stubbed out specifically to dodge this same native crash (see
+    test_select_safeguard_in_tree_no_crash's docstring), which is exactly
+    why this class instead calls the real, un-stubbed load_node() repeatedly.
+
+    The fix (this session) replaces resizeRowsToContents() with a manual
+    per-row/per-cell height computation in _resize_rows_manual(), never
+    invoking the native call at all. These tests exercise that new code path
+    directly and would have reproduced the native crash before the fix.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_resize_rows_test_")
+        self.db_path = os.path.join(self._tmpdir, "test_project.db")
+        self.db = Database(path=self.db_path)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_full_chain(self, node_name, long_text=False):
+        """Build node -> deviation -> cause -> consequence -> safeguard,
+        optionally with long cause/consequence text to force the ORS/KON
+        wrapping-height computation path in _resize_rows_manual()."""
+        node_id = self.db.add_node()
+        self.db.conn.execute(
+            "UPDATE nodes SET name=? WHERE id=?", (node_name, node_id))
+        self.db.commit()
+        deviation_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(deviation_id)
+        if long_text:
+            self.db.update_cause(
+                cause_id,
+                description="Mycket lång orsakstext som ska radbrytas flera "
+                             "gånger i tabellcellen för att tvinga fram "
+                             "höjdberäkning via QFontMetrics.boundingRect " * 3)
+        cons_id = self.db.add_consequence(cause_id)
+        if long_text:
+            self.db.update_consequence(
+                cons_id,
+                "Mycket lång konsekvensbeskrivning som också radbryts flera "
+                "gånger för att övning täcker KON-kolumnens höjdlogik " * 3,
+                3, '')
+        sg_id = self.db.add_safeguard(cons_id)
+        return {
+            'node_id': node_id, 'deviation_id': deviation_id,
+            'cause_id': cause_id, 'cons_id': cons_id, 'sg_id': sg_id,
+        }
+
+    def test_rapid_node_switching_does_not_crash_and_row_heights_are_sane(self):
+        """Simulates the Worksheet node-picker dropdown being changed rapidly:
+        real (un-stubbed) load_node() calls across several nodes, each with a
+        full deviation/cause/consequence/safeguard chain and long wrapping
+        text, repeated enough times to meaningfully exercise the manual
+        row-height computation added in this fix."""
+        from hazop import ScenarioTablePanel
+
+        node_ids = []
+        for i in range(3):
+            ids = self._make_full_chain(f"Nod {i}", long_text=True)
+            node_ids.append(ids['node_id'])
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            for _cycle in range(10):
+                for node_id in node_ids:
+                    try:
+                        panel.load_node(node_id)
+                    except Exception as e:
+                        self.fail(
+                            f"load_node({node_id}) raised on rapid-switch "
+                            f"cycle {_cycle}: {e!r}")
+
+            # Final state sanity: rows exist and every row has a positive,
+            # sane height (not 0, not some absurd default).
+            row_count = panel._table.rowCount()
+            self.assertGreater(row_count, 0)
+            for r in range(row_count):
+                h = panel._table.rowHeight(r)
+                self.assertGreater(h, 0, f"row {r} has non-positive height")
+                self.assertLess(h, 2000, f"row {r} has a suspiciously huge height")
+        finally:
+            panel.deleteLater()
+
+    def test_resize_rows_manual_sizes_all_rows_without_resize_rows_to_contents(self):
+        """Directly checks _resize_rows_manual() (the new helper) sizes every
+        row to a positive height, for both a single node's chain (typical
+        single-node worksheet view) and load_all() (potentially hundreds of
+        rows across many nodes)."""
+        from hazop import ScenarioTablePanel
+
+        ids1 = self._make_full_chain("Nod A", long_text=True)
+        self._make_full_chain("Nod B", long_text=True)
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(ids1['node_id'])
+            self.assertGreater(panel._table.rowCount(), 0)
+            for r in range(panel._table.rowCount()):
+                self.assertGreater(panel._table.rowHeight(r), 0)
+
+            try:
+                panel.load_all()
+            except Exception as e:
+                self.fail(f"load_all() raised: {e!r}")
+            self.assertGreater(panel._table.rowCount(), 0)
+            for r in range(panel._table.rowCount()):
+                self.assertGreater(panel._table.rowHeight(r), 0)
+        finally:
+            panel.deleteLater()
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
