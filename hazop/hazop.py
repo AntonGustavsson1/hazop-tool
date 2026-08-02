@@ -12079,6 +12079,67 @@ class ScenarioTablePanel(QWidget):
         finally:
             self._table.blockSignals(False)
 
+    def _update_row_text_only(self, kind, id_, new_desc):
+        """Fast path for a pure description-text edit: patch just the
+        affected cell's text on every row referencing id_ (a cause/
+        consequence/safeguard can appear on more than one row when spans
+        merge same-id rows visually), without a full _rebuild().
+
+        No _apply_spans() or _resize_rows() pass is needed: _apply_spans()
+        groups rows purely by IDs in _row_meta (never by cell text — see its
+        docstring), which a description edit never changes, and only
+        _C_ORS/_C_KON ever need a height recompute for long/short text
+        (_C_SG is a fixed one-line column per _ScenarioDelegate's wrap_cols).
+        Mirrors _update_lopa_risk()'s established pattern (re-entrancy guard,
+        blockSignals, patch in place, no rebuild).
+        """
+        if getattr(self, '_rebuilding', False):
+            return  # mid-teardown/rebuild — the coming _rebuild() will show
+                     # correct text anyway; avoid touching a row index that
+                     # may no longer correspond to the same item.
+        col = {'cause': self._C_ORS, 'consequence': self._C_KON,
+               'safeguard': self._C_SG}.get(kind)
+        if col is None:
+            return
+        field_idx = {'cause': 1, 'consequence': 2, 'safeguard': 3}[kind]
+        needs_height_recalc = col in (self._C_ORS, self._C_KON)
+
+        self._table.blockSignals(True)
+        try:
+            for row, meta in enumerate(self._row_meta):
+                if meta[field_idx] != id_:
+                    continue
+                item = self._table.item(row, col)
+                if item is not None:
+                    item.setText(new_desc)
+                if needs_height_recalc:
+                    self._table.setRowHeight(row, self._wrap_col_row_height(row, col))
+        finally:
+            self._table.blockSignals(False)
+
+    def _wrap_col_row_height(self, row, col):
+        """Height a single ORS/KON cell needs for its current text, matching
+        _resize_rows_manual()'s per-column formula exactly (kept in sync
+        with it deliberately — see that method for why boundingRect() is
+        only used for these two wrap-sensitive columns)."""
+        table = self._table
+        fm = QFontMetrics(table.font())
+        one_line_h = fm.height() + 6
+        item = table.item(row, col)
+        text = item.text() if item is not None else ''
+        if not text:
+            return one_line_h
+        w = table.columnWidth(col)
+        if col == self._C_ORS:
+            _STRIP_H = 14
+            cell_w = max(40, w - 6)
+            rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, text)
+            return _STRIP_H + max(one_line_h, rect.height() + 4)
+        else:   # self._C_KON
+            cell_w = max(40, w - _PID_ICON_W - _KON_CAT_W - _KON_CHAIN_W)
+            rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, text)
+            return max(one_line_h, rect.height() + 4)
+
     def refresh_placed(self):
         """Reload which IDs are placed on the P&ID and repaint the table."""
         try:
@@ -12880,6 +12941,11 @@ class ScenarioTablePanel(QWidget):
                 else:
                     # User edited description
                     self.db.update_cause(id_, desc)
+                    # Sync any OTHER row showing this same cause (span groups
+                    # merge same-id rows visually, but each still has its own
+                    # QTableWidgetItem) — no full rebuild needed, see
+                    # _update_row_text_only()'s docstring for why.
+                    self._update_row_text_only('cause', id_, desc)
             self.item_edited.emit(CAUSE_T, id_)
 
         elif kind == 'consequence':
@@ -12887,6 +12953,7 @@ class ScenarioTablePanel(QWidget):
             cons = self.db.get_consequence(id_)
             if cons:
                 self.db.update_consequence(id_, desc, cons['severity'], cons['category'] or '')
+                self._update_row_text_only('consequence', id_, desc)
             self.item_edited.emit(CONS_T, id_)
 
         elif kind == 'safeguard':
@@ -12895,8 +12962,12 @@ class ScenarioTablePanel(QWidget):
             sg = self.db.get_safeguard(id_)
             if sg:
                 self.db.update_safeguard(id_, desc, sg['rrf'] or 1)
+                # A safeguard's description never affects its own row's RRF/
+                # risk-derived columns (those depend on rrf, not text) or any
+                # other row, so a full _rebuild() was pure overhead here —
+                # patch the text in place instead (see _update_row_text_only).
+                self._update_row_text_only('safeguard', id_, desc)
             self.item_edited.emit(SG_T, id_)
-            self._schedule_rebuild()
 
         if (row, col) == (self._enter_row, self._enter_col):
             self._last_enter_committed = True

@@ -1027,6 +1027,134 @@ class MarkerNavigateCrashTests(unittest.TestCase):
             fake_editor.clearFocus.assert_called_once()
 
 
+class TextOnlyEditFastPathTests(unittest.TestCase):
+    """ScenarioTablePanel._update_row_text_only(): a pure description-text
+    edit (cause/consequence/safeguard) patches just the affected cell(s) in
+    place instead of paying for a full _rebuild() (teardown + re-walk the
+    entire DB hierarchy + _apply_spans() + _resize_rows()).
+
+    Before this fix, editing a safeguard's description called
+    self._schedule_rebuild() unconditionally, even though nothing about a
+    safeguard's OWN row (its RFORE/REFT/SLUT columns are derived from rrf,
+    not description text) or any OTHER row depends on that text. Cause/
+    consequence edits already didn't trigger a rebuild (a side effect of the
+    emit_selection=False fix earlier this session), but didn't sync other
+    rows showing the same id (span groups keep one QTableWidgetItem per
+    underlying row even when visually merged).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def _make_full_chain(self, db):
+        node_id = db.add_node()
+        deviation_id = db.deviations(node_id)[0]['id']
+        cause_id = db.add_cause(deviation_id)
+        cons_id = db.add_consequence(cause_id)
+        sg_id = db.add_safeguard(cons_id)
+        return {
+            'node_id': node_id, 'deviation_id': deviation_id,
+            'cause_id': cause_id, 'cons_id': cons_id, 'sg_id': sg_id,
+        }
+
+    def test_safeguard_description_edit_no_longer_schedules_full_rebuild(self):
+        """Editing a safeguard's description must patch the cell in place and
+        must NOT call _schedule_rebuild() — nothing about its own row's
+        risk-derived columns or any other row depends on description text.
+        """
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            ids = self._make_full_chain(win.db)
+            panel.load_cause(ids['cause_id'])
+
+            schedule_spy = unittest.mock.Mock(wraps=panel._schedule_rebuild)
+            panel._schedule_rebuild = schedule_spy
+
+            row = next(r for r, m in enumerate(panel._row_meta) if m[3] == ids['sg_id'])
+            item = panel._table.item(row, panel._C_SG)
+            item.setText("Ny barriärbeskrivning")
+            panel._on_cell_changed(row, panel._C_SG)
+
+            schedule_spy.assert_not_called()
+            self.assertEqual(
+                dict(win.db.get_safeguard(ids['sg_id']))['description'],
+                "Ny barriärbeskrivning")
+
+    def test_update_row_text_only_noop_while_rebuilding(self):
+        """Mirrors test_update_lopa_risk_noop_while_rebuilding: the fast path
+        must return immediately without touching the table if called while
+        _rebuilding is True (e.g. a reentrant cell-commit signal firing
+        mid-teardown), not just skip the (now-removed) rebuild call.
+        """
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            ids = self._make_full_chain(win.db)
+            panel.load_cause(ids['cause_id'])
+
+            panel._rebuilding = True
+            try:
+                block_signals_spy = unittest.mock.Mock(wraps=panel._table.blockSignals)
+                panel._table.blockSignals = block_signals_spy
+                try:
+                    panel._update_row_text_only('safeguard', ids['sg_id'], "Should not apply")
+                finally:
+                    panel._table.blockSignals = block_signals_spy._mock_wraps
+            finally:
+                panel._rebuilding = False
+
+            block_signals_spy.assert_not_called()
+
+    def test_cause_edit_syncs_all_rows_sharing_the_same_cause(self):
+        """A cause with two consequences produces two rows sharing the same
+        cause_id (merged into one visual span by _apply_spans(), but still
+        two distinct QTableWidgetItem objects underneath). Editing the ORS
+        text on one row must patch the OTHER row's copy too, without a full
+        rebuild.
+        """
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            ids = self._make_full_chain(win.db)
+            win.db.add_consequence(ids['cause_id'])  # second consequence -> second row, same cause
+            panel.load_cause(ids['cause_id'])
+
+            rows = [r for r, m in enumerate(panel._row_meta) if m[1] == ids['cause_id']]
+            self.assertEqual(len(rows), 2, "expected two rows sharing the same cause_id")
+
+            panel._update_row_text_only('cause', ids['cause_id'], "Uppdaterad orsakstext")
+
+            for row in rows:
+                item = panel._table.item(row, panel._C_ORS)
+                self.assertEqual(item.text(), "Uppdaterad orsakstext",
+                    f"row {row}'s ORS cell must reflect the edit even though "
+                    "it wasn't the row the user directly typed into")
+
+    def test_wrap_col_row_height_matches_resize_rows_manual_formula(self):
+        """_wrap_col_row_height() is a deliberate near-duplicate of one branch
+        of _resize_rows_manual()'s per-row loop (kept as a small standalone
+        helper so the fast path doesn't need a full table pass) -- assert it
+        actually agrees with a real _resize_rows_manual() pass for the same
+        row/column, so the two don't silently drift apart over time.
+        """
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            ids = self._make_full_chain(win.db)
+            panel.load_cause(ids['cause_id'])
+
+            long_text = "Detta är en mycket lång orsaksbeskrivning som med säkerhet radbryts över flera rader i cellen. " * 3
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == ids['cause_id'])
+            panel._table.item(row, panel._C_ORS).setText(long_text)
+
+            fast_path_height = panel._wrap_col_row_height(row, panel._C_ORS)
+
+            panel._resize_rows_manual()
+            full_pass_height = panel._table.rowHeight(row)
+
+            self.assertEqual(fast_path_height, full_pass_height,
+                "the fast-path height helper must agree with a full "
+                "_resize_rows_manual() pass for the same row/column")
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 4. ConnectorAnalyzer thread-hang regression (bug #5)
 # ══════════════════════════════════════════════════════════════════════════
