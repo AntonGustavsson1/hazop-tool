@@ -2763,6 +2763,54 @@ class ConsequenceStepPickerWizardTests(unittest.TestCase):
         finally:
             dlg.deleteLater()
 
+    def test_dialog_opens_near_scenario_table_row_not_screen_center(self):
+        """The wizard must open positioned near its cons_id's row in the
+        HAZOP scenario table (ScenarioTablePanel._pos_near_cons_row), not at
+        the OS's default screen-centered dialog placement -- per explicit
+        user feedback that it should appear "nere vid hazop scenario" (down
+        by the scenario table) rather than as a generic centered popup.
+        """
+        from hazop import ScenarioTablePanel
+        node_id, dev_id, cause_id, cons_id = self._make_chain()
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+            expected_anchor = panel._table.viewport().mapToGlobal(
+                panel._table.visualRect(
+                    panel._table.model().index(row, panel._C_KON)).bottomLeft())
+
+            pos = panel._pos_near_cons_row(cons_id, __import__('PyQt6.QtCore', fromlist=['QSize']).QSize(420, 480))
+
+            # Clamped-to-screen position must still originate from the row's
+            # anchor point, not an arbitrary screen-center/default position.
+            self.assertLessEqual(abs(pos.x() - expected_anchor.x()), 5)
+            self.assertLessEqual(abs(pos.y() - expected_anchor.y()), 5)
+        finally:
+            panel.deleteLater()
+
+    def test_pos_near_cons_row_falls_back_to_cursor_when_row_not_visible(self):
+        """If cons_id isn't in the table's current filter scope (e.g. a
+        different node/cause is loaded), _pos_near_cons_row() must not raise
+        -- it falls back to the cursor position instead of crashing or
+        returning a nonsensical location."""
+        from hazop import ScenarioTablePanel
+        from PyQt6.QtCore import QSize
+        _, _, _, cons_id = self._make_chain()
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.clear()  # nothing loaded -> _row_meta is empty
+            try:
+                pos = panel._pos_near_cons_row(cons_id, QSize(420, 480))
+            except Exception as e:
+                self.fail(f"_pos_near_cons_row() must not raise when the row "
+                          f"isn't visible, raised: {e!r}")
+            self.assertIsNotNone(pos)
+        finally:
+            panel.deleteLater()
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -37,7 +37,7 @@ from PyQt6.QtWidgets import (
     QStyledItemDelegate, QStyleOptionViewItem, QStyle,
     QButtonGroup, QRadioButton,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF, QRect, QTimer, QMimeData, QEvent
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF, QRect, QPoint, QTimer, QMimeData, QEvent
 from PyQt6.QtGui import QFont, QFontMetrics, QColor, QAction, QBrush, QPen, QPainter, QDrag, QPainterPath, QPixmap, QIcon, QPolygonF, QShortcut, QKeySequence, QCursor
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -11997,6 +11997,24 @@ class ScenarioTablePanel(QWidget):
                 dev_desc = dev['description'] or ''
         return dev_desc, comp, cause_tx
 
+    def _pos_near_cons_row(self, cons_id: int, popup_size):
+        """Global top-left position to show a popup near cons_id's KON cell in
+        the scenario table, clamped to the screen — so it opens right where
+        the user is working instead of centered on screen. Falls back to the
+        current cursor position if cons_id isn't visible in the table right
+        now (e.g. filtered out by the current node/deviation/cause scope)."""
+        row = next((r for r, m in enumerate(self._row_meta) if m[2] == cons_id), -1)
+        if row >= 0:
+            rect = self._table.visualRect(self._table.model().index(row, self._C_KON))
+            anchor = self._table.viewport().mapToGlobal(rect.bottomLeft())
+        else:
+            anchor = QCursor.pos()
+        scr = (QApplication.screenAt(anchor) or QApplication.primaryScreen()).availableGeometry()
+        pw, ph = popup_size.width(), popup_size.height()
+        x = min(anchor.x(), scr.right() - pw)
+        y = min(anchor.y() + 4, scr.bottom() - ph)
+        return QPoint(max(scr.left(), x), max(scr.top(), y))
+
     def _open_chain_editor(self, cons_id: int, label_widget=None):
         """Open the consequence step picker dialog; refresh the cell on accept."""
         dev, comp, cause_tx = self._get_cons_context(cons_id)
@@ -12004,6 +12022,7 @@ class ScenarioTablePanel(QWidget):
             self.db, cons_id,
             deviation=dev, comp_type=comp, cause_text=cause_tx,
             parent=self)
+        dlg.move(self._pos_near_cons_row(cons_id, dlg.sizeHint()))
         if dlg.exec() == QDialog.DialogCode.Accepted:
             # Rebuild risk cells (description changed)
             self._schedule_rebuild()
@@ -18235,6 +18254,11 @@ class MainWindow(QMainWindow):
                 deviation=dev_desc, comp_type=comp, cause_text=cause_tx,
                 initial_ref_tag=initial_tag,
                 parent=self)
+            # Open next to the HAZOP scenario table's row for this consequence
+            # (falls back to the current cursor position if the row isn't
+            # visible in the table's current node/deviation/cause scope)
+            # instead of the OS's default centered placement.
+            dlg.move(self.scenario_panel._pos_near_cons_row(cons_id, dlg.sizeHint()))
             self._active_step_picker = dlg
             logging.info('_open_consequence_step_picker: calling dlg.exec()')
             result = dlg.exec()
