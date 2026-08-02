@@ -10851,6 +10851,7 @@ class ScenarioTablePanel(QWidget):
         self._deviation_id = None
         self._all_nodes = False  # if True, show every node's full hierarchy (set by load_all)
         self._show_empty_deviations = False  # if True, deviations with zero causes get a placeholder row instead of being omitted
+        self._force_dev_column_visible = False  # if True, Avvikelse column stays visible regardless of _all_nodes (set by always_show_deviation_column)
         self._row_meta = []   # list of (dev_id, cause_id, cons_id, sg_id) per visible row
         self._cons_id  = None  # if set, show only this consequence (set by load_consequence)
         self._enter_row = -1
@@ -11054,9 +11055,23 @@ class ScenarioTablePanel(QWidget):
         """NOD/DEV columns are normally hidden (context shown in the sticky
         header bar / _hdr_lbl instead). In "all nodes" mode multiple nodes
         and deviations are interleaved in one table, so those columns must
-        become visible so rows remain identifiable."""
+        become visible so rows remain identifiable.
+
+        `self._force_dev_column_visible` (set via always_show_deviation_column())
+        keeps the Avvikelse column visible regardless of `visible` — for hosts
+        like HAZOPWorksheet where deviation context should always be in the
+        grid, not just in the sticky header bar."""
         self._table.setColumnHidden(self._C_NOD, not visible)
-        self._table.setColumnHidden(self._C_DEV, not visible)
+        self._table.setColumnHidden(
+            self._C_DEV, not (visible or self._force_dev_column_visible))
+
+    def always_show_deviation_column(self):
+        """Keep the Avvikelse column visible at all times, regardless of
+        "Visa samtliga noder" / "Visa avvikelser utan orsaker" state — opt-in
+        for hosts (e.g. HAZOPWorksheet) that want deviation context always
+        shown in the grid itself."""
+        self._force_dev_column_visible = True
+        self._set_all_nodes_columns_visible(self._all_nodes)
 
     # Columns that stretch to fill remaining space in fill mode
     _STRETCH_COLS = None  # set after class constants are known
@@ -13239,6 +13254,10 @@ class HAZOPWorksheet(QWidget):
         # large blank gap below/around a height-capped table.
         self._table_panel = ScenarioTablePanel(db)
         self._table_panel.allow_full_height()
+        # Avvikelse column should always be visible here — there's no separate
+        # deviation-picker (only a node dropdown), and rows aren't distinguishable
+        # by node/deviation otherwise when neither checkbox above is checked.
+        self._table_panel.always_show_deviation_column()
         layout.addWidget(self._table_panel, 1)
 
         self._node_combo.currentIndexChanged.connect(self._on_node_combo_changed)

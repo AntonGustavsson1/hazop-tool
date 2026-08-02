@@ -1994,6 +1994,49 @@ class HAZOPWorksheetTests(unittest.TestCase):
         finally:
             ws.deleteLater()
 
+    def test_deviation_column_always_visible_regardless_of_checkboxes(self):
+        """The Avvikelse column must stay visible in the Worksheet even with
+        both 'Visa samtliga noder' and 'Visa avvikelser utan orsaker'
+        unchecked — there's no separate deviation-picker, only a node
+        dropdown, so rows need the Avvikelse column to stay distinguishable."""
+        from hazop import HAZOPWorksheet
+        from hazop import ScenarioTablePanel
+
+        self._make_full_chain(node_name="Nod A")
+
+        ws = HAZOPWorksheet(self.db)
+        try:
+            ws.refresh()
+            self.assertFalse(ws._all_nodes_cb.isChecked())
+            self.assertFalse(ws._show_empty_dev_cb.isChecked())
+            self.assertFalse(
+                ws._table_panel._table.isColumnHidden(ScenarioTablePanel._C_DEV),
+                "Avvikelse column must be visible with neither checkbox checked")
+
+            # Must also stay visible through mode changes (all-nodes on/off).
+            ws._all_nodes_cb.setChecked(True)
+            self.assertFalse(
+                ws._table_panel._table.isColumnHidden(ScenarioTablePanel._C_DEV))
+            ws._all_nodes_cb.setChecked(False)
+            self.assertFalse(
+                ws._table_panel._table.isColumnHidden(ScenarioTablePanel._C_DEV))
+        finally:
+            ws.deleteLater()
+
+    def test_main_pid_scenario_panel_dev_column_unaffected(self):
+        """always_show_deviation_column() is opt-in per instance — a plain
+        ScenarioTablePanel (as used standalone on the P&ID page) must keep
+        its original hide-unless-all-nodes behavior for the Avvikelse column."""
+        from pid_viewer import PIDPanel  # noqa: F401  (ensures hazop module fully loaded)
+        from hazop import ScenarioTablePanel
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            self.assertTrue(panel._table.isColumnHidden(ScenarioTablePanel._C_DEV),
+                "a plain ScenarioTablePanel must still hide Avvikelse by default")
+        finally:
+            panel.deleteLater()
+
 
 class EditExtraDeferredRebuildTests(unittest.TestCase):
     """Reproduces the THIRD occurrence of the silent-native-crash class in
