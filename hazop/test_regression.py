@@ -1355,6 +1355,58 @@ class SafeguardCreatedDoubleRebuildTests(unittest.TestCase):
                 "node (it used to fire twice: once via tree_panel.refresh()'s "
                 "setCurrentItem cascade, once via the explicit call)")
 
+    def test_on_scenario_item_edited_does_not_cascade_into_on_selected(self):
+        """Committing an ordinary cell edit (e.g. a cause description) must
+        NOT redundantly re-select/re-rebuild the scenario panel via
+        tree_panel.refresh()'s setCurrentItem cascade. Before this fix,
+        MainWindow._on_scenario_item_edited() called tree_panel.refresh(type_,
+        id_) with the default emit_selection=True, cascading into
+        _on_selected() on EVERY single cell edit -- not just on new-item
+        creation -- causing the scenario table to visibly reset its current
+        cell/selection after every edit commit (the reported "jumps away
+        from the object" confusion).
+        """
+        with _TempDbMainWindow() as win:
+            ids = self._make_full_chain(win.db)
+
+            on_selected_spy = unittest.mock.Mock(wraps=win._on_selected)
+            win.tree_panel.item_selected.disconnect(win._on_selected)
+            win.tree_panel.item_selected.connect(on_selected_spy)
+            win._on_selected = on_selected_spy
+
+            win._on_scenario_item_edited(CAUSE_T, ids['cause_id'])
+
+            self.assertEqual(
+                on_selected_spy.call_count, 0,
+                "_on_scenario_item_edited() must not cascade into "
+                "_on_selected() at all -- it already has everything it "
+                "needs (type_, id_) and only needs to sync tree labels / "
+                "P&ID overlays, not reselect/rebuild the scenario panel")
+
+    def test_new_item_created_positions_current_cell_on_new_row(self):
+        """After quick-adding a cause via Enter-to-add-next-row (or the quick-
+        add menu), the scenario table's current cell must land on the new
+        cause's Orsak cell -- not wherever the rebuild happened to leave
+        selection -- so the user can keep typing without losing their place.
+        """
+        with _TempDbMainWindow() as win:
+            ids = self._make_full_chain(win.db)
+            win.tree_panel.refresh = unittest.mock.Mock()  # isolate: only care about scenario_panel
+
+            new_cause_id = win.db.add_cause(ids['deviation_id'])
+            win.scenario_panel.load_node(ids['node_id'])  # populate _row_meta with both causes
+
+            win.scenario_panel.new_item_created.emit(CAUSE_T, new_cause_id)
+
+            row = win.scenario_panel._table.currentRow()
+            col = win.scenario_panel._table.currentColumn()
+            self.assertGreaterEqual(row, 0, "current cell must be set, not left unselected")
+            self.assertEqual(col, win.scenario_panel._C_ORS)
+            dev_id, cause_id, cons_id, sg_id = win.scenario_panel._row_meta[row]
+            self.assertEqual(cause_id, new_cause_id,
+                "current cell must be on the row for the newly created cause, "
+                "not an arbitrary/leftover row from before the rebuild")
+
 
 class EscapeCancelsPlacementTests(unittest.TestCase):
     """Escape must abort an in-progress cause/consequence/safeguard placement

@@ -12825,6 +12825,29 @@ class ScenarioTablePanel(QWidget):
         new_id = self.db.add_safeguard(cons_id)
         self.new_item_created.emit(SG_T, new_id)
 
+    def select_item(self, type_, id_):
+        """Move the current cell to the row for (type_, id_) and start inline
+        editing where supported (Orsak/Safeguard columns). Call this after
+        refresh()/_rebuild() so the row/table is already populated — used
+        when a new cause/consequence/safeguard was just created (e.g. via
+        Enter-to-add-next-row), so the user's editing cursor stays on the
+        new item instead of the table rebuild silently dropping selection
+        and leaving the user unsure where they ended up."""
+        col_for_type = {CAUSE_T: self._C_ORS, CONS_T: self._C_KON, SG_T: self._C_SG}
+        col = col_for_type.get(type_)
+        if col is None:
+            return
+        # index into each _row_meta tuple: (dev_id, cause_id, cons_id, sg_id)
+        field_idx = {CAUSE_T: 1, CONS_T: 2, SG_T: 3}[type_]
+        for row, meta in enumerate(self._row_meta):
+            if meta[field_idx] == id_:
+                self._table.setCurrentCell(row, col)
+                item = self._table.item(row, col)
+                if item is not None:
+                    self._table.scrollToItem(item)
+                self._try_start_edit(row, col)  # no-op for columns it doesn't support (e.g. KON)
+                return
+
     def _on_cell_changed(self, row, col):
         try:
             self._on_cell_changed_inner(row, col)
@@ -17511,7 +17534,13 @@ class MainWindow(QMainWindow):
                 # redundant rebuild here can race with a cell editor's
                 # focus-out mid-edit-commit.
                 self.tree_panel.refresh(type_, id_, emit_selection=False),
-                self.scenario_panel.refresh()))
+                self.scenario_panel.refresh(),
+                # Land the editing cursor on the new item instead of leaving
+                # selection wherever the rebuild happened to reset it to --
+                # otherwise the user's view visibly "jumps away" from the row
+                # they were just working on, making it hard to keep typing
+                # the next cause/consequence in one flow.
+                self.scenario_panel.select_item(type_, id_)))
         self.scenario_panel.item_edited.connect(self._on_scenario_item_edited)
         self.scenario_panel.place_requested.connect(self._on_scenario_place_requested)
         self.scenario_panel.navigate_to_pid.connect(self._on_scenario_navigate_to_pid)
@@ -17759,8 +17788,20 @@ class MainWindow(QMainWindow):
         self.tree_panel.structure_changed.emit()
 
     def _on_scenario_item_edited(self, type_, id_):
-        """Scenario table committed an edit — sync tree and P&ID labels."""
-        self.tree_panel.refresh(type_, id_)
+        """Scenario table committed an edit — sync tree and P&ID labels.
+
+        emit_selection=False: without it, tree_panel.refresh()'s
+        setCurrentItem cascades via currentItemChanged -> _on_select ->
+        item_selected -> _on_selected, which reloads the scenario panel and
+        triggers a SECOND, redundant _rebuild() on every single cell edit
+        (same anti-pattern already fixed for _on_marker_navigate,
+        _on_safeguard_created, _on_props_changed and node_created). Besides
+        the redundant work, this is what made the table visibly "jump away"
+        after committing an edit -- the extra rebuild reset the current
+        cell/selection a second time on top of whatever the first rebuild
+        already did.
+        """
+        self.tree_panel.refresh(type_, id_, emit_selection=False)
         self.pid_panel.reload_overlays()
 
     def _on_structure_changed(self):
