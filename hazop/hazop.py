@@ -7014,6 +7014,27 @@ class TreePanel(QWidget):
 
         layout.addLayout(vis_row)
 
+        # ── Tree action buttons (2nd row) — Nod/Avvikelse have no natural
+        # right-click target of their own (they act on the whole tree or
+        # need a node selected first), and "Ta bort" is common enough to
+        # warrant a one-click button alongside the context-menu entry.
+        # Orsak/Konsekvens/Safeguard stay right-click-only (add_deviation on
+        # a NODE_T item, add_cause on DEV_T, etc.) since those already have
+        # an obvious parent item to right-click.
+        action_row = QHBoxLayout()
+        action_row.setSpacing(4)
+        for label, tip, slot in (
+            ("+ Nod",       "Lägg till ny nod",       self.add_node),
+            ("+ Avvikelse", "Lägg till ny avvikelse", self.add_deviation),
+            ("🗑 Ta bort",  "Ta bort markerat",       self.delete_selected),
+        ):
+            btn = QPushButton(label)
+            btn.setToolTip(tip)
+            btn.setFixedHeight(CONFIG['H_CTRL_STD'])
+            btn.clicked.connect(slot)
+            action_row.addWidget(btn)
+        layout.addLayout(action_row)
+
         # ── Tree widget ──────────────────────────────────────────────────────────
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
@@ -17263,7 +17284,15 @@ class MainWindow(QMainWindow):
         self._markup_undo_stack  = []
         self.resize(1440, 900)
 
-        # ── File menu ─────────────────────────────────────────────────────────
+        # ── Menu bar ──────────────────────────────────────────────────────────
+        # Former toolbar row folded into menus, grouped by purpose:
+        #   Fil          — project + Skriv ut
+        #   Export       — Excel / PDF / Åtgärder
+        #   Analys       — Risk Scenario / Statistik / Godkänn
+        #   Inställningar — Mörkt läge
+        # Node/deviation/delete actions moved to a button row in TreePanel
+        # instead (see TreePanel.__init__), since they act on the tree
+        # selection rather than the document as a whole.
         mb = self.menuBar()
         file_menu = mb.addMenu("Fil")
         file_menu.addAction("📄 Nytt projekt",      self._hzp_new)
@@ -17272,32 +17301,24 @@ class MainWindow(QMainWindow):
         self._act_save = file_menu.addAction("💾 Spara",         self._hzp_save)
         file_menu.addAction("💾 Spara som…",         self._hzp_save_as)
         file_menu.addSeparator()
+        file_menu.addAction("🖨 Skriv ut",           self._print_scenario_table)
+        file_menu.addSeparator()
         file_menu.addAction("❌ Avsluta",            self.close)
+
+        export_menu = mb.addMenu("Export")
+        export_menu.addAction("📊 Excel",           self._export_excel)
+        export_menu.addAction("📄 PDF",             self._export_pdf)
+        export_menu.addAction("📋 Åtgärder",        self._export_actions_pdf)
+
+        analysis_menu = mb.addMenu("Analys")
+        analysis_menu.addAction("🔀 Risk Scenario", self._open_risk_scenario_wizard)
+        analysis_menu.addAction("📈 Statistik",     self._show_statistics)
+        analysis_menu.addAction("✅ Godkänn",       self._approve_node)
+
+        settings_menu = mb.addMenu("Inställningar")
+        settings_menu.addAction("🌙 Mörkt läge",    self._toggle_dark_mode)
+
         self._update_title()
-
-        # ── Toolbar ───────────────────────────────────────────────────────────
-        # Toolbar actions that don't depend on tree_panel are created here.
-        # Actions that reference tree_panel are deferred to after tree_panel creation.
-        self._tb = self.addToolBar("Verktyg")
-        self._tb.setMovable(False)
-        self._tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-
-        def act(label, tip, slot):
-            a = QAction(label, self); a.setToolTip(tip); a.triggered.connect(slot)
-            self._tb.addAction(a); return a
-
-        # These actions don't reference tree_panel (safe to create now)
-        act("🔀 Risk Scenario", "Starta risk scenario-guide", self._open_risk_scenario_wizard)
-        self._tb.addSeparator()
-        act("📊 Excel",      "Exportera till Excel (IEC 61511)", self._export_excel)
-        act("📄 PDF",        "Exportera till PDF",     self._export_pdf)
-        act("📋 Åtgärder",   "Exportera åtgärdsrapport (PDF)", self._export_actions_pdf)
-        act("🖨 Skriv ut",   "Skriv ut scenariotabell",        self._print_scenario_table)
-        act("📈 Statistik",  "Visa projekstatistik",           self._show_statistics)
-        act("✅ Godkänn",    "Godkänn / byt status på nod",    self._approve_node)
-        act("🌙 Mörkt läge", "Växla mörkt/ljust läge",        self._toggle_dark_mode)
-
-        # Defer these toolbar actions to after tree_panel is created (below)
 
         # ── Status bar ────────────────────────────────────────────────────────
         self.status_bar = QStatusBar()
@@ -17366,17 +17387,6 @@ class MainWindow(QMainWindow):
         self.tree_panel.setMinimumWidth(220)
         self.tree_panel.setMaximumWidth(340)
         self._h_splitter.addWidget(self.tree_panel)
-
-        # Now that tree_panel exists, add the deferred toolbar actions
-        def act_deferred(label, tip, slot):
-            a = QAction(label, self); a.setToolTip(tip); a.triggered.connect(slot)
-            self._tb.addAction(a); return a
-
-        act_deferred("+ Nod",         "Lägg till ny nod",          lambda: self.tree_panel.add_node())
-        act_deferred("+ Avvikelse",   "Lägg till ny avvikelse",    lambda: self.tree_panel.add_deviation())
-        self._tb.addSeparator()
-        act_deferred("Ta bort",       "Ta bort markerat",          lambda: self.tree_panel.delete_selected())
-        self._tb.addSeparator()
 
         self.pid_panel = PIDPanel(self.db)
         self.pid_panel.setMinimumWidth(400)
