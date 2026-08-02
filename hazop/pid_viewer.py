@@ -9309,14 +9309,14 @@ class PIDPanel(QWidget):
         if node_id:
             self._active_node_id = node_id
         if not self._active_node_id:
-            QMessageBox.information(None, "Välj nod",
+            QMessageBox.information(self, "Välj nod",
                 "Välj en nod i trädet eller på P&ID:n innan du startar Risk Scenario.")
             return
 
         # Pick deviation — standard causes are organised per deviation
         devs = self.db.deviations(self._active_node_id) if hasattr(self.db, 'deviations') else []
         if not devs:
-            QMessageBox.information(None, "Inga avvikelser",
+            QMessageBox.information(self, "Inga avvikelser",
                 "Noden har inga avvikelser. Lägg till avvikelser i trädet först.")
             return
         dev_labels = [d['description'] for d in devs]
