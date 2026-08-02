@@ -266,6 +266,70 @@ class CrashReporter:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# GLOBAL EXCEPTION HOOK — keep the app alive when a Qt slot raises
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# In PyQt5.5+/PyQt6, an exception raised inside a Qt signal/slot callback
+# (button click, tree selection, etc.) that is not caught anywhere propagates
+# to sys.excepthook. If sys.excepthook is left at its default, PyQt prints the
+# traceback and then aborts the whole process. Installing this hook means the
+# offending slot call simply fails (the rest of that slot's code does not
+# run), while the QApplication event loop keeps running so the user does not
+# lose their whole session over one bad callback.
+#
+# This must be installed before app.exec() starts (module import time is
+# early enough and keeps it in effect for the entire process lifetime).
+
+def _global_exception_hook(exc_type, exc_value, exc_tb):
+    """Replacement for sys.excepthook: log + report + inform the user,
+    but never re-raise, sys.exit(), or os.abort() — the event loop must
+    keep running afterwards."""
+
+    # Let Ctrl+C behave normally (default handling), same as stock Python.
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+        return
+
+    # Structured crash report (JSON under hazop/crashes/). Never allow a bug
+    # in the crash reporter itself to take down the exception hook.
+    try:
+        CrashReporter.handle_exception(exc_type, exc_value, exc_tb)
+    except Exception as e:
+        logging.error(f"Failed to generate crash report: {e}")
+
+    # Always also log the traceback via the standard logging module (this
+    # matches the pattern used elsewhere in this file, e.g. the crash log
+    # written to hazop_crash.log).
+    msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    logging.error('UNHANDLED EXCEPTION IN SLOT\n%s', msg)
+
+    # Show a dialog so the user knows something went wrong, but only if a
+    # QApplication is actually running (otherwise there is nothing to show
+    # a dialog on top of, e.g. exceptions during module import).
+    try:
+        from PyQt6.QtWidgets import QApplication, QMessageBox
+        if QApplication.instance() is not None:
+            try:
+                crash_dir = CrashReporter.CRASH_DIR
+                QMessageBox.critical(
+                    None,
+                    'Ett oväntat fel uppstod',
+                    f'<b>{exc_type.__name__}:</b> {exc_value}<br><br>'
+                    f'Programmet försöker fortsätta köra, men kontrollera '
+                    f'att inget gick fel.<br><br>'
+                    f'Detaljerad felrapport sparad i:<br>'
+                    f'<code>{crash_dir}</code><br><br>'
+                    f'Skicka innehållet från JSON-filen när du rapporterar felet.')
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+sys.excepthook = _global_exception_hook
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # WINDOWS 11 THEME — LJUST TEMA
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1542,14 +1606,24 @@ def _lookup_comp_type_for_tag(tag: str, db) -> str:
 class Database:
     def __init__(self, path=DB_PATH):
         self.path = Path(path)
+        # A pre-existing, non-empty DB file means _migrate() below may run real
+        # ALTER TABLE/CREATE TABLE statements against live user data. Snapshot
+        # it *before* touching the schema so a buggy/failed migration can
+        # always be recovered from. Brand-new (empty) DBs have nothing to lose.
+        pre_existing_db = self.path.exists() and self.path.stat().st_size > 0
         self.conn = sqlite3.connect(str(self.path))
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")   # faster concurrent reads
         self.conn.executescript(SCHEMA)
         self.commit()
+        if pre_existing_db:
+            try:
+                self._write_backup(startup=True)   # pre-migration safety snapshot
+            except Exception:
+                logging.warning("Pre-migration backup failed", exc_info=True)
         self._migrate()
-        self._write_backup(startup=True)   # unconditional startup snapshot
+        self._write_backup(startup=True)   # unconditional post-migration snapshot
 
     def __del__(self):
         """Clean up database connection on object destruction.
@@ -3843,6 +3917,15 @@ class Database:
 
     # ── Delete ────────────────────────────────────────────────────────────────
     def delete_node(self, id_):
+        # Deleting a node cascades through causes -> consequences -> safeguards,
+        # i.e. it can wipe out an entire branch of the HAZOP tree in one go.
+        # Force an un-throttled backup right before this destructive operation
+        # so a crash mid-cascade (or a bug in the cascade logic) is always
+        # recoverable. Never let a backup failure block the actual delete.
+        try:
+            self._write_backup(startup=True)
+        except Exception:
+            logging.warning("Pre-delete backup failed", exc_info=True)
         # No FK cascade exists from causes(node_id) down into
         # consequence_severities / consequence_severity_exclusions / linked_consequence_id,
         # so route through delete_cause() for each direct cause (mirrors delete_deviation()).
@@ -18493,7 +18576,7 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == '__main__':
-    import logging, traceback as _tb, datetime as _dt
+    import logging
 
     # ── Crash logger ───────────────────────────────────────────────────────────
     # Structured crash reporting: saves detailed diagnostic info to JSON files
@@ -18515,34 +18598,16 @@ if __name__ == '__main__':
     # Setup structured crash reporting
     CrashReporter.setup()
 
-    def _excepthook(exc_type, exc_value, exc_tb):
-        # Generate structured crash report
-        try:
-            CrashReporter.handle_exception(exc_type, exc_value, exc_tb)
-        except Exception as e:
-            logging.error(f"Failed to generate crash report: {e}")
-
-        # Also log as text for backward compatibility
-        msg = ''.join(_tb.format_exception(exc_type, exc_value, exc_tb))
-        logging.error('UNHANDLED EXCEPTION\n%s', msg)
-
-        # Show a dialog so the user knows something crashed
-        try:
-            crash_dir = CrashReporter.CRASH_DIR
-            dlg = QMessageBox()
-            dlg.setWindowTitle('Programmet kraschade')
-            dlg.setIcon(QMessageBox.Icon.Critical)
-            dlg.setText(
-                f'<b>{exc_type.__name__}:</b> {exc_value}<br><br>'
-                f'Detaljerad rapport sparad i:<br>'
-                f'<code>{crash_dir}</code><br><br>'
-                f'Skicka innehållet från JSON-filen när du rapporterar felet.')
-            dlg.setDetailedText(msg)
-            dlg.exec()
-        except Exception:
-            pass
-
-    sys.excepthook = _excepthook
+    # sys.excepthook was already installed at module load time (see
+    # _global_exception_hook, defined right after the CrashReporter class,
+    # near the top of this file) — it logs, writes a structured crash
+    # report, and shows a QMessageBox, without calling sys.exit()/os.abort()
+    # or re-raising, so a single bad slot cannot take down the whole app.
+    # Nothing here should reassign sys.excepthook; doing so would just
+    # shadow that hook for the rest of the process.
+    assert sys.excepthook is _global_exception_hook, (
+        "sys.excepthook was reassigned somewhere between module import and "
+        "__main__ -- _global_exception_hook must remain installed")
 
     # Catch exceptions raised inside Qt signal handlers (they bypass sys.excepthook)
     def _qt_message_handler(mode, context, message):

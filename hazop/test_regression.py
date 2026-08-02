@@ -367,6 +367,133 @@ class DatabaseLayerTests(unittest.TestCase):
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# 1b. Backup system tests (stability improvement #5)
+# ══════════════════════════════════════════════════════════════════════════
+
+class BackupSystemTests(unittest.TestCase):
+    """Exercise Database._write_backup()/_prune_backups() directly, plus the
+    forced backup call sites (pre-migration in __init__, pre-delete in
+    delete_node()). Never touches the real project database — each test
+    gets its own tempfile, removed in tearDown.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_backup_test_")
+        self.db_path = os.path.join(self._tmpdir, "test_project.db")
+        self.db = Database(path=self.db_path)
+        # Reset the class-level throttle timestamps so each test's explicit
+        # _write_backup(startup=True) calls aren't skipped due to timing
+        # left over from a previous test in the same process.
+        Database._last_backup_ts = 0.0
+        Database._last_prune_ts = 0.0
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_write_backup_creates_file_with_same_data(self):
+        """A forced backup must produce a standalone .db file that a fresh
+        sqlite3 connection can open and query, containing the same rows."""
+        node_id = self.db.add_node()
+        self.db._write_backup(startup=True)
+
+        backup_dir = self.db._backup_dir()
+        backups = list(backup_dir.glob("backup_*.db"))
+        self.assertTrue(len(backups) >= 1, "expected at least one backup file")
+
+        # Open the newest backup as an independent connection and verify data.
+        newest = max(backups, key=lambda p: p.stat().st_mtime)
+        check_conn = sqlite3.connect(str(newest))
+        try:
+            row = check_conn.execute(
+                "SELECT id FROM nodes WHERE id=?", (node_id,)).fetchone()
+            self.assertIsNotNone(row, "backup file is missing data present in live DB")
+            self.assertEqual(row[0], node_id)
+        finally:
+            check_conn.close()
+
+    def test_prune_keeps_bounded_number_of_backups(self):
+        """_prune_backups() must not let backups grow without bound once past
+        the hourly+daily retention window. We fabricate old-dated filenames
+        directly (bypassing the once-per-hour prune throttle and the
+        once-per-minute write throttle) to exercise the pruning logic itself."""
+        backup_dir = self.db._backup_dir()
+
+        import datetime as _dt
+        now = _dt.datetime.now()
+        # Retention keeps at most one file per day beyond the hourly window,
+        # for _DAILY_KEEP_D days -- i.e. roughly _DAILY_KEEP_D survivors past
+        # the hourly cutoff, plus everything within the hourly window itself.
+        # Spread files across many more distinct past days than that so
+        # pruning has real work to do (files older than hourly+daily windows
+        # combined get deleted outright).
+        total_days = Database._HOURLY_KEEP_H // 24 + Database._DAILY_KEEP_D + 60
+        for days_ago in range(total_days):
+            ts = now - _dt.timedelta(days=days_ago, hours=1)
+            fname = f"backup_{ts.strftime('%Y-%m-%dT%H-%M-%S-%f')}.db"
+            dest = sqlite3.connect(str(backup_dir / fname))
+            dest.close()
+
+        before_count = len(list(backup_dir.glob("backup_*.db")))
+        self.assertGreater(
+            before_count, Database._HOURLY_KEEP_H + Database._DAILY_KEEP_D,
+            "test setup should create more files than the retention policy allows")
+
+        # Force the prune (bypass its own once-per-hour throttle).
+        Database._last_prune_ts = 0.0
+        self.db._prune_backups(backup_dir)
+
+        after_count = len(list(backup_dir.glob("backup_*.db")))
+        self.assertLess(
+            after_count, before_count,
+            "_prune_backups() should have removed backups beyond the retention window")
+
+    def test_delete_node_forces_backup_before_cascading_delete(self):
+        """delete_node() is the most destructive single user action (cascades
+        causes -> consequences -> safeguards). It must force a fresh,
+        un-throttled backup immediately beforehand, even if a recent commit()
+        already wrote a throttled one."""
+        node_id = self.db.add_node()
+        deviation_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(deviation_id)
+        self.db.add_consequence(cause_id)
+
+        backup_dir = self.db._backup_dir()
+        before = set(backup_dir.glob("backup_*.db"))
+
+        # Simulate "a commit just happened" so the throttle would normally
+        # suppress another backup for _COMMIT_INTERVAL_S seconds.
+        import time as _time
+        Database._last_backup_ts = _time.monotonic()
+
+        self.db.delete_node(node_id)
+
+        after = set(backup_dir.glob("backup_*.db"))
+        self.assertTrue(
+            len(after) > len(before),
+            "delete_node() should force a new backup even though the "
+            "throttle window had not elapsed")
+        self.assertIsNone(self.db.get_node(node_id), "node should still be deleted")
+
+    def test_backup_failure_does_not_block_delete_node(self):
+        """A backup failure must never prevent the destructive operation it
+        guards -- delete_node() must still delete the node even if
+        _write_backup() raises."""
+        node_id = self.db.add_node()
+
+        with unittest.mock.patch.object(
+                self.db, '_write_backup', side_effect=RuntimeError("disk full")):
+            self.db.delete_node(node_id)
+
+        self.assertIsNone(
+            self.db.get_node(node_id),
+            "delete_node() must still delete the node even when the backup call raises")
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # 2. GUI smoke tests (headless, offscreen)
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -735,6 +862,102 @@ class ConnectorAnalyzerHangTests(unittest.TestCase):
             fake_doc.closed,
             "ConnectorAnalyzer.run() must close() the fitz doc even when "
             "analysis fails mid-scan (no more leaked file handles).")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 5. Global sys.excepthook regression — exception in a Qt slot must not
+#    silently close the whole application
+# ══════════════════════════════════════════════════════════════════════════
+
+class GlobalExceptHookTests(unittest.TestCase):
+    """In PyQt5.5+/PyQt6, an exception raised inside a signal/slot callback
+    (button click, tree selection, etc.) propagates to sys.excepthook. With
+    the default hook, PyQt prints the traceback and the process aborts.
+    hazop.py installs hazop._global_exception_hook as sys.excepthook at
+    module import time specifically so this no longer happens: the slot call
+    fails, but the QApplication event loop keeps running.
+
+    This test proves the *new* hook specifically fires (not just that
+    nothing crashes) by temporarily wrapping it to record calls, and
+    silences the QMessageBox.critical dialog it would otherwise pop up so
+    the test doesn't hang waiting for a user click.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_exception_in_button_click_slot_invokes_global_hook_not_crash(self):
+        from PyQt6.QtWidgets import QWidget, QPushButton, QMessageBox
+
+        self.assertIs(
+            sys.excepthook, hazop._global_exception_hook,
+            "sys.excepthook is not hazop._global_exception_hook -- either "
+            "it was never installed or something later overwrote it.")
+
+        # Silence the dialog the hook shows -- headless test, no user to
+        # click it away, and we don't want the test to hang.
+        original_critical = QMessageBox.critical
+        QMessageBox.critical = staticmethod(lambda *a, **k: None)
+
+        # Don't actually persist a crash-report JSON file to hazop/crashes/
+        # on every test run -- that's a disk side effect unrelated to what
+        # this test is checking. Stub out just the persistence step; the
+        # hook's own try/except around this call is exactly what makes that
+        # safe to do.
+        original_handle_exception = hazop.CrashReporter.handle_exception
+        hazop.CrashReporter.handle_exception = classmethod(lambda cls, *a, **k: None)
+
+        # Wrap (not replace) the real hook so we can assert it specifically
+        # fired, with which exception type, while still exercising the real
+        # logging/dialog code path.
+        original_hook = sys.excepthook
+        calls = []
+
+        def _recording_hook(exc_type, exc_value, exc_tb):
+            calls.append(exc_type)
+            return original_hook(exc_type, exc_value, exc_tb)
+
+        sys.excepthook = _recording_hook
+
+        widget = QWidget()
+        button = QPushButton("Crash me", widget)
+
+        def _raise(*_a, **_k):
+            raise ValueError("test exception for excepthook")
+
+        button.clicked.connect(_raise)
+
+        try:
+            try:
+                button.click()
+            except Exception as e:
+                self.fail(
+                    "button.click() must not raise out to the test -- the "
+                    f"exception should have gone through sys.excepthook "
+                    f"instead: {e!r}")
+
+            self.assertIsNotNone(
+                QApplication.instance(),
+                "QApplication must survive an unhandled exception in a "
+                "slot -- this is the whole point of installing the hook.")
+            self.assertEqual(
+                len(calls), 1,
+                "sys.excepthook (wrapping _global_exception_hook) should "
+                "have fired exactly once for the exception raised in the "
+                "button's clicked slot.")
+            self.assertIs(
+                calls[0], ValueError,
+                "the hook fired but with the wrong exception type.")
+        finally:
+            sys.excepthook = original_hook
+            QMessageBox.critical = original_critical
+            hazop.CrashReporter.handle_exception = original_handle_exception
+            button.deleteLater()
+            widget.deleteLater()
+            app = QApplication.instance()
+            if app is not None:
+                app.processEvents()
 
 
 if __name__ == '__main__':
