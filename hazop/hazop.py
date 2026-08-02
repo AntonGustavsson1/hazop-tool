@@ -3843,12 +3843,51 @@ class Database:
 
     # ── Delete ────────────────────────────────────────────────────────────────
     def delete_node(self, id_):
+        # No FK cascade exists from causes(node_id) down into
+        # consequence_severities / consequence_severity_exclusions / linked_consequence_id,
+        # so route through delete_cause() for each direct cause (mirrors delete_deviation()).
+        for cause in self.causes(id_):
+            self.delete_cause(cause['id'])
         self.conn.execute("DELETE FROM nodes WHERE id=?", (id_,)); self.commit()
 
     def delete_cause(self, id_):
+        # Clean up severity/exclusion data for all consequences under this cause
+        # (no FK cascade exists for these tables).
+        self.conn.execute(
+            "DELETE FROM consequence_severity_exclusions "
+            "WHERE severity_id IN ("
+            "  SELECT cs.id FROM consequence_severities cs "
+            "  JOIN consequences c ON cs.consequence_id = c.id "
+            "  WHERE c.cause_id=?)",
+            (id_,))
+        self.conn.execute(
+            "DELETE FROM consequence_severities "
+            "WHERE consequence_id IN (SELECT id FROM consequences WHERE cause_id=?)",
+            (id_,))
+        self.conn.execute(
+            "UPDATE causes SET linked_consequence_id=NULL "
+            "WHERE linked_consequence_id IN (SELECT id FROM consequences WHERE cause_id=?)",
+            (id_,))
+        self.conn.execute(
+            "DELETE FROM consequence_severity_exclusions WHERE safeguard_id IN ("
+            "  SELECT id FROM safeguards WHERE consequence_id IN "
+            "  (SELECT id FROM consequences WHERE cause_id=?))",
+            (id_,))
         self.conn.execute("DELETE FROM causes WHERE id=?", (id_,)); self.commit()
 
     def delete_consequence(self, id_):
+        # Clean up orphaned severity data (no FK cascade exists for these tables)
+        self.conn.execute(
+            "DELETE FROM consequence_severity_exclusions "
+            "WHERE severity_id IN (SELECT id FROM consequence_severities WHERE consequence_id=?)",
+            (id_,))
+        self.conn.execute("DELETE FROM consequence_severities WHERE consequence_id=?", (id_,))
+        # Null out any causes that chain-link to this consequence (cross-branch reference, no FK)
+        self.conn.execute("UPDATE causes SET linked_consequence_id=NULL WHERE linked_consequence_id=?", (id_,))
+        self.conn.execute(
+            "DELETE FROM consequence_severity_exclusions WHERE safeguard_id IN "
+            "(SELECT id FROM safeguards WHERE consequence_id=?)",
+            (id_,))
         self.conn.execute("DELETE FROM consequences WHERE id=?", (id_,)); self.commit()
 
     # ── Consequence steps (Del1-Del5 escalation chain) ────────────────────────
@@ -3889,6 +3928,8 @@ class Database:
         return ' → '.join(parts) if parts else ''
 
     def delete_safeguard(self, id_):
+        # No FK cascade exists for consequence_severity_exclusions.safeguard_id
+        self.conn.execute("DELETE FROM consequence_severity_exclusions WHERE safeguard_id=?", (id_,))
         self.conn.execute("DELETE FROM safeguards WHERE id=?", (id_,)); self.commit()
 
     def delete_action(self, id_):
@@ -12375,7 +12416,7 @@ class ScenarioTablePanel(QWidget):
         try:
             self._on_cell_changed_inner(row, col)
         except Exception as e:
-            QMessageBox.critical(None, "Fel vid celländring (scenario)", str(e))
+            QMessageBox.critical(self, "Fel vid celländring (scenario)", str(e))
 
     def _on_cell_changed_inner(self, row, col):
         item = self._table.item(row, col)
@@ -15561,7 +15602,8 @@ class SettingsPanel(QWidget):
         if not item: return
         self.db.delete_category(item.data(Qt.ItemDataRole.UserRole))
         self._load_categories()
-        self._sev_def_panel.refresh()
+        if hasattr(self, '_sev_def_panel') and self._sev_def_panel:
+            self._sev_def_panel.refresh()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -16217,7 +16259,7 @@ class EquipmentPanel(QWidget):
         try:
             self._on_cell_changed_inner(row, col)
         except Exception as e:
-            QMessageBox.critical(None, "Fel vid celländring (utrustning)", str(e))
+            QMessageBox.critical(self, "Fel vid celländring (utrustning)", str(e))
 
     def _on_cell_changed_inner(self, row, col):
         if self._loading:
@@ -17327,6 +17369,7 @@ class MainWindow(QMainWindow):
         self._cur_id   = None
         self.stack.setCurrentWidget(self.welcome_panel)
         self.scenario_panel.clear()
+        self.pid_panel.reload_overlays()
 
     def _on_sheets_changed(self):
         """Reload the study board after sheets are added or deleted."""
