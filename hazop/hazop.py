@@ -11952,10 +11952,13 @@ class ScenarioTablePanel(QWidget):
 
     def _update_ctx_bar(self, *_):
         """Refresh the sticky context bar to show Nod + Avvikelse of the topmost visible row."""
-        if self._all_nodes:
-            # Multiple nodes are interleaved in one table in this mode, so a
-            # single "current node/deviation" context bar doesn't make sense
-            # — the now-visible NOD/DEV columns already show that per row.
+        if self._all_nodes or self._force_dev_column_visible:
+            # Multiple nodes are interleaved in one table in "all nodes" mode,
+            # or the host (e.g. HAZOPWorksheet, via always_show_deviation_
+            # column()) forces the Avvikelse column always visible — either
+            # way, a single "current node/deviation" context bar is redundant
+            # with what the now-visible NOD/DEV columns already show per row,
+            # and just costs an extra row of vertical space for the same info.
             self._ctx_bar.hide()
             return
         if not self._row_meta:

@@ -2217,6 +2217,35 @@ class HAZOPWorksheetTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_sticky_ctx_bar_hidden_when_dev_column_forced_visible(self):
+        """The sticky context bar (which shows 'current Nod + Avvikelse' as a
+        text header) duplicates the now-always-visible Avvikelse column in
+        the Worksheet -- both showed Nod/Avvikelse on their own row, wasting
+        vertical space. Once always_show_deviation_column() is in effect,
+        the context bar must stay hidden, matching the existing "all nodes"
+        mode reasoning (the visible column already shows the same info)."""
+        from hazop import HAZOPWorksheet
+
+        node_id = self.db.add_node()
+        self.db.conn.execute("UPDATE nodes SET name=? WHERE id=?", ("Nod A", node_id))
+        self.db.commit()
+        deviation_id = self.db.deviations(node_id)[0]['id']
+        self.db.add_cause(deviation_id)
+
+        ws = HAZOPWorksheet(self.db)
+        try:
+            ws.refresh()  # loads the node into the embedded ScenarioTablePanel
+            self.assertFalse(
+                ws._table_panel._table.isColumnHidden(ws._table_panel._C_DEV),
+                "sanity check: Avvikelse column must be visible in Worksheet")
+            self.assertFalse(
+                ws._table_panel._ctx_bar.isVisible(),
+                "the sticky context bar must be hidden once the Avvikelse "
+                "column is force-visible -- otherwise Nod/Avvikelse are "
+                "shown redundantly on two separate rows")
+        finally:
+            ws.deleteLater()
+
 
 class EditExtraDeferredRebuildTests(unittest.TestCase):
     """Reproduces the THIRD occurrence of the silent-native-crash class in
