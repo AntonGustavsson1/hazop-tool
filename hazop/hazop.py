@@ -32,7 +32,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox,
     QMessageBox, QFileDialog, QGroupBox,
     QMenu, QToolBar, QStatusBar, QSizePolicy,
-    QSpinBox, QSlider, QColorDialog, QFrame, QListWidget, QListWidgetItem,
+    QSpinBox, QDoubleSpinBox, QSlider, QColorDialog, QFrame, QListWidget, QListWidgetItem,
     QProgressDialog, QAbstractItemView, QToolTip, QInputDialog, QCheckBox,
     QStyledItemDelegate, QStyleOptionViewItem, QStyle,
     QButtonGroup, QRadioButton,
@@ -1603,6 +1603,108 @@ def _lookup_comp_type_for_tag(tag: str, db) -> str:
         return db.get_prefix_memory(pfx) if hasattr(db, 'get_prefix_memory') else ''
     except Exception:
         return ''
+
+
+def _obj_type_matches(preselect: str, obj_name: str) -> bool:
+    """True when preselect and obj_name refer to the same object type.
+    Bidirectional whole-string substring match (case-insensitive) — no
+    word-level matching, to avoid e.g. 'ventil' matching 'backventil' when
+    preselect is 'Manuell ventil'.
+    """
+    if not preselect or not obj_name:
+        return False
+    p, n = preselect.lower(), obj_name.lower()
+    return p in n or n in p
+
+
+def _make_tag_completer(db, parent):
+    """Build a QCompleter of known equipment tags for a Tag-ID QLineEdit.
+    Returns None (leaving the field plain) if the catalog can't be read.
+    """
+    try:
+        tags = [r[0] for r in db.conn.execute(
+            "SELECT DISTINCT tag FROM equipment_catalog ORDER BY tag").fetchall()]
+        comp = QCompleter(tags, parent)
+        comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        comp.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        return comp
+    except Exception:
+        return None
+
+
+def _resolve_std_deviation_id(db, deviation_description):
+    """Look up the standard_deviations.id matching a node deviation's
+    description text, or None if it doesn't match a standard deviation
+    (e.g. a free-typed deviation name).
+    """
+    if not deviation_description:
+        return None
+    row = db.conn.execute(
+        "SELECT id FROM standard_deviations WHERE description=? COLLATE NOCASE LIMIT 1",
+        (deviation_description,)).fetchone()
+    return row[0] if row else None
+
+
+def _create_cause_from_pick(db, deviation_id, description, frequency):
+    """Create a new cause under deviation_id from a StandardCausesPickerPopup
+    pick, applying the description/likelihood/frequency consistently —
+    shared by every quick-add entry point so a freshly created cause always
+    starts with real content instead of a blank placeholder.
+    """
+    new_id = db.add_cause(deviation_id)
+    like = freq_to_f_level(frequency) if frequency is not None else 3
+    db.update_cause(new_id, description=description or 'Ny orsak', likelihood=like)
+    if frequency is not None:
+        db.conn.execute("UPDATE causes SET base_frequency=? WHERE id=?", (frequency, new_id))
+        db.commit()
+    return new_id
+
+
+def _maybe_save_as_standard_cause(parent, db, dev_id, obj_id, obj_name, description):
+    """Ask if a free-typed cause should be promoted into the standard_causes
+    library (with an optional frequency), so it's offered again next time.
+    Shared by every cause-entry dialog that has a free-text fallback field.
+    """
+    if dev_id is None or obj_id is None or db is None or not description:
+        return
+    ans = QMessageBox.question(
+        parent, "Spara som standardorsak?",
+        f"Vill du spara\n\"{description}\"\nsom standardorsak för {obj_name or 'detta objekt'}?\n\n"
+        "Den kommer då att finnas i listan nästa gång.",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No)
+    if ans != QMessageBox.StandardButton.Yes:
+        return
+
+    freq_str, ok = QInputDialog.getText(
+        parent, "Frekvens (valfritt)",
+        "Ange typfrekvens i händelser/år (lämna tomt om okänd).\n"
+        "Exempel: 0.01  (= 1e-2/år, ungefär vart 100:e år)",
+        QLineEdit.EchoMode.Normal, '')
+    freq = None
+    if ok and freq_str.strip():
+        try:
+            freq = float(freq_str.strip().replace(',', '.'))
+        except ValueError:
+            pass
+
+    try:
+        existing = db.conn.execute(
+            "SELECT id FROM standard_causes WHERE deviation_id=? AND description=?",
+            (dev_id, description)).fetchone()
+        if not existing:
+            db.conn.execute(
+                "INSERT INTO standard_causes "
+                "(deviation_id, description, sort_order, object_id, frequency)"
+                " VALUES (?,?,?,?,?)",
+                (dev_id, description,
+                 (db.conn.execute(
+                     "SELECT COALESCE(MAX(sort_order),0)+1 FROM standard_causes "
+                     "WHERE deviation_id=?", (dev_id,)).fetchone()[0]),
+                 obj_id, freq))
+            db.commit()
+    except Exception:
+        pass
 
 
 class Database:
@@ -4078,7 +4180,7 @@ class Database:
         for sg in self.safeguards(cons_id):
             self.conn.execute(
                 "INSERT INTO safeguards (consequence_id,description,rrf,sg_type,source_id) VALUES (?,?,?,?,?)",
-                (new_id, sg['description'], sg['rrf'], sg.get('sg_type','Övrigt'), sg['id']))
+                (new_id, sg['description'], sg['rrf'], dict(sg).get('sg_type','Övrigt'), sg['id']))
         # Copy reduction factors
         for rf in self.reduction_factors(cons_id):
             self.conn.execute(
@@ -4530,183 +4632,6 @@ class NodePanel(QWidget):
             self.pressure_edit.text(),
             self.temperature_edit.text())
         self.saved.emit(self.node_id, name)
-
-
-class DeviationPanel(QWidget):
-    saved        = pyqtSignal(int, str)   # (id_, description)
-    add_cause_requested = pyqtSignal(int) # (deviation_id)
-
-    def __init__(self, db: Database):
-        super().__init__()
-        self.db = db
-        self.deviation_id = None
-        self._loading = False
-
-        layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-        layout.setContentsMargins(16, 16, 16, 16)
-
-        title = QLabel("Avvikelse")
-        f = QFont(); f.setPointSize(15); f.setBold(True)
-        title.setFont(f)
-        layout.addWidget(title)
-        sep = QLabel(); sep.setFixedHeight(CONFIG['H_SEP_LINE']); sep.setStyleSheet("background:#ddd;")
-        layout.addWidget(sep)
-
-        form = QFormLayout()
-        form.setSpacing(10)
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-
-        self.desc_edit = QLineEdit()
-        self.desc_edit.setPlaceholderText("T.ex. Högt flöde, Lågt tryck, Övrigt…")
-        self.desc_edit.editingFinished.connect(self._save)
-        form.addRow("Beskrivning:", self.desc_edit)
-        layout.addLayout(form)
-
-        self._add_btn = QPushButton("⚙  Lägg till orsak")
-        self._add_btn.setEnabled(False)
-        self._add_btn.setStyleSheet(
-            "QPushButton{background:#1F4E79;color:white;border:none;"
-            "border-radius:4px;padding:7px;font-weight:bold;margin-top:8px;}"
-            "QPushButton:hover{background:#2563a8;}"
-            "QPushButton:disabled{background:#aaa;}")
-        self._add_btn.clicked.connect(
-            lambda: self.add_cause_requested.emit(self.deviation_id))
-        layout.addWidget(self._add_btn)
-        layout.addStretch()
-
-    def load(self, deviation_id):
-        self.deviation_id = deviation_id
-        self._add_btn.setEnabled(True)
-        dev = self.db.get_deviation(deviation_id)
-        if not dev:
-            return
-        self._loading = True
-        self.desc_edit.setText(dev['description'])
-        self._loading = False
-
-    def _save(self):
-        if self._loading or self.deviation_id is None:
-            return
-        desc = self.desc_edit.text().strip() or 'Övrigt'
-        self.db.update_deviation(self.deviation_id, desc)
-        self.saved.emit(self.deviation_id, desc)
-
-
-class CausePanel(QWidget):
-    saved        = pyqtSignal(int, str)
-    place_on_pid = pyqtSignal()
-
-    def __init__(self, db: Database):
-        super().__init__()
-        self.db = db
-        self.cause_id = None
-        self._loading = False
-
-        layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-        layout.setContentsMargins(16, 16, 16, 16)
-
-        title = QLabel("Orsak (Cause)")
-        f = QFont(); f.setPointSize(15); f.setBold(True)
-        title.setFont(f)
-        layout.addWidget(title)
-        sep = QLabel(); sep.setFixedHeight(CONFIG['H_SEP_LINE']); sep.setStyleSheet("background:#ddd;")
-        layout.addWidget(sep)
-
-        form = QFormLayout()
-        form.setSpacing(10)
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-
-        self.desc_edit = QTextEdit()
-        self.desc_edit.setPlaceholderText("Beskriv orsaken till avvikelsen / faran...")
-        self.desc_edit.setFixedHeight(CONFIG['H_DESC_LG'])
-        _orig_foe = QTextEdit.focusOutEvent
-        _w = self.desc_edit
-        _s = self._save
-        def _desc_foe(e, _w=_w, _s=_s, _orig=_orig_foe):
-            _s()
-            _orig(_w, e)
-        self.desc_edit.focusOutEvent = _desc_foe
-        form.addRow("Beskrivning:", self.desc_edit)
-
-        layout.addLayout(form)
-
-        # Compact frequency section
-        freq_box = QGroupBox("Frekvens")
-        freq_box.setStyleSheet(
-            "QGroupBox{font-size:10px;color:#555;border:1px solid #ddd;"
-            "border-radius:4px;margin-top:4px;padding-top:2px;}"
-            "QGroupBox::title{subcontrol-origin:margin;left:6px;}")
-        freq_lay = QFormLayout(freq_box)
-        freq_lay.setSpacing(4)
-        freq_lay.setContentsMargins(6, 4, 6, 4)
-        freq_lay.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-
-        self._db_freq_lbl = QLabel("—")
-        self._db_freq_lbl.setStyleSheet(
-            "color:#1F4E79; font-style:italic; font-size:10px; padding:1px 3px;"
-            "background:#eef4fb; border:1px solid #bee3f8; border-radius:3px;")
-        self._db_freq_lbl.setToolTip(
-            "F-nivå beräknad från frekvens definierad i Inställningar → Standardorsaker.\n"
-            "Tomt om ingen frekvens är definierad för denna orsak.")
-        freq_lay.addRow("Standard:", self._db_freq_lbl)
-
-        self.freq_combo = QComboBox()
-        self.freq_combo.setMaximumWidth(180)
-        self.freq_combo.addItem("— (välj)")
-        self.freq_combo.addItems(FREQ_LABELS)
-        self.freq_combo.currentIndexChanged.connect(self._save)
-        freq_lay.addRow("Manuell:", self.freq_combo)
-
-        layout.addWidget(freq_box)
-        layout.addStretch()
-
-    def load(self, cause_id):
-        self.cause_id = cause_id
-        row = self.db.get_cause(cause_id)
-        if not row:
-            return
-        self._loading = True
-        self.desc_edit.setPlainText(row['description'])
-
-        # Field 1: frequency — prefer live standard_causes lookup if linked
-        std_cause_id = row['standard_cause_id'] if 'standard_cause_id' in row.keys() else None
-        base_freq_per_year = None
-        if std_cause_id:
-            sc = self.db.get_standard_cause(std_cause_id)
-            if sc and sc.get('frequency') is not None:
-                base_freq_per_year = sc['frequency']
-        if base_freq_per_year is None:
-            base_freq_per_year = row['base_frequency'] if 'base_frequency' in row.keys() else None
-        if base_freq_per_year is not None:
-            f_auto = freq_to_f_level(base_freq_per_year)
-            f_lbl  = FREQ_LABELS[freq_to_idx(f_auto)] if freq_to_idx(f_auto) < len(FREQ_LABELS) else f'F={f_auto}'
-            suffix = "  🗄️" if std_cause_id else ""
-            self._db_freq_lbl.setText(f"F={f_auto} — {base_freq_per_year:.4g}/år  →  {f_lbl}{suffix}")
-        else:
-            self._db_freq_lbl.setText("—")
-
-        # Field 2: manual F-level (likelihood) — show resolved F when frequency data exists
-        like = self.db.cause_f_level(row)
-        if like is not None:
-            self.freq_combo.setCurrentIndex(freq_to_idx(like) + 1)  # +1 for the "—" item
-        else:
-            self.freq_combo.setCurrentIndex(0)   # "— (välj)"
-        self._loading = False
-
-    def _save(self):
-        if self._loading or self.cause_id is None:
-            return
-        desc = self.desc_edit.toPlainText().strip() or 'Ny orsak'
-        idx  = self.freq_combo.currentIndex()
-        if idx == 0:
-            # "— (välj)" — keep existing likelihood, just save description
-            self.db.update_cause(self.cause_id, description=desc)
-        else:
-            freq = idx_to_freq(idx - 1)   # -1 for the "—" item
-            self.db.update_cause(self.cause_id, desc, freq)
-        self.saved.emit(self.cause_id, desc)
 
 
 class ConsequencePanel(QWidget):
@@ -5484,8 +5409,7 @@ class PropertiesRibbon(QWidget):
         if T == 2:   # CAUSE_T
             return [
                 "ORSAK",
-                ("📝", "Redigera orsaksbeskrivning",          self._edit_cause_desc),
-                ("🏷", "Redigera objekttyp och tag-ID",       self._edit_cause_obj),
+                ("📝", "Redigera orsak (beskrivning, objekt, tag)", self._edit_cause_obj),
                 ("📊", "Ange frekvens / F-nivå",              self._edit_cause_freq),
                 ("💬", "Redigera kommentar",                  self._edit_cause_comment),
                 None,
@@ -5661,20 +5585,12 @@ class PropertiesRibbon(QWidget):
             self.item_changed.emit()
 
     # ── CAUSE actions ─────────────────────────────────────────────────────────
-    def _edit_cause_desc(self, btn):
-        if not self._id: return
-        c = self.db.get_cause(self._id)
-        if not c: return
-        c = dict(c)
-        val = self._text_popup(btn, "Orsaksbeskrivning",
-                               dict(c).get('description','') or '',
-                               multiline=True, placeholder="Beskriv orsaken...")
-        if val is not None:
-            self.db.update_cause(self._id, description=val)
-            self.item_changed.emit()
-
     def _edit_cause_obj(self, btn):
-        """Open the CauseObjectPopup for editing comp_type + comp_tag."""
+        """Open the combined CauseObjectPopup for editing description,
+        comp_type and comp_tag together — replaces the old split of a
+        separate free-text description popup and a separate object/tag
+        popup, so cause editing is consistent with every other entry point.
+        """
         if not self._id or not self._mw: return
         c = dict(self.db.get_cause(self._id) or {})
         dev = self.db.get_deviation(c.get('deviation_id')) if c.get('deviation_id') else None
@@ -7245,9 +7161,31 @@ class TreePanel(QWidget):
         dev_id = self._resolve_deviation_id(type_, id_) if type_ else None
         if dev_id is None:
             QMessageBox.information(self, "Välj avvikelse", "Välj en avvikelse i trädet."); return
-        new_id = self.db.add_cause(dev_id)
-        self.refresh(CAUSE_T, new_id)
-        self.structure_changed.emit()
+        self._open_cause_picker_for_deviation(dev_id, self._resolve_node_id(type_, id_))
+
+    def _open_cause_picker_for_deviation(self, dev_id, node_id=None):
+        """Open the standard-causes picker to create a new cause under dev_id.
+        Shared by every 'add cause under this deviation' entry point in the
+        tree so a freshly created cause always starts with real content
+        instead of a silent blank 'Ny orsak' placeholder.
+        """
+        dev = self.db.get_deviation(dev_id)
+        dev_desc = dev['description'] if dev else ''
+        if node_id is None:
+            node_id = dev['node_id'] if dev else None
+        std_dev_id = _resolve_std_deviation_id(self.db, dev_desc)
+
+        popup = StandardCausesPickerPopup(
+            self.db, std_dev_id, deviation_name=dev_desc,
+            node_id=node_id, parent=self)
+
+        def _on_picked(description, frequency):
+            new_id = _create_cause_from_pick(self.db, dev_id, description, frequency)
+            self.refresh(CAUSE_T, new_id)
+            self.structure_changed.emit()
+
+        popup.cause_picked.connect(_on_picked)
+        popup.exec()
 
     def add_consequence(self):
         type_, id_ = self._current()
@@ -7453,8 +7391,7 @@ class TreePanel(QWidget):
         return False
 
     def _add_cause_for_deviation(self, dev_id):
-        new_id = self.db.add_cause(dev_id)
-        self.refresh(CAUSE_T, new_id); self.structure_changed.emit()
+        self._open_cause_picker_for_deviation(dev_id)
 
     def _delete_item(self, type_, id_):
         if type_ == NODE_T:      self.db.delete_node(id_)
@@ -7466,245 +7403,51 @@ class TreePanel(QWidget):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# EDITABLE SCENARIO PANEL  (bottom)
-# ══════════════════════════════════════════════════════════════════════════════
-
-class EditableScenarioPanel(QWidget):
-    data_changed = pyqtSignal()
-
-    def __init__(self, db: Database):
-        super().__init__()
-        self.db = db
-        self.cause_id = None
-        self.setMinimumHeight(CONFIG['H_PANEL_MIN_LG'])
-        self.setMaximumHeight(300)
-
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(4, 2, 4, 2)
-        outer.setSpacing(2)
-
-        hdr = QHBoxLayout()
-        self._hdr_lbl = QLabel("HAZOP Scenario")
-        f = QFont(); f.setBold(True); f.setPointSize(9)
-        self._hdr_lbl.setFont(f)
-        hdr.addWidget(self._hdr_lbl)
-        hdr.addStretch()
-        outer.addLayout(hdr)
-
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        self._content_widget = QWidget()
-        self._content_layout = QVBoxLayout(self._content_widget)
-        self._content_layout.setContentsMargins(2, 2, 2, 2)
-        self._content_layout.setSpacing(4)
-        self._scroll.setWidget(self._content_widget)
-        outer.addWidget(self._scroll)
-
-    def load_cause(self, cause_id):
-        self.cause_id = cause_id
-        self._rebuild()
-
-    def load_consequence(self, cons_id):
-        row = self.db.get_consequence(cons_id)
-        if row:
-            self.cause_id = dict(row)['cause_id']
-            self._rebuild()
-
-    def clear(self):
-        self.cause_id = None
-        self._rebuild()
-
-    def _rebuild(self):
-        while self._content_layout.count():
-            item = self._content_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        if self.cause_id is None:
-            return
-
-        cause = self.db.get_cause(self.cause_id)
-        if not cause:
-            return
-        cause_d = dict(cause)
-        node = self.db.get_node(cause_d['node_id'])
-        node_name = dict(node)['name'] if node else '?'
-        self._hdr_lbl.setText(f"HAZOP Scenario — {node_name}")
-
-        # Cause section
-        cause_box = QGroupBox("ORSAK")
-        cause_lay = QHBoxLayout(cause_box)
-        cause_lay.setSpacing(6)
-
-        cause_desc = QLineEdit(cause_d['description'])
-        cause_desc.setPlaceholderText("Beskriv orsaken...")
-        cid = self.cause_id
-        cause_desc.editingFinished.connect(
-            lambda w=cause_desc: (self.db.update_cause(cid, w.text().strip() or 'Ny orsak'),
-                                  self.data_changed.emit()))
-        cause_lay.addWidget(cause_desc, 3)
-
-        like_combo = QComboBox()
-        like_combo.addItems(LIKE_LABELS)
-        like_val = self.db.cause_frequency_level(cause_d)
-        like_combo.setCurrentIndex(freq_to_idx(like_val))
-        like_combo.currentIndexChanged.connect(
-            lambda idx, c=cid: (self.db.update_cause(c, likelihood=idx_to_freq(idx)),
-                                self.data_changed.emit()))
-        cause_lay.addWidget(QLabel("F:"))
-        cause_lay.addWidget(like_combo, 2)
-
-        add_cons_btn = QPushButton("+ Konsekvens")
-        add_cons_btn.setFixedHeight(CONFIG['H_CTRL_STD'])
-        add_cons_btn.clicked.connect(self._add_consequence)
-        cause_lay.addWidget(add_cons_btn)
-        self._content_layout.addWidget(cause_box)
-
-        # Consequence rows — like_val is the resolved F-level (-1..5)
-        like_val = self.db.cause_frequency_level(cause_d)
-        for cons in self.db.consequences(self.cause_id):
-            cons_d = dict(cons)
-            self._add_consequence_row(cons_d, like_val)
-
-        self._content_layout.addStretch()
-
-    def _add_consequence_row(self, cons_d, like_val):
-        row_frame = QFrame()
-        row_frame.setFrameShape(QFrame.Shape.StyledPanel)
-        row_lay = QHBoxLayout(row_frame)
-        row_lay.setContentsMargins(4, 2, 4, 2)
-        row_lay.setSpacing(4)
-
-        cons_box = QGroupBox(f"KONSEKVENS")
-        cons_form = QHBoxLayout(cons_box)
-        cons_form.setSpacing(4)
-
-        cons_desc = QLineEdit(cons_d['description'])
-        cons_id = cons_d['id']
-        sev_start = cons_d['severity'] or 1
-
-        sev_combo = QComboBox()
-        sev_combo.addItems(SEV_LABELS)
-        sev_combo.setCurrentIndex(max(0, sev_start - 1))
-
-        badge = RiskBadge()
-        badge.update_risk(like_val, sev_start)
-
-        def _save_cons():
-            desc = cons_desc.text().strip() or 'Ny konsekvens'
-            sev_idx = sev_combo.currentIndex()
-            sev = sev_idx + 1 if sev_idx >= 0 else 1
-            cat = cons_d.get('category', '')
-            self.db.update_consequence(cons_id, desc, sev, cat)
-            badge.update_risk(like_val, sev)
-            self.data_changed.emit()
-
-        cons_desc.editingFinished.connect(_save_cons)
-        sev_combo.currentIndexChanged.connect(lambda _: _save_cons())
-
-        cons_form.addWidget(cons_desc, 3)
-        cons_form.addWidget(QLabel("S:"))
-        cons_form.addWidget(sev_combo, 2)
-        cons_form.addWidget(badge)
-
-        del_cons_btn = QPushButton("✕")
-        del_cons_btn.setFixedSize(22, 22)
-        del_cons_btn.setStyleSheet("color:#c0392b;")
-        del_cons_btn.clicked.connect(lambda _, cid=cons_id: (
-            self.db.delete_consequence(cid), self._rebuild(), self.data_changed.emit()))
-        cons_form.addWidget(del_cons_btn)
-        row_lay.addWidget(cons_box, 2)
-
-        # Safeguards
-        sg_container = QWidget()
-        sg_vlay = QVBoxLayout(sg_container)
-        sg_vlay.setContentsMargins(0, 0, 0, 0)
-        sg_vlay.setSpacing(2)
-
-        for sg in self.db.safeguards(cons_id):
-            sg_d = dict(sg)
-            sg_row = QHBoxLayout()
-            sg_desc = QLineEdit(sg_d['description'])
-            sg_id = sg_d['id']
-
-            rrf_combo = QComboBox()
-            rrf_combo.addItems(RRF_LABELS)
-            rrf_idx = RRF_VALUES.index(sg_d['rrf']) if sg_d['rrf'] in RRF_VALUES else 0
-            rrf_combo.setCurrentIndex(rrf_idx)
-
-            eff_badge = RiskBadge()
-            eff_badge.setFixedSize(120, 22)
-            eff_f = effective_frequency(like_val, sg_d['rrf'])
-            eff_badge.update_risk(eff_f, sev_start)
-
-            def _save_sg(s=sg_id, dw=sg_desc, rw=rrf_combo, eb=eff_badge):
-                desc = dw.text().strip() or 'Ny safeguard'
-                rrf_idx = rw.currentIndex()
-                rrf = RRF_VALUES[rrf_idx] if 0 <= rrf_idx < len(RRF_VALUES) else 1
-                self.db.update_safeguard(s, desc, rrf)
-                eff = effective_frequency(like_val, rrf)
-                sev_idx = sev_combo.currentIndex()
-                sev = sev_idx + 1 if sev_idx >= 0 else 1
-                eb.update_risk(eff, sev)
-                self.data_changed.emit()
-
-            sg_desc.editingFinished.connect(_save_sg)
-            rrf_combo.currentIndexChanged.connect(lambda _, f=_save_sg: f())
-
-            del_sg = QPushButton("✕")
-            del_sg.setFixedSize(20, 20)
-            del_sg.setStyleSheet("color:#c0392b;")
-            del_sg.clicked.connect(lambda _, s=sg_id: (
-                self.db.delete_safeguard(s), self._rebuild(), self.data_changed.emit()))
-
-            sg_row.addWidget(QLabel("🛡"))
-            sg_row.addWidget(sg_desc, 3)
-            sg_row.addWidget(QLabel("RRF:"))
-            sg_row.addWidget(rrf_combo, 2)
-            sg_row.addWidget(eff_badge)
-            sg_row.addWidget(del_sg)
-            w = QWidget(); w.setLayout(sg_row)
-            sg_vlay.addWidget(w)
-
-        add_sg_btn = QPushButton("+ Safeguard")
-        add_sg_btn.setFixedHeight(CONFIG['H_BTN_SMALL'])
-        add_sg_btn.clicked.connect(lambda _, cid=cons_id: (
-            self.db.add_safeguard(cid), self._rebuild(), self.data_changed.emit()))
-        sg_vlay.addWidget(add_sg_btn)
-
-        row_lay.addWidget(sg_container, 3)
-        self._content_layout.addWidget(row_frame)
-
-    def _add_consequence(self):
-        if self.cause_id is None:
-            return
-        self.db.add_consequence(self.cause_id)
-        self._rebuild()
-        self.data_changed.emit()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # SCENARIO TABLE PANEL  (6-column bottom panel)
 # ══════════════════════════════════════════════════════════════════════════════
 
 _CAUSE_OBJ_W = 64   # width of the object-tag zone on the left of Orsak cells
 
-OBJ_TYPES = [
-    '', 'Pump', 'Ventil', 'Kompressor', 'Tank / Kärl', 'Värmeväxlare',
-    'Rörledning', 'Instrument / Sensor', 'Säkerhetsventil (PSV)', 'Övrigt',
-]
-
 # Icon size used in the obj-zone (square, left part of _CAUSE_OBJ_W)
 _EQUIP_ICON_SZ = 20
+
+
+def _icon_category(comp_type: str) -> str:
+    """Map any object-type name (from the DB-backed standard_objects list,
+    which is more granular than the drawing categories below) onto the
+    fixed set of icon categories _draw_equip_icon knows how to draw.
+    """
+    if not comp_type:
+        return ''
+    t = comp_type.lower()
+    if 'säkerhetsventil' in t or 'sprängbleck' in t:
+        return 'Säkerhetsventil (PSV)'
+    if 'ventil' in t:
+        return 'Ventil'
+    if 'pump' in t:
+        return 'Pump'
+    if 'kompressor' in t or 'fläkt' in t:
+        return 'Kompressor'
+    if 'tank' in t or 'kärl' in t or 'kolonn' in t:
+        return 'Tank / Kärl'
+    if 'värmeväxlare' in t or 'kylare' in t or 'värmare' in t:
+        return 'Värmeväxlare'
+    if 'rörledning' in t or 'slang' in t:
+        return 'Rörledning'
+    if 'instrument' in t or 'sensor' in t:
+        return 'Instrument / Sensor'
+    return ''
 
 
 def _draw_equip_icon(painter, rect, comp_type):
     """Draw a colorful QPainter icon for the given equipment type.
 
     rect  -- the QRect to draw inside (icon is centred/fitted)
-    comp_type -- one of OBJ_TYPES strings (or empty / unknown)
+    comp_type -- a standard_objects name (or empty / unknown); mapped onto
+    a drawing category via _icon_category() before matching below.
     """
+    original_empty = not comp_type
+    comp_type = _icon_category(comp_type) or comp_type
     sz    = min(rect.width(), rect.height()) - 4
     sz    = max(6, sz)
     cx    = float(rect.center().x())
@@ -7866,7 +7609,7 @@ def _draw_equip_icon(painter, rect, comp_type):
         painter.setBrush(QBrush(QColor('#bdc3c7')))
         painter.setPen(QPen(QColor('#7f8c8d'), 1.2))
         painter.drawEllipse(QPointF(cx, cy), half * 0.85, half * 0.85)
-        if not comp_type:
+        if original_empty:
             # '+' — not yet set
             pen_plus = QPen(QColor('#7f8c8d'), max(1.2, sz * 0.13))
             pen_plus.setCapStyle(Qt.PenCapStyle.RoundCap)
@@ -7984,14 +7727,9 @@ class StandardCausesPickerPopup(QDialog):
         self._tag_edit.setPlaceholderText("t.ex. P-101")
         self._tag_edit.setMaximumWidth(110)
         # Autocomplete from equipment catalog
-        try:
-            tags = [r[0] for r in db.conn.execute(
-                "SELECT DISTINCT tag FROM equipment_catalog ORDER BY tag").fetchall()]
-            comp = QCompleter(tags, self)
-            comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-            self._tag_edit.setCompleter(comp)
-        except Exception:
-            pass
+        completer = _make_tag_completer(db, self)
+        if completer:
+            self._tag_edit.setCompleter(completer)
         self._tag_edit.textChanged.connect(self._on_tag_id_changed)
         self._tag_edit.textChanged.connect(self._update_tag_style)
         self._update_tag_style(initial_tag)
@@ -8153,7 +7891,7 @@ class StandardCausesPickerPopup(QDialog):
             return
         # Try existing buttons first
         for btn in self._obj_btn_group:
-            if self._type_matches(comp_type, btn.property('obj_name') or ''):
+            if _obj_type_matches(comp_type, btn.property('obj_name') or ''):
                 if not btn.isChecked():
                     for b in self._obj_btn_group:
                         b.setChecked(False)
@@ -8170,18 +7908,6 @@ class StandardCausesPickerPopup(QDialog):
             self.selected_node_dev_id = self._dev_items[idx][0]
             self._dev_id              = self._dev_items[idx][2]
         self._populate_objects(getattr(self, '_initial_comp_type', ''))
-
-    @staticmethod
-    def _type_matches(preselect: str, obj_name: str) -> bool:
-        """True when preselect and obj_name refer to the same object type.
-        Uses bidirectional whole-string substring only — no word-level
-        matching to avoid 'ventil' matching 'backventil' when preselect
-        is 'Manuell ventil'.
-        """
-        if not preselect or not obj_name:
-            return False
-        p, n = preselect.lower(), obj_name.lower()
-        return p in n or n in p
 
     def _populate_objects(self, preselect_comp: str = ''):
         # Remove old buttons
@@ -8200,7 +7926,7 @@ class StandardCausesPickerPopup(QDialog):
         # If a preselect type is requested but absent from the filtered list,
         # fall back to all objects so the button actually exists.
         if preselect_comp:
-            if not any(self._type_matches(preselect_comp, o['name']) for o in objs):
+            if not any(_obj_type_matches(preselect_comp, o['name']) for o in objs):
                 objs = self._db.standard_objects()
 
         def _make_btn(obj):
@@ -8217,7 +7943,7 @@ class StandardCausesPickerPopup(QDialog):
             btn = _make_btn(obj)
             self._obj_inner_l.addWidget(btn)
             self._obj_btn_group.append(btn)
-            if preselect_comp and sel_btn is None and self._type_matches(preselect_comp, obj['name']):
+            if preselect_comp and sel_btn is None and _obj_type_matches(preselect_comp, obj['name']):
                 sel_btn = btn
         self._obj_inner_l.addStretch()
 
@@ -8362,122 +8088,7 @@ class StandardCausesPickerPopup(QDialog):
         checked = next((b for b in self._obj_btn_group if b.isChecked()), None)
         obj_id   = checked.property('obj_id')   if checked else None
         obj_name = checked.property('obj_name') if checked else ''
-        dev_id   = self._dev_id
-
-        ans = QMessageBox.question(
-            self, "Spara som standardorsak?",
-            f"Vill du spara\n\"{description}\"\nsom standardorsak för {obj_name or 'detta objekt'}?\n\n"
-            "Den kommer då att finnas i listan nästa gång.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No)
-        if ans != QMessageBox.StandardButton.Yes:
-            return
-
-        # Ask for optional frequency
-        freq_str, ok = QInputDialog.getText(
-            self, "Frekvens (valfritt)",
-            "Ange typfrekvens i händelser/år (lämna tomt om okänd).\n"
-            "Exempel: 0.01  (= 1e-2/år, ungefär vart 100:e år)",
-            QLineEdit.EchoMode.Normal, '')
-        freq = None
-        if ok and freq_str.strip():
-            try:
-                freq = float(freq_str.strip().replace(',', '.'))
-            except ValueError:
-                pass
-
-        try:
-            if dev_id is not None and obj_id is not None:
-                existing = self._db.conn.execute(
-                    "SELECT id FROM standard_causes WHERE deviation_id=? AND description=?",
-                    (dev_id, description)).fetchone()
-                if not existing:
-                    self._db.conn.execute(
-                        "INSERT INTO standard_causes "
-                        "(deviation_id, description, sort_order, object_id, frequency)"
-                        " VALUES (?,?,?,?,?)",
-                        (dev_id, description,
-                         (self._db.conn.execute(
-                             "SELECT COALESCE(MAX(sort_order),0)+1 FROM standard_causes "
-                             "WHERE deviation_id=?", (dev_id,)).fetchone()[0]),
-                         obj_id, freq))
-                    self._db.commit()
-        except Exception:
-            pass
-
-
-class ObjectTagPopup(QDialog):
-    """Small popup to set comp_type + comp_tag on a cause."""
-    saved = pyqtSignal(str, str)   # (comp_type, comp_tag)
-
-    def __init__(self, comp_type: str, comp_tag: str, db=None, parent=None):
-        super().__init__(parent)
-        self._db = db
-        self.setWindowTitle("Objekt / Utrustning")
-        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
-        layout = QVBoxLayout(self)
-        layout.setSpacing(6)
-        layout.setContentsMargins(10, 10, 10, 10)
-
-        layout.addWidget(QLabel("<b>Tag-ID</b>  (t.ex. P-101)"))
-        self._tag_edit = QLineEdit(comp_tag)
-        self._tag_edit.setPlaceholderText("t.ex. P-101")
-        layout.addWidget(self._tag_edit)
-
-        # Completer from equipment catalog
-        if db:
-            try:
-                tags = [r[0] for r in db.conn.execute(
-                    "SELECT DISTINCT tag FROM equipment_catalog ORDER BY tag").fetchall()]
-                comp = QCompleter(tags, self)
-                comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-                comp.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
-                self._tag_edit.setCompleter(comp)
-            except Exception:
-                pass
-
-        layout.addWidget(QLabel("<b>Utrustningstyp</b>"))
-        self._type_cb = QComboBox()
-        self._type_cb.addItems(OBJ_TYPES)
-        idx = self._type_cb.findText(comp_type)
-        self._type_cb.setCurrentIndex(max(0, idx))
-        layout.addWidget(self._type_cb)
-
-        # Auto-fill type when tag is edited
-        self._tag_edit.textChanged.connect(self._on_tag_changed)
-        # Trigger once on open if there's already a tag
-        if comp_tag:
-            self._on_tag_changed(comp_tag)
-
-        btns = QHBoxLayout()
-        ok = QPushButton("OK")
-        ok.setDefault(True)
-        ok.clicked.connect(self._ok)
-        clr = QPushButton("Rensa")
-        clr.clicked.connect(self._clear)
-        cancel = QPushButton("Avbryt")
-        cancel.clicked.connect(self.reject)
-        btns.addWidget(ok); btns.addWidget(clr); btns.addWidget(cancel)
-        layout.addLayout(btns)
-
-        self._tag_edit.returnPressed.connect(self._ok)
-
-    def _on_tag_changed(self, text):
-        if not self._db or not text.strip():
-            return
-        detected = _lookup_comp_type_for_tag(text.strip(), self._db)
-        if detected:
-            idx = self._type_cb.findText(detected)
-            if idx >= 0:
-                self._type_cb.setCurrentIndex(idx)
-
-    def _ok(self):
-        self.saved.emit(self._type_cb.currentText(), self._tag_edit.text().strip())
-        self.accept()
-
-    def _clear(self):
-        self.saved.emit('', '')
-        self.accept()
+        _maybe_save_as_standard_cause(self, self._db, self._dev_id, obj_id, obj_name, description)
 
 
 class CauseObjectPopup(QDialog):
@@ -8554,6 +8165,7 @@ class CauseObjectPopup(QDialog):
                 self._dev_description = self._dev_combo.currentText()
             def _on_dev_changed():
                 self._dev_description = self._dev_combo.currentText() or None
+                self._populate_type_combo(self._type_cb.currentText())
                 self._rebuild_causes(self._type_cb.currentText())
             self._dev_combo.currentIndexChanged.connect(_on_dev_changed)
 
@@ -8562,25 +8174,17 @@ class CauseObjectPopup(QDialog):
         self._tag_edit.setFixedHeight(CONFIG['H_BTN_SMALL'])
         self._tag_edit.setStyleSheet(_small)
         if db:
-            try:
-                tags = [r[0] for r in db.conn.execute(
-                    "SELECT DISTINCT tag FROM equipment_catalog ORDER BY tag").fetchall()]
-                comp = QCompleter(tags, self)
-                comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-                comp.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
-                self._tag_edit.setCompleter(comp)
-            except Exception:
-                pass
+            completer = _make_tag_completer(db, self)
+            if completer:
+                self._tag_edit.setCompleter(completer)
         tag_lbl = QLabel("Tag:")
         tag_lbl.setStyleSheet(_small)
         form.addRow(tag_lbl, self._tag_edit)
 
         self._type_cb = QComboBox()
-        self._type_cb.addItems(OBJ_TYPES)
         self._type_cb.setFixedHeight(CONFIG['H_BTN_SMALL'])
         self._type_cb.setStyleSheet(_small)
-        idx = self._type_cb.findText(comp_type)
-        self._type_cb.setCurrentIndex(max(0, idx))
+        self._populate_type_combo(comp_type)
         typ_lbl = QLabel("Typ:")
         typ_lbl.setStyleSheet(_small)
         form.addRow(typ_lbl, self._type_cb)
@@ -8651,6 +8255,67 @@ class CauseObjectPopup(QDialog):
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
+    def _populate_type_combo(self, preselect_comp: str = ''):
+        """Populate the type combo from the same DB-backed standard_objects
+        list StandardCausesPickerPopup uses, instead of a hardcoded list —
+        so both dialogs offer the same object-type vocabulary.
+        """
+        self._type_cb.blockSignals(True)
+        self._type_cb.clear()
+        self._type_cb.addItem('')
+        objs = []
+        if self._db is not None:
+            try:
+                dev_id = self._deviation_id
+                if dev_id is None and self._dev_description:
+                    r = self._db.conn.execute(
+                        "SELECT id FROM standard_deviations WHERE description=? LIMIT 1",
+                        (self._dev_description,)).fetchone()
+                    if r:
+                        dev_id = r[0]
+                objs = self._db.objects_for_deviation(dev_id) if dev_id is not None else []
+                if not objs:
+                    objs = self._db.standard_objects()
+            except Exception:
+                objs = []
+        for o in objs:
+            self._type_cb.addItem(o['name'])
+
+        idx = -1
+        if preselect_comp:
+            for i in range(self._type_cb.count()):
+                if _obj_type_matches(preselect_comp, self._type_cb.itemText(i)):
+                    idx = i
+                    break
+            if idx < 0:
+                # Not in the standard list (e.g. legacy free-typed value) —
+                # keep it selectable rather than silently discarding it.
+                self._type_cb.addItem(preselect_comp)
+                idx = self._type_cb.count() - 1
+        self._type_cb.setCurrentIndex(max(0, idx))
+        self._type_cb.blockSignals(False)
+
+    def _resolve_dev_obj_ids(self, comp_type):
+        """Resolve (deviation_id, object_id) for the given comp_type string
+        against the DB-backed standard_deviations/standard_objects tables.
+        Caches the resolved deviation id on self._deviation_id.
+        """
+        dev_id = self._deviation_id
+        if dev_id is None and self._dev_description and self._db is not None:
+            r = self._db.conn.execute(
+                "SELECT id FROM standard_deviations WHERE description=? LIMIT 1",
+                (self._dev_description,)).fetchone()
+            if r:
+                dev_id = r[0]
+                self._deviation_id = dev_id
+        obj_id = None
+        if comp_type and self._db is not None:
+            for o in self._db.standard_objects():
+                if _obj_type_matches(comp_type, o['name']):
+                    obj_id = o['id']
+                    break
+        return dev_id, obj_id
+
     def _update_icon(self, comp_type):
         px = QPixmap(22, 22)
         px.fill(Qt.GlobalColor.transparent)
@@ -8664,10 +8329,16 @@ class CauseObjectPopup(QDialog):
             return
         detected = _lookup_comp_type_for_tag(text.strip(), self._db)
         if detected:
-            idx = self._type_cb.findText(detected)
+            idx = next((i for i in range(self._type_cb.count())
+                        if _obj_type_matches(detected, self._type_cb.itemText(i))), -1)
             if idx >= 0:
                 self._type_cb.setCurrentIndex(idx)
-                self._rebuild_causes(detected)
+                self._rebuild_causes(self._type_cb.itemText(idx))
+            else:
+                # Not in the current list (e.g. filtered by deviation) —
+                # repopulate so the learned type is selectable.
+                self._populate_type_combo(detected)
+                self._rebuild_causes(self._type_cb.currentText())
 
     def _rebuild_causes(self, comp_type, pre_select=''):
         self._update_icon(comp_type)
@@ -8683,25 +8354,9 @@ class CauseObjectPopup(QDialog):
         # Query causes: prefer new hierarchy (deviation + object), fall back to comp_type
         rows = []
         if comp_type and self._db is not None:
-            # Resolve object_id from object name matching comp_type string
-            dev_id = self._deviation_id
-            if dev_id is None and self._dev_description:
-                r = self._db.conn.execute(
-                    "SELECT id FROM standard_deviations WHERE description=? LIMIT 1",
-                    (self._dev_description,)).fetchone()
-                if r:
-                    dev_id = r[0]
-                    self._deviation_id = dev_id
-            if dev_id is not None:
-                # Find best-matching standard_object for this comp_type string
-                all_objs = self._db.standard_objects()
-                obj_id = None
-                for o in all_objs:
-                    if comp_type.lower() in o['name'].lower() or o['name'].lower() in comp_type.lower():
-                        obj_id = o['id']
-                        break
-                if obj_id is not None:
-                    rows = self._db.standard_causes_for_object(dev_id, obj_id)
+            dev_id, obj_id = self._resolve_dev_obj_ids(comp_type)
+            if dev_id is not None and obj_id is not None:
+                rows = self._db.standard_causes_for_object(dev_id, obj_id)
             if not rows:
                 rows = self._db.standard_causes_for_comp_type(comp_type, self._dev_description)
             if not rows:
@@ -8805,6 +8460,9 @@ class CauseObjectPopup(QDialog):
         desc, freq = '', None
         if self._freetext_radio.isChecked():
             desc = self._freetext_edit.text().strip()
+            if desc:
+                dev_id, obj_id = self._resolve_dev_obj_ids(comp_type)
+                _maybe_save_as_standard_cause(self, self._db, dev_id, obj_id, comp_type, desc)
         else:
             for radio, d, f in self._cause_buttons:
                 if radio.isChecked():
@@ -8880,6 +8538,120 @@ class RRFPopup(QDialog):
     def _pick(self, val: int):
         self.rrf_selected.emit(val, self._type_combo.currentText())
         self.accept()
+
+
+class FrequencyPickerPopup(QDialog):
+    """Quick-pick popup for setting a cause's frequency: either a matrix
+    F-level preset (labelled with the live-configured axis text) or an
+    exact numeric events/year value.
+
+    Mirrors RRFPopup's "preset buttons + custom spinbox" layout and
+    ConsCategoryMatrixPopup's frameless small-popup styling.
+    """
+
+    # (f_level_int_or_None, numeric_freq_or_None) — exactly one is non-None.
+    frequency_selected = pyqtSignal(object, object)
+
+    def __init__(self, current_f_level=None, current_numeric_freq=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Ändra frekvens")
+        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(6)
+
+        layout.addWidget(QLabel("<b>Frekvens</b>"))
+
+        cfg  = get_matrix()
+        cols = cfg.get('cols', 7)
+        # Valid F-level range is -1 .. (cols - 2): column 0 is F=-1.
+        f_levels = list(range(-1, cols - 1))
+
+        # ── Preset buttons (wrapped grid, matrix-configured labels) ──────────
+        presets = QGridLayout()
+        presets.setSpacing(4)
+        self._preset_btns = {}
+        per_row = 4
+        for i, f in enumerate(f_levels):
+            btn = QPushButton(freq_axis_label_full(f))
+            btn.setToolTip(freq_axis_label_full(f))
+            btn.setStyleSheet(self._bstyle(f == current_f_level))
+            btn.clicked.connect(partial(self._pick_preset, f))
+            self._preset_btns[f] = btn
+            presets.addWidget(btn, i // per_row, i % per_row)
+        layout.addLayout(presets)
+
+        # ── Custom numeric value (events/year) ───────────────────────────────
+        custom_row = QHBoxLayout()
+        custom_row.addWidget(QLabel("Eget (händelser/år):"))
+        self._spin = QDoubleSpinBox()
+        self._spin.setDecimals(6)
+        self._spin.setRange(0.0, 1_000_000.0)
+        self._spin.setSingleStep(0.01)
+        if current_numeric_freq is not None:
+            self._spin.setValue(float(current_numeric_freq))
+        self._spin.valueChanged.connect(self._update_preview_label)
+        custom_row.addWidget(self._spin)
+        ok_btn = QPushButton("OK")
+        ok_btn.clicked.connect(self._pick_numeric)
+        custom_row.addWidget(ok_btn)
+        layout.addLayout(custom_row)
+
+        # ── Live F-level preview for the numeric field ───────────────────────
+        self._preview_lbl = QLabel()
+        self._preview_lbl.setStyleSheet("color:#555; font-size:10px;")
+        layout.addWidget(self._preview_lbl)
+        if current_numeric_freq is not None:
+            self._update_preview_label(float(current_numeric_freq))
+        else:
+            self._update_preview_label(self._spin.value())
+
+        self.adjustSize()
+
+    @staticmethod
+    def _bstyle(selected: bool) -> str:
+        if selected:
+            return ("QPushButton{background:#1F4E79;color:white;border:none;"
+                    "border-radius:4px;padding:5px;font-weight:bold;font-size:10px;}"
+                    "QPushButton:hover{background:#2563a8;}")
+        return ("QPushButton{background:#f0f0f0;color:#333;border:1px solid #ccc;"
+                "border-radius:4px;padding:5px;font-size:10px;}"
+                "QPushButton:hover{background:#e0e8f5;border:1px solid #999;}")
+
+    def _update_preview_label(self, val):
+        f_lvl = freq_to_f_level(val) if val else -1
+        self._preview_lbl.setText(f"→ {freq_axis_label_full(f_lvl)}")
+
+    def _pick_preset(self, f_level: int):
+        self.frequency_selected.emit(f_level, None)
+        self.accept()
+
+    def _pick_numeric(self):
+        self.frequency_selected.emit(None, self._spin.value())
+        self.accept()
+
+    @classmethod
+    def create_positioned(cls, global_pos, current_f_level=None,
+                           current_numeric_freq=None, parent=None):
+        """Construct the popup and position it near global_pos, clamped to
+        the screen — mirrors the clamping pattern used at RRFPopup's and
+        ConsCategoryMatrixPopup's call sites elsewhere in this file
+        (adjustSize() → compute available screen geometry → clamp x/y).
+
+        Callers should connect `frequency_selected` and then call
+        `.exec()` themselves, exactly like the existing RRFPopup /
+        ConsCategoryMatrixPopup call sites do.
+        """
+        popup = cls(current_f_level, current_numeric_freq, parent)
+        popup.adjustSize()
+        scr = (QApplication.screenAt(global_pos) or QApplication.primaryScreen()).availableGeometry()
+        pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
+        x = min(global_pos.x(), scr.right() - pw)
+        y = min(global_pos.y() + 4, scr.bottom() - ph)
+        popup.move(max(scr.left(), x), max(scr.top(), y))
+        return popup
 
 
 class RiskMatrixPopup(QDialog):
@@ -10152,7 +9924,53 @@ class _PidDelegate(_ScenarioDelegate):
             # Show only the clean description (EditRole is already clean)
             raw = index.data(Qt.ItemDataRole.EditRole) or ''
             editor.setText(_PID_ICON_RE.sub('', str(raw)))
+            if index.column() == self._panel._C_ORS:
+                self._attach_cause_completer(editor, index)
         return editor
+
+    def _attach_cause_completer(self, editor, index):
+        """Suggest standard-cause descriptions while inline-editing an Orsak
+        cell — the same library StandardCausesPickerPopup/CauseObjectPopup
+        draw from, so quick text edits get the same suggestions as the
+        popups instead of a bare, unassisted QLineEdit.
+        """
+        db = getattr(self._panel, 'db', None)
+        if db is None:
+            return
+        try:
+            row = index.row()
+            row_meta = getattr(self._panel, '_row_meta', [])
+            dev_id = row_meta[row][0] if row < len(row_meta) else None
+            item = self._panel._table.item(row, self._panel._C_ORS)
+            obj_data = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
+            comp_type = (obj_data or ('', ''))[0]
+
+            descs = []
+            if dev_id is not None:
+                dev = db.get_deviation(dev_id)
+                std_dev_id = _resolve_std_deviation_id(db, dev['description'] if dev else '')
+                if std_dev_id is not None:
+                    obj_id = None
+                    if comp_type:
+                        for o in db.standard_objects():
+                            if _obj_type_matches(comp_type, o['name']):
+                                obj_id = o['id']
+                                break
+                    if obj_id is not None:
+                        descs = [c['description'] for c in
+                                 db.standard_causes_for_object(std_dev_id, obj_id)]
+            if not descs:
+                descs = [r[0] for r in db.conn.execute(
+                    "SELECT DISTINCT description FROM standard_causes").fetchall()]
+
+            if descs:
+                comp = QCompleter(descs, editor)
+                comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+                comp.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+                comp.setFilterMode(Qt.MatchFlag.MatchContains)
+                editor.setCompleter(comp)
+        except Exception:
+            pass
 
     def setModelData(self, editor, model, index):
         clean = _PID_ICON_RE.sub('', editor.text().strip())
@@ -12976,8 +12794,21 @@ class ScenarioTablePanel(QWidget):
         menu.exec(pos)
 
     def _quick_add_cause(self, deviation_id):
-        new_id = self.db.add_cause(deviation_id)
-        self.new_item_created.emit(CAUSE_T, new_id)
+        dev = self.db.get_deviation(deviation_id)
+        dev_desc = dev['description'] if dev else ''
+        node_id = dev['node_id'] if dev else None
+        std_dev_id = _resolve_std_deviation_id(self.db, dev_desc)
+
+        popup = StandardCausesPickerPopup(
+            self.db, std_dev_id, deviation_name=dev_desc,
+            node_id=node_id, parent=self)
+
+        def _on_picked(description, frequency):
+            new_id = _create_cause_from_pick(self.db, deviation_id, description, frequency)
+            self.new_item_created.emit(CAUSE_T, new_id)
+
+        popup.cause_picked.connect(_on_picked)
+        popup.exec()
 
     def _quick_add_consequence(self, cause_id):
         new_id = self.db.add_consequence(cause_id)
@@ -13539,155 +13370,6 @@ class HAZOPWorksheet(QWidget):
             node_id = self._node_combo.currentData()
             if node_id is not None:
                 self._table_panel.load_node(node_id)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# RISK SCENARIO WIZARD
-# ══════════════════════════════════════════════════════════════════════════════
-
-class RiskScenarioWizard(QDialog):
-    def __init__(self, db: Database, node_id: int, parent=None):
-        super().__init__(parent)
-        self.db = db
-        self.node_id = node_id
-        self.created_cause_id = None
-        self.created_cons_id  = None
-
-        self.setWindowTitle("Risk Scenario — Guide")
-        self.setMinimumWidth(CONFIG['W_PANEL_MIN_XL'])
-
-        outer = QVBoxLayout(self)
-
-        self._step_lbl = QLabel()
-        f = QFont(); f.setBold(True); f.setPointSize(11)
-        self._step_lbl.setFont(f)
-        self._step_lbl.setStyleSheet("color:#1F4E79; padding:4px;")
-        outer.addWidget(self._step_lbl)
-
-        sep = QLabel(); sep.setFixedHeight(CONFIG['H_SEP_LINE']); sep.setStyleSheet("background:#ccc;")
-        outer.addWidget(sep)
-
-        self._stack = QStackedWidget()
-        outer.addWidget(self._stack)
-
-        # Step 1: Cause
-        p1 = QWidget()
-        f1 = QFormLayout(p1); f1.setSpacing(10)
-        self._cause_desc = QTextEdit()
-        self._cause_desc.setPlaceholderText("Beskriv orsaken till avvikelsen / faran...")
-        self._cause_desc.setFixedHeight(CONFIG['H_EDIT_LG'])
-        f1.addRow("Beskrivning:", self._cause_desc)
-        self._cause_like = QComboBox()
-        self._cause_like.addItems(FREQ_LABELS)
-        self._cause_like.setCurrentIndex(freq_to_idx(3))
-        f1.addRow("Frekvens (F):", self._cause_like)
-        self._stack.addWidget(p1)
-
-        # Step 2: Consequence
-        p2 = QWidget()
-        f2 = QFormLayout(p2); f2.setSpacing(10)
-        self._cons_desc = QTextEdit()
-        self._cons_desc.setPlaceholderText("Beskriv konsekvensen...")
-        self._cons_desc.setFixedHeight(CONFIG['H_EDIT_LG'])
-        f2.addRow("Beskrivning:", self._cons_desc)
-        self._cons_sev = QComboBox()
-        self._cons_sev.addItems(SEV_LABELS)
-        self._cons_sev.currentIndexChanged.connect(self._update_preview)
-        f2.addRow("Allvarlighet (S):", self._cons_sev)
-        self._cons_cat = QComboBox()
-        self._cons_cat.addItem('')
-        for cat in self.db.consequence_categories():
-            self._cons_cat.addItem(cat['name'])
-        f2.addRow("Kategori:", self._cons_cat)
-        self._preview_badge = RiskBadge()
-        f2.addRow("Förhandsvisning risk:", self._preview_badge)
-        self._stack.addWidget(p2)
-
-        # Step 3: Safeguard (optional)
-        p3 = QWidget()
-        f3 = QFormLayout(p3); f3.setSpacing(10)
-        note = QLabel("Lämna tom för att hoppa över safeguard.")
-        note.setStyleSheet("color:#888; font-style:italic;")
-        f3.addRow(note)
-        self._sg_desc = QLineEdit()
-        self._sg_desc.setPlaceholderText("t.ex. Säkerhetsventil PSV-101")
-        f3.addRow("Beskrivning:", self._sg_desc)
-        self._sg_rrf = QComboBox()
-        self._sg_rrf.addItems(RRF_LABELS)
-        self._sg_rrf.currentIndexChanged.connect(self._update_preview)
-        f3.addRow("RRF:", self._sg_rrf)
-        self._sg_badge = RiskBadge()
-        f3.addRow("Effektiv risk:", self._sg_badge)
-        self._stack.addWidget(p3)
-
-        # Buttons
-        btn_row = QHBoxLayout()
-        self._back_btn = QPushButton("◀ Tillbaka")
-        self._next_btn = QPushButton("Nästa ▶")
-        self._finish_btn = QPushButton("✅ Slutför")
-        self._finish_btn.setVisible(False)
-        cancel_btn = QPushButton("Avbryt")
-        cancel_btn.clicked.connect(self.reject)
-        self._back_btn.clicked.connect(self._go_back)
-        self._next_btn.clicked.connect(self._go_next)
-        self._finish_btn.clicked.connect(self._finish)
-        btn_row.addWidget(self._back_btn)
-        btn_row.addStretch()
-        btn_row.addWidget(cancel_btn)
-        btn_row.addWidget(self._next_btn)
-        btn_row.addWidget(self._finish_btn)
-        outer.addLayout(btn_row)
-
-        self._go_to(0)
-
-    def _go_to(self, step):
-        self._stack.setCurrentIndex(step)
-        self._step_lbl.setText(
-            ["Steg 1 av 3: Orsak", "Steg 2 av 3: Konsekvens", "Steg 3 av 3: Safeguard"][step])
-        self._back_btn.setEnabled(step > 0)
-        self._next_btn.setVisible(step < 2)
-        self._finish_btn.setVisible(step == 2)
-        self._update_preview()
-
-    def _go_back(self):
-        self._go_to(self._stack.currentIndex() - 1)
-
-    def _go_next(self):
-        self._go_to(self._stack.currentIndex() + 1)
-
-    def _update_preview(self):
-        sev_idx = self._cons_sev.currentIndex()
-        sev  = sev_idx + 1 if sev_idx >= 0 else 1
-        freq = idx_to_freq(self._cause_like.currentIndex())
-        self._preview_badge.update_risk(freq, sev)
-        rrf_idx = self._sg_rrf.currentIndex()
-        rrf   = RRF_VALUES[rrf_idx] if 0 <= rrf_idx < len(RRF_VALUES) else 1
-        eff_f = effective_frequency(freq, rrf)
-        self._sg_badge.update_risk(eff_f, sev)
-
-    def _finish(self):
-        cause_desc = self._cause_desc.toPlainText().strip() or 'Ny orsak'
-        freq  = idx_to_freq(self._cause_like.currentIndex())
-        dev_id = self.db.get_or_create_deviation(self.node_id, "Övrigt")
-        c_id  = self.db.add_cause(dev_id)
-        self.db.update_cause(c_id, cause_desc, freq)
-
-        cons_desc = self._cons_desc.toPlainText().strip() or 'Ny konsekvens'
-        sev  = self._cons_sev.currentIndex() + 1
-        cat  = self._cons_cat.currentText()
-        k_id = self.db.add_consequence(c_id)
-        self.db.update_consequence(k_id, cons_desc, sev, cat)
-
-        sg_desc = self._sg_desc.text().strip()
-        if sg_desc:
-            rrf_idx = self._sg_rrf.currentIndex()
-            rrf  = RRF_VALUES[rrf_idx] if 0 <= rrf_idx < len(RRF_VALUES) else 1
-            s_id = self.db.add_safeguard(k_id)
-            self.db.update_safeguard(s_id, sg_desc, rrf)
-
-        self.created_cause_id = c_id
-        self.created_cons_id  = k_id
-        self.accept()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -17592,15 +17274,13 @@ class MainWindow(QMainWindow):
         # but they are not shown in the splitter.
         self.welcome_panel    = WelcomePanel()
         self.node_panel       = NodePanel(self.db)
-        self.deviation_panel  = DeviationPanel(self.db)
-        self.cause_panel      = CausePanel(self.db)
         self.cons_panel       = ConsequencePanel(self.db)
         self.sg_panel         = SafeguardPanel(self.db)
         # Dummy stack kept so existing code that calls self.stack.setCurrentWidget() works
         self.stack = QStackedWidget()
         self._right_scroll = QScrollArea()   # kept for _reload_all_panels compatibility
-        for panel in [self.welcome_panel, self.node_panel, self.deviation_panel,
-                      self.cause_panel, self.cons_panel, self.sg_panel]:
+        for panel in [self.welcome_panel, self.node_panel,
+                      self.cons_panel, self.sg_panel]:
             self.stack.addWidget(panel)
 
         # Narrow properties ribbon
@@ -17672,20 +17352,12 @@ class MainWindow(QMainWindow):
                 self.db.sync_node_text_markups(id_, name),
                 self.pid_panel.refresh_markup_overlays(),
             ))
-        self.deviation_panel.saved.connect(
-            lambda id_, _: self.tree_panel.refresh(DEV_T, id_))
-        self.deviation_panel.add_cause_requested.connect(self._on_deviation_add_cause)
-        self.cause_panel.saved.connect(
-            lambda id_, _: (self.tree_panel.refresh(CAUSE_T, id_),
-                            self.scenario_panel.refresh_placed()))
         self.cons_panel.saved.connect(
             lambda id_: (self.tree_panel.refresh(CONS_T, id_),
                          self.scenario_panel.refresh_placed()))
         self.sg_panel.saved.connect(
             lambda id_: self.tree_panel.refresh(SG_T, id_))
 
-        self.cause_panel.place_on_pid.connect(
-            lambda: self.pid_panel._set_mode(MODE_CAUSE))
         self.cons_panel.place_on_pid.connect(
             lambda: self.pid_panel._set_mode(MODE_CONSEQUENCE))
         self.sg_panel.place_on_pid.connect(
@@ -17953,11 +17625,6 @@ class MainWindow(QMainWindow):
                         self.scenario_panel.load_deviation(cause['deviation_id'])
                     else:
                         self.scenario_panel.load_consequence(cons['id'])
-
-    def _on_deviation_add_cause(self, dev_id):
-        new_id = self.db.add_cause(dev_id)
-        self.tree_panel.refresh(CAUSE_T, new_id)
-        self.tree_panel.structure_changed.emit()
 
     def _on_scenario_item_edited(self, type_, id_):
         """Scenario table committed an edit — sync tree and P&ID labels.
@@ -19088,8 +18755,8 @@ class MainWindow(QMainWindow):
         load_matrix(db)
 
         # Update db reference on every panel (props_ribbon included)
-        for panel in [self.tree_panel, self.node_panel, self.deviation_panel,
-                      self.cause_panel, self.cons_panel, self.sg_panel,
+        for panel in [self.tree_panel, self.node_panel,
+                      self.cons_panel, self.sg_panel,
                       self.scenario_panel, self.equipment_panel,
                       self.admin_panel, self.settings_panel,
                       self.node_markup_panel, self.markup_table_panel,
