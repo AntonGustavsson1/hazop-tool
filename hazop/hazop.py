@@ -10850,6 +10850,7 @@ class ScenarioTablePanel(QWidget):
         self._node_id = None
         self._deviation_id = None
         self._all_nodes = False  # if True, show every node's full hierarchy (set by load_all)
+        self._show_empty_deviations = False  # if True, deviations with zero causes get a placeholder row instead of being omitted
         self._row_meta = []   # list of (dev_id, cause_id, cons_id, sg_id) per visible row
         self._cons_id  = None  # if set, show only this consequence (set by load_consequence)
         self._enter_row = -1
@@ -10863,6 +10864,9 @@ class ScenarioTablePanel(QWidget):
         # Parallel list to _row_meta: None or (cat_id, cat_name, cat_sev)
         self._row_cat_info: list = []
         self.setMinimumHeight(CONFIG['H_TABLE_STD'])
+        # 380px cap fits the P&ID page's bottom-splitter usage, where this panel
+        # shares vertical space with the canvas above it. A full-page host
+        # (e.g. HAZOPWorksheet) should call allow_full_height() to lift this cap.
         self.setMaximumHeight(380)
 
         outer = QVBoxLayout(self)
@@ -10963,6 +10967,23 @@ class ScenarioTablePanel(QWidget):
         # ── Deferred rebuild system (signal-based, not timer-based) ──────────────
         self._rebuild_pending = False
 
+    def allow_full_height(self):
+        """Lift the 380px cap so this panel fills whatever container it's
+        placed in — for hosts that give it a whole page (e.g. HAZOPWorksheet),
+        as opposed to the P&ID page's bottom splitter (which relies on the cap
+        to leave room for the canvas above it)."""
+        self.setMaximumHeight(16777215)  # Qt's QWIDGETSIZE_MAX — effectively "no cap"
+        self._table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+    def set_show_empty_deviations(self, show: bool):
+        """Toggle whether deviations with zero causes get their own placeholder
+        row (interleaved with deviations that do have causes), instead of being
+        silently omitted from the single-node/all-nodes view."""
+        if self._show_empty_deviations == show:
+            return
+        self._show_empty_deviations = show
+        self._rebuild()
+
     # ── Load ──────────────────────────────────────────────────────────────────
 
     def load_node(self, node_id):
@@ -11024,6 +11045,7 @@ class ScenarioTablePanel(QWidget):
         self.cause_id = None
         self._cons_id = None
         self._all_nodes = False
+        self._show_empty_deviations = False
         self._set_all_nodes_columns_visible(False)
         self._table.setRowCount(0)
         self._hdr_lbl.setText("HAZOP Scenario")
@@ -11163,7 +11185,12 @@ class ScenarioTablePanel(QWidget):
         result = []
         for dev in self.db.deviations(node_id):
             dev_d = dict(dev)
-            for c in self.db.causes_for_deviation(dev['id']):
+            causes = list(self.db.causes_for_deviation(dev['id']))
+            if not causes:
+                if self._show_empty_deviations:
+                    result.append((None, dev_d))  # sentinel: deviation has no causes
+                continue
+            for c in causes:
                 result.append((dict(c), dev_d))
         return result
 
@@ -11225,17 +11252,21 @@ class ScenarioTablePanel(QWidget):
             logging.info('_build_rows: F2 — placeholder-only branch done, returning')
             return
 
-        # Determine header title from first cause's node
-        first_cause = causes_to_show[0][0]
-        node = self.db.get_node(first_cause['node_id'])
+        # Determine header title from first cause's node (or, for a sentinel
+        # "empty deviation" entry — cause_d is None — fall back to its dev_d,
+        # which always carries node_id).
+        first_cause, first_dev = causes_to_show[0]
+        first_node_id = first_cause['node_id'] if first_cause is not None else first_dev.get('node_id')
+        node = self.db.get_node(first_node_id) if first_node_id else None
         node_name_hdr = node['name'] if node else '?'
         if self._all_nodes:
             self._hdr_lbl.setText("HAZOP Scenario — Hela studien")
         elif self._cons_id is not None:
             cons = self.db.get_consequence(self._cons_id)
             cons_desc = cons['description'] if cons else '?'
+            _first_desc = first_cause.get('description', '?') if first_cause is not None else '?'
             self._hdr_lbl.setText(
-                f"HAZOP Scenario — {node_name_hdr} / {first_cause.get('description', '?')} / {cons_desc}")
+                f"HAZOP Scenario — {node_name_hdr} / {_first_desc} / {cons_desc}")
         elif self._deviation_id is not None:
             dev = self.db.get_deviation(self._deviation_id)
             self._hdr_lbl.setText(
@@ -11253,6 +11284,17 @@ class ScenarioTablePanel(QWidget):
         logging.info('_build_rows: G1 — refresh_placed done, entering cause loop (n=%d)',
                      len(causes_to_show))
         for _cause_idx, (cause_d, dev_d) in enumerate(causes_to_show):
+            if cause_d is None:
+                # Sentinel from _causes_for_node(): this deviation has zero causes,
+                # but "Visa avvikelser utan orsaker" is on — show it as its own
+                # placeholder row instead of skipping it.
+                if _cause_idx % 10 == 0 or _cause_idx == len(causes_to_show) - 1:
+                    logging.info('_build_rows: G2 — cause loop iter %d/%d (empty deviation, '
+                                 'dev_id=%s)', _cause_idx, len(causes_to_show), dev_d.get('id'))
+                node = self.db.get_node(dev_d.get('node_id')) if dev_d.get('node_id') else None
+                node_name = node['name'] if node else '?'
+                self._add_placeholder_row(node_name, dev_d)
+                continue
             if _cause_idx % 10 == 0 or _cause_idx == len(causes_to_show) - 1:
                 logging.info('_build_rows: G2 — cause loop iter %d/%d (cause_id=%s)',
                              _cause_idx, len(causes_to_show), cause_d.get('id'))
@@ -13185,15 +13227,23 @@ class HAZOPWorksheet(QWidget):
         top_bar.addWidget(self._node_combo)
         self._all_nodes_cb = QCheckBox("Visa samtliga noder")
         top_bar.addWidget(self._all_nodes_cb)
+        self._show_empty_dev_cb = QCheckBox("Visa avvikelser utan orsaker")
+        top_bar.addWidget(self._show_empty_dev_cb)
         top_bar.addStretch()
         layout.addLayout(top_bar)
 
-        # Embedded scenario table (full hierarchy for selected node, or all nodes)
+        # Embedded scenario table (full hierarchy for selected node, or all nodes).
+        # Lift the 380px height cap ScenarioTablePanel normally uses for the
+        # P&ID page's bottom-splitter placement — here it owns the whole page,
+        # so it should fill all available vertical space instead of leaving a
+        # large blank gap below/around a height-capped table.
         self._table_panel = ScenarioTablePanel(db)
-        layout.addWidget(self._table_panel)
+        self._table_panel.allow_full_height()
+        layout.addWidget(self._table_panel, 1)
 
         self._node_combo.currentIndexChanged.connect(self._on_node_combo_changed)
         self._all_nodes_cb.toggled.connect(self._on_all_nodes_toggled)
+        self._show_empty_dev_cb.toggled.connect(self._table_panel.set_show_empty_deviations)
 
         # navigate_to_pid ("go to P&ID" pin click on a row): MainWindow's own
         # scenario_panel wires this to _on_scenario_navigate_to_pid, which

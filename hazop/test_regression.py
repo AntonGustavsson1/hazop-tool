@@ -1621,6 +1621,196 @@ class ScenarioTablePanelAllNodesTests(unittest.TestCase):
             panel.deleteLater()
 
 
+class ScenarioTablePanelShowEmptyDeviationsTests(unittest.TestCase):
+    """ScenarioTablePanel.set_show_empty_deviations(): deviations with zero
+    causes are silently omitted by default (_causes_for_node's normal
+    behaviour). When the flag is on, each such deviation must get its own
+    placeholder row (via _add_placeholder_row), interleaved in deviation
+    order alongside deviations that do have causes — not just in the
+    "whole node/study is empty" fallback branch of _build_rows()."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_showempty_test_")
+        self.db_path = os.path.join(self._tmpdir, "test_project.db")
+        self.db = Database(path=self.db_path)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_node_with_one_cause_and_empty_deviations(self, node_name=None):
+        """add_node() auto-creates several standard deviations. Give only
+        the FIRST one a cause (+consequence+safeguard); leave the rest
+        (at least one more, per the standard deviation set) with zero
+        causes."""
+        node_id = self.db.add_node()
+        if node_name is not None:
+            self.db.conn.execute(
+                "UPDATE nodes SET name=? WHERE id=?", (node_name, node_id))
+            self.db.commit()
+        devs = self.db.deviations(node_id)
+        self.assertGreaterEqual(len(devs), 2,
+            "test assumes add_node() creates >=2 standard deviations")
+        dev_with_cause = devs[0]['id']
+        empty_dev_ids = [d['id'] for d in devs[1:]]
+        cause_id = self.db.add_cause(dev_with_cause)
+        cons_id = self.db.add_consequence(cause_id)
+        sg_id = self.db.add_safeguard(cons_id)
+        return {
+            'node_id': node_id,
+            'dev_with_cause': dev_with_cause,
+            'empty_dev_ids': empty_dev_ids,
+            'cause_id': cause_id, 'cons_id': cons_id, 'sg_id': sg_id,
+        }
+
+    def test_default_off_omits_empty_deviations(self):
+        from hazop import ScenarioTablePanel
+
+        ids = self._make_node_with_one_cause_and_empty_deviations("Nod A")
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(ids['node_id'])
+            self.assertFalse(panel._show_empty_deviations)
+            dev_ids_in_rows = {meta[0] for meta in panel._row_meta}
+            self.assertIn(ids['dev_with_cause'], dev_ids_in_rows)
+            for empty_id in ids['empty_dev_ids']:
+                self.assertNotIn(empty_id, dev_ids_in_rows,
+                    "empty deviations must be omitted when the flag is off")
+        finally:
+            panel.deleteLater()
+
+    def test_enabling_flag_adds_placeholder_rows_for_empty_deviations(self):
+        from hazop import ScenarioTablePanel
+
+        ids = self._make_node_with_one_cause_and_empty_deviations("Nod A")
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(ids['node_id'])
+            rows_before = panel._table.rowCount()
+
+            panel.set_show_empty_deviations(True)
+            self.assertTrue(panel._show_empty_deviations)
+
+            rows_after = panel._table.rowCount()
+            self.assertGreater(rows_after, rows_before,
+                "turning the flag on must add rows for the empty deviations")
+
+            dev_ids_in_rows = [meta[0] for meta in panel._row_meta]
+            self.assertIn(ids['dev_with_cause'], dev_ids_in_rows)
+            for empty_id in ids['empty_dev_ids']:
+                self.assertIn(empty_id, dev_ids_in_rows,
+                    "empty deviations must appear as placeholder rows when the flag is on")
+
+            # The placeholder row(s) for empty deviations must carry None for
+            # cause/cons/sg ids in _row_meta.
+            for i, meta in enumerate(panel._row_meta):
+                if meta[0] in ids['empty_dev_ids']:
+                    self.assertIsNone(meta[1], "placeholder row must have cause_id=None")
+                    self.assertIsNone(meta[2], "placeholder row must have cons_id=None")
+                    self.assertIsNone(meta[3], "placeholder row must have sg_id=None")
+        finally:
+            panel.deleteLater()
+
+    def test_works_in_all_nodes_mode_across_multiple_nodes(self):
+        from hazop import ScenarioTablePanel
+
+        ids1 = self._make_node_with_one_cause_and_empty_deviations("Nod A")
+        ids2 = self._make_node_with_one_cause_and_empty_deviations("Nod B")
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_all()
+            panel.set_show_empty_deviations(True)
+            self.assertTrue(panel._all_nodes)
+            self.assertTrue(panel._show_empty_deviations)
+
+            dev_ids_in_rows = [meta[0] for meta in panel._row_meta]
+            for empty_id in ids1['empty_dev_ids'] + ids2['empty_dev_ids']:
+                self.assertIn(empty_id, dev_ids_in_rows,
+                    "empty deviations from every node must appear in all-nodes mode")
+            self.assertIn(ids1['dev_with_cause'], dev_ids_in_rows)
+            self.assertIn(ids2['dev_with_cause'], dev_ids_in_rows)
+        finally:
+            panel.deleteLater()
+
+    def test_toggling_flag_on_and_off_does_not_crash_and_changes_row_count(self):
+        from hazop import ScenarioTablePanel
+
+        ids = self._make_node_with_one_cause_and_empty_deviations("Nod A")
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(ids['node_id'])
+            rows_off = panel._table.rowCount()
+
+            try:
+                panel.set_show_empty_deviations(True)
+            except Exception as e:
+                self.fail(f"set_show_empty_deviations(True) raised: {e!r}")
+            rows_on = panel._table.rowCount()
+            self.assertGreater(rows_on, rows_off)
+
+            try:
+                panel.set_show_empty_deviations(False)
+            except Exception as e:
+                self.fail(f"set_show_empty_deviations(False) raised: {e!r}")
+            rows_off_again = panel._table.rowCount()
+            self.assertEqual(rows_off_again, rows_off)
+
+            # Calling with the same value again must be a no-op (early return)
+            # and must not raise.
+            try:
+                panel.set_show_empty_deviations(False)
+            except Exception as e:
+                self.fail(f"set_show_empty_deviations(False) again raised: {e!r}")
+        finally:
+            panel.deleteLater()
+
+    def test_flag_persists_across_load_node_switches(self):
+        """This is a display PREFERENCE (like font size / 'Fyll skärm'), not
+        a per-node filter, so switching nodes must not reset it."""
+        from hazop import ScenarioTablePanel
+
+        ids1 = self._make_node_with_one_cause_and_empty_deviations("Nod A")
+        ids2 = self._make_node_with_one_cause_and_empty_deviations("Nod B")
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(ids1['node_id'])
+            panel.set_show_empty_deviations(True)
+
+            panel.load_node(ids2['node_id'])
+            self.assertTrue(panel._show_empty_deviations,
+                "load_node() must not reset the show-empty-deviations preference")
+            dev_ids_in_rows = [meta[0] for meta in panel._row_meta]
+            for empty_id in ids2['empty_dev_ids']:
+                self.assertIn(empty_id, dev_ids_in_rows)
+        finally:
+            panel.deleteLater()
+
+    def test_clear_resets_the_flag(self):
+        """clear() is a full state reset (unlike the load_* switches), so it
+        should reset this preference along with the other filter state."""
+        from hazop import ScenarioTablePanel
+
+        ids1 = self._make_node_with_one_cause_and_empty_deviations("Nod A")
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(ids1['node_id'])
+            panel.set_show_empty_deviations(True)
+            panel.clear()
+            self.assertFalse(panel._show_empty_deviations)
+        finally:
+            panel.deleteLater()
+
+
 class HAZOPWorksheetTests(unittest.TestCase):
     """HAZOPWorksheet: node-picker + 'Visa samtliga noder' checkbox wired to
     the embedded ScenarioTablePanel's load_node()/load_all()."""
@@ -1764,6 +1954,43 @@ class HAZOPWorksheetTests(unittest.TestCase):
             ws.refresh()
             ws._table_panel.load_all.assert_called_once()
             ws._table_panel.load_node.assert_not_called()
+        finally:
+            ws.deleteLater()
+
+    def test_show_empty_dev_checkbox_calls_set_show_empty_deviations(self):
+        """The 'Visa avvikelser utan orsaker' checkbox must be wired directly
+        to the embedded ScenarioTablePanel's set_show_empty_deviations(bool).
+
+        The signal is connected straight to the bound method at construction
+        time (`toggled.connect(self._table_panel.set_show_empty_deviations)`),
+        so a plain attribute-patch after construction would not intercept the
+        already-connected Qt slot. Verify the wiring by its real effect: the
+        panel's underlying flag (and the resulting row set) instead.
+        """
+        from hazop import HAZOPWorksheet
+
+        ids = self._make_full_chain(node_name="Nod A")
+        # Give the node a second, cause-less deviation so toggling the
+        # checkbox has an observable effect on the row count too.
+        self.db.add_deviation(ids['node_id'], description="Tom avvikelse")
+
+        ws = HAZOPWorksheet(self.db)
+        try:
+            ws.refresh()  # populate combo + load the node into _table_panel
+            self.assertFalse(ws._table_panel._show_empty_deviations)
+            rows_before = ws._table_panel._table.rowCount()
+
+            ws._show_empty_dev_cb.setChecked(True)
+            self.assertTrue(ws._table_panel._show_empty_deviations,
+                "checking the box must call set_show_empty_deviations(True) "
+                "on the embedded ScenarioTablePanel")
+            self.assertGreater(ws._table_panel._table.rowCount(), rows_before,
+                "the empty deviation must now show as a placeholder row")
+
+            ws._show_empty_dev_cb.setChecked(False)
+            self.assertFalse(ws._table_panel._show_empty_deviations,
+                "unchecking the box must call set_show_empty_deviations(False)")
+            self.assertEqual(ws._table_panel._table.rowCount(), rows_before)
         finally:
             ws.deleteLater()
 
