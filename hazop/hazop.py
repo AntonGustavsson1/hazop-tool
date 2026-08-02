@@ -3097,16 +3097,20 @@ class Database:
             "SELECT * FROM actions WHERE consequence_id=? ORDER BY id", (consequence_id,)).fetchall()
 
     def get_node(self, id_):
-        return self.conn.execute("SELECT * FROM nodes WHERE id=?", (id_,)).fetchone()
+        row = self.conn.execute("SELECT * FROM nodes WHERE id=?", (id_,)).fetchone()
+        return dict(row) if row else None
 
     def get_cause(self, id_):
-        return self.conn.execute("SELECT * FROM causes WHERE id=?", (id_,)).fetchone()
+        row = self.conn.execute("SELECT * FROM causes WHERE id=?", (id_,)).fetchone()
+        return dict(row) if row else None
 
     def get_consequence(self, id_):
-        return self.conn.execute("SELECT * FROM consequences WHERE id=?", (id_,)).fetchone()
+        row = self.conn.execute("SELECT * FROM consequences WHERE id=?", (id_,)).fetchone()
+        return dict(row) if row else None
 
     def get_safeguard(self, id_):
-        return self.conn.execute("SELECT * FROM safeguards WHERE id=?", (id_,)).fetchone()
+        row = self.conn.execute("SELECT * FROM safeguards WHERE id=?", (id_,)).fetchone()
+        return dict(row) if row else None
 
     def cause_base_frequency_per_year(self, cause):
         """Return frequency in events/year from standard cause or base_frequency, or None."""
@@ -3153,7 +3157,8 @@ class Database:
             "SELECT * FROM deviations WHERE node_id=? ORDER BY id", (node_id,)).fetchall()
 
     def get_deviation(self, id_):
-        return self.conn.execute("SELECT * FROM deviations WHERE id=?", (id_,)).fetchone()
+        row = self.conn.execute("SELECT * FROM deviations WHERE id=?", (id_,)).fetchone()
+        return dict(row) if row else None
 
     def causes_for_node_all(self, node_id):
         """All causes for a node across all deviations."""
@@ -3622,8 +3627,9 @@ class Database:
             (page,)).fetchall()
 
     def get_node_markup(self, mu_id):
-        return self.conn.execute(
+        row = self.conn.execute(
             "SELECT * FROM node_markups WHERE id=?", (mu_id,)).fetchone()
+        return dict(row) if row else None
 
     def update_node_markup(self, mu_id, label=None, color=None, opacity=None,
                            line_width=None, font_size=None, visible=None, points=None):
@@ -3684,8 +3690,9 @@ class Database:
             (page,)).fetchall()
 
     def get_node_red_markup(self, mu_id):
-        return self.conn.execute(
+        row = self.conn.execute(
             "SELECT * FROM node_red_markups WHERE id=?", (mu_id,)).fetchone()
+        return dict(row) if row else None
 
     def update_node_red_markup(self, mu_id, label=None, color=None, opacity=None,
                                line_width=None, font_size=None, visible=None,
