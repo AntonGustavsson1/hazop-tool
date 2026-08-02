@@ -2510,15 +2510,17 @@ class ResizeRowsManualNoNativeCrashTests(unittest.TestCase):
             panel.deleteLater()
 
 
-class ConsequenceStepPickerWizardTests(unittest.TestCase):
-    """Regression tests for the step-by-step wizard redesign of
-    ConsequenceStepPickerDialog (was: 5 columns shown side by side at once).
+class ConsequenceStepPickerColumnsTests(unittest.TestCase):
+    """Regression tests for ConsequenceStepPickerDialog's multi-column
+    layout (all _N_STEPS 'Del N' columns shown side by side, replacing an
+    intermediate one-step-at-a-time wizard redesign).
 
     The data model (_CONSEQ_NODES / _CONSEQ_ENTRY / _CONSEQ_GENERIC_NEXT,
     _successor_pairs, _resolve, Database.set_consequence_steps /
-    get_consequence_steps) is unchanged — these tests confirm the new
-    single-step-at-a-time presentation still drives that model correctly
-    and that persistence format is unchanged.
+    get_consequence_steps) is unchanged across all these presentation
+    changes — these tests confirm the all-columns-visible presentation
+    still drives that model correctly and that the persistence format is
+    unchanged.
     """
 
     @classmethod
@@ -2526,7 +2528,7 @@ class ConsequenceStepPickerWizardTests(unittest.TestCase):
         cls.app = _ensure_qapp()
 
     def setUp(self):
-        self._tmpdir = tempfile.mkdtemp(prefix="hazop_stepwizard_test_")
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_stepcolumns_test_")
         self.db_path = os.path.join(self._tmpdir, "test_project.db")
         self.db = Database(path=self.db_path)
 
@@ -2544,45 +2546,50 @@ class ConsequenceStepPickerWizardTests(unittest.TestCase):
         cons_id = self.db.add_consequence(cause_id)
         return node_id, dev_id, cause_id, cons_id
 
-    def _cards(self, dlg):
-        """All currently-mounted, checkable option-card QPushButtons.
-
-        Cards live nested inside a container widget inside the single
-        step panel, not as direct children of the step layout, so this
-        walks the whole dialog's widget tree via findChildren.
-        """
-        from PyQt6.QtWidgets import QPushButton
-        return [w for w in dlg.findChildren(QPushButton) if w.isCheckable()]
-
-    def test_step1_cards_match_entry_pairs_count(self):
-        """Opening the dialog for a known deviation/object-type combo must
-        show step 1's cards matching _entry_pairs()'s result count exactly
-        -- not a hardcoded 5, since node option counts vary 0-6."""
+    def test_col1_options_match_entry_pairs_count(self):
+        """Del1's list must show exactly _entry_pairs()'s result count of
+        items -- not a hardcoded 5, since node option counts vary 0-6."""
         from hazop import ConsequenceStepPickerDialog
         _, _, _, cons_id = self._make_chain()
         dlg = ConsequenceStepPickerDialog(
             self.db, cons_id, deviation="Lågt flöde", comp_type="Pump")
         try:
-            self.assertEqual(dlg._current_step, 0)
             expected = dlg._entry_pairs()
             self.assertGreater(len(expected), 0)
-            cards = self._cards(dlg)
-            self.assertEqual(len(cards), len(expected))
-            for (key, text), card in zip(expected, cards):
-                self.assertIn(dlg._resolve(text, ''), card.text())
+            self.assertEqual(dlg._cols[0]['list'].count(), len(expected))
+            self.assertFalse(dlg._cols[0]['list'].isHidden())
+            self.assertTrue(dlg._cols[0]['end_lbl'].isHidden())
+            for (key, text), i in zip(expected, range(len(expected))):
+                self.assertIn(dlg._resolve(text, ''), dlg._cols[0]['list'].item(i).text())
         finally:
             dlg.deleteLater()
 
-    def test_clicking_card_advances_to_correct_successor_pairs(self):
-        """Clicking a card at step 1 must advance to step 2 showing exactly
-        the pairs _successor_pairs() returns for the chosen node."""
+    def test_other_columns_start_neutral_not_terminal(self):
+        """Columns 2-5 haven't been reached yet on a fresh dialog -- they
+        must show a neutral empty list, NOT the 'chain ends here' message
+        (that message is reserved for an actually-terminal graph node)."""
+        from hazop import ConsequenceStepPickerDialog, _N_STEPS
+        _, _, _, cons_id = self._make_chain()
+        dlg = ConsequenceStepPickerDialog(
+            self.db, cons_id, deviation="Lågt flöde", comp_type="Pump")
+        try:
+            for i in range(1, _N_STEPS):
+                self.assertEqual(dlg._cols[i]['list'].count(), 0)
+                self.assertFalse(dlg._cols[i]['list'].isHidden())
+                self.assertTrue(dlg._cols[i]['end_lbl'].isHidden())
+        finally:
+            dlg.deleteLater()
+
+    def test_clicking_option_populates_next_column_with_successor_pairs(self):
+        """Clicking an option in Del1 must populate Del2 with exactly the
+        pairs _successor_pairs() returns for the chosen node."""
         from hazop import ConsequenceStepPickerDialog
         _, _, _, cons_id = self._make_chain()
         dlg = ConsequenceStepPickerDialog(
             self.db, cons_id, deviation="Lågt flöde", comp_type="Pump")
         try:
-            dlg._card_clicked(0, 0)
-            self.assertEqual(dlg._current_step, 1)
+            dlg._cols[0]['list'].setCurrentRow(0)
+            dlg._list_clicked(0, dlg._cols[0]['list'])
             chosen_key = dlg._opt_keys[0][0]
             expected = dlg._successor_pairs(chosen_key)
             self.assertEqual(dlg._options[1], [t for _, t in expected])
@@ -2590,9 +2597,32 @@ class ConsequenceStepPickerWizardTests(unittest.TestCase):
         finally:
             dlg.deleteLater()
 
-    def test_terminal_node_shows_end_of_chain_state_not_empty_cards(self):
-        """Reaching a 0-next node (e.g. 'fatality') must render the
-        end-of-chain message instead of an empty/crashing card list."""
+    def test_second_click_deselects_and_clears_downstream(self):
+        """Clicking an already-selected option a second time must clear the
+        selection and cascade the clear downstream (no stale successors
+        left over from the previous choice)."""
+        from hazop import ConsequenceStepPickerDialog
+        _, _, _, cons_id = self._make_chain()
+        dlg = ConsequenceStepPickerDialog(
+            self.db, cons_id, deviation="Lågt flöde", comp_type="Pump")
+        try:
+            dlg._cols[0]['list'].setCurrentRow(0)
+            dlg._list_clicked(0, dlg._cols[0]['list'])
+            self.assertGreaterEqual(dlg._cols[0]['sel'], 0)
+            self.assertGreater(len(dlg._options[1]), 0)
+
+            dlg._cols[0]['list'].setCurrentRow(0)
+            dlg._list_clicked(0, dlg._cols[0]['list'])
+            self.assertEqual(dlg._cols[0]['sel'], -1)
+            self.assertEqual(dlg._options[1], [])
+            self.assertFalse(dlg._cols[1]['list'].isHidden())
+            self.assertTrue(dlg._cols[1]['end_lbl'].isHidden())
+        finally:
+            dlg.deleteLater()
+
+    def test_terminal_node_shows_end_of_chain_message_not_empty_list(self):
+        """Reaching a 0-next node (e.g. 'fatality') must show the
+        end-of-chain message and hide the (empty) list for that column."""
         from hazop import ConsequenceStepPickerDialog
         _, _, _, cons_id = self._make_chain()
         dlg = ConsequenceStepPickerDialog(
@@ -2600,76 +2630,32 @@ class ConsequenceStepPickerWizardTests(unittest.TestCase):
         try:
             # 'fatality' is a real terminal node in _CONSEQ_NODES (next=[]).
             self.assertEqual(dlg._successor_pairs('fatality'), [])
-            dlg._populate_column(1, dlg._successor_pairs('fatality'))
-            dlg._render_step(1)
-            self.assertEqual(len(self._cards(dlg)), 0)
-            from PyQt6.QtWidgets import QLabel
-            labels = [w.text() for w in dlg.findChildren(QLabel)]
-            self.assertTrue(
-                any('Kedjan slutar här' in t for t in labels),
-                "expected end-of-chain message when a terminal node is reached")
+            dlg._populate_column(1, dlg._successor_pairs('fatality'), upstream_has_sel=True)
+            self.assertTrue(dlg._cols[1]['list'].isHidden())
+            self.assertFalse(dlg._cols[1]['end_lbl'].isHidden())
+            self.assertIn('Kedjan slutar här', dlg._cols[1]['end_lbl'].text())
         finally:
             dlg.deleteLater()
 
-    def test_terminal_after_all_five_steps_shows_completion_message(self):
-        """Reaching step index >= _N_STEPS (all 5 parts chosen) must render
-        a completion state, not raise IndexError."""
-        from hazop import ConsequenceStepPickerDialog, _N_STEPS
-        _, _, _, cons_id = self._make_chain()
-        dlg = ConsequenceStepPickerDialog(
-            self.db, cons_id, deviation="Lågt flöde", comp_type="Pump")
-        try:
-            dlg._render_step(_N_STEPS)
-            from PyQt6.QtWidgets import QLabel
-            labels = [w.text() for w in dlg.findChildren(QLabel)]
-            self.assertTrue(any('spara' in t.lower() for t in labels))
-        finally:
-            dlg.deleteLater()
-
-    def test_freetext_entry_advances_using_generic_pairs(self):
-        """Typing free text at a step (instead of clicking a card) and
-        advancing must populate the next step from _generic_pairs(),
-        matching the pre-redesign fallback behavior."""
+    def test_freetext_entry_cascades_using_generic_pairs(self):
+        """Typing free text in a column (instead of picking an option) must
+        populate the next column from _generic_pairs(), matching the
+        original fallback behavior."""
         from hazop import ConsequenceStepPickerDialog
         _, _, _, cons_id = self._make_chain()
         dlg = ConsequenceStepPickerDialog(
             self.db, cons_id, deviation="Lågt flöde", comp_type="Pump")
         try:
-            dlg._cols[0]['ft_text'] = "Eget alternativ"
-            dlg._ft_edit.setText("Eget alternativ")
-            dlg._freetext_advance(0)
-            self.assertEqual(dlg._current_step, 1)
+            dlg._cols[0]['ft_edit'].setText("Eget alternativ")
             expected = dlg._generic_pairs()
             self.assertEqual(dlg._options[1], [t for _, t in expected])
             self.assertIsNone(dlg._selected_key(0))
         finally:
             dlg.deleteLater()
 
-    def test_back_reshows_previous_step_prior_selection_and_options(self):
-        """Going Back after advancing must re-show the previous step with
-        its prior selection and the SAME option list it had before -- not
-        a freshly recomputed one that might differ."""
-        from hazop import ConsequenceStepPickerDialog
-        _, _, _, cons_id = self._make_chain()
-        dlg = ConsequenceStepPickerDialog(
-            self.db, cons_id, deviation="Lågt flöde", comp_type="Pump")
-        try:
-            step0_options_before = list(dlg._options[0])
-            dlg._card_clicked(0, 0)
-            self.assertEqual(dlg._current_step, 1)
-            dlg._go_back()
-            self.assertEqual(dlg._current_step, 0)
-            self.assertEqual(dlg._options[0], step0_options_before)
-            self.assertEqual(dlg._cols[0]['sel'], 0)
-            cards = self._cards(dlg)
-            self.assertTrue(cards[0].isChecked())
-        finally:
-            dlg.deleteLater()
-
     def test_save_produces_same_node_keys_as_direct_graph_walk(self):
-        """Saving via the wizard must persist the same node_key values (and
-        text) that a direct walk of the graph would produce -- the
-        persistence format must be unchanged from before the redesign."""
+        """Saving must persist the same node_key values (and text) that a
+        direct walk of the graph would produce."""
         from hazop import ConsequenceStepPickerDialog
         _, _, _, cons_id = self._make_chain()
         dlg = ConsequenceStepPickerDialog(
@@ -2677,10 +2663,13 @@ class ConsequenceStepPickerWizardTests(unittest.TestCase):
         try:
             key0 = dlg._opt_keys[0][0]
             expected_text0 = dlg._resolve(dlg._options[0][0], '')
-            dlg._card_clicked(0, 0)
+            dlg._cols[0]['list'].setCurrentRow(0)
+            dlg._list_clicked(0, dlg._cols[0]['list'])
+
             key1 = dlg._opt_keys[1][0]
             expected_text1 = dlg._resolve(dlg._options[1][0], '')
-            dlg._card_clicked(1, 0)
+            dlg._cols[1]['list'].setCurrentRow(0)
+            dlg._list_clicked(1, dlg._cols[1]['list'])
 
             dlg._do_save()
             saved = self.db.get_consequence_steps(cons_id)
@@ -2700,14 +2689,14 @@ class ConsequenceStepPickerWizardTests(unittest.TestCase):
 
     def test_reopening_dialog_restores_saved_chain_selection(self):
         """A saved chain (node_key based) must be restored selection-by-
-        selection when the dialog is reopened, mirroring pre-redesign
-        _init_columns() behavior."""
+        selection when the dialog is reopened."""
         from hazop import ConsequenceStepPickerDialog
         _, _, _, cons_id = self._make_chain()
         dlg1 = ConsequenceStepPickerDialog(
             self.db, cons_id, deviation="Lågt flöde", comp_type="Pump")
         key0 = dlg1._opt_keys[0][0]
-        dlg1._card_clicked(0, 0)
+        dlg1._cols[0]['list'].setCurrentRow(0)
+        dlg1._list_clicked(0, dlg1._cols[0]['list'])
         dlg1._do_save()
         dlg1.deleteLater()
 
@@ -2715,23 +2704,22 @@ class ConsequenceStepPickerWizardTests(unittest.TestCase):
             self.db, cons_id, deviation="Lågt flöde", comp_type="Pump")
         try:
             self.assertEqual(dlg2._cols[0]['sel'], 0)
+            self.assertEqual(dlg2._cols[0]['list'].currentRow(), 0)
             self.assertEqual(dlg2._opt_keys[0][dlg2._cols[0]['sel']], key0)
         finally:
             dlg2.deleteLater()
 
-    def test_pin_button_flow_refills_ref_tag_for_current_step(self):
+    def test_pin_button_flow_refills_ref_tag_for_column(self):
         """The ref-tag pin-button flow (_request_pick_for_col hides the
-        dialog and waits; the caller fills the waiting step's ref_edit and
-        re-shows) must still work for whichever step is current, and the
-        re-shown step's cards must reflect the newly-set tag."""
+        dialog and waits; the caller fills the waiting column's ref_edit
+        and re-shows) must update that column's live, always-mounted
+        ref_edit widget and cascade the list label refresh."""
         from hazop import ConsequenceStepPickerDialog
         _, _, _, cons_id = self._make_chain()
         dlg = ConsequenceStepPickerDialog(
             self.db, cons_id, deviation="Lågt flöde", comp_type="Pump")
         try:
-            dlg._card_clicked(0, 0)   # move to step 2 (index 1) first
-            self.assertEqual(dlg._current_step, 1)
-            dlg._request_pick_for_col(dlg._current_step)
+            dlg._request_pick_for_col(1)
             self.assertEqual(dlg._waiting_col_idx, 1)
             self.assertTrue(dlg.isHidden())
 
@@ -2742,16 +2730,13 @@ class ConsequenceStepPickerWizardTests(unittest.TestCase):
             dlg.show()
 
             self.assertIsNone(dlg._waiting_col_idx)
-            cards = self._cards(dlg)
-            self.assertTrue(any('T-101' in c.text() for c in cards),
-                             "current step's cards must reflect the picked ref-tag")
+            self.assertEqual(dlg._cols[1]['ref_edit'].text(), "T-101")
         finally:
             dlg.deleteLater()
 
     def test_quickselect_removed(self):
-        """The 'Snabbval' quick-select text field was dropped as part of the
-        wizard redesign -- it was layout-dependent on seeing multiple
-        columns at once. Confirm it is gone rather than silently broken."""
+        """The 'Snabbval' quick-select text field is dropped for a cleaner,
+        tighter dialog. Confirm it is gone rather than silently broken."""
         from hazop import ConsequenceStepPickerDialog
         _, _, _, cons_id = self._make_chain()
         dlg = ConsequenceStepPickerDialog(
@@ -2764,7 +2749,7 @@ class ConsequenceStepPickerWizardTests(unittest.TestCase):
             dlg.deleteLater()
 
     def test_dialog_opens_near_scenario_table_row_not_screen_center(self):
-        """The wizard must open positioned near its cons_id's row in the
+        """The dialog must open positioned near its cons_id's row in the
         HAZOP scenario table (ScenarioTablePanel._pos_near_cons_row), not at
         the OS's default screen-centered dialog placement -- per explicit
         user feedback that it should appear "nere vid hazop scenario" (down

@@ -9082,17 +9082,31 @@ _CONSEQ_GENERIC_NEXT = [
 ]
 
 class ConsequenceStepPickerDialog(QDialog):
-    """Konsekvenskedja Del1 → Del2 → Del3 → Del4 → Del5 — compact step wizard.
+    """Konsekvenskedja Del1 → Del2 → Del3 → Del4 → Del5.
 
-    Shows ONE step at a time: a breadcrumb of the chain built so far, the
-    current step's clickable option cards (0–6 depending on the graph node),
-    a free-text fallback, and a ref-tag/object-type row for the current step.
-    Clicking a card immediately advances to the next step. 'Tillbaka' steps
-    back without losing previously computed options. 'Lägg till ytterligare
-    objekt' saves and returns to P&ID-läge to mark another object.
+    All _N_STEPS columns are shown side by side — compact and tight, but
+    the whole chain stays visible and directly editable at a glance rather
+    than navigating one step at a time. Each column has a status-colored
+    "Del N" header (muted gray = not reached / chain ended, light blue =
+    options available, filled blue = a choice has been made), a scrollable
+    option list built from the dependency graph, a free-text fallback, and
+    a compact tag + object-type row. Picking an option (or typing free
+    text) in column N immediately recomputes column N+1's options
+    (cascading) and clears anything further downstream.
     """
     # Set when the "add more objects" button is clicked
     add_more_requested = False
+
+    _COL_W = 150   # fixed width per "Del N" column — keeps the dialog tight
+
+    _LIST_SS = (
+        "QListWidget { border:1px solid #d8dee8; border-radius:5px; background:white; }"
+        "QListWidget::item { padding:3px 5px; border-radius:3px; font-size:10px; }"
+        "QListWidget::item:selected {"
+        "  background:#dbeafe; color:#1e3a8a; font-weight:bold;"
+        "  border:1px solid #2563eb; }"
+        "QListWidget::item:hover:!selected { background:#eff6ff; }"
+    )
 
     def __init__(self, db: 'Database', cons_id: int,
                  deviation: str = '', comp_type: str = '',
@@ -9107,8 +9121,11 @@ class ConsequenceStepPickerDialog(QDialog):
         self.add_more_requested = False
 
         self.setWindowTitle("Konsekvenskedja — Del 1–5")
-        self.setFixedWidth(420)
-        self.setMinimumHeight(480)
+        col_gap = 9
+        self.setMinimumWidth(min(
+            QApplication.primaryScreen().availableGeometry().width() - 80,
+            _N_STEPS * self._COL_W + (_N_STEPS - 1) * col_gap + 24))
+        self.setMinimumHeight(440)
         # initial_ref_tag is pre-filled in Del1's ref-tag from the P&ID click
         self._initial_ref_tag = initial_ref_tag
 
@@ -9120,7 +9137,8 @@ class ConsequenceStepPickerDialog(QDialog):
         self._orig_desc = cons_row['description'] if cons_row else ''
 
         main = QVBoxLayout(self)
-        main.setSpacing(6)
+        main.setSpacing(5)
+        main.setContentsMargins(8, 8, 8, 8)
 
         # ── Context info ──────────────────────────────────────────────────────
         if deviation or comp_type or cause_text:
@@ -9134,52 +9152,157 @@ class ConsequenceStepPickerDialog(QDialog):
             ctx.setWordWrap(True)
             main.addWidget(ctx)
 
-        # ── Breadcrumb row ───────────────────────────────────────────────────
-        self._breadcrumb = QLabel()
-        self._breadcrumb.setWordWrap(True)
-        self._breadcrumb.setTextFormat(Qt.TextFormat.RichText)
-        self._breadcrumb.setStyleSheet("font-size:10px; padding:2px 4px;")
-        self._breadcrumb.linkActivated.connect(self._on_breadcrumb_clicked)
-        main.addWidget(self._breadcrumb)
+        # ── Column grid ───────────────────────────────────────────────────────
+        cols_widget = QWidget()
+        cols_layout = QHBoxLayout(cols_widget)
+        cols_layout.setSpacing(0)
+        cols_layout.setContentsMargins(0, 0, 0, 0)
 
-        # ── Per-step state (one dict per step index, always alive even when
-        #     not the currently-mounted step) ──────────────────────────────────
         self._cols: list = []      # per-step state
         self._options: list = []   # option texts per step (graph node texts)
         self._opt_keys: list = []  # parallel node keys (None = free/saved text)
+
         for step in range(1, _N_STEPS + 1):
             self._options.append([])
             self._opt_keys.append([])
+
+            if step > 1:
+                cols_layout.addSpacing(4)
+                divider = QFrame()
+                divider.setFixedWidth(1)
+                divider.setStyleSheet("background:#e5e7eb;")
+                cols_layout.addWidget(divider)
+                cols_layout.addSpacing(4)
+
+            col_w = QWidget()
+            col_w.setFixedWidth(self._COL_W)
+            col_l = QVBoxLayout(col_w)
+            col_l.setContentsMargins(0, 0, 0, 0)
+            col_l.setSpacing(3)
+
+            hdr = QLabel(f"Del {step}")
+            hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            col_l.addWidget(hdr)
+
+            # QListWidget — native scrolling + word wrap, stays compact
+            lst = QListWidget()
+            lst.setWordWrap(True)
+            lst.setSpacing(1)
+            lst.setAlternatingRowColors(False)
+            lst.setMinimumHeight(110)
+            lst.setStyleSheet(self._LIST_SS)
+            lst.itemClicked.connect(
+                lambda it, s=step-1, lw=lst: self._list_clicked(s, lw))
+            col_l.addWidget(lst, 1)
+
+            # Terminal-chain message — shares the list's space (only one of
+            # the two is ever visible), shown once a graph node with no
+            # successors is reached instead of leaving an empty list box.
+            end_lbl = QLabel("Kedjan slutar här")
+            end_lbl.setWordWrap(True)
+            end_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            end_lbl.setStyleSheet(
+                "color:#9a6a3d; font-size:9px; background:#fff7ed;"
+                "border:1px solid #fde8cc; border-radius:5px; padding:6px;")
+            end_lbl.setMinimumHeight(110)
+            end_lbl.setVisible(False)
+            col_l.addWidget(end_lbl, 1)
+
+            # Free-text input
+            ft_edit = QLineEdit()
+            ft_edit.setPlaceholderText("Fritext…")
+            ft_edit.setStyleSheet("font-size:10px;")
+            ft_edit.textChanged.connect(
+                lambda _t, s=step-1: (self._cascade_from(s),
+                                      self._refresh_header_state(s),
+                                      self._update_preview()))
+            col_l.addWidget(ft_edit)
+
+            # Tag row: compact "Tag" label + field + pin button (no separate
+            # label line — the placeholder text carries the hint instead)
+            tag_row = QHBoxLayout()
+            tag_row.setContentsMargins(0, 0, 0, 0)
+            tag_row.setSpacing(2)
+            tag_lbl = QLabel("Tag")
+            tag_lbl.setStyleSheet("color:#999; font-size:9px;")
+            tag_lbl.setFixedWidth(20)
             ref_edit = QLineEdit()
+            ref_edit.setPlaceholderText("t.ex. T-101")
+            ref_edit.setMaximumHeight(22)
+            ref_edit.setStyleSheet("font-size:10px;")
             if step in existing:
                 ref_edit.setText(existing[step].get('ref_tag', '') or '')
             elif step == 1 and self._initial_ref_tag:
                 ref_edit.setText(self._initial_ref_tag)
+            pin_btn = QPushButton("📍")
+            pin_btn.setFixedSize(22, 22)
+            pin_btn.setToolTip("Klicka på P&ID för att välja referensobjekt")
+            pin_btn.setStyleSheet(
+                "QPushButton { border:1px solid #dc2626; border-radius:3px;"
+                "  background:#fee2e2; color:#dc2626; font-size:10px; }"
+                "QPushButton:hover { background:#fca5a5; }")
+            pin_btn.clicked.connect(partial(self._request_pick_for_col, step-1))
+            tag_row.addWidget(tag_lbl)
+            tag_row.addWidget(ref_edit)
+            tag_row.addWidget(pin_btn)
+            col_l.addLayout(tag_row)
+
+            # Object-type row: compact "Typ" label + combo, pre-filled from
+            # smart recognition on ref-tag change
+            typ_row = QHBoxLayout()
+            typ_row.setContentsMargins(0, 0, 0, 0)
+            typ_row.setSpacing(2)
+            typ_lbl = QLabel("Typ")
+            typ_lbl.setStyleSheet("color:#999; font-size:9px;")
+            typ_lbl.setFixedWidth(20)
             obj_combo = QComboBox()
+            obj_combo.setFixedHeight(22)
+            obj_combo.setStyleSheet("font-size:9px;")
+            obj_combo.setToolTip("Objekttyp")
             obj_combo.addItem('')
             try:
                 for o in db.standard_objects():
                     obj_combo.addItem(o['name'])
             except Exception:
                 pass
+            # Pre-select based on initial data
             if step == 1 and comp_type:
                 _idx = obj_combo.findText(comp_type)
                 if _idx >= 0:
                     obj_combo.setCurrentIndex(_idx)
-            self._cols.append({
-                'sel':       -1,     # index into self._options[step-1] / _opt_keys
-                'ft_text':   '',     # free-text value for this step
+            typ_row.addWidget(typ_lbl)
+            typ_row.addWidget(obj_combo, 1)
+            col_l.addLayout(typ_row)
+
+            # Connect after layout so step-1 index is correct
+            ref_edit.textChanged.connect(
+                lambda tag, s=step-1, cb=obj_combo: (
+                    self._refresh_list_labels(s, tag),
+                    self._autofill_obj_combo(cb, tag),
+                    self._update_preview()))
+            obj_combo.currentTextChanged.connect(
+                lambda txt, s=step-1: (
+                    self._on_obj_type_changed(s, txt),
+                    self._update_preview()))
+
+            cols_layout.addWidget(col_w)
+
+            col_state = {
+                'list':      lst,
+                'end_lbl':   end_lbl,
+                'sel':       -1,
+                'ft_edit':   ft_edit,
                 'ref_edit':  ref_edit,
                 'obj_combo': obj_combo,
-            })
+                'hdr':       hdr,
+            }
+            self._cols.append(col_state)
 
-        # ── Current step panel (single mounted widget, rebuilt per step) ────────
-        self._current_step = 0
-        self._step_panel = QWidget()
-        self._step_layout = QVBoxLayout(self._step_panel)
-        self._step_layout.setContentsMargins(0, 0, 0, 0)
-        self._step_layout.setSpacing(4)
-        main.addWidget(self._step_panel, 1)
+        # Fill columns: Del1 from entry nodes, Del2+ cascades from selections.
+        # Saved chains are restored selection by selection.
+        self._init_columns(existing)
+
+        main.addWidget(cols_widget, 1)
 
         # ── Preview strip ─────────────────────────────────────────────────────
         prev_frame = QFrame()
@@ -9197,14 +9320,7 @@ class ConsequenceStepPickerDialog(QDialog):
         prev_lay.addWidget(self._preview)
         main.addWidget(prev_frame)
 
-        # ── Navigation / action buttons ──────────────────────────────────────
-        nav_row = QHBoxLayout()
-        self._back_btn = QPushButton("◀ Tillbaka")
-        self._back_btn.clicked.connect(self._go_back)
-        nav_row.addWidget(self._back_btn)
-        nav_row.addStretch()
-        main.addLayout(nav_row)
-
+        # ── Buttons ───────────────────────────────────────────────────────────
         btn_row = QHBoxLayout()
         add_more_btn = QPushButton("📍 Lägg till ytterligare objekt")
         add_more_btn.setToolTip(
@@ -9226,10 +9342,17 @@ class ConsequenceStepPickerDialog(QDialog):
 
         self._waiting_col_idx = None
 
-        # Fill Del1 from entry nodes, then walk any saved chain, restoring
-        # per-step selections without mounting all steps at once.
-        self._init_columns(existing)
-        self._render_step(0)
+        # ── Tab-key navigation between columns ────────────────────────────────
+        # Tab in ft_edit or ref_edit of column N → focus ft_edit of column N+1
+        for i, col in enumerate(self._cols):
+            for field in (col['ft_edit'], col['ref_edit']):
+                field.installEventFilter(self)
+        self._field_order = []
+        for col in self._cols:
+            self._field_order.append(col['ft_edit'])
+            self._field_order.append(col['ref_edit'])
+
+        self._update_preview()
 
     # ── Graf-baserade alternativ ──────────────────────────────────────────────
     def _entry_pairs(self, obj_type: str = ''):
@@ -9260,8 +9383,7 @@ class ConsequenceStepPickerDialog(QDialog):
         if step_idx == 0:
             # Re-initialise column 0 with deviation + new object type
             self._populate_column(0, self._entry_pairs(obj_type))
-            if self._current_step == 0:
-                self._render_step(0)
+            self._cascade_from(0)
 
     @staticmethod
     def _successor_pairs(node_key):
@@ -9276,23 +9398,41 @@ class ConsequenceStepPickerDialog(QDialog):
         return [(k, _CONSEQ_NODES[k]['text'])
                 for k in _CONSEQ_GENERIC_NEXT if k in _CONSEQ_NODES]
 
-    def _populate_column(self, step_idx: int, pairs):
-        """Store (key, text) pairs as step_idx's option list; clears selection."""
+    def _populate_column(self, step_idx: int, pairs, upstream_has_sel: bool = True):
+        """Fill column step_idx with (key, text) pairs; clears selection.
+
+        upstream_has_sel distinguishes two visually different empty states:
+        when the PREVIOUS column has a selection but pairs is still empty,
+        a real graph terminal was reached ("Kedjan slutar här" is shown);
+        when the previous column has nothing chosen yet, this column just
+        hasn't been reached, so it's left as a neutral empty list instead.
+        """
         col = self._cols[step_idx]
+        lst = col['list']
+        tag = col['ref_edit'].text().strip()
+        lst.clear()
         keys, texts = [], []
         for k, t in pairs:
             keys.append(k)
             texts.append(t)
+            lst.addItem(QListWidgetItem(
+                f"{len(texts)}. {self._resolve(t, tag)}"))
         self._options[step_idx]  = texts
         self._opt_keys[step_idx] = keys
         col['sel'] = -1
+        lst.setCurrentRow(-1)
+        has_opts = bool(pairs)
+        show_end_msg = (not has_opts) and upstream_has_sel
+        lst.setVisible(not show_end_msg)
+        col['end_lbl'].setVisible(show_end_msg)
+        self._refresh_header_state(step_idx)
 
     def _selected_key(self, step_idx: int):
-        """Node key of the step's selection, or None (free text / none)."""
+        """Node key of the column's selection, or None (free text / none)."""
         col = self._cols[step_idx]
-        if col['ft_text'].strip():
+        if col['ft_edit'].text().strip():
             return None
-        sel = col['sel']
+        sel = col['list'].currentRow()
         keys = self._opt_keys[step_idx]
         if 0 <= sel < len(keys):
             return keys[sel]
@@ -9301,9 +9441,9 @@ class ConsequenceStepPickerDialog(QDialog):
     def _next_pairs_after(self, step_idx: int):
         """Compute the (key, text) pairs for step_idx+1 based on step_idx's state."""
         col = self._cols[step_idx]
-        ft = col['ft_text'].strip()
+        ft = col['ft_edit'].text().strip()
         key = self._selected_key(step_idx)
-        has_sel = (col['sel'] >= 0) or bool(ft)
+        has_sel = (col['list'].currentRow() >= 0) or bool(ft)
         if key:
             return self._successor_pairs(key)
         elif has_sel:
@@ -9311,15 +9451,20 @@ class ConsequenceStepPickerDialog(QDialog):
         return []                           # nothing chosen → chain ends here
 
     def _cascade_from(self, step_idx: int):
-        """Repopulate step_idx+1 based on this step's state; clear rest."""
+        """Repopulate column step_idx+1 based on this column's state; clear rest."""
         if step_idx + 1 >= _N_STEPS:
             return
-        self._populate_column(step_idx + 1, self._next_pairs_after(step_idx))
-        self._cascade_from(step_idx + 1)     # downstream steps reset too
+        col = self._cols[step_idx]
+        upstream_has_sel = (col['list'].currentRow() >= 0) or bool(col['ft_edit'].text().strip())
+        self._populate_column(step_idx + 1, self._next_pairs_after(step_idx), upstream_has_sel)
+        self._cascade_from(step_idx + 1)     # downstream columns reset too
 
     def _init_columns(self, existing: dict):
-        """Initial fill: entry nodes in Del1, then walk saved chain if any."""
+        """Initial fill: entry nodes in Del1, neutral empty state for the
+        rest, then walk saved chain if any (restoring selections)."""
         self._populate_column(0, self._entry_pairs())
+        for i in range(1, _N_STEPS):
+            self._populate_column(i, [], upstream_has_sel=False)
         for i in range(_N_STEPS):
             step  = i + 1
             saved = existing.get(step) if existing else None
@@ -9344,261 +9489,57 @@ class ConsequenceStepPickerDialog(QDialog):
                 self._populate_column(i, pairs)
                 sel = 0
             self._cols[i]['sel'] = sel
+            self._cols[i]['list'].setCurrentRow(sel)
+            self._refresh_header_state(i)
             if i + 1 < _N_STEPS:
                 nxt_key = self._opt_keys[i][sel] if sel < len(self._opt_keys[i]) else None
                 pairs = self._successor_pairs(nxt_key) if nxt_key else self._generic_pairs()
-                self._populate_column(i + 1, pairs)
+                self._populate_column(i + 1, pairs, upstream_has_sel=True)
 
-    # ── Step rendering (single mounted panel, rebuilt per step) ────────────────
-    def _persistent_widgets(self):
-        """Widgets that live in self._cols and get re-parented into the step
-        panel on every _render_step() call — these must survive layout
-        clearing (never deleteLater()'d), only ephemeral per-render widgets
-        (cards, labels, the free-text edit, nav buttons) get destroyed."""
-        widgets = set()
-        for col in self._cols:
-            widgets.add(col['ref_edit'])
-            widgets.add(col['obj_combo'])
-        return widgets
-
-    def _clear_step_layout(self):
-        keep = self._persistent_widgets()
-        self._clear_layout_recursive(self._step_layout, keep)
-
-    def _clear_layout_recursive(self, layout, keep):
-        while layout.count():
-            item = layout.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                if w in keep:
-                    w.setParent(None)   # detach only — reused on next render
-                else:
-                    # setParent(None) detaches it from the dialog's widget
-                    # tree immediately (so findChildren()/re-render logic
-                    # never sees stale cards from the previous step), then
-                    # deleteLater() reclaims it once the event loop spins —
-                    # relying on deleteLater() alone is not enough here since
-                    # _render_step() can run again (e.g. rapid clicks, or in
-                    # tests with no active exec() loop) before that happens.
-                    w.setParent(None)
-                    w.deleteLater()
-            lay = item.layout()
-            if lay is not None:
-                self._clear_layout_recursive(lay, keep)
-
-    def _render_step(self, step_idx: int):
-        """Clear and rebuild the single step panel for step_idx (0-based)."""
-        self._current_step = step_idx
-        self._clear_step_layout()
-        self._update_breadcrumb()
-        self._back_btn.setEnabled(step_idx > 0)
-
-        if step_idx >= _N_STEPS:
-            end_lbl = QLabel("Alla 5 delar valda — klar att spara.")
-            end_lbl.setWordWrap(True)
-            end_lbl.setStyleSheet("color:#166534; font-size:11px; padding:6px;")
-            self._step_layout.addWidget(end_lbl)
-            self._update_preview()
-            return
-
+    # ── Column header status color ────────────────────────────────────────────
+    def _refresh_header_state(self, step_idx: int):
+        """Color-code the 'Del N' header: light blue = options available,
+        filled dark blue = a choice has been made, muted gray = nothing to
+        do here (not yet reached, or the chain ended) — an at-a-glance
+        progress indicator across all visible columns."""
         col = self._cols[step_idx]
-        pairs = list(zip(self._opt_keys[step_idx], self._options[step_idx]))
-        tag = col['ref_edit'].text().strip()
-
-        hdr = QLabel(f"Del {step_idx + 1}")
-        hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        hdr.setStyleSheet("font-weight:bold; color:#1F4E79; font-size:12px;"
-                          "background:#dbeafe; border-radius:3px; padding:3px;")
-        self._step_layout.addWidget(hdr)
-
-        if not pairs:
-            end_lbl = QLabel("Kedjan slutar här — inga fler steg.")
-            end_lbl.setWordWrap(True)
-            end_lbl.setStyleSheet("color:#7c2d12; font-size:11px; padding:6px;"
-                                  "background:#fff7ed; border-radius:4px;")
-            self._step_layout.addWidget(end_lbl)
+        has_sel  = col['sel'] >= 0 or bool(col['ft_edit'].text().strip())
+        has_opts = bool(self._options[step_idx])
+        if has_sel:
+            style = ("font-weight:bold; color:white; font-size:10px;"
+                     "background:#2563eb; border-radius:3px; padding:3px;")
+        elif not has_opts:
+            style = ("font-weight:bold; color:#9ca3af; font-size:10px;"
+                     "background:#f3f4f6; border-radius:3px; padding:3px;")
         else:
-            cards_w = QWidget()
-            cards_l = QVBoxLayout(cards_w)
-            cards_l.setContentsMargins(0, 0, 0, 0)
-            cards_l.setSpacing(3)
-            for i, (k, t) in enumerate(pairs):
-                card = QPushButton(f"{i+1}. {self._resolve(t, tag)}")
-                card.setStyleSheet(
-                    "QPushButton { text-align:left; padding:6px 8px;"
-                    "  border:1px solid #d1d5db; border-radius:4px;"
-                    "  background:white; font-size:10px; }"
-                    "QPushButton:hover { background:#eff6ff; border-color:#2563eb; }")
-                card.setCheckable(True)
-                card.setChecked(col['sel'] == i)
-                if col['sel'] == i:
-                    card.setStyleSheet(
-                        "QPushButton { text-align:left; padding:6px 8px;"
-                        "  border:1px solid #2563eb; border-radius:4px;"
-                        "  background:#dbeafe; color:#1e3a8a; font-weight:bold;"
-                        "  font-size:10px; }")
-                card.clicked.connect(partial(self._card_clicked, step_idx, i))
-                cards_l.addWidget(card)
-            self._step_layout.addWidget(cards_w)
+            style = ("font-weight:bold; color:#1F4E79; font-size:10px;"
+                     "background:#dbeafe; border-radius:3px; padding:3px;")
+        col['hdr'].setStyleSheet(style)
 
-        # Free-text fallback
-        ft_edit = QLineEdit()
-        ft_edit.setPlaceholderText("Fritext (eget alternativ)")
-        ft_edit.setText(col['ft_text'])
-        ft_edit.returnPressed.connect(partial(self._freetext_advance, step_idx))
-        self._step_layout.addWidget(ft_edit)
-        self._ft_edit = ft_edit
-
-        nxt_btn = QPushButton("Nästa ▶")
-        nxt_btn.clicked.connect(partial(self._freetext_advance, step_idx))
-        self._step_layout.addWidget(nxt_btn)
-
-        # Ref-tag + object-type row for the current step
-        ref_lbl = QLabel("Ref-tag:")
-        ref_lbl.setStyleSheet("color:#666; font-size:10px;")
-        self._step_layout.addWidget(ref_lbl)
-        ref_row = QHBoxLayout()
-        ref_row.setContentsMargins(0, 0, 0, 0)
-        ref_row.setSpacing(2)
-        ref_edit = col['ref_edit']
-        ref_row.addWidget(ref_edit)
-        pin_btn = QPushButton("📍")
-        pin_btn.setMaximumWidth(28)
-        pin_btn.setMaximumHeight(24)
-        pin_btn.setToolTip("Klicka på P&ID för att välja referensobjekt")
-        pin_btn.setStyleSheet(
-            "QPushButton { border:1px solid #dc2626; border-radius:3px;"
-            "  background:#fee2e2; color:#dc2626; font-size:11px; }"
-            "QPushButton:hover { background:#fca5a5; }")
-        pin_btn.clicked.connect(partial(self._request_pick_for_col, step_idx))
-        ref_row.addWidget(pin_btn)
-        self._step_layout.addLayout(ref_row)
-
-        # Disconnect any previous connections isn't needed since ref_edit/obj_combo
-        # persist per step (created once in __init__) — reconnect signals is safe
-        # because Qt allows the same slot connected multiple times; to avoid stacking
-        # duplicate connections across re-renders we use a guarded connect.
-        self._connect_once(ref_edit, 'textChanged', partial(self._on_ref_tag_changed, step_idx))
-
-        obj_lbl = QLabel("Objekttyp:")
-        obj_lbl.setStyleSheet("color:#666; font-size:10px;")
-        self._step_layout.addWidget(obj_lbl)
-        obj_combo = col['obj_combo']
-        self._step_layout.addWidget(obj_combo)
-        self._connect_once(obj_combo, 'currentTextChanged', partial(self._on_obj_combo_changed, step_idx))
-
-        self._step_layout.addStretch()
-        self._update_preview()
-
-    @staticmethod
-    def _connect_once(widget, signal_name: str, slot):
-        """Connect slot to widget's signal, disconnecting any prior connection
-        made via this helper first (avoids duplicate-connection stacking when
-        the same persistent widget is re-parented into the step panel on
-        every _render_step() call)."""
-        signal = getattr(widget, signal_name)
-        attr = f'_connected_{signal_name}'
-        prev = getattr(widget, attr, None)
-        if prev is not None:
-            try:
-                signal.disconnect(prev)
-            except (TypeError, RuntimeError):
-                pass
-        signal.connect(slot)
-        setattr(widget, attr, slot)
-
-    def _on_ref_tag_changed(self, step_idx: int, tag: str):
-        self._autofill_obj_combo(self._cols[step_idx]['obj_combo'], tag)
-        if step_idx == self._current_step:
-            self._rerender_cards_only(step_idx)
-        self._update_preview()
-
-    def _rerender_cards_only(self, step_idx: int):
-        """Re-render the current step to reflect a ref-tag change (updates
-        card label text via _resolve without discarding the selection)."""
-        if step_idx != self._current_step:
-            return
-        # Simplest safe approach given the single-panel design: re-render the
-        # whole step. Selection ('sel') and free-text state are preserved in
-        # self._cols, so nothing is lost.
-        self._render_step(step_idx)
-
-    def _on_obj_combo_changed(self, step_idx: int, txt: str):
-        self._on_obj_type_changed(step_idx, txt)
-        self._update_preview()
-
-    def _card_clicked(self, step_idx: int, opt_idx: int):
-        col = self._cols[step_idx]
-        if col['sel'] == opt_idx:
+    # ── Selection logic ───────────────────────────────────────────────────────
+    def _list_clicked(self, step_idx: int, listwidget):
+        row = listwidget.currentRow()
+        old = self._cols[step_idx]['sel']
+        if old == row:
             # Second click deselects
-            col['sel'] = -1
-            self._render_step(step_idx)
-            self._cascade_from(step_idx)
-            self._update_preview()
-            return
-        col['sel'] = opt_idx
-        col['ft_text'] = ''   # a card selection overrides any free text
+            listwidget.clearSelection()
+            listwidget.setCurrentRow(-1)
+            self._cols[step_idx]['sel'] = -1
+        else:
+            self._cols[step_idx]['sel'] = row
+        # Dependent columns: repopulate Del(n+1) from the new selection
         self._cascade_from(step_idx)
-        self._advance_to_next(step_idx)
-
-    def _freetext_advance(self, step_idx: int):
-        col = self._cols[step_idx]
-        text = self._ft_edit.text().strip() if hasattr(self, '_ft_edit') else ''
-        col['ft_text'] = text
-        if text:
-            col['sel'] = -1
-        self._cascade_from(step_idx)
-        self._advance_to_next(step_idx)
-
-    def _advance_to_next(self, step_idx: int):
-        # _render_step() itself handles both "all 5 parts done" (nxt >=
-        # _N_STEPS) and "terminal node, no options" (self._options[nxt] ==
-        # []) by showing the appropriate end-of-chain state, so simply
-        # advancing to nxt is always correct here.
-        self._render_step(step_idx + 1)
-
-    def _go_back(self):
-        if self._current_step > 0:
-            self._render_step(self._current_step - 1)
-
-    # ── Breadcrumb ───────────────────────────────────────────────────────────
-    def _update_breadcrumb(self):
-        parts = []
-        for i in range(_N_STEPS):
-            label = f"Del {i+1}"
-            text = self._selected_text(i)
-            is_current = (i == self._current_step)
-            if text:
-                shown = text if len(text) <= 24 else text[:21] + '…'
-                inner = f"{label}: {shown}"
-            else:
-                inner = label
-            if is_current:
-                parts.append(f"<b><u>{inner}</u></b>")
-            elif i < self._current_step or text:
-                # Earlier / already-visited steps are clickable to jump back
-                parts.append(f'<a href="{i}" style="color:#1d4ed8; '
-                             f'text-decoration:none;">{inner}</a>')
-            else:
-                parts.append(f'<span style="color:#999;">{inner}</span>')
-        self._breadcrumb.setText(' → '.join(parts))
-
-    def _on_breadcrumb_clicked(self, href: str):
-        try:
-            idx = int(href)
-        except ValueError:
-            return
-        if idx <= self._current_step and 0 <= idx < _N_STEPS:
-            self._render_step(idx)
+        self._refresh_header_state(step_idx)
+        self._update_preview()
 
     # ── Preview ───────────────────────────────────────────────────────────────
     def _selected_text(self, step_idx: int) -> str:
         col = self._cols[step_idx]
         tag = col['ref_edit'].text().strip()
-        ft  = col['ft_text'].strip()
+        ft  = col['ft_edit'].text().strip()
         if ft:
             return self._resolve(ft, tag)
-        sel = col['sel']
+        sel = col['list'].currentRow()
         opts = self._options[step_idx]
         if 0 <= sel < len(opts):
             t = opts[sel]
@@ -9650,6 +9591,15 @@ class ConsequenceStepPickerDialog(QDialog):
             stripped = stripped[0].upper() + stripped[1:]
         return stripped
 
+    def _refresh_list_labels(self, step_idx: int, tag: str):
+        """Update list item display text when ref-tag changes for this column."""
+        lst  = self._cols[step_idx]['list']
+        opts = self._options[step_idx]
+        for i, opt in enumerate(opts):
+            item = lst.item(i)
+            if item is not None:
+                item.setText(f"{i+1}. {self._resolve(opt, tag)}")
+
     # ── Pin button: pick ref-tag from P&ID ────────────────────────────────────
     def _request_pick_for_col(self, col_idx: int):
         """Hide dialog, enter MODE_PICK_REF_TAG; MainWindow refills col on pick."""
@@ -9662,6 +9612,21 @@ class ConsequenceStepPickerDialog(QDialog):
                 p.pid_panel._set_mode(MODE_PICK_REF_TAG)
                 break
             p = p.parent() if hasattr(p, 'parent') else None
+
+    # ── Tab navigation event filter ───────────────────────────────────────────
+    def eventFilter(self, obj, event):
+        from PyQt6.QtCore import QEvent
+        if (event.type() == QEvent.Type.KeyPress and
+                event.key() == Qt.Key.Key_Tab):
+            try:
+                idx = self._field_order.index(obj)
+                nxt = self._field_order[(idx + 1) % len(self._field_order)]
+                nxt.setFocus()
+                nxt.selectAll()
+                return True
+            except ValueError:
+                pass
+        return super().eventFilter(obj, event)
 
     # ── Save helpers ──────────────────────────────────────────────────────────
     def _save_and_add_more(self):
