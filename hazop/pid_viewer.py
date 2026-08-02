@@ -5164,7 +5164,9 @@ class PIDGraphicsView(QGraphicsView):
     def _start_inline_label_edit(self, mu_id):
         """Show a floating QLineEdit over the text item for in-place label editing."""
         txt_item = None
-        for gi in self._markup_items.get(mu_id, []):
+        items_dict = (self._red_markup_items if mu_id in self._red_markup_items
+                      else self._markup_items)
+        for gi in items_dict.get(mu_id, []):
             if isinstance(gi, QGraphicsSimpleTextItem):
                 txt_item = gi
                 break
@@ -5331,7 +5333,9 @@ class PIDGraphicsView(QGraphicsView):
         """Zoom and pan the view to fit all given markup items."""
         combined = QRectF()
         for mu_id in mu_ids:
-            for gi in self._markup_items.get(mu_id, []):
+            items_dict = (self._red_markup_items if mu_id in self._red_markup_items
+                          else self._markup_items)
+            for gi in items_dict.get(mu_id, []):
                 br = gi.mapToScene(gi.boundingRect()).boundingRect()
                 if combined.isNull():
                     combined = br
@@ -5360,16 +5364,32 @@ class PIDGraphicsView(QGraphicsView):
         """Briefly pulse-highlight a markup item (thicken its border)."""
         if self._markup_highlighted == mu_id:
             return
-        # Reset previous
-        if self._markup_highlighted in self._markup_items:
-            for gi in self._markup_items[self._markup_highlighted]:
-                if isinstance(gi, (QGraphicsPathItem, QGraphicsRectItem)):
-                    p = gi.pen(); p.setWidthF(max(1, p.widthF() - 2)); gi.setPen(p)
+        # Reset previous highlight - check BOTH dicts
+        if self._markup_highlighted:
+            prev_dict = None
+            if self._markup_highlighted in self._red_markup_items:
+                prev_dict = self._red_markup_items
+            elif self._markup_highlighted in self._markup_items:
+                prev_dict = self._markup_items
+            if prev_dict:
+                for gi in prev_dict[self._markup_highlighted]:
+                    if isinstance(gi, (QGraphicsPathItem, QGraphicsRectItem)):
+                        p = gi.pen()
+                        p.setWidthF(max(1, p.widthF() - 2))
+                        gi.setPen(p)
         self._markup_highlighted = mu_id
-        if mu_id in self._markup_items:
-            for gi in self._markup_items[mu_id]:
+        # Highlight current - check BOTH dicts
+        curr_dict = None
+        if mu_id in self._red_markup_items:
+            curr_dict = self._red_markup_items
+        elif mu_id in self._markup_items:
+            curr_dict = self._markup_items
+        if curr_dict and mu_id in curr_dict:
+            for gi in curr_dict[mu_id]:
                 if isinstance(gi, (QGraphicsPathItem, QGraphicsRectItem)):
-                    p = gi.pen(); p.setWidthF(p.widthF() + 2); gi.setPen(p)
+                    p = gi.pen()
+                    p.setWidthF(p.widthF() + 2)
+                    gi.setPen(p)
 
     def _add_tracked(self, item, marker_type: str):
         """Add item to scene and track it for visibility toggling."""
@@ -6210,7 +6230,9 @@ class PIDGraphicsView(QGraphicsView):
                 mu_id = gi.data(self._DATA_MARKUP_ID)
                 if mu_id is not None:
                     mu_id_int = int(mu_id)
-                    if self._markup_types.get(mu_id_int) in ('text', 'comment'):
+                    mtype = self._markup_types.get(mu_id_int,
+                                self._red_markup_types.get(mu_id_int))
+                    if mtype in ('text', 'comment'):
                         self._start_inline_label_edit(mu_id_int)
                         event.accept()
                         return

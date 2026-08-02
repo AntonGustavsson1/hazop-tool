@@ -13539,6 +13539,10 @@ class PIDAnalysisPanel(QWidget):
 
             self._tbl.setRowHeight(r, 28)
 
+        try:
+            self._tbl.cellChanged.disconnect(self._on_cell_changed)
+        except TypeError:
+            pass   # wasn't connected yet (first call)
         self._tbl.cellChanged.connect(self._on_cell_changed)
         self._tbl.blockSignals(False)
         self._loading = False
@@ -14033,6 +14037,10 @@ class StandardCausesSettingsPanel(QWidget):
                 self._desc_list.addItem(item)
         finally:
             self._desc_list.blockSignals(False)
+            try:
+                self._desc_list.itemChanged.disconnect(self._on_desc_changed)
+            except TypeError:
+                pass   # wasn't connected yet (first call)
             self._desc_list.itemChanged.connect(self._on_desc_changed)
 
     # ── Slot chains ───────────────────────────────────────────────────────────
@@ -14306,6 +14314,10 @@ class StandardObjectsSettingsPanel(QWidget):
             item.setData(Qt.ItemDataRole.UserRole, obj['id'])
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
             self._list.addItem(item)
+        try:
+            self._list.itemChanged.disconnect(self._on_changed)
+        except TypeError:
+            pass   # wasn't connected yet (first call)
         self._list.itemChanged.connect(self._on_changed)
         self._loading = False
         if cur >= 0:
@@ -18235,7 +18247,11 @@ class MainWindow(QMainWindow):
                 "Välj en nod i trädet innan du godkänner den.")
             return
         node = self.db.get_node(node_id)
-        status = node['study_status'] if node and 'study_status' in node.keys() else 'draft'
+        if not node:
+            QMessageBox.information(self, "Nod saknas",
+                "Noden finns inte längre (kan ha tagits bort).")
+            return
+        status = node['study_status'] if 'study_status' in node.keys() else 'draft'
         statuses = ['draft', 'under_review', 'approved']
         labels   = ['Utkast', 'Under granskning', 'Godkänd']
         choice, ok = QInputDialog.getItem(
@@ -18437,9 +18453,11 @@ class MainWindow(QMainWindow):
         tmp_db = Path(tmp_path)
         try:
             bk_conn = _sql.connect(str(tmp_db))
-            with bk_conn:
-                self.db.conn.backup(bk_conn)
-            bk_conn.close()
+            try:
+                with bk_conn:
+                    self.db.conn.backup(bk_conn)
+            finally:
+                bk_conn.close()
 
             # Collect PDF path from pid_config
             pdf_src = None
@@ -18463,7 +18481,10 @@ class MainWindow(QMainWindow):
                     zf.write(pdf_src, f"pid/{pdf_src.name}")
                 zf.writestr("meta.json", json.dumps(meta, ensure_ascii=False, indent=2))
         finally:
-            tmp_db.unlink(missing_ok=True)   # always clean up even on exception
+            try:
+                tmp_db.unlink(missing_ok=True)   # always clean up even on exception
+            except Exception:
+                pass   # don't let cleanup failure mask the real error
 
         self.status_bar.showMessage(f"Sparat: {path}", 5000)
         self._hzp_path = path
