@@ -788,6 +788,246 @@ class GuiSmokeTests(unittest.TestCase):
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# 3b. Marker-click native crash regression (bug #6):
+#     _on_marker_navigate() double-fired _on_selected()/_rebuild() per click,
+#     and a focused _LopaWidget QLineEdit's focus-out during table teardown
+#     re-entered _update_lopa_risk() while blockSignals() was flipped back to
+#     False mid-_rebuild() (blockSignals is a flat bool, not a nesting
+#     counter) — together these caused a native (non-Python) crash when
+#     clicking a cause marker on the P&ID viewer.
+# ══════════════════════════════════════════════════════════════════════════
+
+class MarkerNavigateCrashTests(unittest.TestCase):
+    """Reproduces the exact double-fire + reentrancy scenario that caused a
+    native crash on marker click, and verifies both fixes:
+
+      1. TreePanel.refresh(..., emit_selection=False) no longer cascades
+         setCurrentItem() -> currentItemChanged -> _on_select ->
+         item_selected -> MainWindow._on_selected, so _on_marker_navigate()
+         drives _on_selected() (and therefore scenario_panel._rebuild()) only
+         once per marker click instead of twice.
+      2. ScenarioTablePanel._update_lopa_risk() no-ops while `_rebuilding` is
+         True, so a _LopaWidget cell editor's focus-out signal firing
+         reentrantly mid-teardown cannot flip _table.blockSignals() back to
+         False out from under the outer _rebuild().
+
+    NOTE: scenario_panel.load_deviation()/load_cause()/load_consequence()
+    ultimately call QTableWidget.resizeRowsToContents(), which is documented
+    elsewhere in this suite (see test_select_safeguard_in_tree_no_crash) as
+    reproducibly hitting a native access violation under this machine's
+    headless Qt platform plugin — an unrelated environment fragility. Tests
+    here that need to count *how many times* the load_* methods are invoked
+    (rather than let them run for real) wrap them with a counting spy that
+    still calls through only where safe, or stub them out entirely, exactly
+    following that existing pattern.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def _make_full_chain(self, db):
+        node_id = db.add_node()
+        deviation_id = db.deviations(node_id)[0]['id']
+        cause_id = db.add_cause(deviation_id)
+        cons_id = db.add_consequence(cause_id)
+        sg_id = db.add_safeguard(cons_id)
+        return {
+            'node_id': node_id, 'deviation_id': deviation_id,
+            'cause_id': cause_id, 'cons_id': cons_id, 'sg_id': sg_id,
+        }
+
+    # ── Bug 1: double-fire fix ────────────────────────────────────────────
+
+    def test_marker_navigate_calls_on_selected_exactly_once(self):
+        """_on_marker_navigate() must drive MainWindow._on_selected() exactly
+        once per marker click. Before the fix, TreePanel.refresh()'s internal
+        setCurrentItem() call (issued after blockSignals(False)) fired the
+        tree's currentItemChanged -> _on_select -> item_selected signal chain
+        for real, invoking _on_selected() once, and then
+        _on_marker_navigate()'s own explicit call invoked it a second time —
+        two full scenario_panel loads/rebuilds per single click.
+        """
+        with _TempDbMainWindow() as win:
+            # Stub the heavy scenario_panel loaders (see class docstring / the
+            # existing test_select_safeguard_in_tree_no_crash precedent) so
+            # this test isolates the *call count*, not table-rendering
+            # behaviour that is independently fragile under offscreen Qt.
+            win.scenario_panel.load_deviation = unittest.mock.Mock()
+            win.scenario_panel.load_consequence = unittest.mock.Mock()
+            win.scenario_panel.load_cause = unittest.mock.Mock()
+            win.scenario_panel.load_node = unittest.mock.Mock()
+
+            ids = self._make_full_chain(win.db)
+
+            # tree_panel.item_selected was connected to the *bound method*
+            # win._on_selected back in MainWindow.__init__, so merely
+            # reassigning win._on_selected afterwards would not intercept
+            # calls arriving via that pre-existing Qt connection (only the
+            # explicit call at the end of _on_marker_navigate would be seen).
+            # Disconnect and reconnect to the spy so both the signal-cascade
+            # path and the explicit call are counted, exactly reproducing
+            # what a real marker click drives.
+            on_selected_spy = unittest.mock.Mock(wraps=win._on_selected)
+            win.tree_panel.item_selected.disconnect(win._on_selected)
+            win.tree_panel.item_selected.connect(on_selected_spy)
+            win._on_selected = on_selected_spy
+
+            win._on_marker_navigate('cause', ids['cause_id'])
+
+            self.assertEqual(
+                on_selected_spy.call_count, 1,
+                "_on_marker_navigate() must call _on_selected() exactly once "
+                "per marker click (it used to fire twice: once via "
+                "TreePanel.refresh()'s setCurrentItem() cascade, once via "
+                "the explicit call)")
+            on_selected_spy.assert_called_once_with(CAUSE_T, ids['cause_id'])
+
+    def test_tree_panel_refresh_emit_selection_false_suppresses_cascade(self):
+        """Directly verify TreePanel.refresh(..., emit_selection=False) does
+        not cascade into item_selected, while the default (emit_selection=
+        True, used by every other caller) still does — proving the fix does
+        not change behaviour for existing call sites.
+        """
+        db_tmpdir = tempfile.mkdtemp(prefix="hazop_marker_test_")
+        try:
+            db = Database(path=os.path.join(db_tmpdir, "test_project.db"))
+            tree = TreePanel(db)
+            try:
+                ids = self._make_full_chain(db)
+
+                item_selected_spy = unittest.mock.Mock()
+                tree.item_selected.connect(item_selected_spy)
+
+                # emit_selection=False: no cascade.
+                tree.refresh(CAUSE_T, ids['cause_id'], emit_selection=False)
+                self.assertEqual(
+                    item_selected_spy.call_count, 0,
+                    "refresh(emit_selection=False) must not emit item_selected")
+                self.assertIsNotNone(tree.tree.currentItem(),
+                                      "the visual highlight must still be set")
+
+                # Default behaviour (emit_selection=True) must still cascade,
+                # so other existing callers of tree_panel.refresh(type_, id_)
+                # keep working exactly as before.
+                tree.refresh(CONS_T, ids['cons_id'])
+                self.assertEqual(
+                    item_selected_spy.call_count, 1,
+                    "refresh() with default emit_selection=True must still "
+                    "emit item_selected, unchanged for pre-existing callers")
+            finally:
+                tree.deleteLater()
+        finally:
+            shutil.rmtree(db_tmpdir, ignore_errors=True)
+
+    # ── Bug 2: _LopaWidget focus-out reentrancy guard ─────────────────────
+
+    def test_update_lopa_risk_noop_while_rebuilding(self):
+        """The core of the fix: _update_lopa_risk() must return immediately
+        (without touching _table) if called while ScenarioTablePanel._rebuilding
+        is True — simulating a _LopaWidget cell editor's focus-out firing
+        editingFinished -> _save -> changed.emit() reentrantly mid-teardown,
+        which used to reach _update_lopa_risk()'s own
+        `finally: self._table.blockSignals(False)` and prematurely unblock
+        signals on the *outer* _rebuild()'s table while _build_rows() was
+        still constructing new cell widgets.
+        """
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            ids = self._make_full_chain(win.db)
+
+            # Give the consequence some LOPA data so _update_lopa_risk() has
+            # real work to do if it were allowed to run.
+            win.db.update_consequence_factors(ids['cons_id'], True, 10, False, 10)
+
+            panel._rebuilding = True
+            try:
+                block_signals_spy = unittest.mock.Mock(
+                    wraps=panel._table.blockSignals)
+                panel._table.blockSignals = block_signals_spy
+                try:
+                    panel._update_lopa_risk(ids['cons_id'])
+                finally:
+                    panel._table.blockSignals = block_signals_spy._mock_wraps
+            finally:
+                panel._rebuilding = False
+
+            block_signals_spy.assert_not_called()
+
+    def test_lopa_widget_editing_finished_during_rebuild_does_not_reenter(self):
+        """End-to-end version of the reentrancy scenario: build a real
+        _LopaWidget bound to a live cons_id, simulate _rebuild() being
+        mid-teardown (`_rebuilding = True`), then fire the widget's `changed`
+        signal (as its QLineEdit's editingFinished -> _save would during a
+        focus-out) and confirm it reaches _update_lopa_risk() but the guard
+        makes it a no-op rather than touching the table's signal-blocking
+        state.
+        """
+        from hazop import _LopaWidget
+
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            ids = self._make_full_chain(win.db)
+            win.db.update_consequence_factors(ids['cons_id'], True, 10, False, 10)
+
+            lopa = _LopaWidget(win.db, ids['cons_id'],
+                                True, 10.0, False, 10.0, 0)
+            lopa.changed.connect(panel._update_lopa_risk)
+            try:
+                # Give the FA edit field focus, as the real bug scenario
+                # requires (a focused QLineEdit inside a cell widget being
+                # destroyed by setRowCount(0) mid-rebuild).
+                lopa._fa_edit.setFocus()
+
+                panel._rebuilding = True
+                try:
+                    update_spy = unittest.mock.Mock(wraps=panel._update_lopa_risk)
+                    panel._update_lopa_risk = update_spy
+                    lopa.changed.connect(update_spy)
+
+                    # Simulate the focus-out -> editingFinished -> _save ->
+                    # changed.emit() chain directly (this is exactly what
+                    # QLineEdit does internally on focus-out).
+                    lopa._fa_edit.editingFinished.emit()
+
+                    self.assertTrue(
+                        update_spy.called,
+                        "the widget's changed signal should still reach "
+                        "_update_lopa_risk (that part of the wiring is "
+                        "unchanged) — the guard inside it is what must stop "
+                        "the reentrant work, not the signal connection")
+                finally:
+                    panel._rebuilding = False
+            finally:
+                lopa.deleteLater()
+
+    def test_rebuild_clears_focus_before_teardown(self):
+        """Belt-and-suspenders fix: _rebuild() must clear focus from any
+        active cell editor before calling setRowCount(0), so the focus-out
+        signal cascade described above never fires in the first place, even
+        before the _rebuilding guard in _update_lopa_risk() would catch it.
+        """
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            ids = self._make_full_chain(win.db)
+            win.db.update_consequence_factors(ids['cons_id'], True, 10, False, 10)
+
+            # Stub the heavy loaders so _rebuild() (invoked transitively via
+            # load_cause below) stays inside the safe/tested code path,
+            # consistent with the rest of this suite's approach to the
+            # documented resizeRowsToContents native-crash fragility.
+            win.scenario_panel.load_deviation = unittest.mock.Mock()
+            win.scenario_panel.load_consequence = unittest.mock.Mock()
+
+            fake_editor = unittest.mock.Mock()
+            panel._table.focusWidget = unittest.mock.Mock(return_value=fake_editor)
+
+            panel._rebuild()
+
+            fake_editor.clearFocus.assert_called_once()
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # 4. ConnectorAnalyzer thread-hang regression (bug #5)
 # ══════════════════════════════════════════════════════════════════════════
 

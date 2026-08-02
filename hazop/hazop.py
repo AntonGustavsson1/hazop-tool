@@ -7044,7 +7044,7 @@ class TreePanel(QWidget):
 
         layout.addLayout(compact_row)
 
-    def refresh(self, select_type=None, select_id=None):
+    def refresh(self, select_type=None, select_id=None, emit_selection=True):
         expanded = set()
         it = QTreeWidgetItemIterator(self.tree)
         while it.value():
@@ -7127,9 +7127,19 @@ class TreePanel(QWidget):
                                 sgitem.setData(0, Qt.ItemDataRole.UserRole + 1, SG_T)
                                 kitem.addChild(sgitem)
                                 if select_type == SG_T and select_id == sg['id']: target = sgitem
+
+            if target and not emit_selection:
+                # Update the tree's visual highlight while signals are still
+                # blocked, so setCurrentItem does NOT cascade into
+                # currentItemChanged -> _on_select -> item_selected -> _on_selected.
+                # Callers that pass emit_selection=False (e.g. _on_marker_navigate)
+                # already trigger the selection-handling logic explicitly afterward,
+                # so we must not let the tree fire it a second time here.
+                self.tree.setCurrentItem(target)
+                self.tree.scrollToItem(target)
         finally:
             self.tree.blockSignals(False)
-            if target:
+            if target and emit_selection:
                 self.tree.setCurrentItem(target)
                 self.tree.scrollToItem(target)
 
@@ -11057,6 +11067,16 @@ class ScenarioTablePanel(QWidget):
             self._table.blockSignals(True)
             try:
                 self._table.clearSpans()
+                # Proactively clear focus from any active cell editor (e.g. a
+                # _LopaWidget QLineEdit) before tearing down rows. Destroying a
+                # focused widget forces a synchronous focus-out, which would
+                # fire editingFinished -> _save -> changed.emit -> _update_lopa_risk
+                # reentrantly mid-teardown. The _rebuilding guard in
+                # _update_lopa_risk covers this too, but avoiding the signal
+                # firing at all is a cleaner first line of defense.
+                focused = self._table.focusWidget()
+                if focused is not None:
+                    focused.clearFocus()
                 logging.info('_rebuild: D — setRowCount(0)')
                 self._table.setRowCount(0)
                 logging.info('_rebuild: E — reset meta')
@@ -11682,6 +11702,10 @@ class ScenarioTablePanel(QWidget):
         Avoids a full _rebuild() — only recalculates risk values for the
         rows belonging to *cons_id* and patches those cells in-place.
         """
+        if getattr(self, '_rebuilding', False):
+            return  # Table is mid-teardown/rebuild; a cell widget's focus-out signal
+                     # fired reentrantly — ignore it, _rebuild() will reflect current
+                     # state correctly once it completes.
         cons_d = self.db.get_consequence(cons_id)
         if not cons_d:
             return
@@ -17490,7 +17514,11 @@ class MainWindow(QMainWindow):
         t = type_map.get(item_type)
         if t is None:
             return
-        self.tree_panel.refresh(t, item_id)
+        # emit_selection=False: avoid double-firing _on_selected (and its
+        # downstream scenario_panel._rebuild()) — setCurrentItem's cascade via
+        # currentItemChanged is suppressed here since we call _on_selected
+        # explicitly right below.
+        self.tree_panel.refresh(t, item_id, emit_selection=False)
         self._on_selected(t, item_id)
 
     def _on_safeguard_created(self, _sg_id):
