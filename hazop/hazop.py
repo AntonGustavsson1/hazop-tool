@@ -126,7 +126,9 @@ class CrashReporter:
     def setup(cls):
         """Install crash handler for uncaught exceptions."""
         cls.CRASH_DIR.mkdir(exist_ok=True)
-        # Don't override sys.excepthook here; let the main block do it
+        # sys.excepthook itself is installed at module load time as
+        # _global_exception_hook (defined right after this class) -- not
+        # here, since this method only runs once __main__ calls it.
         logging.info(f"Crash reporting initialized: {cls.CRASH_DIR}")
 
     @classmethod
