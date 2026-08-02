@@ -2872,86 +2872,98 @@ class ConnectorAnalyzer(QThread):
         self._deadline = time.time() + 45.0   # longer for OCR-heavy sets
         all_connectors = []
         page_sheet_nums = {}  # pn → sheet number string (best guess)
+        doc = None
 
         try:
-            doc = fitz.open(self._pdf_path)
+            try:
+                doc = fitz.open(self._pdf_path)
+            except Exception as e:
+                self.progress.emit(f"Kunde inte öppna PDF: {e}")
+                self.finished_analysis.emit([], [], {}, {})
+                return
+
+            # ── Auto-detect dialect from first 5 pages ────────────────────────────
+            sample_texts = []
+            for pn in range(min(5, doc.page_count)):
+                sample_texts.append(doc.load_page(pn).get_text("text"))
+            self._dialect = _detect_dialect(sample_texts)
+            dialect_conf  = _DIALECTS[self._dialect]
+            self.progress.emit(f"Dialekt: {dialect_conf['name']}")
+
+            for pn in range(doc.page_count):
+                if time.time() > self._deadline:
+                    self.progress.emit(f"Tidsgräns — {pn}/{doc.page_count} blad klara")
+                    break
+                self.progress.emit(f"Blad {pn + 1}/{doc.page_count}…")
+                page = doc.load_page(pn)
+                pw = float(page.rect.width)
+                ph = float(page.rect.height)
+
+                # ── Extract sheet number using dialect title area ──────────────────
+                ta = dialect_conf['title_area']
+                title_rect = fitz.Rect(pw*ta[0], ph*ta[1], pw*ta[2], ph*ta[3])
+                title_text = page.get_text("text", clip=title_rect)
+                m = dialect_conf['sheet_num_re'].search(title_text)
+                if m:
+                    page_sheet_nums[pn] = m.group(1).upper().strip()
+
+                # ── Native text in edge zones ──────────────────────────────────────
+                spans = self._get_spans(page)
+                native_word_count = len(spans)
+                connectors = self._find_in_zones(spans, pn, pw, ph,
+                                                 ocr_used=False, page=page)
+
+                # ── OCR: trigger when page has few native words (scanned PDF) ──────
+                needs_ocr = (not connectors or native_word_count < 30)
+                if needs_ocr and HAS_PYMUPDF and time.time() < self._deadline - 2.0:
+                    ocr_text = self._ocr_edges(page, pw, ph)
+                    if ocr_text:
+                        ocr_spans = self._text_to_spans(ocr_text, pw, ph)
+                        ocr_conns = self._find_in_zones(ocr_spans, pn, pw, ph,
+                                                        ocr_used=True, page=page)
+                        if ocr_conns:
+                            connectors = ocr_conns
+                        # Also try to extract sheet number from OCR if not found yet
+                        if pn not in page_sheet_nums:
+                            all_ocr = ' '.join(ocr_text.values())
+                            m2 = dialect_conf['sheet_num_re'].search(all_ocr)
+                            if m2:
+                                page_sheet_nums[pn] = m2.group(1).upper().strip()
+
+                all_connectors.extend(connectors)
+
+            # ── Build sheet-number lookup: sheet_str (and variants) → pn ──
+            sheet_lookup = {}
+            for k, v in page_sheet_nums.items():
+                for variant in _sheet_ref_variants(v.upper()):
+                    sheet_lookup.setdefault(variant, k)
+
+            # ── Match connectors into connections ──
+            connections = self._match_connections(all_connectors, sheet_lookup,
+                                                  self._page_count, page_sheet_nums)
+
+            # ── Propose layout (active pages only) ──
+            layout_pages = (self._active_pages if self._active_pages is not None
+                            else list(range(self._page_count)))
+            layout = _propose_layout(connections, layout_pages,
+                                     self._page_widths_pdf, self._page_heights_pdf,
+                                     self._render_scale)
+
+            # Convert int keys to str for JSON serialisation
+            sheet_num_map_str = {str(k): v for k, v in page_sheet_nums.items()}
+            self.finished_analysis.emit(all_connectors, connections, layout, sheet_num_map_str)
         except Exception as e:
-            self.progress.emit(f"Kunde inte öppna PDF: {e}")
+            import logging
+            logging.error(f"ConnectorAnalyzer.run() failed: {e}", exc_info=True)
+            # CRITICAL: still emit finished_analysis so the UI unblocks and
+            # the modal progress dialog closes instead of hanging forever.
             self.finished_analysis.emit([], [], {}, {})
-            return
-
-        # ── Auto-detect dialect from first 5 pages ────────────────────────────
-        sample_texts = []
-        for pn in range(min(5, doc.page_count)):
-            sample_texts.append(doc.load_page(pn).get_text("text"))
-        self._dialect = _detect_dialect(sample_texts)
-        dialect_conf  = _DIALECTS[self._dialect]
-        self.progress.emit(f"Dialekt: {dialect_conf['name']}")
-
-        for pn in range(doc.page_count):
-            if time.time() > self._deadline:
-                self.progress.emit(f"Tidsgräns — {pn}/{doc.page_count} blad klara")
-                break
-            self.progress.emit(f"Blad {pn + 1}/{doc.page_count}…")
-            page = doc.load_page(pn)
-            pw = float(page.rect.width)
-            ph = float(page.rect.height)
-
-            # ── Extract sheet number using dialect title area ──────────────────
-            ta = dialect_conf['title_area']
-            title_rect = fitz.Rect(pw*ta[0], ph*ta[1], pw*ta[2], ph*ta[3])
-            title_text = page.get_text("text", clip=title_rect)
-            m = dialect_conf['sheet_num_re'].search(title_text)
-            if m:
-                page_sheet_nums[pn] = m.group(1).upper().strip()
-
-            # ── Native text in edge zones ──────────────────────────────────────
-            spans = self._get_spans(page)
-            native_word_count = len(spans)
-            connectors = self._find_in_zones(spans, pn, pw, ph,
-                                             ocr_used=False, page=page)
-
-            # ── OCR: trigger when page has few native words (scanned PDF) ──────
-            needs_ocr = (not connectors or native_word_count < 30)
-            if needs_ocr and HAS_PYMUPDF and time.time() < self._deadline - 2.0:
-                ocr_text = self._ocr_edges(page, pw, ph)
-                if ocr_text:
-                    ocr_spans = self._text_to_spans(ocr_text, pw, ph)
-                    ocr_conns = self._find_in_zones(ocr_spans, pn, pw, ph,
-                                                    ocr_used=True, page=page)
-                    if ocr_conns:
-                        connectors = ocr_conns
-                    # Also try to extract sheet number from OCR if not found yet
-                    if pn not in page_sheet_nums:
-                        all_ocr = ' '.join(ocr_text.values())
-                        m2 = dialect_conf['sheet_num_re'].search(all_ocr)
-                        if m2:
-                            page_sheet_nums[pn] = m2.group(1).upper().strip()
-
-            all_connectors.extend(connectors)
-
-        doc.close()
-
-        # ── Build sheet-number lookup: sheet_str (and variants) → pn ──
-        sheet_lookup = {}
-        for k, v in page_sheet_nums.items():
-            for variant in _sheet_ref_variants(v.upper()):
-                sheet_lookup.setdefault(variant, k)
-
-        # ── Match connectors into connections ──
-        connections = self._match_connections(all_connectors, sheet_lookup,
-                                              self._page_count, page_sheet_nums)
-
-        # ── Propose layout (active pages only) ──
-        layout_pages = (self._active_pages if self._active_pages is not None
-                        else list(range(self._page_count)))
-        layout = _propose_layout(connections, layout_pages,
-                                 self._page_widths_pdf, self._page_heights_pdf,
-                                 self._render_scale)
-
-        # Convert int keys to str for JSON serialisation
-        sheet_num_map_str = {str(k): v for k, v in page_sheet_nums.items()}
-        self.finished_analysis.emit(all_connectors, connections, layout, sheet_num_map_str)
+        finally:
+            if doc is not None:
+                try:
+                    doc.close()
+                except Exception:
+                    pass
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -8188,10 +8200,9 @@ class PIDPanel(QWidget):
             return
         if self._analyzer_thread and self._analyzer_thread.isRunning():
             return
-        # Stop and wait for old thread before starting new one
-        if hasattr(self, '_analyzer_thread') and self._analyzer_thread and self._analyzer_thread.isRunning():
-            self._analyzer_thread.quit()
-            self._analyzer_thread.wait()
+        # Note: a running analysis can never reach this point (guard above
+        # returns first), so the old thread here — if any — is guaranteed to
+        # have already finished or failed. No need to quit()/wait() on it.
         # Disconnect old thread's signal to prevent stale double-fires
         if self._analyzer_thread is not None:
             try:
