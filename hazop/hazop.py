@@ -20,6 +20,7 @@ from pid_viewer import (
     scan_pdf_for_equipment, ocr_status, KNOWN_PREFIXES, invert_cause_text,
     _RED_MARKUP_SYMBOLS, _get_red_symbol_svg,
     _equip_prefix_from_tag,
+    detect_equipment_symbols, EquipmentMarkerReviewDialog,
 )
 
 from PyQt6.QtWidgets import (
@@ -38,7 +39,7 @@ from PyQt6.QtWidgets import (
     QButtonGroup, QRadioButton,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF, QRect, QPoint, QTimer, QMimeData, QEvent
-from PyQt6.QtGui import QFont, QFontMetrics, QColor, QAction, QBrush, QPen, QPainter, QDrag, QPainterPath, QPixmap, QIcon, QPolygonF, QShortcut, QKeySequence, QCursor
+from PyQt6.QtGui import QFont, QFontMetrics, QColor, QAction, QBrush, QPen, QPainter, QDrag, QPainterPath, QPixmap, QIcon, QPolygonF, QShortcut, QKeySequence, QCursor, QPalette
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SPLASH SCREEN — STARTUP PROGRESS
@@ -67,7 +68,7 @@ class SplashScreen(QWidget):
 
         # Logo/title
         title = QLabel("HAZOP Tool")
-        title.setStyleSheet("font-size: 24px; font-weight: bold; color: #1F4E79;")
+        title.setStyleSheet("font-size: 24px; font-weight: bold; color: #17191C;")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
 
@@ -80,7 +81,7 @@ class SplashScreen(QWidget):
 
         # Spinner (simple rotating dots)
         spinner = QLabel("●  ○  ○")
-        spinner.setStyleSheet("font-size: 16px; color: #0078D4; letter-spacing: 8px;")
+        spinner.setStyleSheet("font-size: 16px; color: #17191C; letter-spacing: 8px;")
         spinner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.spinner = spinner
         layout.addWidget(spinner)
@@ -336,206 +337,185 @@ sys.excepthook = _global_exception_hook
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _get_windows11_stylesheet():
-    """Return a complete Windows 11 light theme stylesheet."""
+    """Near-monochrome theme with one signal accent, matching the design mockup."""
     return """
-    /* Global font and defaults */
     * {
         font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
         font-size: 9pt;
     }
 
     QMainWindow, QDialog, QWidget {
-        background-color: #FFFFFF;
-        color: #1F1F1F;
+        background-color: #FBFBFA;
+        color: #17191C;
     }
 
-    /* Buttons */
     QPushButton {
-        background-color: #E8E8E8;
-        color: #1F1F1F;
-        border: 1px solid #D0D0D0;
-        border-radius: 6px;
+        background-color: #FFFFFF;
+        color: #17191C;
+        border: 1px solid #E2E3E1;
+        border-radius: 4px;
         padding: 4px 10px;
         font-weight: 500;
     }
     QPushButton:hover {
-        background-color: #E0E0E0;
-        border-color: #B0B0B0;
+        background-color: #F5F5F3;
+        border-color: #CFD1CE;
     }
     QPushButton:pressed {
-        background-color: #D0D0D0;
-        border-color: #A0A0A0;
+        background-color: #E8E9E6;
     }
     QPushButton:checked {
-        background-color: #0078D4;
+        background-color: #17191C;
         color: #FFFFFF;
-        border-color: #0078D4;
+        border-color: #17191C;
     }
     QPushButton:focus {
-        outline: 2px solid #0078D4;
+        outline: 2px solid #17191C;
         outline-offset: 2px;
     }
+    QPushButton:default {
+        border-color: #17191C;
+    }
 
-    /* Line edits and text inputs */
+    QCheckBox, QRadioButton { color: #17191C; spacing: 6px; }
+    QCheckBox::indicator, QRadioButton::indicator {
+        width: 14px; height: 14px;
+        border: 1px solid #CFD1CE;
+        background-color: #FFFFFF;
+    }
+    QCheckBox::indicator { border-radius: 3px; }
+    QRadioButton::indicator { border-radius: 7px; }
+    QCheckBox::indicator:hover, QRadioButton::indicator:hover { border-color: #17191C; }
+    QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+        background-color: #17191C;
+        border-color: #17191C;
+    }
+
+    QSpinBox, QDoubleSpinBox {
+        background-color: #FFFFFF;
+        color: #17191C;
+        border: 1px solid #CFD1CE;
+        border-radius: 4px;
+        padding: 3px 4px;
+    }
+    QSpinBox:focus, QDoubleSpinBox:focus { border: 2px solid #17191C; }
+
+    QListWidget, QListView {
+        background-color: #FFFFFF;
+        border: 1px solid #E2E3E1;
+        border-radius: 4px;
+    }
+    QListWidget::item:hover, QListView::item:hover { background-color: #F5F5F3; }
+    QListWidget::item:selected, QListView::item:selected {
+        background-color: #E6ECFA;
+        color: #17191C;
+    }
+
+    QTabWidget::pane { border: 1px solid #E2E3E1; border-radius: 4px; }
+    QTabBar::tab {
+        background-color: #F5F5F3;
+        color: #17191C;
+        padding: 5px 12px;
+        border: 1px solid #E2E3E1;
+        border-bottom: none;
+        border-top-left-radius: 4px;
+        border-top-right-radius: 4px;
+    }
+    QTabBar::tab:hover { background-color: #E8E9E6; }
+    QTabBar::tab:selected {
+        background-color: #FFFFFF;
+        border-bottom: 2px solid #17191C;
+    }
+
     QLineEdit, QTextEdit, QPlainTextEdit {
         background-color: #FFFFFF;
-        color: #1F1F1F;
-        border: 1px solid #CACACA;
+        color: #17191C;
+        border: 1px solid #CFD1CE;
         border-radius: 4px;
         padding: 4px 6px;
-        selection-background-color: #0078D4;
+        selection-background-color: #17191C;
         selection-color: #FFFFFF;
     }
     QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {
-        border: 2px solid #0078D4;
-        padding: 5px 7px;
+        border: 2px solid #17191C;
+        padding: 3px 5px;
     }
 
-    /* Combo box */
     QComboBox {
         background-color: #FFFFFF;
-        color: #1F1F1F;
-        border: 1px solid #CACACA;
+        color: #17191C;
+        border: 1px solid #CFD1CE;
         border-radius: 4px;
         padding: 4px 8px;
     }
-    QComboBox:focus {
-        border: 2px solid #0078D4;
-    }
-    QComboBox::drop-down {
-        border: none;
-        width: 20px;
-    }
-    QComboBox::down-arrow {
-        image: none;
-    }
+    QComboBox:focus { border: 2px solid #17191C; }
+    QComboBox::drop-down { border: none; width: 20px; }
+    QComboBox::down-arrow { image: none; }
 
-    /* Tables */
     QTableWidget, QTableView {
         background-color: #FFFFFF;
-        alternate-background-color: #F5F5F5;
-        gridline-color: #E8E8E8;
-        border: 1px solid #CACACA;
+        alternate-background-color: #F5F5F3;
+        gridline-color: #EEEFEC;
+        border: 1px solid #E2E3E1;
         border-radius: 4px;
     }
-    QTableWidget::item, QTableView::item {
-        padding: 4px;
-        border: none;
-    }
+    QTableWidget::item, QTableView::item { padding: 4px; border: none; }
     QTableWidget::item:selected, QTableView::item:selected {
-        background-color: #0078D4;
-        color: #FFFFFF;
+        background-color: #E6ECFA;
+        color: #17191C;
     }
     QHeaderView::section {
-        background-color: #F3F3F3;
-        color: #1F1F1F;
+        background-color: #F5F5F3;
+        color: #8D9299;
         padding: 4px;
         border: none;
-        border-bottom: 1px solid #E8E8E8;
+        border-bottom: 1px solid #E2E3E1;
+        font-weight: 600;
+        font-size: 8pt;
+        letter-spacing: 0.5px;
     }
 
-    /* Tree widget */
     QTreeWidget, QTreeView {
         background-color: #FFFFFF;
-        alternate-background-color: #F5F5F5;
-        border: 1px solid #CACACA;
+        alternate-background-color: #F5F5F3;
+        border: 1px solid #E2E3E1;
         border-radius: 4px;
     }
-    QTreeWidget::item:hover, QTreeView::item:hover {
-        background-color: #F0F0F0;
-    }
+    QTreeWidget::item:hover, QTreeView::item:hover { background-color: #F5F5F3; }
     QTreeWidget::item:selected, QTreeView::item:selected {
-        background-color: #0078D4;
-        color: #FFFFFF;
+        background-color: #E6ECFA;
+        color: #17191C;
     }
 
-    /* Frames and groups */
-    QFrame {
-        background-color: #FFFFFF;
-        border: none;
-    }
+    QFrame { background-color: #FFFFFF; border: none; }
     QGroupBox {
-        color: #1F1F1F;
-        border: 1px solid #E8E8E8;
+        color: #17191C;
+        border: 1px solid #E2E3E1;
         border-radius: 6px;
         margin-top: 8px;
         padding-top: 8px;
     }
-    QGroupBox::title {
-        subcontrol-origin: margin;
-        left: 10px;
-        padding: 0 3px;
-    }
+    QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; color: #8D9299; }
 
-    /* Scroll bars */
-    QScrollBar:vertical {
-        background-color: #F3F3F3;
-        border: none;
-        width: 12px;
-    }
-    QScrollBar::handle:vertical {
-        background-color: #CACACA;
-        border-radius: 6px;
-        margin: 2px;
-        min-height: 20px;
-    }
-    QScrollBar::handle:vertical:hover {
-        background-color: #B0B0B0;
-    }
-    QScrollBar:horizontal {
-        background-color: #F3F3F3;
-        border: none;
-        height: 12px;
-    }
-    QScrollBar::handle:horizontal {
-        background-color: #CACACA;
-        border-radius: 6px;
-        margin: 2px;
-        min-width: 20px;
-    }
-    QScrollBar::handle:horizontal:hover {
-        background-color: #B0B0B0;
-    }
-    QScrollBar::add-line, QScrollBar::sub-line {
-        border: none;
-        background: none;
-    }
+    QScrollBar:vertical { background-color: #F5F5F3; border: none; width: 12px; }
+    QScrollBar::handle:vertical { background-color: #CFD1CE; border-radius: 6px; margin: 2px; min-height: 20px; }
+    QScrollBar::handle:vertical:hover { background-color: #B3B7B2; }
+    QScrollBar:horizontal { background-color: #F5F5F3; border: none; height: 12px; }
+    QScrollBar::handle:horizontal { background-color: #CFD1CE; border-radius: 6px; margin: 2px; min-width: 20px; }
+    QScrollBar::handle:horizontal:hover { background-color: #B3B7B2; }
+    QScrollBar::add-line, QScrollBar::sub-line { border: none; background: none; }
 
-    /* Dialogs */
-    QDialog {
-        background-color: #FFFFFF;
-    }
+    QDialog { background-color: #FFFFFF; }
+    QSplitter::handle { background-color: #E2E3E1; }
+    QSplitter::handle:hover { background-color: #CFD1CE; }
 
-    /* Splitter */
-    QSplitter::handle {
-        background-color: #E8E8E8;
-    }
-    QSplitter::handle:hover {
-        background-color: #D0D0D0;
-    }
+    QMenuBar { background-color: #FFFFFF; color: #17191C; border-bottom: 1px solid #E2E3E1; }
+    QMenuBar::item:selected { background-color: #F5F5F3; }
+    QMenu { background-color: #FFFFFF; color: #17191C; border: 1px solid #CFD1CE; border-radius: 4px; }
+    QMenu::item:selected { background-color: #F5F5F3; }
 
-    /* Menu bar and menus */
-    QMenuBar {
-        background-color: #FFFFFF;
-        color: #1F1F1F;
-        border-bottom: 1px solid #E8E8E8;
-    }
-    QMenuBar::item:selected {
-        background-color: #E8E8E8;
-    }
-    QMenu {
-        background-color: #FFFFFF;
-        color: #1F1F1F;
-        border: 1px solid #CACACA;
-        border-radius: 4px;
-    }
-    QMenu::item:selected {
-        background-color: #E8E8E8;
-    }
-
-    /* Tool tips */
     QToolTip {
-        background-color: #1F1F1F;
+        background-color: #17191C;
         color: #FFFFFF;
         border: none;
         border-radius: 4px;
@@ -1951,6 +1931,16 @@ class Database:
                 pid_page INTEGER DEFAULT 0, x REAL DEFAULT 0, y REAL DEFAULT 0,
                 tag TEXT DEFAULT ''
             );
+            CREATE TABLE IF NOT EXISTS equipment_markers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                equipment_id INTEGER REFERENCES equipment_catalog(id) ON DELETE CASCADE,
+                tag TEXT DEFAULT '',
+                pid_page INTEGER DEFAULT 0, x REAL DEFAULT 0, y REAL DEFAULT 0,
+                comp_type TEXT DEFAULT '',
+                shape_outline TEXT DEFAULT '',
+                confidence REAL DEFAULT 0,
+                link_method TEXT DEFAULT ''
+            );
             CREATE TABLE IF NOT EXISTS pid_revisions (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 revision    TEXT NOT NULL DEFAULT '',
@@ -3247,6 +3237,25 @@ class Database:
             (safeguard_id,)).fetchone()
         return dict(row) if row else None
 
+    # ── Equipment markers (auto-detected symbols, "🎯 Hitta på P&ID") ──────────
+    def add_equipment_marker(self, equipment_id, tag, page, x, y, comp_type,
+                             shape_outline='', confidence=0.0, link_method=''):
+        cur = self.conn.execute(
+            "INSERT INTO equipment_markers "
+            "(equipment_id,tag,pid_page,x,y,comp_type,shape_outline,confidence,link_method) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (equipment_id, tag, page, x, y, comp_type, shape_outline, confidence, link_method))
+        self.commit()
+        return cur.lastrowid
+
+    def equipment_markers_for_page(self, page):
+        return self.conn.execute(
+            "SELECT * FROM equipment_markers WHERE pid_page=?", (page,)).fetchall()
+
+    def delete_equipment_marker(self, id_):
+        self.conn.execute("DELETE FROM equipment_markers WHERE id=?", (id_,))
+        self.commit()
+
     # ── Queries ───────────────────────────────────────────────────────────────
     def nodes(self):
         return self.conn.execute("SELECT * FROM nodes ORDER BY id").fetchall()
@@ -4268,7 +4277,7 @@ class RiskBadge(QLabel):
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setFixedSize(200, 38)
         self.setWordWrap(True)
-        f = QFont(); f.setBold(True)
+        f = QFont("Consolas", 9); f.setBold(True)
         self.setFont(f)
         self.set_empty()
 
@@ -4284,8 +4293,8 @@ class RiskBadge(QLabel):
     def set_empty(self):
         self.setText("—  (ingen frekvens)")
         self.setStyleSheet(
-            "background:#f0f0f0; color:#aaa; border-radius:5px; "
-            "padding:2px 8px; border:1px solid #ddd;")
+            "background:#F5F5F3; color:#8D9299; border-radius:4px; "
+            "padding:2px 8px; border:1px solid #E2E3E1;")
 
 
 class SafeguardEditor(QWidget):
@@ -4573,7 +4582,7 @@ class NodePanel(QWidget):
         sep2 = QLabel("Processparametrar")
         f2 = QFont(); f2.setBold(True); f2.setPointSize(9)
         sep2.setFont(f2)
-        sep2.setStyleSheet("color:#1F4E79; margin-top:2px;")
+        sep2.setStyleSheet("color:#8D9299; margin-top:2px;")
         form.addRow(sep2)
 
         self.media_edit = QLineEdit()
@@ -4693,7 +4702,7 @@ class ConsequencePanel(QWidget):
                 if col > 0:
                     row_idx += 1; col = 0
                 hdr = QLabel(group)
-                hdr.setStyleSheet("color:#1F4E79; font-weight:bold; font-size:10px; margin-top:4px;")
+                hdr.setStyleSheet("color:#8D9299; font-weight:bold; font-size:10px; margin-top:4px;")
                 grid.addWidget(hdr, row_idx, 0, 1, 3)
                 row_idx += 1; col = 0
                 last_group = group
@@ -4713,14 +4722,14 @@ class ConsequencePanel(QWidget):
         sep_lbl.setStyleSheet("color:#555; font-size:10px; margin-top:4px;")
         chain_lay.addWidget(sep_lbl)
         self._chain_preview.setStyleSheet(
-            "color:#1F4E79; font-weight:bold; font-size:11px;"
-            "background:#eef4fb; border:1px solid #bee3f8; border-radius:3px; padding:3px 6px;")
+            "color:#17191C; font-weight:bold; font-size:11px;"
+            "background:#F5F5F3; border:1px solid #E2E3E1; border-radius:3px; padding:3px 6px;")
         self._chain_preview.setWordWrap(True)
         chain_lay.addWidget(self._chain_preview)
 
         apply_btn = QPushButton("↑ Tillämpa genererad text i beskrivningsfältet")
         apply_btn.setStyleSheet(
-            "font-size:10px; padding:2px 8px; background:#1F4E79; color:white;"
+            "font-size:10px; padding:2px 8px; background:#17191C; color:white;"
             "border:none; border-radius:3px;")
         apply_btn.clicked.connect(self._apply_chain_to_desc)
         chain_lay.addWidget(apply_btn)
@@ -5313,14 +5322,14 @@ class PropertiesRibbon(QWidget):
     _BTN_SZ  = 50
     _WIDTH   = 62
     _BTN_SS  = (
-        "QPushButton{border:1px solid #D0D4DA;border-radius:5px;"
+        "QPushButton{border:1px solid #E2E3E1;border-radius:5px;"
         "background:#FFFFFF;padding:0px;font-size:15px;}"
-        "QPushButton:hover{background:#E8EEF8;border-color:#A0AABB;}"
-        "QPushButton:pressed{background:#dbeafe;}"
+        "QPushButton:hover{background:#F5F5F3;border-color:#CFD1CE;}"
+        "QPushButton:pressed{background:#E8E9E6;}"
     )
     _GRP_SS  = "font-size:8px;color:#888;margin:0px;padding:0px;"
     # Shared style for the OK button inside floating popups
-    _OK_BTN_SS = ("background:#1d4ed8;color:white;border:none;"
+    _OK_BTN_SS = ("background:#17191C;color:white;border:none;"
                   "border-radius:4px;padding:4px 16px;")
 
     def __init__(self, db, main_window=None, parent=None):
@@ -5461,7 +5470,7 @@ class PropertiesRibbon(QWidget):
         lay = QVBoxLayout(dlg)
         lay.setSpacing(6); lay.setContentsMargins(10, 10, 10, 10)
         hdr = QLabel(f"<b>{title}</b>")
-        hdr.setStyleSheet("color:#1F4E79;")
+        hdr.setStyleSheet("color:#8D9299;")
         lay.addWidget(hdr)
         if multiline:
             ed = QTextEdit(); ed.setPlainText(current)
@@ -5627,7 +5636,7 @@ class PropertiesRibbon(QWidget):
         freq_e = QLineEdit(f"{current_freq:g}" if current_freq else '')
         freq_e.setPlaceholderText("t.ex. 0.01")
         level_lbl = QLabel('')
-        level_lbl.setStyleSheet("color:#1F4E79;font-size:10px;")
+        level_lbl.setStyleSheet("color:#8D9299;font-size:10px;")
         def _upd(txt):
             try: level_lbl.setText(freq_axis_label(freq_to_f_level(float(txt))))
             except: level_lbl.setText('')
@@ -5771,10 +5780,10 @@ class NodeMarkupPanel(QWidget):
         outer.setSpacing(3)
 
         _btn_ss = (
-            "QPushButton{border:1px solid #D0D4DA;border-radius:5px;"
+            "QPushButton{border:1px solid #E2E3E1;border-radius:5px;"
             "background:#FFFFFF;padding:0px;}"
-            "QPushButton:checked{background:#1565C0;border-color:#1565C0;}"
-            "QPushButton:hover:!checked{background:#E8EEF8;border-color:#A0AABB;}")
+            "QPushButton:checked{background:#17191C;border-color:#17191C;}"
+            "QPushButton:hover:!checked{background:#F5F5F3;border-color:#CFD1CE;}")
 
         # ── Navigation row ────────────────────────────────────────────────────
         nav_lay = QHBoxLayout()
@@ -6086,8 +6095,8 @@ class MarkupTablePanel(QWidget):
         self._table.customContextMenuRequested.connect(self._on_ctx_menu)
         self._table.cellClicked.connect(self._on_cell_clicked)
         self._table.setStyleSheet(
-            "QTableWidget{border:1px solid #ddd;font-size:10px;}"
-            "QTableWidget::item:selected{background:#E3F2FD;color:#1565C0;}")
+            "QTableWidget{border:1px solid #E2E3E1;font-size:10px;}"
+            "QTableWidget::item:selected{background:#E6ECFA;color:#17191C;}")
 
         hh = self._table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -6264,11 +6273,11 @@ class _SymbolSelectorPopup(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setStyleSheet(
-            "QFrame{background:#FFFFFF;border:1px solid #AAAAAA;border-radius:6px;}"
-            "QPushButton{border:1px solid #DDD;border-radius:4px;background:#FAFAFA;"
+            "QFrame{background:#FFFFFF;border:1px solid #CFD1CE;border-radius:6px;}"
+            "QPushButton{border:1px solid #E2E3E1;border-radius:4px;background:#FAFAFA;"
             "padding:2px;}"
-            "QPushButton:hover{background:#E8F0FE;border-color:#1565C0;}"
-            "QPushButton:checked{background:#1565C0;border-color:#1565C0;}")
+            "QPushButton:hover{background:#F5F5F3;border-color:#CFD1CE;}"
+            "QPushButton:checked{background:#17191C;border-color:#17191C;}")
         outer = QVBoxLayout(self)
         outer.setContentsMargins(8, 8, 8, 8)
         outer.setSpacing(4)
@@ -6281,7 +6290,7 @@ class _SymbolSelectorPopup(QFrame):
         tabs = QTabWidget()
         tabs.setStyleSheet(
             "QTabBar::tab{padding:4px 10px;font-size:9px;}"
-            "QTabBar::tab:selected{background:#E8F0FE;}")
+            "QTabBar::tab:selected{background:#E6ECFA;}")
         outer.addWidget(tabs)
 
         for cat, syms in _RED_MARKUP_SYMBOLS.items():
@@ -6912,6 +6921,7 @@ class TreePanel(QWidget):
             ('cause',        '⚙️ Orsaker',       '#e74c3c', '#fde8e8'),
             ('consequence',  '⚠️ Konsekvenser',  '#e67e22', '#fef0e0'),
             ('safeguard',    '🛡️ Safeguards',    '#27ae60', '#e8f8e8'),
+            ('equipment',    '🔧 Utrustning',    '#7f8c8d', '#ecf0f1'),
         ]
         self._vis_btns = {}
         for type_key, label, color_on, color_off in _VIS_BTNS:
@@ -7637,10 +7647,10 @@ class StandardCausesPickerPopup(QDialog):
     cause_picked = pyqtSignal(str, object)   # (description, frequency_or_None)
 
     _OBJ_BTN_STYLE = (
-        "QPushButton { text-align:left; padding:2px 6px; border:1px solid #d1d5db;"
-        " border-radius:3px; background:#f9fafb; font-size:10px; }"
-        "QPushButton:hover { background:#eff6ff; border-color:#93c5fd; }"
-        "QPushButton:checked { background:#1d4ed8; color:white; border-color:#1d4ed8;"
+        "QPushButton { text-align:left; padding:2px 6px; border:1px solid #E2E3E1;"
+        " border-radius:3px; background:#FAFAFA; font-size:10px; }"
+        "QPushButton:hover { background:#F5F5F3; border-color:#CFD1CE; }"
+        "QPushButton:checked { background:#17191C; color:white; border-color:#17191C;"
         " font-weight:bold; }")
 
     def __init__(self, db, deviation_id: int, deviation_name: str = '',
@@ -7681,7 +7691,7 @@ class StandardCausesPickerPopup(QDialog):
 
         # ── Coloured header band ──────────────────────────────────────────────
         hdr_w = QWidget()
-        hdr_w.setStyleSheet("background:#1d4ed8;")
+        hdr_w.setStyleSheet("background:#17191C;")
         hdr_l = QVBoxLayout(hdr_w)
         hdr_l.setContentsMargins(12, 8, 12, 8)
         hdr_l.setSpacing(3)
@@ -7689,7 +7699,7 @@ class StandardCausesPickerPopup(QDialog):
         title.setStyleSheet("color:white; font-size:13px; font-weight:bold;")
         hdr_l.addWidget(title)
         sub = QLabel(f"Avvikelse: {deviation_name}")
-        sub.setStyleSheet("color:#bfdbfe; font-size:10px;")
+        sub.setStyleSheet("color:#D7E3FA; font-size:10px;")
         hdr_l.addWidget(sub)
         main.addWidget(hdr_w)
 
@@ -7759,15 +7769,15 @@ class StandardCausesPickerPopup(QDialog):
         obj_fl.setSpacing(2)
         obj_hdr_row = QHBoxLayout()
         obj_hdr = QLabel("<b>Objekttyp</b>")
-        obj_hdr.setStyleSheet("font-size:10px; color:#1F4E79; padding:2px 4px;")
+        obj_hdr.setStyleSheet("font-size:10px; color:#8D9299; padding:2px 4px;")
         obj_hdr_row.addWidget(obj_hdr)
         obj_hdr_row.addStretch()
         btn_add_obj = QPushButton("+ Ny")
         btn_add_obj.setFixedHeight(CONFIG['H_BADGE'])
         btn_add_obj.setStyleSheet(
-            "QPushButton{font-size:9px;padding:1px 5px;border:1px solid #93c5fd;"
-            "border-radius:3px;background:#eff6ff;color:#1d4ed8;}"
-            "QPushButton:hover{background:#dbeafe;}")
+            "QPushButton{font-size:9px;padding:1px 5px;border:1px solid #CFD1CE;"
+            "border-radius:3px;background:#F5F5F3;color:#17191C;}"
+            "QPushButton:hover{background:#E8E9E6;}")
         btn_add_obj.setToolTip("Lägg till ny objekttyp (t.ex. Transportör)")
         btn_add_obj.clicked.connect(self._add_object_type)
         obj_hdr_row.addWidget(btn_add_obj)
@@ -7793,7 +7803,7 @@ class StandardCausesPickerPopup(QDialog):
         cause_fl.setContentsMargins(4, 4, 4, 4)
         cause_fl.setSpacing(2)
         self._cause_hdr = QLabel("<b>Orsaker</b>")
-        self._cause_hdr.setStyleSheet("font-size:10px; color:#1F4E79; padding:2px 4px;")
+        self._cause_hdr.setStyleSheet("font-size:10px; color:#8D9299; padding:2px 4px;")
         cause_fl.addWidget(self._cause_hdr)
         self._cause_list = QListWidget()
         self._cause_list.setAlternatingRowColors(False)
@@ -7802,9 +7812,9 @@ class StandardCausesPickerPopup(QDialog):
         self._cause_list.setStyleSheet(
             "QListWidget { border:none; }"
             "QListWidget::item { padding:6px 10px; border-bottom:1px solid #f3f4f6; }"
-            "QListWidget::item:selected { background:#dbeafe; color:#1e3a8a;"
-            "  border-left:3px solid #1d4ed8; font-weight:bold; }"
-            "QListWidget::item:hover:!selected { background:#f0f9ff; }")
+            "QListWidget::item:selected { background:#E6ECFA; color:#17191C;"
+            "  border-left:3px solid #17191C; font-weight:bold; }"
+            "QListWidget::item:hover:!selected { background:#F5F5F3; }")
         cause_fl.addWidget(self._cause_list)
         splitter.addWidget(cause_frame)
         splitter.setSizes([200, 420])
@@ -7832,17 +7842,17 @@ class StandardCausesPickerPopup(QDialog):
         self._ok_btn.setDefault(True)
         self._ok_btn.setMinimumHeight(CONFIG['H_BTN_OK'])
         self._ok_btn.setStyleSheet(
-            "QPushButton { background:#1d4ed8; color:white; border:none;"
+            "QPushButton { background:#17191C; color:white; border:none;"
             " border-radius:5px; padding:6px 20px; font-weight:bold; font-size:11px; }"
-            "QPushButton:hover { background:#1e40af; }"
-            "QPushButton:pressed { background:#1e3a8a; }")
+            "QPushButton:hover { background:#2A2E34; }"
+            "QPushButton:pressed { background:#0B0C0E; }")
         self._ok_btn.clicked.connect(self._pick_selected)
         cancel_btn = QPushButton("Avbryt")
         cancel_btn.setMinimumHeight(CONFIG['H_BTN_OK'])
         cancel_btn.setStyleSheet(
-            "QPushButton { background:#f1f5f9; color:#374151; border:1px solid #cbd5e1;"
+            "QPushButton { background:#FFFFFF; color:#17191C; border:1px solid #E2E3E1;"
             " border-radius:5px; padding:6px 16px; }"
-            "QPushButton:hover { background:#e2e8f0; }")
+            "QPushButton:hover { background:#F5F5F3; }")
         cancel_btn.clicked.connect(self.reject)
         btn_row.addStretch()
         btn_row.addWidget(cancel_btn)
@@ -8015,7 +8025,7 @@ class StandardCausesPickerPopup(QDialog):
             ci.setData(Qt.ItemDataRole.UserRole + 1, c['description'])
             ci.setData(Qt.ItemDataRole.UserRole + 2, freq)
             if freq is not None:
-                ci.setForeground(QColor('#1a56db'))
+                ci.setForeground(QColor('#17191C'))
             self._cause_list.addItem(ci)
         if self._cause_list.count():
             self._cause_list.setCurrentRow(0)
@@ -8113,10 +8123,10 @@ class CauseObjectPopup(QDialog):
 
         _small = "font-size:10px;"
         _btn_style = ("QPushButton{font-size:10px; padding:2px 10px;"
-                      "border:1px solid #bbb; border-radius:3px; background:#f5f5f5;}"
-                      "QPushButton:hover{background:#e0e8f5;}"
-                      "QPushButton:default{background:#1F4E79; color:white; border-color:#1F4E79;}"
-                      "QPushButton:default:hover{background:#2a6099;}")
+                      "border:1px solid #E2E3E1; border-radius:3px; background:#FFFFFF;}"
+                      "QPushButton:hover{background:#F5F5F3;}"
+                      "QPushButton:default{background:#17191C; color:white; border-color:#17191C;}"
+                      "QPushButton:default:hover{background:#2A2E34;}")
 
         layout = QVBoxLayout(self)
         layout.setSpacing(4)
@@ -8129,7 +8139,7 @@ class CauseObjectPopup(QDialog):
         self._icon_lbl.setFixedSize(22, 22)
         hdr.addWidget(self._icon_lbl)
         title = QLabel("<b>Orsak på P&amp;ID</b>")
-        title.setStyleSheet("font-size:11px; color:#1F4E79;")
+        title.setStyleSheet("font-size:11px; color:#8D9299;")
         hdr.addWidget(title)
         hdr.addStretch()
         layout.addLayout(hdr)
@@ -8391,9 +8401,9 @@ class CauseObjectPopup(QDialog):
                 fb = QPushButton(freq_str)
                 fb.setFixedHeight(CONFIG['H_BADGE'])
                 fb.setStyleSheet(
-                    "QPushButton{color:#1F4E79; background:#dce8f5; border-radius:3px;"
+                    "QPushButton{color:#17191C; background:#F5F5F3; border-radius:3px;"
                     "padding:1px 5px; font-size:10px; font-weight:bold; border:none;}"
-                    "QPushButton:hover{background:#b8d4f0;}")
+                    "QPushButton:hover{background:#E8E9E6;}")
                 fb.setToolTip("Klicka för att ange anpassad frekvens")
                 # capture radio + fb in closure
                 def _make_freq_handler(r=radio, btn=fb, base=freq):
@@ -8516,9 +8526,9 @@ class RRFPopup(QDialog):
             btn = QPushButton(str(val))
             btn.setFixedWidth(62)
             btn.setStyleSheet(
-                "QPushButton{background:#1F4E79;color:white;border:none;"
+                "QPushButton{background:#17191C;color:white;border:none;"
                 "border-radius:4px;padding:5px;font-weight:bold;}"
-                "QPushButton:hover{background:#2563a8;}")
+                "QPushButton:hover{background:#2A2E34;}")
             btn.clicked.connect(partial(self._pick, val))
             presets.addWidget(btn)
         layout.addLayout(presets)
@@ -8613,12 +8623,12 @@ class FrequencyPickerPopup(QDialog):
     @staticmethod
     def _bstyle(selected: bool) -> str:
         if selected:
-            return ("QPushButton{background:#1F4E79;color:white;border:none;"
+            return ("QPushButton{background:#17191C;color:white;border:none;"
                     "border-radius:4px;padding:5px;font-weight:bold;font-size:10px;}"
-                    "QPushButton:hover{background:#2563a8;}")
-        return ("QPushButton{background:#f0f0f0;color:#333;border:1px solid #ccc;"
+                    "QPushButton:hover{background:#2A2E34;}")
+        return ("QPushButton{background:#F5F5F3;color:#17191C;border:1px solid #CFD1CE;"
                 "border-radius:4px;padding:5px;font-size:10px;}"
-                "QPushButton:hover{background:#e0e8f5;border:1px solid #999;}")
+                "QPushButton:hover{background:#E8E9E6;border:1px solid #B3B7B2;}")
 
     def _update_preview_label(self, val):
         f_lvl = freq_to_f_level(val) if val else -1
@@ -8829,7 +8839,7 @@ class ConsequenceChainDialog(QDialog):
                     row_idx += 1; col_idx = 0
                 hdr = QLabel(group)
                 hdr.setStyleSheet(
-                    "color:#1F4E79; font-weight:bold; font-size:10px; margin-top:4px;")
+                    "color:#8D9299; font-weight:bold; font-size:10px; margin-top:4px;")
                 chain_lay.addWidget(hdr, row_idx, 0, 1, 2)
                 row_idx += 1; col_idx = 0
                 last_group = group
@@ -8850,8 +8860,8 @@ class ConsequenceChainDialog(QDialog):
         self._preview = QLabel("—")
         self._preview.setWordWrap(True)
         self._preview.setStyleSheet(
-            "color:#1F4E79; font-weight:bold; font-size:11px;"
-            "background:#eef4fb; border:1px solid #bee3f8;"
+            "color:#17191C; font-weight:bold; font-size:11px;"
+            "background:#F5F5F3; border:1px solid #E2E3E1;"
             "border-radius:3px; padding:4px 8px;")
         layout.addWidget(self._preview)
 
@@ -9100,12 +9110,12 @@ class ConsequenceStepPickerDialog(QDialog):
     _COL_W = 150   # fixed width per "Del N" column — keeps the dialog tight
 
     _LIST_SS = (
-        "QListWidget { border:1px solid #d8dee8; border-radius:5px; background:white; }"
+        "QListWidget { border:1px solid #E2E3E1; border-radius:5px; background:white; }"
         "QListWidget::item { padding:3px 5px; border-radius:3px; font-size:10px; }"
         "QListWidget::item:selected {"
-        "  background:#dbeafe; color:#1e3a8a; font-weight:bold;"
-        "  border:1px solid #2563eb; }"
-        "QListWidget::item:hover:!selected { background:#eff6ff; }"
+        "  background:#E6ECFA; color:#17191C; font-weight:bold;"
+        "  border:1px solid #17191C; }"
+        "QListWidget::item:hover:!selected { background:#F5F5F3; }"
     )
 
     def __init__(self, db: 'Database', cons_id: int,
@@ -9147,8 +9157,8 @@ class ConsequenceStepPickerDialog(QDialog):
             if comp_type:  ctx_parts.append(f"<b>Objekt:</b> {comp_type}")
             if cause_text: ctx_parts.append(f"<b>Orsak:</b> {cause_text[:80]}")
             ctx = QLabel("  ·  ".join(ctx_parts))
-            ctx.setStyleSheet("color:#1F4E79; font-size:10px; padding:2px 4px;"
-                              "background:#eef4fb; border-radius:3px;")
+            ctx.setStyleSheet("color:#17191C; font-size:10px; padding:2px 4px;"
+                              "background:#F5F5F3; border-radius:3px;")
             ctx.setWordWrap(True)
             main.addWidget(ctx)
 
@@ -9316,7 +9326,7 @@ class ConsequenceStepPickerDialog(QDialog):
         self._preview = QLabel("—")
         self._preview.setWordWrap(True)
         self._preview.setStyleSheet(
-            "color:#1F4E79; font-weight:bold; font-size:11px;")
+            "color:#17191C; font-weight:bold; font-size:11px;")
         prev_lay.addWidget(self._preview)
         main.addWidget(prev_frame)
 
@@ -9327,7 +9337,7 @@ class ConsequenceStepPickerDialog(QDialog):
             "Spara denna kedja och återgå till P&ID-läge\n"
             "för att omedelbart markera ytterligare ett objekt.")
         add_more_btn.setStyleSheet(
-            "background:#1d4ed8; color:white; border:none;"
+            "background:#17191C; color:white; border:none;"
             "border-radius:4px; padding:4px 10px;")
         add_more_btn.clicked.connect(self._save_and_add_more)
         btn_row.addWidget(add_more_btn)
@@ -9498,8 +9508,8 @@ class ConsequenceStepPickerDialog(QDialog):
 
     # ── Column header status color ────────────────────────────────────────────
     def _refresh_header_state(self, step_idx: int):
-        """Color-code the 'Del N' header: light blue = options available,
-        filled dark blue = a choice has been made, muted gray = nothing to
+        """Color-code the 'Del N' header: outlined = options available,
+        filled dark = a choice has been made, muted gray = nothing to
         do here (not yet reached, or the chain ended) — an at-a-glance
         progress indicator across all visible columns."""
         col = self._cols[step_idx]
@@ -9507,13 +9517,13 @@ class ConsequenceStepPickerDialog(QDialog):
         has_opts = bool(self._options[step_idx])
         if has_sel:
             style = ("font-weight:bold; color:white; font-size:10px;"
-                     "background:#2563eb; border-radius:3px; padding:3px;")
+                     "background:#17191C; border-radius:3px; padding:3px;")
         elif not has_opts:
-            style = ("font-weight:bold; color:#9ca3af; font-size:10px;"
-                     "background:#f3f4f6; border-radius:3px; padding:3px;")
+            style = ("font-weight:bold; color:#8D9299; font-size:10px;"
+                     "background:#F5F5F3; border-radius:3px; padding:3px;")
         else:
-            style = ("font-weight:bold; color:#1F4E79; font-size:10px;"
-                     "background:#dbeafe; border-radius:3px; padding:3px;")
+            style = ("font-weight:bold; color:#17191C; font-size:10px;"
+                     "background:#FFFFFF; border:1px solid #CFD1CE; border-radius:3px; padding:2px;")
         col['hdr'].setStyleSheet(style)
 
     # ── Selection logic ───────────────────────────────────────────────────────
@@ -9996,9 +10006,9 @@ class _PidDelegate(_ScenarioDelegate):
                                  elided)
 
                 # RRF badge (right column)
-                badge_bg = QColor('#1F4E79') if sel else QColor('#dce8f5')
+                badge_bg = QColor('#17191C') if sel else QColor('#F5F5F3')
                 painter.fillRect(rrf_rect, badge_bg)
-                badge_tc = QColor('#ffffff') if sel else QColor('#1F4E79')
+                badge_tc = QColor('#ffffff') if sel else QColor('#17191C')
                 painter.setPen(badge_tc)
                 badge_font = QFont(option.font)
                 badge_font.setPointSize(max(6, option.font.pointSize() - 2))
@@ -10068,9 +10078,9 @@ class _PidDelegate(_ScenarioDelegate):
                 desc_rect  = QRect(r.left() + 2, r.top() + _SH,
                                    r.width() - 4, max(0, r.height() - _SH))
 
-                # Light-blue strip background
+                # Strip background (grey, purple tint for chain-linked rows)
                 if not sel:
-                    strip_bg = QColor('#ede7f6') if is_chain else QColor('#dbeafe')
+                    strip_bg = QColor('#ede7f6') if is_chain else QColor('#F5F5F3')
                     painter.fillRect(strip_rect, strip_bg)
                 else:
                     painter.fillRect(strip_rect,
@@ -10100,7 +10110,7 @@ class _PidDelegate(_ScenarioDelegate):
                                 self._panel._cause_obj_w)
                     tag_draw_rect = QRect(tag_x, r.top(), tag_w, _SH)
                     tag_tc = (option.palette.highlightedText().color() if sel
-                              else QColor('#1e40af'))
+                              else QColor('#17191C'))
                     painter.setPen(tag_tc)
                     painter.drawText(tag_draw_rect.adjusted(2, 0, -1, 0),
                                      Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
@@ -10128,7 +10138,7 @@ class _PidDelegate(_ScenarioDelegate):
                     ff.setPointSize(max(6, option.font.pointSize() - 1))
                     painter.setFont(ff)
                     f_tc = (option.palette.highlightedText().color() if sel
-                            else QColor('#1e40af'))
+                            else QColor('#17191C'))
                     painter.setPen(f_tc)
                     freq_avail = r.right() - freq_x - 22   # leave room for dots
                     freq_draw_rect = QRect(freq_x + 3, r.top(), freq_avail, _SH)
@@ -10147,7 +10157,7 @@ class _PidDelegate(_ScenarioDelegate):
                 dot_y = r.top() + _SH // 2
                 dot_x = r.right() - 5
                 if _has_comment:
-                    painter.setBrush(QBrush(QColor('#2563eb')))
+                    painter.setBrush(QBrush(QColor('#17191C')))
                     painter.setPen(Qt.PenStyle.NoPen)
                     painter.drawEllipse(QRect(dot_x - dot_r, dot_y - dot_r,
                                               dot_r * 2, dot_r * 2))
@@ -10213,7 +10223,7 @@ class _PidDelegate(_ScenarioDelegate):
                         painter.drawText(badge, Qt.AlignmentFlag.AlignCenter,
                                          f"{cat_name[:3]} {cons_axis_label(cat_sev)}")
                 else:
-                    icon_clr = QColor('#1a56db') if n_cats > 0 else QColor('#aaa')
+                    icon_clr = QColor('#17191C') if n_cats > 0 else QColor('#aaa')
                     painter.setPen(icon_clr)
                     f2 = QFont(option.font)
                     f2.setPointSize(max(6, option.font.pointSize() - 1))
@@ -10336,9 +10346,9 @@ class SgRRFCategoryPopup(QDialog):
             btn = QPushButton(str(v))
             btn.setFixedWidth(52)
             btn.setStyleSheet(
-                "QPushButton{background:#1F4E79;color:white;border:none;"
+                "QPushButton{background:#17191C;color:white;border:none;"
                 "border-radius:3px;padding:3px;font-weight:bold;font-size:9px;}"
-                "QPushButton:hover{background:#2563a8;}")
+                "QPushButton:hover{background:#2A2E34;}")
             btn.clicked.connect(lambda _, v=v: self._spin.setValue(v))
             presets.addWidget(btn)
         outer.addLayout(presets)
@@ -10387,8 +10397,8 @@ class SgRRFCategoryPopup(QDialog):
         ok.setDefault(True)
         ok.setStyleSheet(
             "QPushButton{font-size:10px;padding:2px 12px;"
-            "background:#1F4E79;color:white;border-radius:3px;}"
-            "QPushButton:hover{background:#2a6099;}")
+            "background:#17191C;color:white;border-radius:3px;}"
+            "QPushButton:hover{background:#2A2E34;}")
         ok.clicked.connect(self._ok)
         cancel = QPushButton("Avbryt")
         cancel.setStyleSheet("font-size:10px; padding:2px 8px;")
@@ -10467,8 +10477,8 @@ class CatSGSelectionPopup(QDialog):
         ok.setDefault(True)
         ok.setStyleSheet(
             "QPushButton{font-size:10px;padding:2px 12px;"
-            "background:#1F4E79;color:white;border-radius:3px;}"
-            "QPushButton:hover{background:#2a6099;}")
+            "background:#17191C;color:white;border-radius:3px;}"
+            "QPushButton:hover{background:#2A2E34;}")
         ok.clicked.connect(self._ok)
         cancel = QPushButton("Avbryt")
         cancel.setStyleSheet("font-size:10px; padding:2px 8px;")
@@ -10556,8 +10566,8 @@ class ConsCategoryMatrixPopup(QDialog):
         ok.setDefault(True)
         ok.setStyleSheet(
             "QPushButton{font-size:10px;padding:2px 12px;"
-            "background:#1F4E79;color:white;border-radius:3px;}"
-            "QPushButton:hover{background:#2a6099;}")
+            "background:#17191C;color:white;border-radius:3px;}"
+            "QPushButton:hover{background:#2A2E34;}")
         ok.clicked.connect(self._ok)
         cancel = QPushButton("Avbryt")
         cancel.setStyleSheet("font-size:10px; padding:2px 8px;")
@@ -10569,13 +10579,13 @@ class ConsCategoryMatrixPopup(QDialog):
     @staticmethod
     def _bstyle(selected: bool) -> str:
         if selected:
-            return ("QPushButton{background:#1F4E79;color:white;"
-                    "border:2px solid #163d61;border-radius:3px;"
+            return ("QPushButton{background:#17191C;color:white;"
+                    "border:2px solid #17191C;border-radius:3px;"
                     "font-size:9px;font-weight:bold;}"
-                    "QPushButton:hover{background:#2a6099;}")
-        return ("QPushButton{background:#f0f0f0;color:#333;"
-                "border:1px solid #ccc;border-radius:3px;font-size:9px;}"
-                "QPushButton:hover{background:#e0e8f5;border:1px solid #999;}")
+                    "QPushButton:hover{background:#2A2E34;}")
+        return ("QPushButton{background:#F5F5F3;color:#17191C;"
+                "border:1px solid #CFD1CE;border-radius:3px;font-size:9px;}"
+                "QPushButton:hover{background:#E8E9E6;border:1px solid #B3B7B2;}")
 
     def _toggle(self, cat_id: int, sev: int):
         self._sel[cat_id] = 0 if self._sel.get(cat_id) == sev else sev
@@ -10811,7 +10821,7 @@ class ScenarioTablePanel(QWidget):
         self._table.setWordWrap(True)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.setStyleSheet(
-            "QHeaderView::section{background:#1F4E79;color:#fff;font-weight:bold;padding:3px;}")
+            "QHeaderView::section{background:#F5F5F3;color:#8D9299;font-weight:600;padding:3px;}")
         self._table.cellChanged.connect(self._on_cell_changed)
         self._table.cellClicked.connect(self._on_cell_clicked)
         self._table.itemDoubleClicked.connect(self._on_cell_double_clicked)
@@ -10838,8 +10848,8 @@ class ScenarioTablePanel(QWidget):
         # ── Sticky context bar — always shows current Nod + Avvikelse ──────────
         self._ctx_bar = QLabel()
         self._ctx_bar.setStyleSheet(
-            "QLabel { background:#1F4E79; color:white; font-size:10px;"
-            " padding:3px 8px; border-bottom:1px solid #163d61; }")
+            "QLabel { background:#F5F5F3; color:#17191C; font-size:10px;"
+            " padding:3px 8px; border-bottom:1px solid #E2E3E1; }")
         self._ctx_bar.setWordWrap(False)
         self._ctx_bar.hide()   # hidden until content is loaded
         outer.addWidget(self._ctx_bar)
@@ -11693,6 +11703,7 @@ class ScenarioTablePanel(QWidget):
         else:
             rb = QTableWidgetItem('')
             rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        rb.setFont(QFont("Consolas", 9))
         self._table.setItem(r, self._C_RFORE, rb)
 
         # ── Col 5: Barriär ───────────────────────────────────────────────────
@@ -11744,6 +11755,7 @@ class ScenarioTablePanel(QWidget):
         else:
             ra = QTableWidgetItem('')
             ra.setFlags(ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        ra.setFont(QFont("Consolas", 9))
         self._table.setItem(r, self._C_REFT, ra)
 
         # ── Col 10: Slutkonsekvens (only when a category is set) ──────────────
@@ -11757,6 +11769,7 @@ class ScenarioTablePanel(QWidget):
         else:
             rs = QTableWidgetItem('')
             rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        rs.setFont(QFont("Consolas", 9))
         self._table.setItem(r, self._C_SLUT, rs)
 
         pass  # row height set by resizeRowsToContents at end of _rebuild
@@ -12423,7 +12436,7 @@ class ScenarioTablePanel(QWidget):
         lay = QVBoxLayout(popup)
         lay.setContentsMargins(10, 10, 10, 10)
         lbl = QLabel("💬  Kommentar till orsaksraden:")
-        lbl.setStyleSheet("font-weight:bold; font-size:10px; color:#1F4E79;")
+        lbl.setStyleSheet("font-weight:bold; font-size:10px; color:#8D9299;")
         lay.addWidget(lbl)
         txt = QTextEdit(current)
         txt.setPlaceholderText("Ange notering, beslut eller referens…")
@@ -13387,8 +13400,8 @@ class ComponentEditorPanel(QWidget):
         self._mode_table.setColumnWidth(2, 90)
         self._mode_table.verticalHeader().setVisible(False)
         self._mode_table.setStyleSheet(
-            "QHeaderView::section{background:#1F4E79;color:#fff;"
-            "font-weight:bold;padding:3px;}")
+            "QHeaderView::section{background:#F5F5F3;color:#8D9299;"
+            "font-weight:600;padding:3px;}")
         self._mode_table.cellChanged.connect(self._on_mode_cell)
         right.addWidget(self._mode_table)
 
@@ -13593,7 +13606,7 @@ class PIDAnalysisPanel(QWidget):
         self._tbl.verticalHeader().setVisible(False)
         self._tbl.setAlternatingRowColors(True)
         self._tbl.setStyleSheet(
-            "QHeaderView::section{background:#1F4E79;color:#fff;font-weight:bold;padding:3px;}")
+            "QHeaderView::section{background:#F5F5F3;color:#8D9299;font-weight:600;padding:3px;}")
         layout.addWidget(self._tbl)
 
         btn_row = QHBoxLayout()
@@ -13631,7 +13644,7 @@ class PIDAnalysisPanel(QWidget):
             # Database suggestion (read-only)
             sugg = QTableWidgetItem(entry['name_sv'] or '—')
             sugg.setFlags(sugg.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            sugg.setForeground(QBrush(QColor('#1F4E79')))
+            sugg.setForeground(QBrush(QColor('#8D9299')))
             self._tbl.setItem(r, 2, sugg)
 
             # Editable component type combo
@@ -13786,7 +13799,7 @@ class TagDatabasePanel(QWidget):
         self._tbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._tbl.setAlternatingRowColors(True)
         self._tbl.setStyleSheet(
-            "QHeaderView::section{background:#1F4E79;color:#fff;font-weight:bold;padding:3px;}")
+            "QHeaderView::section{background:#F5F5F3;color:#8D9299;font-weight:600;padding:3px;}")
         layout.addWidget(self._tbl)
 
         self._status = QLabel("")
@@ -14017,7 +14030,7 @@ class StandardCausesSettingsPanel(QWidget):
         self._freq_edit.editingFinished.connect(self._save_freq)
         freq_row.addWidget(self._freq_edit)
         self._freq_level_lbl = QLabel("")
-        self._freq_level_lbl.setStyleSheet("color:#1F4E79; font-size:10px;")
+        self._freq_level_lbl.setStyleSheet("color:#8D9299; font-size:10px;")
         freq_row.addWidget(self._freq_level_lbl)
         freq_row.addStretch()
         c3.addLayout(freq_row)
@@ -14099,7 +14112,7 @@ class StandardCausesSettingsPanel(QWidget):
             item.setData(Qt.ItemDataRole.UserRole, r['id'])
             item.setData(Qt.ItemDataRole.UserRole + 1, r['name'])
             if n:
-                item.setForeground(QColor('#1F4E79'))
+                item.setForeground(QColor('#17191C'))
             self._obj_list.addItem(item)
         self._loading = False
         self._obj_list.setCurrentRow(max(0, min(cur, self._obj_list.count()-1)))
@@ -14547,7 +14560,7 @@ class SeverityDefinitionsPanel(QWidget):
             hdr = QLabel(f"<b>C{col_idx+1}</b><br><small>{label}</small>")
             hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
             hdr.setStyleSheet(
-                "background:#1F4E79; color:white; border-radius:3px; padding:4px 6px;")
+                "background:#F5F5F3; color:#17191C; border-radius:3px; padding:4px 6px;")
             hdr.setMinimumWidth(120)
             self._grid_layout.addWidget(hdr, 0, col_idx + 1)
 
@@ -14788,7 +14801,7 @@ class TagMemoryPanel(QWidget):
             # Col 1 — prefix (bold if this is the winning row)
             pfx_item = QTableWidgetItem(d['tag'])
             pfx_item.setData(Qt.ItemDataRole.UserRole, d['tag'])
-            colour = QColor('#1a56db') if d['active'] else QColor('#aaa')
+            colour = QColor('#17191C') if d['active'] else QColor('#aaa')
             pfx_item.setForeground(QBrush(colour))
             if is_winner:
                 f = pfx_item.font(); f.setBold(True); pfx_item.setFont(f)
@@ -14873,7 +14886,7 @@ class TagMemoryPanel(QWidget):
                                 ki2.setCheckState(
                                     Qt.CheckState.Checked if is_this_row
                                     else Qt.CheckState.Unchecked)
-                                colour = QColor('#1a56db') if is_this_row else QColor('#aaa')
+                                colour = QColor('#17191C') if is_this_row else QColor('#aaa')
                                 for c in (self._C_PFX, self._C_TYPE, self._C_CNT):
                                     it2 = self._tbl.item(r2, c)
                                     if it2:
@@ -15070,7 +15083,7 @@ class SettingsPanel(QWidget):
 
         save_matrix_btn = QPushButton("💾 Spara riskmatris")
         save_matrix_btn.setStyleSheet(
-            "background:#1F4E79; color:#fff; font-weight:bold; padding:4px 12px;")
+            "background:#17191C; color:#fff; font-weight:bold; padding:4px 12px;")
         save_matrix_btn.clicked.connect(self._save_matrix)
         ml.addWidget(save_matrix_btn)
         tabs.addTab(matrix_tab, "Riskmatris")
@@ -15872,7 +15885,7 @@ class PIDManagementPanel(QWidget):
         self._rev_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._rev_table.setAlternatingRowColors(True)
         self._rev_table.setStyleSheet(
-            "QHeaderView::section{background:#1F4E79;color:#fff;font-weight:bold;padding:4px;}")
+            "QHeaderView::section{background:#F5F5F3;color:#8D9299;font-weight:600;padding:4px;}")
         rev_layout.addWidget(self._rev_table)
         tabs.addTab(rev_widget, "Revisioner")
 
@@ -16102,7 +16115,7 @@ class StudyManagementPanel(QWidget):
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setAlternatingRowColors(True)
         self._table.setStyleSheet(
-            "QHeaderView::section{background:#1F4E79;color:#fff;font-weight:bold;padding:4px;}")
+            "QHeaderView::section{background:#F5F5F3;color:#8D9299;font-weight:600;padding:4px;}")
         stats_layout.addWidget(self._table)
         tabs.addTab(stats_widget, "Statistik")
 
@@ -16309,6 +16322,8 @@ _EC_DEL  = 7
 class EquipmentPanel(QWidget):
     """Persistent equipment register — scan P&ID, review, edit and create nodes."""
 
+    markers_saved = pyqtSignal()   # equipment_markers layer changed — P&ID view should reload
+
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
         self.db = db
@@ -16328,7 +16343,7 @@ class EquipmentPanel(QWidget):
         self._scan_btn = QPushButton("🔍 Skanna P&ID")
         self._scan_btn.setToolTip("Skannar inläst P&ID-fil efter utrustningstaggar")
         self._scan_btn.setStyleSheet(
-            "background:#1F4E79; color:white; border:none; border-radius:4px; padding:3px 10px;")
+            "background:#17191C; color:white; border:none; border-radius:4px; padding:3px 10px;")
         self._scan_btn.clicked.connect(self._scan)
 
         add_btn = QPushButton("+ Lägg till")
@@ -16342,12 +16357,19 @@ class EquipmentPanel(QWidget):
         self._create_btn.setToolTip("Skapar en nod per ikryssad rad")
         self._create_btn.clicked.connect(self._create_nodes)
 
+        self._autodetect_btn = QPushButton("🎯 Hitta på P&ID")
+        self._autodetect_btn.setToolTip(
+            "Söker efter den ritade symbolen för varje ikryssad tagg och lägger\n"
+            "en markör på P&ID:et — filtrera/kryssa raderna nedan för sida+typ först")
+        self._autodetect_btn.clicked.connect(self._autodetect)
+
         clear_btn = QPushButton("🗑 Rensa utrustning")
         clear_btn.setToolTip("Tar bort alla poster i utrustningsregistret")
         clear_btn.setStyleSheet("color:#c0392b; font-weight:bold;")
         clear_btn.clicked.connect(self._clear)
 
-        for btn in [self._scan_btn, add_btn, refresh_btn, self._create_btn, clear_btn]:
+        for btn in [self._scan_btn, add_btn, refresh_btn, self._create_btn,
+                    self._autodetect_btn, clear_btn]:
             tb.addWidget(btn)
         tb.addStretch()
         self._status_lbl = QLabel("")
@@ -16398,7 +16420,7 @@ class EquipmentPanel(QWidget):
         self._tbl.setAlternatingRowColors(True)
         self._tbl.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._tbl.setStyleSheet(
-            "QHeaderView::section{background:#1F4E79;color:#fff;font-weight:bold;padding:4px;}")
+            "QHeaderView::section{background:#F5F5F3;color:#8D9299;font-weight:600;padding:4px;}")
         self._tbl.cellChanged.connect(self._on_cell_changed)
         layout.addWidget(self._tbl)
 
@@ -16745,6 +16767,66 @@ class EquipmentPanel(QWidget):
 
         self.refresh()
 
+    def _autodetect(self):
+        """🎯 Hitta på P&ID — for every checked row (already filtered/checked
+        by page and type in the table above), search for the actual drawn
+        symbol near that tag and open a review dialog before saving anything.
+        """
+        if not HAS_PYMUPDF:
+            QMessageBox.warning(self, "PyMuPDF saknas",
+                "Installera med:  pip install PyMuPDF")
+            return
+
+        requests = []   # (tag, page0idx, comp_type, equipment_id)
+        for r in range(self._tbl.rowCount()):
+            chk = self._tbl.item(r, _EC_CHK)
+            if not (chk and chk.checkState() == Qt.CheckState.Checked):
+                continue
+            tag_item = self._tbl.item(r, _EC_TAG)
+            pg_item  = self._tbl.item(r, _EC_PAGE)
+            if not (tag_item and pg_item):
+                continue
+            try:
+                page0 = int(pg_item.text()) - 1
+            except ValueError:
+                continue
+            type_combo = self._tbl.cellWidget(r, _EC_TYPE)
+            comp_type  = type_combo.currentText() if type_combo else ''
+            eq_id = chk.data(Qt.ItemDataRole.UserRole)
+            requests.append((tag_item.text().strip(), page0, comp_type, eq_id))
+
+        if not requests:
+            QMessageBox.information(
+                self, "Inget valt",
+                "Kryssa i minst en rad i tabellen nedan (filtrera t.ex. på sida "
+                "eller typ) innan du klickar 🎯 Hitta på P&ID.")
+            return
+
+        path = self.db.get_pid_path()
+        if not path or not Path(path).exists():
+            QMessageBox.warning(self, "Ingen P&ID",
+                "Öppna en P&ID-fil i P&ID-vyn först.")
+            return
+        try:
+            import fitz
+            pdf_doc = fitz.open(str(path))
+        except Exception as e:
+            QMessageBox.warning(self, "PDF-fel", f"Kunde inte öppna PDF:\n{e}")
+            return
+
+        detect_requests = [(tag, page0, comp_type) for tag, page0, comp_type, _eq in requests]
+        results = detect_equipment_symbols(pdf_doc, detect_requests)
+        pdf_doc.close()
+
+        # detect_equipment_symbols preserves request order — zip the
+        # equipment_catalog id back in for the review dialog to save with.
+        for res, (_tag, _page0, _comp_type, eq_id) in zip(results, requests):
+            res['equipment_id'] = eq_id
+
+        dlg = EquipmentMarkerReviewDialog(results, self.db, parent=self)
+        if dlg.exec():
+            self.markers_saved.emit()
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # REUSE CAUSES DIALOG
@@ -16828,10 +16910,10 @@ class ReuseDeviationCausesDialog(QDialog):
             ref_dev_btn.setCheckable(True)
             ref_dev_btn.setToolTip(f"Skapar en referensorsak med texten: {ref_label}")
             ref_dev_btn.setStyleSheet(
-                "QPushButton{font-size:10px;padding:2px 8px;border:1px solid #2980b9;"
-                "border-radius:3px;background:transparent;color:#2980b9;font-style:italic;}"
-                "QPushButton:checked{background:#2980b9;color:white;font-style:normal;}"
-                "QPushButton:hover:!checked{background:#d6eaf8;}")
+                "QPushButton{font-size:10px;padding:2px 8px;border:1px solid #17191C;"
+                "border-radius:3px;background:transparent;color:#17191C;font-style:italic;}"
+                "QPushButton:checked{background:#17191C;color:white;font-style:normal;}"
+                "QPushButton:hover:!checked{background:#F5F5F3;}")
             ref_dev_btn.toggled.connect(
                 self._make_ref_handler(dev_key, ref_label, None, None, dev_pos))
             hdr_h.addWidget(ref_dev_btn)
@@ -16870,7 +16952,7 @@ class ReuseDeviationCausesDialog(QDialog):
 
                     tag_lbl = QLabel(f"<b>{comp_tag}</b>")
                     tag_lbl.setStyleSheet(
-                        "color:#1a56db; background:#e8f0fe; border-radius:3px;"
+                        "color:#17191C; background:#F5F5F3; border-radius:3px;"
                         "padding:0px 4px; font-size:10px;")
                     tag_lbl.setToolTip(comp_type or "Okänd typ")
                     row_h.addWidget(tag_lbl)
@@ -16883,10 +16965,10 @@ class ReuseDeviationCausesDialog(QDialog):
                 ref_btn.setCheckable(True)
                 ref_btn.setFixedWidth(72)
                 ref_btn.setStyleSheet(
-                    "QPushButton{font-size:10px;padding:2px 4px;border:1px solid #2980b9;"
+                    "QPushButton{font-size:10px;padding:2px 4px;border:1px solid #17191C;"
                     "border-radius:3px;}"
-                    "QPushButton:checked{background:#2980b9;color:white;}"
-                    "QPushButton:hover:!checked{background:#d6eaf8;}")
+                    "QPushButton:checked{background:#17191C;color:white;}"
+                    "QPushButton:hover:!checked{background:#F5F5F3;}")
 
                 has_inv = inv_text != orig
                 inv_btn = QPushButton("Invers")
@@ -17168,44 +17250,61 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"Databas: {self.db.path}")
 
         # ── Central widget ────────────────────────────────────────────────────
-        root = QWidget()
-        root_layout = QVBoxLayout(root)
+        # Outer vertical splitter: top pane holds [nav rail | view_stack],
+        # bottom pane holds the scenario/markup tables (P&ID page only). The
+        # bottom pane spans the FULL window width — it is a sibling of the
+        # top pane, not nested inside it — so the nav rail only extends as
+        # far down as the tree/P&ID area, not behind the scenario table too.
+        self._outer_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.setCentralWidget(self._outer_splitter)
+
+        top_widget = QWidget()
+        root_layout = QHBoxLayout(top_widget)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
-        self.setCentralWidget(root)
 
-        # Toggle bar
+        # Nav rail — narrow vertical strip of square icon buttons, far left
         toggle_bar = QWidget()
-        toggle_bar.setStyleSheet("background:#1F4E79;")
-        toggle_lay = QHBoxLayout(toggle_bar)
-        toggle_lay.setContentsMargins(8, 4, 8, 4)
-        toggle_lay.setSpacing(6)
+        toggle_bar.setFixedWidth(52)
+        toggle_bar.setStyleSheet("background:#17191C;")
+        toggle_lay = QVBoxLayout(toggle_bar)
+        toggle_lay.setContentsMargins(6, 12, 6, 12)
+        toggle_lay.setSpacing(8)
 
-        self.btn_pid       = QPushButton("🗺  P&ID-vy")
-        self.btn_sheet     = QPushButton("📋  Worksheet")
-        self.btn_equip     = QPushButton("🔩  Utrustning")
-        self.btn_admin     = QPushButton("⚙️  Studiehantering")
-        self.btn_settings  = QPushButton("🔧  Inställningar")
+        self.btn_pid       = QPushButton("🗺")
+        self.btn_sheet     = QPushButton("📋")
+        self.btn_equip     = QPushButton("🔩")
+        self.btn_admin     = QPushButton("⚙")
+        self.btn_settings  = QPushButton("🔧")
+
+        _nav_labels = {
+            self.btn_pid:      "P&ID-vy",
+            self.btn_sheet:    "Worksheet",
+            self.btn_equip:    "Utrustning",
+            self.btn_admin:    "Studiehantering",
+            self.btn_settings: "Inställningar",
+        }
 
         for btn in (self.btn_pid, self.btn_sheet, self.btn_equip,
                     self.btn_admin, self.btn_settings):
             btn.setCheckable(True)
-            btn.setFixedHeight(CONFIG['H_ROW_STD'])
+            btn.setFixedSize(40, 40)
+            btn.setToolTip(_nav_labels[btn])
             btn.setStyleSheet(
-                "QPushButton{color:#fff;background:#2d6ca3;border:none;"
-                "border-radius:4px;padding:0 12px;font-weight:bold;}"
-                "QPushButton:checked{background:#fff;color:#1F4E79;}")
-            toggle_lay.addWidget(btn)
+                "QPushButton{color:#fff;background:#2A2E34;border:none;"
+                "border-radius:6px;font-size:16px;}"
+                "QPushButton:hover{background:#383D45;}"
+                "QPushButton:checked{background:#fff;color:#17191C;}")
+            toggle_lay.addWidget(btn, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         toggle_lay.addStretch()
-        lbl_db = QLabel(f"DB: {self.db.path.name}")
-        lbl_db.setStyleSheet("color:#aac;font-size:11px;")
-        toggle_lay.addWidget(lbl_db)
         root_layout.addWidget(toggle_bar)
 
         # View stack (init BEFORE setChecked to prevent signal before object exists)
         self.view_stack = QStackedWidget()
-        root_layout.addWidget(self.view_stack)
+        root_layout.addWidget(self.view_stack, 1)
+
+        self._outer_splitter.addWidget(top_widget)
 
         self.btn_pid.setChecked(True)
         self.btn_pid.clicked.connect(lambda: self._switch_view(0))
@@ -17215,14 +17314,11 @@ class MainWindow(QMainWindow):
         self.btn_settings.clicked.connect(lambda: self._switch_view(4))
 
         # ── Page 0: P&ID view ─────────────────────────────────────────────────
-        pid_page = QWidget()
-        pid_layout = QVBoxLayout(pid_page)
-        pid_layout.setContentsMargins(0, 0, 0, 0)
-        pid_layout.setSpacing(0)
-
-        self._v_splitter = QSplitter(Qt.Orientation.Vertical)
-        pid_layout.addWidget(self._v_splitter)
-
+        # No wrapper widget here — the view_stack page IS _h_splitter directly.
+        # The scenario/markup tables that used to share a vertical splitter
+        # with _h_splitter now live in self._v_splitter, added as the outer
+        # splitter's own bottom pane (see below) so they span the full window
+        # width instead of being indented by the nav rail.
         self._h_splitter = QSplitter(Qt.Orientation.Horizontal)
 
         self.tree_panel = TreePanel(self.db)
@@ -17262,7 +17358,13 @@ class MainWindow(QMainWindow):
         self._h_splitter.addWidget(self.red_markup_panel)
 
         self._h_splitter.setSizes([260, 650, 62, 0, 0])
-        self._v_splitter.addWidget(self._h_splitter)
+        self.view_stack.addWidget(self._h_splitter)
+
+        # Bottom pane of the OUTER splitter (full window width, below the
+        # nav rail) — scenario table + the two markup-edit tables that swap
+        # in during edit modes. Hidden entirely on non-P&ID pages (see
+        # _switch_view) so those pages use the whole window height.
+        self._v_splitter = QSplitter(Qt.Orientation.Vertical)
 
         self.scenario_panel = ScenarioTablePanel(self.db)
         self._v_splitter.addWidget(self.scenario_panel)
@@ -17275,8 +17377,9 @@ class MainWindow(QMainWindow):
         self.red_markup_table_panel.setVisible(False)
         self._v_splitter.addWidget(self.red_markup_table_panel)
 
-        self._v_splitter.setSizes([640, 220, 0, 0])
-        self.view_stack.addWidget(pid_page)
+        self._v_splitter.setSizes([220, 0, 0])
+        self._outer_splitter.addWidget(self._v_splitter)
+        self._outer_splitter.setSizes([640, 220])
 
         # ── Page 1: Worksheet ─────────────────────────────────────────────────
         self.worksheet = HAZOPWorksheet(self.db, main_window=self)
@@ -17284,6 +17387,7 @@ class MainWindow(QMainWindow):
 
         # ── Page 2: Equipment ─────────────────────────────────────────────────
         self.equipment_panel = EquipmentPanel(self.db)
+        self.equipment_panel.markers_saved.connect(self.pid_panel.reload_overlays)
         self.view_stack.addWidget(self.equipment_panel)
 
         # ── Page 3: Study management ──────────────────────────────────────────
@@ -17503,6 +17607,10 @@ class MainWindow(QMainWindow):
     def _switch_view(self, page):
         prev = self.view_stack.currentIndex()
         self.view_stack.setCurrentIndex(page)
+        # Bottom pane (scenario/markup tables) only makes sense on the P&ID
+        # page — hidden elsewhere so those pages use the full window height
+        # instead of leaving an empty strip below the nav rail's height.
+        self._v_splitter.setVisible(page == 0)
         self.btn_pid.setChecked(page == 0)
         self.btn_sheet.setChecked(page == 1)
         self.btn_equip.setChecked(page == 2)
@@ -17936,7 +18044,8 @@ class MainWindow(QMainWindow):
         self.scenario_panel.setVisible(False)
         self.markup_table_panel.setVisible(True)
         self._h_splitter.setSizes([0, 800, 0, 64, 0])
-        self._v_splitter.setSizes([560, 0, 200, 0])
+        self._v_splitter.setSizes([0, 200, 0])
+        self._outer_splitter.setSizes([560, 200])
         self.pid_panel.enter_markup_edit(node_id)
         self._markup_undo_stack.clear()
         self._undo_shortcut.setEnabled(True)
@@ -17951,7 +18060,8 @@ class MainWindow(QMainWindow):
         self.scenario_panel.setVisible(True)
         self.markup_table_panel.setVisible(False)
         self._h_splitter.setSizes([260, 650, 370, 0, 0])
-        self._v_splitter.setSizes([640, 220, 0, 0])
+        self._v_splitter.setSizes([220, 0, 0])
+        self._outer_splitter.setSizes([640, 220])
         self.stack.setCurrentWidget(self.welcome_panel)
         self._markup_undo_stack.clear()
         self._undo_shortcut.setEnabled(False)
@@ -17967,7 +18077,8 @@ class MainWindow(QMainWindow):
         self.scenario_panel.setVisible(False)
         self.red_markup_table_panel.setVisible(True)
         self._h_splitter.setSizes([0, 800, 0, 0, 64])
-        self._v_splitter.setSizes([560, 0, 0, 200])
+        self._v_splitter.setSizes([0, 0, 200])
+        self._outer_splitter.setSizes([560, 200])
         self.pid_panel.enter_red_markup_edit(node_id)
 
     def _on_close_red_markup(self):
@@ -17980,7 +18091,8 @@ class MainWindow(QMainWindow):
         self.scenario_panel.setVisible(True)
         self.red_markup_table_panel.setVisible(False)
         self._h_splitter.setSizes([260, 650, 370, 0, 0])
-        self._v_splitter.setSizes([640, 220, 0, 0])
+        self._v_splitter.setSizes([220, 0, 0])
+        self._outer_splitter.setSizes([640, 220])
         self.stack.setCurrentWidget(self.welcome_panel)
 
     def _on_red_markup_draw_finished(self, type_, node_id, pts, page, label):
@@ -18725,7 +18837,8 @@ class MainWindow(QMainWindow):
                       self.scenario_panel, self.equipment_panel,
                       self.admin_panel, self.settings_panel,
                       self.node_markup_panel, self.markup_table_panel,
-                      self.props_ribbon]:
+                      self.red_markup_panel, self.red_markup_table_panel,
+                      self.worksheet, self.props_ribbon]:
             try:
                 panel.db = db
             except Exception:
@@ -18741,6 +18854,13 @@ class MainWindow(QMainWindow):
                     sub.db = db
             except Exception:
                 pass
+
+        # HAZOPWorksheet embeds its own ScenarioTablePanel instance (distinct
+        # from self.scenario_panel above) — it has its own stale db reference.
+        try:
+            self.worksheet._table_panel.db = db
+        except Exception:
+            pass
 
         # PIDPanel wires differently — it holds db on itself and the viewer
         try:
@@ -18818,6 +18938,19 @@ if __name__ == '__main__':
 
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
+
+    # Override Fusion's default OS/theme-blue Highlight role with the app's
+    # own accent — otherwise native-rendered selections (custom delegate
+    # paints via option.palette.highlight(), combo box popups, etc.) show
+    # a different blue than the one used throughout the QSS below.
+    _palette = app.palette()
+    _palette.setColor(QPalette.ColorRole.Highlight, QColor('#17191C'))
+    _palette.setColor(QPalette.ColorRole.HighlightedText, QColor('#FFFFFF'))
+    _palette.setColor(QPalette.ColorRole.Window, QColor('#FBFBFA'))
+    _palette.setColor(QPalette.ColorRole.Base, QColor('#FFFFFF'))
+    _palette.setColor(QPalette.ColorRole.Text, QColor('#17191C'))
+    _palette.setColor(QPalette.ColorRole.WindowText, QColor('#17191C'))
+    app.setPalette(_palette)
 
     # Apply Windows 11 light theme
     app.setStyleSheet(_get_windows11_stylesheet())

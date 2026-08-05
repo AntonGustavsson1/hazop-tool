@@ -12,6 +12,8 @@ import logging
 from pathlib import Path
 from functools import partial
 
+import symbol_geometry
+
 # Suppress Qt SVG parser warnings (font references, path truncations)
 # These come from PyMuPDF's SVG output and are harmless display artefacts.
 from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
@@ -477,6 +479,26 @@ MODE_BOARD_LAYOUT    = 14  # drag pages to reposition on study board
 MODE_ADD_SHEET_LINK  = 15  # click target page to create a manual inter-sheet link
 MODE_PICK_REF_TAG   = 16  # one-shot click: detect tag near point → emit ref_tag_picked
 MODE_ANNOTATION     = 17  # click on board to place a sticky note
+
+# Placement-mode outline/fill colors — shared by the drag-rect preview and the
+# cursor-following ghost preview. Matches the tree-panel visibility buttons and
+# the final rendered markers (cause=red, consequence=orange, safeguard=green).
+_PLACEMENT_MODE_COLORS = {
+    MODE_CAUSE:           (QColor(0xe7, 0x4c, 0x3c), QColor(0xe7, 0x4c, 0x3c, 35)),
+    MODE_CONSEQUENCE:     (QColor(0xe6, 0x7e, 0x22), QColor(0xe6, 0x7e, 0x22, 35)),
+    MODE_SAFEGUARD:       (QColor(0x27, 0xae, 0x60), QColor(0x27, 0xae, 0x60, 35)),
+    MODE_CAUSE_TEMPLATE:  (QColor(0xe7, 0x4c, 0x3c), QColor(0xe7, 0x4c, 0x3c, 35)),
+    MODE_PLACE_EXISTING:  (QColor(0x14, 0x6e, 0xbe), QColor(0x14, 0x6e, 0xbe, 30)),
+}
+# Ghost preview radius per mode, matching the real marker's radius (see
+# add_cause_marker/add_consequence_marker/add_safeguard_marker).
+_PLACEMENT_MODE_RADIUS = {
+    MODE_CAUSE:           14.0,
+    MODE_CONSEQUENCE:     12.0,
+    MODE_SAFEGUARD:       12.0,
+    MODE_CAUSE_TEMPLATE:  14.0,
+    MODE_PLACE_EXISTING:  12.0,
+}
 
 # ── Off-page connector analysis ───────────────────────────────────────────────
 _RE_TO_FROM = re.compile(
@@ -1413,6 +1435,89 @@ def scan_pdf_for_equipment(pdf_doc, use_ocr: bool = False,
     return result
 
 
+def find_tag_position_on_page(pdf_doc, page_num, tag):
+    """Locate where a specific (already-known) tag is printed on a page.
+
+    Mirrors scan_pdf_for_equipment's pass-2 word matching. Used to get a
+    live x,y for a tag already sitting in equipment_catalog — that table
+    does not persist positions itself — before searching for vector-drawn
+    symbol clusters around it. Returns (x, y) in PDF points, or None.
+    """
+    if not HAS_PYMUPDF or pdf_doc is None:
+        return None
+    try:
+        page = pdf_doc[page_num]
+    except Exception:
+        return None
+    target = tag.strip().upper()
+    for text, cx, cy in _words_from_native(page):
+        parsed_tag, _prefix = _parse_tag(text)
+        if parsed_tag and parsed_tag.upper() == target:
+            return (cx, cy)
+    return None
+
+
+def detect_equipment_symbols(pdf_doc, requests, min_confidence=0.3):
+    """Run geometric symbol detection for a batch of (tag, page, comp_type)
+    requests — one entry per checked row in the Utrustningsregister.
+
+    For each request: locate the tag's current position on its page, find
+    nearby vector-drawn symbol clusters (symbol_geometry.find_symbol_clusters),
+    and resolve which one (if any) the tag is linked to via
+    leader-line > containment > nearest > none
+    (symbol_geometry.resolve_tag_symbol).
+
+    Type (valve/pump/...) is NOT guessed from the shape here — comp_type is
+    passed straight through from the caller's KNOWN_PREFIXES-derived value
+    for display in the review dialog. The geometry only answers "is there a
+    drawn symbol here, and exactly where/what shape" for placing an accurate
+    marker and confirming the tag-symbol link.
+
+    Returns a list of dicts (one per request, same order):
+        {tag, page, comp_type, x, y, confidence, link_method, outline}
+    link_method is one of 'leader'|'contain'|'nearest'|'none'|'not_found'
+    ('not_found' means the tag text itself could not be located on the page —
+    e.g. it moved or the page number is stale).
+    """
+    if not HAS_PYMUPDF or pdf_doc is None:
+        return []
+
+    results = []
+    clusters_by_page = {}   # page_num -> (primitives, clusters), computed once per page
+    for tag, page_num, comp_type in requests:
+        if page_num not in clusters_by_page:
+            try:
+                page = pdf_doc[page_num]
+                prims = symbol_geometry.extract_primitives(page)
+                clusters = symbol_geometry.find_symbol_clusters(page, min_confidence=min_confidence)
+            except Exception:
+                prims, clusters = [], []
+            clusters_by_page[page_num] = (prims, clusters)
+        prims, clusters = clusters_by_page[page_num]
+
+        tag_pos = find_tag_position_on_page(pdf_doc, page_num, tag)
+        if tag_pos is None:
+            results.append({'tag': tag, 'page': page_num, 'comp_type': comp_type,
+                             'x': 0.0, 'y': 0.0, 'confidence': 0.0,
+                             'link_method': 'not_found', 'outline': []})
+            continue
+
+        cluster, method = symbol_geometry.resolve_tag_symbol(tag_pos, clusters, prims)
+        if cluster is not None:
+            x0, y0, x1, y1 = cluster['bbox']
+            results.append({'tag': tag, 'page': page_num, 'comp_type': comp_type,
+                             'x': (x0 + x1) / 2, 'y': (y0 + y1) / 2,
+                             'confidence': cluster['confidence'],
+                             'link_method': method, 'outline': cluster['outline']})
+        else:
+            # No symbol cluster nearby at all — fall back to the tag's own
+            # text position so a marker can still be placed and reviewed.
+            results.append({'tag': tag, 'page': page_num, 'comp_type': comp_type,
+                             'x': tag_pos[0], 'y': tag_pos[1], 'confidence': 0.0,
+                             'link_method': 'none', 'outline': []})
+    return results
+
+
 class PDFVectorItem(QGraphicsItem):
     """Renders a PDF page as pure vector — crisp at any zoom.
 
@@ -2039,6 +2144,137 @@ class EquipmentScanDialog(QDialog):
 
         QMessageBox.information(self, "Klart",
             f"{created} noder skapade. Uppdatera trädet i HAZOP-vyn.")
+
+
+class EquipmentMarkerReviewDialog(QDialog):
+    """Review/correct auto-detected equipment-symbol matches before saving
+    them as a new 'equipment' marker layer on the P&ID.
+
+    Triggered by EquipmentPanel's "🎯 Hitta på P&ID" button on whichever rows
+    are checked in the Utrustningsregister — this dialog is the review step
+    for detect_equipment_symbols()'s results (see symbol_geometry.py for the
+    underlying geometric detection). Unchecking a row skips it entirely;
+    editing the Tagg cell corrects a wrong tag-text match before saving.
+    Repositioning a marker that landed in the wrong place is not supported
+    yet — remove it here and place it manually via the existing P&ID
+    Orsak/Konsekvens-style click-to-place flow instead.
+    """
+
+    _C_CHK, _C_TAG, _C_PAGE, _C_TYPE, _C_CONF, _C_METHOD = range(6)
+
+    _METHOD_LABELS = {
+        'leader':    '📐 Ledarlinje',
+        'contain':   '📍 Vidrör symbol',
+        'nearest':   '≈ Närmaste symbol',
+        'none':      '— Ingen symbol hittad',
+        'not_found': '⚠ Tagg ej hittad på sidan',
+    }
+
+    def __init__(self, results: list, db, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self._results = results   # dicts: tag,page,comp_type,x,y,confidence,link_method,outline,equipment_id
+        self.setWindowTitle("Granska autodetekterad utrustning")
+        self.setMinimumSize(760, 480)
+
+        outer = QVBoxLayout(self)
+
+        n = len(results)
+        n_found = sum(1 for r in results if r['link_method'] not in ('none', 'not_found'))
+        hdr = QLabel(
+            f"Hittade en symbolmatchning för <b>{n_found} av {n}</b> valda taggar. "
+            "Kryssa ur felaktiga rader, redigera taggtext vid behov, och spara.")
+        hdr.setTextFormat(Qt.TextFormat.RichText)
+        hdr.setWordWrap(True)
+        hdr.setStyleSheet(
+            "padding:5px; background:#F5F5F3; border:1px solid #E2E3E1; border-radius:4px;")
+        outer.addWidget(hdr)
+
+        self._tbl = QTableWidget(0, 6)
+        self._tbl.setHorizontalHeaderLabels(
+            ['✓', 'Tagg', 'Sida', 'Typ', 'Konfidens', 'Metod'])
+        hh = self._tbl.horizontalHeader()
+        hh.setSectionResizeMode(self._C_TAG, QHeaderView.ResizeMode.Stretch)
+        for col, w in ((self._C_CHK, 30), (self._C_PAGE, 50),
+                       (self._C_TYPE, 160), (self._C_CONF, 80), (self._C_METHOD, 160)):
+            self._tbl.setColumnWidth(col, w)
+        self._tbl.verticalHeader().setVisible(False)
+        self._tbl.setAlternatingRowColors(True)
+        outer.addWidget(self._tbl)
+        self._populate()
+
+        btn_row = QHBoxLayout()
+        save_btn = QPushButton("💾 Spara markörer")
+        save_btn.setDefault(True)
+        save_btn.clicked.connect(self._save)
+        cancel_btn = QPushButton("Avbryt")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addStretch()
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(save_btn)
+        outer.addLayout(btn_row)
+
+    def _populate(self):
+        self._tbl.setRowCount(0)
+        for res in self._results:
+            r = self._tbl.rowCount()
+            self._tbl.insertRow(r)
+
+            chk = QTableWidgetItem()
+            include_default = res['link_method'] not in ('none', 'not_found')
+            chk.setCheckState(
+                Qt.CheckState.Checked if include_default else Qt.CheckState.Unchecked)
+            chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+            self._tbl.setItem(r, self._C_CHK, chk)
+
+            self._tbl.setItem(r, self._C_TAG, QTableWidgetItem(res['tag']))
+
+            pg_item = QTableWidgetItem(str(res['page'] + 1))
+            pg_item.setFlags(pg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            pg_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._tbl.setItem(r, self._C_PAGE, pg_item)
+
+            type_item = QTableWidgetItem(res['comp_type'])
+            type_item.setFlags(type_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self._tbl.setItem(r, self._C_TYPE, type_item)
+
+            pct = int(round(res['confidence'] * 100))
+            conf_item = QTableWidgetItem(f"{pct}%")
+            conf_item.setFlags(conf_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            conf_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if pct >= 70:
+                conf_item.setForeground(QBrush(QColor('#1a7a40')))
+            elif pct >= 40:
+                conf_item.setForeground(QBrush(QColor('#b8860b')))
+            else:
+                conf_item.setForeground(QBrush(QColor('#8D9299')))
+            self._tbl.setItem(r, self._C_CONF, conf_item)
+
+            method_item = QTableWidgetItem(
+                self._METHOD_LABELS.get(res['link_method'], res['link_method']))
+            method_item.setFlags(method_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            if res['link_method'] in ('none', 'not_found'):
+                method_item.setForeground(QBrush(QColor('#aaa')))
+            self._tbl.setItem(r, self._C_METHOD, method_item)
+
+    def _save(self):
+        saved = 0
+        for r, res in enumerate(self._results):
+            chk = self._tbl.item(r, self._C_CHK)
+            if not (chk and chk.checkState() == Qt.CheckState.Checked):
+                continue
+            tag_item = self._tbl.item(r, self._C_TAG)
+            tag = tag_item.text().strip() if tag_item and tag_item.text().strip() else res['tag']
+            outline_json = json.dumps(res['outline']) if res.get('outline') else ''
+            self.db.add_equipment_marker(
+                res.get('equipment_id'), tag, res['page'], res['x'], res['y'],
+                res['comp_type'], shape_outline=outline_json,
+                confidence=res['confidence'], link_method=res['link_method'])
+            saved += 1
+        if saved == 0:
+            QMessageBox.information(self, "Inget sparat", "Inga rader var ikryssade.")
+            return
+        self.accept()
 
 
 class ComponentPickerDialog(QDialog):
@@ -3855,8 +4091,8 @@ class PIDGraphicsView(QGraphicsView):
         self._rect_start = None
         self._rect_item  = None
         # Per-type marker tracking for visibility toggle
-        self._type_items: dict = {'cause': [], 'consequence': [], 'safeguard': []}
-        self._type_visible: dict = {'cause': True, 'consequence': True, 'safeguard': True}
+        self._type_items: dict = {'cause': [], 'consequence': [], 'safeguard': [], 'equipment': []}
+        self._type_visible: dict = {'cause': True, 'consequence': True, 'safeguard': True, 'equipment': True}
 
         self.mode             = MODE_NAV
         self.pdf_doc          = None
@@ -3905,6 +4141,11 @@ class PIDGraphicsView(QGraphicsView):
         self._rband_dragging     = False
         # Last rubber-band rect from left-click placement modes (PDF coords)
         self._last_drawn_pdf_rect = None
+
+        # Ghost preview circle — follows the cursor in cause/consequence/
+        # safeguard placement modes, before the user clicks to place/size a
+        # marker. Shows what will be placed and roughly where.
+        self._ghost_preview_item = None
 
         # Zone rectangle overlays: (type_, id_) → {rect_item, handles:[4]}
         self._zone_rects: dict = {}
@@ -4332,6 +4573,7 @@ class PIDGraphicsView(QGraphicsView):
 
     def set_mode(self, mode):
         self._purge_rubber_band_state()
+        self._clear_ghost_preview()
 
         self.mode = mode
         if mode == MODE_NAV:
@@ -4689,35 +4931,23 @@ class PIDGraphicsView(QGraphicsView):
         return QPointF(closest_x, closest_y), dist
 
     def _extract_pdf_lines_for_page(self, page_num):
-        """Extract all visible line segments from a PDF page for snapping."""
+        """Extract all visible line segments from a PDF page for snapping.
+
+        Was previously always returning [] — get_drawings() returns plain
+        dicts, so the old hasattr(path, 'rects')/hasattr(path, 'lines')
+        checks were always False. Now delegates to the shared primitive
+        extractor in symbol_geometry.py (also used for equipment-symbol
+        clustering), so there is one source of truth for "what vector
+        geometry is really on this page".
+        """
         if not HAS_PYMUPDF or self.pdf_doc is None:
             return []
         if page_num in self._pdf_line_segments:
             return self._pdf_line_segments[page_num]
 
-        lines = []
         try:
             page = self.pdf_doc[page_num]
-            # Get all paths and shapes on the page
-            for path in page.get_drawings():
-                # Each drawing can contain lines, rectangles, etc.
-                rects = path.rects if hasattr(path, 'rects') else []
-                lines_in_path = path.lines if hasattr(path, 'lines') else []
-
-                # Add rectangle edges as line segments
-                for rect in rects:
-                    x0, y0, x1, y1 = rect
-                    lines.append((x0, y0, x1, y0))  # top
-                    lines.append((x1, y0, x1, y1))  # right
-                    lines.append((x1, y1, x0, y1))  # bottom
-                    lines.append((x0, y1, x0, y0))  # left
-
-                # Add line segments directly
-                for line in lines_in_path:
-                    x0, y0, x1, y1 = line
-                    lines.append((x0, y0, x1, y1))
-
-            self._pdf_line_segments[page_num] = lines
+            self._pdf_line_segments[page_num] = symbol_geometry.extract_line_segments(page)
         except Exception:
             self._pdf_line_segments[page_num] = []
 
@@ -5684,6 +5914,49 @@ class PIDGraphicsView(QGraphicsView):
         if rect_w is not None and rect_h is not None and rect_w > 0 and rect_h > 0:
             self.add_zone_rect('safeguard', sg_id, x_pdf, y_pdf, rect_w, rect_h)
 
+    def add_equipment_marker(self, marker_id, x_pdf, y_pdf, comp_type, tag='',
+                             confidence=0.0, outline_pdf=None):
+        """Draw an auto-detected equipment symbol marker: a semi-transparent
+        red shape tracing the detected symbol's outline (or a generic
+        valve-bowtie icon if no outline was captured), linked to `tag` via
+        geometric detection — see symbol_geometry.py / detect_equipment_symbols
+        and the "🎯 Hitta på P&ID" flow in EquipmentPanel."""
+        center = self.pdf_to_scene(x_pdf, y_pdf)
+        r = 12.0
+        pen = QPen(QColor(160, 0, 0), 1.5)
+        brush = QBrush(QColor(220, 20, 20, 90))
+
+        points = None
+        if outline_pdf:
+            try:
+                raw = json.loads(outline_pdf) if isinstance(outline_pdf, str) else outline_pdf
+                if raw and len(raw) >= 3:
+                    points = [self.pdf_to_scene(px, py) for px, py in raw]
+            except Exception:
+                points = None
+
+        if not points:
+            # Fallback: a generic valve-bowtie (two triangles meeting at the
+            # center) when no detected outline was captured for this marker.
+            cx, cy = center.x(), center.y()
+            points = [QPointF(cx - r, cy - r), QPointF(cx - r, cy + r), QPointF(cx, cy),
+                      QPointF(cx + r, cy - r), QPointF(cx + r, cy + r), QPointF(cx, cy)]
+
+        item = QGraphicsPolygonItem(QPolygonF(points))
+        item.setPen(pen)
+        item.setBrush(brush)
+        item.setZValue(Z_OVERLAY)
+        pct = int(round(confidence * 100))
+        tip = f"{tag + ': ' if tag else ''}{comp_type}\nAutodetekterad ({pct}% konfidens)"
+        item.setToolTip(tip)
+        item.setData(self._DATA_TYPE, 'equipment')
+        item.setData(self._DATA_ID, marker_id)
+        item.setAcceptHoverEvents(True)
+        self._add_tracked(item, 'equipment')
+
+        if tag:
+            self._place_label(tag, x_pdf, y_pdf, r, QColor(140, 0, 0), 'equipment')
+
     def _extract_tag_from_rect(self, pdf_rect: QRectF) -> tuple:
         """Extract tag text AND classify the P&ID symbol inside the rectangle.
 
@@ -6211,6 +6484,7 @@ class PIDGraphicsView(QGraphicsView):
                            MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE):
             if event.button() == Qt.MouseButton.LeftButton:
                 # Start rubber-band rectangle selection (or simple click)
+                self._clear_ghost_preview()
                 self._rect_start = sp
                 self._rect_item  = None
                 event.accept(); return
@@ -6464,6 +6738,9 @@ class PIDGraphicsView(QGraphicsView):
         elif self.mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD,
                            MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE) \
                 and self._rect_start is not None:
+            # Actively sizing a marker's rect — the ghost preview (shown before
+            # the click) is no longer needed; the dashed rect below takes over.
+            self._clear_ghost_preview()
             current = self.mapToScene(event.position().toPoint())
             rect = QRectF(self._rect_start, current).normalized()
             if self._rect_item is not None:
@@ -6474,14 +6751,7 @@ class PIDGraphicsView(QGraphicsView):
                 except RuntimeError as e: logging.warning(f"Failed to remove motion rect label: {e}")
                 self._rect_label = None
             # Color matches tree-panel visibility button: cause=red, cons=orange, sg=green
-            _mode_colors = {
-                MODE_CAUSE:           (QColor(0xe7, 0x4c, 0x3c), QColor(0xe7, 0x4c, 0x3c, 35)),
-                MODE_CONSEQUENCE:     (QColor(0xe6, 0x7e, 0x22), QColor(0xe6, 0x7e, 0x22, 35)),
-                MODE_SAFEGUARD:       (QColor(0x27, 0xae, 0x60), QColor(0x27, 0xae, 0x60, 35)),
-                MODE_CAUSE_TEMPLATE:  (QColor(0xe7, 0x4c, 0x3c), QColor(0xe7, 0x4c, 0x3c, 35)),
-                MODE_PLACE_EXISTING:  (QColor(0x14, 0x6e, 0xbe), QColor(0x14, 0x6e, 0xbe, 30)),
-            }
-            rc, fc = _mode_colors.get(self.mode, (QColor(0, 100, 220), QColor(0, 100, 220, 30)))
+            rc, fc = _PLACEMENT_MODE_COLORS.get(self.mode, (QColor(0, 100, 220), QColor(0, 100, 220, 30)))
             # Reuse existing item — just update geometry (same fix as right-drag rubber-band)
             if self._rect_item is None:
                 pen = QPen(rc, 1.5)
@@ -6493,7 +6763,43 @@ class PIDGraphicsView(QGraphicsView):
                 self._rect_item.setRect(rect)
             # No live tag extraction during drag (PDF read is slow — tag extracted on release)
             event.accept(); return
+        elif self.mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD,
+                           MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE) \
+                and self._rect_start is None:
+            # Not dragging yet — show a ghost circle at the cursor previewing
+            # what will be placed (color/size match the real marker).
+            self._update_ghost_preview(self.mapToScene(event.position().toPoint()))
+        elif self._ghost_preview_item is not None:
+            # Left the placement modes without going through _set_mode (e.g.
+            # programmatic mode change) — make sure the ghost doesn't linger.
+            self._clear_ghost_preview()
         super().mouseMoveEvent(event)
+
+    def _update_ghost_preview(self, scene_pos):
+        """Create/move the cursor-following ghost circle for placement modes."""
+        r = _PLACEMENT_MODE_RADIUS.get(self.mode, 12.0)
+        rc, fc = _PLACEMENT_MODE_COLORS.get(self.mode, (QColor(0, 100, 220), QColor(0, 100, 220, 30)))
+        rect = QRectF(scene_pos.x() - r, scene_pos.y() - r, 2 * r, 2 * r)
+        if self._ghost_preview_item is None:
+            pen = QPen(rc, 1.5)
+            pen.setStyle(Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            self._ghost_preview_item = self._scene.addEllipse(rect, pen, QBrush(fc))
+            self._ghost_preview_item.setZValue(Z_TEMP)
+            self._ghost_preview_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        else:
+            self._ghost_preview_item.setRect(rect)
+
+    def _clear_ghost_preview(self):
+        if self._ghost_preview_item is not None:
+            try: self._scene.removeItem(self._ghost_preview_item)
+            except RuntimeError as e: logging.warning(f"Failed to remove ghost preview: {e}")
+            self._ghost_preview_item = None
+
+    def leaveEvent(self, event):
+        # Mouse left the viewport — don't leave a stale ghost marker behind.
+        self._clear_ghost_preview()
+        super().leaveEvent(event)
 
     _LOD_THRESHOLD = 0.12   # view scale below which overview mode activates
 
@@ -8781,6 +9087,13 @@ class PIDPanel(QWidget):
                 self.viewer.add_safeguard_marker(
                     md['safeguard_id'], md['x'], md['y'], md.get('tag', ''), desc,
                     rect_w=md.get('rect_w'), rect_h=md.get('rect_h'))
+
+            for m in self.db.equipment_markers_for_page(page):
+                md = dict(m)
+                self.viewer.add_equipment_marker(
+                    md['id'], md['x'], md['y'], md.get('comp_type', ''),
+                    md.get('tag', ''), md.get('confidence', 0.0) or 0.0,
+                    outline_pdf=md.get('shape_outline'))
 
         # ── Draw ALL connections after all pages, so cross-page lines work ──────
         all_cause_pos = {}

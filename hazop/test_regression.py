@@ -1629,6 +1629,115 @@ class EscapeCancelsPlacementTests(unittest.TestCase):
             panel.deleteLater()
 
 
+class GhostPreviewMarkerTests(unittest.TestCase):
+    """Cursor-following ghost preview in cause/consequence/safeguard placement
+    modes: shows what will be placed before the first click, and must never
+    linger once placement is cancelled, a drag starts, or the mode changes —
+    a stale ghost item would visually overlap the real marker (see
+    _clear_ghost_preview() call sites).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_ghost_test_")
+        self.db_path = os.path.join(self._tmpdir, "test_project.db")
+        self.db = Database(path=self.db_path)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _move_to(self, view, scene_pos):
+        from PyQt6.QtCore import QPointF
+        view._update_ghost_preview(scene_pos)
+
+    def test_ghost_created_in_cause_mode(self):
+        from pid_viewer import PIDPanel, MODE_CAUSE
+        from PyQt6.QtCore import QPointF
+        panel = PIDPanel(self.db)
+        try:
+            panel._set_mode(MODE_CAUSE)
+            self.assertIsNone(panel.viewer._ghost_preview_item)
+            self._move_to(panel.viewer, QPointF(50, 50))
+            self.assertIsNotNone(panel.viewer._ghost_preview_item,
+                                  "Ghost circle must appear once in a placement mode")
+        finally:
+            panel.deleteLater()
+
+    def test_ghost_reused_not_recreated_on_move(self):
+        """Moving the cursor should update the existing item's geometry, not
+        create a new scene item each time (perf pattern already used by the
+        drag-rect / right-drag rubber-band previews)."""
+        from pid_viewer import PIDPanel, MODE_CONSEQUENCE
+        from PyQt6.QtCore import QPointF
+        panel = PIDPanel(self.db)
+        try:
+            panel._set_mode(MODE_CONSEQUENCE)
+            self._move_to(panel.viewer, QPointF(10, 10))
+            first = panel.viewer._ghost_preview_item
+            self._move_to(panel.viewer, QPointF(80, 40))
+            self.assertIs(panel.viewer._ghost_preview_item, first,
+                          "Same graphics item must be reused across moves")
+        finally:
+            panel.deleteLater()
+
+    def test_ghost_cleared_on_mode_change(self):
+        from pid_viewer import PIDPanel, MODE_SAFEGUARD, MODE_NAV
+        from PyQt6.QtCore import QPointF
+        panel = PIDPanel(self.db)
+        try:
+            panel._set_mode(MODE_SAFEGUARD)
+            self._move_to(panel.viewer, QPointF(20, 20))
+            self.assertIsNotNone(panel.viewer._ghost_preview_item)
+            panel._set_mode(MODE_NAV)
+            self.assertIsNone(panel.viewer._ghost_preview_item,
+                              "Switching away from a placement mode must clear the ghost")
+        finally:
+            panel.deleteLater()
+
+    def test_ghost_cleared_when_drag_starts(self):
+        """The moment the user presses the mouse button to start sizing the
+        marker's rect, the ghost must disappear — otherwise it would sit on
+        top of the dashed drag-rect preview at Z_TEMP."""
+        from pid_viewer import PIDPanel, MODE_CAUSE
+        from PyQt6.QtCore import QPointF
+        panel = PIDPanel(self.db)
+        try:
+            panel._set_mode(MODE_CAUSE)
+            self._move_to(panel.viewer, QPointF(30, 30))
+            self.assertIsNotNone(panel.viewer._ghost_preview_item)
+            panel.viewer._clear_ghost_preview()   # what mousePressEvent triggers
+            panel.viewer._rect_start = QPointF(30, 30)
+            self.assertIsNone(panel.viewer._ghost_preview_item)
+        finally:
+            panel.deleteLater()
+
+    def test_ghost_color_matches_mode(self):
+        """Ghost fill must match the mode's real marker color (cause=red,
+        consequence=orange, safeguard=green) — verified via the shared
+        _PLACEMENT_MODE_COLORS map rather than duplicated literals here."""
+        from pid_viewer import (PIDPanel, MODE_CAUSE, MODE_CONSEQUENCE,
+                                 MODE_SAFEGUARD, _PLACEMENT_MODE_COLORS)
+        from PyQt6.QtCore import QPointF
+        panel = PIDPanel(self.db)
+        try:
+            for mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD):
+                panel._set_mode(mode)
+                self._move_to(panel.viewer, QPointF(15, 15))
+                item = panel.viewer._ghost_preview_item
+                _, expected_fill = _PLACEMENT_MODE_COLORS[mode]
+                self.assertEqual(item.brush().color().rgb(), expected_fill.rgb())
+                panel.viewer._clear_ghost_preview()
+        finally:
+            panel.deleteLater()
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 6. Worksheet page: ScenarioTablePanel "all nodes" mode + HAZOPWorksheet
 #    node-picker/checkbox wiring (feature: Worksheet mirrors the full HAZOP
@@ -2795,6 +2904,215 @@ class ConsequenceStepPickerColumnsTests(unittest.TestCase):
             self.assertIsNotNone(pos)
         finally:
             panel.deleteLater()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 7. Equipment markers ("🎯 Hitta på P&ID" autodetect feature) — DB round
+#    trip for the new equipment_markers table, and a headless smoke test of
+#    EquipmentMarkerReviewDialog. Geometric detection itself (clustering,
+#    leader-line resolution) is covered separately in test_symbol_geometry.py.
+# ══════════════════════════════════════════════════════════════════════════
+
+class EquipmentMarkersDbTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_eqmarker_test_")
+        self.db_path = os.path.join(self._tmpdir, "test_project.db")
+        self.db = Database(path=self.db_path)
+        cur = self.db.conn.execute(
+            "INSERT INTO equipment_catalog (tag, prefix, pid_page, equipment_type) "
+            "VALUES (?,?,?,?)", ("V-101", "V", 0, "Ventil"))
+        self.db.commit()
+        self.equipment_id = cur.lastrowid
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_add_and_list_marker(self):
+        mid = self.db.add_equipment_marker(
+            self.equipment_id, "V-101", 0, 100.0, 100.0, "Ventil",
+            shape_outline='[[90,90],[110,90],[110,110],[90,110]]',
+            confidence=0.95, link_method='leader')
+        self.assertIsNotNone(mid)
+        rows = [dict(r) for r in self.db.equipment_markers_for_page(0)]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['tag'], 'V-101')
+        self.assertEqual(rows[0]['link_method'], 'leader')
+        self.assertAlmostEqual(rows[0]['confidence'], 0.95)
+
+    def test_delete_marker(self):
+        mid = self.db.add_equipment_marker(self.equipment_id, "V-101", 0, 1, 1, "Ventil")
+        self.db.delete_equipment_marker(mid)
+        self.assertEqual(len(self.db.equipment_markers_for_page(0)), 0)
+
+    def test_cascade_delete_when_equipment_catalog_row_removed(self):
+        """equipment_markers.equipment_id has ON DELETE CASCADE — deleting the
+        underlying equipment_catalog row (e.g. via 'Rensa utrustning' or a
+        rescan) must not leave orphaned marker rows behind."""
+        self.db.add_equipment_marker(self.equipment_id, "V-101", 0, 1, 1, "Ventil")
+        self.db.conn.execute("DELETE FROM equipment_catalog WHERE id=?", (self.equipment_id,))
+        self.db.commit()
+        self.assertEqual(len(self.db.equipment_markers_for_page(0)), 0,
+            "marker must be cascade-deleted when its equipment_catalog row is removed")
+
+    def test_markers_scoped_by_page(self):
+        self.db.add_equipment_marker(self.equipment_id, "V-101", 0, 1, 1, "Ventil")
+        self.db.add_equipment_marker(self.equipment_id, "V-101", 3, 2, 2, "Ventil")
+        self.assertEqual(len(self.db.equipment_markers_for_page(0)), 1)
+        self.assertEqual(len(self.db.equipment_markers_for_page(3)), 1)
+        self.assertEqual(len(self.db.equipment_markers_for_page(1)), 0)
+
+
+class EquipmentMarkerReviewDialogTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_eqdialog_test_")
+        self.db_path = os.path.join(self._tmpdir, "test_project.db")
+        self.db = Database(path=self.db_path)
+        cur = self.db.conn.execute(
+            "INSERT INTO equipment_catalog (tag, prefix, pid_page, equipment_type) "
+            "VALUES (?,?,?,?)", ("V-101", "V", 0, "Ventil"))
+        self.db.commit()
+        self.equipment_id = cur.lastrowid
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _sample_results(self):
+        return [
+            {'tag': 'V-101', 'page': 0, 'comp_type': 'Ventil', 'x': 100.0, 'y': 100.0,
+             'confidence': 0.95, 'link_method': 'leader',
+             'outline': [[90, 90], [110, 90], [110, 110], [90, 110]],
+             'equipment_id': self.equipment_id},
+            {'tag': 'V-999', 'page': 0, 'comp_type': 'Ventil', 'x': 0.0, 'y': 0.0,
+             'confidence': 0.0, 'link_method': 'not_found',
+             'outline': [], 'equipment_id': None},
+        ]
+
+    def test_table_populates_from_results(self):
+        from pid_viewer import EquipmentMarkerReviewDialog
+        dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db)
+        try:
+            self.assertEqual(dlg._tbl.rowCount(), 2)
+            self.assertEqual(dlg._tbl.item(0, dlg._C_TAG).text(), 'V-101')
+        finally:
+            dlg.deleteLater()
+
+    def test_high_confidence_row_defaults_checked_low_confidence_unchecked(self):
+        from pid_viewer import EquipmentMarkerReviewDialog
+        from PyQt6.QtCore import Qt
+        dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db)
+        try:
+            self.assertEqual(dlg._tbl.item(0, dlg._C_CHK).checkState(), Qt.CheckState.Checked)
+            self.assertEqual(dlg._tbl.item(1, dlg._C_CHK).checkState(), Qt.CheckState.Unchecked)
+        finally:
+            dlg.deleteLater()
+
+    def test_save_writes_only_checked_rows(self):
+        from pid_viewer import EquipmentMarkerReviewDialog
+        dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db)
+        try:
+            dlg._save()
+            rows = [dict(r) for r in self.db.equipment_markers_for_page(0)]
+            self.assertEqual(len(rows), 1, "only the checked (found) row should be saved")
+            self.assertEqual(rows[0]['tag'], 'V-101')
+        finally:
+            dlg.deleteLater()
+
+    def test_save_with_nothing_checked_does_not_write_and_does_not_crash(self):
+        from pid_viewer import EquipmentMarkerReviewDialog
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtWidgets import QMessageBox
+        dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db)
+        try:
+            for r in range(dlg._tbl.rowCount()):
+                dlg._tbl.item(r, dlg._C_CHK).setCheckState(Qt.CheckState.Unchecked)
+            with unittest.mock.patch.object(QMessageBox, 'information'):
+                dlg._save()
+            self.assertEqual(len(self.db.equipment_markers_for_page(0)), 0)
+        finally:
+            dlg.deleteLater()
+
+    def test_editing_tag_cell_corrects_the_saved_tag(self):
+        """Editing the Tagg column before saving must use the corrected text,
+        not the original (possibly wrong) detected tag — this is the 'edit
+        errors before saving' mechanism the review dialog exists for."""
+        from pid_viewer import EquipmentMarkerReviewDialog
+        dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db)
+        try:
+            dlg._tbl.item(0, dlg._C_TAG).setText('V-101A')
+            dlg._save()
+            rows = [dict(r) for r in self.db.equipment_markers_for_page(0)]
+            self.assertEqual(rows[0]['tag'], 'V-101A')
+        finally:
+            dlg.deleteLater()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 8. _reload_all_panels() must swap self.db on EVERY panel that holds its
+#    own db reference. Real bug found in production: HAZOPWorksheet (and
+#    its embedded ScenarioTablePanel), RedMarkupPanel and
+#    RedMarkupTablePanel were missing from the panel list — after "Nytt
+#    projekt" / "Öppna .hzp" closed the old connection and opened a new
+#    one, clicking the Worksheet tab crashed with sqlite3.ProgrammingError
+#    ("Cannot operate on a closed database") because HAZOPWorksheet.refresh()
+#    -> _populate_node_combo() -> self.db.nodes() still ran against the OLD,
+#    now-closed Database object.
+# ══════════════════════════════════════════════════════════════════════════
+
+class ReloadAllPanelsDbSwapTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_worksheet_and_its_embedded_table_panel_get_new_db(self):
+        with _TempDbMainWindow() as win:
+            old_db = win.db
+            # Simulate what _hzp_new/_load_hzp do: close the old connection,
+            # swap in a brand new Database, then run the same fix-up step.
+            old_db.conn.close()
+            win.db = hazop.Database(path=old_db.path)
+            win._reload_all_panels()
+            self.assertIs(win.worksheet.db, win.db,
+                "HAZOPWorksheet must receive the new db reference")
+            self.assertIs(win.worksheet._table_panel.db, win.db,
+                "HAZOPWorksheet's embedded ScenarioTablePanel must also receive the new db reference")
+            self.assertIs(win.red_markup_panel.db, win.db)
+            self.assertIs(win.red_markup_table_panel.db, win.db)
+
+    def test_worksheet_refresh_does_not_crash_after_db_swap(self):
+        """End-to-end regression for the exact reported crash: switching to
+        the Worksheet tab after a db swap must not raise
+        sqlite3.ProgrammingError('Cannot operate on a closed database')."""
+        with _TempDbMainWindow() as win:
+            old_db = win.db
+            old_db.conn.execute(
+                "INSERT INTO nodes (name, markup_points, markup_style, pid_page) "
+                "VALUES ('N-1', '[]', '{}', 0)")
+            old_db.commit()
+
+            old_db.conn.close()
+            win.db = hazop.Database(path=old_db.path)
+            win._reload_all_panels()
+
+            try:
+                win.worksheet.refresh()
+            except sqlite3.ProgrammingError as e:
+                self.fail(f"worksheet.refresh() must not touch the closed old db, raised: {e!r}")
 
 
 if __name__ == '__main__':
