@@ -678,6 +678,95 @@ class ClosedShapeFilterTests(unittest.TestCase):
         self.assertTrue(feats['has_closed_or_filled'])
 
 
+class ClosedLoopFilterTests(unittest.TestCase):
+    """_has_closed_loop() — replaces has_closed_or_filled as the valve
+    filter's "is this really a closed shape" check. Found necessary on
+    real Sunpine/Swerim/ITS P&IDs: they draw a valve's two triangles as
+    separate UNCLOSED 'l' segments with no fill (closePath=False, no
+    fill color) — has_closed_or_filled rejected these as false negatives
+    (confirmed: roughly a third to two thirds of otherwise-valid bow-tie
+    candidates on sampled pages from those files used this convention).
+    _has_closed_loop instead checks whether the segments' endpoints
+    trace an actual cycle, tolerant of the small real-world gap (~3.5pt
+    on a real Swerim valve) some exports leave at one corner."""
+
+    def test_open_stroke_triangle_with_real_world_gap_closes(self):
+        """Reproduces a real Swerim valve's exact triangle coordinates:
+        3 unclosed 'l' segments whose supposed shared corner is off by
+        3.48pt (192, matching the source dict's own coordinates) rather
+        than landing exactly on top of each other."""
+        doc, page = _new_page()
+        shape = page.new_shape()
+        shape.draw_line(fitz.Point(93.8, 15.32), fitz.Point(97.28, 15.32))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(97.28, 15.32), fitz.Point(93.8, 22.4))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(97.28, 22.4), fitz.Point(93.8, 15.32))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        self.assertEqual(len(groups), 1)
+        self.assertFalse(sg.cluster_features(prims, groups[0])['has_closed_or_filled'],
+            "sanity check: none of these 3 segments is individually closed/filled")
+        self.assertTrue(sg._has_closed_loop(prims, groups[0]),
+            "3 unclosed segments whose endpoints nearly coincide must still register as a closed loop")
+
+    def test_open_zigzag_does_not_close(self):
+        """The real false positive this filter must still reject: the
+        vector-drawn "M" glyph's open zigzag (see ClosedShapeFilterTests)
+        — its loose ends are 8.6pt apart, well beyond the tolerance that
+        correctly closes the Swerim valve's 3.48pt gap above."""
+        doc, page = _new_page()
+        shape = page.new_shape()
+        shape.draw_line(fitz.Point(90, 110), fitz.Point(90, 90))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(90, 90), fitz.Point(100, 100))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(100, 100), fitz.Point(110, 90))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(110, 90), fitz.Point(110, 110))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        self.assertEqual(len(groups), 1)
+        self.assertFalse(sg._has_closed_loop(prims, groups[0]),
+            "an open zigzag must never register as a closed loop, at any real gap size")
+
+    def test_pipe_corner_bend_does_not_close(self):
+        """A simple two-segment corner (an ordinary pipe elbow) must not
+        register as closed — guards against the tolerance merge being so
+        loose it treats any two nearby segments as a loop."""
+        doc, page = _new_page()
+        shape = page.new_shape()
+        shape.draw_line(fitz.Point(50, 50), fitz.Point(50, 70))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(50, 70), fitz.Point(70, 70))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        prims = sg.extract_primitives(page)
+        doc.close()
+        self.assertFalse(sg._has_closed_loop(prims, [0, 1]))
+
+    def test_closed_quad_uses_fast_path(self):
+        """A real self-intersecting quad (closed=True by construction,
+        see extract_primitives) must pass via the fast path without
+        needing the graph walk."""
+        doc, page = _new_page()
+        shape = page.new_shape()
+        q = fitz.Quad(fitz.Point(90, 90), fitz.Point(110, 110),
+                      fitz.Point(90, 110), fitz.Point(110, 90))
+        shape.draw_quad(q)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        prims = sg.extract_primitives(page)
+        doc.close()
+        self.assertTrue(sg._has_closed_loop(prims, [0]))
+
+
 class BowtieScoreTests(unittest.TestCase):
     """bowtie_score() — "🦋 Hitta ventilformer" identifies valves by their
     bow-tie/hourglass silhouette (wide-narrow-wide) rather than requiring a

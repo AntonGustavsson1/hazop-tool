@@ -3654,21 +3654,21 @@ class BowtieValveDetectionTests(unittest.TestCase):
         be an interesting near-miss."""
         from equipment_detection import _valve_rejection_reason
         near_miss = {'bowtie_score': 0.7, 'aspect': 5.0, 'norm_size': 10.0,
-                     'has_diagonal': True, 'has_closed_or_filled': True}
+                     'has_diagonal': True, 'has_closed_loop': True}
         reason = _valve_rejection_reason(near_miss, min_bowtie_score=0.5)
         self.assertIsNotNone(reason)
         self.assertIn('avlångt', reason.lower())
 
         too_far_off = {'bowtie_score': 0.1, 'aspect': 5.0, 'norm_size': 10.0,
-                       'has_diagonal': True, 'has_closed_or_filled': True}
+                       'has_diagonal': True, 'has_closed_loop': True}
         self.assertIsNone(_valve_rejection_reason(too_far_off, min_bowtie_score=0.5))
 
         passes_all = {'bowtie_score': 0.7, 'aspect': 1.5, 'norm_size': 10.0,
-                      'has_diagonal': True, 'has_closed_or_filled': True}
+                      'has_diagonal': True, 'has_closed_loop': True}
         self.assertIsNone(_valve_rejection_reason(passes_all, min_bowtie_score=0.5))
 
         no_closed_shape = {'bowtie_score': 0.7, 'aspect': 1.5, 'norm_size': 10.0,
-                            'has_diagonal': True, 'has_closed_or_filled': False}
+                            'has_diagonal': True, 'has_closed_loop': False}
         reason2 = _valve_rejection_reason(no_closed_shape, min_bowtie_score=0.5)
         self.assertIsNotNone(reason2)
         self.assertIn('sluten', reason2.lower())

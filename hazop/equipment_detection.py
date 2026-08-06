@@ -1383,16 +1383,25 @@ def find_valve_shapes(pdf_doc, pages=None, min_bowtie_score=0.5, progress_callba
     diagonal segment; pipe crossings, title-block grids, and instrument-
     bubble stems cannot.
 
-    A third filter requires has_closed_or_filled — a real bow-tie is
-    always a closed shape (a single self-intersecting quad, always
-    closed=True, or two closed/filled triangle paths). Found on a real
-    LKAB P&ID: the vector-drawn letter "M" (motor label text drawn as
-    outline strokes, not searchable text) has two verticals meeting at a
-    point in the middle — an open zigzag that reads as a textbook
-    wide-narrow-wide silhouette (bowtie_score 0.85) but is never a closed
-    path, unlike every confirmed real valve on that page. The same check
-    also rejected a nearby pump assembly (motor + impeller circle) that
-    had bridged into one cluster with that same "M".
+    A third filter requires has_closed_loop (symbol_geometry._has_closed_loop)
+    — a real bow-tie always contains at least one closed loop of edges,
+    however it's drawn (a single self-intersecting quad, closed/filled
+    triangle paths, or — confirmed on real Sunpine/Swerim/ITS P&IDs — two
+    triangles drawn as separate UNCLOSED line segments with no fill,
+    where only the segments' endpoints forming a cycle prove it's really
+    closed). Found on a real LKAB P&ID: the vector-drawn letter "M"
+    (motor label text drawn as outline strokes, not searchable text) has
+    two verticals meeting at a point in the middle — an open zigzag that
+    reads as a textbook wide-narrow-wide silhouette (bowtie_score 0.85)
+    but never closes into a loop, unlike every confirmed real valve on
+    that page. The same check also rejected a nearby pump assembly
+    (motor + impeller circle) that had bridged into one cluster with
+    that same "M". An earlier, simpler version of this filter
+    (has_closed_or_filled — require an explicit closed=True/filled=True
+    primitive) rejected those false positives too, but ALSO rejected a
+    large fraction of genuine valves on Sunpine/Swerim/ITS files that use
+    the open-stroke convention — has_closed_loop replaced it for that
+    reason.
     """
     if not HAS_PYMUPDF or pdf_doc is None:
         return []
@@ -1424,9 +1433,9 @@ def find_valve_shapes(pdf_doc, pages=None, min_bowtie_score=0.5, progress_callba
                 # instrument-bubble's straight stems, never an actual
                 # bow-tie valve body (whose triangle edges are diagonal).
                 continue
-            if not cluster['has_closed_or_filled']:
-                # A real bow-tie is always a closed shape. Rejects e.g. a
-                # vector-drawn "M" (motor) label glyph — its open zigzag
+            if not cluster['has_closed_loop']:
+                # A real bow-tie always contains a closed loop of edges.
+                # Rejects e.g. a vector-drawn "M" (motor) label glyph — its open zigzag
                 # strokes coincidentally read as wide-narrow-wide too.
                 continue
             x0, y0, x1, y1 = cluster['bbox']
@@ -1543,7 +1552,7 @@ def _valve_rejection_reason(cluster, min_bowtie_score=0.5):
         (not (1.5 <= cluster['norm_size'] <= 40.0),
          f"Fel storlek relativt sidans text (norm_size {cluster['norm_size']:.1f})"),
         (not cluster['has_diagonal'], "Ingen diagonal linje (kan inte vara en bow-tie-ventil)"),
-        (not cluster['has_closed_or_filled'],
+        (not cluster['has_closed_loop'],
          "Ingen sluten form (kan inte vara en bow-tie-ventil)"),
     ]
     failed = [reason for is_failed, reason in checks if is_failed]
@@ -1798,7 +1807,7 @@ def detect_equipment_and_valves(pdf_doc, tag_points, pages=None,
                       and cluster['aspect'] <= 3.0
                       and 1.5 <= cluster['norm_size'] <= 40.0
                       and cluster['has_diagonal']
-                      and cluster['has_closed_or_filled'])
+                      and cluster['has_closed_loop'])
             if not passes:
                 reason = _valve_rejection_reason(cluster, min_bowtie_score)
                 if reason:

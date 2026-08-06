@@ -669,6 +669,91 @@ def _cluster_core(primitives, group, text_bboxes=None):
     return list(core)
 
 
+_LOOP_CLOSURE_TOL = 4.0   # pt — endpoints within this distance count as
+                          # the same point when checking for a closed
+                          # loop of edges. Must comfortably exceed the
+                          # small real-world gap some CAD exports leave
+                          # at a triangle's own base (~3.5pt measured on
+                          # a real Sunpine/Swerim valve) while staying
+                          # well under an unrelated open shape's gap
+                          # (~8.6pt for the vector-drawn "M" glyph in
+                          # ClosedShapeFilterTests).
+
+
+def _has_closed_loop(primitives, group, tol=_LOOP_CLOSURE_TOL):
+    """Does this cluster contain at least one closed loop of edges — the
+    signature of a genuine bow-tie body, however it happens to be drawn?
+
+    cluster_features()['has_closed_or_filled'] (an explicit closed=True
+    or filled=True primitive) is what this codebase originally used to
+    tell a real valve apart from an open shape like a double-rendered
+    tag-text glyph (see ClosedShapeFilterTests) — but that check turned
+    out to reject GENUINE valves too: confirmed on real Sunpine, Swerim
+    and ITS P&IDs, which draw a valve's two triangles as separate
+    unclosed 'l' segments (closePath=False, no fill) — visually a crisp
+    closed bow-tie, but with no primitive individually marked closed or
+    filled. On a sample Sunpine/ITS/Gryaab page, roughly a third to two
+    thirds of otherwise-valid bow-tie candidates used this "open-stroke"
+    convention — a widespread pattern, not a one-off.
+
+    Fast path: any 're'/'qu' primitive is closed by construction (see
+    extract_primitives), and any 'filled' primitive implies a closed
+    outline too — either settles it immediately, covering the LKAB-style
+    self-intersecting quad and the closed/filled two-triangle convention
+    without the cost of the graph walk below.
+
+    Otherwise, build a graph from every 'l'/'c' segment's endpoints
+    (merging endpoints within `tol` into one node) and check whether any
+    connected component has at least as many edges as nodes — only
+    possible if that component contains a cycle. A real open shape (the
+    "M" glyph's zigzag, a pipe corner, a T-junction) never satisfies
+    this regardless of tolerance; a triangle missing only its exact
+    corner-point precision does.
+    """
+    members = [primitives[i] for i in group]
+    if any(m['closed'] or m['filled'] for m in members):
+        return True
+
+    segments = [(m['p0'], m['p1']) for m in members if m['kind'] in ('l', 'c')]
+    if len(segments) < 3:
+        return False
+
+    nodes = []
+
+    def find_or_add(p):
+        for idx, q in enumerate(nodes):
+            if _dist(p, q) <= tol:
+                return idx
+        nodes.append(p)
+        return len(nodes) - 1
+
+    edges = [(find_or_add(p0), find_or_add(p1)) for p0, p1 in segments]
+
+    parent = list(range(len(nodes)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i0, i1 in edges:
+        r0, r1 = find(i0), find(i1)
+        if r0 != r1:
+            parent[r0] = r1
+
+    comp_nodes = {}
+    comp_edges = {}
+    for i in range(len(nodes)):
+        comp_nodes.setdefault(find(i), set()).add(i)
+    for i0, i1 in edges:
+        root = find(i0)
+        comp_edges[root] = comp_edges.get(root, 0) + 1
+
+    return any(comp_edges.get(root, 0) >= len(members_)
+               for root, members_ in comp_nodes.items())
+
+
 def find_symbol_clusters(page, min_confidence=0.3):
     """Extract, cluster, and score all vector-drawn symbol candidates on a
     page. Returns a list of dicts (cluster features + 'confidence' +
@@ -705,6 +790,7 @@ def find_symbol_clusters(page, min_confidence=0.3):
             core_feats = cluster_features(primitives, core, page_text_scale=scale)
             feats = {**feats, 'bbox': core_feats['bbox'], 'aspect': core_feats['aspect'],
                       'norm_size': core_feats['norm_size'], 'has_diagonal': core_feats['has_diagonal']}
+        feats['has_closed_loop'] = _has_closed_loop(primitives, core)
         x0, y0, x1, y1 = feats['bbox']
         results.append({
             **feats, 'confidence': conf,
