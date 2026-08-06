@@ -200,6 +200,37 @@
 
 ---
 
+## Utrustningsregistret / "Identifierade objekt" — riktig omskrivning till modell/vy (2026-08-06)
+
+**Bakgrund:** Föregående fix (ovan) sköt bara upp kostnaden till första gången fliken öppnas — grundproblemet (`QTableWidget` med en riktig `QComboBox`/`QPushButton`-widget per rad) fanns kvar. Användaren bad om en riktig omskrivning istället för att bara skjuta upp problemet.
+
+**Root cause bekräftad med benchmark:** Att fylla en `QTableWidget` med bara `QTableWidgetItem` (inga cell-widgets) för 10 215 rader tog **0.12 s**. Att göra samma sak men med en `QComboBox` + `QPushButton` per rad (som originalkoden gjorde) tog **superlinjärt lång tid** (~9 s även med `setUpdatesEnabled(False)`/`blockSignals(True)`, växande brant efter ~6000 rader) — Qts interna hantering av persistenta cell-widgets (`setCellWidget`/`setIndexWidget`) skalar dåligt, inte radantalet eller `QTableWidgetItem` i sig.
+
+**Fix — modell/vy-arkitektur:** Ersatte `QTableWidget` med `QTableView` + `QAbstractTableModel` i båda panelerna, och ersatte de per-rad-widgetarna med delegates som bara skapar en riktig widget medan en cell faktiskt redigeras:
+
+- `_EquipmentTableModel` / `_IdentifiedTagsModel` (`QAbstractTableModel`): raderna hålls som vanliga `dict`-objekt i minnet (billigt); `setData()` skriver igenom till databasen direkt och `dataChanged` triggar en repaint av bara den cellen — ingen widget skapas för celler som inte redigeras.
+- `_ComboBoxCellDelegate` (delad av båda panelerna): `createEditor()` skapar en `QComboBox` bara medan cellen redigeras (`editor.showPopup()` öppnar den direkt vid klick för att matcha känslan av en alltid-synlig dropdown); stängs/förstörs när redigeringen avslutas. En vy-nivå `clicked`-koppling anropar `view.edit(index)` för typ-kolumnen så ett enkelklick öppnar den, som innan.
+- `_ButtonCellDelegate` ("Ta bort"-kolumnen i Utrustningsregistret): ritar en knapp-look med `QStyle.drawControl(CE_PushButton, ...)` och hanterar klick i `editorEvent()` — ingen `QPushButton`-instans lagras per rad.
+- Kryssrutekolumnerna (`✓` / "Använd") behöver ingen custom delegate — `QStyledItemDelegate`s inbyggda hantering av `Qt.ItemFlag.ItemIsUserCheckable` + `CheckStateRole` sköter klick-för-att-toggla automatiskt (samma mekanism som `QTableWidget` redan använde under huven).
+- `_EquipmentFilterProxy` (`QSortFilterProxyModel`) ersatte den gamla `setRowHidden()`-loopen för sök-/OCR-filtret.
+
+**Ny bugg hittad och fixad under omskrivningen:** Den uppenbara vägen för "Välj alla"/"Avmarkera alla" (`_bulk_check`/`_bulk_confirm`) — att anropa `model.setData()` en gång per rad — visade sig ta **>90 sekunder och timeoutade** för 10 255 rader, eftersom varje `setData()`-anrop gör sin egen `conn.commit()` (korrekt för en enskild cellredigering, men katastrofalt i en loop över tusentals rader — SQLite-commits är inte gratis, särskilt inte över OneDrive-synkad lagring). Lade till `bulk_set_include()` / `bulk_set_confirmed()` som skriver alla rader med `executemany()` + **en enda** `commit()`.
+
+**Resultat (uppmätt, 10 254 respektive 3 153 rader i en isolerad testkopia av databasen):**
+| Operation | Före | Efter |
+|---|---|---|
+| Öppna Utrustningsregistret (`refresh()`) | ~60–80 s | **0.06 s** |
+| Öppna "Identifierade objekt" (`refresh()`) | ~33–46 s | **0.005 s** |
+| "Välj alla" / "Avmarkera alla" | (aldrig testat vid denna skala förut) | **0.07 s / 0.008 s** |
+
+**Bevarad funktionalitet (verifierat, inte bara antaget):** taggredigering (uppdaterar prefix + föreslår typ om tom, precis som förut), typ-combo, beskrivning, kryssruta (✓/Använd — verifierat med en riktig simulerad musklick via `QTest.mouseClick`, inte bara direkta modell-anrop), radborttagning (verifierat med riktig musklick på "Ta bort"), filter (sök-text + "Visa OCR"), bulk-val, "🏭 Skapa HAZOP-noder" och "🎯 Hitta på P&ID" (läser nu direkt från modellens `rows()` istället för att läsa `QTableWidgetItem`-text — enklare och mer robust). `EquipmentPanel._scan()` oförändrad och täcks redan av `test_equipment_panel_scan_writes_both_tables`.
+
+**Känd, avsiktlig UX-skillnad:** Typ-kolumnen är inte längre en permanent synlig dropdown-widget — den visas som vanlig text och blir en riktig combo-box vid enkelklick (dropdown öppnas direkt). Motiverat av att en riktig widget per rad är just vad som gjorde tabellerna långsamma.
+
+**Test:** Alla 107 tester i `test_regression.py` passerar. Manuellt verifierat i en offscreen Qt-session mot en isolerad kopia av `hazop_project.db` (via SQLites backup-API, inte en rå filkopia — projektet kör WAL-läge så en `cp` av bara `.db`-filen missar ej-checkpointade rader i `.db-wal`): alla redigeringar skriver korrekt till databasen, `_ButtonCellDelegate`/`_ComboBoxCellDelegate`/kryssrutor målas utan fel (`.grab()`), och tre interaktionsvägar (kryssruta, "Ta bort", typ-combo) verifierade end-to-end med riktiga `QTest.mouseClick`-händelser genom hela vy→delegate→modell→databas-kedjan.
+
+---
+
 ## Stabilitetsgenomgång (2026-08-02)
 
 **Bakgrund:** En serie krascher (app stängdes tyst vid klick på orsak-markör, röd markup m.m.) spårades och åtgärdades i flera omgångar med parallella granskningsagenter, följt av en implementationsomgång och två oberoende slutgranskningar.

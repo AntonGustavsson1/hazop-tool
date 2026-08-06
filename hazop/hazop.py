@@ -29,16 +29,19 @@ from PyQt6.QtWidgets import (
     QTabWidget,
     QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout,
     QLineEdit, QTextEdit, QLabel, QPushButton,
-    QTableWidget, QTableWidgetItem, QHeaderView,
+    QTableWidget, QTableWidgetItem, QHeaderView, QTableView,
     QComboBox, QDialog, QDialogButtonBox,
     QMessageBox, QFileDialog, QGroupBox,
     QMenu, QToolBar, QStatusBar, QSizePolicy,
     QSpinBox, QDoubleSpinBox, QSlider, QColorDialog, QFrame, QListWidget, QListWidgetItem,
     QProgressDialog, QAbstractItemView, QToolTip, QInputDialog, QCheckBox,
-    QStyledItemDelegate, QStyleOptionViewItem, QStyle,
+    QStyledItemDelegate, QStyleOptionViewItem, QStyle, QStyleOptionButton,
     QButtonGroup, QRadioButton,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPointF, QRectF, QRect, QPoint, QTimer, QMimeData, QEvent
+from PyQt6.QtCore import (
+    Qt, pyqtSignal, QSize, QPointF, QRectF, QRect, QPoint, QTimer, QMimeData, QEvent,
+    QAbstractTableModel, QModelIndex, QSortFilterProxyModel,
+)
 from PyQt6.QtGui import QFont, QFontMetrics, QColor, QAction, QBrush, QPen, QPainter, QDrag, QPainterPath, QPixmap, QIcon, QPolygonF, QShortcut, QKeySequence, QCursor, QPalette
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -13557,6 +13560,167 @@ class ComponentEditorPanel(QWidget):
             self._mode_table.blockSignals(False)
 
 
+class _ComboBoxCellDelegate(QStyledItemDelegate):
+    """Editable-combo-box cell for a QTableView, without a persistent QComboBox
+    per row. The combo only exists while a cell is actually being edited —
+    used by PIDAnalysisPanel and EquipmentPanel, both of which used to embed
+    one real QComboBox per row via setCellWidget(); with thousands of rows
+    that alone took tens of seconds to build. Pair with a view whose
+    `clicked` signal calls view.edit(index) for this column so a single
+    click opens the dropdown, matching the old always-visible-combo feel."""
+
+    def __init__(self, items, parent=None):
+        super().__init__(parent)
+        self._items = items
+
+    def createEditor(self, parent, option, index):
+        combo = QComboBox(parent)
+        combo.addItems(self._items)
+        return combo
+
+    def setEditorData(self, editor, index):
+        text = index.data(Qt.ItemDataRole.EditRole) or ''
+        i = editor.findText(text)
+        editor.setCurrentIndex(i if i >= 0 else 0)
+        editor.showPopup()
+
+    def setModelData(self, editor, model, index):
+        model.setData(index, editor.currentText(), Qt.ItemDataRole.EditRole)
+
+
+class _ButtonCellDelegate(QStyledItemDelegate):
+    """Paints a push-button label in a QTableView cell without a persistent
+    QPushButton per row (same rationale as _ComboBoxCellDelegate above).
+    on_click(index) is called with the *view's* model index (which may be a
+    proxy index — map through the proxy before touching the source model)."""
+
+    def __init__(self, text, on_click, parent=None):
+        super().__init__(parent)
+        self._text     = text
+        self._on_click = on_click
+
+    def paint(self, painter, option, index):
+        opt = QStyleOptionButton()
+        opt.rect  = option.rect.adjusted(3, 2, -3, -2)
+        opt.text  = self._text
+        opt.state = QStyle.StateFlag.State_Enabled
+        QApplication.style().drawControl(QStyle.ControlElement.CE_PushButton, opt, painter)
+
+    def editorEvent(self, event, model, option, index):
+        if (event.type() == QEvent.Type.MouseButtonRelease
+                and option.rect.contains(event.pos())):
+            self._on_click(index)
+            return True
+        return False
+
+    def createEditor(self, parent, option, index):
+        return None   # never a real editor widget — clicks are handled above
+
+
+_PA_CODE, _PA_EX, _PA_SUGG, _PA_TYPE, _PA_USE = range(5)
+_PA_HEADERS = ['Prefix', 'Exempeltaggar', 'Databas-förslag', 'Komponenttyp', 'Använd ✓']
+
+
+class _IdentifiedTagsModel(QAbstractTableModel):
+    """Backs PIDAnalysisPanel's QTableView. Rows are kept as plain dicts in
+    memory (cheap) and DB writes happen in setData() — no per-row widgets."""
+
+    def __init__(self, db: Database, parent=None):
+        super().__init__(parent)
+        self.db    = db
+        self._rows = []   # list[dict], one per pid_identified_tags row
+
+    def load(self):
+        self.beginResetModel()
+        self._rows = [dict(r) for r in self.db.pid_identified_tags()]
+        self.endResetModel()
+
+    def rows(self):
+        return self._rows
+
+    def rowCount(self, parent=QModelIndex()):
+        return 0 if parent.isValid() else len(self._rows)
+
+    def columnCount(self, parent=QModelIndex()):
+        return 5
+
+    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
+        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
+            return _PA_HEADERS[section]
+        return None
+
+    def flags(self, index):
+        base = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        col = index.column()
+        if col == _PA_TYPE:
+            return base | Qt.ItemFlag.ItemIsEditable
+        if col == _PA_USE:
+            return base | Qt.ItemFlag.ItemIsUserCheckable
+        return base
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid():
+            return None
+        row = self._rows[index.row()]
+        col = index.column()
+        if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
+            if col == _PA_CODE: return row['tag_code']
+            if col == _PA_EX:   return row['examples'] or ''
+            if col == _PA_SUGG: return row['name_sv'] or '—'
+            if col == _PA_TYPE: return row['comp_type'] or ''
+            return None
+        if role == Qt.ItemDataRole.CheckStateRole and col == _PA_USE:
+            return Qt.CheckState.Checked if row['confirmed'] else Qt.CheckState.Unchecked
+        if role == Qt.ItemDataRole.FontRole and col == _PA_CODE:
+            return QFont('Courier', 10)
+        if role == Qt.ItemDataRole.ForegroundRole:
+            if col == _PA_EX:   return QBrush(QColor('#555555'))
+            if col == _PA_SUGG: return QBrush(QColor('#8D9299'))
+        if role == Qt.ItemDataRole.TextAlignmentRole and col == _PA_USE:
+            return Qt.AlignmentFlag.AlignCenter
+        return None
+
+    def setData(self, index, value, role=Qt.ItemDataRole.EditRole):
+        row = self._rows[index.row()]
+        col = index.column()
+        try:
+            if role == Qt.ItemDataRole.CheckStateRole and col == _PA_USE:
+                confirmed = value in (Qt.CheckState.Checked, Qt.CheckState.Checked.value)
+                row['confirmed'] = 1 if confirmed else 0
+                self.db.confirm_pid_tag(row['tag_code'], row['comp_type'] or '', confirmed)
+            elif role == Qt.ItemDataRole.EditRole and col == _PA_TYPE:
+                row['comp_type'] = str(value)
+                self.db.confirm_pid_tag(row['tag_code'], row['comp_type'], bool(row['confirmed']))
+            else:
+                return False
+        except Exception:
+            logging.exception('_IdentifiedTagsModel.setData: DB write failed (row=%d col=%d)',
+                              index.row(), col)
+            return False
+        self.dataChanged.emit(index, index, [role])
+        return True
+
+    def bulk_set_confirmed(self, confirm: bool):
+        """Set 'confirmed' for every row with a single commit — setData()
+        commits per call, which is fine for one edit but would mean one
+        fsync-ish SQLite commit per row (thousands of them) for 'Välj alla'."""
+        if not self._rows:
+            return
+        conf = 1 if confirm else 0
+        for row in self._rows:
+            row['confirmed'] = conf
+        try:
+            self.db.conn.executemany(
+                "UPDATE pid_identified_tags SET comp_type=?,confirmed=? WHERE tag_code=?",
+                [(row['comp_type'] or '', conf, row['tag_code']) for row in self._rows])
+            self.db.conn.commit()
+        except Exception:
+            logging.exception('_IdentifiedTagsModel.bulk_set_confirmed: DB write failed')
+            return
+        self.dataChanged.emit(self.index(0, _PA_USE), self.index(len(self._rows) - 1, _PA_USE),
+                              [Qt.ItemDataRole.CheckStateRole])
+
+
 class PIDAnalysisPanel(QWidget):
     """Settings panel: shows all tag prefixes found in the P&ID with component-type mapping."""
 
@@ -13570,8 +13734,8 @@ class PIDAnalysisPanel(QWidget):
     def __init__(self, db: Database):
         super().__init__()
         self.db = db
-        self._loading = False
-        self._loaded  = False   # first refresh() deferred to showEvent — see below
+        self._loaded = False   # first refresh() deferred to showEvent — see below
+        self._model  = _IdentifiedTagsModel(db, self)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -13590,10 +13754,14 @@ class PIDAnalysisPanel(QWidget):
         layout.addWidget(title)
         layout.addWidget(note)
 
-        # Table
-        self._tbl = QTableWidget(0, 5)
-        self._tbl.setHorizontalHeaderLabels(
-            ['Prefix', 'Exempeltaggar', 'Databas-förslag', 'Komponenttyp', 'Använd ✓'])
+        # Table — QTableView + QAbstractTableModel instead of QTableWidget:
+        # populating this used to mean inserting one row (with a real
+        # QComboBox widget) per identified tag prefix, which does not scale.
+        # See _IdentifiedTagsModel / _ComboBoxCellDelegate above.
+        self._tbl = QTableView()
+        self._tbl.setModel(self._model)
+        self._tbl.setItemDelegateForColumn(
+            _PA_TYPE, _ComboBoxCellDelegate(self._COMP_TYPES, self._tbl))
         h = self._tbl.horizontalHeader()
         h.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         h.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -13605,9 +13773,13 @@ class PIDAnalysisPanel(QWidget):
         self._tbl.setColumnWidth(3, 160)
         self._tbl.setColumnWidth(4, 70)
         self._tbl.verticalHeader().setVisible(False)
+        self._tbl.verticalHeader().setDefaultSectionSize(28)
         self._tbl.setAlternatingRowColors(True)
+        self._tbl.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked |
+                                  QAbstractItemView.EditTrigger.EditKeyPressed)
         self._tbl.setStyleSheet(
             "QHeaderView::section{background:#F5F5F3;color:#8D9299;font-weight:600;padding:3px;}")
+        self._tbl.clicked.connect(self._on_cell_clicked)
         layout.addWidget(self._tbl)
 
         btn_row = QHBoxLayout()
@@ -13621,121 +13793,33 @@ class PIDAnalysisPanel(QWidget):
         btn_row.addWidget(self._status)
         layout.addLayout(btn_row)
 
+        self._model.dataChanged.connect(lambda *a: self._update_status())
+
     def showEvent(self, event):
-        # Populating this table means inserting one row (with a QComboBox
-        # cell widget) per identified tag prefix, which does not scale — with
-        # thousands of prefixes it can take tens of seconds. Doing this
-        # unconditionally in __init__ used to block the whole app at startup
-        # even when the user never opens Inställningar → Identifierade
-        # objekt. Defer to the first time the tab actually becomes visible.
+        # See _IdentifiedTagsModel docstring: populating used to block the
+        # whole app at startup even when the user never opens Inställningar
+        # → Identifierade objekt. Defer to the first time the tab is shown.
         super().showEvent(event)
         if not self._loaded:
             self._loaded = True
             self.refresh()
 
+    def _on_cell_clicked(self, index):
+        if index.column() == _PA_TYPE:
+            self._tbl.edit(index)
+
     def refresh(self):
-        self._loaded  = True   # any explicit refresh() satisfies showEvent's lazy-load too
-        self._loading = True
-        self._tbl.blockSignals(True)
-        self._tbl.setRowCount(0)
-
-        for entry in self.db.pid_identified_tags():
-            r = self._tbl.rowCount()
-            self._tbl.insertRow(r)
-
-            code_item = QTableWidgetItem(entry['tag_code'])
-            code_item.setFlags(code_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            code_item.setFont(QFont('Courier', 10))
-            self._tbl.setItem(r, 0, code_item)
-
-            ex_item = QTableWidgetItem(entry['examples'] or '')
-            ex_item.setFlags(ex_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            ex_item.setForeground(QBrush(QColor('#555555')))
-            self._tbl.setItem(r, 1, ex_item)
-
-            # Database suggestion (read-only)
-            sugg = QTableWidgetItem(entry['name_sv'] or '—')
-            sugg.setFlags(sugg.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            sugg.setForeground(QBrush(QColor('#8D9299')))
-            self._tbl.setItem(r, 2, sugg)
-
-            # Editable component type combo
-            combo = QComboBox()
-            for t in self._COMP_TYPES:
-                combo.addItem(t)
-            cur = entry['comp_type'] or ''
-            idx = combo.findText(cur)
-            if idx >= 0:
-                combo.setCurrentIndex(idx)
-            code = entry['tag_code']
-            combo.currentTextChanged.connect(
-                lambda text, c=code: self._on_type_changed(c, text))
-            self._tbl.setCellWidget(r, 3, combo)
-
-            # "Använd" checkbox
-            chk = QTableWidgetItem()
-            chk.setCheckState(
-                Qt.CheckState.Checked if entry['confirmed'] else Qt.CheckState.Unchecked)
-            chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
-            chk.setData(Qt.ItemDataRole.UserRole, entry['tag_code'])
-            chk.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._tbl.setItem(r, 4, chk)
-
-            self._tbl.setRowHeight(r, 28)
-
-        try:
-            self._tbl.cellChanged.disconnect(self._on_cell_changed)
-        except TypeError:
-            pass   # wasn't connected yet (first call)
-        self._tbl.cellChanged.connect(self._on_cell_changed)
-        self._tbl.blockSignals(False)
-        self._loading = False
-        self._update_status()
-
-    def _on_type_changed(self, tag_code, comp_type):
-        if self._loading:
-            return
-        # Find confirmed state
-        for r in range(self._tbl.rowCount()):
-            item = self._tbl.item(r, 0)
-            if item and item.text() == tag_code:
-                chk = self._tbl.item(r, 4)
-                confirmed = chk and chk.checkState() == Qt.CheckState.Checked
-                self.db.confirm_pid_tag(tag_code, comp_type, confirmed)
-                break
-
-    def _on_cell_changed(self, row, col):
-        if self._loading or col != 4:
-            return
-        chk = self._tbl.item(row, 4)
-        if not chk:
-            return
-        tag_code = chk.data(Qt.ItemDataRole.UserRole)
-        confirmed = chk.checkState() == Qt.CheckState.Checked
-        combo = self._tbl.cellWidget(row, 3)
-        comp_type = combo.currentText() if combo else ''
-        self.db.confirm_pid_tag(tag_code, comp_type, confirmed)
+        self._loaded = True   # any explicit refresh() satisfies showEvent's lazy-load too
+        self._model.load()
         self._update_status()
 
     def _bulk_confirm(self, confirm: bool):
-        self._loading = True
-        state = Qt.CheckState.Checked if confirm else Qt.CheckState.Unchecked
-        for r in range(self._tbl.rowCount()):
-            chk = self._tbl.item(r, 4)
-            if chk:
-                chk.setCheckState(state)
-                tag_code = chk.data(Qt.ItemDataRole.UserRole)
-                combo = self._tbl.cellWidget(r, 3)
-                comp_type = combo.currentText() if combo else ''
-                self.db.confirm_pid_tag(tag_code, comp_type, confirm)
-        self._loading = False
+        self._model.bulk_set_confirmed(confirm)
         self._update_status()
 
     def _update_status(self):
-        total     = self._tbl.rowCount()
-        confirmed = sum(1 for r in range(total)
-                        if self._tbl.item(r, 4) and
-                        self._tbl.item(r, 4).checkState() == Qt.CheckState.Checked)
+        total     = self._model.rowCount()
+        confirmed = sum(1 for row in self._model.rows() if row['confirmed'])
         self._status.setText(f"{total} prefix hittade  |  {confirmed} bekräftade")
 
 
@@ -16331,6 +16415,200 @@ _EC_DESC = 6
 _EC_DEL  = 7
 
 
+class _EquipmentTableModel(QAbstractTableModel):
+    """Backs EquipmentPanel's QTableView. Rows are kept as plain dicts in
+    memory (cheap) and DB writes happen in setData()/delete_row() — no more
+    persistent per-row QComboBox/QPushButton widgets, which is what made
+    populating 10k+ rows take upwards of a minute (see NOTES.md, 2026-08-06)."""
+
+    write_failed = pyqtSignal(str)   # emitted with an error message on a failed DB write
+
+    def __init__(self, db: Database, parent=None):
+        super().__init__(parent)
+        self.db    = db
+        self._rows = []   # list[dict], one per equipment_catalog row
+
+    def load(self):
+        self.beginResetModel()
+        self._rows = [dict(r) for r in self.db.equipment_items()]
+        self.endResetModel()
+
+    def rows(self):
+        return self._rows
+
+    def row_dict(self, row):
+        return self._rows[row]
+
+    def rowCount(self, parent=QModelIndex()):
+        return 0 if parent.isValid() else len(self._rows)
+
+    def columnCount(self, parent=QModelIndex()):
+        return 8
+
+    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
+        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
+            return ['✓', 'Tagg', 'Prefix', 'Sida', 'OCR', 'Utrustningstyp', 'Beskrivning', ''][section]
+        return None
+
+    def flags(self, index):
+        base = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        col = index.column()
+        if col == _EC_CHK:
+            return base | Qt.ItemFlag.ItemIsUserCheckable
+        if col in (_EC_TAG, _EC_TYPE, _EC_DESC):
+            return base | Qt.ItemFlag.ItemIsEditable
+        return base
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid():
+            return None
+        row = self._rows[index.row()]
+        col = index.column()
+        if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
+            if col == _EC_TAG:  return row['tag']
+            if col == _EC_PFX:  return row.get('prefix') or _tag_prefix(row['tag'])
+            if col == _EC_PAGE: return str(row.get('pid_page', 0) + 1)
+            if col == _EC_OCR:  return '🔬' if row.get('is_ocr') else ''
+            if col == _EC_TYPE: return row.get('equipment_type', '') or ''
+            if col == _EC_DESC: return row.get('description', '') or ''
+            if col == _EC_DEL:  return 'Ta bort' if role == Qt.ItemDataRole.DisplayRole else None
+            return None
+        if role == Qt.ItemDataRole.CheckStateRole and col == _EC_CHK:
+            return Qt.CheckState.Checked if row.get('include', 1) else Qt.CheckState.Unchecked
+        if role == Qt.ItemDataRole.TextAlignmentRole and col in (_EC_PFX, _EC_PAGE, _EC_OCR):
+            return Qt.AlignmentFlag.AlignCenter
+        if role == Qt.ItemDataRole.BackgroundRole and col == _EC_TAG and row.get('is_ocr'):
+            return QBrush(QColor('#fff3cd'))
+        if role == Qt.ItemDataRole.ToolTipRole:
+            if col == _EC_TAG and row.get('is_ocr'):
+                return "Identifierad via OCR — kontrollera taggen"
+            if col == _EC_OCR:
+                return "Hittad via OCR" if row.get('is_ocr') else "Hittad via PDF-text"
+        return None
+
+    def setData(self, index, value, role=Qt.ItemDataRole.EditRole):
+        row_i = index.row()
+        col   = index.column()
+        row   = self._rows[row_i]
+        try:
+            if role == Qt.ItemDataRole.CheckStateRole and col == _EC_CHK:
+                checked = value in (Qt.CheckState.Checked, Qt.CheckState.Checked.value)
+                row['include'] = 1 if checked else 0
+                self.db.conn.execute("UPDATE equipment_catalog SET include=? WHERE id=?",
+                                     (row['include'], row['id']))
+                self.db.conn.commit()
+                self.dataChanged.emit(index, index, [role])
+                return True
+
+            if role != Qt.ItemDataRole.EditRole:
+                return False
+
+            if col == _EC_TAG:
+                new_tag = str(value).strip().upper()
+                new_pfx = _tag_prefix(new_tag)
+                row['tag']    = new_tag
+                row['prefix'] = new_pfx
+                # Suggest a type from the new prefix only if none set yet —
+                # matches the pre-rewrite behaviour exactly.
+                if not row.get('equipment_type'):
+                    known = KNOWN_PREFIXES.get(new_pfx)
+                    if known:
+                        row['equipment_type'] = known[1]
+                self.db.update_equipment_item(
+                    row['id'], new_tag, new_pfx,
+                    row.get('equipment_type', ''), row.get('description', ''))
+                first = self.index(row_i, 0)
+                last  = self.index(row_i, self.columnCount() - 1)
+                self.dataChanged.emit(first, last)
+                return True
+
+            if col == _EC_TYPE:
+                row['equipment_type'] = str(value)
+                self.db.conn.execute(
+                    "UPDATE equipment_catalog SET equipment_type=? WHERE id=?",
+                    (row['equipment_type'], row['id']))
+                self.db.conn.commit()
+                self.dataChanged.emit(index, index, [role])
+                return True
+
+            if col == _EC_DESC:
+                row['description'] = str(value)
+                self.db.update_equipment_item(
+                    row['id'], row['tag'], row.get('prefix', ''),
+                    row.get('equipment_type', ''), row['description'])
+                self.dataChanged.emit(index, index, [role])
+                return True
+        except Exception as e:
+            logging.exception('_EquipmentTableModel.setData: DB write failed (row=%d col=%d)',
+                              row_i, col)
+            self.write_failed.emit(str(e))
+            return False
+        return False
+
+    def delete_row(self, row_i):
+        row = self._rows[row_i]
+        self.db.delete_equipment_item(row['id'])
+        self.beginRemoveRows(QModelIndex(), row_i, row_i)
+        del self._rows[row_i]
+        self.endRemoveRows()
+
+    def bulk_set_include(self, row_indices, checked: bool):
+        """Set 'include' for many rows with a single commit — setData() commits
+        per call, which is correct for one edit but would mean one fsync-ish
+        SQLite commit per row (thousands of them) for a bulk checkbox action."""
+        if not row_indices:
+            return
+        inc = 1 if checked else 0
+        ids = []
+        for r in row_indices:
+            row = self._rows[r]
+            row['include'] = inc
+            ids.append(row['id'])
+        try:
+            self.db.conn.executemany(
+                "UPDATE equipment_catalog SET include=? WHERE id=?", [(inc, i) for i in ids])
+            self.db.conn.commit()
+        except Exception as e:
+            logging.exception('_EquipmentTableModel.bulk_set_include: DB write failed')
+            self.write_failed.emit(str(e))
+            return
+        top = self.index(min(row_indices), _EC_CHK)
+        bot = self.index(max(row_indices), _EC_CHK)
+        self.dataChanged.emit(top, bot, [Qt.ItemDataRole.CheckStateRole])
+
+
+class _EquipmentFilterProxy(QSortFilterProxyModel):
+    """Search-text + 'OCR only' filter for EquipmentPanel — replaces the old
+    per-row setRowHidden() loop, which needed the underlying QTableWidget."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._text     = ''
+        self._ocr_only = False
+
+    def set_filter_text(self, text: str):
+        self._text = text.lower()
+        self.invalidateFilter()
+
+    def set_ocr_only(self, on: bool):
+        self._ocr_only = on
+        self.invalidateFilter()
+
+    def filterAcceptsRow(self, source_row, source_parent):
+        model = self.sourceModel()
+        row   = model.row_dict(source_row)
+        if self._ocr_only and not row.get('is_ocr'):
+            return False
+        if self._text:
+            tag_t  = row['tag'].lower()
+            type_t = (row.get('equipment_type') or '').lower()
+            pg_t   = str(row.get('pid_page', 0) + 1)
+            if (self._text not in tag_t and self._text not in type_t
+                    and self._text not in pg_t):
+                return False
+        return True
+
+
 class EquipmentPanel(QWidget):
     """Persistent equipment register — scan P&ID, review, edit and create nodes."""
 
@@ -16339,7 +16617,11 @@ class EquipmentPanel(QWidget):
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
         self.db = db
-        self._loading = False
+        self._model = _EquipmentTableModel(db, self)
+        self._model.write_failed.connect(
+            lambda msg: QMessageBox.critical(self, "Fel vid celländring (utrustning)", msg))
+        self._proxy = _EquipmentFilterProxy(self)
+        self._proxy.setSourceModel(self._model)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -16407,10 +16689,17 @@ class EquipmentPanel(QWidget):
             fb.addWidget(b)
         layout.addLayout(fb)
 
-        # Table
-        self._tbl = QTableWidget(0, 8)
-        self._tbl.setHorizontalHeaderLabels(
-            ['✓', 'Tagg', 'Prefix', 'Sida', 'OCR', 'Utrustningstyp', 'Beskrivning', ''])
+        # Table — QTableView + QAbstractTableModel instead of QTableWidget:
+        # populating this used to mean inserting one row (with a real
+        # QComboBox *and* a real QPushButton widget) per equipment item,
+        # which does not scale. See _EquipmentTableModel / _ComboBoxCellDelegate
+        # / _ButtonCellDelegate above.
+        self._tbl = QTableView()
+        self._tbl.setModel(self._proxy)
+        self._tbl.setItemDelegateForColumn(
+            _EC_TYPE, _ComboBoxCellDelegate(_EQ_TYPE_ITEMS, self._tbl))
+        self._tbl.setItemDelegateForColumn(
+            _EC_DEL, _ButtonCellDelegate("Ta bort", self._on_delete_clicked, self._tbl))
         hdr = self._tbl.horizontalHeader()
         modes = [
             (_EC_CHK,  QHeaderView.ResizeMode.Fixed),
@@ -16429,189 +16718,59 @@ class EquipmentPanel(QWidget):
         for col, w in widths.items():
             self._tbl.setColumnWidth(col, w)
         self._tbl.verticalHeader().setVisible(False)
+        self._tbl.verticalHeader().setDefaultSectionSize(26)
         self._tbl.setAlternatingRowColors(True)
-        self._tbl.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._tbl.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
+        self._tbl.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked |
+                                  QAbstractItemView.EditTrigger.EditKeyPressed)
         self._tbl.setStyleSheet(
             "QHeaderView::section{background:#F5F5F3;color:#8D9299;font-weight:600;padding:4px;}")
-        self._tbl.cellChanged.connect(self._on_cell_changed)
+        self._tbl.clicked.connect(self._on_cell_clicked)
         layout.addWidget(self._tbl)
 
-        # No eager refresh() here: populating this table inserts one row
-        # (with a QComboBox + a QPushButton cell widget) per equipment item,
-        # which does not scale — with thousands of items it can take tens of
-        # seconds. Doing that unconditionally in __init__ used to block the
-        # whole app at startup even when the user never opens the Equipment
-        # page. MainWindow._switch_view() already calls refresh() every time
-        # this page (index 2) becomes active, including the first time.
+        self._model.dataChanged.connect(lambda *a: self._update_status())
+
+        # No eager refresh() here: populating this table used to mean
+        # building thousands of cell widgets, which does not scale — doing
+        # that unconditionally in __init__ used to block the whole app at
+        # startup even when the user never opens the Equipment page.
+        # MainWindow._switch_view() already calls refresh() every time this
+        # page (index 2) becomes active, including the first time.
 
     # ── Populate ──────────────────────────────────────────────────────────────
 
     def refresh(self):
-        self._loading = True
-        self._tbl.blockSignals(True)
-        self._tbl.setRowCount(0)
-        for item in self.db.equipment_items():
-            self._insert_row(dict(item))
-        self._tbl.blockSignals(False)
-        self._loading = False
+        self._model.load()
         self._apply_filter()
 
-    def _insert_row(self, item: dict):
-        r = self._tbl.rowCount()
-        self._tbl.insertRow(r)
+    def _on_cell_clicked(self, index):
+        if index.column() == _EC_TYPE:
+            self._tbl.edit(index)
 
-        chk = QTableWidgetItem()
-        chk.setCheckState(
-            Qt.CheckState.Checked if item.get('include', 1) else Qt.CheckState.Unchecked)
-        chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
-        chk.setData(Qt.ItemDataRole.UserRole, item['id'])
-        self._tbl.setItem(r, _EC_CHK, chk)
-
-        tag_item = QTableWidgetItem(item['tag'])
-        if item.get('is_ocr'):
-            tag_item.setBackground(QBrush(QColor('#fff3cd')))
-            tag_item.setToolTip("Identifierad via OCR — kontrollera taggen")
-        self._tbl.setItem(r, _EC_TAG, tag_item)
-
-        pfx = QTableWidgetItem(item.get('prefix', _tag_prefix(item['tag'])))
-        pfx.setFlags(pfx.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        pfx.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._tbl.setItem(r, _EC_PFX, pfx)
-
-        pg = QTableWidgetItem(str(item.get('pid_page', 0) + 1))
-        pg.setFlags(pg.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        pg.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._tbl.setItem(r, _EC_PAGE, pg)
-
-        ocr = QTableWidgetItem('🔬' if item.get('is_ocr') else '')
-        ocr.setFlags(ocr.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        ocr.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        ocr.setToolTip("Hittad via OCR" if item.get('is_ocr') else "Hittad via PDF-text")
-        self._tbl.setItem(r, _EC_OCR, ocr)
-
-        combo = QComboBox()
-        for t in _EQ_TYPE_ITEMS:
-            combo.addItem(t)
-        et = item.get('equipment_type', '')
-        if et:
-            idx = combo.findText(et)
-            if idx >= 0:
-                combo.setCurrentIndex(idx)
-        iid = item['id']
-        combo.currentTextChanged.connect(lambda typ, i=iid: self._save_type(i, typ))
-        self._tbl.setCellWidget(r, _EC_TYPE, combo)
-
-        self._tbl.setItem(r, _EC_DESC, QTableWidgetItem(item.get('description', '')))
-
-        del_btn = QPushButton("Ta bort")
-        del_btn.setFixedHeight(CONFIG['H_BTN_SMALL'])
-        del_btn.clicked.connect(partial(self._delete, iid))
-        self._tbl.setCellWidget(r, _EC_DEL, del_btn)
-        self._tbl.setRowHeight(r, 26)
-
-    # ── Cell editing ──────────────────────────────────────────────────────────
-
-    def _on_cell_changed(self, row, col):
-        try:
-            self._on_cell_changed_inner(row, col)
-        except Exception as e:
-            QMessageBox.critical(self, "Fel vid celländring (utrustning)", str(e))
-
-    def _on_cell_changed_inner(self, row, col):
-        if self._loading:
-            return
-        chk = self._tbl.item(row, _EC_CHK)
-        if not chk:
-            return
-        iid = chk.data(Qt.ItemDataRole.UserRole)
-
-        if col == _EC_CHK:
-            inc = 1 if chk.checkState() == Qt.CheckState.Checked else 0
-            self.db.conn.execute("UPDATE equipment_catalog SET include=? WHERE id=?", (inc, iid))
-            self.db.conn.commit()
-            self._update_status()
-
-        elif col == _EC_TAG:
-            new_tag = (self._tbl.item(row, _EC_TAG).text().strip().upper()
-                       if self._tbl.item(row, _EC_TAG) else '')
-            new_pfx = _tag_prefix(new_tag)
-            self._tbl.blockSignals(True)
-            pfx_item = self._tbl.item(row, _EC_PFX)
-            if pfx_item:
-                pfx_item.setText(new_pfx)
-            # Suggest type from new prefix if none set
-            combo = self._tbl.cellWidget(row, _EC_TYPE)
-            if combo and not combo.currentText():
-                known = KNOWN_PREFIXES.get(new_pfx)
-                if known:
-                    idx = combo.findText(known[1])
-                    if idx >= 0:
-                        combo.setCurrentIndex(idx)
-            self._tbl.blockSignals(False)
-            desc = self._tbl.item(row, _EC_DESC)
-            self.db.update_equipment_item(
-                iid, new_tag, new_pfx,
-                combo.currentText() if combo else '',
-                desc.text() if desc else '')
-
-        elif col == _EC_DESC:
-            tag_i  = self._tbl.item(row, _EC_TAG)
-            pfx_i  = self._tbl.item(row, _EC_PFX)
-            combo  = self._tbl.cellWidget(row, _EC_TYPE)
-            desc_i = self._tbl.item(row, _EC_DESC)
-            self.db.update_equipment_item(
-                iid,
-                tag_i.text() if tag_i else '',
-                pfx_i.text() if pfx_i else '',
-                combo.currentText() if combo else '',
-                desc_i.text() if desc_i else '')
-
-    def _save_type(self, iid, typ):
-        if not self._loading:
-            self.db.conn.execute(
-                "UPDATE equipment_catalog SET equipment_type=? WHERE id=?", (typ, iid))
-            self.db.conn.commit()
+    def _on_delete_clicked(self, proxy_index):
+        self._model.delete_row(self._proxy.mapToSource(proxy_index).row())
+        self._update_status()
 
     # ── Filter / selection ────────────────────────────────────────────────────
 
     def _apply_filter(self):
-        text     = self._filter.text().lower()
-        ocr_only = self._ocr_only.isChecked()
-        for r in range(self._tbl.rowCount()):
-            tag_t  = (self._tbl.item(r, _EC_TAG).text().lower()
-                      if self._tbl.item(r, _EC_TAG) else '')
-            type_w = self._tbl.cellWidget(r, _EC_TYPE)
-            type_t = type_w.currentText().lower() if type_w else ''
-            pg_t   = self._tbl.item(r, _EC_PAGE).text() if self._tbl.item(r, _EC_PAGE) else ''
-            is_ocr = bool(self._tbl.item(r, _EC_OCR) and self._tbl.item(r, _EC_OCR).text())
-            hidden = (text and text not in tag_t and text not in type_t and text not in pg_t) \
-                     or (ocr_only and not is_ocr)
-            self._tbl.setRowHidden(r, hidden)
+        self._proxy.set_filter_text(self._filter.text())
+        self._proxy.set_ocr_only(self._ocr_only.isChecked())
         self._update_status()
 
     def _bulk_check(self, checked: bool):
-        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
-        self._loading = True
-        for r in range(self._tbl.rowCount()):
-            if not self._tbl.isRowHidden(r):
-                item = self._tbl.item(r, _EC_CHK)
-                if item:
-                    item.setCheckState(state)
-                    self.db.conn.execute(
-                        "UPDATE equipment_catalog SET include=? WHERE id=?",
-                        (1 if checked else 0, item.data(Qt.ItemDataRole.UserRole)))
-        self.db.conn.commit()
-        self._loading = False
+        src_rows = [self._proxy.mapToSource(self._proxy.index(pr, _EC_CHK)).row()
+                    for pr in range(self._proxy.rowCount())]
+        self._model.bulk_set_include(src_rows, checked)
         self._update_status()
 
     def _update_status(self):
-        visible = sum(1 for r in range(self._tbl.rowCount())
-                      if not self._tbl.isRowHidden(r))
-        checked = sum(1 for r in range(self._tbl.rowCount())
-                      if not self._tbl.isRowHidden(r)
-                      and self._tbl.item(r, _EC_CHK)
-                      and self._tbl.item(r, _EC_CHK).checkState() == Qt.CheckState.Checked)
-        total_all = sum(1 for _ in range(self._tbl.rowCount()))
+        total_all = self._model.rowCount()
+        visible   = self._proxy.rowCount()
+        checked   = sum(1 for pr in range(visible)
+                        if self._model.row_dict(
+                            self._proxy.mapToSource(self._proxy.index(pr, _EC_CHK)).row()
+                        ).get('include', 1))
         self._status_lbl.setText(
             f"{total_all} taggar totalt  |  {visible} visas  |  {checked} valda")
 
@@ -16628,10 +16787,6 @@ class EquipmentPanel(QWidget):
         self.db.add_equipment_item(tag, tag, pfx, 0, known[1] if known else '', '', 0)
         self.refresh()
 
-    def _delete(self, iid):
-        self.db.delete_equipment_item(iid)
-        self.refresh()
-
     def _clear(self):
         n = len(self.db.equipment_items())
         reply = QMessageBox.question(
@@ -16645,15 +16800,15 @@ class EquipmentPanel(QWidget):
             self.refresh()
 
     def _create_nodes(self):
+        # Iterates ALL rows (not just those matching the current filter) —
+        # only the checkbox state matters, same as before the rewrite.
         to_create = []
-        for r in range(self._tbl.rowCount()):
-            chk = self._tbl.item(r, _EC_CHK)
-            if chk and chk.checkState() == Qt.CheckState.Checked:
-                tag   = self._tbl.item(r, _EC_TAG).text() if self._tbl.item(r, _EC_TAG) else ''
-                pg    = int(self._tbl.item(r, _EC_PAGE).text()) - 1 if self._tbl.item(r, _EC_PAGE) else 0
-                combo = self._tbl.cellWidget(r, _EC_TYPE)
-                et    = combo.currentText() if combo else ''
-                desc  = self._tbl.item(r, _EC_DESC).text() if self._tbl.item(r, _EC_DESC) else ''
+        for row in self._model.rows():
+            if row.get('include', 1):
+                tag  = row['tag']
+                pg   = row.get('pid_page', 0)
+                et   = row.get('equipment_type', '') or ''
+                desc = row.get('description', '') or ''
                 if tag:
                     to_create.append((tag, pg, et, desc))
         if not to_create:
@@ -16796,22 +16951,14 @@ class EquipmentPanel(QWidget):
             return
 
         requests = []   # (tag, page0idx, comp_type, equipment_id)
-        for r in range(self._tbl.rowCount()):
-            chk = self._tbl.item(r, _EC_CHK)
-            if not (chk and chk.checkState() == Qt.CheckState.Checked):
+        for row in self._model.rows():
+            if not row.get('include', 1):
                 continue
-            tag_item = self._tbl.item(r, _EC_TAG)
-            pg_item  = self._tbl.item(r, _EC_PAGE)
-            if not (tag_item and pg_item):
+            tag = (row.get('tag') or '').strip()
+            if not tag:
                 continue
-            try:
-                page0 = int(pg_item.text()) - 1
-            except ValueError:
-                continue
-            type_combo = self._tbl.cellWidget(r, _EC_TYPE)
-            comp_type  = type_combo.currentText() if type_combo else ''
-            eq_id = chk.data(Qt.ItemDataRole.UserRole)
-            requests.append((tag_item.text().strip(), page0, comp_type, eq_id))
+            requests.append((tag, row.get('pid_page', 0), row.get('equipment_type', '') or '',
+                             row['id']))
 
         if not requests:
             QMessageBox.information(
