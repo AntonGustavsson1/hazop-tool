@@ -9,6 +9,7 @@ import tempfile
 import datetime
 import math
 import logging
+import importlib.util
 from pathlib import Path
 from functools import partial
 
@@ -75,19 +76,12 @@ except ImportError:
     pytesseract = None
     HAS_TESSERACT = False
 
-try:
-    import easyocr as _easyocr_module
-    HAS_EASYOCR = True
-except ImportError:
-    _easyocr_module = None
-    HAS_EASYOCR = False
-
-try:
-    from rapidocr_onnxruntime import RapidOCR as _RapidOCR
-    HAS_RAPIDOCR = True
-except ImportError:
-    _RapidOCR = None
-    HAS_RAPIDOCR = False
+# easyocr and rapidocr_onnxruntime pull in torch/onnxruntime, which take
+# several seconds to import. Neither is needed until OCR is actually run, so
+# only check whether they're installed here (find_spec is near-instant) and
+# defer the real `import` to _OCRLifecycleManager.get_*_reader() below.
+HAS_EASYOCR = importlib.util.find_spec('easyocr') is not None
+HAS_RAPIDOCR = importlib.util.find_spec('rapidocr_onnxruntime') is not None
 
 try:
     from PIL import Image as _PILImage, ImageFilter, ImageEnhance, ImageOps
@@ -134,6 +128,7 @@ class _OCRLifecycleManager:
         """Get or create EasyOCR reader; lazily initialized on first use."""
         if self._easyocr_reader is None and HAS_EASYOCR:
             try:
+                import easyocr as _easyocr_module
                 self._easyocr_reader = _easyocr_module.Reader(['en'], gpu=False, verbose=False)
             except Exception:
                 return None
@@ -143,6 +138,7 @@ class _OCRLifecycleManager:
         """Get or create RapidOCR instance; lazily initialized on first use."""
         if self._rapidocr_instance is None and HAS_RAPIDOCR:
             try:
+                from rapidocr_onnxruntime import RapidOCR as _RapidOCR
                 self._rapidocr_instance = _RapidOCR()
             except Exception:
                 return None
@@ -1070,7 +1066,11 @@ def _spatial_combine(words: list, gap_limit: float = 18.0) -> list:
 
     Words that lie on the same baseline and are separated by less than
     `gap_limit` PDF units (or are single-char separators like '-' or '.')
-    are joined without space.  Yields combined strings for tag parsing.
+    are joined without space.  Yields (text, x0, y0, x1, y1) tuples — the
+    bounding box is the combined group's box (first token's x0/y0, last
+    token's x1, first token's y1), so callers that need a placement
+    position (e.g. scan_pdf_for_equipment) don't lose it, same as callers
+    that only want the text and ignore the trailing coordinates.
 
     words: list of (x0, y0, x1, y1, text) tuples from page.get_text("words")
     """
@@ -1081,11 +1081,13 @@ def _spatial_combine(words: list, gap_limit: float = 18.0) -> list:
     sw = sorted(words, key=lambda w: (round((w[1] + w[3]) / 2 / 8) * 8, w[0]))
 
     results = []
+    seen = set()
     i = 0
     while i < len(sw):
         x0, y0, x1, y1, text = sw[i][:5]
         group = [text]
         grp_x1 = x1
+        grp_y1 = y1
         y_mid = (y0 + y1) / 2
 
         j = i + 1
@@ -1104,19 +1106,47 @@ def _spatial_combine(words: list, gap_limit: float = 18.0) -> list:
             if gap <= gap_limit or is_sep:
                 group.append(ntext)
                 grp_x1 = nx1
+                grp_y1 = ny1
                 j += 1
             else:
                 break
 
         combined = ''.join(group)
-        if combined and combined not in results:
-            results.append(combined)
+        if combined and combined not in seen:
+            seen.add(combined)
+            results.append((combined, x0, y0, grp_x1, grp_y1))
         # Also yield the first token alone (in case only part is a tag)
-        if text not in results:
-            results.append(text)
+        if text not in seen:
+            seen.add(text)
+            results.append((text, x0, y0, x1, y1))
         i = j if j > i + 1 else i + 1
 
     return results
+
+
+def _rotate_words(words, page):
+    """Transform page.get_text("words") tuples from PyMuPDF's raw
+    (unrotated mediabox) coordinate space into this app's "PDF space" —
+    the ROTATED space matching page.rect, which is what page.get_pixmap()
+    renders and what PIDGraphicsView.pdf_to_scene()/scene_to_pdf() assume
+    for every marker placed in this app.
+
+    get_text() (like get_drawings(), see symbol_geometry.extract_primitives)
+    never applies page rotation itself — confirmed by rendering a crop at
+    an un-transformed word position on a real rotated P&ID (182036 Hybrit,
+    which uses /Rotate 270) and finding it did not line up with the text
+    until page.rotation_matrix was applied. A no-op for the (far more
+    common) unrotated-page case, since rotation_matrix is then the
+    identity matrix.
+    """
+    mat = page.rotation_matrix
+    out = []
+    for w in words:
+        p0 = fitz.Point(w[0], w[1]) * mat
+        p1 = fitz.Point(w[2], w[3]) * mat
+        out.append((min(p0.x, p1.x), min(p0.y, p1.y),
+                    max(p0.x, p1.x), max(p0.y, p1.y)) + tuple(w[4:]))
+    return out
 
 
 def _clean_for_tag(text: str) -> str:
@@ -1241,7 +1271,7 @@ def _clean_tag_for_popup(tag: str) -> str:
 
 def _words_from_native(fitz_page):
     """Extract (text, cx, cy) from a PDF page using PyMuPDF word list."""
-    words = fitz_page.get_text("words")
+    words = _rotate_words(fitz_page.get_text("words"), fitz_page)
     return [(w[4].strip().upper(), (w[0] + w[2]) / 2, (w[1] + w[3]) / 2)
             for w in words if w[4].strip()]
 
@@ -1380,18 +1410,29 @@ def scan_pdf_for_equipment(pdf_doc, use_ocr: bool = False,
             if tag and prefix:
                 _add(tag, prefix, page_num, 0.0, 0.0, from_ocr=False)
 
-        # ── Pass 2: word-by-word (gives precise x,y positions) ───────────────
-        native_words = _words_from_native(page)
+        # ── Pass 2: spatially-combined words (precise x,y positions) ─────────
+        # Rejoins tags the PDF split into several text objects (e.g.
+        # "20" "-" "PCV" "-" "101") and matches via _pick_best_tag, which
+        # has no minimum-prefix-length gate — unlike a bare _parse_tag call,
+        # this also catches single-letter-prefix tags with no separator
+        # (P101, T12, E205), which used to be silently dropped here. Same
+        # technique "Analysera P&ID" (_analyze_pid) already uses.
+        raw_words = _rotate_words(page.get_text("words"), page)
         tags_from_native = 0
-        for text, cx, cy in native_words:
-            tag, prefix = _parse_tag(text)
-            if tag and prefix:
-                # Overwrite position with precise coords
-                if prefix in result and tag in result[prefix]['tags']:
-                    result[prefix]['positions'][tag] = (cx, cy)
-                else:
-                    _add(tag, prefix, page_num, cx, cy, from_ocr=False)
-                tags_from_native += 1
+        for candidate, cx0, cy0, cx1, cy1 in _spatial_combine(raw_words, gap_limit=22.0):
+            tag = _pick_best_tag(candidate)
+            if not tag:
+                continue
+            prefix = _equip_prefix_from_tag(tag)
+            if not prefix:
+                continue
+            cx, cy = (cx0 + cx1) / 2, (cy0 + cy1) / 2
+            # Overwrite position with precise coords
+            if prefix in result and tag in result[prefix]['tags']:
+                result[prefix]['positions'][tag] = (cx, cy)
+            else:
+                _add(tag, prefix, page_num, cx, cy, from_ocr=False)
+            tags_from_native += 1
 
         # ── Pass 3: OCR ───────────────────────────────────────────────────────
         # Always run when requested — OCR finds tags that live in vector graphics
@@ -1435,6 +1476,73 @@ def scan_pdf_for_equipment(pdf_doc, use_ocr: bool = False,
     return result
 
 
+# Prefix → component-category mapping used to cross-reference a scanned
+# prefix against the tag database's free-text 'category' field. Shared by
+# both apply_scan_result_to_equipment_catalog and
+# upsert_identified_tags_from_scan so "🔍 Skanna P&ID" and "📋 Analysera
+# P&ID" derive the same suggested component type from the same scan.
+_SCAN_CAT_MAP = {
+    'instrument': 'Instrument / Sensor', 'givare': 'Instrument / Sensor',
+    'reglerfunktion': 'Instrument / Sensor', 'larm': 'Instrument / Sensor',
+    'ventil': 'Ventil', 'reglerventil': 'Ventil',
+    'pump': 'Pump', 'kompressor': 'Kompressor',
+    'tank': 'Tank / Kärl', 'kärl': 'Tank / Kärl',
+    'värmeväxlare': 'Värmeväxlare',
+    'säkerhetsventil': 'Säkerhetsventil (PSV)',
+}
+
+
+def apply_scan_result_to_equipment_catalog(db, scan_result):
+    """Replace equipment_catalog with a scan_pdf_for_equipment() result.
+
+    Shared by "🔍 Skanna P&ID" (EquipmentPanel._scan, hazop.py) and
+    "📋 Analysera P&ID" (PIDPanel._analyze_pid) now that both trigger the
+    same underlying scan — whichever button is used, the equipment
+    register ends up with the same rows. Matches EquipmentPanel._scan's
+    pre-existing full-rescan-replaces-catalog behavior: per-tag
+    descriptions typed manually are not preserved across a rescan (this
+    was already true for "Skanna P&ID" before the two scans were merged).
+    """
+    real = {k: v for k, v in scan_result.items() if not k.startswith('_')}
+    db.clear_equipment_catalog()
+    for prefix, data in real.items():
+        known      = KNOWN_PREFIXES.get(prefix, ('', ''))
+        saved_type = db.get_equipment_type(prefix) if hasattr(db, 'get_equipment_type') else ''
+        eq_type    = saved_type or (known[1] if known else '')
+        ocr_pages  = data.get('ocr_pages', set())
+        for tag in data['tags']:
+            page   = data['pages'].get(tag, 0)
+            is_ocr = int(page in ocr_pages)
+            db.add_equipment_item(tag, tag, prefix, page, eq_type, '', is_ocr)
+
+
+def upsert_identified_tags_from_scan(db, scan_result):
+    """Cross-reference a scan_pdf_for_equipment() result into the per-prefix
+    pid_identified_tags table (Settings → "Identifierade objekt").
+
+    Shared by both scan entry points so that panel stays in sync
+    regardless of whether the scan was triggered from "🔍 Skanna P&ID" or
+    "📋 Analysera P&ID" — previously only the latter wrote here.
+    """
+    real = {k: v for k, v in scan_result.items() if not k.startswith('_')}
+    for prefix, data in real.items():
+        tags = data.get('tags') or []
+        if not tags:
+            continue
+        examples  = ', '.join(sorted(tags)[:6])
+        db_entry  = db.tag_code_lookup(prefix) if hasattr(db, 'tag_code_lookup') else {}
+        name_sv   = (db_entry or {}).get('name_sv', '')
+        comp_type = ''
+        if db_entry:
+            cat = str(db_entry.get('category', '')).lower()
+            for k, v in _SCAN_CAT_MAP.items():
+                if k in cat:
+                    comp_type = v; break
+        if not comp_type and prefix in KNOWN_PREFIXES:
+            comp_type = KNOWN_PREFIXES[prefix][1]
+        db.upsert_pid_tag(prefix, examples, name_sv, comp_type)
+
+
 def find_tag_position_on_page(pdf_doc, page_num, tag):
     """Locate where a specific (already-known) tag is printed on a page.
 
@@ -1455,6 +1563,37 @@ def find_tag_position_on_page(pdf_doc, page_num, tag):
         if parsed_tag and parsed_tag.upper() == target:
             return (cx, cy)
     return None
+
+
+def find_nearby_tag_text(page, point, radius=150.0):
+    """Find the closest recognizable tag-like text near a point on a page.
+
+    The inverse of find_tag_position_on_page: that one starts from an
+    ALREADY-KNOWN tag and finds its symbol; this one starts from a symbol
+    (e.g. a bow-tie-shaped cluster found by find_valve_shapes) that has no
+    linked tag yet, and suggests one from whatever text is printed nearby.
+    Uses the same spatially-combined matching as scan_pdf_for_equipment so
+    it catches tags split across multiple text objects.
+
+    Returns (tag, prefix), or (None, None) if nothing plausible is within
+    radius.
+    """
+    raw_words = _rotate_words(page.get_text("words"), page)
+    best = (None, None)
+    best_dist = radius
+    for candidate, x0, y0, x1, y1 in _spatial_combine(raw_words, gap_limit=22.0):
+        tag = _pick_best_tag(candidate)
+        if not tag:
+            continue
+        prefix = _equip_prefix_from_tag(tag)
+        if not prefix:
+            continue
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        d = math.hypot(cx - point[0], cy - point[1])
+        if d <= best_dist:
+            best_dist = d
+            best = (tag, prefix)
+    return best
 
 
 def detect_equipment_symbols(pdf_doc, requests, min_confidence=0.3):
@@ -1515,6 +1654,96 @@ def detect_equipment_symbols(pdf_doc, requests, min_confidence=0.3):
             results.append({'tag': tag, 'page': page_num, 'comp_type': comp_type,
                              'x': tag_pos[0], 'y': tag_pos[1], 'confidence': 0.0,
                              'link_method': 'none', 'outline': []})
+    return results
+
+
+def find_valve_shapes(pdf_doc, pages=None, min_bowtie_score=0.5, progress_callback=None):
+    """Scan pages for bow-tie-shaped (valve) symbols, independent of
+    whether a tag is already known nearby.
+
+    The counterpart to detect_equipment_symbols(): that one starts from an
+    already-scanned tag and looks for its symbol; this one starts from the
+    SHAPE (symbol_geometry.bowtie_score) and works backwards to suggest a
+    tag via find_nearby_tag_text() when something is printed close enough
+    — leaving the tag empty (for the review dialog to fill in manually)
+    when nothing plausible is nearby, e.g. a valve whose tag wasn't
+    picked up by text scanning at all, or that genuinely has none.
+
+    pages: iterable of 0-based page numbers, or None for all pages.
+
+    Returns a list of dicts in the same shape detect_equipment_symbols()
+    uses (so EquipmentMarkerReviewDialog needs no changes to display
+    them): {tag, page, comp_type, x, y, confidence, link_method, outline}.
+    link_method is always 'shape' here; confidence is the bow-tie score
+    itself (0..1) — NOT find_symbol_clusters' generic "is this a symbol
+    at all" score, which is only used as a pre-filter via
+    min_confidence=0.0 (consider every cluster; some real bow-ties score
+    low on the generic classifier's own unrelated features).
+
+    bowtie_score alone is not enough on real drawings: title-block grid
+    intersections and stray small line-crossings can also produce a
+    "wide-narrow-wide" point cloud and score just as high as a real valve
+    (found while verifying against real P&ID ref/ files — a title block
+    on one Hybrit sheet alone produced 13 shapes scoring 0.9-1.0). What
+    reliably tells them apart is size and shape *relative to the page*,
+    which bowtie_score deliberately ignores: those false positives were
+    all far smaller than the page's own text (norm_size well under 1.5)
+    or wildly elongated (a long pipe run's aspect ratio, not a compact
+    symbol's). aspect<=3.0 and 1.5<=norm_size<=40.0 reuse
+    classify_cluster's own established "plausible discrete symbol" bounds
+    (not new thresholds) to filter those out while keeping real bow-ties,
+    which are always compact and comparable in size to the page's text —
+    confirmed against several real files after this filter was added:
+    correctly dropped to 0 false hits on the noisy Hybrit title-block
+    page, and correctly kept real valve symbols (visually confirmed) on
+    ITS/Smurfit Kappa/Loket P&IDs.
+
+    A second, independent filter requires at least one diagonal line
+    segment (symbol_geometry.cluster_features' has_diagonal) — piping is
+    drawn strictly horizontally/vertically by P&ID convention, so only a
+    symbol's own geometry (a bow-tie's triangle edges) can ever contain a
+    diagonal segment; pipe crossings, title-block grids, and instrument-
+    bubble stems cannot.
+    """
+    if not HAS_PYMUPDF or pdf_doc is None:
+        return []
+    if pages is None:
+        pages = range(pdf_doc.page_count)
+
+    results = []
+    for page_num in pages:
+        if progress_callback:
+            progress_callback(
+                page_num, pdf_doc.page_count,
+                f"Sida {page_num + 1}/{pdf_doc.page_count} — söker ventilformer…")
+        try:
+            page = pdf_doc[page_num]
+            clusters = symbol_geometry.find_symbol_clusters(page, min_confidence=0.0)
+        except Exception:
+            continue
+
+        for cluster in clusters:
+            score = cluster.get('bowtie_score', 0.0)
+            if score < min_bowtie_score:
+                continue
+            if cluster['aspect'] > 3.0 or not (1.5 <= cluster['norm_size'] <= 40.0):
+                continue
+            if not cluster['has_diagonal']:
+                # Piping is drawn strictly horizontally/vertically by P&ID
+                # convention — a cluster with no diagonal line at all can
+                # only be pipe crossings, a title-block grid, or an
+                # instrument-bubble's straight stems, never an actual
+                # bow-tie valve body (whose triangle edges are diagonal).
+                continue
+            x0, y0, x1, y1 = cluster['bbox']
+            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            tag, _prefix = find_nearby_tag_text(page, (cx, cy))
+            results.append({
+                'tag': tag or '', 'page': page_num, 'comp_type': 'Ventil',
+                'x': cx, 'y': cy, 'confidence': score,
+                'link_method': 'shape', 'outline': cluster['outline'],
+            })
+    results.sort(key=lambda r: -r['confidence'])
     return results
 
 
@@ -2150,11 +2379,17 @@ class EquipmentMarkerReviewDialog(QDialog):
     """Review/correct auto-detected equipment-symbol matches before saving
     them as a new 'equipment' marker layer on the P&ID.
 
-    Triggered by EquipmentPanel's "🎯 Hitta på P&ID" button on whichever rows
-    are checked in the Utrustningsregister — this dialog is the review step
-    for detect_equipment_symbols()'s results (see symbol_geometry.py for the
-    underlying geometric detection). Unchecking a row skips it entirely;
-    editing the Tagg cell corrects a wrong tag-text match before saving.
+    Two triggers feed this dialog with the same result shape:
+    - EquipmentPanel's "🎯 Hitta på P&ID" (tag-anchored: starts from
+      already-known equipment_catalog tags, see detect_equipment_symbols).
+    - PIDPanel's "🦋 Hitta ventilformer" (shape-anchored: starts from
+      bow-tie-shaped symbols with no tag required, see find_valve_shapes —
+      rows from this path may have an empty/suggested Tagg and no
+      equipment_id yet; _save() creates the equipment_catalog row for them
+      on the fly if the (possibly user-typed) tag is non-empty).
+
+    Unchecking a row skips it entirely; editing the Tagg cell corrects a
+    wrong tag-text match, or names a valve that had none, before saving.
     Repositioning a marker that landed in the wrong place is not supported
     yet — remove it here and place it manually via the existing P&ID
     Orsak/Konsekvens-style click-to-place flow instead.
@@ -2166,6 +2401,7 @@ class EquipmentMarkerReviewDialog(QDialog):
         'leader':    '📐 Ledarlinje',
         'contain':   '📍 Vidrör symbol',
         'nearest':   '≈ Närmaste symbol',
+        'shape':     '🦋 Formigenkänning',
         'none':      '— Ingen symbol hittad',
         'not_found': '⚠ Tagg ej hittad på sidan',
     }
@@ -2182,8 +2418,9 @@ class EquipmentMarkerReviewDialog(QDialog):
         n = len(results)
         n_found = sum(1 for r in results if r['link_method'] not in ('none', 'not_found'))
         hdr = QLabel(
-            f"Hittade en symbolmatchning för <b>{n_found} av {n}</b> valda taggar. "
-            "Kryssa ur felaktiga rader, redigera taggtext vid behov, och spara.")
+            f"Hittade en symbolmatchning för <b>{n_found} av {n}</b> rader. "
+            "Kryssa ur felaktiga rader, redigera taggtext vid behov (ge en "
+            "namnlös ventil en tagg om du vill), och spara.")
         hdr.setTextFormat(Qt.TextFormat.RichText)
         hdr.setWordWrap(True)
         hdr.setStyleSheet(
@@ -2265,9 +2502,21 @@ class EquipmentMarkerReviewDialog(QDialog):
                 continue
             tag_item = self._tbl.item(r, self._C_TAG)
             tag = tag_item.text().strip() if tag_item and tag_item.text().strip() else res['tag']
+            equipment_id = res.get('equipment_id')
+
+            # Rows from "🦋 Hitta ventilformer" may have no equipment_id yet
+            # (the valve wasn't a known tag to begin with) — if the user
+            # gave it a tag (suggested or typed in), register it as a real
+            # equipment_catalog entry now, so it shows up in
+            # Utrustningsregistret/nodskapande like any other scanned tag.
+            if equipment_id is None and tag:
+                prefix = _equip_prefix_from_tag(tag) or ''
+                equipment_id = self.db.add_equipment_item(
+                    tag, tag, prefix, res['page'], res['comp_type'], '', 0)
+
             outline_json = json.dumps(res['outline']) if res.get('outline') else ''
             self.db.add_equipment_marker(
-                res.get('equipment_id'), tag, res['page'], res['x'], res['y'],
+                equipment_id, tag, res['page'], res['x'], res['y'],
                 res['comp_type'], shape_outline=outline_json,
                 confidence=res['confidence'], link_method=res['link_method'])
             saved += 1
@@ -5975,7 +6224,7 @@ class PIDGraphicsView(QGraphicsView):
             raw_words = page.get_text("words", clip=frect)
             # Try spatially-combined strings first (catches 20 - PCV - 101)
             tag = ''
-            for candidate in _spatial_combine(raw_words):
+            for candidate, *_box in _spatial_combine(raw_words):
                 t = _pick_best_tag(candidate)
                 if t:
                     tag = t
@@ -7368,6 +7617,16 @@ class PIDPanel(QWidget):
         self.analyze_btn.setEnabled(False)
         bar.addWidget(self.analyze_btn)
 
+        self.find_valves_btn = QPushButton("🦋 Hitta ventilformer")
+        self.find_valves_btn.setToolTip(
+            "Söker igenom P&ID:n efter bow-tie-formade ventilsymboler —\n"
+            "hittar även ventiler som saknar en igenkänd tagg i närheten.\n"
+            "Föreslår en tagg när något står tillräckligt nära, annars\n"
+            "kan du skriva in den själv i granskningslistan.")
+        self.find_valves_btn.clicked.connect(self._find_valve_shapes)
+        self.find_valves_btn.setEnabled(False)
+        bar.addWidget(self.find_valves_btn)
+
         self.export_btn = QPushButton("📤 Exportera PDF")
         self.export_btn.setToolTip(
             "Exportera P&ID med alla HAZOP-markeringar (nodgränser, orsaker,\n"
@@ -7600,15 +7859,35 @@ class PIDPanel(QWidget):
         self._update_pen()
 
     def _analyze_pid(self):
-        """Scan all PDF pages, collect unique tag prefixes, cross-ref with database."""
+        """Scan all PDF pages via the shared scan_pdf_for_equipment() pipeline
+        (same one "🔍 Skanna P&ID" in Utrustningsregistret uses — see
+        NOTES.md "Slå ihop Skanna/Analysera P&ID"), collect unique tag
+        prefixes, and cross-ref with the tag database. This used to run its
+        own, weaker scanning loop with no OCR support; now both entry points
+        share one implementation and one OCR option."""
         if not HAS_PYMUPDF or self.viewer.pdf_doc is None:
             QMessageBox.warning(self, "Ingen P&ID", "Öppna en P&ID-fil först.")
             return
 
-        # Offer OCR auto-install — needed for vector-only P&IDs
+        # Offer OCR auto-install if no engine is available at all, then ask
+        # whether to actually use it for this scan (same prompt as "🔍 Skanna
+        # P&ID" in EquipmentPanel._scan, hazop.py).
         st = ocr_status()
         if not st['tesseract'] and not st['easyocr']:
             ensure_ocr_available(self)
+        st = ocr_status()
+        use_ocr = False
+        if st['tesseract'] or st['easyocr']:
+            engines = [n for n, v in [('pytesseract', st['tesseract']),
+                                       ('easyocr', st['easyocr'])] if v]
+            reply = QMessageBox.question(
+                self, "OCR",
+                f"Tillgänglig OCR-motor: {', '.join(engines)}\n\n"
+                "Använd OCR för sidor med lite text?\n"
+                "(Bättre för skannade ritningar, tar längre tid.)",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes)
+            use_ocr = (reply == QMessageBox.StandardButton.Yes)
 
         doc = self.viewer.pdf_doc
         n   = doc.page_count
@@ -7619,60 +7898,89 @@ class PIDPanel(QWidget):
         progress.show()
         QApplication.processEvents()
 
-        found = {}   # prefix → set of full tags
-        for pg in range(n):
+        def _cb(pg, _total, msg):
             if progress.wasCanceled():
-                break
+                return
             progress.setValue(pg)
-            progress.setLabelText(f"Sida {pg+1}/{n}…")
+            progress.setLabelText(msg)
             QApplication.processEvents()
-            page = doc.load_page(pg)
-            raw_words = page.get_text("words")
-            # Use spatial combining to catch extended tags (20-PCV-101, K2.FT.201)
-            seen_in_page = set()
-            for candidate in _spatial_combine(raw_words, gap_limit=22.0):
-                tag = _pick_best_tag(candidate)
-                if not tag or tag in seen_in_page:
-                    continue
-                seen_in_page.add(tag)
-                pfx = _equip_prefix_from_tag(tag)
-                if pfx:
-                    found.setdefault(pfx, set()).add(tag)
+
+        scan_result = scan_pdf_for_equipment(doc, use_ocr=use_ocr, progress_callback=_cb)
         progress.setValue(n); progress.close()
+
+        real = {k: v for k, v in scan_result.items() if not k.startswith('_')}
+        found = {pfx: set(data['tags']) for pfx, data in real.items()}
 
         if not found:
             QMessageBox.information(self, "Inga taggar",
                 "Inga taggnummer hittades i P&ID:n."); return
 
-        # Cross-reference with tag database and symbol knowledge
-        _cat_map = {
-            'instrument': 'Instrument / Sensor', 'givare': 'Instrument / Sensor',
-            'reglerfunktion': 'Instrument / Sensor', 'larm': 'Instrument / Sensor',
-            'ventil': 'Ventil', 'reglerventil': 'Ventil',
-            'pump': 'Pump', 'kompressor': 'Kompressor',
-            'tank': 'Tank / Kärl', 'kärl': 'Tank / Kärl',
-            'värmeväxlare': 'Värmeväxlare',
-            'säkerhetsventil': 'Säkerhetsventil (PSV)',
-        }
-        for pfx, tags in found.items():
-            examples  = ', '.join(sorted(tags)[:6])
-            db_entry  = self.db.tag_code_lookup(pfx) if hasattr(self.db, 'tag_code_lookup') else {}
-            name_sv   = (db_entry or {}).get('name_sv', '')
-            comp_type = ''
-            if db_entry:
-                cat = str(db_entry.get('category', '')).lower()
-                for k, v in _cat_map.items():
-                    if k in cat:
-                        comp_type = v; break
-            if not comp_type and pfx in KNOWN_PREFIXES:
-                comp_type = KNOWN_PREFIXES[pfx][1]
-            self.db.upsert_pid_tag(pfx, examples, name_sv, comp_type)
+        # Shared with "🔍 Skanna P&ID" (EquipmentPanel._scan, hazop.py) —
+        # both scan entry points now populate BOTH the per-tag equipment
+        # register and the per-prefix "Identifierade objekt" list, so
+        # results are identical regardless of which button was used.
+        apply_scan_result_to_equipment_catalog(self.db, scan_result)
+        upsert_identified_tags_from_scan(self.db, scan_result)
 
         QMessageBox.information(self, "Analys klar ✅",
             f"Hittade {len(found)} unika prefix.\n\n"
             "Öppna Inställningar → Identifierade objekt\n"
-            "för att bekräfta typerna och aktivera 'Använd'.")
+            "för att bekräfta typerna och aktivera 'Använd'.\n\n"
+            "Utrustningsregistret har också uppdaterats.")
         self.pid_analysis_done.emit()
+
+    def _find_valve_shapes(self):
+        """🦋 Hitta ventilformer — scans every page for bow-tie-shaped
+        symbols regardless of whether a tag is already known nearby (see
+        find_valve_shapes in this module). Unlike "🎯 Hitta på P&ID" in
+        Utrustningsregistret, this does NOT require the valve to already
+        be a row in the equipment register — a suggested tag (or an empty
+        one, editable in the review dialog) is derived from whatever text
+        is printed near the shape itself.
+        """
+        if not HAS_PYMUPDF or self.viewer.pdf_doc is None:
+            QMessageBox.warning(self, "Ingen P&ID", "Öppna en P&ID-fil först.")
+            return
+
+        doc = self.viewer.pdf_doc
+        n = doc.page_count
+        progress = QProgressDialog("Söker ventilformer…", "Avbryt", 0, n, self)
+        progress.setWindowTitle("Hitta ventilformer")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+        QApplication.processEvents()
+
+        def _cb(pg, _total, msg):
+            if progress.wasCanceled():
+                return
+            progress.setValue(pg)
+            progress.setLabelText(msg)
+            QApplication.processEvents()
+
+        results = find_valve_shapes(doc, progress_callback=_cb)
+        progress.setValue(n); progress.close()
+
+        if not results:
+            QMessageBox.information(self, "Inga ventilformer hittades",
+                "Hittade inga bow-tie-formade symboler på denna P&ID.")
+            return
+
+        # Link to an already-known equipment_catalog row when the suggested
+        # tag matches one, same as the tag-anchored "🎯 Hitta på P&ID" flow —
+        # avoids creating a duplicate row for a valve that's already tracked.
+        for res in results:
+            res['equipment_id'] = None
+            if res['tag']:
+                row = self.db.conn.execute(
+                    "SELECT id FROM equipment_catalog WHERE tag=? LIMIT 1",
+                    (res['tag'],)).fetchone()
+                if row:
+                    res['equipment_id'] = row['id']
+
+        dlg = EquipmentMarkerReviewDialog(results, self.db, parent=self)
+        if dlg.exec():
+            self.reload_overlays()
 
     def _refresh_color_btn(self):
         c = self._pen_color
@@ -8129,6 +8437,7 @@ class PIDPanel(QWidget):
         self._load_overlays()
         prog.close()
         self.analyze_btn.setEnabled(True)
+        self.find_valves_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
 
     def _goto_page(self, display_n):
@@ -8975,10 +9284,10 @@ class PIDPanel(QWidget):
                 pass
 
             # Scan page text for complete tag numbers using spatial combining
-            raw_words = fitz_page.get_text("words")
+            raw_words = _rotate_words(fitz_page.get_text("words"), fitz_page)
             seen: set = set()
 
-            for candidate in _spatial_combine(raw_words, gap_limit=22.0):
+            for candidate, *_box in _spatial_combine(raw_words, gap_limit=22.0):
                 tag = _pick_best_tag(candidate)
                 if not tag or tag in seen:
                     continue
@@ -8991,13 +9300,19 @@ class PIDPanel(QWidget):
                     continue
                 seen.add(tag)
 
-                # Find exact bounding box on the page
+                # Find exact bounding box on the page. search_for(), like
+                # get_text(), returns raw unrotated-mediabox rects — rotate
+                # into this app's PDF space (see _rotate_words) before
+                # handing bbox to add_tag_highlight, which draws it in
+                # scene coordinates via pdf_to_scene().
                 try:
+                    mat = fitz_page.rotation_matrix
                     hits = fitz_page.search_for(tag)
                     if not hits:
                         # Try just the code part (e.g., PSV-101 from 20-PSV-101)
                         simple = f"{pfx}-" + tag.split('-')[-1] if '-' in tag else tag
                         hits = fitz_page.search_for(simple)
+                    hits = [h * mat for h in hits]
                     for bbox in hits:
                         is_used = tag in used_tags or simple in used_tags \
                                   if 'simple' in dir() else tag in used_tags
@@ -9578,87 +9893,6 @@ class PIDPanel(QWidget):
             if cause:
                 self._active_node_id = dict(cause).get('node_id')
 
-    def _scan_equipment(self):
-        if not HAS_PYMUPDF or self.viewer.pdf_doc is None:
-            QMessageBox.warning(self, "Ingen PDF", "Öppna en P&ID-fil först.")
-            return
-
-        # Offer OCR auto-install if no engine is present
-        status = ocr_status()
-        if not status['tesseract'] and not status['easyocr']:
-            ensure_ocr_available(self)
-            status = ocr_status()
-
-        use_ocr   = False
-        ocr_engine = 'auto'
-
-        if status['tesseract'] or status['easyocr']:
-            engines = []
-            if status['tesseract']: engines.append("pytesseract")
-            if status['easyocr']:   engines.append("easyocr")
-            reply = QMessageBox.question(
-                self, "OCR — skanningsalternativ",
-                f"Tillgängliga OCR-motorer: {', '.join(engines)}\n\n"
-                "Vill du använda OCR för sidor med lite text?\n"
-                "(Ger bättre resultat på skannade P&ID-ritningar men tar längre tid.)",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes)
-            use_ocr = (reply == QMessageBox.StandardButton.Yes)
-        else:
-            # No OCR available — inform user
-            native_test_pg = self.viewer.pdf_doc.load_page(0)
-            if len(native_test_pg.get_text("words")) < 10:
-                QMessageBox.information(
-                    self, "OCR saknas",
-                    "PDF:en verkar innehålla lite sökbar text.\n\n"
-                    "Installera en OCR-motor för bättre resultat:\n"
-                    "  • pip install pytesseract\n"
-                    "    (+ ladda ner Tesseract: https://github.com/UB-Mannheim/tesseract/wiki)\n"
-                    "  • pip install easyocr  (tyngre men enklare att installera)")
-
-        # Progress dialog
-        n_pages = self.viewer.pdf_doc.page_count
-        progress = QProgressDialog("Förbereder…", "Avbryt", 0, n_pages, self)
-        progress.setWindowTitle("Skannar P&ID")
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.show()
-
-        def _cb(page_num, total, msg):
-            if progress.wasCanceled():
-                return
-            progress.setValue(page_num)
-            progress.setLabelText(msg)
-            QApplication.processEvents()
-
-        result = scan_pdf_for_equipment(
-            self.viewer.pdf_doc,
-            use_ocr=use_ocr,
-            ocr_engine=ocr_engine,
-            progress_callback=_cb)
-        progress.setValue(n_pages)
-        progress.close()
-
-        if progress.wasCanceled():
-            return
-
-        # Remove meta before checking emptiness
-        meta = result.pop('_meta', {})
-        real_result = {k: v for k, v in result.items() if not k.startswith('_')}
-        result['_meta'] = meta  # put back for dialog
-
-        if not real_result:
-            QMessageBox.information(
-                self, "Inga taggar",
-                "Inga utrustningstaggar hittades.\n\n"
-                + ("Försök aktivera OCR (installera pytesseract eller easyocr)."
-                   if not use_ocr else
-                   "Kontrollera att PDF-filens text är läsbar."))
-            return
-
-        dlg = EquipmentScanDialog(result, self.db, self)
-        dlg.exec()
-
     # ── Guided Risk Scenario mode ─────────────────────────────────────────────
 
     def start_scenario_mode(self, node_id=None):
@@ -9925,6 +10159,7 @@ class PIDPanel(QWidget):
                 self._update_page_label()
                 self._load_overlays()
                 self.analyze_btn.setEnabled(True)
+                self.find_valves_btn.setEnabled(True)
         else:
             # No P&ID in database — clear the canvas completely
             if self.viewer.pdf_doc is not None:
@@ -9950,4 +10185,5 @@ class PIDPanel(QWidget):
             self.viewer._show_placeholder(
                 "Ingen P&ID inläst.\nImportera en PDF-fil med knappen ovan.")
             self.analyze_btn.setEnabled(False)
+            self.find_valves_btn.setEnabled(False)
         self.export_btn.setEnabled(True)
