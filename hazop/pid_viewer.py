@@ -418,6 +418,14 @@ COMPONENT_TYPES = {
     'Övrigt': ['Mekaniskt haveri', 'Yttre läcka', 'Kontaminering', 'Felaktig manuell operation'],
 }
 
+# The COMPONENT_TYPES keys that count as "a valve" for scoping "🎯 Hitta på
+# P&ID" — deliberately narrowed to valves only for now (2026-08-06); other
+# equipment types (instruments, pumps, ...) are planned but not yet wired
+# into the detection pipeline, so including their tags today would just
+# mean noisy, unfiltered results in the review dialog for a type the
+# pipeline doesn't actually know how to visually confirm.
+VALVE_COMPONENT_TYPES = {'Ventil', 'Säkerhetsventil (PSV)'}
+
 CONSEQUENCE_TEMPLATES = [
     'Överfyllnad av {}',
     'Övertryck i {}',
@@ -7482,7 +7490,7 @@ class PIDGraphicsView(QGraphicsView):
                 for item in self._scene.items(sp):
                     itype = item.data(self._DATA_TYPE)
                     iid   = item.data(self._DATA_ID)
-                    if itype in ('cause', 'consequence', 'safeguard') and iid is not None:
+                    if itype in ('cause', 'consequence', 'safeguard', 'equipment') and iid is not None:
                         self.marker_clicked.emit(itype, int(iid))
                         break
         self._press_pos = None

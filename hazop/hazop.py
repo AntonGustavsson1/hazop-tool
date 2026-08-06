@@ -15,7 +15,7 @@ import platform
 import inspect
 
 from pid_viewer import (
-    PIDPanel, COMPONENT_TYPES, CONSEQUENCE_TEMPLATES, HAS_PYMUPDF,
+    PIDPanel, COMPONENT_TYPES, VALVE_COMPONENT_TYPES, CONSEQUENCE_TEMPLATES, HAS_PYMUPDF,
     MODE_NAV, MODE_NODE, MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD, MODE_PICK_REF_TAG,
     scan_pdf_for_equipment, ocr_status, KNOWN_PREFIXES, invert_cause_text,
     _RED_MARKUP_SYMBOLS, _get_red_symbol_svg,
@@ -16677,12 +16677,13 @@ class EquipmentPanel(QWidget):
         self._create_btn.setToolTip("Skapar en nod per ikryssad rad")
         self._create_btn.clicked.connect(self._create_nodes)
 
-        self._autodetect_btn = QPushButton("🎯 Hitta på P&ID")
+        self._autodetect_btn = QPushButton("🎯 Hitta ventiler på P&ID")
         self._autodetect_btn.setToolTip(
-            "Fullständig analys: kopplar varje kända tagg till dess ritade symbol\n"
-            "OCH letar efter ventilformade symboler som saknar tagg — allt i en\n"
-            "bakgrundskörning med synlig progress. Kör 🔍 Skanna P&ID först om\n"
-            "registret är tomt.")
+            "Analyserar VENTILER (Ventil / Säkerhetsventil PSV): kopplar varje\n"
+            "känd ventiltagg till dess ritade symbol OCH letar efter ventilformade\n"
+            "symboler som saknar tagg — allt i en bakgrundskörning med synlig\n"
+            "progress. Andra utrustningstyper (instrument m.fl.) är inte med än.\n"
+            "Kör 🔍 Skanna P&ID först om registret är tomt.")
         self._autodetect_btn.clicked.connect(self._autodetect)
 
         clear_btn = QPushButton("🗑 Rensa utrustning")
@@ -16770,6 +16771,25 @@ class EquipmentPanel(QWidget):
     def refresh(self):
         self._model.load()
         self._apply_filter()
+
+    def select_row_by_equipment_id(self, equipment_id):
+        """Select and scroll to the register row for `equipment_id` — used
+        when a valve marker on the P&ID is clicked
+        (MainWindow._on_equipment_marker_navigate). Clears any active
+        filter first so the target row can never be hidden by it."""
+        src_row = next((i for i, row in enumerate(self._model.rows())
+                        if row.get('id') == equipment_id), None)
+        if src_row is None:
+            return
+        if self._filter.text() or self._ocr_only.isChecked():
+            self._filter.clear()
+            self._ocr_only.setChecked(False)
+        proxy_index = self._proxy.mapFromSource(self._model.index(src_row, _EC_TAG))
+        if not proxy_index.isValid():
+            return
+        self._tbl.setCurrentIndex(proxy_index)
+        self._tbl.selectRow(proxy_index.row())
+        self._tbl.scrollTo(proxy_index)
 
     def _on_cell_clicked(self, index):
         if index.column() == _EC_TYPE:
@@ -16964,14 +16984,22 @@ class EquipmentPanel(QWidget):
 
     def _autodetect(self):
         """🎯 Hitta på P&ID — full analysis: weighted tag<->symbol
-        association for every known tag in the register AND shape-anchored
-        hunting for valve-shaped symbols with no tag, against one shared
-        per-page cluster extraction (detect_equipment_and_valves). Runs on
-        a background QThread (EquipmentAnalysisWorker) so the UI stays
-        responsive and shows real per-page progress, including on a
+        association for every known VALVE tag in the register AND shape-
+        anchored hunting for valve-shaped symbols with no tag, against one
+        shared per-page cluster extraction (detect_equipment_and_valves).
+        Runs on a background QThread (EquipmentAnalysisWorker) so the UI
+        stays responsive and shows real per-page progress, including on a
         50-page document.
 
-        Uses EVERY row in the register, not just checked ones — the
+        Deliberately scoped to valves only for now (2026-08-06) —
+        VALVE_COMPONENT_TYPES ('Ventil'/'Säkerhetsventil (PSV)') — even
+        though the register may hold other equipment types too. Other
+        types (instruments, pumps, ...) are a planned future extension of
+        this same pipeline, not yet wired up; including their tags today
+        would just be unfiltered noise in the review dialog for a type
+        the shape-hunting side doesn't know how to visually confirm at all.
+
+        Uses EVERY valve row in the register, not just checked ones — the
         global weighted association gets WORSE, not just redundant, if
         the candidate pool is pre-filtered, since a real symbol match for
         an unchecked tag would otherwise be unavailable to steal a
@@ -16985,6 +17013,8 @@ class EquipmentPanel(QWidget):
         tag_points = []          # (tag, prefix, page, x, y, conf) — x/y resolved in-thread
         tag_to_equipment_id = {}
         for row in self._model.rows():
+            if (row.get('equipment_type') or '') not in VALVE_COMPONENT_TYPES:
+                continue
             tag = (row.get('tag') or '').strip()
             if not tag:
                 continue
@@ -16994,8 +17024,10 @@ class EquipmentPanel(QWidget):
 
         if not tag_points:
             QMessageBox.information(
-                self, "Tomt register",
-                "Utrustningsregistret är tomt — kör 🔍 Skanna P&ID först.")
+                self, "Inga ventiler i registret",
+                "Hittade inga rader klassade som Ventil eller Säkerhetsventil (PSV) i "
+                "Utrustningsregistret.\n\nKör 🔍 Skanna P&ID om registret är tomt, eller "
+                "sätt typen till Ventil på de rader du vill analysera.")
             return
 
         path = self.db.get_pid_path()
@@ -17957,6 +17989,11 @@ class MainWindow(QMainWindow):
 
     def _on_marker_navigate(self, item_type: str, item_id: int):
         """Navigate tree and detail panel when a P&ID marker is clicked."""
+        if item_type == 'equipment':
+            # item_id here is equipment_markers.id (the marker row), not
+            # equipment_catalog.id — look up which register row it links to.
+            self._on_equipment_marker_navigate(item_id)
+            return
         type_map = {'cause': CAUSE_T, 'consequence': CONS_T, 'safeguard': SG_T}
         t = type_map.get(item_type)
         if t is None:
@@ -17967,6 +18004,19 @@ class MainWindow(QMainWindow):
         # explicitly right below.
         self.tree_panel.refresh(t, item_id, emit_selection=False)
         self._on_selected(t, item_id)
+
+    def _on_equipment_marker_navigate(self, marker_id: int):
+        """Clicking a valve marker on the P&ID switches to Utrustningsregistret
+        and selects the corresponding row, mirroring _on_marker_navigate's
+        tree-select behaviour for cause/consequence/safeguard markers — the
+        closest equivalent to "navigate to this item" for equipment, which
+        has no HAZOP tree node of its own."""
+        row = self.db.conn.execute(
+            "SELECT equipment_id FROM equipment_markers WHERE id=?", (marker_id,)).fetchone()
+        if not row or row['equipment_id'] is None:
+            return
+        self._switch_view(2)   # Utrustning page
+        self.equipment_panel.select_row_by_equipment_id(row['equipment_id'])
 
     def _on_safeguard_created(self, _sg_id):
         if self._cur_type == CONS_T and self._cur_id is not None:

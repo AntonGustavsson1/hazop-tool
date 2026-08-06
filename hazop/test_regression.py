@@ -3698,5 +3698,174 @@ class EquipmentAnalysisWorkerTests(unittest.TestCase):
         self.assertEqual(received['rejected'], [])
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# Valve-only scoping (2026-08-06): "🎯 Hitta ventiler på P&ID" is
+# deliberately restricted to VALVE_COMPONENT_TYPES for now — other
+# equipment types (instruments, pumps, ...) are a planned future
+# extension, not yet wired into the detection pipeline.
+# ══════════════════════════════════════════════════════════════════════════
+
+class ValveOnlyAutodetectScopeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_valvescope_test_")
+        self.db_path = os.path.join(self._tmpdir, "test_project.db")
+        self.db = Database(path=self.db_path)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_autodetect_proceeds_when_only_valve_rows_present(self):
+        """No PDF path is configured in this test, so _autodetect() must
+        reach its 'Ingen P&ID' warning (not the 'Inga ventiler i
+        registret' info message) -- proof the valve rows were NOT
+        filtered out before the tag_points-empty check."""
+        from hazop import EquipmentPanel
+        from PyQt6.QtWidgets import QMessageBox
+        self.db.add_equipment_item("HV-101", "HV-101", "HV", 0, "Ventil", '', 0)
+        self.db.add_equipment_item("PSV-201", "PSV-201", "PSV", 0,
+                                   "Säkerhetsventil (PSV)", '', 0)
+        panel = EquipmentPanel(self.db)
+        panel.refresh()
+        try:
+            with unittest.mock.patch.object(QMessageBox, 'warning') as mock_warn, \
+                 unittest.mock.patch.object(QMessageBox, 'information') as mock_info:
+                panel._autodetect()
+            mock_warn.assert_called_once()
+            mock_info.assert_not_called()
+        finally:
+            panel.deleteLater()
+
+    def test_autodetect_skips_non_valve_rows(self):
+        from hazop import EquipmentPanel
+        from PyQt6.QtWidgets import QMessageBox
+        self.db.add_equipment_item("TI-301", "TI-301", "TI", 0, "Instrument / Sensor", '', 0)
+        self.db.add_equipment_item("P-401", "P-401", "P", 0, "Pump", '', 0)
+        self.db.add_equipment_item("X-501", "X-501", "X", 0, "", '', 0)   # unclassified
+        panel = EquipmentPanel(self.db)
+        panel.refresh()
+        try:
+            with unittest.mock.patch.object(QMessageBox, 'warning') as mock_warn, \
+                 unittest.mock.patch.object(QMessageBox, 'information') as mock_info:
+                panel._autodetect()
+            mock_info.assert_called_once()
+            mock_warn.assert_not_called()
+            title = mock_info.call_args[0][1]
+            self.assertIn('ventiler', title.lower())
+        finally:
+            panel.deleteLater()
+
+    def test_autodetect_mixed_register_only_uses_valve_rows(self):
+        """A register with both valve and non-valve rows must still
+        proceed past the empty-check (the valve rows are enough), while
+        the non-valve rows are simply excluded from the candidate pool —
+        checked indirectly the same way as the two tests above, since
+        tag_points itself is a local variable inside _autodetect()."""
+        from hazop import EquipmentPanel
+        from PyQt6.QtWidgets import QMessageBox
+        self.db.add_equipment_item("HV-101", "HV-101", "HV", 0, "Ventil", '', 0)
+        self.db.add_equipment_item("TI-301", "TI-301", "TI", 0, "Instrument / Sensor", '', 0)
+        panel = EquipmentPanel(self.db)
+        panel.refresh()
+        try:
+            with unittest.mock.patch.object(QMessageBox, 'warning') as mock_warn, \
+                 unittest.mock.patch.object(QMessageBox, 'information') as mock_info:
+                panel._autodetect()
+            mock_warn.assert_called_once()
+            mock_info.assert_not_called()
+        finally:
+            panel.deleteLater()
+
+
+class EquipmentMarkerClickNavigationTests(unittest.TestCase):
+    """2026-08-06: valve markers on the P&ID are now clickable — clicking
+    one switches to Utrustningsregistret and selects the corresponding
+    row, the closest equivalent to _on_marker_navigate's tree-select
+    behaviour for cause/consequence/safeguard (equipment has no HAZOP tree
+    node of its own to select)."""
+
+    def test_on_marker_navigate_switches_to_equipment_page_and_selects_row(self):
+        with _TempDbMainWindow() as win:
+            eq_id = win.db.add_equipment_item("HV-101", "HV-101", "HV", 0, "Ventil", '', 0)
+            marker_id = win.db.add_equipment_marker(
+                eq_id, "HV-101", 0, 100.0, 100.0, "Ventil", confidence=0.9,
+                link_method='leader')
+            win.equipment_panel.refresh()
+
+            win._on_marker_navigate('equipment', marker_id)
+
+            self.assertEqual(win.view_stack.currentIndex(), 2,
+                "clicking a valve marker must switch to the Utrustning page")
+            src_row = win.equipment_panel._proxy.mapToSource(
+                win.equipment_panel._tbl.currentIndex()).row()
+            self.assertEqual(win.equipment_panel._model.row_dict(src_row)['id'], eq_id,
+                "the register row for the clicked marker's equipment_id must be selected")
+
+    def test_on_marker_navigate_equipment_with_no_linked_row_does_not_crash(self):
+        """A marker whose equipment_id is NULL (e.g. an untagged shape hit
+        the user never confirmed with a tag) must be a silent no-op, not
+        a crash."""
+        with _TempDbMainWindow() as win:
+            marker_id = win.db.add_equipment_marker(
+                None, '', 0, 50.0, 50.0, "Ventil", confidence=0.6, link_method='shape')
+            try:
+                win._on_marker_navigate('equipment', marker_id)
+            except Exception as e:
+                self.fail(f"must not raise for a marker with no linked equipment row: {e!r}")
+
+    def test_select_row_by_equipment_id_clears_blocking_filter(self):
+        """If a text filter is currently hiding the target row, selecting
+        it must clear the filter rather than silently doing nothing."""
+        from hazop import EquipmentPanel
+        tmpdir = tempfile.mkdtemp(prefix="hazop_selectrow_test_")
+        try:
+            db = Database(path=os.path.join(tmpdir, "test_project.db"))
+            eq_id = db.add_equipment_item("HV-101", "HV-101", "HV", 0, "Ventil", '', 0)
+            panel = EquipmentPanel(db)
+            panel.refresh()
+            try:
+                panel._filter.setText("no-such-tag-matches-this")
+                self.assertEqual(panel._proxy.rowCount(), 0,
+                    "sanity check: the filter must actually hide the row first")
+
+                panel.select_row_by_equipment_id(eq_id)
+
+                self.assertEqual(panel._filter.text(), "",
+                    "the blocking filter must be cleared so the target row becomes reachable")
+                src_row = panel._proxy.mapToSource(panel._tbl.currentIndex()).row()
+                self.assertEqual(panel._model.row_dict(src_row)['id'], eq_id)
+            finally:
+                panel.deleteLater()
+                try: del db
+                except Exception: pass
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_select_row_by_equipment_id_unknown_id_does_not_crash(self):
+        from hazop import EquipmentPanel
+        tmpdir = tempfile.mkdtemp(prefix="hazop_selectrow_test_")
+        try:
+            db = Database(path=os.path.join(tmpdir, "test_project.db"))
+            panel = EquipmentPanel(db)
+            panel.refresh()
+            try:
+                panel.select_row_by_equipment_id(999999)   # no such row
+            except Exception as e:
+                self.fail(f"must not raise for an unknown equipment_id: {e!r}")
+            finally:
+                panel.deleteLater()
+                try: del db
+                except Exception: pass
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

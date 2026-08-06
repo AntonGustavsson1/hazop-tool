@@ -293,6 +293,20 @@
 
 ---
 
+## Avgränsa "Hitta på P&ID" till ventiler + klickbara markörer (2026-08-06)
+
+**Begäran:** Användaren ville avgränsa "🎯 Hitta på P&ID" till enbart ventiler för nu (andra utrustningstyper som instrument planeras senare men är inte klara), och att de detekterade ventilerna ska bli klickbara objekt på P&ID:n — inte bara sparas i registret.
+
+**1. Avgränsning till ventiler:** Ny `pid_viewer.VALVE_COMPONENT_TYPES = {'Ventil', 'Säkerhetsventil (PSV)'}`. `EquipmentPanel._autodetect()` filtrerar nu registrets rader på `equipment_type in VALVE_COMPONENT_TYPES` innan `tag_points` byggs — andra typer (instrument, pumpar, oklassificerade) tas inte med i taggkopplingen. Den formbaserade jakten (bow-tie) i `detect_equipment_and_valves` var redan ventilspecifik (kräver `bowtie_score`/diagonal linje) och behövde ingen ändring. Knappen döpt om till "🎯 Hitta ventiler på P&ID" för att vara tydlig om scope. `scan_pdf_for_equipment`/"🔍 Skanna P&ID" är **oförändrad** — den ska fortsätta hitta alla taggtyper, avgränsningen gäller bara analys/markerings-steget.
+
+**2. Klickbara markörer:** Ventilmarkörer (`equipment_markers`, ritade av `PIDGraphicsView.add_equipment_marker`) fanns redan som visuella overlays med `setData(_DATA_TYPE, 'equipment')` — men klick-dispatchen i `mouseReleaseEvent` hade en hårdkodad vitlista `('cause', 'consequence', 'safeguard')` som inte inkluderade `'equipment'`, så klick gjorde ingenting. Lade till `'equipment'` i vitlistan, och en ny `MainWindow._on_equipment_marker_navigate()` (kopplad via befintliga `marker_navigated`-signalen, samma väg som cause/consequence/safeguard) som slår upp vilken registerrad markören (`equipment_markers.id`) länkar till (`equipment_markers.equipment_id`) och byter till Utrustningsregistret + markerar/scrollar till raden (`EquipmentPanel.select_row_by_equipment_id`, som även rensar ett aktivt filter om det annars skulle dölja måltraden).
+
+**Arkitekturbeslut:** Behöll den generiska `equipment_catalog`/`EquipmentPanel`/`detect_equipment_and_valves`-strukturen oförändrad (döpte INTE om till t.ex. "ValvePanel") — avgränsningen är en körtidsfilter, inte en omskrivning av datamodellen, precis eftersom användaren själv sa att instrument m.fl. ska byggas ut på samma grund senare.
+
+**Test:** 7 nya tester (`ValveOnlyAutodetectScopeTests`, `EquipmentMarkerClickNavigationTests`) + en manuell verifiering med en riktig `QTest.mouseClick` på en ventilmarkör i en levande `PIDGraphicsView`, som bekräftar att `marker_clicked` triggas korrekt hela vägen. Alla 160 tester passerar.
+
+---
+
 ## Stabilitetsgenomgång (2026-08-02)
 
 **Bakgrund:** En serie krascher (app stängdes tyst vid klick på orsak-markör, röd markup m.m.) spårades och åtgärdades i flera omgångar med parallella granskningsagenter, följt av en implementationsomgång och två oberoende slutgranskningar.
