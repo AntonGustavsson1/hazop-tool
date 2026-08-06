@@ -3300,6 +3300,46 @@ class UnifiedTagScanTests(unittest.TestCase):
             "_spatial_combine must yield (text, x0, y0, x1, y1) tuples")
         self.assertTrue(any('PCV' in r[0] for r in results))
 
+    def test_spatial_combine_skips_exact_position_duplicate_words(self):
+        """Some CAD exports render the same text 2-3 times at the
+        byte-for-byte identical bbox (a bold-simulation trick) — confirmed
+        on a real ITS P&ID title block, where "Checked"/"Drawn" etc. each
+        appeared exactly 3 times with identical coordinates. Without a
+        dedup check, _spatial_combine's gap-based joining logic
+        concatenates these into e.g. "CheckedCheckedChecked" instead of
+        recognizing them as the same word rendered on top of itself."""
+        from equipment_detection import _spatial_combine
+        words = [
+            (100.0, 200.0, 128.0, 208.0, 'Checked'),
+            (100.0, 200.0, 128.0, 208.0, 'Checked'),
+            (100.0, 200.0, 128.0, 208.0, 'Checked'),
+        ]
+        results = _spatial_combine(words, gap_limit=18.0)
+        texts = {r[0] for r in results}
+        self.assertIn('Checked', texts)
+        self.assertNotIn('CheckedCheckedChecked', texts)
+        self.assertFalse(any(t.count('Checked') > 1 for t in texts),
+            f"exact-position duplicate must never be concatenated, got: {texts}")
+
+    def test_spatial_combine_dedups_duplicate_mid_group(self):
+        """The same duplicate-rendering artifact can occur on ANY word
+        within an already multi-word line, not just the first — e.g. a
+        real ITS title block line rendered as "MANIFOLD pressure
+        pressure PHC PHC ...". Must dedup regardless of position in the
+        group, not just immediately after the group's own first token."""
+        from equipment_detection import _spatial_combine
+        words = [
+            (100.0, 200.0, 140.0, 208.0, 'MANIFOLD'),
+            (145.0, 200.0, 175.0, 208.0, 'pressure'),
+            (145.0, 200.0, 175.0, 208.0, 'pressure'),
+            (180.0, 200.0, 195.0, 208.0, 'PHC'),
+        ]
+        results = _spatial_combine(words, gap_limit=18.0)
+        texts = {r[0] for r in results}
+        self.assertIn('MANIFOLDpressurePHC', texts)
+        self.assertFalse(any('pressurepressure' in t.lower() for t in texts),
+            f"mid-group duplicate must be skipped too, got: {texts}")
+
     def test_equipment_panel_scan_writes_both_tables(self):
         from hazop import EquipmentPanel
         from PyQt6.QtWidgets import QMessageBox

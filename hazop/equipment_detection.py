@@ -692,6 +692,16 @@ def _spatial_combine(words: list, gap_limit: float = 18.0) -> list:
     position (e.g. scan_pdf_for_equipment) don't lose it, same as callers
     that only want the text and ignore the trailing coordinates.
 
+    Some CAD exports render the SAME text 2-3 times at the byte-for-byte
+    identical bounding box (a bold-simulation trick, confirmed on a real
+    ITS P&ID title block: "Checked"/"Drawn"/etc. each appeared 3 times
+    at identical coordinates). Their gap (next token's x0 minus the
+    group's x1) is then negative and well under gap_limit, so without a
+    check these get silently concatenated into e.g. "CHECKEDCHECKEDCHECKED"
+    — a real, previously-unnoticed source of garbage tag-candidate noise.
+    Such an exact-position repeat of the immediately preceding token is
+    treated as a rendering duplicate and skipped, not appended.
+
     words: list of (x0, y0, x1, y1, text) tuples from page.get_text("words")
     """
     if not words:
@@ -709,6 +719,11 @@ def _spatial_combine(words: list, gap_limit: float = 18.0) -> list:
         grp_x1 = x1
         grp_y1 = y1
         y_mid = (y0 + y1) / 2
+        prev_x0, prev_y0, prev_x1 = x0, y0, x1   # bbox of the last token
+                                                   # actually appended (for
+                                                   # duplicate detection —
+                                                   # NOT the group's overall
+                                                   # start, which stays fixed)
 
         j = i + 1
         while j < len(sw):
@@ -719,6 +734,18 @@ def _spatial_combine(words: list, gap_limit: float = 18.0) -> list:
             if abs(y_mid - ny_mid) > 5:
                 break
 
+            # Exact-position duplicate of the token just processed (a
+            # bold-simulation rendering artifact, see docstring) — skip
+            # it entirely rather than treating it as an adjacent word.
+            # Compared against the PREVIOUS token's own bbox, not the
+            # group's overall start — a duplicate can occur anywhere in
+            # an already multi-word group (e.g. "MANIFOLD pressure
+            # pressure PHC PHC..."), not just right after the first word.
+            if (ntext == group[-1] and abs(nx0 - prev_x0) <= 0.5
+                    and abs(ny0 - prev_y0) <= 0.5 and abs(nx1 - prev_x1) <= 0.5):
+                j += 1
+                continue
+
             gap = nx0 - grp_x1
             is_sep = ntext.strip() in ('-', '.', '/', '_')
 
@@ -727,6 +754,7 @@ def _spatial_combine(words: list, gap_limit: float = 18.0) -> list:
                 group.append(ntext)
                 grp_x1 = nx1
                 grp_y1 = ny1
+                prev_x0, prev_y0, prev_x1 = nx0, ny0, nx1
                 j += 1
             else:
                 break
