@@ -19060,6 +19060,17 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+        # EquipmentPanel's QTableView is backed by _EquipmentTableModel,
+        # which keeps its OWN db reference (needed for setData()/delete_row()
+        # to write through directly) separate from EquipmentPanel.db above —
+        # found via a real crash: "Cannot operate on a closed database" when
+        # switching to the Utrustning page after a project reload, because
+        # the model was still holding the OLD (by-then-closed) connection.
+        try:
+            self.equipment_panel._model.db = db
+        except Exception:
+            pass
+
         # Also update db on settings sub-panels (they have their own db reference)
         sp = self.settings_panel
         for attr in ('_std_causes_panel', '_std_objects_panel', '_tag_memory_panel',
@@ -19070,6 +19081,13 @@ class MainWindow(QMainWindow):
                     sub.db = db
             except Exception:
                 pass
+        # analysis_panel (PIDAnalysisPanel) is likewise backed by
+        # _IdentifiedTagsModel with its own db reference — same fix as
+        # equipment_panel above.
+        try:
+            sp.analysis_panel._model.db = db
+        except Exception:
+            pass
 
         # HAZOPWorksheet embeds its own ScenarioTablePanel instance (distinct
         # from self.scenario_panel above) — it has its own stale db reference.

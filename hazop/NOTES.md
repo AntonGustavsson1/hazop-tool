@@ -278,6 +278,21 @@
 
 ---
 
+## Krasch: "Cannot operate on a closed database" i Utrustningsregistret (2026-08-06, uppföljning)
+
+**Problem:** Riktig krasch-rapport (`crashes/crash_20260806_133424_ProgrammingError.json`): klick på "Utrustning" i navigeringsfältet efter att ett projekt laddats om kraschade med `sqlite3.ProgrammingError: Cannot operate on a closed database.` i `EquipmentPanel.refresh() → _EquipmentTableModel.load() → equipment_items()`.
+
+**Grundorsak:** Samma buggklass som redan fanns dokumenterad och åtgärdad för `HAZOPWorksheet`/`ScenarioTablePanel` (se `ReloadAllPanelsDbSwapTests`) — men nu återkommen för `EquipmentPanel`/`PIDAnalysisPanel` eftersom deras omskrivning till modell/vy (2026-08-06, ovan) introducerade en **andra** db-referens som `_reload_all_panels()` inte kände till:
+
+- `_hzp_open()` stänger den gamla anslutningen explicit (`self.db.conn.close()`) innan den nya `Database`-instansen skapas.
+- `_reload_all_panels()` sätter `panel.db = db` (nya anslutningen) på `equipment_panel` och `settings_panel.analysis_panel` — men `_EquipmentTableModel`/`_IdentifiedTagsModel` (som varje panel numera delegerar all databasläsning/skrivning till) håller sin **egen** `self.db`, satt en gång vid konstruktion och aldrig uppdaterad. Modellen fortsatte alltså peka på den redan stängda, gamla anslutningen.
+
+**Fix:** `_reload_all_panels()` uppdaterar nu också `equipment_panel._model.db` och `settings_panel.analysis_panel._model.db`, exakt samma mönster som redan används för `worksheet._table_panel.db`.
+
+**Test:** Lade till fyra tester i `ReloadAllPanelsDbSwapTests` (samma mönster som de befintliga worksheet-testerna): två kontrollerar att modellerna faktiskt får den nya db-referensen, två är end-to-end-regressioner som reproducerar den exakta kraschen. Verifierat att de fyra nya testerna **faller** utan fixen (samma felmeddelande som kraschrapporten) och passerar med den. Alla 153 tester passerar.
+
+---
+
 ## Stabilitetsgenomgång (2026-08-02)
 
 **Bakgrund:** En serie krascher (app stängdes tyst vid klick på orsak-markör, röd markup m.m.) spårades och åtgärdades i flera omgångar med parallella granskningsagenter, följt av en implementationsomgång och två oberoende slutgranskningar.

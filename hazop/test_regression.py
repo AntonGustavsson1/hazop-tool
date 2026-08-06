@@ -3147,6 +3147,73 @@ class ReloadAllPanelsDbSwapTests(unittest.TestCase):
             except sqlite3.ProgrammingError as e:
                 self.fail(f"worksheet.refresh() must not touch the closed old db, raised: {e!r}")
 
+    def test_equipment_panel_and_its_model_get_new_db(self):
+        """Same bug class as the Worksheet one above, found via a real crash
+        report (2026-08-06): EquipmentPanel's QTableView is backed by
+        _EquipmentTableModel, which keeps its OWN db reference (needed so
+        setData()/delete_row() can write through directly) separate from
+        EquipmentPanel.db — _reload_all_panels() updated the panel's db but
+        not the model's, so the model kept using the old, by-then-closed
+        connection after a project reload."""
+        with _TempDbMainWindow() as win:
+            old_db = win.db
+            old_db.conn.close()
+            win.db = hazop.Database(path=old_db.path)
+            win._reload_all_panels()
+            self.assertIs(win.equipment_panel.db, win.db)
+            self.assertIs(win.equipment_panel._model.db, win.db,
+                "EquipmentPanel's _EquipmentTableModel must also receive the new db reference")
+
+    def test_equipment_panel_refresh_does_not_crash_after_db_swap(self):
+        """End-to-end regression for the exact reported crash: switching to
+        the Utrustning tab after a project reload must not raise
+        sqlite3.ProgrammingError('Cannot operate on a closed database')."""
+        with _TempDbMainWindow() as win:
+            old_db = win.db
+            old_db.conn.execute(
+                "INSERT INTO equipment_catalog (tag, prefix, pid_page, equipment_type) "
+                "VALUES ('V-1', 'V', 0, 'Ventil')")
+            old_db.commit()
+
+            old_db.conn.close()
+            win.db = hazop.Database(path=old_db.path)
+            win._reload_all_panels()
+
+            try:
+                win.equipment_panel.refresh()
+            except sqlite3.ProgrammingError as e:
+                self.fail(f"equipment_panel.refresh() must not touch the closed old db, raised: {e!r}")
+
+    def test_pid_analysis_panel_and_its_model_get_new_db(self):
+        """Same bug, same fix, for Inställningar → Identifierade objekt
+        (PIDAnalysisPanel / _IdentifiedTagsModel)."""
+        with _TempDbMainWindow() as win:
+            old_db = win.db
+            old_db.conn.close()
+            win.db = hazop.Database(path=old_db.path)
+            win._reload_all_panels()
+            analysis_panel = win.settings_panel.analysis_panel
+            self.assertIs(analysis_panel.db, win.db)
+            self.assertIs(analysis_panel._model.db, win.db,
+                "PIDAnalysisPanel's _IdentifiedTagsModel must also receive the new db reference")
+
+    def test_pid_analysis_panel_refresh_does_not_crash_after_db_swap(self):
+        with _TempDbMainWindow() as win:
+            old_db = win.db
+            old_db.conn.execute(
+                "INSERT INTO pid_identified_tags (tag_code, examples, name_sv, comp_type, confirmed) "
+                "VALUES ('V', 'V-1', '', '', 0)")
+            old_db.commit()
+
+            old_db.conn.close()
+            win.db = hazop.Database(path=old_db.path)
+            win._reload_all_panels()
+
+            try:
+                win.settings_panel.analysis_panel.refresh()
+            except sqlite3.ProgrammingError as e:
+                self.fail(f"analysis_panel.refresh() must not touch the closed old db, raised: {e!r}")
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # 9. Unified tag scanning — "🔍 Skanna P&ID" and "📋 Analysera P&ID" used to
