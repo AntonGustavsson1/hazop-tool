@@ -11,7 +11,9 @@ Run with:
 or:
     python -m unittest hazop.test_symbol_geometry -v
 """
+import math
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -817,6 +819,44 @@ class ClusterCoresPeelingTests(unittest.TestCase):
         self.assertEqual(len(cores), 1)
         self.assertEqual(set(cores[0]), set(groups[0]))
 
+    def test_core_growth_is_capped_by_member_count_not_just_shape(self):
+        """Regression test: found on a real Hybrit P&ID where a ~540-line
+        cluster was a large non-symbol graphic that happened to stay
+        physically compact (under _CORE_MAX_NORM_SIZE) and roughly
+        square (under _CORE_ASPECT_LIMIT) while growing — neither limit
+        caught it, and _touches_any's cost scales with the CURRENT core
+        size, so absorbing all ~540 members took 28+ seconds. Reproduced
+        here with a seed quad surrounded by a dense hatch of 200 tiny
+        touching line segments confined to a small, square area (built
+        directly as primitive dicts — real PDF rendering of 200 shapes
+        would make the test itself slow) — aspect and size both stay
+        low throughout, so only _CORE_MAX_MEMBERS stops the growth."""
+        prims = [{
+            'kind': 'qu', 'bbox': (90.0, 90.0, 110.0, 110.0),
+            'p0': (90.0, 90.0), 'p1': (110.0, 110.0),
+            'closed': True, 'filled': False,
+            'corners': [(90.0, 110.0), (110.0, 90.0), (90.0, 90.0), (110.0, 110.0)],
+            'width': 1.0, 'source': 0,
+        }]
+        # A tight grid of short touching hatch segments confined to
+        # (85,85)-(115,115) — stays compact and square-ish no matter how
+        # many are absorbed.
+        n = 0
+        for row in range(20):
+            y = 85.0 + row * 1.5
+            for col in range(10):
+                x = 85.0 + col * 3.0
+                n += 1
+                prims.append({
+                    'kind': 'l', 'bbox': (x, y, x + 3.0, y),
+                    'p0': (x, y), 'p1': (x + 3.0, y),
+                    'closed': False, 'filled': False, 'width': 1.0, 'source': n,
+                })
+        group = list(range(len(prims)))
+        core = sg._cluster_core(prims, group)
+        self.assertLessEqual(len(core), sg._CORE_MAX_MEMBERS,
+            "growth must stop at the member cap even though aspect/size never trigger")
+
 
 class ClosedShapeFilterTests(unittest.TestCase):
     """Found on a real LKAB P&ID: the vector-drawn letter "M" (a motor
@@ -1096,6 +1136,55 @@ class PolygonCircleTests(unittest.TestCase):
         for g in groups:
             all_islands.extend(sg._circle_islands(prims, g))
         self.assertEqual(len(all_islands), 2)
+
+    def test_large_non_circular_cluster_stays_fast(self):
+        """Regression test: found on a real Hybrit P&ID where a page had
+        zero curve primitives (triggering the line-polygon search on
+        every cluster) and one cluster was a ~3500-segment pipe-network
+        zigzag, not a circle at all. The original implementation did a
+        raw O(n^2) pairwise scan to find connected components among a
+        cluster's own line segments, which took minutes on that cluster
+        alone. Reproduced here with a 400-segment zigzag chain (built
+        directly as primitive dicts — real PDF rendering of that many
+        shapes would make the test itself slow) plus one genuine
+        32-sided polygon circle bridged onto the end of the chain. Must
+        both run in well under a second and still find the one real
+        circle among the noise."""
+        prims = []
+        # A long zigzag of touching line segments — one connected
+        # component, never anywhere close to forming a circle.
+        x = 0.0
+        for i in range(400):
+            x0, x1 = x, x + 2.0
+            y0, y1 = (0.0, 5.0) if i % 2 == 0 else (5.0, 0.0)
+            prims.append({
+                'kind': 'l', 'bbox': (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)),
+                'p0': (x0, y0), 'p1': (x1, y1),
+                'closed': False, 'filled': False, 'width': 1.0, 'source': i,
+            })
+            x = x1
+        # One genuine 32-sided circle, bridged onto the end of the chain.
+        cx, cy, r, n_sides = x + 1.0, 20.0, 5.0, 32
+        for k in range(n_sides):
+            a0 = 2 * math.pi * k / n_sides
+            a1 = 2 * math.pi * (k + 1) / n_sides
+            p0 = (cx + r * math.cos(a0), cy + r * math.sin(a0))
+            p1 = (cx + r * math.cos(a1), cy + r * math.sin(a1))
+            prims.append({
+                'kind': 'l', 'bbox': (min(p0[0], p1[0]), min(p0[1], p1[1]),
+                                       max(p0[0], p1[0]), max(p0[1], p1[1])),
+                'p0': p0, 'p1': p1,
+                'closed': False, 'filled': False, 'width': 1.0, 'source': 400 + k,
+            })
+        group = list(range(len(prims)))
+
+        t0 = time.time()
+        islands = sg._polygon_circle_islands(prims, group)
+        elapsed = time.time() - t0
+        self.assertLess(elapsed, 3.0,
+            f"took {elapsed:.1f}s — the O(n^2) pairwise scan regressed")
+        self.assertEqual(len(islands), 1, "the one genuine circle must still be found")
+        self.assertEqual(len(islands[0]), n_sides)
 
 
 class PumpShapeTests(unittest.TestCase):

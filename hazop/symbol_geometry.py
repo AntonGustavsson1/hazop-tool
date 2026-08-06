@@ -264,6 +264,39 @@ class _UnionFind:
             self.parent[ri] = rj
 
 
+def _grid_bucketed_union_find(primitives, idxs, gap):
+    """Union-find over just `idxs` (a subset of `primitives`), connecting
+    pairs whose actual drawn edges are within `gap` — same grid-bucketed
+    broad-phase technique as cluster_primitives (see its docstring for
+    why: an unbucketed O(k^2) pairwise scan is fine for the compact
+    handful of primitives a real symbol has, but confirmed on a real
+    Hybrit P&ID to take minutes on a single ~3500-line pipe-network
+    cluster that isn't a symbol at all. Returns a _UnionFind indexed by
+    POSITION in `idxs` (0..len(idxs)-1), not by primitive index — the
+    caller maps back via idxs[k].
+    """
+    k = len(idxs)
+    uf = _UnionFind(k)
+    grid = {}
+    for pos, i in enumerate(idxs):
+        x0, y0, x1, y1 = _bbox_expand(primitives[i]['bbox'], gap)
+        for gx in range(int(x0 // _GRID_CELL), int(x1 // _GRID_CELL) + 1):
+            for gy in range(int(y0 // _GRID_CELL), int(y1 // _GRID_CELL) + 1):
+                grid.setdefault((gx, gy), []).append(pos)
+    for cell_items in grid.values():
+        if len(cell_items) > _MAX_CELL_DENSITY:
+            continue
+        for a in range(len(cell_items)):
+            pa = cell_items[a]
+            for b in range(a + 1, len(cell_items)):
+                pb = cell_items[b]
+                if uf.find(pa) == uf.find(pb):
+                    continue
+                if _prim_gap(primitives[idxs[pa]], primitives[idxs[pb]]) <= gap:
+                    uf.union(pa, pb)
+    return uf
+
+
 def cluster_primitives(primitives, gap=_CLUSTER_GAP, scale=10.0):
     """Group primitives into connected components by actual edge proximity
     (see _prim_gap — deliberately not bbox proximity).
@@ -581,11 +614,7 @@ def _polygon_circle_islands(primitives, group, gap=_CLUSTER_GAP):
     n = len(line_idxs)
     if n < _POLYGON_CIRCLE_MIN_SIDES:
         return []
-    uf = _UnionFind(n)
-    for a in range(n):
-        for b in range(a + 1, n):
-            if _prim_gap(primitives[line_idxs[a]], primitives[line_idxs[b]]) <= gap:
-                uf.union(a, b)
+    uf = _grid_bucketed_union_find(primitives, line_idxs, gap)
     raw_islands = {}
     for idx in range(n):
         root = uf.find(idx)
@@ -617,11 +646,7 @@ def _polygon_circle_islands(primitives, group, gap=_CLUSTER_GAP):
         # Swerim-style instrument bubble. Re-check connectivity among
         # just the survivors rather than assuming they're still one
         # shape; each resulting piece is tested independently below.
-        sub_uf = _UnionFind(len(filtered))
-        for a in range(len(filtered)):
-            for b in range(a + 1, len(filtered)):
-                if _prim_gap(primitives[filtered[a]], primitives[filtered[b]]) <= gap:
-                    sub_uf.union(a, b)
+        sub_uf = _grid_bucketed_union_find(primitives, filtered, gap)
         sub_islands = {}
         for idx in range(len(filtered)):
             root = sub_uf.find(idx)
@@ -1032,6 +1057,21 @@ _CORE_MAX_NORM_SIZE = 20.0   # pt, relative to page text size — real valve/
                              # pure waste since it never scores as a symbol
                              # (bowtie_score 0.0) regardless.
 
+_CORE_MAX_MEMBERS = 80   # real valve/pump/instrument cores measured this
+                         # session (including multi-symbol recoveries via
+                         # _cluster_cores) never exceeded ~40 primitives; a
+                         # generous margin above that. Confirmed necessary
+                         # on a real Hybrit P&ID: a ~540-primitive cluster
+                         # (a large non-symbol graphic, physically small
+                         # enough to slip under _CORE_MAX_NORM_SIZE) took
+                         # 28+ seconds to grow because _touches_any's cost
+                         # scales with the CURRENT core size, not just
+                         # `remaining` — every extra primitive absorbed
+                         # makes every future round's touching-check that
+                         # much more expensive. Capping member count bounds
+                         # that per-round cost directly, where the norm_size
+                         # cap alone does not.
+
 
 def _cluster_core(primitives, group, text_bboxes=None, scale=10.0):
     """A cluster's compact "symbol core", grown outward from its most
@@ -1097,10 +1137,12 @@ def _cluster_core(primitives, group, text_bboxes=None, scale=10.0):
     best_score = bowtie_score(primitives, list(core))
     remaining = set(group) - core
     progress = True
-    while progress and remaining:
+    while progress and remaining and len(core) < _CORE_MAX_MEMBERS:
         progress = False
         touching = sorted(i for i in remaining if _touches_any(primitives, i, core))
         for i in touching:
+            if len(core) >= _CORE_MAX_MEMBERS:
+                break
             if text_bboxes and _is_text_glyph_primitive(primitives[i], text_bboxes):
                 remaining.discard(i)
                 continue
