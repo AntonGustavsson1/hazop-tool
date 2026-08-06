@@ -971,6 +971,16 @@ _CORE_ASPECT_LIMIT = 3.0   # same compact-symbol ceiling classify_cluster
                            # already uses for aspect — a core only grows
                            # outward while it still looks like one.
 
+_CORE_PINCH_GUARD_MIN = 0.5    # only veto a growth step on pinch-signal
+                                # grounds if the core already reads as a
+                                # decent bow-tie (>= this score) — leaves
+                                # generic, non-valve compact-symbol growth
+                                # untouched.
+_CORE_PINCH_GUARD_DROP = 0.3   # how much bowtie_score is allowed to fall
+                                # in one growth step before it's treated
+                                # as "this addition broke the hourglass",
+                                # not "normal noise from an appendage".
+
 
 def _touches_any(primitives, i, members, gap=_CLUSTER_GAP):
     return any(_prim_gap(primitives[i], primitives[j]) <= gap for j in members)
@@ -1045,6 +1055,20 @@ def _cluster_core(primitives, group, text_bboxes=None):
     the seed without ever pushing the bbox aspect past the limit — they
     add clutter, not size. Such primitives are skipped during growth
     (never joining the core) regardless of aspect.
+
+    A candidate is also rejected if it would collapse an already-strong
+    bow-tie pinch signal (see _CORE_PINCH_GUARD_MIN/_DROP), even though
+    the aspect stays within _CORE_ASPECT_LIMIT. Confirmed necessary on a
+    real LKAB P&ID: a vertically-mounted valve's own connecting stem was
+    only 14pt long, so quad+stem landed at aspect 2.99 — just inside the
+    3.0 ceiling — yet the stem's constant-x sample points still fell
+    inside bowtie_score's "wide open end" slices and diluted them enough
+    to drop the score from 0.77 to 0.0, hiding a real valve. The aspect
+    ceiling alone assumes "still under the limit" implies "still looks
+    like one compact symbol", which this case disproves; only guarding
+    on the actual pinch signal catches it. Skipped for clusters that
+    don't already read as a bow-tie (best_score below the min) so this
+    never interferes with generic, non-valve compact-symbol growth.
     """
     if len(group) <= 1:
         return list(group)
@@ -1055,6 +1079,7 @@ def _cluster_core(primitives, group, text_bboxes=None):
         return list(group)
     seed = max(seed_candidates, key=lambda i: _prim_length(primitives[i]))
     core = {seed}
+    best_score = bowtie_score(primitives, list(core))
     remaining = set(group) - core
     progress = True
     while progress and remaining:
@@ -1068,11 +1093,61 @@ def _cluster_core(primitives, group, text_bboxes=None):
             x0, y0, x1, y1 = _group_bbox(primitives, candidate)
             w, h = x1 - x0, y1 - y0
             aspect = max(w, h) / max(min(w, h), 0.1)
-            if aspect <= _CORE_ASPECT_LIMIT:
-                core = candidate
-                remaining.discard(i)
-                progress = True
+            if aspect > _CORE_ASPECT_LIMIT:
+                continue
+            candidate_score = bowtie_score(primitives, list(candidate))
+            if (best_score >= _CORE_PINCH_GUARD_MIN
+                    and candidate_score < best_score - _CORE_PINCH_GUARD_DROP):
+                continue
+            core = candidate
+            best_score = candidate_score
+            remaining.discard(i)
+            progress = True
     return list(core)
+
+
+_CLUSTER_CORES_MAX = 8   # hard cap on how many symbol cores one raw
+                          # cluster_primitives() group can yield — a
+                          # generous bound above any real page's worst
+                          # case (see _cluster_cores), just a backstop
+                          # against a pathological page.
+
+
+def _cluster_cores(primitives, group, text_bboxes=None):
+    """Peel every compact "symbol core" out of a cluster, one at a time
+    (see _cluster_core), instead of assuming a cluster_primitives() group
+    contains exactly one real symbol.
+
+    Confirmed necessary on a real LKAB P&ID: a shared instrument signal
+    wire — drawn as many short dash segments with small circular
+    junction-dots bridging each dash-to-dash gap (each gap individually
+    well under _CLUSTER_GAP, so cluster_primitives correctly merges them
+    as one continuous line) — chained a valve, several instrument
+    bubbles, a motor, and a VSD box roughly 500pt apart into ONE cluster.
+    _cluster_core alone only recovers the first compact symbol reachable
+    from the biggest seed (whichever 'qu'/'re'/'c' primitive has the
+    largest perimeter) and silently drops every other real symbol still
+    sitting in that same oversized cluster.
+
+    Stops once no 'qu'/'re'/'c' primitive remains to seed another core —
+    what's left is loose line/glyph fragments that could never score as
+    a valve/pump/instrument on their own, so there is no point spending a
+    growth pass on them. Also capped at _CLUSTER_CORES_MAX iterations as
+    a backstop; every real page sampled while building this needed at
+    most a handful of cores out of even the largest merged clusters.
+    """
+    remaining = set(group)
+    cores = []
+    while remaining and len(cores) < _CLUSTER_CORES_MAX:
+        seed_candidates = [i for i in remaining if primitives[i]['kind'] in ('qu', 're', 'c')]
+        if not seed_candidates:
+            break
+        core = _cluster_core(primitives, remaining, text_bboxes=text_bboxes)
+        if not core:
+            break
+        cores.append(core)
+        remaining -= set(core)
+    return cores
 
 
 _LOOP_CLOSURE_TOL = 4.0   # pt — endpoints within this distance count as
@@ -1179,6 +1254,14 @@ def find_symbol_clusters(page, min_confidence=0.3):
     the group — bowtie_score and the shape-based filters in
     pid_viewer.find_valve_shapes() care about the compact body, not how
     far a stem happens to stick out.
+
+    A raw cluster that _cluster_cores splits into MORE than one core
+    (see its docstring — a shared signal wire bridging several genuinely
+    separate symbols into one cluster) contributes one extra result
+    entry per additional core, each with its own bbox/aspect/bowtie_score
+    but no pump_bboxes/instrument_bboxes of its own (those are already
+    found once, from the raw group, on the FIRST entry — see below —
+    so attaching them again here would double-count them).
     """
     primitives = extract_primitives(page)
     if not primitives:
@@ -1201,7 +1284,8 @@ def find_symbol_clusters(page, min_confidence=0.3):
         conf = classify_cluster(feats)
         if conf < min_confidence:
             continue
-        core = _cluster_core(primitives, group, text_bboxes=text_bboxes)
+        cores = _cluster_cores(primitives, group, text_bboxes=text_bboxes)
+        core = cores[0] if cores else group
         if core != group:
             core_feats = cluster_features(primitives, core, page_text_scale=scale)
             feats = {**feats, 'bbox': core_feats['bbox'], 'aspect': core_feats['aspect'],
@@ -1223,6 +1307,16 @@ def find_symbol_clusters(page, min_confidence=0.3):
             'instrument_bboxes': instrument_shapes_in_cluster(primitives, group, islands=islands),
             'outline': [[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
         })
+        for extra_core in cores[1:]:
+            extra_feats = cluster_features(primitives, extra_core, page_text_scale=scale)
+            extra_feats['has_closed_loop'] = _has_closed_loop(primitives, extra_core)
+            ex0, ey0, ex1, ey1 = extra_feats['bbox']
+            results.append({
+                **extra_feats, 'confidence': conf,
+                'bowtie_score': bowtie_score(primitives, extra_core),
+                'pump_bboxes': [], 'instrument_bboxes': [],
+                'outline': [[ex0, ey0], [ex1, ey0], [ex1, ey1], [ex0, ey1]],
+            })
     results.sort(key=lambda r: -r['confidence'])
     return results
 

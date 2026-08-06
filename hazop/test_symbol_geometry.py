@@ -627,6 +627,163 @@ class ClusterCoreTests(unittest.TestCase):
         self.assertEqual(prims[core[0]]['kind'], 'qu')
 
 
+class ClusterCorePinchGuardTests(unittest.TestCase):
+    """_cluster_core()'s pinch-signal guard — found on a real LKAB P&ID: a
+    vertically-mounted valve's own connecting stem was short enough that
+    quad+stem landed at aspect 2.99, just inside _CORE_ASPECT_LIMIT (3.0),
+    so the aspect check alone let it join the core — yet the stem's
+    constant-x sample points fell inside bowtie_score's "wide open end"
+    slices and dropped the score from ~0.77 to 0.0, hiding a real valve.
+    """
+
+    def _vertical_valve_with_short_stem_page(self, stem_len):
+        doc, page = _new_page()
+        shape = page.new_shape()
+        # A vertically-pinched bow-tie (10 wide, 20 tall) — same
+        # self-intersecting-quad construction as ClusterCoreTests, but
+        # built so the caps are horizontal (top/bottom) and the pinch
+        # runs along Y, matching the real vertically-mounted valve.
+        q = fitz.Quad(fitz.Point(90, 110), fitz.Point(100, 90),
+                      fitz.Point(90, 90), fitz.Point(100, 110))
+        shape.draw_quad(q)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        # The connecting pipe stub, leading into the valve from above.
+        shape.draw_line(fitz.Point(95, 90), fitz.Point(95, 90 - stem_len))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        return doc, page
+
+    def test_short_stem_under_aspect_limit_still_corrupts_bowtie_score(self):
+        """Sanity check reproducing the real bug: a stem short enough to
+        keep aspect under 3.0 (here 9.9pt, giving 29.9/10 = 2.99) still
+        collapses bowtie_score to ~0 once merged with the quad."""
+        doc, page = self._vertical_valve_with_short_stem_page(stem_len=9.9)
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        self.assertEqual(len(groups), 1, "stem must still bridge into the valve's cluster")
+        full_feats = sg.cluster_features(prims, groups[0])
+        self.assertLessEqual(full_feats['aspect'], 3.0,
+            "sanity check: aspect alone would NOT reject this stem")
+        self.assertLess(sg.bowtie_score(prims, groups[0]), 0.5,
+            "sanity check: the stem still corrupts the pinch profile enough to fail "
+            "find_valve_shapes' own min_bowtie_score filter, despite the aspect passing")
+
+    def test_core_excludes_stem_even_though_aspect_stays_in_limit(self):
+        doc, page = self._vertical_valve_with_short_stem_page(stem_len=9.9)
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        core = sg._cluster_core(prims, groups[0])
+        self.assertEqual(len(core), 1, "the stem must be excluded despite aspect staying under the limit")
+        self.assertEqual(prims[core[0]]['kind'], 'qu')
+        self.assertGreaterEqual(sg.bowtie_score(prims, core), 0.5)
+
+    def test_guard_does_not_fire_when_core_is_not_already_a_good_bowtie(self):
+        """Guard against overcorrecting: the pinch-signal veto must only
+        kick in for a cluster that already reads as a decent bow-tie —
+        otherwise it would interfere with ordinary, non-valve compact-
+        symbol growth that never had a meaningful bowtie_score to
+        protect in the first place."""
+        doc, page = _new_page()
+        shape = page.new_shape()
+        shape.draw_rect(fitz.Rect(90, 90, 100, 100))
+        shape.finish(color=(0, 0, 0), width=1, closePath=True)
+        shape.draw_line(fitz.Point(95, 100), fitz.Point(95, 108))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        self.assertEqual(len(groups), 1)
+        core = sg._cluster_core(prims, groups[0])
+        self.assertEqual(set(core), set(groups[0]),
+            "a plain rect+stub (not a bow-tie) must grow normally, unaffected by the pinch guard")
+
+
+class ClusterCoresPeelingTests(unittest.TestCase):
+    """_cluster_cores() — peels multiple compact symbol cores out of one
+    cluster_primitives() group, instead of assuming exactly one real
+    symbol per cluster (see _cluster_core, which alone only recovers the
+    first). Found necessary on a real LKAB P&ID: a shared instrument
+    signal wire bridged a valve, a pump, and several instrument bubbles
+    roughly 500pt apart into ONE cluster."""
+
+    def _two_bridged_valves_page(self):
+        doc, page = _new_page(200, 300)
+        shape = page.new_shape()
+        # Valve A: a vertically-pinched bow-tie at (90,90)-(110,110).
+        qa = fitz.Quad(fitz.Point(90, 110), fitz.Point(110, 90),
+                       fitz.Point(90, 90), fitz.Point(110, 110))
+        shape.draw_quad(qa)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        # A connector well under the "long pipe run" exclusion threshold
+        # (60pt at scale=10.0) so it still bridges the two valves into
+        # one cluster — same proportions as the real LKAB assembly.
+        shape.draw_line(fitz.Point(100, 110), fitz.Point(100, 160))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        # Valve B: an identical bow-tie 70pt further down.
+        qb = fitz.Quad(fitz.Point(90, 180), fitz.Point(110, 160),
+                       fitz.Point(90, 160), fitz.Point(110, 180))
+        shape.draw_quad(qb)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        return doc, page
+
+    def test_two_bridged_valves_merge_into_one_raw_cluster(self):
+        doc, page = self._two_bridged_valves_page()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        self.assertEqual(len(groups), 1,
+            "sanity check: the connector must actually bridge both valves into one cluster")
+
+    def test_single_core_only_recovers_one_of_the_two_valves(self):
+        """Sanity check reproducing the original limitation: _cluster_core
+        alone stops after the first valve (the connector already blows
+        the aspect ratio past the limit), leaving the second valve
+        completely unrepresented in its result."""
+        doc, page = self._two_bridged_valves_page()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        core = sg._cluster_core(prims, groups[0])
+        core_bbox = sg._group_bbox(prims, core)
+        self.assertNotEqual(core_bbox, (90.0, 90.0, 110.0, 180.0),
+            "sanity check: a single core cannot legitimately span both valves")
+        # Whichever valve it kept, the other valve's quad is NOT in it.
+        self.assertEqual(len(core), 1)
+
+    def test_cluster_cores_recovers_both_valves(self):
+        doc, page = self._two_bridged_valves_page()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        cores = sg._cluster_cores(prims, groups[0])
+        self.assertEqual(len(cores), 2, "both valves must be recovered as separate cores")
+        bboxes = {sg._group_bbox(prims, c) for c in cores}
+        self.assertEqual(bboxes, {(90.0, 90.0, 110.0, 110.0), (90.0, 160.0, 110.0, 180.0)})
+        for core in cores:
+            self.assertGreaterEqual(sg.bowtie_score(prims, core), 0.5)
+
+    def test_ordinary_single_symbol_cluster_yields_one_core(self):
+        """Guard against overcorrecting: a normal, non-bridged bow-tie
+        must still yield exactly one core, not get needlessly split."""
+        doc, page = _new_page()
+        shape = page.new_shape()
+        q = fitz.Quad(fitz.Point(90, 110), fitz.Point(110, 90),
+                      fitz.Point(90, 90), fitz.Point(110, 110))
+        shape.draw_quad(q)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        cores = sg._cluster_cores(prims, groups[0])
+        self.assertEqual(len(cores), 1)
+        self.assertEqual(set(cores[0]), set(groups[0]))
+
+
 class ClosedShapeFilterTests(unittest.TestCase):
     """Found on a real LKAB P&ID: the vector-drawn letter "M" (a motor
     label rendered as outline strokes rather than searchable text) is an
