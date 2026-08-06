@@ -167,6 +167,94 @@ class ClusteringAndClassificationTests(unittest.TestCase):
         doc.close()
 
 
+class PipeNetworkBridgingTests(unittest.TestCase):
+    """A valve is spliced directly into its pipe with zero gap, by design.
+    Confirmed on a real LKAB P&ID (drawing S0000159): a valve's bow-tie
+    quad touching a long pipe run transitively merged into that pipe's
+    ENTIRE connected network via cluster_primitives' edge-proximity
+    union-find — in the worst observed case, one page's whole piping
+    collapsed into a single 330-primitive cluster spanning nearly the
+    whole page, hiding 6 of the page's 7 valves behind the aspect/
+    norm_size filters meant for compact symbols. _is_pipe_run_line +
+    cluster_primitives(scale=...) fixes this by never letting a long
+    straight line bridge two primitives together."""
+
+    def test_valve_on_long_pipe_does_not_merge_with_pipe_network(self):
+        doc, page = _new_page(400, 200)
+        shape = page.new_shape()
+        # One long horizontal pipe spanning almost the whole page — well
+        # over the default scale=10.0's 6x (60pt) "long line" threshold.
+        shape.draw_line(fitz.Point(5, 100), fitz.Point(395, 100))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        # A valve spliced directly into it at x=100 (self-intersecting
+        # quad, touching the pipe with zero gap — same as the real files).
+        q = fitz.Quad(fitz.Point(90, 90), fitz.Point(110, 110),
+                      fitz.Point(90, 110), fitz.Point(110, 90))
+        shape.draw_quad(q)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        # A second valve further along the SAME pipe, simulating a real
+        # network where many valves share one continuous run.
+        q2 = fitz.Quad(fitz.Point(290, 90), fitz.Point(310, 110),
+                       fitz.Point(290, 110), fitz.Point(310, 90))
+        shape.draw_quad(q2)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+
+        def group_of(pred):
+            for g in groups:
+                if any(pred(prims[i]) for i in g):
+                    return frozenset(g)
+            return None
+
+        pipe_group = group_of(lambda p: p['kind'] == 'l')
+        valve1_group = group_of(lambda p: p['kind'] == 'qu' and p['bbox'][0] == 90.0)
+        valve2_group = group_of(lambda p: p['kind'] == 'qu' and p['bbox'][0] == 290.0)
+        self.assertIsNotNone(valve1_group)
+        self.assertIsNotNone(valve2_group)
+        self.assertNotEqual(pipe_group, valve1_group,
+            "a valve must not bridge-merge into the long pipe it's mounted on")
+        self.assertNotEqual(valve1_group, valve2_group,
+            "two valves on the same long pipe must not merge into one cluster via the pipe")
+        self.assertEqual(len(valve1_group), 1, "the valve's own cluster must contain only its quad")
+
+    def test_short_connector_still_merges_normally(self):
+        """Guard against overcorrecting: a SHORT line (e.g. a real
+        actuator stem or drain stub, well under the long-line threshold)
+        between two primitives must still merge them as before."""
+        doc, page = _new_page(200, 200)
+        shape = page.new_shape()
+        shape.draw_circle(fitz.Point(100, 85), 8)
+        shape.finish(color=(0, 0, 0), width=1)
+        shape.draw_line(fitz.Point(100, 93), fitz.Point(100, 103))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        self.assertEqual(len(groups), 1,
+            "a short connector line must still bridge two nearby primitives into one cluster")
+
+    def test_long_pipe_still_reported_as_its_own_cluster(self):
+        """The excluded pipe primitive isn't dropped — it still comes back
+        as its own (harmless, aspect-filtered) singleton cluster."""
+        doc, page = _new_page(400, 200)
+        shape = page.new_shape()
+        shape.draw_line(fitz.Point(5, 100), fitz.Point(395, 100))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(len(groups[0]), 1)
+
+
 class LeaderLineResolutionTests(unittest.TestCase):
     def _build_page_with_leader(self):
         doc, page = _new_page(200, 200)

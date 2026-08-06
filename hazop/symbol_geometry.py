@@ -208,6 +208,28 @@ def _prim_gap(a, b):
     return best
 
 
+_LONG_LINE_SCALE = 6.0   # a straight 'l' segment longer than this many
+                         # text-heights is a pipe run, not a symbol's own
+                         # geometry — see _is_pipe_run_line.
+
+
+def _is_pipe_run_line(prim, scale):
+    """A straight line segment long enough to be a pipe run rather than
+    part of an equipment symbol's own geometry (a bow-tie's triangle
+    edges, an actuator stem, a drain stub — all well under this length).
+
+    Confirmed necessary on a real LKAB P&ID: a valve is spliced directly
+    into its pipe with zero gap (by design — that's what "the valve sits
+    on this line" means), and real pipe networks connect end-to-end
+    across most of a page via tees/elbows. Without this exclusion,
+    cluster_primitives' edge-proximity union-find transitively merges
+    every valve into the pipe network it's mounted on — measured on that
+    file, one page's entire piping collapsed into a single 330-primitive
+    cluster spanning nearly the whole page, hiding 6 of 7 valves behind
+    filters meant for compact symbols (aspect/norm_size)."""
+    return prim['kind'] == 'l' and _prim_length(prim) > _LONG_LINE_SCALE * max(scale, 1.0)
+
+
 class _UnionFind:
     def __init__(self, n):
         self.parent = list(range(n))
@@ -224,7 +246,7 @@ class _UnionFind:
             self.parent[ri] = rj
 
 
-def cluster_primitives(primitives, gap=_CLUSTER_GAP):
+def cluster_primitives(primitives, gap=_CLUSTER_GAP, scale=10.0):
     """Group primitives into connected components by actual edge proximity
     (see _prim_gap — deliberately not bbox proximity).
 
@@ -243,6 +265,13 @@ def cluster_primitives(primitives, gap=_CLUSTER_GAP):
     Primitives left ungrouped by this skip fall out on their own as
     (almost always low-confidence) singleton clusters — classify_cluster
     still runs on them, nothing is silently dropped from the result.
+
+    `scale` (pass dominant_text_size(page), see find_symbol_clusters) sets
+    what counts as a "long" pipe-run line for _is_pipe_run_line — such
+    lines are never allowed to bridge two primitives into one cluster
+    (see that function for why: a valve merges with its own pipe network
+    otherwise). They still end up in the returned groups as their own
+    (harmless) cluster, same as any other ungrouped primitive.
 
     Returns a list of index-lists into `primitives` (one list per cluster).
     """
@@ -265,6 +294,8 @@ def cluster_primitives(primitives, gap=_CLUSTER_GAP):
             for b in range(a + 1, len(cell_items)):
                 j = cell_items[b]
                 if uf.find(i) == uf.find(j):
+                    continue
+                if _is_pipe_run_line(primitives[i], scale) or _is_pipe_run_line(primitives[j], scale):
                     continue
                 if _prim_gap(primitives[i], primitives[j]) <= gap:
                     uf.union(i, j)
@@ -531,7 +562,7 @@ def find_symbol_clusters(page, min_confidence=0.3):
         return []
     scale = dominant_text_size(page)
     results = []
-    for group in cluster_primitives(primitives):
+    for group in cluster_primitives(primitives, scale=scale):
         feats = cluster_features(primitives, group, page_text_scale=scale)
         conf = classify_cluster(feats)
         if conf < min_confidence:
