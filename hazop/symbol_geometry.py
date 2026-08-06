@@ -1019,15 +1019,30 @@ def _is_text_glyph_primitive(prim, text_bboxes, tol=1.0):
     return False
 
 
-def _cluster_core(primitives, group, text_bboxes=None):
+_CORE_MAX_NORM_SIZE = 20.0   # pt, relative to page text size — real valve/
+                             # pump/instrument cores measured this session
+                             # never exceeded ~15; a generous margin above
+                             # that. Confirmed necessary on a real Hybrit
+                             # P&ID: a large non-symbol assembly (an aspect
+                             # near 1, so _CORE_ASPECT_LIMIT never triggers)
+                             # otherwise keeps growing — one such core grew
+                             # to norm_size 38 (consuming 300+ primitives
+                             # over many rounds) before running out of
+                             # touching neighbors, costing over a second of
+                             # pure waste since it never scores as a symbol
+                             # (bowtie_score 0.0) regardless.
+
+
+def _cluster_core(primitives, group, text_bboxes=None, scale=10.0):
     """A cluster's compact "symbol core", grown outward from its most
     symbol-like seed primitive (the largest closed quad/rect, or a curve
     if there's no quad/rect) — accepting a touching neighbor only as long
     as the growing core's own bbox aspect stays within
-    _CORE_ASPECT_LIMIT. Anything left over (an actuator stem, a drain
-    stub, a flange tick, or in a busy area unrelated nearby equipment
-    that happened to bridge in) is excluded from the core but NOT dropped
-    from the cluster itself — see find_symbol_clusters.
+    _CORE_ASPECT_LIMIT and its size stays within _CORE_MAX_NORM_SIZE.
+    Anything left over (an actuator stem, a drain stub, a flange tick, or
+    in a busy area unrelated nearby equipment that happened to bridge in)
+    is excluded from the core but NOT dropped from the cluster itself —
+    see find_symbol_clusters.
 
     Confirmed necessary on a real LKAB P&ID: a valve's own bow-tie scores
     perfectly on its own (bowtie_score ~0.6-1.0, aspect ~2), but its
@@ -1095,12 +1110,34 @@ def _cluster_core(primitives, group, text_bboxes=None):
             aspect = max(w, h) / max(min(w, h), 0.1)
             if aspect > _CORE_ASPECT_LIMIT:
                 continue
-            candidate_score = bowtie_score(primitives, list(candidate))
-            if (best_score >= _CORE_PINCH_GUARD_MIN
-                    and candidate_score < best_score - _CORE_PINCH_GUARD_DROP):
+            if math.hypot(w, h) / max(scale, 1.0) > _CORE_MAX_NORM_SIZE:
                 continue
+            # bowtie_score is real sampling/scoring work (not a cheap
+            # arithmetic check like aspect), so it's only ever computed
+            # once best_score has already shown this core reads as a
+            # decent bow-tie — the guard has nothing to protect
+            # otherwise. This keeps growth on a large, non-valve cluster
+            # (hundreds of members, many growth rounds) exactly as cheap
+            # as before this guard existed — confirmed necessary on a
+            # real Hybrit P&ID where computing it unconditionally made
+            # several of the page's large non-valve clusters take
+            # 4-5 seconds each just for one _cluster_core call. An
+            # earlier version of this also skipped the check below a
+            # fixed aspect floor to save more time, but that let a real
+            # Gryaab valve's score silently collapse through several
+            # growth steps that all stayed under the floor — best_score
+            # never updated, so the guard judged a much later step
+            # against a stale, too-generous reference and rejected
+            # growth that would have recovered a valid (if different)
+            # bow-tie further on. Gating on aspect is unsafe for that
+            # reason; only gating on whether the core is bow-tie-like at
+            # all (best_score) is.
+            if best_score >= _CORE_PINCH_GUARD_MIN:
+                candidate_score = bowtie_score(primitives, list(candidate))
+                if candidate_score < best_score - _CORE_PINCH_GUARD_DROP:
+                    continue
+                best_score = candidate_score
             core = candidate
-            best_score = candidate_score
             remaining.discard(i)
             progress = True
     return list(core)
@@ -1113,7 +1150,7 @@ _CLUSTER_CORES_MAX = 8   # hard cap on how many symbol cores one raw
                           # against a pathological page.
 
 
-def _cluster_cores(primitives, group, text_bboxes=None):
+def _cluster_cores(primitives, group, text_bboxes=None, scale=10.0):
     """Peel every compact "symbol core" out of a cluster, one at a time
     (see _cluster_core), instead of assuming a cluster_primitives() group
     contains exactly one real symbol.
@@ -1142,7 +1179,7 @@ def _cluster_cores(primitives, group, text_bboxes=None):
         seed_candidates = [i for i in remaining if primitives[i]['kind'] in ('qu', 're', 'c')]
         if not seed_candidates:
             break
-        core = _cluster_core(primitives, remaining, text_bboxes=text_bboxes)
+        core = _cluster_core(primitives, remaining, text_bboxes=text_bboxes, scale=scale)
         if not core:
             break
         cores.append(core)
@@ -1284,7 +1321,7 @@ def find_symbol_clusters(page, min_confidence=0.3):
         conf = classify_cluster(feats)
         if conf < min_confidence:
             continue
-        cores = _cluster_cores(primitives, group, text_bboxes=text_bboxes)
+        cores = _cluster_cores(primitives, group, text_bboxes=text_bboxes, scale=scale)
         core = cores[0] if cores else group
         if core != group:
             core_feats = cluster_features(primitives, core, page_text_scale=scale)

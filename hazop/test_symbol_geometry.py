@@ -700,6 +700,40 @@ class ClusterCorePinchGuardTests(unittest.TestCase):
         self.assertEqual(set(core), set(groups[0]),
             "a plain rect+stub (not a bow-tie) must grow normally, unaffected by the pinch guard")
 
+    def test_guard_fires_even_when_corruption_happens_at_low_aspect(self):
+        """Regression test: an earlier version of this guard only checked
+        the pinch signal once aspect exceeded a fixed floor (added to cut
+        down on bowtie_score calls). That let a real Gryaab valve's score
+        collapse silently through several growth steps that all stayed
+        under the floor — best_score never updated, so a MUCH later step
+        got compared against a stale, too-generous reference and the
+        guard let the corruption through. Reproduced in miniature here:
+        two stem segments added one at a time, each keeping aspect at or
+        under 2.0 the whole way, where only the SECOND one collapses the
+        score — the guard must catch it at that exact step, not defer
+        based on aspect."""
+        doc, page = _new_page()
+        shape = page.new_shape()
+        q = fitz.Quad(fitz.Point(90, 110), fitz.Point(110, 90),
+                      fitz.Point(90, 90), fitz.Point(110, 110))
+        shape.draw_quad(q)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(95, 90), fitz.Point(95, 80))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(95, 80), fitz.Point(95, 70))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        self.assertEqual(len(groups), 1, "both stem segments must still bridge into the cluster")
+        self.assertLess(sg.bowtie_score(prims, groups[0]), 0.5,
+            "sanity check: both stems together must corrupt the full cluster's score")
+
+        core = sg._cluster_core(prims, groups[0])
+        self.assertGreaterEqual(sg.bowtie_score(prims, core), 0.5,
+            "the corrupting second stem must be excluded regardless of aspect staying low")
+
 
 class ClusterCoresPeelingTests(unittest.TestCase):
     """_cluster_cores() — peels multiple compact symbol cores out of one
