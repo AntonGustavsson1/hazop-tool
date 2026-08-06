@@ -489,6 +489,16 @@ Verifierat: skräptaggarna är borta (t.ex. "Checked" förekommer nu en gång, r
 
 **Uttryckligen INTE gjort:** Hexagon-/fyrkant-baserade instrumentsymboler (dator-/PLC-funktion per ISA-5.1) — en annan, ännu ej undersökt symbolfamilj. Precis som pumpdetekteringen: fristående, inte integrerad i `detect_equipment_and_valves`-pipelinen eller kopplad till UI.
 
+### Uppföljning samma dag — stort fynd: Sunpine/Swerim ritar ALLA cirklar som linjepolygoner, inte bezier-kurvor
+
+**Bakgrund:** Vid fortsatt filgenomgång (Sunpine, Swerim) för att validera pump-/instrumentdetekteringen hittades 0 pumpar och 0 instrument på flera sidor — trots att valv-detektering redan fungerade bra på samma filer. Misstänkte en genuin brist snarare än att filerna saknar utrustning.
+
+**Grundorsak bekräftad:** `extract_primitives()` räknade **0 curve-primitiver (`'c'`-kind) på VARJE testad sida** i både Sunpine (48-sidig fil, 5 sidor stickprovade) och alla 3 Swerim-filer. Visuell inspektion hittade riktiga instrumentbubblor ("TT", "PT" — temperatur-/tryckgivare) som SER UT som cirklar men vid direkt granskning av rådata visade sig vara ritade som **32-sidiga slutna linjepolygoner** (32 `'l'`-primitiver som approximerar en cirkel), inte äkta bezier-kurvor.
+
+**Konsekvens:** Både `pump_shapes_in_cluster()` och `instrument_shapes_in_cluster()` bygger helt på `_curve_islands()`, som bara tittar på `'c'`-kind primitiver — på en fil helt utan kurvor hittar den ingenting alls, oavsett hur många riktiga pumpar/instrument som faktiskt finns. Detta är alltså INTE ett gränsfall utan en hel, parallell ritkonvention (minst 2 av 8 undersökta kundfiler använder den) som dagens implementation missar helt.
+
+**INTE åtgärdat denna session** — kräver en ny, separat detektor (t.ex. `_polygon_circle_islands`: hitta slutna loopar av MÅNGA (≥8) ungefär lika långa linjesegment vars punkter ligger på ~samma avstånd från sin egen tyngdpunkt, som ett alternativt "ö"-format vid sidan av `_curve_islands`) — ett arbete av ungefär samma omfattning som dagens pump-/instrumentdetektering krävde, och bör göras och testas noga innan den kopplas in (måste verifieras att den INTE ger nya falsklarm på de redan fungerande bezier-kurve-filerna LKAB/Gryaab/ITS). Flaggat som nästa stora steg, inte påbörjat.
+
 ---
 
 ## Kända begränsningar och tekniska skulder
