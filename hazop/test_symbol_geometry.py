@@ -767,6 +767,109 @@ class ClosedLoopFilterTests(unittest.TestCase):
         self.assertTrue(sg._has_closed_loop(prims, [0]))
 
 
+class PumpShapeTests(unittest.TestCase):
+    """pump_shapes_in_cluster() identifies pump symbols: a round, closed
+    body (drawn as a circle via bezier curves) with a diagonal impeller
+    mark inside it — confirmed by direct inspection of real LKAB and
+    Gryaab P&IDs, both showing a circle with two ~30pt diagonal lines
+    (in a ~42.5pt circle, ~71% of its diameter) meeting at a point on
+    the circle's right rim."""
+
+    def _pump_page(self, cx=100, cy=100, r=20):
+        """A circle with two diagonal lines meeting at its right rim —
+        proportioned like the real LKAB pump (diagonals ~70% of the
+        circle's diameter), inside its own bbox."""
+        doc, page = _new_page(200, 200)
+        shape = page.new_shape()
+        shape.draw_circle(fitz.Point(cx, cy), r)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(cx, cy - 0.7 * r), fitz.Point(cx + r, cy))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(cx + r, cy), fitz.Point(cx, cy + 0.7 * r))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        return doc, page
+
+    def test_circle_with_impeller_diagonal_is_a_pump(self):
+        doc, page = self._pump_page()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        self.assertEqual(len(groups), 1, "circle + diagonals must cluster together (they touch)")
+        found = sg.pump_shapes_in_cluster(prims, groups[0])
+        self.assertEqual(len(found), 1)
+        x0, y0, x1, y1 = found[0]
+        self.assertAlmostEqual(x0, 80.0, delta=1.0)
+        self.assertAlmostEqual(x1, 120.0, delta=1.0)
+
+    def test_plain_circle_is_not_a_pump(self):
+        """An instrument bubble (a plain circle, no diagonal) must not
+        register as a pump — confirmed against real PI/LC/LI bubbles."""
+        doc, page = _new_page()
+        shape = page.new_shape()
+        shape.draw_circle(fitz.Point(100, 100), 20)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        found = sg.pump_shapes_in_cluster(prims, groups[0])
+        self.assertEqual(found, [])
+
+    def test_tiny_diagonal_fragment_inside_circle_is_not_a_pump(self):
+        """Found on a real Gryaab P&ID: a plain motor ("M") circle with
+        no impeller mark still false-positived, because the letter "M"
+        (drawn as a vector glyph, not searchable text — see
+        ClosedShapeFilterTests) has its own tiny diagonal strokes that
+        happen to fall inside the circle. A real impeller diagonal spans
+        a large fraction of the circle's own diameter; a stray glyph
+        fragment does not — _PUMP_DIAGONAL_MIN_FRACTION tells them apart."""
+        doc, page = _new_page()
+        shape = page.new_shape()
+        shape.draw_circle(fitz.Point(100, 100), 20)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        # A tiny (1.5pt) diagonal fragment well under 40% of the 40pt
+        # circle diameter — proportioned like the real glyph artifact
+        # (observed: ~0.5pt fragment inside a ~14pt circle, ~3.5%).
+        shape.draw_line(fitz.Point(99.0, 99.0), fitz.Point(100.5, 100.5))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        found = sg.pump_shapes_in_cluster(prims, groups[0])
+        self.assertEqual(found, [],
+            "a diagonal fragment far shorter than the circle's own diameter must not count as an impeller mark")
+
+    def test_two_pumps_merged_into_one_cluster_both_found(self):
+        """Found on a real Gryaab P&ID: a busy process area with no long
+        pipe run to break the chain (see _is_pipe_run_line) merged an
+        entire neighborhood — including TWO separate pumps — into one
+        290-primitive cluster. pump_shapes_in_cluster must return both,
+        not just the first."""
+        doc, page = _new_page(200, 200)
+        shape = page.new_shape()
+        for cx in (60, 140):
+            shape.draw_circle(fitz.Point(cx, 100), 20)
+            shape.finish(color=(0, 0, 0), width=1, closePath=False)
+            shape.draw_line(fitz.Point(cx, 86), fitz.Point(cx + 20, 100))
+            shape.finish(color=(0, 0, 0), width=1, closePath=False)
+            shape.draw_line(fitz.Point(cx + 20, 100), fitz.Point(cx, 114))
+            shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        # A short (20pt, well under the "long pipe run" exclusion
+        # threshold) connecting line bridges the two circles into one
+        # cluster — same as the real Gryaab case's short pipe stub.
+        shape.draw_line(fitz.Point(80, 100), fitz.Point(120, 100))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        self.assertEqual(len(groups), 1, "sanity check: the connector must bridge both pumps into one cluster")
+        found = sg.pump_shapes_in_cluster(prims, groups[0])
+        self.assertEqual(len(found), 2)
+
+
 class BowtieScoreTests(unittest.TestCase):
     """bowtie_score() — "🦋 Hitta ventilformer" identifies valves by their
     bow-tie/hourglass silhouette (wide-narrow-wide) rather than requiring a

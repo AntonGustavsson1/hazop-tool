@@ -493,6 +493,112 @@ def bowtie_score(primitives, index_group, n_slices=9):
                _pinch_profile_score(pts, 'y', n_slices))
 
 
+def _curve_islands(primitives, group, gap=_CLUSTER_GAP):
+    """Split a cluster's 'c' (curve) primitives into their own maximal
+    connected sub-groups, by real edge proximity among JUST the curve
+    primitives — independent of the cluster's own (looser) bridging.
+
+    A single cluster can contain several stacked circles/ovals: e.g. an
+    instrument-bubble (SC/FC/...) + a motor circle ("M") + a pump's own
+    circular body, connected top-to-bottom by short vertical lines into
+    ONE cluster (confirmed on a real LKAB P&ID). Each circle is its own
+    'island' here — a pump's diagonal impeller mark belongs to ITS
+    circle specifically, not to a neighboring instrument bubble one
+    line-segment away in the same vertical stack.
+    """
+    curve_idxs = [i for i in group if primitives[i]['kind'] == 'c']
+    n = len(curve_idxs)
+    if n == 0:
+        return []
+    uf = _UnionFind(n)
+    for a in range(n):
+        for b in range(a + 1, n):
+            if _prim_gap(primitives[curve_idxs[a]], primitives[curve_idxs[b]]) <= gap:
+                uf.union(a, b)
+    islands = {}
+    for idx in range(n):
+        root = uf.find(idx)
+        islands.setdefault(root, []).append(curve_idxs[idx])
+    return list(islands.values())
+
+
+_PUMP_ISLAND_ASPECT_LIMIT = 1.8   # a pump/instrument body is round, not
+                                  # elongated — well under the generic
+                                  # compact-symbol ceiling used elsewhere
+                                  # (_CORE_ASPECT_LIMIT=3.0), since a
+                                  # genuine circle's aspect is ~1.0.
+
+_PUMP_DIAGONAL_MIN_FRACTION = 0.4   # an impeller diagonal must span at
+                                    # least this fraction of the circle's
+                                    # own (smaller) dimension — see
+                                    # pump_shapes_in_cluster's docstring.
+
+
+def pump_shapes_in_cluster(primitives, index_group):
+    """Find every round, closed body (an instrument bubble, a motor, or
+    a pump shell — all drawn as a closed curve) within this cluster that
+    has at least one diagonal line strictly inside it — the signature of
+    a centrifugal pump's impeller mark (confirmed by direct inspection of
+    real LKAB and Gryaab P&IDs: a circle with two diagonal lines meeting
+    at a point on its rim, drawn as a SEPARATE 'l'-only sub-path sitting
+    entirely inside the circle's own bbox).
+
+    Unlike bowtie_score (scored over the WHOLE cluster's pooled point
+    cloud), this is scored per circle 'island' (_curve_islands) —
+    confirmed necessary on a real LKAB P&ID: a pump's own circle is
+    routinely merged, via short connecting lines, into a taller vertical
+    stack with an instrument bubble above it and a motor circle in
+    between (aspect ~2.25 for the whole stack — still well under the
+    generic compact-symbol ceiling, so nothing about the STACK's own
+    shape flags it as "not one compact thing"). Scoring each circle on
+    its own sidesteps that: a circle's own aspect is ~1.0 regardless of
+    what else got merged above or below it.
+
+    Returns a LIST of bboxes (one per qualifying circle), not just the
+    single best one — confirmed necessary on a real Gryaab P&ID, where
+    an entire process area (no long pipe run to break the chain — see
+    _is_pipe_run_line) merged into one 290-primitive cluster containing
+    TWO separate pumps; a single best-match result would have silently
+    dropped the second one. Empty list if none qualify.
+    """
+    results = []
+    for island in _curve_islands(primitives, index_group):
+        if not _has_closed_loop(primitives, island):
+            continue
+        bbox = _group_bbox(primitives, island)
+        w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        if min(w, h) < 1e-6:
+            continue
+        aspect = max(w, h) / min(w, h)
+        if aspect > _PUMP_ISLAND_ASPECT_LIMIT:
+            continue
+        island_set = set(island)
+        tol = 1.0
+        # The diagonal must span a real fraction of the circle's own
+        # size (>= _PUMP_DIAGONAL_MIN_FRACTION of its smaller dimension)
+        # — a genuine impeller mark reaches from near one rim to near
+        # the opposite rim (confirmed on a real LKAB pump: two 30.1pt
+        # diagonals inside a 42.5pt circle, ~71%). Without this, a
+        # vector-drawn "M" motor-label glyph (see ClosedShapeFilterTests)
+        # sitting inside an unrelated plain motor circle produces tiny
+        # sub-1pt diagonal fragments from its own letterform that
+        # otherwise satisfy "diagonal line inside a circle" too —
+        # confirmed as a false positive on a real Gryaab P&ID.
+        min_len = _PUMP_DIAGONAL_MIN_FRACTION * min(w, h)
+        has_inner_diagonal = any(
+            primitives[i]['kind'] == 'l' and _prim_is_diagonal(primitives[i])
+            and _prim_length(primitives[i]) >= min_len
+            and primitives[i]['bbox'][0] >= bbox[0] - tol
+            and primitives[i]['bbox'][1] >= bbox[1] - tol
+            and primitives[i]['bbox'][2] <= bbox[2] + tol
+            and primitives[i]['bbox'][3] <= bbox[3] + tol
+            for i in index_group if i not in island_set
+        )
+        if has_inner_diagonal:
+            results.append(bbox)
+    return results
+
+
 def classify_cluster(features):
     """First-pass threshold+weighted-score classifier. Returns a confidence
     in [0, 1] that this cluster is a discrete equipment symbol (as opposed
@@ -795,6 +901,13 @@ def find_symbol_clusters(page, min_confidence=0.3):
         results.append({
             **feats, 'confidence': conf,
             'bowtie_score': bowtie_score(primitives, core),
+            # Computed on the RAW group, not the valve-appendage-aware
+            # `core` — pump_shapes_in_cluster does its own per-circle
+            # 'island' isolation (see _curve_islands) and needs the full
+            # group to find every distinct circle a giant merged-area
+            # cluster may contain, not just whatever _cluster_core's
+            # aspect-bounded growth happened to keep.
+            'pump_bboxes': pump_shapes_in_cluster(primitives, group),
             'outline': [[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
         })
     results.sort(key=lambda r: -r['confidence'])

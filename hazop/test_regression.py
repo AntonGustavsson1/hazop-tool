@@ -3537,6 +3537,59 @@ class BowtieValveDetectionTests(unittest.TestCase):
         self.assertTrue(0 <= results[0]['y'] <= page_rect.height,
             f"y={results[0]['y']} must fall inside the rendered page (0..{page_rect.height})")
 
+    def test_find_pump_shapes_detects_circle_with_impeller_diagonal(self):
+        """find_pump_shapes() — the pump counterpart to find_valve_shapes(),
+        added after studying real LKAB/Gryaab P&IDs: a pump is a circle
+        with two diagonal lines (an impeller mark) meeting on its rim,
+        proportioned at ~70% of the circle's own diameter (confirmed: a
+        real LKAB pump's two 30.1pt diagonals inside a 42.5pt circle)."""
+        from equipment_detection import find_pump_shapes
+        import fitz
+        path = os.path.join(self._tmpdir, "pump.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=200, height=200)
+        shape = page.new_shape()
+        shape.draw_circle(fitz.Point(100, 100), 20)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(100, 86), fitz.Point(120, 100))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(120, 100), fitz.Point(100, 114))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        page.insert_text(fitz.Point(80, 130), "PU-101", fontsize=8)
+        doc.save(path)
+        doc.close()
+
+        doc = fitz.open(path)
+        try:
+            results = find_pump_shapes(doc)
+        finally:
+            doc.close()
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['tag'], 'PU-101')
+        self.assertEqual(results[0]['comp_type'], 'Pump')
+
+    def test_find_pump_shapes_ignores_plain_instrument_bubble(self):
+        from equipment_detection import find_pump_shapes
+        import fitz
+        path = os.path.join(self._tmpdir, "bubble.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=200, height=200)
+        shape = page.new_shape()
+        shape.draw_circle(fitz.Point(100, 100), 20)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        page.insert_text(fitz.Point(90, 100), "PI-1", fontsize=8)
+        doc.save(path)
+        doc.close()
+
+        doc = fitz.open(path)
+        try:
+            results = find_pump_shapes(doc)
+        finally:
+            doc.close()
+        self.assertEqual(results, [], "a plain instrument bubble (no impeller diagonal) must not be reported as a pump")
+
     def test_find_nearby_tag_text_finds_closest_tag_within_radius(self):
         from equipment_detection import find_nearby_tag_text
         import fitz

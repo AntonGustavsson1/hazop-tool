@@ -448,6 +448,27 @@ Verifierat: skräptaggarna är borta (t.ex. "Checked" förekommer nu en gång, r
 
 ---
 
+## Pumpdetektering — ny funktion (2026-08-06)
+
+**Bakgrund:** På Antons begäran ("nu kan du fortsätta med att identifiera pumpar från olika P&ID") byggdes en formbaserad pumpdetektering, analog med ventildetekteringen ovan. Research mot riktiga LKAB- och Gryaab-filer bekräftade konventionen: en pump ritas som en **cirkel (bezier-kurvor, `closePath=False`, ingen fyllnad) med två diagonala linjer** som möts i en spets vid cirkelns högerkant (ett "impeller"-märke), ofta staplad vertikalt med en instrumentbubbla ("SC"/"FC") ovanför och en motorcirkel ("M") däremellan, kopplade med korta linjer.
+
+**Central utmaning:** Precis som ventilernas "SC+M+pump"-stapel (redan dokumenterad ovan) slås pumpens egen cirkel rutinmässigt ihop med instrumentbubblan/motorn ovanför i EN kluster via `cluster_primitives` — och till skillnad från ventiler kan HELA processområden (utan lång rörledning som bryter kedjan, se `_is_pipe_run_line`) slås ihop till EN enda klump med FLERA separata pumpar (bekräftat: ett 290-primitivers Gryaab-kluster innehöll två olika pumpar).
+
+**Lösning (`symbol_geometry.py`):**
+- `_curve_islands(primitives, group)` — delar ett klusters kurv-primitiver (`'c'`-kind) i sina egna sammanhängande "öar" via samma kant-avstånds-teknik som klustringen använder, men ISOLERAT från klustrets övriga (lösare) sammanslagning — varje cirkel i en vertikal stapel blir sin egen ö, oavsett vad den råkat klustras ihop med.
+- `pump_shapes_in_cluster(primitives, group)` — hittar VARJE cirkel-ö i klustret (inte bara den bästa) vars aspect är nära 1.0 (rund, `_PUMP_ISLAND_ASPECT_LIMIT=1.8`) och som har en diagonal linje STRIKT INNANFÖR sin egen bbox — returnerar en LISTA av bboxar (en per fynd), inte bara den bästa, just för att hantera flerpump-klump-fallet.
+- **Falsklarm hittat och fixat under utveckling:** en vanlig motorcirkel ("M", ingen pump alls) triggade ändå detekteringen, eftersom bokstaven "M" (dubbelrenderad som vektorkonturer, samma mönster som tidigare "M"-fyndet) har egna diagonala linjestreck som råkar hamna innanför cirkelns bbox. Fixat med `_PUMP_DIAGONAL_MIN_FRACTION=0.4` — den diagonala linjen måste sträcka sig över minst 40% av cirkelns egen diameter (en riktig impeller-diagonal på en LKAB-pump mätte 30.1pt i en 42.5pt cirkel, ~71%; bokstavsfragmentet var bara ~0.5pt i en ~14pt cirkel, ~3.5%).
+
+**Ny funktion (`equipment_detection.py`):** `find_pump_shapes(pdf_doc, pages=None, progress_callback=None)` — pump-motsvarigheten till `find_valve_shapes()`, samma form-först-tagg-sen-design. `comp_type='Pump'`, `confidence` alltid 1.0 (binär signal, ingen gradvis "pinch-skärpa"-motsvarighet här). Ett minimistorlekfilter (`_PUMP_MIN_NORM_SIZE=1.5`, samma tröskel som ventilernas `norm_size`) utesluter en riktig falsklarm: en liten fylld korsningsprick med en rörstump genom sig råkade också klara formkraven.
+
+**Verifierat mot riktiga filer:** LKAB S0000160: 1/1 riktig pump hittad (`=M1.GPA6`). Gryaab AD-PR-FB-8-0002: 14/14 kandidater var genuina riktiga pumpar (PU-0010 till PU-9302 m.fl., inklusive de två som satt i det stora 290-klustret) — de enda kvarvarande bristerna var FEL taggassociation (t.ex. "LS" istället för "PU0052", "9101FÖLLNINGSKEMIKALIE" istället för "PU9110") — ett redan känt, separat problem i `find_nearby_tag_text`s bästa-gissning-fallback, samma typ av brist som redan påverkar ventildetektering, inte en ny formrelaterad brist.
+
+**Test:** 4 nya syntetiska tester i `test_symbol_geometry.py` (`PumpShapeTests`) + 2 nya i `test_regression.py` (end-to-end via `find_pump_shapes`). Alla 185 tester passerar: `python -m unittest test_regression test_symbol_geometry -v`.
+
+**Uttryckligen INTE gjort denna omgång:** `find_pump_shapes` är fristående (som `find_valve_shapes` var innan Fas 1+2-enigheten) — INTE ännu integrerad i den enhetliga `detect_equipment_and_valves`-pipelinen eller kopplad till någon UI-knapp. Naturligt nästa steg om pumpdetektering ska bli en riktig funktion i appen: samma "Fas 1+2"-enande som gjordes för ventiler (dela klusterextraktion, undvik dubbelräkning mellan tagg- och formbaserad detektering, koppla in i "🎯 Hitta på P&ID").
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **OCR-positioner är approximativa** — x,y-koordinater från OCR stämmer inte perfekt med PDF-koordinater vid hög zoom. Markörer kan hamna något fel.

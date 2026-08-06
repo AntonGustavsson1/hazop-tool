@@ -1478,6 +1478,81 @@ def find_valve_shapes(pdf_doc, pages=None, min_bowtie_score=0.5, progress_callba
     return results
 
 
+_PUMP_MIN_NORM_SIZE = 1.5   # same "plausible symbol size" floor
+                            # find_valve_shapes uses — rejects e.g. a tiny
+                            # filled junction dot with a stem crossing it,
+                            # confirmed on a real Gryaab P&ID to otherwise
+                            # pass pump_shapes_in_cluster's shape checks.
+
+
+def find_pump_shapes(pdf_doc, pages=None, progress_callback=None):
+    """Scan pages for pump symbols (a circular body with a diagonal
+    impeller mark inside it — symbol_geometry.pump_shapes_in_cluster),
+    independent of whether a tag is already known nearby. The pump
+    counterpart to find_valve_shapes(); same shape-first, tag-nearby-
+    second design.
+
+    pages: iterable of 0-based page numbers, or None for all pages.
+
+    Returns a list of dicts: {tag, page, comp_type, x, y, confidence,
+    link_method, outline} — the same shape find_valve_shapes()/
+    detect_equipment_symbols() use, so no caller-side changes are needed
+    to display these alongside valve results. confidence is always 1.0
+    (pump_shapes_in_cluster is a binary yes/no signal — see its
+    docstring for why there was no graded analogue to bowtie_score's
+    pinch sharpness here).
+
+    A pump's own circle is routinely merged, via short connecting
+    lines, into a taller vertical instrument stack (a speed controller
+    and/or motor circle above it — confirmed on a real LKAB P&ID) or, in
+    a busy area with no long pipe run to break the chain (confirmed on a
+    real Gryaab P&ID), into one large cluster containing SEVERAL pumps.
+    pump_shapes_in_cluster() finds each qualifying circle independently
+    of the cluster's own overall shape, and returns every one it finds
+    — not just the first — so both cases are handled without dropping
+    a pump silently.
+
+    A minimum-size filter (_PUMP_MIN_NORM_SIZE, relative to the page's
+    own text size like find_valve_shapes' norm_size) rejects small
+    artifacts that otherwise pass the shape check — confirmed on a real
+    Gryaab P&ID: a tiny filled junction dot with a pipe stem crossing it
+    coincidentally has both a closed loop and an "inner diagonal".
+    """
+    if not HAS_PYMUPDF or pdf_doc is None:
+        return []
+    if pages is None:
+        pages = range(pdf_doc.page_count)
+
+    results = []
+    for page_num in pages:
+        if progress_callback:
+            progress_callback(
+                page_num, pdf_doc.page_count,
+                f"Sida {page_num + 1}/{pdf_doc.page_count} — söker pumpformer…")
+        try:
+            page = pdf_doc[page_num]
+            scale = max(symbol_geometry.dominant_text_size(page), 1.0)
+            clusters = symbol_geometry.find_symbol_clusters(page, min_confidence=0.0)
+        except Exception:
+            continue
+
+        for cluster in clusters:
+            for bbox in cluster.get('pump_bboxes') or []:
+                x0, y0, x1, y1 = bbox
+                diag = math.hypot(x1 - x0, y1 - y0)
+                if diag / scale < _PUMP_MIN_NORM_SIZE:
+                    continue
+                cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+                tag, _prefix = find_nearby_tag_text(page, (cx, cy))
+                results.append({
+                    'tag': tag or '', 'page': page_num, 'comp_type': 'Pump',
+                    'x': cx, 'y': cy, 'confidence': 1.0,
+                    'link_method': 'shape',
+                    'outline': [[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
+                })
+    return results
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # Unified tag+shape valve detection — replaces detect_equipment_symbols()
 # and find_valve_shapes() as the UI's entry point (both functions above are
