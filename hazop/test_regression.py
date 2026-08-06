@@ -2969,6 +2969,39 @@ class EquipmentMarkersDbTests(unittest.TestCase):
         self.assertEqual(len(self.db.equipment_markers_for_page(3)), 1)
         self.assertEqual(len(self.db.equipment_markers_for_page(1)), 0)
 
+    def test_new_confidence_and_line_fields_round_trip(self):
+        """Fas 1+2 (2026-08-06): 9 new equipment_markers columns for
+        per-field confidence, line/medium/DN tracing, and untagged-valve
+        status — must round-trip through add_equipment_marker() and be
+        readable via equipment_markers_for_page() like every other column."""
+        self.db.add_equipment_marker(
+            self.equipment_id, "V-101", 0, 100.0, 100.0, "Ventil",
+            confidence=0.6, link_method='leader',
+            detection_confidence=1.0, tag_reading_confidence=0.6,
+            tag_assignment_confidence=0.8, line_assignment_confidence=0.9,
+            line_number='=E1.M1.WPA041', medium_code='KX200',
+            medium_code_verified=0, nominal_size='DN10', tag_status='tagged')
+        row = dict(self.db.equipment_markers_for_page(0)[0])
+        self.assertAlmostEqual(row['detection_confidence'], 1.0)
+        self.assertAlmostEqual(row['tag_reading_confidence'], 0.6)
+        self.assertAlmostEqual(row['tag_assignment_confidence'], 0.8)
+        self.assertAlmostEqual(row['line_assignment_confidence'], 0.9)
+        self.assertEqual(row['line_number'], '=E1.M1.WPA041')
+        self.assertEqual(row['medium_code'], 'KX200')
+        self.assertEqual(row['medium_code_verified'], 0)
+        self.assertEqual(row['nominal_size'], 'DN10')
+        self.assertEqual(row['tag_status'], 'tagged')
+
+    def test_new_fields_default_sensibly_for_old_style_calls(self):
+        """Callers that only pass the original params (confidence,
+        link_method) must keep working — the 9 new columns are all
+        optional/defaulted, no existing call site should need to change."""
+        self.db.add_equipment_marker(self.equipment_id, "V-101", 0, 1, 1, "Ventil")
+        row = dict(self.db.equipment_markers_for_page(0)[0])
+        self.assertIsNone(row['detection_confidence'])
+        self.assertEqual(row['line_number'], '')
+        self.assertEqual(row['tag_status'], 'tagged')
+
 
 class EquipmentMarkerReviewDialogTests(unittest.TestCase):
     @classmethod
@@ -3113,6 +3146,489 @@ class ReloadAllPanelsDbSwapTests(unittest.TestCase):
                 win.worksheet.refresh()
             except sqlite3.ProgrammingError as e:
                 self.fail(f"worksheet.refresh() must not touch the closed old db, raised: {e!r}")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 9. Unified tag scanning — "🔍 Skanna P&ID" and "📋 Analysera P&ID" used to
+#    be two separate, inconsistent tag-matching implementations.
+#    scan_pdf_for_equipment()'s matcher silently dropped single-letter-
+#    prefix tags with no separator (P101, T12, E205) and never rejoined
+#    tags the PDF split into multiple text objects; _analyze_pid's matcher
+#    (_pick_best_tag/_spatial_combine) did both correctly, which is why it
+#    found more. Both entry points now share scan_pdf_for_equipment() (with
+#    the fixed matcher) and cross-write into BOTH equipment_catalog and
+#    pid_identified_tags so results are identical regardless of which
+#    button was used.
+# ══════════════════════════════════════════════════════════════════════════
+
+class UnifiedTagScanTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_scan_test_")
+        self.db_path = os.path.join(self._tmpdir, "test_project.db")
+        self.pdf_path = os.path.join(self._tmpdir, "test.pdf")
+        self.db = Database(path=self.db_path)
+
+        import fitz
+        doc = fitz.open()
+        p0 = doc.new_page(width=200, height=200)
+        p0.insert_text(fitz.Point(10, 20), "P101", fontsize=10)   # single-letter prefix, no separator
+        p1 = doc.new_page(width=200, height=200)
+        p1.insert_text(fitz.Point(10, 20), "20-PCV-101", fontsize=10)
+        doc.save(self.pdf_path)
+        doc.close()
+        self.db.set_pid_config_value('path', self.pdf_path)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_scan_pdf_for_equipment_finds_single_letter_prefix_tag(self):
+        """Regression test for the exact reported gap: 'P101' (single-letter
+        prefix, no separator) used to be silently dropped by
+        scan_pdf_for_equipment's Pass 2 (_parse_tag's len(pfx)>=2 gate)."""
+        import fitz
+        from pid_viewer import scan_pdf_for_equipment
+        doc = fitz.open(self.pdf_path)
+        try:
+            result = scan_pdf_for_equipment(doc, use_ocr=False)
+        finally:
+            doc.close()
+        result.pop('_meta', None)
+        all_tags = {t for data in result.values() for t in data['tags']}
+        self.assertIn('P-101', all_tags,
+            "single-letter-prefix tag without a separator must now be found")
+
+    def test_scan_pdf_for_equipment_rejoins_split_tokens(self):
+        import fitz
+        from pid_viewer import scan_pdf_for_equipment
+        doc = fitz.open(self.pdf_path)
+        try:
+            result = scan_pdf_for_equipment(doc, use_ocr=False)
+        finally:
+            doc.close()
+        result.pop('_meta', None)
+        all_tags = {t for data in result.values() for t in data['tags']}
+        self.assertTrue(any('PCV' in t for t in all_tags),
+            f"expected a PCV tag rejoined from split tokens, got: {all_tags}")
+
+    def test_spatial_combine_returns_bbox_tuples(self):
+        from pid_viewer import _spatial_combine
+        import fitz
+        doc = fitz.open(self.pdf_path)
+        try:
+            page = doc[1]
+            words = page.get_text("words")
+            results = _spatial_combine(words, gap_limit=22.0)
+        finally:
+            doc.close()
+        self.assertTrue(results)
+        self.assertTrue(all(len(r) == 5 for r in results),
+            "_spatial_combine must yield (text, x0, y0, x1, y1) tuples")
+        self.assertTrue(any('PCV' in r[0] for r in results))
+
+    def test_equipment_panel_scan_writes_both_tables(self):
+        from hazop import EquipmentPanel
+        from PyQt6.QtWidgets import QMessageBox
+
+        class _FakeProgressDialog:
+            """Stand-in for QProgressDialog: under the offscreen QPA platform
+            used for headless tests, a real QProgressDialog.close() spuriously
+            flips wasCanceled() to True (not reproducible in a real windowed
+            session) — _scan() checks wasCanceled() right after close(), so
+            without this stub the scan result would be silently discarded in
+            this test harness. A plain stub avoids depending on Qt's
+            offscreen-platform quirks entirely, rather than patching a real
+            QProgressDialog's methods."""
+            def __init__(self, *a, **k): pass
+            def setWindowTitle(self, *a, **k): pass
+            def setWindowModality(self, *a, **k): pass
+            def setMinimumDuration(self, *a, **k): pass
+            def show(self, *a, **k): pass
+            def setValue(self, *a, **k): pass
+            def setLabelText(self, *a, **k): pass
+            def close(self, *a, **k): pass
+            def wasCanceled(self): return False
+
+        panel = EquipmentPanel(self.db)
+        try:
+            with unittest.mock.patch.object(
+                    QMessageBox, 'question',
+                    return_value=QMessageBox.StandardButton.No), \
+                 unittest.mock.patch.object(QMessageBox, 'information'), \
+                 unittest.mock.patch('hazop.QProgressDialog', _FakeProgressDialog):
+                panel._scan()
+            cat_tags = {dict(r)['tag'] for r in self.db.equipment_items()}
+            id_rows  = list(self.db.pid_identified_tags())
+            self.assertIn('P-101', cat_tags,
+                "equipment_catalog must contain the single-letter-prefix tag")
+            self.assertTrue(len(id_rows) > 0,
+                "pid_identified_tags must also be populated by 'Skanna P&ID' now")
+        finally:
+            panel.deleteLater()
+
+    def test_analyze_pid_writes_both_tables(self):
+        import fitz
+        from pid_viewer import PIDPanel
+        from PyQt6.QtWidgets import QMessageBox
+        panel = PIDPanel(self.db)
+        try:
+            panel.viewer.pdf_doc = fitz.open(self.pdf_path)
+            with unittest.mock.patch.object(
+                    QMessageBox, 'question',
+                    return_value=QMessageBox.StandardButton.No), \
+                 unittest.mock.patch.object(QMessageBox, 'information'):
+                panel._analyze_pid()
+            cat_tags = {dict(r)['tag'] for r in self.db.equipment_items()}
+            id_rows  = list(self.db.pid_identified_tags())
+            self.assertIn('P-101', cat_tags,
+                "'Analysera P&ID' must now also populate equipment_catalog")
+            self.assertTrue(len(id_rows) > 0)
+        finally:
+            panel.viewer.pdf_doc.close()
+            panel.deleteLater()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 10. Bow-tie shape-based valve detection — "🦋 Hitta ventilformer" finds
+#     valves by their drawn silhouette (symbol_geometry.bowtie_score)
+#     instead of requiring a tag to already be scanned nearby, so it also
+#     catches untagged valves. find_valve_shapes()/find_nearby_tag_text()
+#     are unit-tested against synthetic PDFs here; the geometry itself
+#     (bowtie_score orientation/sampling correctness) is covered in
+#     test_symbol_geometry.BowtieScoreTests.
+# ══════════════════════════════════════════════════════════════════════════
+
+class BowtieValveDetectionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_bowtie_test_")
+        self.db_path = os.path.join(self._tmpdir, "test_project.db")
+        self.db = Database(path=self.db_path)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _bowtie_pdf(self, with_tag=True):
+        import fitz
+        path = os.path.join(self._tmpdir, "valve.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=200, height=200)
+        shape = page.new_shape()
+        shape.draw_polyline([fitz.Point(90, 90), fitz.Point(90, 110), fitz.Point(100, 100)])
+        shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+        shape.draw_polyline([fitz.Point(110, 90), fitz.Point(110, 110), fitz.Point(100, 100)])
+        shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+        shape.commit()
+        if with_tag:
+            page.insert_text(fitz.Point(95, 75), "V-201", fontsize=8)
+        doc.save(path)
+        doc.close()
+        return path
+
+    def test_find_valve_shapes_detects_bowtie_with_nearby_tag(self):
+        from pid_viewer import find_valve_shapes
+        import fitz
+        doc = fitz.open(self._bowtie_pdf(with_tag=True))
+        try:
+            results = find_valve_shapes(doc)
+        finally:
+            doc.close()
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['tag'], 'V-201')
+        self.assertEqual(results[0]['link_method'], 'shape')
+        self.assertGreater(results[0]['confidence'], 0.5)
+
+    def test_find_valve_shapes_leaves_tag_empty_when_none_nearby(self):
+        """This is the scope the user explicitly asked for: valves with no
+        tag anywhere near them must still be found and returned, with an
+        empty (not guessed, not dropped) tag for manual entry in the
+        review dialog."""
+        from pid_viewer import find_valve_shapes
+        import fitz
+        doc = fitz.open(self._bowtie_pdf(with_tag=False))
+        try:
+            results = find_valve_shapes(doc)
+        finally:
+            doc.close()
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['tag'], '')
+        self.assertEqual(results[0]['link_method'], 'shape')
+
+    def test_find_valve_shapes_respects_min_bowtie_score(self):
+        from pid_viewer import find_valve_shapes
+        import fitz
+        path = os.path.join(self._tmpdir, "rect.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=200, height=200)
+        shape = page.new_shape()
+        shape.draw_rect(fitz.Rect(90, 90, 110, 110))
+        shape.finish(color=(0, 0, 0), width=1)
+        shape.commit()
+        doc.save(path)
+        doc.close()
+
+        doc = fitz.open(path)
+        try:
+            results = find_valve_shapes(doc)
+        finally:
+            doc.close()
+        self.assertEqual(results, [], "a plain rectangle must not be reported as a valve")
+
+    def test_find_valve_shapes_and_tag_link_survive_page_rotation(self):
+        """Regression test for the coordinate mix-up found during real-file
+        verification against 182036 Hybrit (/Rotate 270): get_text() and
+        get_drawings() both report positions in the page's raw unrotated
+        mediabox space, but this app's marker placement (pdf_to_scene())
+        assumes the ROTATED space matching page.rect. Without rotating
+        both the shape and the tag text into the same space, the tag
+        would fail to link (find_nearby_tag_text comparing a rotated-space
+        point against raw-space text positions) and/or the reported x/y
+        would land outside the rendered page entirely."""
+        from pid_viewer import find_valve_shapes
+        import fitz
+        path = os.path.join(self._tmpdir, "rotated_valve.pdf")
+        doc = fitz.open()
+        # Non-square mediabox + 90° rotation: page.rect swaps width/height,
+        # so a coordinate-space mix-up cannot accidentally look correct.
+        page = doc.new_page(width=100, height=300)
+        page.set_rotation(90)
+        shape = page.new_shape()
+        shape.draw_polyline([fitz.Point(10, 270), fitz.Point(10, 290), fitz.Point(20, 280)])
+        shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+        shape.draw_polyline([fitz.Point(30, 270), fitz.Point(30, 290), fitz.Point(20, 280)])
+        shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+        shape.commit()
+        page.insert_text(fitz.Point(15, 255), "V-500", fontsize=8)
+        doc.save(path)
+        doc.close()
+
+        doc = fitz.open(path)
+        try:
+            page_rect = doc[0].rect
+            results = find_valve_shapes(doc)
+        finally:
+            doc.close()
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['tag'], 'V-500',
+            "tag must still link across the rotation-space mismatch")
+        self.assertTrue(0 <= results[0]['x'] <= page_rect.width,
+            f"x={results[0]['x']} must fall inside the rendered page (0..{page_rect.width})")
+        self.assertTrue(0 <= results[0]['y'] <= page_rect.height,
+            f"y={results[0]['y']} must fall inside the rendered page (0..{page_rect.height})")
+
+    def test_find_nearby_tag_text_finds_closest_tag_within_radius(self):
+        from pid_viewer import find_nearby_tag_text
+        import fitz
+        doc = fitz.open()
+        page = doc.new_page(width=200, height=200)
+        page.insert_text(fitz.Point(95, 75), "V-201", fontsize=8)
+        try:
+            tag, prefix = find_nearby_tag_text(page, (100, 100), radius=150.0)
+            self.assertEqual(tag, 'V-201')
+            self.assertEqual(prefix, 'V')
+        finally:
+            doc.close()
+
+    def test_find_nearby_tag_text_returns_none_when_too_far(self):
+        from pid_viewer import find_nearby_tag_text
+        import fitz
+        doc = fitz.open()
+        page = doc.new_page(width=400, height=400)
+        page.insert_text(fitz.Point(10, 20), "V-201", fontsize=8)
+        try:
+            tag, prefix = find_nearby_tag_text(page, (390, 390), radius=50.0)
+            self.assertIsNone(tag)
+            self.assertIsNone(prefix)
+        finally:
+            doc.close()
+
+    def test_detect_equipment_and_valves_links_shape_hit_to_existing_equipment_row(self):
+        """Replacement for the old, now-removed '🦋 Hitta ventilformer'
+        button (its shape-hunting is folded into detect_equipment_and_valves,
+        the engine behind EquipmentPanel._autodetect — see NOTES.md,
+        "Fas 1+2" 2026-08-06): a bow-tie shape whose nearby tag matches an
+        already-known equipment_catalog row must resolve with a real
+        link_method (not 'none'), so _autodetect's tag_to_equipment_id
+        lookup can attach it to the existing row instead of duplicating it."""
+        from pid_viewer import detect_equipment_and_valves
+        import fitz
+        cur = self.db.conn.execute(
+            "INSERT INTO equipment_catalog (tag, prefix, pid_page, equipment_type) "
+            "VALUES (?,?,?,?)", ("V-201", "V", 0, "Ventil"))
+        self.db.commit()
+
+        doc = fitz.open(self._bowtie_pdf(with_tag=True))
+        try:
+            tag_points = [("V-201", "V", 0, None, None, 1.0)]
+            results, _rejected = detect_equipment_and_valves(doc, tag_points)
+            tagged = [r for r in results if r['tag'] == 'V-201']
+            self.assertEqual(len(tagged), 1)
+            self.assertNotEqual(tagged[0]['link_method'], 'none')
+            self.assertEqual(tagged[0]['tag_status'], 'tagged')
+        finally:
+            doc.close()
+
+    def test_autodetect_no_pdf_shows_warning(self):
+        """Replacement for the old PIDPanel._find_valve_shapes no-PDF test —
+        EquipmentPanel._autodetect is now the single consolidated entry
+        point and must warn the same way when no P&ID path is configured."""
+        from hazop import EquipmentPanel
+        from PyQt6.QtWidgets import QMessageBox
+        self.db.add_equipment_item("V-201", "V-201", "V", 0, "Ventil", '', 0)
+        panel = EquipmentPanel(self.db)
+        try:
+            panel.refresh()
+            with unittest.mock.patch.object(QMessageBox, 'warning') as mock_warn:
+                panel._autodetect()
+            self.assertEqual(mock_warn.call_count, 1)
+        finally:
+            panel.deleteLater()
+
+    def test_review_dialog_save_creates_equipment_catalog_row_for_taggedbut_unlinked_row(self):
+        """A shape-detected valve whose suggested tag has NO existing
+        equipment_catalog row (equipment_id=None) must get one created on
+        save, per Task 20's tag-less-row handling."""
+        from pid_viewer import EquipmentMarkerReviewDialog
+        results = [{'tag': 'V-301', 'page': 0, 'comp_type': 'Ventil',
+                    'x': 100.0, 'y': 100.0, 'confidence': 0.8,
+                    'link_method': 'shape', 'outline': [[90, 90], [110, 110]],
+                    'equipment_id': None}]
+        dlg = EquipmentMarkerReviewDialog(results, self.db)
+        try:
+            dlg._save()
+            cat_rows = [dict(r) for r in self.db.equipment_items()]
+            self.assertEqual(len(cat_rows), 1)
+            self.assertEqual(cat_rows[0]['tag'], 'V-301')
+            marker_rows = [dict(r) for r in self.db.equipment_markers_for_page(0)]
+            self.assertEqual(len(marker_rows), 1)
+        finally:
+            dlg.deleteLater()
+
+    def test_review_dialog_save_with_empty_tag_and_no_equipment_id_still_saves(self):
+        """A shape-detected valve with NEITHER a suggested tag NOR a linked
+        equipment_catalog row (the 'valve with no tag anywhere nearby'
+        case) must still be checkable and saveable — the whole point of
+        the tag-less scope the user asked for."""
+        from pid_viewer import EquipmentMarkerReviewDialog
+        from PyQt6.QtCore import Qt
+        results = [{'tag': '', 'page': 0, 'comp_type': 'Ventil',
+                    'x': 50.0, 'y': 50.0, 'confidence': 0.8,
+                    'link_method': 'shape', 'outline': [[40, 40], [60, 60]],
+                    'equipment_id': None}]
+        dlg = EquipmentMarkerReviewDialog(results, self.db)
+        try:
+            dlg._tbl.item(0, dlg._C_CHK).setCheckState(Qt.CheckState.Checked)
+            dlg._save()
+            marker_rows = [dict(r) for r in self.db.equipment_markers_for_page(0)]
+            self.assertEqual(len(marker_rows), 1)
+        finally:
+            dlg.deleteLater()
+
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Fas 1+2 (2026-08-06): detect_equipment_and_valves() unifies the
+    # tag-anchored and shape-anchored paths against one shared per-page
+    # cluster extraction, so a valve that has BOTH a known tag AND a
+    # matching bow-tie shape must appear exactly once, and one with
+    # neither must still surface as an untagged row, not get dropped.
+    # ══════════════════════════════════════════════════════════════════════
+
+    def test_detect_equipment_and_valves_no_double_count_when_tag_and_shape_both_match(self):
+        from pid_viewer import detect_equipment_and_valves
+        import fitz
+        doc = fitz.open(self._bowtie_pdf(with_tag=True))
+        try:
+            tag_points = [("V-201", "V", 0, None, None, 1.0)]
+            results, rejected = detect_equipment_and_valves(doc, tag_points)
+        finally:
+            doc.close()
+        self.assertEqual(len(results), 1,
+            "the same physical valve must not appear once as a tagged row "
+            "and again as a separate untagged shape-anchored row")
+        self.assertEqual(results[0]['tag'], 'V-201')
+        self.assertEqual(results[0]['tag_status'], 'tagged')
+
+    def test_detect_equipment_and_valves_surfaces_untagged_valve(self):
+        """The scope the user explicitly asked ChatGPT's spec to cover:
+        valves with no tag anywhere nearby must still be found and
+        returned with a temporary id, never silently dropped."""
+        from pid_viewer import detect_equipment_and_valves
+        import fitz
+        doc = fitz.open(self._bowtie_pdf(with_tag=False))
+        try:
+            results, rejected = detect_equipment_and_valves(doc, [])
+        finally:
+            doc.close()
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['tag_status'], 'untagged')
+        self.assertEqual(results[0]['tag'], '')
+        self.assertTrue(results[0]['temporary_id'].startswith('UNASSIGNED-VALVE-0-'),
+            f"got temporary_id={results[0]['temporary_id']!r}")
+
+    def test_valve_rejection_reason_reports_single_near_miss_only(self):
+        """_valve_rejection_reason surfaces a near-miss (exactly one of the
+        four bow-tie/valve-shape filters failed) for the review dialog's
+        'avvisade kandidater' section, but stays silent for a cluster that
+        either passes everything or is too far off (>1 filter failed) to
+        be an interesting near-miss."""
+        from pid_viewer import _valve_rejection_reason
+        near_miss = {'bowtie_score': 0.7, 'aspect': 5.0, 'norm_size': 10.0, 'has_diagonal': True}
+        reason = _valve_rejection_reason(near_miss, min_bowtie_score=0.5)
+        self.assertIsNotNone(reason)
+        self.assertIn('avlångt', reason.lower())
+
+        too_far_off = {'bowtie_score': 0.1, 'aspect': 5.0, 'norm_size': 10.0, 'has_diagonal': True}
+        self.assertIsNone(_valve_rejection_reason(too_far_off, min_bowtie_score=0.5))
+
+        passes_all = {'bowtie_score': 0.7, 'aspect': 1.5, 'norm_size': 10.0, 'has_diagonal': True}
+        self.assertIsNone(_valve_rejection_reason(passes_all, min_bowtie_score=0.5))
+
+
+class EquipmentAnalysisWorkerTests(unittest.TestCase):
+    """EquipmentAnalysisWorker (pid_viewer.py) — the QThread behind
+    EquipmentPanel._autodetect(). Modelled on ConnectorAnalyzer: must
+    always emit finished_analysis, even when fitz.open() itself raises,
+    so the caller's modal QProgressDialog can never hang forever."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_finished_analysis_emitted_even_when_pdf_open_fails(self):
+        from pid_viewer import EquipmentAnalysisWorker
+        received = {}
+
+        def _capture(results, rejected):
+            received['results'] = results
+            received['rejected'] = rejected
+
+        worker = EquipmentAnalysisWorker("/nonexistent/path/does-not-exist.pdf", [])
+        worker.finished_analysis.connect(_capture)
+        worker.start()
+        self.assertTrue(worker.wait(5000), "worker.run() did not finish within 5s")
+        # finished_analysis is queued across threads (the slot is a plain
+        # function with no QObject thread affinity) — wait() only blocks
+        # until the WORKER thread stops, it doesn't pump the main thread's
+        # event queue, so the delivery itself needs an explicit tick.
+        self.app.processEvents()
+        self.assertIn('results', received,
+            "finished_analysis must fire even when fitz.open() raises")
+        self.assertEqual(received['results'], [])
+        self.assertEqual(received['rejected'], [])
 
 
 if __name__ == '__main__':

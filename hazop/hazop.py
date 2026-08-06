@@ -21,6 +21,8 @@ from pid_viewer import (
     _RED_MARKUP_SYMBOLS, _get_red_symbol_svg,
     _equip_prefix_from_tag,
     detect_equipment_symbols, EquipmentMarkerReviewDialog,
+    apply_scan_result_to_equipment_catalog, upsert_identified_tags_from_scan,
+    EquipmentAnalysisWorker,
 )
 
 from PyQt6.QtWidgets import (
@@ -1817,6 +1819,20 @@ class Database:
                 tag_example TEXT NOT NULL DEFAULT '',
                 usage_count INTEGER NOT NULL DEFAULT 1
             )""",
+            # Fas 1+2 valve-detection improvements (2026-08-06, see NOTES.md) —
+            # per-field confidence + line/medium/DN tracing + untagged-valve
+            # status on equipment_markers. Existing 'confidence' column is
+            # kept and populated with the weakest-link min() of the four new
+            # ones, so every existing reader keeps working unchanged.
+            "ALTER TABLE equipment_markers ADD COLUMN detection_confidence REAL DEFAULT NULL",
+            "ALTER TABLE equipment_markers ADD COLUMN tag_reading_confidence REAL DEFAULT NULL",
+            "ALTER TABLE equipment_markers ADD COLUMN tag_assignment_confidence REAL DEFAULT NULL",
+            "ALTER TABLE equipment_markers ADD COLUMN line_assignment_confidence REAL DEFAULT NULL",
+            "ALTER TABLE equipment_markers ADD COLUMN line_number TEXT DEFAULT ''",
+            "ALTER TABLE equipment_markers ADD COLUMN medium_code TEXT DEFAULT ''",
+            "ALTER TABLE equipment_markers ADD COLUMN medium_code_verified INTEGER DEFAULT 0",
+            "ALTER TABLE equipment_markers ADD COLUMN nominal_size TEXT DEFAULT ''",
+            "ALTER TABLE equipment_markers ADD COLUMN tag_status TEXT DEFAULT 'tagged'",
         ]
 
         for sql in migrations:
@@ -3242,12 +3258,22 @@ class Database:
 
     # ── Equipment markers (auto-detected symbols, "🎯 Hitta på P&ID") ──────────
     def add_equipment_marker(self, equipment_id, tag, page, x, y, comp_type,
-                             shape_outline='', confidence=0.0, link_method=''):
+                             shape_outline='', confidence=0.0, link_method='',
+                             detection_confidence=None, tag_reading_confidence=None,
+                             tag_assignment_confidence=None, line_assignment_confidence=None,
+                             line_number='', medium_code='', medium_code_verified=0,
+                             nominal_size='', tag_status='tagged'):
         cur = self.conn.execute(
             "INSERT INTO equipment_markers "
-            "(equipment_id,tag,pid_page,x,y,comp_type,shape_outline,confidence,link_method) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
-            (equipment_id, tag, page, x, y, comp_type, shape_outline, confidence, link_method))
+            "(equipment_id,tag,pid_page,x,y,comp_type,shape_outline,confidence,link_method,"
+            "detection_confidence,tag_reading_confidence,tag_assignment_confidence,"
+            "line_assignment_confidence,line_number,medium_code,medium_code_verified,"
+            "nominal_size,tag_status) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (equipment_id, tag, page, x, y, comp_type, shape_outline, confidence, link_method,
+             detection_confidence, tag_reading_confidence, tag_assignment_confidence,
+             line_assignment_confidence, line_number, medium_code, medium_code_verified,
+             nominal_size, tag_status))
         self.commit()
         return cur.lastrowid
 
@@ -16653,8 +16679,10 @@ class EquipmentPanel(QWidget):
 
         self._autodetect_btn = QPushButton("🎯 Hitta på P&ID")
         self._autodetect_btn.setToolTip(
-            "Söker efter den ritade symbolen för varje ikryssad tagg och lägger\n"
-            "en markör på P&ID:et — filtrera/kryssa raderna nedan för sida+typ först")
+            "Fullständig analys: kopplar varje kända tagg till dess ritade symbol\n"
+            "OCH letar efter ventilformade symboler som saknar tagg — allt i en\n"
+            "bakgrundskörning med synlig progress. Kör 🔍 Skanna P&ID först om\n"
+            "registret är tomt.")
         self._autodetect_btn.clicked.connect(self._autodetect)
 
         clear_btn = QPushButton("🗑 Rensa utrustning")
@@ -16898,18 +16926,12 @@ class EquipmentPanel(QWidget):
                    "Kontrollera att PDF-texten är läsbar och försök med OCR."))
             return
 
-        # Import to DB
-        self.db.clear_equipment_catalog()
-        for prefix, data in real.items():
-            known      = KNOWN_PREFIXES.get(prefix, ('', ''))
-            saved_type = (self.db.get_equipment_type(prefix)
-                          if hasattr(self.db, 'get_equipment_type') else '')
-            eq_type    = saved_type or (known[1] if known else '')
-            ocr_pages  = data.get('ocr_pages', set())
-            for tag in data['tags']:
-                page   = data['pages'].get(tag, 0)
-                is_ocr = int(page in ocr_pages)
-                self.db.add_equipment_item(tag, tag, prefix, page, eq_type, '', is_ocr)
+        # Import to DB — shared with "📋 Analysera P&ID" (PIDPanel._analyze_pid,
+        # pid_viewer.py) now that both buttons trigger the same underlying
+        # scan; also cross-write "Identifierade objekt" so that panel stays
+        # in sync regardless of which button was used.
+        apply_scan_result_to_equipment_catalog(self.db, real)
+        upsert_identified_tags_from_scan(self.db, real)
 
         # Build summary
         n_tags   = sum(len(d['tags']) for d in real.values())
@@ -16941,30 +16963,39 @@ class EquipmentPanel(QWidget):
         self.refresh()
 
     def _autodetect(self):
-        """🎯 Hitta på P&ID — for every checked row (already filtered/checked
-        by page and type in the table above), search for the actual drawn
-        symbol near that tag and open a review dialog before saving anything.
+        """🎯 Hitta på P&ID — full analysis: weighted tag<->symbol
+        association for every known tag in the register AND shape-anchored
+        hunting for valve-shaped symbols with no tag, against one shared
+        per-page cluster extraction (detect_equipment_and_valves). Runs on
+        a background QThread (EquipmentAnalysisWorker) so the UI stays
+        responsive and shows real per-page progress, including on a
+        50-page document.
+
+        Uses EVERY row in the register, not just checked ones — the
+        global weighted association gets WORSE, not just redundant, if
+        the candidate pool is pre-filtered, since a real symbol match for
+        an unchecked tag would otherwise be unavailable to steal a
+        cluster away from a genuinely wrong candidate.
         """
         if not HAS_PYMUPDF:
             QMessageBox.warning(self, "PyMuPDF saknas",
                 "Installera med:  pip install PyMuPDF")
             return
 
-        requests = []   # (tag, page0idx, comp_type, equipment_id)
+        tag_points = []          # (tag, prefix, page, x, y, conf) — x/y resolved in-thread
+        tag_to_equipment_id = {}
         for row in self._model.rows():
-            if not row.get('include', 1):
-                continue
             tag = (row.get('tag') or '').strip()
             if not tag:
                 continue
-            requests.append((tag, row.get('pid_page', 0), row.get('equipment_type', '') or '',
-                             row['id']))
+            prefix = row.get('prefix') or _tag_prefix(tag)
+            tag_points.append((tag, prefix, row.get('pid_page', 0), None, None, 1.0))
+            tag_to_equipment_id[tag] = row['id']
 
-        if not requests:
+        if not tag_points:
             QMessageBox.information(
-                self, "Inget valt",
-                "Kryssa i minst en rad i tabellen nedan (filtrera t.ex. på sida "
-                "eller typ) innan du klickar 🎯 Hitta på P&ID.")
+                self, "Tomt register",
+                "Utrustningsregistret är tomt — kör 🔍 Skanna P&ID först.")
             return
 
         path = self.db.get_pid_path()
@@ -16974,23 +17005,43 @@ class EquipmentPanel(QWidget):
             return
         try:
             import fitz
-            pdf_doc = fitz.open(str(path))
+            n_pages = fitz.open(str(path)).page_count
         except Exception as e:
             QMessageBox.warning(self, "PDF-fel", f"Kunde inte öppna PDF:\n{e}")
             return
 
-        detect_requests = [(tag, page0, comp_type) for tag, page0, comp_type, _eq in requests]
-        results = detect_equipment_symbols(pdf_doc, detect_requests)
-        pdf_doc.close()
+        progress = QProgressDialog("Förbereder…", "Avbryt", 0, n_pages, self)
+        progress.setWindowTitle("Analyserar P&ID")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
 
-        # detect_equipment_symbols preserves request order — zip the
-        # equipment_catalog id back in for the review dialog to save with.
-        for res, (_tag, _page0, _comp_type, eq_id) in zip(results, requests):
-            res['equipment_id'] = eq_id
+        thread = EquipmentAnalysisWorker(path, tag_points)
+        self._analysis_thread = thread   # keep a reference so it isn't GC'd mid-run
 
-        dlg = EquipmentMarkerReviewDialog(results, self.db, parent=self)
-        if dlg.exec():
-            self.markers_saved.emit()
+        def _on_progress(page_num, total, msg):
+            progress.setMaximum(total)
+            progress.setValue(page_num)
+            progress.setLabelText(msg)
+
+        def _on_finished(results, rejected):
+            progress.close()
+            self._analysis_thread = None
+            for res in results:
+                if res.get('tag_status') != 'untagged':
+                    res['equipment_id'] = tag_to_equipment_id.get(res['tag'])
+            if not results:
+                QMessageBox.information(self, "Inget hittat",
+                    "Inga ventiler eller symboler hittades.")
+                return
+            dlg = EquipmentMarkerReviewDialog(results, self.db, parent=self, rejected=rejected)
+            if dlg.exec():
+                self.markers_saved.emit()
+
+        thread.progress.connect(_on_progress)
+        thread.finished_analysis.connect(_on_finished)
+        progress.canceled.connect(thread.requestInterruption)
+        thread.start()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

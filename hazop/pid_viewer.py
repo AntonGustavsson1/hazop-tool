@@ -1208,6 +1208,54 @@ def _pick_best_tag(text: str) -> str:
     return ''
 
 
+_OCR_CONFUSION_PAIRS = [
+    ('O', '0'), ('I', '1'), ('L', '1'), ('S', '5'), ('B', '8'), ('G', '6'), ('Z', '2'),
+]
+
+
+def _ocr_fuzzy_variants(text: str) -> list:
+    """Generate additional OCR-confusion candidate strings, one character
+    position varied at a time against _OCR_CONFUSION_PAIRS — linear in tag
+    length, not combinatorial. Broader than _fix_ocr_common_errors (which
+    only handles 0<->O/1<->I on a single fixed prefix/suffix shape).
+    OCR-only: native PDF text doesn't have this failure mode."""
+    text = text.upper().strip()
+    variants = []
+    seen = {text}
+    for i, ch in enumerate(text):
+        for a, b in _OCR_CONFUSION_PAIRS:
+            if ch == a:
+                repl = b
+            elif ch == b:
+                repl = a
+            else:
+                continue
+            variant = text[:i] + repl + text[i + 1:]
+            if variant not in seen:
+                seen.add(variant)
+                variants.append(variant)
+    return variants
+
+
+def _ocr_tag_candidates(raw_text: str, known_prefixes=None) -> list:
+    """All candidate strings to try for one OCR word, in preference order:
+    the existing single-answer correction and raw uppercased text first
+    (unchanged from before — same two candidates, same order), then
+    broader single-character-confusion variants, ranked so a variant
+    whose prefix is a known equipment prefix comes first — a plausibility
+    tie-break, never a semantic guess."""
+    corrected = _fix_ocr_common_errors(raw_text)
+    base = [corrected, raw_text.upper()]
+    fuzzy = _ocr_fuzzy_variants(raw_text)
+    if known_prefixes:
+        fuzzy.sort(key=lambda v: 0 if _equip_prefix_from_tag(v) in known_prefixes else 1)
+    candidates = []
+    for c in base + fuzzy:
+        if c not in candidates:
+            candidates.append(c)
+    return candidates
+
+
 def _tag_candidates(text: str) -> list:
     """Return a prioritised list of text variants to try when parsing a tag."""
     candidates = [text]
@@ -1384,14 +1432,19 @@ def scan_pdf_for_equipment(pdf_doc, use_ocr: bool = False,
     result: dict = {}
     ocr_engine_used = None
 
-    def _add(tag, prefix, page_num, cx, cy, from_ocr=False):
+    def _add(tag, prefix, page_num, cx, cy, from_ocr=False, source='native'):
         if prefix not in result:
-            result[prefix] = {'tags': [], 'pages': {}, 'positions': {}, 'ocr_pages': set()}
+            result[prefix] = {'tags': [], 'pages': {}, 'positions': {},
+                              'ocr_pages': set(), 'tag_source': {}}
         if tag not in result[prefix]['tags']:
             result[prefix]['tags'].append(tag)
         # First-seen wins for page assignment
         result[prefix]['pages'].setdefault(tag, page_num)
         result[prefix]['positions'].setdefault(tag, (cx, cy))
+        # 'native' | 'ocr' | 'ocr_fuzzy' — how this tag was actually read;
+        # feeds tag_reading_confidence in detect_equipment_and_valves()
+        # without needing per-word confidence scores from any OCR engine.
+        result[prefix]['tag_source'].setdefault(tag, source)
         if from_ocr:
             result[prefix]['ocr_pages'].add(page_num)
 
@@ -1455,11 +1508,16 @@ def scan_pdf_for_equipment(pdf_doc, use_ocr: bool = False,
             }
 
             for raw_text, cx, cy in (ocr_words or []):
-                corrected = _fix_ocr_common_errors(raw_text)
-                for candidate in (corrected, raw_text.upper()):
+                candidates = _ocr_tag_candidates(raw_text, known_prefixes=KNOWN_PREFIXES)
+                for i, candidate in enumerate(candidates):
                     tag, prefix = _parse_tag(candidate)
                     if tag and prefix and tag not in native_tag_set:
-                        _add(tag, prefix, page_num, cx, cy, from_ocr=True)
+                        # First 2 candidates are the pre-existing
+                        # (corrected, raw_text.upper()) pair — unchanged
+                        # behaviour; anything after that is a broader
+                        # fuzzy character-confusion guess (item 2).
+                        source = 'ocr' if i < 2 else 'ocr_fuzzy'
+                        _add(tag, prefix, page_num, cx, cy, from_ocr=True, source=source)
                         native_tag_set.add(tag)
                         break
 
@@ -1745,6 +1803,379 @@ def find_valve_shapes(pdf_doc, pages=None, min_bowtie_score=0.5, progress_callba
             })
     results.sort(key=lambda r: -r['confidence'])
     return results
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Unified tag+shape valve detection — replaces detect_equipment_symbols()
+# and find_valve_shapes() as the UI's entry point (both functions above are
+# left unchanged and still directly callable/testable). Those two used to
+# extract vector primitives/clusters independently per page and never
+# cross-checked results, so the same physical valve could be reported
+# twice; here every page's clusters are extracted exactly ONCE and shared
+# between tag-association and shape-hunting, so that can't happen by
+# construction. See NOTES.md, "Fas 1+2" (2026-08-06).
+# ══════════════════════════════════════════════════════════════════════════
+
+_ASSOC_KNOWN_PREFIX_BONUS = 0.10
+_ASSOC_MIN_SCORE = 0.25
+
+
+def _dominant_link_method(tag_point, cluster, primitives):
+    """Which geometric signal explains an accepted (tag, cluster) pair —
+    for display continuity with resolve_tag_symbol's existing
+    leader/contain/nearest vocabulary in EquipmentMarkerReviewDialog."""
+    if symbol_geometry.find_leader_line(tag_point, [cluster], primitives) is not None:
+        return 'leader'
+    x0, y0, x1, y1 = cluster['bbox']
+    tol = 5.0
+    if (x0 - tol) <= tag_point[0] <= (x1 + tol) and (y0 - tol) <= tag_point[1] <= (y1 + tol):
+        return 'contain'
+    return 'nearest'
+
+
+def associate_tags_to_clusters(tag_points, clusters, primitives,
+                                known_prefixes=None, search_radius=220.0,
+                                min_score=_ASSOC_MIN_SCORE):
+    """Global (not independent-per-tag) tag<->symbol-cluster assignment for
+    one page — replaces resolve_tag_symbol's fixed leader>contain>nearest
+    cascade, which resolves each tag on its own and so has no way to stop
+    two different tags both claiming the same cluster.
+
+    tag_points: [(tag, prefix, (x, y)), ...] for ONE page.
+    clusters/primitives: symbol_geometry.find_symbol_clusters()/
+        extract_primitives() output for that SAME page.
+
+    Scores every (tag, cluster) pair via symbol_geometry.score_tag_cluster_link,
+    adding +_ASSOC_KNOWN_PREFIX_BONUS when the tag's prefix is in
+    known_prefixes (tag-format plausibility — pure geometry can't see
+    this, so the bonus is applied here rather than in symbol_geometry.py,
+    which stays free of any tag-naming-convention knowledge). Then assigns
+    greedily by descending score, removing BOTH the tag and the cluster
+    from the pool the instant a pair is accepted — this is what actually
+    prevents double-assignment.
+
+    No scipy/Hungarian-algorithm dependency: the leader-line term (weight
+    0.50 of 1.0) dominates so strongly that a formally optimal assignment
+    solver would essentially never disagree with this greedy-with-
+    exclusion approach for realistic per-page tag/symbol counts (tens, not
+    thousands) — the real value of "global" over "independent" here is
+    simply the mutual-exclusion guarantee, which this already provides.
+
+    Returns {tag: (cluster_or_None, method, score)} for every tag in
+    tag_points; unmatched tags map to (None, 'none', 0.0).
+    """
+    indexed_points = [(i, pos) for i, (_tag, _prefix, pos) in enumerate(tag_points)]
+    pair_scores = symbol_geometry.build_pair_scores(
+        indexed_points, clusters, primitives, search_radius=search_radius)
+
+    if known_prefixes:
+        for (ti, ci), score in list(pair_scores.items()):
+            _tag, prefix, _pos = tag_points[ti]
+            if prefix in known_prefixes:
+                pair_scores[(ti, ci)] = min(1.0, score + _ASSOC_KNOWN_PREFIX_BONUS)
+
+    ordered = sorted(pair_scores.items(), key=lambda kv: -kv[1])
+    used_tags, used_clusters = set(), set()
+    assigned = {}
+    for (ti, ci), score in ordered:
+        if score < min_score or ti in used_tags or ci in used_clusters:
+            continue
+        cluster = clusters[ci]
+        tag_point = tag_points[ti][2]
+        method = _dominant_link_method(tag_point, cluster, primitives)
+        assigned[ti] = (cluster, method, score)
+        used_tags.add(ti)
+        used_clusters.add(ci)
+
+    result = {}
+    for i, (tag, _prefix, _pos) in enumerate(tag_points):
+        result[tag] = assigned.get(i, (None, 'none', 0.0))
+    return result
+
+
+def _valve_rejection_reason(cluster, min_bowtie_score=0.5):
+    """Human-readable reason iff `cluster` fails EXACTLY ONE of
+    find_valve_shapes' four valve-shape filters — a near-miss worth
+    surfacing to the user in the review dialog's "avvisade kandidater"
+    section. None if it passes everything (not rejected) or fails more
+    than one filter (too far off to be an interesting near-miss)."""
+    checks = [
+        (cluster.get('bowtie_score', 0.0) < min_bowtie_score,
+         f"Ventilformspoäng {cluster.get('bowtie_score', 0.0):.2f} under tröskeln "
+         f"{min_bowtie_score:.2f}"),
+        (cluster['aspect'] > 3.0, f"För avlångt (proportion {cluster['aspect']:.1f} > 3.0)"),
+        (not (1.5 <= cluster['norm_size'] <= 40.0),
+         f"Fel storlek relativt sidans text (norm_size {cluster['norm_size']:.1f})"),
+        (not cluster['has_diagonal'], "Ingen diagonal linje (kan inte vara en bow-tie-ventil)"),
+    ]
+    failed = [reason for is_failed, reason in checks if is_failed]
+    return failed[0] if len(failed) == 1 else None
+
+
+# ── Line-number / medium / DN tracing — vector-only, no rendering ─────────
+
+_DN_TEXT_SEARCH_RADIUS = 60.0   # pt around each traced pipe point
+_DN_RE = re.compile(r'(?<![A-Z0-9])DN\s?-?(\d{2,4})(?![0-9])', re.IGNORECASE)
+_LINE_OBJREF_RE = re.compile(r'(?<![A-Z0-9=])=[A-Z0-9]{1,4}(?:[.\-][A-Z0-9]{1,8}){1,6}(?![A-Z0-9])')
+_MEDIUM_CODE_RE = re.compile(r'(?<![A-Za-z0-9])[A-Za-z]{1,4}\d{1,4}(?![A-Za-z0-9])')
+
+
+def _parse_line_callout(text: str) -> dict:
+    """Verbatim extraction only — NEVER interprets medium_code
+    semantically. A project-specific medium/class code (e.g. 'KX200' in
+    '=E1.M1.WPA041 KX200 DN10') has no fixed meaning across projects; the
+    right answer when its meaning isn't independently verified (e.g. via
+    an explicit legend) is to say so, not to guess. Returns whichever of
+    {'line_number', 'nominal_size', 'medium_code'+'medium_code_verified'}
+    is present in `text`; {} if none.
+    """
+    out = {}
+    remaining = text
+
+    m = _LINE_OBJREF_RE.search(text)
+    if m:
+        out['line_number'] = m.group(0)
+        remaining = remaining.replace(m.group(0), ' ')
+
+    m = _DN_RE.search(remaining)
+    if m:
+        out['nominal_size'] = f"DN{m.group(1)}"
+        remaining = remaining.replace(m.group(0), ' ')
+
+    m = _MEDIUM_CODE_RE.search(remaining)
+    if m:
+        out['medium_code'] = m.group(0).upper()
+        out['medium_code_verified'] = False
+
+    return out
+
+
+def trace_line_info_for_cluster(cluster, primitives, page_words_combined) -> dict:
+    """Best-effort line-number/medium/DN association for one valve
+    cluster: walks connected pipe primitives outward from its bbox
+    (symbol_geometry.trace_pipe_points_from_bbox — vector-only, no
+    rendering) and checks native text near each traced point, nearest
+    first. First match wins; line_assignment_confidence decays with how
+    far along the trace it was found. Returns {} if nothing plausible
+    turns up — never raises, never guesses.
+
+    page_words_combined: _spatial_combine(_rotate_words(page.get_text(
+    "words"), page)) output for the SAME page as `cluster`, computed ONCE
+    per page by the caller and reused across every valve on it (avoids
+    re-extracting/re-combining native words per valve).
+    """
+    try:
+        points = symbol_geometry.trace_pipe_points_from_bbox(cluster['bbox'], primitives)
+    except Exception:
+        return {}
+    if not points:
+        return {}
+
+    max_hops = max(1, len(points))
+    for hop_idx, pt in enumerate(points):
+        best, best_dist = None, _DN_TEXT_SEARCH_RADIUS
+        for candidate, x0, y0, x1, y1 in page_words_combined:
+            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            d = math.hypot(cx - pt[0], cy - pt[1])
+            if d <= best_dist:
+                parsed = _parse_line_callout(candidate)
+                if parsed:
+                    best, best_dist = parsed, d
+        if best:
+            decay = max(0.0, 1.0 - hop_idx / max_hops)
+            conf = (1.0 if 'line_number' in best else 0.6) * (0.5 + 0.5 * decay)
+            best['line_assignment_confidence'] = round(conf, 2)
+            return best
+    return {}
+
+
+# ── Tag-source -> confidence, and flattening scan_pdf_for_equipment's
+#    per-prefix result dict into detect_equipment_and_valves' flat input ──
+
+_TAG_READING_CONF_BY_SOURCE = {'native': 1.0, 'ocr': 0.6, 'ocr_fuzzy': 0.4}
+
+
+def scan_result_to_tag_points(scan_result):
+    """Flatten scan_pdf_for_equipment()'s per-prefix dict into
+    detect_equipment_and_valves()'s flat input shape:
+    [(tag, prefix, page, x, y, tag_reading_confidence), ...].
+    Positions come straight from the scan (already precise from pass 2's
+    spatial-combine matching), so detect_equipment_and_valves never needs
+    to re-look them up for this path."""
+    out = []
+    real = {k: v for k, v in (scan_result or {}).items() if not k.startswith('_')}
+    for prefix, data in real.items():
+        for tag in data.get('tags', []):
+            page = data['pages'].get(tag, 0)
+            x, y = data['positions'].get(tag, (0.0, 0.0))
+            source = data.get('tag_source', {}).get(tag, 'native')
+            out.append((tag, prefix, page, x, y, _TAG_READING_CONF_BY_SOURCE.get(source, 1.0)))
+    return out
+
+
+def _comp_type_for_prefix(prefix, known_prefixes):
+    known = known_prefixes.get(prefix)
+    return known[1] if known else ''
+
+
+def detect_equipment_and_valves(pdf_doc, tag_points, pages=None,
+                                min_bowtie_score=0.5, min_confidence=0.3,
+                                known_prefixes=None, progress_callback=None,
+                                should_cancel=None):
+    """Unified per-page pipeline: tag<->symbol association (weighted,
+    global — see associate_tags_to_clusters) AND shape-anchored valve
+    hunting (the same bow-tie/aspect/size/diagonal filter find_valve_shapes
+    uses) against ONE shared per-page cluster extraction, plus line-
+    tracing for line number/medium/DN. Replaces the UI's separate calls to
+    detect_equipment_symbols()/find_valve_shapes() (both left unchanged
+    below, still directly usable/testable on their own).
+
+    tag_points: [(tag, prefix, page_num, x_or_None, y_or_None,
+                 tag_reading_confidence), ...] — flat across all pages.
+    Position may be None (resolved via find_tag_position_on_page) for
+    callers that don't already know it, e.g. tags read from the
+    Utrustningsregister, which persists tags but not positions;
+    scan_result_to_tag_points() above supplies precise positions already
+    computed during scanning, so no re-lookup happens for that path.
+
+    pages: iterable of 0-based page numbers to analyse, or None for every
+    page in the document — NOT restricted to pages that happen to have a
+    known tag, since an untagged valve can be on any page.
+
+    progress_callback(page_num, total_pages, msg) — same 3-arg contract
+    scan_pdf_for_equipment/find_valve_shapes already use.
+    should_cancel() is checked once per page (cooperative cancellation).
+
+    Returns (results, rejected):
+      results: list[dict] — tag, page, comp_type, x, y, outline,
+        link_method, tag_status ('tagged'|'untagged'), temporary_id,
+        detection_confidence, tag_reading_confidence,
+        tag_assignment_confidence, line_assignment_confidence,
+        line_number, medium_code, medium_code_verified, nominal_size.
+      rejected: list[dict] — page, x, y, outline, reason. In-memory only —
+        never written to the database, purely for the review dialog's
+        optional "avvisade kandidater" section.
+    """
+    if not HAS_PYMUPDF or pdf_doc is None:
+        return [], []
+    if known_prefixes is None:
+        known_prefixes = KNOWN_PREFIXES
+    if pages is None:
+        pages = range(pdf_doc.page_count)
+    pages = list(pages)
+    total = pdf_doc.page_count
+
+    tag_points_by_page = {}
+    for tag, prefix, page_num, x, y, conf in tag_points:
+        tag_points_by_page.setdefault(page_num, []).append((tag, prefix, x, y, conf))
+
+    results, rejected = [], []
+    for page_num in pages:
+        if should_cancel and should_cancel():
+            break
+        if progress_callback:
+            progress_callback(page_num, total,
+                              f"Sida {page_num + 1}/{total} — analyserar ventiler…")
+        try:
+            page = pdf_doc[page_num]
+            primitives = symbol_geometry.extract_primitives(page)
+            clusters = symbol_geometry.find_symbol_clusters(page, min_confidence=0.0)
+        except Exception:
+            continue
+
+        resolved_tags = []   # (tag, prefix, (x,y), tag_reading_confidence)
+        for tag, prefix, x, y, conf in tag_points_by_page.get(page_num, []):
+            if x is None or y is None:
+                pos = find_tag_position_on_page(pdf_doc, page_num, tag)
+                if pos is None:
+                    # Known to exist but its text can't be located on this
+                    # page right now — still a row, just with no geometry.
+                    results.append({
+                        'tag': tag, 'page': page_num,
+                        'comp_type': _comp_type_for_prefix(prefix, known_prefixes),
+                        'x': 0.0, 'y': 0.0, 'outline': [], 'link_method': 'not_found',
+                        'tag_status': 'tagged', 'temporary_id': '',
+                        'detection_confidence': 0.0, 'tag_reading_confidence': conf,
+                        'tag_assignment_confidence': 0.0, 'line_assignment_confidence': 0.0,
+                        'line_number': '', 'medium_code': '', 'medium_code_verified': False,
+                        'nominal_size': '',
+                    })
+                    continue
+                x, y = pos
+            resolved_tags.append((tag, prefix, (x, y), conf))
+
+        assoc = (associate_tags_to_clusters(
+                    [(t, p, pos) for t, p, pos, _c in resolved_tags],
+                    clusters, primitives, known_prefixes=known_prefixes)
+                 if resolved_tags else {})
+        assigned_cluster_ids = {id(cl) for cl, _m, _s in assoc.values() if cl is not None}
+
+        page_words_combined = _spatial_combine(
+            _rotate_words(page.get_text("words"), page), gap_limit=22.0)
+
+        for tag, prefix, _pos, tag_read_conf in resolved_tags:
+            cluster, method, assoc_score = assoc.get(tag, (None, 'none', 0.0))
+            comp_type = _comp_type_for_prefix(prefix, known_prefixes)
+            if cluster is not None:
+                x0, y0, x1, y1 = cluster['bbox']
+                x, y = (x0 + x1) / 2, (y0 + y1) / 2
+                detection_conf, outline = cluster['confidence'], cluster['outline']
+                line_info = trace_line_info_for_cluster(cluster, primitives, page_words_combined)
+            else:
+                x, y = _pos
+                detection_conf, outline, line_info = 0.0, [], {}
+            results.append({
+                'tag': tag, 'page': page_num, 'comp_type': comp_type,
+                'x': x, 'y': y, 'outline': outline, 'link_method': method,
+                'tag_status': 'tagged', 'temporary_id': '',
+                'detection_confidence': detection_conf,
+                'tag_reading_confidence': tag_read_conf,
+                'tag_assignment_confidence': assoc_score,
+                'line_assignment_confidence': line_info.get('line_assignment_confidence', 0.0),
+                'line_number': line_info.get('line_number', ''),
+                'medium_code': line_info.get('medium_code', ''),
+                'medium_code_verified': line_info.get('medium_code_verified', False),
+                'nominal_size': line_info.get('nominal_size', ''),
+            })
+
+        # Shape-anchored: clusters passing the bow-tie/valve-shape filter
+        # that no tag above claimed.
+        n_untagged = 0
+        for cluster in clusters:
+            if id(cluster) in assigned_cluster_ids:
+                continue
+            passes = (cluster.get('bowtie_score', 0.0) >= min_bowtie_score
+                      and cluster['aspect'] <= 3.0
+                      and 1.5 <= cluster['norm_size'] <= 40.0
+                      and cluster['has_diagonal'])
+            if not passes:
+                reason = _valve_rejection_reason(cluster, min_bowtie_score)
+                if reason:
+                    x0, y0, x1, y1 = cluster['bbox']
+                    rejected.append({'page': page_num, 'x': (x0 + x1) / 2, 'y': (y0 + y1) / 2,
+                                     'outline': cluster['outline'], 'reason': reason})
+                continue
+
+            x0, y0, x1, y1 = cluster['bbox']
+            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            suggested_tag, _pfx = find_nearby_tag_text(page, (cx, cy))
+            line_info = trace_line_info_for_cluster(cluster, primitives, page_words_combined)
+            n_untagged += 1
+            results.append({
+                'tag': suggested_tag or '', 'page': page_num, 'comp_type': 'Ventil',
+                'x': cx, 'y': cy, 'outline': cluster['outline'], 'link_method': 'shape',
+                'tag_status': 'untagged',
+                'temporary_id': f'UNASSIGNED-VALVE-{page_num}-{n_untagged}',
+                'detection_confidence': cluster['confidence'],
+                'tag_reading_confidence': 0.0, 'tag_assignment_confidence': 0.0,
+                'line_assignment_confidence': line_info.get('line_assignment_confidence', 0.0),
+                'line_number': line_info.get('line_number', ''),
+                'medium_code': line_info.get('medium_code', ''),
+                'medium_code_verified': line_info.get('medium_code_verified', False),
+                'nominal_size': line_info.get('nominal_size', ''),
+            })
+
+    return results, rejected
 
 
 class PDFVectorItem(QGraphicsItem):
@@ -2375,24 +2806,59 @@ class EquipmentScanDialog(QDialog):
             f"{created} noder skapade. Uppdatera trädet i HAZOP-vyn.")
 
 
+def _row_confidence(res: dict) -> float:
+    """Single headline confidence for a result row. Rows from the older
+    detect_equipment_symbols()/find_valve_shapes() carry one 'confidence'
+    scalar directly; rows from the unified detect_equipment_and_valves()
+    carry four separate confidences instead — the headline value there is
+    the weakest link (min), matching the existing 70%/40% colour
+    thresholds without needing a table redesign. See _row_confidence_breakdown
+    for the full per-field tooltip."""
+    if 'confidence' in res:
+        return res['confidence']
+    fields = ['detection_confidence', 'tag_reading_confidence',
+              'tag_assignment_confidence', 'line_assignment_confidence']
+    values = [res.get(f) for f in fields if res.get(f) is not None]
+    return min(values) if values else 0.0
+
+
+def _row_confidence_breakdown(res: dict) -> str:
+    """Tooltip text listing all four per-field confidences, when present."""
+    labels = [
+        ('detection_confidence', 'Symboldetektering'),
+        ('tag_reading_confidence', 'Taggläsning'),
+        ('tag_assignment_confidence', 'Tagg-koppling'),
+        ('line_assignment_confidence', 'Ledningskoppling'),
+    ]
+    lines = [f"{label}: {int(round(res[key] * 100))}%"
+             for key, label in labels if res.get(key) is not None]
+    return '\n'.join(lines) if lines else ''
+
+
 class EquipmentMarkerReviewDialog(QDialog):
     """Review/correct auto-detected equipment-symbol matches before saving
     them as a new 'equipment' marker layer on the P&ID.
 
-    Two triggers feed this dialog with the same result shape:
-    - EquipmentPanel's "🎯 Hitta på P&ID" (tag-anchored: starts from
-      already-known equipment_catalog tags, see detect_equipment_symbols).
-    - PIDPanel's "🦋 Hitta ventilformer" (shape-anchored: starts from
-      bow-tie-shaped symbols with no tag required, see find_valve_shapes —
-      rows from this path may have an empty/suggested Tagg and no
-      equipment_id yet; _save() creates the equipment_catalog row for them
-      on the fly if the (possibly user-typed) tag is non-empty).
+    Fed by EquipmentPanel's "🎯 Hitta på P&ID", which runs the unified
+    detect_equipment_and_valves() pipeline (tag-anchored AND shape-
+    anchored valve hunting against one shared per-page cluster
+    extraction — see that function's docstring). Rows with
+    tag_status='untagged' (a valve-shaped symbol with no confident tag
+    match) pre-fill the Tagg cell with their temporary_id
+    ('UNASSIGNED-VALVE-...') rather than being silently dropped;
+    _save() registers a real equipment_catalog entry for them on the fly
+    if the (suggested or user-typed) tag is non-empty.
 
     Unchecking a row skips it entirely; editing the Tagg cell corrects a
     wrong tag-text match, or names a valve that had none, before saving.
     Repositioning a marker that landed in the wrong place is not supported
     yet — remove it here and place it manually via the existing P&ID
     Orsak/Konsekvens-style click-to-place flow instead.
+
+    `rejected` (optional): near-miss candidates that failed exactly one
+    valve-shape filter (see _valve_rejection_reason) — shown in an
+    optional, read-only, in-memory-only section; never written to the
+    database, purely a debugging aid for this review session.
     """
 
     _C_CHK, _C_TAG, _C_PAGE, _C_TYPE, _C_CONF, _C_METHOD = range(6)
@@ -2406,10 +2872,11 @@ class EquipmentMarkerReviewDialog(QDialog):
         'not_found': '⚠ Tagg ej hittad på sidan',
     }
 
-    def __init__(self, results: list, db, parent=None):
+    def __init__(self, results: list, db, parent=None, rejected: list = None):
         super().__init__(parent)
         self.db = db
-        self._results = results   # dicts: tag,page,comp_type,x,y,confidence,link_method,outline,equipment_id
+        self._results = results   # dicts: tag,page,comp_type,x,y,confidence(_es),link_method,outline,equipment_id
+        self._rejected = rejected or []
         self.setWindowTitle("Granska autodetekterad utrustning")
         self.setMinimumSize(760, 480)
 
@@ -2417,8 +2884,10 @@ class EquipmentMarkerReviewDialog(QDialog):
 
         n = len(results)
         n_found = sum(1 for r in results if r['link_method'] not in ('none', 'not_found'))
+        n_untagged = sum(1 for r in results if r.get('tag_status') == 'untagged')
+        extra = f" ({n_untagged} utan tagg)" if n_untagged else ""
         hdr = QLabel(
-            f"Hittade en symbolmatchning för <b>{n_found} av {n}</b> rader. "
+            f"Hittade en symbolmatchning för <b>{n_found} av {n}</b> rader{extra}. "
             "Kryssa ur felaktiga rader, redigera taggtext vid behov (ge en "
             "namnlös ventil en tagg om du vill), och spara.")
         hdr.setTextFormat(Qt.TextFormat.RichText)
@@ -2440,6 +2909,28 @@ class EquipmentMarkerReviewDialog(QDialog):
         outer.addWidget(self._tbl)
         self._populate()
 
+        self._rejected_toggle = QPushButton(f"▸ Visa avvisade kandidater ({len(self._rejected)})")
+        self._rejected_toggle.setCheckable(True)
+        self._rejected_toggle.setEnabled(bool(self._rejected))
+        self._rejected_toggle.setStyleSheet("text-align:left; border:none; color:#555;")
+        self._rejected_toggle.toggled.connect(self._on_rejected_toggled)
+        outer.addWidget(self._rejected_toggle)
+
+        self._rejected_tbl = QTableWidget(0, 2)
+        self._rejected_tbl.setHorizontalHeaderLabels(['Sida', 'Anledning'])
+        self._rejected_tbl.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch)
+        self._rejected_tbl.verticalHeader().setVisible(False)
+        self._rejected_tbl.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._rejected_tbl.setMaximumHeight(140)
+        self._rejected_tbl.setVisible(False)
+        for res in self._rejected:
+            r = self._rejected_tbl.rowCount()
+            self._rejected_tbl.insertRow(r)
+            self._rejected_tbl.setItem(r, 0, QTableWidgetItem(str(res.get('page', 0) + 1)))
+            self._rejected_tbl.setItem(r, 1, QTableWidgetItem(res.get('reason', '')))
+        outer.addWidget(self._rejected_tbl)
+
         btn_row = QHBoxLayout()
         save_btn = QPushButton("💾 Spara markörer")
         save_btn.setDefault(True)
@@ -2451,6 +2942,11 @@ class EquipmentMarkerReviewDialog(QDialog):
         btn_row.addWidget(save_btn)
         outer.addLayout(btn_row)
 
+    def _on_rejected_toggled(self, on):
+        self._rejected_tbl.setVisible(on)
+        arrow = '▾' if on else '▸'
+        self._rejected_toggle.setText(f"{arrow} Visa avvisade kandidater ({len(self._rejected)})")
+
     def _populate(self):
         self._tbl.setRowCount(0)
         for res in self._results:
@@ -2458,13 +2954,20 @@ class EquipmentMarkerReviewDialog(QDialog):
             self._tbl.insertRow(r)
 
             chk = QTableWidgetItem()
-            include_default = res['link_method'] not in ('none', 'not_found')
+            untagged_ok = (res.get('tag_status') == 'untagged'
+                          and res.get('detection_confidence', 0.0) >= 0.5)
+            include_default = res['link_method'] not in ('none', 'not_found') or untagged_ok
             chk.setCheckState(
                 Qt.CheckState.Checked if include_default else Qt.CheckState.Unchecked)
             chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
             self._tbl.setItem(r, self._C_CHK, chk)
 
-            self._tbl.setItem(r, self._C_TAG, QTableWidgetItem(res['tag']))
+            tag_text = res['tag'] or (res.get('temporary_id', '') if res.get('tag_status') == 'untagged' else '')
+            tag_item = QTableWidgetItem(tag_text)
+            if res.get('tag_status') == 'untagged':
+                tag_item.setToolTip("Ingen tagg hittades nära denna symbol — döp den eller "
+                                    "lämna det tillfälliga id:et.")
+            self._tbl.setItem(r, self._C_TAG, tag_item)
 
             pg_item = QTableWidgetItem(str(res['page'] + 1))
             pg_item.setFlags(pg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -2475,10 +2978,14 @@ class EquipmentMarkerReviewDialog(QDialog):
             type_item.setFlags(type_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self._tbl.setItem(r, self._C_TYPE, type_item)
 
-            pct = int(round(res['confidence'] * 100))
+            conf = _row_confidence(res)
+            pct = int(round(conf * 100))
             conf_item = QTableWidgetItem(f"{pct}%")
             conf_item.setFlags(conf_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             conf_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            breakdown = _row_confidence_breakdown(res)
+            if breakdown:
+                conf_item.setToolTip(breakdown)
             if pct >= 70:
                 conf_item.setForeground(QBrush(QColor('#1a7a40')))
             elif pct >= 40:
@@ -2504,9 +3011,9 @@ class EquipmentMarkerReviewDialog(QDialog):
             tag = tag_item.text().strip() if tag_item and tag_item.text().strip() else res['tag']
             equipment_id = res.get('equipment_id')
 
-            # Rows from "🦋 Hitta ventilformer" may have no equipment_id yet
-            # (the valve wasn't a known tag to begin with) — if the user
-            # gave it a tag (suggested or typed in), register it as a real
+            # Rows with no equipment_id yet (shape-anchored hits that
+            # weren't already a known tag) — if the user gave it a tag
+            # (suggested or typed in), register it as a real
             # equipment_catalog entry now, so it shows up in
             # Utrustningsregistret/nodskapande like any other scanned tag.
             if equipment_id is None and tag:
@@ -2518,7 +3025,16 @@ class EquipmentMarkerReviewDialog(QDialog):
             self.db.add_equipment_marker(
                 equipment_id, tag, res['page'], res['x'], res['y'],
                 res['comp_type'], shape_outline=outline_json,
-                confidence=res['confidence'], link_method=res['link_method'])
+                confidence=_row_confidence(res), link_method=res['link_method'],
+                detection_confidence=res.get('detection_confidence'),
+                tag_reading_confidence=res.get('tag_reading_confidence'),
+                tag_assignment_confidence=res.get('tag_assignment_confidence'),
+                line_assignment_confidence=res.get('line_assignment_confidence'),
+                line_number=res.get('line_number', ''),
+                medium_code=res.get('medium_code', ''),
+                medium_code_verified=int(bool(res.get('medium_code_verified'))),
+                nominal_size=res.get('nominal_size', ''),
+                tag_status=res.get('tag_status', 'tagged'))
             saved += 1
         if saved == 0:
             QMessageBox.information(self, "Inget sparat", "Inga rader var ikryssade.")
@@ -4232,6 +4748,58 @@ def _propose_layout(connections, active_pages, page_widths_pdf, page_heights_pdf
             row_h = max(row_h, hs[i])
 
     return {i: (round(pos[i][0]), round(pos[i][1])) for i in active_pages}
+
+
+class EquipmentAnalysisWorker(QThread):
+    """Runs detect_equipment_and_valves() off the UI thread, modelled
+    exactly on ConnectorAnalyzer above: opens its own fitz.open() in run(),
+    NEVER touches a Database/sqlite3 connection (sqlite3 defaults to
+    check_same_thread=True — the caller does all DB reads/writes in the
+    main-thread slot connected to finished_analysis, after this thread has
+    already stopped), and always emits finished_analysis even on an
+    exception or cancellation so the caller's modal progress dialog can
+    never hang.
+
+    tag_points is built entirely on the calling (UI) thread before
+    construction — from the Utrustningsregister's already-in-memory rows,
+    or from a scan_result via scan_result_to_tag_points() — so this class
+    never needs any callback into GUI/DB code from inside run().
+    """
+    progress          = pyqtSignal(int, int, str)   # (page_num, total, msg) — same
+                                                      # contract detect_equipment_and_valves'
+                                                      # progress_callback already uses
+    finished_analysis = pyqtSignal(list, list)       # (results, rejected) — ALWAYS emitted
+
+    def __init__(self, pdf_path, tag_points, pages=None,
+                 min_bowtie_score=0.5, min_confidence=0.3, parent=None):
+        super().__init__(parent)
+        self._pdf_path         = str(pdf_path)
+        self._tag_points       = list(tag_points)
+        self._pages            = list(pages) if pages is not None else None
+        self._min_bowtie_score = min_bowtie_score
+        self._min_confidence   = min_confidence
+
+    def run(self):
+        doc = None
+        try:
+            doc = fitz.open(self._pdf_path)
+            results, rejected = detect_equipment_and_valves(
+                doc, self._tag_points, pages=self._pages,
+                min_bowtie_score=self._min_bowtie_score,
+                min_confidence=self._min_confidence,
+                progress_callback=lambda pn, total, msg: self.progress.emit(pn, total, msg),
+                should_cancel=self.isInterruptionRequested)
+            self.finished_analysis.emit(results, rejected)
+        except Exception as e:
+            import logging
+            logging.error(f"EquipmentAnalysisWorker.run() failed: {e}", exc_info=True)
+            self.finished_analysis.emit([], [])
+        finally:
+            if doc is not None:
+                try:
+                    doc.close()
+                except Exception:
+                    pass
 
 
 class ConnectorDotItem(QGraphicsEllipseItem):
@@ -7617,16 +8185,6 @@ class PIDPanel(QWidget):
         self.analyze_btn.setEnabled(False)
         bar.addWidget(self.analyze_btn)
 
-        self.find_valves_btn = QPushButton("🦋 Hitta ventilformer")
-        self.find_valves_btn.setToolTip(
-            "Söker igenom P&ID:n efter bow-tie-formade ventilsymboler —\n"
-            "hittar även ventiler som saknar en igenkänd tagg i närheten.\n"
-            "Föreslår en tagg när något står tillräckligt nära, annars\n"
-            "kan du skriva in den själv i granskningslistan.")
-        self.find_valves_btn.clicked.connect(self._find_valve_shapes)
-        self.find_valves_btn.setEnabled(False)
-        bar.addWidget(self.find_valves_btn)
-
         self.export_btn = QPushButton("📤 Exportera PDF")
         self.export_btn.setToolTip(
             "Exportera P&ID med alla HAZOP-markeringar (nodgränser, orsaker,\n"
@@ -7928,59 +8486,6 @@ class PIDPanel(QWidget):
             "för att bekräfta typerna och aktivera 'Använd'.\n\n"
             "Utrustningsregistret har också uppdaterats.")
         self.pid_analysis_done.emit()
-
-    def _find_valve_shapes(self):
-        """🦋 Hitta ventilformer — scans every page for bow-tie-shaped
-        symbols regardless of whether a tag is already known nearby (see
-        find_valve_shapes in this module). Unlike "🎯 Hitta på P&ID" in
-        Utrustningsregistret, this does NOT require the valve to already
-        be a row in the equipment register — a suggested tag (or an empty
-        one, editable in the review dialog) is derived from whatever text
-        is printed near the shape itself.
-        """
-        if not HAS_PYMUPDF or self.viewer.pdf_doc is None:
-            QMessageBox.warning(self, "Ingen P&ID", "Öppna en P&ID-fil först.")
-            return
-
-        doc = self.viewer.pdf_doc
-        n = doc.page_count
-        progress = QProgressDialog("Söker ventilformer…", "Avbryt", 0, n, self)
-        progress.setWindowTitle("Hitta ventilformer")
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.show()
-        QApplication.processEvents()
-
-        def _cb(pg, _total, msg):
-            if progress.wasCanceled():
-                return
-            progress.setValue(pg)
-            progress.setLabelText(msg)
-            QApplication.processEvents()
-
-        results = find_valve_shapes(doc, progress_callback=_cb)
-        progress.setValue(n); progress.close()
-
-        if not results:
-            QMessageBox.information(self, "Inga ventilformer hittades",
-                "Hittade inga bow-tie-formade symboler på denna P&ID.")
-            return
-
-        # Link to an already-known equipment_catalog row when the suggested
-        # tag matches one, same as the tag-anchored "🎯 Hitta på P&ID" flow —
-        # avoids creating a duplicate row for a valve that's already tracked.
-        for res in results:
-            res['equipment_id'] = None
-            if res['tag']:
-                row = self.db.conn.execute(
-                    "SELECT id FROM equipment_catalog WHERE tag=? LIMIT 1",
-                    (res['tag'],)).fetchone()
-                if row:
-                    res['equipment_id'] = row['id']
-
-        dlg = EquipmentMarkerReviewDialog(results, self.db, parent=self)
-        if dlg.exec():
-            self.reload_overlays()
 
     def _refresh_color_btn(self):
         c = self._pen_color
@@ -8437,7 +8942,6 @@ class PIDPanel(QWidget):
         self._load_overlays()
         prog.close()
         self.analyze_btn.setEnabled(True)
-        self.find_valves_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
 
     def _goto_page(self, display_n):
@@ -10159,7 +10663,6 @@ class PIDPanel(QWidget):
                 self._update_page_label()
                 self._load_overlays()
                 self.analyze_btn.setEnabled(True)
-                self.find_valves_btn.setEnabled(True)
         else:
             # No P&ID in database — clear the canvas completely
             if self.viewer.pdf_doc is not None:
@@ -10185,5 +10688,4 @@ class PIDPanel(QWidget):
             self.viewer._show_placeholder(
                 "Ingen P&ID inläst.\nImportera en PDF-fil med knappen ovan.")
             self.analyze_btn.setEnabled(False)
-            self.find_valves_btn.setEnabled(False)
         self.export_btn.setEnabled(True)
