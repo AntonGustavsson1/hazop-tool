@@ -3590,6 +3590,80 @@ class BowtieValveDetectionTests(unittest.TestCase):
             doc.close()
         self.assertEqual(results, [], "a plain instrument bubble (no impeller diagonal) must not be reported as a pump")
 
+    def test_find_instrument_shapes_detects_divided_capsule(self):
+        """find_instrument_shapes() — the instrument counterpart to
+        find_valve_shapes()/find_pump_shapes(), added after studying a
+        real LKAB P&ID: an instrument bubble is a circle/capsule with a
+        horizontal divider line at its vertical midpoint (ISA-5.1's
+        shared-display/panel-mounted convention)."""
+        from equipment_detection import find_instrument_shapes
+        import fitz
+        path = os.path.join(self._tmpdir, "instrument.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=200, height=200)
+        shape = page.new_shape()
+        shape.draw_circle(fitz.Point(85, 100), 10)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_circle(fitz.Point(115, 100), 10)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(85, 90), fitz.Point(115, 90))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(85, 110), fitz.Point(115, 110))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(75, 100), fitz.Point(125, 100))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        # fontsize=10 (not the more typical 8) so dominant_text_size()
+        # comes out high enough that the 50pt divider line stays safely
+        # under _is_pipe_run_line's scale-relative "long pipe" threshold
+        # (6x text size) — with fontsize=8 that threshold is 48pt and
+        # the divider gets excluded from bridging, splitting the capsule
+        # into two clusters and hiding it from instrument_shapes_in_cluster.
+        page.insert_text(fitz.Point(70, 130), "PI-101", fontsize=10)
+        doc.save(path)
+        doc.close()
+
+        doc = fitz.open(path)
+        try:
+            results = find_instrument_shapes(doc)
+        finally:
+            doc.close()
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['tag'], 'PI-101')
+        self.assertEqual(results[0]['comp_type'], 'Instrument / Sensor')
+
+    def test_find_instrument_shapes_ignores_pump_circle(self):
+        """A pump's circle (with its own diagonal impeller mark and a
+        pipe line straight through its midpoint) must never also be
+        reported as an instrument — see
+        InstrumentShapeTests.test_pump_circle_with_through_line_is_not_an_instrument
+        for the geometric ambiguity this guards against."""
+        from equipment_detection import find_instrument_shapes
+        import fitz
+        path = os.path.join(self._tmpdir, "pump_not_instrument.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=200, height=200)
+        shape = page.new_shape()
+        shape.draw_circle(fitz.Point(100, 100), 20)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(70, 100), fitz.Point(130, 100))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(100, 86), fitz.Point(120, 100))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(120, 100), fitz.Point(100, 114))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        page.insert_text(fitz.Point(90, 130), "PU-1", fontsize=8)
+        doc.save(path)
+        doc.close()
+
+        doc = fitz.open(path)
+        try:
+            results = find_instrument_shapes(doc)
+        finally:
+            doc.close()
+        self.assertEqual(results, [])
+
     def test_find_nearby_tag_text_finds_closest_tag_within_radius(self):
         from equipment_detection import find_nearby_tag_text
         import fitz

@@ -870,6 +870,112 @@ class PumpShapeTests(unittest.TestCase):
         self.assertEqual(len(found), 2)
 
 
+class InstrumentShapeTests(unittest.TestCase):
+    """instrument_shapes_in_cluster() identifies instrument "bubble"
+    bodies: a circle or elongated capsule/"stadium" shape (confirmed by
+    direct inspection of a real LKAB P&ID: two semicircle end-caps 28.3pt
+    apart, joined by straight top/bottom edges — NOT within
+    _CLUSTER_GAP of each other directly, unlike a pump's single
+    continuous circle) with a horizontal divider line at its vertical
+    midpoint — the ISA-5.1 convention for a shared-display (panel-
+    mounted) instrument."""
+
+    def _capsule_page(self, with_divider=True):
+        doc, page = _new_page(200, 200)
+        shape = page.new_shape()
+        # Two small circles standing in for the two semicircle end-caps
+        # of a real capsule — far enough apart (10pt gap between their
+        # own edges) that _curve_islands treats them as separate
+        # islands, exactly like the real ~28.3pt-apart caps do. The
+        # connecting lines' endpoints land exactly on each circle's own
+        # top/bottom/side point (a full circle has no flat edge to
+        # attach to, unlike a real semicircle cap) so they genuinely
+        # touch within _CLUSTER_GAP.
+        shape.draw_circle(fitz.Point(85, 100), 10)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_circle(fitz.Point(115, 100), 10)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(85, 90), fitz.Point(115, 90))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(85, 110), fitz.Point(115, 110))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        if with_divider:
+            shape.draw_line(fitz.Point(75, 100), fitz.Point(125, 100))
+            shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        return doc, page
+
+    def test_capsule_with_midline_divider_is_an_instrument(self):
+        doc, page = self._capsule_page(with_divider=True)
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        self.assertEqual(len(groups), 1, "the divider must bridge both caps into one cluster")
+        found = sg.instrument_shapes_in_cluster(prims, groups[0])
+        self.assertEqual(len(found), 1)
+        x0, y0, x1, y1 = found[0]
+        self.assertAlmostEqual(x0, 75.0, delta=1.0)
+        self.assertAlmostEqual(x1, 125.0, delta=1.0)
+
+    def test_undivided_capsule_is_not_an_instrument(self):
+        """A field-mounted instrument (no divider — see a real LKAB
+        "LI"/second-"PI" bubble) must not be reported. Deliberately not
+        detected by design: a plain undivided bubble is geometrically
+        identical to a motor label circle or plenty of other things —
+        see the module docstring for why only the divided case is
+        unambiguous enough to target."""
+        doc, page = self._capsule_page(with_divider=False)
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        found = sg.instrument_shapes_in_cluster(prims, groups[0])
+        self.assertEqual(found, [])
+
+    def test_capsule_outline_edges_are_not_mistaken_for_a_divider(self):
+        """Regression test for the bug this exact fixture caught during
+        development: the capsule's own top/bottom outline edges connect
+        the same two islands and span the same full width as a genuine
+        divider — only _INSTRUMENT_DIVIDER_MIDLINE_TOLERANCE (requiring
+        the line to sit near the vertical midpoint, not at the top/
+        bottom extremes) tells them apart. Covered implicitly by
+        test_undivided_capsule_is_not_an_instrument above, named
+        explicitly here so the reason is unmistakable if it regresses."""
+        doc, page = self._capsule_page(with_divider=False)
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        found = sg.instrument_shapes_in_cluster(prims, groups[0])
+        self.assertEqual(found, [], "the capsule's own top/bottom edges must never count as a divider")
+
+    def test_pump_circle_with_through_line_is_not_an_instrument(self):
+        """Found on a real Gryaab P&ID: a pump's connecting pipe is
+        drawn as ONE continuous horizontal line straight through the
+        circle's own vertical midpoint (not stopping at its rim) —
+        geometrically identical to a genuine instrument divider at that
+        same midpoint. Only the pump's own diagonal impeller mark tells
+        them apart; a real instrument bubble never has one."""
+        doc, page = _new_page()
+        shape = page.new_shape()
+        shape.draw_circle(fitz.Point(100, 100), 20)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        # A line straight through the middle (the "pipe"), PLUS the
+        # pump's own diagonal impeller mark.
+        shape.draw_line(fitz.Point(70, 100), fitz.Point(130, 100))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(100, 86), fitz.Point(120, 100))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(120, 100), fitz.Point(100, 114))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        self.assertEqual(len(sg.pump_shapes_in_cluster(prims, groups[0])), 1,
+            "sanity check: this must still register as a pump")
+        self.assertEqual(sg.instrument_shapes_in_cluster(prims, groups[0]), [],
+            "a pump's circle must never also be reported as an instrument")
+
+
 class BowtieScoreTests(unittest.TestCase):
     """bowtie_score() — "🦋 Hitta ventilformer" identifies valves by their
     bow-tie/hourglass silhouette (wide-narrow-wide) rather than requiring a

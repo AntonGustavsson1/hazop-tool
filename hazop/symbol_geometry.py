@@ -572,30 +572,165 @@ def pump_shapes_in_cluster(primitives, index_group):
         aspect = max(w, h) / min(w, h)
         if aspect > _PUMP_ISLAND_ASPECT_LIMIT:
             continue
-        island_set = set(island)
-        tol = 1.0
-        # The diagonal must span a real fraction of the circle's own
-        # size (>= _PUMP_DIAGONAL_MIN_FRACTION of its smaller dimension)
-        # — a genuine impeller mark reaches from near one rim to near
-        # the opposite rim (confirmed on a real LKAB pump: two 30.1pt
-        # diagonals inside a 42.5pt circle, ~71%). Without this, a
-        # vector-drawn "M" motor-label glyph (see ClosedShapeFilterTests)
-        # sitting inside an unrelated plain motor circle produces tiny
-        # sub-1pt diagonal fragments from its own letterform that
-        # otherwise satisfy "diagonal line inside a circle" too —
-        # confirmed as a false positive on a real Gryaab P&ID.
-        min_len = _PUMP_DIAGONAL_MIN_FRACTION * min(w, h)
-        has_inner_diagonal = any(
-            primitives[i]['kind'] == 'l' and _prim_is_diagonal(primitives[i])
-            and _prim_length(primitives[i]) >= min_len
-            and primitives[i]['bbox'][0] >= bbox[0] - tol
-            and primitives[i]['bbox'][1] >= bbox[1] - tol
-            and primitives[i]['bbox'][2] <= bbox[2] + tol
-            and primitives[i]['bbox'][3] <= bbox[3] + tol
-            for i in index_group if i not in island_set
-        )
-        if has_inner_diagonal:
+        if _island_has_inner_diagonal(primitives, island, index_group, bbox):
             results.append(bbox)
+    return results
+
+
+def _island_has_inner_diagonal(primitives, island, index_group, bbox):
+    """Is there a diagonal 'l' primitive, elsewhere in index_group,
+    strictly inside `bbox` (an island's own bbox) and spanning a real
+    fraction of its smaller dimension? Shared by pump_shapes_in_cluster
+    (the check itself) and instrument_shapes_in_cluster (which uses it
+    the other way round, to EXCLUDE a pump's circle from also counting
+    as an instrument body — see that function's docstring for why the
+    two are otherwise ambiguous on a real Gryaab P&ID).
+
+    The diagonal-length requirement (>= _PUMP_DIAGONAL_MIN_FRACTION of
+    the island's smaller dimension) matters here too: a genuine impeller
+    mark reaches from near one rim to near the opposite rim (confirmed
+    on a real LKAB pump: two 30.1pt diagonals inside a 42.5pt circle,
+    ~71%). Without it, a vector-drawn "M" motor-label glyph (see
+    ClosedShapeFilterTests) sitting inside an unrelated plain motor
+    circle produces tiny sub-1pt diagonal fragments from its own
+    letterform that otherwise satisfy "diagonal line inside a circle"
+    too — confirmed as a false positive on a real Gryaab P&ID.
+    """
+    w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    island_set = set(island)
+    tol = 1.0
+    min_len = _PUMP_DIAGONAL_MIN_FRACTION * min(w, h)
+    return any(
+        primitives[i]['kind'] == 'l' and _prim_is_diagonal(primitives[i])
+        and _prim_length(primitives[i]) >= min_len
+        and primitives[i]['bbox'][0] >= bbox[0] - tol
+        and primitives[i]['bbox'][1] >= bbox[1] - tol
+        and primitives[i]['bbox'][2] <= bbox[2] + tol
+        and primitives[i]['bbox'][3] <= bbox[3] + tol
+        for i in index_group if i not in island_set
+    )
+
+
+_INSTRUMENT_ASPECT_RANGE = (1.0, 3.2)   # a plain circle (~1.0) up to an
+                                         # elongated capsule/"stadium"
+                                         # body (~2.0 measured on a real
+                                         # LKAB LC/PI instrument bubble).
+_INSTRUMENT_DIVIDER_MIN_SPAN_FRACTION = 0.7   # a divider must span most
+                                               # of the body's own width
+                                               # (measured: spans exactly
+                                               # the full width on a real
+                                               # LKAB instrument bubble).
+_INSTRUMENT_DIVIDER_MIDLINE_TOLERANCE = 0.2   # a divider must sit within
+                                               # this fraction of the
+                                               # body's own height from
+                                               # the vertical midpoint —
+                                               # see docstring for why
+                                               # this is needed at all.
+
+
+def _island_touching_point(primitives, islands, point, tol=_CLUSTER_GAP):
+    """Which island (if any) has a member primitive within `tol` of
+    `point`? Returns the island (a list of indices) or None."""
+    for island in islands:
+        for i in island:
+            x0, y0, x1, y1 = primitives[i]['bbox']
+            if x0 - tol <= point[0] <= x1 + tol and y0 - tol <= point[1] <= y1 + tol:
+                return island
+    return None
+
+
+def instrument_shapes_in_cluster(primitives, index_group):
+    """Find every instrument "bubble" body within this cluster — a
+    circle or elongated capsule/"stadium" shape (two semicircle end-caps
+    joined by straight top/bottom edges — confirmed by direct inspection
+    of a real LKAB P&ID) with a horizontal divider line INSIDE it, at
+    its vertical midpoint — the ISA-5.1 convention for a shared-display
+    (panel-mounted) instrument, as opposed to a plain undivided bubble
+    (field-mounted) which this deliberately does NOT try to detect (see
+    below for why).
+
+    A capsule's own two curve end-caps are typically NOT within
+    _CLUSTER_GAP of each other directly (measured on a real LKAB
+    instrument: 28.3pt apart) — they're only joined via straight top/
+    bottom connecting lines, unlike a pump's single continuous circle
+    (_curve_islands, which only considers curve-to-curve proximity,
+    would report them as two SEPARATE islands). So this walks every
+    roughly-horizontal line in the cluster and checks whether its two
+    endpoints each touch a curve island — if both ends do, the
+    instrument body's bbox is the union of that line + both islands
+    (or, for a plain circle bisected by one line, both ends touch the
+    SAME single island).
+
+    Excluding a capsule's own top/bottom outline edges is essential, not
+    optional: those edges connect the exact same two islands, span the
+    exact same full width, and would otherwise register as a "divider"
+    on every capsule regardless of whether it actually has one —
+    confirmed on a real LKAB P&ID, where an UNDIVIDED "PI" bubble (a
+    field-mounted instrument, no divider at all) has the identical
+    two-cap-plus-top/bottom-edges construction as a divided one, only
+    missing the middle line. _INSTRUMENT_DIVIDER_MIDLINE_TOLERANCE
+    requires the candidate line to sit near the body's own vertical
+    midpoint, which the top/bottom outline edges — sitting at the two
+    extremes by construction — never do.
+
+    Also excludes a single circle that qualifies as a PUMP
+    (pump_shapes_in_cluster/_island_has_inner_diagonal) — confirmed
+    necessary on a real Gryaab P&ID: a pump's connecting pipe is drawn
+    as one continuous horizontal line straight through the circle's
+    own vertical midpoint (rather than stopping at its rim), which is
+    otherwise geometrically indistinguishable from a genuine instrument
+    divider at that same midpoint. A pump's own diagonal impeller mark
+    is the tell — no real instrument bubble has one.
+
+    Returns a list of bboxes (one per qualifying instrument body).
+    """
+    islands = _curve_islands(primitives, index_group)
+    if not islands:
+        return []
+    results = []
+    seen_pairs = set()
+    for i in index_group:
+        prim = primitives[i]
+        if prim['kind'] != 'l':
+            continue
+        (px0, py0), (px1, py1) = prim['p0'], prim['p1']
+        if abs(py0 - py1) > 1.0:
+            continue   # not horizontal enough to be a divider
+        length = abs(px1 - px0)
+        if length < 1e-6:
+            continue
+        left_pt = (min(px0, px1), (py0 + py1) / 2)
+        right_pt = (max(px0, px1), (py0 + py1) / 2)
+        left_island = _island_touching_point(primitives, islands, left_pt)
+        right_island = _island_touching_point(primitives, islands, right_pt)
+        if left_island is None or right_island is None:
+            continue
+        pair_key = (id(left_island), id(right_island))
+        if pair_key in seen_pairs:
+            continue
+        if left_island is right_island:
+            if _has_closed_loop(primitives, left_island) and _island_has_inner_diagonal(
+                    primitives, left_island, index_group, _group_bbox(primitives, left_island)):
+                continue   # a pump's circle, not an instrument bubble
+            body_bbox = _group_bbox(primitives, left_island)
+        else:
+            lb, rb = _group_bbox(primitives, left_island), _group_bbox(primitives, right_island)
+            body_bbox = (min(lb[0], rb[0], prim['bbox'][0]), min(lb[1], rb[1], prim['bbox'][1]),
+                         max(lb[2], rb[2], prim['bbox'][2]), max(lb[3], rb[3], prim['bbox'][3]))
+        w, h = body_bbox[2] - body_bbox[0], body_bbox[3] - body_bbox[1]
+        if min(w, h) < 1e-6:
+            continue
+        aspect = max(w, h) / min(w, h)
+        if not (_INSTRUMENT_ASPECT_RANGE[0] <= aspect <= _INSTRUMENT_ASPECT_RANGE[1]):
+            continue
+        if length / w < _INSTRUMENT_DIVIDER_MIN_SPAN_FRACTION:
+            continue
+        midline = (body_bbox[1] + body_bbox[3]) / 2
+        divider_y = (py0 + py1) / 2
+        if abs(divider_y - midline) > _INSTRUMENT_DIVIDER_MIDLINE_TOLERANCE * h:
+            continue
+        seen_pairs.add(pair_key)
+        results.append(body_bbox)
     return results
 
 
@@ -908,6 +1043,10 @@ def find_symbol_clusters(page, min_confidence=0.3):
             # cluster may contain, not just whatever _cluster_core's
             # aspect-bounded growth happened to keep.
             'pump_bboxes': pump_shapes_in_cluster(primitives, group),
+            # Same rationale as pump_bboxes — instrument_shapes_in_cluster
+            # does its own two-cap/divider-line reconstruction and needs
+            # every primitive in the raw group, not the valve-specific core.
+            'instrument_bboxes': instrument_shapes_in_cluster(primitives, group),
             'outline': [[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
         })
     results.sort(key=lambda r: -r['confidence'])

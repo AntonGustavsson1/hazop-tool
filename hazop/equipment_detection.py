@@ -1553,6 +1553,82 @@ def find_pump_shapes(pdf_doc, pages=None, progress_callback=None):
     return results
 
 
+_INSTRUMENT_MIN_NORM_SIZE = 1.5   # same "plausible symbol size" floor as
+                                   # find_valve_shapes/find_pump_shapes —
+                                   # rejects tiny title-block/logo glyph
+                                   # fragments confirmed to otherwise pass
+                                   # instrument_shapes_in_cluster's shape
+                                   # checks on a real LKAB P&ID page.
+
+
+def find_instrument_shapes(pdf_doc, pages=None, progress_callback=None):
+    """Scan pages for instrument "bubble" symbols — a circle or
+    elongated capsule/"stadium" body with a horizontal divider line at
+    its vertical midpoint (symbol_geometry.instrument_shapes_in_cluster)
+    — independent of whether a tag is already known nearby. The
+    instrument counterpart to find_valve_shapes()/find_pump_shapes();
+    same shape-first, tag-nearby-second design.
+
+    pages: iterable of 0-based page numbers, or None for all pages.
+
+    Returns a list of dicts in the same shape find_valve_shapes()/
+    find_pump_shapes() use: {tag, page, comp_type, x, y, confidence,
+    link_method, outline}. comp_type is always 'Instrument / Sensor'
+    (matching KNOWN_PREFIXES' own category for PI/LI/FI/etc.).
+    confidence is always 1.0 — like pump detection, this is a binary
+    shape signal (a divider either sits at the body's vertical midpoint
+    or it doesn't), not a graded score.
+
+    Deliberately only detects DIVIDED bubbles (a shared-display, panel-
+    mounted instrument per ISA-5.1), not plain undivided ones — a plain
+    circle/capsule with no internal feature is geometrically identical
+    to a field-mounted instrument, a motor label circle, or plenty of
+    other things (confirmed ambiguous while building pump detection,
+    where a plain motor circle needed its own separate false-positive
+    fix). The divider line is the one feature that's unambiguously
+    instrument-specific and not shared with valve or pump symbols.
+
+    A minimum-size filter (_INSTRUMENT_MIN_NORM_SIZE, relative to the
+    page's own text size) rejects small artifacts that otherwise pass
+    the shape check — confirmed on a real LKAB P&ID: several tiny
+    title-block/logo glyph fragments (under 8pt) satisfied the aspect
+    and divider-span checks at that tiny scale.
+    """
+    if not HAS_PYMUPDF or pdf_doc is None:
+        return []
+    if pages is None:
+        pages = range(pdf_doc.page_count)
+
+    results = []
+    for page_num in pages:
+        if progress_callback:
+            progress_callback(
+                page_num, pdf_doc.page_count,
+                f"Sida {page_num + 1}/{pdf_doc.page_count} — söker instrumentformer…")
+        try:
+            page = pdf_doc[page_num]
+            scale = max(symbol_geometry.dominant_text_size(page), 1.0)
+            clusters = symbol_geometry.find_symbol_clusters(page, min_confidence=0.0)
+        except Exception:
+            continue
+
+        for cluster in clusters:
+            for bbox in cluster.get('instrument_bboxes') or []:
+                x0, y0, x1, y1 = bbox
+                diag = math.hypot(x1 - x0, y1 - y0)
+                if diag / scale < _INSTRUMENT_MIN_NORM_SIZE:
+                    continue
+                cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+                tag, _prefix = find_nearby_tag_text(page, (cx, cy))
+                results.append({
+                    'tag': tag or '', 'page': page_num, 'comp_type': 'Instrument / Sensor',
+                    'x': cx, 'y': cy, 'confidence': 1.0,
+                    'link_method': 'shape',
+                    'outline': [[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
+                })
+    return results
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # Unified tag+shape valve detection — replaces detect_equipment_symbols()
 # and find_valve_shapes() as the UI's entry point (both functions above are

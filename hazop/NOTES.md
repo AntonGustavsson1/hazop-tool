@@ -469,6 +469,28 @@ Verifierat: skräptaggarna är borta (t.ex. "Checked" förekommer nu en gång, r
 
 ---
 
+## Instrumentdetektering — ny funktion (2026-08-06)
+
+**Bakgrund:** Efter pumpdetekteringen ovan bad Anton mig lära känna igen instrument också, innan jag fortsätter titta på fler filer. Research mot LKAB bekräftade ISA-5.1-konventionen: ett instrument ritas som en **cirkel eller avlång kapsel/"stadium"-form** (två halvcirkel-"lock" ~28.3pt ifrån varandra, hopkopplade med raka topp-/bottenlinjer — INTE nära nog för `_curve_islands` att slå ihop dem direkt, till skillnad från en pumps EN sammanhängande cirkel) — **med eller utan en horisontell delningslinje vid dess vertikala mittpunkt**. Delningslinjen skiljer ett delat/panelmonterat instrument (t.ex. "LC") från ett fältmonterat (t.ex. "LI") — samma mätpunkt visas ofta som BÅDA varianterna, hopkopplade med en streckad linje (representerar en datalänk, inte en rörledning).
+
+**Designbeslut — bara delade instrument detekteras:** Ett odelat instrument (bara en tom cirkel/kapsel) är geometriskt IDENTISKT med en motorcirkel ("M"), en dekorativ cirkel, eller massor av annat — samma tvetydighet som redan upptäcktes och löstes separat för pumpar. Delningslinjen är den ENDA otvetydigt instrument-specifika signalen, så bara DEN detekteras. Detta är ett medvetet, avgränsat designval, inte en ofullständig implementation.
+
+**Central utmaning — kapselns egen kontur kan misstas för en delningslinje:** Ett odelat instruments kapsel har EXAKT samma "två lock + topp-/bottenlinje"-konstruktion som ett delat, bara utan mittlinjen. Utan vidare precision skulle topp- och bottenlinjerna (som också sträcker sig över hela bredden och kopplar samma två lock) felaktigt räknas som en delningslinje på VARJE kapsel, delad eller ej. Löst med `_INSTRUMENT_DIVIDER_MIDLINE_TOLERANCE=0.2` — kandidatlinjen måste sitta nära kroppens vertikala mittpunkt (inte vid de två extremerna där topp-/bottenlinjerna alltid sitter per konstruktion).
+
+**Central utmaning #2 — förväxling med pumpar:** En pumps rörledning ritas ibland som EN sammanhängande horisontell linje rakt genom cirkelns vertikala mittpunkt (inte avbruten vid kanten) — bekräftat på en riktig Gryaab-fil, geometriskt omöjlig att skilja från en genuin instrument-delningslinje vid samma mittpunkt. Löst genom ömsesidig uteslutning: om samma cirkel ÄVEN har en kvalificerande diagonal (pumpens "impeller"-märke, se `_island_has_inner_diagonal`, nu delad kod mellan pump- och instrumentdetektering), räknas den som pump, inte instrument.
+
+**Ny kod (`symbol_geometry.py`):** `instrument_shapes_in_cluster(primitives, group)` — hittar varje instrumentkropp i ett kluster (cirkel ELLER kapsel-öpar hopkopplade via en nästan-horisontell linje som rör vid bägges "ö":ar) vars delningslinje sitter vid mittpunkten och spänner minst 70% av kroppens bredd. `_island_touching_point` — hjälpfunktion som hittar vilken kurv-ö (om någon) som rör vid en given punkt.
+
+**Ny funktion (`equipment_detection.py`):** `find_instrument_shapes(pdf_doc, pages=None, progress_callback=None)` — instrument-motsvarigheten till `find_valve_shapes()`/`find_pump_shapes()`, samma form-först-design. `comp_type='Instrument / Sensor'` (matchar `KNOWN_PREFIXES`s egen kategori för PI/LI/FI m.fl.).
+
+**Verifierat mot riktiga filer:** LKAB S0000159 och S0000160: 4/4 riktiga instrument hittade på varje (SC, LC, PI, FC), inga falsklarm. Gryaab AD-PR-FB-8-0002: korrekt 0 instrument hittade — denna fil använder HEXAGONER (inte cirklar/kapslar) för sina "FM"-instrument (en annan ISA-konvention, dator-/DCS-funktion), en konvention utanför denna omgångs omfång men inte en bugg (bekräftat visuellt: en sexkantig "FM 0010"-symbol, helt rakt-linje-konstruerad, inga kurvor alls).
+
+**Test:** 4 nya syntetiska tester i `test_symbol_geometry.py` (`InstrumentShapeTests`) + 2 nya i `test_regression.py`. Alla 191 tester passerar.
+
+**Uttryckligen INTE gjort:** Hexagon-/fyrkant-baserade instrumentsymboler (dator-/PLC-funktion per ISA-5.1) — en annan, ännu ej undersökt symbolfamilj. Precis som pumpdetekteringen: fristående, inte integrerad i `detect_equipment_and_valves`-pipelinen eller kopplad till UI.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **OCR-positioner är approximativa** — x,y-koordinater från OCR stämmer inte perfekt med PDF-koordinater vid hög zoom. Markörer kan hamna något fel.
