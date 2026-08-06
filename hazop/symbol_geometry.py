@@ -666,13 +666,33 @@ def build_pair_scores(tag_points, clusters, primitives, search_radius=_LEADER_SE
 
     Returns {(tag_idx, cluster_idx): score}, omitting pairs scoring 0.0
     (out of range) to keep the candidate matrix small.
+
+    Deliberately does NOT call score_tag_cluster_link() per pair — that
+    would call find_leader_line() once per (tag, cluster) combination,
+    turning an O(tags) walk into O(tags * clusters); a real busy P&ID page
+    (found while investigating a real slowdown report: 60 valves + normal
+    piping density took >1s for this step alone with the naive approach)
+    makes that blow-up very real. find_leader_line() already checks every
+    candidate cluster per hop in one pass, so it only needs to be called
+    ONCE per tag, against every nearby cluster at once — exactly like
+    resolve_tag_symbol() already does it.
     """
     scores = {}
     for tag_idx, tag_point in tag_points:
-        for cluster_idx, cluster in enumerate(clusters):
-            s = score_tag_cluster_link(tag_point, cluster, primitives, search_radius)
-            if s > 0.0:
-                scores[(tag_idx, cluster_idx)] = s
+        nearby = [(ci, c) for ci, c in enumerate(clusters)
+                  if _dist(_bbox_center(c['bbox']), tag_point) <= search_radius]
+        if not nearby:
+            continue
+        leader_cluster = find_leader_line(tag_point, [c for _ci, c in nearby], primitives)
+        for cluster_idx, cluster in nearby:
+            dist = _dist(_bbox_center(cluster['bbox']), tag_point)
+            score = _LINK_W_DISTANCE * max(0.0, 1.0 - dist / search_radius)
+            if _point_near_bbox(tag_point, cluster['bbox'], tol=5.0):
+                score += _LINK_W_CONTAIN
+            if leader_cluster is cluster:
+                score += _LINK_W_LEADER
+            if score > 0.0:
+                scores[(tag_idx, cluster_idx)] = min(1.0, score)
     return scores
 
 
@@ -686,13 +706,65 @@ def build_pair_scores(tag_points, clusters, primitives, search_radius=_LEADER_SE
 _TRACE_MAX_HOPS      = 6      # pipe runs are longer than a tag's leader line
 _TRACE_MAX_CHAIN_LEN = 600.0  # pt, per branch
 _TRACE_MAX_BRANCHES  = 6      # cap fan-out at junctions/manifolds
+_TRACE_GRID_CELL     = 20.0   # pt — matches cluster_primitives' own grid-bucketing scale
+
+
+def build_line_index(primitives, cell=_TRACE_GRID_CELL):
+    """Grid-bucket every 'l'-kind primitive's endpoints for fast "which
+    lines touch this point" lookups. Without this, trace_pipe_points_
+    from_bbox scans EVERY line primitive on the page at every hop, for
+    every branch, for every valve — found while investigating a real
+    slowdown report: a page with 60 valves and normal piping density
+    produced ~1.7 million distance checks for this step alone. Build once
+    per page and pass the result to trace_pipe_points_from_bbox via
+    line_index= for every valve traced on that page, exactly like
+    find_symbol_clusters' primitive extraction is already shared across a
+    page's tag-association and shape-hunting.
+
+    Returns (lines, grid_index) — pass both back in as line_index=.
+    """
+    lines = [p for p in primitives if p['kind'] == 'l']
+    index = {}
+    for i, ln in enumerate(lines):
+        for pt in (ln['p0'], ln['p1']):
+            key = (int(pt[0] // cell), int(pt[1] // cell))
+            index.setdefault(key, []).append(i)
+    return lines, index
+
+
+def _lines_near_point(lines, index, point, tol, cell=_TRACE_GRID_CELL):
+    """Lines with an endpoint within tol of `point`, via the grid index —
+    tol is always « cell, so the point's 3x3 cell neighbourhood always
+    covers every actually-qualifying line, same as cluster_primitives'
+    own grid-bucketed neighbour search."""
+    cx, cy = int(point[0] // cell), int(point[1] // cell)
+    seen = set()
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            seen.update(index.get((cx + dx, cy + dy), ()))
+    return [lines[i] for i in seen]
+
+
+def _lines_near_bbox(lines, index, bbox, tol, cell=_TRACE_GRID_CELL):
+    """Lines with an endpoint within tol of any edge of the (tol-expanded)
+    bbox — same grid-index technique as _lines_near_point, just over the
+    range of cells the expanded bbox spans instead of a single point."""
+    x0, y0, x1, y1 = bbox
+    gx0, gy0 = int((x0 - tol) // cell), int((y0 - tol) // cell)
+    gx1, gy1 = int((x1 + tol) // cell), int((y1 + tol) // cell)
+    seen = set()
+    for gx in range(gx0, gx1 + 1):
+        for gy in range(gy0, gy1 + 1):
+            seen.update(index.get((gx, gy), ()))
+    return [lines[i] for i in seen]
 
 
 def trace_pipe_points_from_bbox(bbox, primitives,
                                  max_hops=_TRACE_MAX_HOPS,
                                  max_chain_len=_TRACE_MAX_CHAIN_LEN,
                                  max_branches=_TRACE_MAX_BRANCHES,
-                                 endpoint_tol=_LEADER_ENDPOINT_TOL):
+                                 endpoint_tol=_LEADER_ENDPOINT_TOL,
+                                 line_index=None):
     """Walk outward from `bbox` along connected 'l'-kind primitives (pipe
     runs), returning every point visited, nearest first.
 
@@ -703,6 +775,12 @@ def trace_pipe_points_from_bbox(bbox, primitives,
     max_chain_len total length — a line-number callout is typically
     printed mid-run, not just at the far end, so every hop's endpoint is
     collected, not only the final one.
+
+    line_index: optional (lines, grid_index) pair from build_line_index()
+    — pass one built once per page and reused across every valve traced
+    on it. If omitted, an index is built internally from `primitives`
+    (correct, but repeats the O(lines) index-build cost on every call —
+    fine for a single ad-hoc call, wasteful in a per-valve loop).
     """
     # extract_primitives() emits BOTH directions of every line (p0/p1
     # swapped) — harmless for find_leader_line (which tries a fresh
@@ -714,10 +792,11 @@ def trace_pipe_points_from_bbox(bbox, primitives,
     def _line_key(ln):
         return frozenset((ln['p0'], ln['p1']))
 
-    lines = [p for p in primitives if p['kind'] == 'l']
+    lines, index = line_index if line_index is not None else build_line_index(primitives)
+
     seen_seed_keys = set()
     seeds = []
-    for ln in lines:
+    for ln in _lines_near_bbox(lines, index, bbox, endpoint_tol):
         if not (_point_near_bbox(ln['p0'], bbox, endpoint_tol)
                 or _point_near_bbox(ln['p1'], bbox, endpoint_tol)):
             continue
@@ -737,7 +816,7 @@ def trace_pipe_points_from_bbox(bbox, primitives,
 
         for _hop in range(max_hops - 1):
             nxt, nxt_far = None, None
-            for ln in lines:
+            for ln in _lines_near_point(lines, index, frontier, endpoint_tol):
                 if _line_key(ln) in visited:
                     continue
                 if _dist(ln['p0'], frontier) <= endpoint_tol:

@@ -1950,7 +1950,7 @@ def _parse_line_callout(text: str) -> dict:
     return out
 
 
-def trace_line_info_for_cluster(cluster, primitives, page_words_combined) -> dict:
+def trace_line_info_for_cluster(cluster, primitives, page_words_combined, line_index=None) -> dict:
     """Best-effort line-number/medium/DN association for one valve
     cluster: walks connected pipe primitives outward from its bbox
     (symbol_geometry.trace_pipe_points_from_bbox — vector-only, no
@@ -1963,9 +1963,16 @@ def trace_line_info_for_cluster(cluster, primitives, page_words_combined) -> dic
     "words"), page)) output for the SAME page as `cluster`, computed ONCE
     per page by the caller and reused across every valve on it (avoids
     re-extracting/re-combining native words per valve).
+
+    line_index: optional symbol_geometry.build_line_index(primitives)
+    result for the SAME page, computed ONCE per page by the caller —
+    without it, trace_pipe_points_from_bbox rebuilds its own spatial index
+    from `primitives` on every call, which is correct but redoes an
+    O(lines) build for every single valve on the page.
     """
     try:
-        points = symbol_geometry.trace_pipe_points_from_bbox(cluster['bbox'], primitives)
+        points = symbol_geometry.trace_pipe_points_from_bbox(
+            cluster['bbox'], primitives, line_index=line_index)
     except Exception:
         return {}
     if not points:
@@ -2112,6 +2119,10 @@ def detect_equipment_and_valves(pdf_doc, tag_points, pages=None,
 
         page_words_combined = _spatial_combine(
             _rotate_words(page.get_text("words"), page), gap_limit=22.0)
+        # Built once per page, reused for every valve's line-trace below —
+        # without this, trace_pipe_points_from_bbox rebuilds its own
+        # spatial index from `primitives` on every single call.
+        line_index = symbol_geometry.build_line_index(primitives)
 
         for tag, prefix, _pos, tag_read_conf in resolved_tags:
             cluster, method, assoc_score = assoc.get(tag, (None, 'none', 0.0))
@@ -2120,7 +2131,8 @@ def detect_equipment_and_valves(pdf_doc, tag_points, pages=None,
                 x0, y0, x1, y1 = cluster['bbox']
                 x, y = (x0 + x1) / 2, (y0 + y1) / 2
                 detection_conf, outline = cluster['confidence'], cluster['outline']
-                line_info = trace_line_info_for_cluster(cluster, primitives, page_words_combined)
+                line_info = trace_line_info_for_cluster(
+                    cluster, primitives, page_words_combined, line_index=line_index)
             else:
                 x, y = _pos
                 detection_conf, outline, line_info = 0.0, [], {}
@@ -2159,7 +2171,8 @@ def detect_equipment_and_valves(pdf_doc, tag_points, pages=None,
             x0, y0, x1, y1 = cluster['bbox']
             cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
             suggested_tag, _pfx = find_nearby_tag_text(page, (cx, cy))
-            line_info = trace_line_info_for_cluster(cluster, primitives, page_words_combined)
+            line_info = trace_line_info_for_cluster(
+                cluster, primitives, page_words_combined, line_index=line_index)
             n_untagged += 1
             results.append({
                 'tag': suggested_tag or '', 'page': page_num, 'comp_type': 'Ventil',

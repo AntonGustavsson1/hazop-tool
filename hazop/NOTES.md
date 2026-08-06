@@ -260,6 +260,24 @@
 
 ---
 
+## Ventildetektering — prestandabugg efter Fas 1+2 (2026-08-06, uppföljning)
+
+**Problem:** Användaren rapporterade att "🎯 Hitta på P&ID" ändå kändes långsam. Benchmarken ovan (0.89 s/50 sidor) använde bara 12 ventiler/sida — glest jämfört med en riktig, tät P&ID-sida. Profilering mot en tätare syntetisk sida (60 ventiler + normal rörledningsdensitet) visade **1.08 s för en enda sida** — extrapolerat till ~50 s för 48 sidor, vilket matchar klagomålet.
+
+**Grundorsak, hittad via `cProfile` (två separata buggar i min egen Fas 1+2-kod):**
+1. `build_pair_scores` anropade `score_tag_cluster_link` — som själv anropar `find_leader_line` — **en gång per (tagg, kluster)-par**. `find_leader_line` letar redan igenom ALLA kandidatkluster i samma vandring (det är precis varför `resolve_tag_symbol` bara anropar den en gång per tagg) — att anropa den separat per kluster gjorde om samma vandring från taggens position upprepade gånger. 60 taggar × 60 kluster = 3600 anrop istället för 60.
+2. `trace_pipe_points_from_bbox` skannade **alla** linjeprimitiver på sidan vid varje BFS-hopp, för varje gren, för varje ventil. På den täta testsidan gav det ~1.7 miljoner avståndsberäkningar för bara 60 ventiler.
+
+**Fix:**
+1. `build_pair_scores` gör nu **en** `find_leader_line`-vandring per tagg (mot alla kluster inom radien samtidigt), precis som `resolve_tag_symbol` redan gör — inte en per par. Samma poängformel, samma resultat, bara inte omgjort i onödan.
+2. Ny `symbol_geometry.build_line_index()` — rutnätsindexerar linjeprimitivernas ändpunkter (samma teknik `cluster_primitives` redan använder för sin egen grannsökning). `trace_pipe_points_from_bbox` tar nu en valfri `line_index=`, byggd **en gång per sida** i `detect_equipment_and_valves` och återanvänd för varje ventil på den sidan, istället för att skanna alla linjer om och om igen.
+
+**Resultat (samma täta testsida, 60 ventiler):** `detect_equipment_and_valves` gick från **1.08 s → 0.205 s** per sida (~5×). Fullskaligt 50-sidigt syntetiskt test med realistisk densitet (60 ventiler/sida = 3000 st totalt, ingen OCR): **4.68 sekunder totalt**, progress fortfarande exakt en gång per sida, 0 dubbletter.
+
+**Test:** Alla 149 tester passerar oförändrat (samma poängformel/samma BFS-logik, bara omstrukturerad för att undvika onödigt upprepat arbete — inget beteende ändrades, bara vilken ordning/hur ofta det underliggande sök-anropet görs).
+
+---
+
 ## Stabilitetsgenomgång (2026-08-02)
 
 **Bakgrund:** En serie krascher (app stängdes tyst vid klick på orsak-markör, röd markup m.m.) spårades och åtgärdades i flera omgångar med parallella granskningsagenter, följt av en implementationsomgång och två oberoende slutgranskningar.
