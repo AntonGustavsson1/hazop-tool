@@ -767,6 +767,146 @@ class ClosedLoopFilterTests(unittest.TestCase):
         self.assertTrue(sg._has_closed_loop(prims, [0]))
 
 
+def _draw_polygon_circle(shape, cx, cy, r, n_sides=32):
+    """Draw a closed n-sided line polygon approximating a circle —
+    confirmed by direct inspection to be exactly how real Sunpine/Swerim
+    P&IDs draw every circular symbol (measured: 32 segments per circle,
+    zero bezier curves anywhere on multiple sampled pages of each file),
+    unlike the bezier-curve convention LKAB/Gryaab/ITS use."""
+    import math
+    pts = [fitz.Point(cx + r * math.cos(2 * math.pi * k / n_sides),
+                       cy + r * math.sin(2 * math.pi * k / n_sides))
+           for k in range(n_sides)]
+    for k in range(n_sides):
+        shape.draw_line(pts[k], pts[(k + 1) % n_sides])
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+
+
+class PolygonCircleTests(unittest.TestCase):
+    """_polygon_circle_islands()/_circle_islands() — pump/instrument
+    detection must work whether a circle is drawn as true bezier curves
+    (LKAB/Gryaab/ITS) or as a many-sided line polygon (Sunpine/Swerim,
+    confirmed: extract_primitives found ZERO 'c' kind primitives
+    anywhere on multiple sampled pages of each file — every circular
+    symbol, including pump bodies and instrument bubbles, is
+    approximated with straight segments instead)."""
+
+    def test_polygon_circle_is_found_as_an_island(self):
+        doc, page = _new_page()
+        shape = page.new_shape()
+        _draw_polygon_circle(shape, 100, 100, 20)
+        shape.commit()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        self.assertEqual(len(groups), 1)
+        islands = sg._polygon_circle_islands(prims, groups[0])
+        self.assertEqual(len(islands), 1)
+        self.assertEqual(len(islands[0]), 32)
+
+    def test_few_sided_polygon_is_not_a_circle(self):
+        """A triangle or rectangle (a valve bowtie, a title-block frame)
+        must never register as a circle — _POLYGON_CIRCLE_MIN_SIDES
+        guards against a few-sided polygon looking "round enough"."""
+        doc, page = _new_page()
+        shape = page.new_shape()
+        _draw_polygon_circle(shape, 100, 100, 20, n_sides=4)
+        shape.commit()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        self.assertEqual(sg._polygon_circle_islands(prims, groups[0]), [])
+
+    def test_internal_decoration_does_not_break_circularity_check(self):
+        """Found necessary on a real Swerim P&ID: a temperature-sensor
+        circle had an internal cross-tick mark (4 short lines near the
+        center) bridged into the SAME connected component as the 32
+        boundary segments — without filtering by segment length, the
+        cross-tick's near-center points skew the circularity check
+        (points-from-centroid variance) enough to reject a genuine
+        circle."""
+        doc, page = _new_page()
+        shape = page.new_shape()
+        _draw_polygon_circle(shape, 100, 100, 20)
+        # A small cross-tick mark at the center, touching the boundary
+        # circle at one point so it joins the same cluster. Kept much
+        # shorter than the boundary's own ~3.9pt segments (a 20pt-radius,
+        # 32-sided polygon) so the length filter has an unambiguous
+        # signal to work with in this test.
+        shape.draw_line(fitz.Point(100, 100), fitz.Point(100, 80))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(99.5, 80.5), fitz.Point(100.5, 80.5))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        self.assertEqual(len(groups), 1, "the tick mark must bridge into the circle's own cluster")
+        islands = sg._polygon_circle_islands(prims, groups[0])
+        self.assertEqual(len(islands), 1)
+        self.assertEqual(len(islands[0]), 32,
+            "the circularity check must find just the 32 boundary segments, ignoring the tick mark")
+
+    def test_pump_detected_via_polygon_circle(self):
+        """A polygon-circle with a diagonal impeller mark inside it must
+        be found as a pump, exactly like a bezier-curve one."""
+        doc, page = _new_page()
+        shape = page.new_shape()
+        _draw_polygon_circle(shape, 100, 100, 20)
+        shape.draw_line(fitz.Point(100, 86), fitz.Point(120, 100))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(120, 100), fitz.Point(100, 114))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        found = sg.pump_shapes_in_cluster(prims, groups[0])
+        self.assertEqual(len(found), 1)
+
+    def test_instrument_detected_via_polygon_circle_capsule(self):
+        """Two polygon-circles bridged by a horizontal divider (a
+        capsule's two end-caps, drawn as line polygons) must be found
+        as an instrument, exactly like the bezier-curve version."""
+        doc, page = _new_page()
+        shape = page.new_shape()
+        _draw_polygon_circle(shape, 85, 100, 10)
+        _draw_polygon_circle(shape, 115, 100, 10)
+        shape.draw_line(fitz.Point(85, 90), fitz.Point(115, 90))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(85, 110), fitz.Point(115, 110))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(75, 100), fitz.Point(125, 100))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        self.assertEqual(len(groups), 1, "the divider must bridge both polygon-circle caps into one cluster")
+        found = sg.instrument_shapes_in_cluster(prims, groups[0])
+        self.assertEqual(len(found), 1)
+
+    def test_curve_and_polygon_circles_both_found_in_same_call(self):
+        """_circle_islands must find both conventions at once — a file
+        is never assumed to use exclusively one or the other at this
+        level (that assumption is only used as a page-level PERFORMANCE
+        gate in find_symbol_clusters, not a correctness one here)."""
+        doc, page = _new_page(300, 200)
+        shape = page.new_shape()
+        shape.draw_circle(fitz.Point(80, 100), 20)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        _draw_polygon_circle(shape, 220, 100, 20)
+        shape.commit()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        all_islands = []
+        for g in groups:
+            all_islands.extend(sg._circle_islands(prims, g))
+        self.assertEqual(len(all_islands), 2)
+
+
 class PumpShapeTests(unittest.TestCase):
     """pump_shapes_in_cluster() identifies pump symbols: a round, closed
     body (drawn as a circle via bezier curves) with a diagonal impeller

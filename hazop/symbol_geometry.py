@@ -142,7 +142,23 @@ def extract_line_segments(page):
 
 _CLUSTER_GAP = 3.0   # pt — max gap between primitive bboxes to merge
 _GRID_CELL = 20.0    # pt — spatial bucket size for neighbor lookups
-_MAX_CELL_DENSITY = 40   # primitives per grid cell — see cluster_primitives
+_MAX_CELL_DENSITY = 40   # primitives per grid cell — see cluster_primitives.
+                         # Tried raising this to 60 (2026-08-06) to fix a
+                         # real Swerim instrument bubble (a 32-segment
+                         # line-polygon circle, see _polygon_circle_islands)
+                         # whose own segments got fragmented across the
+                         # density-skip on an unusually dense page (32K+
+                         # primitives). Reverted: raising it doesn't just
+                         # cost more in cluster_primitives itself — it
+                         # also merges many MORE unrelated primitives per
+                         # cluster overall, and find_symbol_clusters runs
+                         # bowtie_score/pump/instrument island-finding on
+                         # every resulting cluster, so a few much-larger
+                         # clusters made whole-page detection take 54s
+                         # instead of ~1s. See NOTES.md for the follow-up
+                         # this needs (a targeted post-merge pass for
+                         # fragmented same-symbol pieces specifically,
+                         # not a blanket density-limit increase).
 
 
 def _bbox_expand(bbox, pad):
@@ -522,6 +538,139 @@ def _curve_islands(primitives, group, gap=_CLUSTER_GAP):
     return list(islands.values())
 
 
+_POLYGON_CIRCLE_MIN_SIDES = 8   # fewer straight segments than this reads
+                                 # as an intentional polygon (a valve
+                                 # triangle, a title-block rectangle),
+                                 # not an approximated circle.
+_POLYGON_CIRCLE_MAX_RADIUS_CV = 0.15   # coefficient of variation (std/
+                                        # mean) of every vertex's distance
+                                        # from the shape's own centroid —
+                                        # a real circle-approximating
+                                        # polygon is tight (measured
+                                        # 0.0038 on a real Swerim
+                                        # instrument bubble's 32-gon);
+                                        # 0.15 stays far more generous
+                                        # than that measurement while
+                                        # still ruling out a shape that's
+                                        # only vaguely round.
+
+
+def _polygon_circle_islands(primitives, group, gap=_CLUSTER_GAP):
+    """Split a cluster's 'l' (straight line) primitives into their own
+    maximal connected sub-groups (same technique as _curve_islands, but
+    for lines) and keep only the ones that trace a closed loop
+    approximating a circle — many short, roughly equal-radius segments,
+    not a triangle, rectangle, or other few-sided polygon.
+
+    Confirmed necessary on real Sunpine and Swerim P&IDs: both draw
+    EVERY circular symbol (pump bodies, instrument bubbles) as a many-
+    sided line polygon instead of true bezier curves — extract_primitives
+    found zero 'c' kind primitives anywhere on multiple sampled pages
+    from each file, meaning _curve_islands (which only looks at 'c'
+    kind) finds nothing there at all, regardless of how many real pumps
+    or instruments the page actually shows. A real instrument bubble on
+    a Swerim page measured as a 32-segment closed polygon with a
+    vertex-distance-from-centroid coefficient of variation of 0.0038 —
+    about 40x tighter than _POLYGON_CIRCLE_MAX_RADIUS_CV allows.
+
+    Returns islands in the SAME format as _curve_islands (a list of
+    index-lists) so pump_shapes_in_cluster/instrument_shapes_in_cluster
+    can treat the two interchangeably — see _circle_islands.
+    """
+    line_idxs = [i for i in group if primitives[i]['kind'] == 'l']
+    n = len(line_idxs)
+    if n < _POLYGON_CIRCLE_MIN_SIDES:
+        return []
+    uf = _UnionFind(n)
+    for a in range(n):
+        for b in range(a + 1, n):
+            if _prim_gap(primitives[line_idxs[a]], primitives[line_idxs[b]]) <= gap:
+                uf.union(a, b)
+    raw_islands = {}
+    for idx in range(n):
+        root = uf.find(idx)
+        raw_islands.setdefault(root, []).append(line_idxs[idx])
+
+    islands = []
+    for island in raw_islands.values():
+        if len(island) < _POLYGON_CIRCLE_MIN_SIDES:
+            continue
+        # A circle's own boundary segments are all similar in length. A
+        # decorative line that happens to touch/bridge into the same
+        # connected component — an internal cross-tick mark, confirmed
+        # on a real Swerim instrument bubble, or a divider/connector
+        # line bridging TWO separate circles into one capsule — is
+        # usually a visibly different length and would otherwise skew
+        # the circularity check below (its points sit much closer to,
+        # or much farther from, the centroid than the boundary's own
+        # points do). Keep only segments within 2.5x of the component's
+        # own median length before testing shape.
+        lengths = sorted(_prim_length(primitives[i]) for i in island)
+        median_len = lengths[len(lengths) // 2]
+        filtered = [i for i in island
+                    if median_len > 0 and median_len / 2.5 <= _prim_length(primitives[i]) <= median_len * 2.5]
+        if len(filtered) < _POLYGON_CIRCLE_MIN_SIDES:
+            continue
+        # Removing those outlier-length lines can SPLIT what was one
+        # connected component into several — e.g. a divider line
+        # bridging two circles into a capsule, confirmed on a real
+        # Swerim-style instrument bubble. Re-check connectivity among
+        # just the survivors rather than assuming they're still one
+        # shape; each resulting piece is tested independently below.
+        sub_uf = _UnionFind(len(filtered))
+        for a in range(len(filtered)):
+            for b in range(a + 1, len(filtered)):
+                if _prim_gap(primitives[filtered[a]], primitives[filtered[b]]) <= gap:
+                    sub_uf.union(a, b)
+        sub_islands = {}
+        for idx in range(len(filtered)):
+            root = sub_uf.find(idx)
+            sub_islands.setdefault(root, []).append(filtered[idx])
+
+        for sub_island in sub_islands.values():
+            if len(sub_island) < _POLYGON_CIRCLE_MIN_SIDES:
+                continue
+            if not _has_closed_loop(primitives, sub_island):
+                continue
+            pts = []
+            for i in sub_island:
+                pts.append(primitives[i]['p0'])
+                pts.append(primitives[i]['p1'])
+            cx = sum(p[0] for p in pts) / len(pts)
+            cy = sum(p[1] for p in pts) / len(pts)
+            dists = [math.hypot(p[0] - cx, p[1] - cy) for p in pts]
+            mean_d = sum(dists) / len(dists)
+            if mean_d < 1e-6:
+                continue
+            std_d = (sum((d - mean_d) ** 2 for d in dists) / len(dists)) ** 0.5
+            if (std_d / mean_d) <= _POLYGON_CIRCLE_MAX_RADIUS_CV:
+                islands.append(sub_island)
+    return islands
+
+
+def _circle_islands(primitives, group, try_polygon_circles=True):
+    """Every round, closed body in this cluster, however it's drawn —
+    the union of _curve_islands (bezier-curve circles, the LKAB/Gryaab/
+    ITS convention) and _polygon_circle_islands (many-sided line-
+    polygon circles, the Sunpine/Swerim convention). pump_shapes_in_cluster
+    and instrument_shapes_in_cluster both use this so neither cares
+    which convention a given file happens to use.
+
+    `try_polygon_circles=False` skips the (comparatively expensive,
+    O(k^2) per cluster) line-polygon search entirely. find_symbol_clusters
+    sets this once per PAGE, not per cluster: every real file sampled
+    uses one convention consistently across a whole page (curves
+    everywhere, or zero curves anywhere), never a mix — confirmed
+    necessary after this search made a busy real Gryaab page (which
+    uses curves, not line-polygons, for its own circles) take 5+
+    seconds just running the line-polygon search on clusters that were
+    never going to contain one."""
+    islands = _curve_islands(primitives, group)
+    if try_polygon_circles:
+        islands += _polygon_circle_islands(primitives, group)
+    return islands
+
+
 _PUMP_ISLAND_ASPECT_LIMIT = 1.8   # a pump/instrument body is round, not
                                   # elongated — well under the generic
                                   # compact-symbol ceiling used elsewhere
@@ -534,7 +683,7 @@ _PUMP_DIAGONAL_MIN_FRACTION = 0.4   # an impeller diagonal must span at
                                     # pump_shapes_in_cluster's docstring.
 
 
-def pump_shapes_in_cluster(primitives, index_group):
+def pump_shapes_in_cluster(primitives, index_group, islands=None):
     """Find every round, closed body (an instrument bubble, a motor, or
     a pump shell — all drawn as a closed curve) within this cluster that
     has at least one diagonal line strictly inside it — the signature of
@@ -560,9 +709,17 @@ def pump_shapes_in_cluster(primitives, index_group):
     _is_pipe_run_line) merged into one 290-primitive cluster containing
     TWO separate pumps; a single best-match result would have silently
     dropped the second one. Empty list if none qualify.
+
+    `islands`, if given, is used as-is instead of recomputing
+    _circle_islands — find_symbol_clusters computes it once and shares
+    it with instrument_shapes_in_cluster, since both would otherwise
+    redundantly repeat the same (non-trivial) island-finding work on
+    every single cluster on a page.
     """
+    if islands is None:
+        islands = _circle_islands(primitives, index_group)
     results = []
-    for island in _curve_islands(primitives, index_group):
+    for island in islands:
         if not _has_closed_loop(primitives, island):
             continue
         bbox = _group_bbox(primitives, island)
@@ -639,7 +796,7 @@ def _island_touching_point(primitives, islands, point, tol=_CLUSTER_GAP):
     return None
 
 
-def instrument_shapes_in_cluster(primitives, index_group):
+def instrument_shapes_in_cluster(primitives, index_group, islands=None):
     """Find every instrument "bubble" body within this cluster — a
     circle or elongated capsule/"stadium" shape (two semicircle end-caps
     joined by straight top/bottom edges — confirmed by direct inspection
@@ -683,13 +840,21 @@ def instrument_shapes_in_cluster(primitives, index_group):
     is the tell — no real instrument bubble has one.
 
     Returns a list of bboxes (one per qualifying instrument body).
+
+    `islands`, if given, is used as-is instead of recomputing
+    _circle_islands — see pump_shapes_in_cluster's matching parameter;
+    find_symbol_clusters computes it once and shares it between both.
     """
-    islands = _curve_islands(primitives, index_group)
+    if islands is None:
+        islands = _circle_islands(primitives, index_group)
     if not islands:
         return []
+    island_members = {i for island in islands for i in island}
     results = []
     seen_pairs = set()
     for i in index_group:
+        if i in island_members:
+            continue   # a circle's own boundary segment, never a divider candidate
         prim = primitives[i]
         if prim['kind'] != 'l':
             continue
@@ -1020,6 +1185,16 @@ def find_symbol_clusters(page, min_confidence=0.3):
         return []
     scale = dominant_text_size(page)
     text_bboxes = _text_word_bboxes(page)
+    # Every real file sampled draws circles with ONE convention
+    # consistently across a whole page — true bezier curves everywhere
+    # (LKAB/Gryaab/ITS), or zero curves anywhere (Sunpine/Swerim, which
+    # approximate every circle as a many-sided line polygon instead).
+    # Computed once per page, not per cluster: _polygon_circle_islands'
+    # O(k^2)-per-cluster line search is only worth paying for on a page
+    # that actually needs it — running it unconditionally made a busy
+    # real Gryaab page (curves, not line-polygons) take 5+ seconds on
+    # clusters that were never going to contain one.
+    try_polygon_circles = not any(p['kind'] == 'c' for p in primitives)
     results = []
     for group in cluster_primitives(primitives, scale=scale):
         feats = cluster_features(primitives, group, page_text_scale=scale)
@@ -1033,20 +1208,19 @@ def find_symbol_clusters(page, min_confidence=0.3):
                       'norm_size': core_feats['norm_size'], 'has_diagonal': core_feats['has_diagonal']}
         feats['has_closed_loop'] = _has_closed_loop(primitives, core)
         x0, y0, x1, y1 = feats['bbox']
+        # Computed on the RAW group, not the valve-appendage-aware `core`
+        # — pump/instrument_shapes_in_cluster do their own per-circle
+        # 'island' isolation and need the full group to find every
+        # distinct circle a giant merged-area cluster may contain, not
+        # just whatever _cluster_core's aspect-bounded growth kept.
+        # Computed once and shared between both — they'd otherwise each
+        # redundantly repeat the same island-finding work per cluster.
+        islands = _circle_islands(primitives, group, try_polygon_circles=try_polygon_circles)
         results.append({
             **feats, 'confidence': conf,
             'bowtie_score': bowtie_score(primitives, core),
-            # Computed on the RAW group, not the valve-appendage-aware
-            # `core` — pump_shapes_in_cluster does its own per-circle
-            # 'island' isolation (see _curve_islands) and needs the full
-            # group to find every distinct circle a giant merged-area
-            # cluster may contain, not just whatever _cluster_core's
-            # aspect-bounded growth happened to keep.
-            'pump_bboxes': pump_shapes_in_cluster(primitives, group),
-            # Same rationale as pump_bboxes — instrument_shapes_in_cluster
-            # does its own two-cap/divider-line reconstruction and needs
-            # every primitive in the raw group, not the valve-specific core.
-            'instrument_bboxes': instrument_shapes_in_cluster(primitives, group),
+            'pump_bboxes': pump_shapes_in_cluster(primitives, group, islands=islands),
+            'instrument_bboxes': instrument_shapes_in_cluster(primitives, group, islands=islands),
             'outline': [[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
         })
     results.sort(key=lambda r: -r['confidence'])

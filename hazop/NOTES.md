@@ -499,6 +499,24 @@ Verifierat: skräptaggarna är borta (t.ex. "Checked" förekommer nu en gång, r
 
 **INTE åtgärdat denna session** — kräver en ny, separat detektor (t.ex. `_polygon_circle_islands`: hitta slutna loopar av MÅNGA (≥8) ungefär lika långa linjesegment vars punkter ligger på ~samma avstånd från sin egen tyngdpunkt, som ett alternativt "ö"-format vid sidan av `_curve_islands`) — ett arbete av ungefär samma omfattning som dagens pump-/instrumentdetektering krävde, och bör göras och testas noga innan den kopplas in (måste verifieras att den INTE ger nya falsklarm på de redan fungerande bezier-kurve-filerna LKAB/Gryaab/ITS). Flaggat som nästa stora steg, inte påbörjat.
 
+### Uppföljning samma dag — linjepolygon-cirkeldetektering implementerad (delvis verifierad mot riktig fil)
+
+**Genomfört:** Byggde `_polygon_circle_islands(primitives, group)` — hittar slutna loopar av `'l'`-segment (≥8 st, `_POLYGON_CIRCLE_MIN_SIDES`) vars punkter ligger inom `_POLYGON_CIRCLE_MAX_RADIUS_CV=0.15` (variationskoefficient) från sin egen tyngdpunkt, dvs. approximerar en cirkel. Ny `_circle_islands()` slår ihop `_curve_islands()` (bezier) + `_polygon_circle_islands()` (linjepolygon) till en enhetlig "ö"-lista som både `pump_shapes_in_cluster()` och `instrument_shapes_in_cluster()` nu använder — ingendera bryr sig längre om vilken konvention en fil råkar använda.
+
+**Två riktiga falsklarm hittade och fixade under utvecklingen (bekräftat mot verklig Swerim-data):**
+1. Ett instruments interna kryssmärke (en termometer-symbol) bron in i SAMMA sammanhängande komponent som cirkelns 32 gränssegment och skevade cirkularitetskontrollen (dess punkter ligger mycket närmare tyngdpunkten). Fixat genom att bara behålla segment inom 2.5× medianlängden i komponenten innan cirkularitet testas.
+2. Efter den fixen upptäcktes att en delningslinje som bryggar ISÄR två separata cirklar (en kapsel) hamnar i SAMMA ursprungliga sammanhängande komponent, och att ta bort den avvikande långa bryggan (via längdfiltret) INTE automatiskt delar upp komponenten igen om inget nytt sammanhangs-pass görs — löst genom att köra en ny, andra union-find-pass bland ENDAST de kvarvarande (längd-filtrerade) segmenten, så att borttagning av bryggan korrekt delar upp kapseln i sina två cirklar igen.
+
+**Prestandaregression hittad och löst:** Att köra `_polygon_circle_islands()` ovillkorligt på VARJE kluster gjorde en redan tät riktig Gryaab-sida (som använder bezier-kurvor, inte linjepolygoner) 8×+ långsammare. Löst med en sidnivå-spärr (`try_polygon_circles`, beräknad EN gång per sida i `find_symbol_clusters`: `not any(p['kind']=='c' for p in primitives)`) — varje riktig fil som undersökts använder EN konvention konsekvent över en hel sida (antingen kurvor överallt, eller inga kurvor alls), aldrig en blandning, så filer med kurvor (LKAB/Gryaab/ITS) hoppar nu över hela linjepolygon-sökningen och behåller sin ursprungliga hastighet.
+
+**Kvarstående, INTE löst — kräver en riktad framtida insats:** På den specifika riktiga Swerim-testsidan (32 000+ primitiver, en extrem tät sida) hamnar en cirkels egna 32 gränssegment fortfarande delvis i en grid-cell med >`_MAX_CELL_DENSITY` (40) andra primitiver, vilket bryter deras sammanhang INNAN `_polygon_circle_islands` ens ser dem. Två separata fixförsök gjordes och backades båda ut pga prestandaregression:
+- Att höja `_MAX_CELL_DENSITY` löser sammanhangsproblemet men gör `find_symbol_clusters` 50-400× långsammare på just denna extremsida (54 sekunder istället för ~1) eftersom MÅNGA fler orelaterade primitiver slås ihop per kluster överallt på sidan, inte bara där cirkeln sitter.
+- Ett riktat andra-pass ("slå bara ihop redan små fragment-kluster") implementerades med samma rutnätsteknik som huvudklustringen, men även det blev för långsamt (20+ sekunder) eftersom **28 176 av 28 338 kluster** på denna extremsida kvalificerade som "fragment" — nästan hela sidan.
+
+Given detta: kärnlogiken är korrekt implementerad och verifierad via 6 nya syntetiska tester (`PolygonCircleTests` — enskild cirkel, för-få-sidor-avvisas, intern dekoration, pump via linjepolygon, instrument via linjepolygon-kapsel, blandad kurva+linjepolygon i samma anrop), och FUNGERAR KORREKT när en cirkels egna segment lyckas klustras ihop (vilket sker på mindre täta sidor/filer). Den specifika Swerim-testsidan förblir en extremfall som inte kunde verifieras utan att riskera en prestandaregression — värt en egen, mer genomtänkt uppföljning (t.ex. en smartare, riktigt gles rutnätsteknik specifikt för fragment, eller att helt enkelt öka `_GRID_CELL`-storleken för just denna typ av sida).
+
+**Test:** 6 nya syntetiska tester i `test_symbol_geometry.py` (`PolygonCircleTests`). Alla 197 tester passerar: `python -m unittest test_regression test_symbol_geometry -v`.
+
 ---
 
 ## Kända begränsningar och tekniska skulder
