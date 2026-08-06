@@ -14,6 +14,8 @@ confirm the tag-to-symbol link, not to classify ISA valve sub-types.
 """
 import math
 
+import fitz
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # Primitive extraction — flatten get_drawings() into plain (kind, bbox, ...)
@@ -568,7 +570,40 @@ def _touches_any(primitives, i, members, gap=_CLUSTER_GAP):
     return any(_prim_gap(primitives[i], primitives[j]) <= gap for j in members)
 
 
-def _cluster_core(primitives, group):
+def _text_word_bboxes(page):
+    """Native text word bounding boxes, in the SAME rotated coordinate
+    space extract_primitives() converts drawing coordinates into.
+    page.get_text() (like get_drawings()) always reports raw UNROTATED
+    mediabox coordinates, so page.rotation_matrix is applied here too —
+    otherwise a comparison against prim['bbox'] would silently misalign
+    on any rotated page (this codebase has hit that exact bug twice
+    before, see RotatedPageCoordinateTests)."""
+    mat = page.rotation_matrix
+    bboxes = []
+    for w in page.get_text('words'):
+        r = fitz.Rect(w[0], w[1], w[2], w[3]) * mat
+        bboxes.append((r.x0, r.y0, r.x1, r.y1))
+    return bboxes
+
+
+def _is_text_glyph_primitive(prim, text_bboxes, tol=1.0):
+    """Does this primitive's bbox fall (almost entirely) inside a native
+    text word's bbox? Some CAD exports double-render a tag's label —
+    once as normal searchable text, and again as vector-outlined glyph
+    strokes for guaranteed visual fidelity. Confirmed on a real LKAB
+    P&ID: a valve's tag text ended 3.6pt into its own quad's bbox, and
+    ~36 tiny vector glyph fragments from that text bridged into the
+    valve's cluster (see cluster_primitives), diluting bowtie_score's
+    point cloud until a correctly-shaped, otherwise-identical valve
+    scored 0.0 instead of the ~0.77 every one of its neighbors got."""
+    px0, py0, px1, py1 = prim['bbox']
+    for tx0, ty0, tx1, ty1 in text_bboxes:
+        if px0 >= tx0 - tol and py0 >= ty0 - tol and px1 <= tx1 + tol and py1 <= ty1 + tol:
+            return True
+    return False
+
+
+def _cluster_core(primitives, group, text_bboxes=None):
     """A cluster's compact "symbol core", grown outward from its most
     symbol-like seed primitive (the largest closed quad/rect, or a curve
     if there's no quad/rect) — accepting a touching neighbor only as long
@@ -596,6 +631,14 @@ def _cluster_core(primitives, group):
     seed sidesteps this: it stops the instant adding the FIRST attached
     primitive would already blow the aspect past the limit, without
     needing to know how many more primitives are attached beyond it.
+
+    `text_bboxes` (see _text_word_bboxes), if given, blocks a further
+    case the aspect check alone doesn't catch: many small primitives
+    packed tightly together (e.g. a tag's own double-rendered vector
+    glyph strokes, see _is_text_glyph_primitive) can sit right next to
+    the seed without ever pushing the bbox aspect past the limit — they
+    add clutter, not size. Such primitives are skipped during growth
+    (never joining the core) regardless of aspect.
     """
     if len(group) <= 1:
         return list(group)
@@ -612,6 +655,9 @@ def _cluster_core(primitives, group):
         progress = False
         touching = sorted(i for i in remaining if _touches_any(primitives, i, core))
         for i in touching:
+            if text_bboxes and _is_text_glyph_primitive(primitives[i], text_bboxes):
+                remaining.discard(i)
+                continue
             candidate = core | {i}
             x0, y0, x1, y1 = _group_bbox(primitives, candidate)
             w, h = x1 - x0, y1 - y0
@@ -647,13 +693,14 @@ def find_symbol_clusters(page, min_confidence=0.3):
     if not primitives:
         return []
     scale = dominant_text_size(page)
+    text_bboxes = _text_word_bboxes(page)
     results = []
     for group in cluster_primitives(primitives, scale=scale):
         feats = cluster_features(primitives, group, page_text_scale=scale)
         conf = classify_cluster(feats)
         if conf < min_confidence:
             continue
-        core = _cluster_core(primitives, group)
+        core = _cluster_core(primitives, group, text_bboxes=text_bboxes)
         if core != group:
             core_feats = cluster_features(primitives, core, page_text_scale=scale)
             feats = {**feats, 'bbox': core_feats['bbox'], 'aspect': core_feats['aspect'],

@@ -585,6 +585,47 @@ class ClusterCoreTests(unittest.TestCase):
         core = sg._cluster_core(prims, groups[0])
         self.assertEqual(set(core), set(groups[0]))
 
+    def test_text_glyph_fragment_excluded_from_core(self):
+        """Found on a real LKAB P&ID: a valve's own tag text ended up
+        double-rendered as tiny vector glyph strokes close enough to
+        bridge into the valve's cluster (see cluster_primitives),
+        diluting bowtie_score's point cloud until an otherwise-identical,
+        correctly-shaped valve scored 0.0 instead of ~0.77. Unlike the
+        stem/drain-stub appendage above, a small glyph fragment doesn't
+        push the aspect ratio past the limit on its own — the aspect
+        check alone doesn't catch it. Only an explicit text_bboxes
+        exclusion does."""
+        doc, page = _new_page()
+        shape = page.new_shape()
+        q = fitz.Quad(fitz.Point(90, 90), fitz.Point(110, 110),
+                      fitz.Point(90, 110), fitz.Point(110, 90))
+        shape.draw_quad(q)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        # A tiny stroke sitting right at the quad's edge (touches within
+        # cluster_primitives' gap) and inside where the tag text below
+        # will report its own bbox.
+        shape.draw_line(fitz.Point(89, 96), fitz.Point(90.5, 98))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        page.insert_text(fitz.Point(70, 100), "TAG1", fontsize=8)
+
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        text_bboxes = sg._text_word_bboxes(page)
+        doc.close()
+        self.assertEqual(len(groups), 1,
+            "sanity check: the glyph fragment must actually touch the quad's cluster")
+        self.assertEqual(len(groups[0]), 2)
+
+        core_without_filter = sg._cluster_core(prims, groups[0])
+        self.assertEqual(len(core_without_filter), 2,
+            "sanity check: without text_bboxes, the tiny fragment doesn't blow the aspect ratio "
+            "and would normally join the core")
+
+        core = sg._cluster_core(prims, groups[0], text_bboxes=text_bboxes)
+        self.assertEqual(len(core), 1, "the glyph fragment must be excluded from the core")
+        self.assertEqual(prims[core[0]]['kind'], 'qu')
+
 
 class ClosedShapeFilterTests(unittest.TestCase):
     """Found on a real LKAB P&ID: the vector-drawn letter "M" (a motor
