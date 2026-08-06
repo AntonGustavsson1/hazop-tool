@@ -23,7 +23,7 @@ pip install easyocr       # pure pip, downloads ~1 GB models on first use
 
 Syntax check without running the GUI:
 ```
-python -m py_compile hazop.py && python -m py_compile pid_viewer.py
+python -m py_compile hazop.py && python -m py_compile pid_viewer.py && python -m py_compile equipment_detection.py && python -m py_compile symbol_geometry.py
 ```
 
 ## Session context
@@ -51,7 +51,7 @@ At the start of EVERY session, Claude automatically checks for new crash reports
 After every meaningful change, commit and push so no work is ever lost:
 
 ```
-git add hazop.py pid_viewer.py CLAUDE.md   # stage only source files, not .db/.pdf/.pyc
+git add hazop.py pid_viewer.py equipment_detection.py symbol_geometry.py CLAUDE.md   # stage only source files, not .db/.pdf/.pyc
 git commit -m "short descriptive message"
 git push
 ```
@@ -73,14 +73,22 @@ __pycache__/
 
 ## Architecture
 
-The application is split into two modules:
+The application is split into four modules:
 
-**`pid_viewer.py`** — P&ID canvas and equipment scanning
+**`equipment_detection.py`** — PDF/vector analysis for equipment & valve detection (no Qt, split out of `pid_viewer.py` 2026-08-06 once this layer grew large enough on its own — see NOTES.md)
+- `scan_pdf_for_equipment(pdf_doc, use_ocr, ...)` — three-pass scanner: (1) full-text regex, (2) word-by-word with positions, (3) optional OCR. Returns `{prefix: {tags, pages, positions, ocr_pages}, '_meta': {...}}`.
+- `detect_equipment_and_valves(pdf_doc, tag_points, ...)` — the unified Fas 1+2 pipeline: extracts each page's vector primitives/clusters ONCE and shares them between tag-association and bow-tie shape-hunting, so the same physical valve can never be reported twice.
+- `find_valve_shapes`/`detect_equipment_symbols` — older, standalone shape-only / tag-only entry points, kept for direct testability.
+- `KNOWN_PREFIXES` — dict mapping P&ID tag prefixes to `(display_name, COMPONENT_TYPES_key)`. Add entries here when new prefix types need to be recognised.
+- Importable standalone (`import equipment_detection`) without pulling in PyQt6 — same rationale as `symbol_geometry.py`.
+
+**`symbol_geometry.py`** — pure vector-drawing geometry (no Qt): `extract_primitives`, `cluster_primitives`, `bowtie_score`, `find_symbol_clusters`, tag↔symbol leader-line resolution. The lower layer `equipment_detection.py` builds on.
+
+**`pid_viewer.py`** — P&ID canvas and dialogs (Qt)
 - `PIDGraphicsView` — QGraphicsView subclass handling pan/zoom, draw modes, and right-click context menu. Emits `context_action(str, QPointF, int)` for menu selections.
 - `PIDPanel` — wrapper widget with toolbar. Holds the active node/cause/consequence IDs and orchestrates marker placement. Signals: `node_created`, `cause_created`, `consequence_created`, `safeguard_created`, `risk_scenario_requested`.
-- `scan_pdf_for_equipment(pdf_doc, use_ocr, ...)` — three-pass scanner: (1) full-text regex, (2) word-by-word with positions, (3) optional OCR. Returns `{prefix: {tags, pages, positions, ocr_pages}, '_meta': {...}}`.
-- `EquipmentScanDialog` — two-tab dialog: grouped prefix view and individual editable tag table.
-- `KNOWN_PREFIXES` — dict mapping P&ID tag prefixes to `(display_name, COMPONENT_TYPES_key)`. Add entries here when new prefix types need to be recognised.
+- `EquipmentScanDialog` / `EquipmentMarkerReviewDialog` — dialogs built on top of `equipment_detection.py`'s functions.
+- Re-exports several `equipment_detection.py` names (`scan_pdf_for_equipment`, `KNOWN_PREFIXES`, `COMPONENT_TYPES`, etc.) so `hazop.py`'s existing `from pid_viewer import ...` calls keep working unchanged.
 
 **`hazop.py`** — main window, database, all panels
 - `Database` — SQLite wrapper around `hazop_project.db`. Schema is defined in `SCHEMA` string + idempotent `_migrate()`. All DB access goes through this class.

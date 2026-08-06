@@ -2,12 +2,12 @@
 extracted from PDF page drawings via PyMuPDF's page.get_drawings().
 
 Pure Python/PyMuPDF — no Qt dependency, so this module can be imported by
-pid_viewer.py (for the live app) or by standalone scripts/tests without
-pulling in the GUI stack.
+equipment_detection.py/pid_viewer.py (for the live app) or by standalone
+scripts/tests without pulling in the GUI stack.
 
 Scope: vector-drawn PDFs only. Equipment TYPE (valve vs pump vs instrument)
 is not guessed from shape here — that already comes from the tag's prefix
-via KNOWN_PREFIXES in pid_viewer.py. This module answers a narrower
+via KNOWN_PREFIXES in equipment_detection.py. This module answers a narrower
 question: "is there a discrete drawn symbol near this tag, and if so,
 exactly where/what shape is it?" — used to place an accurate marker and
 confirm the tag-to-symbol link, not to classify ISA valve sub-types.
@@ -857,7 +857,7 @@ def score_tag_cluster_link(tag_point, cluster, primitives, search_radius=_LEADER
     bbox (+tol 5pt, +_LINK_W_CONTAIN), and an inverse-distance term
     (+_LINK_W_DISTANCE, scaled by how close within search_radius). Pure
     geometry only — callers may add a tag-format-plausibility bonus on top
-    (that needs KNOWN_PREFIXES, which lives in pid_viewer.py, not here).
+    (that needs KNOWN_PREFIXES, which lives in equipment_detection.py, not here).
     """
     dist = _dist(_bbox_center(cluster['bbox']), tag_point)
     if dist > search_radius:

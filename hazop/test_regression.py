@@ -3261,7 +3261,7 @@ class UnifiedTagScanTests(unittest.TestCase):
         prefix, no separator) used to be silently dropped by
         scan_pdf_for_equipment's Pass 2 (_parse_tag's len(pfx)>=2 gate)."""
         import fitz
-        from pid_viewer import scan_pdf_for_equipment
+        from equipment_detection import scan_pdf_for_equipment
         doc = fitz.open(self.pdf_path)
         try:
             result = scan_pdf_for_equipment(doc, use_ocr=False)
@@ -3274,7 +3274,7 @@ class UnifiedTagScanTests(unittest.TestCase):
 
     def test_scan_pdf_for_equipment_rejoins_split_tokens(self):
         import fitz
-        from pid_viewer import scan_pdf_for_equipment
+        from equipment_detection import scan_pdf_for_equipment
         doc = fitz.open(self.pdf_path)
         try:
             result = scan_pdf_for_equipment(doc, use_ocr=False)
@@ -3286,7 +3286,7 @@ class UnifiedTagScanTests(unittest.TestCase):
             f"expected a PCV tag rejoined from split tokens, got: {all_tags}")
 
     def test_spatial_combine_returns_bbox_tuples(self):
-        from pid_viewer import _spatial_combine
+        from equipment_detection import _spatial_combine
         import fitz
         doc = fitz.open(self.pdf_path)
         try:
@@ -3407,7 +3407,7 @@ class BowtieValveDetectionTests(unittest.TestCase):
         return path
 
     def test_find_valve_shapes_detects_bowtie_with_nearby_tag(self):
-        from pid_viewer import find_valve_shapes
+        from equipment_detection import find_valve_shapes
         import fitz
         doc = fitz.open(self._bowtie_pdf(with_tag=True))
         try:
@@ -3424,7 +3424,7 @@ class BowtieValveDetectionTests(unittest.TestCase):
         tag anywhere near them must still be found and returned, with an
         empty (not guessed, not dropped) tag for manual entry in the
         review dialog."""
-        from pid_viewer import find_valve_shapes
+        from equipment_detection import find_valve_shapes
         import fitz
         doc = fitz.open(self._bowtie_pdf(with_tag=False))
         try:
@@ -3436,7 +3436,7 @@ class BowtieValveDetectionTests(unittest.TestCase):
         self.assertEqual(results[0]['link_method'], 'shape')
 
     def test_find_valve_shapes_respects_min_bowtie_score(self):
-        from pid_viewer import find_valve_shapes
+        from equipment_detection import find_valve_shapes
         import fitz
         path = os.path.join(self._tmpdir, "rect.pdf")
         doc = fitz.open()
@@ -3465,7 +3465,7 @@ class BowtieValveDetectionTests(unittest.TestCase):
         would fail to link (find_nearby_tag_text comparing a rotated-space
         point against raw-space text positions) and/or the reported x/y
         would land outside the rendered page entirely."""
-        from pid_viewer import find_valve_shapes
+        from equipment_detection import find_valve_shapes
         import fitz
         path = os.path.join(self._tmpdir, "rotated_valve.pdf")
         doc = fitz.open()
@@ -3498,7 +3498,7 @@ class BowtieValveDetectionTests(unittest.TestCase):
             f"y={results[0]['y']} must fall inside the rendered page (0..{page_rect.height})")
 
     def test_find_nearby_tag_text_finds_closest_tag_within_radius(self):
-        from pid_viewer import find_nearby_tag_text
+        from equipment_detection import find_nearby_tag_text
         import fitz
         doc = fitz.open()
         page = doc.new_page(width=200, height=200)
@@ -3511,7 +3511,7 @@ class BowtieValveDetectionTests(unittest.TestCase):
             doc.close()
 
     def test_find_nearby_tag_text_returns_none_when_too_far(self):
-        from pid_viewer import find_nearby_tag_text
+        from equipment_detection import find_nearby_tag_text
         import fitz
         doc = fitz.open()
         page = doc.new_page(width=400, height=400)
@@ -3531,7 +3531,7 @@ class BowtieValveDetectionTests(unittest.TestCase):
         already-known equipment_catalog row must resolve with a real
         link_method (not 'none'), so _autodetect's tag_to_equipment_id
         lookup can attach it to the existing row instead of duplicating it."""
-        from pid_viewer import detect_equipment_and_valves
+        from equipment_detection import detect_equipment_and_valves
         import fitz
         cur = self.db.conn.execute(
             "INSERT INTO equipment_catalog (tag, prefix, pid_page, equipment_type) "
@@ -3615,7 +3615,7 @@ class BowtieValveDetectionTests(unittest.TestCase):
     # ══════════════════════════════════════════════════════════════════════
 
     def test_detect_equipment_and_valves_no_double_count_when_tag_and_shape_both_match(self):
-        from pid_viewer import detect_equipment_and_valves
+        from equipment_detection import detect_equipment_and_valves
         import fitz
         doc = fitz.open(self._bowtie_pdf(with_tag=True))
         try:
@@ -3633,7 +3633,7 @@ class BowtieValveDetectionTests(unittest.TestCase):
         """The scope the user explicitly asked ChatGPT's spec to cover:
         valves with no tag anywhere nearby must still be found and
         returned with a temporary id, never silently dropped."""
-        from pid_viewer import detect_equipment_and_valves
+        from equipment_detection import detect_equipment_and_valves
         import fitz
         doc = fitz.open(self._bowtie_pdf(with_tag=False))
         try:
@@ -3652,7 +3652,7 @@ class BowtieValveDetectionTests(unittest.TestCase):
         'avvisade kandidater' section, but stays silent for a cluster that
         either passes everything or is too far off (>1 filter failed) to
         be an interesting near-miss."""
-        from pid_viewer import _valve_rejection_reason
+        from equipment_detection import _valve_rejection_reason
         near_miss = {'bowtie_score': 0.7, 'aspect': 5.0, 'norm_size': 10.0,
                      'has_diagonal': True, 'has_closed_or_filled': True}
         reason = _valve_rejection_reason(near_miss, min_bowtie_score=0.5)

@@ -47,9 +47,15 @@
 **Beslut:** Riskmatrisen (färger, etiketter, storlek, axelriktning) sparas som JSON under nyckeln `'risk_matrix'` i `app_config`-tabellen.
 **Varför:** Flexibelt — användaren kan konfigurera valfri matrisstorlek (2×2 till 10×10) och färgsättning utan kodändring.
 
-### Tvåfilsstruktur
-**Beslut:** Koden är uppdelad i `hazop.py` (huvudfönster + DB + panels) och `pid_viewer.py` (P&ID-canvas + skanning).
-**Varför:** P&ID-komponenten är stor och fristående nog för att motivera separation. Underlättar framtida utbyte av viewer-implementationen.
+### Tvåfilsstruktur → fyra moduler (2026-08-06, uppdaterat)
+**Ursprungligt beslut:** Koden delades i `hazop.py` (huvudfönster + DB + panels) och `pid_viewer.py` (P&ID-canvas + skanning).
+**Uppdaterat beslut:** Efter Fas 1+2 samt kvällens ventildetekterings-fixar (självkorsande quads, rörledningsnät, bihängda delar, dubbelrenderad tagg-text) hade den icke-Qt-beroende analyslogiken i `pid_viewer.py` vuxit så mycket att Anton själv föreslog att bryta den ut, innan den blir ännu större när "instrument etc." byggs ut. Bröt ut i en NY, fristående modul: **`equipment_detection.py`** — all PDF/tagg/ventilanalys utan Qt-beroende (`scan_pdf_for_equipment`, `detect_equipment_and_valves`, `find_valve_shapes`, `detect_equipment_symbols`, `associate_tags_to_clusters`, `trace_line_info_for_cluster`, OCR-motorwrapprarna, `KNOWN_PREFIXES`/`COMPONENT_TYPES`/`VALVE_COMPONENT_TYPES` m.fl.) — samma princip som `symbol_geometry.py` redan följde ("Pure Python/PyMuPDF — no Qt dependency... kan importeras fristående utan GUI-stacken").
+
+**Vad som INTE flyttades** (medvetet, annan analysdomän): sheet-connector/media-färgläggningssystemet (`_sheet_ref_variants`, `_detect_dialect`, `_propose_layout`, `_MEDIA_*`/`_RE_*`/`_DIALECTS`) och röd-markup-SVG-ikonuppslaget (`_get_red_symbol_svg`/`_RED_MARKUP_SYMBOLS`) — orelaterat till ventil-/utrustningsdetektering, ligger kvar i `pid_viewer.py`. `ensure_ocr_available()` ligger också kvar (visar `QMessageBox`, det enda OCR-relaterade som genuint behöver Qt) men anropar `equipment_detection.ocr_status()` för själva tillgänglighetskollen.
+
+**Genomförande:** `pid_viewer.py` importerar och **re-exporterar** alla namn `hazop.py` redan importerade direkt (`from pid_viewer import KNOWN_PREFIXES, scan_pdf_for_equipment, ...`) — så `hazop.py` behövde INGA ändringar. `test_regression.py`s importer av de flyttade funktionerna pekar nu direkt mot `equipment_detection` istället för `pid_viewer` (bevisar att modulen verkligen fungerar fristående, inte bara att den råkar re-exporteras). Verifierat: `python -m unittest test_regression test_symbol_geometry` — 173/173 gröna, samt `find_valve_shapes()` ger identiskt resultat anropad via `pid_viewer.find_valve_shapes` och via `equipment_detection.find_valve_shapes` direkt (7/7 resp. 6/6 på de två LKAB-testritningarna).
+
+**Varför den ursprungliga uppdelningen fanns:** P&ID-komponenten är stor och fristående nog för att motivera separation. Underlättar framtida utbyte av viewer-implementationen — skälet gäller lika mycket den nya uppdelningen.
 
 ---
 
