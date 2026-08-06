@@ -322,8 +322,9 @@ class DiagonalLineFilterTests(unittest.TestCase):
         self.assertTrue(self._cluster_diagonal(draw))
 
     def test_rect_edges_are_not_diagonal(self):
-        """Rects/quads are axis-aligned by construction — has_diagonal must
-        only ever be set by an actual sloped 'l' (line) primitive."""
+        """An ordinary axis-aligned rectangle ('re', always axis-aligned by
+        construction — unlike a self-intersecting 'qu', see
+        SelfIntersectingQuadTests) must not register as diagonal."""
         def draw(shape):
             shape.draw_rect(fitz.Rect(90, 90, 110, 110))
             shape.finish(color=(0, 0, 0), width=1)
@@ -339,6 +340,90 @@ class DiagonalLineFilterTests(unittest.TestCase):
             shape.draw_polyline([fitz.Point(110, 90), fitz.Point(110, 110), fitz.Point(100, 100)])
             shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
         self.assertTrue(self._cluster_diagonal(draw))
+
+
+class SelfIntersectingQuadTests(unittest.TestCase):
+    """Some CAD sources draw a bow-tie valve body as a SINGLE 'qu' (quad)
+    primitive whose 4 corners are ordered so that connecting them in
+    sequence (ul->ur->lr->ll->ul) traces two CROSSING diagonals — a
+    self-intersecting quad — rather than a simple axis-aligned rectangle.
+    Confirmed by direct inspection of real P&ID PDFs (LKAB/Metso, Hybrit,
+    Swerim): e.g. one real valve's raw drawn quad was
+    ul=(637.9,911.4) ur=(609.5,897.2) lr=(609.5,911.4) ll=(637.9,897.2) —
+    ul-ur and lr-ll are the hourglass's two diagonal edges, ur-lr/ll-ul its
+    short vertical sides. The dict holding it contains ONLY that one 'qu'
+    item (closePath=False, stroke-only) — no accompanying 'l' primitives —
+    confirmed by reading the raw get_drawings() dict directly.
+
+    Before the fix, extract_primitives() only kept such a quad's bbox (a
+    plain enclosing rectangle), so _prim_is_diagonal and
+    _sample_primitive_points both operated on that rectangle instead of
+    the real crossing-diagonal shape — has_diagonal came out False and
+    bowtie_score came out 0.0 for a genuine, well-formed valve symbol,
+    causing find_valve_shapes() to reject it outright."""
+
+    def _self_intersecting_quad_page(self):
+        doc, page = _new_page()
+        shape = page.new_shape()
+        # ul, ur, lr, ll in DRAWN order — ul-ur and lr-ll cross, matching
+        # the real valve quad above (mirrored/scaled to a 20x20 test box).
+        q = fitz.Quad(fitz.Point(90, 90), fitz.Point(110, 110),
+                      fitz.Point(90, 110), fitz.Point(110, 90))
+        shape.draw_quad(q)
+        # closePath=False, no fill — matches the real files exactly (a
+        # fill or closePath makes PyMuPDF also emit 4 separate 'l' items
+        # for the outline, which would trivially pass the OLD, buggy code
+        # too via its already-working 'l'-kind handling and defeat the
+        # point of this test).
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        return doc, page
+
+    def test_corners_kept_in_self_intersecting_drawn_order(self):
+        doc, page = self._self_intersecting_quad_page()
+        prims = sg.extract_primitives(page)
+        doc.close()
+        quads = [p for p in prims if p['kind'] == 'qu']
+        self.assertEqual(len(quads), 1)
+        self.assertEqual(quads[0]['corners'],
+            [(90.0, 90.0), (110.0, 110.0), (110.0, 90.0), (90.0, 110.0)])
+
+    def test_self_intersecting_quad_edge_is_diagonal(self):
+        """Regression test: has_diagonal must be True for this quad even
+        though rects/quads are usually axis-aligned — its real ul-ur edge
+        genuinely runs at 45 degrees, unlike an ordinary rectangle's."""
+        doc, page = self._self_intersecting_quad_page()
+        prims = sg.extract_primitives(page)
+        doc.close()
+        self.assertTrue(sg._prim_is_diagonal(prims[0]))
+
+    def test_self_intersecting_quad_scores_high_bowtie(self):
+        """The core regression test: sampling this quad's actual drawn
+        edges (not its bbox perimeter) must reproduce the hourglass pinch
+        bowtie_score looks for. Before the fix this scored exactly 0.0."""
+        doc, page = self._self_intersecting_quad_page()
+        prims = sg.extract_primitives(page)
+        doc.close()
+        score = sg.bowtie_score(prims, [0])
+        self.assertGreaterEqual(score, 0.5,
+            "a self-intersecting bow-tie quad must score as a valve, not a plain rectangle")
+
+    def test_ordinary_axis_aligned_quad_is_unaffected(self):
+        """Same drawing call, but with corners in ordinary (non-crossing)
+        order — must behave exactly like a plain rectangle: no diagonal,
+        low bowtie score. Guards against the fix over-firing on every
+        quad regardless of corner order."""
+        doc, page = _new_page()
+        shape = page.new_shape()
+        q = fitz.Quad(fitz.Point(90, 90), fitz.Point(110, 90),
+                      fitz.Point(90, 110), fitz.Point(110, 110))
+        shape.draw_quad(q)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        prims = sg.extract_primitives(page)
+        doc.close()
+        self.assertFalse(sg._prim_is_diagonal(prims[0]))
+        self.assertLess(sg.bowtie_score(prims, [0]), 0.5)
 
 
 class BowtieScoreTests(unittest.TestCase):

@@ -369,6 +369,30 @@
 
 ---
 
+## Ventildetektering missade självkorsande quad-symboler (2026-08-06)
+
+**Bakgrund:** Trots Fas 1+2-uppgraderingen (viktad tagg-koppling, delad klusterextraktion) rapporterade användaren att appen fortfarande har svårt att hitta ventiler på riktiga P&ID:er. På uttrycklig begäran ("du behöver lära dig det innan du kan implementera") gjordes en ren research-genomgång — inga kodändringar — av riktiga referensfiler i `hazop/P&ID ref/` (LKAB, Hybrit, Smurfit Kappa, Swerim, Sunpine, Gryaab, ITS, Loket, samt en fristående "P&ID Node markup.pdf") för att visuellt och programmatiskt bekräfta hur ventilsymboler faktiskt ritas, INNAN någon fix skrevs. Ingen av dessa filer kopierades/committades — enbart lokal, tillfällig analys (samma regel som redan gäller för `test_symbol_geometry.py`s syntetiska fixtures).
+
+**Grundorsak funnen:** Vissa CAD-källor (bekräftat: LKAB/Metso, Hybrit, Swerim, samt "P&ID Node markup.pdf" — INTE Smurfit Kappa, Sunpine, Gryaab, ITS eller Loket i de granskade filerna) ritar en bow-tie-ventilkropp som EN ENDA `'qu'`-primitiv (quad) vars 4 hörn är listade i en medvetet självkorsande ordning — kopplar man dem i ordning (ul→ur→lr→ll→ul) bildas två korsande diagonaler (timglas-formen) istället för en enkel axelparallell rektangel. Exempel från en riktig ventil (LKAB, tagg QMA182): `ul=(637.9,911.4) ur=(609.5,897.2) lr=(609.5,911.4) ll=(637.9,897.2)`. Dictet som innehåller den har ENDAST detta ena `'qu'`-item (`closePath=False`, stroke-only) — inga separata linjeprimitiver.
+
+`symbol_geometry.py`s `extract_primitives()` sparade tidigare bara quadens bbox (en enkel omslutande rektangel), inte de faktiska hörnpunkterna i ritad ordning. Det gjorde att:
+- `_prim_is_diagonal()` alltid returnerade `False` för `'qu'`/`'re'` (antog "axelparallell by construction") — sant för `'re'` men inte för en självkorsande `'qu'`.
+- `_sample_primitive_points()` samplade bbox:ens omkrets istället för quadens verkliga kanter — plattade ut timglasformen till en rektangel och nollställde all "pinch".
+
+Resultat: `find_valve_shapes()`s filter (`bowtie_score>=0.5` OCH `has_diagonal`) förkastade genuina, korrekt ritade ventilsymboler rakt av — bekräftat empiriskt: `bowtie_score` gick från 0.0 → 0.77 för QMA182 efter fixen.
+
+**Fix (`symbol_geometry.py`):**
+1. `extract_primitives()` sparar nu en `'corners'`-nyckel (hörnen i ritad ordning) på `'re'`/`'qu'`-primitiver, inte bara bbox.
+2. Ny helper `_prim_corner_edges(prim)` — ger en primitivs 4 verkliga ritade kanter (från `'corners'`, med bbox-hörn som fallback om nyckeln saknas).
+3. `_prim_is_diagonal()` kontrollerar nu `'re'`/`'qu'`-primitivers verkliga kanter (via `_prim_corner_edges`) istället för att blankt returnera `False`.
+4. `_sample_primitive_points()` samplar nu längs samma verkliga kanter istället för bbox-omkretsen.
+
+Verifierat: `has_diagonal` False→True och `bowtie_score` 0.0→0.77 för den riktiga QMA182-ventilen; `find_valve_shapes()` hittar nu QMA182 och QMA186 på testsidan (tidigare 0 av 6 ventiler på sidan). Alla 160 befintliga tester + 4 nya (`SelfIntersectingQuadTests` i `test_symbol_geometry.py`, syntetiska quads — ingen riktig PDF som fixture) passerar: `python -m unittest test_regression test_symbol_geometry -v`.
+
+**Ny, relaterad begränsning upptäckt (INTE fixad denna gång):** Vid verifiering mot samma testsida märktes att `cluster_primitives()` ibland slår ihop en ventils bowtie-primitiver med hela rörledningen den sitter på (kontinuerlig kant-till-kant-anslutning, inget gap) till ETT stort avlångt kluster — som då faller på `aspect<=3.0`-filtret trots att bowtie-poängen är hög (t.ex. QMA184: aspect 9.05, bowtie 0.97). Skiljer sig från den redan dokumenterade "flera ventiler i tätt område slås ihop"-begränsningen nedan — här är det ventil+rörledning som slås ihop, inte ventil+ventil. Ej undersökt vidare denna session (utanför det specifika quad-fyndets omfång).
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **OCR-positioner är approximativa** — x,y-koordinater från OCR stämmer inte perfekt med PDF-koordinater vid hög zoom. Markörer kan hamna något fel.
@@ -378,6 +402,7 @@
 - **EquipmentScanDialog nås fortfarande via PIDPanel** — den gamla scan-dialogen i pid_viewer.py lever kvar parallellt med den nya EquipmentPanel. Kan rensas bort om den inte används.
 - **`_equip_prefix_from_tag`/`_parse_tag` kräver inte att "prefixet" innehåller en bokstav** — ett rent numeriskt textstycke som ett titelblocks datum ("2019-09-30") tolkas som giltig tagg med prefix "2019". Upptäckt via `find_nearby_tag_text` (bowtie-ventilformsdetektionen) som föreslog datum som ventiltagg nära ett titelblock, men bugen finns i den delade tagg-parsern och kan i teorin påverka all taggskanning, inte bara ventilformsfunktionen. Inte fixat denna session (utanför ventilform-uppdragets omfång) — värt en egen uppföljning.
 - **Bowtie-ventilformsdetektion kan slå ihop flera närliggande ventiler till ett kluster** — i tätt packade områden (många ventiler nära varandra) kan klustringen (samma `_CLUSTER_GAP`-mekanism som andra symboler) råka slå ihop 2–3 fysiskt separata ventiler till en enda rapporterad träff. Sett vid verifiering mot en riktig Smurfit Kappa-fil. Påverkar bara "🦋 Hitta ventilformer" (formbaserad), inte den taggankrade "🎯 Hitta på P&ID".
+- **Samma klustring kan även slå ihop en ventil med rörledningen den sitter på** — sett vid verifiering av quad-fixen ovan mot en riktig LKAB-fil (QMA184: bowtie-poäng 0.97 men aspect 9.05 eftersom hela rörsträckan klustrades ihop med ventilen, vilket faller på `aspect<=3.0`-filtret). Distinkt från punkten ovan (ventil+rörledning, inte ventil+ventil). Ej åtgärdat.
 
 ---
 

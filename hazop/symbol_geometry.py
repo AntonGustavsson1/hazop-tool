@@ -70,19 +70,35 @@ def extract_primitives(page):
                 })
             elif kind == 're':
                 rect = item[1] * mat
+                corners = [(rect.x0, rect.y0), (rect.x1, rect.y0),
+                           (rect.x1, rect.y1), (rect.x0, rect.y1)]
                 prims.append({
                     'kind': 're', 'bbox': (rect.x0, rect.y0, rect.x1, rect.y1),
                     'p0': (rect.x0, rect.y0), 'p1': (rect.x1, rect.y1),
-                    'closed': True, 'filled': filled,
+                    'closed': True, 'filled': filled, 'corners': corners,
                     'width': width, 'source': src_idx,
                 })
             elif kind == 'qu':
                 quad = item[1] * mat
                 pts = [quad.ul, quad.ur, quad.lr, quad.ll]
+                # Corners are kept in their AS-DRAWN order (ul,ur,lr,ll), not
+                # sorted into an axis-aligned rectangle. Some CAD sources
+                # (confirmed on real LKAB/Metso, Hybrit and Swerim P&IDs)
+                # draw a bow-tie valve body as a single 'qu' primitive whose
+                # corners are ordered so that ul-ur and lr-ll are the two
+                # crossing diagonal edges of the hourglass silhouette, with
+                # ur-lr/ll-ul as its short vertical (or horizontal) sides —
+                # a self-intersecting quad, not a simple rectangle. Losing
+                # this order (by only keeping the bbox, as before) made such
+                # valves indistinguishable from an ordinary axis-aligned
+                # rectangle downstream, hiding every bow-tie drawn this way
+                # from _prim_is_diagonal/_sample_primitive_points.
+                corners = [(pts[0].x, pts[0].y), (pts[1].x, pts[1].y),
+                           (pts[2].x, pts[2].y), (pts[3].x, pts[3].y)]
                 prims.append({
                     'kind': 'qu', 'bbox': _bbox_of_points(pts),
                     'p0': (pts[0].x, pts[0].y), 'p1': (pts[2].x, pts[2].y),
-                    'closed': True, 'filled': filled,
+                    'closed': True, 'filled': filled, 'corners': corners,
                     'width': width, 'source': src_idx,
                 })
     return prims
@@ -282,21 +298,47 @@ def _prim_length(prim):
 _DIAGONAL_TOL_DEG = 12.0   # how far from 0/90/180/270 a line must be to count as diagonal
 
 
+def _prim_corner_edges(prim):
+    """A rect/quad primitive's 4 actual drawn edges (as-drawn corner order,
+    closing back to the first corner) — NOT its bounding box perimeter.
+    For an ordinary axis-aligned rectangle these are the same thing, but a
+    self-intersecting quad (see extract_primitives' 'qu' branch) has real
+    edges that cut diagonally across its bbox, which this preserves."""
+    corners = prim.get('corners')
+    if not corners:
+        x0, y0, x1, y1 = prim['bbox']
+        corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    return list(zip(corners, corners[1:] + corners[:1]))
+
+
 def _prim_is_diagonal(prim, tol_deg=_DIAGONAL_TOL_DEG):
-    """A straight line segment that runs neither horizontally nor
-    vertically (within tol_deg). Piping in a P&ID is drawn strictly
-    orthogonally by convention — a diagonal segment can only be a symbol's
-    own geometry (e.g. a bow-tie valve's triangle edges), never a pipe run,
-    a title-block grid line, or an instrument-bubble stem. Rects/quads and
-    curves are axis-aligned/rounded by construction and never diagonal."""
-    if prim['kind'] != 'l':
+    """Does this primitive have an edge that runs neither horizontally nor
+    vertically (within tol_deg)? Piping in a P&ID is drawn strictly
+    orthogonally by convention — a diagonal edge can only be a symbol's own
+    geometry (e.g. a bow-tie valve's triangle edges), never a pipe run, a
+    title-block grid line, or an instrument-bubble stem.
+
+    Rects/quads are usually axis-aligned by construction, but some CAD
+    sources (confirmed on real LKAB/Metso, Hybrit and Swerim P&IDs) draw a
+    bow-tie valve body as a single self-intersecting 'qu' primitive whose
+    actual edges ARE diagonal even though its bbox looks like a plain
+    rectangle — so rect/quad edges are checked via their real corners
+    (_prim_corner_edges), not skipped. Curves are rounded by construction
+    and never diagonal."""
+    if prim['kind'] == 'l':
+        edges = [(prim['p0'], prim['p1'])]
+    elif prim['kind'] in ('re', 'qu'):
+        edges = _prim_corner_edges(prim)
+    else:
         return False
-    (x0, y0), (x1, y1) = prim['p0'], prim['p1']
-    length = math.hypot(x1 - x0, y1 - y0)
-    if length < 1e-6:
-        return False
-    angle = math.degrees(math.atan2(y1 - y0, x1 - x0)) % 90
-    return tol_deg <= angle <= (90 - tol_deg)
+    for (x0, y0), (x1, y1) in edges:
+        length = math.hypot(x1 - x0, y1 - y0)
+        if length < 1e-6:
+            continue
+        angle = math.degrees(math.atan2(y1 - y0, x1 - x0)) % 90
+        if tol_deg <= angle <= (90 - tol_deg):
+            return True
+    return False
 
 
 def cluster_features(primitives, index_group, page_text_scale=10.0):
@@ -340,18 +382,21 @@ def _sample_primitive_points(prim, n=20):
     endpoints alone would miss the gradual narrowing along a diagonal
     triangle edge — a bow-tie's edges are exactly such diagonals — so we
     interpolate along it instead of just using p0/p1. Rects/quads sample
-    along all 4 edges the same way (not just their corners) — corners
-    alone would leave every slice between them with zero data points,
-    which bowtie_score would misread as "pinched to nothing" rather than
-    "no primitive passes through here"."""
+    along all 4 of their actual drawn edges (_prim_corner_edges) the same
+    way, not just their corners — corners alone would leave every slice
+    between them with zero data points, which bowtie_score would misread
+    as "pinched to nothing" rather than "no primitive passes through
+    here". Using the real corner order (not the bbox perimeter) matters
+    for the self-intersecting bow-tie quads described in
+    extract_primitives — sampling the bbox instead would flatten the
+    hourglass silhouette into a plain rectangle and erase the pinch
+    bowtie_score is looking for."""
     if prim['kind'] in ('l', 'c'):
         p0, p1 = prim['p0'], prim['p1']
         return [(p0[0] + (p1[0] - p0[0]) * t / (n - 1),
                   p0[1] + (p1[1] - p0[1]) * t / (n - 1)) for t in range(n)]
-    x0, y0, x1, y1 = prim['bbox']
-    corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]
     pts = []
-    for (ax, ay), (bx, by) in zip(corners, corners[1:]):
+    for (ax, ay), (bx, by) in _prim_corner_edges(prim):
         pts.extend((ax + (bx - ax) * t / (n - 1), ay + (by - ay) * t / (n - 1))
                    for t in range(n))
     return pts
