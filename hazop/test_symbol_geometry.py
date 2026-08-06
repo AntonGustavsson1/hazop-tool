@@ -514,6 +514,129 @@ class SelfIntersectingQuadTests(unittest.TestCase):
         self.assertLess(sg.bowtie_score(prims, [0]), 0.5)
 
 
+class ClusterCoreTests(unittest.TestCase):
+    """_cluster_core() — grows a compact "symbol core" outward from a
+    cluster's most symbol-like seed, stopping before absorbing an attached
+    appendage (actuator stem, drain stub) that would blow the aspect ratio
+    past a bare bow-tie's own. Found necessary on a real LKAB P&ID: a
+    valve's cluster correctly also contains a short connecting stem (same
+    physical assembly — see PipeNetworkBridgingTests for why they merge),
+    but scoring/filtering the WHOLE cluster hid 6 of 7 real valves behind
+    filters meant for a compact symbol."""
+
+    def _valve_with_stem_page(self):
+        doc, page = _new_page(200, 200)
+        shape = page.new_shape()
+        q = fitz.Quad(fitz.Point(90, 90), fitz.Point(110, 110),
+                      fitz.Point(90, 110), fitz.Point(110, 90))
+        shape.draw_quad(q)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        # A stem long enough that quad+stem together exceed aspect 3.0
+        # (20pt wide, 70pt tall combined -> aspect 3.5), but still short
+        # of cluster_primitives' own "long pipe run" threshold (60pt at
+        # the default scale=10.0) so it still bridges into one cluster —
+        # same proportions as the real LKAB valve+drain-stub assembly
+        # that motivated this.
+        shape.draw_line(fitz.Point(100, 110), fitz.Point(100, 160))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        return doc, page
+
+    def test_core_excludes_appendage_that_would_blow_aspect(self):
+        doc, page = self._valve_with_stem_page()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        self.assertEqual(len(groups), 1, "the quad and stem must still merge into one cluster")
+        core = sg._cluster_core(prims, groups[0])
+        self.assertEqual(len(core), 1, "the core must be just the quad, excluding the stem")
+        core_bbox = sg._group_bbox(prims, core)
+        self.assertEqual(core_bbox, (90.0, 90.0, 110.0, 110.0))
+
+    def test_core_scores_as_valve_even_though_full_cluster_would_not(self):
+        doc, page = self._valve_with_stem_page()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        full_feats = sg.cluster_features(prims, groups[0])
+        self.assertGreater(full_feats['aspect'], 3.0,
+            "sanity check: the full cluster (quad+stem) must exceed the compact-symbol aspect ceiling")
+        core = sg._cluster_core(prims, groups[0])
+        core_feats = sg.cluster_features(prims, core)
+        self.assertLessEqual(core_feats['aspect'], 3.0)
+        self.assertGreaterEqual(sg.bowtie_score(prims, core), 0.5)
+
+    def test_two_triangle_bowtie_core_is_unchanged(self):
+        """Guard against overcorrecting: a normal two-triangle bow-tie
+        (both triangles sharing an apex, no appendage) must keep ALL its
+        primitives in the core — nothing should ever get trimmed from a
+        bare, well-formed bow-tie."""
+        doc, page = _new_page()
+        shape = page.new_shape()
+        shape.draw_polyline([fitz.Point(90, 90), fitz.Point(90, 110), fitz.Point(100, 100)])
+        shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+        shape.draw_polyline([fitz.Point(110, 90), fitz.Point(110, 110), fitz.Point(100, 100)])
+        shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+        shape.commit()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        self.assertEqual(len(groups), 1)
+        core = sg._cluster_core(prims, groups[0])
+        self.assertEqual(set(core), set(groups[0]))
+
+
+class ClosedShapeFilterTests(unittest.TestCase):
+    """Found on a real LKAB P&ID: the vector-drawn letter "M" (a motor
+    label rendered as outline strokes rather than searchable text) is an
+    open zigzag — two verticals meeting at a point in the middle — that
+    reads as a textbook wide-narrow-wide silhouette (bowtie_score ~0.85)
+    despite never being a closed shape, unlike every real valve on that
+    page (always a closed quad or closed/filled triangle paths).
+    cluster_features()['has_closed_or_filled'] tells them apart."""
+
+    def test_open_zigzag_has_no_closed_or_filled_member(self):
+        doc, page = _new_page()
+        shape = page.new_shape()
+        # Two verticals connected by a V in the middle, all open strokes —
+        # same shape as the real "M" glyph that produced a false positive.
+        shape.draw_line(fitz.Point(90, 110), fitz.Point(90, 90))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(90, 90), fitz.Point(100, 100))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(100, 100), fitz.Point(110, 90))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(110, 90), fitz.Point(110, 110))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        self.assertEqual(len(groups), 1)
+        feats = sg.cluster_features(prims, groups[0])
+        # Sanity check this fixture reproduces the real false positive's
+        # shape signature before asserting the distinguishing feature.
+        self.assertGreaterEqual(sg.bowtie_score(prims, groups[0]), 0.5)
+        self.assertFalse(feats['has_closed_or_filled'],
+            "an open zigzag of unclosed line strokes must never register as closed/filled")
+
+    def test_real_bowtie_has_closed_or_filled_member(self):
+        """A genuine self-intersecting quad valve (always closed=True, see
+        extract_primitives) must keep passing this filter."""
+        doc, page = _new_page()
+        shape = page.new_shape()
+        q = fitz.Quad(fitz.Point(90, 90), fitz.Point(110, 110),
+                      fitz.Point(90, 110), fitz.Point(110, 90))
+        shape.draw_quad(q)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        prims = sg.extract_primitives(page)
+        doc.close()
+        feats = sg.cluster_features(prims, [0])
+        self.assertTrue(feats['has_closed_or_filled'])
+
+
 class BowtieScoreTests(unittest.TestCase):
     """bowtie_score() — "🦋 Hitta ventilformer" identifies valves by their
     bow-tie/hourglass silhouette (wide-narrow-wide) rather than requiring a

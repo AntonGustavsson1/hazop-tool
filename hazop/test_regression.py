@@ -3648,21 +3648,30 @@ class BowtieValveDetectionTests(unittest.TestCase):
 
     def test_valve_rejection_reason_reports_single_near_miss_only(self):
         """_valve_rejection_reason surfaces a near-miss (exactly one of the
-        four bow-tie/valve-shape filters failed) for the review dialog's
+        five bow-tie/valve-shape filters failed) for the review dialog's
         'avvisade kandidater' section, but stays silent for a cluster that
         either passes everything or is too far off (>1 filter failed) to
         be an interesting near-miss."""
         from pid_viewer import _valve_rejection_reason
-        near_miss = {'bowtie_score': 0.7, 'aspect': 5.0, 'norm_size': 10.0, 'has_diagonal': True}
+        near_miss = {'bowtie_score': 0.7, 'aspect': 5.0, 'norm_size': 10.0,
+                     'has_diagonal': True, 'has_closed_or_filled': True}
         reason = _valve_rejection_reason(near_miss, min_bowtie_score=0.5)
         self.assertIsNotNone(reason)
         self.assertIn('avlångt', reason.lower())
 
-        too_far_off = {'bowtie_score': 0.1, 'aspect': 5.0, 'norm_size': 10.0, 'has_diagonal': True}
+        too_far_off = {'bowtie_score': 0.1, 'aspect': 5.0, 'norm_size': 10.0,
+                       'has_diagonal': True, 'has_closed_or_filled': True}
         self.assertIsNone(_valve_rejection_reason(too_far_off, min_bowtie_score=0.5))
 
-        passes_all = {'bowtie_score': 0.7, 'aspect': 1.5, 'norm_size': 10.0, 'has_diagonal': True}
+        passes_all = {'bowtie_score': 0.7, 'aspect': 1.5, 'norm_size': 10.0,
+                      'has_diagonal': True, 'has_closed_or_filled': True}
         self.assertIsNone(_valve_rejection_reason(passes_all, min_bowtie_score=0.5))
+
+        no_closed_shape = {'bowtie_score': 0.7, 'aspect': 1.5, 'norm_size': 10.0,
+                            'has_diagonal': True, 'has_closed_or_filled': False}
+        reason2 = _valve_rejection_reason(no_closed_shape, min_bowtie_score=0.5)
+        self.assertIsNotNone(reason2)
+        self.assertIn('sluten', reason2.lower())
 
 
 class EquipmentAnalysisWorkerTests(unittest.TestCase):

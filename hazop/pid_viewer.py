@@ -1770,6 +1770,17 @@ def find_valve_shapes(pdf_doc, pages=None, min_bowtie_score=0.5, progress_callba
     symbol's own geometry (a bow-tie's triangle edges) can ever contain a
     diagonal segment; pipe crossings, title-block grids, and instrument-
     bubble stems cannot.
+
+    A third filter requires has_closed_or_filled — a real bow-tie is
+    always a closed shape (a single self-intersecting quad, always
+    closed=True, or two closed/filled triangle paths). Found on a real
+    LKAB P&ID: the vector-drawn letter "M" (motor label text drawn as
+    outline strokes, not searchable text) has two verticals meeting at a
+    point in the middle — an open zigzag that reads as a textbook
+    wide-narrow-wide silhouette (bowtie_score 0.85) but is never a closed
+    path, unlike every confirmed real valve on that page. The same check
+    also rejected a nearby pump assembly (motor + impeller circle) that
+    had bridged into one cluster with that same "M".
     """
     if not HAS_PYMUPDF or pdf_doc is None:
         return []
@@ -1800,6 +1811,11 @@ def find_valve_shapes(pdf_doc, pages=None, min_bowtie_score=0.5, progress_callba
                 # only be pipe crossings, a title-block grid, or an
                 # instrument-bubble's straight stems, never an actual
                 # bow-tie valve body (whose triangle edges are diagonal).
+                continue
+            if not cluster['has_closed_or_filled']:
+                # A real bow-tie is always a closed shape. Rejects e.g. a
+                # vector-drawn "M" (motor) label glyph — its open zigzag
+                # strokes coincidentally read as wide-narrow-wide too.
                 continue
             x0, y0, x1, y1 = cluster['bbox']
             cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
@@ -1903,7 +1919,7 @@ def associate_tags_to_clusters(tag_points, clusters, primitives,
 
 def _valve_rejection_reason(cluster, min_bowtie_score=0.5):
     """Human-readable reason iff `cluster` fails EXACTLY ONE of
-    find_valve_shapes' four valve-shape filters — a near-miss worth
+    find_valve_shapes' five valve-shape filters — a near-miss worth
     surfacing to the user in the review dialog's "avvisade kandidater"
     section. None if it passes everything (not rejected) or fails more
     than one filter (too far off to be an interesting near-miss)."""
@@ -1915,6 +1931,8 @@ def _valve_rejection_reason(cluster, min_bowtie_score=0.5):
         (not (1.5 <= cluster['norm_size'] <= 40.0),
          f"Fel storlek relativt sidans text (norm_size {cluster['norm_size']:.1f})"),
         (not cluster['has_diagonal'], "Ingen diagonal linje (kan inte vara en bow-tie-ventil)"),
+        (not cluster['has_closed_or_filled'],
+         "Ingen sluten form (kan inte vara en bow-tie-ventil)"),
     ]
     failed = [reason for is_failed, reason in checks if is_failed]
     return failed[0] if len(failed) == 1 else None
@@ -2167,7 +2185,8 @@ def detect_equipment_and_valves(pdf_doc, tag_points, pages=None,
             passes = (cluster.get('bowtie_score', 0.0) >= min_bowtie_score
                       and cluster['aspect'] <= 3.0
                       and 1.5 <= cluster['norm_size'] <= 40.0
-                      and cluster['has_diagonal'])
+                      and cluster['has_diagonal']
+                      and cluster['has_closed_or_filled'])
             if not passes:
                 reason = _valve_rejection_reason(cluster, min_bowtie_score)
                 if reason:

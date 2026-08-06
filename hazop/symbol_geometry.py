@@ -546,6 +546,83 @@ def dominant_text_size(page):
     return sizes[len(sizes) // 2]
 
 
+def _group_bbox(primitives, group):
+    return (
+        min(primitives[i]['bbox'][0] for i in group),
+        min(primitives[i]['bbox'][1] for i in group),
+        max(primitives[i]['bbox'][2] for i in group),
+        max(primitives[i]['bbox'][3] for i in group),
+    )
+
+
+def _bbox_diag(bbox):
+    return math.hypot(bbox[2] - bbox[0], bbox[3] - bbox[1])
+
+
+_CORE_ASPECT_LIMIT = 3.0   # same compact-symbol ceiling classify_cluster
+                           # already uses for aspect — a core only grows
+                           # outward while it still looks like one.
+
+
+def _touches_any(primitives, i, members, gap=_CLUSTER_GAP):
+    return any(_prim_gap(primitives[i], primitives[j]) <= gap for j in members)
+
+
+def _cluster_core(primitives, group):
+    """A cluster's compact "symbol core", grown outward from its most
+    symbol-like seed primitive (the largest closed quad/rect, or a curve
+    if there's no quad/rect) — accepting a touching neighbor only as long
+    as the growing core's own bbox aspect stays within
+    _CORE_ASPECT_LIMIT. Anything left over (an actuator stem, a drain
+    stub, a flange tick, or in a busy area unrelated nearby equipment
+    that happened to bridge in) is excluded from the core but NOT dropped
+    from the cluster itself — see find_symbol_clusters.
+
+    Confirmed necessary on a real LKAB P&ID: a valve's own bow-tie scores
+    perfectly on its own (bowtie_score ~0.6-1.0, aspect ~2), but its
+    connected cluster can correctly also include a short stem/drain-stub
+    (same physical valve assembly — see cluster_primitives), which alone
+    can push the WHOLE cluster's aspect past the compact-symbol threshold
+    and dilutes bowtie_score's pooled point cloud until it no longer
+    reads as a clean hourglass — hiding a real valve behind filters meant
+    for a bare bow-tie.
+
+    A simpler "drop the single longest line, see if the bbox shrinks
+    enough" heuristic was tried first and failed on real data: a stem
+    plus a drain-stub icon can each independently reach the cluster's
+    outer edge, so removing any ONE of them leaves the others still
+    covering that same edge and nothing appears to shrink — even though
+    the two of them TOGETHER are the appendage. Growing outward from the
+    seed sidesteps this: it stops the instant adding the FIRST attached
+    primitive would already blow the aspect past the limit, without
+    needing to know how many more primitives are attached beyond it.
+    """
+    if len(group) <= 1:
+        return list(group)
+    seed_candidates = [i for i in group if primitives[i]['kind'] in ('qu', 're')]
+    if not seed_candidates:
+        seed_candidates = [i for i in group if primitives[i]['kind'] == 'c']
+    if not seed_candidates:
+        return list(group)
+    seed = max(seed_candidates, key=lambda i: _prim_length(primitives[i]))
+    core = {seed}
+    remaining = set(group) - core
+    progress = True
+    while progress and remaining:
+        progress = False
+        touching = sorted(i for i in remaining if _touches_any(primitives, i, core))
+        for i in touching:
+            candidate = core | {i}
+            x0, y0, x1, y1 = _group_bbox(primitives, candidate)
+            w, h = x1 - x0, y1 - y0
+            aspect = max(w, h) / max(min(w, h), 0.1)
+            if aspect <= _CORE_ASPECT_LIMIT:
+                core = candidate
+                remaining.discard(i)
+                progress = True
+    return list(core)
+
+
 def find_symbol_clusters(page, min_confidence=0.3):
     """Extract, cluster, and score all vector-drawn symbol candidates on a
     page. Returns a list of dicts (cluster features + 'confidence' +
@@ -556,6 +633,15 @@ def find_symbol_clusters(page, min_confidence=0.3):
     hunting for valve shapes specifically can pass min_confidence=0.0 and
     filter on bowtie_score instead of the generic "is this a symbol at
     all" confidence.
+
+    'confidence' always reflects the FULL cluster (including any
+    appendage) — an attached stem/stub is still part of one real symbol,
+    so the generic "is this a discrete symbol" question shouldn't ignore
+    it. But 'bbox'/'aspect'/'norm_size'/'has_diagonal' are recomputed on
+    the trimmed core (_cluster_core) whenever trimming actually changes
+    the group — bowtie_score and the shape-based filters in
+    pid_viewer.find_valve_shapes() care about the compact body, not how
+    far a stem happens to stick out.
     """
     primitives = extract_primitives(page)
     if not primitives:
@@ -567,10 +653,15 @@ def find_symbol_clusters(page, min_confidence=0.3):
         conf = classify_cluster(feats)
         if conf < min_confidence:
             continue
+        core = _cluster_core(primitives, group)
+        if core != group:
+            core_feats = cluster_features(primitives, core, page_text_scale=scale)
+            feats = {**feats, 'bbox': core_feats['bbox'], 'aspect': core_feats['aspect'],
+                      'norm_size': core_feats['norm_size'], 'has_diagonal': core_feats['has_diagonal']}
         x0, y0, x1, y1 = feats['bbox']
         results.append({
             **feats, 'confidence': conf,
-            'bowtie_score': bowtie_score(primitives, group),
+            'bowtie_score': bowtie_score(primitives, core),
             'outline': [[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
         })
     results.sort(key=lambda r: -r['confidence'])
