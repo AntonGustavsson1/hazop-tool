@@ -178,6 +178,28 @@
 
 ---
 
+## Uppstartsprestanda — "Laddar databas..." (2026-08-06, uppföljning)
+
+**Problem:** Efter OCR-lazy-import-fixen ovan tog `MainWindow()`-konstruktionen (allt som visas bakom splash-texten "Laddar databas...") fortfarande **>100 sekunder** i det här projektet (48-sidig P&ID, 10 215 rader i `equipment_catalog`, 2 753 rader i `pid_identified_tags`).
+
+**Orsak (hittad via cProfile på `MainWindow()`):** Det var inte databasen eller PDF-renderingen (`Database()` ~0.06 s, `try_reload_pdf()` för 48 sidor lågupplöst ~0.9 s) — det var två paneler som byggde HELA sina tabeller radvis vid konstruktion, **innan användaren över huvud taget bytt till den fliken**:
+- `EquipmentPanel.__init__` → `refresh()` → `_insert_row()` × 10 215 (Utrustningsregister-fliken) — **~60 s**
+- `PIDAnalysisPanel.__init__` → `refresh()` (Inställningar → "Identifierade objekt") → en rad med egen `QComboBox` per prefix, 2 753 rader — **~46 s**
+
+`QTableWidget.insertRow()`/`setCellWidget()` skalar dåligt (uppmätt superlinjärt) när varje rad har egna widgets (combo-box, knapp) — `setUpdatesEnabled(False)`/`blockSignals(True)` hjälper inte nämnvärt. Vid 10 000+ rader blir det tiotals sekunder oavsett.
+
+**Fix:** Tog bort den ovillkorliga `self.refresh()` i båda panelernas `__init__` och gjorde laddningen lat:
+- `EquipmentPanel`: ingen ny kod behövdes — `MainWindow._switch_view()` anropar redan `self.equipment_panel.refresh()` varje gång sidan (index 2, "Utrustning") blir aktiv, inklusive första gången.
+- `PIDAnalysisPanel`: fanns ingen motsvarande hook för Inställningar-fliken (`_switch_view(4)` uppdaterar bara `_tag_memory_panel`), så lade till en `showEvent()`-override med en `_loaded`-flagga som triggar `refresh()` första gången fliken faktiskt visas — oavsett om användaren klickar dit manuellt eller når den via `_on_pid_analysis_done()`.
+
+**Resultat:** `MainWindow()` gick från >100 s till **~0.66 s**. Tabellerna är tomma direkt efter start och fylls först när användaren faktiskt öppnar respektive flik.
+
+**Känd kvarstående begränsning:** Att öppna Utrustningsregistret eller Inställningar → "Identifierade objekt" är fortfarande långsamt (samma ~60 s / ~46 s) första gången per session, eftersom grundproblemet (en riktig widget per rad i en `QTableWidget`) inte är löst — bara flyttat till en punkt där det inte blockerar hela appstarten. En riktig lösning kräver en virtualiserad tabell (`QAbstractTableModel` + `QTableView` + delegates istället för `setCellWidget` per rad) — inte gjort här, större omskrivning som inte var vad som efterfrågades.
+
+**Test:** Verifierat med `cProfile` att `equipment_catalog`/`pid_identified_tags`-tabellerna är tomma direkt efter `MainWindow()` och fylls korrekt vid `_switch_view(2)` / `_switch_view(4)`. `python -m py_compile hazop.py` OK.
+
+---
+
 ## Stabilitetsgenomgång (2026-08-02)
 
 **Bakgrund:** En serie krascher (app stängdes tyst vid klick på orsak-markör, röd markup m.m.) spårades och åtgärdades i flera omgångar med parallella granskningsagenter, följt av en implementationsomgång och två oberoende slutgranskningar.

@@ -13571,6 +13571,7 @@ class PIDAnalysisPanel(QWidget):
         super().__init__()
         self.db = db
         self._loading = False
+        self._loaded  = False   # first refresh() deferred to showEvent — see below
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -13620,9 +13621,20 @@ class PIDAnalysisPanel(QWidget):
         btn_row.addWidget(self._status)
         layout.addLayout(btn_row)
 
-        self.refresh()
+    def showEvent(self, event):
+        # Populating this table means inserting one row (with a QComboBox
+        # cell widget) per identified tag prefix, which does not scale — with
+        # thousands of prefixes it can take tens of seconds. Doing this
+        # unconditionally in __init__ used to block the whole app at startup
+        # even when the user never opens Inställningar → Identifierade
+        # objekt. Defer to the first time the tab actually becomes visible.
+        super().showEvent(event)
+        if not self._loaded:
+            self._loaded = True
+            self.refresh()
 
     def refresh(self):
+        self._loaded  = True   # any explicit refresh() satisfies showEvent's lazy-load too
         self._loading = True
         self._tbl.blockSignals(True)
         self._tbl.setRowCount(0)
@@ -16424,7 +16436,13 @@ class EquipmentPanel(QWidget):
         self._tbl.cellChanged.connect(self._on_cell_changed)
         layout.addWidget(self._tbl)
 
-        self.refresh()
+        # No eager refresh() here: populating this table inserts one row
+        # (with a QComboBox + a QPushButton cell widget) per equipment item,
+        # which does not scale — with thousands of items it can take tens of
+        # seconds. Doing that unconditionally in __init__ used to block the
+        # whole app at startup even when the user never opens the Equipment
+        # page. MainWindow._switch_view() already calls refresh() every time
+        # this page (index 2) becomes active, including the first time.
 
     # ── Populate ──────────────────────────────────────────────────────────────
 
