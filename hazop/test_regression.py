@@ -4319,6 +4319,59 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         self.assertEqual(dev_rows[0][2], LEDORD_T)
         self.assertEqual(len([x for x in items if x[0] == EQUIP_T]), 0)
 
+    def test_empty_generic_deviation_hidden_when_equipment_scoped_sibling_exists(self):
+        """Bug report: 'Lågt flöde dyker upp två gånger i trädet'.
+        add_node() auto-seeds an empty, generic (equipment_id=NULL) 'Lågt
+        flöde' deviation for every node. Once a piece of equipment ALSO
+        gets its own 'Lågt flöde', the still-empty generic one is just
+        unused scaffolding sitting right next to it under the same guide
+        word — hide it (it is not deleted; see the sibling test below)."""
+        eq_id = self.db.add_equipment_item("P-101", "P-101", "P", 0, "Pump", '', 0)
+        node_id = self.db.add_node()   # already auto-seeds a generic "Lågt flöde"
+        self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        self.panel.refresh()
+
+        items = self._tree_items()
+        # Scope to the "Lågt flöde" ledord specifically — the other ~15
+        # auto-seeded guide words have no equipment sibling, so THEIR empty
+        # generic deviations correctly stay visible (nothing to hide).
+        ledord_id = next(x[1] for x in items
+                          if x[0] == LEDORD_T and str(x[1]).endswith(":Lågt flöde"))
+        # A DEV_T's own id doesn't tell us its parent ledord directly from
+        # _tree_items(), so walk the actual tree instead for this one check.
+        it = QTreeWidgetItemIterator(self.panel.tree)
+        found_under_target_ledord = []
+        while it.value():
+            item = it.value()
+            if (item.data(0, Qt.ItemDataRole.UserRole + 1) == DEV_T
+                    and item.parent() is not None
+                    and item.parent().data(0, Qt.ItemDataRole.UserRole + 1) == LEDORD_T
+                    and item.parent().data(0, Qt.ItemDataRole.UserRole) == ledord_id):
+                found_under_target_ledord.append(item)
+            it += 1
+        self.assertEqual(
+            len(found_under_target_ledord), 0,
+            "the empty auto-seeded generic deviation must be hidden once an "
+            "equipment-scoped sibling exists for the same guide word")
+
+    def test_generic_deviation_stays_visible_once_it_has_a_cause(self):
+        """The hide-when-empty rule must never hide real user data: a
+        generic deviation that already has a cause stays visible even if an
+        equipment-scoped sibling for the same guide word also exists."""
+        eq_id = self.db.add_equipment_item("P-101", "P-101", "P", 0, "Pump", '', 0)
+        node_id = self.db.add_node()
+        generic_dev = next(d for d in self.db.deviations(node_id)
+                            if d['description'] == "Lågt flöde")
+        self.db.add_cause(generic_dev['id'])
+        self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        self.panel.refresh()
+
+        items = self._tree_items()
+        direct_dev_rows = [x for x in items if x[0] == DEV_T and x[2] == LEDORD_T
+                            and x[1] == generic_dev['id']]
+        self.assertEqual(len(direct_dev_rows), 1,
+                          "a generic deviation with an existing cause must remain visible")
+
     def test_resolve_node_id_for_equip_t(self):
         eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
         node_id = self.db.add_node()
@@ -4491,17 +4544,31 @@ class EquipmentDeviationBarTests(unittest.TestCase):
 
         created = {}
 
-        def fake_create_cause(dev_id, comp_type, comp_tag, description):
+        def fake_create_cause(dev_id, comp_type, comp_tag, description, frequency=None):
             cause_id = self.db.add_cause(dev_id)
             self.db.update_cause(cause_id, description, comp_type=comp_type, comp_tag=comp_tag)
             created['cause_id'] = cause_id
             created['dev_id'] = dev_id
+            created['frequency'] = frequency
             return cause_id
 
         self.bar._create_cause_fn = fake_create_cause
         return created
 
-    def test_suggested_cause_chip_creates_cause_and_reveals_frequency_combo(self):
+    def test_frequency_combo_present_but_disabled_before_any_cause_exists(self):
+        """Bug report: 'Frekvensknappen dök först upp när jag valde någon
+        fritext' — the combo must always render (never hidden), just
+        disabled until this row actually has a cause_id to write against."""
+        node_id = self.db.add_node()
+        self.bar.load(self.eq_id, self.marker_id)
+        idx = self.bar._node_combo.findData(node_id)
+        self.bar._node_combo.setCurrentIndex(idx)
+
+        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        freq_combo = row_widget.findChildren(QComboBox)[-1]
+        self.assertFalse(freq_combo.isEnabled())
+
+    def test_suggested_cause_chip_creates_cause_and_enables_frequency_combo(self):
         created = self._select_node_and_stub_cause_creation()
 
         row_widget = self.bar._checklist_layout.itemAt(0).widget()
@@ -4516,12 +4583,51 @@ class EquipmentDeviationBarTests(unittest.TestCase):
 
         self.assertIn('cause_id', created)
         freq_combo = row_widget.findChildren(QComboBox)[-1]
-        # isVisibleTo (not isVisible) — self.bar is never actually .show()n
-        # in this test, so isVisible() would be False regardless of our
-        # setVisible(True) call; isVisibleTo(row_widget) checks the
-        # widget's own visibility flag relative to its parent instead.
-        self.assertTrue(freq_combo.isVisibleTo(row_widget))
+        self.assertTrue(freq_combo.isEnabled())
         self.assertEqual(freq_combo.property('cause_id'), created['cause_id'])
+
+    def test_suggested_cause_chip_passes_through_seeded_frequency(self):
+        """'Pump stopp' is seeded with a real frequency estimate
+        (standard_causes.frequency) — the chip must pass it through to
+        _create_cause_fn (and from there to place_cause_from_template's
+        _compute_f_level conversion) instead of discarding it, per the
+        user's own request: 'får gärna vara kopplad till databasen med
+        frekvenser'."""
+        created = self._select_node_and_stub_cause_creation()
+        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        checkbox = row_widget.findChild(QCheckBox)
+        checkbox.setChecked(True)
+        suggest_btn = next(
+            w for w in row_widget.findChildren(QPushButton) if w.text().startswith("→ "))
+        suggest_btn.click()
+        self.assertIsNotNone(created.get('frequency'),
+                              "expected the seeded standard_causes.frequency to flow through")
+
+    def test_generic_equipment_type_resolves_object_based_causes(self):
+        """Bug report: 'Orsaksväljaren skall ge fler alternativ'.
+        equipment_type 'Ventil' matches ZERO standard_causes.comp_type rows
+        directly (seeding is per specific sub-type like 'Manuell
+        ventil'/'On-off ventil'), so the checklist used to fall back to the
+        full unfiltered standard_deviations catalogue with no cause
+        suggestions at all. The object-based fallback (_resolve_object_id +
+        standard_causes_for_object) must find a substring match
+        (_obj_type_matches) and produce real suggestions instead."""
+        self.assertEqual(
+            self.db.standard_causes_for_comp_type("Ventil"), [],
+            "sanity check: literal comp_type match is empty for this generic label")
+        obj_id = self.bar._resolve_object_id("Ventil")
+        self.assertIsNotNone(
+            obj_id, "expected a substring match against standard_objects (e.g. 'Manuell ventil')")
+
+        node_id = self.db.add_node()
+        self.bar.load(self.eq_id, self.marker_id)
+        idx = self.bar._node_combo.findData(node_id)
+        self.bar._node_combo.setCurrentIndex(idx)
+        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        suggest_btn = next(
+            (w for w in row_widget.findChildren(QPushButton) if w.text().startswith("→ ")), None)
+        self.assertIsNotNone(
+            suggest_btn, "expected a suggested cause once the object-based fallback resolves")
 
     def test_frequency_combo_change_writes_to_cause_likelihood(self):
         created = self._select_node_and_stub_cause_creation()

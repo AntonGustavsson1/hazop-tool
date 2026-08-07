@@ -24,6 +24,7 @@ from pid_viewer import (
     apply_scan_result_to_equipment_catalog, upsert_identified_tags_from_scan,
     EquipmentAnalysisWorker,
     FREQ_LABELS, freq_to_idx, idx_to_freq,
+    _obj_type_matches,
 )
 
 from PyQt6.QtWidgets import (
@@ -1577,16 +1578,8 @@ def _lookup_comp_type_for_tag(tag: str, db) -> str:
         return ''
 
 
-def _obj_type_matches(preselect: str, obj_name: str) -> bool:
-    """True when preselect and obj_name refer to the same object type.
-    Bidirectional whole-string substring match (case-insensitive) — no
-    word-level matching, to avoid e.g. 'ventil' matching 'backventil' when
-    preselect is 'Manuell ventil'.
-    """
-    if not preselect or not obj_name:
-        return False
-    p, n = preselect.lower(), obj_name.lower()
-    return p in n or n in p
+# _obj_type_matches now lives in pid_viewer.py (imported above) — EquipmentDeviationBar
+# needs it too, and pid_viewer.py can't import back from hazop.py.
 
 
 def _make_tag_completer(db, parent):
@@ -3582,6 +3575,23 @@ class Database:
                GROUP BY so.id
                ORDER BY so.sort_order, so.name""",
             (deviation_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def deviations_for_object(self, object_id):
+        """Standard deviations that have at least one cause for this object,
+        sorted — the mirror of objects_for_deviation(), used by
+        EquipmentDeviationBar to offer the same richer, object-based
+        deviation/cause set as StandardCausesPickerPopup instead of the
+        narrower literal-comp_type lookup (see NOTES.md)."""
+        rows = self.conn.execute(
+            """SELECT sd.id, sd.description, sd.sort_order,
+                      COUNT(sc.id) AS n_causes
+               FROM standard_deviations sd
+               JOIN standard_causes sc ON sc.deviation_id = sd.id
+               WHERE sc.object_id = ?
+               GROUP BY sd.id
+               ORDER BY sd.sort_order, sd.id""",
+            (object_id,)).fetchall()
         return [dict(r) for r in rows]
 
     def all_objects_with_cause_counts(self, deviation_id):
@@ -7179,6 +7189,17 @@ class TreePanel(QWidget):
                             add_deviation_subtree(eitem, dev, di)
 
                     for dev in ungrouped_devs:
+                        # Every node is auto-seeded with one empty, generic
+                        # (equipment_id=NULL) deviation per guide word — see
+                        # add_node(). Once THIS SAME guide word also has a
+                        # real equipment-scoped entry, the still-empty
+                        # generic one is just unused scaffolding sitting
+                        # right next to it under the same Ledord label —
+                        # reads as "Lågt flöde" appearing twice. Hide it
+                        # (not delete — reappears the moment it gets a real
+                        # cause, and non-empty generic entries always show).
+                        if equipment_groups and not self.db.causes_for_deviation(dev['id']):
+                            continue
                         di += 1
                         add_deviation_subtree(litem, dev, di)
 
