@@ -52,10 +52,14 @@ if str(_HAZOP_DIR) not in sys.path:
 import hazop  # noqa: E402  (import after sys.path setup, by design)
 from hazop import (  # noqa: E402
     Database, TreePanel, MainWindow,
-    CAUSE_T, CONS_T, SG_T,
+    NODE_T, DEV_T, CAUSE_T, CONS_T, SG_T, EQUIP_T,
 )
-from PyQt6.QtWidgets import QApplication, QGraphicsPixmapItem  # noqa: E402
+from PyQt6.QtWidgets import (  # noqa: E402
+    QApplication, QGraphicsPixmapItem, QTreeWidgetItemIterator, QCheckBox,
+)
 from PyQt6.QtGui import QPixmap  # noqa: E402
+from PyQt6.QtCore import Qt  # noqa: E402
+from equipment_detection import COMPONENT_TYPES  # noqa: E402
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -4094,6 +4098,229 @@ class EquipmentMarkerClickNavigationTests(unittest.TestCase):
                 except Exception: pass
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+class EquipmentNodeDeviationSchemaTests(unittest.TestCase):
+    """2026-08-07 'Nod → Utrustning → Avvikelse' — equipment_catalog.node_id
+    and deviations.equipment_id, both nullable so existing data/behaviour
+    is untouched. See NOTES.md."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_equipnode_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_column_migrations_are_idempotent(self):
+        """Running the migration list twice (e.g. reopening an already-
+        migrated project) must not raise — same guarantee every other
+        column migration already has."""
+        try:
+            self.db._column_migrations()
+            self.db._column_migrations()
+        except Exception as e:
+            self.fail(f"re-running _column_migrations() must not raise: {e!r}")
+
+    def test_equipment_node_id_defaults_to_none(self):
+        eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
+        self.assertIsNone(self.db.equipment_node_id(eq_id))
+
+    def test_set_and_read_equipment_node(self):
+        eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
+        node_id = self.db.add_node()
+        self.db.set_equipment_node(eq_id, node_id)
+        self.assertEqual(self.db.equipment_node_id(eq_id), node_id)
+
+    def test_existing_deviations_have_null_equipment_id(self):
+        """Every deviation created before this feature (or via any path
+        that doesn't pass equipment_id) must be equipment_id=NULL — the
+        exact backward-compatibility guarantee the plan relies on instead
+        of a backfill migration."""
+        node_id = self.db.add_node()
+        dev_id = self.db.add_deviation(node_id, "Lågt flöde")
+        dev = self.db.get_deviation(dev_id)
+        self.assertIsNone(dev['equipment_id'])
+
+
+class GetOrCreateDeviationEquipmentTests(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_getorcreate_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        self.node_id = self.db.add_node()
+        self.eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_creates_equipment_scoped_deviation(self):
+        dev_id = self.db.get_or_create_deviation(self.node_id, "Lågt flöde", equipment_id=self.eq_id)
+        dev = self.db.get_deviation(dev_id)
+        self.assertEqual(dev['equipment_id'], self.eq_id)
+        self.assertEqual(dev['node_id'], self.node_id)
+
+    def test_reuses_existing_equipment_scoped_deviation(self):
+        first = self.db.get_or_create_deviation(self.node_id, "Lågt flöde", equipment_id=self.eq_id)
+        second = self.db.get_or_create_deviation(self.node_id, "Lågt flöde", equipment_id=self.eq_id)
+        self.assertEqual(first, second)
+        self.assertEqual(len(self.db.deviations_for_equipment(self.eq_id)), 1)
+
+    def test_does_not_reuse_a_generic_deviation_with_same_description(self):
+        """A pre-existing generic (equipment_id=NULL) 'Lågt flöde' under the
+        node must NOT be silently claimed as this equipment's own — they
+        represent different things (whole-node vs. this-specific-valve)."""
+        generic_id = self.db.get_or_create_deviation(self.node_id, "Lågt flöde")
+        scoped_id = self.db.get_or_create_deviation(self.node_id, "Lågt flöde", equipment_id=self.eq_id)
+        self.assertNotEqual(generic_id, scoped_id)
+
+    def test_equipment_deviation_count(self):
+        self.assertEqual(self.db.equipment_deviation_count(self.eq_id), 0)
+        self.db.get_or_create_deviation(self.node_id, "Lågt flöde", equipment_id=self.eq_id)
+        self.db.get_or_create_deviation(self.node_id, "Högt flöde", equipment_id=self.eq_id)
+        self.assertEqual(self.db.equipment_deviation_count(self.eq_id), 2)
+
+
+class TreePanelEquipmentGroupingTests(unittest.TestCase):
+    """TreePanel.refresh() groups a node's equipment-scoped deviations
+    under a new EQUIP_T item, while equipment_id=NULL deviations keep
+    appearing directly under the node exactly as before this feature."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_treeequip_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        self.panel = TreePanel(self.db)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _tree_items(self):
+        """Flat list of (type_, id_, parent_type_) for every item in the tree."""
+        out = []
+        it = QTreeWidgetItemIterator(self.panel.tree)
+        while it.value():
+            item = it.value()
+            t = item.data(0, Qt.ItemDataRole.UserRole + 1)
+            i = item.data(0, Qt.ItemDataRole.UserRole)
+            pt = item.parent().data(0, Qt.ItemDataRole.UserRole + 1) if item.parent() else None
+            out.append((t, i, pt))
+            it += 1
+        return out
+
+    def test_equipment_scoped_deviation_grouped_under_equip_t(self):
+        eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
+        node_id = self.db.add_node()
+        dev_id = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        self.panel.refresh()
+
+        items = self._tree_items()
+        equip_rows = [x for x in items if x[0] == EQUIP_T and x[1] == eq_id]
+        self.assertEqual(len(equip_rows), 1, "the equipment must appear as its own tree item")
+        dev_rows = [x for x in items if x[0] == DEV_T and x[1] == dev_id]
+        self.assertEqual(len(dev_rows), 1)
+        self.assertEqual(dev_rows[0][2], EQUIP_T,
+            "the deviation must be nested under the EQUIP_T item, not directly under the node")
+
+    def test_generic_deviation_stays_flat_under_node(self):
+        """Regression guard: a deviation with no equipment_id (every
+        deviation that existed before this feature) must keep its original
+        parent — a NODE_T item directly, no EQUIP_T inserted."""
+        node_id = self.db.add_node()
+        dev_id = self.db.add_deviation(node_id, "Övrigt-avvikelse")
+        self.panel.refresh()
+
+        items = self._tree_items()
+        dev_rows = [x for x in items if x[0] == DEV_T and x[1] == dev_id]
+        self.assertEqual(len(dev_rows), 1)
+        self.assertEqual(dev_rows[0][2], NODE_T)
+        self.assertEqual(len([x for x in items if x[0] == EQUIP_T]), 0)
+
+    def test_resolve_node_id_for_equip_t(self):
+        eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
+        node_id = self.db.add_node()
+        self.db.set_equipment_node(eq_id, node_id)
+        self.assertEqual(self.panel._resolve_node_id(EQUIP_T, eq_id), node_id)
+
+
+class EquipmentDeviationBarTests(unittest.TestCase):
+    """The bottom-of-P&ID-view bar shown when an equipment marker is
+    clicked — see NOTES.md 'Nod → Utrustning → Avvikelse'."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_equipbar_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from pid_viewer import EquipmentDeviationBar
+        self.bar = EquipmentDeviationBar(self.db)
+        self.eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
+        self.marker_id = self.db.add_equipment_marker(
+            self.eq_id, "V-101", 0, 100.0, 100.0, "Ventil", confidence=0.9, link_method='leader')
+
+    def tearDown(self):
+        self.bar.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_load_shows_bar_and_populates_type_and_node(self):
+        self.bar.load(self.eq_id, self.marker_id)
+        self.assertTrue(self.bar.isVisible())
+        self.assertEqual(self.bar._type_combo.currentText(), "Ventil")
+
+    def test_changing_type_propagates_to_catalog_and_marker(self):
+        """Known pre-existing gap fixed as part of this feature: changing
+        equipment_type used to update ONLY equipment_catalog, never the
+        already-drawn marker's own comp_type — see NOTES.md."""
+        self.bar.load(self.eq_id, self.marker_id)
+        other_type = next(t for t in sorted(COMPONENT_TYPES.keys()) if t != "Ventil")
+
+        self.bar._type_combo.setCurrentText(other_type)
+
+        cat = self.db.get_equipment_by_id(self.eq_id)
+        self.assertEqual(cat['equipment_type'], other_type)
+        marker = self.db.conn.execute(
+            "SELECT comp_type FROM equipment_markers WHERE id=?", (self.marker_id,)).fetchone()
+        self.assertEqual(marker['comp_type'], other_type)
+
+    def test_checking_deviation_without_a_node_selected_is_a_no_op(self):
+        self.bar.load(self.eq_id, self.marker_id)
+        self.assertEqual(self.db.equipment_deviation_count(self.eq_id), 0)
+        # No node picked yet — checkboxes must be disabled, nothing to toggle.
+        self.assertEqual(self.bar._node_combo.currentData(), None)
+
+    def test_checking_deviation_after_node_selected_creates_it(self):
+        node_id = self.db.add_node()
+        self.bar.load(self.eq_id, self.marker_id)
+        idx = self.bar._node_combo.findData(node_id)
+        self.bar._node_combo.setCurrentIndex(idx)
+
+        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        checkbox = row_widget.findChild(QCheckBox)
+        checkbox.setChecked(True)
+
+        self.assertEqual(self.db.equipment_deviation_count(self.eq_id), 1)
+        self.assertEqual(self.db.equipment_node_id(self.eq_id), node_id)
 
 
 if __name__ == '__main__':

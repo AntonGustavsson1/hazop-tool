@@ -573,6 +573,32 @@ Given detta: kärnlogiken är korrekt implementerad och verifierad via 6 nya syn
 
 ---
 
+## Nod → Utrustning → Avvikelse: snabbval från P&ID-markören (2026-08-07)
+
+**Bakgrund:** Anton ville kunna klicka på en utrustningsmarkör (ventil, pump, instrument) på P&ID:n och få upp en liten, icke-modal ruta längst ner i vyn för att snabbt kryssa i vilka avvikelser (lågt/högt flöde m.m.) som gäller just det objektet, välja orsak för varje, och ändra utrustningstyp om autodetekteringen gissat fel. Resultatet skulle synas i HAZOP-trädet/worksheet som en helt ny nivå: **Nod → Utrustning → Avvikelse → Orsak** (explicit bekräftat av Anton, inte bara en taggning på befintliga avvikelser). Markören skulle bli grön med en sifferplupp när avvikelser finns, istället för alltid röd. Ingen popup mitt i skärmen — "smarta rutor" istället.
+
+**Datamodell (2 nya, nullable kolumner, `Database._column_migrations()`):**
+- `equipment_catalog.node_id` — vilken nod utrustningen hör till, satt explicit av användaren i den nya rutan (ingen spatial "vilken nod ligger punkten i"-logik byggdes — bekräftat att ingen sådan fanns i kodbasen sedan tidigare, och att gissa fel läge hade varit sämre än att fråga).
+- `deviations.equipment_id` — kopplar en avvikelse till en specifik utrustning. Befintliga avvikelser lämnas helt orörda (`equipment_id=NULL`), inget backfill behövs — de fortsätter visas exakt som innan, platt under noden.
+- `Database.get_or_create_deviation(node_id, description, equipment_id=None)` — utökad med bakåtkompatibel `equipment_id`-parameter. En avvikelse med samma beskrivning men annat `equipment_id` (t.ex. en redan existerande generisk "Lågt flöde" utan utrustningskoppling) återanvänds INTE — de representerar olika saker (hela noden vs. just den här ventilen).
+- Nya metoder: `equipment_node_id`/`set_equipment_node`/`equipment_deviation_count`/`deviations_for_equipment`/`get_equipment_by_id`.
+
+**Trädet (`TreePanel.refresh()`, hazop.py):** ny typkonstant `EQUIP_T=6`. Nodens avvikelser grupperas i `equipment_id IS NULL` (visas exakt som innan, direkt under noden) och `equipment_id=X` (grupperas under en ny `🔧`-markerad `EQUIP_T`-nod). `_resolve_node_id`/`_resolve_deviation_id`/`_resolve_cause_id` behövde INGEN ändring — de slår redan upp via DB-frågor per typ, inte via `.parent()`-klättring i trädet, så den nya nivån är transparent för dem. Lade ändå till `_resolve_equipment_id` och en `EQUIP_T`-gren i `_resolve_node_id` för robusthet. Kontextmenyn hoppar helt över `EQUIP_T` (det är en ren vy över `equipment_catalog`/`deviations`, ingen egen rad att lägga till/kopiera/ta bort från trädet).
+
+**Worksheet (`ScenarioTablePanel`, hazop.py):** ny kolumn `_C_UTR` mellan Nod och Avvikelse (alla efterföljande kolumnkonstanter skiftades — inget hårdkodat kolumnantal någonstans i klassen, så detta var en enda-radsändring plus datapopulering på tre ställen: `_add_placeholder_row`/`_add_empty_row`/`_add_row`). Spanning: `_C_UTR` grupperas (som `_C_NOD`) via `equipment_id` sparat som `UserRole`-data på cellen — spanner ALLA en utrustnings avvikelserader tillsammans, inte bara rader som delar samma avvikelse (till skillnad från `_C_DEV`s span). Synlighet följer `_C_DEV` (samma `_force_dev_column_visible`-flagga) eftersom en nod kan ha FLERA utrustningsgrupper — till skillnad från Nod, som är konstant för varje rad i enkelnod-vy, varierar Utrustning rad-för-rad precis som Avvikelse gör.
+
+**Ny UI — `EquipmentDeviationBar` (pid_viewer.py):** en vanlig `QWidget` (inte `QDialog`) tillagd i `PIDPanel`s layout under `self.viewer`, dold tills en utrustningsmarkör klickas. Vänsterklick på en utrustningsmarkör (`PIDGraphicsView.marker_clicked`) gick tidigare alltid till `marker_navigated.emit('equipment', ...)` → hoppade till Utrustningsregistret. Detta hanteras nu lokalt i en ny `PIDPanel._on_marker_clicked`, som öppnar/fyller rutan istället för 'equipment'-typen (övriga typer vidarebefordras oförändrat). Den gamla navigeringen finns kvar som en "Visa i register"-länk inuti rutan (ny signaltyp `'equipment_register'` med `equipment_id` direkt, hanterad i `MainWindow._on_marker_navigate`).
+
+Rutans innehåll: typ-kombobox (ändring skriver till BÅDE `equipment_catalog.equipment_type` OCH `equipment_markers.comp_type` — fixar en redan identifierad, förbefintlig brist där registrets typändring aldrig propagerade till den redan ritade markören), nod-kombobox, och en kryssgardin med avvikelser hämtade via `standard_causes_for_comp_type(comp_type)` (redan existerande metod, samma datakälla `StandardCausesPickerPopup` redan använder — grupperad i Python på `deviation_id` för att få fram "vilka avvikelser är relevanta för den här typen"). Varje kryssad avvikelse får en inline-kombobox med orsaksförslag (`standard_causes_for_comp_type(comp_type, deviation_name)`) + ett "✎ Skriv egen orsak…"-alternativ (öppnar en liten `QInputDialog.getText`, enda återstående minimala dialogen — allt annat är inline i rutan). Att välja en orsak återanvänder `PIDPanel.place_cause_from_template` rakt av (samma skapande-kedja + samma `cause_template_created`-signal som redan trådar om träd/worksheet, inget nytt där).
+
+**Avsiktliga begränsningar (v1):** att bocka UR en redan ikryssad avvikelse tar inte bort den (skyddar mot oavsiktlig dataförlust — kryssrutan blir bara inaktiverad); att byta nod på en utrustning flyttar inte redan skapade avvikelser till den nya noden.
+
+**Markörens utseende (`add_equipment_marker`, pid_viewer.py):** ny `deviation_count`-parameter — grön istället för röd när `>0`, plus en liten grön sifferplupp i markörens övre högra hörn. `_load_overlays()` räknar `db.equipment_deviation_count(equipment_id)` per markör vid varje redraw. Efter en kryssning/typändring i den nya rutan anropas en full `_load_overlays()` (inte ett riktat enda-markör-redraw) — enklare och redan det etablerade mönstret för "något ändrades, rita om P&ID-overlayen", och `_place_label`s etikett-items är inte id-taggade så ett riktat borttag hade krävt ny spårningskod utan tydlig vinst för en checkbox-klick.
+
+**Test:** 15 nya tester i `test_regression.py` (`EquipmentNodeDeviationSchemaTests`, `GetOrCreateDeviationEquipmentTests`, `TreePanelEquipmentGroupingTests`, `EquipmentDeviationBarTests`). Alla 223 tester passerar (`test_regression` + `test_symbol_geometry`).
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **OCR-positioner är approximativa** — x,y-koordinater från OCR stämmer inte perfekt med PDF-koordinater vid hög zoom. Markörer kan hamna något fel.

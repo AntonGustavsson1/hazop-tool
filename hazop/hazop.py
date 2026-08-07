@@ -1833,6 +1833,12 @@ class Database:
             "ALTER TABLE equipment_markers ADD COLUMN medium_code_verified INTEGER DEFAULT 0",
             "ALTER TABLE equipment_markers ADD COLUMN nominal_size TEXT DEFAULT ''",
             "ALTER TABLE equipment_markers ADD COLUMN tag_status TEXT DEFAULT 'tagged'",
+            # Nod → Utrustning → Avvikelse (2026-08-07, se NOTES.md) — kopplar
+            # en utrustning till en nod, och en avvikelse till en specifik
+            # utrustning. Båda nullable: befintliga rader/avvikelser lämnas
+            # helt orörda (equipment_id/node_id=NULL), inget backfill behövs.
+            "ALTER TABLE equipment_catalog ADD COLUMN node_id INTEGER REFERENCES nodes(id)",
+            "ALTER TABLE deviations ADD COLUMN equipment_id INTEGER REFERENCES equipment_catalog(id)",
         ]
 
         for sql in migrations:
@@ -2632,6 +2638,22 @@ class Database:
         self.conn.execute("DELETE FROM equipment_catalog")
         self.commit()
 
+    # ── Nod ↔ Utrustning (2026-08-07) ────────────────────────────────────────
+    def equipment_node_id(self, equipment_id):
+        row = self.conn.execute(
+            "SELECT node_id FROM equipment_catalog WHERE id=?", (equipment_id,)).fetchone()
+        return row['node_id'] if row else None
+
+    def set_equipment_node(self, equipment_id, node_id):
+        self.conn.execute(
+            "UPDATE equipment_catalog SET node_id=? WHERE id=?", (node_id, equipment_id))
+        self.commit()
+
+    def equipment_deviation_count(self, equipment_id):
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM deviations WHERE equipment_id=?", (equipment_id,)).fetchone()
+        return row[0] if row else 0
+
     # ── Equipment types ───────────────────────────────────────────────────────
     def get_equipment_type(self, prefix: str):
         """Return saved equipment_type for this prefix, or None."""
@@ -2654,6 +2676,11 @@ class Database:
         row = self.conn.execute(
             "SELECT * FROM equipment_catalog WHERE UPPER(tag)=UPPER(?) AND include=1 LIMIT 1",
             (tag,)).fetchone()
+        return dict(row) if row else None
+
+    def get_equipment_by_id(self, id_):
+        row = self.conn.execute(
+            "SELECT * FROM equipment_catalog WHERE id=?", (id_,)).fetchone()
         return dict(row) if row else None
 
     # ── Smart object recognition: study tag memory ─────────────────────────────
@@ -3372,6 +3399,10 @@ class Database:
         return self.conn.execute(
             "SELECT * FROM deviations WHERE node_id=? ORDER BY id", (node_id,)).fetchall()
 
+    def deviations_for_equipment(self, equipment_id):
+        return self.conn.execute(
+            "SELECT * FROM deviations WHERE equipment_id=? ORDER BY id", (equipment_id,)).fetchall()
+
     def get_deviation(self, id_):
         row = self.conn.execute("SELECT * FROM deviations WHERE id=?", (id_,)).fetchone()
         return dict(row) if row else None
@@ -3412,9 +3443,10 @@ class Database:
             "ORDER BY d.id, c.id",
             (node_id, deviation_id)).fetchall()
 
-    def add_deviation(self, node_id, description="Övrigt"):
+    def add_deviation(self, node_id, description="Övrigt", equipment_id=None):
         cur = self.conn.execute(
-            "INSERT INTO deviations (node_id, description) VALUES (?,?)", (node_id, description))
+            "INSERT INTO deviations (node_id, description, equipment_id) VALUES (?,?,?)",
+            (node_id, description, equipment_id))
         self.commit()
         return cur.lastrowid
 
@@ -3428,11 +3460,12 @@ class Database:
         self.conn.execute("DELETE FROM deviations WHERE id=?", (id_,))
         self.commit()
 
-    def get_or_create_deviation(self, node_id, description="Övrigt"):
+    def get_or_create_deviation(self, node_id, description="Övrigt", equipment_id=None):
         row = self.conn.execute(
-            "SELECT id FROM deviations WHERE node_id=? AND description=? ORDER BY id LIMIT 1",
-            (node_id, description)).fetchone()
-        return row[0] if row else self.add_deviation(node_id, description)
+            "SELECT id FROM deviations WHERE node_id=? AND description=? AND equipment_id IS ? "
+            "ORDER BY id LIMIT 1",
+            (node_id, description, equipment_id)).fetchone()
+        return row[0] if row else self.add_deviation(node_id, description, equipment_id)
 
     # ── Standard deviation / cause template library ───────────────────────────
     def standard_deviations(self):
@@ -6780,6 +6813,7 @@ CAUSE_T = 2
 CONS_T = 3
 SG_T = 4
 DEV_T = 5
+EQUIP_T = 6
 
 DEVIATION_TYPES = [
     "Lågt flöde",
@@ -7040,6 +7074,59 @@ class TreePanel(QWidget):
             marked_consequences = self.db.marked_consequence_ids()
             marked_safeguards = self.db.marked_safeguard_ids()
 
+            def add_deviation_subtree(parent_item, dev, di):
+                nonlocal target
+                ditem = QTreeWidgetItem([f"  ⬡  {di}. {dev['description'][:55]}"])
+                ditem.setData(0, Qt.ItemDataRole.UserRole, dev['id'])
+                ditem.setData(0, Qt.ItemDataRole.UserRole + 1, DEV_T)
+                dev_font = QFont(); dev_font.setItalic(True)
+                ditem.setFont(0, dev_font)
+                parent_item.addChild(ditem)
+                if (DEV_T, dev['id']) in expanded: ditem.setExpanded(True)
+                if select_type == DEV_T and select_id == dev['id']: target = ditem
+
+                for ci, cause in enumerate(self.db.causes_for_deviation(dev['id']), 1):
+                    placed_c = cause['id'] in marked_causes
+                    chain_icon = "⛓" if cause['linked_consequence_id'] else ""
+                    tag    = (cause['comp_tag'] or '').strip() if cause['comp_tag'] else ''
+                    c_label = tag if tag else (cause['description'] or '')[:50]
+                    citem = QTreeWidgetItem([f"    ⚙ {chain_icon} {ci}. {c_label}"])
+                    citem.setIcon(0, _make_pin_icon(placed_c))
+                    citem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
+                    citem.setData(0, Qt.ItemDataRole.UserRole + 1, CAUSE_T)
+                    ditem.addChild(citem)
+                    if (CAUSE_T, cause['id']) in expanded: citem.setExpanded(True)
+                    if select_type == CAUSE_T and select_id == cause['id']: target = citem
+
+                    for ki, cons in enumerate(self.db.consequences(cause['id']), 1):
+                        cause_freq = self.db.cause_frequency_level(cause)
+                        level, _, _ = risk_info(cause_freq, cons['severity'])
+                        risk_icon = RISK_ICON.get(level, '⚪')
+                        placed_k = cons['id'] in marked_consequences
+                        kitem = QTreeWidgetItem([f"      {risk_icon}  {ki}. {cons['description'][:40]}"])
+                        kitem.setIcon(0, _make_pin_icon(placed_k))
+                        kitem.setData(0, Qt.ItemDataRole.UserRole, cons['id'])
+                        kitem.setData(0, Qt.ItemDataRole.UserRole + 1, CONS_T)
+                        citem.addChild(kitem)
+                        if (CONS_T, cons['id']) in expanded: kitem.setExpanded(True)
+                        if select_type == CONS_T and select_id == cons['id']: target = kitem
+
+                        for si, sg in enumerate(self.db.safeguards(cons['id']), 1):
+                            rrf = (sg['rrf'] or 1) if sg['rrf'] is not None else 1
+                            rrf_str = f"RRF{rrf}" if rrf > 1 else "—"
+                            try:
+                                linked = bool(sg['source_id'])
+                            except (IndexError, KeyError):
+                                linked = False
+                            sg_icon = "🔗🛡" if linked else "🛡"
+                            placed_s = sg['id'] in marked_safeguards
+                            sgitem = QTreeWidgetItem([f"         {sg_icon}  {si}. {sg['description'][:35]}  [{rrf_str}]"])
+                            sgitem.setIcon(0, _make_pin_icon(placed_s))
+                            sgitem.setData(0, Qt.ItemDataRole.UserRole, sg['id'])
+                            sgitem.setData(0, Qt.ItemDataRole.UserRole + 1, SG_T)
+                            kitem.addChild(sgitem)
+                            if select_type == SG_T and select_id == sg['id']: target = sgitem
+
             for ni, node in enumerate(self.db.nodes(), 1):
                 node_on_pid = bool(node['markup_points'])
                 pid_pin = " 📍" if node_on_pid else ""
@@ -7052,57 +7139,40 @@ class TreePanel(QWidget):
                 if (NODE_T, node['id']) in expanded: nitem.setExpanded(True)
                 if select_type == NODE_T and select_id == node['id']: target = nitem
 
-                for di, dev in enumerate(self.db.deviations(node['id']), 1):
-                    ditem = QTreeWidgetItem([f"  ⬡  {di}. {dev['description'][:55]}"])
-                    ditem.setData(0, Qt.ItemDataRole.UserRole, dev['id'])
-                    ditem.setData(0, Qt.ItemDataRole.UserRole + 1, DEV_T)
-                    dev_font = QFont(); dev_font.setItalic(True)
-                    ditem.setFont(0, dev_font)
-                    nitem.addChild(ditem)
-                    if (DEV_T, dev['id']) in expanded: ditem.setExpanded(True)
-                    if select_type == DEV_T and select_id == dev['id']: target = ditem
+                # Deviations tied to a specific equipment (equipment_id set)
+                # are grouped under a new "Utrustning" item between the node
+                # and its deviations; deviations with no equipment_id (every
+                # deviation created before this feature, and any created the
+                # old way) are shown exactly as before, directly under the
+                # node — see NOTES.md "Nod → Utrustning → Avvikelse".
+                equipment_groups = {}
+                ungrouped_devs = []
+                for dev in self.db.deviations(node['id']):
+                    eq_id = dev['equipment_id']
+                    if eq_id:
+                        equipment_groups.setdefault(eq_id, []).append(dev)
+                    else:
+                        ungrouped_devs.append(dev)
 
-                    for ci, cause in enumerate(self.db.causes_for_deviation(dev['id']), 1):
-                        placed_c = cause['id'] in marked_causes
-                        chain_icon = "⛓" if cause['linked_consequence_id'] else ""
-                        tag    = (cause['comp_tag'] or '').strip() if cause['comp_tag'] else ''
-                        c_label = tag if tag else (cause['description'] or '')[:50]
-                        citem = QTreeWidgetItem([f"    ⚙ {chain_icon} {ci}. {c_label}"])
-                        citem.setIcon(0, _make_pin_icon(placed_c))
-                        citem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
-                        citem.setData(0, Qt.ItemDataRole.UserRole + 1, CAUSE_T)
-                        ditem.addChild(citem)
-                        if (CAUSE_T, cause['id']) in expanded: citem.setExpanded(True)
-                        if select_type == CAUSE_T and select_id == cause['id']: target = citem
+                di = 0
+                for eq_id, eq_devs in equipment_groups.items():
+                    eq = self.db.get_equipment_by_id(eq_id)
+                    eq_label = f"{eq['tag']} — {eq['equipment_type']}" if eq else f"Utrustning #{eq_id}"
+                    eitem = QTreeWidgetItem([f"  🔧  {eq_label}"])
+                    eitem.setData(0, Qt.ItemDataRole.UserRole, eq_id)
+                    eitem.setData(0, Qt.ItemDataRole.UserRole + 1, EQUIP_T)
+                    eq_font = QFont(); eq_font.setBold(True)
+                    eitem.setFont(0, eq_font)
+                    nitem.addChild(eitem)
+                    if (EQUIP_T, eq_id) in expanded: eitem.setExpanded(True)
+                    if select_type == EQUIP_T and select_id == eq_id: target = eitem
+                    for dev in eq_devs:
+                        di += 1
+                        add_deviation_subtree(eitem, dev, di)
 
-                        for ki, cons in enumerate(self.db.consequences(cause['id']), 1):
-                            cause_freq = self.db.cause_frequency_level(cause)
-                            level, _, _ = risk_info(cause_freq, cons['severity'])
-                            risk_icon = RISK_ICON.get(level, '⚪')
-                            placed_k = cons['id'] in marked_consequences
-                            kitem = QTreeWidgetItem([f"      {risk_icon}  {ki}. {cons['description'][:40]}"])
-                            kitem.setIcon(0, _make_pin_icon(placed_k))
-                            kitem.setData(0, Qt.ItemDataRole.UserRole, cons['id'])
-                            kitem.setData(0, Qt.ItemDataRole.UserRole + 1, CONS_T)
-                            citem.addChild(kitem)
-                            if (CONS_T, cons['id']) in expanded: kitem.setExpanded(True)
-                            if select_type == CONS_T and select_id == cons['id']: target = kitem
-
-                            for si, sg in enumerate(self.db.safeguards(cons['id']), 1):
-                                rrf = (sg['rrf'] or 1) if sg['rrf'] is not None else 1
-                                rrf_str = f"RRF{rrf}" if rrf > 1 else "—"
-                                try:
-                                    linked = bool(sg['source_id'])
-                                except (IndexError, KeyError):
-                                    linked = False
-                                sg_icon = "🔗🛡" if linked else "🛡"
-                                placed_s = sg['id'] in marked_safeguards
-                                sgitem = QTreeWidgetItem([f"         {sg_icon}  {si}. {sg['description'][:35]}  [{rrf_str}]"])
-                                sgitem.setIcon(0, _make_pin_icon(placed_s))
-                                sgitem.setData(0, Qt.ItemDataRole.UserRole, sg['id'])
-                                sgitem.setData(0, Qt.ItemDataRole.UserRole + 1, SG_T)
-                                kitem.addChild(sgitem)
-                                if select_type == SG_T and select_id == sg['id']: target = sgitem
+                for dev in ungrouped_devs:
+                    di += 1
+                    add_deviation_subtree(nitem, dev, di)
 
             if target and not emit_selection:
                 # Update the tree's visual highlight while signals are still
@@ -7128,6 +7198,7 @@ class TreePanel(QWidget):
 
     def _resolve_node_id(self, type_, id_):
         if type_ == NODE_T: return id_
+        if type_ == EQUIP_T: return self.db.equipment_node_id(id_)
         if type_ == DEV_T:
             r = self.db.get_deviation(id_); return r['node_id'] if r else None
         if type_ == CAUSE_T:
@@ -7143,6 +7214,17 @@ class TreePanel(QWidget):
                 if c:
                     ca = self.db.get_cause(c['cause_id']); return ca['node_id'] if ca else None
         return None
+
+    def _resolve_equipment_id(self, type_, id_):
+        """Walk any tree item back to the equipment it's grouped under, or
+        None if it sits directly under a node (no equipment_id set on its
+        deviation) — see 'Nod → Utrustning → Avvikelse' in NOTES.md."""
+        if type_ == EQUIP_T: return id_
+        dev_id = self._resolve_deviation_id(type_, id_) if type_ != DEV_T else id_
+        if dev_id is None:
+            return None
+        r = self.db.get_deviation(dev_id)
+        return r['equipment_id'] if r else None
 
     def _resolve_deviation_id(self, type_, id_):
         if type_ == DEV_T: return id_
@@ -7282,6 +7364,12 @@ class TreePanel(QWidget):
         if item is None: return
         type_ = item.data(0, Qt.ItemDataRole.UserRole + 1)
         id_   = item.data(0, Qt.ItemDataRole.UserRole)
+        if type_ == EQUIP_T:
+            # A live grouping view over equipment_catalog/deviations, not
+            # its own row — nothing to add/copy/delete here from the tree
+            # (use the equipment's own bottom bar on the P&ID, or the
+            # Utrustningsregister).
+            return
         menu  = QMenu(self)
 
         if type_ == NODE_T:
@@ -10750,11 +10838,12 @@ class ScenarioTablePanel(QWidget):
     structure_changed          = pyqtSignal()           # item moved/deleted/duplicated → refresh tree
 
     # Column indices
-    _C_NOD, _C_DEV, _C_ORS, _C_KON, _C_RFORE = 0, 1, 2, 3, 4
-    _C_SG, _C_REFT, _C_LOPA, _C_SLUT          = 5, 6, 7, 8
+    _C_NOD, _C_UTR, _C_DEV, _C_ORS, _C_KON, _C_RFORE = 0, 1, 2, 3, 4, 5
+    _C_SG, _C_REFT, _C_LOPA, _C_SLUT                  = 6, 7, 8, 9
 
     _COLS = [
         'Nod',
+        'Utrustning',
         'Avvikelse',
         'Orsak  →',
         'Konsekvens',
@@ -10822,11 +10911,13 @@ class ScenarioTablePanel(QWidget):
         self._table = QTableWidget(0, len(self._COLS))
         self._table.setHorizontalHeaderLabels(self._COLS)
         h = self._table.horizontalHeader()
-        # NOD and DEV are hidden — context is shown in the header label instead
+        # NOD, UTR and DEV are hidden — context is shown in the header label instead
         self._table.setColumnHidden(self._C_NOD, True)
+        self._table.setColumnHidden(self._C_UTR, True)
         self._table.setColumnHidden(self._C_DEV, True)
         resize_modes = {
             self._C_NOD:   (QHeaderView.ResizeMode.Interactive,  70),
+            self._C_UTR:   (QHeaderView.ResizeMode.Interactive, 110),
             self._C_DEV:   (QHeaderView.ResizeMode.Interactive, 120),
             self._C_ORS:   (QHeaderView.ResizeMode.Interactive, 180),
             self._C_KON:   (QHeaderView.ResizeMode.Interactive, 180),
@@ -10974,24 +11065,31 @@ class ScenarioTablePanel(QWidget):
         self._hdr_lbl.setText("HAZOP Scenario")
 
     def _set_all_nodes_columns_visible(self, visible: bool):
-        """NOD/DEV columns are normally hidden (context shown in the sticky
-        header bar / _hdr_lbl instead). In "all nodes" mode multiple nodes
-        and deviations are interleaved in one table, so those columns must
-        become visible so rows remain identifiable.
+        """NOD/UTR/DEV columns are normally hidden (context shown in the
+        sticky header bar / _hdr_lbl instead). In "all nodes" mode multiple
+        nodes and deviations are interleaved in one table, so those columns
+        must become visible so rows remain identifiable.
 
         `self._force_dev_column_visible` (set via always_show_deviation_column())
-        keeps the Avvikelse column visible regardless of `visible` — for hosts
-        like HAZOPWorksheet where deviation context should always be in the
-        grid, not just in the sticky header bar."""
+        keeps the Avvikelse AND Utrustning columns visible regardless of
+        `visible` — for hosts like HAZOPWorksheet where deviation/equipment
+        context should always be in the grid, not just in the sticky header
+        bar. UTR follows DEV's visibility rather than getting its own flag:
+        a node can have MULTIPLE equipment groups (unlike a single node,
+        which is constant for every row in single-node view), so "show
+        which deviation this row is" and "show which equipment it belongs
+        to" are the same kind of per-row context, not per-node context."""
         self._table.setColumnHidden(self._C_NOD, not visible)
         self._table.setColumnHidden(
             self._C_DEV, not (visible or self._force_dev_column_visible))
+        self._table.setColumnHidden(
+            self._C_UTR, not (visible or self._force_dev_column_visible))
 
     def always_show_deviation_column(self):
-        """Keep the Avvikelse column visible at all times, regardless of
-        "Visa samtliga noder" / "Visa avvikelser utan orsaker" state — opt-in
-        for hosts (e.g. HAZOPWorksheet) that want deviation context always
-        shown in the grid itself."""
+        """Keep the Avvikelse (and Utrustning) column visible at all times,
+        regardless of "Visa samtliga noder" / "Visa avvikelser utan orsaker"
+        state — opt-in for hosts (e.g. HAZOPWorksheet) that want deviation
+        context always shown in the grid itself."""
         self._force_dev_column_visible = True
         self._set_all_nodes_columns_visible(self._all_nodes)
 
@@ -11113,6 +11211,16 @@ class ScenarioTablePanel(QWidget):
             self._rebuild_pending = False
             self._rebuilding = False
             self._update_ctx_bar()
+
+    def _equipment_for_dev(self, dev_d):
+        """(equipment_id, label) for a deviation dict's equipment_id, or
+        (None, '') if it's not tied to a specific equipment — see NOTES.md
+        "Nod → Utrustning → Avvikelse"."""
+        eq_id = dev_d.get('equipment_id') if dev_d else None
+        if not eq_id:
+            return None, ''
+        eq = self.db.get_equipment_by_id(eq_id)
+        return eq_id, (f"{eq['tag']} — {eq['equipment_type']}" if eq else '')
 
     def _causes_for_node(self, node_id):
         """Return [(cause_dict, deviation_dict), ...] for every cause under
@@ -11369,6 +11477,15 @@ class ScenarioTablePanel(QWidget):
             if self._table.item(r, self._C_NOD) else None))
         logging.info('_apply_spans: J2 — NOD column spanned')
 
+        # Utrustning: group by equipment_id stored in UserRole — spans ALL of
+        # an equipment's deviation rows together (like NOD spans a whole
+        # node), not just rows sharing one deviation. Rows with no equipment
+        # (key None) never span, same as _span_col's general None handling.
+        _span_col(self._C_UTR, lambda r: (
+            self._table.item(r, self._C_UTR).data(Qt.ItemDataRole.UserRole)
+            if self._table.item(r, self._C_UTR) else None))
+        logging.info('_apply_spans: J2b — UTR column spanned')
+
         # Avvikelse: group by dev_id (index 0 in row_meta)
         _span_col(self._C_DEV, lambda r: _meta(r, 0))
         logging.info('_apply_spans: J3 — DEV column spanned')
@@ -11536,6 +11653,10 @@ class ScenarioTablePanel(QWidget):
 
         nod = _ro(node_name)
         self._table.setItem(r, self._C_NOD, nod)
+        eq_id, eq_label = self._equipment_for_dev(dev_d or {})
+        utr = _ro(eq_label)
+        utr.setData(Qt.ItemDataRole.UserRole, eq_id)
+        self._table.setItem(r, self._C_UTR, utr)
         dev_item = _ro(dev_d['description'] if dev_d else '')
         dev_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self._table.setItem(r, self._C_DEV, dev_item)
@@ -11567,6 +11688,11 @@ class ScenarioTablePanel(QWidget):
         nod = _ro(node_name)
         nod.setData(Qt.ItemDataRole.UserRole, cause_d['node_id'])
         self._table.setItem(r, self._C_NOD, nod)
+
+        eq_id, eq_label = self._equipment_for_dev(dev_d or {})
+        utr = _ro(eq_label)
+        utr.setData(Qt.ItemDataRole.UserRole, eq_id)
+        self._table.setItem(r, self._C_UTR, utr)
 
         dev_item = _ro(dev_d['description'] if dev_d else '')
         dev_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -11662,6 +11788,14 @@ class ScenarioTablePanel(QWidget):
         nod.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         nod.setData(Qt.ItemDataRole.UserRole, cause_d['node_id'])
         self._table.setItem(r, self._C_NOD, nod)
+
+        # ── Col: Utrustning ──────────────────────────────────────────────────
+        eq_id, eq_label = self._equipment_for_dev(dev_d or {})
+        utr_item = QTableWidgetItem(eq_label)
+        utr_item.setFlags(utr_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        utr_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        utr_item.setData(Qt.ItemDataRole.UserRole, eq_id)
+        self._table.setItem(r, self._C_UTR, utr_item)
 
         # ── Col 1: Avvikelse ─────────────────────────────────────────────────
         dev_item = QTableWidgetItem(dev_d['description'] if dev_d else '')
@@ -17843,6 +17977,7 @@ class MainWindow(QMainWindow):
         self.pid_panel.cause_placement_requested.connect(self._on_cause_placement_requested)
         self.pid_panel.risk_scenario_requested.connect(self._on_pid_risk_scenario)
         self.pid_panel.marker_navigated.connect(self._on_marker_navigate)
+        self.pid_panel.equipment_deviation_created.connect(self._on_equipment_deviation_created)
         self.pid_panel.pid_analysis_done.connect(self._on_pid_analysis_done)
         self.admin_panel._pid_mgmt.sheets_changed.connect(self._on_sheets_changed)
 
@@ -17994,6 +18129,13 @@ class MainWindow(QMainWindow):
             # equipment_catalog.id — look up which register row it links to.
             self._on_equipment_marker_navigate(item_id)
             return
+        if item_type == 'equipment_register':
+            # From EquipmentDeviationBar's "Visa i register" link — item_id
+            # here IS already equipment_catalog.id (the bar knows it
+            # directly, no marker lookup needed).
+            self._switch_view(2)
+            self.equipment_panel.select_row_by_equipment_id(item_id)
+            return
         type_map = {'cause': CAUSE_T, 'consequence': CONS_T, 'safeguard': SG_T}
         t = type_map.get(item_type)
         if t is None:
@@ -18017,6 +18159,13 @@ class MainWindow(QMainWindow):
             return
         self._switch_view(2)   # Utrustning page
         self.equipment_panel.select_row_by_equipment_id(row['equipment_id'])
+
+    def _on_equipment_deviation_created(self, deviation_id, _equipment_id):
+        """A deviation was checked on in EquipmentDeviationBar — refresh the
+        tree (new EQUIP_T/DEV_T items) and worksheet, same as any other
+        structural change. See NOTES.md "Nod → Utrustning → Avvikelse"."""
+        self.tree_panel.refresh(DEV_T, deviation_id)
+        self.scenario_panel.refresh_placed()
 
     def _on_safeguard_created(self, _sg_id):
         if self._cur_type == CONS_T and self._cur_id is not None:

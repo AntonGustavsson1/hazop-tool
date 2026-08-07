@@ -4914,16 +4914,23 @@ class PIDGraphicsView(QGraphicsView):
             self.add_zone_rect('safeguard', sg_id, x_pdf, y_pdf, rect_w, rect_h)
 
     def add_equipment_marker(self, marker_id, x_pdf, y_pdf, comp_type, tag='',
-                             confidence=0.0, outline_pdf=None):
+                             confidence=0.0, outline_pdf=None, deviation_count=0):
         """Draw an auto-detected equipment symbol marker: a semi-transparent
-        red shape tracing the detected symbol's outline (or a generic
+        shape tracing the detected symbol's outline (or a generic
         valve-bowtie icon if no outline was captured), linked to `tag` via
         geometric detection — see symbol_geometry.py / detect_equipment_symbols
-        and the "🎯 Hitta på P&ID" flow in EquipmentPanel."""
+        and the "🎯 Hitta på P&ID" flow in EquipmentPanel.
+
+        `deviation_count` (see NOTES.md "Nod → Utrustning → Avvikelse") —
+        0 keeps the original red "not analysed yet" colour; >0 switches to
+        green and adds a small numbered badge in the marker's top-right
+        corner, so a glance at the P&ID shows which equipment already has
+        HAZOP deviations recorded against it."""
         center = self.pdf_to_scene(x_pdf, y_pdf)
         r = 12.0
-        pen = QPen(QColor(160, 0, 0), 1.5)
-        brush = QBrush(QColor(220, 20, 20, 90))
+        has_deviations = deviation_count > 0
+        pen = QPen(QColor(0, 130, 60) if has_deviations else QColor(160, 0, 0), 1.5)
+        brush = QBrush(QColor(40, 180, 90, 100) if has_deviations else QColor(220, 20, 20, 90))
 
         points = None
         if outline_pdf:
@@ -4947,11 +4954,32 @@ class PIDGraphicsView(QGraphicsView):
         item.setZValue(Z_OVERLAY)
         pct = int(round(confidence * 100))
         tip = f"{tag + ': ' if tag else ''}{comp_type}\nAutodetekterad ({pct}% konfidens)"
+        if has_deviations:
+            tip += f"\n{deviation_count} avvikelse{'r' if deviation_count != 1 else ''} registrerad{'e' if deviation_count != 1 else ''}"
         item.setToolTip(tip)
         item.setData(self._DATA_TYPE, 'equipment')
         item.setData(self._DATA_ID, marker_id)
         item.setAcceptHoverEvents(True)
         self._add_tracked(item, 'equipment')
+
+        if has_deviations:
+            poly_rect = QPolygonF(points).boundingRect()
+            badge_r = 8.0
+            bx, by = poly_rect.right(), poly_rect.top()
+            badge = QGraphicsEllipseItem(bx - badge_r, by - badge_r, 2 * badge_r, 2 * badge_r)
+            badge.setPen(QPen(QColor(0, 100, 40), 1))
+            badge.setBrush(QBrush(QColor(0, 140, 60)))
+            badge.setZValue(Z_OVERLAY + 1)
+            badge.setToolTip(tip)
+            self._add_tracked(badge, 'equipment')
+            count_txt = QGraphicsSimpleTextItem(str(deviation_count))
+            f = QFont(); f.setPointSize(8); f.setBold(True)
+            count_txt.setFont(f)
+            count_txt.setBrush(QBrush(QColor(255, 255, 255)))
+            tb = count_txt.boundingRect()
+            count_txt.setPos(bx - tb.width() / 2, by - tb.height() / 2)
+            count_txt.setZValue(Z_OVERLAY + 2)
+            self._add_tracked(count_txt, 'equipment')
 
         if tag:
             self._place_label(tag, x_pdf, y_pdf, r, QColor(140, 0, 0), 'equipment')
@@ -6296,6 +6324,248 @@ class TemplateCausePickerDialog(QDialog):
         return self._sec_tag_edit.text().strip()
 
 
+class EquipmentDeviationBar(QWidget):
+    """Non-modal panel anchored at the bottom of the P&ID view, shown when
+    an equipment marker is clicked. Lets the user check off which
+    deviations apply to that specific piece of equipment, pick a cause for
+    each straight from an inline list, and reclassify the equipment's type
+    if autodetection guessed wrong — all inline, no dialog popping up in
+    the middle of the window. See NOTES.md "Nod → Utrustning → Avvikelse".
+
+    Deliberately NOT a QDialog: a plain QWidget added below PIDPanel's
+    viewer, hidden until an equipment marker is clicked.
+    """
+
+    # A deviation was newly created (or already existed) for this equipment —
+    # PIDPanel listens to refresh the marker's colour/badge and the tree/worksheet.
+    deviation_added = pyqtSignal(int, int)   # (deviation_id, equipment_id)
+    # User picked/typed a cause for an already-checked deviation — PIDPanel
+    # creates it via the SAME place_cause_from_template() path the existing
+    # "Orsak"/cause-template flow already uses (reuses its cause_template_created
+    # signal for tree/worksheet refresh, no new refresh plumbing needed).
+    cause_requested = pyqtSignal(int, str, str, str)   # (deviation_id, comp_type, comp_tag, description)
+    # Equipment type changed (comp_type reclassified) — PIDPanel redraws the marker.
+    equipment_retyped = pyqtSignal(int)   # equipment_id
+    show_in_register_requested = pyqtSignal(int)   # equipment_id
+
+    _FREE_TEXT_SENTINEL = "✎ Skriv egen orsak…"
+
+    def __init__(self, db, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self._equipment_id = None
+        self._marker_id = None
+        self.setVisible(False)
+        self.setStyleSheet(
+            "EquipmentDeviationBar { background:#F5F5F3; border-top:1px solid #C9CBC7; }")
+        self.setMaximumHeight(220)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(6, 4, 6, 4)
+        outer.setSpacing(3)
+
+        hdr = QHBoxLayout()
+        self._title_lbl = QLabel()
+        bold = QFont(); bold.setBold(True)
+        self._title_lbl.setFont(bold)
+        hdr.addWidget(self._title_lbl)
+
+        hdr.addSpacing(10)
+        hdr.addWidget(QLabel("Typ:"))
+        self._type_combo = QComboBox()
+        self._type_combo.addItems(sorted(COMPONENT_TYPES.keys()))
+        self._type_combo.currentTextChanged.connect(self._on_type_changed)
+        hdr.addWidget(self._type_combo)
+
+        hdr.addSpacing(10)
+        hdr.addWidget(QLabel("Nod:"))
+        self._node_combo = QComboBox()
+        self._node_combo.setMinimumWidth(160)
+        self._node_combo.currentIndexChanged.connect(self._on_node_changed)
+        hdr.addWidget(self._node_combo)
+
+        hdr.addStretch()
+        register_btn = QPushButton("Visa i register")
+        register_btn.clicked.connect(
+            lambda: self.show_in_register_requested.emit(self._equipment_id))
+        hdr.addWidget(register_btn)
+        close_btn = QPushButton("✕")
+        close_btn.setFixedWidth(28)
+        close_btn.clicked.connect(lambda: self.setVisible(False))
+        hdr.addWidget(close_btn)
+        outer.addLayout(hdr)
+
+        self._hint_lbl = QLabel("Välj en nod ovan innan du kryssar avvikelser.")
+        self._hint_lbl.setStyleSheet("color:#8D9299; font-style:italic;")
+        outer.addWidget(self._hint_lbl)
+
+        self._checklist_host = QWidget()
+        self._checklist_layout = QVBoxLayout(self._checklist_host)
+        self._checklist_layout.setContentsMargins(0, 0, 0, 0)
+        self._checklist_layout.setSpacing(2)
+        scroll = QScrollArea()
+        scroll.setWidget(self._checklist_host)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setMaximumHeight(150)
+        outer.addWidget(scroll)
+
+    @property
+    def equipment_id(self):
+        return self._equipment_id
+
+    @property
+    def marker_id(self):
+        return self._marker_id
+
+    def load(self, equipment_id, marker_id):
+        """Populate and show the bar for the equipment behind `marker_id`
+        (an equipment_markers.id — the caller already has this from the
+        marker_clicked signal)."""
+        eq = self.db.get_equipment_by_id(equipment_id)
+        if not eq:
+            return
+        self._equipment_id = equipment_id
+        self._marker_id = marker_id
+        self._title_lbl.setText(eq['tag'] or f"Utrustning #{equipment_id}")
+
+        self._type_combo.blockSignals(True)
+        idx = self._type_combo.findText(eq['equipment_type'] or '')
+        self._type_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._type_combo.blockSignals(False)
+
+        self._node_combo.blockSignals(True)
+        self._node_combo.clear()
+        self._node_combo.addItem("— välj nod —", None)
+        for node in self.db.nodes():
+            self._node_combo.addItem(node['name'], node['id'])
+        node_id = eq.get('node_id')
+        if node_id:
+            found = self._node_combo.findData(node_id)
+            if found >= 0:
+                self._node_combo.setCurrentIndex(found)
+        self._node_combo.blockSignals(False)
+
+        self._rebuild_checklist()
+        self.setVisible(True)
+
+    def _rebuild_checklist(self):
+        while self._checklist_layout.count():
+            item = self._checklist_layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+
+        eq = self.db.get_equipment_by_id(self._equipment_id) if self._equipment_id else None
+        if not eq:
+            return
+        node_id = eq.get('node_id')
+        self._hint_lbl.setVisible(node_id is None)
+
+        comp_type = eq['equipment_type'] or ''
+        rows = self.db.standard_causes_for_comp_type(comp_type) if comp_type else []
+        deviations = {}   # deviation_id -> name, insertion order preserved
+        for r in rows:
+            deviations.setdefault(r['deviation_id'], r['deviation_name'])
+        if not deviations:
+            # No template causes for this comp_type yet — fall back to the
+            # full standard-deviation catalogue so the checklist isn't empty.
+            for sd in self.db.standard_deviations():
+                deviations[sd['id']] = sd['description']
+
+        existing = {d['description'] for d in self.db.deviations_for_equipment(self._equipment_id)}
+
+        for std_dev_id, name in deviations.items():
+            self._checklist_layout.addWidget(
+                self._build_deviation_row(std_dev_id, name, name in existing,
+                                          enabled=node_id is not None))
+
+    def _build_deviation_row(self, std_dev_id, description, checked, enabled):
+        row_w = QWidget()
+        row = QHBoxLayout(row_w)
+        row.setContentsMargins(0, 0, 0, 0)
+        cb = QCheckBox(description)
+        cb.setChecked(checked)
+        cb.setEnabled(enabled and not checked)   # v1: unchecking never removes — see NOTES.md
+        row.addWidget(cb)
+
+        cause_combo = QComboBox()
+        cause_combo.setMinimumWidth(220)
+        cause_combo.setEnabled(checked)
+        eq = self.db.get_equipment_by_id(self._equipment_id)
+        comp_type = eq['equipment_type'] if eq else ''
+        causes = self.db.standard_causes_for_comp_type(comp_type, description) if comp_type else []
+        cause_combo.addItem("+ orsak…", None)
+        for c in causes:
+            cause_combo.addItem(c['description'], c['description'])
+        cause_combo.addItem(self._FREE_TEXT_SENTINEL, self._FREE_TEXT_SENTINEL)
+        row.addWidget(cause_combo)
+
+        cb.toggled.connect(
+            lambda on, sdid=std_dev_id, desc=description, combo=cause_combo, box=cb:
+                self._on_deviation_toggled(sdid, desc, on, combo, box))
+        cause_combo.activated.connect(
+            lambda _idx, desc=description, combo=cause_combo:
+                self._on_cause_combo_activated(desc, combo))
+        return row_w
+
+    def _on_deviation_toggled(self, std_dev_id, description, checked, cause_combo, checkbox):
+        if not checked:
+            return
+        eq = self.db.get_equipment_by_id(self._equipment_id)
+        node_id = eq.get('node_id') if eq else None
+        if node_id is None:
+            checkbox.setChecked(False)
+            return
+        dev_id = self.db.get_or_create_deviation(node_id, description, equipment_id=self._equipment_id)
+        checkbox.setEnabled(False)   # v1: once checked, stays checked — see NOTES.md
+        cause_combo.setEnabled(True)
+        self.deviation_added.emit(dev_id, self._equipment_id)
+
+    def _on_cause_combo_activated(self, description, combo):
+        value = combo.currentData()
+        if value is None:
+            return
+        eq = self.db.get_equipment_by_id(self._equipment_id)
+        node_id = eq.get('node_id') if eq else None
+        if node_id is None:
+            return
+        dev_id = self.db.get_or_create_deviation(node_id, description, equipment_id=self._equipment_id)
+        comp_type = eq['equipment_type'] or ''
+        comp_tag = eq['tag'] or ''
+        if value == self._FREE_TEXT_SENTINEL:
+            text, ok = QInputDialog.getText(self, "Egen orsak", "Beskrivning:")
+            if not ok or not text.strip():
+                combo.setCurrentIndex(0)
+                return
+            description_text = text.strip()
+        else:
+            description_text = value
+        self.cause_requested.emit(dev_id, comp_type, comp_tag, description_text)
+        combo.setCurrentIndex(0)
+
+    def _on_node_changed(self, _idx):
+        if self._equipment_id is None:
+            return
+        node_id = self._node_combo.currentData()
+        self.db.set_equipment_node(self._equipment_id, node_id)
+        self._rebuild_checklist()
+
+    def _on_type_changed(self, new_type):
+        if self._equipment_id is None or self._marker_id is None:
+            return
+        eq = self.db.get_equipment_by_id(self._equipment_id)
+        if not eq or eq['equipment_type'] == new_type:
+            return
+        self.db.update_equipment_item(
+            self._equipment_id, eq['tag'], eq['prefix'], new_type, eq['description'])
+        self.db.conn.execute(
+            "UPDATE equipment_markers SET comp_type=? WHERE id=?", (new_type, self._marker_id))
+        self.db.commit()
+        self._rebuild_checklist()
+        self.equipment_retyped.emit(self._equipment_id)
+
+
 class PIDPanel(QWidget):
     node_created            = pyqtSignal(int)
     cause_created           = pyqtSignal(int)
@@ -6305,6 +6575,7 @@ class PIDPanel(QWidget):
     existing_marker_placed  = pyqtSignal(str, int)
     risk_scenario_requested = pyqtSignal(int, object, int)
     marker_navigated        = pyqtSignal(str, int)
+    equipment_deviation_created = pyqtSignal(int, int)   # (deviation_id, equipment_id)
     pid_analysis_done       = pyqtSignal()
     # Emitted when user clicks P&ID in cause-template mode;
     # MainWindow shows CauseObjectPopup then calls place_cause_from_template()
@@ -6576,8 +6847,7 @@ class PIDPanel(QWidget):
         self._active_place_type  = None   # 'cause' | 'consequence' | 'safeguard'
         self._active_place_id    = None
         self._pending_zone_pdf   = None   # QRectF while zone dialog chain is open
-        self.viewer.marker_clicked.connect(
-            lambda t, i: self.marker_navigated.emit(t, i))
+        self.viewer.marker_clicked.connect(self._on_marker_clicked)
         self.viewer.markup_moved.connect(self.markup_moved)
         self.viewer.markup_label_edited.connect(self.markup_label_edited)
         self.viewer.markup_duplicate_requested.connect(self.markup_duplicate_requested)
@@ -6594,6 +6864,14 @@ class PIDPanel(QWidget):
         self.safeguard_created.connect(self._sc_on_safeguard)
 
         layout.addWidget(self.viewer)
+
+        self._equipment_bar = EquipmentDeviationBar(self.db)
+        self._equipment_bar.deviation_added.connect(self._on_equipment_deviation_added)
+        self._equipment_bar.cause_requested.connect(self._on_equipment_cause_requested)
+        self._equipment_bar.equipment_retyped.connect(self._on_equipment_retyped)
+        self._equipment_bar.show_in_register_requested.connect(
+            lambda eq_id: self.marker_navigated.emit('equipment_register', eq_id))
+        layout.addWidget(self._equipment_bar)
 
         self._set_mode(MODE_NAV)
         self._update_pen()
@@ -8091,10 +8369,12 @@ class PIDPanel(QWidget):
 
             for m in self.db.equipment_markers_for_page(page):
                 md = dict(m)
+                dev_count = (self.db.equipment_deviation_count(md['equipment_id'])
+                             if md.get('equipment_id') else 0)
                 self.viewer.add_equipment_marker(
                     md['id'], md['x'], md['y'], md.get('comp_type', ''),
                     md.get('tag', ''), md.get('confidence', 0.0) or 0.0,
-                    outline_pdf=md.get('shape_outline'))
+                    outline_pdf=md.get('shape_outline'), deviation_count=dev_count)
 
         # ── Draw ALL connections after all pages, so cross-page lines work ──────
         all_cause_pos = {}
@@ -8363,6 +8643,45 @@ class PIDPanel(QWidget):
         self._load_overlays()
         self.cause_template_created.emit(cause_id)
         return cause_id
+
+    # ── Equipment marker click → EquipmentDeviationBar (2026-08-07) ────────
+    # See NOTES.md "Nod → Utrustning → Avvikelse". Clicking an equipment
+    # marker used to always navigate away to the Utrustningsregister
+    # (marker_navigated.emit('equipment', ...)); it now opens the bottom
+    # bar instead, with a link inside it for the old navigation.
+
+    def _on_marker_clicked(self, item_type, item_id):
+        if item_type == 'equipment':
+            row = self.db.conn.execute(
+                "SELECT equipment_id FROM equipment_markers WHERE id=?", (item_id,)).fetchone()
+            if row and row['equipment_id'] is not None:
+                self._equipment_bar.load(row['equipment_id'], item_id)
+            return
+        self.marker_navigated.emit(item_type, item_id)
+
+    def _on_equipment_deviation_added(self, deviation_id, equipment_id):
+        self._refresh_equipment_marker_visual(equipment_id)
+        self.equipment_deviation_created.emit(deviation_id, equipment_id)
+
+    def _on_equipment_cause_requested(self, deviation_id, comp_type, comp_tag, description):
+        marker = self.db.conn.execute(
+            "SELECT x, y, pid_page FROM equipment_markers WHERE id=?",
+            (self._equipment_bar.marker_id,)).fetchone()
+        if not marker:
+            return
+        scene_pos = self.viewer.pdf_to_scene(marker['x'], marker['y'], page=marker['pid_page'])
+        self.place_cause_from_template(
+            deviation_id, scene_pos, marker['pid_page'], comp_type, comp_tag, description, None)
+
+    def _on_equipment_retyped(self, equipment_id):
+        self._refresh_equipment_marker_visual(equipment_id)
+
+    def _refresh_equipment_marker_visual(self, _equipment_id):
+        """Redraw overlays so this equipment's marker picks up its new
+        colour/deviation-count badge (or new comp_type/shape after a
+        reclassification) — _load_overlays() re-reads every marker's
+        current deviation count from the DB, see add_equipment_marker."""
+        self._load_overlays()
 
     def _on_add_cause_at_marker(self, cause_id: int):
         """Right-click on existing cause marker → create another cause at the same position."""
