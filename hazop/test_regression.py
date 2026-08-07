@@ -1772,19 +1772,22 @@ class EscapeCancelsPlacementTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_escape_unchecks_mode_toolbar_button(self):
+    def test_escape_returns_navigate_button_to_checked(self):
         """Cancelling via Escape must also update the toolbar button state,
-        not just the internal viewer.mode — otherwise the UI would show the
-        cause/consequence/safeguard button as still active after cancelling.
-        """
+        not just the internal viewer.mode. The "⚙️ Orsak"/"⚠️ Konsekvens"
+        toggle buttons were removed 2026-08-07 (see NOTES.md — redundant
+        once the P&ID right-click menu did the same thing directly), so
+        "🔍 Navigera" is now the only button in mode_buttons; it must still
+        become checked again after an Escape-cancel out of MODE_CAUSE
+        (still settable programmatically, e.g. by the right-click flow's
+        internal _set_mode calls, even with no dedicated toolbar button)."""
         from pid_viewer import PIDPanel, MODE_CAUSE, MODE_NAV
         panel = PIDPanel(self.db)
         try:
             panel._set_mode(MODE_CAUSE)
-            self.assertTrue(panel.mode_buttons[MODE_CAUSE].isChecked())
+            self.assertFalse(panel.mode_buttons[MODE_NAV].isChecked())
             self._press_escape(panel.viewer)
-            self.assertFalse(panel.mode_buttons[MODE_CAUSE].isChecked(),
-                              "Cause toolbar button must uncheck after Escape-cancel")
+            self.assertEqual(panel.viewer.mode, MODE_NAV)
             self.assertTrue(panel.mode_buttons[MODE_NAV].isChecked(),
                              "Navigate toolbar button must become checked after Escape-cancel")
         finally:
@@ -5726,6 +5729,250 @@ class EquipmentTagDragToConsequenceTests(unittest.TestCase):
             comp_type, comp_tag = item.data(Qt.ItemDataRole.UserRole + 7)
             self.assertEqual(comp_tag, '')
             self.assertEqual(comp_type, '')
+
+
+class EquipmentObjectPlacementTests(unittest.TestCase):
+    """P&ID right-click -> "🔧 Objekt" (2026-08-07, see NOTES.md) —
+    PIDPanel.place_equipment_marker resolves an existing equipment_catalog
+    row by tag (never creates a duplicate) or creates a new one, places a
+    marker at the clicked point, and opens EquipmentDeviationBar
+    immediately so ticking a deviation is the very next step."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_objplacement_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from pid_viewer import PIDPanel
+        self.panel = PIDPanel(self.db)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_new_tag_creates_catalog_row_and_marker(self):
+        from PyQt6.QtCore import QPointF
+        self.panel.place_equipment_marker("HV-201", "Ventil", QPointF(10, 10), 0)
+
+        equip = self.db.get_equipment_by_tag("HV-201")
+        self.assertIsNotNone(equip)
+        self.assertEqual(equip['equipment_type'], "Ventil")
+        markers = self.db.equipment_markers_for_page(0)
+        self.assertEqual(len(markers), 1)
+        self.assertEqual(markers[0]['equipment_id'], equip['id'])
+
+    def test_existing_tag_reuses_catalog_row_no_duplicate(self):
+        from PyQt6.QtCore import QPointF
+        eq_id = self.db.add_equipment_item("P-101", "P-101", "P", 0, "Pump", '', 0)
+
+        self.panel.place_equipment_marker("P-101", "Pump", QPointF(20, 20), 0)
+
+        self.assertEqual(len(self.db.equipment_items()), 1,
+            "must not create a duplicate catalog row for an already-known tag")
+        markers = self.db.equipment_markers_for_page(0)
+        self.assertEqual(markers[0]['equipment_id'], eq_id)
+
+    def test_placement_opens_equipment_deviation_bar(self):
+        # isVisible() would report False here regardless of load() having
+        # run — the panel itself is never shown in this headless test, and
+        # QWidget.isVisible() reflects the whole ancestor chain, not just
+        # this widget's own setVisible(True) call. Assert on load()'s
+        # actual effect (which equipment/marker it's now bound to) instead.
+        from PyQt6.QtCore import QPointF
+        self.panel.place_equipment_marker("T-301", "Behållare", QPointF(5, 5), 0)
+        equip_row = self.db.get_equipment_by_tag("T-301")
+        self.assertIsNotNone(equip_row)
+        self.assertEqual(self.panel._equipment_bar._equipment_id, equip_row['id'])
+        markers = self.db.equipment_markers_for_page(0)
+        self.assertEqual(self.panel._equipment_bar._marker_id, markers[0]['id'])
+
+    def test_blank_tag_still_creates_marker_from_type_alone(self):
+        from PyQt6.QtCore import QPointF
+        self.panel.place_equipment_marker("", "Pump", QPointF(1, 1), 0)
+        markers = self.db.equipment_markers_for_page(0)
+        self.assertEqual(len(markers), 1)
+        equip = self.db.get_equipment_by_id(markers[0]['equipment_id'])
+        self.assertEqual(equip['equipment_type'], "Pump")
+
+
+class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
+    """"⚙️ Orsak"/"⚠️ Konsekvens" mode-toggle buttons removed from the P&ID
+    toolbar, and "🔧 Objekt" added to the right-click menu's action chain
+    (2026-08-07, see NOTES.md). MODE_CAUSE becomes fully unreachable (it
+    was only ever set by the removed button); MODE_CONSEQUENCE must still
+    work since the right-click menu's own "⚠️ Konsekvens" action still
+    relies on it internally."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_toolbarmenu_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from pid_viewer import PIDPanel
+        self.panel = PIDPanel(self.db)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_only_navigate_button_remains(self):
+        from pid_viewer import MODE_NAV, MODE_CAUSE, MODE_CONSEQUENCE
+        self.assertIn(MODE_NAV, self.panel.mode_buttons)
+        self.assertNotIn(MODE_CAUSE, self.panel.mode_buttons)
+        self.assertNotIn(MODE_CONSEQUENCE, self.panel.mode_buttons)
+
+    def test_context_menu_consequence_action_still_sets_mode(self):
+        """The toolbar toggle is gone, but the right-click menu's own
+        "⚠️ Konsekvens" action must still work exactly as before."""
+        from pid_viewer import MODE_CONSEQUENCE
+        from PyQt6.QtCore import QPointF
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.panel._active_cause_id = cause_id
+
+        self.panel._on_context_action('consequence', QPointF(5, 5), 0)
+
+        self.assertEqual(self.panel.viewer.mode, MODE_CONSEQUENCE)
+
+    def test_context_menu_equipment_action_emits_placement_signal(self):
+        from PyQt6.QtCore import QPointF
+        captured = []
+        self.panel.equipment_placement_requested.connect(
+            lambda tag, pos, page: captured.append((tag, pos, page)))
+        pt = QPointF(7, 7)
+
+        self.panel._on_context_action('equipment', pt, 2)
+
+        self.assertEqual(len(captured), 1)
+        tag, pos, page = captured[0]
+        self.assertEqual(page, 2)
+        self.assertEqual(pos, pt)
+
+
+class AutoConsequenceOnCauseAddTests(unittest.TestCase):
+    """'Sedan vill jag ... kunna editera konsekvenser direkt utan att
+    behöva lägga till dem via popuprutan ... utan det skall gå i hazop
+    scenario så fort jag lagt till en orsak' (2026-08-07, see NOTES.md) —
+    _create_cause_from_pick (shared by the tree's "+ Lägg till orsak" and
+    the worksheet's Ctrl+Enter quick-add) now also creates one empty
+    consequence, and ScenarioTablePanel._quick_add_cause lands the editing
+    cursor on that new consequence's KON cell instead of the cause's own
+    ORS cell."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_autocons_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_create_cause_from_pick_returns_cause_and_consequence_ids(self):
+        from hazop import _create_cause_from_pick
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+
+        cause_id, cons_id = _create_cause_from_pick(self.db, dev_id, "Ny orsak", None)
+
+        self.assertIsNotNone(self.db.get_cause(cause_id))
+        cons = self.db.get_consequence(cons_id)
+        self.assertIsNotNone(cons)
+        self.assertEqual(dict(cons)['cause_id'], cause_id)
+
+    def test_new_item_created_consequence_starts_inline_edit_on_kon(self):
+        """Directly exercises the MainWindow-level wiring (matches the
+        established pattern in SafeguardCreatedDoubleRebuildTests): emitting
+        new_item_created(CONS_T, cons_id) must land the current cell AND an
+        active edit on that row's KON column."""
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            cons_id = win.db.add_consequence(cause_id)
+            panel.load_node(node_id)
+
+            edit_spy = unittest.mock.Mock(wraps=panel._table.edit)
+            panel._table.edit = edit_spy
+
+            panel.new_item_created.emit(CONS_T, cons_id)
+
+            cur_row = panel._table.currentRow()
+            self.assertEqual(panel._table.currentColumn(), panel._C_KON)
+            self.assertEqual(panel._row_meta[cur_row][2], cons_id)
+            edit_spy.assert_called()
+
+    def test_quick_add_cause_emits_new_item_created_for_the_new_consequence(self):
+        """ScenarioTablePanel._quick_add_cause (Ctrl+Enter in the worksheet)
+        must emit new_item_created for the auto-created CONSEQUENCE, not
+        for the cause itself — the cause's description was already chosen
+        in the picker popup, so the next thing to fill in is the
+        consequence."""
+        from PyQt6.QtWidgets import QDialog
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            panel.load_node(node_id)
+
+            def _fake_exec(self):
+                self.cause_picked.emit("Ny orsak (test)", None)
+                return QDialog.DialogCode.Accepted
+
+            captured = []
+            panel.new_item_created.connect(lambda t, i: captured.append((t, i)))
+
+            with unittest.mock.patch.object(hazop.StandardCausesPickerPopup, 'exec', new=_fake_exec):
+                panel._quick_add_cause(dev_id)
+
+            self.assertEqual(len(captured), 1)
+            type_, cons_id = captured[0]
+            self.assertEqual(type_, CONS_T)
+            self.assertIsNotNone(win.db.get_consequence(cons_id))
+
+    def test_tree_add_cause_via_picker_also_creates_empty_consequence(self):
+        """TreePanel._open_cause_picker_for_deviation is the other
+        _create_cause_from_pick caller (tree's "+ Lägg till orsak" / Enter
+        on an avvikelse) — must not crash on the new tuple return, and the
+        consequence must actually exist in DB afterwards."""
+        from PyQt6.QtWidgets import QDialog
+        with _TempDbMainWindow() as win:
+            tree = win.tree_panel
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+
+            def _fake_exec(self):
+                self.cause_picked.emit("Ny orsak (test)", None)
+                return QDialog.DialogCode.Accepted
+
+            with unittest.mock.patch.object(hazop.StandardCausesPickerPopup, 'exec', new=_fake_exec):
+                tree._open_cause_picker_for_deviation(dev_id, node_id)
+
+            causes = win.db.causes(node_id)
+            self.assertEqual(len(causes), 1)
+            cons_list = win.db.consequences(causes[0]['id'])
+            self.assertEqual(len(cons_list), 1,
+                "the tree's add-cause path must also auto-create an empty consequence")
 
 
 if __name__ == '__main__':

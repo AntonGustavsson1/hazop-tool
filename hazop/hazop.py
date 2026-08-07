@@ -1616,6 +1616,13 @@ def _create_cause_from_pick(db, deviation_id, description, frequency):
     pick, applying the description/likelihood/frequency consistently —
     shared by every quick-add entry point so a freshly created cause always
     starts with real content instead of a blank placeholder.
+
+    Also creates one empty consequence for the new cause (2026-08-07, see
+    NOTES.md "direkt konsekvensinmatning") — the same no-popup
+    db.add_consequence() call TreePanel.add_consequence() already uses, so
+    the HAZOP scenario table's KON cell is ready for inline typing the
+    instant the cause exists, without a separate add-consequence step.
+    Returns (cause_id, consequence_id).
     """
     new_id = db.add_cause(deviation_id)
     like = freq_to_f_level(frequency) if frequency is not None else 3
@@ -1623,7 +1630,8 @@ def _create_cause_from_pick(db, deviation_id, description, frequency):
     if frequency is not None:
         db.conn.execute("UPDATE causes SET base_frequency=? WHERE id=?", (frequency, new_id))
         db.commit()
-    return new_id
+    cons_id = db.add_consequence(new_id)
+    return new_id, cons_id
 
 
 def _maybe_save_as_standard_cause(parent, db, dev_id, obj_id, obj_name, description):
@@ -7404,7 +7412,7 @@ class TreePanel(QWidget):
             node_id=node_id, parent=self)
 
         def _on_picked(description, frequency):
-            new_id = _create_cause_from_pick(self.db, dev_id, description, frequency)
+            new_id, _cons_id = _create_cause_from_pick(self.db, dev_id, description, frequency)
             self.refresh(CAUSE_T, new_id)
             self.structure_changed.emit()
 
@@ -13114,8 +13122,12 @@ class ScenarioTablePanel(QWidget):
             node_id=node_id, parent=self)
 
         def _on_picked(description, frequency):
-            new_id = _create_cause_from_pick(self.db, deviation_id, description, frequency)
-            self.new_item_created.emit(CAUSE_T, new_id)
+            new_id, cons_id = _create_cause_from_pick(self.db, deviation_id, description, frequency)
+            # Jump straight to the new consequence's KON cell (not the cause's
+            # own ORS cell) — the cause's description was already chosen in
+            # the popup above, so typing the consequence is the next natural
+            # step ("så fort jag lagt till en orsak", see NOTES.md).
+            self.new_item_created.emit(CONS_T, cons_id)
 
         popup.cause_picked.connect(_on_picked)
         popup.exec()
@@ -16756,6 +16768,89 @@ def _tag_prefix(tag: str) -> str:
 
 _EQ_TYPE_ITEMS = [''] + sorted(COMPONENT_TYPES.keys()) + ['Rörledning', 'Övrigt / Okänd']
 
+
+class EquipmentTagPopup(QDialog):
+    """Small popup for the P&ID right-click menu's "🔧 Objekt" action —
+    pick an object type and optionally set/edit its tag, independent of
+    any cause (2026-08-07, see NOTES.md). Deliberately not CauseObjectPopup
+    or StandardCausesPickerPopup: this has no standard-cause list to show,
+    it only resolves (tag, comp_type) for PIDPanel.place_equipment_marker."""
+    committed = pyqtSignal(str, str)  # (comp_tag, comp_type)
+
+    def __init__(self, db, suggested_tag='', suggested_type='', parent=None):
+        super().__init__(parent)
+        self._db = db
+        self.setWindowTitle("Objekt")
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setMinimumWidth(240)
+
+        _small = "font-size:10px;"
+        layout = QVBoxLayout(self)
+        layout.setSpacing(4)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        title = QLabel("<b>Nytt objekt på P&amp;ID</b>")
+        title.setStyleSheet("font-size:11px; color:#8D9299;")
+        layout.addWidget(title)
+
+        form = QFormLayout()
+        form.setSpacing(3)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self._tag_edit = QLineEdit(suggested_tag)
+        self._tag_edit.setPlaceholderText("t.ex. P-101 (valfritt)")
+        self._tag_edit.setFixedHeight(CONFIG['H_BTN_SMALL'])
+        self._tag_edit.setStyleSheet(_small)
+        completer = _make_tag_completer(db, self)
+        if completer:
+            self._tag_edit.setCompleter(completer)
+        tag_lbl = QLabel("Tag:")
+        tag_lbl.setStyleSheet(_small)
+        form.addRow(tag_lbl, self._tag_edit)
+
+        self._type_cb = QComboBox()
+        self._type_cb.setFixedHeight(CONFIG['H_BTN_SMALL'])
+        self._type_cb.setStyleSheet(_small)
+        self._type_cb.addItems(_EQ_TYPE_ITEMS)
+        if suggested_type:
+            idx = self._type_cb.findText(suggested_type)
+            if idx < 0:
+                self._type_cb.addItem(suggested_type)
+                idx = self._type_cb.count() - 1
+            self._type_cb.setCurrentIndex(idx)
+        typ_lbl = QLabel("Typ:")
+        typ_lbl.setStyleSheet(_small)
+        form.addRow(typ_lbl, self._type_cb)
+        layout.addLayout(form)
+
+        btns = QHBoxLayout()
+        btns.setSpacing(4)
+        ok = QPushButton("OK")
+        ok.setDefault(True)
+        ok.setFixedHeight(CONFIG['H_CTRL_STD'])
+        ok.clicked.connect(self._ok)
+        cancel = QPushButton("Avbryt")
+        cancel.setFixedHeight(CONFIG['H_CTRL_STD'])
+        cancel.clicked.connect(self.reject)
+        btns.addWidget(ok)
+        btns.addStretch()
+        btns.addWidget(cancel)
+        layout.addLayout(btns)
+
+        self._tag_edit.returnPressed.connect(self._ok)
+
+    def _ok(self):
+        tag = self._tag_edit.text().strip().upper()
+        comp_type = self._type_cb.currentText().strip()
+        if not tag and not comp_type:
+            QMessageBox.information(self, "Ange typ eller tag",
+                "Ange minst en typ eller ett taggnummer för objektet.")
+            return
+        self.committed.emit(tag, comp_type)
+        self.accept()
+
+
 # Column indices
 _EC_CHK  = 0
 _EC_TAG  = 1
@@ -18199,6 +18294,7 @@ class MainWindow(QMainWindow):
                 pass
         self.pid_panel.cause_template_created.connect(_on_cause_template_created)
         self.pid_panel.cause_placement_requested.connect(self._on_cause_placement_requested)
+        self.pid_panel.equipment_placement_requested.connect(self._on_equipment_placement_requested)
         self.pid_panel.risk_scenario_requested.connect(self._on_pid_risk_scenario)
         self.pid_panel.marker_navigated.connect(self._on_marker_navigate)
         self.pid_panel.equipment_deviation_created.connect(self._on_equipment_deviation_created)
@@ -18594,6 +18690,18 @@ class MainWindow(QMainWindow):
                                      f"{type(e).__name__}: {e}\n\n{traceback.format_exc()}")
 
         popup.cause_picked.connect(_on_picked)
+        popup.exec()
+
+    def _on_equipment_placement_requested(self, suggested_tag, scene_pos, page):
+        """P&ID right-click -> "🔧 Objekt" (2026-08-07, see NOTES.md)."""
+        detected_type = self.pid_panel._db_comp_for_tag(suggested_tag)
+        popup = EquipmentTagPopup(self.db, suggested_tag=suggested_tag,
+                                  suggested_type=detected_type, parent=self)
+
+        def _on_picked(tag, comp_type):
+            self.pid_panel.place_equipment_marker(tag, comp_type, scene_pos, page)
+
+        popup.committed.connect(_on_picked)
         popup.exec()
 
     def _on_add_consequences_on_pid(self, cause_id):

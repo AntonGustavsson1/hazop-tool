@@ -5195,6 +5195,8 @@ class PIDGraphicsView(QGraphicsView):
                        partial(self.context_action.emit, 'consequence', sp, self.current_page))
         menu.addAction("🛡️ Safeguard",
                        partial(self.context_action.emit, 'safeguard', sp, self.current_page))
+        menu.addAction("🔧 Objekt",
+                       partial(self.context_action.emit, 'equipment', sp, self.current_page))
         menu.addSeparator()
         menu.addAction("🔀 Risk Scenario",
                        partial(self.context_action.emit, 'risk_scenario', sp, self.current_page))
@@ -7405,6 +7407,11 @@ class PIDPanel(QWidget):
     # MainWindow shows CauseObjectPopup then calls place_cause_from_template()
     cause_placement_requested = pyqtSignal(int, str, str, object, int, str)
     # (deviation_id, suggested_tag, detected_comp_type, scene_pos, page)
+    # Emitted when user right-clicks P&ID -> "🔧 Objekt"; MainWindow shows
+    # EquipmentTagPopup then calls place_equipment_marker() (2026-08-07,
+    # see NOTES.md).
+    equipment_placement_requested = pyqtSignal(str, object, int)
+    # (suggested_tag, scene_pos, page)
     ref_tag_picked            = pyqtSignal(str)   # forwarded from viewer after MODE_PICK_REF_TAG
     annotation_placed         = pyqtSignal(int)   # annotation id (feature 8)
     # Node markup signals
@@ -7498,11 +7505,14 @@ class PIDPanel(QWidget):
 
         bar.addWidget(_vline())
 
+        # "⚙️ Orsak"/"⚠️ Konsekvens" mode-toggle buttons removed 2026-08-07
+        # (see NOTES.md) — redundant now that the P&ID right-click menu adds
+        # cause/consequence/safeguard/objekt directly at the clicked point.
+        # MODE_CONSEQUENCE is still used internally by that right-click flow
+        # (_on_context_action); only the standalone toolbar toggle is gone.
         self.mode_buttons = {}
         mode_defs = [
             (MODE_NAV,         "🔍 Navigera"),
-            (MODE_CAUSE,       "⚙️ Orsak"),
-            (MODE_CONSEQUENCE, "⚠️ Konsekvens"),
         ]
         for mode, label in mode_defs:
             btn = QPushButton(label)
@@ -9047,6 +9057,12 @@ class PIDPanel(QWidget):
             self._on_safeguard_click(pos, page, tag)
         elif action == 'node':
             self._set_mode(MODE_NODE)
+        elif action == 'equipment':
+            pdf_x, pdf_y = self.viewer.scene_to_pdf(pos)
+            tag = find_tag_near_point(
+                self.viewer.pdf_doc, page, pdf_x, pdf_y, radius=100) \
+                if self.viewer.pdf_doc else ''
+            self.equipment_placement_requested.emit(tag or '', pos, page)
         elif action == 'risk_scenario':
             node_id = self._active_node_id or 0
             self.risk_scenario_requested.emit(node_id, pos, page)
@@ -9503,6 +9519,30 @@ class PIDPanel(QWidget):
                                          active_node_id=self._active_node_id)
             return
         self.marker_navigated.emit(item_type, item_id)
+
+    def place_equipment_marker(self, tag, comp_type, scene_pos, page):
+        """Callback for EquipmentTagPopup (P&ID right-click -> "🔧 Objekt",
+        2026-08-07, see NOTES.md). Resolves an existing equipment_catalog
+        row by tag if one exists (never creates a duplicate for a tag
+        that's already catalogued) or creates a new one, places a marker
+        at the clicked point, and opens EquipmentDeviationBar immediately —
+        the same bar _on_marker_clicked already opens for an existing
+        marker, so the very next step (tick a deviation) continues the
+        same established flow without an extra click."""
+        tag = (tag or '').strip().upper()
+        existing = self.db.get_equipment_by_tag(tag) if tag else None
+        if existing:
+            equipment_id = existing['id']
+        else:
+            prefix = _equip_prefix_from_tag(tag) if tag else ''
+            equipment_id = self.db.add_equipment_item(tag, tag, prefix, page, comp_type, '', 0)
+
+        pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
+        marker_id = self.db.add_equipment_marker(
+            equipment_id, tag, page, pdf_x, pdf_y, comp_type,
+            confidence=1.0, link_method='manual')
+        self.viewer.add_equipment_marker(marker_id, pdf_x, pdf_y, comp_type, tag=tag)
+        self._equipment_bar.load(equipment_id, marker_id, active_node_id=self._active_node_id)
 
     def _on_equipment_deviation_added(self, deviation_id, equipment_id):
         self._refresh_equipment_marker_visual(equipment_id)
