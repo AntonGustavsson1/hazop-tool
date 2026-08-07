@@ -52,13 +52,15 @@ if str(_HAZOP_DIR) not in sys.path:
 import hazop  # noqa: E402  (import after sys.path setup, by design)
 from hazop import (  # noqa: E402
     Database, TreePanel, MainWindow,
-    NODE_T, DEV_T, CAUSE_T, CONS_T, SG_T, EQUIP_T,
+    NODE_T, DEV_T, CAUSE_T, CONS_T, SG_T, EQUIP_T, LEDORD_T,
+    freq_to_idx,
 )
 from PyQt6.QtWidgets import (  # noqa: E402
     QApplication, QGraphicsPixmapItem, QTreeWidgetItemIterator, QCheckBox,
+    QComboBox, QPushButton,
 )
 from PyQt6.QtGui import QPixmap  # noqa: E402
-from PyQt6.QtCore import Qt  # noqa: E402
+from PyQt6.QtCore import Qt, QPoint  # noqa: E402
 from equipment_detection import COMPONENT_TYPES  # noqa: E402
 
 
@@ -4224,9 +4226,13 @@ class GetOrCreateDeviationEquipmentTests(unittest.TestCase):
 
 
 class TreePanelEquipmentGroupingTests(unittest.TestCase):
-    """TreePanel.refresh() groups a node's equipment-scoped deviations
-    under a new EQUIP_T item, while equipment_id=NULL deviations keep
-    appearing directly under the node exactly as before this feature."""
+    """TreePanel.refresh() groups a node's deviations by guide-word text
+    FIRST (LEDORD_T — several deviation rows across different equipment can
+    share one description), then within each guide word, by equipment_id
+    (EQUIP_T) — see NOTES.md 'Nod → Ledord → Utrustning'. A deviation with
+    equipment_id=NULL (every deviation that existed before this feature)
+    still gets a LEDORD_T parent (new, unavoidable — grouping by guide word
+    always happens) but no EQUIP_T level."""
 
     @classmethod
     def setUpClass(cls):
@@ -4258,24 +4264,51 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
             it += 1
         return out
 
-    def test_equipment_scoped_deviation_grouped_under_equip_t(self):
+    def test_equipment_scoped_deviation_grouped_under_ledord_then_equip_t(self):
         eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
         node_id = self.db.add_node()
         dev_id = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
         self.panel.refresh()
 
         items = self._tree_items()
+        # add_node() auto-seeds ~16 default guide words, so filter down to
+        # just the one this test cares about, not "any LEDORD_T at all".
+        ledord_rows = [x for x in items if x[0] == LEDORD_T and x[2] == NODE_T
+                       and str(x[1]).endswith("Lågt flöde")]
+        self.assertEqual(len(ledord_rows), 1, "the guide word must appear as its own tree item under the node")
         equip_rows = [x for x in items if x[0] == EQUIP_T and x[1] == eq_id]
         self.assertEqual(len(equip_rows), 1, "the equipment must appear as its own tree item")
+        self.assertEqual(equip_rows[0][2], LEDORD_T,
+            "the equipment must be nested under the LEDORD_T (guide word) item")
         dev_rows = [x for x in items if x[0] == DEV_T and x[1] == dev_id]
         self.assertEqual(len(dev_rows), 1)
         self.assertEqual(dev_rows[0][2], EQUIP_T,
-            "the deviation must be nested under the EQUIP_T item, not directly under the node")
+            "the deviation must be nested under the EQUIP_T item")
 
-    def test_generic_deviation_stays_flat_under_node(self):
-        """Regression guard: a deviation with no equipment_id (every
-        deviation that existed before this feature) must keep its original
-        parent — a NODE_T item directly, no EQUIP_T inserted."""
+    def test_two_equipment_sharing_same_guide_word_grouped_under_one_ledord(self):
+        """The core reason for this hierarchy: 'Lågt flöde' for a pump AND
+        a valve under the same node must appear under ONE shared guide-word
+        item, each with its own Utrustning sub-item — not two separate
+        top-level groups."""
+        pump_id = self.db.add_equipment_item("P-101", "P-101", "P", 0, "Pump", '', 0)
+        valve_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
+        node_id = self.db.add_node()
+        self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=pump_id)
+        self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=valve_id)
+        self.panel.refresh()
+
+        items = self._tree_items()
+        ledord_rows = [x for x in items if x[0] == LEDORD_T]
+        matching = [x for x in ledord_rows if str(x[1]).endswith("Lågt flöde")]
+        self.assertEqual(len(matching), 1, "both equipment must share ONE 'Lågt flöde' guide-word item")
+        equip_rows = [x for x in items if x[0] == EQUIP_T and x[2] == LEDORD_T]
+        self.assertEqual({x[1] for x in equip_rows}, {pump_id, valve_id})
+
+    def test_generic_deviation_gets_ledord_parent_but_no_equip_t(self):
+        """A deviation with no equipment_id (every deviation that existed
+        before this feature) still gets grouped under its guide word (that
+        grouping is unconditional now), but no EQUIP_T level is inserted —
+        it's a direct LEDORD_T -> DEV_T child."""
         node_id = self.db.add_node()
         dev_id = self.db.add_deviation(node_id, "Övrigt-avvikelse")
         self.panel.refresh()
@@ -4283,7 +4316,7 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         items = self._tree_items()
         dev_rows = [x for x in items if x[0] == DEV_T and x[1] == dev_id]
         self.assertEqual(len(dev_rows), 1)
-        self.assertEqual(dev_rows[0][2], NODE_T)
+        self.assertEqual(dev_rows[0][2], LEDORD_T)
         self.assertEqual(len([x for x in items if x[0] == EQUIP_T]), 0)
 
     def test_resolve_node_id_for_equip_t(self):
@@ -4291,6 +4324,46 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         node_id = self.db.add_node()
         self.db.set_equipment_node(eq_id, node_id)
         self.assertEqual(self.panel._resolve_node_id(EQUIP_T, eq_id), node_id)
+
+    def test_resolve_node_id_for_ledord_t(self):
+        node_id = self.db.add_node()
+        self.db.add_deviation(node_id, "Lågt flöde")
+        self.panel.refresh()
+        items = self._tree_items()
+        ledord_id = next(x[1] for x in items if x[0] == LEDORD_T)
+        self.assertEqual(self.panel._resolve_node_id(LEDORD_T, ledord_id), node_id)
+
+    def test_context_menu_is_a_no_op_for_ledord_t(self):
+        """LEDORD_T is a pure grouping view (like EQUIP_T) — right-clicking
+        it must return before ever building/exec-ing a QMenu (QMenu.exec()
+        is modal and would otherwise hang a headless/offscreen test run
+        indefinitely if the LEDORD_T check were ever bypassed).
+
+        Patches QTreeWidget.itemAt directly rather than relying on
+        visualItemRect()-derived coordinates: self.panel is never shown, so
+        the tree has no real layout geometry, and itemAt() on an arbitrary
+        point can resolve to the wrong item (or None) — which is exactly
+        what silently happened here once already, sending this test
+        through the real menu-building path and hanging on menu.exec()."""
+        node_id = self.db.add_node()
+        self.db.add_deviation(node_id, "Lågt flöde")
+        self.panel.refresh()
+        it = QTreeWidgetItemIterator(self.panel.tree)
+        ledord_item = None
+        while it.value():
+            if it.value().data(0, Qt.ItemDataRole.UserRole + 1) == LEDORD_T:
+                ledord_item = it.value()
+                break
+            it += 1
+        self.assertIsNotNone(ledord_item)
+
+        with unittest.mock.patch.object(self.panel.tree, 'itemAt', return_value=ledord_item), \
+             unittest.mock.patch('hazop.QMenu') as mock_menu_cls:
+            try:
+                self.panel._context_menu(QPoint(0, 0))
+            except Exception as e:
+                self.fail(f"right-clicking a LEDORD_T item must not raise: {e!r}")
+            mock_menu_cls.assert_not_called()
 
 
 class EquipmentDeviationBarTests(unittest.TestCase):
@@ -4356,6 +4429,116 @@ class EquipmentDeviationBarTests(unittest.TestCase):
 
         self.assertEqual(self.db.equipment_deviation_count(self.eq_id), 1)
         self.assertEqual(self.db.equipment_node_id(self.eq_id), node_id)
+
+    def test_smart_node_default_assigns_active_node_when_equipment_has_none(self):
+        """See NOTES.md 'Slippa välja nod varje gång': the bar assigns
+        PIDPanel._active_node_id immediately when the equipment has no node
+        of its own yet, so checking a deviation works right away instead of
+        forcing a manual node pick every time — explicit user request."""
+        node_id = self.db.add_node()
+        self.bar.load(self.eq_id, self.marker_id, active_node_id=node_id)
+        self.assertEqual(self.bar._node_combo.currentData(), node_id)
+        self.assertEqual(self.db.equipment_node_id(self.eq_id), node_id)
+
+    def test_smart_node_default_does_not_override_existing_node(self):
+        node_id = self.db.add_node()
+        other_node_id = self.db.add_node()
+        self.db.set_equipment_node(self.eq_id, node_id)
+        self.bar.load(self.eq_id, self.marker_id, active_node_id=other_node_id)
+        self.assertEqual(self.db.equipment_node_id(self.eq_id), node_id)
+
+    def test_number_key_shortcut_toggles_matching_checkbox(self):
+        node_id = self.db.add_node()
+        self.bar.load(self.eq_id, self.marker_id)
+        idx = self.bar._node_combo.findData(node_id)
+        self.bar._node_combo.setCurrentIndex(idx)
+
+        self.assertGreaterEqual(len(self.bar._checklist_checkboxes), 1)
+        self.bar._toggle_checkbox_by_number(1)
+
+        self.assertTrue(self.bar._checklist_checkboxes[0].isChecked())
+        self.assertEqual(self.db.equipment_deviation_count(self.eq_id), 1)
+
+    def test_number_key_shortcut_out_of_range_is_a_no_op(self):
+        node_id = self.db.add_node()
+        self.bar.load(self.eq_id, self.marker_id)
+        idx = self.bar._node_combo.findData(node_id)
+        self.bar._node_combo.setCurrentIndex(idx)
+        # One past the last real row — must not raise or toggle anything.
+        out_of_range = len(self.bar._checklist_checkboxes) + 1
+        self.bar._toggle_checkbox_by_number(out_of_range)
+        self.assertEqual(self.db.equipment_deviation_count(self.eq_id), 0)
+
+    def _select_node_and_stub_cause_creation(self):
+        """Shared setup for the suggested-cause-chip / frequency tests:
+        picks a node and installs a fake _create_cause_fn that creates a
+        real cause row via Database directly, standing in for
+        PIDPanel._create_cause_for_bar (which needs a real P&ID marker/scene
+        this test class doesn't construct).
+
+        Uses a Pump equipment item rather than self.eq_id ("Ventil") because
+        standard_causes is only seeded per specific valve/equipment
+        sub-type (e.g. "Manuell ventil", "On-off ventil") — "Pump" is
+        seeded and matches the user's own example ("Lågt flöde" + Pump →
+        "Pump stopp")."""
+        pump_id = self.db.add_equipment_item("P-101", "P-101", "P", 0, "Pump", '', 0)
+        pump_marker_id = self.db.add_equipment_marker(
+            pump_id, "P-101", 0, 200.0, 200.0, "Pump", confidence=0.9, link_method='leader')
+        node_id = self.db.add_node()
+        self.bar.load(pump_id, pump_marker_id)
+        idx = self.bar._node_combo.findData(node_id)
+        self.bar._node_combo.setCurrentIndex(idx)
+
+        created = {}
+
+        def fake_create_cause(dev_id, comp_type, comp_tag, description):
+            cause_id = self.db.add_cause(dev_id)
+            self.db.update_cause(cause_id, description, comp_type=comp_type, comp_tag=comp_tag)
+            created['cause_id'] = cause_id
+            created['dev_id'] = dev_id
+            return cause_id
+
+        self.bar._create_cause_fn = fake_create_cause
+        return created
+
+    def test_suggested_cause_chip_creates_cause_and_reveals_frequency_combo(self):
+        created = self._select_node_and_stub_cause_creation()
+
+        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        checkbox = row_widget.findChild(QCheckBox)
+        checkbox.setChecked(True)
+
+        suggest_btn = next(
+            (w for w in row_widget.findChildren(QPushButton) if w.text().startswith("→ ")), None)
+        self.assertIsNotNone(
+            suggest_btn, "expected a suggested-cause chip once a standard cause exists for this row")
+        suggest_btn.click()
+
+        self.assertIn('cause_id', created)
+        freq_combo = row_widget.findChildren(QComboBox)[-1]
+        # isVisibleTo (not isVisible) — self.bar is never actually .show()n
+        # in this test, so isVisible() would be False regardless of our
+        # setVisible(True) call; isVisibleTo(row_widget) checks the
+        # widget's own visibility flag relative to its parent instead.
+        self.assertTrue(freq_combo.isVisibleTo(row_widget))
+        self.assertEqual(freq_combo.property('cause_id'), created['cause_id'])
+
+    def test_frequency_combo_change_writes_to_cause_likelihood(self):
+        created = self._select_node_and_stub_cause_creation()
+
+        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        checkbox = row_widget.findChild(QCheckBox)
+        checkbox.setChecked(True)
+        suggest_btn = next(
+            w for w in row_widget.findChildren(QPushButton) if w.text().startswith("→ "))
+        suggest_btn.click()
+
+        freq_combo = row_widget.findChildren(QComboBox)[-1]
+        freq_combo.setCurrentIndex(freq_to_idx(3))
+
+        cause = self.db.conn.execute(
+            "SELECT likelihood FROM causes WHERE id=?", (created['cause_id'],)).fetchone()
+        self.assertEqual(cause['likelihood'], 3)
 
 
 if __name__ == '__main__':

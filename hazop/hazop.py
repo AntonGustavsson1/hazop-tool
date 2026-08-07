@@ -23,6 +23,7 @@ from pid_viewer import (
     detect_equipment_symbols, EquipmentMarkerReviewDialog,
     apply_scan_result_to_equipment_catalog, upsert_identified_tags_from_scan,
     EquipmentAnalysisWorker,
+    FREQ_LABELS, freq_to_idx, idx_to_freq,
 )
 
 from PyQt6.QtWidgets import (
@@ -1023,17 +1024,11 @@ def parse_chain_from_json(raw: str) -> dict:
         return {}
 
 
-# Frequency F=-1..5, stored as integer in causes.likelihood
+# Frequency F=-1..5, stored as integer in causes.likelihood.
+# FREQ_LABELS/freq_to_idx/idx_to_freq now live in pid_viewer.py (imported
+# above) since EquipmentDeviationBar needs them too and pid_viewer.py
+# cannot import back from hazop.py without a circular import.
 _FREQ_VALUES = [-1, 0, 1, 2, 3, 4, 5]
-FREQ_LABELS = [
-    'F-1 – Otänkbar',
-    'F0 – Extremt sällan',
-    'F1 – Sällan',
-    'F2 – Osannolik',
-    'F3 – Möjlig',
-    'F4 – Trolig',
-    'F5 – Frekvent',
-]
 
 # Default frequency boundaries (events/year) between each F-column.
 # 6 boundaries for 7 columns (F=-1..F5).
@@ -1060,14 +1055,6 @@ def freq_to_f_level(freq_per_year, boundaries=None) -> int:
             return i - 1
     return len(boundaries) - 1   # above all → F=5
 
-
-def freq_to_idx(f: int) -> int:
-    """Frequency value (-1..5) → combo-box index (0..6)."""
-    return max(0, min(int(f) + 1, 6))
-
-def idx_to_freq(i: int) -> int:
-    """Combo-box index (0..6) → frequency value (-1..5)."""
-    return i - 1
 
 # Keep old alias so existing code that references LIKE_LABELS doesn't crash
 LIKE_LABELS = FREQ_LABELS
@@ -6814,6 +6801,9 @@ CONS_T = 3
 SG_T = 4
 DEV_T = 5
 EQUIP_T = 6
+LEDORD_T = 7   # pure grouping level (guide word / "ledord") — no DB row of
+               # its own, several deviation rows across different equipment
+               # can share one. See NOTES.md "Nod → Ledord → Utrustning".
 
 DEVIATION_TYPES = [
     "Lågt flöde",
@@ -7139,40 +7129,58 @@ class TreePanel(QWidget):
                 if (NODE_T, node['id']) in expanded: nitem.setExpanded(True)
                 if select_type == NODE_T and select_id == node['id']: target = nitem
 
-                # Deviations tied to a specific equipment (equipment_id set)
-                # are grouped under a new "Utrustning" item between the node
-                # and its deviations; deviations with no equipment_id (every
-                # deviation created before this feature, and any created the
-                # old way) are shown exactly as before, directly under the
-                # node — see NOTES.md "Nod → Utrustning → Avvikelse".
-                equipment_groups = {}
-                ungrouped_devs = []
+                # Nod → Ledord → Utrustning → Avvikelse (2026-08-07, see
+                # NOTES.md): deviations are grouped by their guide-word text
+                # FIRST (several deviation rows across different equipment
+                # can share the same description, e.g. "Lågt flöde" for both
+                # a pump and a valve under one node), then WITHIN each guide
+                # word, split into equipment_id-tagged rows (grouped under a
+                # "Utrustning" item) and equipment_id=NULL rows (shown
+                # directly under the guide word — every deviation that
+                # existed before this feature, unaffected in substance,
+                # just one extra grouping level to expand).
+                ledord_groups = {}
                 for dev in self.db.deviations(node['id']):
-                    eq_id = dev['equipment_id']
-                    if eq_id:
-                        equipment_groups.setdefault(eq_id, []).append(dev)
-                    else:
-                        ungrouped_devs.append(dev)
+                    ledord_groups.setdefault(dev['description'], []).append(dev)
 
                 di = 0
-                for eq_id, eq_devs in equipment_groups.items():
-                    eq = self.db.get_equipment_by_id(eq_id)
-                    eq_label = f"{eq['tag']} — {eq['equipment_type']}" if eq else f"Utrustning #{eq_id}"
-                    eitem = QTreeWidgetItem([f"  🔧  {eq_label}"])
-                    eitem.setData(0, Qt.ItemDataRole.UserRole, eq_id)
-                    eitem.setData(0, Qt.ItemDataRole.UserRole + 1, EQUIP_T)
-                    eq_font = QFont(); eq_font.setBold(True)
-                    eitem.setFont(0, eq_font)
-                    nitem.addChild(eitem)
-                    if (EQUIP_T, eq_id) in expanded: eitem.setExpanded(True)
-                    if select_type == EQUIP_T and select_id == eq_id: target = eitem
-                    for dev in eq_devs:
-                        di += 1
-                        add_deviation_subtree(eitem, dev, di)
+                for description, dev_list in ledord_groups.items():
+                    litem = QTreeWidgetItem([f"  ⬡  {description}"])
+                    ledord_key = f"{node['id']}:{description}"
+                    litem.setData(0, Qt.ItemDataRole.UserRole, ledord_key)
+                    litem.setData(0, Qt.ItemDataRole.UserRole + 1, LEDORD_T)
+                    led_font = QFont(); led_font.setItalic(True)
+                    litem.setFont(0, led_font)
+                    nitem.addChild(litem)
+                    if (LEDORD_T, ledord_key) in expanded: litem.setExpanded(True)
 
-                for dev in ungrouped_devs:
-                    di += 1
-                    add_deviation_subtree(nitem, dev, di)
+                    equipment_groups = {}
+                    ungrouped_devs = []
+                    for dev in dev_list:
+                        eq_id = dev['equipment_id']
+                        if eq_id:
+                            equipment_groups.setdefault(eq_id, []).append(dev)
+                        else:
+                            ungrouped_devs.append(dev)
+
+                    for eq_id, eq_devs in equipment_groups.items():
+                        eq = self.db.get_equipment_by_id(eq_id)
+                        eq_label = f"{eq['tag']} — {eq['equipment_type']}" if eq else f"Utrustning #{eq_id}"
+                        eitem = QTreeWidgetItem([f"    🔧  {eq_label}"])
+                        eitem.setData(0, Qt.ItemDataRole.UserRole, eq_id)
+                        eitem.setData(0, Qt.ItemDataRole.UserRole + 1, EQUIP_T)
+                        eq_font = QFont(); eq_font.setBold(True)
+                        eitem.setFont(0, eq_font)
+                        litem.addChild(eitem)
+                        if (EQUIP_T, eq_id) in expanded: eitem.setExpanded(True)
+                        if select_type == EQUIP_T and select_id == eq_id: target = eitem
+                        for dev in eq_devs:
+                            di += 1
+                            add_deviation_subtree(eitem, dev, di)
+
+                    for dev in ungrouped_devs:
+                        di += 1
+                        add_deviation_subtree(litem, dev, di)
 
             if target and not emit_selection:
                 # Update the tree's visual highlight while signals are still
@@ -7199,6 +7207,13 @@ class TreePanel(QWidget):
     def _resolve_node_id(self, type_, id_):
         if type_ == NODE_T: return id_
         if type_ == EQUIP_T: return self.db.equipment_node_id(id_)
+        if type_ == LEDORD_T:
+            # id_ is "node_id:description" (see refresh()) — LEDORD_T has no
+            # DB row of its own, but the node_id is encoded right in the key.
+            try:
+                return int(str(id_).split(':', 1)[0])
+            except (ValueError, IndexError):
+                return None
         if type_ == DEV_T:
             r = self.db.get_deviation(id_); return r['node_id'] if r else None
         if type_ == CAUSE_T:
@@ -7364,11 +7379,11 @@ class TreePanel(QWidget):
         if item is None: return
         type_ = item.data(0, Qt.ItemDataRole.UserRole + 1)
         id_   = item.data(0, Qt.ItemDataRole.UserRole)
-        if type_ == EQUIP_T:
-            # A live grouping view over equipment_catalog/deviations, not
-            # its own row — nothing to add/copy/delete here from the tree
-            # (use the equipment's own bottom bar on the P&ID, or the
-            # Utrustningsregister).
+        if type_ in (EQUIP_T, LEDORD_T):
+            # Both are live grouping views (over equipment_catalog/deviations,
+            # or over deviation description text), not their own DB row —
+            # nothing to add/copy/delete here from the tree (use the
+            # equipment's own bottom bar on the P&ID, or the Utrustningsregister).
             return
         menu  = QMenu(self)
 
@@ -17749,6 +17764,10 @@ class MainWindow(QMainWindow):
         self._v_splitter = QSplitter(Qt.Orientation.Vertical)
 
         self.scenario_panel = ScenarioTablePanel(self.db)
+        # Same opt-in HAZOPWorksheet already uses (see always_show_deviation_column
+        # docstring) — needed so load_node() from the equipment bar shows WHICH
+        # deviation/equipment each row belongs to, not just the causes themselves.
+        self.scenario_panel.always_show_deviation_column()
         self._v_splitter.addWidget(self.scenario_panel)
 
         self.markup_table_panel = MarkupTablePanel(self.db)
@@ -18160,11 +18179,30 @@ class MainWindow(QMainWindow):
         self._switch_view(2)   # Utrustning page
         self.equipment_panel.select_row_by_equipment_id(row['equipment_id'])
 
-    def _on_equipment_deviation_created(self, deviation_id, _equipment_id):
+    def _on_equipment_deviation_created(self, deviation_id, equipment_id):
         """A deviation was checked on in EquipmentDeviationBar — refresh the
-        tree (new EQUIP_T/DEV_T items) and worksheet, same as any other
-        structural change. See NOTES.md "Nod → Utrustning → Avvikelse"."""
-        self.tree_panel.refresh(DEV_T, deviation_id)
+        tree (new LEDORD_T/EQUIP_T/DEV_T items) and worksheet.
+
+        emit_selection=False + explicit load_node() (2026-08-07 fix, real
+        crash-adjacent bug report: "kan inte lägga till konsekvens"): the
+        original version called tree_panel.refresh(DEV_T, deviation_id)
+        with the default emit_selection=True, which cascades into
+        _on_selected(DEV_T, ...) -> scenario_panel.load_deviation(...) —
+        narrowing the worksheet to just THIS ONE deviation on every single
+        checkbox toggle. That hid sibling deviations for the same
+        node/equipment (the user's "I want to see BOTH deviations"
+        complaint) and left keyboard focus inside the bar's comboboxes, so
+        the worksheet's Enter-to-add-consequence shortcut never fired
+        (the user's "I can't add a consequence" complaint) — same
+        emit_selection anti-pattern already fixed elsewhere per commit
+        84c8b7c (see _on_props_changed, _on_safeguard_created,
+        _on_marker_navigate). load_node() shows every deviation under the
+        node together instead, exactly like clicking the node itself.
+        """
+        node_id = self.db.equipment_node_id(equipment_id)
+        self.tree_panel.refresh(DEV_T, deviation_id, emit_selection=False)
+        if node_id is not None:
+            self.scenario_panel.load_node(node_id)
         self.scenario_panel.refresh_placed()
 
     def _on_safeguard_created(self, _sg_id):
