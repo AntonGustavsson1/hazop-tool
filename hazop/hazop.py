@@ -22,7 +22,8 @@ from pid_viewer import (
     _equip_prefix_from_tag,
     detect_equipment_symbols, EquipmentMarkerReviewDialog,
     apply_scan_result_to_equipment_catalog, upsert_identified_tags_from_scan,
-    EquipmentAnalysisWorker,
+    ParallelTagScanWorker, ParallelEquipmentAnalysisWorker,
+    PageProgressDialog,
     FREQ_LABELS, freq_to_idx, idx_to_freq,
     _obj_type_matches,
 )
@@ -17057,6 +17058,13 @@ class EquipmentPanel(QWidget):
     # ── Scan ──────────────────────────────────────────────────────────────────
 
     def _scan(self):
+        """🔍 Skanna P&ID — runs on background worker PROCESSES
+        (ParallelTagScanWorker) when the document is large enough for
+        multi-core parallelism to be worth it, with live per-page
+        progress (PageProgressDialog) — see NOTES.md "Flerkärnig
+        parallellisering av Analysera P&ID". Falls back to a single
+        sequential pass for small documents or if the process pool can't
+        start."""
         if not HAS_PYMUPDF:
             QMessageBox.warning(self, "PyMuPDF saknas",
                 "Installera med:  pip install PyMuPDF")
@@ -17070,7 +17078,7 @@ class EquipmentPanel(QWidget):
 
         try:
             import fitz
-            pdf_doc = fitz.open(str(path))
+            n_pages = fitz.open(str(path)).page_count
         except Exception as e:
             QMessageBox.warning(self, "PDF-fel", f"Kunde inte öppna PDF:\n{e}")
             return
@@ -17090,86 +17098,87 @@ class EquipmentPanel(QWidget):
                 QMessageBox.StandardButton.Yes)
             use_ocr = (reply == QMessageBox.StandardButton.Yes)
 
-        # Progress
-        n_pages  = pdf_doc.page_count
-        progress = QProgressDialog("Förbereder…", "Avbryt", 0, n_pages, self)
-        progress.setWindowTitle("Skannar P&ID")
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.show()
+        dlg = PageProgressDialog("Skannar P&ID…", n_pages, self)
+        worker = ParallelTagScanWorker(path, use_ocr=use_ocr)
+        self._scan_thread = worker   # keep a reference so it isn't GC'd mid-run
 
-        def _cb(pn, _total, msg):
-            if progress.wasCanceled():
+        cancelled_flag = {'v': False}
+
+        def _on_cancel():
+            cancelled_flag['v'] = True
+            worker.requestInterruption()
+
+        def _on_finished(result):
+            dlg.close()
+            self._scan_thread = None
+            if cancelled_flag['v']:
                 return
-            progress.setValue(pn)
-            progress.setLabelText(msg)
-            QApplication.processEvents()
 
-        result = scan_pdf_for_equipment(
-            pdf_doc, use_ocr=use_ocr, progress_callback=_cb)
-        progress.setValue(n_pages)
-        progress.close()
-        pdf_doc.close()
+            meta = result.pop('_meta', {})
+            real = {k: v for k, v in result.items() if not k.startswith('_')}
 
-        if progress.wasCanceled():
-            return
+            if not real:
+                QMessageBox.warning(
+                    self, "Inga taggar",
+                    "Inga utrustningstaggar hittades.\n\n"
+                    + ("Prova med OCR aktiverat (installera pytesseract eller easyocr)."
+                       if not use_ocr else
+                       "Kontrollera att PDF-texten är läsbar och försök med OCR."))
+                return
 
-        meta = result.pop('_meta', {})
-        real = {k: v for k, v in result.items() if not k.startswith('_')}
+            # Import to DB — shared with "📋 Analysera P&ID" (PIDPanel._analyze_pid,
+            # pid_viewer.py) now that both buttons trigger the same underlying
+            # scan; also cross-write "Identifierade objekt" so that panel stays
+            # in sync regardless of which button was used.
+            apply_scan_result_to_equipment_catalog(self.db, real)
+            upsert_identified_tags_from_scan(self.db, real)
 
-        if not real:
-            QMessageBox.warning(
-                self, "Inga taggar",
-                "Inga utrustningstaggar hittades.\n\n"
-                + ("Prova med OCR aktiverat (installera pytesseract eller easyocr)."
-                   if not use_ocr else
-                   "Kontrollera att PDF-texten är läsbar och försök med OCR."))
-            return
+            # Build summary
+            n_tags   = sum(len(d['tags']) for d in real.values())
+            n_groups = len(real)
+            ocr_used = meta.get('ocr_used', False)
+            ocr_eng  = meta.get('ocr_engine', '')
 
-        # Import to DB — shared with "📋 Analysera P&ID" (PIDPanel._analyze_pid,
-        # pid_viewer.py) now that both buttons trigger the same underlying
-        # scan; also cross-write "Identifierade objekt" so that panel stays
-        # in sync regardless of which button was used.
-        apply_scan_result_to_equipment_catalog(self.db, real)
-        upsert_identified_tags_from_scan(self.db, real)
+            type_counts: dict = {}
+            for prefix, data in real.items():
+                known = KNOWN_PREFIXES.get(prefix)
+                et    = known[1] if known else 'Okänd'
+                type_counts[et] = type_counts.get(et, 0) + len(data['tags'])
 
-        # Build summary
-        n_tags   = sum(len(d['tags']) for d in real.values())
-        n_groups = len(real)
-        ocr_used = meta.get('ocr_used', False)
-        ocr_eng  = meta.get('ocr_engine', '')
+            lines = "\n".join(
+                f"  • {t}: {c} st"
+                for t, c in sorted(type_counts.items(), key=lambda x: -x[1]))
+            ocr_line = f"\n🔬 OCR användes ({ocr_eng})\n" if ocr_used else "\n"
 
-        type_counts: dict = {}
-        for prefix, data in real.items():
-            known = KNOWN_PREFIXES.get(prefix)
-            et    = known[1] if known else 'Okänd'
-            type_counts[et] = type_counts.get(et, 0) + len(data['tags'])
+            QMessageBox.information(
+                self, "Skanning klar ✅",
+                f"Skanning klar!\n\n"
+                f"Totalt hittade:  {n_tags}  taggar\n"
+                f"Prefix-grupper:  {n_groups}{ocr_line}\n"
+                f"Utrustningstyper:\n{lines}\n\n"
+                f"Tabellen nedan har uppdaterats.\n"
+                f"Redigera eventuella OCR-fel (gul bakgrund) och kryssa i\n"
+                f"de taggar du vill skapa HAZOP-noder för.")
 
-        lines = "\n".join(
-            f"  • {t}: {c} st"
-            for t, c in sorted(type_counts.items(), key=lambda x: -x[1]))
-        ocr_line = f"\n🔬 OCR användes ({ocr_eng})\n" if ocr_used else "\n"
+            self.refresh()
 
-        QMessageBox.information(
-            self, "Skanning klar ✅",
-            f"Skanning klar!\n\n"
-            f"Totalt hittade:  {n_tags}  taggar\n"
-            f"Prefix-grupper:  {n_groups}{ocr_line}\n"
-            f"Utrustningstyper:\n{lines}\n\n"
-            f"Tabellen nedan har uppdaterats.\n"
-            f"Redigera eventuella OCR-fel (gul bakgrund) och kryssa i\n"
-            f"de taggar du vill skapa HAZOP-noder för.")
-
-        self.refresh()
+        worker.page_progress.connect(dlg.set_page_status)
+        worker.finished_scan.connect(_on_finished)
+        dlg.canceled.connect(_on_cancel)
+        worker.start()
+        dlg.exec()
 
     def _autodetect(self):
         """🎯 Hitta på P&ID — full analysis: weighted tag<->symbol
         association for every known VALVE tag in the register AND shape-
         anchored hunting for valve-shaped symbols with no tag, against one
         shared per-page cluster extraction (detect_equipment_and_valves).
-        Runs on a background QThread (EquipmentAnalysisWorker) so the UI
-        stays responsive and shows real per-page progress, including on a
-        50-page document.
+        Runs on background worker PROCESSES (ParallelEquipmentAnalysisWorker)
+        when the document is large enough for multi-core parallelism to be
+        worth it — falls back to the proven single-thread
+        EquipmentAnalysisWorker path otherwise — with live per-page
+        progress (PageProgressDialog), including on a 50-page document.
+        See NOTES.md "Flerkärnig parallellisering av Analysera P&ID".
 
         Deliberately scoped to valves only for now (2026-08-06) —
         VALVE_COMPONENT_TYPES ('Ventil'/'Säkerhetsventil (PSV)') — even
@@ -17222,23 +17231,21 @@ class EquipmentPanel(QWidget):
             QMessageBox.warning(self, "PDF-fel", f"Kunde inte öppna PDF:\n{e}")
             return
 
-        progress = QProgressDialog("Förbereder…", "Avbryt", 0, n_pages, self)
-        progress.setWindowTitle("Analyserar P&ID")
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.show()
-
-        thread = EquipmentAnalysisWorker(path, tag_points)
+        dlg = PageProgressDialog("Analyserar P&ID…", n_pages, self)
+        thread = ParallelEquipmentAnalysisWorker(path, tag_points)
         self._analysis_thread = thread   # keep a reference so it isn't GC'd mid-run
 
-        def _on_progress(page_num, total, msg):
-            progress.setMaximum(total)
-            progress.setValue(page_num)
-            progress.setLabelText(msg)
+        cancelled_flag = {'v': False}
+
+        def _on_cancel():
+            cancelled_flag['v'] = True
+            thread.requestInterruption()
 
         def _on_finished(results, rejected):
-            progress.close()
+            dlg.close()
             self._analysis_thread = None
+            if cancelled_flag['v']:
+                return
             for res in results:
                 if res.get('tag_status') != 'untagged':
                     res['equipment_id'] = tag_to_equipment_id.get(res['tag'])
@@ -17246,14 +17253,15 @@ class EquipmentPanel(QWidget):
                 QMessageBox.information(self, "Inget hittat",
                     "Inga ventiler eller symboler hittades.")
                 return
-            dlg = EquipmentMarkerReviewDialog(results, self.db, parent=self, rejected=rejected)
-            if dlg.exec():
+            review_dlg = EquipmentMarkerReviewDialog(results, self.db, parent=self, rejected=rejected)
+            if review_dlg.exec():
                 self.markers_saved.emit()
 
-        thread.progress.connect(_on_progress)
+        thread.page_progress.connect(dlg.set_page_status)
         thread.finished_analysis.connect(_on_finished)
-        progress.canceled.connect(thread.requestInterruption)
+        dlg.canceled.connect(_on_cancel)
         thread.start()
+        dlg.exec()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

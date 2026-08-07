@@ -10,6 +10,8 @@ import datetime
 import math
 import logging
 import importlib.util
+import multiprocessing
+import concurrent.futures
 from pathlib import Path
 from functools import partial
 
@@ -2982,6 +2984,411 @@ class EquipmentAnalysisWorker(QThread):
                     doc.close()
                 except Exception:
                     pass
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Multi-core parallel analysis (2026-08-07) — see NOTES.md "Flerkärnig
+# parallellisering av Analysera P&ID". Neither scan_pdf_for_equipment() nor
+# detect_equipment_and_valves() previously used more than one CPU core —
+# the latter already ran off the UI thread (EquipmentAnalysisWorker above)
+# but still one page at a time. Both iterate pages independently (confirmed
+# via code review), so both can be split across several OS PROCESSES
+# (not threads — the GIL would otherwise serialize this CPU-bound work
+# anyway) using the equipment_detection.py module-level worker functions
+# (_scan_page_range_worker / _analyze_page_range_worker — picklable, so
+# they survive Windows' 'spawn' start method, and Qt-free, so they're safe
+# to run in a child process that never touches the GUI).
+# ══════════════════════════════════════════════════════════════════════════
+
+def _pick_worker_count(n_pages, use_ocr, ocr_engine):
+    """How many worker PROCESSES to use for a parallel scan/analysis.
+    Leaves one core for the UI thread. Capped further when EasyOCR is (or
+    would be, under 'auto') the active engine specifically — each process
+    loads its own ~1GB model and pays EasyOCR's own ~4-6s torch import
+    cost (see NOTES.md "Uppstartsprestanda — lat OCR-import"), so spinning
+    up as many EasyOCR workers as CPU cores risks gigabytes of duplicated
+    RAM for little extra speed. RapidOCR/Tesseract are cheap enough not to
+    need this extra cap."""
+    cpu_n = os.cpu_count() or 4
+    base = max(1, cpu_n - 1)
+    if use_ocr:
+        resolved = ocr_engine
+        if resolved == 'auto':
+            st = ocr_status()
+            resolved = ('rapidocr' if st.get('rapidocr') else
+                        'tesseract' if st.get('tesseract') else
+                        'easyocr' if st.get('easyocr') else None)
+        if resolved == 'easyocr':
+            base = min(base, 3)
+    return min(base, n_pages) if n_pages else base
+
+
+def _should_parallelize(n_pages, n_workers):
+    """Below this, ProcessPoolExecutor/model-load startup cost would
+    likely exceed any speedup — run the proven single-process path
+    instead."""
+    return n_pages >= 4 and n_workers >= 2
+
+
+def _drain_progress_queue(progress_queue, emit_fn):
+    """Pull every currently-available (page_num, status) tuple off a
+    multiprocessing progress queue and forward it via emit_fn — shared by
+    ParallelTagScanWorker and ParallelEquipmentAnalysisWorker below."""
+    try:
+        while True:
+            page_num, status = progress_queue.get_nowait()
+            emit_fn(page_num, status)
+    except Exception:
+        pass
+
+
+class ParallelTagScanWorker(QThread):
+    """Runs scan_pdf_for_equipment() off the UI thread, across multiple
+    CPU-core PROCESSES when the document is large enough to be worth it
+    (_should_parallelize) — otherwise falls back to running the exact same
+    scan_pdf_for_equipment() call directly, on this thread. Modelled on
+    EquipmentAnalysisWorker: every worker process opens its OWN
+    fitz.Document (Documents can't cross a process boundary), NEVER
+    touches Database/sqlite, and finished_scan is ALWAYS emitted — on
+    success, on any exception, or on cancellation (as an empty dict, same
+    as today's "Avbryt" during the old synchronous scan silently
+    discarding whatever had been found so far).
+
+    page_progress(page_num, status) — status is 'running' or 'done', for
+    PageProgressDialog. Fired for every page regardless of which path ran.
+    finished_scan(dict) — the scan_pdf_for_equipment()-shaped result.
+    """
+    page_progress = pyqtSignal(int, str)
+    finished_scan = pyqtSignal(dict)
+
+    def __init__(self, pdf_path, use_ocr, ocr_engine='auto', parent=None):
+        super().__init__(parent)
+        self._pdf_path   = str(pdf_path)
+        self._use_ocr    = use_ocr
+        self._ocr_engine = ocr_engine
+
+    def run(self):
+        doc = None
+        try:
+            doc = fitz.open(self._pdf_path)
+            n_pages = doc.page_count
+        except Exception as e:
+            logging.error(f"ParallelTagScanWorker.run() failed to open PDF: {e}", exc_info=True)
+            self.finished_scan.emit({})
+            return
+        finally:
+            if doc is not None:
+                try:
+                    doc.close()
+                except Exception:
+                    pass
+
+        n_workers = _pick_worker_count(n_pages, self._use_ocr, self._ocr_engine)
+        if not _should_parallelize(n_pages, n_workers):
+            self._run_sequential(n_pages)
+            return
+        try:
+            self._run_parallel(n_pages, n_workers)
+        except Exception as e:
+            logging.error(f"ParallelTagScanWorker.run() parallel path failed, "
+                          f"falling back to sequential: {e}", exc_info=True)
+            try:
+                self._run_sequential(n_pages)
+            except Exception as e2:
+                logging.error(f"ParallelTagScanWorker: sequential fallback also "
+                              f"failed: {e2}", exc_info=True)
+                self.finished_scan.emit({})
+
+    def _run_sequential(self, n_pages):
+        doc = None
+        last_page = [None]
+
+        def _cb(page_num, _total, _msg):
+            if last_page[0] is not None and last_page[0] != page_num:
+                self.page_progress.emit(last_page[0], 'done')
+            self.page_progress.emit(page_num, 'running')
+            last_page[0] = page_num
+
+        try:
+            doc = fitz.open(self._pdf_path)
+            result = scan_pdf_for_equipment(
+                doc, use_ocr=self._use_ocr, ocr_engine=self._ocr_engine, progress_callback=_cb)
+            if last_page[0] is not None:
+                self.page_progress.emit(last_page[0], 'done')
+            self.finished_scan.emit(result)
+        except Exception as e:
+            logging.error(f"ParallelTagScanWorker._run_sequential failed: {e}", exc_info=True)
+            self.finished_scan.emit({})
+        finally:
+            if doc is not None:
+                try:
+                    doc.close()
+                except Exception:
+                    pass
+
+    def _run_parallel(self, n_pages, n_workers):
+        chunks = equipment_detection._split_into_chunks(n_pages, n_workers)
+        all_rows = []
+        ocr_engine_used = None
+        cancelled = False
+        manager = multiprocessing.Manager()
+        progress_queue = manager.Queue()
+        try:
+            executor = concurrent.futures.ProcessPoolExecutor(max_workers=len(chunks))
+            try:
+                futures = [executor.submit(
+                    equipment_detection._scan_page_range_worker,
+                    self._pdf_path, chunk, self._use_ocr, self._ocr_engine, progress_queue)
+                    for chunk in chunks]
+                pending = set(futures)
+                while pending:
+                    _drain_progress_queue(progress_queue, self.page_progress.emit)
+                    if self.isInterruptionRequested():
+                        cancelled = True
+                        for f in pending:
+                            f.cancel()
+                        break
+                    _done, pending = concurrent.futures.wait(
+                        pending, timeout=0.1, return_when=concurrent.futures.FIRST_COMPLETED)
+                _drain_progress_queue(progress_queue, self.page_progress.emit)
+                if not cancelled:
+                    for f in futures:
+                        try:
+                            rows, engine_name = f.result()
+                        except concurrent.futures.CancelledError:
+                            continue
+                        except Exception as e:
+                            logging.error(f"ParallelTagScanWorker: a worker "
+                                          f"process failed: {e}", exc_info=True)
+                            continue
+                        all_rows.extend(rows)
+                        if engine_name:
+                            ocr_engine_used = engine_name
+            finally:
+                # wait=True even when cancelled: cancel_futures=True skips
+                # any not-yet-STARTED task, but a worker process already
+                # spawned/mid-startup at cancel time keeps running and
+                # reaches for the manager's queue proxy — tearing down
+                # `manager` before that process finishes connecting to it
+                # orphans it with a noisy WinError/FileNotFoundError
+                # traceback (confirmed via a real cancellation test).
+                # Waiting bounds "Avbryt" latency to one in-flight chunk's
+                # remaining work, same order of magnitude as the existing
+                # single-thread path's own once-per-page cancel check —
+                # not instant, but always clean.
+                executor.shutdown(wait=True, cancel_futures=cancelled)
+        finally:
+            manager.shutdown()
+
+        if cancelled:
+            self.finished_scan.emit({})
+            return
+        result = equipment_detection._merge_scan_page_rows(all_rows)
+        result['_meta']['ocr_engine'] = ocr_engine_used
+        self.finished_scan.emit(result)
+
+
+class ParallelEquipmentAnalysisWorker(QThread):
+    """Runs detect_equipment_and_valves() across multiple CPU-core
+    PROCESSES when the document is large enough to be worth it, otherwise
+    delegates to the existing single-thread EquipmentAnalysisWorker (its
+    `run()` is a plain method, safe to call directly off its own thread —
+    same pattern EquipmentAnalysisWorkerTests already establishes) so this
+    class never duplicates that logic. See NOTES.md.
+
+    page_progress(page_num, status) — 'running'|'done', per page.
+    finished_analysis(list, list) — (results, rejected), ALWAYS emitted.
+    """
+    page_progress     = pyqtSignal(int, str)
+    finished_analysis = pyqtSignal(list, list)
+
+    def __init__(self, pdf_path, tag_points, pages=None,
+                 min_bowtie_score=0.5, min_confidence=0.3, parent=None):
+        super().__init__(parent)
+        self._pdf_path         = str(pdf_path)
+        self._tag_points       = list(tag_points)
+        self._pages            = list(pages) if pages is not None else None
+        self._min_bowtie_score = min_bowtie_score
+        self._min_confidence   = min_confidence
+
+    def run(self):
+        doc = None
+        try:
+            doc = fitz.open(self._pdf_path)
+            pages = self._pages if self._pages is not None else list(range(doc.page_count))
+        except Exception as e:
+            logging.error(f"ParallelEquipmentAnalysisWorker.run() failed to open "
+                          f"PDF: {e}", exc_info=True)
+            self.finished_analysis.emit([], [])
+            return
+        finally:
+            if doc is not None:
+                try:
+                    doc.close()
+                except Exception:
+                    pass
+
+        n_workers = _pick_worker_count(len(pages), use_ocr=False, ocr_engine='auto')
+        if not _should_parallelize(len(pages), n_workers):
+            self._run_sequential(pages)
+            return
+        try:
+            self._run_parallel(pages, n_workers)
+        except Exception as e:
+            logging.error(f"ParallelEquipmentAnalysisWorker.run() parallel path "
+                          f"failed, falling back to sequential: {e}", exc_info=True)
+            try:
+                self._run_sequential(pages)
+            except Exception as e2:
+                logging.error(f"ParallelEquipmentAnalysisWorker: sequential "
+                              f"fallback also failed: {e2}", exc_info=True)
+                self.finished_analysis.emit([], [])
+
+    def _run_sequential(self, pages):
+        inner = EquipmentAnalysisWorker(
+            self._pdf_path, self._tag_points, pages=pages,
+            min_bowtie_score=self._min_bowtie_score, min_confidence=self._min_confidence)
+        last_page = [None]
+
+        def _on_progress(page_num, _total, _msg):
+            if last_page[0] is not None and last_page[0] != page_num:
+                self.page_progress.emit(last_page[0], 'done')
+            self.page_progress.emit(page_num, 'running')
+            last_page[0] = page_num
+
+        def _on_finished(results, rejected):
+            if last_page[0] is not None:
+                self.page_progress.emit(last_page[0], 'done')
+            self.finished_analysis.emit(results, rejected)
+
+        inner.progress.connect(_on_progress)
+        inner.finished_analysis.connect(_on_finished)
+        inner.run()
+
+    def _run_parallel(self, pages, n_workers):
+        chunks = equipment_detection._split_into_chunks(len(pages), n_workers)
+        # _split_into_chunks works on a 0-based page COUNT — map its
+        # indices back onto the actual `pages` list so this still works
+        # when the caller passed a filtered/non-contiguous subset.
+        chunks = [[pages[i] for i in chunk] for chunk in chunks]
+        all_results, all_rejected = [], []
+        cancelled = False
+        manager = multiprocessing.Manager()
+        progress_queue = manager.Queue()
+        try:
+            executor = concurrent.futures.ProcessPoolExecutor(max_workers=len(chunks))
+            try:
+                futures = [executor.submit(
+                    equipment_detection._analyze_page_range_worker,
+                    self._pdf_path, chunk, self._tag_points,
+                    self._min_bowtie_score, self._min_confidence, progress_queue)
+                    for chunk in chunks]
+                pending = set(futures)
+                while pending:
+                    _drain_progress_queue(progress_queue, self.page_progress.emit)
+                    if self.isInterruptionRequested():
+                        cancelled = True
+                        for f in pending:
+                            f.cancel()
+                        break
+                    _done, pending = concurrent.futures.wait(
+                        pending, timeout=0.1, return_when=concurrent.futures.FIRST_COMPLETED)
+                _drain_progress_queue(progress_queue, self.page_progress.emit)
+                if not cancelled:
+                    for f in futures:
+                        try:
+                            results, rejected = f.result()
+                        except concurrent.futures.CancelledError:
+                            continue
+                        except Exception as e:
+                            logging.error(f"ParallelEquipmentAnalysisWorker: a "
+                                          f"worker process failed: {e}", exc_info=True)
+                            continue
+                        all_results.extend(results)
+                        all_rejected.extend(rejected)
+            finally:
+                # wait=True even when cancelled: cancel_futures=True skips
+                # any not-yet-STARTED task, but a worker process already
+                # spawned/mid-startup at cancel time keeps running and
+                # reaches for the manager's queue proxy — tearing down
+                # `manager` before that process finishes connecting to it
+                # orphans it with a noisy WinError/FileNotFoundError
+                # traceback (confirmed via a real cancellation test).
+                # Waiting bounds "Avbryt" latency to one in-flight chunk's
+                # remaining work, same order of magnitude as the existing
+                # single-thread path's own once-per-page cancel check —
+                # not instant, but always clean.
+                executor.shutdown(wait=True, cancel_futures=cancelled)
+        finally:
+            manager.shutdown()
+
+        if cancelled:
+            self.finished_analysis.emit([], [])
+            return
+        self.finished_analysis.emit(all_results, all_rejected)
+
+
+class PageProgressDialog(QDialog):
+    """Compact "Analyserar…" dialog showing individual status per page —
+    replaces the old single-line QProgressDialog now that analysis can run
+    across several worker PROCESSES and pages finish out of order (see
+    NOTES.md "Flerkärnig parallellisering av Analysera P&ID"). Shared by
+    all three analysis entry points: PIDPanel._analyze_pid,
+    EquipmentPanel._scan, EquipmentPanel._autodetect.
+    """
+    _PENDING, _RUNNING, _DONE = '⏳', '⚙', '✓'
+    _COLS = 6
+
+    canceled = pyqtSignal()
+
+    def __init__(self, title, n_pages, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setMinimumSize(320, 420)
+        self.setModal(True)
+        self._n_pages = n_pages
+        self._done_count = 0
+
+        layout = QVBoxLayout(self)
+        self._summary_lbl = QLabel(f"0/{n_pages} sidor klara")
+        bold = QFont(); bold.setBold(True)
+        self._summary_lbl.setFont(bold)
+        layout.addWidget(self._summary_lbl)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner = QWidget()
+        grid = QGridLayout(inner)
+        grid.setSpacing(2)
+        self._labels = {}
+        for i in range(n_pages):
+            lbl = QLabel(f"{self._PENDING} {i + 1}")
+            lbl.setStyleSheet("color:#8D9299; padding:2px 4px;")
+            self._labels[i] = lbl
+            grid.addWidget(lbl, i // self._COLS, i % self._COLS)
+        scroll.setWidget(inner)
+        layout.addWidget(scroll, 1)
+
+        cancel_btn = QPushButton("Avbryt")
+        cancel_btn.clicked.connect(self._on_cancel_clicked)
+        layout.addWidget(cancel_btn)
+
+    def _on_cancel_clicked(self):
+        self._summary_lbl.setText("Avbryter…")
+        self.canceled.emit()
+
+    def set_page_status(self, page_num, status):
+        lbl = self._labels.get(page_num)
+        if lbl is None:
+            return
+        if status == 'running':
+            lbl.setText(f"{self._RUNNING} {page_num + 1}")
+            lbl.setStyleSheet("color:#1565C0; padding:2px 4px; font-weight:bold;")
+        elif status == 'done':
+            lbl.setText(f"{self._DONE} {page_num + 1}")
+            lbl.setStyleSheet("color:#2E7D32; padding:2px 4px;")
+            self._done_count += 1
+            self._summary_lbl.setText(f"{self._done_count}/{self._n_pages} sidor klara")
 
 
 class ConnectorDotItem(QGraphicsEllipseItem):
@@ -7075,9 +7482,14 @@ class PIDPanel(QWidget):
         """Scan all PDF pages via the shared scan_pdf_for_equipment() pipeline
         (same one "🔍 Skanna P&ID" in Utrustningsregistret uses — see
         NOTES.md "Slå ihop Skanna/Analysera P&ID"), collect unique tag
-        prefixes, and cross-ref with the tag database. This used to run its
-        own, weaker scanning loop with no OCR support; now both entry points
-        share one implementation and one OCR option."""
+        prefixes, and cross-ref with the tag database.
+
+        Runs on background worker PROCESSES (ParallelTagScanWorker) when
+        the document is large enough for multi-core parallelism to be
+        worth it, with live per-page progress — see NOTES.md "Flerkärnig
+        parallellisering av Analysera P&ID". Falls back to a single
+        sequential pass automatically for small documents or if the
+        process pool can't start."""
         if not HAS_PYMUPDF or self.viewer.pdf_doc is None:
             QMessageBox.warning(self, "Ingen P&ID", "Öppna en P&ID-fil först.")
             return
@@ -7102,45 +7514,54 @@ class PIDPanel(QWidget):
                 QMessageBox.StandardButton.Yes)
             use_ocr = (reply == QMessageBox.StandardButton.Yes)
 
-        doc = self.viewer.pdf_doc
-        n   = doc.page_count
-        progress = QProgressDialog("Analyserar P&ID…", "Avbryt", 0, n, self)
-        progress.setWindowTitle("Analyserar")
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.show()
-        QApplication.processEvents()
+        path = self.db.get_pid_path()
+        if not path or not Path(path).exists():
+            QMessageBox.warning(self, "Ingen P&ID", "Öppna en P&ID-fil först.")
+            return
+        n = self.viewer.pdf_doc.page_count
 
-        def _cb(pg, _total, msg):
-            if progress.wasCanceled():
+        dlg = PageProgressDialog("Analyserar P&ID…", n, self)
+        worker = ParallelTagScanWorker(path, use_ocr=use_ocr)
+        self._scan_thread = worker   # keep a reference so it isn't GC'd mid-run
+
+        cancelled_flag = {'v': False}
+
+        def _on_cancel():
+            cancelled_flag['v'] = True
+            worker.requestInterruption()
+
+        def _on_finished(scan_result):
+            dlg.close()
+            self._scan_thread = None
+            if cancelled_flag['v']:
                 return
-            progress.setValue(pg)
-            progress.setLabelText(msg)
-            QApplication.processEvents()
 
-        scan_result = scan_pdf_for_equipment(doc, use_ocr=use_ocr, progress_callback=_cb)
-        progress.setValue(n); progress.close()
+            real = {k: v for k, v in scan_result.items() if not k.startswith('_')}
+            found = {pfx: set(data['tags']) for pfx, data in real.items()}
+            if not found:
+                QMessageBox.information(self, "Inga taggar",
+                    "Inga taggnummer hittades i P&ID:n.")
+                return
 
-        real = {k: v for k, v in scan_result.items() if not k.startswith('_')}
-        found = {pfx: set(data['tags']) for pfx, data in real.items()}
+            # Shared with "🔍 Skanna P&ID" (EquipmentPanel._scan, hazop.py) —
+            # both scan entry points now populate BOTH the per-tag equipment
+            # register and the per-prefix "Identifierade objekt" list, so
+            # results are identical regardless of which button was used.
+            apply_scan_result_to_equipment_catalog(self.db, scan_result)
+            upsert_identified_tags_from_scan(self.db, scan_result)
 
-        if not found:
-            QMessageBox.information(self, "Inga taggar",
-                "Inga taggnummer hittades i P&ID:n."); return
+            QMessageBox.information(self, "Analys klar ✅",
+                f"Hittade {len(found)} unika prefix.\n\n"
+                "Öppna Inställningar → Identifierade objekt\n"
+                "för att bekräfta typerna och aktivera 'Använd'.\n\n"
+                "Utrustningsregistret har också uppdaterats.")
+            self.pid_analysis_done.emit()
 
-        # Shared with "🔍 Skanna P&ID" (EquipmentPanel._scan, hazop.py) —
-        # both scan entry points now populate BOTH the per-tag equipment
-        # register and the per-prefix "Identifierade objekt" list, so
-        # results are identical regardless of which button was used.
-        apply_scan_result_to_equipment_catalog(self.db, scan_result)
-        upsert_identified_tags_from_scan(self.db, scan_result)
-
-        QMessageBox.information(self, "Analys klar ✅",
-            f"Hittade {len(found)} unika prefix.\n\n"
-            "Öppna Inställningar → Identifierade objekt\n"
-            "för att bekräfta typerna och aktivera 'Använd'.\n\n"
-            "Utrustningsregistret har också uppdaterats.")
-        self.pid_analysis_done.emit()
+        worker.page_progress.connect(dlg.set_page_status)
+        worker.finished_scan.connect(_on_finished)
+        dlg.canceled.connect(_on_cancel)
+        worker.start()
+        dlg.exec()
 
     def _refresh_color_btn(self):
         c = self._pen_color

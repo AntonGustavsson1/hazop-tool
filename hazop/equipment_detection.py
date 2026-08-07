@@ -1058,6 +1058,229 @@ def _parse_tag(text: str):
     return None, None
 
 
+# ── Per-page scan units (2026-08-07) ────────────────────────────────────────
+# scan_pdf_for_equipment()'s per-page work used to be inline in one big loop
+# mutating a single shared `result` dict via a page-order-dependent _add()
+# closure. Split into _scan_one_page_native()/_scan_one_page_ocr() — the
+# same per-page logic, unchanged, but returning a flat list of row dicts
+# instead of mutating shared state — so the exact same code can run either
+# sequentially (scan_pdf_for_equipment, below) or in a separate OS process
+# on a page range (_scan_page_range_worker, for multi-core parallelism —
+# see NOTES.md "Flerkärnig parallellisering av Analysera P&ID"). Rows are
+# combined into the final nested-dict shape by _merge_scan_page_rows(),
+# also below, run once at the end regardless of how many workers produced
+# rows — this is what makes the parallel and sequential paths produce
+# identical results.
+
+def _scan_one_page_native(page, page_num):
+    """Pass 1 (full-text regex) + Pass 2 (spatially-combined words) for ONE
+    page. Returns a flat list of row dicts: {'tag','prefix','page_num',
+    'cx','cy','from_ocr','source'}."""
+    rows = []
+
+    def _row(tag, prefix, cx, cy):
+        rows.append({'tag': tag, 'prefix': prefix, 'page_num': page_num,
+                     'cx': cx, 'cy': cy, 'from_ocr': False, 'source': 'native'})
+
+    # ── Pass 1: full-text regex ───────────────────────────────────────────
+    full_text = page.get_text("text")
+    for m in _FULL_TAG_RE.finditer(full_text):
+        raw = m.group(0)
+        tag, prefix = _parse_tag(raw)
+        if tag and prefix:
+            _row(tag, prefix, 0.0, 0.0)
+
+    # ── Pass 2: spatially-combined words (precise x,y positions) ─────────
+    # Rejoins tags the PDF split into several text objects (e.g.
+    # "20" "-" "PCV" "-" "101") and matches via _pick_best_tag, which
+    # has no minimum-prefix-length gate — unlike a bare _parse_tag call,
+    # this also catches single-letter-prefix tags with no separator
+    # (P101, T12, E205), which used to be silently dropped here. Same
+    # technique "Analysera P&ID" (_analyze_pid) already uses.
+    raw_words = _rotate_words(page.get_text("words"), page)
+    for candidate, cx0, cy0, cx1, cy1 in _spatial_combine(raw_words, gap_limit=22.0):
+        tag = _pick_best_tag(candidate)
+        if not tag:
+            continue
+        prefix = _equip_prefix_from_tag(tag)
+        if not prefix:
+            continue
+        cx, cy = (cx0 + cx1) / 2, (cy0 + cy1) / 2
+        existing = next((r for r in rows if r['tag'] == tag), None)
+        if existing is not None:
+            # Pass-2 upgrade: more precise coords for a tag pass 1 already
+            # found (via the coarser full-text regex) on THIS page.
+            existing['cx'], existing['cy'] = cx, cy
+        else:
+            _row(tag, prefix, cx, cy)
+    return rows
+
+
+def _scan_one_page_ocr(page, page_num, native_rows, ocr_engine):
+    """Pass 3 (OCR) for ONE page. Only adds tags not already found by
+    _scan_one_page_native() on the SAME page. Returns (rows, engine_name).
+
+    NOTE: an OCR-crop-to-candidate-regions optimization (rendering+OCRing
+    only the vector-dense regions of a page instead of the whole page) was
+    tried here and reverted — measured against a real reference file
+    (P&ID ref/182036 Hybrit/258-0000-001-revC.pdf) it was SLOWER than
+    full-page OCR (RapidOCR's per-crop invocation overhead outweighed the
+    area reduction once a page had the thousands of small vector clusters
+    a real, graphically dense P&ID can have) AND missed real words with no
+    nearby vector cluster (title-block text, revision dates). See
+    NOTES.md "Flerkärnig parallellisering av Analysera P&ID"."""
+    local_tags = {r['tag'] for r in native_rows}
+    ocr_words, engine_name = _ocr_page(page, scale=4.0, engine=ocr_engine)
+    rows = []
+    for raw_text, cx, cy in (ocr_words or []):
+        candidates = _ocr_tag_candidates(raw_text, known_prefixes=KNOWN_PREFIXES)
+        for i, candidate in enumerate(candidates):
+            tag, prefix = _parse_tag(candidate)
+            if tag and prefix and tag not in local_tags:
+                # First 2 candidates are the pre-existing (corrected,
+                # raw_text.upper()) pair — unchanged behaviour; anything
+                # after that is a broader fuzzy character-confusion guess.
+                source = 'ocr' if i < 2 else 'ocr_fuzzy'
+                rows.append({'tag': tag, 'prefix': prefix, 'page_num': page_num,
+                            'cx': cx, 'cy': cy, 'from_ocr': True, 'source': source})
+                local_tags.add(tag)
+                break
+    return rows, engine_name
+
+
+def _merge_scan_page_rows(rows) -> dict:
+    """Build scan_pdf_for_equipment()'s nested result dict from a flat list
+    of per-page rows (see _scan_one_page_native/_scan_one_page_ocr above) —
+    regardless of what order the rows arrive in, since they may come from
+    pages processed out of order across several worker processes.
+
+    Reduction rules (deliberately ORDER-INDEPENDENT, unlike the original
+    inline loop's page-processing-order-dependent .setdefault() semantics):
+      - pages[tag]:      lowest page_num among all rows for this tag —
+                         "first sighting", equivalent to the original
+                         first-seen-wins .setdefault() when pages are
+                         processed 0..N sequentially (still true for the
+                         sequential caller below), but well-defined
+                         regardless of processing order too.
+      - positions[tag]:  the (cx,cy) from that SAME lowest-page sighting,
+                         preferring a row with real coordinates over a
+                         pass-1 (0,0) placeholder if both exist on that
+                         page. NOTE: the original code's pass-2 loop could
+                         overwrite an existing tag's position using
+                         whichever page happened to run pass-2 LAST,
+                         regardless of which page "owns" pages[tag] — a
+                         page/position mismatch for the same duplicate-tag
+                         edge case that reads as an accidental side effect
+                         of "upgrade THIS page's placeholder to precise
+                         coords", not a deliberate cross-page design.
+                         Tying position to the same page as pages[tag] is
+                         more internally consistent and is the behavior
+                         going forward — see NOTES.md.
+      - tag_source[tag]: source string from that same lowest-page sighting.
+      - tags:            union (membership only); re-sorted at the end
+                         exactly like the original.
+      - ocr_pages:       union of every row's page_num where from_ocr=True.
+    """
+    result: dict = {}
+    by_key: dict = {}
+    for row in rows:
+        by_key.setdefault((row['prefix'], row['tag']), []).append(row)
+
+    for (prefix, tag), tag_rows in by_key.items():
+        entry = result.setdefault(prefix, {'tags': [], 'pages': {}, 'positions': {},
+                                            'ocr_pages': set(), 'tag_source': {}})
+        if tag not in entry['tags']:
+            entry['tags'].append(tag)
+        min_page = min(r['page_num'] for r in tag_rows)
+        same_page_rows = [r for r in tag_rows if r['page_num'] == min_page]
+        chosen = next((r for r in same_page_rows if (r['cx'], r['cy']) != (0.0, 0.0)),
+                      same_page_rows[0])
+        entry['pages'][tag] = min_page
+        entry['positions'][tag] = (chosen['cx'], chosen['cy'])
+        entry['tag_source'][tag] = chosen['source']
+        for r in tag_rows:
+            if r['from_ocr']:
+                entry['ocr_pages'].add(r['page_num'])
+
+    for prefix in result:
+        result[prefix]['tags'].sort(key=lambda t: (t[:re.search(r'\d', t).start()],
+                                                    int(re.search(r'\d+', t).group()))
+                                    if re.search(r'\d', t) else (t, 0))
+
+    result['_meta'] = {
+        'ocr_used':   any(result[p].get('ocr_pages') for p in result if not p.startswith('_')),
+        'ocr_engine': None,   # caller fills in — merge itself doesn't track which pages ran OCR with which engine
+        'total_tags': sum(len(result[p]['tags']) for p in result if not p.startswith('_')),
+    }
+    return result
+
+
+def _split_into_chunks(n_pages: int, n_workers: int):
+    """Split range(n_pages) into n_workers contiguous, ascending chunks —
+    e.g. 10 pages / 3 workers -> [0,1,2,3], [4,5,6], [7,8,9]. Contiguous
+    (not round-robin) so pages WITHIN a single worker's chunk are always
+    processed in the same ascending order the sequential path uses."""
+    n_workers = max(1, min(n_workers, n_pages)) if n_pages else 0
+    if n_workers == 0:
+        return []
+    base, extra = divmod(n_pages, n_workers)
+    chunks = []
+    start = 0
+    for i in range(n_workers):
+        size = base + (1 if i < extra else 0)
+        if size == 0:
+            continue
+        chunks.append(list(range(start, start + size)))
+        start += size
+    return chunks
+
+
+def _scan_page_range_worker(pdf_path, page_range, use_ocr, ocr_engine, progress_queue=None):
+    """Multiprocessing target for scan_pdf_for_equipment() — module-level
+    (not a closure) so it can be pickled/imported by a spawned child
+    process on Windows. Opens its OWN fitz.Document (Document objects
+    can't be shared across processes) and scans its assigned page range
+    with the exact same per-page logic the sequential path uses. Returns
+    (flat_rows, ocr_engine_used) for the caller to combine with every
+    other worker's rows via _merge_scan_page_rows() — see NOTES.md.
+
+    progress_queue, if given (a multiprocessing.Manager().Queue()), gets a
+    (page_num, 'running'|'done') tuple pushed around each page — polled by
+    the orchestrating QThread (ParallelTagScanWorker, pid_viewer.py) to
+    drive the per-page progress UI live."""
+    doc = None
+    all_rows = []
+    ocr_engine_used = None
+    try:
+        doc = fitz.open(pdf_path)
+        for page_num in page_range:
+            if progress_queue is not None:
+                try:
+                    progress_queue.put((page_num, 'running'))
+                except Exception:
+                    pass
+            page = doc.load_page(page_num)
+            native_rows = _scan_one_page_native(page, page_num)
+            all_rows.extend(native_rows)
+            if use_ocr:
+                ocr_rows, engine_name = _scan_one_page_ocr(page, page_num, native_rows, ocr_engine)
+                all_rows.extend(ocr_rows)
+                if engine_name:
+                    ocr_engine_used = engine_name
+            if progress_queue is not None:
+                try:
+                    progress_queue.put((page_num, 'done'))
+                except Exception:
+                    pass
+    finally:
+        if doc is not None:
+            try:
+                doc.close()
+            except Exception:
+                pass
+    return all_rows, ocr_engine_used
+
+
 def scan_pdf_for_equipment(pdf_doc, use_ocr: bool = False,
                            ocr_engine: str = 'auto',
                            progress_callback=None) -> dict:
@@ -1066,8 +1289,8 @@ def scan_pdf_for_equipment(pdf_doc, use_ocr: bool = False,
     Strategy per page:
       1. Full-text regex search (catches tags in paragraphs / annotations).
       2. Word-by-word matching (standalone tags with precise positions).
-      3. If use_ocr=True: always run OCR and merge results.
-         OCR finds tags that are part of raster graphics or vector-only layers.
+      3. If use_ocr=True: always run OCR and merge results. OCR finds
+         tags that are part of raster graphics or vector-only layers.
 
     Returns:
         {prefix: {'tags': [str], 'pages': {tag: int}, 'positions': {tag: (x,y)},
@@ -1077,108 +1300,27 @@ def scan_pdf_for_equipment(pdf_doc, use_ocr: bool = False,
     if not HAS_PYMUPDF or pdf_doc is None:
         return {}
 
-    result: dict = {}
+    all_rows = []
     ocr_engine_used = None
+    n = pdf_doc.page_count
 
-    def _add(tag, prefix, page_num, cx, cy, from_ocr=False, source='native'):
-        if prefix not in result:
-            result[prefix] = {'tags': [], 'pages': {}, 'positions': {},
-                              'ocr_pages': set(), 'tag_source': {}}
-        if tag not in result[prefix]['tags']:
-            result[prefix]['tags'].append(tag)
-        # First-seen wins for page assignment
-        result[prefix]['pages'].setdefault(tag, page_num)
-        result[prefix]['positions'].setdefault(tag, (cx, cy))
-        # 'native' | 'ocr' | 'ocr_fuzzy' — how this tag was actually read;
-        # feeds tag_reading_confidence in detect_equipment_and_valves()
-        # without needing per-word confidence scores from any OCR engine.
-        result[prefix]['tag_source'].setdefault(tag, source)
-        if from_ocr:
-            result[prefix]['ocr_pages'].add(page_num)
-
-    for page_num in range(pdf_doc.page_count):
+    for page_num in range(n):
         page = pdf_doc.load_page(page_num)
         if progress_callback:
-            progress_callback(
-                page_num, pdf_doc.page_count,
-                f"Sida {page_num + 1}/{pdf_doc.page_count} — nativ text…")
+            progress_callback(page_num, n, f"Sida {page_num + 1}/{n} — nativ text…")
+        native_rows = _scan_one_page_native(page, page_num)
+        all_rows.extend(native_rows)
 
-        # ── Pass 1: full-text regex ───────────────────────────────────────────
-        full_text = page.get_text("text")
-        for m in _FULL_TAG_RE.finditer(full_text):
-            raw = m.group(0)
-            tag, prefix = _parse_tag(raw)
-            if tag and prefix:
-                _add(tag, prefix, page_num, 0.0, 0.0, from_ocr=False)
-
-        # ── Pass 2: spatially-combined words (precise x,y positions) ─────────
-        # Rejoins tags the PDF split into several text objects (e.g.
-        # "20" "-" "PCV" "-" "101") and matches via _pick_best_tag, which
-        # has no minimum-prefix-length gate — unlike a bare _parse_tag call,
-        # this also catches single-letter-prefix tags with no separator
-        # (P101, T12, E205), which used to be silently dropped here. Same
-        # technique "Analysera P&ID" (_analyze_pid) already uses.
-        raw_words = _rotate_words(page.get_text("words"), page)
-        tags_from_native = 0
-        for candidate, cx0, cy0, cx1, cy1 in _spatial_combine(raw_words, gap_limit=22.0):
-            tag = _pick_best_tag(candidate)
-            if not tag:
-                continue
-            prefix = _equip_prefix_from_tag(tag)
-            if not prefix:
-                continue
-            cx, cy = (cx0 + cx1) / 2, (cy0 + cy1) / 2
-            # Overwrite position with precise coords
-            if prefix in result and tag in result[prefix]['tags']:
-                result[prefix]['positions'][tag] = (cx, cy)
-            else:
-                _add(tag, prefix, page_num, cx, cy, from_ocr=False)
-            tags_from_native += 1
-
-        # ── Pass 3: OCR ───────────────────────────────────────────────────────
-        # Always run when requested — OCR finds tags that live in vector graphics
         if use_ocr:
             if progress_callback:
-                progress_callback(
-                    page_num, pdf_doc.page_count,
-                    f"Sida {page_num + 1}/{pdf_doc.page_count} — OCR (skala 4×)…")
-
-            # Use 4× scale for better small-text recognition
-            ocr_words, engine_name = _ocr_page(page, scale=4.0, engine=ocr_engine)
+                progress_callback(page_num, n, f"Sida {page_num + 1}/{n} — OCR (skala 4×)…")
+            ocr_rows, engine_name = _scan_one_page_ocr(page, page_num, native_rows, ocr_engine)
+            all_rows.extend(ocr_rows)
             if engine_name:
                 ocr_engine_used = engine_name
 
-            native_tag_set = {
-                result[p]['tags'][i]
-                for p in result
-                for i in range(len(result[p].get('tags', [])))
-                if result[p]['pages'].get(result[p]['tags'][i]) == page_num
-            }
-
-            for raw_text, cx, cy in (ocr_words or []):
-                candidates = _ocr_tag_candidates(raw_text, known_prefixes=KNOWN_PREFIXES)
-                for i, candidate in enumerate(candidates):
-                    tag, prefix = _parse_tag(candidate)
-                    if tag and prefix and tag not in native_tag_set:
-                        # First 2 candidates are the pre-existing
-                        # (corrected, raw_text.upper()) pair — unchanged
-                        # behaviour; anything after that is a broader
-                        # fuzzy character-confusion guess (item 2).
-                        source = 'ocr' if i < 2 else 'ocr_fuzzy'
-                        _add(tag, prefix, page_num, cx, cy, from_ocr=True, source=source)
-                        native_tag_set.add(tag)
-                        break
-
-    for prefix in result:
-        result[prefix]['tags'].sort(key=lambda t: (t[:re.search(r'\d', t).start()],
-                                                    int(re.search(r'\d+', t).group()))
-                                    if re.search(r'\d', t) else (t, 0))
-
-    result['_meta'] = {
-        'ocr_used':   any(result[p].get('ocr_pages') for p in result if not p.startswith('_')),
-        'ocr_engine': ocr_engine_used,
-        'total_tags': sum(len(result[p]['tags']) for p in result if not p.startswith('_')),
-    }
+    result = _merge_scan_page_rows(all_rows)
+    result['_meta']['ocr_engine'] = ocr_engine_used
     return result
 
 
@@ -2075,6 +2217,53 @@ def detect_equipment_and_valves(pdf_doc, tag_points, pages=None,
                 })
 
     return results, rejected
+
+
+def _analyze_page_range_worker(pdf_path, page_range, tag_points, min_bowtie_score,
+                                min_confidence, progress_queue=None):
+    """Multiprocessing target for detect_equipment_and_valves() — mirrors
+    _scan_page_range_worker() above (module-level, own fitz.open(), see
+    NOTES.md "Flerkärnig parallellisering av Analysera P&ID"). Unlike
+    scan_pdf_for_equipment(), detect_equipment_and_valves() is already
+    fully page-independent (confirmed: no shared state read back across
+    pages, page-scoped temporary IDs) and already accepts a `pages=`
+    range directly — so this wrapper only needs to open the doc, forward
+    progress into progress_queue instead of a callback (plain callables
+    aren't picklable across a process boundary), and return the two
+    result lists for the caller to concatenate with every other worker's.
+    """
+    doc = None
+    last_page = [None]
+
+    def _cb(page_num, _total, _msg):
+        if progress_queue is None:
+            return
+        try:
+            if last_page[0] is not None and last_page[0] != page_num:
+                progress_queue.put((last_page[0], 'done'))
+            progress_queue.put((page_num, 'running'))
+            last_page[0] = page_num
+        except Exception:
+            pass
+
+    try:
+        doc = fitz.open(pdf_path)
+        results, rejected = detect_equipment_and_valves(
+            doc, tag_points, pages=page_range,
+            min_bowtie_score=min_bowtie_score, min_confidence=min_confidence,
+            progress_callback=_cb)
+        if progress_queue is not None and last_page[0] is not None:
+            try:
+                progress_queue.put((last_page[0], 'done'))
+            except Exception:
+                pass
+        return results, rejected
+    finally:
+        if doc is not None:
+            try:
+                doc.close()
+            except Exception:
+                pass
 
 
 def _score_tag_word(raw: str):

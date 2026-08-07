@@ -4736,5 +4736,290 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         self.assertEqual(cause['likelihood'], 3)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# Multi-core parallel P&ID analysis (2026-08-07) — see NOTES.md "Flerkärnig
+# parallellisering av Analysera P&ID". scan_pdf_for_equipment() and
+# detect_equipment_and_valves() can now be split across several worker
+# PROCESSES. These tests verify: (1) the merge/split logic is correct and
+# order-independent regardless of what order workers finish in, without
+# needing to spin up real OS processes for every case; (2) the two real
+# multiprocessing round-trips that DO matter (cancellation always still
+# emits the "finished" signal) actually work end to end; (3) the OCR-crop
+# optimization's dispatch/fallback/coordinate-translation logic, mocking
+# the OCR engine layer itself since this suite never depends on a real
+# installed OCR engine (none of tesseract/easyocr/rapidocr are guaranteed
+# present in every environment this suite runs in).
+# ══════════════════════════════════════════════════════════════════════════
+
+class SplitIntoChunksTests(unittest.TestCase):
+    def test_contiguous_and_covers_all_pages(self):
+        from equipment_detection import _split_into_chunks
+        chunks = _split_into_chunks(10, 3)
+        self.assertEqual(sorted(p for c in chunks for p in c), list(range(10)))
+        for c in chunks:
+            self.assertEqual(
+                c, list(range(c[0], c[0] + len(c))),
+                "each chunk must be contiguous and ascending")
+
+    def test_more_workers_than_pages_caps_at_page_count(self):
+        from equipment_detection import _split_into_chunks
+        chunks = _split_into_chunks(3, 10)
+        self.assertEqual(len(chunks), 3)
+        self.assertEqual(sorted(p for c in chunks for p in c), [0, 1, 2])
+
+    def test_zero_pages_returns_no_chunks(self):
+        from equipment_detection import _split_into_chunks
+        self.assertEqual(_split_into_chunks(0, 4), [])
+
+
+class MergeScanPageRowsTests(unittest.TestCase):
+    """_merge_scan_page_rows (equipment_detection.py) combines flat
+    per-page scan rows into scan_pdf_for_equipment()'s nested result
+    shape, order-independently — pages processed out of order across
+    parallel worker processes must still produce the same result as the
+    original sequential 0..N loop."""
+
+    def test_lowest_page_wins_regardless_of_row_order(self):
+        from equipment_detection import _merge_scan_page_rows
+        row_page5 = {'tag': 'V-1', 'prefix': 'V', 'page_num': 5,
+                     'cx': 50.0, 'cy': 60.0, 'from_ocr': False, 'source': 'native'}
+        row_page2 = {'tag': 'V-1', 'prefix': 'V', 'page_num': 2,
+                     'cx': 10.0, 'cy': 20.0, 'from_ocr': False, 'source': 'native'}
+        # Deliberately out of page order — simulates a worker for a LATER
+        # page range finishing before one for an EARLIER range.
+        result = _merge_scan_page_rows([row_page5, row_page2])
+        self.assertEqual(result['V']['pages']['V-1'], 2)
+        self.assertEqual(result['V']['positions']['V-1'], (10.0, 20.0))
+
+    def test_prefers_real_coordinates_over_pass1_placeholder_on_same_page(self):
+        from equipment_detection import _merge_scan_page_rows
+        placeholder = {'tag': 'V-1', 'prefix': 'V', 'page_num': 3,
+                       'cx': 0.0, 'cy': 0.0, 'from_ocr': False, 'source': 'native'}
+        precise = {'tag': 'V-1', 'prefix': 'V', 'page_num': 3,
+                   'cx': 42.0, 'cy': 24.0, 'from_ocr': False, 'source': 'native'}
+        result = _merge_scan_page_rows([placeholder, precise])
+        self.assertEqual(result['V']['positions']['V-1'], (42.0, 24.0))
+
+    def test_ocr_pages_is_a_union_across_all_rows(self):
+        from equipment_detection import _merge_scan_page_rows
+        rows = [
+            {'tag': 'V-1', 'prefix': 'V', 'page_num': 1, 'cx': 1.0, 'cy': 1.0,
+             'from_ocr': True, 'source': 'ocr'},
+            {'tag': 'V-1', 'prefix': 'V', 'page_num': 4, 'cx': 4.0, 'cy': 4.0,
+             'from_ocr': True, 'source': 'ocr'},
+        ]
+        result = _merge_scan_page_rows(rows)
+        self.assertEqual(result['V']['ocr_pages'], {1, 4})
+        self.assertEqual(result['V']['pages']['V-1'], 1)
+
+    def test_matches_sequential_scan_pdf_for_equipment_on_a_real_document(self):
+        """The determinism guarantee end to end: scanning a real multi-page
+        PDF page-by-page (as _scan_page_range_worker would, one chunk at a
+        time) and merging out of order must produce an identical result to
+        running scan_pdf_for_equipment() sequentially."""
+        import fitz
+        from equipment_detection import (
+            scan_pdf_for_equipment, _scan_one_page_native, _merge_scan_page_rows)
+        doc = fitz.open()
+        for i in range(4):
+            p = doc.new_page(width=200, height=200)
+            p.insert_text(fitz.Point(10, 20), f"V-{100 + i}", fontsize=10)
+        sequential = scan_pdf_for_equipment(doc, use_ocr=False)
+        sequential.pop('_meta', None)
+
+        # Simulate two workers, each handling a contiguous chunk, whose
+        # rows are then merged in REVERSE completion order (the worker for
+        # pages 2-3 "finishes" before the one for pages 0-1).
+        rows_a = []
+        for pn in (2, 3):
+            rows_a.extend(_scan_one_page_native(doc[pn], pn))
+        rows_b = []
+        for pn in (0, 1):
+            rows_b.extend(_scan_one_page_native(doc[pn], pn))
+        merged = _merge_scan_page_rows(rows_a + rows_b)
+        merged.pop('_meta', None)
+        doc.close()
+
+        self.assertEqual(merged, sequential)
+
+
+class AnalyzePageRangeWorkerTests(unittest.TestCase):
+    """_analyze_page_range_worker (equipment_detection.py) — the
+    multiprocessing target wrapping detect_equipment_and_valves() for a
+    page range — must produce the same rows as calling
+    detect_equipment_and_valves() sequentially across ALL pages, whether
+    split into chunks or not (that function was already confirmed fully
+    page-independent — this locks in the wrapper's own correctness)."""
+
+    def test_matches_sequential_detect_equipment_and_valves(self):
+        import fitz
+        from equipment_detection import (
+            detect_equipment_and_valves, _analyze_page_range_worker, _split_into_chunks)
+        tmpdir = tempfile.mkdtemp(prefix="hazop_paranalyze_test_")
+        try:
+            pdf_path = os.path.join(tmpdir, "test.pdf")
+            doc = fitz.open()
+            tag_points = []
+            for i in range(6):
+                p = doc.new_page(width=200, height=200)
+                tag = f"V-{100 + i}"
+                p.insert_text(fitz.Point(10, 20), tag, fontsize=10)
+                tag_points.append((tag, 'V', i, None, None, 1.0))
+            doc.save(pdf_path)
+            doc.close()
+
+            doc2 = fitz.open(pdf_path)
+            try:
+                seq_results, seq_rejected = detect_equipment_and_valves(doc2, tag_points)
+            finally:
+                doc2.close()
+
+            chunks = _split_into_chunks(6, 3)
+            all_results, all_rejected = [], []
+            for chunk in chunks:
+                results, rejected = _analyze_page_range_worker(
+                    pdf_path, chunk, tag_points, 0.5, 0.3)
+                all_results.extend(results)
+                all_rejected.extend(rejected)
+
+            def _key(r):
+                return (r['tag'], r['page'], r['comp_type'])
+            self.assertEqual(sorted(map(_key, all_results)), sorted(map(_key, seq_results)))
+            self.assertEqual(len(all_rejected), len(seq_rejected))
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+class PickWorkerCountTests(unittest.TestCase):
+    """_pick_worker_count (pid_viewer.py) — how many worker PROCESSES to
+    use for a parallel scan/analysis."""
+
+    def test_caps_easyocr_workers_even_with_many_cpus(self):
+        from pid_viewer import _pick_worker_count
+        with unittest.mock.patch('pid_viewer.os.cpu_count', return_value=32), \
+             unittest.mock.patch('pid_viewer.ocr_status',
+                                  return_value={'tesseract': False, 'easyocr': True, 'rapidocr': False}):
+            n = _pick_worker_count(n_pages=100, use_ocr=True, ocr_engine='auto')
+        self.assertLessEqual(
+            n, 3, "EasyOCR workers must be capped regardless of CPU count — each "
+                  "loads its own ~1GB model (see NOTES.md)")
+
+    def test_rapidocr_not_capped_like_easyocr(self):
+        from pid_viewer import _pick_worker_count
+        with unittest.mock.patch('pid_viewer.os.cpu_count', return_value=8), \
+             unittest.mock.patch('pid_viewer.ocr_status',
+                                  return_value={'tesseract': False, 'easyocr': True, 'rapidocr': True}):
+            n = _pick_worker_count(n_pages=100, use_ocr=True, ocr_engine='auto')
+        self.assertEqual(n, 7, "leaves one core for the UI thread, no extra RapidOCR cap")
+
+    def test_never_exceeds_page_count(self):
+        from pid_viewer import _pick_worker_count
+        with unittest.mock.patch('pid_viewer.os.cpu_count', return_value=16):
+            n = _pick_worker_count(n_pages=2, use_ocr=False, ocr_engine='auto')
+        self.assertLessEqual(n, 2)
+
+
+class ShouldParallelizeTests(unittest.TestCase):
+    def test_below_threshold_stays_sequential(self):
+        from pid_viewer import _should_parallelize
+        self.assertFalse(_should_parallelize(3, 4))
+        self.assertFalse(_should_parallelize(10, 1))
+
+    def test_meets_threshold_parallelizes(self):
+        from pid_viewer import _should_parallelize
+        self.assertTrue(_should_parallelize(4, 2))
+
+
+class ParallelWorkerCancellationTests(unittest.TestCase):
+    """ParallelTagScanWorker/ParallelEquipmentAnalysisWorker must ALWAYS
+    emit their 'finished' signal, even when cancelled mid-run — the same
+    contract EquipmentAnalysisWorker/ConnectorAnalyzer already guarantee.
+    Uses a document large enough to force the real parallel path (see
+    _should_parallelize) so this actually exercises ProcessPoolExecutor
+    cancellation, not just the untouched sequential fallback."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_parcancel_test_")
+        self.pdf_path = os.path.join(self._tmpdir, "test.pdf")
+        import fitz
+        doc = fitz.open()
+        for i in range(6):
+            doc.new_page(width=200, height=200)
+        doc.save(self.pdf_path)
+        doc.close()
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_parallel_tag_scan_worker_emits_finished_scan_on_cancel(self):
+        from pid_viewer import ParallelTagScanWorker
+        worker = ParallelTagScanWorker(self.pdf_path, use_ocr=False)
+        received = {}
+        worker.finished_scan.connect(lambda r: received.setdefault('result', r))
+        with unittest.mock.patch.object(worker, 'isInterruptionRequested', return_value=True):
+            worker.run()
+        self.assertIn('result', received)
+        self.assertEqual(received['result'], {})
+
+    def test_parallel_equipment_analysis_worker_emits_finished_on_cancel(self):
+        from pid_viewer import ParallelEquipmentAnalysisWorker
+        worker = ParallelEquipmentAnalysisWorker(self.pdf_path, tag_points=[])
+        received = {}
+        worker.finished_analysis.connect(
+            lambda results, rejected: received.setdefault('r', (results, rejected)))
+        with unittest.mock.patch.object(worker, 'isInterruptionRequested', return_value=True):
+            worker.run()
+        self.assertIn('r', received)
+        self.assertEqual(received['r'], ([], []))
+
+
+class PageProgressDialogTests(unittest.TestCase):
+    """PageProgressDialog (pid_viewer.py) — the per-page status board
+    replacing the old single-line QProgressDialog."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_set_page_status_updates_summary_count(self):
+        from pid_viewer import PageProgressDialog
+        dlg = PageProgressDialog("Test", 3)
+        try:
+            self.assertIn("0/3", dlg._summary_lbl.text())
+            dlg.set_page_status(0, 'running')
+            self.assertIn("0/3", dlg._summary_lbl.text(),
+                          "'running' must not count as done")
+            dlg.set_page_status(0, 'done')
+            self.assertIn("1/3", dlg._summary_lbl.text())
+            dlg.set_page_status(2, 'done')
+            self.assertIn("2/3", dlg._summary_lbl.text())
+        finally:
+            dlg.deleteLater()
+
+    def test_unknown_page_number_is_a_no_op(self):
+        from pid_viewer import PageProgressDialog
+        dlg = PageProgressDialog("Test", 2)
+        try:
+            dlg.set_page_status(99, 'done')   # out of range — must not raise
+            self.assertIn("0/2", dlg._summary_lbl.text())
+        finally:
+            dlg.deleteLater()
+
+    def test_cancel_button_emits_canceled_signal(self):
+        from pid_viewer import PageProgressDialog
+        dlg = PageProgressDialog("Test", 2)
+        try:
+            received = []
+            dlg.canceled.connect(lambda: received.append(True))
+            dlg._on_cancel_clicked()
+            self.assertEqual(received, [True])
+        finally:
+            dlg.deleteLater()
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
