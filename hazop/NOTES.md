@@ -650,6 +650,16 @@ Anton testade funktionen ovan och hittade tre problem på en gång:
 
 **Test:** 2 nya i `TreePanelEquipmentGroupingTests` (döljs när tom + syns när den har en orsak), 5 nya/omskrivna i `EquipmentDeviationBarTests` (alltid synlig men inaktiverad, aktiveras vid orsak, frekvens flödar igenom, bredare orsaksalternativ för en generisk utrustningstyp). Alla 239 tester gröna (`test_regression` 162 + `test_symbol_geometry` 77).
 
+### Uppföljning samma dag, tredje omgången — "kan fortfarande inte trycka på konsekvens och lägga in text" (2026-08-07)
+
+Trots gårdagens fix av `_on_equipment_deviation_created` (samma symptom) rapporterade Anton att problemet KVARSTOD. Grundorsaken visade sig sitta i en HELT ANNAN handler som aldrig fixades förut: `MainWindow._on_cause_template_created` (en closure i `__init__`, kopplad till `PIDPanel.cause_template_created` — signalen `place_cause_from_template()` alltid skickar, oavsett om orsaken skapades via den vanliga P&ID-"Orsak"-klicken ELLER via `EquipmentDeviationBar`s förslags-chip/orsaks-dropdown).
+
+**Bugg 1 (samma anti-mönster, ny plats):** `tree_panel.refresh(CAUSE_T, cid)` saknade `emit_selection=False` — kaskadade in i `_on_selected(CAUSE_T, cid)` → `scenario_panel.load_deviation(...)`, som bygger om HELA worksheet-tabellen rakt när användarens nästa handling (klicka i den nya radens KON-cell för att skriva en konsekvens) sker. **Fix:** samma mönster som `_on_equipment_deviation_created` — `emit_selection=False` + explicit `scenario_panel.load_node(node_id)` istället (håller alla nodens avvikelser synliga samtidigt, inte bara en).
+
+**Bugg 2 (oberoende, ny upptäckt):** `ScenarioTablePanel.select_cause()`, anropad 50 ms efter orsaksskapandet via `QTimer.singleShot`, tvingade ALLTID tillbaka den aktiva cellen till ORS-kolumnen — vilket skulle rycka bort fokus rakt ur en KON-cell användaren redan hunnit börja skriva i inom det fönstret. **Fix:** `select_cause()` hoppar nu över `setCurrentCell()` (men skrollar ändå raden synlig) om tabellen redan är i redigeringsläge ELLER om användaren redan själv navigerat till samma rad (t.ex. klickat i KON-cellen) — den stjäl aldrig längre fokus från en pågående interaktion.
+
+**Test:** 3 nya i ny klass `CauseTemplateCreatedFocusStealBugTests` (ingen kaskad in i `_on_selected`, `load_node` används istället för `load_deviation`, `select_cause` stjäl inte cellen från en rad användaren redan navigerat till). Alla 242 tester gröna (`test_regression` 165 + `test_symbol_geometry` 77).
+
 ---
 
 ## Kända begränsningar och tekniska skulder

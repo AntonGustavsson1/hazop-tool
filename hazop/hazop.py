@@ -12247,10 +12247,20 @@ class ScenarioTablePanel(QWidget):
         self._table.viewport().update()
 
     def select_cause(self, cause_id: int):
-        """Scroll to and select the first row for *cause_id* in the scenario table."""
+        """Scroll to and select the first row for *cause_id* in the scenario
+        table. Never steals the current cell away from an active edit or a
+        row the user has already navigated to on their own — this used to
+        unconditionally force the ORS column current a moment after cause
+        creation, which could yank focus out from under a user who had
+        already clicked into that very row's KON cell to type a
+        consequence (reported as "kan fortfarande inte lägga in text
+        [i konsekvens]"). Always still scrolls the row into view."""
         for row, (dev_id, cid, cons_id, sg_id) in enumerate(self._row_meta):
             if cid == cause_id:
-                self._table.setCurrentCell(row, self._C_ORS)
+                already_editing = self._table.state() == QAbstractItemView.State.EditingState
+                already_on_row = self._table.currentRow() == row
+                if not already_editing and not already_on_row:
+                    self._table.setCurrentCell(row, self._C_ORS)
                 self._table.scrollTo(
                     self._table.model().index(row, self._C_ORS),
                     QAbstractItemView.ScrollHint.PositionAtCenter)
@@ -18005,9 +18015,30 @@ class MainWindow(QMainWindow):
         self.pid_panel.safeguard_created.connect(self._on_safeguard_created)
         self.pid_panel.existing_marker_placed.connect(self._on_existing_marker_placed)
         def _on_cause_template_created(cid):
-            self.tree_panel.refresh(CAUSE_T, cid)
+            # emit_selection=False + explicit load_node (2026-08-07
+            # follow-up — same "kan inte lägga till konsekvens" bug class
+            # as _on_equipment_deviation_created, but triggered by CAUSE
+            # creation this time, not deviation creation): refresh(CAUSE_T,
+            # cid) used to run WITHOUT emit_selection=False, cascading into
+            # _on_selected(CAUSE_T, cid) -> scenario_panel.load_deviation(...)
+            # right as the user's very next move (picking a cause from
+            # EquipmentDeviationBar's chip/dropdown, then immediately
+            # clicking that row's KON cell to type) lands — narrowing/
+            # rebuilding the worksheet mid-interaction. load_node() instead
+            # keeps every deviation under the node visible, same as
+            # _on_equipment_deviation_created already does.
+            self.tree_panel.refresh(CAUSE_T, cid, emit_selection=False)
+            cause = self.db.get_cause(cid)
+            node_id = cause.get('node_id') if cause else None
+            if node_id is not None:
+                self.pid_panel.set_active_cause(cid)
+                self.scenario_panel.load_node(node_id)
             self.scenario_panel.refresh_placed()
-            QTimer.singleShot(50, lambda c=cid: self.scenario_panel.select_cause(c))
+            # select_cause() itself refuses to steal the current cell from
+            # an active edit / a row the user already navigated to (see
+            # ScenarioTablePanel.select_cause) — this deferral just lets
+            # the rebuild above settle before it scans _row_meta.
+            QTimer.singleShot(0, lambda c=cid: self.scenario_panel.select_cause(c))
             # Refresh Smart Recognition panel so new learning is immediately visible
             try:
                 self.settings_panel._tag_memory_panel.refresh()

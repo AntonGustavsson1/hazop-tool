@@ -1542,6 +1542,95 @@ class SafeguardCreatedDoubleRebuildTests(unittest.TestCase):
                 "not an arbitrary/leftover row from before the rebuild")
 
 
+class CauseTemplateCreatedFocusStealBugTests(unittest.TestCase):
+    """Regression test for the user report 'jag kan fortfarande inte trycka
+    på konsekvens och lägga in text' (still can't click into Consequence
+    and type), reported right after the EquipmentDeviationBar's "föreslå
+    troligaste orsaken" chip / cause dropdown started working.
+
+    Root cause: MainWindow's `_on_cause_template_created` closure (fired by
+    PIDPanel.cause_template_created, which place_cause_from_template() —
+    used by BOTH the normal P&ID 'Orsak' flow and
+    EquipmentDeviationBar._create_cause_from_bar — always emits) called
+    `tree_panel.refresh(CAUSE_T, cid)` WITHOUT `emit_selection=False`. That
+    cascades into `_on_selected(CAUSE_T, cid)` ->
+    `scenario_panel.load_deviation(...)`, rebuilding the whole worksheet
+    table right as the user's very next move (clicking that new row's KON
+    cell to type a consequence) lands — the same anti-pattern already fixed
+    elsewhere per commit 84c8b7c, just not yet here. A second, independent
+    bug compounded it: `ScenarioTablePanel.select_cause()`, deferred 50ms
+    after cause creation, unconditionally forced the current cell back to
+    the ORS column — which would yank focus straight out of a KON cell the
+    user had already started typing into within that window.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_cause_template_created_does_not_cascade_into_on_selected(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.get_or_create_deviation(node_id, "Lågt flöde")
+            cause_id = win.db.add_cause(dev_id)
+
+            on_selected_spy = unittest.mock.Mock(wraps=win._on_selected)
+            win.tree_panel.item_selected.disconnect(win._on_selected)
+            win.tree_panel.item_selected.connect(on_selected_spy)
+            win._on_selected = on_selected_spy
+
+            win.pid_panel.cause_template_created.emit(cause_id)
+
+            self.assertEqual(
+                on_selected_spy.call_count, 0,
+                "cause_template_created must not cascade into _on_selected() "
+                "via tree_panel.refresh()'s setCurrentItem — it already "
+                "drives the worksheet explicitly via scenario_panel.load_node()")
+
+    def test_cause_template_created_uses_load_node_not_load_deviation(self):
+        """load_node() (not load_deviation()) must be used so every
+        deviation under the node stays visible — matching
+        _on_equipment_deviation_created's own fix for the same underlying
+        complaint ('jag vill se BÅDA avvikelserna')."""
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.get_or_create_deviation(node_id, "Lågt flöde")
+            cause_id = win.db.add_cause(dev_id)
+
+            load_node_spy = unittest.mock.Mock(wraps=win.scenario_panel.load_node)
+            win.scenario_panel.load_node = load_node_spy
+            load_deviation_spy = unittest.mock.Mock(wraps=win.scenario_panel.load_deviation)
+            win.scenario_panel.load_deviation = load_deviation_spy
+
+            win.pid_panel.cause_template_created.emit(cause_id)
+
+            load_node_spy.assert_called_once_with(node_id)
+            load_deviation_spy.assert_not_called()
+
+    def test_select_cause_does_not_steal_current_cell_from_a_row_user_already_navigated_to(self):
+        """ScenarioTablePanel.select_cause() must not force the current
+        cell back to the ORS column if the user has already navigated
+        (e.g. clicked into the KON cell of that same row to type a
+        consequence) — it may still scroll the row into view."""
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.get_or_create_deviation(node_id, "Lågt flöde")
+            cause_id = win.db.add_cause(dev_id)
+            win.scenario_panel.load_node(node_id)
+
+            row = next(i for i, m in enumerate(win.scenario_panel._row_meta)
+                       if m[1] == cause_id)
+            kon_col = win.scenario_panel._C_KON
+            win.scenario_panel._table.setCurrentCell(row, kon_col)
+
+            win.scenario_panel.select_cause(cause_id)
+
+            self.assertEqual(
+                win.scenario_panel._table.currentColumn(), kon_col,
+                "select_cause must not steal the current cell away from a "
+                "row the user already navigated to")
+
+
 class EscapeCancelsPlacementTests(unittest.TestCase):
     """Escape must abort an in-progress cause/consequence/safeguard placement
     on the P&ID and return the viewer to MODE_NAV, mirroring the existing
