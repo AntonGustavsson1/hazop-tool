@@ -5072,5 +5072,76 @@ class PageProgressDialogTests(unittest.TestCase):
             dlg.deleteLater()
 
 
+class EquipmentForeignKeyCleanupTests(unittest.TestCase):
+    """Regression tests for two real crash reports (2026-08-07,
+    crash_20260807_154530_IntegrityError.json / _161554_...): deleting a
+    node with equipment assigned to it (equipment_catalog.node_id) raised
+    sqlite3.IntegrityError: FOREIGN KEY constraint failed. Root cause:
+    equipment_catalog.node_id and deviations.equipment_id (both added
+    2026-08-07 for "Nod → Utrustning → Avvikelse", see NOTES.md) were
+    added via ALTER TABLE with NO ON DELETE clause, unlike every other
+    node_id/equipment_id-shaped FK in this schema (which use ON DELETE
+    CASCADE). delete_node()/delete_equipment_item()/clear_equipment_catalog()
+    now explicitly clear these soft references before deleting, instead
+    of cascading (equipment/deviations are real HAZOP data that must
+    survive their assigned node or equipment row being removed)."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_fk_cleanup_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_deleting_node_with_equipment_assigned_does_not_raise(self):
+        node_id = self.db.add_node()
+        eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
+        self.db.set_equipment_node(eq_id, node_id)
+        self.assertEqual(self.db.equipment_node_id(eq_id), node_id)
+
+        self.db.delete_node(node_id)   # must not raise IntegrityError
+
+        self.assertIsNone(self.db.get_node(node_id))
+        # Equipment itself survives, just loses its node assignment.
+        eq = self.db.get_equipment_by_id(eq_id)
+        self.assertIsNotNone(eq)
+        self.assertIsNone(eq['node_id'])
+
+    def test_deleting_equipment_item_with_a_deviation_does_not_raise(self):
+        node_id = self.db.add_node()
+        eq_id = self.db.add_equipment_item("P-101", "P-101", "P", 0, "Pump", '', 0)
+        dev_id = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        cause_id = self.db.add_cause(dev_id)
+
+        self.db.delete_equipment_item(eq_id)   # must not raise IntegrityError
+
+        self.assertIsNone(self.db.get_equipment_by_id(eq_id))
+        # The deviation (and its cause) survive, just lose the equipment link.
+        dev = self.db.get_deviation(dev_id)
+        self.assertIsNotNone(dev)
+        self.assertIsNone(dev['equipment_id'])
+        self.assertIsNotNone(self.db.get_cause(cause_id))
+
+    def test_clear_equipment_catalog_with_a_deviation_does_not_raise(self):
+        """The exact real-world trigger: rescanning P&ID ('Skanna P&ID'/
+        'Analysera P&ID') replaces the whole catalog via
+        clear_equipment_catalog() — must not fail just because the user
+        had already used the equipment bar to add a deviation."""
+        node_id = self.db.add_node()
+        eq_id = self.db.add_equipment_item("P-101", "P-101", "P", 0, "Pump", '', 0)
+        dev_id = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+
+        self.db.clear_equipment_catalog()   # must not raise IntegrityError
+
+        self.assertEqual(self.db.equipment_items(), [])
+        dev = self.db.get_deviation(dev_id)
+        self.assertIsNotNone(dev)
+        self.assertIsNone(dev['equipment_id'])
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

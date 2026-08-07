@@ -713,6 +713,24 @@ Trots gårdagens fix av `_on_equipment_deviation_created` (samma symptom) rappor
 
 ---
 
+## Krasch: "FOREIGN KEY constraint failed" vid nod-/utrustningsborttagning (2026-08-07)
+
+**Rapport:** Tre riktiga krascher samma dag (`crash_20260807_131433`, `_154530`, `_161554_IntegrityError.json`) — att ta bort en nod kraschade med `sqlite3.IntegrityError: FOREIGN KEY constraint failed` i `Database.delete_node()`.
+
+**Grundorsak:** `equipment_catalog.node_id` (lades till samma dag för "Nod → Utrustning → Avvikelse", se ovan) skapades via `ALTER TABLE equipment_catalog ADD COLUMN node_id INTEGER REFERENCES nodes(id)` — **utan** `ON DELETE CASCADE`/`SET NULL`, till skillnad från varenda annan `node_id`-kolumn i schemat (`deviations.node_id`, `node_markups.node_id`, `node_red_markups.node_id` har alla `ON DELETE CASCADE`). `delete_node()` visste inte om detta och gjorde bara `DELETE FROM nodes` rakt av — om NÅGON utrustning var tilldelad noden (via `set_equipment_node`, dvs. EquipmentDeviationBar-flödet) blockerade SQLite borttagningen eftersom den kvarvarande `equipment_catalog`-raden pekade på en nod som skulle försvinna.
+
+**Samma buggmönster hittades ytterligare två ställen** genom att leta efter alla nytillagda `node_id`/`equipment_id`-kolumner utan `ON DELETE`: `deviations.equipment_id` (samma ALTER TABLE-mönster, samma dag) skulle ge samma krasch i `delete_equipment_item()` (ta bort en enskild utrustning från registret) OCH i `clear_equipment_catalog()` — den senare anropas av BÅDE "🔍 Skanna P&ID" och "📋 Analysera P&ID" vid varje omskanning, vilket gör den till den mest sannolika triggern av alla tre framöver (varje omskanning efter att EquipmentDeviationBar använts en enda gång hade kraschat).
+
+**Fix:** Lade till explicit rensning av den mjuka referensen (sätt till NULL) precis innan raderingen i alla tre metoderna — `UPDATE equipment_catalog SET node_id=NULL WHERE node_id=?` i `delete_node()`, `UPDATE deviations SET equipment_id=NULL WHERE equipment_id=?` (eller `IS NOT NULL` för bulk-varianten) i `delete_equipment_item()`/`clear_equipment_catalog()`. Medvetet INGEN kaskadradering — avvikelsen/orsaken/utrustningen är riktig HAZOP-data som ska överleva att nod- eller utrustningskopplingen tas bort, bara själva kopplingen försvinner (blir `NULL`, visas som "ogrupperad" i trädet igen).
+
+**Verifierat:** körde de tre nya testerna mot koden UTAN fixen (`git stash`) — alla tre kraschade med exakt samma `sqlite3.IntegrityError: FOREIGN KEY constraint failed` som krasch-rapporterna, sedan gröna igen efter att fixen återställdes.
+
+**Test:** 3 nya i `EquipmentForeignKeyCleanupTests`. Alla 265 tester gröna (`test_regression` 188 + `test_symbol_geometry` 77).
+
+**Läxan:** varje ny `REFERENCES`-kolumn som läggs till via `ALTER TABLE ADD COLUMN` måste medvetet välja `ON DELETE CASCADE`/`SET NULL`/manuell rensning — SQLite defaultar annars till att BLOCKERA borttagningen (inte kaskadera tyst), vilket bara upptäcks första gången någon faktiskt försöker radera föräldraraden. Värt att dubbelkolla vid NÄSTA nya FK-kolumn också.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **OCR-positioner är approximativa** — x,y-koordinater från OCR stämmer inte perfekt med PDF-koordinater vid hög zoom. Markörer kan hamna något fel.

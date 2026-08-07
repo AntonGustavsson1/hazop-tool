@@ -2612,10 +2612,21 @@ class Database:
         self.commit()
 
     def delete_equipment_item(self, id_):
+        # deviations.equipment_id (added 2026-08-07 for "Nod → Utrustning →
+        # Avvikelse", see NOTES.md) has NO ON DELETE clause — clear the
+        # reference first (keeps the deviation + its causes/consequences,
+        # just detaches it from the deleted equipment row) instead of
+        # hitting sqlite3.IntegrityError: FOREIGN KEY constraint failed,
+        # the same root cause already found and fixed for
+        # equipment_catalog.node_id in delete_node().
+        self.conn.execute("UPDATE deviations SET equipment_id=NULL WHERE equipment_id=?", (id_,))
         self.conn.execute("DELETE FROM equipment_catalog WHERE id=?", (id_,))
         self.commit()
 
     def clear_equipment_catalog(self):
+        # Same fix as delete_equipment_item() above, but for the full-
+        # rescan-replaces-catalog path ("🔍 Skanna P&ID"/"📋 Analysera P&ID").
+        self.conn.execute("UPDATE deviations SET equipment_id=NULL WHERE equipment_id IS NOT NULL")
         self.conn.execute("DELETE FROM equipment_catalog")
         self.commit()
 
@@ -4104,6 +4115,15 @@ class Database:
         # so route through delete_cause() for each direct cause (mirrors delete_deviation()).
         for cause in self.causes(id_):
             self.delete_cause(cause['id'])
+        # equipment_catalog.node_id (added 2026-08-07 for "Nod → Utrustning
+        # → Avvikelse", see NOTES.md) has NO ON DELETE clause — unlike
+        # deviations.node_id, equipment assigned to this node must NOT be
+        # deleted along with it (the assignment is optional/soft, the
+        # equipment itself lives independently in the register), so clear
+        # the assignment instead of cascading. Without this, deleting a
+        # node with any equipment assigned to it raised sqlite3.IntegrityError:
+        # FOREIGN KEY constraint failed (real crash report, 2026-08-07).
+        self.conn.execute("UPDATE equipment_catalog SET node_id=NULL WHERE node_id=?", (id_,))
         self.conn.execute("DELETE FROM nodes WHERE id=?", (id_,)); self.commit()
 
     def delete_cause(self, id_):
