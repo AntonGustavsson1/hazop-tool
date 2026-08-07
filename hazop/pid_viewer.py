@@ -6801,11 +6801,16 @@ class EquipmentDeviationBar(QWidget):
         self._marker_id = None
         self._checklist_checkboxes = []   # display order, for number-key shortcuts
         # Set by PIDPanel right after construction to
-        # PIDPanel._create_cause_for_bar. A plain callback rather than a
-        # fire-and-forget signal because we need the created cause_id back
-        # synchronously, to show/enable that row's frequency combo — see
-        # NOTES.md "Frekvens synlig + klickbar".
+        # PIDPanel._create_cause_for_bar / ._update_cause_for_bar. Plain
+        # callbacks rather than fire-and-forget signals because we need
+        # the (created or existing) cause_id back synchronously, to show/
+        # enable that row's frequency combo — see NOTES.md "Frekvens
+        # synlig + klickbar". _update_cause_fn handles re-selecting a
+        # DIFFERENT cause for a row that already has one (see
+        # "Förenklat orsaksval, ta bort dubbla val") — updates the
+        # existing row in place instead of creating a second cause.
         self._create_cause_fn = None
+        self._update_cause_fn = None
         self.setVisible(False)
         self.setStyleSheet(
             "EquipmentDeviationBar { background:#F5F5F3; border-top:1px solid #C9CBC7; }")
@@ -6969,14 +6974,18 @@ class EquipmentDeviationBar(QWidget):
             for sd in self.db.standard_deviations():
                 deviations[sd['id']] = sd['description']
 
-        existing = {d['description'] for d in self.db.deviations_for_equipment(self._equipment_id)}
+        # Full row (not just a name-in-set check) so an already-checked
+        # deviation's already-saved cause can be looked up and shown —
+        # see _build_deviation_row's existing_dev handling.
+        existing_by_desc = {d['description']: d
+                             for d in self.db.deviations_for_equipment(self._equipment_id)}
 
         # Tracked in display order so number-key shortcuts (1-9, see
         # keyPressEvent) can toggle the matching row without the mouse —
         # explicit user request ("snabbknappar 1, 2..").
         self._checklist_checkboxes = []
         for i, (std_dev_id, name) in enumerate(deviations.items(), 1):
-            row_w = self._build_deviation_row(std_dev_id, name, name in existing,
+            row_w = self._build_deviation_row(std_dev_id, name, existing_by_desc.get(name),
                                               enabled=node_id is not None, number=i,
                                               obj_id=obj_id)
             self._checklist_layout.addWidget(row_w)
@@ -6992,10 +7001,11 @@ class EquipmentDeviationBar(QWidget):
                 return o['id']
         return None
 
-    def _build_deviation_row(self, std_dev_id, description, checked, enabled, number, obj_id=None):
+    def _build_deviation_row(self, std_dev_id, description, existing_dev, enabled, number, obj_id=None):
         row_w = QWidget()
         row = QHBoxLayout(row_w)
         row.setContentsMargins(0, 0, 0, 0)
+        checked = existing_dev is not None
         if number <= 9:
             num_lbl = QLabel(f"{number}.")
             num_lbl.setFixedWidth(16)
@@ -7051,25 +7061,24 @@ class EquipmentDeviationBar(QWidget):
         freq_combo.setEnabled(False)
         row.addWidget(freq_combo)
 
-        # Föreslå troligaste orsaken: causes is already sorted by
-        # sort_order, so causes[0] is the template library's most common
-        # match for this deviation+equipment-type combo (e.g. "Lågt flöde"
-        # + Pump → "Pump stopp"). One click creates it via the same path as
-        # picking it from the dropdown — the dropdown stays for anything else.
-        suggest_btn = None
-        if causes:
-            suggest_btn = QPushButton(f"→ {causes[0]['description']}")
-            suggest_btn.setVisible(checked)
-            suggest_btn.setStyleSheet("QPushButton { color:#2E6B3E; font-weight:bold; }")
-            suggest_btn.clicked.connect(
-                lambda _checked=False, desc=description, name=causes[0]['description'],
-                       freq=causes[0].get('frequency'), combo=cause_combo, fc=freq_combo:
-                    self._create_cause_from_bar(desc, name, combo, fc, freq))
-            row.addWidget(suggest_btn)
+        # Redan sparad orsak för denna rad (t.ex. vid återöppning av rutan
+        # för en utrustning som redan konfigurerats) — visa/aktivera direkt
+        # istället för att raden ser otillagd ut trots att data finns.
+        if existing_dev is not None:
+            existing_causes = self.db.causes_for_deviation(existing_dev['id'])
+            if existing_causes:
+                first_cause = existing_causes[0]
+                self._select_or_add_combo_item(cause_combo, first_cause['description'] or '')
+                freq_combo.setProperty('cause_id', first_cause['id'])
+                likelihood = (first_cause['likelihood']
+                              if first_cause['likelihood'] is not None else 0)
+                freq_combo.setCurrentIndex(freq_to_idx(likelihood))
+                freq_combo.setEnabled(True)
 
         cb.toggled.connect(
-            lambda on, sdid=std_dev_id, desc=description, combo=cause_combo, box=cb, sb=suggest_btn:
-                self._on_deviation_toggled(sdid, desc, on, combo, box, sb))
+            lambda on, sdid=std_dev_id, desc=description, combo=cause_combo, box=cb,
+                   fc=freq_combo, cs=causes:
+                self._on_deviation_toggled(sdid, desc, on, combo, box, fc, cs))
         cause_combo.activated.connect(
             lambda _idx, desc=description, combo=cause_combo, fc=freq_combo, d2f=desc_to_freq:
                 self._on_cause_combo_activated(desc, combo, fc, d2f))
@@ -7077,7 +7086,8 @@ class EquipmentDeviationBar(QWidget):
             lambda idx, fc=freq_combo: self._on_freq_changed(fc, idx))
         return row_w
 
-    def _on_deviation_toggled(self, std_dev_id, description, checked, cause_combo, checkbox, suggest_btn=None):
+    def _on_deviation_toggled(self, std_dev_id, description, checked, cause_combo, checkbox,
+                              freq_combo, causes):
         if not checked:
             return
         eq = self.db.get_equipment_by_id(self._equipment_id)
@@ -7088,9 +7098,31 @@ class EquipmentDeviationBar(QWidget):
         dev_id = self.db.get_or_create_deviation(node_id, description, equipment_id=self._equipment_id)
         checkbox.setEnabled(False)   # v1: once checked, stays checked — see NOTES.md
         cause_combo.setEnabled(True)
-        if suggest_btn is not None:
-            suggest_btn.setVisible(True)
         self.deviation_added.emit(dev_id, self._equipment_id)
+        # Förenklat orsaksval, ta bort dubbla val (NOTES.md): tidigare
+        # visades BÅDE en separat "→ <förslag>"-knapp OCH en dropdown för
+        # att välja orsak samtidigt — två kontroller för samma sak. Nu
+        # skapas det mest troliga förslaget direkt när avvikelsen kryssas;
+        # dropdownen finns kvar för att ÄNDRA det, inte för att först
+        # behöva bekräfta det.
+        if causes:
+            top = causes[0]
+            self._create_cause_from_bar(description, top['description'], cause_combo,
+                                        freq_combo, top.get('frequency'))
+
+    def _select_or_add_combo_item(self, combo, text):
+        """Select `text` in a cause combo, inserting it (right after the
+        "+ orsak…" placeholder) if it isn't already one of the standard
+        suggestions — e.g. a free-text cause typed earlier, or a template
+        cause from a different object/comp_type match than this rebuild
+        resolved to. Signals blocked so this never re-triggers creation."""
+        idx = combo.findData(text)
+        if idx < 0:
+            idx = 1
+            combo.insertItem(idx, text, text)
+        combo.blockSignals(True)
+        combo.setCurrentIndex(idx)
+        combo.blockSignals(False)
 
     def _on_cause_combo_activated(self, description, combo, freq_combo, desc_to_freq):
         value = combo.currentData()
@@ -7109,33 +7141,48 @@ class EquipmentDeviationBar(QWidget):
         self._create_cause_from_bar(description, description_text, combo, freq_combo, frequency)
 
     def _create_cause_from_bar(self, description, description_text, combo, freq_combo, frequency=None):
-        """Create (or reuse) the deviation+cause via PIDPanel._create_cause_for_bar
-        and, once we get its cause_id back, enable this row's frequency
-        combo and set it to whatever likelihood was actually stored —
+        """Create this row's cause the first time one is picked (checking
+        the deviation, or the user's first dropdown choice), or UPDATE it
+        in place on every later selection — the dropdown is now a single
+        "pick or change the cause" control, not create-once-then-a-
+        separate-chip-to-confirm (see NOTES.md "Förenklat orsaksval, ta
+        bort dubbla val"). Which path runs is decided by whether this row
+        already has a cause_id (stashed on freq_combo once one exists).
         `frequency` (events/year, from standard_causes.frequency when the
-        picked cause has a seeded estimate) flows through
-        place_cause_from_template's existing _compute_f_level() conversion,
-        so the combo reflects real data instead of always defaulting to F0.
-        Shared by both the suggested-cause chip and the cause dropdown."""
+        picked cause has a seeded estimate) flows through to
+        place_cause_from_template's existing _compute_f_level() conversion
+        via PIDPanel, so the combo reflects real data instead of always
+        defaulting to F0."""
         eq = self.db.get_equipment_by_id(self._equipment_id)
         node_id = eq.get('node_id') if eq else None
-        if node_id is None or self._create_cause_fn is None:
-            combo.setCurrentIndex(0)
+        if node_id is None:
             return
-        dev_id = self.db.get_or_create_deviation(node_id, description, equipment_id=self._equipment_id)
         comp_type = eq['equipment_type'] or ''
         comp_tag = eq['tag'] or ''
-        cause_id = self._create_cause_fn(dev_id, comp_type, comp_tag, description_text, frequency)
-        if cause_id is not None:
-            freq_combo.setProperty('cause_id', cause_id)
-            row = self.db.conn.execute(
-                "SELECT likelihood FROM causes WHERE id=?", (cause_id,)).fetchone()
-            likelihood = row['likelihood'] if row and row['likelihood'] is not None else 0
-            freq_combo.blockSignals(True)
-            freq_combo.setCurrentIndex(freq_to_idx(likelihood))
-            freq_combo.blockSignals(False)
-            freq_combo.setEnabled(True)
-        combo.setCurrentIndex(0)
+        existing_cause_id = freq_combo.property('cause_id')
+
+        if existing_cause_id is not None:
+            if self._update_cause_fn is None:
+                return
+            cause_id = existing_cause_id
+            self._update_cause_fn(cause_id, comp_type, comp_tag, description_text, frequency)
+        else:
+            if self._create_cause_fn is None:
+                return
+            dev_id = self.db.get_or_create_deviation(node_id, description, equipment_id=self._equipment_id)
+            cause_id = self._create_cause_fn(dev_id, comp_type, comp_tag, description_text, frequency)
+
+        if cause_id is None:
+            return
+        freq_combo.setProperty('cause_id', cause_id)
+        row = self.db.conn.execute(
+            "SELECT likelihood FROM causes WHERE id=?", (cause_id,)).fetchone()
+        likelihood = row['likelihood'] if row and row['likelihood'] is not None else 0
+        freq_combo.blockSignals(True)
+        freq_combo.setCurrentIndex(freq_to_idx(likelihood))
+        freq_combo.blockSignals(False)
+        freq_combo.setEnabled(True)
+        self._select_or_add_combo_item(combo, description_text)
 
     def _on_freq_changed(self, freq_combo, idx):
         cause_id = freq_combo.property('cause_id')
@@ -7466,10 +7513,11 @@ class PIDPanel(QWidget):
 
         self._equipment_bar = EquipmentDeviationBar(self.db)
         self._equipment_bar.deviation_added.connect(self._on_equipment_deviation_added)
-        # Plain callback, not a signal, so the bar gets the created cause_id
-        # back synchronously to reveal its frequency combo — see
-        # EquipmentDeviationBar._create_cause_fn.
+        # Plain callbacks, not signals, so the bar gets the (created or
+        # existing) cause_id back synchronously to reveal its frequency
+        # combo — see EquipmentDeviationBar._create_cause_fn/_update_cause_fn.
         self._equipment_bar._create_cause_fn = self._create_cause_for_bar
+        self._equipment_bar._update_cause_fn = self._update_cause_for_bar
         self._equipment_bar.equipment_retyped.connect(self._on_equipment_retyped)
         self._equipment_bar.show_in_register_requested.connect(
             lambda eq_id: self.marker_navigated.emit('equipment_register', eq_id))
@@ -9295,6 +9343,22 @@ class PIDPanel(QWidget):
         scene_pos = self.viewer.pdf_to_scene(marker['x'], marker['y'], page=marker['pid_page'])
         return self.place_cause_from_template(
             deviation_id, scene_pos, marker['pid_page'], comp_type, comp_tag, description, frequency)
+
+    def _update_cause_for_bar(self, cause_id, comp_type, comp_tag, description, frequency=None):
+        """Callback wired into EquipmentDeviationBar._update_cause_fn —
+        updates an EXISTING cause in place instead of creating a new one,
+        for a row the user is CHANGING (not creating for the first time —
+        see NOTES.md "Förenklat orsaksval, ta bort dubbla val"). Redraws
+        markers so the on-P&ID label reflects the new description, and
+        reuses cause_template_created (the same signal
+        place_cause_from_template already emits) so tree/worksheet refresh
+        exactly as they would for a newly created cause."""
+        self.db.update_cause(cause_id, description, comp_type=comp_type, comp_tag=comp_tag)
+        if frequency is not None:
+            f_level = self._compute_f_level(frequency)
+            self.db.update_cause(cause_id, likelihood=f_level, base_freq=frequency)
+        self._load_overlays()
+        self.cause_template_created.emit(cause_id)
 
     def _on_equipment_retyped(self, equipment_id):
         self._refresh_equipment_marker_visual(equipment_id)

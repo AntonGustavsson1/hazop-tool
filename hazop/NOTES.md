@@ -689,6 +689,30 @@ Trots gårdagens fix av `_on_equipment_deviation_created` (samma symptom) rappor
 
 ---
 
+## Trädupprepning — undersökt, ingen kodbugg hittad (2026-08-07)
+
+**Rapport:** Anton såg "Låg nivå", "Hög temperatur" m.fl. ledord upprepas två gånger i trädet — endast "Lågt flöde" (som redan fixats tidigare samma dag) visade sig korrekt.
+
+**Undersökning:** Dumpade den FAKTISKA trädstrukturen `TreePanel.refresh()` bygger mot den LIVE `hazop_project.db` (inklusive WAL-innehåll) rakt av — varje ledord förekom exakt EN gång, varje avvikelse exakt EN gång, ingen duplicering någonstans. Databasen bekräftade samma sak: bara "Lågt flöde" hade två `deviations`-rader (en generisk + en utrustningskopplad); alla andra ledord hade bara en enda rad var — matematiskt omöjligt för dem att renderas dubbelt med den koden.
+
+**Slutsats:** Anton bekräftade att programmet INTE startats om sedan de tidigare fixarna pushades samma dag — Python laddar inte om kodändringar automatiskt, så det körande programmet visade fortfarande gammalt beteende i minnet. Inte en kvarstående kodbugg, men värt att komma ihåg: **efter varje kodfix måste HAZOP-programmet startas om helt (stängas och köras på nytt) för att ändringen ska synas** — det finns ingen hot-reload.
+
+---
+
+## Förenklat orsaksval i EquipmentDeviationBar, ta bort dubbla val (2026-08-07)
+
+**Bakgrund:** Anton tyckte rutans orsaksval hade blivit "dubbla val" — en grön "→ Pump stopp"-chip-knapp och en dropdown-gardin visades SAMTIDIGT bredvid varandra för att välja orsak, två kontroller som gjorde överlappande saker. Önskemål: "Det mest troliga alternativet ska dyka upp i gardinen, vill man ändra så får man göra det" — ett enda, självförklarande val istället för två.
+
+**Ändring (`EquipmentDeviationBar`, pid_viewer.py):**
+- **Chip-knappen togs bort helt.** När en avvikelse kryssas skapas nu det mest troliga förslaget (`causes[0]`, redan sorterat på `sort_order`) **automatiskt**, direkt — inget extra klick behövs för normalfallet. Gardinen uppdateras samtidigt att VISA den skapade orsaken (inte längre "+ orsak…" som en tom platshållare efteråt).
+- **Gardinen är nu en "välj ELLER ändra"-kontroll, inte bara "skapa en gång".** Väljer man en ANNAN post i gardinen efteråt uppdateras SAMMA orsak i databasen (ny `_update_cause_fn`-callback, `PIDPanel._update_cause_for_bar`) istället för att en andra, redundant orsaksrad skapas — annars hade varje omval byggt upp fler och fler orsaker för samma kryssruta. `_update_cause_for_bar` skriver till orsaken, ritar om markören (`_load_overlays()`) så P&ID-etiketten stämmer, och återanvänder samma `cause_template_created`-signal som en nyskapad orsak redan triggar tak/worksheet-uppdatering via.
+- **Återöppning visar redan sparad data.** Tidigare visade en redan ikryssad avvikelse alltid en tom "+ orsak…"-gardin vid omöppning av rutan, trots att en riktig orsak redan fanns sparad — `_rebuild_checklist()` slår nu upp den befintliga avvikelsens första orsak och förifyller gardinen + frekvenskombon direkt.
+- Vilken väg som körs (skapa vs uppdatera) avgörs av om raden redan har ett `cause_id` (sparat på `freq_combo` som en Qt-property, samma mekanism frekvenskombon redan använde).
+
+**Test:** 4 tester ändrade (tog bort chip-beroende, testar nu auto-skapande vid kryssning istället), 2 nya (`test_picking_a_different_cause_updates_in_place_instead_of_creating_a_second_one`, `test_reopening_bar_shows_already_saved_cause`). Alla 262 tester gröna (`test_regression` 185 + `test_symbol_geometry` 77).
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **OCR-positioner är approximativa** — x,y-koordinater från OCR stämmer inte perfekt med PDF-koordinater vid hög zoom. Markörer kan hamna något fel.

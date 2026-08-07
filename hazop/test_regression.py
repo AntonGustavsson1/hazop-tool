@@ -4631,7 +4631,7 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         idx = self.bar._node_combo.findData(node_id)
         self.bar._node_combo.setCurrentIndex(idx)
 
-        created = {}
+        created = {'pump_id': pump_id, 'node_id': node_id, 'update_calls': []}
 
         def fake_create_cause(dev_id, comp_type, comp_tag, description, frequency=None):
             cause_id = self.db.add_cause(dev_id)
@@ -4639,9 +4639,16 @@ class EquipmentDeviationBarTests(unittest.TestCase):
             created['cause_id'] = cause_id
             created['dev_id'] = dev_id
             created['frequency'] = frequency
+            created['description'] = description
             return cause_id
 
+        def fake_update_cause(cause_id, comp_type, comp_tag, description, frequency=None):
+            self.db.update_cause(cause_id, description, comp_type=comp_type, comp_tag=comp_tag)
+            created['update_calls'].append(
+                {'cause_id': cause_id, 'description': description, 'frequency': frequency})
+
         self.bar._create_cause_fn = fake_create_cause
+        self.bar._update_cause_fn = fake_update_cause
         return created
 
     def test_frequency_combo_present_but_disabled_before_any_cause_exists(self):
@@ -4657,38 +4664,36 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         freq_combo = row_widget.findChildren(QComboBox)[-1]
         self.assertFalse(freq_combo.isEnabled())
 
-    def test_suggested_cause_chip_creates_cause_and_enables_frequency_combo(self):
+    def test_checking_deviation_auto_creates_suggested_cause_and_enables_frequency_combo(self):
+        """Förenklat orsaksval, ta bort dubbla val (NOTES.md): checking the
+        deviation alone must create the top-suggested cause immediately —
+        no separate chip/button to click anymore, that was the 'dubbla
+        val' complaint (checkbox + chip + dropdown all doing overlapping
+        things)."""
         created = self._select_node_and_stub_cause_creation()
 
         row_widget = self.bar._checklist_layout.itemAt(0).widget()
         checkbox = row_widget.findChild(QCheckBox)
         checkbox.setChecked(True)
 
-        suggest_btn = next(
-            (w for w in row_widget.findChildren(QPushButton) if w.text().startswith("→ ")), None)
-        self.assertIsNotNone(
-            suggest_btn, "expected a suggested-cause chip once a standard cause exists for this row")
-        suggest_btn.click()
-
         self.assertIn('cause_id', created)
+        cause_combo = row_widget.findChildren(QComboBox)[0]
+        self.assertEqual(cause_combo.currentText(), created['description'])
         freq_combo = row_widget.findChildren(QComboBox)[-1]
         self.assertTrue(freq_combo.isEnabled())
         self.assertEqual(freq_combo.property('cause_id'), created['cause_id'])
 
-    def test_suggested_cause_chip_passes_through_seeded_frequency(self):
+    def test_checking_deviation_passes_through_seeded_frequency(self):
         """'Pump stopp' is seeded with a real frequency estimate
-        (standard_causes.frequency) — the chip must pass it through to
-        _create_cause_fn (and from there to place_cause_from_template's
-        _compute_f_level conversion) instead of discarding it, per the
-        user's own request: 'får gärna vara kopplad till databasen med
-        frekvenser'."""
+        (standard_causes.frequency) — auto-creating it on check must pass
+        that through to _create_cause_fn (and from there to
+        place_cause_from_template's _compute_f_level conversion) instead
+        of discarding it, per the user's own request: 'får gärna vara
+        kopplad till databasen med frekvenser'."""
         created = self._select_node_and_stub_cause_creation()
         row_widget = self.bar._checklist_layout.itemAt(0).widget()
         checkbox = row_widget.findChild(QCheckBox)
         checkbox.setChecked(True)
-        suggest_btn = next(
-            w for w in row_widget.findChildren(QPushButton) if w.text().startswith("→ "))
-        suggest_btn.click()
         self.assertIsNotNone(created.get('frequency'),
                               "expected the seeded standard_causes.frequency to flow through")
 
@@ -4713,10 +4718,11 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         idx = self.bar._node_combo.findData(node_id)
         self.bar._node_combo.setCurrentIndex(idx)
         row_widget = self.bar._checklist_layout.itemAt(0).widget()
-        suggest_btn = next(
-            (w for w in row_widget.findChildren(QPushButton) if w.text().startswith("→ ")), None)
-        self.assertIsNotNone(
-            suggest_btn, "expected a suggested cause once the object-based fallback resolves")
+        cause_combo = row_widget.findChildren(QComboBox)[0]
+        # "+ orsak…" + at least one real suggestion + the free-text sentinel.
+        self.assertGreater(
+            cause_combo.count(), 2,
+            "expected real cause suggestions once the object-based fallback resolves")
 
     def test_frequency_combo_change_writes_to_cause_likelihood(self):
         created = self._select_node_and_stub_cause_creation()
@@ -4724,9 +4730,6 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         row_widget = self.bar._checklist_layout.itemAt(0).widget()
         checkbox = row_widget.findChild(QCheckBox)
         checkbox.setChecked(True)
-        suggest_btn = next(
-            w for w in row_widget.findChildren(QPushButton) if w.text().startswith("→ "))
-        suggest_btn.click()
 
         freq_combo = row_widget.findChildren(QComboBox)[-1]
         freq_combo.setCurrentIndex(freq_to_idx(3))
@@ -4734,6 +4737,54 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         cause = self.db.conn.execute(
             "SELECT likelihood FROM causes WHERE id=?", (created['cause_id'],)).fetchone()
         self.assertEqual(cause['likelihood'], 3)
+
+    def test_picking_a_different_cause_updates_in_place_instead_of_creating_a_second_one(self):
+        """Förenklat orsaksval, ta bort dubbla val (NOTES.md): the dropdown
+        is now a single 'pick or change the cause' control. Re-selecting a
+        DIFFERENT entry for a row that already auto-created a cause must
+        UPDATE that same cause (via _update_cause_fn), not create a
+        second, redundant one via _create_cause_fn."""
+        created = self._select_node_and_stub_cause_creation()
+        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        checkbox = row_widget.findChild(QCheckBox)
+        checkbox.setChecked(True)
+        first_cause_id = created['cause_id']
+
+        cause_combo = row_widget.findChildren(QComboBox)[0]
+        other_idx = next(
+            i for i in range(cause_combo.count())
+            if cause_combo.itemData(i) not in (None, created['description'],
+                                                self.bar._FREE_TEXT_SENTINEL))
+        other_text = cause_combo.itemData(other_idx)
+        cause_combo.setCurrentIndex(other_idx)
+        cause_combo.activated.emit(other_idx)
+
+        self.assertEqual(len(created['update_calls']), 1)
+        self.assertEqual(created['update_calls'][0]['cause_id'], first_cause_id)
+        self.assertEqual(created['update_calls'][0]['description'], other_text)
+        # No second cause row created for this deviation.
+        causes = self.db.causes_for_deviation(created['dev_id'])
+        self.assertEqual(len(causes), 1)
+        self.assertEqual(cause_combo.currentText(), other_text)
+
+    def test_reopening_bar_shows_already_saved_cause(self):
+        """Closing and reopening the bar for equipment that already has a
+        saved cause must show/enable that cause immediately — the row
+        shouldn't look unconfigured just because the bar was rebuilt."""
+        created = self._select_node_and_stub_cause_creation()
+        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        checkbox = row_widget.findChild(QCheckBox)
+        checkbox.setChecked(True)
+
+        # Simulate reopening: rebuild the checklist from scratch.
+        self.bar._rebuild_checklist()
+
+        row_widget2 = self.bar._checklist_layout.itemAt(0).widget()
+        cause_combo2 = row_widget2.findChildren(QComboBox)[0]
+        freq_combo2 = row_widget2.findChildren(QComboBox)[-1]
+        self.assertEqual(cause_combo2.currentText(), created['description'])
+        self.assertEqual(freq_combo2.property('cause_id'), created['cause_id'])
+        self.assertTrue(freq_combo2.isEnabled())
 
 
 # ══════════════════════════════════════════════════════════════════════════
