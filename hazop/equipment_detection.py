@@ -1949,6 +1949,7 @@ def detect_equipment_and_valves(pdf_doc, tag_points, pages=None,
         # without this, trace_pipe_points_from_bbox rebuilds its own
         # spatial index from `primitives` on every single call.
         line_index = symbol_geometry.build_line_index(primitives)
+        scale = max(symbol_geometry.dominant_text_size(page), 1.0)
 
         for tag, prefix, _pos, tag_read_conf in resolved_tags:
             cluster, method, assoc_score = assoc.get(tag, (None, 'none', 0.0))
@@ -1979,6 +1980,8 @@ def detect_equipment_and_valves(pdf_doc, tag_points, pages=None,
         # Shape-anchored: clusters passing the bow-tie/valve-shape filter
         # that no tag above claimed.
         n_untagged = 0
+        n_untagged_pump = 0
+        n_untagged_instrument = 0
         for cluster in clusters:
             if id(cluster) in assigned_cluster_ids:
                 continue
@@ -1993,27 +1996,83 @@ def detect_equipment_and_valves(pdf_doc, tag_points, pages=None,
                     x0, y0, x1, y1 = cluster['bbox']
                     rejected.append({'page': page_num, 'x': (x0 + x1) / 2, 'y': (y0 + y1) / 2,
                                      'outline': cluster['outline'], 'reason': reason})
-                continue
+            else:
+                x0, y0, x1, y1 = cluster['bbox']
+                cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+                suggested_tag, _pfx = find_nearby_tag_text(page, (cx, cy))
+                line_info = trace_line_info_for_cluster(
+                    cluster, primitives, page_words_combined, line_index=line_index)
+                n_untagged += 1
+                results.append({
+                    'tag': suggested_tag or '', 'page': page_num, 'comp_type': 'Ventil',
+                    'x': cx, 'y': cy, 'outline': cluster['outline'], 'link_method': 'shape',
+                    'tag_status': 'untagged',
+                    'temporary_id': f'UNASSIGNED-VALVE-{page_num}-{n_untagged}',
+                    'detection_confidence': cluster['confidence'],
+                    'tag_reading_confidence': 0.0, 'tag_assignment_confidence': 0.0,
+                    'line_assignment_confidence': line_info.get('line_assignment_confidence', 0.0),
+                    'line_number': line_info.get('line_number', ''),
+                    'medium_code': line_info.get('medium_code', ''),
+                    'medium_code_verified': line_info.get('medium_code_verified', False),
+                    'nominal_size': line_info.get('nominal_size', ''),
+                })
 
-            x0, y0, x1, y1 = cluster['bbox']
-            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-            suggested_tag, _pfx = find_nearby_tag_text(page, (cx, cy))
-            line_info = trace_line_info_for_cluster(
-                cluster, primitives, page_words_combined, line_index=line_index)
-            n_untagged += 1
-            results.append({
-                'tag': suggested_tag or '', 'page': page_num, 'comp_type': 'Ventil',
-                'x': cx, 'y': cy, 'outline': cluster['outline'], 'link_method': 'shape',
-                'tag_status': 'untagged',
-                'temporary_id': f'UNASSIGNED-VALVE-{page_num}-{n_untagged}',
-                'detection_confidence': cluster['confidence'],
-                'tag_reading_confidence': 0.0, 'tag_assignment_confidence': 0.0,
-                'line_assignment_confidence': line_info.get('line_assignment_confidence', 0.0),
-                'line_number': line_info.get('line_number', ''),
-                'medium_code': line_info.get('medium_code', ''),
-                'medium_code_verified': line_info.get('medium_code_verified', False),
-                'nominal_size': line_info.get('nominal_size', ''),
-            })
+            # Pump/instrument shapes are found on the cluster's RAW group
+            # (see symbol_geometry.find_symbol_clusters), independently of
+            # whether the cluster ALSO passed the valve bow-tie check above
+            # — a busy merged cluster can contain a valve, a pump, AND an
+            # instrument bubble at once (confirmed on real LKAB/Gryaab
+            # P&IDs, see NOTES.md). Skipped entirely if a known tag was
+            # already linked to this cluster (assigned_cluster_ids, same
+            # guard the valve branch above uses) so an already-tagged pump
+            # doesn't also get reported as a second, untagged one.
+            for bbox in cluster.get('pump_bboxes') or []:
+                px0, py0, px1, py1 = bbox
+                if math.hypot(px1 - px0, py1 - py0) / scale < _PUMP_MIN_NORM_SIZE:
+                    continue
+                pcx, pcy = (px0 + px1) / 2, (py0 + py1) / 2
+                suggested_tag, _pfx = find_nearby_tag_text(page, (pcx, pcy))
+                line_info = trace_line_info_for_cluster(
+                    {'bbox': bbox}, primitives, page_words_combined, line_index=line_index)
+                n_untagged_pump += 1
+                results.append({
+                    'tag': suggested_tag or '', 'page': page_num, 'comp_type': 'Pump',
+                    'x': pcx, 'y': pcy,
+                    'outline': [[px0, py0], [px1, py0], [px1, py1], [px0, py1]],
+                    'link_method': 'shape', 'tag_status': 'untagged',
+                    'temporary_id': f'UNASSIGNED-PUMP-{page_num}-{n_untagged_pump}',
+                    'detection_confidence': 1.0,
+                    'tag_reading_confidence': 0.0, 'tag_assignment_confidence': 0.0,
+                    'line_assignment_confidence': line_info.get('line_assignment_confidence', 0.0),
+                    'line_number': line_info.get('line_number', ''),
+                    'medium_code': line_info.get('medium_code', ''),
+                    'medium_code_verified': line_info.get('medium_code_verified', False),
+                    'nominal_size': line_info.get('nominal_size', ''),
+                })
+
+            for bbox in cluster.get('instrument_bboxes') or []:
+                ix0, iy0, ix1, iy1 = bbox
+                if math.hypot(ix1 - ix0, iy1 - iy0) / scale < _INSTRUMENT_MIN_NORM_SIZE:
+                    continue
+                icx, icy = (ix0 + ix1) / 2, (iy0 + iy1) / 2
+                suggested_tag, _pfx = find_nearby_tag_text(page, (icx, icy))
+                line_info = trace_line_info_for_cluster(
+                    {'bbox': bbox}, primitives, page_words_combined, line_index=line_index)
+                n_untagged_instrument += 1
+                results.append({
+                    'tag': suggested_tag or '', 'page': page_num, 'comp_type': 'Instrument / Sensor',
+                    'x': icx, 'y': icy,
+                    'outline': [[ix0, iy0], [ix1, iy0], [ix1, iy1], [ix0, iy1]],
+                    'link_method': 'shape', 'tag_status': 'untagged',
+                    'temporary_id': f'UNASSIGNED-INSTRUMENT-{page_num}-{n_untagged_instrument}',
+                    'detection_confidence': 1.0,
+                    'tag_reading_confidence': 0.0, 'tag_assignment_confidence': 0.0,
+                    'line_assignment_confidence': line_info.get('line_assignment_confidence', 0.0),
+                    'line_number': line_info.get('line_number', ''),
+                    'medium_code': line_info.get('medium_code', ''),
+                    'medium_code_verified': line_info.get('medium_code_verified', False),
+                    'nominal_size': line_info.get('nominal_size', ''),
+                })
 
     return results, rejected
 

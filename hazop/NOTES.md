@@ -561,6 +561,18 @@ Given detta: kärnlogiken är korrekt implementerad och verifierad via 6 nya syn
 
 ---
 
+## "Hitta på P&ID" utökad till pumpar och instrument (2026-08-07)
+
+**Bakgrund:** Anton bad om att "hitta ventilformer" (numera `detect_equipment_and_valves`, motorn bakom "🎯 Hitta på P&ID" sedan Fas 1+2) även ska hitta pumpar och instrument. `find_pump_shapes()`/`find_instrument_shapes()` fanns redan och fungerade (se pump-/instrumentdetekteringsavsnitten ovan) men var fristående — aldrig kopplade in i den enhetliga pipelinen eller något UI-knapp.
+
+**Genomfört:** `detect_equipment_and_valves()` i `equipment_detection.py` läser redan `cluster['pump_bboxes']`/`cluster['instrument_bboxes']` som `symbol_geometry.find_symbol_clusters()` beräknar per kluster (samma data pump-/instrumentdetekteringen alltid använt) — de las bara aldrig till i resultatlistan. Lade till två nya loopar, en per kluster (samma loop som redan hanterar det taggankrade + formankrade ventilfallet), som går igenom dessa bboxar och lägger till `comp_type='Pump'`/`'Instrument / Sensor'`-rader med `tag_status='untagged'` och `temporary_id='UNASSIGNED-PUMP-...'`/`'UNASSIGNED-INSTRUMENT-...'` — exakt samma mönster som redan finns för otaggade ventiler. Pump/instrument-kandidater kollas OBEROENDE av om samma kluster också klarade ventil-bowtie-filtret (ett hoprundat kluster kan innehålla en ventil OCH en pump samtidigt, bekräftat på riktiga LKAB/Gryaab-filer) men hoppas över helt om klustret redan fick en KÄND tagg kopplad (`assigned_cluster_ids`, samma spärr som ventilgrenen redan använder) — en redan taggad pump ska inte också rapporteras som en andra, otaggad rad.
+
+**Granskningsdialogen (`EquipmentMarkerReviewDialog`) kräver ingen ändring** — `comp_type`-kolumnen och markörvisningen är redan datadrivna (visar strängen rakt av, ingen hårdkodad lista över giltiga typer), så `'Pump'`/`'Instrument / Sensor'` renderas korrekt utan vidare arbete.
+
+**Verifierat:** LKAB S0000258 (sida 0): 14 ventiler + 9 instrument + 3 pumpar, alla otaggade rader med rimliga föreslagna taggar (samma resultat som de fristående funktionerna gav var för sig). Gryaab AD-PR-FB-8-0002: 31 ventiler + 14 pumpar (0 instrument — redan känd begränsning, filen använder hexagoner). Prestandan opåverkad (samma klusterdata återanvänds, ingen ny extraktion). Alla 208 tester passerar (1 nytt: `test_detect_equipment_and_valves_surfaces_untagged_pump_and_instrument`).
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **OCR-positioner är approximativa** — x,y-koordinater från OCR stämmer inte perfekt med PDF-koordinater vid hög zoom. Markörer kan hamna något fel.

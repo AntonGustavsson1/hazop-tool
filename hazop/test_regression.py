@@ -3813,6 +3813,59 @@ class BowtieValveDetectionTests(unittest.TestCase):
         self.assertTrue(results[0]['temporary_id'].startswith('UNASSIGNED-VALVE-0-'),
             f"got temporary_id={results[0]['temporary_id']!r}")
 
+    def test_detect_equipment_and_valves_surfaces_untagged_pump_and_instrument(self):
+        """User request (2026-08-07): 'Hitta på P&ID' (detect_equipment_and_valves,
+        the engine behind the old '🦋 Hitta ventilformer' button) must also
+        surface pump and instrument shapes, not just valves — they were
+        previously only reachable via the standalone find_pump_shapes()/
+        find_instrument_shapes(), never wired into this unified pipeline."""
+        from equipment_detection import detect_equipment_and_valves
+        import fitz
+        path = os.path.join(self._tmpdir, "pump_and_instrument.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=300, height=200)
+        shape = page.new_shape()
+        # A pump: circle + diagonal impeller mark.
+        shape.draw_circle(fitz.Point(60, 100), 20)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(60, 86), fitz.Point(80, 100))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(80, 100), fitz.Point(60, 114))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        # A divided instrument capsule, far enough away to be its own cluster.
+        shape.draw_circle(fitz.Point(225, 100), 10)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_circle(fitz.Point(255, 100), 10)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(225, 90), fitz.Point(255, 90))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(225, 110), fitz.Point(255, 110))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(215, 100), fitz.Point(265, 100))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        page.insert_text(fitz.Point(40, 130), "PU-101", fontsize=10)
+        page.insert_text(fitz.Point(210, 130), "PI-101", fontsize=10)
+        doc.save(path)
+        doc.close()
+
+        doc = fitz.open(path)
+        try:
+            results, _rejected = detect_equipment_and_valves(doc, [])
+        finally:
+            doc.close()
+
+        pumps = [r for r in results if r['comp_type'] == 'Pump']
+        instruments = [r for r in results if r['comp_type'] == 'Instrument / Sensor']
+        self.assertEqual(len(pumps), 1)
+        self.assertEqual(pumps[0]['tag'], 'PU-101')
+        self.assertEqual(pumps[0]['tag_status'], 'untagged')
+        self.assertTrue(pumps[0]['temporary_id'].startswith('UNASSIGNED-PUMP-0-'))
+        self.assertEqual(len(instruments), 1)
+        self.assertEqual(instruments[0]['tag'], 'PI-101')
+        self.assertEqual(instruments[0]['tag_status'], 'untagged')
+        self.assertTrue(instruments[0]['temporary_id'].startswith('UNASSIGNED-INSTRUMENT-0-'))
+
     def test_valve_rejection_reason_reports_single_near_miss_only(self):
         """_valve_rejection_reason surfaces a near-miss (exactly one of the
         five bow-tie/valve-shape filters failed) for the review dialog's
