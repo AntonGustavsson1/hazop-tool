@@ -57,7 +57,7 @@ from hazop import (  # noqa: E402
 )
 from PyQt6.QtWidgets import (  # noqa: E402
     QApplication, QGraphicsPixmapItem, QTreeWidgetItemIterator, QCheckBox,
-    QComboBox, QPushButton,
+    QComboBox, QPushButton, QMessageBox,
 )
 from PyQt6.QtGui import QPixmap  # noqa: E402
 from PyQt6.QtCore import Qt, QPoint  # noqa: E402
@@ -1159,6 +1159,84 @@ class TextOnlyEditFastPathTests(unittest.TestCase):
             self.assertEqual(fast_path_height, full_pass_height,
                 "the fast-path height helper must agree with a full "
                 "_resize_rows_manual() pass for the same row/column")
+
+
+class KonInlineEditTests(unittest.TestCase):
+    """'Klicka direkt på konsekvens för att redigera den direkt där'
+    (NOTES.md 2026-08-07) — KON cells are now included in the inline-edit
+    path (_try_start_edit) and get the same single-click-on-already-
+    current-cell trigger ORS/SG already had ("Feature 7"). The commit path
+    (_on_cell_changed_inner's 'consequence' branch) already existed and
+    worked — this was purely a missing trigger. Double-click still opens
+    the step-by-step chain wizard, unchanged."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def _make_full_chain(self, db):
+        node_id = db.add_node()
+        deviation_id = db.deviations(node_id)[0]['id']
+        cause_id = db.add_cause(deviation_id)
+        cons_id = db.add_consequence(cause_id)
+        return node_id, deviation_id, cause_id, cons_id
+
+    def test_try_start_edit_now_allows_kon_column(self):
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            _node_id, _dev_id, cause_id, cons_id = self._make_full_chain(win.db)
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+
+            edit_spy = unittest.mock.Mock(wraps=panel._table.edit)
+            panel._table.edit = edit_spy
+            panel._try_start_edit(row, panel._C_KON)
+            # QTableWidget.edit() is overloaded (Qt itself can trigger a
+            # second internal call) — what matters is that _try_start_edit
+            # no longer early-returns for the KON column at all.
+            edit_spy.assert_called()
+
+    def test_single_click_on_already_current_kon_cell_schedules_edit(self):
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            _node_id, _dev_id, cause_id, cons_id = self._make_full_chain(win.db)
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+            panel._table.setCurrentCell(row, panel._C_KON)
+
+            with unittest.mock.patch('hazop.QTimer.singleShot',
+                                      side_effect=lambda _ms, fn: fn()) as mock_timer:
+                panel._on_cell_clicked(row, panel._C_KON)
+            mock_timer.assert_called_once()
+
+    def test_editing_kon_cell_saves_to_consequence_description(self):
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            _node_id, _dev_id, cause_id, cons_id = self._make_full_chain(win.db)
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+
+            item = panel._table.item(row, panel._C_KON)
+            item.setText("Inget flöde till pump X")
+            panel._on_cell_changed(row, panel._C_KON)
+
+            self.assertEqual(
+                dict(win.db.get_consequence(cons_id))['description'],
+                "Inget flöde till pump X")
+
+    def test_double_click_still_opens_chain_wizard_not_inline_edit(self):
+        """Inline editing is an ADDITIONAL path (single-click-when-
+        current), not a replacement — the wizard stays reachable."""
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            _node_id, _dev_id, cause_id, cons_id = self._make_full_chain(win.db)
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+            item = panel._table.item(row, panel._C_KON)
+
+            with unittest.mock.patch.object(panel, '_open_chain_editor') as mock_wizard:
+                panel._on_cell_double_clicked(item)
+            mock_wizard.assert_called_once_with(cons_id)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -4664,6 +4742,12 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         def fake_create_cause(dev_id, comp_type, comp_tag, description, frequency=None):
             cause_id = self.db.add_cause(dev_id)
             self.db.update_cause(cause_id, description, comp_type=comp_type, comp_tag=comp_tag)
+            if frequency is not None:
+                # Stand-in for place_cause_from_template's real
+                # _compute_f_level() conversion — this test class only
+                # needs base_frequency to actually persist so the
+                # numeric-label UI has something real to read back.
+                self.db.update_cause(cause_id, likelihood=0, base_frequency=frequency)
             created['cause_id'] = cause_id
             created['dev_id'] = dev_id
             created['frequency'] = frequency
@@ -4675,8 +4759,15 @@ class EquipmentDeviationBarTests(unittest.TestCase):
             created['update_calls'].append(
                 {'cause_id': cause_id, 'description': description, 'frequency': frequency})
 
+        def fake_set_freq(cause_id, value):
+            f_level = 3 if value >= 0.01 else 0
+            self.db.update_cause(cause_id, likelihood=f_level, base_frequency=value)
+            created['set_freq_calls'] = created.get('set_freq_calls', []) + [(cause_id, value)]
+            return f_level
+
         self.bar._create_cause_fn = fake_create_cause
         self.bar._update_cause_fn = fake_update_cause
+        self.bar._set_freq_fn = fake_set_freq
         return created
 
     def test_frequency_combo_present_but_disabled_before_any_cause_exists(self):
@@ -4813,6 +4904,157 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         self.assertEqual(cause_combo2.currentText(), created['description'])
         self.assertEqual(freq_combo2.property('cause_id'), created['cause_id'])
         self.assertTrue(freq_combo2.isEnabled())
+
+    def test_unchecking_deviation_without_causes_deletes_silently(self):
+        """Kryssrutan ska gå att av-/aktivera (NOTES.md) — unchecking a
+        deviation that never got a cause (e.g. no template match, user
+        never picked one) must delete it right away with no confirmation
+        prompt (nothing meaningful to lose)."""
+        node_id = self.db.add_node()
+        self.bar.load(self.eq_id, self.marker_id)
+        idx = self.bar._node_combo.findData(node_id)
+        self.bar._node_combo.setCurrentIndex(idx)
+
+        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        checkbox = row_widget.findChild(QCheckBox)
+        with unittest.mock.patch('pid_viewer.QMessageBox.question') as mock_q:
+            checkbox.setChecked(True)
+            self.assertEqual(self.db.equipment_deviation_count(self.eq_id), 1)
+            checkbox.setChecked(False)
+        mock_q.assert_not_called()
+        self.assertEqual(self.db.equipment_deviation_count(self.eq_id), 0)
+        self.assertTrue(checkbox.isEnabled())
+        self.assertFalse(checkbox.isChecked())
+
+    def test_unchecking_deviation_with_causes_asks_for_confirmation(self):
+        """A deviation with a real cause attached must be confirmed before
+        deletion — same pattern as ScenarioTablePanel's own 'Ta bort
+        orsak'/'Ta bort konsekvens' confirmations."""
+        created = self._select_node_and_stub_cause_creation()
+        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        checkbox = row_widget.findChild(QCheckBox)
+        checkbox.setChecked(True)   # auto-creates a cause via the stub
+        self.assertIn('cause_id', created)
+
+        with unittest.mock.patch('pid_viewer.QMessageBox.question',
+                                  return_value=QMessageBox.StandardButton.No) as mock_q:
+            checkbox.setChecked(False)
+        mock_q.assert_called_once()
+        # Declined -> deviation and cause both survive, checkbox reverts.
+        self.assertTrue(checkbox.isChecked())
+        self.assertIsNotNone(self.db.get_cause(created['cause_id']))
+
+        with unittest.mock.patch('pid_viewer.QMessageBox.question',
+                                  return_value=QMessageBox.StandardButton.Yes):
+            checkbox.setChecked(False)
+        self.assertFalse(checkbox.isChecked())
+        self.assertIsNone(self.db.get_cause(created['cause_id']))
+        self.assertEqual(self.db.equipment_deviation_count(created['pump_id']), 0)
+
+    def test_unchecking_emits_deviation_removed_and_resets_combos(self):
+        node_id = self.db.add_node()
+        self.bar.load(self.eq_id, self.marker_id)
+        idx = self.bar._node_combo.findData(node_id)
+        self.bar._node_combo.setCurrentIndex(idx)
+
+        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        checkbox = row_widget.findChild(QCheckBox)
+        cause_combo = row_widget.findChildren(QComboBox)[0]
+        freq_combo = row_widget.findChildren(QComboBox)[-1]
+
+        received = []
+        self.bar.deviation_removed.connect(lambda dev_id, eq_id: received.append((dev_id, eq_id)))
+
+        with unittest.mock.patch('pid_viewer.QMessageBox.question'):
+            checkbox.setChecked(True)
+            checkbox.setChecked(False)
+
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0][1], self.eq_id)
+        self.assertFalse(cause_combo.isEnabled())
+        self.assertFalse(freq_combo.isEnabled())
+        self.assertIsNone(freq_combo.property('cause_id'))
+
+    def test_can_recheck_after_unchecking(self):
+        """The whole point: checking, unchecking, and checking again must
+        all work — not a one-way lock like the old v1 behavior."""
+        node_id = self.db.add_node()
+        self.bar.load(self.eq_id, self.marker_id)
+        idx = self.bar._node_combo.findData(node_id)
+        self.bar._node_combo.setCurrentIndex(idx)
+
+        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        checkbox = row_widget.findChild(QCheckBox)
+        with unittest.mock.patch('pid_viewer.QMessageBox.question'):
+            checkbox.setChecked(True)
+            checkbox.setChecked(False)
+            checkbox.setChecked(True)
+        self.assertTrue(checkbox.isChecked())
+        self.assertTrue(checkbox.isEnabled())
+        self.assertEqual(self.db.equipment_deviation_count(self.eq_id), 1)
+
+    def test_numeric_frequency_label_shows_seeded_value_after_auto_create(self):
+        """'jag vill även ha med den numeriska frekvensen som finns
+        inlagt' — checking a deviation auto-creates 'Pump stopp' (seeded
+        frequency 0.02/år) and the row's numeric label must show it, not
+        just the F-level combo."""
+        self._select_node_and_stub_cause_creation()
+        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        checkbox = row_widget.findChild(QCheckBox)
+        checkbox.setChecked(True)
+
+        freq_combo = row_widget.findChildren(QComboBox)[-1]
+        num_btn = freq_combo.property('num_btn')
+        self.assertIsNotNone(num_btn)
+        self.assertTrue(num_btn.isEnabled())
+        self.assertIn("/år", num_btn.text())
+        self.assertNotEqual(num_btn.text(), "—")
+
+    def test_numeric_frequency_label_disabled_and_blank_before_any_cause(self):
+        node_id = self.db.add_node()
+        self.bar.load(self.eq_id, self.marker_id)
+        idx = self.bar._node_combo.findData(node_id)
+        self.bar._node_combo.setCurrentIndex(idx)
+
+        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        freq_combo = row_widget.findChildren(QComboBox)[-1]
+        num_btn = freq_combo.property('num_btn')
+        self.assertFalse(num_btn.isEnabled())
+        self.assertEqual(num_btn.text(), "—")
+
+    def test_clicking_numeric_frequency_label_writes_exact_value(self):
+        created = self._select_node_and_stub_cause_creation()
+        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        checkbox = row_widget.findChild(QCheckBox)
+        checkbox.setChecked(True)
+
+        freq_combo = row_widget.findChildren(QComboBox)[-1]
+        num_btn = freq_combo.property('num_btn')
+        with unittest.mock.patch(
+                'pid_viewer.QInputDialog.getDouble', return_value=(0.05, True)):
+            num_btn.click()
+
+        self.assertEqual(created['set_freq_calls'], [(created['cause_id'], 0.05)])
+        cause = self.db.get_cause(created['cause_id'])
+        self.assertEqual(cause['base_frequency'], 0.05)
+        self.assertEqual(cause['likelihood'], 3)   # per fake_set_freq's stand-in rule
+        self.assertEqual(freq_combo.currentIndex(), freq_to_idx(3))
+        self.assertIn("/år", num_btn.text())
+
+    def test_deactivating_resets_numeric_frequency_label(self):
+        self._select_node_and_stub_cause_creation()
+        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        checkbox = row_widget.findChild(QCheckBox)
+        checkbox.setChecked(True)
+        freq_combo = row_widget.findChildren(QComboBox)[-1]
+        num_btn = freq_combo.property('num_btn')
+        self.assertNotEqual(num_btn.text(), "—")
+
+        with unittest.mock.patch('pid_viewer.QMessageBox.question',
+                                  return_value=QMessageBox.StandardButton.Yes):
+            checkbox.setChecked(False)
+        self.assertEqual(num_btn.text(), "—")
+        self.assertFalse(num_btn.isEnabled())
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -5169,6 +5411,321 @@ class EquipmentForeignKeyCleanupTests(unittest.TestCase):
         dev = self.db.get_deviation(dev_id)
         self.assertIsNotNone(dev)
         self.assertIsNone(dev['equipment_id'])
+
+
+class EquipmentTagDragToConsequenceTests(unittest.TestCase):
+    """2026-08-07 'drag-and-dropp kunna dra ett objekt från P&ID viewer till
+    konsekvensen för att få med tag nummer' (see NOTES.md). Three parts,
+    tested separately: (1) Database.set_consequence_tag writes comp_tag/
+    comp_type without touching description/severity; (2) ScenarioTablePanel
+    ._handle_drop's new 'equipment' mime kind resolves a marker to its
+    catalog tag and attaches it to the dropped-on KON cell; (3)
+    PIDGraphicsView arms/fires a Shift-held drag from an equipment marker,
+    and a plain (non-Shift) click never arms it — the approved plan's
+    explicit requirement so normal clicks keep opening
+    EquipmentDeviationBar exactly as before."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_dragtag_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    # ── Database.set_consequence_tag ────────────────────────────────────
+
+    def test_set_consequence_tag_writes_tag_and_type(self):
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+
+        self.db.set_consequence_tag(cons_id, "HV-101", "Ventil")
+
+        cons = dict(self.db.get_consequence(cons_id))
+        self.assertEqual(cons['comp_tag'], "HV-101")
+        self.assertEqual(cons['comp_type'], "Ventil")
+
+    def test_set_consequence_tag_does_not_touch_description(self):
+        """The tag is a complement, not a replacement — the user's own
+        free-text sentence (e.g. 'Inget flöde till pump X -> ...') must
+        survive a tag being attached afterwards."""
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        self.db.update_consequence(cons_id, "Inget flöde till pump X -> kavitation", 3)
+
+        self.db.set_consequence_tag(cons_id, "P-101", "Pump")
+
+        cons = dict(self.db.get_consequence(cons_id))
+        self.assertEqual(cons['description'], "Inget flöde till pump X -> kavitation")
+        self.assertEqual(cons['severity'], 3)
+        self.assertEqual(cons['comp_tag'], "P-101")
+
+    # ── ScenarioTablePanel._handle_drop('equipment', ...) ───────────────
+
+    def _make_full_chain(self, db):
+        node_id = db.add_node()
+        deviation_id = db.deviations(node_id)[0]['id']
+        cause_id = db.add_cause(deviation_id)
+        cons_id = db.add_consequence(cause_id)
+        return node_id, deviation_id, cause_id, cons_id
+
+    def _make_drop_event(self, panel, text, tgt_row, tgt_col):
+        """Builds a fake QDropEvent-like object targeting (tgt_row, tgt_col).
+        Bypasses the table<->viewport coordinate mapping (irrelevant to the
+        _handle_drop logic under test and unreliable on a never-shown,
+        headless widget) by overriding viewport().mapFrom() to identity and
+        computing the position directly from the real column/row viewport
+        offsets."""
+        from PyQt6.QtCore import QMimeData, QPointF
+        vp_x = panel._table.columnViewportPosition(tgt_col) + 2
+        vp_y = panel._table.rowViewportPosition(tgt_row) + 2
+        mime = QMimeData()
+        mime.setText(text)
+        event = unittest.mock.MagicMock()
+        event.mimeData.return_value = mime
+        event.position.return_value = QPointF(vp_x, vp_y)
+        event.dropAction.return_value = Qt.DropAction.CopyAction
+        panel._table.viewport().mapFrom = lambda widget, pt: pt
+        return event
+
+    def test_drop_equipment_on_kon_cell_attaches_tag(self):
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            _n, _d, cause_id, cons_id = self._make_full_chain(win.db)
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+
+            eq_id = win.db.add_equipment_item("HV-101", "HV-101", "HV", 0, "Ventil", '', 0)
+            marker_id = win.db.add_equipment_marker(
+                eq_id, "HV-101", 0, 10.0, 10.0, "Ventil", confidence=0.9,
+                link_method='leader')
+
+            event = self._make_drop_event(
+                panel, f'hzp:equipment:{marker_id}:-1:-1', row, panel._C_KON)
+            panel._handle_drop(event)
+
+            event.acceptProposedAction.assert_called_once()
+            cons = dict(win.db.get_consequence(cons_id))
+            self.assertEqual(cons['comp_tag'], "HV-101")
+            self.assertEqual(cons['comp_type'], "Ventil")
+
+    def test_drop_equipment_on_non_kon_column_is_ignored(self):
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            _n, _d, cause_id, cons_id = self._make_full_chain(win.db)
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+
+            eq_id = win.db.add_equipment_item("HV-101", "HV-101", "HV", 0, "Ventil", '', 0)
+            marker_id = win.db.add_equipment_marker(
+                eq_id, "HV-101", 0, 10.0, 10.0, "Ventil", confidence=0.9,
+                link_method='leader')
+
+            event = self._make_drop_event(
+                panel, f'hzp:equipment:{marker_id}:-1:-1', row, panel._C_ORS)
+            panel._handle_drop(event)
+
+            event.ignore.assert_called_once()
+            event.acceptProposedAction.assert_not_called()
+            cons = dict(win.db.get_consequence(cons_id))
+            self.assertEqual(cons['comp_tag'], '')
+
+    def test_drop_equipment_marker_with_no_linked_catalog_row_is_ignored(self):
+        """A marker whose equipment_id is NULL (untagged shape hit) must be
+        a silent no-op, matching _on_marker_clicked's own guard for the
+        same case."""
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            _n, _d, cause_id, cons_id = self._make_full_chain(win.db)
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+
+            marker_id = win.db.add_equipment_marker(
+                None, '', 0, 10.0, 10.0, "Ventil", confidence=0.6, link_method='shape')
+
+            event = self._make_drop_event(
+                panel, f'hzp:equipment:{marker_id}:-1:-1', row, panel._C_KON)
+            try:
+                panel._handle_drop(event)
+            except Exception as e:
+                self.fail(f"must not raise for a marker with no linked equipment row: {e!r}")
+
+            event.ignore.assert_called_once()
+            cons = dict(win.db.get_consequence(cons_id))
+            self.assertEqual(cons['comp_tag'], '')
+
+    # ── PIDGraphicsView Shift+drag source ────────────────────────────────
+
+    def _make_view_with_equipment_marker(self, marker_id):
+        from pid_viewer import PIDGraphicsView, MODE_NAV
+        from PyQt6.QtCore import QPointF
+        view = PIDGraphicsView()
+        view.mode = MODE_NAV
+        scene_pos = QPointF(50, 50)
+        item = view._scene.addEllipse(scene_pos.x() - 5, scene_pos.y() - 5, 10, 10)
+        item.setData(view._DATA_TYPE, 'equipment')
+        item.setData(view._DATA_ID, marker_id)
+        # The viewport<->scene coordinate transform is standard Qt machinery,
+        # not something this feature changes — fix it to a known value so
+        # the test exercises only the new drag-arming logic.
+        view.mapToScene = lambda pt: scene_pos
+        return view
+
+    def _press(self, view, event):
+        """In MODE_NAV, mousePressEvent falls through to
+        super().mousePressEvent(event) for the base QGraphicsView pan/select
+        behaviour — real Qt code that requires a genuine QMouseEvent, not
+        our MagicMock stand-in. Patched out since it's irrelevant to the
+        drag-arming logic under test."""
+        from PyQt6.QtWidgets import QGraphicsView
+        with unittest.mock.patch.object(QGraphicsView, 'mousePressEvent'):
+            view.mousePressEvent(event)
+
+    def _move(self, view, event):
+        """Same rationale as _press: once a move doesn't trigger our new
+        drag-start branch, it falls through to the base QGraphicsView
+        mouseMoveEvent, which needs a real QMouseEvent."""
+        from PyQt6.QtWidgets import QGraphicsView
+        with unittest.mock.patch.object(QGraphicsView, 'mouseMoveEvent'):
+            view.mouseMoveEvent(event)
+
+    def test_shift_press_on_equipment_marker_arms_drag_candidate(self):
+        from PyQt6.QtCore import QPointF
+        view = self._make_view_with_equipment_marker(marker_id=7)
+        event = unittest.mock.MagicMock()
+        event.button.return_value = Qt.MouseButton.LeftButton
+        event.modifiers.return_value = Qt.KeyboardModifier.ShiftModifier
+        event.position.return_value = QPointF(50, 50)
+
+        self._press(view, event)
+
+        self.assertIsNotNone(view._equip_drag_candidate)
+        self.assertEqual(view._equip_drag_candidate[0], 7)
+
+    def test_plain_click_on_equipment_marker_does_not_arm_drag_candidate(self):
+        """Protects the user's explicit requirement: a normal click (no
+        Shift) must never be interpreted as a drag start, so it keeps
+        opening EquipmentDeviationBar exactly as before."""
+        from PyQt6.QtCore import QPointF
+        view = self._make_view_with_equipment_marker(marker_id=7)
+        event = unittest.mock.MagicMock()
+        event.button.return_value = Qt.MouseButton.LeftButton
+        event.modifiers.return_value = Qt.KeyboardModifier.NoModifier
+        event.position.return_value = QPointF(50, 50)
+
+        self._press(view, event)
+
+        self.assertIsNone(view._equip_drag_candidate)
+        # And the normal click-tracking state must still be set, so
+        # mouseReleaseEvent's existing marker_clicked dispatch still fires.
+        self.assertIsNotNone(view._press_pos)
+
+    def test_shift_drag_past_threshold_starts_qdrag_with_equipment_mime(self):
+        from PyQt6.QtCore import QPointF
+        view = self._make_view_with_equipment_marker(marker_id=9)
+        press_event = unittest.mock.MagicMock()
+        press_event.button.return_value = Qt.MouseButton.LeftButton
+        press_event.modifiers.return_value = Qt.KeyboardModifier.ShiftModifier
+        press_event.position.return_value = QPointF(50, 50)
+        self._press(view, press_event)
+        self.assertIsNotNone(view._equip_drag_candidate)
+
+        move_event = unittest.mock.MagicMock()
+        move_event.buttons.return_value = Qt.MouseButton.LeftButton
+        move_event.modifiers.return_value = Qt.KeyboardModifier.ShiftModifier
+        move_event.position.return_value = QPointF(90, 50)   # 40px — past any startDragDistance
+
+        with unittest.mock.patch('pid_viewer.QDrag') as MockDrag:
+            mock_drag = MockDrag.return_value
+            view.mouseMoveEvent(move_event)
+
+        MockDrag.assert_called_once()
+        mime_arg = mock_drag.setMimeData.call_args[0][0]
+        self.assertEqual(mime_arg.text(), 'hzp:equipment:9:-1:-1')
+        mock_drag.exec.assert_called_once()
+        self.assertIsNone(view._equip_drag_candidate)
+        self.assertIsNone(view._press_pos)
+
+    def test_shift_drag_below_threshold_does_not_start_drag_yet(self):
+        from PyQt6.QtCore import QPointF
+        view = self._make_view_with_equipment_marker(marker_id=9)
+        press_event = unittest.mock.MagicMock()
+        press_event.button.return_value = Qt.MouseButton.LeftButton
+        press_event.modifiers.return_value = Qt.KeyboardModifier.ShiftModifier
+        press_event.position.return_value = QPointF(50, 50)
+        self._press(view, press_event)
+
+        move_event = unittest.mock.MagicMock()
+        move_event.buttons.return_value = Qt.MouseButton.LeftButton
+        move_event.modifiers.return_value = Qt.KeyboardModifier.ShiftModifier
+        move_event.position.return_value = QPointF(51, 50)   # 1px — below threshold
+
+        with unittest.mock.patch('pid_viewer.QDrag') as MockDrag:
+            self._move(view, move_event)
+
+        MockDrag.assert_not_called()
+        self.assertIsNotNone(view._equip_drag_candidate,
+            "candidate must stay armed until the drag distance is exceeded")
+
+    def test_releasing_shift_mid_move_disarms_the_candidate(self):
+        from PyQt6.QtCore import QPointF
+        view = self._make_view_with_equipment_marker(marker_id=9)
+        press_event = unittest.mock.MagicMock()
+        press_event.button.return_value = Qt.MouseButton.LeftButton
+        press_event.modifiers.return_value = Qt.KeyboardModifier.ShiftModifier
+        press_event.position.return_value = QPointF(50, 50)
+        self._press(view, press_event)
+
+        move_event = unittest.mock.MagicMock()
+        move_event.buttons.return_value = Qt.MouseButton.LeftButton
+        move_event.modifiers.return_value = Qt.KeyboardModifier.NoModifier  # Shift let go
+        move_event.position.return_value = QPointF(90, 50)
+
+        with unittest.mock.patch('pid_viewer.QDrag') as MockDrag:
+            self._move(view, move_event)
+
+        MockDrag.assert_not_called()
+        self.assertIsNone(view._equip_drag_candidate)
+
+    # ── _add_row: KON cell carries the tag via UserRole+7 ────────────────
+
+    def test_kon_cell_carries_comp_tag_via_userrole(self):
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            _n, _d, cause_id, cons_id = self._make_full_chain(win.db)
+            win.db.set_consequence_tag(cons_id, "P-101", "Pump")
+
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+
+            item = panel._table.item(row, panel._C_KON)
+            comp_type, comp_tag = item.data(Qt.ItemDataRole.UserRole + 7)
+            self.assertEqual(comp_tag, "P-101")
+            self.assertEqual(comp_type, "Pump")
+
+    def test_kon_cell_tag_tuple_blank_when_untagged(self):
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            _n, _d, cause_id, cons_id = self._make_full_chain(win.db)
+
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+
+            item = panel._table.item(row, panel._C_KON)
+            comp_type, comp_tag = item.data(Qt.ItemDataRole.UserRole + 7)
+            self.assertEqual(comp_tag, '')
+            self.assertEqual(comp_type, '')
 
 
 if __name__ == '__main__':

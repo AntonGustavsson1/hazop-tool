@@ -59,10 +59,10 @@ from PyQt6.QtWidgets import (
     QProgressDialog, QApplication, QGridLayout, QTextEdit, QButtonGroup,
     QScrollArea,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QThread, QPoint, QTimer
+from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QThread, QPoint, QTimer, QMimeData
 from PyQt6.QtGui import (
     QColor, QPen, QBrush, QPainterPath, QPolygonF, QPixmap, QImage, QFont,
-    QPainter, QPicture, QCursor, QShortcut, QKeySequence,
+    QPainter, QPicture, QCursor, QShortcut, QKeySequence, QDrag,
 )
 
 # Optional OpenGL for GPU-accelerated rendering
@@ -3496,6 +3496,10 @@ class PIDGraphicsView(QGraphicsView):
         self._press_pos  = None
         self._rect_start = None
         self._rect_item  = None
+        # Shift+drag of an equipment marker onto a worksheet consequence row
+        # (see mousePressEvent/mouseMoveEvent) — armed on Shift+press over a
+        # marker, consumed by mouseMoveEvent once the drag distance is exceeded.
+        self._equip_drag_candidate = None
         # Per-type marker tracking for visibility toggle
         self._type_items: dict = {'cause': [], 'consequence': [], 'safeguard': [], 'equipment': []}
         self._type_visible: dict = {'cause': True, 'consequence': True, 'safeguard': True, 'equipment': True}
@@ -5820,6 +5824,21 @@ class PIDGraphicsView(QGraphicsView):
         if self.mode in (MODE_NAV, MODE_MARKUP_SELECT):
             self._press_pos = event.position()
         sp = self.mapToScene(event.position().toPoint())
+
+        # ── Shift+press on an equipment marker: arm a possible drag-to-worksheet ──
+        # (dragging a tag onto a HAZOP consequence row). A plain click (no Shift)
+        # never arms this, so it can never interfere with the normal
+        # click-opens-EquipmentDeviationBar interaction below.
+        self._equip_drag_candidate = None
+        if (self.mode == MODE_NAV and event.button() == Qt.MouseButton.LeftButton and
+                event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+            for item in self._scene.items(sp):
+                itype = item.data(self._DATA_TYPE)
+                iid   = item.data(self._DATA_ID)
+                if itype == 'equipment' and iid is not None:
+                    self._equip_drag_candidate = (int(iid), event.position())
+                    break
+
         if self.mode == MODE_NODE:
             if event.button() == Qt.MouseButton.LeftButton:
                 self._add_draw_point(sp); event.accept(); return
@@ -6092,9 +6111,33 @@ class PIDGraphicsView(QGraphicsView):
                         self.marker_clicked.emit(itype, int(iid))
                         break
         self._press_pos = None
+        self._equip_drag_candidate = None
         super().mouseReleaseEvent(event)
 
     def mouseMoveEvent(self, event):
+        # ── Shift+drag of an equipment marker → worksheet consequence row ─────
+        if (self._equip_drag_candidate is not None and
+                event.buttons() & Qt.MouseButton.LeftButton and
+                event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+            marker_id, start_pos = self._equip_drag_candidate
+            p  = event.position()
+            dx = p.x() - start_pos.x()
+            dy = p.y() - start_pos.y()
+            if (dx * dx + dy * dy) ** 0.5 >= QApplication.startDragDistance():
+                self._equip_drag_candidate = None
+                self._press_pos = None  # prevent mouseReleaseEvent's click-dispatch from also firing
+                mime = QMimeData()
+                mime.setText(f'hzp:equipment:{marker_id}:-1:-1')
+                drag = QDrag(self)
+                drag.setMimeData(mime)
+                drag.exec(Qt.DropAction.CopyAction)
+                return
+        elif self._equip_drag_candidate is not None and not (
+                event.buttons() & Qt.MouseButton.LeftButton and
+                event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+            # Shift released or button let go before threshold — disarm
+            self._equip_drag_candidate = None
+
         # ── Board layout page drag ────────────────────────────────────────────
         if self.mode == MODE_BOARD_LAYOUT and self._dragging_page is not None:
             sp = self.mapToScene(event.position().toPoint())
@@ -6759,6 +6802,23 @@ def idx_to_freq(i: int) -> int:
     return i - 1
 
 
+def _format_freq_per_year(value):
+    """Format a numeric frequency (events/year) for display — same
+    formatting rules already used for the worksheet's ORS-column
+    frequency label (hazop.py's _ScenarioDelegate.paint) and RiskBadge,
+    duplicated here for the same reason FREQ_LABELS/_obj_type_matches are
+    (pid_viewer.py can't import back from hazop.py). Returns '—' for
+    None/falsy so callers can always just set the label text directly."""
+    if not value:
+        return "—"
+    bfv = float(value)
+    if bfv >= 0.1:
+        return f"{bfv:.2g}/år"
+    elif bfv >= 0.001:
+        return f"{bfv:.3g}/år"
+    return f"{bfv:.1e}".replace('e-0', 'e-') + "/år"
+
+
 def _obj_type_matches(preselect: str, obj_name: str) -> bool:
     """True when preselect and obj_name refer to the same object type.
     Bidirectional whole-string substring match (case-insensitive) — no
@@ -6788,6 +6848,10 @@ class EquipmentDeviationBar(QWidget):
     # A deviation was newly created (or already existed) for this equipment —
     # PIDPanel listens to refresh the marker's colour/badge and the tree/worksheet.
     deviation_added = pyqtSignal(int, int)   # (deviation_id, equipment_id)
+    # A previously-checked deviation was unchecked and deleted (see
+    # "Kryssrutan ska gå att av-/aktivera", NOTES.md) — same refresh needs
+    # as deviation_added (marker badge count, tree, worksheet).
+    deviation_removed = pyqtSignal(int, int)   # (deviation_id, equipment_id)
     # Equipment type changed (comp_type reclassified) — PIDPanel redraws the marker.
     equipment_retyped = pyqtSignal(int)   # equipment_id
     show_in_register_requested = pyqtSignal(int)   # equipment_id
@@ -6811,6 +6875,11 @@ class EquipmentDeviationBar(QWidget):
         # existing row in place instead of creating a second cause.
         self._create_cause_fn = None
         self._update_cause_fn = None
+        # Set by PIDPanel to PIDPanel._set_cause_frequency_for_bar — user
+        # typed an exact numeric frequency (events/år) via the row's
+        # clickable frequency label; returns the computed F-level so the
+        # bar can sync freq_combo. See NOTES.md "numerisk frekvens synlig".
+        self._set_freq_fn = None
         self.setVisible(False)
         self.setStyleSheet(
             "EquipmentDeviationBar { background:#F5F5F3; border-top:1px solid #C9CBC7; }")
@@ -7013,7 +7082,7 @@ class EquipmentDeviationBar(QWidget):
             row.addWidget(num_lbl)
         cb = QCheckBox(description)
         cb.setChecked(checked)
-        cb.setEnabled(enabled and not checked)   # v1: unchecking never removes — see NOTES.md
+        cb.setEnabled(enabled)   # can be checked AND unchecked — see NOTES.md "av-/aktivera"
         row.addWidget(cb)
         self._checklist_checkboxes.append(cb)
 
@@ -7061,6 +7130,29 @@ class EquipmentDeviationBar(QWidget):
         freq_combo.setEnabled(False)
         row.addWidget(freq_combo)
 
+        # Numerisk frekvens synlig + klickbar (NOTES.md): F-nivån i
+        # freq_combo är en bred bucket ("F3 – Möjlig") — den faktiska
+        # siffran (händelser/år) som redan lagras i causes.base_frequency
+        # visas här också, och går att klicka för att skriva in ett exakt
+        # värde. Stashas som en Qt-property PÅ freq_combo (samma mönster
+        # som cause_id redan använder) så varje ställe som redan har
+        # freq_combo i handen kan hitta/uppdatera den utan att tråckla
+        # igenom ett nytt argument överallt.
+        freq_num_btn = QPushButton("—")
+        freq_num_btn.setFlat(True)
+        freq_num_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        freq_num_btn.setStyleSheet(
+            "QPushButton { color:#5A5F66; font-size:10px; border:none; "
+            "padding:1px 4px; text-align:left; }"
+            "QPushButton:hover { color:#17191C; text-decoration:underline; }"
+            "QPushButton:disabled { color:#C9CBC7; }")
+        freq_num_btn.setToolTip("Klicka för att ange exakt frekvens (händelser/år)")
+        freq_num_btn.setEnabled(False)
+        freq_num_btn.clicked.connect(
+            lambda _checked=False, fc=freq_combo: self._on_freq_numeric_clicked(fc))
+        freq_combo.setProperty('num_btn', freq_num_btn)
+        row.addWidget(freq_num_btn)
+
         # Redan sparad orsak för denna rad (t.ex. vid återöppning av rutan
         # för en utrustning som redan konfigurerats) — visa/aktivera direkt
         # istället för att raden ser otillagd ut trots att data finns.
@@ -7074,6 +7166,9 @@ class EquipmentDeviationBar(QWidget):
                               if first_cause['likelihood'] is not None else 0)
                 freq_combo.setCurrentIndex(freq_to_idx(likelihood))
                 freq_combo.setEnabled(True)
+                freq_num_btn.setEnabled(True)
+                freq_num_btn.setText(_format_freq_per_year(
+                    self.db.cause_base_frequency_per_year(first_cause)))
 
         cb.toggled.connect(
             lambda on, sdid=std_dev_id, desc=description, combo=cause_combo, box=cb,
@@ -7088,15 +7183,22 @@ class EquipmentDeviationBar(QWidget):
 
     def _on_deviation_toggled(self, std_dev_id, description, checked, cause_combo, checkbox,
                               freq_combo, causes):
-        if not checked:
-            return
+        if checked:
+            self._activate_deviation(std_dev_id, description, cause_combo, checkbox,
+                                     freq_combo, causes)
+        else:
+            self._deactivate_deviation(description, cause_combo, checkbox, freq_combo)
+
+    def _activate_deviation(self, std_dev_id, description, cause_combo, checkbox,
+                            freq_combo, causes):
         eq = self.db.get_equipment_by_id(self._equipment_id)
         node_id = eq.get('node_id') if eq else None
         if node_id is None:
+            checkbox.blockSignals(True)
             checkbox.setChecked(False)
+            checkbox.blockSignals(False)
             return
         dev_id = self.db.get_or_create_deviation(node_id, description, equipment_id=self._equipment_id)
-        checkbox.setEnabled(False)   # v1: once checked, stays checked — see NOTES.md
         cause_combo.setEnabled(True)
         self.deviation_added.emit(dev_id, self._equipment_id)
         # Förenklat orsaksval, ta bort dubbla val (NOTES.md): tidigare
@@ -7109,6 +7211,52 @@ class EquipmentDeviationBar(QWidget):
             top = causes[0]
             self._create_cause_from_bar(description, top['description'], cause_combo,
                                         freq_combo, top.get('frequency'))
+
+    def _deactivate_deviation(self, description, cause_combo, checkbox, freq_combo):
+        """Kryssrutan ska gå att av-/aktivera (NOTES.md): unchecking now
+        actually removes the deviation (db.delete_deviation — the same
+        cascading delete the tree's own "Ta bort" already uses, so any
+        causes/consequences/safeguards/markers under it go too), instead
+        of the old v1 behavior where a checked box was locked forever.
+        Confirms first if there's real data to lose, matching the exact
+        confirmation pattern ScenarioTablePanel._delete_current_item
+        already uses for "Ta bort orsak"/"Ta bort konsekvens"."""
+        eq = self.db.get_equipment_by_id(self._equipment_id)
+        node_id = eq.get('node_id') if eq else None
+        dev_id = (self.db.get_or_create_deviation(node_id, description, equipment_id=self._equipment_id)
+                  if node_id is not None else None)
+        if dev_id is None:
+            return
+
+        n_causes = len(self.db.causes_for_deviation(dev_id))
+        if n_causes:
+            reply = QMessageBox.question(
+                self, "Ta bort avvikelse",
+                f"'{description}' har {n_causes} orsak(er) kopplade.\n"
+                "Ta bort avvikelsen och allt under den (orsaker, konsekvenser, barriärer)?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if reply != QMessageBox.StandardButton.Yes:
+                checkbox.blockSignals(True)
+                checkbox.setChecked(True)
+                checkbox.blockSignals(False)
+                return
+
+        self.db.delete_deviation(dev_id)
+        cause_combo.blockSignals(True)
+        cause_combo.setCurrentIndex(0)
+        cause_combo.setEnabled(False)
+        cause_combo.blockSignals(False)
+        freq_combo.blockSignals(True)
+        freq_combo.setProperty('cause_id', None)
+        freq_combo.setCurrentIndex(freq_to_idx(0))
+        freq_combo.setEnabled(False)
+        freq_combo.blockSignals(False)
+        num_btn = freq_combo.property('num_btn')
+        if num_btn is not None:
+            num_btn.setEnabled(False)
+            num_btn.setText("—")
+        self.deviation_removed.emit(dev_id, self._equipment_id)
 
     def _select_or_add_combo_item(self, combo, text):
         """Select `text` in a cause combo, inserting it (right after the
@@ -7175,13 +7323,17 @@ class EquipmentDeviationBar(QWidget):
         if cause_id is None:
             return
         freq_combo.setProperty('cause_id', cause_id)
-        row = self.db.conn.execute(
-            "SELECT likelihood FROM causes WHERE id=?", (cause_id,)).fetchone()
-        likelihood = row['likelihood'] if row and row['likelihood'] is not None else 0
+        cause = self.db.get_cause(cause_id)
+        likelihood = cause['likelihood'] if cause and cause['likelihood'] is not None else 0
         freq_combo.blockSignals(True)
         freq_combo.setCurrentIndex(freq_to_idx(likelihood))
         freq_combo.blockSignals(False)
         freq_combo.setEnabled(True)
+        num_btn = freq_combo.property('num_btn')
+        if num_btn is not None:
+            num_btn.setEnabled(True)
+            num_btn.setText(_format_freq_per_year(
+                self.db.cause_base_frequency_per_year(cause) if cause else None))
         self._select_or_add_combo_item(combo, description_text)
 
     def _on_freq_changed(self, freq_combo, idx):
@@ -7189,6 +7341,32 @@ class EquipmentDeviationBar(QWidget):
         if cause_id is None:
             return
         self.db.update_cause(cause_id, likelihood=idx_to_freq(idx))
+        # The F-level combo and the numeric label are two views of the same
+        # likelihood — moving the combo away from what base_frequency would
+        # itself imply is a deliberate manual override, so blank the exact
+        # number rather than show a now-stale value next to the new level.
+        num_btn = freq_combo.property('num_btn')
+        if num_btn is not None:
+            num_btn.setText("—")
+
+    def _on_freq_numeric_clicked(self, freq_combo):
+        cause_id = freq_combo.property('cause_id')
+        if cause_id is None:
+            return
+        cause = self.db.get_cause(cause_id)
+        current = self.db.cause_base_frequency_per_year(cause) if cause else None
+        value, ok = QInputDialog.getDouble(
+            self, "Frekvens", "Händelser per år:", current or 0.0, 0.0, 1_000_000.0, 6)
+        if not ok or self._set_freq_fn is None:
+            return
+        f_level = self._set_freq_fn(cause_id, value)
+        if f_level is not None:
+            freq_combo.blockSignals(True)
+            freq_combo.setCurrentIndex(freq_to_idx(f_level))
+            freq_combo.blockSignals(False)
+        num_btn = freq_combo.property('num_btn')
+        if num_btn is not None:
+            num_btn.setText(_format_freq_per_year(value))
 
     def _on_node_changed(self, _idx):
         if self._equipment_id is None:
@@ -7513,11 +7691,13 @@ class PIDPanel(QWidget):
 
         self._equipment_bar = EquipmentDeviationBar(self.db)
         self._equipment_bar.deviation_added.connect(self._on_equipment_deviation_added)
+        self._equipment_bar.deviation_removed.connect(self._on_equipment_deviation_removed)
         # Plain callbacks, not signals, so the bar gets the (created or
         # existing) cause_id back synchronously to reveal its frequency
         # combo — see EquipmentDeviationBar._create_cause_fn/_update_cause_fn.
         self._equipment_bar._create_cause_fn = self._create_cause_for_bar
         self._equipment_bar._update_cause_fn = self._update_cause_for_bar
+        self._equipment_bar._set_freq_fn = self._set_cause_frequency_for_bar
         self._equipment_bar.equipment_retyped.connect(self._on_equipment_retyped)
         self._equipment_bar.show_in_register_requested.connect(
             lambda eq_id: self.marker_navigated.emit('equipment_register', eq_id))
@@ -9328,6 +9508,12 @@ class PIDPanel(QWidget):
         self._refresh_equipment_marker_visual(equipment_id)
         self.equipment_deviation_created.emit(deviation_id, equipment_id)
 
+    def _on_equipment_deviation_removed(self, deviation_id, equipment_id):
+        # Same refresh needs as _on_equipment_deviation_added (marker badge
+        # count, tree, worksheet) — see NOTES.md "av-/aktivera".
+        self._refresh_equipment_marker_visual(equipment_id)
+        self.equipment_deviation_created.emit(deviation_id, equipment_id)
+
     def _create_cause_for_bar(self, deviation_id, comp_type, comp_tag, description, frequency=None):
         """Callback wired into EquipmentDeviationBar._create_cause_fn — same
         creation path as the normal cause-template flow, but returns
@@ -9359,6 +9545,20 @@ class PIDPanel(QWidget):
             self.db.update_cause(cause_id, likelihood=f_level, base_freq=frequency)
         self._load_overlays()
         self.cause_template_created.emit(cause_id)
+
+    def _set_cause_frequency_for_bar(self, cause_id, value):
+        """Callback wired into EquipmentDeviationBar._set_freq_fn — the
+        user typed an exact numeric frequency (events/år) via the bar's
+        clickable frequency label (see NOTES.md "numerisk frekvens
+        synlig"). Computes the matching F-level via the existing
+        _compute_f_level() (the same conversion place_cause_from_template
+        already uses), writes both fields, redraws markers, and returns
+        the F-level so the bar can sync its combo."""
+        f_level = self._compute_f_level(value)
+        self.db.update_cause(cause_id, likelihood=f_level, base_freq=value)
+        self._load_overlays()
+        self.cause_template_created.emit(cause_id)
+        return f_level
 
     def _on_equipment_retyped(self, equipment_id):
         self._refresh_equipment_marker_visual(equipment_id)

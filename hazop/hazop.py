@@ -1820,6 +1820,14 @@ class Database:
             # helt orörda (equipment_id/node_id=NULL), inget backfill behövs.
             "ALTER TABLE equipment_catalog ADD COLUMN node_id INTEGER REFERENCES nodes(id)",
             "ALTER TABLE deviations ADD COLUMN equipment_id INTEGER REFERENCES equipment_catalog(id)",
+            # Drag-and-drop tagg från P&ID till konsekvens (2026-08-07, se
+            # NOTES.md) — en konsekvens kan nu bära ett eget taggnummer
+            # (t.ex. en pump nedströms orsaken), visat högst upp i
+            # KON-kolumnen precis som orsakskolumnen redan visar sin egen
+            # tagg. Fri text (description) rörs inte av detta — taggen är
+            # ett komplement, inte en ersättning.
+            "ALTER TABLE consequences ADD COLUMN comp_type TEXT DEFAULT ''",
+            "ALTER TABLE consequences ADD COLUMN comp_tag  TEXT DEFAULT ''",
         ]
 
         for sql in migrations:
@@ -4072,11 +4080,33 @@ class Database:
         return n
 
     def update_consequence(self, id_, description, severity, category='',
-                           consequence_chain=''):
+                           consequence_chain='', comp_tag=None, comp_type=None):
         self.conn.execute(
             "UPDATE consequences SET description=?,severity=?,category=?,"
             "consequence_chain=? WHERE id=?",
             (description, severity, category, consequence_chain, id_))
+        # comp_tag/comp_type (2026-08-07, drag-and-drop tag from P&ID —
+        # see NOTES.md) — optional, None means "don't touch", same
+        # backward-compatible convention update_cause already uses, so
+        # every existing call site (which never passes these) is unaffected.
+        if comp_tag is not None or comp_type is not None:
+            parts, vals = [], []
+            if comp_tag is not None:
+                parts.append("comp_tag=?"); vals.append(comp_tag)
+            if comp_type is not None:
+                parts.append("comp_type=?"); vals.append(comp_type)
+            vals.append(id_)
+            self.conn.execute(f"UPDATE consequences SET {', '.join(parts)} WHERE id=?", vals)
+        self.commit()
+
+    def set_consequence_tag(self, id_, comp_tag, comp_type):
+        """Attach an equipment tag/type to a consequence without touching its
+        description/severity — used by the P&ID drag-and-drop-a-tag feature
+        (2026-08-07, see NOTES.md), where the free-text description is the
+        user's own sentence and must be left exactly as-is."""
+        self.conn.execute(
+            "UPDATE consequences SET comp_tag=?, comp_type=? WHERE id=?",
+            (comp_tag, comp_type, id_))
         self.commit()
 
     def update_safeguard(self, id_, description=None, rrf=None, sg_type=None):
@@ -9990,6 +10020,12 @@ class _ScenarioDelegate(QStyledItemDelegate):
                          _STRIP_H + max(one_line_h, rect.height() + 4))
         elif col == panel._C_KON:
             w -= _PID_ICON_W + _KON_CAT_W + _KON_CHAIN_W
+            comp_type, comp_tag = index.data(Qt.ItemDataRole.UserRole + 7) or ('', '')
+            w = max(40, w)
+            rect = fm.boundingRect(0, 0, w, 10000, Qt.TextFlag.TextWordWrap, text)
+            strip_h = 17 if (comp_tag or comp_type) else 0
+            return QSize(option.rect.width(),
+                         strip_h + max(one_line_h, rect.height() + 4))
         elif col == panel._C_SG:
             w -= _PID_ICON_W + _RRF_W
         w = max(40, w)
@@ -10154,10 +10190,16 @@ class _PidDelegate(_ScenarioDelegate):
             return
         elif col == self._panel._C_KON:
             offset = _PID_ICON_W + _KON_CAT_W
+            comp_type, comp_tag = index.data(Qt.ItemDataRole.UserRole + 7) or ('', '')
+            top_offset = 17 if (comp_tag or comp_type) else 0
+            editor.setGeometry(QRect(r.left() + offset, r.top() + top_offset,
+                                     max(10, r.width() - offset - _KON_CHAIN_W),
+                                     max(10, r.height() - top_offset)))
+            return
         else:
             offset = _PID_ICON_W
         editor.setGeometry(QRect(r.left() + offset, r.top(),
-                                 max(10, r.width() - offset - (0 if col != self._panel._C_KON else _KON_CHAIN_W)), r.height()))
+                                 max(10, r.width() - offset), r.height()))
 
     def paint(self, painter, option, index):
         row, col = index.row(), index.column()
@@ -10386,11 +10428,42 @@ class _PidDelegate(_ScenarioDelegate):
                 else:
                     painter.fillRect(r, option.palette.base())
 
-                pin_rect   = QRect(r.left(), r.top(), _PID_ICON_W, r.height())
-                cat_rect   = QRect(r.left() + _PID_ICON_W, r.top(), _KON_CAT_W, r.height())
-                chain_rect = QRect(r.right() - _KON_CHAIN_W, r.top(), _KON_CHAIN_W, r.height())
-                txt_rect   = QRect(r.left() + _PID_ICON_W + _KON_CAT_W, r.top(),
-                                   r.width() - _PID_ICON_W - _KON_CAT_W - _KON_CHAIN_W, r.height())
+                # ── Tag strip (top row) — mirrors the ORS column's tag strip ────
+                _SH = 17
+                comp_type, comp_tag = index.data(Qt.ItemDataRole.UserRole + 7) or ('', '')
+                has_tag = bool(comp_tag or comp_type)
+                if has_tag:
+                    strip_rect = QRect(r.left(), r.top(), r.width(), _SH)
+                    strip_bg = (option.palette.highlight().color().darker(110) if sel
+                                else QColor('#F5F5F3'))
+                    painter.fillRect(strip_rect, strip_bg)
+                    painter.setPen(QPen(QColor('#bcd'), 1))
+                    painter.drawLine(r.left(), r.top() + _SH, r.right(), r.top() + _SH)
+                    tf = QFont(option.font)
+                    tf.setPointSize(max(6, option.font.pointSize() - 1))
+                    tf.setBold(True)
+                    painter.setFont(tf)
+                    tag_tc = (option.palette.highlightedText().color() if sel
+                              else QColor('#17191C'))
+                    painter.setPen(tag_tc)
+                    tag_rect = QRect(r.left() + _PID_ICON_W, r.top(),
+                                     r.width() - _PID_ICON_W - 4, _SH)
+                    painter.drawText(tag_rect.adjusted(2, 0, -1, 0),
+                                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                                     painter.fontMetrics().elidedText(
+                                         comp_tag, Qt.TextElideMode.ElideRight,
+                                         tag_rect.width() - 3))
+                    body_top = r.top() + _SH
+                    body_h   = max(0, r.height() - _SH)
+                else:
+                    body_top = r.top()
+                    body_h   = r.height()
+
+                pin_rect   = QRect(r.left(), body_top, _PID_ICON_W, body_h)
+                cat_rect   = QRect(r.left() + _PID_ICON_W, body_top, _KON_CAT_W, body_h)
+                chain_rect = QRect(r.right() - _KON_CHAIN_W, body_top, _KON_CHAIN_W, body_h)
+                txt_rect   = QRect(r.left() + _PID_ICON_W + _KON_CAT_W, body_top,
+                                   r.width() - _PID_ICON_W - _KON_CAT_W - _KON_CHAIN_W, body_h)
 
                 # Category badges — stacked vertically, one per category
                 n_cats      = index.data(Qt.ItemDataRole.UserRole + 4) or 0
@@ -11654,7 +11727,9 @@ class ScenarioTablePanel(QWidget):
                         cell_w = max(40, w - _PID_ICON_W - _KON_CAT_W - _KON_CHAIN_W)
                         rect = fm.boundingRect(0, 0, cell_w, 10000,
                                               Qt.TextFlag.TextWordWrap, text)
-                        h = max(one_line_h, rect.height() + 4)
+                        comp_type, comp_tag = item.data(Qt.ItemDataRole.UserRole + 7) or ('', '')
+                        strip_h = 17 if (comp_tag or comp_type) else 0
+                        h = strip_h + max(one_line_h, rect.height() + 4)
                     if h > max_h:
                         max_h = h
             except Exception:
@@ -11921,7 +11996,10 @@ class ScenarioTablePanel(QWidget):
         kon_item.setData(Qt.ItemDataRole.UserRole + 4, n_cats)
         kon_item.setData(Qt.ItemDataRole.UserRole + 5, all_cat_infos or [])
         kon_item.setData(Qt.ItemDataRole.UserRole + 6, has_linked_causes)
+        kon_item.setData(Qt.ItemDataRole.UserRole + 7, (cons_d.get('comp_type') or '',
+                                                         cons_d.get('comp_tag')  or ''))
         tip = ("Klicka på 📊-ikonen för att sätta konsekvens per kategori\n"
+               "Dra en utrustningsmarkör hit (håll Shift) för att sätta tag\n"
                "Dubbelklicka för att redigera\nEnter för att lägga till ny konsekvens")
         if display_desc != cons_d['description']:
             tip += f"\nKedjetext: {display_desc}"
@@ -12271,7 +12349,9 @@ class ScenarioTablePanel(QWidget):
         else:   # self._C_KON
             cell_w = max(40, w - _PID_ICON_W - _KON_CAT_W - _KON_CHAIN_W)
             rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, text)
-            return max(one_line_h, rect.height() + 4)
+            comp_type, comp_tag = item.data(Qt.ItemDataRole.UserRole + 7) or ('', '')
+            strip_h = 17 if (comp_tag or comp_type) else 0
+            return strip_h + max(one_line_h, rect.height() + 4)
 
     def refresh_placed(self):
         """Reload which IDs are placed on the P&ID and repaint the table."""
@@ -12423,6 +12503,12 @@ class ScenarioTablePanel(QWidget):
             cons_id = self._row_meta[row][2]
             if cons_id is not None:
                 self.item_selected.emit(CONS_T, cons_id)
+            # Feature 7 (2026-08-07): single-click on already-current KON
+            # cell → start inline edit, same as ORS/SG — "trycka direkt på
+            # konsekvensen för att redigera den direkt där" (NOTES.md).
+            # Double-click still opens the chain wizard (_on_cell_double_clicked).
+            if self._table.currentRow() == row and self._table.currentColumn() == col:
+                QTimer.singleShot(200, lambda r=row, c=col: self._try_start_edit(r, c))
             return
         if col == self._C_SG and row < len(self._row_meta):
             sg_id = self._row_meta[row][3]
@@ -13062,7 +13148,7 @@ class ScenarioTablePanel(QWidget):
                 item = self._table.item(row, col)
                 if item is not None:
                     self._table.scrollToItem(item)
-                self._try_start_edit(row, col)  # no-op for columns it doesn't support (e.g. KON)
+                self._try_start_edit(row, col)  # KON supported too since 2026-08-07 — see NOTES.md
                 return
 
     def _on_cell_changed(self, row, col):
@@ -13130,7 +13216,12 @@ class ScenarioTablePanel(QWidget):
 
     # ── Feature 7: try start inline edit ──────────────────────────────────────
     def _try_start_edit(self, row, col):
-        if row < 0 or col not in (self._C_ORS, self._C_SG):
+        # _C_KON added 2026-08-07 (see NOTES.md "Klicka direkt på
+        # konsekvens") — the commit path (_on_cell_changed_inner's
+        # 'consequence' branch) already existed and worked; only the
+        # trigger was missing. Double-click still opens the step-by-step
+        # chain wizard (_open_chain_editor) for anyone who wants that.
+        if row < 0 or col not in (self._C_ORS, self._C_SG, self._C_KON):
             return
         item = self._table.item(row, col)
         if item and bool(item.flags() & Qt.ItemFlag.ItemIsEditable):
@@ -13283,6 +13374,24 @@ class ScenarioTablePanel(QWidget):
                 self.db.move_cause_to_deviation(item_id, tgt_dev)
             self._schedule_rebuild()
             QTimer.singleShot(0, self.structure_changed.emit)
+            event.acceptProposedAction()
+
+        elif kind == 'equipment':
+            # Shift-drag of a P&ID equipment marker onto a KON cell — attaches
+            # its tag/type to that consequence. `item_id` here is
+            # equipment_markers.id (the marker), not equipment_catalog.id —
+            # same distinction _on_marker_clicked already resolves.
+            if tgt_cons is None or tgt_col != self._C_KON:
+                event.ignore(); return
+            marker = self.db.conn.execute(
+                "SELECT equipment_id FROM equipment_markers WHERE id=?", (item_id,)).fetchone()
+            if not marker or marker['equipment_id'] is None:
+                event.ignore(); return
+            equip = self.db.get_equipment_by_id(marker['equipment_id'])
+            if not equip:
+                event.ignore(); return
+            self.db.set_consequence_tag(tgt_cons, equip.get('tag', ''), equip.get('equipment_type', ''))
+            self._schedule_rebuild()
             event.acceptProposedAction()
 
     # ── Feature 4 & 5: Context menu ───────────────────────────────────────────
