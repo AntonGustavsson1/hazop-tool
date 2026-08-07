@@ -4318,10 +4318,13 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
     """TreePanel.refresh() groups a node's deviations by guide-word text
     FIRST (LEDORD_T — several deviation rows across different equipment can
     share one description), then within each guide word, by equipment_id
-    (EQUIP_T) — see NOTES.md 'Nod → Ledord → Utrustning'. A deviation with
-    equipment_id=NULL (every deviation that existed before this feature)
-    still gets a LEDORD_T parent (new, unavoidable — grouping by guide word
-    always happens) but no EQUIP_T level."""
+    (EQUIP_T) — see NOTES.md 'Nod → Ledord → Utrustning'. The LEDORD_T
+    wrapper is skipped entirely when there's nothing to group — a single,
+    plain (no equipment) deviation for a guide word attaches directly to
+    the node instead, to avoid showing the same guide-word text twice in a
+    row for no reason (see NOTES.md's follow-up 'varför är det dubbelt?').
+    It reappears as soon as a second deviation (equipment-scoped, or
+    another plain one) shares that same guide word."""
 
     @classmethod
     def setUpClass(cls):
@@ -4393,11 +4396,19 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         equip_rows = [x for x in items if x[0] == EQUIP_T and x[2] == LEDORD_T]
         self.assertEqual({x[1] for x in equip_rows}, {pump_id, valve_id})
 
-    def test_generic_deviation_gets_ledord_parent_but_no_equip_t(self):
-        """A deviation with no equipment_id (every deviation that existed
-        before this feature) still gets grouped under its guide word (that
-        grouping is unconditional now), but no EQUIP_T level is inserted —
-        it's a direct LEDORD_T -> DEV_T child."""
+    def test_lone_generic_deviation_skips_ledord_wrapper(self):
+        """Bug report: 'varför är det dubbelt?' — a single, plain
+        (no equipment) deviation for a guide word with no other sibling
+        used to STILL get wrapped in a LEDORD_T item carrying the exact
+        same guide-word text as its own only child, e.g.
+        '⬡ Lågt flöde' -> '1. Lågt flöde' — the same words shown twice in
+        a row for no structural reason. With nothing to group (no
+        equipment, no second deviation sharing the guide word), the
+        deviation now attaches directly to the NODE, exactly like before
+        this feature existed. The wrapper only reappears once there's a
+        second deviation for the same guide word to actually distinguish
+        (see test_two_equipment_sharing_same_guide_word_grouped_under_one_ledord
+        and test_generic_deviation_stays_visible_once_it_has_a_cause)."""
         node_id = self.db.add_node()
         dev_id = self.db.add_deviation(node_id, "Övrigt-avvikelse")
         self.panel.refresh()
@@ -4405,8 +4416,25 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         items = self._tree_items()
         dev_rows = [x for x in items if x[0] == DEV_T and x[1] == dev_id]
         self.assertEqual(len(dev_rows), 1)
-        self.assertEqual(dev_rows[0][2], LEDORD_T)
+        self.assertEqual(dev_rows[0][2], NODE_T,
+                          "a lone deviation with nothing to group against must "
+                          "attach directly to the node, no redundant Ledord wrapper")
         self.assertEqual(len([x for x in items if x[0] == EQUIP_T]), 0)
+
+    def test_brand_new_node_has_no_ledord_wrappers_at_all(self):
+        """The exact real-world screenshot that triggered the fix: a freshly
+        created node (all ~16 auto-seeded guide words, no equipment
+        touched yet) must show every guide word as a single flat row
+        directly under the node — zero LEDORD_T items anywhere, since
+        there is nothing anywhere to group."""
+        node_id = self.db.add_node()
+        self.panel.refresh()
+
+        items = self._tree_items()
+        self.assertEqual(len([x for x in items if x[0] == LEDORD_T]), 0)
+        dev_rows = [x for x in items if x[0] == DEV_T]
+        self.assertTrue(dev_rows)
+        self.assertTrue(all(x[2] == NODE_T for x in dev_rows))
 
     def test_empty_generic_deviation_hidden_when_equipment_scoped_sibling_exists(self):
         """Bug report: 'Lågt flöde dyker upp två gånger i trädet'.

@@ -7176,15 +7176,6 @@ class TreePanel(QWidget):
 
                 di = 0
                 for description, dev_list in ledord_groups.items():
-                    litem = QTreeWidgetItem([f"  ⬡  {description}"])
-                    ledord_key = f"{node['id']}:{description}"
-                    litem.setData(0, Qt.ItemDataRole.UserRole, ledord_key)
-                    litem.setData(0, Qt.ItemDataRole.UserRole + 1, LEDORD_T)
-                    led_font = QFont(); led_font.setItalic(True)
-                    litem.setFont(0, led_font)
-                    nitem.addChild(litem)
-                    if (LEDORD_T, ledord_key) in expanded: litem.setExpanded(True)
-
                     equipment_groups = {}
                     ungrouped_devs = []
                     for dev in dev_list:
@@ -7193,6 +7184,31 @@ class TreePanel(QWidget):
                             equipment_groups.setdefault(eq_id, []).append(dev)
                         else:
                             ungrouped_devs.append(dev)
+
+                    # Skip the Ledord wrapper for the common case: exactly
+                    # one plain (no equipment) deviation for this guide
+                    # word — no equipment to distinguish between, so the
+                    # wrapper item would just repeat the SAME guide-word
+                    # text directly above its own single child (reported:
+                    # "varför är det dubbelt?" — every guide word showed
+                    # its own name twice). Put the deviation straight under
+                    # the node instead, exactly like before this feature
+                    # existed. Once a SECOND deviation for this guide word
+                    # shows up (equipment-scoped, or another plain one),
+                    # the wrapper starts pulling real weight and comes back.
+                    if not equipment_groups and len(ungrouped_devs) == 1:
+                        di += 1
+                        add_deviation_subtree(nitem, ungrouped_devs[0], di)
+                        continue
+
+                    litem = QTreeWidgetItem([f"  ⬡  {description}"])
+                    ledord_key = f"{node['id']}:{description}"
+                    litem.setData(0, Qt.ItemDataRole.UserRole, ledord_key)
+                    litem.setData(0, Qt.ItemDataRole.UserRole + 1, LEDORD_T)
+                    led_font = QFont(); led_font.setItalic(True)
+                    litem.setFont(0, led_font)
+                    nitem.addChild(litem)
+                    if (LEDORD_T, ledord_key) in expanded: litem.setExpanded(True)
 
                     for eq_id, eq_devs in equipment_groups.items():
                         eq = self.db.get_equipment_by_id(eq_id)

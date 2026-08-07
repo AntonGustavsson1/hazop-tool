@@ -729,6 +729,22 @@ Trots gårdagens fix av `_on_equipment_deviation_created` (samma symptom) rappor
 
 **Läxan:** varje ny `REFERENCES`-kolumn som läggs till via `ALTER TABLE ADD COLUMN` måste medvetet välja `ON DELETE CASCADE`/`SET NULL`/manuell rensning — SQLite defaultar annars till att BLOCKERA borttagningen (inte kaskadera tyst), vilket bara upptäcks första gången någon faktiskt försöker radera föräldraraden. Värt att dubbelkolla vid NÄSTA nya FK-kolumn också.
 
+**Uppföljning samma dag — "database is locked":** efter kraschen ovan blev en Python-process (den kraschade appen) kvarhängande i bakgrunden och höll SQLite-filen låst, så nästa uppstart av programmet fick `database is locked`. Löst genom att avsluta den gamla processen (`Stop-Process`); ingen kodändring behövdes — kraschande processer kan lämna en låst databasfil kvar tills de verkligen avslutas, värt att komma ihåg om samma felmeddelande dyker upp igen efter en krasch.
+
+---
+
+## Trädet visade varje ledord dubbelt — Ledord-omslaget borttaget för enstaka avvikelser (2026-08-07)
+
+**Rapport:** Skärmdump visade att VARJE ledord i trädet ("Lågt flöde", "Högt flöde", "Missriktat flöde" osv) förekom med sin egen text två gånger i rad: `⬡ Lågt flöde` → `1. Lågt flöde` — själva ledord-gruppens rubrik och dess enda barn sa exakt samma sak.
+
+**Grundorsak:** `TreePanel.refresh()`s Ledord-gruppering (se "Nod → Ledord → Utrustning" ovan) skapade alltid ett `LEDORD_T`-omslag för varje unikt ledord, ÄVEN när det bara fanns EN enda, oscopad avvikelse för det ledordet — dvs. normalfallet för ett nytt/opåverkat projekt (~16 auto-fröade avvikelser, ingen utrustningskoppling gjord än). Omslaget fyller en riktig funktion när flera utrustningar delar samma ledord (då visar det olika `🔧`-undergrupper) — men med bara EN avvikelse att visa blir omslaget bara en repetition av samma text.
+
+**Fix (`TreePanel.refresh()`):** beräknar nu `equipment_groups`/`ungrouped_devs` INNAN `LEDORD_T`-objektet skapas. Om resultatet är "inga utrustningsgrupper OCH exakt en oscopad avvikelse" hoppas hela omslaget över — avvikelsen läggs direkt under noden istället, precis som innan hela Ledord-funktionen fanns. Omslaget kommer tillbaka automatiskt så fort ledordet får en andra avvikelse (utrustningskopplad, eller ytterligare en oscopad) — då gör det äntligen skillnad mellan flera saker istället för att upprepa sig självt.
+
+**Verifierat:** dumpade trädet mot exakt samma live-databas skärmdumpen togs från — alla 16 ledord visas nu som en enda platt rad var (`1. Lågt flöde`, `2. Högt flöde`, ...), noll `LEDORD_T`-objekt. Testade separat att scenariot med två utrustningar som delar ett ledord fortfarande grupperas korrekt under ett gemensamt `⬡`-omslag, oförändrat.
+
+**Test:** `test_generic_deviation_gets_ledord_parent_but_no_equip_t` uppdaterat/omdöpt till `test_lone_generic_deviation_skips_ledord_wrapper` (motsatt förväntan av avsikt), ny `test_brand_new_node_has_no_ledord_wrappers_at_all` (låser fast exakt skärmdumps-scenariot: en helt ny nod har noll `LEDORD_T`-objekt). Alla 266 tester gröna (`test_regression` 189 + `test_symbol_geometry` 77).
+
 ---
 
 ## Kända begränsningar och tekniska skulder
