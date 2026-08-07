@@ -3218,6 +3218,41 @@ class ReloadAllPanelsDbSwapTests(unittest.TestCase):
             except sqlite3.ProgrammingError as e:
                 self.fail(f"analysis_panel.refresh() must not touch the closed old db, raised: {e!r}")
 
+    def test_equipment_deviation_bar_gets_new_db(self):
+        """Same bug class as worksheet/equipment_panel above, found via a
+        real crash report (2026-08-07): EquipmentDeviationBar (the bottom-
+        of-P&ID bar opened by clicking an equipment marker, see NOTES.md
+        'Nod → Utrustning → Avvikelse') keeps its own db reference,
+        separate from PIDPanel.db — _reload_all_panels() updated
+        pid_panel.db/pid_panel.viewer.db but not pid_panel._equipment_bar.db,
+        so clicking an equipment marker after a project reload crashed with
+        sqlite3.ProgrammingError('Cannot operate on a closed database')."""
+        with _TempDbMainWindow() as win:
+            old_db = win.db
+            old_db.conn.close()
+            win.db = hazop.Database(path=old_db.path)
+            win._reload_all_panels()
+            self.assertIs(win.pid_panel._equipment_bar.db, win.db,
+                "EquipmentDeviationBar must also receive the new db reference")
+
+    def test_equipment_marker_click_does_not_crash_after_db_swap(self):
+        """End-to-end regression for the exact reported crash: clicking an
+        equipment marker on the P&ID after a project reload must not raise
+        sqlite3.ProgrammingError('Cannot operate on a closed database')."""
+        with _TempDbMainWindow() as win:
+            old_db = win.db
+            eq_id = old_db.add_equipment_item("V-1", "V-1", "V", 0, "Ventil", '', 0)
+            marker_id = old_db.add_equipment_marker(eq_id, "V-1", 0, 10.0, 10.0, "Ventil")
+
+            old_db.conn.close()
+            win.db = hazop.Database(path=old_db.path)
+            win._reload_all_panels()
+
+            try:
+                win.pid_panel._on_marker_clicked('equipment', marker_id)
+            except sqlite3.ProgrammingError as e:
+                self.fail(f"clicking an equipment marker must not touch the closed old db, raised: {e!r}")
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # 9. Unified tag scanning — "🔍 Skanna P&ID" and "📋 Analysera P&ID" used to

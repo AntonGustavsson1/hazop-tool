@@ -597,6 +597,20 @@ Rutans innehåll: typ-kombobox (ändring skriver till BÅDE `equipment_catalog.e
 
 **Test:** 15 nya tester i `test_regression.py` (`EquipmentNodeDeviationSchemaTests`, `GetOrCreateDeviationEquipmentTests`, `TreePanelEquipmentGroupingTests`, `EquipmentDeviationBarTests`). Alla 223 tester passerar (`test_regression` + `test_symbol_geometry`).
 
+### Uppföljning samma dag — krasch: "Cannot operate on a closed database" vid klick på utrustningsmarkör
+
+**Problem:** Riktig krasch-rapport (`crashes/crash_20260807_104841_ProgrammingError.json`), inträffad direkt efter att funktionen ovan togs i bruk: klick på en utrustningsmarkör kraschade med `sqlite3.ProgrammingError: Cannot operate on a closed database` i `EquipmentDeviationBar.load() → Database.get_equipment_by_id()`.
+
+**Grundorsak — samma återkommande buggklass som redan dokumenterats två gånger tidigare** (Worksheet 2026-08-05, Utrustningsregistret 2026-08-06, se ovan i denna fil): `MainWindow._reload_all_panels()` (körs av "Nytt projekt"/"Öppna .hzp" efter att den gamla DB-anslutningen stängts) uppdaterar `self.db` på en hårdkodad lista av paneler/underpaneler — men den nya `EquipmentDeviationBar` (som håller sin EGEN `self.db`-referens, satt en gång i `__init__`, separat från `PIDPanel.db`) glömdes bort ur den listan när funktionen byggdes samma dag. Exakt samma misstag som redan hänt för `EquipmentPanel._model` och `HAZOPWorksheet._table_panel` — nya widgets med en egen `db`-referens måste läggas till i `_reload_all_panels()` manuellt, det finns ingen generisk mekanism som hittar dem automatiskt.
+
+**Fix:** lade till `self.pid_panel._equipment_bar.db = db` i `_reload_all_panels()`, samma stil som de befintliga `equipment_panel._model`/`worksheet._table_panel`-raderna.
+
+**Verifierat att buggen var verklig:** körde de två nya testerna mot koden UTAN fixen (via `git stash`) — kraschade identiskt med den rapporterade tracebacken, sedan grönt igen efter att fixen återställdes.
+
+**Test:** 2 nya tester i `test_regression.py::ReloadAllPanelsDbSwapTests` (`test_equipment_deviation_bar_gets_new_db`, `test_equipment_marker_click_does_not_crash_after_db_swap`), samma mönster som de befintliga för Worksheet/EquipmentPanel/PIDAnalysisPanel i samma klass. Alla 225 tester passerar.
+
+**Läxan:** varje ny widget som cachar sin egen `db`-referens (istället för att alltid läsa `self.parent().db`) MÅSTE läggas till i `_reload_all_panels()`s lista för hand — detta är nu tredje gången samma misstag görs för en ny panel/widget. Värt att komma ihåg vid NÄSTA nya widget med egen db-referens också.
+
 ---
 
 ## Kända begränsningar och tekniska skulder

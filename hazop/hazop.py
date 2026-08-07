@@ -19302,6 +19302,17 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+        # EquipmentDeviationBar (the bottom-of-P&ID bar shown when an
+        # equipment marker is clicked) also keeps its own db reference —
+        # same "Cannot operate on a closed database" crash class as
+        # equipment_panel._model/worksheet._table_panel above, found via a
+        # real crash report the first time a user clicked an equipment
+        # marker after a project reload.
+        try:
+            self.pid_panel._equipment_bar.db = db
+        except Exception:
+            pass
+
         # Reload tree + scenario
         self.tree_panel.refresh()
         self.scenario_panel.clear()
