@@ -6098,5 +6098,480 @@ class AutoConsequenceOnCauseAddTests(unittest.TestCase):
                 "the tree's add-cause path must also auto-create an empty consequence")
 
 
+def _find_tree_item(tree, type_, id_=None):
+    it = QTreeWidgetItemIterator(tree)
+    while it.value():
+        item = it.value()
+        if item.data(0, Qt.ItemDataRole.UserRole + 1) == type_ and (
+                id_ is None or item.data(0, Qt.ItemDataRole.UserRole) == id_):
+            return item
+        it += 1
+    return None
+
+
+class SafeguardTagDbTests(unittest.TestCase):
+    """DB-layer support for 'kunna dra objects till safeguards' (2026-08-08,
+    see NOTES.md): set_safeguard_tag, get_equipment_by_marker_id,
+    _create_tagged_cause."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_sgtag_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_full_chain(self):
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        sg_id = self.db.add_safeguard(cons_id)
+        return node_id, dev_id, cause_id, cons_id, sg_id
+
+    def test_set_safeguard_tag_writes_tag_and_type(self):
+        *_ids, sg_id = self._make_full_chain()
+        self.db.set_safeguard_tag(sg_id, "PSV-101", "Säkerhetsventil")
+        sg = dict(self.db.get_safeguard(sg_id))
+        self.assertEqual(sg['comp_tag'], "PSV-101")
+        self.assertEqual(sg['comp_type'], "Säkerhetsventil")
+
+    def test_set_safeguard_tag_does_not_touch_description_or_rrf(self):
+        *_ids, sg_id = self._make_full_chain()
+        self.db.update_safeguard(sg_id, description="Tryckvakt stoppar pump", rrf=100)
+        self.db.set_safeguard_tag(sg_id, "PSH-201", "Tryckvakt")
+        sg = dict(self.db.get_safeguard(sg_id))
+        self.assertEqual(sg['description'], "Tryckvakt stoppar pump")
+        self.assertEqual(sg['rrf'], 100)
+        self.assertEqual(sg['comp_tag'], "PSH-201")
+
+    def test_get_equipment_by_marker_id_resolves_linked_equipment(self):
+        eq_id = self.db.add_equipment_item("HV-101", "HV-101", "HV", 0, "Ventil", '', 0)
+        marker_id = self.db.add_equipment_marker(
+            eq_id, "HV-101", 0, 10.0, 10.0, "Ventil", confidence=0.9, link_method='leader')
+        equip = self.db.get_equipment_by_marker_id(marker_id)
+        self.assertIsNotNone(equip)
+        self.assertEqual(equip['id'], eq_id)
+        self.assertEqual(equip['tag'], "HV-101")
+
+    def test_get_equipment_by_marker_id_returns_none_for_untagged_marker(self):
+        marker_id = self.db.add_equipment_marker(
+            None, '', 0, 5.0, 5.0, "Ventil", confidence=0.6, link_method='shape')
+        self.assertIsNone(self.db.get_equipment_by_marker_id(marker_id))
+
+    def test_get_equipment_by_marker_id_returns_none_for_unknown_marker(self):
+        self.assertIsNone(self.db.get_equipment_by_marker_id(999999))
+
+    def test_create_tagged_cause_creates_empty_cause_and_consequence_with_tag(self):
+        from hazop import _create_tagged_cause
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+
+        cause_id, cons_id = _create_tagged_cause(self.db, dev_id, "Pump", "P-101")
+
+        cause = dict(self.db.get_cause(cause_id))
+        self.assertEqual(cause['description'], '')
+        self.assertEqual(cause['comp_type'], "Pump")
+        self.assertEqual(cause['comp_tag'], "P-101")
+        cons = self.db.get_consequence(cons_id)
+        self.assertIsNotNone(cons)
+        self.assertEqual(dict(cons)['cause_id'], cause_id)
+
+
+class EquipmentDropOnSafeguardAndMultiTests(unittest.TestCase):
+    """_handle_drop's 'equipment'/'equipment-multi' kinds extended to the
+    SG column, and multi-marker drops onto a single KON/SG cell using only
+    the first dragged marker (2026-08-08, see NOTES.md). Routed through
+    panel.eventFilter(), not _handle_drop() directly — see
+    DropEventRoutedToViewportTests for why that distinction matters."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def _make_full_chain(self, db):
+        node_id = db.add_node()
+        dev_id = db.deviations(node_id)[0]['id']
+        cause_id = db.add_cause(dev_id)
+        cons_id = db.add_consequence(cause_id)
+        sg_id = db.add_safeguard(cons_id)
+        return node_id, dev_id, cause_id, cons_id, sg_id
+
+    def _make_drop_event(self, panel, text, tgt_row, tgt_col):
+        from PyQt6.QtCore import QEvent, QMimeData, QPointF
+        vp_x = panel._table.columnViewportPosition(tgt_col) + 2
+        vp_y = panel._table.rowViewportPosition(tgt_row) + 2
+        mime = QMimeData()
+        mime.setText(text)
+        event = unittest.mock.MagicMock()
+        event.type.return_value = QEvent.Type.Drop
+        event.mimeData.return_value = mime
+        event.position.return_value = QPointF(vp_x, vp_y)
+        event.dropAction.return_value = Qt.DropAction.CopyAction
+        return event
+
+    def test_drop_equipment_on_sg_cell_attaches_tag(self):
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            _n, _d, cause_id, cons_id, sg_id = self._make_full_chain(win.db)
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[3] == sg_id)
+
+            eq_id = win.db.add_equipment_item("PSV-101", "PSV-101", "PSV", 0,
+                                              "Säkerhetsventil", '', 0)
+            marker_id = win.db.add_equipment_marker(
+                eq_id, "PSV-101", 0, 10.0, 10.0, "Säkerhetsventil", confidence=0.9,
+                link_method='leader')
+
+            event = self._make_drop_event(
+                panel, f'hzp:equipment:{marker_id}:-1:-1', row, panel._C_SG)
+            handled = panel.eventFilter(panel._table.viewport(), event)
+
+            self.assertTrue(handled)
+            sg = dict(win.db.get_safeguard(sg_id))
+            self.assertEqual(sg['comp_tag'], "PSV-101")
+            self.assertEqual(sg['comp_type'], "Säkerhetsventil")
+
+    def test_drop_equipment_multi_on_kon_uses_only_first_marker(self):
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            _n, _d, cause_id, cons_id, _sg = self._make_full_chain(win.db)
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+
+            eq1 = win.db.add_equipment_item("P-101", "P-101", "P", 0, "Pump", '', 0)
+            eq2 = win.db.add_equipment_item("P-102", "P-102", "P", 0, "Pump", '', 0)
+            m1 = win.db.add_equipment_marker(eq1, "P-101", 0, 1.0, 1.0, "Pump",
+                                             confidence=0.9, link_method='leader')
+            m2 = win.db.add_equipment_marker(eq2, "P-102", 0, 2.0, 2.0, "Pump",
+                                             confidence=0.9, link_method='leader')
+
+            event = self._make_drop_event(
+                panel, f'hzp:equipment-multi:{m1},{m2}:-1:-1', row, panel._C_KON)
+            handled = panel.eventFilter(panel._table.viewport(), event)
+
+            self.assertTrue(handled)
+            cons = dict(win.db.get_consequence(cons_id))
+            self.assertEqual(cons['comp_tag'], "P-101",
+                "a single cell can only hold one tag — must use the first dragged marker")
+
+    def test_drop_equipment_multi_on_sg_uses_only_first_marker(self):
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            _n, _d, cause_id, _cons_id, sg_id = self._make_full_chain(win.db)
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[3] == sg_id)
+
+            eq1 = win.db.add_equipment_item("TSH-1", "TSH-1", "TSH", 0, "Termostat", '', 0)
+            eq2 = win.db.add_equipment_item("TSH-2", "TSH-2", "TSH", 0, "Termostat", '', 0)
+            m1 = win.db.add_equipment_marker(eq1, "TSH-1", 0, 1.0, 1.0, "Termostat",
+                                             confidence=0.9, link_method='leader')
+            m2 = win.db.add_equipment_marker(eq2, "TSH-2", 0, 2.0, 2.0, "Termostat",
+                                             confidence=0.9, link_method='leader')
+
+            event = self._make_drop_event(
+                panel, f'hzp:equipment-multi:{m1},{m2}:-1:-1', row, panel._C_SG)
+            handled = panel.eventFilter(panel._table.viewport(), event)
+
+            self.assertTrue(handled)
+            sg = dict(win.db.get_safeguard(sg_id))
+            self.assertEqual(sg['comp_tag'], "TSH-1")
+
+    def test_sg_cell_carries_comp_tag_via_userrole(self):
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            _n, _d, cause_id, _cons_id, sg_id = self._make_full_chain(win.db)
+            win.db.set_safeguard_tag(sg_id, "FE-301", "Flödesgivare")
+
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[3] == sg_id)
+
+            item = panel._table.item(row, panel._C_SG)
+            comp_type, comp_tag = item.data(Qt.ItemDataRole.UserRole + 6)
+            self.assertEqual(comp_tag, "FE-301")
+            self.assertEqual(comp_type, "Flödesgivare")
+
+
+class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
+    """Dragging equipment marker(s) onto a HAZOP-tree deviation item (e.g.
+    "Lågt flöde") creates one empty, tagged cause per marker directly — no
+    popup (2026-08-08, see NOTES.md, decision: 'Skapa tom orsak direkt')."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def _make_drop_event(self, text, pos):
+        from PyQt6.QtCore import QEvent, QMimeData, QPointF
+        mime = QMimeData()
+        mime.setText(text)
+        event = unittest.mock.MagicMock()
+        event.type.return_value = QEvent.Type.Drop
+        event.mimeData.return_value = mime
+        event.position.return_value = QPointF(pos)
+        return event
+
+    def test_tree_drop_on_deviation_emits_signal_with_marker_ids(self):
+        with _TempDbMainWindow() as win:
+            tree_panel = win.tree_panel
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            tree_panel.refresh()
+            tree_panel.tree.expandAll()   # itemAt()/visualItemRect() need the row actually visible
+            dev_item = _find_tree_item(tree_panel.tree, DEV_T, dev_id)
+            self.assertIsNotNone(dev_item, "sanity: the deviation must actually be in the tree")
+            pos = tree_panel.tree.visualItemRect(dev_item).center()
+
+            captured = []
+            tree_panel.equipment_dropped_on_deviation.connect(
+                lambda d, ids: captured.append((d, ids)))
+
+            event = self._make_drop_event('hzp:equipment:42:-1:-1', pos)
+            handled = tree_panel.eventFilter(tree_panel.tree.viewport(), event)
+
+            self.assertTrue(handled)
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0], (dev_id, [42]))
+
+    def test_tree_drop_on_non_deviation_item_is_ignored(self):
+        with _TempDbMainWindow() as win:
+            tree_panel = win.tree_panel
+            node_id = win.db.add_node()
+            tree_panel.refresh()
+            node_item = _find_tree_item(tree_panel.tree, NODE_T, node_id)
+            self.assertIsNotNone(node_item)
+            pos = tree_panel.tree.visualItemRect(node_item).center()
+
+            captured = []
+            tree_panel.equipment_dropped_on_deviation.connect(
+                lambda d, ids: captured.append((d, ids)))
+
+            event = self._make_drop_event('hzp:equipment:42:-1:-1', pos)
+            tree_panel.eventFilter(tree_panel.tree.viewport(), event)
+
+            self.assertEqual(captured, [])
+            event.ignore.assert_called()
+
+    def test_on_equipment_dropped_on_deviation_creates_one_cause_per_marker(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            eq1 = win.db.add_equipment_item("V-1", "V-1", "V", 0, "Ventil", '', 0)
+            eq2 = win.db.add_equipment_item("V-2", "V-2", "V", 0, "Ventil", '', 0)
+            m1 = win.db.add_equipment_marker(eq1, "V-1", 0, 1.0, 1.0, "Ventil",
+                                             confidence=0.9, link_method='leader')
+            m2 = win.db.add_equipment_marker(eq2, "V-2", 0, 2.0, 2.0, "Ventil",
+                                             confidence=0.9, link_method='leader')
+
+            win._on_equipment_dropped_on_deviation(dev_id, [m1, m2])
+
+            causes = win.db.causes(node_id)
+            tagged = {c['comp_tag'] for c in causes}
+            self.assertEqual(tagged, {"V-1", "V-2"})
+            for c in causes:
+                self.assertEqual(dict(c)['description'], '')
+                self.assertEqual(len(win.db.consequences(c['id'])), 1)
+
+    def test_on_equipment_dropped_on_deviation_assigns_node_when_missing(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            eq_id = win.db.add_equipment_item("T-1", "T-1", "T", 0, "Behållare", '', 0)
+            marker_id = win.db.add_equipment_marker(
+                eq_id, "T-1", 0, 1.0, 1.0, "Behållare", confidence=0.9, link_method='leader')
+            self.assertIsNone(win.db.equipment_node_id(eq_id))
+
+            win._on_equipment_dropped_on_deviation(dev_id, [marker_id])
+
+            self.assertEqual(win.db.equipment_node_id(eq_id), node_id)
+
+    def test_on_equipment_dropped_on_deviation_ignores_unlinked_markers(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            marker_id = win.db.add_equipment_marker(
+                None, '', 0, 1.0, 1.0, "Ventil", confidence=0.5, link_method='shape')
+            try:
+                win._on_equipment_dropped_on_deviation(dev_id, [marker_id])
+            except Exception as e:
+                self.fail(f"must not raise for an untagged/unlinked marker: {e!r}")
+            self.assertEqual(win.db.causes(node_id), [])
+
+
+class EquipmentMultiSelectTests(unittest.TestCase):
+    """Multi-select of equipment markers on the P&ID (2026-08-08, see
+    NOTES.md): Ctrl+click toggles, Ctrl+drag rubber-bands several at once,
+    and a Shift-drag of a >=2-member selection drags the whole group."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def _make_view_with_markers(self, marker_positions):
+        """marker_positions: dict marker_id -> QPointF scene position."""
+        from pid_viewer import PIDGraphicsView, MODE_NAV
+        view = PIDGraphicsView()
+        view.mode = MODE_NAV
+        items = {}
+        for marker_id, pos in marker_positions.items():
+            item = view._scene.addEllipse(pos.x() - 5, pos.y() - 5, 10, 10)
+            item.setData(view._DATA_TYPE, 'equipment')
+            item.setData(view._DATA_ID, marker_id)
+            view._type_items.setdefault('equipment', []).append(item)
+            items[marker_id] = item
+        return view, items
+
+    def _press(self, view, event):
+        from PyQt6.QtWidgets import QGraphicsView
+        with unittest.mock.patch.object(QGraphicsView, 'mousePressEvent'):
+            view.mousePressEvent(event)
+
+    def _move(self, view, event):
+        from PyQt6.QtWidgets import QGraphicsView
+        with unittest.mock.patch.object(QGraphicsView, 'mouseMoveEvent'):
+            view.mouseMoveEvent(event)
+
+    def _release(self, view, event):
+        from PyQt6.QtWidgets import QGraphicsView
+        with unittest.mock.patch.object(QGraphicsView, 'mouseReleaseEvent'):
+            view.mouseReleaseEvent(event)
+
+    def test_ctrl_click_toggles_marker_into_selection(self):
+        from PyQt6.QtCore import QPointF
+        view, _items = self._make_view_with_markers({7: QPointF(50, 50)})
+        view.mapToScene = lambda pt: QPointF(50, 50)
+        event = unittest.mock.MagicMock()
+        event.button.return_value = Qt.MouseButton.LeftButton
+        event.modifiers.return_value = Qt.KeyboardModifier.ControlModifier
+        event.position.return_value = QPointF(50, 50)
+
+        self._press(view, event)
+
+        self.assertIn(7, view._selected_equipment_markers)
+        self.assertIn(7, view._equip_selection_overlays)
+
+    def test_ctrl_click_again_deselects_marker(self):
+        from PyQt6.QtCore import QPointF
+        view, _items = self._make_view_with_markers({7: QPointF(50, 50)})
+        view.mapToScene = lambda pt: QPointF(50, 50)
+        event = unittest.mock.MagicMock()
+        event.button.return_value = Qt.MouseButton.LeftButton
+        event.modifiers.return_value = Qt.KeyboardModifier.ControlModifier
+        event.position.return_value = QPointF(50, 50)
+
+        self._press(view, event)
+        self._press(view, event)
+
+        self.assertNotIn(7, view._selected_equipment_markers)
+        self.assertNotIn(7, view._equip_selection_overlays)
+
+    def test_plain_click_clears_existing_selection(self):
+        from PyQt6.QtCore import QPointF
+        view, _items = self._make_view_with_markers({7: QPointF(50, 50)})
+        view._select_equipment_marker(7)
+        self.assertIn(7, view._selected_equipment_markers)
+
+        view.mapToScene = lambda pt: QPointF(200, 200)   # empty area, no marker there
+        event = unittest.mock.MagicMock()
+        event.button.return_value = Qt.MouseButton.LeftButton
+        event.modifiers.return_value = Qt.KeyboardModifier.NoModifier
+        event.position.return_value = QPointF(200, 200)
+
+        self._press(view, event)
+
+        self.assertEqual(view._selected_equipment_markers, set())
+
+    def test_ctrl_drag_rubber_band_selects_markers_in_rect(self):
+        from PyQt6.QtCore import QPointF
+        view, _items = self._make_view_with_markers({
+            1: QPointF(10, 10), 2: QPointF(20, 20), 3: QPointF(500, 500),
+        })
+        # mapToScene: identity-ish, viewport coords == scene coords for this test
+        view.mapToScene = lambda pt: QPointF(pt)
+
+        press_event = unittest.mock.MagicMock()
+        press_event.button.return_value = Qt.MouseButton.LeftButton
+        press_event.modifiers.return_value = Qt.KeyboardModifier.ControlModifier
+        press_event.position.return_value = QPointF(0, 0)
+        self._press(view, press_event)
+        self.assertIsNotNone(view._ctrl_rband_start_scene)
+
+        move_event = unittest.mock.MagicMock()
+        move_event.buttons.return_value = Qt.MouseButton.LeftButton
+        move_event.modifiers.return_value = Qt.KeyboardModifier.ControlModifier
+        move_event.position.return_value = QPointF(30, 30)
+        self._move(view, move_event)
+        self.assertTrue(view._ctrl_rband_dragging)
+
+        release_event = unittest.mock.MagicMock()
+        release_event.button.return_value = Qt.MouseButton.LeftButton
+        release_event.position.return_value = QPointF(30, 30)
+        self._release(view, release_event)
+
+        self.assertEqual(view._selected_equipment_markers, {1, 2},
+            "only markers inside the 0,0-30,30 band should be selected")
+        self.assertNotIn(3, view._selected_equipment_markers)
+
+    def test_shift_drag_of_multi_selection_builds_equipment_multi_mime(self):
+        from PyQt6.QtCore import QPointF
+        view, _items = self._make_view_with_markers({
+            5: QPointF(50, 50), 6: QPointF(60, 60),
+        })
+        view._select_equipment_marker(5)
+        view._select_equipment_marker(6)
+        view.mapToScene = lambda pt: QPointF(50, 50)
+
+        press_event = unittest.mock.MagicMock()
+        press_event.button.return_value = Qt.MouseButton.LeftButton
+        press_event.modifiers.return_value = Qt.KeyboardModifier.ShiftModifier
+        press_event.position.return_value = QPointF(50, 50)
+        self._press(view, press_event)
+        self.assertEqual(view._equip_drag_candidate[0], 5)
+
+        move_event = unittest.mock.MagicMock()
+        move_event.buttons.return_value = Qt.MouseButton.LeftButton
+        move_event.modifiers.return_value = Qt.KeyboardModifier.ShiftModifier
+        move_event.position.return_value = QPointF(90, 50)
+
+        with unittest.mock.patch('pid_viewer.QDrag') as MockDrag:
+            mock_drag = MockDrag.return_value
+            view.mouseMoveEvent(move_event)
+
+        mime_arg = mock_drag.setMimeData.call_args[0][0]
+        self.assertEqual(mime_arg.text(), 'hzp:equipment-multi:5,6:-1:-1')
+        # Selection is cleared once the group drag has actually started.
+        self.assertEqual(view._selected_equipment_markers, set())
+
+    def test_shift_drag_of_single_unselected_marker_still_uses_plain_kind(self):
+        """A Shift-drag from a marker NOT part of any multi-selection must
+        keep using the original single-marker mime — no regression for the
+        already-shipped, already-tested single-drag feature."""
+        from PyQt6.QtCore import QPointF
+        view, _items = self._make_view_with_markers({9: QPointF(50, 50)})
+        view.mapToScene = lambda pt: QPointF(50, 50)
+
+        press_event = unittest.mock.MagicMock()
+        press_event.button.return_value = Qt.MouseButton.LeftButton
+        press_event.modifiers.return_value = Qt.KeyboardModifier.ShiftModifier
+        press_event.position.return_value = QPointF(50, 50)
+        self._press(view, press_event)
+
+        move_event = unittest.mock.MagicMock()
+        move_event.buttons.return_value = Qt.MouseButton.LeftButton
+        move_event.modifiers.return_value = Qt.KeyboardModifier.ShiftModifier
+        move_event.position.return_value = QPointF(90, 50)
+
+        with unittest.mock.patch('pid_viewer.QDrag') as MockDrag:
+            mock_drag = MockDrag.return_value
+            view.mouseMoveEvent(move_event)
+
+        mime_arg = mock_drag.setMimeData.call_args[0][0]
+        self.assertEqual(mime_arg.text(), 'hzp:equipment:9:-1:-1')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

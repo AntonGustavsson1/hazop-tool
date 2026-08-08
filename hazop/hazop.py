@@ -1634,6 +1634,22 @@ def _create_cause_from_pick(db, deviation_id, description, frequency):
     return new_id, cons_id
 
 
+def _create_tagged_cause(db, deviation_id, comp_type, comp_tag):
+    """Create a new cause under deviation_id with no description (only its
+    equipment tag/type set) plus one empty consequence — used when an
+    equipment marker is dropped directly onto a deviation in the HAZOP
+    tree (2026-08-08, see NOTES.md). No popup: the description is left
+    blank and immediately inline-editable, same spirit as
+    _create_cause_from_pick's auto-consequence but without a picker (there
+    is no cause-description to pick here, only the dragged tag).
+    Returns (cause_id, consequence_id).
+    """
+    new_id = db.add_cause(deviation_id)
+    db.update_cause(new_id, description='', comp_type=comp_type, comp_tag=comp_tag)
+    cons_id = db.add_consequence(new_id)
+    return new_id, cons_id
+
+
 def _maybe_save_as_standard_cause(parent, db, dev_id, obj_id, obj_name, description):
     """Ask if a free-typed cause should be promoted into the standard_causes
     library (with an optional frequency), so it's offered again next time.
@@ -1836,6 +1852,11 @@ class Database:
             # ett komplement, inte en ersättning.
             "ALTER TABLE consequences ADD COLUMN comp_type TEXT DEFAULT ''",
             "ALTER TABLE consequences ADD COLUMN comp_tag  TEXT DEFAULT ''",
+            # Drag-and-drop tagg från P&ID till safeguard (2026-08-08, se
+            # NOTES.md) — samma komplement-inte-ersättning-mönster som
+            # consequences.comp_tag/comp_type ovan.
+            "ALTER TABLE safeguards ADD COLUMN comp_type TEXT DEFAULT ''",
+            "ALTER TABLE safeguards ADD COLUMN comp_tag  TEXT DEFAULT ''",
         ]
 
         for sql in migrations:
@@ -2690,6 +2711,19 @@ class Database:
         row = self.conn.execute(
             "SELECT * FROM equipment_catalog WHERE id=?", (id_,)).fetchone()
         return dict(row) if row else None
+
+    def get_equipment_by_marker_id(self, marker_id):
+        """Resolve an equipment_markers.id (what a P&ID drag/drop mime
+        carries — see NOTES.md) to its linked equipment_catalog row, or
+        None if the marker has no linked equipment (untagged shape hit).
+        Single shared lookup for every equipment drag-and-drop target
+        (KON/SG cells, HAZOP tree deviations) instead of each repeating
+        the same two-step marker->catalog join."""
+        row = self.conn.execute(
+            "SELECT equipment_id FROM equipment_markers WHERE id=?", (marker_id,)).fetchone()
+        if not row or row['equipment_id'] is None:
+            return None
+        return self.get_equipment_by_id(row['equipment_id'])
 
     # ── Smart object recognition: study tag memory ─────────────────────────────
 
@@ -4114,6 +4148,15 @@ class Database:
         user's own sentence and must be left exactly as-is."""
         self.conn.execute(
             "UPDATE consequences SET comp_tag=?, comp_type=? WHERE id=?",
+            (comp_tag, comp_type, id_))
+        self.commit()
+
+    def set_safeguard_tag(self, id_, comp_tag, comp_type):
+        """Attach an equipment tag/type to a safeguard without touching its
+        description/rrf — same complement-not-replacement rule as
+        set_consequence_tag (2026-08-08, see NOTES.md)."""
+        self.conn.execute(
+            "UPDATE safeguards SET comp_tag=?, comp_type=? WHERE id=?",
             (comp_tag, comp_type, id_))
         self.commit()
 
@@ -7019,6 +7062,10 @@ class TreePanel(QWidget):
     structure_changed           = pyqtSignal()
     visibility_changed          = pyqtSignal(str, bool)   # marker_type, visible
     exit_pid_mode_requested     = pyqtSignal()    # exit any active P&ID placement mode
+    # Equipment marker(s) dragged from the P&ID onto a deviation item (e.g.
+    # "Lågt flöde") — 2026-08-08, see NOTES.md. Args: (deviation_id, list
+    # of equipment_markers.id).
+    equipment_dropped_on_deviation = pyqtSignal(int, object)
 
     def __init__(self, db: Database):
         super().__init__()
@@ -7087,6 +7134,11 @@ class TreePanel(QWidget):
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
         self.tree.setIndentation(16)
+        # Accepts an external drop (equipment marker dragged from the P&ID
+        # view onto a deviation, e.g. "Lågt flöde" — 2026-08-08, see
+        # NOTES.md) — handled in eventFilter below, not Qt's own internal
+        # DragDropMode (this tree has no internal drag-reordering).
+        self.tree.setAcceptDrops(True)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._context_menu)
         self.tree.currentItemChanged.connect(self._on_select)
@@ -7584,6 +7636,28 @@ class TreePanel(QWidget):
     # ── Feature 17: keyboard navigation ───────────────────────────────────────
     def eventFilter(self, obj, event):
         from PyQt6.QtCore import QEvent
+        # ── External drop: equipment marker(s) dragged from the P&ID onto a
+        # deviation item (2026-08-08, see NOTES.md). Qt delivers drag/drop
+        # events to the tree's VIEWPORT, not the outer QTreeWidget — see
+        # the identical lesson in ScenarioTablePanel.eventFilter — so both
+        # objects are accepted defensively.
+        _drop_targets = (self.tree, self.tree.viewport())
+        if obj in _drop_targets and event.type() == QEvent.Type.DragEnter:
+            if event.mimeData().hasText() and event.mimeData().text().startswith('hzp:equipment'):
+                event.acceptProposedAction()
+                return True
+        if obj in _drop_targets and event.type() == QEvent.Type.DragMove:
+            if event.mimeData().hasText() and event.mimeData().text().startswith('hzp:equipment'):
+                if self._deviation_item_at(event, obj) is not None:
+                    event.acceptProposedAction()
+                else:
+                    event.ignore()
+                return True
+        if obj in _drop_targets and event.type() == QEvent.Type.Drop:
+            if event.mimeData().hasText() and event.mimeData().text().startswith('hzp:equipment'):
+                self._handle_equipment_drop(event, obj)
+                return True
+
         if obj is not self.tree or event.type() != QEvent.Type.KeyPress:
             return super().eventFilter(obj, event)
         key  = event.key()
@@ -7627,6 +7701,48 @@ class TreePanel(QWidget):
                 self._delete_item(type_, id_)
             return True
         return False
+
+    def _event_pos_in_viewport(self, event, source_obj):
+        """Drag/drop event positions are relative to whichever widget the
+        event was actually delivered to — remap to viewport coordinates
+        only when that was the outer tree widget, matching
+        ScenarioTablePanel._handle_drop's identical fix (2026-08-08, see
+        NOTES.md)."""
+        pos = event.position().toPoint() if hasattr(event, 'position') else event.pos()
+        if source_obj is self.tree:
+            return self.tree.viewport().mapFrom(self.tree, pos)
+        return pos
+
+    def _deviation_item_at(self, event, source_obj):
+        """Return the DEV_T tree item under the drag position, or None."""
+        pos = self._event_pos_in_viewport(event, source_obj)
+        target = self.tree.itemAt(pos)
+        if target is None or target.data(0, Qt.ItemDataRole.UserRole + 1) != DEV_T:
+            return None
+        return target
+
+    def _handle_equipment_drop(self, event, source_obj):
+        text = event.mimeData().text()
+        parts = text.split(':')
+        if len(parts) < 3:
+            event.ignore(); return
+        ids_field = parts[2]
+        try:
+            marker_ids = [int(s) for s in ids_field.split(',') if s.strip()]
+        except ValueError:
+            event.ignore(); return
+        if not marker_ids:
+            event.ignore(); return
+
+        target = self._deviation_item_at(event, source_obj)
+        if target is None:
+            event.ignore(); return
+        dev_id = target.data(0, Qt.ItemDataRole.UserRole)
+        if dev_id is None:
+            event.ignore(); return
+
+        self.equipment_dropped_on_deviation.emit(dev_id, marker_ids)
+        event.acceptProposedAction()
 
     def _add_cause_for_deviation(self, dev_id):
         self._open_cause_picker_for_deviation(dev_id)
@@ -10011,7 +10127,15 @@ class _ScenarioDelegate(QStyledItemDelegate):
 
         wrap_cols = {panel._C_ORS, panel._C_KON}
         if col not in wrap_cols:
-            # Non-wrap columns (risk cells, SG) stay at one compact line
+            if col == panel._C_SG:
+                # SG's description never word-wraps (unlike ORS/KON), so the
+                # only extra height it ever needs is the tag strip itself
+                # when a tag has been drag-and-dropped onto it (2026-08-08,
+                # see NOTES.md) — no boundingRect() computation needed.
+                comp_type, comp_tag = index.data(Qt.ItemDataRole.UserRole + 6) or ('', '')
+                strip_h = 17 if (comp_tag or comp_type) else 0
+                return QSize(option.rect.width(), strip_h + one_line_h)
+            # Non-wrap columns (risk cells) stay at one compact line
             base = super().sizeHint(option, index)
             return QSize(base.width(), one_line_h)
 
@@ -10204,6 +10328,13 @@ class _PidDelegate(_ScenarioDelegate):
                                      max(10, r.width() - offset - _KON_CHAIN_W),
                                      max(10, r.height() - top_offset)))
             return
+        elif col == self._panel._C_SG:
+            comp_type, comp_tag = index.data(Qt.ItemDataRole.UserRole + 6) or ('', '')
+            top_offset = 17 if (comp_tag or comp_type) else 0
+            editor.setGeometry(QRect(r.left() + _PID_ICON_W, r.top() + top_offset,
+                                     max(10, r.width() - _PID_ICON_W),
+                                     max(10, r.height() - top_offset)))
+            return
         else:
             offset = _PID_ICON_W
         editor.setGeometry(QRect(r.left() + offset, r.top(),
@@ -10227,11 +10358,45 @@ class _PidDelegate(_ScenarioDelegate):
                 else:
                     painter.fillRect(r, option.palette.base())
 
+                # ── Tag strip (top row) — mirrors the KON column's tag strip,
+                # only shown when a tag has been drag-and-dropped onto this
+                # safeguard (2026-08-08, see NOTES.md) — an untagged
+                # safeguard looks exactly as it always has.
+                _SH = 17
+                comp_type, comp_tag = index.data(Qt.ItemDataRole.UserRole + 6) or ('', '')
+                has_tag = bool(comp_tag or comp_type)
+                if has_tag:
+                    strip_rect = QRect(r.left(), r.top(), r.width(), _SH)
+                    strip_bg = (option.palette.highlight().color().darker(110) if sel
+                                else QColor('#F5F5F3'))
+                    painter.fillRect(strip_rect, strip_bg)
+                    painter.setPen(QPen(QColor('#bcd'), 1))
+                    painter.drawLine(r.left(), r.top() + _SH, r.right(), r.top() + _SH)
+                    tf = QFont(option.font)
+                    tf.setPointSize(max(6, option.font.pointSize() - 1))
+                    tf.setBold(True)
+                    painter.setFont(tf)
+                    tag_tc = (option.palette.highlightedText().color() if sel
+                              else QColor('#17191C'))
+                    painter.setPen(tag_tc)
+                    tag_rect = QRect(r.left() + _PID_ICON_W, r.top(),
+                                     r.width() - _PID_ICON_W - 4, _SH)
+                    painter.drawText(tag_rect.adjusted(2, 0, -1, 0),
+                                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                                     painter.fontMetrics().elidedText(
+                                         comp_tag, Qt.TextElideMode.ElideRight,
+                                         tag_rect.width() - 3))
+                    body_top = r.top() + _SH
+                    body_h   = max(0, r.height() - _SH)
+                else:
+                    body_top = r.top()
+                    body_h   = r.height()
+
                 # Layout: [pin 22px][description ...][RRF badge 54px]
                 desc_w    = r.width() - _PID_ICON_W - _RRF_W
-                pin_rect  = QRect(r.left(), r.top(), _PID_ICON_W, r.height())
-                desc_rect = QRect(r.left() + _PID_ICON_W, r.top(), desc_w, r.height())
-                rrf_rect  = QRect(r.right() - _RRF_W, r.top(), _RRF_W, r.height())
+                pin_rect  = QRect(r.left(), body_top, _PID_ICON_W, body_h)
+                desc_rect = QRect(r.left() + _PID_ICON_W, body_top, desc_w, body_h)
+                rrf_rect  = QRect(r.right() - _RRF_W, body_top, _RRF_W, body_h)
 
                 # Description text (elided to one line)
                 desc = index.data(Qt.ItemDataRole.DisplayRole) or ''
@@ -11714,6 +11879,20 @@ class ScenarioTablePanel(QWidget):
                                 max_h = h
                         continue
 
+                    if col == self._C_SG:
+                        # SG's description never word-wraps — the only
+                        # extra height it needs is the tag strip itself
+                        # when drag-and-dropped-tagged (2026-08-08, see
+                        # NOTES.md), same rule as _ScenarioDelegate.sizeHint.
+                        sg_item = table.item(row, col)
+                        comp_type, comp_tag = (sg_item.data(Qt.ItemDataRole.UserRole + 6)
+                                               if sg_item else None) or ('', '')
+                        strip_h = 17 if (comp_tag or comp_type) else 0
+                        h = strip_h + one_line_h
+                        if h > max_h:
+                            max_h = h
+                        continue
+
                     if col not in wrap_cols:
                         # Fixed one-line columns (matches _ScenarioDelegate's
                         # non-wrap branch) — no font-metric work needed.
@@ -12049,7 +12228,10 @@ class ScenarioTablePanel(QWidget):
             excl_cause_names = [desc for cid2, desc, _ in cause_popup_list
                                 if cid2 in excl_cause_ids]
             sg_item.setData(Qt.ItemDataRole.UserRole + 5, excl_cause_names)
-            tip = "Dubbelklicka för att redigera\nEnter för att lägga till ny barriär\nKlicka på RRF-kolumnen för att ändra värdet"
+            sg_item.setData(Qt.ItemDataRole.UserRole + 6, (sg.get('comp_type') or '',
+                                                            sg.get('comp_tag')  or ''))
+            tip = "Dra en utrustningsmarkör hit (håll Shift) för att sätta tag\n" \
+                  "Dubbelklicka för att redigera\nEnter för att lägga till ny barriär\nKlicka på RRF-kolumnen för att ändra värdet"
             if excl_cat_names:
                 tip += "\n⚠ Gäller ej för kategori: " + ", ".join(excl_cat_names)
             if excl_cause_names:
@@ -13350,7 +13532,6 @@ class ScenarioTablePanel(QWidget):
             return
         kind, item_id_s, src_row_s = parts[1], parts[2], parts[3]
         try:
-            item_id = int(item_id_s)
             src_row = int(src_row_s)
         except ValueError:
             return
@@ -13374,6 +13555,41 @@ class ScenarioTablePanel(QWidget):
             event.ignore(); return
 
         tgt_dev, tgt_cause, tgt_cons, tgt_sg = self._row_meta[tgt_row]
+
+        if kind in ('equipment', 'equipment-multi'):
+            # Shift-drag of one or more P&ID equipment markers onto a KON
+            # or SG cell — attaches the FIRST dragged marker's tag/type to
+            # that cell (a single cell can only hold one tag; dragging a
+            # multi-selection here just uses its first member — the rest
+            # of a multi-selection is only meaningful for the HAZOP-tree
+            # drop target, which creates one cause per marker instead —
+            # see TreePanel.dropEvent / NOTES.md). `item_id_s` is a
+            # comma-separated list of equipment_markers.id values (a
+            # single id for the plain 'equipment' kind).
+            try:
+                marker_ids = [int(s) for s in item_id_s.split(',') if s.strip()]
+            except ValueError:
+                event.ignore(); return
+            if not marker_ids:
+                event.ignore(); return
+            equip = self.db.get_equipment_by_marker_id(marker_ids[0])
+            if not equip:
+                event.ignore(); return
+            tag, comp_type = equip.get('tag', ''), equip.get('equipment_type', '')
+            if tgt_col == self._C_KON and tgt_cons is not None:
+                self.db.set_consequence_tag(tgt_cons, tag, comp_type)
+            elif tgt_col == self._C_SG and tgt_sg is not None:
+                self.db.set_safeguard_tag(tgt_sg, tag, comp_type)
+            else:
+                event.ignore(); return
+            self._schedule_rebuild()
+            event.acceptProposedAction()
+            return
+
+        try:
+            item_id = int(item_id_s)
+        except ValueError:
+            return
 
         if kind == 'sg':
             if tgt_cons is None or tgt_cons == self._row_meta[src_row][2]:
@@ -13406,24 +13622,6 @@ class ScenarioTablePanel(QWidget):
                 self.db.move_cause_to_deviation(item_id, tgt_dev)
             self._schedule_rebuild()
             QTimer.singleShot(0, self.structure_changed.emit)
-            event.acceptProposedAction()
-
-        elif kind == 'equipment':
-            # Shift-drag of a P&ID equipment marker onto a KON cell — attaches
-            # its tag/type to that consequence. `item_id` here is
-            # equipment_markers.id (the marker), not equipment_catalog.id —
-            # same distinction _on_marker_clicked already resolves.
-            if tgt_cons is None or tgt_col != self._C_KON:
-                event.ignore(); return
-            marker = self.db.conn.execute(
-                "SELECT equipment_id FROM equipment_markers WHERE id=?", (item_id,)).fetchone()
-            if not marker or marker['equipment_id'] is None:
-                event.ignore(); return
-            equip = self.db.get_equipment_by_id(marker['equipment_id'])
-            if not equip:
-                event.ignore(); return
-            self.db.set_consequence_tag(tgt_cons, equip.get('tag', ''), equip.get('equipment_type', ''))
-            self._schedule_rebuild()
             event.acceptProposedAction()
 
     # ── Feature 4 & 5: Context menu ───────────────────────────────────────────
@@ -18162,6 +18360,8 @@ class MainWindow(QMainWindow):
         self.scenario_panel.structure_changed.connect(
             lambda: (self.tree_panel.refresh(), self.pid_panel.reload_overlays()))
 
+        self.tree_panel.equipment_dropped_on_deviation.connect(
+            self._on_equipment_dropped_on_deviation)
         self.tree_panel.add_causes_on_pid_requested.connect(self._on_add_causes_on_pid_tree)
         self.tree_panel.add_consequences_on_pid_requested.connect(
             self._on_add_consequences_on_pid)
@@ -18723,6 +18923,34 @@ class MainWindow(QMainWindow):
 
         popup.committed.connect(_on_picked)
         popup.exec()
+
+    def _on_equipment_dropped_on_deviation(self, dev_id, marker_ids):
+        """One or more equipment markers dragged from the P&ID onto a
+        deviation in the HAZOP tree (2026-08-08, see NOTES.md) — creates
+        one empty, tagged cause per marker directly (no popup), same
+        immediate-inline-editable spirit as the worksheet/tree "+"
+        auto-consequence feature. If the equipment has no node yet, it's
+        assigned to the deviation's own node — same "slipp välja nod varje
+        gång" convenience rule EquipmentDeviationBar.load() already uses."""
+        dev = self.db.get_deviation(dev_id)
+        if not dev:
+            return
+        node_id = dev['node_id']
+        last_cause_id = None
+        for marker_id in marker_ids:
+            equip = self.db.get_equipment_by_marker_id(marker_id)
+            if not equip:
+                continue
+            if equip.get('node_id') is None and node_id is not None:
+                self.db.set_equipment_node(equip['id'], node_id)
+            cause_id, _cons_id = _create_tagged_cause(
+                self.db, dev_id, equip.get('equipment_type', ''), equip.get('tag', ''))
+            last_cause_id = cause_id
+        if last_cause_id is not None:
+            self.tree_panel.refresh(CAUSE_T, last_cause_id)
+            self.scenario_panel.refresh_placed()
+            if node_id is not None:
+                self.scenario_panel.load_node(node_id)
 
     def _on_add_consequences_on_pid(self, cause_id):
         """Right-click cause → 'Lägg till konsekvens på P&ID'."""

@@ -3500,6 +3500,15 @@ class PIDGraphicsView(QGraphicsView):
         # (see mousePressEvent/mouseMoveEvent) — armed on Shift+press over a
         # marker, consumed by mouseMoveEvent once the drag distance is exceeded.
         self._equip_drag_candidate = None
+        # Multi-select of equipment markers (2026-08-08, see NOTES.md):
+        # Ctrl+click toggles one marker in/out, Ctrl+drag rubber-bands
+        # several at once; a Shift-drag started from a marker that's part
+        # of a >=2-member selection then drags the whole group.
+        self._selected_equipment_markers: set = set()
+        self._equip_selection_overlays: dict = {}   # marker_id -> highlight QGraphicsItem
+        self._ctrl_rband_start_scene  = None
+        self._ctrl_rband_dragging     = False
+        self._ctrl_rband_preview_item = None
         # Per-type marker tracking for visibility toggle
         self._type_items: dict = {'cause': [], 'consequence': [], 'safeguard': [], 'equipment': []}
         self._type_visible: dict = {'cause': True, 'consequence': True, 'safeguard': True, 'equipment': True}
@@ -5039,6 +5048,49 @@ class PIDGraphicsView(QGraphicsView):
         if not self._type_visible.get(marker_type, True):
             item.setVisible(False)
 
+    # ── Equipment marker multi-select (2026-08-08, see NOTES.md) ───────────
+    def _find_equipment_item(self, marker_id):
+        for item in self._type_items.get('equipment', []):
+            if item.data(self._DATA_TYPE) == 'equipment' and item.data(self._DATA_ID) == marker_id:
+                return item
+        return None
+
+    def _select_equipment_marker(self, marker_id):
+        if marker_id in self._selected_equipment_markers:
+            return
+        self._selected_equipment_markers.add(marker_id)
+        item = self._find_equipment_item(marker_id)
+        if item is None:
+            return
+        # A separate highlight overlay (not a pen change on the marker
+        # itself) — avoids having to know/restore whatever pen color the
+        # marker's own "has deviations?" state already uses.
+        rect = item.mapRectToScene(item.boundingRect()).adjusted(-3, -3, 3, 3)
+        pen = QPen(QColor(30, 110, 220), 2.5)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        pen.setCosmetic(True)
+        overlay = self._scene.addRect(rect, pen, QBrush(Qt.BrushStyle.NoBrush))
+        overlay.setZValue(Z_OVERLAY + 5)
+        self._equip_selection_overlays[marker_id] = overlay
+
+    def _deselect_equipment_marker(self, marker_id):
+        self._selected_equipment_markers.discard(marker_id)
+        overlay = self._equip_selection_overlays.pop(marker_id, None)
+        if overlay is not None:
+            try: self._scene.removeItem(overlay)
+            except RuntimeError as e: logging.warning(f"Failed to remove selection overlay: {e}")
+
+    def _toggle_equipment_selection(self, marker_id):
+        if marker_id in self._selected_equipment_markers:
+            self._deselect_equipment_marker(marker_id)
+        else:
+            self._select_equipment_marker(marker_id)
+
+    def _clear_equipment_selection(self):
+        for marker_id in list(self._equip_selection_overlays.keys()):
+            self._deselect_equipment_marker(marker_id)
+        self._selected_equipment_markers.clear()
+
     def set_marker_visibility(self, marker_type: str, visible: bool):
         """Show or hide all markers of a given type."""
         self._type_visible[marker_type] = visible
@@ -5841,6 +5893,38 @@ class PIDGraphicsView(QGraphicsView):
                     self._equip_drag_candidate = (int(iid), event.position())
                     break
 
+        # ── Ctrl+click: toggle one marker in/out of the multi-selection.
+        # Ctrl+drag over empty canvas: arm a rubber-band to select several
+        # at once (2026-08-08, see NOTES.md). Mutually exclusive with the
+        # Shift-drag above — Ctrl selects, Shift drags, never both at once.
+        if (self.mode == MODE_NAV and event.button() == Qt.MouseButton.LeftButton and
+                event.modifiers() & Qt.KeyboardModifier.ControlModifier and
+                not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier)):
+            hit_marker = None
+            for item in self._scene.items(sp):
+                itype = item.data(self._DATA_TYPE)
+                iid   = item.data(self._DATA_ID)
+                if itype == 'equipment' and iid is not None:
+                    hit_marker = int(iid)
+                    break
+            if hit_marker is not None:
+                self._toggle_equipment_selection(hit_marker)
+            else:
+                self._ctrl_rband_start_scene = sp
+                self._ctrl_rband_dragging    = False
+            self._press_pos = None
+            event.accept(); return
+
+        # Plain click (no Ctrl, no Shift) clears any existing multi-
+        # selection — same convention as file managers/desktop icons. Not
+        # an early return: the normal click-dispatch (open
+        # EquipmentDeviationBar etc., in mouseReleaseEvent) still applies.
+        if (self.mode == MODE_NAV and event.button() == Qt.MouseButton.LeftButton and
+                not (event.modifiers() & (Qt.KeyboardModifier.ControlModifier |
+                                          Qt.KeyboardModifier.ShiftModifier)) and
+                self._selected_equipment_markers):
+            self._clear_equipment_selection()
+
         if self.mode == MODE_NODE:
             if event.button() == Qt.MouseButton.LeftButton:
                 self._add_draw_point(sp); event.accept(); return
@@ -6020,6 +6104,28 @@ class PIDGraphicsView(QGraphicsView):
                 self._show_context_menu(sp, event.globalPosition().toPoint())
             event.accept(); return
 
+        # ── Ctrl+drag rubber band end — commit the multi-selection ─────────────
+        # (2026-08-08, see NOTES.md). Adds to the existing selection rather
+        # than replacing it, so repeated Ctrl-drags can build up a group.
+        if (event.button() == Qt.MouseButton.LeftButton and
+                self._ctrl_rband_start_scene is not None):
+            if self._ctrl_rband_dragging:
+                sp = self.mapToScene(event.position().toPoint())
+                if self._ctrl_rband_preview_item is not None:
+                    try: self._scene.removeItem(self._ctrl_rband_preview_item)
+                    except RuntimeError as e: logging.warning(f"Failed to remove ctrl rubber-band preview: {e}")
+                    self._ctrl_rband_preview_item = None
+                band_rect = QRectF(self._ctrl_rband_start_scene, sp).normalized()
+                for item in self._type_items.get('equipment', []):
+                    marker_id = item.data(self._DATA_ID)
+                    if (item.data(self._DATA_TYPE) == 'equipment' and marker_id is not None and
+                            band_rect.intersects(item.mapRectToScene(item.boundingRect()))):
+                        self._select_equipment_marker(int(marker_id))
+            self._ctrl_rband_start_scene = None
+            self._ctrl_rband_dragging    = False
+            self._press_pos = None
+            event.accept(); return
+
         # ── Rect-select release for cause/consequence/safeguard ───────────────
         if (event.button() == Qt.MouseButton.LeftButton and
                 self.mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD,
@@ -6129,10 +6235,20 @@ class PIDGraphicsView(QGraphicsView):
                 self._equip_drag_candidate = None
                 self._press_pos = None  # prevent mouseReleaseEvent's click-dispatch from also firing
                 mime = QMimeData()
-                mime.setText(f'hzp:equipment:{marker_id}:-1:-1')
+                # Dragging a marker that's part of a >=2-member multi-
+                # selection (2026-08-08, see NOTES.md) drags the WHOLE
+                # group, not just the one under the cursor; otherwise
+                # unchanged single-marker behaviour.
+                if (len(self._selected_equipment_markers) >= 2 and
+                        marker_id in self._selected_equipment_markers):
+                    ids_text = ",".join(str(i) for i in sorted(self._selected_equipment_markers))
+                    mime.setText(f'hzp:equipment-multi:{ids_text}:-1:-1')
+                else:
+                    mime.setText(f'hzp:equipment:{marker_id}:-1:-1')
                 drag = QDrag(self)
                 drag.setMimeData(mime)
                 drag.exec(Qt.DropAction.CopyAction)
+                self._clear_equipment_selection()
                 return
         elif self._equip_drag_candidate is not None and not (
                 event.buttons() & Qt.MouseButton.LeftButton and
@@ -6184,6 +6300,30 @@ class PIDGraphicsView(QGraphicsView):
                     try: self._scene.removeItem(self._rband_label_item)
                     except RuntimeError as e: logging.warning(f"Failed to remove dragged label: {e}")
                     self._rband_label_item = None
+            event.accept(); return
+
+        # ── Ctrl+drag rubber band — multi-select equipment markers ────────────
+        # (2026-08-08, see NOTES.md). Distinct orange colour from the
+        # right-drag zone-rubber-band above so the two are never confused.
+        if (self._ctrl_rband_start_scene is not None and
+                event.buttons() & Qt.MouseButton.LeftButton and
+                event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            sp = self.mapToScene(event.position().toPoint())
+            dx = sp.x() - self._ctrl_rband_start_scene.x()
+            dy = sp.y() - self._ctrl_rband_start_scene.y()
+            if not self._ctrl_rband_dragging and dx * dx + dy * dy > 25:
+                self._ctrl_rband_dragging = True
+            if self._ctrl_rband_dragging:
+                rect = QRectF(self._ctrl_rband_start_scene, sp).normalized()
+                if self._ctrl_rband_preview_item is None:
+                    pen = QPen(QColor(230, 140, 0), 1.5)
+                    pen.setStyle(Qt.PenStyle.DashLine)
+                    pen.setCosmetic(True)
+                    self._ctrl_rband_preview_item = self._scene.addRect(
+                        rect, pen, QBrush(QColor(230, 140, 0, 28)))
+                    self._ctrl_rband_preview_item.setZValue(Z_TEMP)
+                else:
+                    self._ctrl_rband_preview_item.setRect(rect)
             event.accept(); return
 
         if self.mode == MODE_MARKUP_SELECT and self._drag_mode is not None:
