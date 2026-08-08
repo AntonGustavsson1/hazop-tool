@@ -12903,17 +12903,29 @@ class ScenarioTablePanel(QWidget):
                 return True
 
         # ── Drop events on table ──────────────────────────────────────────────
-        if obj is self._table and event.type() == QEvent.Type.DragEnter:
+        # Qt/PyQt6 delivers DragEnter/DragMove/Drop to whichever widget is
+        # actually under the cursor — for a QAbstractItemView-based widget
+        # like QTableWidget that's the VIEWPORT, not the outer table widget
+        # (the viewport is the real scrollable surface; the outer widget is
+        # just its frame). Checking only `obj is self._table` here meant
+        # this branch never matched for a REAL cross-widget drag (e.g. the
+        # Shift-drag-a-tag-from-P&ID feature), so the drop silently did
+        # nothing — this only worked at all in tests because they called
+        # _handle_drop() directly, bypassing event delivery entirely (see
+        # NOTES.md "Drag-and-drop till KON fungerade inte i praktiken").
+        # Accept either object defensively rather than betting on one.
+        _drop_targets = (self._table, self._table.viewport())
+        if obj in _drop_targets and event.type() == QEvent.Type.DragEnter:
             if event.mimeData().hasText() and event.mimeData().text().startswith('hzp:'):
                 event.acceptProposedAction()
                 return True
-        if obj is self._table and event.type() == QEvent.Type.DragMove:
+        if obj in _drop_targets and event.type() == QEvent.Type.DragMove:
             if event.mimeData().hasText() and event.mimeData().text().startswith('hzp:'):
                 event.acceptProposedAction()
                 return True
-        if obj is self._table and event.type() == QEvent.Type.Drop:
+        if obj in _drop_targets and event.type() == QEvent.Type.Drop:
             if event.mimeData().hasText() and event.mimeData().text().startswith('hzp:'):
-                self._handle_drop(event)
+                self._handle_drop(event, source_obj=obj)
                 return True
 
         # Viewport mouse: detect LEFT-click in icon strip or RRF row
@@ -13329,7 +13341,7 @@ class ScenarioTablePanel(QWidget):
                   else Qt.DropAction.MoveAction | Qt.DropAction.CopyAction)
         drag.exec(action)
 
-    def _handle_drop(self, event):
+    def _handle_drop(self, event, source_obj=None):
         text = event.mimeData().text()
         if not text.startswith('hzp:'):
             return
@@ -13344,10 +13356,18 @@ class ScenarioTablePanel(QWidget):
             return
         is_copy = bool(event.dropAction() == Qt.DropAction.CopyAction)
 
-        # Find target row/col from drop position
-        vp_pos = self._table.viewport().mapFrom(self._table,
-                 event.position().toPoint() if hasattr(event, 'position')
-                 else event.pos())
+        # Find target row/col from drop position. The event's position is
+        # relative to whichever widget it was actually delivered to
+        # (source_obj) — only remap it into viewport coordinates when it
+        # came in relative to the outer table widget; if it's already
+        # viewport-relative (the common case — see the eventFilter comment
+        # above), remapping again would shift it by the header/frame
+        # offset a second time and silently miss the target row.
+        pos = event.position().toPoint() if hasattr(event, 'position') else event.pos()
+        if source_obj is self._table:
+            vp_pos = self._table.viewport().mapFrom(self._table, pos)
+        else:
+            vp_pos = pos
         tgt_row = self._table.rowAt(vp_pos.y())
         tgt_col = self._table.columnAt(vp_pos.x())
         if tgt_row < 0 or tgt_row >= len(self._row_meta):

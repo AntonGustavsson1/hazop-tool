@@ -5731,6 +5731,129 @@ class EquipmentTagDragToConsequenceTests(unittest.TestCase):
             self.assertEqual(comp_type, '')
 
 
+class DropEventRoutedToViewportTests(unittest.TestCase):
+    """Real bug report (2026-08-08): Shift-dragging an equipment tag onto a
+    KON cell did nothing on drop. Root cause: for a QAbstractItemView-based
+    widget like QTableWidget, Qt/PyQt6 delivers DragEnter/DragMove/Drop
+    events to the VIEWPORT (the actual scrollable surface under the
+    cursor), not the outer QTableWidget — but ScenarioTablePanel's
+    eventFilter only ever checked `obj is self._table`, so this branch
+    never matched for a real cross-widget drag and the drop was silently
+    ignored. _handle_drop() also unconditionally called
+    self._table.viewport().mapFrom(self._table, pos), which — for a
+    position already relative to the viewport — shifts it by the
+    header/frame offset a SECOND time, landing on the wrong row (or no
+    row at all, tgt_row=-1).
+
+    These tests exercise ScenarioTablePanel.eventFilter() itself (not
+    _handle_drop() directly, which earlier tests in
+    EquipmentTagDragToConsequenceTests already cover and which is why that
+    class's own tests didn't catch this — they bypassed the exact routing
+    layer that was actually broken)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def _make_full_chain(self, db):
+        node_id = db.add_node()
+        deviation_id = db.deviations(node_id)[0]['id']
+        cause_id = db.add_cause(deviation_id)
+        cons_id = db.add_consequence(cause_id)
+        return node_id, deviation_id, cause_id, cons_id
+
+    def _make_drop_event(self, panel, text, tgt_row, tgt_col, pos):
+        from PyQt6.QtCore import QEvent, QMimeData
+        mime = QMimeData()
+        mime.setText(text)
+        event = unittest.mock.MagicMock()
+        event.type.return_value = QEvent.Type.Drop
+        event.mimeData.return_value = mime
+        event.position.return_value = pos
+        event.dropAction.return_value = Qt.DropAction.CopyAction
+        return event
+
+    def test_drop_event_on_viewport_is_routed_and_attaches_tag(self):
+        """The realistic case: Qt delivers the Drop event to
+        table.viewport() with a viewport-relative position — this must be
+        used AS-IS (no extra remapping) to find the right row."""
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            _n, _d, cause_id, cons_id = self._make_full_chain(win.db)
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+
+            eq_id = win.db.add_equipment_item("HV-101", "HV-101", "HV", 0, "Ventil", '', 0)
+            marker_id = win.db.add_equipment_marker(
+                eq_id, "HV-101", 0, 10.0, 10.0, "Ventil", confidence=0.9,
+                link_method='leader')
+
+            from PyQt6.QtCore import QPointF
+            vp_x = panel._table.columnViewportPosition(panel._C_KON) + 2
+            vp_y = panel._table.rowViewportPosition(row) + 2
+            viewport_pos = QPointF(vp_x, vp_y)
+
+            event = self._make_drop_event(
+                panel, f'hzp:equipment:{marker_id}:-1:-1', row, panel._C_KON, viewport_pos)
+
+            handled = panel.eventFilter(panel._table.viewport(), event)
+
+            self.assertTrue(handled, "eventFilter must consume a Drop delivered to the viewport")
+            cons = dict(win.db.get_consequence(cons_id))
+            self.assertEqual(cons['comp_tag'], "HV-101")
+
+    def test_drop_event_on_outer_table_widget_still_works(self):
+        """Defensive fallback: if some Qt version/platform instead delivers
+        the event to the outer table widget with a table-relative
+        position, that must still be remapped correctly (the ORIGINAL,
+        pre-bug behavior) rather than assumed to never happen."""
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            _n, _d, cause_id, cons_id = self._make_full_chain(win.db)
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+
+            eq_id = win.db.add_equipment_item("P-202", "P-202", "P", 0, "Pump", '', 0)
+            marker_id = win.db.add_equipment_marker(
+                eq_id, "P-202", 0, 10.0, 10.0, "Pump", confidence=0.9,
+                link_method='leader')
+
+            from PyQt6.QtCore import QPointF
+            vp_x = panel._table.columnViewportPosition(panel._C_KON) + 2
+            vp_y = panel._table.rowViewportPosition(row) + 2
+            # Convert to TABLE-relative coordinates, matching what the event
+            # would carry if Qt delivered it to the outer widget instead.
+            table_pos = panel._table.viewport().mapTo(panel._table, QPointF(vp_x, vp_y).toPoint())
+
+            event = self._make_drop_event(
+                panel, f'hzp:equipment:{marker_id}:-1:-1', row, panel._C_KON,
+                QPointF(table_pos))
+
+            handled = panel.eventFilter(panel._table, event)
+
+            self.assertTrue(handled, "eventFilter must consume a Drop delivered to the outer table")
+            cons = dict(win.db.get_consequence(cons_id))
+            self.assertEqual(cons['comp_tag'], "P-202")
+
+    def test_drag_enter_on_viewport_is_accepted(self):
+        """If DragEnter is never accepted, most platforms never even
+        deliver the subsequent Drop — this is the first domino, and it
+        must fire for the viewport, not just the outer table widget."""
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            from PyQt6.QtCore import QEvent, QMimeData
+            mime = QMimeData()
+            mime.setText('hzp:equipment:1:-1:-1')
+            event = unittest.mock.MagicMock()
+            event.mimeData.return_value = mime
+            event.type.return_value = QEvent.Type.DragEnter
+
+            handled = panel.eventFilter(panel._table.viewport(), event)
+
+            self.assertTrue(handled)
+            event.acceptProposedAction.assert_called_once()
+
+
 class EquipmentObjectPlacementTests(unittest.TestCase):
     """P&ID right-click -> "🔧 Objekt" (2026-08-07, see NOTES.md) —
     PIDPanel.place_equipment_marker resolves an existing equipment_catalog
