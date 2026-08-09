@@ -3801,6 +3801,36 @@ class BowtieValveDetectionTests(unittest.TestCase):
             doc.close()
         self.assertEqual(results, [], "a plain instrument bubble (no impeller diagonal) must not be reported as a pump")
 
+    def test_find_pump_shapes_ignores_title_block_corner(self):
+        """A pump-shaped hit in the bottom-right title-block corner is
+        excluded (2026-08-10, see NOTES.md known limitations, fixed) — a
+        real ITS P&ID had a stylized company logo there false-positive as
+        a pump. The same shape at page center (test above) still counts."""
+        from equipment_detection import find_pump_shapes
+        import fitz
+        path = os.path.join(self._tmpdir, "pump_titleblock.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=200, height=200)
+        # Bottom-right corner for a 200x200 page with the (0.20, 0.10)
+        # fraction is x>=160, y>=180 — center the pump well inside that.
+        shape = page.new_shape()
+        shape.draw_circle(fitz.Point(185, 190), 10)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(185, 183), fitz.Point(195, 190))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(195, 190), fitz.Point(185, 197))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        doc.save(path)
+        doc.close()
+
+        doc = fitz.open(path)
+        try:
+            results = find_pump_shapes(doc)
+        finally:
+            doc.close()
+        self.assertEqual(results, [], "a pump-shaped hit inside the title-block corner must be excluded")
+
     def test_find_instrument_shapes_detects_divided_capsule(self):
         """find_instrument_shapes() — the instrument counterpart to
         find_valve_shapes()/find_pump_shapes(), added after studying a
@@ -7207,6 +7237,30 @@ class EquipmentTagPopupDuplicateHintTests(unittest.TestCase):
             self.assertEqual(popup._dup_hint.text(), "")
         finally:
             popup.deleteLater()
+
+
+class NumericPrefixParsingTests(unittest.TestCase):
+    """_equip_prefix_from_tag/_parse_tag used to treat a purely numeric
+    text span (e.g. a title-block date "2019-09-30") as a valid
+    equipment tag with prefix "2019" (2026-08-10, see NOTES.md known
+    limitations — fixed). A prefix must contain at least one letter."""
+
+    def test_date_like_string_has_no_prefix(self):
+        from equipment_detection import _equip_prefix_from_tag
+        self.assertEqual(_equip_prefix_from_tag("2019-09-30"), '')
+
+    def test_pure_digit_string_has_no_prefix(self):
+        from equipment_detection import _equip_prefix_from_tag
+        self.assertEqual(_equip_prefix_from_tag("123456"), '')
+
+    def test_real_tag_prefix_still_works(self):
+        from equipment_detection import _equip_prefix_from_tag
+        self.assertEqual(_equip_prefix_from_tag("PCV-101"), 'PCV')
+        self.assertEqual(_equip_prefix_from_tag("HV0063"), 'HV')
+
+    def test_parse_tag_rejects_date_like_string(self):
+        from equipment_detection import _parse_tag
+        self.assertEqual(_parse_tag("2019-09-30"), (None, None))
 
 
 if __name__ == '__main__':

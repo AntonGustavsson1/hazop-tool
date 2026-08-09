@@ -494,7 +494,15 @@ def _equip_prefix_from_tag(tag: str) -> str:
 
     # 6. Any leading letters from the first non-empty part
     first = next((lead for lead, _ in candidates if lead), '')
-    return first or (parts[0] if parts else tag)
+    if first:
+        return first
+    # A "prefix" must contain at least one letter to mean anything — this
+    # used to fall back to parts[0] unconditionally, which let a purely
+    # numeric text span (e.g. a title-block date "2019-09-30") come back
+    # as prefix "2019" and get treated as a valid equipment tag by callers
+    # like _parse_tag's own last-resort branch (2026-08-10, see NOTES.md).
+    fallback = parts[0] if parts else tag
+    return fallback if re.search(r'[A-Z]', fallback) else ''
 
 # ── Equipment prefix knowledge base ──────────────────────────────────────────
 # Format: prefix → (swedish_display_name, COMPONENT_TYPES key)
@@ -1626,6 +1634,22 @@ _PUMP_MIN_NORM_SIZE = 1.5   # same "plausible symbol size" floor
                             # confirmed on a real Gryaab P&ID to otherwise
                             # pass pump_shapes_in_cluster's shape checks.
 
+# (width_frac, height_frac) reserved in the bottom-right corner of the
+# page for the title block — a stylized company logo there was confirmed
+# (real ITS P&ID) to false-positive as a pump under find_pump_shapes'
+# shape checks (2026-08-10, see NOTES.md known limitations). Deliberately
+# just the CORNER, not a full-width bottom band — real equipment (drains,
+# vents) is routinely drawn near the bottom edge elsewhere on the sheet.
+_TITLE_BLOCK_CORNER_FRAC = (0.20, 0.10)
+
+
+def _in_title_block_corner(cx, cy, page_rect):
+    w, h = page_rect.width, page_rect.height
+    if w <= 0 or h <= 0:
+        return False
+    frac_w, frac_h = _TITLE_BLOCK_CORNER_FRAC
+    return cx >= w * (1 - frac_w) and cy >= h * (1 - frac_h)
+
 
 def find_pump_shapes(pdf_doc, pages=None, progress_callback=None):
     """Scan pages for pump symbols (a circular body with a diagonal
@@ -1685,6 +1709,8 @@ def find_pump_shapes(pdf_doc, pages=None, progress_callback=None):
                 if diag / scale < _PUMP_MIN_NORM_SIZE:
                     continue
                 cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+                if _in_title_block_corner(cx, cy, page.rect):
+                    continue
                 tag, _prefix = find_nearby_tag_text(page, (cx, cy))
                 results.append({
                     'tag': tag or '', 'page': page_num, 'comp_type': 'Pump',
