@@ -3836,11 +3836,15 @@ class Database:
 
         Throttled to at most once per _COMMIT_INTERVAL_S seconds so that
         frequent commits don't hammer the disk, but startup always writes.
+        Returns the backup file's Path on success, or None (throttled or
+        failed) — existing call sites all ignore the return value, so this
+        is purely additive for callers (e.g. a manual "backup now" button)
+        that want to report success/failure to the user.
         """
         import time, sqlite3, datetime as _dt
         now = time.monotonic()
         if not startup and (now - Database._last_backup_ts) < self._COMMIT_INTERVAL_S:
-            return
+            return None
         Database._last_backup_ts = now
         try:
             d   = self._backup_dir()
@@ -3852,8 +3856,9 @@ class Database:
                 self.conn.backup(bk_conn)
             bk_conn.close()
             self._prune_backups(d)
+            return dst
         except Exception:
-            pass   # never crash the app due to backup failure
+            return None   # never crash the app due to backup failure
 
     def _prune_backups(self, d: 'Path'):
         """Remove old backups according to retention policy (rate-limited to once/hour)."""
@@ -16783,7 +16788,14 @@ class StudyManagementPanel(QWidget):
         bar = QHBoxLayout()
         refresh_btn = QPushButton("🔄 Uppdatera")
         refresh_btn.clicked.connect(self.refresh)
-        bar.addWidget(refresh_btn); bar.addStretch()
+        bar.addWidget(refresh_btn)
+        backup_btn = QPushButton("💾 Skapa säkerhetskopia nu")
+        backup_btn.setToolTip(
+            "Automatiska säkerhetskopior sparas redan löpande i hazop_backups/ — "
+            "denna knapp tvingar fram en omedelbar kopia, utan att vänta på nästa automatiska tillfälle.")
+        backup_btn.clicked.connect(self._backup_now)
+        bar.addWidget(backup_btn)
+        bar.addStretch()
         stats_layout.addLayout(bar)
 
         self._table = QTableWidget(0, 8)
@@ -16814,6 +16826,16 @@ class StudyManagementPanel(QWidget):
         tabs.addTab(self._pid_mgmt, "PID-hantering")
 
         self.refresh()
+
+    def _backup_now(self):
+        dst = self.db._write_backup(startup=True)   # startup=True bypasses the throttle
+        if dst is not None:
+            QMessageBox.information(self, "Säkerhetskopia skapad",
+                f"Sparade en säkerhetskopia:\n{dst}")
+        else:
+            QMessageBox.warning(self, "Säkerhetskopiering misslyckades",
+                "Kunde inte skapa säkerhetskopian. Kontrollera att det finns "
+                "diskutrymme och skrivbehörighet i projektmappen.")
 
     def refresh(self):
         s = self.db.stats()

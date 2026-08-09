@@ -498,6 +498,71 @@ class BackupSystemTests(unittest.TestCase):
             self.db.get_node(node_id),
             "delete_node() must still delete the node even when the backup call raises")
 
+    def test_write_backup_returns_path_on_success(self):
+        """_write_backup()'s return value feeds the manual 'Skapa
+        säkerhetskopia nu' button's success/failure message (2026-08-09,
+        see NOTES.md) — existing throttled/startup call sites all ignore
+        it, so this is purely additive."""
+        dst = self.db._write_backup(startup=True)
+        self.assertIsNotNone(dst)
+        self.assertTrue(Path(dst).exists())
+
+    def test_write_backup_returns_none_when_throttled(self):
+        self.db._write_backup(startup=True)
+        dst = self.db._write_backup(startup=False)   # immediately after — within throttle window
+        self.assertIsNone(dst)
+
+    def test_write_backup_returns_none_on_failure(self):
+        with unittest.mock.patch(
+                'sqlite3.connect',
+                side_effect=sqlite3.OperationalError("disk full")):
+            dst = self.db._write_backup(startup=True)
+        self.assertIsNone(dst)
+
+
+class ManualBackupButtonTests(unittest.TestCase):
+    """StudyManagementPanel's "💾 Skapa säkerhetskopia nu" button forces an
+    immediate, unthrottled backup and reports success/failure to the user
+    (2026-08-09, see NOTES.md) — previously the only way to get a backup
+    was to wait for the automatic throttled/startup ones."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_manualbackup_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        Database._last_backup_ts = 0.0
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_backup_now_shows_success_message_with_path(self):
+        from hazop import StudyManagementPanel
+        panel = StudyManagementPanel(self.db)
+        try:
+            with unittest.mock.patch.object(QMessageBox, 'information') as mock_info:
+                panel._backup_now()
+            self.assertEqual(mock_info.call_count, 1)
+        finally:
+            panel.deleteLater()
+
+    def test_backup_now_shows_warning_on_failure(self):
+        from hazop import StudyManagementPanel
+        panel = StudyManagementPanel(self.db)
+        try:
+            with unittest.mock.patch.object(Database, '_write_backup', return_value=None), \
+                 unittest.mock.patch.object(QMessageBox, 'warning') as mock_warn:
+                panel._backup_now()
+            self.assertEqual(mock_warn.call_count, 1)
+        finally:
+            panel.deleteLater()
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # 2. GUI smoke tests (headless, offscreen)
