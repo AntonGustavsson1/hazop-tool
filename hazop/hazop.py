@@ -3572,12 +3572,6 @@ class Database:
         return self.conn.execute(
             "SELECT * FROM causes WHERE deviation_id=? ORDER BY id", (deviation_id,)).fetchall()
 
-    def causes_linked_from_consequence(self, cons_id):
-        """Return all causes whose linked_consequence_id points to cons_id."""
-        return self.conn.execute(
-            "SELECT * FROM causes WHERE linked_consequence_id=? ORDER BY id",
-            (cons_id,)).fetchall()
-
     def causes_for_node_excluding_deviation(self, node_id, deviation_id):
         """Return causes for the node that belong to OTHER deviations (for reuse dialog)."""
         return self.conn.execute(
@@ -4171,7 +4165,7 @@ class Database:
 
     def update_cause(self, id_, description=None, likelihood=None, base_frequency=_SENTINEL,
                      standard_cause_id=_SENTINEL, comp_type=_SENTINEL, comp_tag=_SENTINEL,
-                     linked_consequence_id=_SENTINEL, base_freq=_SENTINEL):
+                     base_freq=_SENTINEL):
         # Support old parameter name for backward compatibility
         if base_freq is not Database._SENTINEL and base_frequency is Database._SENTINEL:
             base_frequency = base_freq
@@ -4189,8 +4183,6 @@ class Database:
             sets.append("comp_type=?"); vals.append(comp_type)
         if comp_tag is not Database._SENTINEL:
             sets.append("comp_tag=?"); vals.append(comp_tag)
-        if linked_consequence_id is not Database._SENTINEL:
-            sets.append("linked_consequence_id=?"); vals.append(linked_consequence_id)
         if sets:
             vals.append(id_)
             self.conn.execute(f"UPDATE causes SET {', '.join(sets)} WHERE id=?", vals)
@@ -7262,10 +7254,9 @@ class TreePanel(QWidget):
                 nonlocal target
                 for ci, cause in enumerate(self.db.causes_for_deviation(dev_id), 1):
                     placed_c = cause['id'] in marked_causes
-                    chain_icon = "⛓" if cause['linked_consequence_id'] else ""
                     tag    = (cause['comp_tag'] or '').strip() if cause['comp_tag'] else ''
                     c_label = tag if tag else (cause['description'] or '')[:50]
-                    citem = QTreeWidgetItem([f"    ⚙ {chain_icon} {ci}. {c_label}"])
+                    citem = QTreeWidgetItem([f"    ⚙ {ci}. {c_label}"])
                     citem.setIcon(0, _make_pin_icon(placed_c))
                     citem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
                     citem.setData(0, Qt.ItemDataRole.UserRole + 1, CAUSE_T)
@@ -10313,7 +10304,7 @@ class _ScenarioDelegate(QStyledItemDelegate):
             return QSize(option.rect.width(),
                          _STRIP_H + max(one_line_h, rect.height() + 4))
         elif col == panel._C_KON:
-            w -= _PID_ICON_W + _KON_CAT_W + _KON_CHAIN_W
+            w -= _PID_ICON_W + _KON_CAT_W
             comp_type, comp_tag = index.data(Qt.ItemDataRole.UserRole + 7) or ('', '')
             w = max(40, w)
             rect = fm.boundingRect(0, 0, w, 10000, Qt.TextFlag.TextWordWrap, text)
@@ -10328,7 +10319,7 @@ class _ScenarioDelegate(QStyledItemDelegate):
         return QSize(option.rect.width(), max(one_line_h, rect.height() + 4))
 
     def paint(self, painter, option, index):
-        """RFORE/REFT/SLUT (this base delegate — ORS/KON/SG are handled by
+        """RFORE/SLUT (this base delegate — ORS/KON/SG are handled by
         the _PidDelegate subclass installed for those specific columns,
         see ScenarioTablePanel.__init__) need their own custom paint:
         the app-wide QSS rule targeting QTableWidget::item (see CONFIG's
@@ -10350,7 +10341,7 @@ class _ScenarioDelegate(QStyledItemDelegate):
         path unchanged."""
         col = index.column()
         panel = self._panel
-        if col not in (panel._C_RFORE, panel._C_REFT, panel._C_SLUT):
+        if col not in (panel._C_RFORE, panel._C_SLUT):
             super().paint(painter, option, index)
             return
         sel = bool(option.state & QStyle.StateFlag.State_Selected)
@@ -10381,7 +10372,6 @@ class _ScenarioDelegate(QStyledItemDelegate):
 
 _PID_ICON_W  = 22          # pixels reserved on the left for the pin icon
 _KON_CAT_W   = 26          # pixels for the category badge zone in KON cells
-_KON_CHAIN_W = 24          # pixels for the ⛓ chain-link zone on the right of KON cells
 _TAG_CLOSE_W = 16          # "×" zone at the right of a KON/SG tag strip — detaches the tag
 _ORS_COMMENT_W = 22        # 💬 comment icon zone (rightmost of ORS)
 _ORS_CLONE_W   = 22        # 📋 clone-scenario icon zone
@@ -10519,7 +10509,7 @@ class _PidDelegate(_ScenarioDelegate):
             comp_type, comp_tag = index.data(Qt.ItemDataRole.UserRole + 7) or ('', '')
             top_offset = 17 if (comp_tag or comp_type) else 0
             editor.setGeometry(QRect(r.left() + offset, r.top() + top_offset,
-                                     max(10, r.width() - offset - _KON_CHAIN_W),
+                                     max(10, r.width() - offset),
                                      max(10, r.height() - top_offset)))
             return
         elif col == self._panel._C_SG:
@@ -10661,7 +10651,6 @@ class _PidDelegate(_ScenarioDelegate):
             if obj_data is not None:
                 comp_type, comp_tag = obj_data
                 freq_val   = index.data(Qt.ItemDataRole.UserRole + 3)
-                is_chain   = bool(index.data(Qt.ItemDataRole.UserRole + 4))
                 has_tag    = bool(comp_tag or comp_type)
                 base_freq_per_year  = index.data(Qt.ItemDataRole.UserRole + 5)
                 status_icon = index.data(Qt.ItemDataRole.UserRole + 6) or ''
@@ -10693,14 +10682,9 @@ class _PidDelegate(_ScenarioDelegate):
                 desc_rect  = QRect(r.left() + 2, r.top() + _SH,
                                    r.width() - 4, max(0, r.height() - _SH))
 
-                # Strip background — grey normally; chain-linked rows use
-                # the app's own selection-blue family instead of an
-                # unrelated purple (2026-08-09, see NOTES.md), so the one
-                # other "special state" color in this cell matches
-                # everything else that already means "linked/selected".
+                # Strip background
                 if not sel:
-                    strip_bg = QColor('#E6ECFA') if is_chain else QColor('#F5F5F3')
-                    painter.fillRect(strip_rect, strip_bg)
+                    painter.fillRect(strip_rect, QColor('#F5F5F3'))
                 else:
                     painter.fillRect(strip_rect,
                                      option.palette.highlight().color().darker(110))
@@ -10739,10 +10723,6 @@ class _PidDelegate(_ScenarioDelegate):
                                      tfm.elidedText(tag_label,
                                                     Qt.TextElideMode.ElideRight,
                                                     tag_draw_rect.width() - 3))
-                    if is_chain:
-                        painter.setPen(QPen(QColor('#999'), 1))
-                        painter.drawLine(tag_draw_rect.right(), r.top(),
-                                         tag_draw_rect.right(), r.top() + _SH)
                 else:
                     tag_w = 0
 
@@ -10805,7 +10785,7 @@ class _PidDelegate(_ScenarioDelegate):
                 painter.restore()
                 return
 
-        # ── Consequence cells: [pin][cat-badge][description][⛓] ──────────────
+        # ── Consequence cells: [pin][cat-badge][description] ──────────────────
         if col == self._panel._C_KON:
             con_data = index.data(Qt.ItemDataRole.UserRole)
             if con_data and con_data[0] == 'consequence':
@@ -10856,9 +10836,8 @@ class _PidDelegate(_ScenarioDelegate):
 
                 pin_rect   = QRect(r.left(), body_top, _PID_ICON_W, body_h)
                 cat_rect   = QRect(r.left() + _PID_ICON_W, body_top, _KON_CAT_W, body_h)
-                chain_rect = QRect(r.right() - _KON_CHAIN_W, body_top, _KON_CHAIN_W, body_h)
                 txt_rect   = QRect(r.left() + _PID_ICON_W + _KON_CAT_W, body_top,
-                                   r.width() - _PID_ICON_W - _KON_CAT_W - _KON_CHAIN_W, body_h)
+                                   r.width() - _PID_ICON_W - _KON_CAT_W, body_h)
 
                 # Category badges — stacked vertically, one per category
                 n_cats      = index.data(Qt.ItemDataRole.UserRole + 4) or 0
@@ -10901,30 +10880,6 @@ class _PidDelegate(_ScenarioDelegate):
                 _draw_text_with_bold_tags(
                     painter, txt_rect.adjusted(2, 2, -2, -2), display,
                     tagged_refs, option.font, tc, word_wrap=True)
-
-                # ⛓ chain-link zone on the right — uses the app's own
-                # near-black accent instead of a saturated green/dark-grey
-                # pair (2026-08-09, see NOTES.md) so this small always-
-                # visible zone on every KON cell reads as a quiet, minor
-                # control rather than competing for attention.
-                has_linked = bool(index.data(Qt.ItemDataRole.UserRole + 6))
-                if sel:
-                    chain_bg = option.palette.highlight().color().darker(110)
-                    chain_fg = option.palette.highlightedText().color()
-                elif has_linked:
-                    chain_bg = QColor('#17191C')   # near-black — already has linked cause
-                    chain_fg = QColor('#ffffff')
-                else:
-                    chain_bg = QColor('#F5F5F3')   # light grey — click to add
-                    chain_fg = QColor('#8D9299')
-                painter.fillRect(chain_rect, chain_bg)
-                painter.setPen(QPen(QColor('#bbb'), 1))
-                painter.drawLine(chain_rect.left(), r.top(), chain_rect.left(), r.bottom())
-                cf2 = QFont(option.font)
-                cf2.setPointSize(max(7, option.font.pointSize()))
-                painter.setFont(cf2)
-                painter.setPen(chain_fg)
-                painter.drawText(chain_rect, Qt.AlignmentFlag.AlignCenter, "⛓")
 
                 # Pin icon — green once EITHER a real P&ID marker exists OR
                 # an object has been drag-appended (2026-08-09, see NOTES.md)
@@ -11385,7 +11340,7 @@ class ScenarioTablePanel(QWidget):
 
     # Column indices
     _C_NOD, _C_UTR, _C_DEV, _C_ORS, _C_KON, _C_RFORE = 0, 1, 2, 3, 4, 5
-    _C_SG, _C_REFT, _C_LOPA, _C_SLUT                  = 6, 7, 8, 9
+    _C_SG, _C_LOPA, _C_SLUT                           = 6, 7, 8
 
     _COLS = [
         'Nod',
@@ -11395,7 +11350,6 @@ class ScenarioTablePanel(QWidget):
         'Konsekvens',
         'Risk före barriär',
         'Barriärer  →',
-        'Risk efter barriärer',
         'FA / Ant. / Övriga',
         'Slutkonsekvens',
     ]
@@ -11469,7 +11423,6 @@ class ScenarioTablePanel(QWidget):
             self._C_KON:   (QHeaderView.ResizeMode.Interactive, 180),
             self._C_RFORE: (QHeaderView.ResizeMode.Interactive,  85),
             self._C_SG:    (QHeaderView.ResizeMode.Interactive, 160),
-            self._C_REFT:  (QHeaderView.ResizeMode.Interactive,  85),
             self._C_LOPA:  (QHeaderView.ResizeMode.Interactive, 130),
             self._C_SLUT:  (QHeaderView.ResizeMode.Interactive,  85),
         }
@@ -11666,7 +11619,7 @@ class ScenarioTablePanel(QWidget):
         h = self._table.horizontalHeader()
         stretch_cols = {self._C_ORS, self._C_KON, self._C_SG}
         fixed_widths = {
-            self._C_RFORE: 85, self._C_REFT: 85,
+            self._C_RFORE: 85,
             self._C_LOPA:  130, self._C_SLUT: 85,
         }
         if fill:
@@ -11927,13 +11880,7 @@ class ScenarioTablePanel(QWidget):
             _fi = freq_to_idx(freq)
             freq_lbl = FREQ_LABELS[_fi] if _fi < len(FREQ_LABELS) else f'F{freq}'
             first_row_for_cause = self._table.rowCount()
-            # Chain-linked causes display the referenced consequence, not own consequences
-            is_chain_link = bool(cause_d.get('linked_consequence_id'))
-            if is_chain_link:
-                linked_row = self.db.get_consequence(cause_d['linked_consequence_id'])
-                all_cons = [linked_row] if linked_row else []
-            else:
-                all_cons = list(self.db.consequences(cause_d['id']))
+            all_cons = list(self.db.consequences(cause_d['id']))
             if self._cons_id is not None:
                 all_cons = [c for c in all_cons if dict(c)['id'] == self._cons_id]
             for _cons_idx, cons in enumerate(all_cons):
@@ -11946,10 +11893,6 @@ class ScenarioTablePanel(QWidget):
                 n_cats = len(cat_rows)
                 n_sgs  = len(sgs)
                 n_rows = max(n_cats, n_sgs, 1)
-
-                # Does this consequence have chain-linked causes?
-                has_linked_causes = bool(
-                    self.db.causes_linked_from_consequence(cons_d['id']))
 
                 # Precompute exclusions per severity assessment
                 cat_excl_map = {}           # sev_id → set of excluded sg_ids
@@ -11975,24 +11918,18 @@ class ScenarioTablePanel(QWidget):
                 # Full category info for stacked badges in KON cell
                 all_cat_infos = [(cr['category_id'], cr['id'],
                                   cr['name'], cr['severity']) for cr in cat_rows]
-                # Cause list for the RRF popup: build from direct + chain causes
-                _chain_causes = [dict(c) for c in
-                                 self.db.causes_linked_from_consequence(cons_d['id'])]
+                # Cause list for the RRF popup
                 _direct_cause = self.db.get_cause(cons_d.get('cause_id')) if cons_d.get('cause_id') else None
                 cause_popup_list = []
                 if _direct_cause:
                     cause_popup_list.append((dict(_direct_cause)['id'],
                                              dict(_direct_cause)['description'], False))
-                for _cc in _chain_causes:
-                    cause_popup_list.append((_cc['id'], _cc['description'], True))
 
-                # Chain-linked cause rows don't repeat SG column
-                display_n_rows = max(n_cats, 1) if is_chain_link else n_rows
                 logging.info('_build_rows: H1 — cons_id=%s about to add %d row(s) '
                              '(n_cats=%d n_sgs=%d)',
-                             cons_d.get('id'), display_n_rows, n_cats, n_sgs)
-                for i in range(display_n_rows):
-                    sg_i    = (sgs[i] if i < n_sgs else None) if not is_chain_link else None
+                             cons_d.get('id'), n_rows, n_cats, n_sgs)
+                for i in range(n_rows):
+                    sg_i    = sgs[i] if i < n_sgs else None
                     cr_i    = cat_rows[i] if i < n_cats else None
                     cat_info_i = ((cr_i['category_id'], cr_i['id'],
                                    cr_i['name'], cr_i['severity'])
@@ -12001,7 +11938,7 @@ class ScenarioTablePanel(QWidget):
                     excl_cat_names = any_excl_map.get(sg_i['id'], []) if sg_i else []
                     logging.info('_build_rows: H2 — _add_row cons_id=%s row_i=%d/%d '
                                  '(will create _LopaWidget)',
-                                 cons_d.get('id'), i, display_n_rows)
+                                 cons_d.get('id'), i, n_rows)
                     self._add_row(node_name, dev_d, cause_d, freq, freq_lbl,
                                   cons_d, sgs, sg_i,
                                   cat_info=cat_info_i,
@@ -12011,9 +11948,7 @@ class ScenarioTablePanel(QWidget):
                                   sev_cat_list=sev_cat_list,
                                   all_cat_infos=all_cat_infos,
                                   cause_popup_list=cause_popup_list,
-                                  n_cats=n_cats,
-                                  is_chain_link=is_chain_link,
-                                  has_linked_causes=has_linked_causes)
+                                  n_cats=n_cats)
                     logging.info('_build_rows: H3 — _add_row cons_id=%s row_i=%d done',
                                  cons_d.get('id'), i)
             if self._table.rowCount() == first_row_for_cause:
@@ -12085,11 +12020,11 @@ class ScenarioTablePanel(QWidget):
             _span_col(col, lambda r: _meta(r, 2))
         logging.info('_apply_spans: J5 — KON/LOPA columns spanned')
 
-        # RFORE, REFT, SLUT: span by (cons_id, cat_id)
+        # RFORE, SLUT: span by (cons_id, cat_id)
         # → non-category rows all merge; per-category rows each stay separate
-        for col in (self._C_RFORE, self._C_REFT, self._C_SLUT):
+        for col in (self._C_RFORE, self._C_SLUT):
             _span_col(col, _cat_key)
-        logging.info('_apply_spans: J6 — RFORE/REFT/SLUT columns spanned, done')
+        logging.info('_apply_spans: J6 — RFORE/SLUT columns spanned, done')
 
     def _resize_rows_manual(self):
         """
@@ -12170,7 +12105,7 @@ class ScenarioTablePanel(QWidget):
                                               Qt.TextFlag.TextWordWrap, text)
                         h = _STRIP_H + max(one_line_h, rect.height() + 4)
                     else:   # self._C_KON
-                        cell_w = max(40, w - _PID_ICON_W - _KON_CAT_W - _KON_CHAIN_W)
+                        cell_w = max(40, w - _PID_ICON_W - _KON_CAT_W)
                         rect = fm.boundingRect(0, 0, cell_w, 10000,
                                               Qt.TextFlag.TextWordWrap, text)
                         comp_type, comp_tag = item.data(Qt.ItemDataRole.UserRole + 7) or ('', '')
@@ -12261,7 +12196,7 @@ class ScenarioTablePanel(QWidget):
         ors.setToolTip("Enter för att lägga till orsak")
         self._table.setItem(r, self._C_ORS, ors)
 
-        for col in (self._C_KON, self._C_RFORE, self._C_SG, self._C_REFT,
+        for col in (self._C_KON, self._C_RFORE, self._C_SG,
                     self._C_LOPA, self._C_SLUT):
             self._table.setItem(r, col, _ro())
         pass  # row height set by resizeRowsToContents at end of _rebuild
@@ -12303,7 +12238,7 @@ class ScenarioTablePanel(QWidget):
         kon.setToolTip("Enter för att lägga till konsekvens")
         self._table.setItem(r, self._C_KON, kon)
 
-        for col in (self._C_RFORE, self._C_SG, self._C_REFT,
+        for col in (self._C_RFORE, self._C_SG,
                     self._C_LOPA, self._C_SLUT):
             self._table.setItem(r, col, _ro())
 
@@ -12312,8 +12247,7 @@ class ScenarioTablePanel(QWidget):
     def _add_row(self, node_name, dev_d, cause_d, freq, freq_lbl, cons_d, all_sgs, sg,
                  cat_info=None, excl_cat_names=None, excl_for_cat=None,
                  cause_excl_sgs=None, sev_cat_list=None, all_cat_infos=None,
-                 cause_popup_list=None, n_cats=0,
-                 is_chain_link=False, has_linked_causes=False):
+                 cause_popup_list=None, n_cats=0):
         """One row in the scenario table.
 
         sg            – the safeguard for this row (None = no safeguard on this row).
@@ -12372,8 +12306,6 @@ class ScenarioTablePanel(QWidget):
             freq, sg_rrf, fa_active, fa_rrf, ign_active, ign_rrf, rfs)
 
         level_b, bg_b, fg_b = risk_info(freq, sev)
-        f_eff               = effective_frequency(freq, sg_rrf)
-        level_a, bg_a, fg_a = risk_info(f_eff, sev)
         level_s, bg_s, fg_s = risk_info(final_f, sev)
 
         # ── Col 0: Nod ────────────────────────────────────────────────────────
@@ -12422,7 +12354,6 @@ class ScenarioTablePanel(QWidget):
         ors.setData(Qt.ItemDataRole.UserRole + 2, (cause_d.get('comp_type') or '',
                                                     cause_d.get('comp_tag')  or ''))
         ors.setData(Qt.ItemDataRole.UserRole + 3, freq)
-        ors.setData(Qt.ItemDataRole.UserRole + 4, is_chain_link)
         ors.setData(Qt.ItemDataRole.UserRole + 5, cause_d.get('base_frequency'))
         ors.setData(Qt.ItemDataRole.UserRole + 6, _status_icon)
         ors.setToolTip(f"{_status_icon} {_status_tip}\n"
@@ -12441,7 +12372,6 @@ class ScenarioTablePanel(QWidget):
         kon_item.setData(Qt.ItemDataRole.UserRole + 3, None)   # no per-row cat badge
         kon_item.setData(Qt.ItemDataRole.UserRole + 4, n_cats)
         kon_item.setData(Qt.ItemDataRole.UserRole + 5, all_cat_infos or [])
-        kon_item.setData(Qt.ItemDataRole.UserRole + 6, has_linked_causes)
         kon_item.setData(Qt.ItemDataRole.UserRole + 7, (cons_d.get('comp_type') or '',
                                                          cons_d.get('comp_tag')  or ''))
         # Every tag ever drag-appended into this text, bolded on paint
@@ -12518,7 +12448,7 @@ class ScenarioTablePanel(QWidget):
             sg_item.setToolTip(tip)
         self._table.setItem(r, self._C_SG, sg_item)
 
-        # ── Col 7: FA / Antändning / Övriga (merged LOPA column) ─────────────
+        # ── Col LOPA: FA / Antändning / Övriga (merged LOPA column) ──────────
         n_active = sum(1 for rf in rfs if rf.get('active'))
         lopa_w = _LopaWidget(self.db, cid,
                              fa_active, fa_rrf, ign_active, ign_rrf, n_active)
@@ -12526,23 +12456,7 @@ class ScenarioTablePanel(QWidget):
         lopa_w.changed.connect(self._update_lopa_risk)
         self._table.setCellWidget(r, self._C_LOPA, lopa_w)
 
-        # ── Col 6: Risk efter barriärer ───────────────────────────────────────
-        # Shown for every row now (2026-08-09, see NOTES.md) — same fallback
-        # rationale as RFORE above; f_eff/sev/bg_a/fg_a are already computed
-        # unconditionally regardless of cat_info.
-        sg_steps  = int(math.log10(max(1, sg_rrf))) if sg_rrf > 1 else 0
-        reft_text = (f"−{sg_steps} steg\n" if sg_steps else "") + \
-                    f"{freq_axis_label(f_eff)}  {cons_axis_label(sev)}"
-        ra = QTableWidgetItem(reft_text)
-        ra.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        ra.setFlags(ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        ra.setToolTip(f"{level_a} — {freq_axis_label(f_eff)}  {cons_axis_label(sev)}  (efter barriärer)")
-        ra.setBackground(QBrush(QColor(bg_a)))
-        ra.setForeground(QBrush(QColor(fg_a)))
-        ra.setFont(QFont("Consolas", 9))
-        self._table.setItem(r, self._C_REFT, ra)
-
-        # ── Col 10: Slutkonsekvens ────────────────────────────────────────────
+        # ── Col SLUT: Slutkonsekvens ──────────────────────────────────────────
         # Shown for every row now (2026-08-09, see NOTES.md) — same fallback
         # rationale as RFORE above; final_f/sev/bg_s/fg_s are already
         # computed unconditionally regardless of cat_info.
@@ -12683,7 +12597,7 @@ class ScenarioTablePanel(QWidget):
         self._ctx_bar.show()
 
     def _update_lopa_risk(self, cons_id: int):
-        """Targeted update of REFT/SLUT cells when FA/IGN/Övriga changes.
+        """Targeted update of the SLUT cell when FA/IGN/Övriga changes.
 
         Avoids a full _rebuild() — only recalculates risk values for the
         rows belonging to *cons_id* and patches those cells in-place.
@@ -12741,24 +12655,13 @@ class ScenarioTablePanel(QWidget):
 
                 final_f, total_rrf, total_steps = total_freq_reduction(
                     freq, sg_rrf, fa_active, fa_rrf, ign_active, ign_rrf, rfs)
-                f_eff               = effective_frequency(freq, sg_rrf)
-                _, bg_a, fg_a       = risk_info(f_eff, sev)
                 _, bg_s, fg_s       = risk_info(final_f, sev)
 
                 # Patched for every row now (2026-08-09, see NOTES.md) — same
-                # fallback rationale as _add_row: bg_a/fg_a/bg_s/fg_s are
-                # already computed unconditionally above, regardless of
-                # cat_info, so a non-categorized consequence's REFT/SLUT
-                # cells used to go stale/blank forever after an RRF change.
-                sg_steps  = int(math.log10(max(1, sg_rrf))) if sg_rrf > 1 else 0
-                reft_text = (f"−{sg_steps} steg\n" if sg_steps else "") + \
-                            f"{freq_axis_label(f_eff)}  {cons_axis_label(sev)}"
-                ra = self._table.item(row, self._C_REFT)
-                if ra:
-                    ra.setText(reft_text)
-                    ra.setBackground(QBrush(QColor(bg_a)))
-                    ra.setForeground(QBrush(QColor(fg_a)))
-
+                # fallback rationale as _add_row: bg_s/fg_s are already
+                # computed unconditionally above, regardless of cat_info, so
+                # a non-categorized consequence's SLUT cell used to go
+                # stale/blank forever after an RRF change.
                 slut_text = (f"−{total_steps} steg\n" if total_steps else "") + \
                             f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}"
                 rs = self._table.item(row, self._C_SLUT)
@@ -12826,7 +12729,7 @@ class ScenarioTablePanel(QWidget):
             rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, text)
             return _STRIP_H + max(one_line_h, rect.height() + 4)
         else:   # self._C_KON
-            cell_w = max(40, w - _PID_ICON_W - _KON_CAT_W - _KON_CHAIN_W)
+            cell_w = max(40, w - _PID_ICON_W - _KON_CAT_W)
             rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, text)
             comp_type, comp_tag = item.data(Qt.ItemDataRole.UserRole + 7) or ('', '')
             strip_h = 17 if (comp_tag or comp_type) else 0
@@ -13180,59 +13083,6 @@ class ScenarioTablePanel(QWidget):
             self._table.blockSignals(False)
             self._table.viewport().update()
 
-    def _add_cause_from_consequence(self, cons_id):
-        """Open CauseObjectPopup and create a new cause chain-linked from cons_id."""
-        cons = self.db.get_consequence(cons_id)
-        if not cons:
-            return
-        cons_d = dict(cons)
-        parent_cause = self.db.get_cause(cons_d['cause_id'])
-        if not parent_cause:
-            return
-        parent_cause_d = dict(parent_cause)
-        dev_id   = parent_cause_d.get('deviation_id')
-        dev_desc = None
-        if dev_id:
-            dev = self.db.get_deviation(dev_id)
-            if dev:
-                dev_desc = dev['description']
-
-        popup = CauseObjectPopup('', '', self.db,
-                                 dev_description=dev_desc,
-                                 current_description='',
-                                 parent=self)
-        popup.setWindowTitle("Kedjad orsak — skapad från konsekvens")
-
-        def _on_committed(comp_type, comp_tag, description, frequency):
-            if not dev_id:
-                return
-            new_cause_id = self.db.add_cause(dev_id)
-            desc = description or 'Ny kedjad orsak'
-            like = freq_to_f_level(frequency) if frequency is not None else 3
-            self.db.update_cause(new_cause_id,
-                                 description=desc,
-                                 likelihood=like,
-                                 comp_type=comp_type,
-                                 comp_tag=comp_tag,
-                                 linked_consequence_id=cons_id)
-            if frequency is not None:
-                self.db.conn.execute(
-                    "UPDATE causes SET base_frequency=? WHERE id=?", (frequency, new_cause_id))
-                self.db.conn.commit()
-            self.new_item_created.emit(CAUSE_T, new_cause_id)
-            self._schedule_rebuild()
-
-        popup.committed.connect(_on_committed)
-        popup.adjustSize()
-        gp = QCursor.pos()
-        _scr   = QApplication.screenAt(gp) or QApplication.primaryScreen()
-        screen = _scr.availableGeometry()
-        pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
-        x = min(gp.x(), screen.right() - pw - 4)
-        y = min(gp.y() + 6, screen.bottom() - ph - 4)
-        popup.move(max(screen.left() + 4, x), max(screen.top() + 4, y))
-        popup.exec()
-
     def _update_sg_rrf(self, row, sg_id, rrf, sg_type=None):
         self.db.update_safeguard(sg_id, rrf=rrf, sg_type=sg_type)
         self._schedule_rebuild()
@@ -13513,16 +13363,6 @@ class ScenarioTablePanel(QWidget):
                             self._schedule_rebuild()
                     return True
 
-            # ⛓ Chain-link click — right _KON_CHAIN_W pixels of KON cell
-            if row >= 0 and col == self._C_KON and row < len(self._row_meta):
-                cell_idx = self._table.model().index(row, col)
-                cr = self._table.visualRect(cell_idx)
-                if pos.x() >= cr.right() - _KON_CHAIN_W:
-                    cons_id = self._row_meta[row][2]
-                    if cons_id is not None:
-                        self._add_cause_from_consequence(cons_id)
-                    return True
-
             # ⚡ RRF badge click — right _RRF_W pixels of safeguard cell
             if (row >= 0 and col == self._C_SG and row < len(self._row_meta)):
                 sg_id = self._row_meta[row][3]
@@ -13766,7 +13606,6 @@ class ScenarioTablePanel(QWidget):
         parts.append(_txt(self._C_RFORE))
         sg = self.db.get_safeguard(sg_id) if sg_id else None
         parts.append(dict(sg).get('description', '') if sg else '')
-        parts.append(_txt(self._C_REFT))
         parts.append(_txt(self._C_SLUT))
         QApplication.clipboard().setText('\t'.join(parts))
 
@@ -14008,7 +13847,7 @@ class ScenarioTablePanel(QWidget):
             a_del.triggered.connect(lambda cid=cons_id: self._confirm_delete('cons', cid))
 
         # ── Barriär-åtgärder ────────────────────────────────────────────
-        elif col in (self._C_SG, self._C_REFT, self._C_LOPA, self._C_SLUT) and sg_id:
+        elif col in (self._C_SG, self._C_LOPA, self._C_SLUT) and sg_id:
             sg = self.db.get_safeguard(sg_id)
             sg_desc = dict(sg).get('description', '?')[:40] if sg else '?'
             menu.addSection(f"🛡 Barriär: {sg_desc}")

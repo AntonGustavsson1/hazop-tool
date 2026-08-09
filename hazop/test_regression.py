@@ -1106,7 +1106,7 @@ class TextOnlyEditFastPathTests(unittest.TestCase):
 
     Before this fix, editing a safeguard's description called
     self._schedule_rebuild() unconditionally, even though nothing about a
-    safeguard's OWN row (its RFORE/REFT/SLUT columns are derived from rrf,
+    safeguard's OWN row (its RFORE/SLUT columns are derived from rrf,
     not description text) or any OTHER row depends on that text. Cause/
     consequence edits already didn't trigger a rebuild (a side effect of the
     emit_selection=False fix earlier this session), but didn't sync other
@@ -7545,7 +7545,7 @@ class AutoConsequenceAndSafeguardOnCauseTemplateTests(unittest.TestCase):
 class RiskCellColorTests(unittest.TestCase):
     """'nu vill jag att du fixar så att cellerna med riskmatriser i hazop
     scenario återspeglar motsvarande färg från riskmatrisen' (2026-08-09,
-    see NOTES.md) — RFORE/REFT/SLUT cells now get their background/
+    see NOTES.md) — RFORE/SLUT cells now get their background/
     foreground from risk_info(), matching the configured risk matrix.
     risk_info() was already being called for each row (its label went
     into tooltips) but the bg/fg colors it returned were simply discarded
@@ -7596,8 +7596,10 @@ class RiskCellColorTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_reft_and_slut_cells_match_risk_info_colors(self):
-        from hazop import ScenarioTablePanel, risk_info, effective_frequency, total_freq_reduction
+    def test_slut_cell_matches_risk_info_colors(self):
+        """Risk efter barriär (REFT) was removed (2026-08-09, see
+        NOTES.md) — only RFORE and SLUT remain."""
+        from hazop import ScenarioTablePanel, risk_info, total_freq_reduction
         from PyQt6.QtGui import QColor
         panel = ScenarioTablePanel(self.db)
         try:
@@ -7606,17 +7608,23 @@ class RiskCellColorTests(unittest.TestCase):
             panel.load_node(node_id)
             row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
 
-            f_eff = effective_frequency(4, 100)
-            _, expected_bg_a, expected_fg_a = risk_info(f_eff, 3)
-            reft_item = panel._table.item(row, panel._C_REFT)
-            self.assertEqual(reft_item.background().color(), QColor(expected_bg_a))
-            self.assertEqual(reft_item.foreground().color(), QColor(expected_fg_a))
-
             final_f, _rrf, _steps = total_freq_reduction(4, 100, False, 10, False, 10, [])
             _, expected_bg_s, expected_fg_s = risk_info(final_f, 3)
             slut_item = panel._table.item(row, panel._C_SLUT)
             self.assertEqual(slut_item.background().color(), QColor(expected_bg_s))
             self.assertEqual(slut_item.foreground().color(), QColor(expected_fg_s))
+        finally:
+            panel.deleteLater()
+
+    def test_reft_column_no_longer_exists(self):
+        """'Ta bart risk efter barriär och behåll bara före och slut.'
+        (2026-08-09) — the column constant itself must be gone, not just
+        unused."""
+        from hazop import ScenarioTablePanel
+        panel = ScenarioTablePanel(self.db)
+        try:
+            self.assertFalse(hasattr(panel, '_C_REFT'))
+            self.assertNotIn('Risk efter barriärer', panel._COLS)
         finally:
             panel.deleteLater()
 
@@ -7651,7 +7659,7 @@ class RiskCellColorTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_uncategorized_reft_and_slut_also_show_plain_severity_colors(self):
+    def test_uncategorized_slut_also_shows_plain_severity_colors(self):
         from hazop import ScenarioTablePanel, risk_info
         from PyQt6.QtGui import QColor
         panel = ScenarioTablePanel(self.db)
@@ -7666,20 +7674,19 @@ class RiskCellColorTests(unittest.TestCase):
             row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
 
             _, expected_bg, expected_fg = risk_info(3, 4)
-            for col in (panel._C_REFT, panel._C_SLUT):
-                item = panel._table.item(row, col)
-                self.assertNotEqual(item.text(), '')
-                self.assertEqual(item.background().color(), QColor(expected_bg))
-                self.assertEqual(item.foreground().color(), QColor(expected_fg))
+            item = panel._table.item(row, panel._C_SLUT)
+            self.assertNotEqual(item.text(), '')
+            self.assertEqual(item.background().color(), QColor(expected_bg))
+            self.assertEqual(item.foreground().color(), QColor(expected_fg))
         finally:
             panel.deleteLater()
 
     def test_update_lopa_risk_recolors_uncategorized_row_too(self):
         """The incremental RRF-change path (_update_lopa_risk) must also
-        keep patching REFT/SLUT for rows without a category assessment —
+        keep patching SLUT for rows without a category assessment —
         previously it silently stopped updating them after the first
         rebuild (same cat_info gate as _add_row)."""
-        from hazop import ScenarioTablePanel, risk_info, effective_frequency
+        from hazop import ScenarioTablePanel, risk_info, total_freq_reduction
         from PyQt6.QtGui import QColor
         panel = ScenarioTablePanel(self.db)
         try:
@@ -7696,19 +7703,19 @@ class RiskCellColorTests(unittest.TestCase):
             panel._update_lopa_risk(cons_id)
 
             row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
-            f_eff = effective_frequency(4, 100)
-            _, expected_bg, expected_fg = risk_info(f_eff, 3)
-            reft_item = panel._table.item(row, panel._C_REFT)
-            self.assertEqual(reft_item.background().color(), QColor(expected_bg))
-            self.assertEqual(reft_item.foreground().color(), QColor(expected_fg))
+            final_f, _rrf, _steps = total_freq_reduction(4, 100, False, 10, False, 10, [])
+            _, expected_bg, expected_fg = risk_info(final_f, 3)
+            slut_item = panel._table.item(row, panel._C_SLUT)
+            self.assertEqual(slut_item.background().color(), QColor(expected_bg))
+            self.assertEqual(slut_item.foreground().color(), QColor(expected_fg))
         finally:
             panel.deleteLater()
 
-    def test_update_lopa_risk_also_recolors_reft_and_slut(self):
+    def test_update_lopa_risk_also_recolors_slut(self):
         """Changing a safeguard's RRF without a full rebuild
         (_update_lopa_risk, the LopaWidget-triggered incremental path)
-        must keep the REFT/SLUT colors in sync, not just their text."""
-        from hazop import ScenarioTablePanel, risk_info, effective_frequency
+        must keep SLUT's color in sync, not just its text."""
+        from hazop import ScenarioTablePanel, risk_info, total_freq_reduction
         from PyQt6.QtGui import QColor
         panel = ScenarioTablePanel(self.db)
         try:
@@ -7720,11 +7727,11 @@ class RiskCellColorTests(unittest.TestCase):
             panel._update_lopa_risk(cons_id)
 
             row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
-            f_eff = effective_frequency(4, 100)
-            _, expected_bg, expected_fg = risk_info(f_eff, 3)
-            reft_item = panel._table.item(row, panel._C_REFT)
-            self.assertEqual(reft_item.background().color(), QColor(expected_bg))
-            self.assertEqual(reft_item.foreground().color(), QColor(expected_fg))
+            final_f, _rrf, _steps = total_freq_reduction(4, 100, False, 10, False, 10, [])
+            _, expected_bg, expected_fg = risk_info(final_f, 3)
+            slut_item = panel._table.item(row, panel._C_SLUT)
+            self.assertEqual(slut_item.background().color(), QColor(expected_bg))
+            self.assertEqual(slut_item.foreground().color(), QColor(expected_fg))
         finally:
             panel.deleteLater()
 
@@ -7736,7 +7743,7 @@ class RiskCellActualRenderColorTests(unittest.TestCase):
     applies app.setStyleSheet(_get_windows11_stylesheet()) globally, and
     once ANY stylesheet targets QTableWidget::item, Qt's default
     QStyledItemDelegate.paint() stops respecting Qt::BackgroundRole/
-    ForegroundRole entirely — a well-known Qt quirk. RFORE/REFT/SLUT fell
+    ForegroundRole entirely — a well-known Qt quirk. RFORE/SLUT fell
     through to that default path, so cells stayed white until selected
     (2026-08-09 bug report: 'jag ser inga bakgrundsfärger ... det är bara
     vitt till jag klickar'). These tests apply the SAME stylesheet the
@@ -7809,7 +7816,7 @@ class RiskCellActualRenderColorTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_reft_and_slut_cells_actually_paint_the_risk_color(self):
+    def test_slut_cell_actually_paints_the_risk_color(self):
         from hazop import ScenarioTablePanel, risk_info
         from PyQt6.QtGui import QColor
         panel = ScenarioTablePanel(self.db)
@@ -7824,10 +7831,9 @@ class RiskCellActualRenderColorTests(unittest.TestCase):
             row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
 
             _, expected_bg, _ = risk_info(0, 1)
-            for col in (panel._C_REFT, panel._C_SLUT):
-                pixmap = self._paint_cell_to_pixmap(panel, row, col)
-                sampled = pixmap.toImage().pixelColor(1, 1)
-                self.assertEqual(sampled, QColor(expected_bg))
+            pixmap = self._paint_cell_to_pixmap(panel, row, panel._C_SLUT)
+            sampled = pixmap.toImage().pixelColor(1, 1)
+            self.assertEqual(sampled, QColor(expected_bg))
         finally:
             panel.deleteLater()
 
