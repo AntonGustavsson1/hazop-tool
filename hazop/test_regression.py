@@ -6378,6 +6378,118 @@ class SafeguardTagDbTests(unittest.TestCase):
         self.assertEqual(dict(cons)['cause_id'], cause_id)
 
 
+class AppendTagToFreeTextTests(unittest.TestCase):
+    """Dragging an equipment marker onto a KON/SG cell now appends the tag
+    into the free-text description, building a running sentence, instead
+    of only setting the separate tag-strip field (2026-08-09, request:
+    'skriver jag hög nivå i och drar TA-1 ... vill jag att denna läggs
+    till i textsnittet'). Dragging several different tags onto the same
+    cell must keep appending, not overwrite the previous one — the
+    complaint about the old tag-strip-only behavior ('ska inte skriva
+    över tidigare som idag')."""
+
+    def test_append_tag_to_text_adds_space_before_tag(self):
+        from hazop import append_tag_to_text
+        self.assertEqual(append_tag_to_text("hög nivå i", "TA-1"), "hög nivå i TA-1")
+
+    def test_append_tag_to_text_does_not_duplicate_space(self):
+        from hazop import append_tag_to_text
+        self.assertEqual(append_tag_to_text("hög nivå i ", "TA-1"), "hög nivå i TA-1")
+
+    def test_append_tag_to_text_builds_up_across_repeated_calls(self):
+        """The exact scenario from the request: type more text, drag a
+        second different tag, and the FIRST tag's text must survive."""
+        from hazop import append_tag_to_text
+        text = append_tag_to_text("hög nivå i", "TA-1")
+        text = text + " => överbreddning till"
+        text = append_tag_to_text(text, "TA-2")
+        self.assertEqual(text, "hög nivå i TA-1 => överbreddning till TA-2")
+
+    def test_append_tag_to_text_replaces_untouched_placeholder(self):
+        from hazop import append_tag_to_text
+        self.assertEqual(append_tag_to_text("Ny konsekvens", "TA-1"), "TA-1")
+        self.assertEqual(append_tag_to_text("Ny safeguard", "PSV-101"), "PSV-101")
+
+    def test_append_tag_to_text_from_empty_is_just_the_tag(self):
+        from hazop import append_tag_to_text
+        self.assertEqual(append_tag_to_text("", "TA-1"), "TA-1")
+
+    def test_append_tag_to_text_blank_tag_is_a_noop(self):
+        from hazop import append_tag_to_text
+        self.assertEqual(append_tag_to_text("hög nivå i", ""), "hög nivå i")
+
+
+class ConsequenceAndSafeguardTagAppendDbTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_tagappend_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_append_tag_to_consequence_builds_up_text_and_keeps_strip_current(self):
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        self.db.update_consequence(cons_id, "hög nivå i", 2)
+
+        self.db.append_tag_to_consequence(cons_id, "TA-1", "Tank")
+        cons = dict(self.db.get_consequence(cons_id))
+        self.assertEqual(cons['description'], "hög nivå i TA-1")
+        self.assertEqual(cons['comp_tag'], "TA-1")
+        self.assertEqual(cons['comp_type'], "Tank")
+
+        self.db.update_consequence(
+            cons_id, cons['description'] + " => överbreddning till", cons['severity'],
+            cons['category'] or '', cons['consequence_chain'] or '')
+        self.db.append_tag_to_consequence(cons_id, "TA-2", "Tank")
+        cons = dict(self.db.get_consequence(cons_id))
+        self.assertEqual(cons['description'], "hög nivå i TA-1 => överbreddning till TA-2")
+        self.assertEqual(cons['comp_tag'], "TA-2",
+            "the tag strip shows the MOST RECENT drop; the full history lives in the text")
+
+    def test_append_tag_to_consequence_preserves_severity_and_category(self):
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        cat = self.db.consequence_categories()[0]
+        self.db.update_consequence(cons_id, "beskrivning", 4, cat['name'])
+
+        self.db.append_tag_to_consequence(cons_id, "TA-1", "Tank")
+
+        cons = dict(self.db.get_consequence(cons_id))
+        self.assertEqual(cons['severity'], 4)
+        self.assertEqual(cons['category'], cat['name'])
+
+    def test_append_tag_to_safeguard_builds_up_text(self):
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        sg_id = self.db.add_safeguard(cons_id)
+        self.db.update_safeguard(sg_id, description="Larm vid")
+
+        self.db.append_tag_to_safeguard(sg_id, "PSH-101", "Tryckvakt")
+        sg = dict(self.db.get_safeguard(sg_id))
+        self.assertEqual(sg['description'], "Larm vid PSH-101")
+
+        self.db.update_safeguard(sg_id, description=sg['description'] + " och")
+        self.db.append_tag_to_safeguard(sg_id, "PSH-102", "Tryckvakt")
+        sg = dict(self.db.get_safeguard(sg_id))
+        self.assertEqual(sg['description'], "Larm vid PSH-101 och PSH-102")
+        self.assertEqual(sg['comp_tag'], "PSH-102")
+
+
 class EquipmentDropOnSafeguardAndMultiTests(unittest.TestCase):
     """_handle_drop's 'equipment'/'equipment-multi' kinds extended to the
     SG column, and multi-marker drops onto a single KON/SG cell using only

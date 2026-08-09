@@ -1017,6 +1017,27 @@ def build_consequence_text(base: str, chain: dict) -> str:
     return ' → '.join(parts)
 
 
+def append_tag_to_text(description: str, tag: str) -> str:
+    """Append an equipment tag to the end of a free-text description with
+    a single separating space (2026-08-09, see NOTES.md) — used when an
+    equipment marker is drag-and-dropped onto a KON/SG cell, building a
+    running sentence ("hög nivå i" + drop TA-1 -> "hög nivå i TA-1", then
+    "... => överbreddning till" + drop TA-2 -> "... => överbreddning
+    till TA-2") instead of overwriting a separate tag field. Starting
+    from the still-untouched default placeholder text replaces it
+    outright rather than appending to boilerplate nobody wrote."""
+    description = description or ''
+    tag = (tag or '').strip()
+    if not tag:
+        return description
+    stripped = description.strip()
+    if not stripped or stripped in ('Ny konsekvens', 'Ny safeguard', 'Ny orsak'):
+        return tag
+    if description[-1].isspace():
+        return description + tag
+    return description + ' ' + tag
+
+
 def parse_chain_from_json(raw: str) -> dict:
     if not raw:
         return {}
@@ -4157,23 +4178,51 @@ class Database:
         self.commit()
 
     def set_consequence_tag(self, id_, comp_tag, comp_type):
-        """Attach an equipment tag/type to a consequence without touching its
-        description/severity — used by the P&ID drag-and-drop-a-tag feature
-        (2026-08-07, see NOTES.md), where the free-text description is the
-        user's own sentence and must be left exactly as-is."""
+        """Attach an equipment tag/type to a consequence's tag-strip
+        display without touching its description/severity — the
+        low-level primitive append_tag_to_consequence() builds on to also
+        update the free text (2026-08-09, see NOTES.md)."""
         self.conn.execute(
             "UPDATE consequences SET comp_tag=?, comp_type=? WHERE id=?",
             (comp_tag, comp_type, id_))
         self.commit()
 
     def set_safeguard_tag(self, id_, comp_tag, comp_type):
-        """Attach an equipment tag/type to a safeguard without touching its
-        description/rrf — same complement-not-replacement rule as
-        set_consequence_tag (2026-08-08, see NOTES.md)."""
+        """Attach an equipment tag/type to a safeguard's tag-strip display
+        without touching its description/rrf — same complement-not-
+        replacement rule as set_consequence_tag; append_tag_to_safeguard()
+        builds on this to also update the free text (2026-08-09, see
+        NOTES.md)."""
         self.conn.execute(
             "UPDATE safeguards SET comp_tag=?, comp_type=? WHERE id=?",
             (comp_tag, comp_type, id_))
         self.commit()
+
+    def append_tag_to_consequence(self, id_, comp_tag, comp_type):
+        """Drag-and-drop an equipment marker onto a KON cell (2026-08-09,
+        see NOTES.md): appends the tag into the free-text description
+        (building a running sentence across repeated drags, e.g. "hög
+        nivå i" -> "hög nivå i TA-1" -> "... => överbreddning till TA-2"),
+        instead of the tag-strip-only behavior of set_consequence_tag,
+        which used to silently overwrite the PREVIOUS drop's tag on every
+        new one. Still updates the tag-strip too (shows the most recently
+        dropped tag) — the full history lives in the text now."""
+        row = self.get_consequence(id_)
+        if not row:
+            return
+        new_desc = append_tag_to_text(row['description'], comp_tag)
+        self.update_consequence(id_, new_desc, row['severity'], row['category'] or '',
+                                 row['consequence_chain'] or '',
+                                 comp_tag=comp_tag, comp_type=comp_type)
+
+    def append_tag_to_safeguard(self, id_, comp_tag, comp_type):
+        """Same as append_tag_to_consequence, for a safeguard cell."""
+        row = self.get_safeguard(id_)
+        if not row:
+            return
+        new_desc = append_tag_to_text(row['description'], comp_tag)
+        self.update_safeguard(id_, description=new_desc)
+        self.set_safeguard_tag(id_, comp_tag, comp_type)
 
     def update_safeguard(self, id_, description=None, rrf=None, sg_type=None):
         if description is None and rrf is None and sg_type is None:
@@ -13639,9 +13688,9 @@ class ScenarioTablePanel(QWidget):
                 event.ignore(); return
             tag, comp_type = equip.get('tag', ''), equip.get('equipment_type', '')
             if tgt_col == self._C_KON and tgt_cons is not None:
-                self.db.set_consequence_tag(tgt_cons, tag, comp_type)
+                self.db.append_tag_to_consequence(tgt_cons, tag, comp_type)
             elif tgt_col == self._C_SG and tgt_sg is not None:
-                self.db.set_safeguard_tag(tgt_sg, tag, comp_type)
+                self.db.append_tag_to_safeguard(tgt_sg, tag, comp_type)
             else:
                 event.ignore(); return
             self._schedule_rebuild()
