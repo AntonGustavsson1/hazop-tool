@@ -7121,18 +7121,15 @@ class TreePanel(QWidget):
             marked_consequences = self.db.marked_consequence_ids()
             marked_safeguards = self.db.marked_safeguard_ids()
 
-            def add_deviation_subtree(parent_item, dev, di):
+            def add_causes_to_item(ditem, dev_id):
+                """Append the cause/consequence/safeguard subtree for
+                deviation dev_id as children of ditem — factored out of
+                add_deviation_subtree so the equipment-grouped single-
+                deviation case (below) can attach it directly to the
+                equipment item instead of a separate, redundant deviation
+                item (2026-08-09, see NOTES.md "kaka på kaka")."""
                 nonlocal target
-                ditem = QTreeWidgetItem([f"  ⬡  {di}. {dev['description'][:55]}"])
-                ditem.setData(0, Qt.ItemDataRole.UserRole, dev['id'])
-                ditem.setData(0, Qt.ItemDataRole.UserRole + 1, DEV_T)
-                dev_font = QFont(); dev_font.setItalic(True)
-                ditem.setFont(0, dev_font)
-                parent_item.addChild(ditem)
-                if (DEV_T, dev['id']) in expanded: ditem.setExpanded(True)
-                if select_type == DEV_T and select_id == dev['id']: target = ditem
-
-                for ci, cause in enumerate(self.db.causes_for_deviation(dev['id']), 1):
+                for ci, cause in enumerate(self.db.causes_for_deviation(dev_id), 1):
                     placed_c = cause['id'] in marked_causes
                     chain_icon = "⛓" if cause['linked_consequence_id'] else ""
                     tag    = (cause['comp_tag'] or '').strip() if cause['comp_tag'] else ''
@@ -7173,6 +7170,18 @@ class TreePanel(QWidget):
                             sgitem.setData(0, Qt.ItemDataRole.UserRole + 1, SG_T)
                             kitem.addChild(sgitem)
                             if select_type == SG_T and select_id == sg['id']: target = sgitem
+
+            def add_deviation_subtree(parent_item, dev, di):
+                nonlocal target
+                ditem = QTreeWidgetItem([f"  ⬡  {di}. {dev['description'][:55]}"])
+                ditem.setData(0, Qt.ItemDataRole.UserRole, dev['id'])
+                ditem.setData(0, Qt.ItemDataRole.UserRole + 1, DEV_T)
+                dev_font = QFont(); dev_font.setItalic(True)
+                ditem.setFont(0, dev_font)
+                parent_item.addChild(ditem)
+                if (DEV_T, dev['id']) in expanded: ditem.setExpanded(True)
+                if select_type == DEV_T and select_id == dev['id']: target = ditem
+                add_causes_to_item(ditem, dev['id'])
 
             for ni, node in enumerate(self.db.nodes(), 1):
                 node_on_pid = bool(node['markup_points'])
@@ -7240,16 +7249,39 @@ class TreePanel(QWidget):
                         eq = self.db.get_equipment_by_id(eq_id)
                         eq_label = f"{eq['tag']} — {eq['equipment_type']}" if eq else f"Utrustning #{eq_id}"
                         eitem = QTreeWidgetItem([f"    🔧  {eq_label}"])
-                        eitem.setData(0, Qt.ItemDataRole.UserRole, eq_id)
-                        eitem.setData(0, Qt.ItemDataRole.UserRole + 1, EQUIP_T)
                         eq_font = QFont(); eq_font.setBold(True)
                         eitem.setFont(0, eq_font)
                         litem.addChild(eitem)
-                        if (EQUIP_T, eq_id) in expanded: eitem.setExpanded(True)
-                        if select_type == EQUIP_T and select_id == eq_id: target = eitem
-                        for dev in eq_devs:
+                        if len(eq_devs) == 1:
+                            # Collapse the redundant deviation-description
+                            # level (2026-08-09, see NOTES.md "kaka på
+                            # kaka") — a deviation's description is always
+                            # identical to this Ledord group's own label
+                            # (grouped by description above), so a separate
+                            # child item under the equipment just repeats
+                            # text the user already sees one level up. This
+                            # item carries the DEVIATION's identity instead
+                            # of EQUIP_T (get_or_create_deviation makes this
+                            # the only deviation for this equipment+guide-word
+                            # combo in practice), so it's the direct,
+                            # interactive target for "add cause" and
+                            # equipment-dropped-on-deviation — previously
+                            # dead ends when the row was EQUIP_T.
+                            dev = eq_devs[0]
                             di += 1
-                            add_deviation_subtree(eitem, dev, di)
+                            eitem.setData(0, Qt.ItemDataRole.UserRole, dev['id'])
+                            eitem.setData(0, Qt.ItemDataRole.UserRole + 1, DEV_T)
+                            if (DEV_T, dev['id']) in expanded: eitem.setExpanded(True)
+                            if select_type == DEV_T and select_id == dev['id']: target = eitem
+                            add_causes_to_item(eitem, dev['id'])
+                        else:
+                            eitem.setData(0, Qt.ItemDataRole.UserRole, eq_id)
+                            eitem.setData(0, Qt.ItemDataRole.UserRole + 1, EQUIP_T)
+                            if (EQUIP_T, eq_id) in expanded: eitem.setExpanded(True)
+                            if select_type == EQUIP_T and select_id == eq_id: target = eitem
+                            for dev in eq_devs:
+                                di += 1
+                                add_deviation_subtree(eitem, dev, di)
 
                     for dev in ungrouped_devs:
                         # Every node is auto-seeded with one empty, generic

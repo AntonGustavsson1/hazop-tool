@@ -4533,6 +4533,16 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         return out
 
     def test_equipment_scoped_deviation_grouped_under_ledord_then_equip_t(self):
+        """A single deviation for this equipment+guide-word combo (the
+        overwhelmingly common case — get_or_create_deviation is idempotent
+        per node+description+equipment) merges directly onto the
+        equipment's own tree item instead of wrapping it in a separate
+        DEV_T child (2026-08-09, see NOTES.md 'kaka på kaka' — the
+        deviation's description is always identical to the LEDORD_T
+        group's own label, so a nested child just repeated the same text
+        the user already saw one level up). The merged item carries the
+        DEVIATION's identity (not EQUIP_T) so 'add cause' and
+        equipment-dropped-on-deviation both work directly on it."""
         eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
         node_id = self.db.add_node()
         dev_id = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
@@ -4544,33 +4554,96 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         ledord_rows = [x for x in items if x[0] == LEDORD_T and x[2] == NODE_T
                        and str(x[1]).endswith("Lågt flöde")]
         self.assertEqual(len(ledord_rows), 1, "the guide word must appear as its own tree item under the node")
-        equip_rows = [x for x in items if x[0] == EQUIP_T and x[1] == eq_id]
-        self.assertEqual(len(equip_rows), 1, "the equipment must appear as its own tree item")
-        self.assertEqual(equip_rows[0][2], LEDORD_T,
-            "the equipment must be nested under the LEDORD_T (guide word) item")
+        self.assertEqual(len([x for x in items if x[0] == EQUIP_T and x[1] == eq_id]), 0,
+            "a single deviation must not get a separate EQUIP_T wrapper anymore")
         dev_rows = [x for x in items if x[0] == DEV_T and x[1] == dev_id]
         self.assertEqual(len(dev_rows), 1)
-        self.assertEqual(dev_rows[0][2], EQUIP_T,
-            "the deviation must be nested under the EQUIP_T item")
+        self.assertEqual(dev_rows[0][2], LEDORD_T,
+            "the merged equipment+deviation item must sit directly under the LEDORD_T (guide word) item")
+        self.assertEqual(self.panel._resolve_equipment_id(DEV_T, dev_id), eq_id,
+            "the merged item's underlying deviation must still resolve back to its equipment")
 
     def test_two_equipment_sharing_same_guide_word_grouped_under_one_ledord(self):
         """The core reason for this hierarchy: 'Lågt flöde' for a pump AND
         a valve under the same node must appear under ONE shared guide-word
-        item, each with its own Utrustning sub-item — not two separate
-        top-level groups."""
+        item, each with its own equipment sub-item — not two separate
+        top-level groups. Each equipment has only one deviation here, so
+        each merges directly onto its own item (2026-08-09, see NOTES.md
+        'kaka på kaka') rather than wrapping in a separate EQUIP_T+DEV_T pair."""
         pump_id = self.db.add_equipment_item("P-101", "P-101", "P", 0, "Pump", '', 0)
         valve_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
         node_id = self.db.add_node()
-        self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=pump_id)
-        self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=valve_id)
+        pump_dev = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=pump_id)
+        valve_dev = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=valve_id)
         self.panel.refresh()
 
         items = self._tree_items()
         ledord_rows = [x for x in items if x[0] == LEDORD_T]
         matching = [x for x in ledord_rows if str(x[1]).endswith("Lågt flöde")]
         self.assertEqual(len(matching), 1, "both equipment must share ONE 'Lågt flöde' guide-word item")
-        equip_rows = [x for x in items if x[0] == EQUIP_T and x[2] == LEDORD_T]
-        self.assertEqual({x[1] for x in equip_rows}, {pump_id, valve_id})
+        dev_rows = [x for x in items if x[0] == DEV_T and x[2] == LEDORD_T
+                    and x[1] in (pump_dev, valve_dev)]
+        self.assertEqual({x[1] for x in dev_rows}, {pump_dev, valve_dev})
+        self.assertEqual(self.panel._resolve_equipment_id(DEV_T, pump_dev), pump_id)
+        self.assertEqual(self.panel._resolve_equipment_id(DEV_T, valve_dev), valve_id)
+
+    def test_merged_equipment_deviation_item_does_not_repeat_guide_word_text(self):
+        """Exact reported bug: '=M1.GPA6 — Pump' nested under 'Lågt flöde'
+        used to show ANOTHER child item labelled '1. Lågt flöde' — the
+        same guide-word text shown twice in a row for no reason, with the
+        real cause nested one level deeper still (2026-08-09, screenshot
+        in conversation). The merged item's own label must be the
+        equipment tag/type, never a repeat of the guide-word text."""
+        eq_id = self.db.add_equipment_item("M1.GPA6", "M1.GPA6", "M1", 0, "Pump", '', 0)
+        node_id = self.db.add_node()
+        dev_id = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        self.db.add_cause(dev_id)
+        self.panel.refresh()
+
+        it = QTreeWidgetItemIterator(self.panel.tree)
+        dev_item = None
+        while it.value():
+            item = it.value()
+            if (item.data(0, Qt.ItemDataRole.UserRole + 1) == DEV_T
+                    and item.data(0, Qt.ItemDataRole.UserRole) == dev_id):
+                dev_item = item
+            it += 1
+        self.assertIsNotNone(dev_item)
+        self.assertIn("M1.GPA6", dev_item.text(0))
+        self.assertNotIn("Lågt flöde", dev_item.text(0),
+            "the merged item must not repeat the guide-word text its LEDORD_T parent already shows")
+        # The cause must be one level directly below the merged item, not two.
+        self.assertEqual(dev_item.childCount(), 1)
+        cause_item = dev_item.child(0)
+        self.assertEqual(cause_item.data(0, Qt.ItemDataRole.UserRole + 1), CAUSE_T)
+
+    def test_merged_equipment_deviation_item_offers_add_cause_context_menu(self):
+        """Right-clicking the equipment row used to be a dead end (EQUIP_T
+        items get no context menu at all) — now that this row IS the
+        deviation for the common single-deviation case, it must offer
+        '+ Lägg till orsak' just like any other DEV_T item."""
+        eq_id = self.db.add_equipment_item("M1.GPA6", "M1.GPA6", "M1", 0, "Pump", '', 0)
+        node_id = self.db.add_node()
+        dev_id = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        self.panel.refresh()
+
+        it = QTreeWidgetItemIterator(self.panel.tree)
+        dev_item = None
+        while it.value():
+            item = it.value()
+            if (item.data(0, Qt.ItemDataRole.UserRole + 1) == DEV_T
+                    and item.data(0, Qt.ItemDataRole.UserRole) == dev_id):
+                dev_item = item
+            it += 1
+        self.assertIsNotNone(dev_item)
+
+        with unittest.mock.patch.object(self.panel.tree, 'itemAt', return_value=dev_item), \
+             unittest.mock.patch('hazop.QMenu') as mock_menu_cls:
+            self.panel._context_menu(QPoint(0, 0))
+        mock_menu_cls.assert_called_once()
+        mock_menu = mock_menu_cls.return_value
+        labels = [c.args[0] for c in mock_menu.addAction.call_args_list if c.args]
+        self.assertTrue(any("Lägg till orsak" in lbl for lbl in labels))
 
     def test_lone_generic_deviation_skips_ledord_wrapper(self):
         """Bug report: 'varför är det dubbelt?' — a single, plain
@@ -4621,29 +4694,22 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         word — hide it (it is not deleted; see the sibling test below)."""
         eq_id = self.db.add_equipment_item("P-101", "P-101", "P", 0, "Pump", '', 0)
         node_id = self.db.add_node()   # already auto-seeds a generic "Lågt flöde"
+        generic_dev = next(d for d in self.db.deviations(node_id)
+                            if d['description'] == "Lågt flöde")
         self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
         self.panel.refresh()
 
         items = self._tree_items()
-        # Scope to the "Lågt flöde" ledord specifically — the other ~15
-        # auto-seeded guide words have no equipment sibling, so THEIR empty
-        # generic deviations correctly stay visible (nothing to hide).
-        ledord_id = next(x[1] for x in items
-                          if x[0] == LEDORD_T and str(x[1]).endswith(":Lågt flöde"))
-        # A DEV_T's own id doesn't tell us its parent ledord directly from
-        # _tree_items(), so walk the actual tree instead for this one check.
-        it = QTreeWidgetItemIterator(self.panel.tree)
-        found_under_target_ledord = []
-        while it.value():
-            item = it.value()
-            if (item.data(0, Qt.ItemDataRole.UserRole + 1) == DEV_T
-                    and item.parent() is not None
-                    and item.parent().data(0, Qt.ItemDataRole.UserRole + 1) == LEDORD_T
-                    and item.parent().data(0, Qt.ItemDataRole.UserRole) == ledord_id):
-                found_under_target_ledord.append(item)
-            it += 1
+        # The equipment-scoped deviation (single deviation for this
+        # equipment+guide-word combo) now merges directly onto the
+        # equipment's own tree item (2026-08-09, see NOTES.md "kaka på
+        # kaka") — a legitimate DEV_T item directly under the LEDORD_T.
+        # This test only cares whether the separate GENERIC (no-equipment)
+        # deviation is hidden, so it must check that specific id, not
+        # "any DEV_T at all" under the ledord.
+        generic_rows = [x for x in items if x[0] == DEV_T and x[1] == generic_dev['id']]
         self.assertEqual(
-            len(found_under_target_ledord), 0,
+            len(generic_rows), 0,
             "the empty auto-seeded generic deviation must be hidden once an "
             "equipment-scoped sibling exists for the same guide word")
 
