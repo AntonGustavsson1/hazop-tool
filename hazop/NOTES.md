@@ -837,6 +837,18 @@ Redundanta sedan högerklicksmenyn gör samma sak direkt på rätt punkt. `grep`
 
 ---
 
+## "🔧 Objekt" i höger-drag-gummibandets meny också (2026-08-09)
+
+Anton ville kunna lägga till ett objekt (ventil/instrument/pump manuellt) inte bara via högerklicksmenyn (2026-08-07) utan även via den redan existerande höger-drag-gummiband-menyn (`PIDPanel._on_zone_drawn`, som redan erbjöd Orsak/Konsekvens/Safeguard) — **"Objekt ska stå högst upp i rullgardinen"**.
+
+- `_on_zone_drawn`: ny `a_equip = menu.addAction("🔧 Objekt")` läggs till FÖRST (före Orsak/Konsekvens/Safeguard). Vid val emitteras samma `equipment_placement_requested`-signal som högerklicksflödet redan använder — samma `EquipmentTagPopup`-dialog, samma `place_equipment_marker`-slutsteg, ingen duplicerad kod.
+- **Skillnad mot högerklicksflödet:** gummibandet ger en FAKTISK rektangel (till skillnad från en punkt), så `equipment_placement_requested` fick en fjärde parameter, `pdf_rect` (PDF-enheter, `None` för högerklicksfallet) — `place_equipment_marker(tag, comp_type, scene_pos, page, pdf_rect=None)` bygger nu ett `shape_outline` (fyra hörn) från rektangeln när den finns, så markören får en riktig konturform istället för den generiska bowtie-ikonen — närmare "ser ut som skannade objekt" (Antons krav) än en punkt-baserad markör någonsin kunde bli.
+- Röd färg och klickbarhet → EquipmentDeviationBar-flödet (avvikelseval, "lågt/högt flöde" etc.) var redan implementerat i förra sessionens `place_equipment_marker`/`add_equipment_marker` (röd tills en avvikelse finns, grön därefter) — inget nytt behövdes där, bara verifierat att det gäller lika för rektangel-baserade markörer.
+
+**Test:** 5 nya tester i `ObjektInRubberBandMenuTests` — menyordning (`Objekt` alltid först), vald `Objekt` emitterar signalen med rätt rektangel, `place_equipment_marker` med/utan rektangel ger rätt `shape_outline` i DB, och det befintliga högerklicksflödet fortsätter skicka `None` för rektangeln (ingen regression). Verifierat via `git stash`/`git stash pop` att 4 av 5 test fångar en regression utan fixen (det femte, "utan rektangel"-fallet, var redan korrekt). Full svit: `python -m unittest test_regression test_symbol_geometry` — 330/330 gröna.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **OCR-positioner är approximativa** — x,y-koordinater från OCR stämmer inte perfekt med PDF-koordinater vid hög zoom. Markörer kan hamna något fel.

@@ -7550,8 +7550,13 @@ class PIDPanel(QWidget):
     # Emitted when user right-clicks P&ID -> "🔧 Objekt"; MainWindow shows
     # EquipmentTagPopup then calls place_equipment_marker() (2026-08-07,
     # see NOTES.md).
-    equipment_placement_requested = pyqtSignal(str, object, int)
-    # (suggested_tag, scene_pos, page)
+    # Also emitted from the right-drag rubber-band menu's own "Objekt"
+    # entry (2026-08-09) — pdf_rect then carries the drawn rectangle (PDF
+    # units) so the marker gets a real outline shape instead of the
+    # generic bowtie-icon fallback; None for the plain right-click (a
+    # single point has no rectangle to give it).
+    equipment_placement_requested = pyqtSignal(str, object, int, object)
+    # (suggested_tag, scene_pos, page, pdf_rect_or_None)
     ref_tag_picked            = pyqtSignal(str)   # forwarded from viewer after MODE_PICK_REF_TAG
     annotation_placed         = pyqtSignal(int)   # annotation id (feature 8)
     # Node markup signals
@@ -9091,8 +9096,14 @@ class PIDPanel(QWidget):
             self._set_mode(MODE_SAFEGUARD)
 
     def _on_zone_drawn(self, pdf_rect, page):
-        """Right-drag rubber band completed — let user pick cause/consequence/safeguard."""
+        """Right-drag rubber band completed — let user pick objekt/orsak/
+        konsekvens/safeguard. "🔧 Objekt" (2026-08-09, see NOTES.md) is
+        listed first per Anton's request — manually adding a valve/
+        instrument/pump/etc. this way gives it a real outline shape (the
+        drawn rectangle) instead of the generic bowtie-icon fallback the
+        plain right-click "🔧 Objekt" action uses."""
         menu = QMenu(self)
+        a_equip = menu.addAction("🔧 Objekt")
         a_cause = menu.addAction("⚙️ Orsak")
         a_cons  = menu.addAction("⚠️ Konsekvens")
         a_sg    = menu.addAction("🛡️ Safeguard")
@@ -9123,7 +9134,9 @@ class PIDPanel(QWidget):
         full_text = self.viewer._text_in_rect(pdf_rect) if HAS_PYMUPDF and self.viewer.pdf_doc else ''
         strip = hasattr(self.db, 'get_config') and self.db.get_config('tag_strip_spaces', '1') == '1'
 
-        if chosen is a_cause:
+        if chosen is a_equip:
+            self.equipment_placement_requested.emit(tag or '', center_scene, page, pdf_rect)
+        elif chosen is a_cause:
             dev_id   = self._active_deviation_id or 0
             detected = self._db_comp_for_tag(tag) if tag else ''
             suggested = (full_text or tag or '').replace(' ', '') if strip else (full_text or tag or '')
@@ -9202,7 +9215,7 @@ class PIDPanel(QWidget):
             tag = find_tag_near_point(
                 self.viewer.pdf_doc, page, pdf_x, pdf_y, radius=100) \
                 if self.viewer.pdf_doc else ''
-            self.equipment_placement_requested.emit(tag or '', pos, page)
+            self.equipment_placement_requested.emit(tag or '', pos, page, None)
         elif action == 'risk_scenario':
             node_id = self._active_node_id or 0
             self.risk_scenario_requested.emit(node_id, pos, page)
@@ -9660,7 +9673,7 @@ class PIDPanel(QWidget):
             return
         self.marker_navigated.emit(item_type, item_id)
 
-    def place_equipment_marker(self, tag, comp_type, scene_pos, page):
+    def place_equipment_marker(self, tag, comp_type, scene_pos, page, pdf_rect=None):
         """Callback for EquipmentTagPopup (P&ID right-click -> "🔧 Objekt",
         2026-08-07, see NOTES.md). Resolves an existing equipment_catalog
         row by tag if one exists (never creates a duplicate for a tag
@@ -9668,7 +9681,14 @@ class PIDPanel(QWidget):
         at the clicked point, and opens EquipmentDeviationBar immediately —
         the same bar _on_marker_clicked already opens for an existing
         marker, so the very next step (tick a deviation) continues the
-        same established flow without an extra click."""
+        same established flow without an extra click.
+
+        `pdf_rect` (2026-08-09, see NOTES.md) — optional QRectF in PDF
+        units from the right-drag rubber-band menu's "🔧 Objekt" entry.
+        When given, its four corners become the marker's shape_outline so
+        it renders with a real outline (like a scanned/auto-detected
+        symbol) instead of the generic bowtie-icon fallback a bare point
+        gets."""
         tag = (tag or '').strip().upper()
         existing = self.db.get_equipment_by_tag(tag) if tag else None
         if existing:
@@ -9678,10 +9698,16 @@ class PIDPanel(QWidget):
             equipment_id = self.db.add_equipment_item(tag, tag, prefix, page, comp_type, '', 0)
 
         pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
+        outline = None
+        if pdf_rect is not None:
+            outline = [[pdf_rect.left(), pdf_rect.top()], [pdf_rect.right(), pdf_rect.top()],
+                       [pdf_rect.right(), pdf_rect.bottom()], [pdf_rect.left(), pdf_rect.bottom()]]
+        outline_json = json.dumps(outline) if outline else ''
         marker_id = self.db.add_equipment_marker(
-            equipment_id, tag, page, pdf_x, pdf_y, comp_type,
+            equipment_id, tag, page, pdf_x, pdf_y, comp_type, shape_outline=outline_json,
             confidence=1.0, link_method='manual')
-        self.viewer.add_equipment_marker(marker_id, pdf_x, pdf_y, comp_type, tag=tag)
+        self.viewer.add_equipment_marker(marker_id, pdf_x, pdf_y, comp_type, tag=tag,
+                                         outline_pdf=outline)
         self._equipment_bar.load(equipment_id, marker_id, active_node_id=self._active_node_id)
 
     def _on_equipment_deviation_added(self, deviation_id, equipment_id):

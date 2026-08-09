@@ -6573,5 +6573,102 @@ class EquipmentMultiSelectTests(unittest.TestCase):
         self.assertEqual(mime_arg.text(), 'hzp:equipment:9:-1:-1')
 
 
+class ObjektInRubberBandMenuTests(unittest.TestCase):
+    """'När jag håller nere högerknappen och drar fram gummiband vill jag
+    ... även kunna välja Objekt. Objekt ska stå högst upp i rullgardinen.'
+    (2026-08-09, see NOTES.md) — the right-drag rubber-band menu
+    (PIDPanel._on_zone_drawn) gains a "🔧 Objekt" entry, listed first,
+    which reuses the existing EquipmentTagPopup flow but threads the
+    drawn rectangle through so the new marker gets a real outline shape
+    instead of the generic bowtie-icon fallback a bare point gets."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_rbandobj_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from pid_viewer import PIDPanel
+        self.panel = PIDPanel(self.db)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_objekt_is_the_first_menu_entry(self):
+        from PyQt6.QtCore import QRectF
+        from PyQt6.QtWidgets import QMenu
+        texts = []
+
+        def _fake_exec(menu_self, _pos=None):
+            texts.extend(a.text() for a in menu_self.actions())
+            return menu_self.actions()[0]
+
+        with unittest.mock.patch.object(QMenu, 'exec', new=_fake_exec):
+            self.panel._on_zone_drawn(QRectF(0, 0, 10, 10), 0)
+        self.assertEqual(texts[0], "🔧 Objekt")
+        self.assertEqual(set(texts),
+                         {"🔧 Objekt", "⚙️ Orsak", "⚠️ Konsekvens", "🛡️ Safeguard"})
+
+    def test_choosing_objekt_emits_placement_signal_with_the_drawn_rect(self):
+        from PyQt6.QtCore import QRectF
+        from PyQt6.QtWidgets import QMenu
+        captured = []
+        self.panel.equipment_placement_requested.connect(
+            lambda tag, pos, page, rect: captured.append((tag, pos, page, rect)))
+        pdf_rect = QRectF(5.0, 6.0, 10.0, 8.0)
+
+        def _fake_exec(menu_self, _pos=None):
+            return menu_self.actions()[0]
+
+        with unittest.mock.patch.object(QMenu, 'exec', new=_fake_exec):
+            self.panel._on_zone_drawn(pdf_rect, 3)
+
+        self.assertEqual(len(captured), 1)
+        tag, pos, page, rect = captured[0]
+        self.assertEqual(page, 3)
+        self.assertEqual(rect, pdf_rect)
+
+    def test_place_equipment_marker_with_rect_stores_shape_outline(self):
+        import json
+        from PyQt6.QtCore import QPointF, QRectF
+        rect = QRectF(5.0, 6.0, 10.0, 8.0)
+
+        self.panel.place_equipment_marker("V-500", "Ventil", QPointF(50, 50), 0, pdf_rect=rect)
+
+        markers = self.db.equipment_markers_for_page(0)
+        self.assertEqual(len(markers), 1)
+        outline = json.loads(markers[0]['shape_outline'])
+        self.assertEqual(len(outline), 4)
+        xs = [p[0] for p in outline]
+        ys = [p[1] for p in outline]
+        self.assertAlmostEqual(min(xs), rect.left())
+        self.assertAlmostEqual(max(xs), rect.right())
+        self.assertAlmostEqual(min(ys), rect.top())
+        self.assertAlmostEqual(max(ys), rect.bottom())
+
+    def test_place_equipment_marker_without_rect_has_blank_shape_outline(self):
+        from PyQt6.QtCore import QPointF
+        self.panel.place_equipment_marker("V-600", "Ventil", QPointF(20, 20), 0)
+        markers = self.db.equipment_markers_for_page(0)
+        self.assertEqual(markers[0]['shape_outline'], '')
+
+    def test_plain_right_click_objekt_still_has_no_rect(self):
+        """The plain right-click "🔧 Objekt" action (already shipped) must
+        keep passing None for pdf_rect — a single point has no rectangle
+        to give it."""
+        from PyQt6.QtCore import QPointF
+        captured = []
+        self.panel.equipment_placement_requested.connect(
+            lambda tag, pos, page, rect: captured.append(rect))
+        self.panel._on_context_action('equipment', QPointF(5, 5), 0)
+        self.assertEqual(captured, [None])
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

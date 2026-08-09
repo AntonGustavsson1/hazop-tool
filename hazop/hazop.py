@@ -18912,14 +18912,17 @@ class MainWindow(QMainWindow):
         popup.cause_picked.connect(_on_picked)
         popup.exec()
 
-    def _on_equipment_placement_requested(self, suggested_tag, scene_pos, page):
-        """P&ID right-click -> "🔧 Objekt" (2026-08-07, see NOTES.md)."""
+    def _on_equipment_placement_requested(self, suggested_tag, scene_pos, page, pdf_rect=None):
+        """P&ID right-click OR right-drag-rubber-band menu -> "🔧 Objekt"
+        (2026-08-07/2026-08-09, see NOTES.md). pdf_rect (rubber-band case
+        only) is threaded straight through to place_equipment_marker so
+        the new marker gets a real outline shape."""
         detected_type = self.pid_panel._db_comp_for_tag(suggested_tag)
         popup = EquipmentTagPopup(self.db, suggested_tag=suggested_tag,
                                   suggested_type=detected_type, parent=self)
 
         def _on_picked(tag, comp_type):
-            self.pid_panel.place_equipment_marker(tag, comp_type, scene_pos, page)
+            self.pid_panel.place_equipment_marker(tag, comp_type, scene_pos, page, pdf_rect=pdf_rect)
 
         popup.committed.connect(_on_picked)
         popup.exec()
