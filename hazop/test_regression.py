@@ -7188,6 +7188,56 @@ class ScenarioColumnWidthPersistenceTests(unittest.TestCase):
             self.fail(f"must not raise on corrupt saved widths: {e!r}")
 
 
+class EquipmentPanelManualAddUnificationTests(unittest.TestCase):
+    """EquipmentPanel._add_manual used to open a bare QInputDialog.getText()
+    (tag only, type always auto-guessed from KNOWN_PREFIXES, no duplicate
+    check) instead of the richer EquipmentTagPopup already used by the
+    P&ID's "🔧 Objekt" action. Unified onto the same popup + committed
+    handler (2026-08-09, see NOTES.md)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_manualadd_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from hazop import EquipmentPanel
+        self.panel = EquipmentPanel(self.db)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_commit_creates_new_catalog_row_with_chosen_type(self):
+        self.panel._on_manual_equipment_committed("P-101", "Pump")
+        row = self.db.get_equipment_by_tag("P-101")
+        self.assertIsNotNone(row)
+        self.assertEqual(row['equipment_type'], "Pump")
+
+    def test_commit_of_existing_tag_reuses_row_instead_of_duplicating(self):
+        self.db.add_equipment_item("V-01", "V-01", "V", 0, "Ventil", '', 0)
+        self.panel._on_manual_equipment_committed("V-01", "Ventil")
+        matches = [r for r in self.db.equipment_items() if r['tag'] == 'V-01']
+        self.assertEqual(len(matches), 1,
+                          "committing an already-catalogued tag must not create a duplicate row")
+
+    def test_commit_of_existing_tag_updates_type_when_changed(self):
+        self.db.add_equipment_item("V-02", "V-02", "V", 0, "", '', 0)
+        self.panel._on_manual_equipment_committed("V-02", "Ventil")
+        row = self.db.get_equipment_by_tag("V-02")
+        self.assertEqual(row['equipment_type'], "Ventil")
+
+    def test_commit_with_blank_tag_is_a_noop(self):
+        before = len(self.db.equipment_items())
+        self.panel._on_manual_equipment_committed("", "Pump")
+        self.assertEqual(len(self.db.equipment_items()), before)
+
+
 class EquipmentTagPopupDuplicateHintTests(unittest.TestCase):
     """EquipmentTagPopup surfaces when a typed tag already exists in the
     catalog, since place_equipment_marker silently reuses that row rather

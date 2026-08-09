@@ -17497,14 +17497,31 @@ class EquipmentPanel(QWidget):
     # ── Actions ───────────────────────────────────────────────────────────────
 
     def _add_manual(self):
-        from PyQt6.QtWidgets import QInputDialog
-        tag, ok = QInputDialog.getText(self, "Ny tagg", "Ange taggnummer (t.ex. PCV-101):")
-        if not ok or not tag.strip():
-            return
+        # Same EquipmentTagPopup used by the P&ID's "🔧 Objekt" action
+        # (2026-08-09, see NOTES.md) — one dialog for "manually add an
+        # equipment item" everywhere, with an actual type field and the
+        # duplicate-tag hint, instead of this page's own bare
+        # QInputDialog.getText() that only ever guessed the type from
+        # KNOWN_PREFIXES and had no duplicate check at all.
+        popup = EquipmentTagPopup(self.db, parent=self)
+        popup.committed.connect(self._on_manual_equipment_committed)
+        popup.exec()
+
+    def _on_manual_equipment_committed(self, tag, comp_type):
         tag = tag.strip().upper()
-        pfx = _tag_prefix(tag)
-        known = KNOWN_PREFIXES.get(pfx, ('', ''))
-        self.db.add_equipment_item(tag, tag, pfx, 0, known[1] if known else '', '', 0)
+        if not tag:
+            return
+        existing = self.db.get_equipment_by_tag(tag)
+        if existing:
+            if comp_type and comp_type != existing.get('equipment_type'):
+                self.db.update_equipment_item(
+                    existing['id'], existing['tag'], existing['prefix'],
+                    comp_type, existing.get('description') or '')
+        else:
+            pfx = _tag_prefix(tag)
+            known = KNOWN_PREFIXES.get(pfx, ('', ''))
+            self.db.add_equipment_item(
+                tag, tag, pfx, 0, comp_type or (known[1] if known else ''), '', 0)
         self.refresh()
 
     def _clear(self):
