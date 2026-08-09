@@ -182,7 +182,6 @@ def _pid_build_chain_text(base: str, chain: dict) -> str:
 
 MODE_NAV             = 0
 MODE_NODE            = 1
-MODE_CAUSE           = 2
 MODE_CONSEQUENCE     = 3
 MODE_SAFEGUARD       = 4
 MODE_PLACE_EXISTING  = 5   # place a pre-existing item (no new item created)
@@ -203,7 +202,6 @@ MODE_ANNOTATION     = 17  # click on board to place a sticky note
 # cursor-following ghost preview. Matches the tree-panel visibility buttons and
 # the final rendered markers (cause=red, consequence=orange, safeguard=green).
 _PLACEMENT_MODE_COLORS = {
-    MODE_CAUSE:           (QColor(0xe7, 0x4c, 0x3c), QColor(0xe7, 0x4c, 0x3c, 35)),
     MODE_CONSEQUENCE:     (QColor(0xe6, 0x7e, 0x22), QColor(0xe6, 0x7e, 0x22, 35)),
     MODE_SAFEGUARD:       (QColor(0x27, 0xae, 0x60), QColor(0x27, 0xae, 0x60, 35)),
     MODE_CAUSE_TEMPLATE:  (QColor(0xe7, 0x4c, 0x3c), QColor(0xe7, 0x4c, 0x3c, 35)),
@@ -212,7 +210,6 @@ _PLACEMENT_MODE_COLORS = {
 # Ghost preview radius per mode, matching the real marker's radius (see
 # add_cause_marker/add_consequence_marker/add_safeguard_marker).
 _PLACEMENT_MODE_RADIUS = {
-    MODE_CAUSE:           14.0,
     MODE_CONSEQUENCE:     12.0,
     MODE_SAFEGUARD:       12.0,
     MODE_CAUSE_TEMPLATE:  14.0,
@@ -1223,113 +1220,6 @@ class EquipmentMarkerReviewDialog(QDialog):
         if saved == 0:
             QMessageBox.information(self, "Inget sparat", "Inga rader var ikryssade.")
             return
-        self.accept()
-
-
-class ComponentPickerDialog(QDialog):
-    def __init__(self, parent=None, suggested_tag='',
-                 component_types=None, mode_freqs=None, preselect_type=''):
-        super().__init__(parent)
-        self.setWindowTitle("Välj komponent och felmod")
-        self.setMinimumWidth(460)
-        self.selected_type   = ''
-        self.selected_modes  = []
-        self.selected_tag    = ''
-        self.selected_freqs  = {}
-        self._comp_types     = component_types or COMPONENT_TYPES
-        self._mode_freqs     = mode_freqs or {}
-        self._preselect_type = preselect_type  # auto-detected symbol type
-
-        layout = QVBoxLayout(self)
-
-        # Show pre-selected type (learned from previous use)
-        if preselect_type:
-            hint = QLabel(f"💡 Igenkänd typ (lärde mig): {preselect_type}")
-            hint.setStyleSheet(
-                "background:#fff8e1; border:1px solid #ffe082; border-radius:3px;"
-                "padding:4px 8px; color:#795548; font-size:11px;")
-            layout.addWidget(hint)
-        form   = QFormLayout()
-
-        self.tag_edit = QLineEdit(suggested_tag)
-        self.tag_edit.setPlaceholderText("t.ex. V-01  (lästes från PDF, ändra vid behov)")
-        form.addRow("Komponent-ID:", self.tag_edit)
-
-        self.type_combo = QComboBox()
-        self.type_combo.addItems(list(self._comp_types.keys()))
-        self.type_combo.currentTextChanged.connect(self._update_modes)
-        form.addRow("Komponenttyp:", self.type_combo)
-        # Pre-select detected type from symbol classifier
-        if self._preselect_type:
-            idx = self.type_combo.findText(self._preselect_type)
-            if idx >= 0:
-                self.type_combo.setCurrentIndex(idx)
-        layout.addLayout(form)
-
-        layout.addWidget(QLabel("Felmod(er) — flerval möjligt:"))
-        self.mode_list = QListWidget()
-        self.mode_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
-        self.mode_list.setMinimumHeight(160)
-        layout.addWidget(self.mode_list)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self._on_accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-        self._update_modes(self.type_combo.currentText())
-
-    def _update_modes(self, type_name):
-        if not hasattr(self, 'mode_list'):
-            return   # called before mode_list is created (during __init__)
-        self.mode_list.clear()
-        freqs = self._mode_freqs.get(type_name, {})
-        for mode in self._comp_types.get(type_name, []):
-            freq = freqs.get(mode)
-            if freq is not None:
-                # Show frequency info alongside mode description
-                f_lbl = self._freq_label(freq)
-                display = f"{mode}  [{f_lbl}]"
-            else:
-                display = mode
-            item = QListWidgetItem(display)
-            item.setData(Qt.ItemDataRole.UserRole, mode)   # original desc without freq
-            if freq is not None:
-                item.setToolTip(f"Frekvens: {freq:.4g} händelser/år  →  {f_lbl}")
-            self.mode_list.addItem(item)
-
-    @staticmethod
-    def _freq_label(freq):
-        """Format a frequency value as a readable F-level string."""
-        if freq is None or freq <= 0:
-            return "—"
-        from math import floor, log10
-        # Compute F-level (same formula as freq_to_f_level in hazop.py)
-        boundaries = [1e-5, 1e-4, 1e-3, 0.01, 0.1, 1.0]
-        f_level = len(boundaries) - 1
-        for i, b in enumerate(boundaries):
-            if freq < b:
-                f_level = i - 1
-                break
-        return f"F={f_level}  ({freq:.3g}/år)"
-
-    def _on_accept(self):
-        self.selected_type = self.type_combo.currentText()
-        self.selected_tag  = self.tag_edit.text().strip()
-        selected = self.mode_list.selectedItems()
-        if not selected and self.mode_list.count() > 0:
-            self.mode_list.item(0).setSelected(True)
-            selected = [self.mode_list.item(0)]
-        # Use UserRole (original desc) to strip the freq annotation added in display
-        self.selected_modes = [
-            item.data(Qt.ItemDataRole.UserRole) or item.text()
-            for item in selected
-        ]
-        # Collect freq_per_year for each selected mode
-        freqs = self._mode_freqs.get(self.selected_type, {})
-        self.selected_freqs = {mode: freqs.get(mode) for mode in self.selected_modes}
         self.accept()
 
 
@@ -3426,7 +3316,6 @@ class ConnectorDotItem(QGraphicsEllipseItem):
 class PIDGraphicsView(QGraphicsView):
     node_markup_finished    = pyqtSignal(list, int)
     # Third parameter = extracted tag text from drawn rectangle (may be empty)
-    cause_clicked           = pyqtSignal(object, int, str)
     consequence_clicked     = pyqtSignal(object, int, str)
     safeguard_clicked       = pyqtSignal(object, int, str)
     place_existing_clicked  = pyqtSignal(object, int)
@@ -4016,7 +3905,7 @@ class PIDGraphicsView(QGraphicsView):
         elif mode == MODE_ANNOTATION:
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
-        elif mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD,
+        elif mode in (MODE_CONSEQUENCE, MODE_SAFEGUARD,
                       MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE):
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
@@ -6051,7 +5940,7 @@ class PIDGraphicsView(QGraphicsView):
                         event.accept(); return
                 # Priority 3: empty space → clear selection, fall through for panning
                 self._clear_edit_handles()
-        elif self.mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD,
+        elif self.mode in (MODE_CONSEQUENCE, MODE_SAFEGUARD,
                            MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE):
             if event.button() == Qt.MouseButton.LeftButton:
                 # Start rubber-band rectangle selection (or simple click)
@@ -6159,7 +6048,7 @@ class PIDGraphicsView(QGraphicsView):
 
         # ── Rect-select release for cause/consequence/safeguard ───────────────
         if (event.button() == Qt.MouseButton.LeftButton and
-                self.mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD,
+                self.mode in (MODE_CONSEQUENCE, MODE_SAFEGUARD,
                               MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE) and
                 self._rect_start is not None):
 
@@ -6195,9 +6084,7 @@ class PIDGraphicsView(QGraphicsView):
                 pdf_rect.width() > 4 or pdf_rect.height() > 4) else None
 
             center = rect.center()
-            if self.mode == MODE_CAUSE:
-                self.cause_clicked.emit(center, self.current_page, suggested)
-            elif self.mode == MODE_CONSEQUENCE:
+            if self.mode == MODE_CONSEQUENCE:
                 self.consequence_clicked.emit(center, self.current_page, suggested)
             elif self.mode == MODE_SAFEGUARD:
                 self.safeguard_clicked.emit(center, self.current_page, suggested)
@@ -6410,7 +6297,7 @@ class PIDGraphicsView(QGraphicsView):
             if self.mode in (MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE):
                 sp = self._snap_to_nearest(sp)
             self._update_rubber_band(sp)
-        elif self.mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD,
+        elif self.mode in (MODE_CONSEQUENCE, MODE_SAFEGUARD,
                            MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE) \
                 and self._rect_start is not None:
             # Actively sizing a marker's rect — the ghost preview (shown before
@@ -6438,7 +6325,7 @@ class PIDGraphicsView(QGraphicsView):
                 self._rect_item.setRect(rect)
             # No live tag extraction during drag (PDF read is slow — tag extracted on release)
             event.accept(); return
-        elif self.mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD,
+        elif self.mode in (MODE_CONSEQUENCE, MODE_SAFEGUARD,
                            MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE) \
                 and self._rect_start is None:
             # Not dragging yet — show a ghost circle at the cursor previewing
@@ -6540,7 +6427,7 @@ class PIDGraphicsView(QGraphicsView):
                 self._finish_markup_drawing(); event.accept(); return
             elif event.key() == Qt.Key.Key_Escape:
                 self._cancel_drawing(); event.accept(); return
-        elif (self.mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD, MODE_CAUSE_TEMPLATE)
+        elif (self.mode in (MODE_CONSEQUENCE, MODE_SAFEGUARD, MODE_CAUSE_TEMPLATE)
                 and event.key() == Qt.Key.Key_Escape):
             self._cancel_drawing()
             self.placement_cancelled.emit()
@@ -7871,7 +7758,6 @@ class PIDPanel(QWidget):
         self.viewer = PIDGraphicsView()
         self.viewer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.viewer.node_markup_finished.connect(self._on_markup_finished)
-        self.viewer.cause_clicked.connect(self._on_cause_click)
         self.viewer.consequence_clicked.connect(self._on_consequence_click)
         self.viewer.safeguard_clicked.connect(self._on_safeguard_click)
         self.viewer.place_existing_clicked.connect(self._on_place_existing_click)
@@ -9002,68 +8888,6 @@ class PIDPanel(QWidget):
         self.create_node_btn.setEnabled(False)
         self._load_overlays()
         self.node_created.emit(node_id)
-
-    def _on_cause_click(self, scene_pos, page, suggested_tag=''):
-        # Validate node — might be None, 0, or deleted from DB
-        if not self._active_node_id:
-            QMessageBox.information(self, "Välj nod",
-                "Välj en nod i trädet innan du placerar orsaker.")
-            return
-        if hasattr(self.db, 'get_node') and not self.db.get_node(self._active_node_id):
-            QMessageBox.information(self, "Ogiltig nod",
-                "Den valda noden finns inte längre. Välj en nod i trädet.")
-            self._active_node_id = None
-            return
-        # suggested_tag comes from the drawn rectangle's OCR/text extraction
-
-        comp_data  = (self.db.all_component_types_dict()
-                      if hasattr(self.db, 'all_component_types_dict') else None)
-        mode_freqs = self._load_mode_freqs()
-        # Look up component type from database / confirmed mappings
-        detected_type = self._db_comp_for_tag(suggested_tag)
-        dlg = ComponentPickerDialog(self, suggested_tag=suggested_tag,
-                                    component_types=comp_data,
-                                    mode_freqs=mode_freqs,
-                                    preselect_type=detected_type)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-
-        comp_type = dlg.selected_type
-        tag       = dlg.selected_tag
-        modes     = dlg.selected_modes
-        if not modes:
-            return
-
-        # ── Learn: remember this prefix → comp_type for future sessions ──────
-        self._learn_tag_type(suggested_tag or tag, comp_type)
-
-        pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
-        last_cause_id = None
-        for mode in modes:
-            label    = f"{tag + ' — ' if tag else ''}{comp_type}: {mode}"
-            try:
-                cause_id = self.db.add_cause(self._active_node_id)
-            except Exception as e:
-                QMessageBox.critical(self, "Databasfel",
-                    f"Kunde inte skapa orsak:\n{e}\n\nKontrollera att noden finns i trädet.")
-                return
-            self.db.update_cause(cause_id, label)
-
-            # Auto-set F-level AND store base_freq from component failure frequency
-            freq = dlg.selected_freqs.get(mode)
-            if freq is not None:
-                f_level = self._compute_f_level(freq)
-                self.db.update_cause(cause_id, likelihood=f_level, base_freq=freq)
-            else:
-                # No frequency defined — store None so CausePanel shows empty
-                self.db.update_cause(cause_id, base_freq=None)
-
-            self.db.add_cause_marker(cause_id, page, pdf_x, pdf_y, comp_type, tag)
-            self.viewer.add_cause_marker(cause_id, pdf_x, pdf_y, comp_type, mode, tag)
-            last_cause_id = cause_id
-
-        if last_cause_id is not None:
-            self.cause_created.emit(last_cause_id)
 
     def _on_consequence_click(self, scene_pos, page, suggested_tag=''):
         if self._active_cause_id is None:

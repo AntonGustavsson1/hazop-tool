@@ -1739,14 +1739,14 @@ class EscapeCancelsPlacementTests(unittest.TestCase):
         view.keyPressEvent(ev)
 
     def test_escape_cancels_cause_mode(self):
-        from pid_viewer import PIDPanel, MODE_CAUSE, MODE_NAV
+        from pid_viewer import PIDPanel, MODE_CAUSE_TEMPLATE, MODE_NAV
         panel = PIDPanel(self.db)
         try:
-            panel._set_mode(MODE_CAUSE)
-            self.assertEqual(panel.viewer.mode, MODE_CAUSE)
+            panel._set_mode(MODE_CAUSE_TEMPLATE)
+            self.assertEqual(panel.viewer.mode, MODE_CAUSE_TEMPLATE)
             self._press_escape(panel.viewer)
             self.assertEqual(panel.viewer.mode, MODE_NAV,
-                              "Escape must abort MODE_CAUSE back to MODE_NAV")
+                              "Escape must abort MODE_CAUSE_TEMPLATE back to MODE_NAV")
         finally:
             panel.deleteLater()
 
@@ -1778,13 +1778,13 @@ class EscapeCancelsPlacementTests(unittest.TestCase):
         toggle buttons were removed 2026-08-07 (see NOTES.md — redundant
         once the P&ID right-click menu did the same thing directly), so
         "🔍 Navigera" is now the only button in mode_buttons; it must still
-        become checked again after an Escape-cancel out of MODE_CAUSE
+        become checked again after an Escape-cancel out of MODE_CAUSE_TEMPLATE
         (still settable programmatically, e.g. by the right-click flow's
         internal _set_mode calls, even with no dedicated toolbar button)."""
-        from pid_viewer import PIDPanel, MODE_CAUSE, MODE_NAV
+        from pid_viewer import PIDPanel, MODE_CAUSE_TEMPLATE, MODE_NAV
         panel = PIDPanel(self.db)
         try:
-            panel._set_mode(MODE_CAUSE)
+            panel._set_mode(MODE_CAUSE_TEMPLATE)
             self.assertFalse(panel.mode_buttons[MODE_NAV].isChecked())
             self._press_escape(panel.viewer)
             self.assertEqual(panel.viewer.mode, MODE_NAV)
@@ -1834,11 +1834,11 @@ class GhostPreviewMarkerTests(unittest.TestCase):
         view._update_ghost_preview(scene_pos)
 
     def test_ghost_created_in_cause_mode(self):
-        from pid_viewer import PIDPanel, MODE_CAUSE
+        from pid_viewer import PIDPanel, MODE_CAUSE_TEMPLATE
         from PyQt6.QtCore import QPointF
         panel = PIDPanel(self.db)
         try:
-            panel._set_mode(MODE_CAUSE)
+            panel._set_mode(MODE_CAUSE_TEMPLATE)
             self.assertIsNone(panel.viewer._ghost_preview_item)
             self._move_to(panel.viewer, QPointF(50, 50))
             self.assertIsNotNone(panel.viewer._ghost_preview_item,
@@ -1881,11 +1881,11 @@ class GhostPreviewMarkerTests(unittest.TestCase):
         """The moment the user presses the mouse button to start sizing the
         marker's rect, the ghost must disappear — otherwise it would sit on
         top of the dashed drag-rect preview at Z_TEMP."""
-        from pid_viewer import PIDPanel, MODE_CAUSE
+        from pid_viewer import PIDPanel, MODE_CAUSE_TEMPLATE
         from PyQt6.QtCore import QPointF
         panel = PIDPanel(self.db)
         try:
-            panel._set_mode(MODE_CAUSE)
+            panel._set_mode(MODE_CAUSE_TEMPLATE)
             self._move_to(panel.viewer, QPointF(30, 30))
             self.assertIsNotNone(panel.viewer._ghost_preview_item)
             panel.viewer._clear_ghost_preview()   # what mousePressEvent triggers
@@ -1898,12 +1898,12 @@ class GhostPreviewMarkerTests(unittest.TestCase):
         """Ghost fill must match the mode's real marker color (cause=red,
         consequence=orange, safeguard=green) — verified via the shared
         _PLACEMENT_MODE_COLORS map rather than duplicated literals here."""
-        from pid_viewer import (PIDPanel, MODE_CAUSE, MODE_CONSEQUENCE,
+        from pid_viewer import (PIDPanel, MODE_CAUSE_TEMPLATE, MODE_CONSEQUENCE,
                                  MODE_SAFEGUARD, _PLACEMENT_MODE_COLORS)
         from PyQt6.QtCore import QPointF
         panel = PIDPanel(self.db)
         try:
-            for mode in (MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD):
+            for mode in (MODE_CAUSE_TEMPLATE, MODE_CONSEQUENCE, MODE_SAFEGUARD):
                 panel._set_mode(mode)
                 self._move_to(panel.viewer, QPointF(15, 15))
                 item = panel.viewer._ghost_preview_item
@@ -5957,10 +5957,12 @@ class EquipmentObjectPlacementTests(unittest.TestCase):
 class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
     """"⚙️ Orsak"/"⚠️ Konsekvens" mode-toggle buttons removed from the P&ID
     toolbar, and "🔧 Objekt" added to the right-click menu's action chain
-    (2026-08-07, see NOTES.md). MODE_CAUSE becomes fully unreachable (it
-    was only ever set by the removed button); MODE_CONSEQUENCE must still
-    work since the right-click menu's own "⚠️ Konsekvens" action still
-    relies on it internally."""
+    (2026-08-07, see NOTES.md). The old MODE_CAUSE mode/signal chain (only
+    ever set by the removed button) was itself removed as dead code
+    (2026-08-09, see NOTES.md) — cause creation now always goes through
+    MODE_CAUSE_TEMPLATE. MODE_CONSEQUENCE must still work since the
+    right-click menu's own "⚠️ Konsekvens" action still relies on it
+    internally."""
 
     @classmethod
     def setUpClass(cls):
@@ -5981,9 +5983,9 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
     def test_only_navigate_button_remains(self):
-        from pid_viewer import MODE_NAV, MODE_CAUSE, MODE_CONSEQUENCE
+        from pid_viewer import MODE_NAV, MODE_CAUSE_TEMPLATE, MODE_CONSEQUENCE
         self.assertIn(MODE_NAV, self.panel.mode_buttons)
-        self.assertNotIn(MODE_CAUSE, self.panel.mode_buttons)
+        self.assertNotIn(MODE_CAUSE_TEMPLATE, self.panel.mode_buttons)
         self.assertNotIn(MODE_CONSEQUENCE, self.panel.mode_buttons)
 
     def test_context_menu_consequence_action_still_sets_mode(self):

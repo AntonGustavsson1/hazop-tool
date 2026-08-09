@@ -16,7 +16,7 @@ import inspect
 
 from pid_viewer import (
     PIDPanel, COMPONENT_TYPES, VALVE_COMPONENT_TYPES, CONSEQUENCE_TEMPLATES, HAS_PYMUPDF,
-    MODE_NAV, MODE_NODE, MODE_CAUSE, MODE_CONSEQUENCE, MODE_SAFEGUARD, MODE_PICK_REF_TAG,
+    MODE_NAV, MODE_NODE, MODE_CONSEQUENCE, MODE_SAFEGUARD, MODE_PICK_REF_TAG,
     scan_pdf_for_equipment, ocr_status, KNOWN_PREFIXES, invert_cause_text,
     _RED_MARKUP_SYMBOLS, _get_red_symbol_svg,
     _equip_prefix_from_tag,
@@ -2980,14 +2980,6 @@ class Database:
     def delete_failure_mode(self, id_):
         self.conn.execute("DELETE FROM failure_modes WHERE id=?", (id_,))
         self.commit()
-
-    def all_component_types_dict(self):
-        """Return dict {type_name: [mode_description, ...]} for ComponentPickerDialog."""
-        result = {}
-        for ct in self.component_types():
-            modes = [fm['description'] for fm in self.failure_modes(ct['id'])]
-            result[ct['name']] = modes
-        return result
 
     # ── P&ID helpers ──────────────────────────────────────────────────────────
     def get_pid_path(self):
