@@ -7298,6 +7298,54 @@ class ConsequencePanelSevLabelsSyncTests(unittest.TestCase):
         self.assertEqual(panel.sev_combo.itemText(2), 'C3 – Omdöpt')
 
 
+class LegacyConsequenceLikelihoodColumnTests(unittest.TestCase):
+    """consequences.likelihood predates the redesign that moved likelihood
+    onto causes; old database files still carry it with stale values that
+    nothing reads or writes anymore (2026-08-09, see NOTES.md)."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_legacycol_test_")
+        self.db_path = os.path.join(self._tmpdir, "legacy.db")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_legacy_likelihood_column_is_dropped_on_open(self):
+        # Simulate an old database file created before the redesign: a
+        # consequences table that still has its own likelihood column.
+        raw = sqlite3.connect(self.db_path)
+        raw.execute("""
+            CREATE TABLE consequences (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                cause_id    INTEGER NOT NULL,
+                description TEXT NOT NULL DEFAULT 'Ny konsekvens',
+                severity    INTEGER NOT NULL DEFAULT 1,
+                likelihood  INTEGER NOT NULL DEFAULT 1
+            )
+        """)
+        raw.commit()
+        raw.close()
+
+        db = Database(path=self.db_path)
+        try:
+            cols = [r['name'] for r in db.conn.execute("PRAGMA table_info(consequences)")]
+            self.assertNotIn('likelihood', cols,
+                              "legacy consequences.likelihood column must be dropped on open")
+        finally:
+            del db
+
+    def test_fresh_database_open_is_a_harmless_noop(self):
+        """A database that never had the column (every DB created after
+        the redesign) must open without error — the DROP is conditional
+        on PRAGMA table_info actually finding the column first."""
+        db = Database(path=self.db_path)
+        try:
+            cols = [r['name'] for r in db.conn.execute("PRAGMA table_info(consequences)")]
+            self.assertNotIn('likelihood', cols)
+        finally:
+            del db
+
+
 class NumericPrefixParsingTests(unittest.TestCase):
     """_equip_prefix_from_tag/_parse_tag used to treat a purely numeric
     text span (e.g. a title-block date "2019-09-30") as a valid

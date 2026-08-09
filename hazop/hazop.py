@@ -1744,8 +1744,25 @@ class Database:
         logging.info("Database: starting migration...")
         self._column_migrations()
         self._migrate_tables_and_seed()
+        self._drop_legacy_consequence_likelihood_column()
         logging.info("Database: migration complete")
         self._validate_schema()
+
+    def _drop_legacy_consequence_likelihood_column(self):
+        """consequences.likelihood predates the schema redesign that moved
+        likelihood onto causes (see CLAUDE.md — 'Likelihood lives on
+        causes, severity on consequences'). Nothing reads or writes it
+        anymore, but old database files still carry it with stale values.
+        A no-op on any database created after the redesign; harmless if
+        the installed SQLite predates DROP COLUMN support (3.35+, 2021)."""
+        try:
+            cols = [r['name'] for r in self.conn.execute("PRAGMA table_info(consequences)")]
+            if 'likelihood' in cols:
+                self.conn.execute("ALTER TABLE consequences DROP COLUMN likelihood")
+                self.commit()
+                logging.info("Dropped legacy consequences.likelihood column")
+        except sqlite3.OperationalError as e:
+            logging.warning(f"Could not drop legacy consequences.likelihood column: {e}")
 
     def _column_migrations(self):
         """Execute idempotent column migrations with proper error handling.
