@@ -12201,6 +12201,8 @@ class ScenarioTablePanel(QWidget):
             rb.setToolTip(f"🖱 Klicka för att ändra i riskmatrisen\n{level_b}")
             rb.setData(Qt.ItemDataRole.UserRole,
                        ('risk_click_cat', cause_d['id'], cid, cat_id, sev_id, freq, sev))
+            rb.setBackground(QBrush(QColor(bg_b)))
+            rb.setForeground(QBrush(QColor(fg_b)))
         else:
             rb = QTableWidgetItem('')
             rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -12256,6 +12258,8 @@ class ScenarioTablePanel(QWidget):
             ra.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
             ra.setFlags(ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
             ra.setToolTip(f"{level_a} — {freq_axis_label(f_eff)}  {cons_axis_label(sev)}  (efter barriärer)")
+            ra.setBackground(QBrush(QColor(bg_a)))
+            ra.setForeground(QBrush(QColor(fg_a)))
         else:
             ra = QTableWidgetItem('')
             ra.setFlags(ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -12270,6 +12274,8 @@ class ScenarioTablePanel(QWidget):
             rs.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
             rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
             rs.setToolTip(f"{level_s} — {freq_axis_label(final_f)}  {cons_axis_label(sev)}  (−{total_steps} steg totalt)")
+            rs.setBackground(QBrush(QColor(bg_s)))
+            rs.setForeground(QBrush(QColor(fg_s)))
         else:
             rs = QTableWidgetItem('')
             rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -12461,8 +12467,8 @@ class ScenarioTablePanel(QWidget):
                 final_f, total_rrf, total_steps = total_freq_reduction(
                     freq, sg_rrf, fa_active, fa_rrf, ign_active, ign_rrf, rfs)
                 f_eff               = effective_frequency(freq, sg_rrf)
-                _, bg_a, _          = risk_info(f_eff, sev)
-                _, bg_s, _          = risk_info(final_f, sev)
+                _, bg_a, fg_a       = risk_info(f_eff, sev)
+                _, bg_s, fg_s       = risk_info(final_f, sev)
 
                 if cat_info:
                     sg_steps  = int(math.log10(max(1, sg_rrf))) if sg_rrf > 1 else 0
@@ -12471,12 +12477,16 @@ class ScenarioTablePanel(QWidget):
                     ra = self._table.item(row, self._C_REFT)
                     if ra:
                         ra.setText(reft_text)
+                        ra.setBackground(QBrush(QColor(bg_a)))
+                        ra.setForeground(QBrush(QColor(fg_a)))
 
                     slut_text = (f"−{total_steps} steg\n" if total_steps else "") + \
                                 f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}"
                     rs = self._table.item(row, self._C_SLUT)
                     if rs:
                         rs.setText(slut_text)
+                        rs.setBackground(QBrush(QColor(bg_s)))
+                        rs.setForeground(QBrush(QColor(fg_s)))
         finally:
             self._table.blockSignals(False)
 

@@ -863,6 +863,18 @@ Anton ville kunna lägga till ett objekt (ventil/instrument/pump manuellt) inte 
 
 ---
 
+## Riskcellerna i HAZOP scenario saknade riskmatrisens färger (2026-08-09)
+
+**Rapport:** "nu vill jag att du fixar så att cellerna med riskmatriser i hazop scenario återspeglar motsvarande färg från riskmatrisen."
+
+**Grundorsak:** `_add_row` (`ScenarioTablePanel`) anropade redan `risk_info(frekvens, allvarlighet)` för alla tre riskkolumnerna — "Risk före barriär" (RFORE), "Risk efter barriärer" (REFT), "Slutkonsekvens" (SLUT) — men använde bara den returnerade textetiketten (i tooltippen); själva bakgrunds-/textfärgen (`bg`/`fg`, hexsträngar från den konfigurerade matrisen i Inställningar) kastades alltid bort. Cellerna renderades därför alltid med tabellens vanliga vit/randig bakgrund, oavsett riskmatrisens faktiska färgsättning. Samma sak i `_update_lopa_risk` (den snabba uppdateringsvägen när en barriär/RRF ändras utan full ombyggnad) — `bg_a`/`bg_s` beräknades men kastades, och `fg_a`/`fg_s` fångades inte ens upp (`_`).
+
+**Fix:** Alla tre `QTableWidgetItem`-konstruktionerna i `_add_row` (rad ~12197–12277) sätter nu `setBackground(QBrush(QColor(bg)))`/`setForeground(QBrush(QColor(fg)))` med de redan beräknade `bg_b/fg_b` (RFORE), `bg_a/fg_a` (REFT), `bg_s/fg_s` (SLUT). Samma sak i `_update_lopa_risk` (rad ~12470 och framåt) — `fg_a`/`fg_s` fångas nu upp istället för att kastas, och appliceras på REFT/SLUT-cellerna direkt efter `setText(...)`. Ingen delegate-ändring behövdes — `_PidDelegate.paint()`s standardgren (`super().paint()`) respekterar redan `BackgroundRole`/`ForegroundRole` automatiskt; RFORE/REFT/SLUT går aldrig genom någon av delegatens specialfall (ORS/KON/SG). Rader utan kategoribedömning (`cat_info` saknas, tomma placeholder-celler) förblir ofärgade precis som idag — inget att färglägga där.
+
+**Test:** 4 nya tester i `RiskCellColorTests` — RFORE:s färg matchar `risk_info()`, REFT/SLUT:s färger matchar (inkl. RRF-reducerad frekvens), en okategoriserad rad förblir ofärgad, och `_update_lopa_risk` (RRF-ändring utan full ombyggnad) håller REFT/SLUT-färgen i synk. Verifierat via `git stash`/`git stash pop` att 3 av 4 test fångar regressionen (det fjärde, den okategoriserade raden, var redan korrekt). Full svit: `python -m unittest test_regression test_symbol_geometry` — 337/337 gröna.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **OCR-positioner är approximativa** — x,y-koordinater från OCR stämmer inte perfekt med PDF-koordinater vid hög zoom. Markörer kan hamna något fel.

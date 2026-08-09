@@ -6767,5 +6767,126 @@ class AutoConsequenceAndSafeguardOnCauseTemplateTests(unittest.TestCase):
             edit_spy.assert_called()
 
 
+class RiskCellColorTests(unittest.TestCase):
+    """'nu vill jag att du fixar så att cellerna med riskmatriser i hazop
+    scenario återspeglar motsvarande färg från riskmatrisen' (2026-08-09,
+    see NOTES.md) — RFORE/REFT/SLUT cells now get their background/
+    foreground from risk_info(), matching the configured risk matrix.
+    risk_info() was already being called for each row (its label went
+    into tooltips) but the bg/fg colors it returned were simply discarded
+    — the cells rendered with no color at all."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_riskcolor_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_full_chain_with_category(self, freq_level=3, severity=3, rrf=1):
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(cause_id, likelihood=freq_level)
+        cons_id = self.db.add_consequence(cause_id)
+        cat = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(cons_id, cat['id'], severity)
+        sg_id = self.db.add_safeguard(cons_id)
+        if rrf != 1:
+            self.db.update_safeguard(sg_id, rrf=rrf)
+        return node_id, dev_id, cause_id, cons_id, sg_id
+
+    def test_rfore_cell_matches_risk_info_colors(self):
+        from hazop import ScenarioTablePanel, risk_info
+        from PyQt6.QtGui import QColor
+        panel = ScenarioTablePanel(self.db)
+        try:
+            node_id, _dev_id, cause_id, _cons_id, _sg_id = \
+                self._make_full_chain_with_category(freq_level=3, severity=3)
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+
+            item = panel._table.item(row, panel._C_RFORE)
+            _, expected_bg, expected_fg = risk_info(3, 3)
+            self.assertEqual(item.background().color(), QColor(expected_bg))
+            self.assertEqual(item.foreground().color(), QColor(expected_fg))
+        finally:
+            panel.deleteLater()
+
+    def test_reft_and_slut_cells_match_risk_info_colors(self):
+        from hazop import ScenarioTablePanel, risk_info, effective_frequency, total_freq_reduction
+        from PyQt6.QtGui import QColor
+        panel = ScenarioTablePanel(self.db)
+        try:
+            node_id, _dev_id, cause_id, _cons_id, _sg_id = \
+                self._make_full_chain_with_category(freq_level=4, severity=3, rrf=100)
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+
+            f_eff = effective_frequency(4, 100)
+            _, expected_bg_a, expected_fg_a = risk_info(f_eff, 3)
+            reft_item = panel._table.item(row, panel._C_REFT)
+            self.assertEqual(reft_item.background().color(), QColor(expected_bg_a))
+            self.assertEqual(reft_item.foreground().color(), QColor(expected_fg_a))
+
+            final_f, _rrf, _steps = total_freq_reduction(4, 100, False, 10, False, 10, [])
+            _, expected_bg_s, expected_fg_s = risk_info(final_f, 3)
+            slut_item = panel._table.item(row, panel._C_SLUT)
+            self.assertEqual(slut_item.background().color(), QColor(expected_bg_s))
+            self.assertEqual(slut_item.foreground().color(), QColor(expected_fg_s))
+        finally:
+            panel.deleteLater()
+
+    def test_uncategorized_row_stays_uncolored(self):
+        """No category assessment (cat_info is None) means RFORE/REFT/SLUT
+        are blank placeholders, same as before — nothing to color."""
+        from hazop import ScenarioTablePanel
+        panel = ScenarioTablePanel(self.db)
+        try:
+            node_id = self.db.add_node()
+            dev_id = self.db.deviations(node_id)[0]['id']
+            cause_id = self.db.add_cause(dev_id)
+            cons_id = self.db.add_consequence(cause_id)
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+
+            item = panel._table.item(row, panel._C_RFORE)
+            self.assertEqual(item.text(), '')
+        finally:
+            panel.deleteLater()
+
+    def test_update_lopa_risk_also_recolors_reft_and_slut(self):
+        """Changing a safeguard's RRF without a full rebuild
+        (_update_lopa_risk, the LopaWidget-triggered incremental path)
+        must keep the REFT/SLUT colors in sync, not just their text."""
+        from hazop import ScenarioTablePanel, risk_info, effective_frequency
+        from PyQt6.QtGui import QColor
+        panel = ScenarioTablePanel(self.db)
+        try:
+            node_id, _dev_id, cause_id, cons_id, sg_id = \
+                self._make_full_chain_with_category(freq_level=4, severity=3, rrf=1)
+            panel.load_node(node_id)
+
+            self.db.update_safeguard(sg_id, rrf=100)
+            panel._update_lopa_risk(cons_id)
+
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+            f_eff = effective_frequency(4, 100)
+            _, expected_bg, expected_fg = risk_info(f_eff, 3)
+            reft_item = panel._table.item(row, panel._C_REFT)
+            self.assertEqual(reft_item.background().color(), QColor(expected_bg))
+            self.assertEqual(reft_item.foreground().color(), QColor(expected_fg))
+        finally:
+            panel.deleteLater()
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
