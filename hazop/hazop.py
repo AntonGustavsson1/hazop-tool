@@ -10281,13 +10281,9 @@ class _ScenarioDelegate(QStyledItemDelegate):
         wrap_cols = {panel._C_ORS, panel._C_KON}
         if col not in wrap_cols:
             if col == panel._C_SG:
-                # SG's description never word-wraps (unlike ORS/KON), so the
-                # only extra height it ever needs is the tag strip itself
-                # when a tag has been drag-and-dropped onto it (2026-08-08,
-                # see NOTES.md) — no boundingRect() computation needed.
-                comp_type, comp_tag = index.data(Qt.ItemDataRole.UserRole + 6) or ('', '')
-                strip_h = 17 if (comp_tag or comp_type) else 0
-                return QSize(option.rect.width(), strip_h + one_line_h)
+                # SG's description never word-wraps (unlike ORS/KON) — a
+                # single compact line is always enough.
+                return QSize(option.rect.width(), one_line_h)
             # Non-wrap columns (risk cells) stay at one compact line
             base = super().sizeHint(option, index)
             return QSize(base.width(), one_line_h)
@@ -10305,12 +10301,9 @@ class _ScenarioDelegate(QStyledItemDelegate):
                          _STRIP_H + max(one_line_h, rect.height() + 4))
         elif col == panel._C_KON:
             w -= _PID_ICON_W + _KON_CAT_W
-            comp_type, comp_tag = index.data(Qt.ItemDataRole.UserRole + 7) or ('', '')
             w = max(40, w)
             rect = fm.boundingRect(0, 0, w, 10000, Qt.TextFlag.TextWordWrap, text)
-            strip_h = 17 if (comp_tag or comp_type) else 0
-            return QSize(option.rect.width(),
-                         strip_h + max(one_line_h, rect.height() + 4))
+            return QSize(option.rect.width(), max(one_line_h, rect.height() + 4))
         elif col == panel._C_SG:
             w -= _PID_ICON_W + _RRF_W
         w = max(40, w)
@@ -10372,7 +10365,6 @@ class _ScenarioDelegate(QStyledItemDelegate):
 
 _PID_ICON_W  = 22          # pixels reserved on the left for the pin icon
 _KON_CAT_W   = 26          # pixels for the category badge zone in KON cells
-_TAG_CLOSE_W = 16          # "×" zone at the right of a KON/SG tag strip — detaches the tag
 _ORS_COMMENT_W = 22        # 💬 comment icon zone (rightmost of ORS)
 _ORS_CLONE_W   = 22        # 📋 clone-scenario icon zone
 
@@ -10506,21 +10498,15 @@ class _PidDelegate(_ScenarioDelegate):
             return
         elif col == self._panel._C_KON:
             offset = _PID_ICON_W + _KON_CAT_W
-            comp_type, comp_tag = index.data(Qt.ItemDataRole.UserRole + 7) or ('', '')
-            top_offset = 17 if (comp_tag or comp_type) else 0
-            editor.setGeometry(QRect(r.left() + offset, r.top() + top_offset,
-                                     max(10, r.width() - offset),
-                                     max(10, r.height() - top_offset)))
+            editor.setGeometry(QRect(r.left() + offset, r.top(),
+                                     max(10, r.width() - offset), r.height()))
             return
         elif col == self._panel._C_SG:
             # 2026-08-10 fix: this used to span the full remaining width,
-            # visually covering the RRF badge (_RRF_W) while editing — the
-            # same exclusion KON already applies for its chain-link zone.
-            comp_type, comp_tag = index.data(Qt.ItemDataRole.UserRole + 6) or ('', '')
-            top_offset = 17 if (comp_tag or comp_type) else 0
-            editor.setGeometry(QRect(r.left() + _PID_ICON_W, r.top() + top_offset,
+            # visually covering the RRF badge (_RRF_W) while editing.
+            editor.setGeometry(QRect(r.left() + _PID_ICON_W, r.top(),
                                      max(10, r.width() - _PID_ICON_W - _RRF_W),
-                                     max(10, r.height() - top_offset)))
+                                     r.height()))
             return
         else:
             offset = _PID_ICON_W
@@ -10545,44 +10531,14 @@ class _PidDelegate(_ScenarioDelegate):
                 else:
                     painter.fillRect(r, option.palette.base())
 
-                # ── Tag strip (top row) — mirrors the KON column's tag strip,
-                # only shown when a tag has been drag-and-dropped onto this
-                # safeguard (2026-08-08, see NOTES.md) — an untagged
-                # safeguard looks exactly as it always has.
-                _SH = 17
+                # Tag data still tracked (drives pin color below) but no
+                # longer shown as its own strip (2026-08-10, see NOTES.md
+                # "ta bort tagg remsa") — a dragged-in tag now only shows
+                # inline, bolded in the description text.
                 comp_type, comp_tag = index.data(Qt.ItemDataRole.UserRole + 6) or ('', '')
                 has_tag = bool(comp_tag or comp_type)
-                if has_tag:
-                    strip_rect = QRect(r.left(), r.top(), r.width(), _SH)
-                    strip_bg = (option.palette.highlight().color().darker(110) if sel
-                                else QColor('#F5F5F3'))
-                    painter.fillRect(strip_rect, strip_bg)
-                    painter.setPen(QPen(QColor('#bcd'), 1))
-                    painter.drawLine(r.left(), r.top() + _SH, r.right(), r.top() + _SH)
-                    tf = QFont(option.font)
-                    tf.setPointSize(max(6, option.font.pointSize() - 1))
-                    tf.setBold(True)
-                    painter.setFont(tf)
-                    tag_tc = (option.palette.highlightedText().color() if sel
-                              else QColor('#17191C'))
-                    painter.setPen(tag_tc)
-                    close_rect = QRect(r.right() - _TAG_CLOSE_W, r.top(), _TAG_CLOSE_W, _SH)
-                    tag_rect = QRect(r.left() + _PID_ICON_W, r.top(),
-                                     r.width() - _PID_ICON_W - _TAG_CLOSE_W - 4, _SH)
-                    painter.drawText(tag_rect.adjusted(2, 0, -1, 0),
-                                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                                     painter.fontMetrics().elidedText(
-                                         comp_tag, Qt.TextElideMode.ElideRight,
-                                         tag_rect.width() - 3))
-                    # "×" detaches the tag without deleting the row (2026-08-10)
-                    close_tc = QColor('#999') if not sel else tag_tc
-                    painter.setPen(close_tc)
-                    painter.drawText(close_rect, Qt.AlignmentFlag.AlignCenter, "×")
-                    body_top = r.top() + _SH
-                    body_h   = max(0, r.height() - _SH)
-                else:
-                    body_top = r.top()
-                    body_h   = r.height()
+                body_top = r.top()
+                body_h   = r.height()
 
                 # Layout: [pin 22px][description ...][RRF badge 54px]
                 desc_w    = r.width() - _PID_ICON_W - _RRF_W
@@ -10798,41 +10754,14 @@ class _PidDelegate(_ScenarioDelegate):
                 else:
                     painter.fillRect(r, option.palette.base())
 
-                # ── Tag strip (top row) — mirrors the ORS column's tag strip ────
-                _SH = 17
+                # Tag data still tracked (drives pin color below) but no
+                # longer shown as its own strip (2026-08-10, see NOTES.md
+                # "ta bort tagg remsa") — a dragged-in tag now only shows
+                # inline, bolded in the description text.
                 comp_type, comp_tag = index.data(Qt.ItemDataRole.UserRole + 7) or ('', '')
                 has_tag = bool(comp_tag or comp_type)
-                if has_tag:
-                    strip_rect = QRect(r.left(), r.top(), r.width(), _SH)
-                    strip_bg = (option.palette.highlight().color().darker(110) if sel
-                                else QColor('#F5F5F3'))
-                    painter.fillRect(strip_rect, strip_bg)
-                    painter.setPen(QPen(QColor('#bcd'), 1))
-                    painter.drawLine(r.left(), r.top() + _SH, r.right(), r.top() + _SH)
-                    tf = QFont(option.font)
-                    tf.setPointSize(max(6, option.font.pointSize() - 1))
-                    tf.setBold(True)
-                    painter.setFont(tf)
-                    tag_tc = (option.palette.highlightedText().color() if sel
-                              else QColor('#17191C'))
-                    painter.setPen(tag_tc)
-                    close_rect = QRect(r.right() - _TAG_CLOSE_W, r.top(), _TAG_CLOSE_W, _SH)
-                    tag_rect = QRect(r.left() + _PID_ICON_W, r.top(),
-                                     r.width() - _PID_ICON_W - _TAG_CLOSE_W - 4, _SH)
-                    painter.drawText(tag_rect.adjusted(2, 0, -1, 0),
-                                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                                     painter.fontMetrics().elidedText(
-                                         comp_tag, Qt.TextElideMode.ElideRight,
-                                         tag_rect.width() - 3))
-                    # "×" detaches the tag without deleting the row (2026-08-10)
-                    close_tc = QColor('#999') if not sel else tag_tc
-                    painter.setPen(close_tc)
-                    painter.drawText(close_rect, Qt.AlignmentFlag.AlignCenter, "×")
-                    body_top = r.top() + _SH
-                    body_h   = max(0, r.height() - _SH)
-                else:
-                    body_top = r.top()
-                    body_h   = r.height()
+                body_top = r.top()
+                body_h   = r.height()
 
                 pin_rect   = QRect(r.left(), body_top, _PID_ICON_W, body_h)
                 cat_rect   = QRect(r.left() + _PID_ICON_W, body_top, _KON_CAT_W, body_h)
@@ -10859,14 +10788,18 @@ class _PidDelegate(_ScenarioDelegate):
                         painter.setPen(badge_tc)
                         painter.drawText(badge, Qt.AlignmentFlag.AlignCenter,
                                          f"{cat_name[:3]} {cons_axis_label(cat_sev)}")
-                else:
-                    icon_clr = QColor('#17191C') if n_cats > 0 else QColor('#aaa')
-                    painter.setPen(icon_clr)
+                elif n_cats > 0:
+                    painter.setPen(QColor('#17191C'))
                     f2 = QFont(option.font)
                     f2.setPointSize(max(6, option.font.pointSize() - 1))
                     painter.setFont(f2)
-                    txt_icon = f"📊{n_cats}" if n_cats > 0 else "📊"
-                    painter.drawText(cat_rect, Qt.AlignmentFlag.AlignCenter, txt_icon)
+                    painter.drawText(cat_rect, Qt.AlignmentFlag.AlignCenter, f"📊{n_cats}")
+                # else: no category assessment yet — leave the zone blank
+                # rather than showing a muted "📊" placeholder on every
+                # single uncategorized row (2026-08-10, see NOTES.md
+                # "det känns lite plottrigt"; reduce chrome for unused
+                # features instead of always reserving visual weight for
+                # them).
 
                 painter.setPen(QPen(QColor('#ddd'), 1))
                 painter.drawLine(cat_rect.right(), r.top(), cat_rect.right(), r.bottom())
@@ -12074,17 +12007,10 @@ class ScenarioTablePanel(QWidget):
                         continue
 
                     if col == self._C_SG:
-                        # SG's description never word-wraps — the only
-                        # extra height it needs is the tag strip itself
-                        # when drag-and-dropped-tagged (2026-08-08, see
-                        # NOTES.md), same rule as _ScenarioDelegate.sizeHint.
-                        sg_item = table.item(row, col)
-                        comp_type, comp_tag = (sg_item.data(Qt.ItemDataRole.UserRole + 6)
-                                               if sg_item else None) or ('', '')
-                        strip_h = 17 if (comp_tag or comp_type) else 0
-                        h = strip_h + one_line_h
-                        if h > max_h:
-                            max_h = h
+                        # SG's description never word-wraps — a single
+                        # compact line is always enough.
+                        if one_line_h > max_h:
+                            max_h = one_line_h
                         continue
 
                     if col not in wrap_cols:
@@ -12108,9 +12034,7 @@ class ScenarioTablePanel(QWidget):
                         cell_w = max(40, w - _PID_ICON_W - _KON_CAT_W)
                         rect = fm.boundingRect(0, 0, cell_w, 10000,
                                               Qt.TextFlag.TextWordWrap, text)
-                        comp_type, comp_tag = item.data(Qt.ItemDataRole.UserRole + 7) or ('', '')
-                        strip_h = 17 if (comp_tag or comp_type) else 0
-                        h = strip_h + max(one_line_h, rect.height() + 4)
+                        h = max(one_line_h, rect.height() + 4)
                     if h > max_h:
                         max_h = h
             except Exception:
@@ -12731,9 +12655,7 @@ class ScenarioTablePanel(QWidget):
         else:   # self._C_KON
             cell_w = max(40, w - _PID_ICON_W - _KON_CAT_W)
             rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, text)
-            comp_type, comp_tag = item.data(Qt.ItemDataRole.UserRole + 7) or ('', '')
-            strip_h = 17 if (comp_tag or comp_type) else 0
-            return strip_h + max(one_line_h, rect.height() + 4)
+            return max(one_line_h, rect.height() + 4)
 
     def refresh_placed(self):
         """Reload which IDs are placed on the P&ID and repaint the table."""
@@ -13318,31 +13240,6 @@ class ScenarioTablePanel(QWidget):
                                                   self._table.viewport().mapToGlobal(pos))
                         return True
 
-            # "×" detach tag — top-right corner of a KON/SG tag strip
-            # (2026-08-10, see NOTES.md). Checked BEFORE the chain-link/RRF
-            # zones below since both overlap this same x-range at the
-            # right edge — this only matches within the strip's top _SH=17
-            # rows, those zones span the whole cell height.
-            if row >= 0 and col in (self._C_KON, self._C_SG) and row < len(self._row_meta):
-                item = self._table.item(row, col)
-                role = Qt.ItemDataRole.UserRole + (7 if col == self._C_KON else 6)
-                comp_type, comp_tag = (item.data(role) if item else None) or ('', '')
-                if comp_tag or comp_type:
-                    cell_idx = self._table.model().index(row, col)
-                    cr = self._table.visualRect(cell_idx)
-                    if pos.x() >= cr.right() - _TAG_CLOSE_W and (pos.y() - cr.top()) < 17:
-                        if col == self._C_KON:
-                            cons_id = self._row_meta[row][2]
-                            if cons_id is not None:
-                                self.db.set_consequence_tag(cons_id, '', '')
-                                self._schedule_rebuild()
-                        else:
-                            sg_id = self._row_meta[row][3]
-                            if sg_id is not None:
-                                self.db.set_safeguard_tag(sg_id, '', '')
-                                self._schedule_rebuild()
-                        return True
-
             # 📊 Category badge click in KON cell
             if row >= 0 and col == self._C_KON and row < len(self._row_meta):
                 col_x     = self._table.columnViewportPosition(col)
@@ -13842,6 +13739,9 @@ class ScenarioTablePanel(QWidget):
             a_move = menu.addAction("↕  Flytta till annan orsak…")
             a_move.triggered.connect(
                 lambda: self._move_consequence_dialog(cons_id))
+            if k and (dict(k).get('comp_tag') or dict(k).get('comp_type')):
+                a_untag = menu.addAction("✕  Ta bort tagg")
+                a_untag.triggered.connect(lambda cid=cons_id: self._untag_consequence(cid))
             menu.addSeparator()
             a_del = menu.addAction("🗑  Ta bort konsekvens")
             a_del.triggered.connect(lambda cid=cons_id: self._confirm_delete('cons', cid))
@@ -13859,12 +13759,28 @@ class ScenarioTablePanel(QWidget):
             a_move = menu.addAction("↕  Flytta till annan konsekvens…")
             a_move.triggered.connect(
                 lambda: self._move_safeguard_dialog(sg_id))
+            if sg and (dict(sg).get('comp_tag') or dict(sg).get('comp_type')):
+                a_untag = menu.addAction("✕  Ta bort tagg")
+                a_untag.triggered.connect(lambda sid=sg_id: self._untag_safeguard(sid))
             menu.addSeparator()
             a_del = menu.addAction("🗑  Ta bort barriär")
             a_del.triggered.connect(lambda sid=sg_id: self._confirm_delete('sg', sid))
 
         if not menu.isEmpty():
             menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    def _untag_consequence(self, cons_id):
+        """Detach a dragged-in equipment tag from a KON cell without
+        deleting the row — the inline "×" this replaced sat in the tag
+        strip, which was removed 2026-08-10 (see NOTES.md; the tag still
+        shows bolded in the description text via tagged_refs)."""
+        self.db.set_consequence_tag(cons_id, '', '')
+        self._schedule_rebuild()
+
+    def _untag_safeguard(self, sg_id):
+        """Same as _untag_consequence, for a safeguard cell."""
+        self.db.set_safeguard_tag(sg_id, '', '')
+        self._schedule_rebuild()
 
     def _confirm_delete(self, kind, item_id):
         labels = {'cause': ('orsak', 'cause'), 'cons': ('konsekvens', 'consequence'),

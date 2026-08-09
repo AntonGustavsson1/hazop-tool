@@ -7253,9 +7253,13 @@ class EquipmentMultiSelectTests(unittest.TestCase):
         self.assertIn("Shift", item.toolTip())
 
 
-class TagDetachClickTests(unittest.TestCase):
-    """"×" in the KON/SG tag strip detaches the tag without deleting the
-    row (2026-08-10, see NOTES.md)."""
+class TagDetachContextMenuTests(unittest.TestCase):
+    """The KON/SG tag strip (with its inline "×") was removed 2026-08-10
+    (see NOTES.md, "ta bort tagg remsa") — a tag now shows only inline,
+    bolded in the description text. Detaching a tag moved to a
+    "✕  Ta bort tagg" context-menu action, offered only when the row
+    actually carries one, matching this session's other "move rare
+    actions to context menus" cleanup."""
 
     @classmethod
     def setUpClass(cls):
@@ -7280,18 +7284,16 @@ class TagDetachClickTests(unittest.TestCase):
         sg_id = self.db.add_safeguard(cons_id)
         return node_id, dev_id, cause_id, cons_id, sg_id
 
-    def _click_top_right(self, panel, row, col):
-        from PyQt6.QtCore import QPoint, QEvent
-        cell_idx = panel._table.model().index(row, col)
-        cr = panel._table.visualRect(cell_idx)
-        pos = QPoint(cr.right() - 5, cr.top() + 5)   # inside the "×" zone, top strip
-        event = unittest.mock.MagicMock()
-        event.type.return_value = QEvent.Type.MouseButtonPress
-        event.button.return_value = Qt.MouseButton.LeftButton
-        event.pos.return_value = pos
-        return panel.eventFilter(panel._table.viewport(), event)
+    def _menu_labels(self, panel, row, col):
+        from PyQt6.QtCore import QPoint
+        with unittest.mock.patch.object(panel._table, 'rowAt', return_value=row), \
+             unittest.mock.patch.object(panel._table, 'columnAt', return_value=col), \
+             unittest.mock.patch('hazop.QMenu') as mock_menu_cls:
+            panel._on_context_menu(QPoint(0, 0))
+        mock_menu = mock_menu_cls.return_value
+        return [c.args[0] for c in mock_menu.addAction.call_args_list if c.args]
 
-    def test_clicking_x_detaches_kon_tag(self):
+    def test_context_menu_offers_untag_when_kon_tagged(self):
         from hazop import ScenarioTablePanel
         panel = ScenarioTablePanel(self.db)
         try:
@@ -7300,15 +7302,25 @@ class TagDetachClickTests(unittest.TestCase):
             panel.load_node(node_id)
             row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
 
-            handled = self._click_top_right(panel, row, panel._C_KON)
-
-            self.assertTrue(handled)
-            cons = dict(self.db.get_consequence(cons_id))
-            self.assertEqual(cons['comp_tag'], '')
+            labels = self._menu_labels(panel, row, panel._C_KON)
+            self.assertTrue(any("Ta bort tagg" in lbl for lbl in labels))
         finally:
             panel.deleteLater()
 
-    def test_clicking_x_detaches_sg_tag(self):
+    def test_context_menu_omits_untag_when_kon_untagged(self):
+        from hazop import ScenarioTablePanel
+        panel = ScenarioTablePanel(self.db)
+        try:
+            node_id, _dev_id, cause_id, cons_id, _sg_id = self._make_full_chain()
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+
+            labels = self._menu_labels(panel, row, panel._C_KON)
+            self.assertFalse(any("Ta bort tagg" in lbl for lbl in labels))
+        finally:
+            panel.deleteLater()
+
+    def test_context_menu_offers_untag_when_sg_tagged(self):
         from hazop import ScenarioTablePanel
         panel = ScenarioTablePanel(self.db)
         try:
@@ -7317,33 +7329,40 @@ class TagDetachClickTests(unittest.TestCase):
             panel.load_node(node_id)
             row = next(r for r, m in enumerate(panel._row_meta) if m[3] == sg_id)
 
-            handled = self._click_top_right(panel, row, panel._C_SG)
-
-            self.assertTrue(handled)
-            sg = dict(self.db.get_safeguard(sg_id))
-            self.assertEqual(sg['comp_tag'], '')
+            labels = self._menu_labels(panel, row, panel._C_SG)
+            self.assertTrue(any("Ta bort tagg" in lbl for lbl in labels))
         finally:
             panel.deleteLater()
 
-    def test_untagged_kon_cell_has_no_close_zone_guard_condition(self):
-        """The "×" click handler is gated on comp_tag/comp_type both being
-        empty — for an untagged cell that guard must be False so the
-        click falls through to other zones (chain-link etc.) instead of
-        (incorrectly) matching a "×" that was never drawn. Checked at the
-        data level rather than by simulating a real click at that exact
-        screen position, since that position is ALSO the chain-link
-        zone's territory for an untagged cell and would exercise that
-        unrelated, real-popup-opening feature instead."""
+    def test_untag_consequence_clears_tag(self):
         from hazop import ScenarioTablePanel
         panel = ScenarioTablePanel(self.db)
         try:
             node_id, _dev_id, cause_id, cons_id, _sg_id = self._make_full_chain()
+            self.db.set_consequence_tag(cons_id, "P-101", "Pump")
             panel.load_node(node_id)
-            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
 
-            item = panel._table.item(row, panel._C_KON)
-            comp_type, comp_tag = item.data(Qt.ItemDataRole.UserRole + 7)
-            self.assertFalse(comp_tag or comp_type)
+            panel._untag_consequence(cons_id)
+
+            cons = dict(self.db.get_consequence(cons_id))
+            self.assertEqual(cons['comp_tag'], '')
+            self.assertEqual(cons['comp_type'], '')
+        finally:
+            panel.deleteLater()
+
+    def test_untag_safeguard_clears_tag(self):
+        from hazop import ScenarioTablePanel
+        panel = ScenarioTablePanel(self.db)
+        try:
+            node_id, _dev_id, cause_id, _cons_id, sg_id = self._make_full_chain()
+            self.db.set_safeguard_tag(sg_id, "PSV-101", "Säkerhetsventil")
+            panel.load_node(node_id)
+
+            panel._untag_safeguard(sg_id)
+
+            sg = dict(self.db.get_safeguard(sg_id))
+            self.assertEqual(sg['comp_tag'], '')
+            self.assertEqual(sg['comp_type'], '')
         finally:
             panel.deleteLater()
 
