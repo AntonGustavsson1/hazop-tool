@@ -7169,21 +7169,87 @@ class RiskCellColorTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_uncategorized_row_stays_uncolored(self):
-        """No category assessment (cat_info is None) means RFORE/REFT/SLUT
-        are blank placeholders, same as before — nothing to color."""
-        from hazop import ScenarioTablePanel
+    def test_uncategorized_row_still_shows_plain_severity_colors(self):
+        """A consequence with no per-category severity assessment (the
+        common case — ConsequencePanel's plain severity+category fields,
+        not the opt-in 📊 per-category feature) must still show a real
+        risk color using its plain `severity` value, not a blank cell
+        (2026-08-09, see NOTES.md — this was the actual root cause of
+        'jag ser inga bakgrundsfärger som passar med riskmatrisen': every
+        consequence created through the normal flow has cat_info=None)."""
+        from hazop import ScenarioTablePanel, risk_info
+        from PyQt6.QtGui import QColor
         panel = ScenarioTablePanel(self.db)
         try:
             node_id = self.db.add_node()
             dev_id = self.db.deviations(node_id)[0]['id']
             cause_id = self.db.add_cause(dev_id)
+            self.db.update_cause(cause_id, likelihood=3)
             cons_id = self.db.add_consequence(cause_id)
+            self.db.update_consequence(cons_id, 'Ny konsekvens', 4, '')
             panel.load_node(node_id)
             row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
 
             item = panel._table.item(row, panel._C_RFORE)
-            self.assertEqual(item.text(), '')
+            self.assertNotEqual(item.text(), '')
+            _, expected_bg, expected_fg = risk_info(3, 4)
+            self.assertEqual(item.background().color(), QColor(expected_bg))
+            self.assertEqual(item.foreground().color(), QColor(expected_fg))
+            meta = item.data(Qt.ItemDataRole.UserRole)
+            self.assertEqual(meta[0], 'risk_click')
+        finally:
+            panel.deleteLater()
+
+    def test_uncategorized_reft_and_slut_also_show_plain_severity_colors(self):
+        from hazop import ScenarioTablePanel, risk_info
+        from PyQt6.QtGui import QColor
+        panel = ScenarioTablePanel(self.db)
+        try:
+            node_id = self.db.add_node()
+            dev_id = self.db.deviations(node_id)[0]['id']
+            cause_id = self.db.add_cause(dev_id)
+            self.db.update_cause(cause_id, likelihood=3)
+            cons_id = self.db.add_consequence(cause_id)
+            self.db.update_consequence(cons_id, 'Ny konsekvens', 4, '')
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+
+            _, expected_bg, expected_fg = risk_info(3, 4)
+            for col in (panel._C_REFT, panel._C_SLUT):
+                item = panel._table.item(row, col)
+                self.assertNotEqual(item.text(), '')
+                self.assertEqual(item.background().color(), QColor(expected_bg))
+                self.assertEqual(item.foreground().color(), QColor(expected_fg))
+        finally:
+            panel.deleteLater()
+
+    def test_update_lopa_risk_recolors_uncategorized_row_too(self):
+        """The incremental RRF-change path (_update_lopa_risk) must also
+        keep patching REFT/SLUT for rows without a category assessment —
+        previously it silently stopped updating them after the first
+        rebuild (same cat_info gate as _add_row)."""
+        from hazop import ScenarioTablePanel, risk_info, effective_frequency
+        from PyQt6.QtGui import QColor
+        panel = ScenarioTablePanel(self.db)
+        try:
+            node_id = self.db.add_node()
+            dev_id = self.db.deviations(node_id)[0]['id']
+            cause_id = self.db.add_cause(dev_id)
+            self.db.update_cause(cause_id, likelihood=4)
+            cons_id = self.db.add_consequence(cause_id)
+            self.db.update_consequence(cons_id, 'Ny konsekvens', 3, '')
+            sg_id = self.db.add_safeguard(cons_id)
+            panel.load_node(node_id)
+
+            self.db.update_safeguard(sg_id, rrf=100)
+            panel._update_lopa_risk(cons_id)
+
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+            f_eff = effective_frequency(4, 100)
+            _, expected_bg, expected_fg = risk_info(f_eff, 3)
+            reft_item = panel._table.item(row, panel._C_REFT)
+            self.assertEqual(reft_item.background().color(), QColor(expected_bg))
+            self.assertEqual(reft_item.foreground().color(), QColor(expected_fg))
         finally:
             panel.deleteLater()
 

@@ -12175,19 +12175,30 @@ class ScenarioTablePanel(QWidget):
         kon_item.setToolTip(tip)
         self._table.setItem(r, self._C_KON, kon_item)
 
-        # ── Col 4: Risk före barriär (only when a category is set) ──────────
+        # ── Col 4: Risk före barriär ──────────────────────────────────────────
+        # Shown for EVERY row, not just ones with a per-category severity
+        # assessment (2026-08-09, see NOTES.md) — freq/sev/bg_b/fg_b are
+        # already computed unconditionally above (the cat_info/plain-severity
+        # branch just above), so a consequence that only ever got its plain
+        # severity+category set via ConsequencePanel (the common case — the
+        # per-category 📊 assessment is an opt-in power-user feature) used to
+        # render this cell completely blank/uncolored despite having a
+        # perfectly valid risk value. Falls back to the plain 'risk_click'
+        # action (pre-existing in _on_risk_cell_clicked, previously dead code
+        # since nothing ever emitted it) instead of 'risk_click_cat' when
+        # there's no real category_id/severity_id to edit.
+        rb = QTableWidgetItem(f"{freq_axis_label(freq)}  {cons_axis_label(sev)}")
+        rb.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        rb.setToolTip(f"🖱 Klicka för att ändra i riskmatrisen\n{level_b}")
         if cat_info:
-            rb = QTableWidgetItem(f"{freq_axis_label(freq)}  {cons_axis_label(sev)}")
-            rb.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-            rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            rb.setToolTip(f"🖱 Klicka för att ändra i riskmatrisen\n{level_b}")
             rb.setData(Qt.ItemDataRole.UserRole,
                        ('risk_click_cat', cause_d['id'], cid, cat_id, sev_id, freq, sev))
-            rb.setBackground(QBrush(QColor(bg_b)))
-            rb.setForeground(QBrush(QColor(fg_b)))
         else:
-            rb = QTableWidgetItem('')
-            rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            rb.setData(Qt.ItemDataRole.UserRole,
+                       ('risk_click', cause_d['id'], cid, freq, sev))
+        rb.setBackground(QBrush(QColor(bg_b)))
+        rb.setForeground(QBrush(QColor(fg_b)))
         rb.setFont(QFont("Consolas", 9))
         self._table.setItem(r, self._C_RFORE, rb)
 
@@ -12231,36 +12242,34 @@ class ScenarioTablePanel(QWidget):
         lopa_w.changed.connect(self._update_lopa_risk)
         self._table.setCellWidget(r, self._C_LOPA, lopa_w)
 
-        # ── Col 6: Risk efter barriärer (only when a category is set) ────────
-        if cat_info:
-            sg_steps  = int(math.log10(max(1, sg_rrf))) if sg_rrf > 1 else 0
-            reft_text = (f"−{sg_steps} steg\n" if sg_steps else "") + \
-                        f"{freq_axis_label(f_eff)}  {cons_axis_label(sev)}"
-            ra = QTableWidgetItem(reft_text)
-            ra.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-            ra.setFlags(ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            ra.setToolTip(f"{level_a} — {freq_axis_label(f_eff)}  {cons_axis_label(sev)}  (efter barriärer)")
-            ra.setBackground(QBrush(QColor(bg_a)))
-            ra.setForeground(QBrush(QColor(fg_a)))
-        else:
-            ra = QTableWidgetItem('')
-            ra.setFlags(ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        # ── Col 6: Risk efter barriärer ───────────────────────────────────────
+        # Shown for every row now (2026-08-09, see NOTES.md) — same fallback
+        # rationale as RFORE above; f_eff/sev/bg_a/fg_a are already computed
+        # unconditionally regardless of cat_info.
+        sg_steps  = int(math.log10(max(1, sg_rrf))) if sg_rrf > 1 else 0
+        reft_text = (f"−{sg_steps} steg\n" if sg_steps else "") + \
+                    f"{freq_axis_label(f_eff)}  {cons_axis_label(sev)}"
+        ra = QTableWidgetItem(reft_text)
+        ra.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        ra.setFlags(ra.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        ra.setToolTip(f"{level_a} — {freq_axis_label(f_eff)}  {cons_axis_label(sev)}  (efter barriärer)")
+        ra.setBackground(QBrush(QColor(bg_a)))
+        ra.setForeground(QBrush(QColor(fg_a)))
         ra.setFont(QFont("Consolas", 9))
         self._table.setItem(r, self._C_REFT, ra)
 
-        # ── Col 10: Slutkonsekvens (only when a category is set) ──────────────
-        if cat_info:
-            slut_text = (f"−{total_steps} steg\n" if total_steps else "") + \
-                        f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}"
-            rs = QTableWidgetItem(slut_text)
-            rs.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-            rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            rs.setToolTip(f"{level_s} — {freq_axis_label(final_f)}  {cons_axis_label(sev)}  (−{total_steps} steg totalt)")
-            rs.setBackground(QBrush(QColor(bg_s)))
-            rs.setForeground(QBrush(QColor(fg_s)))
-        else:
-            rs = QTableWidgetItem('')
-            rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        # ── Col 10: Slutkonsekvens ────────────────────────────────────────────
+        # Shown for every row now (2026-08-09, see NOTES.md) — same fallback
+        # rationale as RFORE above; final_f/sev/bg_s/fg_s are already
+        # computed unconditionally regardless of cat_info.
+        slut_text = (f"−{total_steps} steg\n" if total_steps else "") + \
+                    f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}"
+        rs = QTableWidgetItem(slut_text)
+        rs.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        rs.setToolTip(f"{level_s} — {freq_axis_label(final_f)}  {cons_axis_label(sev)}  (−{total_steps} steg totalt)")
+        rs.setBackground(QBrush(QColor(bg_s)))
+        rs.setForeground(QBrush(QColor(fg_s)))
         rs.setFont(QFont("Consolas", 9))
         self._table.setItem(r, self._C_SLUT, rs)
 
@@ -12452,23 +12461,27 @@ class ScenarioTablePanel(QWidget):
                 _, bg_a, fg_a       = risk_info(f_eff, sev)
                 _, bg_s, fg_s       = risk_info(final_f, sev)
 
-                if cat_info:
-                    sg_steps  = int(math.log10(max(1, sg_rrf))) if sg_rrf > 1 else 0
-                    reft_text = (f"−{sg_steps} steg\n" if sg_steps else "") + \
-                                f"{freq_axis_label(f_eff)}  {cons_axis_label(sev)}"
-                    ra = self._table.item(row, self._C_REFT)
-                    if ra:
-                        ra.setText(reft_text)
-                        ra.setBackground(QBrush(QColor(bg_a)))
-                        ra.setForeground(QBrush(QColor(fg_a)))
+                # Patched for every row now (2026-08-09, see NOTES.md) — same
+                # fallback rationale as _add_row: bg_a/fg_a/bg_s/fg_s are
+                # already computed unconditionally above, regardless of
+                # cat_info, so a non-categorized consequence's REFT/SLUT
+                # cells used to go stale/blank forever after an RRF change.
+                sg_steps  = int(math.log10(max(1, sg_rrf))) if sg_rrf > 1 else 0
+                reft_text = (f"−{sg_steps} steg\n" if sg_steps else "") + \
+                            f"{freq_axis_label(f_eff)}  {cons_axis_label(sev)}"
+                ra = self._table.item(row, self._C_REFT)
+                if ra:
+                    ra.setText(reft_text)
+                    ra.setBackground(QBrush(QColor(bg_a)))
+                    ra.setForeground(QBrush(QColor(fg_a)))
 
-                    slut_text = (f"−{total_steps} steg\n" if total_steps else "") + \
-                                f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}"
-                    rs = self._table.item(row, self._C_SLUT)
-                    if rs:
-                        rs.setText(slut_text)
-                        rs.setBackground(QBrush(QColor(bg_s)))
-                        rs.setForeground(QBrush(QColor(fg_s)))
+                slut_text = (f"−{total_steps} steg\n" if total_steps else "") + \
+                            f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}"
+                rs = self._table.item(row, self._C_SLUT)
+                if rs:
+                    rs.setText(slut_text)
+                    rs.setBackground(QBrush(QColor(bg_s)))
+                    rs.setForeground(QBrush(QColor(fg_s)))
         finally:
             self._table.blockSignals(False)
 
