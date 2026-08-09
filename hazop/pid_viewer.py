@@ -6811,7 +6811,15 @@ class EquipmentDeviationBar(QWidget):
         of the old v1 behavior where a checked box was locked forever.
         Confirms first if there's real data to lose, matching the exact
         confirmation pattern ScenarioTablePanel._delete_current_item
-        already uses for "Ta bort orsak"/"Ta bort konsekvens"."""
+        already uses for "Ta bort orsak"/"Ta bort konsekvens".
+
+        Softer confirmation (2026-08-09, see NOTES.md): the old message
+        only counted causes ("har N orsak(er) kopplade"), understating
+        the real cascade for a deviation whose causes each have their own
+        consequences/safeguards — a checkbox uncheck looks like a light
+        action but can silently delete a whole scenario tree. The message
+        now spells out the full count and states plainly that it can't be
+        undone, matching how destructive this action actually is."""
         eq = self.db.get_equipment_by_id(self._equipment_id)
         node_id = eq.get('node_id') if eq else None
         dev_id = (self.db.get_or_create_deviation(node_id, description, equipment_id=self._equipment_id)
@@ -6819,12 +6827,26 @@ class EquipmentDeviationBar(QWidget):
         if dev_id is None:
             return
 
-        n_causes = len(self.db.causes_for_deviation(dev_id))
+        causes = self.db.causes_for_deviation(dev_id)
+        n_causes = len(causes)
         if n_causes:
+            n_cons = 0
+            n_sg = 0
+            for cause in causes:
+                conss = self.db.consequences(cause['id'])
+                n_cons += len(conss)
+                for cons in conss:
+                    n_sg += len(self.db.safeguards(cons['id']))
+            parts = [f"{n_causes} orsak(er)"]
+            if n_cons:
+                parts.append(f"{n_cons} konsekvens(er)")
+            if n_sg:
+                parts.append(f"{n_sg} barriär(er)")
             reply = QMessageBox.question(
                 self, "Ta bort avvikelse",
-                f"'{description}' har {n_causes} orsak(er) kopplade.\n"
-                "Ta bort avvikelsen och allt under den (orsaker, konsekvenser, barriärer)?",
+                f"Avvikelsen '{description}' tas bort tillsammans med "
+                f"{', '.join(parts)}. Detta går inte att ångra.\n\n"
+                "Vill du fortsätta?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No)
             if reply != QMessageBox.StandardButton.Yes:

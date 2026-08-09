@@ -5154,6 +5154,36 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         self.assertEqual(num_btn.text(), "—")
         self.assertFalse(num_btn.isEnabled())
 
+    def test_unchecking_confirmation_states_full_cascade_counts(self):
+        """The confirmation message must count consequences/safeguards too,
+        not just causes (2026-08-09, see NOTES.md) — a deviation's single
+        cause can carry several consequences, each with several
+        safeguards, and the old message ('har N orsak(er) kopplade')
+        silently understated how much data a checkbox-uncheck would
+        actually destroy."""
+        created = self._select_node_and_stub_cause_creation()
+        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        checkbox = row_widget.findChild(QCheckBox)
+        checkbox.setChecked(True)   # auto-creates a cause via the stub
+        cause_id = created['cause_id']
+        cons_id = self.db.add_consequence(cause_id)
+        self.db.add_safeguard(cons_id)
+        self.db.add_safeguard(cons_id)
+
+        with unittest.mock.patch(
+                'pid_viewer.QMessageBox.question',
+                return_value=QMessageBox.StandardButton.No) as mock_q:
+            checkbox.setChecked(False)
+
+        mock_q.assert_called_once()
+        message = mock_q.call_args[0][2]
+        self.assertIn("1 orsak", message)
+        self.assertIn("1 konsekvens", message)
+        self.assertIn("2 barriär", message)
+        self.assertTrue(checkbox.isChecked(),
+                         "declining the confirmation must leave the checkbox checked")
+        self.assertEqual(self.db.equipment_deviation_count(created['pump_id']), 1)
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # Multi-core parallel P&ID analysis (2026-08-07) — see NOTES.md "Flerkärnig
