@@ -2783,6 +2783,18 @@ class Database:
             "SELECT COUNT(*) FROM deviations WHERE equipment_id=?", (equipment_id,)).fetchone()
         return row[0] if row else 0
 
+    def set_deviation_equipment(self, deviation_id, equipment_id):
+        """Tie an EXISTING deviation to a specific equipment item — used
+        when equipment is drag-and-dropped directly onto a deviation
+        already sitting in the HAZOP tree (2026-08-09, see NOTES.md),
+        as opposed to get_or_create_deviation()'s own equipment_id param
+        (which only ever applies to a brand-new deviation it creates).
+        Backs both the Nod → Ledord → Utrustning tree grouping and the
+        worksheet's separate Utrustning column."""
+        self.conn.execute(
+            "UPDATE deviations SET equipment_id=? WHERE id=?", (equipment_id, deviation_id))
+        self.commit()
+
     # ── Equipment types ───────────────────────────────────────────────────────
     def get_equipment_type(self, prefix: str):
         """Return saved equipment_type for this prefix, or None."""
@@ -19302,11 +19314,23 @@ class MainWindow(QMainWindow):
         immediate-inline-editable spirit as the worksheet/tree "+"
         auto-consequence feature. If the equipment has no node yet, it's
         assigned to the deviation's own node — same "slipp välja nod varje
-        gång" convenience rule EquipmentDeviationBar.load() already uses."""
+        gång" convenience rule EquipmentDeviationBar.load() already uses.
+
+        Also ties the FIRST dropped marker's equipment to the deviation
+        itself, if it doesn't already have one (2026-08-09, see NOTES.md:
+        "drar jag ett eller flera objekt till trädet skall även kolumnen
+        utrustning fyllas i så det blir stringent, inte bara under
+        orsak") — previously only the created CAUSE got tagged
+        (comp_tag/comp_type, shown in the ORS column), leaving the
+        worksheet's separate Utrustning column (driven by the
+        deviation's own equipment_id, not the cause's tag) empty and
+        inconsistent with the EquipmentDeviationBar checkbox flow, which
+        always sets both."""
         dev = self.db.get_deviation(dev_id)
         if not dev:
             return
         node_id = dev['node_id']
+        dev_equipment_id = dev['equipment_id']
         last_cause_id = None
         for marker_id in marker_ids:
             equip = self.db.get_equipment_by_marker_id(marker_id)
@@ -19314,6 +19338,9 @@ class MainWindow(QMainWindow):
                 continue
             if equip.get('node_id') is None and node_id is not None:
                 self.db.set_equipment_node(equip['id'], node_id)
+            if dev_equipment_id is None:
+                self.db.set_deviation_equipment(dev_id, equip['id'])
+                dev_equipment_id = equip['id']
             cause_id, _cons_id = _create_tagged_cause(
                 self.db, dev_id, equip.get('equipment_type', ''), equip.get('tag', ''))
             last_cause_id = cause_id

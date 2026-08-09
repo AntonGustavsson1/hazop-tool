@@ -6925,6 +6925,64 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
                 self.fail(f"must not raise for an untagged/unlinked marker: {e!r}")
             self.assertEqual(win.db.causes(node_id), [])
 
+    def test_on_equipment_dropped_on_deviation_also_sets_deviation_equipment(self):
+        """'drar jag ett eller flera objekt till trädet skall även
+        kolumnen utrustning fyllas i så det blir stringent, inte bara
+        under orsak' (2026-08-09) — previously only the created CAUSE
+        got comp_tag/comp_type (shown in the ORS column); the deviation's
+        own equipment_id (driving the worksheet's separate Utrustning
+        column) was left untouched, unlike the EquipmentDeviationBar
+        checkbox flow which always sets both."""
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            eq_id = win.db.add_equipment_item("V-1", "V-1", "V", 0, "Ventil", '', 0)
+            marker_id = win.db.add_equipment_marker(
+                eq_id, "V-1", 0, 1.0, 1.0, "Ventil", confidence=0.9, link_method='leader')
+            self.assertIsNone(win.db.get_deviation(dev_id)['equipment_id'])
+
+            win._on_equipment_dropped_on_deviation(dev_id, [marker_id])
+
+            self.assertEqual(win.db.get_deviation(dev_id)['equipment_id'], eq_id)
+
+    def test_on_equipment_dropped_on_deviation_does_not_override_existing_equipment(self):
+        """A deviation already tied to a specific equipment (e.g. from an
+        earlier drop, or the EquipmentDeviationBar flow) must not be
+        silently reassigned to a DIFFERENT equipment by a later drop —
+        matches the same 'first one wins' rule already used for the
+        equipment's own node assignment."""
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            eq1 = win.db.add_equipment_item("V-1", "V-1", "V", 0, "Ventil", '', 0)
+            eq2 = win.db.add_equipment_item("V-2", "V-2", "V", 0, "Ventil", '', 0)
+            dev_id = win.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq1)
+            marker2 = win.db.add_equipment_marker(
+                eq2, "V-2", 0, 2.0, 2.0, "Ventil", confidence=0.9, link_method='leader')
+
+            win._on_equipment_dropped_on_deviation(dev_id, [marker2])
+
+            self.assertEqual(win.db.get_deviation(dev_id)['equipment_id'], eq1)
+
+    def test_on_equipment_dropped_on_deviation_worksheet_utrustning_column_reflects_it(self):
+        """End-to-end: after the drop, the worksheet's Utrustning column
+        for the created cause's row must show the equipment, not stay
+        blank."""
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            eq_id = win.db.add_equipment_item("T-1", "T-1", "T", 0, "Behållare", '', 0)
+            marker_id = win.db.add_equipment_marker(
+                eq_id, "T-1", 0, 1.0, 1.0, "Behållare", confidence=0.9, link_method='leader')
+
+            win._on_equipment_dropped_on_deviation(dev_id, [marker_id])
+
+            panel = win.scenario_panel
+            causes = win.db.causes(node_id)
+            cause_id = next(c['id'] for c in causes if c['comp_tag'] == 'T-1')
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+            utr_item = panel._table.item(row, panel._C_UTR)
+            self.assertIn('T-1', utr_item.text())
+
 
 class EquipmentMultiSelectTests(unittest.TestCase):
     """Multi-select of equipment markers on the P&ID (2026-08-08, see
