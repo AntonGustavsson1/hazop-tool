@@ -6419,6 +6419,62 @@ class AppendTagToFreeTextTests(unittest.TestCase):
         self.assertEqual(append_tag_to_text("hög nivå i", ""), "hög nivå i")
 
 
+class TagRefsAndBoldRangeTests(unittest.TestCase):
+    """Pure helper functions backing 'fetmarkera objekttexten i
+    konsekvensen' (2026-08-09) — tagged_refs tracks every tag ever
+    drag-appended into a KON/SG cell's text (comp_tag only ever holds the
+    MOST RECENT one), and find_tag_bold_ranges locates each occurrence
+    of those tags in the rendered text as a whole word."""
+
+    def test_parse_tag_refs_splits_and_strips(self):
+        from hazop import parse_tag_refs
+        self.assertEqual(parse_tag_refs("TA-1,TA-2"), ["TA-1", "TA-2"])
+        self.assertEqual(parse_tag_refs(" TA-1 , TA-2 "), ["TA-1", "TA-2"])
+
+    def test_parse_tag_refs_empty(self):
+        from hazop import parse_tag_refs
+        self.assertEqual(parse_tag_refs(""), [])
+        self.assertEqual(parse_tag_refs(None), [])
+
+    def test_add_tag_ref_appends_new(self):
+        from hazop import add_tag_ref
+        self.assertEqual(add_tag_ref("", "TA-1"), "TA-1")
+        self.assertEqual(add_tag_ref("TA-1", "TA-2"), "TA-1,TA-2")
+
+    def test_add_tag_ref_moves_existing_to_end_without_duplicating(self):
+        from hazop import add_tag_ref
+        self.assertEqual(add_tag_ref("TA-1,TA-2", "TA-1"), "TA-2,TA-1")
+
+    def test_add_tag_ref_blank_tag_is_a_noop(self):
+        from hazop import add_tag_ref
+        self.assertEqual(add_tag_ref("TA-1", ""), "TA-1")
+
+    def test_find_tag_bold_ranges_single_occurrence(self):
+        from hazop import find_tag_bold_ranges
+        text = "hög nivå i TA-1"
+        self.assertEqual(find_tag_bold_ranges(text, ["TA-1"]), [(11, 15)])
+
+    def test_find_tag_bold_ranges_multiple_tags_and_occurrences(self):
+        from hazop import find_tag_bold_ranges
+        text = "hög nivå i TA-1 => överbreddning till TA-2"
+        ranges = find_tag_bold_ranges(text, ["TA-1", "TA-2"])
+        self.assertEqual([text[s:e] for s, e in ranges], ["TA-1", "TA-2"])
+
+    def test_find_tag_bold_ranges_does_not_match_substring_of_longer_tag(self):
+        """'TA-1' must not match inside 'TA-10' — whole-word boundary."""
+        from hazop import find_tag_bold_ranges
+        text = "nivå i TA-10"
+        self.assertEqual(find_tag_bold_ranges(text, ["TA-1"]), [])
+
+    def test_find_tag_bold_ranges_no_match(self):
+        from hazop import find_tag_bold_ranges
+        self.assertEqual(find_tag_bold_ranges("hög nivå i tanken", ["TA-1"]), [])
+
+    def test_find_tag_bold_ranges_empty_tags_list(self):
+        from hazop import find_tag_bold_ranges
+        self.assertEqual(find_tag_bold_ranges("hög nivå i TA-1", []), [])
+
+
 class ConsequenceAndSafeguardTagAppendDbTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -6456,6 +6512,8 @@ class ConsequenceAndSafeguardTagAppendDbTests(unittest.TestCase):
         self.assertEqual(cons['description'], "hög nivå i TA-1 => överbreddning till TA-2")
         self.assertEqual(cons['comp_tag'], "TA-2",
             "the tag strip shows the MOST RECENT drop; the full history lives in the text")
+        self.assertEqual(cons['tagged_refs'], "TA-1,TA-2",
+            "tagged_refs must remember EVERY tag ever dropped, for bolding both in the text")
 
     def test_append_tag_to_consequence_preserves_severity_and_category(self):
         node_id = self.db.add_node()
@@ -6488,6 +6546,100 @@ class ConsequenceAndSafeguardTagAppendDbTests(unittest.TestCase):
         sg = dict(self.db.get_safeguard(sg_id))
         self.assertEqual(sg['description'], "Larm vid PSH-101 och PSH-102")
         self.assertEqual(sg['comp_tag'], "PSH-102")
+        self.assertEqual(sg['tagged_refs'], "PSH-101,PSH-102")
+
+
+class BoldTagPaintSmokeTests(unittest.TestCase):
+    """Actually invokes _ScenarioDelegate.paint() for KON/SG cells whose
+    description contains drag-appended tags, since find_tag_bold_ranges'
+    QTextLayout-based rendering (_draw_text_with_bold_tags) is new code
+    with real edge cases (empty text, a tag at the very start/end of the
+    string, an untagged row) that pure unit tests of the range-finder
+    alone wouldn't exercise. Pixel-level bold verification isn't
+    practical here — this only proves painting doesn't raise."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def _paint_cell(self, panel, row, col):
+        from PyQt6.QtGui import QPixmap, QPainter
+        from PyQt6.QtWidgets import QStyleOptionViewItem
+        from PyQt6.QtCore import QRect
+        index = panel._table.model().index(row, col)
+        option = QStyleOptionViewItem()
+        option.rect = panel._table.visualRect(index) or QRect(0, 0, 200, 40)
+        if option.rect.isEmpty():
+            option.rect = QRect(0, 0, 200, 40)
+        option.font = panel._table.font()
+        pixmap = QPixmap(max(1, option.rect.width()), max(1, option.rect.height()))
+        painter = QPainter(pixmap)
+        try:
+            panel._delegate.paint(painter, option, index)
+        finally:
+            painter.end()
+
+    def test_paints_kon_cell_with_multiple_tagged_refs_without_raising(self):
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            cons_id = win.db.add_consequence(cause_id)
+            win.db.update_consequence(cons_id, "hög nivå i", 2)
+            win.db.append_tag_to_consequence(cons_id, "TA-1", "Tank")
+            win.db.append_tag_to_consequence(cons_id, "TA-2", "Tank")
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+
+            # Confirms the wiring, not just "doesn't crash" — _add_row must
+            # actually read tagged_refs from the DB onto the item's UserRole
+            # slot for _draw_text_with_bold_tags to have anything to bold.
+            item = panel._table.item(row, panel._C_KON)
+            self.assertEqual(item.data(Qt.ItemDataRole.UserRole + 8), ["TA-1", "TA-2"])
+
+            try:
+                self._paint_cell(panel, row, panel._C_KON)
+            except Exception as e:
+                self.fail(f"painting a KON cell with tagged_refs must not raise: {e!r}")
+
+    def test_paints_sg_cell_with_tagged_ref_without_raising(self):
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            cons_id = win.db.add_consequence(cause_id)
+            sg_id = win.db.add_safeguard(cons_id)
+            win.db.update_safeguard(sg_id, description="Larm vid")
+            win.db.append_tag_to_safeguard(sg_id, "PSH-101", "Tryckvakt")
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[3] == sg_id)
+
+            item = panel._table.item(row, panel._C_SG)
+            self.assertEqual(item.data(Qt.ItemDataRole.UserRole + 7), ["PSH-101"])
+
+            try:
+                self._paint_cell(panel, row, panel._C_SG)
+            except Exception as e:
+                self.fail(f"painting a SG cell with tagged_refs must not raise: {e!r}")
+
+    def test_paints_untagged_kon_cell_without_raising(self):
+        """No tags at all — must take the fast plain-drawText path cleanly."""
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            cons_id = win.db.add_consequence(cause_id)
+            win.db.update_consequence(cons_id, "vanlig text utan taggar", 2)
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+
+            try:
+                self._paint_cell(panel, row, panel._C_KON)
+            except Exception as e:
+                self.fail(f"painting an untagged KON cell must not raise: {e!r}")
 
 
 class EquipmentDropOnSafeguardAndMultiTests(unittest.TestCase):

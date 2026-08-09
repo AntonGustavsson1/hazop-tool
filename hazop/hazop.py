@@ -47,7 +47,7 @@ from PyQt6.QtCore import (
     Qt, pyqtSignal, QSize, QPointF, QRectF, QRect, QPoint, QTimer, QMimeData, QEvent,
     QAbstractTableModel, QModelIndex, QSortFilterProxyModel,
 )
-from PyQt6.QtGui import QFont, QFontMetrics, QColor, QAction, QBrush, QPen, QPainter, QDrag, QPainterPath, QPixmap, QIcon, QPolygonF, QShortcut, QKeySequence, QCursor, QPalette
+from PyQt6.QtGui import QFont, QFontMetrics, QColor, QAction, QBrush, QPen, QPainter, QDrag, QPainterPath, QPixmap, QIcon, QPolygonF, QShortcut, QKeySequence, QCursor, QPalette, QTextLayout, QTextOption, QTextCharFormat
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SPLASH SCREEN — STARTUP PROGRESS
@@ -1038,6 +1038,59 @@ def append_tag_to_text(description: str, tag: str) -> str:
     return description + ' ' + tag
 
 
+def parse_tag_refs(raw: str) -> list:
+    """Decode tagged_refs (comma-separated, order preserved) into a list
+    of tag strings — every tag ever drag-appended into a KON/SG cell's
+    free text, used to bold those substrings when rendering the cell
+    (2026-08-09, see NOTES.md)."""
+    if not raw:
+        return []
+    return [t for t in (s.strip() for s in raw.split(',')) if t]
+
+
+def add_tag_ref(raw: str, tag: str) -> str:
+    """Append tag to the tagged_refs list, deduplicated, order preserved
+    (the most recent drop moves to the end)."""
+    tag = (tag or '').strip()
+    if not tag:
+        return raw or ''
+    refs = [t for t in parse_tag_refs(raw) if t != tag]
+    refs.append(tag)
+    return ','.join(refs)
+
+
+def find_tag_bold_ranges(text: str, tags: list) -> list:
+    """Return sorted, non-overlapping (start, end) character ranges in
+    `text` where a member of `tags` occurs as a whole word — not as a
+    substring of a larger word/tag (e.g. tag "TA-1" must not match inside
+    "TA-10") — used to bold drag-and-dropped equipment references within
+    a free-text description (2026-08-09, see NOTES.md)."""
+    ranges = []
+    for tag in tags:
+        tag = (tag or '').strip()
+        if not tag:
+            continue
+        start = 0
+        while True:
+            idx = text.find(tag, start)
+            if idx < 0:
+                break
+            end = idx + len(tag)
+            before_ok = idx == 0 or not text[idx - 1].isalnum()
+            after_ok = end == len(text) or not text[end].isalnum()
+            if before_ok and after_ok:
+                ranges.append((idx, end))
+            start = idx + 1
+    ranges.sort()
+    merged = []
+    for s, e in ranges:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    return merged
+
+
 def parse_chain_from_json(raw: str) -> dict:
     if not raw:
         return {}
@@ -1896,6 +1949,14 @@ class Database:
             # consequences.comp_tag/comp_type ovan.
             "ALTER TABLE safeguards ADD COLUMN comp_type TEXT DEFAULT ''",
             "ALTER TABLE safeguards ADD COLUMN comp_tag  TEXT DEFAULT ''",
+            # Drag-and-drop taggar in i fritexten (2026-08-09, se NOTES.md) —
+            # comp_tag ovan bara visar det SENAST dragna objektet, men flera
+            # olika objekt kan nu byggas in i samma fritext. tagged_refs
+            # (komma-separerad lista, dedup, ordning bevarad) håller reda på
+            # ALLA taggar som någonsin dragits in, så cellen kan fetmarkera
+            # varje förekomst av dem i texten.
+            "ALTER TABLE consequences ADD COLUMN tagged_refs TEXT DEFAULT ''",
+            "ALTER TABLE safeguards ADD COLUMN tagged_refs TEXT DEFAULT ''",
         ]
 
         for sql in migrations:
@@ -4158,7 +4219,8 @@ class Database:
         return n
 
     def update_consequence(self, id_, description, severity, category='',
-                           consequence_chain='', comp_tag=None, comp_type=None):
+                           consequence_chain='', comp_tag=None, comp_type=None,
+                           tagged_refs=None):
         self.conn.execute(
             "UPDATE consequences SET description=?,severity=?,category=?,"
             "consequence_chain=? WHERE id=?",
@@ -4167,12 +4229,15 @@ class Database:
         # see NOTES.md) — optional, None means "don't touch", same
         # backward-compatible convention update_cause already uses, so
         # every existing call site (which never passes these) is unaffected.
-        if comp_tag is not None or comp_type is not None:
+        # tagged_refs (2026-08-09) follows the same optional convention.
+        if comp_tag is not None or comp_type is not None or tagged_refs is not None:
             parts, vals = [], []
             if comp_tag is not None:
                 parts.append("comp_tag=?"); vals.append(comp_tag)
             if comp_type is not None:
                 parts.append("comp_type=?"); vals.append(comp_type)
+            if tagged_refs is not None:
+                parts.append("tagged_refs=?"); vals.append(tagged_refs)
             vals.append(id_)
             self.conn.execute(f"UPDATE consequences SET {', '.join(parts)} WHERE id=?", vals)
         self.commit()
@@ -4211,9 +4276,11 @@ class Database:
         if not row:
             return
         new_desc = append_tag_to_text(row['description'], comp_tag)
+        new_refs = add_tag_ref(row.get('tagged_refs') or '', comp_tag)
         self.update_consequence(id_, new_desc, row['severity'], row['category'] or '',
                                  row['consequence_chain'] or '',
-                                 comp_tag=comp_tag, comp_type=comp_type)
+                                 comp_tag=comp_tag, comp_type=comp_type,
+                                 tagged_refs=new_refs)
 
     def append_tag_to_safeguard(self, id_, comp_tag, comp_type):
         """Same as append_tag_to_consequence, for a safeguard cell."""
@@ -4221,11 +4288,12 @@ class Database:
         if not row:
             return
         new_desc = append_tag_to_text(row['description'], comp_tag)
-        self.update_safeguard(id_, description=new_desc)
+        new_refs = add_tag_ref(row.get('tagged_refs') or '', comp_tag)
+        self.update_safeguard(id_, description=new_desc, tagged_refs=new_refs)
         self.set_safeguard_tag(id_, comp_tag, comp_type)
 
-    def update_safeguard(self, id_, description=None, rrf=None, sg_type=None):
-        if description is None and rrf is None and sg_type is None:
+    def update_safeguard(self, id_, description=None, rrf=None, sg_type=None, tagged_refs=None):
+        if description is None and rrf is None and sg_type is None and tagged_refs is None:
             return
         parts, vals = [], []
         if description is not None:
@@ -4234,6 +4302,8 @@ class Database:
             parts.append("rrf=?"); vals.append(rrf)
         if sg_type is not None:
             parts.append("sg_type=?"); vals.append(sg_type)
+        if tagged_refs is not None:
+            parts.append("tagged_refs=?"); vals.append(tagged_refs)
         vals.append(id_)
         self.conn.execute(f"UPDATE safeguards SET {', '.join(parts)} WHERE id=?", vals)
         self.commit()
@@ -10095,6 +10165,69 @@ class ReductionFactorsDialog(QDialog):
         self.db.update_reduction_factor(rf_id, desc, rrf, 1)
 
 
+def _draw_text_with_bold_tags(painter, rect, text, tags, base_font, color, word_wrap):
+    """Draw `text` inside `rect`, rendering any whole-word occurrence of a
+    member of `tags` in bold (2026-08-09, see NOTES.md "fetmarkera
+    objekttexten i konsekvensen så man ser att det är som ett objekt").
+    Falls back to a single plain drawText call when there's nothing to
+    bold — the common case for untouched free text — so this stays as
+    cheap as the original code for every row that was never drag-tagged.
+    `word_wrap=True` mirrors the KON column's multi-line wrapping;
+    `word_wrap=False` mirrors the SG column's single-line elided text."""
+    flags = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+    if word_wrap:
+        flags |= Qt.TextFlag.TextWordWrap
+    ranges = find_tag_bold_ranges(text, tags) if tags else []
+    if not ranges:
+        painter.setFont(base_font)
+        painter.setPen(color)
+        painter.drawText(rect, flags, text)
+        return
+
+    if not word_wrap:
+        # Single-line elided mode (SG cell) — elide first; a bold range
+        # that falls in the elided tail is simply lost, same information
+        # loss the plain-text path already accepted for long descriptions.
+        fm = QFontMetrics(base_font)
+        text = fm.elidedText(text, Qt.TextElideMode.ElideRight, rect.width())
+        ranges = find_tag_bold_ranges(text, tags)
+
+    layout = QTextLayout(text, base_font)
+    opt = QTextOption()
+    opt.setWrapMode(QTextOption.WrapMode.WordWrap if word_wrap
+                     else QTextOption.WrapMode.NoWrap)
+    layout.setTextOption(opt)
+
+    bold_font = QFont(base_font)
+    bold_font.setBold(True)
+    bold_fmt = QTextCharFormat()
+    bold_fmt.setFont(bold_font)
+    formats = []
+    for s, e in ranges:
+        fr = QTextLayout.FormatRange()
+        fr.start = s
+        fr.length = e - s
+        fr.format = bold_fmt
+        formats.append(fr)
+    layout.setFormats(formats)
+
+    layout.beginLayout()
+    y = 0.0
+    while True:
+        line = layout.createLine()
+        if not line.isValid():
+            break
+        line.setLineWidth(rect.width())
+        line.setPosition(QPointF(0, y))
+        y += line.height()
+        if not word_wrap:
+            break
+    layout.endLayout()
+
+    painter.setPen(color)
+    layout.draw(painter, QPointF(rect.left(), rect.top()))
+
+
 class _ScenarioDelegate(QStyledItemDelegate):
     """Custom delegate: word-wrap for ORS/KON/SG cells; passes eventFilter to editors."""
 
@@ -10190,26 +10323,6 @@ _TAG_CLOSE_W = 16          # "×" zone at the right of a KON/SG tag strip — de
 _ORS_COMMENT_W = 22        # 💬 comment icon zone (rightmost of ORS)
 _ORS_CLONE_W   = 22        # 📋 clone-scenario icon zone
 
-# Matches equipment tags embedded in consequence text, e.g. T-101, P-201, 323-HV-101
-_CONS_TAG_RE = re.compile(
-    r'(?<![A-Za-z0-9])([A-Z]{1,6}[-./]?\d{2,5}[A-Z]?[0-9]?)(?![A-Za-z0-9])')
-
-def _bold_segments(text: str):
-    """Split *text* into [(fragment, is_tag), ...] for custom bold rendering.
-
-    Tags matching equipment-tag pattern are flagged is_tag=True so the
-    painter can draw them bold; surrounding text is is_tag=False.
-    """
-    parts = []
-    last = 0
-    for m in _CONS_TAG_RE.finditer(text):
-        if m.start() > last:
-            parts.append((text[last:m.start()], False))
-        parts.append((m.group(1), True))
-        last = m.end()
-    if last < len(text):
-        parts.append((text[last:], False))
-    return parts if parts else [(text, False)]
 _ORS_FREQ_W  = 50          # pixels for the frequency badge zone after obj zone in ORS cells
 _RRF_W       = 54          # pixel width of the RRF badge column on the right of safeguard cells
 
@@ -10424,17 +10537,15 @@ class _PidDelegate(_ScenarioDelegate):
                 desc_rect = QRect(r.left() + _PID_ICON_W, body_top, desc_w, body_h)
                 rrf_rect  = QRect(r.right() - _RRF_W, body_top, _RRF_W, body_h)
 
-                # Description text (elided to one line)
+                # Description text (elided to one line), drag-appended tags
+                # in bold (2026-08-09, see NOTES.md "fetmarkera objekttexten")
                 desc = index.data(Qt.ItemDataRole.DisplayRole) or ''
                 tc = (option.palette.highlightedText().color() if sel
                       else option.palette.text().color())
-                painter.setPen(tc)
-                painter.setFont(option.font)
-                fm = painter.fontMetrics()
-                elided = fm.elidedText(desc, Qt.TextElideMode.ElideRight, desc_w - 4)
-                painter.drawText(desc_rect.adjusted(2, 2, -2, -2),
-                                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-                                 elided)
+                tagged_refs = index.data(Qt.ItemDataRole.UserRole + 7) or []
+                _draw_text_with_bold_tags(
+                    painter, desc_rect.adjusted(2, 2, -2, -2), desc,
+                    tagged_refs, option.font, tc, word_wrap=False)
 
                 # RRF badge (right column)
                 badge_bg = QColor('#17191C') if sel else QColor('#F5F5F3')
@@ -10701,16 +10812,15 @@ class _PidDelegate(_ScenarioDelegate):
                 painter.setPen(QPen(QColor('#ddd'), 1))
                 painter.drawLine(cat_rect.right(), r.top(), cat_rect.right(), r.bottom())
 
-                # Description text — word-wrapped, tags in bold
+                # Description text — word-wrapped, drag-appended tags in
+                # bold (2026-08-09, see NOTES.md "fetmarkera objekttexten")
                 display = index.data(Qt.ItemDataRole.DisplayRole) or ''
                 tc = (option.palette.highlightedText().color() if sel
                       else option.palette.text().color())
-                painter.setPen(tc)
-                painter.setFont(option.font)
-                painter.drawText(txt_rect.adjusted(2, 2, -2, -2),
-                                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop |
-                                 Qt.TextFlag.TextWordWrap,
-                                 display)
+                tagged_refs = index.data(Qt.ItemDataRole.UserRole + 8) or []
+                _draw_text_with_bold_tags(
+                    painter, txt_rect.adjusted(2, 2, -2, -2), display,
+                    tagged_refs, option.font, tc, word_wrap=True)
 
                 # ⛓ chain-link zone on the right
                 has_linked = bool(index.data(Qt.ItemDataRole.UserRole + 6))
@@ -12248,6 +12358,11 @@ class ScenarioTablePanel(QWidget):
         kon_item.setData(Qt.ItemDataRole.UserRole + 6, has_linked_causes)
         kon_item.setData(Qt.ItemDataRole.UserRole + 7, (cons_d.get('comp_type') or '',
                                                          cons_d.get('comp_tag')  or ''))
+        # Every tag ever drag-appended into this text, bolded on paint
+        # (2026-08-09, see NOTES.md "fetmarkera objekttexten") — comp_tag
+        # above only ever holds the MOST RECENT one.
+        kon_item.setData(Qt.ItemDataRole.UserRole + 8,
+                         parse_tag_refs(cons_d.get('tagged_refs') or ''))
         tip = ("Klicka på 📊-ikonen för att sätta konsekvens per kategori\n"
                "Dra en utrustningsmarkör hit (håll Shift) för att sätta tag\n"
                "Dubbelklicka för att redigera\nEnter för att lägga till ny konsekvens")
@@ -12306,6 +12421,8 @@ class ScenarioTablePanel(QWidget):
             sg_item.setData(Qt.ItemDataRole.UserRole + 5, excl_cause_names)
             sg_item.setData(Qt.ItemDataRole.UserRole + 6, (sg.get('comp_type') or '',
                                                             sg.get('comp_tag')  or ''))
+            sg_item.setData(Qt.ItemDataRole.UserRole + 7,
+                             parse_tag_refs(sg.get('tagged_refs') or ''))
             tip = "Dra en utrustningsmarkör hit (håll Shift) för att sätta tag\n" \
                   "Dubbelklicka för att redigera\nEnter för att lägga till ny barriär\nKlicka på RRF-kolumnen för att ändra värdet"
             if excl_cat_names:
