@@ -6544,7 +6544,11 @@ class EquipmentDropOnSafeguardAndMultiTests(unittest.TestCase):
             self.assertEqual(sg['comp_tag'], "PSV-101")
             self.assertEqual(sg['comp_type'], "Säkerhetsventil")
 
-    def test_drop_equipment_multi_on_kon_uses_only_first_marker(self):
+    def test_drop_equipment_multi_on_kon_appends_all_markers_to_same_consequence(self):
+        """Dropping several objects onto ONE consequence must build up its
+        text with ALL of them, in order — not just the first (2026-08-09,
+        see NOTES.md: 'drar jag till konsekvens skall flera objekt kunna
+        ligga i samma konsekvens')."""
         with _TempDbMainWindow() as win:
             panel = win.scenario_panel
             _n, _d, cause_id, cons_id, _sg = self._make_full_chain(win.db)
@@ -6564,13 +6568,19 @@ class EquipmentDropOnSafeguardAndMultiTests(unittest.TestCase):
 
             self.assertTrue(handled)
             cons = dict(win.db.get_consequence(cons_id))
-            self.assertEqual(cons['comp_tag'], "P-101",
-                "a single cell can only hold one tag — must use the first dragged marker")
+            self.assertEqual(cons['description'], "P-101 P-102")
+            self.assertEqual(cons['comp_tag'], "P-102",
+                "the tag strip shows the most recently applied marker")
 
-    def test_drop_equipment_multi_on_sg_uses_only_first_marker(self):
+    def test_drop_equipment_multi_on_sg_creates_one_row_per_extra_marker(self):
+        """Dropping several objects onto a SAFEGUARD must NOT merge them
+        into one row's text — each additional object becomes its own new
+        safeguard row under the same consequence, since distinct objects
+        there read as distinct barriers (2026-08-09, see NOTES.md: 'drar
+        jag till safeguard skall de olika objekten vara på olika rader')."""
         with _TempDbMainWindow() as win:
             panel = win.scenario_panel
-            _n, _d, cause_id, _cons_id, sg_id = self._make_full_chain(win.db)
+            _n, _d, cause_id, cons_id, sg_id = self._make_full_chain(win.db)
             panel.load_cause(cause_id)
             row = next(r for r, m in enumerate(panel._row_meta) if m[3] == sg_id)
 
@@ -6587,7 +6597,14 @@ class EquipmentDropOnSafeguardAndMultiTests(unittest.TestCase):
 
             self.assertTrue(handled)
             sg = dict(win.db.get_safeguard(sg_id))
+            self.assertEqual(sg['description'], "TSH-1")
             self.assertEqual(sg['comp_tag'], "TSH-1")
+
+            all_sgs = [dict(s) for s in win.db.safeguards(cons_id)]
+            self.assertEqual(len(all_sgs), 2, "a second safeguard row must be created")
+            new_sg = next(s for s in all_sgs if s['id'] != sg_id)
+            self.assertEqual(new_sg['description'], "TSH-2")
+            self.assertEqual(new_sg['comp_tag'], "TSH-2")
 
     def test_sg_cell_carries_comp_tag_via_userrole(self):
         with _TempDbMainWindow() as win:

@@ -13669,28 +13669,38 @@ class ScenarioTablePanel(QWidget):
 
         if kind in ('equipment', 'equipment-multi'):
             # Shift-drag of one or more P&ID equipment markers onto a KON
-            # or SG cell — attaches the FIRST dragged marker's tag/type to
-            # that cell (a single cell can only hold one tag; dragging a
-            # multi-selection here just uses its first member — the rest
-            # of a multi-selection is only meaningful for the HAZOP-tree
-            # drop target, which creates one cause per marker instead —
-            # see TreePanel.dropEvent / NOTES.md). `item_id_s` is a
-            # comma-separated list of equipment_markers.id values (a
-            # single id for the plain 'equipment' kind).
+            # or SG cell. `item_id_s` is a comma-separated list of
+            # equipment_markers.id values (a single id for the plain
+            # 'equipment' kind). Dropping several objects at once (2026-08-09,
+            # see NOTES.md) behaves differently per target: onto a
+            # CONSEQUENCE, every dragged object builds up the SAME
+            # consequence's text (they describe one scenario in sequence,
+            # e.g. "TA-1 ... TA-2"); onto a SAFEGUARD, only the first
+            # object goes onto the cell actually dropped on — each
+            # additional object becomes its OWN new safeguard row under
+            # the same consequence, since distinct objects there read as
+            # distinct barriers, not one merged sentence.
             try:
                 marker_ids = [int(s) for s in item_id_s.split(',') if s.strip()]
             except ValueError:
                 event.ignore(); return
             if not marker_ids:
                 event.ignore(); return
-            equip = self.db.get_equipment_by_marker_id(marker_ids[0])
-            if not equip:
+            equips = [e for e in (self.db.get_equipment_by_marker_id(m) for m in marker_ids) if e]
+            if not equips:
                 event.ignore(); return
-            tag, comp_type = equip.get('tag', ''), equip.get('equipment_type', '')
             if tgt_col == self._C_KON and tgt_cons is not None:
-                self.db.append_tag_to_consequence(tgt_cons, tag, comp_type)
+                for equip in equips:
+                    self.db.append_tag_to_consequence(
+                        tgt_cons, equip.get('tag', ''), equip.get('equipment_type', ''))
             elif tgt_col == self._C_SG and tgt_sg is not None:
-                self.db.append_tag_to_safeguard(tgt_sg, tag, comp_type)
+                first, rest = equips[0], equips[1:]
+                self.db.append_tag_to_safeguard(
+                    tgt_sg, first.get('tag', ''), first.get('equipment_type', ''))
+                for equip in rest:
+                    new_sg_id = self.db.add_safeguard(tgt_cons)
+                    self.db.append_tag_to_safeguard(
+                        new_sg_id, equip.get('tag', ''), equip.get('equipment_type', ''))
             else:
                 event.ignore(); return
             self._schedule_rebuild()
