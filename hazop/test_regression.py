@@ -6174,7 +6174,10 @@ class SafeguardTagDbTests(unittest.TestCase):
         cause_id, cons_id = _create_tagged_cause(self.db, dev_id, "Pump", "P-101")
 
         cause = dict(self.db.get_cause(cause_id))
-        self.assertEqual(cause['description'], '')
+        # 2026-08-10: unified to the same "Ny orsak" placeholder every
+        # other auto-created cause/consequence/safeguard already uses
+        # (was blank) — see NOTES.md.
+        self.assertEqual(cause['description'], 'Ny orsak')
         self.assertEqual(cause['comp_type'], "Pump")
         self.assertEqual(cause['comp_tag'], "P-101")
         cons = self.db.get_consequence(cons_id)
@@ -6373,7 +6376,8 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             tagged = {c['comp_tag'] for c in causes}
             self.assertEqual(tagged, {"V-1", "V-2"})
             for c in causes:
-                self.assertEqual(dict(c)['description'], '')
+                # 2026-08-10: unified placeholder text, see NOTES.md
+                self.assertEqual(dict(c)['description'], 'Ny orsak')
                 self.assertEqual(len(win.db.consequences(c['id'])), 1)
 
     def test_on_equipment_dropped_on_deviation_assigns_node_when_missing(self):
@@ -7079,6 +7083,130 @@ class RiskCellColorTests(unittest.TestCase):
             self.assertEqual(reft_item.foreground().color(), QColor(expected_fg))
         finally:
             panel.deleteLater()
+
+
+class ScenarioColumnWidthPersistenceTests(unittest.TestCase):
+    """'Fyll skärm' checkbox state and manually-resized column widths are
+    now persisted to app_config (2026-08-10, see NOTES.md) — previously
+    reset to the hardcoded defaults on every app restart."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_colwidth_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_resizing_a_column_persists_its_width(self):
+        import json
+        from hazop import ScenarioTablePanel
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel._table.setColumnWidth(panel._C_RFORE, 123)
+            saved = json.loads(self.db.get_config('scenario_col_widths', '{}'))
+            self.assertEqual(saved.get(str(panel._C_RFORE)), 123)
+        finally:
+            panel.deleteLater()
+
+    def test_saved_width_is_restored_on_next_panel_construction(self):
+        from hazop import ScenarioTablePanel
+        panel1 = ScenarioTablePanel(self.db)
+        try:
+            panel1._table.setColumnWidth(panel1._C_RFORE, 111)
+        finally:
+            panel1.deleteLater()
+
+        panel2 = ScenarioTablePanel(self.db)
+        try:
+            self.assertEqual(panel2._table.columnWidth(panel2._C_RFORE), 111)
+        finally:
+            panel2.deleteLater()
+
+    def test_fill_mode_checkbox_state_persists_across_construction(self):
+        from hazop import ScenarioTablePanel
+        panel1 = ScenarioTablePanel(self.db)
+        try:
+            panel1._fill_chk.setChecked(False)
+        finally:
+            panel1.deleteLater()
+
+        self.assertEqual(self.db.get_config('scenario_fill_mode', '1'), '0')
+
+        panel2 = ScenarioTablePanel(self.db)
+        try:
+            self.assertFalse(panel2._fill_chk.isChecked())
+        finally:
+            panel2.deleteLater()
+
+    def test_corrupt_saved_widths_do_not_crash_construction(self):
+        from hazop import ScenarioTablePanel
+        self.db.set_config('scenario_col_widths', 'not valid json{{{')
+        try:
+            panel = ScenarioTablePanel(self.db)
+            panel.deleteLater()
+        except Exception as e:
+            self.fail(f"must not raise on corrupt saved widths: {e!r}")
+
+
+class EquipmentTagPopupDuplicateHintTests(unittest.TestCase):
+    """EquipmentTagPopup surfaces when a typed tag already exists in the
+    catalog, since place_equipment_marker silently reuses that row rather
+    than creating a duplicate (2026-08-10, see NOTES.md)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_dupcheck_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_hint_shown_for_existing_tag(self):
+        from hazop import EquipmentTagPopup
+        self.db.add_equipment_item("P-101", "P-101", "P", 0, "Pump", '', 0)
+        popup = EquipmentTagPopup(self.db)
+        try:
+            popup._tag_edit.setText("P-101")
+            self.assertIn("P-101", popup._dup_hint.text())
+            self.assertIn("finns redan", popup._dup_hint.text())
+        finally:
+            popup.deleteLater()
+
+    def test_no_hint_for_new_tag(self):
+        from hazop import EquipmentTagPopup
+        popup = EquipmentTagPopup(self.db)
+        try:
+            popup._tag_edit.setText("V-999")
+            self.assertEqual(popup._dup_hint.text(), "")
+        finally:
+            popup.deleteLater()
+
+    def test_hint_clears_when_tag_edited_to_no_longer_match(self):
+        from hazop import EquipmentTagPopup
+        self.db.add_equipment_item("P-101", "P-101", "P", 0, "Pump", '', 0)
+        popup = EquipmentTagPopup(self.db)
+        try:
+            popup._tag_edit.setText("P-101")
+            self.assertNotEqual(popup._dup_hint.text(), "")
+            popup._tag_edit.setText("P-999")
+            self.assertEqual(popup._dup_hint.text(), "")
+        finally:
+            popup.deleteLater()
 
 
 if __name__ == '__main__':

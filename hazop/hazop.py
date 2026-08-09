@@ -1635,17 +1635,18 @@ def _create_cause_from_pick(db, deviation_id, description, frequency):
 
 
 def _create_tagged_cause(db, deviation_id, comp_type, comp_tag):
-    """Create a new cause under deviation_id with no description (only its
-    equipment tag/type set) plus one empty consequence — used when an
-    equipment marker is dropped directly onto a deviation in the HAZOP
-    tree (2026-08-08, see NOTES.md). No popup: the description is left
-    blank and immediately inline-editable, same spirit as
-    _create_cause_from_pick's auto-consequence but without a picker (there
-    is no cause-description to pick here, only the dragged tag).
+    """Create a new cause under deviation_id (only its equipment tag/type
+    set) plus one empty consequence — used when an equipment marker is
+    dropped directly onto a deviation in the HAZOP tree (2026-08-08, see
+    NOTES.md). No popup: the description defaults to the same "Ny orsak"
+    placeholder _create_cause_from_pick's own fallback uses (2026-08-10 —
+    was blank, unified to match every other auto-created cause/
+    consequence/safeguard's placeholder-text convention), immediately
+    inline-editable/overtype-able.
     Returns (cause_id, consequence_id).
     """
     new_id = db.add_cause(deviation_id)
-    db.update_cause(new_id, description='', comp_type=comp_type, comp_tag=comp_tag)
+    db.update_cause(new_id, description='Ny orsak', comp_type=comp_type, comp_tag=comp_tag)
     cons_id = db.add_consequence(new_id)
     return new_id, cons_id
 
@@ -10330,10 +10331,13 @@ class _PidDelegate(_ScenarioDelegate):
                                      max(10, r.height() - top_offset)))
             return
         elif col == self._panel._C_SG:
+            # 2026-08-10 fix: this used to span the full remaining width,
+            # visually covering the RRF badge (_RRF_W) while editing — the
+            # same exclusion KON already applies for its chain-link zone.
             comp_type, comp_tag = index.data(Qt.ItemDataRole.UserRole + 6) or ('', '')
             top_offset = 17 if (comp_tag or comp_type) else 0
             editor.setGeometry(QRect(r.left() + _PID_ICON_W, r.top() + top_offset,
-                                     max(10, r.width() - _PID_ICON_W),
+                                     max(10, r.width() - _PID_ICON_W - _RRF_W),
                                      max(10, r.height() - top_offset)))
             return
         else:
@@ -11291,6 +11295,25 @@ class ScenarioTablePanel(QWidget):
             self._table.setItemDelegateForColumn(col, self._pid_delegate)
         self._table.viewport().installEventFilter(self)
         self._apply_fill_mode(True)   # default: stretch to fill screen
+
+        # ── Persist "Fyll skärm" + manually-resized column widths
+        # (2026-08-10, see NOTES.md) — previously reset to the hardcoded
+        # defaults every time the app restarted.
+        if self.db.get_config('scenario_fill_mode', '1') != '1':
+            self._fill_chk.setChecked(False)   # triggers _apply_fill_mode(False) above
+        self._fill_chk.toggled.connect(
+            lambda checked: self.db.set_config('scenario_fill_mode', '1' if checked else '0'))
+        saved_widths = self.db.get_config('scenario_col_widths', '')
+        if saved_widths:
+            try:
+                for col_str, w in json.loads(saved_widths).items():
+                    col = int(col_str)
+                    if 0 <= col < self._table.columnCount():
+                        self._table.setColumnWidth(col, w)
+            except Exception:
+                pass
+        h.sectionResized.connect(self._on_column_resized)
+
         self._placed_causes       = set()
         self._placed_consequences = set()
         self._placed_safeguards   = set()
@@ -11449,6 +11472,19 @@ class ScenarioTablePanel(QWidget):
                 h.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
             self._table.setHorizontalScrollBarPolicy(
                 Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+    def _on_column_resized(self, col, old_size, new_size):
+        """Persist manually-resized column widths (2026-08-10, see
+        NOTES.md) — only meaningful for Interactive columns ("Fyll skärm"
+        unchecked), but harmless to also record Stretch/Fixed-driven
+        resizes since they'd just re-save the same hardcoded defaults."""
+        try:
+            saved = self.db.get_config('scenario_col_widths', '')
+            widths = json.loads(saved) if saved else {}
+        except Exception:
+            widths = {}
+        widths[str(col)] = new_size
+        self.db.set_config('scenario_col_widths', json.dumps(widths))
 
     def _on_font_size_changed(self, size):
         self._cell_font_size = size
@@ -17088,6 +17124,17 @@ class EquipmentTagPopup(QDialog):
         form.addRow(typ_lbl, self._type_cb)
         layout.addLayout(form)
 
+        # Duplicate-tag hint (2026-08-10, see NOTES.md) — place_equipment_marker
+        # silently reuses an existing equipment_catalog row for a tag that's
+        # already known (never creates a duplicate); this just surfaces that
+        # fact to the user instead of leaving it invisible.
+        self._dup_hint = QLabel("")
+        self._dup_hint.setStyleSheet("font-size:9px; color:#b8860b;")
+        self._dup_hint.setWordWrap(True)
+        layout.addWidget(self._dup_hint)
+        self._tag_edit.textChanged.connect(self._check_duplicate_tag)
+        self._check_duplicate_tag(suggested_tag)
+
         btns = QHBoxLayout()
         btns.setSpacing(4)
         ok = QPushButton("OK")
@@ -17103,6 +17150,16 @@ class EquipmentTagPopup(QDialog):
         layout.addLayout(btns)
 
         self._tag_edit.returnPressed.connect(self._ok)
+
+    def _check_duplicate_tag(self, text):
+        tag = (text or '').strip()
+        existing = self._db.get_equipment_by_tag(tag) if tag else None
+        if existing:
+            self._dup_hint.setText(
+                f"ℹ️ \"{existing['tag']}\" finns redan i katalogen "
+                f"({existing.get('equipment_type') or '?'}) — kopplas till den befintliga raden.")
+        else:
+            self._dup_hint.setText("")
 
     def _ok(self):
         tag = self._tag_edit.text().strip().upper()
