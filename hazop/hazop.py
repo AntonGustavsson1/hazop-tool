@@ -4979,8 +4979,17 @@ class ConsequencePanel(QWidget):
             self.cat_combo.addItem(cat['name'])
         self.cat_combo.blockSignals(False)
 
+    def _load_sev_labels(self):
+        self.sev_combo.blockSignals(True)
+        cur = self.sev_combo.currentIndex()
+        self.sev_combo.clear()
+        self.sev_combo.addItems(get_sev_labels())
+        self.sev_combo.setCurrentIndex(cur)
+        self.sev_combo.blockSignals(False)
+
     def load(self, consequence_id):
         self.consequence_id = consequence_id
+        self._load_sev_labels()
         self._load_categories()
         row = self.db.get_consequence(consequence_id)
         if row:
@@ -6961,94 +6970,6 @@ class _PickDeviationDialog(QDialog):
     def _accept(self):
         self.description = self.combo.currentText().strip() or "Övrigt"
         self.accept()
-
-
-class HAZOPTreeWidget(QTreeWidget):
-    """QTreeWidget with Ctrl+drag=copy, plain drag=move.
-
-    Emits item_drop_requested(drag_type, drag_id, drop_type, drop_id, is_copy)
-    instead of rearranging items internally.
-    """
-    item_drop_requested = pyqtSignal(int, int, int, int, bool)
-
-    _VALID_DROPS = {
-        CAUSE_T: (NODE_T, CAUSE_T),
-        CONS_T:  (CAUSE_T, CONS_T),
-        SG_T:    (CONS_T, SG_T),
-    }
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setDragEnabled(True)
-        self.setAcceptDrops(True)
-        self.setDropIndicatorShown(True)
-        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        self._drag_item = None
-
-    def _item_type(self, item):
-        return item.data(0, Qt.ItemDataRole.UserRole + 1) if item else None
-
-    def _item_id(self, item):
-        return item.data(0, Qt.ItemDataRole.UserRole) if item else None
-
-    def _valid(self, drag_t, drop_t):
-        return drop_t in self._VALID_DROPS.get(drag_t, ())
-
-    def startDrag(self, supported_actions):
-        item = self.currentItem()
-        if item is None:
-            return
-        if self._item_type(item) == NODE_T:
-            return  # Nodes are not draggable
-        self._drag_item = item
-        super().startDrag(Qt.DropAction.MoveAction | Qt.DropAction.CopyAction)
-
-    def dragEnterEvent(self, event):
-        if self._drag_item is not None:
-            event.acceptProposedAction()
-        else:
-            event.ignore()
-
-    def dragMoveEvent(self, event):
-        target = self.itemAt(event.position().toPoint())
-        if target is None or self._drag_item is None or target is self._drag_item:
-            event.ignore()
-            return
-        drag_t = self._item_type(self._drag_item)
-        drop_t = self._item_type(target)
-        if self._valid(drag_t, drop_t):
-            is_copy = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
-            event.setDropAction(
-                Qt.DropAction.CopyAction if is_copy else Qt.DropAction.MoveAction)
-            event.accept()
-        else:
-            event.ignore()
-
-    def dropEvent(self, event):
-        target = self.itemAt(event.position().toPoint())
-        source = self._drag_item
-        self._drag_item = None
-
-        if source is None or target is None or source is target:
-            event.ignore()
-            return
-
-        drag_t  = self._item_type(source)
-        drag_id = self._item_id(source)
-        drop_t  = self._item_type(target)
-        drop_id = self._item_id(target)
-
-        if not self._valid(drag_t, drop_t):
-            event.ignore()
-            return
-
-        is_copy = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
-
-        # Suppress Qt's built-in item move — we manage the tree ourselves
-        event.setDropAction(Qt.DropAction.IgnoreAction)
-        event.accept()
-
-        self.item_drop_requested.emit(drag_t, drag_id, drop_t, drop_id, is_copy)
 
 
 class TreePanel(QWidget):
