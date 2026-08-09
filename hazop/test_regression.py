@@ -6696,6 +6696,52 @@ class EquipmentDropOnSafeguardAndMultiTests(unittest.TestCase):
             self.assertEqual(sg['comp_tag'], "PSV-101")
             self.assertEqual(sg['comp_type'], "Säkerhetsventil")
 
+    def test_second_separate_drop_onto_an_already_tagged_sg_row_creates_new_row(self):
+        """The 'different objects on different rows' rule for safeguards
+        must hold even when the objects arrive as two SEPARATE drag
+        gestures, not just one multi-select drag (2026-08-09, see
+        NOTES.md: 'jag vill att den ... skall lägga till flera olika
+        objekt om jag drar till safeguards med (flera rader)') — the
+        second single-object drop must not silently merge into the
+        already-tagged row's text."""
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            _n, _d, cause_id, cons_id, sg_id = self._make_full_chain(win.db)
+
+            eq1 = win.db.add_equipment_item("PSV-101", "PSV-101", "PSV", 0,
+                                            "Säkerhetsventil", '', 0)
+            eq2 = win.db.add_equipment_item("PSV-102", "PSV-102", "PSV", 0,
+                                            "Säkerhetsventil", '', 0)
+            m1 = win.db.add_equipment_marker(eq1, "PSV-101", 0, 10.0, 10.0,
+                                             "Säkerhetsventil", confidence=0.9, link_method='leader')
+            m2 = win.db.add_equipment_marker(eq2, "PSV-102", 0, 20.0, 20.0,
+                                             "Säkerhetsventil", confidence=0.9, link_method='leader')
+
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[3] == sg_id)
+            event1 = self._make_drop_event(
+                panel, f'hzp:equipment:{m1}:-1:-1', row, panel._C_SG)
+            self.assertTrue(panel.eventFilter(panel._table.viewport(), event1))
+
+            # Reload so _row_meta reflects the just-created state, then drop
+            # the SECOND object on the SAME (now already-tagged) row.
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[3] == sg_id)
+            event2 = self._make_drop_event(
+                panel, f'hzp:equipment:{m2}:-1:-1', row, panel._C_SG)
+            self.assertTrue(panel.eventFilter(panel._table.viewport(), event2))
+
+            sg = dict(win.db.get_safeguard(sg_id))
+            self.assertEqual(sg['description'], "PSV-101",
+                "the originally-tagged row's text must not be touched by the second drop")
+
+            all_sgs = [dict(s) for s in win.db.safeguards(cons_id)]
+            self.assertEqual(len(all_sgs), 2,
+                "the second object must land on a brand new row, not merge into the first")
+            new_sg = next(s for s in all_sgs if s['id'] != sg_id)
+            self.assertEqual(new_sg['description'], "PSV-102")
+            self.assertEqual(new_sg['comp_tag'], "PSV-102")
+
     def test_drop_equipment_multi_on_kon_appends_all_markers_to_same_consequence(self):
         """Dropping several objects onto ONE consequence must build up its
         text with ALL of them, in order — not just the first (2026-08-09,
@@ -7621,6 +7667,223 @@ class RiskCellColorTests(unittest.TestCase):
             reft_item = panel._table.item(row, panel._C_REFT)
             self.assertEqual(reft_item.background().color(), QColor(expected_bg))
             self.assertEqual(reft_item.foreground().color(), QColor(expected_fg))
+        finally:
+            panel.deleteLater()
+
+
+class RiskCellActualRenderColorTests(unittest.TestCase):
+    """RiskCellColorTests above only ever checked the MODEL side
+    (item.background()/item.foreground()) — never whether that color
+    actually reaches the screen. It didn't, in the real app: main()
+    applies app.setStyleSheet(_get_windows11_stylesheet()) globally, and
+    once ANY stylesheet targets QTableWidget::item, Qt's default
+    QStyledItemDelegate.paint() stops respecting Qt::BackgroundRole/
+    ForegroundRole entirely — a well-known Qt quirk. RFORE/REFT/SLUT fell
+    through to that default path, so cells stayed white until selected
+    (2026-08-09 bug report: 'jag ser inga bakgrundsfärger ... det är bara
+    vitt till jag klickar'). These tests apply the SAME stylesheet the
+    real app uses and sample actual painted pixels, which is the only
+    way this regression could have been caught."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        from hazop import _get_windows11_stylesheet
+        self.app.setStyleSheet(_get_windows11_stylesheet())
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_riskrender_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        self.app.setStyleSheet('')
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _paint_cell_to_pixmap(self, panel, row, col):
+        """Grabs the ACTUAL rendered pixels for a cell by showing the real
+        table and letting Qt's normal paintEvent -> style ->
+        delegate.paint() pipeline run, instead of calling delegate.paint()
+        directly with a synthetic QStyleOptionViewItem. A synthetic option
+        has no `widget` set, which skips stylesheet-aware style resolution
+        silently — testing the wrong code path entirely regardless of
+        whether app.setStyleSheet() was called (discovered while verifying
+        this very test: a from-scratch-option version of this test passed
+        identically whether or not the actual bug fix was present)."""
+        panel.resize(600, 400)
+        panel.show()
+        self.app.processEvents()
+        panel._table.resizeRowsToContents()
+        self.app.processEvents()
+        cell_rect = panel._table.visualRect(panel._table.model().index(row, col))
+        pixmap = panel._table.viewport().grab(cell_rect)
+        panel.hide()
+        return pixmap
+
+    def test_rfore_cell_actually_paints_the_risk_color_under_the_app_stylesheet(self):
+        from hazop import ScenarioTablePanel, risk_info
+        from PyQt6.QtGui import QColor
+        panel = ScenarioTablePanel(self.db)
+        try:
+            node_id = self.db.add_node()
+            dev_id = self.db.deviations(node_id)[0]['id']
+            cause_id = self.db.add_cause(dev_id)
+            self.db.update_cause(cause_id, likelihood=5)
+            cons_id = self.db.add_consequence(cause_id)
+            self.db.update_consequence(cons_id, 'Ny konsekvens', 5, '')
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+
+            pixmap = self._paint_cell_to_pixmap(panel, row, panel._C_RFORE)
+            # Sample near the top-left corner, inside the fillRect'd
+            # background but before the 2px-inset drawText region — never
+            # touched by a text glyph regardless of the risk label's length.
+            sampled = pixmap.toImage().pixelColor(1, 1)
+
+            _, expected_bg, _ = risk_info(5, 5)
+            self.assertEqual(sampled, QColor(expected_bg),
+                "the actual painted pixel must match the risk matrix color, not white")
+            self.assertNotEqual(sampled, QColor('white'))
+            self.assertNotEqual(sampled, QColor('#ffffff'))
+        finally:
+            panel.deleteLater()
+
+    def test_reft_and_slut_cells_actually_paint_the_risk_color(self):
+        from hazop import ScenarioTablePanel, risk_info
+        from PyQt6.QtGui import QColor
+        panel = ScenarioTablePanel(self.db)
+        try:
+            node_id = self.db.add_node()
+            dev_id = self.db.deviations(node_id)[0]['id']
+            cause_id = self.db.add_cause(dev_id)
+            self.db.update_cause(cause_id, likelihood=0)
+            cons_id = self.db.add_consequence(cause_id)
+            self.db.update_consequence(cons_id, 'Ny konsekvens', 1, '')
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+
+            _, expected_bg, _ = risk_info(0, 1)
+            for col in (panel._C_REFT, panel._C_SLUT):
+                pixmap = self._paint_cell_to_pixmap(panel, row, col)
+                sampled = pixmap.toImage().pixelColor(1, 1)
+                self.assertEqual(sampled, QColor(expected_bg))
+        finally:
+            panel.deleteLater()
+
+
+class TaggedRowPinTurnsGreenTests(unittest.TestCase):
+    """'Drar jag in ett objekt till safeguard eller konsekvens eller
+    trädet så skall ju pluppen ändras från röd till grön' (2026-08-09).
+    The pin icon on ORS/KON/SG previously only reflected whether a real
+    P&ID marker existed for that row (cause_markers/consequence_markers/
+    safeguard_markers) — dragging an equipment tag into the row's text
+    doesn't create one of those, so the pin stayed red even though the
+    row is now genuinely connected to the P&ID (via the dragged
+    equipment marker's own placement there)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_pincolor_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    _PIN_GREEN = (0x27, 0xae, 0x60)
+    _PIN_RED   = (0xe7, 0x4c, 0x3c)
+
+    def _pin_color_in_cell(self, panel, row, col):
+        """Render the real cell and report which pin color (green/red/
+        neither) appears anywhere in its left icon strip. Scans pixels
+        rather than intercepting _draw_pid_pin() calls directly: a single
+        real paint pass can invoke the delegate's paint() more than once
+        per cell (confirmed while writing this test — an early pass can
+        run before layout/row-height settles), so asserting on every
+        individual call is fragile; the final rendered pixels are what
+        the user actually sees and are what should be verified."""
+        panel.resize(600, 400)
+        panel.show()
+        self.app.processEvents()
+        panel._table.resizeRowsToContents()
+        self.app.processEvents()
+        index = panel._table.model().index(row, col)
+        cell_rect = panel._table.visualRect(index)
+        pixmap = panel._table.viewport().grab(cell_rect)
+        panel.hide()
+        image = pixmap.toImage()
+        found_green = found_red = False
+        strip_w = min(24, image.width())
+        for x in range(strip_w):
+            for y in range(image.height()):
+                px = image.pixelColor(x, y)
+                rgb = (px.red(), px.green(), px.blue())
+                if rgb == self._PIN_GREEN:
+                    found_green = True
+                elif rgb == self._PIN_RED:
+                    found_red = True
+        return found_green, found_red
+
+    def test_kon_pin_is_green_when_tagged_without_a_real_marker(self):
+        from hazop import ScenarioTablePanel
+        panel = ScenarioTablePanel(self.db)
+        try:
+            node_id = self.db.add_node()
+            dev_id = self.db.deviations(node_id)[0]['id']
+            cause_id = self.db.add_cause(dev_id)
+            cons_id = self.db.add_consequence(cause_id)
+            self.db.append_tag_to_consequence(cons_id, "TA-1", "Tank")
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+
+            found_green, found_red = self._pin_color_in_cell(panel, row, panel._C_KON)
+            self.assertTrue(found_green, "a tagged consequence's pin must be green even with no real P&ID marker")
+            self.assertFalse(found_red)
+        finally:
+            panel.deleteLater()
+
+    def test_sg_pin_is_green_when_tagged_without_a_real_marker(self):
+        from hazop import ScenarioTablePanel
+        panel = ScenarioTablePanel(self.db)
+        try:
+            node_id = self.db.add_node()
+            dev_id = self.db.deviations(node_id)[0]['id']
+            cause_id = self.db.add_cause(dev_id)
+            cons_id = self.db.add_consequence(cause_id)
+            sg_id = self.db.add_safeguard(cons_id)
+            self.db.append_tag_to_safeguard(sg_id, "PSH-101", "Tryckvakt")
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[3] == sg_id)
+
+            found_green, found_red = self._pin_color_in_cell(panel, row, panel._C_SG)
+            self.assertTrue(found_green, "a tagged safeguard's pin must be green even with no real P&ID marker")
+            self.assertFalse(found_red)
+        finally:
+            panel.deleteLater()
+
+    def test_kon_pin_stays_red_when_neither_tagged_nor_marked(self):
+        from hazop import ScenarioTablePanel
+        panel = ScenarioTablePanel(self.db)
+        try:
+            node_id = self.db.add_node()
+            dev_id = self.db.deviations(node_id)[0]['id']
+            cause_id = self.db.add_cause(dev_id)
+            cons_id = self.db.add_consequence(cause_id)
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+
+            found_green, found_red = self._pin_color_in_cell(panel, row, panel._C_KON)
+            self.assertTrue(found_red, "an untagged, unmarked consequence's pin must stay red")
+            self.assertFalse(found_green)
         finally:
             panel.deleteLater()
 

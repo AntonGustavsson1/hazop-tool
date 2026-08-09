@@ -10315,6 +10315,57 @@ class _ScenarioDelegate(QStyledItemDelegate):
                                Qt.TextFlag.TextWordWrap, text)
         return QSize(option.rect.width(), max(one_line_h, rect.height() + 4))
 
+    def paint(self, painter, option, index):
+        """RFORE/REFT/SLUT (this base delegate — ORS/KON/SG are handled by
+        the _PidDelegate subclass installed for those specific columns,
+        see ScenarioTablePanel.__init__) need their own custom paint:
+        the app-wide QSS rule targeting QTableWidget::item (see CONFIG's
+        global stylesheet, applied via app.setStyleSheet() in main())
+        means Qt's default QStyledItemDelegate.paint() (super().paint(),
+        used for every other column here — NOD/UTR/DEV/LOPA) stops
+        respecting Qt::BackgroundRole/ForegroundRole once any stylesheet
+        touches ::item, a well-known Qt quirk: stylesheet-driven item
+        rendering only ever reads QSS rules, never the model's own
+        background/foreground data. setBackground()/setForeground() on
+        these items (set in _add_row/_update_lopa_risk) therefore had no
+        visible effect in the real app — cells stayed white until
+        selected (the QSS DOES define its own :selected background,
+        which is why only THAT part ever showed); this was invisible to
+        every earlier test because none of them ever applied the real
+        app stylesheet before painting (2026-08-09, see NOTES.md).
+        NOD/UTR/DEV/LOPA never set a custom background, so their default
+        palette-driven look is unaffected and stays on the super().paint()
+        path unchanged."""
+        col = index.column()
+        panel = self._panel
+        if col not in (panel._C_RFORE, panel._C_REFT, panel._C_SLUT):
+            super().paint(painter, option, index)
+            return
+        sel = bool(option.state & QStyle.StateFlag.State_Selected)
+        r = option.rect
+        painter.save()
+        if sel:
+            painter.fillRect(r, option.palette.highlight())
+        else:
+            bg = index.data(Qt.ItemDataRole.BackgroundRole)
+            painter.fillRect(r, bg if bg is not None else (
+                option.palette.alternateBase() if index.row() % 2 == 1
+                else option.palette.base()))
+        if sel:
+            tc = option.palette.highlightedText().color()
+        else:
+            fg = index.data(Qt.ItemDataRole.ForegroundRole)
+            tc = fg.color() if fg is not None else option.palette.text().color()
+        painter.setPen(tc)
+        font = index.data(Qt.ItemDataRole.FontRole)
+        painter.setFont(font if font is not None else option.font)
+        text_rect = QRect(r.left() + _PID_ICON_W, r.top(),
+                          r.width() - _PID_ICON_W, r.height())
+        painter.drawText(text_rect.adjusted(2, 2, -2, -2),
+                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                         index.data(Qt.ItemDataRole.DisplayRole) or '')
+        painter.restore()
+
 
 _PID_ICON_W  = 22          # pixels reserved on the left for the pin icon
 _KON_CAT_W   = 26          # pixels for the category badge zone in KON cells
@@ -10575,9 +10626,16 @@ class _PidDelegate(_ScenarioDelegate):
                     painter.drawEllipse(circ)
                     painter.setBrush(Qt.BrushStyle.NoBrush)
 
-                # Pin icon
+                # Pin icon — green once EITHER a real P&ID marker exists OR
+                # an object has been drag-appended (2026-08-09, see
+                # NOTES.md: "drar jag in ett objekt ... så skall ju pluppen
+                # ändras från röd till grön") — a dragged-in object is a
+                # real connection to the P&ID (the equipment marker itself
+                # is placed there) even without a separate marker of its
+                # own for this row.
                 if self._panel._cell_has_item(row, col):
-                    _draw_pid_pin(painter, pin_rect, self._panel._is_cell_placed(row, col))
+                    _draw_pid_pin(painter, pin_rect,
+                                 self._panel._is_cell_placed(row, col) or has_tag)
 
                 painter.restore()
                 return
@@ -10632,10 +10690,13 @@ class _PidDelegate(_ScenarioDelegate):
                 painter.setPen(QPen(QColor('#bcd'), 1))
                 painter.drawLine(r.left(), r.top() + _SH, r.right(), r.top() + _SH)
 
-                # ── Pin icon (left of strip) ───────────────────────────────────
+                # ── Pin icon (left of strip) — green once EITHER a real
+                # P&ID marker exists OR an object has been drag-appended
+                # (2026-08-09, see NOTES.md) ────────────────────────────
                 pin_rect = QRect(r.left(), r.top(), _PID_ICON_W, _SH)
                 if _cause_id is not None:
-                    _draw_pid_pin(painter, pin_rect, self._panel._is_cell_placed(row, col))
+                    _draw_pid_pin(painter, pin_rect,
+                                 self._panel._is_cell_placed(row, col) or has_tag)
                 else:
                     _draw_pid_pin(painter, pin_rect, False)
 
@@ -10842,11 +10903,13 @@ class _PidDelegate(_ScenarioDelegate):
                 painter.setPen(chain_fg)
                 painter.drawText(chain_rect, Qt.AlignmentFlag.AlignCenter, "⛓")
 
-                # Pin icon
+                # Pin icon — green once EITHER a real P&ID marker exists OR
+                # an object has been drag-appended (2026-08-09, see NOTES.md)
                 meta = self._panel._row_meta
                 _cid = meta[row][2] if row < len(meta) else None
                 if _cid is not None:
-                    _draw_pid_pin(painter, pin_rect, self._panel._is_cell_placed(row, col))
+                    _draw_pid_pin(painter, pin_rect,
+                                 self._panel._is_cell_placed(row, col) or has_tag)
                 else:
                     _draw_pid_pin(painter, pin_rect, False)
                 painter.restore()
@@ -13811,13 +13874,25 @@ class ScenarioTablePanel(QWidget):
                     self.db.append_tag_to_consequence(
                         tgt_cons, equip.get('tag', ''), equip.get('equipment_type', ''))
             elif tgt_col == self._C_SG and tgt_sg is not None:
-                first, rest = equips[0], equips[1:]
-                self.db.append_tag_to_safeguard(
-                    tgt_sg, first.get('tag', ''), first.get('equipment_type', ''))
-                for equip in rest:
-                    new_sg_id = self.db.add_safeguard(tgt_cons)
-                    self.db.append_tag_to_safeguard(
-                        new_sg_id, equip.get('tag', ''), equip.get('equipment_type', ''))
+                # The dropped-on row only ever absorbs an object if it has
+                # no object on it yet — once it already carries a tag
+                # (from an earlier drop, single or multi), a NEW drop must
+                # still land on its own new row, not merge into that
+                # row's text (2026-08-09, see NOTES.md: "jag vill att den
+                # ... skall lägga till flera olika objekt om jag drar till
+                # safeguards med (flera rader)" — applies whether the
+                # extra objects arrive in one multi-select drag or as
+                # separate later single-object drags onto the same row).
+                sg_row = self.db.get_safeguard(tgt_sg)
+                row_is_free = bool(sg_row) and not (sg_row.get('tagged_refs') or '').strip()
+                for i, equip in enumerate(equips):
+                    if i == 0 and row_is_free:
+                        self.db.append_tag_to_safeguard(
+                            tgt_sg, equip.get('tag', ''), equip.get('equipment_type', ''))
+                    else:
+                        new_sg_id = self.db.add_safeguard(tgt_cons)
+                        self.db.append_tag_to_safeguard(
+                            new_sg_id, equip.get('tag', ''), equip.get('equipment_type', ''))
             else:
                 event.ignore(); return
             self._schedule_rebuild()
