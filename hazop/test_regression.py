@@ -6572,6 +6572,199 @@ class EquipmentMultiSelectTests(unittest.TestCase):
         mime_arg = mock_drag.setMimeData.call_args[0][0]
         self.assertEqual(mime_arg.text(), 'hzp:equipment:9:-1:-1')
 
+    def test_ctrl_drag_shows_live_count_label(self):
+        """(2026-08-10, see NOTES.md) — the count label updates DURING the
+        drag, not just after release."""
+        from PyQt6.QtCore import QPointF
+        view, _items = self._make_view_with_markers({1: QPointF(10, 10), 2: QPointF(20, 20)})
+        view.mapToScene = lambda pt: QPointF(pt)
+
+        press_event = unittest.mock.MagicMock()
+        press_event.button.return_value = Qt.MouseButton.LeftButton
+        press_event.modifiers.return_value = Qt.KeyboardModifier.ControlModifier
+        press_event.position.return_value = QPointF(0, 0)
+        self._press(view, press_event)
+
+        move_event = unittest.mock.MagicMock()
+        move_event.buttons.return_value = Qt.MouseButton.LeftButton
+        move_event.modifiers.return_value = Qt.KeyboardModifier.ControlModifier
+        move_event.position.return_value = QPointF(30, 30)
+        self._move(view, move_event)
+
+        self.assertIsNotNone(view._ctrl_rband_count_label)
+        self.assertEqual(view._ctrl_rband_count_label.text(), "2 objekt")
+
+    def test_ctrl_drag_count_label_removed_when_band_empty(self):
+        from PyQt6.QtCore import QPointF
+        view, _items = self._make_view_with_markers({1: QPointF(500, 500)})
+        view.mapToScene = lambda pt: QPointF(pt)
+
+        press_event = unittest.mock.MagicMock()
+        press_event.button.return_value = Qt.MouseButton.LeftButton
+        press_event.modifiers.return_value = Qt.KeyboardModifier.ControlModifier
+        press_event.position.return_value = QPointF(0, 0)
+        self._press(view, press_event)
+
+        move_event = unittest.mock.MagicMock()
+        move_event.buttons.return_value = Qt.MouseButton.LeftButton
+        move_event.modifiers.return_value = Qt.KeyboardModifier.ControlModifier
+        move_event.position.return_value = QPointF(30, 30)   # marker at (500,500) is outside
+        self._move(view, move_event)
+
+        self.assertIsNone(view._ctrl_rband_count_label)
+
+    def test_escape_clears_multi_selection(self):
+        """(2026-08-10, see NOTES.md) — previously Escape only cancelled
+        placement/drawing modes, never an equipment multi-selection."""
+        from PyQt6.QtCore import QPointF, QEvent
+        from PyQt6.QtGui import QKeyEvent
+        view, _items = self._make_view_with_markers({1: QPointF(10, 10)})
+        view._select_equipment_marker(1)
+        self.assertEqual(view._selected_equipment_markers, {1})
+
+        ev = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
+        view.keyPressEvent(ev)
+
+        self.assertEqual(view._selected_equipment_markers, set())
+
+    def test_context_menu_offers_clear_selection_when_markers_selected(self):
+        from PyQt6.QtCore import QPointF, QPoint
+        from PyQt6.QtWidgets import QMenu
+        view, _items = self._make_view_with_markers({1: QPointF(10, 10)})
+        view._select_equipment_marker(1)
+        texts = []
+
+        def _fake_exec(menu_self, _pos=None):
+            texts.extend(a.text() for a in menu_self.actions())
+            return None
+
+        with unittest.mock.patch.object(QMenu, 'exec', new=_fake_exec):
+            view._show_context_menu(QPointF(500, 500), QPoint(0, 0))
+
+        self.assertTrue(any("Rensa markering" in t for t in texts), texts)
+
+    def test_clearing_via_context_menu_action_clears_selection(self):
+        from PyQt6.QtCore import QPointF, QPoint
+        from PyQt6.QtWidgets import QMenu
+        view, _items = self._make_view_with_markers({1: QPointF(10, 10)})
+        view._select_equipment_marker(1)
+
+        def _fake_exec(menu_self, _pos=None):
+            for a in menu_self.actions():
+                if "Rensa markering" in a.text():
+                    a.trigger()
+            return None
+
+        with unittest.mock.patch.object(QMenu, 'exec', new=_fake_exec):
+            view._show_context_menu(QPointF(500, 500), QPoint(0, 0))
+
+        self.assertEqual(view._selected_equipment_markers, set())
+
+    def test_equipment_marker_tooltip_mentions_gestures(self):
+        """(2026-08-10, see NOTES.md) — Ctrl/Shift modifiers had no other
+        visible affordance anywhere in the UI."""
+        from pid_viewer import PIDGraphicsView
+        view = PIDGraphicsView()
+        view.add_equipment_marker(1, 10.0, 10.0, "Ventil", tag="V-1")
+        item = view._type_items['equipment'][0]
+        self.assertIn("Ctrl", item.toolTip())
+        self.assertIn("Shift", item.toolTip())
+
+
+class TagDetachClickTests(unittest.TestCase):
+    """"×" in the KON/SG tag strip detaches the tag without deleting the
+    row (2026-08-10, see NOTES.md)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_tagdetach_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_full_chain(self):
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        sg_id = self.db.add_safeguard(cons_id)
+        return node_id, dev_id, cause_id, cons_id, sg_id
+
+    def _click_top_right(self, panel, row, col):
+        from PyQt6.QtCore import QPoint, QEvent
+        cell_idx = panel._table.model().index(row, col)
+        cr = panel._table.visualRect(cell_idx)
+        pos = QPoint(cr.right() - 5, cr.top() + 5)   # inside the "×" zone, top strip
+        event = unittest.mock.MagicMock()
+        event.type.return_value = QEvent.Type.MouseButtonPress
+        event.button.return_value = Qt.MouseButton.LeftButton
+        event.pos.return_value = pos
+        return panel.eventFilter(panel._table.viewport(), event)
+
+    def test_clicking_x_detaches_kon_tag(self):
+        from hazop import ScenarioTablePanel
+        panel = ScenarioTablePanel(self.db)
+        try:
+            node_id, _dev_id, cause_id, cons_id, _sg_id = self._make_full_chain()
+            self.db.set_consequence_tag(cons_id, "P-101", "Pump")
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+
+            handled = self._click_top_right(panel, row, panel._C_KON)
+
+            self.assertTrue(handled)
+            cons = dict(self.db.get_consequence(cons_id))
+            self.assertEqual(cons['comp_tag'], '')
+        finally:
+            panel.deleteLater()
+
+    def test_clicking_x_detaches_sg_tag(self):
+        from hazop import ScenarioTablePanel
+        panel = ScenarioTablePanel(self.db)
+        try:
+            node_id, _dev_id, cause_id, _cons_id, sg_id = self._make_full_chain()
+            self.db.set_safeguard_tag(sg_id, "PSV-101", "Säkerhetsventil")
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[3] == sg_id)
+
+            handled = self._click_top_right(panel, row, panel._C_SG)
+
+            self.assertTrue(handled)
+            sg = dict(self.db.get_safeguard(sg_id))
+            self.assertEqual(sg['comp_tag'], '')
+        finally:
+            panel.deleteLater()
+
+    def test_untagged_kon_cell_has_no_close_zone_guard_condition(self):
+        """The "×" click handler is gated on comp_tag/comp_type both being
+        empty — for an untagged cell that guard must be False so the
+        click falls through to other zones (chain-link etc.) instead of
+        (incorrectly) matching a "×" that was never drawn. Checked at the
+        data level rather than by simulating a real click at that exact
+        screen position, since that position is ALSO the chain-link
+        zone's territory for an untagged cell and would exercise that
+        unrelated, real-popup-opening feature instead."""
+        from hazop import ScenarioTablePanel
+        panel = ScenarioTablePanel(self.db)
+        try:
+            node_id, _dev_id, cause_id, cons_id, _sg_id = self._make_full_chain()
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+
+            item = panel._table.item(row, panel._C_KON)
+            comp_type, comp_tag = item.data(Qt.ItemDataRole.UserRole + 7)
+            self.assertFalse(comp_tag or comp_type)
+        finally:
+            panel.deleteLater()
+
 
 class ObjektInRubberBandMenuTests(unittest.TestCase):
     """'När jag håller nere högerknappen och drar fram gummiband vill jag

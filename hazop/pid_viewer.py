@@ -3509,6 +3509,7 @@ class PIDGraphicsView(QGraphicsView):
         self._ctrl_rband_start_scene  = None
         self._ctrl_rband_dragging     = False
         self._ctrl_rband_preview_item = None
+        self._ctrl_rband_count_label  = None   # "N objekt" label shown live during the drag
         # Per-type marker tracking for visibility toggle
         self._type_items: dict = {'cause': [], 'consequence': [], 'safeguard': [], 'equipment': []}
         self._type_visible: dict = {'cause': True, 'consequence': True, 'safeguard': True, 'equipment': True}
@@ -3978,7 +3979,8 @@ class PIDGraphicsView(QGraphicsView):
         canonical cleanup location; add new rubber-band attributes here only.
         """
         for attr in ('_rect_item', '_rect_label',
-                     '_rband_preview_item', '_rband_label_item'):
+                     '_rband_preview_item', '_rband_label_item',
+                     '_ctrl_rband_preview_item', '_ctrl_rband_count_label'):
             item = getattr(self, attr, None)
             if item is not None:
                 try:
@@ -3986,9 +3988,11 @@ class PIDGraphicsView(QGraphicsView):
                 except Exception:
                     pass
                 setattr(self, attr, None)
-        self._rect_start        = None
-        self._rband_start_scene = None
-        self._rband_dragging    = False
+        self._rect_start             = None
+        self._rband_start_scene      = None
+        self._rband_dragging         = False
+        self._ctrl_rband_start_scene = None
+        self._ctrl_rband_dragging    = False
 
     def set_mode(self, mode):
         self._purge_rubber_band_state()
@@ -5091,6 +5095,19 @@ class PIDGraphicsView(QGraphicsView):
             self._deselect_equipment_marker(marker_id)
         self._selected_equipment_markers.clear()
 
+    def _equipment_markers_in_rect(self, band_rect):
+        """Return equipment_markers.id values whose scene bounding rect
+        intersects band_rect — shared by the Ctrl-drag rubber-band's live
+        count label and its release-time selection commit (2026-08-10,
+        see NOTES.md)."""
+        ids = []
+        for item in self._type_items.get('equipment', []):
+            marker_id = item.data(self._DATA_ID)
+            if (item.data(self._DATA_TYPE) == 'equipment' and marker_id is not None and
+                    band_rect.intersects(item.mapRectToScene(item.boundingRect()))):
+                ids.append(int(marker_id))
+        return ids
+
     def set_marker_visibility(self, marker_type: str, visible: bool):
         """Show or hide all markers of a given type."""
         self._type_visible[marker_type] = visible
@@ -5197,6 +5214,15 @@ class PIDGraphicsView(QGraphicsView):
 
     def _show_context_menu(self, sp, global_pos):
         menu = QMenu(self.viewport())
+
+        # ── Explicit "clear selection" (2026-08-10, see NOTES.md) — Escape
+        # and a plain click already clear it, but a discoverable menu
+        # entry doesn't hurt, and gives a keyboard-free way to do it too.
+        if self._selected_equipment_markers:
+            n = len(self._selected_equipment_markers)
+            act = menu.addAction(f"✖ Rensa markering ({n} objekt)")
+            act.triggered.connect(self._clear_equipment_selection)
+            menu.addSeparator()
 
         # ── Check if right-click landed on a sheet-connection arc ──────────────
         for item in self._scene.items(sp):
@@ -5421,6 +5447,10 @@ class PIDGraphicsView(QGraphicsView):
         tip = f"{tag + ': ' if tag else ''}{comp_type}\nAutodetekterad ({pct}% konfidens)"
         if has_deviations:
             tip += f"\n{deviation_count} avvikelse{'r' if deviation_count != 1 else ''} registrerad{'e' if deviation_count != 1 else ''}"
+        # Gesture hints (2026-08-10, see NOTES.md) — Ctrl/Shift modifiers on
+        # equipment markers have no other visible affordance in the UI.
+        tip += ("\n\nCtrl+klick: markera flera\nCtrl+drag: gummiband-markera flera\n"
+                "Shift+drag: dra (markerade) till konsekvens/safeguard/avvikelse")
         item.setToolTip(tip)
         item.setData(self._DATA_TYPE, 'equipment')
         item.setData(self._DATA_ID, marker_id)
@@ -6115,12 +6145,13 @@ class PIDGraphicsView(QGraphicsView):
                     try: self._scene.removeItem(self._ctrl_rband_preview_item)
                     except RuntimeError as e: logging.warning(f"Failed to remove ctrl rubber-band preview: {e}")
                     self._ctrl_rband_preview_item = None
+                if self._ctrl_rband_count_label is not None:
+                    try: self._scene.removeItem(self._ctrl_rband_count_label)
+                    except RuntimeError as e: logging.warning(f"Failed to remove ctrl-drag count label: {e}")
+                    self._ctrl_rband_count_label = None
                 band_rect = QRectF(self._ctrl_rband_start_scene, sp).normalized()
-                for item in self._type_items.get('equipment', []):
-                    marker_id = item.data(self._DATA_ID)
-                    if (item.data(self._DATA_TYPE) == 'equipment' and marker_id is not None and
-                            band_rect.intersects(item.mapRectToScene(item.boundingRect()))):
-                        self._select_equipment_marker(int(marker_id))
+                for marker_id in self._equipment_markers_in_rect(band_rect):
+                    self._select_equipment_marker(marker_id)
             self._ctrl_rband_start_scene = None
             self._ctrl_rband_dragging    = False
             self._press_pos = None
@@ -6324,6 +6355,29 @@ class PIDGraphicsView(QGraphicsView):
                     self._ctrl_rband_preview_item.setZValue(Z_TEMP)
                 else:
                     self._ctrl_rband_preview_item.setRect(rect)
+
+                # Live "N objekt"-etikett — visar hur många som skulle bli
+                # markerade om man släppte just nu (2026-08-10, se
+                # NOTES.md), istället för att bara visa antalet EFTER släpp.
+                count = len(self._equipment_markers_in_rect(rect))
+                if count > 0:
+                    text = f"{count} objekt"
+                    if self._ctrl_rband_count_label is None:
+                        self._ctrl_rband_count_label = QGraphicsSimpleTextItem(text)
+                        lbl_font = QFont()
+                        lbl_font.setBold(True)
+                        lbl_font.setPointSize(9)
+                        self._ctrl_rband_count_label.setFont(lbl_font)
+                        self._ctrl_rband_count_label.setBrush(QBrush(QColor(180, 100, 0)))
+                        self._ctrl_rband_count_label.setZValue(Z_TEMP + 1)
+                        self._scene.addItem(self._ctrl_rband_count_label)
+                    else:
+                        self._ctrl_rband_count_label.setText(text)
+                    self._ctrl_rband_count_label.setPos(sp.x() + 12, sp.y() + 12)
+                elif self._ctrl_rband_count_label is not None:
+                    try: self._scene.removeItem(self._ctrl_rband_count_label)
+                    except RuntimeError as e: logging.warning(f"Failed to remove ctrl-drag count label: {e}")
+                    self._ctrl_rband_count_label = None
             event.accept(); return
 
         if self.mode == MODE_MARKUP_SELECT and self._drag_mode is not None:
@@ -6473,6 +6527,14 @@ class PIDGraphicsView(QGraphicsView):
         self._schedule_lod_update()
 
     def keyPressEvent(self, event):
+        # Escape clears an active equipment multi-selection (2026-08-10,
+        # see NOTES.md) — previously only placement modes/drawing had an
+        # Escape handler; a Ctrl-click/Ctrl-drag selection had no keyboard
+        # way to back out of short of clicking empty canvas.
+        if (self.mode == MODE_NAV and event.key() == Qt.Key.Key_Escape and
+                self._selected_equipment_markers):
+            self._clear_equipment_selection()
+            event.accept(); return
         if self.mode in (MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE):
             if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 self._finish_markup_drawing(); event.accept(); return

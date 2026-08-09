@@ -10169,6 +10169,7 @@ class _ScenarioDelegate(QStyledItemDelegate):
 _PID_ICON_W  = 22          # pixels reserved on the left for the pin icon
 _KON_CAT_W   = 26          # pixels for the category badge zone in KON cells
 _KON_CHAIN_W = 24          # pixels for the ⛓ chain-link zone on the right of KON cells
+_TAG_CLOSE_W = 16          # "×" zone at the right of a KON/SG tag strip — detaches the tag
 _ORS_COMMENT_W = 22        # 💬 comment icon zone (rightmost of ORS)
 _ORS_CLONE_W   = 22        # 📋 clone-scenario icon zone
 
@@ -10379,13 +10380,18 @@ class _PidDelegate(_ScenarioDelegate):
                     tag_tc = (option.palette.highlightedText().color() if sel
                               else QColor('#17191C'))
                     painter.setPen(tag_tc)
+                    close_rect = QRect(r.right() - _TAG_CLOSE_W, r.top(), _TAG_CLOSE_W, _SH)
                     tag_rect = QRect(r.left() + _PID_ICON_W, r.top(),
-                                     r.width() - _PID_ICON_W - 4, _SH)
+                                     r.width() - _PID_ICON_W - _TAG_CLOSE_W - 4, _SH)
                     painter.drawText(tag_rect.adjusted(2, 0, -1, 0),
                                      Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                                      painter.fontMetrics().elidedText(
                                          comp_tag, Qt.TextElideMode.ElideRight,
                                          tag_rect.width() - 3))
+                    # "×" detaches the tag without deleting the row (2026-08-10)
+                    close_tc = QColor('#999') if not sel else tag_tc
+                    painter.setPen(close_tc)
+                    painter.drawText(close_rect, Qt.AlignmentFlag.AlignCenter, "×")
                     body_top = r.top() + _SH
                     body_h   = max(0, r.height() - _SH)
                 else:
@@ -10619,13 +10625,18 @@ class _PidDelegate(_ScenarioDelegate):
                     tag_tc = (option.palette.highlightedText().color() if sel
                               else QColor('#17191C'))
                     painter.setPen(tag_tc)
+                    close_rect = QRect(r.right() - _TAG_CLOSE_W, r.top(), _TAG_CLOSE_W, _SH)
                     tag_rect = QRect(r.left() + _PID_ICON_W, r.top(),
-                                     r.width() - _PID_ICON_W - 4, _SH)
+                                     r.width() - _PID_ICON_W - _TAG_CLOSE_W - 4, _SH)
                     painter.drawText(tag_rect.adjusted(2, 0, -1, 0),
                                      Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                                      painter.fontMetrics().elidedText(
                                          comp_tag, Qt.TextElideMode.ElideRight,
                                          tag_rect.width() - 3))
+                    # "×" detaches the tag without deleting the row (2026-08-10)
+                    close_tc = QColor('#999') if not sel else tag_tc
+                    painter.setPen(close_tc)
+                    painter.drawText(close_rect, Qt.AlignmentFlag.AlignCenter, "×")
                     body_top = r.top() + _SH
                     body_h   = max(0, r.height() - _SH)
                 else:
@@ -13187,6 +13198,31 @@ class ScenarioTablePanel(QWidget):
                         # 💬 Comment popup
                         self._open_comment_popup(row, cause_id,
                                                   self._table.viewport().mapToGlobal(pos))
+                        return True
+
+            # "×" detach tag — top-right corner of a KON/SG tag strip
+            # (2026-08-10, see NOTES.md). Checked BEFORE the chain-link/RRF
+            # zones below since both overlap this same x-range at the
+            # right edge — this only matches within the strip's top _SH=17
+            # rows, those zones span the whole cell height.
+            if row >= 0 and col in (self._C_KON, self._C_SG) and row < len(self._row_meta):
+                item = self._table.item(row, col)
+                role = Qt.ItemDataRole.UserRole + (7 if col == self._C_KON else 6)
+                comp_type, comp_tag = (item.data(role) if item else None) or ('', '')
+                if comp_tag or comp_type:
+                    cell_idx = self._table.model().index(row, col)
+                    cr = self._table.visualRect(cell_idx)
+                    if pos.x() >= cr.right() - _TAG_CLOSE_W and (pos.y() - cr.top()) < 17:
+                        if col == self._C_KON:
+                            cons_id = self._row_meta[row][2]
+                            if cons_id is not None:
+                                self.db.set_consequence_tag(cons_id, '', '')
+                                self._schedule_rebuild()
+                        else:
+                            sg_id = self._row_meta[row][3]
+                            if sg_id is not None:
+                                self.db.set_safeguard_tag(sg_id, '', '')
+                                self._schedule_rebuild()
                         return True
 
             # 📊 Category badge click in KON cell
