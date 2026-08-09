@@ -9634,6 +9634,18 @@ class PIDPanel(QWidget):
             f_level = self._compute_f_level(frequency)
             self.db.update_cause(cause_id, likelihood=f_level, base_freq=frequency)
 
+        # Auto-create an empty consequence + safeguard (2026-08-09, see
+        # NOTES.md) so the HAZOP scenario row is immediately ready for
+        # direct inline editing on KON and SG — no separate add-
+        # consequence/add-safeguard step. Same "så fort jag lagt till en
+        # orsak" pattern _create_cause_from_pick/_create_tagged_cause
+        # already use, extended one level further since a safeguard needs
+        # defining too. This function is the shared path for BOTH the
+        # classic P&ID-click cause flow and the EquipmentDeviationBar
+        # checkbox flow, so both get this for free.
+        cons_id = self.db.add_consequence(cause_id)
+        self.db.add_safeguard(cons_id)
+
         zone = self._pending_zone_pdf
         rect_w = zone.width()  if zone else None
         rect_h = zone.height() if zone else None

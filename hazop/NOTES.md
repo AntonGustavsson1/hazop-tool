@@ -849,6 +849,20 @@ Anton ville kunna lägga till ett objekt (ventil/instrument/pump manuellt) inte 
 
 ---
 
+## Klicka konsekvens/safeguard direkt efter avvikelseval på objekt (2026-08-09)
+
+**Rapport:** "när jag definerar avvikelse för objektet så ska jag kunna klicka på konsekvens nere i hazop scenario och definiera detta. Just nu funkar det inte att klicka där nre. Dessutom vill jag kunna göra samma med safeguard."
+
+**Grundorsak:** Att kryssa en avvikelse i EquipmentDeviationBar går via `PIDPanel._create_cause_for_bar` → `place_cause_from_template` — samma delade funktion som den klassiska P&ID-klick-orsaksskapelsen (`_on_cause_placement_requested`) redan använder. Den skapade bara orsaken, ALDRIG någon konsekvens eller safeguard — så KON/SG-cellerna för den raden i scenariotabellen hade inget verkligt item att klicka in i (samma placeholder-mekanism som redan konstaterats för de andra "lägg till orsak"-vägarna, se "direkt konsekvensinmatning" 2026-08-08).
+
+**Fix:** `place_cause_from_template` skapar nu direkt en tom konsekvens OCH en tom safeguard (`db.add_consequence`/`db.add_safeguard`, samma standardplacerhållartext "Ny konsekvens"/"Ny safeguard" som varje annan snabb-lägg-till-väg redan använder) — ett steg längre än `_create_cause_from_pick`/`_create_tagged_cause`s "bara konsekvens"-mönster, eftersom Anton uttryckligen ville kunna klicka och definiera BÅDA direkt. Eftersom funktionen delas mellan EquipmentDeviationBar-flödet och den klassiska P&ID-klick-orsaksflödet får båda detta samtidigt.
+
+**Medvetet avgränsat:** `_create_cause_from_pick` (trädets "+"/worksheetens Ctrl+Enter) och `_create_tagged_cause` (drag-och-släpp-på-avvikelse) rörs INTE — Antons rapport gällde specifikt objektflödet. Om samma "auto-safeguard"-beteende önskas överallt är det en enkel uppföljning.
+
+**Test:** 3 nya tester i `AutoConsequenceAndSafeguardOnCauseTemplateTests` — `place_cause_from_template` skapar konsekvens+safeguard direkt, `_create_cause_for_bar` (den faktiska bar-vägen) får samma, och en end-to-end-test som reproducerar den exakta rapporterade buggen (`_try_start_edit` på KON/SG efter bar-driven orsaksskapelse måste faktiskt trigga redigering). Verifierat via `git stash`/`git stash pop` att alla 3 test fångar regressionen. Full svit: `python -m unittest test_regression test_symbol_geometry` — 333/333 gröna.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **OCR-positioner är approximativa** — x,y-koordinater från OCR stämmer inte perfekt med PDF-koordinater vid hög zoom. Markörer kan hamna något fel.

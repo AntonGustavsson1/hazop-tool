@@ -6670,5 +6670,102 @@ class ObjektInRubberBandMenuTests(unittest.TestCase):
         self.assertEqual(captured, [None])
 
 
+class AutoConsequenceAndSafeguardOnCauseTemplateTests(unittest.TestCase):
+    """'När jag definerar avvikelse för objektet så ska jag kunna klicka på
+    konsekvens ... och definiera detta. ... Dessutom vill jag kunna göra
+    samma med safeguard.' (2026-08-09, see NOTES.md) — checking a
+    deviation in EquipmentDeviationBar (and the classic P&ID-click cause
+    flow, which shares the same underlying place_cause_from_template)
+    used to create a cause with NO consequence/safeguard at all, so the
+    KON/SG cells for that row had no real item to click into. Both are
+    now auto-created empty, immediately ready for the already-existing
+    KON/SG inline-edit machinery (from earlier sessions, see NOTES.md)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_autocons_sg_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from pid_viewer import PIDPanel
+        self.panel = PIDPanel(self.db)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_place_cause_from_template_creates_empty_consequence_and_safeguard(self):
+        from PyQt6.QtCore import QPointF
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+
+        cause_id = self.panel.place_cause_from_template(
+            dev_id, QPointF(10, 10), 0, "Ventil", "HV-101", "Läckage", None)
+
+        self.assertIsNotNone(cause_id)
+        cons_list = self.db.consequences(cause_id)
+        self.assertEqual(len(cons_list), 1)
+        cons_id = cons_list[0]['id']
+        # db.add_consequence()/add_safeguard() default to placeholder text
+        # ("Ny konsekvens"/"Ny safeguard") — same as every other quick-add
+        # path (TreePanel.add_consequence(), _create_cause_from_pick())
+        # already uses; not blank, but still immediately overtype-able via
+        # the existing KON/SG inline-edit machinery.
+        self.assertEqual(cons_list[0]['description'], 'Ny konsekvens')
+        sg_list = self.db.safeguards(cons_id)
+        self.assertEqual(len(sg_list), 1)
+        self.assertEqual(sg_list[0]['description'], 'Ny safeguard')
+
+    def test_create_cause_for_bar_also_gets_consequence_and_safeguard(self):
+        """The EquipmentDeviationBar checkbox flow specifically — routes
+        through place_cause_from_template via _create_cause_for_bar."""
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        eq_id = self.db.add_equipment_item("P-101", "P-101", "P", 0, "Pump", '', 0)
+        marker_id = self.db.add_equipment_marker(
+            eq_id, "P-101", 0, 10.0, 10.0, "Pump", confidence=0.9, link_method='leader')
+        self.panel._equipment_bar.load(eq_id, marker_id)
+
+        cause_id = self.panel._create_cause_for_bar(
+            dev_id, "Pump", "P-101", "Ingen flödesindikering")
+
+        self.assertIsNotNone(cause_id)
+        cons_list = self.db.consequences(cause_id)
+        self.assertEqual(len(cons_list), 1)
+        self.assertEqual(len(self.db.safeguards(cons_list[0]['id'])), 1)
+
+    def test_kon_and_sg_cells_are_clickable_after_bar_driven_cause_creation(self):
+        """End-to-end confirmation of the actual reported symptom: clicking
+        KON/SG for a row created via the object/deviation-bar flow must
+        now actually trigger inline editing, not silently do nothing."""
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            eq_id = win.db.add_equipment_item("T-1", "T-1", "T", 0, "Behållare", '', 0)
+            marker_id = win.db.add_equipment_marker(
+                eq_id, "T-1", 0, 10.0, 10.0, "Behållare", confidence=0.9, link_method='leader')
+            win.pid_panel._equipment_bar.load(eq_id, marker_id)
+
+            cause_id = win.pid_panel._create_cause_for_bar(
+                dev_id, "Behållare", "T-1", "Övertryck")
+            win.scenario_panel.load_node(node_id)
+            row = next(r for r, m in enumerate(win.scenario_panel._row_meta)
+                      if m[1] == cause_id)
+
+            edit_spy = unittest.mock.Mock(wraps=win.scenario_panel._table.edit)
+            win.scenario_panel._table.edit = edit_spy
+            win.scenario_panel._try_start_edit(row, win.scenario_panel._C_KON)
+            edit_spy.assert_called()
+
+            edit_spy.reset_mock()
+            win.scenario_panel._try_start_edit(row, win.scenario_panel._C_SG)
+            edit_spy.assert_called()
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
