@@ -916,6 +916,20 @@ Anton ville kunna lägga till ett objekt (ventil/instrument/pump manuellt) inte 
 
 ---
 
+## Uppföljning på Rapport 3: uppdelning KON/SG + fetmarkering (2026-08-09)
+
+**Rapport:** "Drar jag till konsekvens skall flera objekt kunna ligga i samma konsekvens, medan drar jag till safeguard skall de olika objekten vara på olika rader (som olika safeguards)." Följt av: "fetmarkera även objekttexten i konsekvensen så man ser att det är som ett objekt."
+
+**Fix 1 (multi-drag-uppdelning):** `_handle_drop`s utrustnings-gren körde tidigare bara det FÖRSTA draget objektet vid en multi-markering, resten kastades tyst. Nu: vid drop på en KONSEKVENS anropas `append_tag_to_consequence` en gång per draget objekt (bygger upp samma mening i sekvens). Vid drop på en SAFEGUARD används bara det första objektet på den släppta cellen — varje YTTERLIGARE objekt skapar en helt NY safeguard-rad (`db.add_safeguard(tgt_cons)`) under samma konsekvens, eftersom skilda objekt där ska läsas som skilda barriärer, inte en sammanslagen mening. 2 befintliga tester (som testade det gamla "bara första markören"-beteendet) skrevs om till det nya, verifierat via `git stash`.
+
+**Fix 2 (fetmarkering):** Ny `consequences.tagged_refs`/`safeguards.tagged_refs`-kolumn (kommaseparerad, dedup, ordning bevarad) minns VARJE tagg som någonsin dragits in i en cells text — `comp_tag` visar bara den SENASTE. `append_tag_to_consequence`/`append_tag_to_safeguard` uppdaterar nu båda via nya `add_tag_ref()`/`parse_tag_refs()`. `_ScenarioDelegate.paint()` ritar KON/SG-beskrivningstext via ny `_draw_text_with_bold_tags()` (QTextLayout med per-intervall fet `QTextCharFormat`) istället för ett enda platt `drawText`-anrop — fetmarkerar varje helords-förekomst av en `tagged_refs`-post, faller tillbaka till den ursprungliga platta vägen när det inte finns något att fetmarkera (ingen extra kostnad för orörda rader). `find_tag_bold_ranges()` är en ren, oberoende testad funktion som hittar dessa förekomster (helords-medveten — "TA-1" matchar inte inuti "TA-10").
+
+**Upptäckt i förbigående:** en TIDIGARE, aldrig avslutad fetmarkerings-funktion (`_bold_segments`/`_CONS_TAG_RE`, från en session i juni 2026) fanns redan i koden — en regex-baserad gissning på "ser detta ut som en tagg" (`[A-Z]{1,6}[-./]?\d{2,5}...`), men hade NOLL anropsställen (död kod, kommentaren "tags in bold" i paint-koden överlevde men själva bold-anropet togs bort i en senare refaktorering). Borttagen — mindre precis än den nya dragbaserade metoden (t.ex. kunde regexen inte ens matcha en enda-siffrig tagg som "TA-1", som kräver 2–5 siffror).
+
+**Test:** 10 nya rena funktionstester (`TagRefsAndBoldRangeTests`), 3 nya paint-rök-tester som faktiskt anropar `_ScenarioDelegate.paint()` med taggad text (`BoldTagPaintSmokeTests` — verifierar både att UserRole-data är rätt kopplad OCH att ritning inte kraschar; pixel-nivå-verifiering av fetstil är inte praktiskt genomförbar i en headless testsvit). Full svit: `python -m unittest test_regression test_symbol_geometry` — 398/398 gröna.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **OCR-positioner är approximativa** — x,y-koordinater från OCR stämmer inte perfekt med PDF-koordinater vid hög zoom. Markörer kan hamna något fel.
