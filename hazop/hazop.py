@@ -10627,13 +10627,16 @@ class _PidDelegate(_ScenarioDelegate):
                 painter.setPen(QPen(QColor('#bcd'), 1))
                 painter.drawLine(rrf_rect.left(), r.top(), rrf_rect.left(), r.bottom())
 
-                # Yellow ○ indicator when safeguard excluded from any category
+                # Amber ○ indicator when safeguard excluded from any
+                # category — muted to match the app's near-monochrome
+                # theme (2026-08-09, see NOTES.md) instead of a pure,
+                # saturated gold that stood out against everything else.
                 excl_cats = index.data(Qt.ItemDataRole.UserRole + 2) or []
                 if excl_cats:
                     csz = 9
                     circ = QRect(rrf_rect.right() - csz - 2,
                                  rrf_rect.top() + 2, csz, csz)
-                    painter.setBrush(QBrush(QColor('#FFD700')))
+                    painter.setBrush(QBrush(QColor('#F5C97A')))
                     painter.setPen(QPen(QColor('#B8860B'), 1))
                     painter.drawEllipse(circ)
                     painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -10690,9 +10693,13 @@ class _PidDelegate(_ScenarioDelegate):
                 desc_rect  = QRect(r.left() + 2, r.top() + _SH,
                                    r.width() - 4, max(0, r.height() - _SH))
 
-                # Strip background (grey, purple tint for chain-linked rows)
+                # Strip background — grey normally; chain-linked rows use
+                # the app's own selection-blue family instead of an
+                # unrelated purple (2026-08-09, see NOTES.md), so the one
+                # other "special state" color in this cell matches
+                # everything else that already means "linked/selected".
                 if not sel:
-                    strip_bg = QColor('#ede7f6') if is_chain else QColor('#F5F5F3')
+                    strip_bg = QColor('#E6ECFA') if is_chain else QColor('#F5F5F3')
                     painter.fillRect(strip_rect, strip_bg)
                 else:
                     painter.fillRect(strip_rect,
@@ -10895,17 +10902,21 @@ class _PidDelegate(_ScenarioDelegate):
                     painter, txt_rect.adjusted(2, 2, -2, -2), display,
                     tagged_refs, option.font, tc, word_wrap=True)
 
-                # ⛓ chain-link zone on the right
+                # ⛓ chain-link zone on the right — uses the app's own
+                # near-black accent instead of a saturated green/dark-grey
+                # pair (2026-08-09, see NOTES.md) so this small always-
+                # visible zone on every KON cell reads as a quiet, minor
+                # control rather than competing for attention.
                 has_linked = bool(index.data(Qt.ItemDataRole.UserRole + 6))
                 if sel:
                     chain_bg = option.palette.highlight().color().darker(110)
                     chain_fg = option.palette.highlightedText().color()
                 elif has_linked:
-                    chain_bg = QColor('#5d5d5d')   # dark grey — already has linked cause
+                    chain_bg = QColor('#17191C')   # near-black — already has linked cause
                     chain_fg = QColor('#ffffff')
                 else:
-                    chain_bg = QColor('#e8f5e9')   # light green — click to add
-                    chain_fg = QColor('#27ae60')
+                    chain_bg = QColor('#F5F5F3')   # light grey — click to add
+                    chain_fg = QColor('#8D9299')
                 painter.fillRect(chain_rect, chain_bg)
                 painter.setPen(QPen(QColor('#bbb'), 1))
                 painter.drawLine(chain_rect.left(), r.top(), chain_rect.left(), r.bottom())
