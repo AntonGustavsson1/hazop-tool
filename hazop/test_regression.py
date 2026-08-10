@@ -4617,6 +4617,113 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         cause_item = dev_item.child(0)
         self.assertEqual(cause_item.data(0, Qt.ItemDataRole.UserRole + 1), CAUSE_T)
 
+    def test_trivial_tagged_cause_merges_into_equipment_header_row(self):
+        """'Det känns onödigt att objektet redovisas två gånger i
+        hierarkin i trädet. Detta går att slå ihop till en.' (2026-08-10,
+        screenshot in conversation) — dragging equipment onto a deviation
+        (_create_tagged_cause) creates a cause with no real description
+        yet, whose own tree label therefore falls back to the SAME
+        equipment tag the merged header row above it already shows
+        ('=E1.M1.QMA102 — Ventil' followed by '1. E1.M1.QMA102'). One
+        more 'kaka på kaka' level: the trivial cause's identity (and its
+        consequences) now attaches directly to the header row instead of
+        a separate, redundant child."""
+        from hazop import _create_tagged_cause
+        eq_id = self.db.add_equipment_item("E1.M1.QMA102", "E1.M1.QMA102", "E1", 0, "Ventil", '', 0)
+        node_id = self.db.add_node()
+        dev_id = self.db.get_or_create_deviation(node_id, "Högt flöde", equipment_id=eq_id)
+        cause_id, cons_id = _create_tagged_cause(self.db, dev_id, "Ventil", "E1.M1.QMA102")
+        self.panel.refresh()
+
+        it = QTreeWidgetItemIterator(self.panel.tree)
+        header_item = None
+        while it.value():
+            item = it.value()
+            if (item.data(0, Qt.ItemDataRole.UserRole + 1) == CAUSE_T
+                    and item.data(0, Qt.ItemDataRole.UserRole) == cause_id):
+                header_item = item
+            it += 1
+        self.assertIsNotNone(header_item,
+            "the merged row must carry the CAUSE's identity, not a separate DEV_T row above it")
+        self.assertIn("E1.M1.QMA102", header_item.text(0))
+        self.assertEqual(len([x for x in self._tree_items() if x[0] == DEV_T and x[1] == dev_id]), 0,
+            "no separate DEV_T row should remain once merged into the cause")
+        # The consequence must be one level directly below the merged
+        # row, not nested under yet another redundant cause row.
+        self.assertEqual(header_item.childCount(), 1)
+        self.assertEqual(header_item.child(0).data(0, Qt.ItemDataRole.UserRole + 1), CONS_T)
+
+    def test_cause_with_real_description_does_not_merge_into_equipment_header(self):
+        """The merge only applies to a genuinely trivial, still-unedited
+        placeholder cause — once the user types a real description, the
+        cause has its own distinct content and must show as a normal,
+        separate child row again."""
+        from hazop import _create_tagged_cause
+        eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
+        node_id = self.db.add_node()
+        dev_id = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        cause_id, _cons_id = _create_tagged_cause(self.db, dev_id, "Ventil", "V-101")
+        self.db.update_cause(cause_id, description="Inget flöde till M1.GPA2")
+        self.panel.refresh()
+
+        items = self._tree_items()
+        dev_rows = [x for x in items if x[0] == DEV_T and x[1] == dev_id]
+        self.assertEqual(len(dev_rows), 1,
+            "a cause with real content must not collapse its parent DEV_T row")
+        cause_rows = [x for x in items if x[0] == CAUSE_T and x[1] == cause_id]
+        self.assertEqual(len(cause_rows), 1)
+        self.assertEqual(cause_rows[0][2], DEV_T)
+
+    def test_second_trivial_cause_prevents_merge(self):
+        """A second cause under the same equipment-scoped deviation means
+        there are now two distinct things to show — merging either one
+        into the header row would hide the other; both must stay normal,
+        separate child rows."""
+        from hazop import _create_tagged_cause
+        eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
+        node_id = self.db.add_node()
+        dev_id = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        cause_id1, _c1 = _create_tagged_cause(self.db, dev_id, "Ventil", "V-101")
+        cause_id2, _c2 = _create_tagged_cause(self.db, dev_id, "Ventil", "V-101")
+        self.panel.refresh()
+
+        items = self._tree_items()
+        dev_rows = [x for x in items if x[0] == DEV_T and x[1] == dev_id]
+        self.assertEqual(len(dev_rows), 1, "two causes must not collapse the parent DEV_T row")
+        cause_rows = {x[1] for x in items if x[0] == CAUSE_T and x[1] in (cause_id1, cause_id2)}
+        self.assertEqual(cause_rows, {cause_id1, cause_id2})
+
+    def test_merged_cause_header_still_offers_add_cause_in_context_menu(self):
+        """The merged row (carrying the CAUSE's identity, see above) must
+        still let the user add a SECOND, distinct cause to the same
+        deviation — add_cause() already resolves the deviation via the
+        cause's own deviation_id regardless of which row type triggered
+        it, so this is purely a context-menu-visibility check."""
+        from hazop import _create_tagged_cause
+        eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
+        node_id = self.db.add_node()
+        dev_id = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        cause_id, _cons_id = _create_tagged_cause(self.db, dev_id, "Ventil", "V-101")
+        self.panel.refresh()
+
+        it = QTreeWidgetItemIterator(self.panel.tree)
+        header_item = None
+        while it.value():
+            item = it.value()
+            if (item.data(0, Qt.ItemDataRole.UserRole + 1) == CAUSE_T
+                    and item.data(0, Qt.ItemDataRole.UserRole) == cause_id):
+                header_item = item
+            it += 1
+        self.assertIsNotNone(header_item)
+
+        with unittest.mock.patch.object(self.panel.tree, 'itemAt', return_value=header_item), \
+             unittest.mock.patch('hazop.QMenu') as mock_menu_cls:
+            self.panel._context_menu(QPoint(0, 0))
+        mock_menu = mock_menu_cls.return_value
+        labels = [c.args[0] for c in mock_menu.addAction.call_args_list if c.args]
+        self.assertTrue(any("Lägg till orsak" in lbl for lbl in labels))
+        self.assertTrue(any("Lägg till konsekvens" in lbl for lbl in labels))
+
     def test_merged_equipment_deviation_item_offers_add_cause_context_menu(self):
         """Right-clicking the equipment row used to be a dead end (EQUIP_T
         items get no context menu at all) — now that this row IS the

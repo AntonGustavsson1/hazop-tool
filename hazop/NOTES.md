@@ -964,6 +964,22 @@ Fortsättning på punkt 5 ovan ("en PÅBÖRJAD, inte fullständig, städning"). 
 
 ---
 
+## HAZOP-trädet: objektets tagg visades två gånger i hierarkin (2026-08-10)
+
+**Rapport:** "Det känns onödigt att objektet redovisas två gånger i hierarkin i trädet. Detta går att slå ihop till en." — med skärmdump som visade t.ex. `🔧 =E1.M1.QMA102 — Ventil` följt direkt av ett barn `⚙ 1. =E1.M1.QMA102`, samma text upprepad.
+
+**Grundorsak:** Ännu en "kaka på kaka"-nivå (se ovan, 2026-08-09-avsnittet) som den ursprungliga fixen inte täckte. När en utrustning dras direkt till en avvikelse i trädet skapar `_create_tagged_cause()` en orsak med **platshållartexten "Ny orsak"** (enhetlig platshållare sedan tidigare samma dag, se den funktionens docstring) plus `comp_tag` satt till utrustningens tagg. `add_causes_to_item()`s egen etikettlogik för en orsaksrad (`c_label = tag if tag else description`) väljer ALLTID taggen när en sådan finns — oavsett om beskrivningen är "Ny orsak" eller riktig text. Så länge orsaken inte fått en egen, riktig beskrivning ännu visar dess rad alltså exakt samma tagg som redan står i utrustningshuvudet en nivå ovanför.
+
+**Fix:** Ytterligare en sammanslagningsnivå i `TreePanel.refresh()`, i grenen för en ensam utrustning med en ensam avvikelse (`if len(eq_devs) == 1:`, hazop.py): om avvikelsens enda orsak (a) är den enda orsaken, (b) har en trivial beskrivning (tom sträng ELLER exakt "Ny orsak" — samma platshållare `_create_tagged_cause`/`_create_cause_from_pick` båda använder) och (c) dess `comp_tag` matchar utrustningens egen tagg exakt, byts den redan sammanslagna utrustnings-/avvikelseradens identitet (var `DEV_T`) till orsakens egen (`CAUSE_T`), och dess konsekvenser hängs direkt på samma rad — istället för en separat barnrad som bara upprepar taggen en gång till. Konsekvens-/safeguard-uppbyggnaden faktoriserades ut till en ny delad `add_cause_children(citem, cause)`-closure (tidigare inbäddad i `add_causes_to_item`) så både normalfallet och detta sammanslagna specialfall återanvänder exakt samma kod.
+
+Radens utseende (🔧-ikon, fet stil, "tagg — typ"-text) ändras INTE — bara den underliggande dataidentiteten byts, så dubbelklick/val hoppar direkt till orsaken istället för avvikelsen. Så fort orsaken får en riktig, egen beskrivning (skiljer sig från "Ny orsak") eller en andra orsak läggs till på samma avvikelse, återgår raden automatiskt till det vanliga, icke-sammanslagna utseendet (`DEV_T`-huvud + separat `CAUSE_T`-barn) — villkoret utvärderas om vid varje `refresh()`.
+
+**Bevarad funktionalitet:** en sammanslagen rad (nu `CAUSE_T`) tappade annars "+ Lägg till orsak" ur högerklicksmenyn (den fanns bara på `DEV_T` tidigare) — vilket hade gjort det svårt att lägga till en ANDRA, skild orsak på samma avvikelse från den raden. Löst genom att lägga till "+ Lägg till orsak" även på `CAUSE_T`s kontextmeny rakt av (inte bara i sammanslagna fall) — `add_cause()` löser redan avvikelsen korrekt via orsakens egen `deviation_id` oavsett vilken radtyp som triggade den, så detta är en säker, allmän förbättring snarare än ett specialfall.
+
+**Test:** 4 nya tester i `TreePanelEquipmentGroupingTests`: sammanslagning sker för en trivial, taggad orsak (`test_trivial_tagged_cause_merges_into_equipment_header_row`); sammanslagning uteblir så fort orsaken har en riktig beskrivning (`test_cause_with_real_description_does_not_merge_into_equipment_header`) eller en andra orsak finns (`test_second_trivial_cause_prevents_merge`); den sammanslagna raden erbjuder fortfarande "+ Lägg till orsak" (`test_merged_cause_header_still_offers_add_cause_in_context_menu`). Verifierat via `git stash`/`git stash pop` att 2 av de 3 sammanslagnings-testerna faktiskt fångar regressionen utan fixen (det tredje testar det redan existerande icke-sammanslagna beteendet och förblir grönt som väntat, precis som avsett). Full svit: `python -m unittest test_regression test_symbol_geometry` — 414/414 gröna.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **OCR-positioner är approximativa** — x,y-koordinater från OCR stämmer inte perfekt med PDF-koordinater vid hög zoom. Markörer kan hamna något fel.

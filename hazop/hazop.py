@@ -7244,6 +7244,45 @@ class TreePanel(QWidget):
             marked_consequences = self.db.marked_consequence_ids()
             marked_safeguards = self.db.marked_safeguard_ids()
 
+            def add_cause_children(citem, cause):
+                """Append the consequence/safeguard subtree for a single
+                cause as children of citem — factored out of
+                add_causes_to_item so the equipment-merged trivial-cause
+                case below (an empty, just-tagged cause whose only
+                content duplicates its own equipment header) can attach
+                it directly to that header row instead of a separate,
+                redundant cause item (2026-08-10, see NOTES.md "objektet
+                redovisas två gånger")."""
+                nonlocal target
+                for ki, cons in enumerate(self.db.consequences(cause['id']), 1):
+                    cause_freq = self.db.cause_frequency_level(cause)
+                    level, _, _ = risk_info(cause_freq, cons['severity'])
+                    risk_icon = RISK_ICON.get(level, '⚪')
+                    placed_k = cons['id'] in marked_consequences
+                    kitem = QTreeWidgetItem([f"      {risk_icon}  {ki}. {cons['description'][:40]}"])
+                    kitem.setIcon(0, _make_pin_icon(placed_k))
+                    kitem.setData(0, Qt.ItemDataRole.UserRole, cons['id'])
+                    kitem.setData(0, Qt.ItemDataRole.UserRole + 1, CONS_T)
+                    citem.addChild(kitem)
+                    if (CONS_T, cons['id']) in expanded: kitem.setExpanded(True)
+                    if select_type == CONS_T and select_id == cons['id']: target = kitem
+
+                    for si, sg in enumerate(self.db.safeguards(cons['id']), 1):
+                        rrf = (sg['rrf'] or 1) if sg['rrf'] is not None else 1
+                        rrf_str = f"RRF{rrf}" if rrf > 1 else "—"
+                        try:
+                            linked = bool(sg['source_id'])
+                        except (IndexError, KeyError):
+                            linked = False
+                        sg_icon = "🔗🛡" if linked else "🛡"
+                        placed_s = sg['id'] in marked_safeguards
+                        sgitem = QTreeWidgetItem([f"         {sg_icon}  {si}. {sg['description'][:35]}  [{rrf_str}]"])
+                        sgitem.setIcon(0, _make_pin_icon(placed_s))
+                        sgitem.setData(0, Qt.ItemDataRole.UserRole, sg['id'])
+                        sgitem.setData(0, Qt.ItemDataRole.UserRole + 1, SG_T)
+                        kitem.addChild(sgitem)
+                        if select_type == SG_T and select_id == sg['id']: target = sgitem
+
             def add_causes_to_item(ditem, dev_id):
                 """Append the cause/consequence/safeguard subtree for
                 deviation dev_id as children of ditem — factored out of
@@ -7263,35 +7302,7 @@ class TreePanel(QWidget):
                     ditem.addChild(citem)
                     if (CAUSE_T, cause['id']) in expanded: citem.setExpanded(True)
                     if select_type == CAUSE_T and select_id == cause['id']: target = citem
-
-                    for ki, cons in enumerate(self.db.consequences(cause['id']), 1):
-                        cause_freq = self.db.cause_frequency_level(cause)
-                        level, _, _ = risk_info(cause_freq, cons['severity'])
-                        risk_icon = RISK_ICON.get(level, '⚪')
-                        placed_k = cons['id'] in marked_consequences
-                        kitem = QTreeWidgetItem([f"      {risk_icon}  {ki}. {cons['description'][:40]}"])
-                        kitem.setIcon(0, _make_pin_icon(placed_k))
-                        kitem.setData(0, Qt.ItemDataRole.UserRole, cons['id'])
-                        kitem.setData(0, Qt.ItemDataRole.UserRole + 1, CONS_T)
-                        citem.addChild(kitem)
-                        if (CONS_T, cons['id']) in expanded: kitem.setExpanded(True)
-                        if select_type == CONS_T and select_id == cons['id']: target = kitem
-
-                        for si, sg in enumerate(self.db.safeguards(cons['id']), 1):
-                            rrf = (sg['rrf'] or 1) if sg['rrf'] is not None else 1
-                            rrf_str = f"RRF{rrf}" if rrf > 1 else "—"
-                            try:
-                                linked = bool(sg['source_id'])
-                            except (IndexError, KeyError):
-                                linked = False
-                            sg_icon = "🔗🛡" if linked else "🛡"
-                            placed_s = sg['id'] in marked_safeguards
-                            sgitem = QTreeWidgetItem([f"         {sg_icon}  {si}. {sg['description'][:35]}  [{rrf_str}]"])
-                            sgitem.setIcon(0, _make_pin_icon(placed_s))
-                            sgitem.setData(0, Qt.ItemDataRole.UserRole, sg['id'])
-                            sgitem.setData(0, Qt.ItemDataRole.UserRole + 1, SG_T)
-                            kitem.addChild(sgitem)
-                            if select_type == SG_T and select_id == sg['id']: target = sgitem
+                    add_cause_children(citem, cause)
 
             def add_deviation_subtree(parent_item, dev, di):
                 nonlocal target
@@ -7391,11 +7402,42 @@ class TreePanel(QWidget):
                             # dead ends when the row was EQUIP_T.
                             dev = eq_devs[0]
                             di += 1
-                            eitem.setData(0, Qt.ItemDataRole.UserRole, dev['id'])
-                            eitem.setData(0, Qt.ItemDataRole.UserRole + 1, DEV_T)
-                            if (DEV_T, dev['id']) in expanded: eitem.setExpanded(True)
-                            if select_type == DEV_T and select_id == dev['id']: target = eitem
-                            add_causes_to_item(eitem, dev['id'])
+                            dev_causes = self.db.causes_for_deviation(dev['id'])
+                            merge_tag = ((eq['tag'] or '').strip() if eq else '')
+                            trivial_desc = (dev_causes[0]['description'] or '').strip() in ('', 'Ny orsak') \
+                                if dev_causes else False
+                            if (len(dev_causes) == 1
+                                    and trivial_desc
+                                    and (dev_causes[0]['comp_tag'] or '').strip() == merge_tag
+                                    and merge_tag):
+                                # One more "kaka på kaka" level (2026-08-10,
+                                # see NOTES.md "objektet redovisas två
+                                # gånger"): this deviation's only cause has
+                                # no real content yet — created empty by a
+                                # drag-and-drop tag placement — so its own
+                                # tree label falls back to the SAME
+                                # equipment tag this header row already
+                                # shows. Attach the cause's identity (and
+                                # its consequences) directly to this row
+                                # instead of a redundant child that repeats
+                                # the tag a second time with nothing new to
+                                # say. Reappears as a normal child row the
+                                # moment the cause gets a real description,
+                                # or a second cause is added.
+                                cause = dev_causes[0]
+                                placed_c = cause['id'] in marked_causes
+                                eitem.setIcon(0, _make_pin_icon(placed_c))
+                                eitem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
+                                eitem.setData(0, Qt.ItemDataRole.UserRole + 1, CAUSE_T)
+                                if (CAUSE_T, cause['id']) in expanded: eitem.setExpanded(True)
+                                if select_type == CAUSE_T and select_id == cause['id']: target = eitem
+                                add_cause_children(eitem, cause)
+                            else:
+                                eitem.setData(0, Qt.ItemDataRole.UserRole, dev['id'])
+                                eitem.setData(0, Qt.ItemDataRole.UserRole + 1, DEV_T)
+                                if (DEV_T, dev['id']) in expanded: eitem.setExpanded(True)
+                                if select_type == DEV_T and select_id == dev['id']: target = eitem
+                                add_causes_to_item(eitem, dev['id'])
                         else:
                             eitem.setData(0, Qt.ItemDataRole.UserRole, eq_id)
                             eitem.setData(0, Qt.ItemDataRole.UserRole + 1, EQUIP_T)
@@ -7644,6 +7686,14 @@ class TreePanel(QWidget):
             menu.addAction("📍 Lägg till orsaker på P&ID",
                            lambda i=id_: self.add_causes_on_pid_requested.emit(i))
         elif type_ == CAUSE_T:
+            # "+ Lägg till orsak" also offered here (not just on DEV_T) so
+            # a cause row that merged with its deviation's own header
+            # (2026-08-10, see NOTES.md "objektet redovisas två gånger")
+            # still lets you add a SECOND, distinct cause to the same
+            # deviation — add_cause() already resolves the deviation via
+            # the cause's own deviation_id regardless of which row type
+            # triggered it.
+            menu.addAction("+ Lägg till orsak", self.add_cause)
             menu.addAction("+ Lägg till konsekvens", self.add_consequence)
             menu.addAction("📍 Lägg till konsekvens på P&ID",
                            lambda i=id_: self.add_consequences_on_pid_requested.emit(i))
