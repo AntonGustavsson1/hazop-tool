@@ -520,12 +520,12 @@ class EquipmentMarkerReviewDialog(QDialog):
     """Review/correct auto-detected equipment-symbol matches before saving
     them as a new 'equipment' marker layer on the P&ID.
 
-    Fed by EquipmentPanel's "🎯 Hitta på P&ID", which runs the unified
-    detect_equipment_and_valves() pipeline (tag-anchored AND shape-
-    anchored valve hunting against one shared per-page cluster
-    extraction — see that function's docstring). Rows with
-    tag_status='untagged' (a valve-shaped symbol with no confident tag
-    match) pre-fill the Tagg cell with their temporary_id
+    Fed by EquipmentPanel's "🎯 Hitta objekt på P&ID", which runs the
+    unified detect_equipment_and_valves() pipeline (tag-anchored AND
+    shape-anchored valve/pump/instrument hunting against one shared
+    per-page cluster extraction — see that function's docstring). Rows
+    with tag_status='untagged' (a shape-recognized symbol with no
+    confident tag match) pre-fill the Tagg cell with their temporary_id
     ('UNASSIGNED-VALVE-...') rather than being silently dropped;
     _save() registers a real equipment_catalog entry for them on the fly
     if the (suggested or user-typed) tag is non-empty.
@@ -569,8 +569,8 @@ class EquipmentMarkerReviewDialog(QDialog):
         extra = f" ({n_untagged} utan tagg)" if n_untagged else ""
         hdr = QLabel(
             f"Hittade en symbolmatchning för <b>{n_found} av {n}</b> rader{extra}. "
-            "Kryssa ur felaktiga rader, redigera taggtext vid behov (ge en "
-            "namnlös ventil en tagg om du vill), och spara.")
+            "Kryssa ur felaktiga rader, redigera taggtext vid behov (ge ett "
+            "namnlöst objekt en tagg om du vill), och spara.")
         hdr.setTextFormat(Qt.TextFormat.RichText)
         hdr.setWordWrap(True)
         hdr.setStyleSheet(

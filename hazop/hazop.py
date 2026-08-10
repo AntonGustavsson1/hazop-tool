@@ -15,7 +15,7 @@ import platform
 import inspect
 
 from pid_viewer import (
-    PIDPanel, COMPONENT_TYPES, VALVE_COMPONENT_TYPES, CONSEQUENCE_TEMPLATES, HAS_PYMUPDF,
+    PIDPanel, COMPONENT_TYPES, CONSEQUENCE_TEMPLATES, HAS_PYMUPDF,
     MODE_NAV, MODE_NODE, MODE_CONSEQUENCE, MODE_SAFEGUARD, MODE_PICK_REF_TAG,
     scan_pdf_for_equipment, ocr_status, KNOWN_PREFIXES, invert_cause_text,
     _RED_MARKUP_SYMBOLS, _get_red_symbol_svg,
@@ -17495,12 +17495,12 @@ class EquipmentPanel(QWidget):
         self._create_btn.setToolTip("Skapar en nod per ikryssad rad")
         self._create_btn.clicked.connect(self._create_nodes)
 
-        self._autodetect_btn = QPushButton("🎯 Hitta ventiler på P&ID")
+        self._autodetect_btn = QPushButton("🎯 Hitta objekt på P&ID")
         self._autodetect_btn.setToolTip(
-            "Analyserar VENTILER (Ventil / Säkerhetsventil PSV): kopplar varje\n"
-            "känd ventiltagg till dess ritade symbol OCH letar efter ventilformade\n"
+            "Analyserar utrustning (ventiler, pumpar, instrument m.fl.): kopplar\n"
+            "varje känd tagg till dess ritade symbol OCH letar efter formigenkända\n"
             "symboler som saknar tagg — allt i en bakgrundskörning med synlig\n"
-            "progress. Andra utrustningstyper (instrument m.fl.) är inte med än.\n"
+            "progress.\n"
             "Kör 🔍 Skanna P&ID först om registret är tomt.")
         self._autodetect_btn.clicked.connect(self._autodetect)
 
@@ -17823,27 +17823,31 @@ class EquipmentPanel(QWidget):
         dlg.exec()
 
     def _autodetect(self):
-        """🎯 Hitta på P&ID — full analysis: weighted tag<->symbol
-        association for every known VALVE tag in the register AND shape-
-        anchored hunting for valve-shaped symbols with no tag, against one
-        shared per-page cluster extraction (detect_equipment_and_valves).
-        Runs on background worker PROCESSES (ParallelEquipmentAnalysisWorker)
-        when the document is large enough for multi-core parallelism to be
-        worth it — falls back to the proven single-thread
-        EquipmentAnalysisWorker path otherwise — with live per-page
-        progress (PageProgressDialog), including on a 50-page document.
-        See NOTES.md "Flerkärnig parallellisering av Analysera P&ID".
+        """🎯 Hitta objekt på P&ID — full analysis: weighted tag<->symbol
+        association for every known tag in the register (any equipment
+        type) AND shape-anchored hunting for valve/pump/instrument-shaped
+        symbols with no tag, against one shared per-page cluster
+        extraction (detect_equipment_and_valves). Runs on background
+        worker PROCESSES (ParallelEquipmentAnalysisWorker) when the
+        document is large enough for multi-core parallelism to be worth
+        it — falls back to the proven single-thread EquipmentAnalysisWorker
+        path otherwise — with live per-page progress (PageProgressDialog),
+        including on a 50-page document. See NOTES.md "Flerkärnig
+        parallellisering av Analysera P&ID".
 
-        Deliberately scoped to valves only for now (2026-08-06) —
-        VALVE_COMPONENT_TYPES ('Ventil'/'Säkerhetsventil (PSV)') — even
-        though the register may hold other equipment types too. Other
-        types (instruments, pumps, ...) are a planned future extension of
-        this same pipeline, not yet wired up; including their tags today
-        would just be unfiltered noise in the review dialog for a type
-        the shape-hunting side doesn't know how to visually confirm at all.
+        Widened from valve-only to every equipment type (2026-08-10, see
+        NOTES.md) — the underlying detect_equipment_and_valves() pipeline
+        has done shape-anchored pump/instrument hunting on UNTAGGED
+        clusters since 2026-08-07 regardless of this filter; restricting
+        tag_points to VALVE_COMPONENT_TYPES only meant a real, already-
+        known pump/instrument tag never got a chance at weighted
+        association with its own symbol, even though the shape side was
+        perfectly capable of confirming it. Renamed from "Hitta ventiler"
+        to reflect what it's always been trending toward: recognizing the
+        SHAPE of any piece of equipment, not just valves.
 
-        Uses EVERY valve row in the register, not just checked ones — the
-        global weighted association gets WORSE, not just redundant, if
+        Uses EVERY row with a tag in the register, not just checked ones —
+        the global weighted association gets WORSE, not just redundant, if
         the candidate pool is pre-filtered, since a real symbol match for
         an unchecked tag would otherwise be unavailable to steal a
         cluster away from a genuinely wrong candidate.
@@ -17856,8 +17860,6 @@ class EquipmentPanel(QWidget):
         tag_points = []          # (tag, prefix, page, x, y, conf) — x/y resolved in-thread
         tag_to_equipment_id = {}
         for row in self._model.rows():
-            if (row.get('equipment_type') or '') not in VALVE_COMPONENT_TYPES:
-                continue
             tag = (row.get('tag') or '').strip()
             if not tag:
                 continue
@@ -17867,10 +17869,9 @@ class EquipmentPanel(QWidget):
 
         if not tag_points:
             QMessageBox.information(
-                self, "Inga ventiler i registret",
-                "Hittade inga rader klassade som Ventil eller Säkerhetsventil (PSV) i "
-                "Utrustningsregistret.\n\nKör 🔍 Skanna P&ID om registret är tomt, eller "
-                "sätt typen till Ventil på de rader du vill analysera.")
+                self, "Inga taggar i registret",
+                "Hittade inga taggade rader i Utrustningsregistret.\n\n"
+                "Kör 🔍 Skanna P&ID om registret är tomt.")
             return
 
         path = self.db.get_pid_path()
@@ -17905,7 +17906,7 @@ class EquipmentPanel(QWidget):
                     res['equipment_id'] = tag_to_equipment_id.get(res['tag'])
             if not results:
                 QMessageBox.information(self, "Inget hittat",
-                    "Inga ventiler eller symboler hittades.")
+                    "Inga objekt eller symboler hittades.")
                 return
             review_dlg = EquipmentMarkerReviewDialog(results, self.db, parent=self, rejected=rejected)
             if review_dlg.exec():

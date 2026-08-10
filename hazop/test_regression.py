@@ -4234,19 +4234,20 @@ class EquipmentAnalysisWorkerTests(unittest.TestCase):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Valve-only scoping (2026-08-06): "🎯 Hitta ventiler på P&ID" is
-# deliberately restricted to VALVE_COMPONENT_TYPES for now — other
-# equipment types (instruments, pumps, ...) are a planned future
-# extension, not yet wired into the detection pipeline.
+# "Hitta ventiler" -> "Hitta objekt" (2026-08-10, see NOTES.md): widened
+# from VALVE_COMPONENT_TYPES-only to every equipment type. The shape side
+# (detect_equipment_and_valves) has hunted pump/instrument-shaped symbols
+# since 2026-08-07 regardless of this filter; a known pump/instrument tag
+# just never got to PARTICIPATE in the weighted tag<->symbol association.
 # ══════════════════════════════════════════════════════════════════════════
 
-class ValveOnlyAutodetectScopeTests(unittest.TestCase):
+class AutodetectAllEquipmentTypesTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = _ensure_qapp()
 
     def setUp(self):
-        self._tmpdir = tempfile.mkdtemp(prefix="hazop_valvescope_test_")
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_autodetectscope_test_")
         self.db_path = os.path.join(self._tmpdir, "test_project.db")
         self.db = Database(path=self.db_path)
 
@@ -4259,7 +4260,7 @@ class ValveOnlyAutodetectScopeTests(unittest.TestCase):
 
     def test_autodetect_proceeds_when_only_valve_rows_present(self):
         """No PDF path is configured in this test, so _autodetect() must
-        reach its 'Ingen P&ID' warning (not the 'Inga ventiler i
+        reach its 'Ingen P&ID' warning (not the 'Inga taggar i
         registret' info message) -- proof the valve rows were NOT
         filtered out before the tag_points-empty check."""
         from hazop import EquipmentPanel
@@ -4278,7 +4279,11 @@ class ValveOnlyAutodetectScopeTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_autodetect_skips_non_valve_rows(self):
+    def test_autodetect_includes_non_valve_rows(self):
+        """Instrument/pump/unclassified rows must now be included in
+        tag_points too (2026-08-10) — proceeds straight to the 'Ingen
+        P&ID' warning rather than the 'Inga taggar i registret' info
+        message, proof they were NOT filtered out."""
         from hazop import EquipmentPanel
         from PyQt6.QtWidgets import QMessageBox
         self.db.add_equipment_item("TI-301", "TI-301", "TI", 0, "Instrument / Sensor", '', 0)
@@ -4290,19 +4295,15 @@ class ValveOnlyAutodetectScopeTests(unittest.TestCase):
             with unittest.mock.patch.object(QMessageBox, 'warning') as mock_warn, \
                  unittest.mock.patch.object(QMessageBox, 'information') as mock_info:
                 panel._autodetect()
-            mock_info.assert_called_once()
-            mock_warn.assert_not_called()
-            title = mock_info.call_args[0][1]
-            self.assertIn('ventiler', title.lower())
+            mock_warn.assert_called_once()
+            mock_info.assert_not_called()
         finally:
             panel.deleteLater()
 
-    def test_autodetect_mixed_register_only_uses_valve_rows(self):
-        """A register with both valve and non-valve rows must still
-        proceed past the empty-check (the valve rows are enough), while
-        the non-valve rows are simply excluded from the candidate pool —
-        checked indirectly the same way as the two tests above, since
-        tag_points itself is a local variable inside _autodetect()."""
+    def test_autodetect_mixed_register_uses_every_type(self):
+        """A register with both valve and non-valve rows proceeds past
+        the empty-check regardless of the mix — the type filter is gone
+        entirely, not just tolerant of a mix."""
         from hazop import EquipmentPanel
         from PyQt6.QtWidgets import QMessageBox
         self.db.add_equipment_item("HV-101", "HV-101", "HV", 0, "Ventil", '', 0)
@@ -4315,6 +4316,24 @@ class ValveOnlyAutodetectScopeTests(unittest.TestCase):
                 panel._autodetect()
             mock_warn.assert_called_once()
             mock_info.assert_not_called()
+        finally:
+            panel.deleteLater()
+
+    def test_autodetect_shows_generic_empty_message_when_no_tags_at_all(self):
+        """With zero rows in the register at all, the empty-state message
+        must be the new generic wording, not the old valve-specific one."""
+        from hazop import EquipmentPanel
+        from PyQt6.QtWidgets import QMessageBox
+        panel = EquipmentPanel(self.db)
+        panel.refresh()
+        try:
+            with unittest.mock.patch.object(QMessageBox, 'warning') as mock_warn, \
+                 unittest.mock.patch.object(QMessageBox, 'information') as mock_info:
+                panel._autodetect()
+            mock_info.assert_called_once()
+            mock_warn.assert_not_called()
+            title = mock_info.call_args[0][1]
+            self.assertIn('taggar', title.lower())
         finally:
             panel.deleteLater()
 
@@ -8379,6 +8398,108 @@ class NumericPrefixParsingTests(unittest.TestCase):
     def test_parse_tag_rejects_date_like_string(self):
         from equipment_detection import _parse_tag
         self.assertEqual(_parse_tag("2019-09-30"), (None, None))
+
+
+class TagFallbackDigitGuardTests(unittest.TestCase):
+    """'jag vill att programmet blir mycket bättre och snabbare på att
+    analysera och hitta objekt på P&ID' (2026-08-10) — a baseline sweep
+    against a new, ~20-vendor P&ID corpus found that 57% of all "tag"
+    hits had no mapped equipment type. Root cause: _parse_tag's and
+    _score_tag_word's last-resort fallbacks accepted ANY 2+ letter word
+    with no digit at all as a "tag" (title-block/disclaimer text like
+    "THIS", "CONFIDENTIAL", "REPRODUCTION", "NODE" — none of which have
+    a digit, unlike every real tag format documented in this module).
+    Fixed by requiring at least one digit before the fallback fires —
+    every other tag regex already required this; only these two loose
+    fallbacks didn't."""
+
+    def test_parse_tag_rejects_plain_english_words(self):
+        from equipment_detection import _parse_tag
+        for word in ("THIS", "CONFIDENTIAL", "REPRODUCTION", "NODE", "AND", "FOR"):
+            self.assertEqual(_parse_tag(word), (None, None), f"{word!r} must not parse as a tag")
+
+    def test_parse_tag_still_accepts_real_tags(self):
+        from equipment_detection import _parse_tag
+        self.assertEqual(_parse_tag("PCV-101"), ("PCV-101", "PCV"))
+        self.assertEqual(_parse_tag("HV0063"), ("HV-0063", "HV"))
+        self.assertEqual(_parse_tag("NODE-1"), ("NODE-1", "NODE"))
+
+    def test_score_tag_word_rejects_plain_english_words(self):
+        from equipment_detection import _score_tag_word
+        for word in ("THIS", "CONFIDENTIAL", "AND", "TO"):
+            self.assertEqual(_score_tag_word(word), (None, 0), f"{word!r} must not score as a tag")
+
+    def test_score_tag_word_still_finds_real_tags(self):
+        from equipment_detection import _score_tag_word
+        tag, score = _score_tag_word("HV-101")
+        self.assertEqual(tag, "HV-101")
+        self.assertGreaterEqual(score, 2)
+
+
+class SpatialCombineGlueWordTests(unittest.TestCase):
+    """_spatial_combine()'s plain inter-word-gap join (for tag sub-parts
+    the PDF exporter split apart, e.g. "20"-"PCV"-"101") also fused
+    ordinary adjacent prose words into bogus tag candidates when the gap
+    between them happened to be small — confirmed on a real file
+    (2026-08-10, see NOTES.md): "TO" immediately followed by "PRI-421"
+    (normal sentence text, e.g. '... TO PRI-421 ...') combined into
+    "TOPRI-421", which then parsed as a fake tag with prefix "TOPRI".
+    Fixed by refusing to extend a group past a short, common English
+    connector word via the gap-based path (the separator-token path,
+    e.g. a literal "-" between two real tag halves, is unaffected)."""
+
+    def test_common_connector_word_does_not_glue_onto_following_tag(self):
+        from equipment_detection import _spatial_combine
+        words = [
+            (100.0, 100.0, 110.0, 108.0, "TO"),
+            (112.0, 100.0, 140.0, 108.0, "PRI-421"),
+        ]
+        results = _spatial_combine(words, gap_limit=22.0)
+        texts = [r[0] for r in results]
+        self.assertNotIn("TOPRI-421", texts)
+        self.assertIn("PRI-421", texts)
+        self.assertIn("TO", texts)
+
+    def test_real_tag_subparts_still_combine(self):
+        """Sanity check: genuine split tag fragments (no connector word
+        involved) must still combine exactly as before."""
+        from equipment_detection import _spatial_combine
+        words = [
+            (100.0, 100.0, 112.0, 108.0, "20"),
+            (114.0, 100.0, 118.0, 108.0, "-"),
+            (120.0, 100.0, 134.0, 108.0, "PCV"),
+            (136.0, 100.0, 140.0, 108.0, "-"),
+            (142.0, 100.0, 156.0, 108.0, "101"),
+        ]
+        results = _spatial_combine(words, gap_limit=22.0)
+        texts = [r[0] for r in results]
+        self.assertIn("20-PCV-101", texts)
+
+
+class NewCorpusPrefixReviewTests(unittest.TestCase):
+    """Two genuinely new, real-corpus-confirmed prefixes added to
+    KNOWN_PREFIXES (2026-08-10, see NOTES.md): HVPT (compound hand-valve
+    + pressure-transmitter tag) and bare FC (Flow Controller, distinct
+    from the existing FCV). Also confirms PN (pipe nominal pressure
+    rating, e.g. PN100/PN-30) is now excluded the same way DN already
+    was — it was showing up as a false "tag" on a real file."""
+
+    def test_hvpt_recognised(self):
+        from equipment_detection import _equip_prefix_from_tag, KNOWN_PREFIXES
+        self.assertEqual(_equip_prefix_from_tag("HVPT-301"), "HVPT")
+        self.assertIn("HVPT", KNOWN_PREFIXES)
+
+    def test_fc_recognised_distinct_from_fcv(self):
+        from equipment_detection import _equip_prefix_from_tag, KNOWN_PREFIXES
+        self.assertEqual(_equip_prefix_from_tag("FC-E-20A"), "FC")
+        self.assertEqual(_equip_prefix_from_tag("FCV-101"), "FCV")
+        self.assertIn("FC", KNOWN_PREFIXES)
+        self.assertIn("FCV", KNOWN_PREFIXES)
+
+    def test_pn_pressure_rating_excluded_like_dn(self):
+        from equipment_detection import _equip_prefix_from_tag
+        self.assertEqual(_equip_prefix_from_tag("PN100BSPP"), '')
+        self.assertEqual(_equip_prefix_from_tag("PN-30"), '')
 
 
 if __name__ == '__main__':

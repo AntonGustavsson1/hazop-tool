@@ -461,8 +461,12 @@ def _equip_prefix_from_tag(tag: str) -> str:
         m = re.match(r'^\d+([A-Z]{2,6})\d', s)
         return m.group(1) if m else ''
 
-    # Skip 'DN' (pipe nominal diameter — not an instrument code)
-    skip = {'DN'}
+    # Skip pipe spec codes that are never instrument/equipment tags: 'DN'
+    # (nominal diameter) and 'PN' (nominal pressure rating, e.g. PN16,
+    # PN100 — same DIN piping-standard family as DN; confirmed as a
+    # source of false "tags" like 'PN100BSPP'/'PN-30' on a real file,
+    # 2026-08-10, see NOTES.md).
+    skip = {'DN', 'PN'}
 
     # Build candidates: (leading_letters, embedded_letters) per part
     candidates = [(_leading(p), _embedded(p)) for p in parts if p]
@@ -492,8 +496,14 @@ def _equip_prefix_from_tag(tag: str) -> str:
         if len(lead) == 1 and lead in KNOWN_PREFIXES:
             return lead
 
-    # 6. Any leading letters from the first non-empty part
-    first = next((lead for lead, _ in candidates if lead), '')
+    # 6. Any leading letters from the first non-empty part — must also
+    # respect `skip`, unlike a plain truthiness check: without this,
+    # skip-listed codes like 'PN100BSPP' (pipe pressure rating, single
+    # glued word with no separator for steps 1-4 to catch) fell through
+    # to here and were returned anyway, unfiltered (2026-08-10, see
+    # NOTES.md — found via the same real-corpus sweep that added 'PN'
+    # to skip in the first place).
+    first = next((lead for lead, _ in candidates if lead and lead not in skip), '')
     if first:
         return first
     # A "prefix" must contain at least one letter to mean anything — this
@@ -502,6 +512,13 @@ def _equip_prefix_from_tag(tag: str) -> str:
     # as prefix "2019" and get treated as a valid equipment tag by callers
     # like _parse_tag's own last-resort branch (2026-08-10, see NOTES.md).
     fallback = parts[0] if parts else tag
+    # Also respect `skip` here — a skip-listed code with no separator for
+    # steps 1-4 to isolate (e.g. 'PN100BSPP') used to reach this point and
+    # come back as the ENTIRE glued string, worse than the bare code
+    # itself (2026-08-10, see NOTES.md).
+    lead0 = _leading(fallback)
+    if lead0 and lead0 in skip:
+        return ''
     return fallback if re.search(r'[A-Z]', fallback) else ''
 
 # ── Equipment prefix knowledge base ──────────────────────────────────────────
@@ -590,12 +607,20 @@ KNOWN_PREFIXES = {
     'PDI':  ('Differenstrycksmätare',            'Instrument / Sensor'),
     'PDT':  ('Differenstrycktransm.',            'Instrument / Sensor'),
     'PDIT': ('Differenstrycktransm. + indik.',   'Instrument / Sensor'),
+    # 2026-08-10, new-corpus review (see NOTES.md): compound hand-valve +
+    # pressure-transmitter tag, consistently instance-numbered (HVPT-001,
+    # HVPT-012, HVPT-022) on a real compressor-package P&ID.
+    'HVPT': ('Handventil m. tryckgivare (HVPT)', 'Instrument / Sensor'),
     # Instrument – Flöde
     'FI':   ('Flödesmätare (lokal)',             'Instrument / Sensor'),
     'FT':   ('Flödestransmitter',                'Instrument / Sensor'),
     'FIT':  ('Flödestransm. + indikering',       'Instrument / Sensor'),
     'FIC':  ('Flödesreglering',                  'Instrument / Sensor'),
     'FICA': ('Flödesreglering + larm',           'Instrument / Sensor'),
+    # 2026-08-10, new-corpus review: bare "FC" (Flow Controller, no "V")
+    # distinct from the existing FCV (Flödesreglerventil) — instance-
+    # numbered (FC-E-20A, FC-E-20B, FC-E-80) on a real file.
+    'FC':   ('Flödesregulator (FC)',             'Instrument / Sensor'),
     'FSH':  ('Högt flödesalarm',                 'Instrument / Sensor'),
     'FSL':  ('Lågt flödesalarm',                 'Instrument / Sensor'),
     'FQ':   ('Flödesmängdsmätare',               'Instrument / Sensor'),
@@ -689,6 +714,17 @@ KNOWN_PREFIXES = {
     'TA':   ('Temperaturlarm (TA)',              'Instrument / Sensor'),
 }
 
+# Short, extremely common English connector words that must never be
+# allowed to glue onto a following token via _spatial_combine()'s plain
+# inter-word-gap check (see the guard inside the function) — ordinary
+# prose text like "TO PRI-421" sits close enough together on a real P&ID
+# to otherwise fuse into a bogus tag candidate "TOPRI-421".
+_COMBINE_GLUE_WORD_STOPLIST = {
+    'TO', 'OF', 'IN', 'ON', 'AT', 'BY', 'OR', 'IS', 'AS', 'IF',
+    'AN', 'BE', 'DO', 'GO', 'NO', 'SO', 'UP', 'US', 'WE',
+}
+
+
 def _spatial_combine(words: list, gap_limit: float = 18.0) -> list:
     """Combine spatially adjacent word-tokens into candidate tag strings.
 
@@ -756,6 +792,19 @@ def _spatial_combine(words: list, gap_limit: float = 18.0) -> list:
 
             gap = nx0 - grp_x1
             is_sep = ntext.strip() in ('-', '.', '/', '_')
+
+            # A group that starts with a short common English connector
+            # word (e.g. "TO PRI-421" in ordinary sentence text) must not
+            # glue onto a following token via the plain gap check — only
+            # true tag sub-parts split by the PDF exporter should join
+            # this way. Confirmed on a real file (2026-08-10, see
+            # NOTES.md): "TO" + "PRI-421" (normal prose, tiny inter-word
+            # gap) fused into the bogus tag candidate "TOPRI-421" via this
+            # path. Still allowed via the is_sep path (a literal '-'/'.'
+            # token between them), and the starting word is still yielded
+            # on its own below regardless.
+            if group[0].strip().upper() in _COMBINE_GLUE_WORD_STOPLIST and not is_sep:
+                break
 
             # Combine if gap is small OR token is a separator char
             if gap <= gap_limit or is_sep:
@@ -1059,6 +1108,17 @@ def _parse_tag(text: str):
         return f"{code}-{area}.{num}", code
 
     # --- Last resort: extract prefix and use raw tag ---
+    # A real equipment tag always identifies a specific INSTANCE, which in
+    # every plant convention documented above means at least one digit
+    # somewhere (HV0063, PCV-101, GPA4, ...) — a purely alphabetic
+    # candidate reaching this last-resort branch is never a real tag, just
+    # an ordinary word. Confirmed via a real-corpus sweep (2026-08-10, see
+    # NOTES.md): without this guard, title-block/disclaimer words like
+    # "THIS", "CONFIDENTIAL", "REPRODUCTION", "NODE" were accepted as
+    # equipment tags across ~1500 distinct false "prefixes".
+    if not re.search(r'\d', text):
+        return None, None
+
     pfx = _equip_prefix_from_tag(text)
     if pfx and len(pfx) >= 2:
         return text, pfx
@@ -2310,10 +2370,16 @@ def _score_tag_word(raw: str):
         pfx = _equip_prefix_from_tag(candidate)
         if pfx and len(pfx) >= 2:
             return candidate, 2
-    # Any word with a recognisable 2+ letter prefix
-    pfx = _equip_prefix_from_tag(text)
-    if pfx and len(pfx) >= 2:
-        return text, 1
+    # Any word with a recognisable 2+ letter prefix — but only if it also
+    # has a digit somewhere (a real tag identifies a specific instance,
+    # see _parse_tag's identical guard/comment for the real-corpus
+    # evidence). Without this, an ordinary nearby word like "AND" or
+    # "THIS" (disclaimer/title-block text) could get returned as the
+    # tag label for an otherwise-correctly-found valve/pump shape.
+    if re.search(r'\d', text):
+        pfx = _equip_prefix_from_tag(text)
+        if pfx and len(pfx) >= 2:
+            return text, 1
     return None, 0
 
 
