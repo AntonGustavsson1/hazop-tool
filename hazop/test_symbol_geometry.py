@@ -1682,5 +1682,59 @@ class PipeTraceTests(unittest.TestCase):
                 f"traced point {(x, y)} must land inside the rotated page bounds")
 
 
+class ClusterSimilarityTests(unittest.TestCase):
+    """cluster_similarity()/find_cluster_at_point() — "Hitta liknande
+    symbol" (2026-08-10, see NOTES.md). Pure-geometry half of the
+    feature; the orchestration (find_similar_shapes) is tested in
+    test_regression.py."""
+
+    def _feats(self, **overrides):
+        base = {'aspect': 1.5, 'norm_size': 3.0, 'fold_ratio': 4.0,
+                'has_curve': False, 'has_diagonal': True, 'has_closed_or_filled': True}
+        base.update(overrides)
+        return base
+
+    def test_identical_features_score_1(self):
+        f = self._feats()
+        self.assertAlmostEqual(sg.cluster_similarity(f, dict(f)), 1.0)
+
+    def test_completely_different_scores_low(self):
+        a = self._feats(aspect=1.0, norm_size=1.0, fold_ratio=1.0,
+                        has_curve=False, has_diagonal=True, has_closed_or_filled=True)
+        b = self._feats(aspect=20.0, norm_size=40.0, fold_ratio=30.0,
+                        has_curve=True, has_diagonal=False, has_closed_or_filled=False)
+        self.assertLess(sg.cluster_similarity(a, b), 0.15)
+
+    def test_same_shape_traits_different_size_scores_moderately(self):
+        """Same boolean shape family, very different size — partial
+        credit, not a full match and not a total mismatch."""
+        a = self._feats(norm_size=2.0)
+        b = self._feats(norm_size=20.0)
+        sim = sg.cluster_similarity(a, b)
+        self.assertGreater(sim, 0.5)
+        self.assertLess(sim, 1.0)
+
+    def _cluster(self, bbox):
+        return {'bbox': bbox}
+
+    def test_find_cluster_at_point_returns_containing_cluster(self):
+        clusters = [self._cluster((0, 0, 10, 10)), self._cluster((20, 20, 30, 30))]
+        found = sg.find_cluster_at_point(clusters, 25, 25)
+        self.assertIs(found, clusters[1])
+
+    def test_find_cluster_at_point_falls_back_to_nearest(self):
+        clusters = [self._cluster((0, 0, 10, 10)), self._cluster((100, 100, 110, 110))]
+        found = sg.find_cluster_at_point(clusters, 12, 12)
+        self.assertIs(found, clusters[0])
+
+    def test_find_cluster_at_point_respects_max_distance(self):
+        clusters = [self._cluster((0, 0, 10, 10))]
+        found = sg.find_cluster_at_point(clusters, 1000, 1000, max_distance=50)
+        self.assertIsNone(found)
+
+    def test_find_cluster_at_point_empty_list_returns_none(self):
+        self.assertIsNone(sg.find_cluster_at_point([], 0, 0))
+
+
 if __name__ == '__main__':
     unittest.main()

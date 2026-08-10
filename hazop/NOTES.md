@@ -1021,6 +1021,24 @@ Radens utseende (🔧-ikon, fet stil, "tagg — typ"-text) ändras INTE — bara
 
 ---
 
+## "Hitta liknande symbol" — ny funktion (2026-08-10)
+
+**Rapport:** "det viktigaste är ju att du känner igen formerna på ventiler och annan utrustning. vi kommer dessutom utöka detta biblioteket tillsammans." → senare, direkt: "lägg in funktion hitta liknande symbol."
+
+**Vad den gör:** användaren högerklickar var som helst på P&ID:n (på en redan taggad symbol, en helt otaggad form, eller en tidigare avvisad kandidat) → "🔎 Hitta liknande symbol" → appen hittar vektorklustret på den positionen och rankar VARJE annat kluster i dokumentet efter geometrisk likhet mot det, med samma befintliga granskningsdialog (`EquipmentMarkerReviewDialog`, redan använd av "🎯 Hitta objekt på P&ID") för att bekräfta/döpa/spara resultaten — inget sparas automatiskt utan mänsklig bekräftelse, samma princip som resten av detekteringspipelinen.
+
+**Byggd på befintlig grund, inte från noll:** `symbol_geometry.cluster_features()` (bbox, aspect, norm_size, has_curve, has_diagonal, has_closed_or_filled, fold_ratio) fanns redan och används överallt annars i formdetekteringen — ny `cluster_similarity(ref, cand)` viktar dessa till en 0–1-poäng (booleska drag 55% av vikten — starkast, minst brusig signal för "samma SORTS form" — kontinuerliga drag 45%, förfinar inom det). Ny `find_cluster_at_point()` hittar vilket kluster en klickpunkt landar i (eller närmast, inom en gräns baserad på sidans textstorlek). Ny `equipment_detection.find_similar_shapes(pdf_doc, ref_page, ref_x, ref_y, ...)` orkestrerar: hittar referensklustret, jämför mot alla andra sidors kluster, returnerar upp till 50 bästa träffar, redan formade exakt som `EquipmentMarkerReviewDialog` förväntar sig (samma dict-nycklar som `find_valve_shapes` m.fl. redan producerar, med `link_method='similar'`).
+
+**Mätt, ärlig begränsning — inte gömd:** testat mot en riktig, mycket tät P&ID-sida (`Node 1.1 Tank and TCS two tanks with GR.pdf`, 7073 kluster på en enda sida). Av de 50 bäst rankade träffarna för en given ventil-referens var bara ~20–40% andra genuina ventilformer — resten var andra former som råkade dela liknande grovmätta geometriska drag (rimligt på en så extremt tät sida, men en verklig, uppmätt precisionsgräns, inte en gissning). Eftersom INGET sparas utan att gå genom granskningsdialogen är detta hanterbart (användaren kryssar bort de uppenbart fel), men det är inte ett högprecisionsverktyg på hårt belastade ritningar i sitt nuvarande skick — samma "första version, inte slutgiltig"-status som `bowtie_score`s egna trösklar redan har i den här koden.
+
+**Andra medvetna begränsningar i denna första version:**
+- **Bara vektordata** — precis som all annan formdetektering i appen bygger `find_similar_shapes` uteslutande på `extract_primitives()`. De tre helt rasteriserade filerna som redan hittats (`146-00-000-010-PI_Instrumentnummer.pdf` m.fl.) ger tomt resultat, inte ett fel — en bildbaserad (pixelnivå) variant för sådana sidor är ett separat, inte påbörjat projekt.
+- **Synkron, ingen bakgrundstråd** — till skillnad från de flertrådade skann-/analysflödena kör sökningen på UI-tråden med bara en väntemarkör som feedback, ingen avbryt-knapp, ingen sidvis progress. Bedömt acceptabelt för en första version eftersom en enskild klick-och-sök normalt körs mot ett specifikt intresseområde, inte rutinmässigt över ett helt stort dokument — värt att ompröva om det antagandet visar sig fel i praktiken.
+
+**Test:** `ClusterSimilarityTests` (7, test_symbol_geometry.py — ren geometri: identiska/olika/delvis-lika egenskaper, klick-i-kluster/närmaste-kluster/max-avstånd). `FindSimilarShapesTests` (6, test_regression.py — hittar identisk form på riktig syntetisk PDF, resultatform matchar granskningsdialogens kontrakt exakt, utesluter referensklustret själv, sorterat fallande, tomt resultat för sida utan vektordata, tak på 50 resultat). 3 UI-kopplingstester i `ObjectMenuAndToolbarButtonsTests` (varnar utan öppen P&ID, visar info när inget hittas, öppnar granskningsdialogen och laddar om vid bekräftelse). Alla 16 nya tester verifierade via `git stash`/`git stash pop` att de genuint fångar avsaknaden av implementationen. Full svit: `python -m unittest test_regression test_symbol_geometry` — 443/443 gröna.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **OCR-positioner är approximativa** — x,y-koordinater från OCR stämmer inte perfekt med PDF-koordinater vid hög zoom. Markörer kan hamna något fel.

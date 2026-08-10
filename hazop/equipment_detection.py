@@ -1625,6 +1625,76 @@ def detect_equipment_symbols(pdf_doc, requests, min_confidence=0.3):
     return results
 
 
+def find_similar_shapes(pdf_doc, ref_page, ref_x, ref_y, pages=None, min_similarity=0.6,
+                        comp_type='', progress_callback=None):
+    """"Hitta liknande symbol" (2026-08-10, see NOTES.md): given a
+    reference point the user picked (ref_page/ref_x/ref_y — anywhere on
+    the P&ID, tagged or not, already a known equipment marker or not),
+    find the vector cluster there and rank every OTHER cluster in
+    `pages` (default: the whole document) by symbol_geometry's
+    cluster_similarity() against it.
+
+    This is the vector/geometry half of the feature — it only ever sees
+    what extract_primitives() can find, so a page with zero vector data
+    (a scanned/rasterized page — see NOTES.md, three such files found in
+    a 2026-08-10 corpus review) always returns []. A pixel/image-based
+    fallback for those pages is a separate, not-yet-built undertaking.
+
+    Returns a list of dicts already shaped for EquipmentMarkerReviewDialog
+    (pid_viewer.py): {tag: '', page, comp_type, x, y, outline,
+    link_method: 'similar', tag_status: 'untagged', temporary_id,
+    detection_confidence: <similarity 0..1>}, sorted by similarity
+    descending, capped to the 50 best matches (a real symbol library
+    match is meant to surface a handful of candidates for human review,
+    not repaint the whole document — see NOTES.md's own "no silent caps"
+    convention: this one isn't silent, it's documented right here).
+    comp_type, if given (e.g. the reference's own already-known type),
+    is copied onto every result row so the review dialog's Typ column
+    isn't just blank for every hit.
+    """
+    if not HAS_PYMUPDF or pdf_doc is None:
+        return []
+    if pages is None:
+        pages = range(pdf_doc.page_count)
+    pages = list(pages)
+
+    ref_fitz_page = pdf_doc[ref_page]
+    ref_clusters = symbol_geometry.find_symbol_clusters(ref_fitz_page, min_confidence=0.0)
+    ref_scale = symbol_geometry.dominant_text_size(ref_fitz_page)
+    ref_cluster = symbol_geometry.find_cluster_at_point(ref_clusters, ref_x, ref_y,
+                                                         max_distance=ref_scale * 3)
+    if ref_cluster is None:
+        return []
+
+    candidates = []
+    total = len(pages)
+    for i, page_num in enumerate(pages):
+        if progress_callback:
+            progress_callback(page_num, total, f"Sida {page_num + 1}/{total} — jämför symboler…")
+        clusters = (ref_clusters if page_num == ref_page
+                   else symbol_geometry.find_symbol_clusters(pdf_doc[page_num], min_confidence=0.0))
+        for c in clusters:
+            if page_num == ref_page and c is ref_cluster:
+                continue
+            sim = symbol_geometry.cluster_similarity(ref_cluster, c)
+            if sim < min_similarity:
+                continue
+            x0, y0, x1, y1 = c['bbox']
+            candidates.append((sim, page_num, (x0 + x1) / 2, (y0 + y1) / 2, c['outline']))
+
+    candidates.sort(key=lambda t: -t[0])
+    results = []
+    for i, (sim, page_num, x, y, outline) in enumerate(candidates[:50]):
+        results.append({
+            'tag': '', 'page': page_num, 'comp_type': comp_type,
+            'x': x, 'y': y, 'outline': outline,
+            'link_method': 'similar', 'tag_status': 'untagged',
+            'temporary_id': f'SIMILAR-{page_num}-{i}',
+            'detection_confidence': sim,
+        })
+    return results
+
+
 def find_valve_shapes(pdf_doc, pages=None, min_bowtie_score=0.5, progress_callback=None):
     """Scan pages for bow-tie-shaped (valve) symbols, independent of
     whether a tag is already known nearby.

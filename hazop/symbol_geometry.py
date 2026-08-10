@@ -458,6 +458,69 @@ def cluster_features(primitives, index_group, page_text_scale=10.0):
     }
 
 
+# Weight given to each cluster_features() key in cluster_similarity() —
+# the three boolean shape traits (does it have a curve/diagonal/closed
+# loop at all) carry the most weight since they're the strongest, least
+# noisy signal of "this is geometrically the same KIND of symbol"; the
+# three continuous ones refine within that (same-shaped things that are
+# a very different size or a very different aspect ratio are probably
+# not the same symbol either).
+_SIMILARITY_WEIGHTS = {
+    'has_curve': 0.20, 'has_diagonal': 0.20, 'has_closed_or_filled': 0.15,
+    'aspect': 0.20, 'norm_size': 0.15, 'fold_ratio': 0.10,
+}
+
+
+def cluster_similarity(ref_feats, cand_feats):
+    """0..1 similarity between two clusters' cluster_features() dicts —
+    used by "Hitta liknande symbol" (2026-08-10, see NOTES.md) to rank
+    candidates against a user-picked reference shape.
+
+    Boolean features (has_curve/has_diagonal/has_closed_or_filled)
+    contribute their full weight on an exact match, zero otherwise.
+    Continuous features (aspect/norm_size/fold_ratio) contribute a
+    weight scaled by how close the two values are relative to their own
+    magnitude (1.0 - relative_difference, floored at 0) — this makes the
+    same absolute gap matter less for two large symbols than for two
+    tiny ones, consistent with how norm_size itself is already scale-
+    normalized against the page's own text size."""
+    score = 0.0
+    for key in ('has_curve', 'has_diagonal', 'has_closed_or_filled'):
+        if ref_feats[key] == cand_feats[key]:
+            score += _SIMILARITY_WEIGHTS[key]
+    for key in ('aspect', 'norm_size', 'fold_ratio'):
+        a, b = ref_feats[key], cand_feats[key]
+        denom = max(a, b, 0.01)
+        closeness = max(0.0, 1.0 - abs(a - b) / denom)
+        score += _SIMILARITY_WEIGHTS[key] * closeness
+    return score
+
+
+def find_cluster_at_point(clusters, x, y, max_distance=None):
+    """Return the cluster (from find_symbol_clusters()'s result list)
+    whose bbox contains (x, y), or — if none does — the one whose bbox
+    CENTER is nearest, same "click near enough" tolerance the rest of
+    the P&ID click-to-place flows already use. Returns None for an
+    empty cluster list, or if max_distance is given and the nearest
+    cluster's center is further than that.
+    """
+    if not clusters:
+        return None
+    for c in clusters:
+        x0, y0, x1, y1 = c['bbox']
+        if x0 <= x <= x1 and y0 <= y <= y1:
+            return c
+
+    def _center_dist(c):
+        x0, y0, x1, y1 = c['bbox']
+        return math.hypot((x0 + x1) / 2 - x, (y0 + y1) / 2 - y)
+
+    nearest = min(clusters, key=_center_dist)
+    if max_distance is not None and _center_dist(nearest) > max_distance:
+        return None
+    return nearest
+
+
 def _sample_primitive_points(prim, n=20):
     """Sample n evenly-spaced points along a primitive's extent, used for
     silhouette-profile analysis (bowtie_score). A line/curve's two

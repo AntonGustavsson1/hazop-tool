@@ -549,6 +549,7 @@ class EquipmentMarkerReviewDialog(QDialog):
         'contain':   '📍 Vidrör symbol',
         'nearest':   '≈ Närmaste symbol',
         'shape':     '🦋 Formigenkänning',
+        'similar':   '🔎 Liknande symbol',
         'none':      '— Ingen symbol hittad',
         'not_found': '⚠ Tagg ej hittad på sidan',
     }
@@ -4666,6 +4667,9 @@ class PIDGraphicsView(QGraphicsView):
         menu.addAction("🔧 Objekt",
                        partial(self.context_action.emit, 'equipment', sp, self.current_page))
         menu.addSeparator()
+        menu.addAction("🔎 Hitta liknande symbol",
+                       partial(self.context_action.emit, 'find_similar', sp, self.current_page))
+        menu.addSeparator()
         menu.addAction("🔀 Risk Scenario",
                        partial(self.context_action.emit, 'risk_scenario', sp, self.current_page))
         menu.exec(global_pos)
@@ -8625,9 +8629,51 @@ class PIDPanel(QWidget):
                 self.viewer.pdf_doc, page, pdf_x, pdf_y, radius=100) \
                 if self.viewer.pdf_doc else ''
             self.equipment_placement_requested.emit(tag or '', pos, page, None)
+        elif action == 'find_similar':
+            self._find_similar_symbol(pos, page)
         elif action == 'risk_scenario':
             node_id = self._active_node_id or 0
             self.risk_scenario_requested.emit(node_id, pos, page)
+
+    def _find_similar_symbol(self, pos, page):
+        """🔎 Hitta liknande symbol (2026-08-10, see NOTES.md) — the click
+        point becomes the reference shape; every other vector-drawn
+        cluster in the document is scored against it
+        (equipment_detection.find_similar_shapes / symbol_geometry.
+        cluster_similarity) and surfaced through the same
+        EquipmentMarkerReviewDialog "🎯 Hitta objekt på P&ID" already
+        uses, so confirming/renaming/saving works identically.
+
+        Synchronous (no background worker, unlike the multi-page tag
+        scan/shape-hunt flows) — a real, documented limitation: on a
+        large, dense document this can take a while with only a wait
+        cursor for feedback, no cancel button and no per-page progress.
+        Acceptable for a first version since a single point-and-click
+        search of THIS kind is normally run against a specific area of
+        interest, not routinely over an entire large document like a
+        full "Analysera P&ID" — worth revisiting if that assumption
+        turns out wrong in practice."""
+        if not HAS_PYMUPDF or self.viewer.pdf_doc is None:
+            QMessageBox.warning(self, "Ingen P&ID", "Öppna en P&ID-fil först.")
+            return
+        pdf_x, pdf_y = self.viewer.scene_to_pdf(pos)
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        try:
+            results = equipment_detection.find_similar_shapes(
+                self.viewer.pdf_doc, page, pdf_x, pdf_y)
+        finally:
+            self.unsetCursor()
+        if not results:
+            QMessageBox.information(
+                self, "Inget liknande hittat",
+                "Hittade ingen symbol att jämföra med på den positionen, eller inga "
+                "tillräckligt lika symboler någon annanstans i dokumentet.\n\n"
+                "Fungerar bara på sidor med vektorritad geometri — en skannad "
+                "(rasteriserad) sida har ingen sådan data att jämföra.")
+            return
+        review_dlg = EquipmentMarkerReviewDialog(results, self.db, parent=self, rejected=[])
+        if review_dlg.exec():
+            self.reload_overlays()
 
     def _draw_tag_highlights(self):
         """Highlight complete tag numbers found on the current PDF page.

@@ -4200,6 +4200,154 @@ class BowtieValveDetectionTests(unittest.TestCase):
         self.assertIn('sluten', reason2.lower())
 
 
+class FindSimilarShapesTests(unittest.TestCase):
+    """find_similar_shapes() (equipment_detection.py) — "Hitta liknande
+    symbol" (2026-08-10, see NOTES.md): user picks a reference point,
+    every other vector cluster in the document gets ranked against it
+    via symbol_geometry.cluster_similarity()."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_findsimilar_test_")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _two_bowties_and_a_rect_pdf(self):
+        """Two IDENTICAL bow-tie shapes (well separated) plus one plainly
+        different long rectangle, on one page."""
+        import fitz
+        path = os.path.join(self._tmpdir, "similar.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=400, height=400)
+        shape = page.new_shape()
+
+        def _bowtie(cx, cy):
+            shape.draw_polyline([fitz.Point(cx - 10, cy - 10), fitz.Point(cx - 10, cy + 10),
+                                 fitz.Point(cx, cy)])
+            shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+            shape.draw_polyline([fitz.Point(cx + 10, cy - 10), fitz.Point(cx + 10, cy + 10),
+                                 fitz.Point(cx, cy)])
+            shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+
+        _bowtie(60, 60)     # reference
+        _bowtie(300, 300)   # identical, far away
+        shape.draw_rect(fitz.Rect(60, 300, 260, 320))   # plainly different (long, no diagonals)
+        shape.finish(color=(0, 0, 0), width=1)
+        shape.commit()
+        doc.save(path)
+        doc.close()
+        return path
+
+    def test_finds_identical_shape_elsewhere_on_page(self):
+        import fitz
+        from equipment_detection import find_similar_shapes
+        doc = fitz.open(self._two_bowties_and_a_rect_pdf())
+        try:
+            results = find_similar_shapes(doc, ref_page=0, ref_x=60, ref_y=60,
+                                          pages=[0], min_similarity=0.5)
+        finally:
+            doc.close()
+        self.assertTrue(results, "the identical bow-tie elsewhere on the page must be found")
+        best = results[0]
+        self.assertAlmostEqual(best['x'], 300, delta=5)
+        self.assertAlmostEqual(best['y'], 300, delta=5)
+
+    def test_result_shape_matches_review_dialog_contract(self):
+        """EquipmentMarkerReviewDialog._populate()/_save() index these
+        dict keys directly — a typo here would only surface as a KeyError
+        deep inside dialog code, not at the call site."""
+        import fitz
+        from equipment_detection import find_similar_shapes
+        doc = fitz.open(self._two_bowties_and_a_rect_pdf())
+        try:
+            results = find_similar_shapes(doc, ref_page=0, ref_x=60, ref_y=60,
+                                          pages=[0], min_similarity=0.5, comp_type='Ventil')
+        finally:
+            doc.close()
+        self.assertTrue(results)
+        r = results[0]
+        for key in ('tag', 'page', 'comp_type', 'x', 'y', 'outline',
+                   'link_method', 'tag_status', 'temporary_id', 'detection_confidence'):
+            self.assertIn(key, r)
+        self.assertEqual(r['tag'], '')
+        self.assertEqual(r['comp_type'], 'Ventil')
+        self.assertEqual(r['link_method'], 'similar')
+        self.assertEqual(r['tag_status'], 'untagged')
+        self.assertTrue(0.0 <= r['detection_confidence'] <= 1.0)
+
+    def test_excludes_reference_cluster_itself(self):
+        import fitz
+        from equipment_detection import find_similar_shapes
+        doc = fitz.open(self._two_bowties_and_a_rect_pdf())
+        try:
+            results = find_similar_shapes(doc, ref_page=0, ref_x=60, ref_y=60,
+                                          pages=[0], min_similarity=0.0)
+        finally:
+            doc.close()
+        for r in results:
+            self.assertFalse(abs(r['x'] - 60) < 2 and abs(r['y'] - 60) < 2,
+                "the reference shape must not be returned as a match for itself")
+
+    def test_sorted_by_similarity_descending(self):
+        import fitz
+        from equipment_detection import find_similar_shapes
+        doc = fitz.open(self._two_bowties_and_a_rect_pdf())
+        try:
+            results = find_similar_shapes(doc, ref_page=0, ref_x=60, ref_y=60,
+                                          pages=[0], min_similarity=0.0)
+        finally:
+            doc.close()
+        sims = [r['detection_confidence'] for r in results]
+        self.assertEqual(sims, sorted(sims, reverse=True))
+
+    def test_returns_empty_for_page_with_no_vector_data(self):
+        """A fully rasterized/scanned page (no vector drawings at all,
+        see NOTES.md's 2026-08-10 corpus review) has nothing for
+        extract_primitives() to find — must return [] cleanly, not
+        raise, regardless of where the user clicked."""
+        import fitz
+        from equipment_detection import find_similar_shapes
+        path = os.path.join(self._tmpdir, "blank.pdf")
+        doc = fitz.open()
+        doc.new_page(width=200, height=200)   # no shapes drawn at all
+        doc.save(path)
+        doc.close()
+
+        doc = fitz.open(path)
+        try:
+            results = find_similar_shapes(doc, ref_page=0, ref_x=100, ref_y=100, pages=[0])
+        finally:
+            doc.close()
+        self.assertEqual(results, [])
+
+    def test_caps_at_50_results(self):
+        import fitz
+        from equipment_detection import find_similar_shapes
+        path = os.path.join(self._tmpdir, "many.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=2000, height=2000)
+        shape = page.new_shape()
+        for i in range(60):
+            cx, cy = 40 + (i % 10) * 60, 40 + (i // 10) * 60
+            shape.draw_polyline([fitz.Point(cx - 10, cy - 10), fitz.Point(cx - 10, cy + 10),
+                                 fitz.Point(cx, cy)])
+            shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+            shape.draw_polyline([fitz.Point(cx + 10, cy - 10), fitz.Point(cx + 10, cy + 10),
+                                 fitz.Point(cx, cy)])
+            shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+        shape.commit()
+        doc.save(path)
+        doc.close()
+
+        doc = fitz.open(path)
+        try:
+            results = find_similar_shapes(doc, ref_page=0, ref_x=40, ref_y=40,
+                                          pages=[0], min_similarity=0.0)
+        finally:
+            doc.close()
+        self.assertLessEqual(len(results), 50)
+
+
 class EquipmentAnalysisWorkerTests(unittest.TestCase):
     """EquipmentAnalysisWorker (pid_viewer.py) — the QThread behind
     EquipmentPanel._autodetect(). Modelled on ConnectorAnalyzer: must
@@ -6357,6 +6505,44 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
         tag, pos, page = captured[0]
         self.assertEqual(page, 2)
         self.assertEqual(pos, pt)
+
+    def test_context_menu_find_similar_action_warns_with_no_pid_open(self):
+        """"🔎 Hitta liknande symbol" (2026-08-10, see NOTES.md) routes to
+        _find_similar_symbol — with no PDF loaded (this fixture's
+        default) it must warn, not crash."""
+        from PyQt6.QtCore import QPointF
+        from PyQt6.QtWidgets import QMessageBox
+        with unittest.mock.patch.object(QMessageBox, 'warning') as mock_warn:
+            self.panel._on_context_action('find_similar', QPointF(5, 5), 0)
+        mock_warn.assert_called_once()
+
+    def test_find_similar_symbol_shows_info_when_nothing_found(self):
+        from PyQt6.QtCore import QPointF
+        from PyQt6.QtWidgets import QMessageBox
+        self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
+        with unittest.mock.patch('pid_viewer.equipment_detection.find_similar_shapes',
+                                 return_value=[]) as mock_find, \
+             unittest.mock.patch.object(QMessageBox, 'information') as mock_info:
+            self.panel._on_context_action('find_similar', QPointF(5, 5), 0)
+        mock_find.assert_called_once()
+        mock_info.assert_called_once()
+
+    def test_find_similar_symbol_opens_review_dialog_and_reloads_on_accept(self):
+        from PyQt6.QtCore import QPointF
+        fake_results = [{'tag': '', 'page': 0, 'comp_type': '', 'x': 1.0, 'y': 1.0,
+                         'outline': [], 'link_method': 'similar', 'tag_status': 'untagged',
+                         'temporary_id': 'SIMILAR-0-0', 'detection_confidence': 0.9}]
+        self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
+        with unittest.mock.patch('pid_viewer.equipment_detection.find_similar_shapes',
+                                 return_value=fake_results), \
+             unittest.mock.patch('pid_viewer.EquipmentMarkerReviewDialog') as mock_dlg_cls, \
+             unittest.mock.patch.object(self.panel, 'reload_overlays') as mock_reload:
+            mock_dlg_cls.return_value.exec.return_value = 1   # QDialog.Accepted
+            self.panel._on_context_action('find_similar', QPointF(5, 5), 0)
+        mock_dlg_cls.assert_called_once()
+        args, kwargs = mock_dlg_cls.call_args
+        self.assertEqual(args[0], fake_results)
+        mock_reload.assert_called_once()
 
 
 class AutoConsequenceOnCauseAddTests(unittest.TestCase):
