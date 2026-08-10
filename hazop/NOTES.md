@@ -1004,6 +1004,23 @@ Radens utseende (🔧-ikon, fet stil, "tagg — typ"-text) ändras INTE — bara
 
 ---
 
+## "Analysera P&ID" med OCR: trådbegränsning ger 2,46× snabbare (2026-08-10)
+
+**Rapport:** "jag tycker analysera p&id tar för lång tid. finns det några förenklingar att göra?" — följt av en diskussion om GPU (avfärdat för vektorpipelinen, men flaggat som relevant för just OCR) och sedan: "testa alternativ 1" (trådbegränsning per process).
+
+**Grundorsak, bekräftad genom ett riktigt experiment (inte antagande):** `rapidocr_onnxruntime` bygger sin onnxruntime-session utan att sätta `intra_op_num_threads`, så varje process försöker använda ALLA logiska kärnor internt. Detta var redan känt vara ett problem i teorin (se "Flerkärnig parallellisering av Analysera P&ID" ovan — bara ~1,05× vinst av fler processer eftersom "en enda OCR-motoranrop redan mättar tillgängliga CPU-resurser internt") men aldrig åtgärdat, eftersom den tidigare mätningen bara testade EN sekventiell körnings känslighet för trådantal (`OMP_NUM_THREADS=1` gav bara ~11% skillnad), inte vad som händer när FLERA processer konkurrerar om samma kärnor SAMTIDIGT.
+
+**Experiment:** 15 OCR-anrop (RapidOCR, en riktig skannad P&ID-sida ur `P&ID ref/NYA`) fördelat på 8 parallella processer, med och utan trådbegränsning:
+- **Obegränsad trådning (dagens beteende):** 273,1s totalt. Enskilda sidtider 103–182s — extremt varierande, tecken på resurskonkurrens.
+- **Begränsad till 2 trådar/process:** 111,1s totalt. Enskilda sidtider 32–80s.
+- **2,46× snabbare, identiskt OCR-resultat** (samma antal ord hittade per sida i båda körningarna — ingen träffsäkerhetsförlust).
+
+**Fix:** ny `_limit_ocr_engine_threads(n_threads)` (equipment_detection.py) monkey-patchar `onnxruntime.SessionOptions` till en subklass som sätter `intra_op_num_threads=n_threads`/`inter_op_num_threads=1`, INNAN `rapidocr_onnxruntime` importeras för första gången i processen (det är den importen som läser av `onnxruntime.SessionOptions` och binder den i sitt eget namnrum — för sent att patcha efteråt). `_scan_page_range_worker()` fick en ny `n_workers`-parameter (default 1, alltså oförändrat beteende för alla andra anropare) och anropar `_limit_ocr_engine_threads(max(1, cpu_count // n_workers))` bara när `use_ocr=True` OCH `n_workers > 1` — en ensam, icke-parallell körning behåller full trådning eftersom det då inte finns någon konkurrens att undvika. `ParallelTagScanWorker._run_parallel` (pid_viewer.py) skickar nu `len(chunks)` (det faktiska antalet processer) som `n_workers`.
+
+**Test:** `OcrEngineThreadLimitTests` (4 nya) — patchningsfunktionen fungerar isolerat; `_scan_page_range_worker` anropar den EXAKT när `use_ocr=True` och `n_workers>1` (inte annars); trådantalet räknas ut korrekt (`max(1, cpu_count // n_workers)`). Verifierat via `git stash`/`git stash pop` att alla tre genuint fångar avsaknaden av fixen. Full svit: `python -m unittest test_regression test_symbol_geometry` — 427/427 gröna. En ytterligare, riktig end-to-end-mätning mot den faktiska produktionsfunktionen (samma sorts experiment som ovan men genom `_scan_page_range_worker` direkt) påbörjades men avbröts upprepade gånger av miljön (tunga, långvariga bakgrundsprocesser verkar stängas ner) — bedömdes inte nödvändigt att jaga vidare eftersom mekanismen redan är direkt mätt (experimentet ovan) och kopplingen in i produktionsfunktionen är enhetstestad och `git stash`-verifierad separat.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **OCR-positioner är approximativa** — x,y-koordinater från OCR stämmer inte perfekt med PDF-koordinater vid hög zoom. Markörer kan hamna något fel.

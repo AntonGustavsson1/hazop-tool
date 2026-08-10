@@ -2528,7 +2528,8 @@ class ParallelTagScanWorker(QThread):
             try:
                 futures = [executor.submit(
                     equipment_detection._scan_page_range_worker,
-                    self._pdf_path, chunk, self._use_ocr, self._ocr_engine, progress_queue)
+                    self._pdf_path, chunk, self._use_ocr, self._ocr_engine, progress_queue,
+                    len(chunks))
                     for chunk in chunks]
                 pending = set(futures)
                 while pending:

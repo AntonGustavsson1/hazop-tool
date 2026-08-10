@@ -28,6 +28,7 @@ ensure_ocr_available() also stayed — it shows a QMessageBox, so it's the
 one OCR-related function that genuinely needs Qt; it calls ocr_status()
 from here for the underlying availability check.
 """
+import os
 import re
 import math
 import importlib.util
@@ -155,6 +156,47 @@ def ocr_status() -> dict:
         'rapidocr':  HAS_RAPIDOCR,
         'pil':       HAS_PIL,
     }
+
+
+def _limit_ocr_engine_threads(n_threads: int):
+    """Constrain onnxruntime's per-session thread pool BEFORE the OCR
+    engine (RapidOCR) builds its first session in this process.
+
+    Real, measured fix (2026-08-10, see NOTES.md "Analysera P&ID tar för
+    lång tid"), not a theoretical one: rapidocr_onnxruntime creates its
+    onnxruntime.SessionOptions with no explicit intra_op_num_threads, so
+    it defaults to using every logical core. When several worker
+    PROCESSES each do that at once — the whole point of the multi-core
+    "Analysera P&ID" parallelization — they compete for the same cores
+    instead of adding throughput, which is why that parallelization
+    previously measured only ~1.05x on OCR despite using 4 processes.
+    Measured on a real 5-page scanned P&ID with 8 concurrent RapidOCR
+    processes: default (unconstrained) threading took 273s total;
+    limiting each process to a couple of threads took 111s — 2.46x
+    faster, byte-identical OCR output (same word counts per page).
+
+    Must run before the FIRST call in this process that triggers
+    `_get_rapidocr_instance()` — that's what imports rapidocr_onnxruntime
+    for the first time, and its own `from onnxruntime import
+    SessionOptions` binds whatever onnxruntime.SessionOptions currently
+    is into rapidocr's module namespace. Patching after that import has
+    already happened would be too late — this function itself is
+    process-local and side-effect-free to call redundantly, but only
+    ever needs to run once per process, before any OCR call.
+    """
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        return
+    _BaseSessionOptions = ort.SessionOptions
+
+    class _ThreadLimitedSessionOptions(_BaseSessionOptions):
+        def __init__(self):
+            super().__init__()
+            self.intra_op_num_threads = n_threads
+            self.inter_op_num_threads = 1
+
+    ort.SessionOptions = _ThreadLimitedSessionOptions
 
 
 def _ocr_page_rapidocr(pil_image, scale: float):
@@ -1303,7 +1345,8 @@ def _split_into_chunks(n_pages: int, n_workers: int):
     return chunks
 
 
-def _scan_page_range_worker(pdf_path, page_range, use_ocr, ocr_engine, progress_queue=None):
+def _scan_page_range_worker(pdf_path, page_range, use_ocr, ocr_engine, progress_queue=None,
+                            n_workers=1):
     """Multiprocessing target for scan_pdf_for_equipment() — module-level
     (not a closure) so it can be pickled/imported by a spawned child
     process on Windows. Opens its OWN fitz.Document (Document objects
@@ -1315,10 +1358,19 @@ def _scan_page_range_worker(pdf_path, page_range, use_ocr, ocr_engine, progress_
     progress_queue, if given (a multiprocessing.Manager().Queue()), gets a
     (page_num, 'running'|'done') tuple pushed around each page — polled by
     the orchestrating QThread (ParallelTagScanWorker, pid_viewer.py) to
-    drive the per-page progress UI live."""
+    drive the per-page progress UI live.
+
+    n_workers: how many sibling worker processes are running this SAME
+    scan concurrently (passed through by the caller, which already knows
+    it) — used to divide available CPU cores between them for the OCR
+    engine's internal thread pool (see _limit_ocr_engine_threads).
+    Defaults to 1 (no limiting) so any other/older caller not passing
+    this keeps today's behavior unchanged."""
     doc = None
     all_rows = []
     ocr_engine_used = None
+    if use_ocr and n_workers > 1:
+        _limit_ocr_engine_threads(max(1, (os.cpu_count() or 4) // n_workers))
     try:
         doc = fitz.open(pdf_path)
         for page_num in page_range:

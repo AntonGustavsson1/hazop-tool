@@ -5560,6 +5560,61 @@ class PickWorkerCountTests(unittest.TestCase):
         self.assertLessEqual(n, 2)
 
 
+class OcrEngineThreadLimitTests(unittest.TestCase):
+    """'jag tycker analysera p&id tar för lång tid' (2026-08-10, see
+    NOTES.md) — investigated and measured: RapidOCR builds its
+    onnxruntime session with no explicit thread limit, so it defaults to
+    every logical core. When several worker PROCESSES each do that
+    concurrently (the whole point of parallelizing 'Analysera P&ID'),
+    they compete for the same cores instead of adding throughput —
+    confirmed by direct experiment (8 concurrent RapidOCR processes:
+    273s unconstrained vs 111s limited to a couple of threads each,
+    2.46x, identical OCR output). _limit_ocr_engine_threads() fixes this
+    for real."""
+
+    def setUp(self):
+        import onnxruntime as ort
+        self._orig_session_options = ort.SessionOptions
+
+    def tearDown(self):
+        import onnxruntime as ort
+        ort.SessionOptions = self._orig_session_options
+
+    def test_limit_ocr_engine_threads_patches_session_options(self):
+        from equipment_detection import _limit_ocr_engine_threads
+        import onnxruntime as ort
+        _limit_ocr_engine_threads(2)
+        so = ort.SessionOptions()
+        self.assertEqual(so.intra_op_num_threads, 2)
+        self.assertEqual(so.inter_op_num_threads, 1)
+        self.assertTrue(issubclass(ort.SessionOptions, self._orig_session_options))
+
+    def test_scan_page_range_worker_limits_only_when_multiple_workers_and_ocr(self):
+        from equipment_detection import _scan_page_range_worker
+        with unittest.mock.patch('equipment_detection._limit_ocr_engine_threads') as mock_limit, \
+             unittest.mock.patch('equipment_detection._scan_one_page_native', return_value=[]), \
+             unittest.mock.patch('equipment_detection._scan_one_page_ocr', return_value=([], None)), \
+             unittest.mock.patch('fitz.open'):
+            _scan_page_range_worker('fake.pdf', [0], use_ocr=False, ocr_engine='auto', n_workers=8)
+            mock_limit.assert_not_called()
+
+            _scan_page_range_worker('fake.pdf', [0], use_ocr=True, ocr_engine='auto', n_workers=1)
+            mock_limit.assert_not_called()
+
+            _scan_page_range_worker('fake.pdf', [0], use_ocr=True, ocr_engine='auto', n_workers=8)
+            mock_limit.assert_called_once()
+
+    def test_scan_page_range_worker_divides_cores_by_worker_count(self):
+        from equipment_detection import _scan_page_range_worker
+        with unittest.mock.patch('equipment_detection._limit_ocr_engine_threads') as mock_limit, \
+             unittest.mock.patch('equipment_detection._scan_one_page_native', return_value=[]), \
+             unittest.mock.patch('equipment_detection._scan_one_page_ocr', return_value=([], None)), \
+             unittest.mock.patch('equipment_detection.os.cpu_count', return_value=14), \
+             unittest.mock.patch('fitz.open'):
+            _scan_page_range_worker('fake.pdf', [0], use_ocr=True, ocr_engine='auto', n_workers=8)
+        mock_limit.assert_called_once_with(1)   # max(1, 14 // 8)
+
+
 class ShouldParallelizeTests(unittest.TestCase):
     def test_below_threshold_stays_sequential(self):
         from pid_viewer import _should_parallelize
