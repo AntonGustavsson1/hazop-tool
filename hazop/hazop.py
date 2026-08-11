@@ -2261,6 +2261,32 @@ class Database:
                 safeguard_id INTEGER NOT NULL,
                 PRIMARY KEY (severity_id, safeguard_id)
             );
+            -- Deltagarmatris (2026-08-11, user request: "byggde en till
+            -- flik med deltagare istället där man definerar förnamn,
+            -- efternamn, roll på y axel och analystillfälen på x axeln
+            -- så det blir en matris") — replaces the old free-text
+            -- 'project_participants' app_config field. sort_order on
+            -- both participants and sessions mirrors the reorderability
+            -- convention used by consequence_categories/standard_deviations
+            -- (no reorder UI yet, but the column is ready for it).
+            CREATE TABLE IF NOT EXISTS participants (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                first_name TEXT NOT NULL DEFAULT '',
+                last_name  TEXT NOT NULL DEFAULT '',
+                role       TEXT DEFAULT '',
+                sort_order INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS analysis_sessions (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                label      TEXT NOT NULL DEFAULT '',
+                sort_order INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS participant_attendance (
+                participant_id INTEGER NOT NULL REFERENCES participants(id) ON DELETE CASCADE,
+                session_id     INTEGER NOT NULL REFERENCES analysis_sessions(id) ON DELETE CASCADE,
+                attended       INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (participant_id, session_id)
+            );
         """)
 
         # Seed missing deviation_id for existing causes
@@ -3064,6 +3090,74 @@ class Database:
     def delete_category(self, id_):
         self.conn.execute("DELETE FROM consequence_categories WHERE id=?", (id_,))
         self.commit()
+
+    # ── Deltagarmatris: participants, analysis sessions, attendance ─────────────
+    # (2026-08-11, replaces the old free-text 'project_participants' field —
+    # see SettingsPanel's "Deltagare" tab and NOTES.md.)
+    def list_participants(self):
+        return self.conn.execute(
+            "SELECT * FROM participants ORDER BY sort_order, id").fetchall()
+
+    def add_participant(self, first_name='', last_name='', role=''):
+        cur = self.conn.execute(
+            "INSERT INTO participants (first_name, last_name, role) VALUES (?,?,?)",
+            (first_name, last_name, role))
+        self.commit()
+        return cur.lastrowid
+
+    def update_participant(self, id_, first_name=None, last_name=None, role=None):
+        row = self.conn.execute("SELECT * FROM participants WHERE id=?", (id_,)).fetchone()
+        if not row:
+            return
+        self.conn.execute(
+            "UPDATE participants SET first_name=?, last_name=?, role=? WHERE id=?",
+            (first_name if first_name is not None else row['first_name'],
+             last_name if last_name is not None else row['last_name'],
+             role if role is not None else row['role'],
+             id_))
+        self.commit()
+
+    def delete_participant(self, id_):
+        self.conn.execute("DELETE FROM participants WHERE id=?", (id_,))
+        self.commit()
+
+    def list_analysis_sessions(self):
+        return self.conn.execute(
+            "SELECT * FROM analysis_sessions ORDER BY sort_order, id").fetchall()
+
+    def add_analysis_session(self, label=''):
+        cur = self.conn.execute(
+            "INSERT INTO analysis_sessions (label) VALUES (?)", (label,))
+        self.commit()
+        return cur.lastrowid
+
+    def update_analysis_session(self, id_, label):
+        self.conn.execute("UPDATE analysis_sessions SET label=? WHERE id=?", (label, id_))
+        self.commit()
+
+    def delete_analysis_session(self, id_):
+        self.conn.execute("DELETE FROM analysis_sessions WHERE id=?", (id_,))
+        self.commit()
+
+    def get_attendance(self, participant_id, session_id):
+        row = self.conn.execute(
+            "SELECT attended FROM participant_attendance WHERE participant_id=? AND session_id=?",
+            (participant_id, session_id)).fetchone()
+        return bool(row['attended']) if row else False
+
+    def set_attendance(self, participant_id, session_id, attended):
+        self.conn.execute(
+            "INSERT INTO participant_attendance (participant_id, session_id, attended) "
+            "VALUES (?,?,?) ON CONFLICT(participant_id, session_id) "
+            "DO UPDATE SET attended=excluded.attended",
+            (participant_id, session_id, 1 if attended else 0))
+        self.commit()
+
+    def get_attendance_matrix(self):
+        """Return dict {(participant_id, session_id): bool} for all recorded attendance rows."""
+        rows = self.conn.execute(
+            "SELECT participant_id, session_id, attended FROM participant_attendance").fetchall()
+        return {(r['participant_id'], r['session_id']): bool(r['attended']) for r in rows}
 
     def get_severity_definitions(self):
         """Return dict: severity_level (1-based int) -> {category_id -> description}."""
@@ -15944,6 +16038,140 @@ class TagMemoryPanel(QWidget):
             self.refresh()
 
 
+class ParticipantMatrixPanel(QWidget):
+    """Deltagarmatris: participants as rows (Förnamn/Efternamn/Roll) ×
+    analystillfällen as columns, with a checkbox per cell marking
+    attendance. Replaces the old free-text "Deltagare" field in the
+    Projekt tab (2026-08-11, user request: "en till flik med deltagare
+    istället där man definerar förnamn, efternamn, roll på y axel och
+    analystillfälen på x axeln så det blir en matris" — see NOTES.md for
+    the full design rationale)."""
+
+    _FIXED_COLS = ['Förnamn', 'Efternamn', 'Roll']
+
+    def __init__(self, db, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self._loading = False
+        self._participant_ids = []
+        self._session_ids = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        lbl = QLabel(
+            "<b>Deltagarmatris</b> — en rad per deltagare (förnamn, efternamn, roll) "
+            "och en kolumn per analystillfälle. Bocka i cellen för att markera att "
+            "deltagaren var med vid det tillfället.")
+        lbl.setWordWrap(True)
+        layout.addWidget(lbl)
+
+        self._table = QTableWidget(0, len(self._FIXED_COLS))
+        self._table.setHorizontalHeaderLabels(self._FIXED_COLS)
+        self._table.verticalHeader().setVisible(False)
+        self._table.itemChanged.connect(self._on_item_changed)
+        layout.addWidget(self._table)
+
+        btn_row = QHBoxLayout()
+        btn_add_p = QPushButton("+ Lägg till deltagare")
+        btn_add_p.clicked.connect(self._add_participant)
+        btn_del_p = QPushButton("Ta bort deltagare")
+        btn_del_p.setToolTip("Tar bort den markerade raden (deltagaren)")
+        btn_del_p.clicked.connect(self._delete_participant)
+        btn_add_s = QPushButton("+ Lägg till analystillfälle")
+        btn_add_s.clicked.connect(self._add_session)
+        btn_del_s = QPushButton("Ta bort analystillfälle")
+        btn_del_s.setToolTip("Tar bort kolumnen för det tillfälle en markerad cell tillhör")
+        btn_del_s.clicked.connect(self._delete_session)
+        for b in (btn_add_p, btn_del_p, btn_add_s, btn_del_s):
+            btn_row.addWidget(b)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        self.refresh()
+
+    def refresh(self):
+        self._loading = True
+        try:
+            sessions = self.db.list_analysis_sessions()
+            participants = self.db.list_participants()
+            attendance = self.db.get_attendance_matrix()
+
+            self._session_ids = [s['id'] for s in sessions]
+            self._participant_ids = [p['id'] for p in participants]
+
+            headers = list(self._FIXED_COLS) + [
+                (s['label'] or f"Tillfälle {s['id']}") for s in sessions]
+            self._table.setColumnCount(len(headers))
+            self._table.setHorizontalHeaderLabels(headers)
+            self._table.setRowCount(len(participants))
+
+            n_fixed = len(self._FIXED_COLS)
+            for row, p in enumerate(participants):
+                self._table.setItem(row, 0, QTableWidgetItem(p['first_name'] or ''))
+                self._table.setItem(row, 1, QTableWidgetItem(p['last_name'] or ''))
+                self._table.setItem(row, 2, QTableWidgetItem(p['role'] or ''))
+                for col, sess in enumerate(sessions):
+                    item = QTableWidgetItem()
+                    item.setFlags(
+                        (item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                        & ~Qt.ItemFlag.ItemIsEditable)
+                    attended = attendance.get((p['id'], sess['id']), False)
+                    item.setCheckState(
+                        Qt.CheckState.Checked if attended else Qt.CheckState.Unchecked)
+                    self._table.setItem(row, n_fixed + col, item)
+        finally:
+            self._loading = False
+
+    def _on_item_changed(self, item):
+        if self._loading:
+            return
+        row, col = item.row(), item.column()
+        if row < 0 or row >= len(self._participant_ids):
+            return
+        pid = self._participant_ids[row]
+        if col == 0:
+            self.db.update_participant(pid, first_name=item.text())
+        elif col == 1:
+            self.db.update_participant(pid, last_name=item.text())
+        elif col == 2:
+            self.db.update_participant(pid, role=item.text())
+        else:
+            sess_idx = col - len(self._FIXED_COLS)
+            if 0 <= sess_idx < len(self._session_ids):
+                sess_id = self._session_ids[sess_idx]
+                attended = item.checkState() == Qt.CheckState.Checked
+                self.db.set_attendance(pid, sess_id, attended)
+
+    def _add_participant(self):
+        self.db.add_participant('', '', '')
+        self.refresh()
+
+    def _delete_participant(self):
+        row = self._table.currentRow()
+        if row < 0 or row >= len(self._participant_ids):
+            return
+        self.db.delete_participant(self._participant_ids[row])
+        self.refresh()
+
+    def _add_session(self):
+        label, ok = QInputDialog.getText(
+            self, "Nytt analystillfälle",
+            "Etikett (t.ex. ett datum eller \"Session 1\"):")
+        if ok and label.strip():
+            self.db.add_analysis_session(label.strip())
+            self.refresh()
+
+    def _delete_session(self):
+        col = self._table.currentColumn()
+        sess_idx = col - len(self._FIXED_COLS)
+        if col < 0 or sess_idx < 0 or sess_idx >= len(self._session_ids):
+            return
+        self.db.delete_analysis_session(self._session_ids[sess_idx])
+        self.refresh()
+
+
 class SettingsPanel(QWidget):
     matrix_changed = pyqtSignal()
 
@@ -16156,23 +16384,52 @@ class SettingsPanel(QWidget):
         # 'project_date' config key with 'project_date_start' /
         # 'project_date_end' — see NOTES.md for the migration note and the
         # project-reset cleanup list update.
+        #
+        # 2026-08-11 follow-up ("Inställningarna under projekt ser konstig
+        # ut. Datumväljren tar upp jättemycket plats. skulle även gilla om
+        # knappen today fanns"): confirmed by rendering the panel
+        # (QFormLayout's default field-growth policy stretches whatever
+        # widget occupies the "field" column — here date_row_w — to the
+        # full remaining tab width) that the container widget was ~1140px
+        # wide while the two QDateEdit widgets inside it were only ~164px
+        # each, leaving a large dead strip of empty space after them. Fix:
+        # (1) cap date_row_w's own horizontal size policy to Maximum so
+        # QFormLayout no longer stretches the row, (2) cap each QDateEdit
+        # to just enough width for "yyyy-MM-dd" plus the calendar-popup
+        # arrow/spin-box chrome, (3) add an explicit "Idag" button per
+        # field per the user's request.
         date_row_w = QWidget()
+        date_row_w.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         date_row_l = QHBoxLayout(date_row_w)
         date_row_l.setContentsMargins(0, 0, 0, 0)
+        date_row_l.setSpacing(6)
         self._proj_date_start = QDateEdit()
         self._proj_date_start.setCalendarPopup(True)
         self._proj_date_start.setDisplayFormat("yyyy-MM-dd")
         self._proj_date_end = QDateEdit()
         self._proj_date_end.setCalendarPopup(True)
         self._proj_date_end.setDisplayFormat("yyyy-MM-dd")
+        _date_edit_w = QFontMetrics(self._proj_date_start.font()).horizontalAdvance(
+            "9999-99-99") + 40
+        self._proj_date_start.setMaximumWidth(_date_edit_w)
+        self._proj_date_end.setMaximumWidth(_date_edit_w)
         self._proj_date_start.dateChanged.connect(
             lambda d: self.db.set_config('project_date_start', d.toString('yyyy-MM-dd')))
         self._proj_date_end.dateChanged.connect(
             lambda d: self.db.set_config('project_date_end', d.toString('yyyy-MM-dd')))
+        self._proj_date_start_today_btn = QPushButton("Idag")
+        self._proj_date_start_today_btn.setToolTip("Sätt startdatum till dagens datum")
+        self._proj_date_start_today_btn.clicked.connect(
+            lambda: self._proj_date_start.setDate(QDate.currentDate()))
+        self._proj_date_end_today_btn = QPushButton("Idag")
+        self._proj_date_end_today_btn.setToolTip("Sätt slutdatum till dagens datum")
+        self._proj_date_end_today_btn.clicked.connect(
+            lambda: self._proj_date_end.setDate(QDate.currentDate()))
         date_row_l.addWidget(self._proj_date_start)
+        date_row_l.addWidget(self._proj_date_start_today_btn)
         date_row_l.addWidget(QLabel("  –  "))
         date_row_l.addWidget(self._proj_date_end)
-        date_row_l.addStretch()
+        date_row_l.addWidget(self._proj_date_end_today_btn)
         pl.addRow("Datum (från–till):", date_row_w)
 
         self._proj_rev = QLineEdit()
@@ -16180,20 +16437,18 @@ class SettingsPanel(QWidget):
             lambda: self.db.set_config('project_revision', self._proj_rev.text()))
         pl.addRow("Revision:", self._proj_rev)
 
-        self._proj_participants = QPlainTextEdit()
-        self._proj_participants.setPlaceholderText(
-            "En deltagare per rad, t.ex.:\nAnna Andersson (Processägare)\nBengt Bengtsson (Drift)")
-        self._proj_participants.setFixedHeight(90)
-        # QPlainTextEdit has no editingFinished signal — save on focus-out
-        # instead, same pattern already used for multi-line description
-        # fields elsewhere in this file (e.g. NodeEditDialog.desc_edit).
-        _orig_participants_foe = QPlainTextEdit.focusOutEvent
-        def _participants_foe(e, _orig=_orig_participants_foe):
-            self.db.set_config('project_participants', self._proj_participants.toPlainText())
-            _orig(self._proj_participants, e)
-        self._proj_participants.focusOutEvent = _participants_foe
-        pl.addRow("Deltagare:", self._proj_participants)
         tabs.addTab(proj_tab, "Projekt")
+
+        # ── Tab: Deltagare ────────────────────────────────────────────────────
+        # Replaces the old free-text "Deltagare" field above (2026-08-11,
+        # user request: "skulle även gilla ... en till flik med deltagare
+        # istället där man definerar förnamn, efternamn, roll på y axel och
+        # analystillfälen på x axeln så det blir en matris" — "istället"
+        # means this REPLACES the free-text field, not adds to it). See
+        # ParticipantMatrixPanel below and NOTES.md for the schema/UI
+        # design rationale.
+        self._participant_matrix_panel = ParticipantMatrixPanel(self.db)
+        tabs.addTab(self._participant_matrix_panel, "Deltagare")
 
         # ── Tab: P&ID-inställningar ───────────────────────────────────────────
         # Renamed from "P&ID" (2026-08-11, user request: "Fliken PID borde
@@ -16331,7 +16586,6 @@ class SettingsPanel(QWidget):
         self._proj_facility.setText(self.db.get_config('project_facility', ''))
         self._proj_leader.setText(self.db.get_config('project_hazop_leader', ''))
         self._proj_rev.setText(self.db.get_config('project_revision', ''))
-        self._proj_participants.setPlainText(self.db.get_config('project_participants', ''))
 
         today = QDate.currentDate()
         start_str = self.db.get_config('project_date_start', '')
@@ -20232,6 +20486,9 @@ class MainWindow(QMainWindow):
             'equipment_catalog', 'pid_identified_tags', 'pid_config',
             'off_page_connector', 'board_annotations', 'pid_connection',
             'node_markups', 'node_red_markups', 'pid_identified_tags',
+            # Deltagarmatris (2026-08-11) — replaces the old
+            # 'project_participants' app_config field, see NOTES.md.
+            'participants', 'analysis_sessions', 'participant_attendance',
         ]
         for tbl in _PROJECT_TABLES:
             try:
