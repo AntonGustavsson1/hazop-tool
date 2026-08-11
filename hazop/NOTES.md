@@ -1122,6 +1122,20 @@ Saknar utrustningen fortfarande en nod (aldrig kopplad via "Nod ↔ Utrustning")
 
 ---
 
+## Tagnumret klipptes av i orsaksbaren — högerställd frekvens ger tillbaka utrymmet (2026-08-11)
+
+**Rapport:** "Jag vill också kunna läsa ut hela tagnumret i orsaksbaren, nu blir det lätt .... för att det finns för lite plats så flytta 0.1 åt höger (högerställ)." Efter en följdfråga om vad "0.1" syftade på, förtydligat: "Tag nummret klipps av då frekvensen står för långt till vänster. högerställ frekvens för att det ska rymma mer."
+
+**Grundorsak:** ORS-cellens övre remsa (`[pin|tagg|frekvens|prickar]`, `_PidDelegate.paint()`) ritade taggen först, begränsad till den fasta, användardragbara delarbredden `_cause_obj_w` (standard 64px) — **oavsett hur mycket ledigt utrymme cellen faktiskt hade**. Frekvensen ritades sedan vänsterjusterad direkt efter taggen och fick använda ALLT återstående utrymme fram till prickarna. Resultatet: en lång tagg klipptes/elidierades i onödan vid 64px, medan den korta frekvenstexten lämnade ett dött, tomt gap mellan sig själv och prickarna — precis det utrymme taggen egentligen behövde. Att bara högerjustera frekvensen på plats (inuti samma, redan breda rektangel) hade INTE löst det egentliga problemet, eftersom taggens bredd räknades ut helt oberoende av var frekvensen hamnade.
+
+**Fix:** Frekvenszonen ankras nu till höger, mot samma marginal som prickarna redan reserverar (`_ORS_DOTS_MARGIN = 22`) — beräknad FÖRST, utifrån frekvenstextens egen bredd (`_ORS_FREQ_MAX_W = 90` som förnuftigt tak). Taggzonen får sedan allt utrymme som blir kvar mellan pin-ikonen och frekvenszonen, istället för det fasta locket. `_cause_obj_w` (den drag-bara delaren) behålls som ett GOLV — taggzonen kan bara bli BREDARE än vad användaren dragit den till, aldrig smalare, så den befintliga drag-för-att-ändra-storlek-funktionen påverkas inte.
+
+Hela beräkningen ligger nu i en delad metod, `ScenarioTablePanel._ors_tag_zone_geometry()`, använd av både `_PidDelegate.paint()` (ritningen) och tagg-zonens klick-hit-test i `eventFilter()` (öppnar taggväljar-popupen) — annars hade en förlängd, nu synlig del av en lång tagg blivit oklickbar (samma klass av träffytebugg som redan dokumenterats för radhöjdsberäkningarna ovan, "Gömd text på orsaksrader"). Själva drag-handtaget (`div_x`, för att ändra `_cause_obj_w`) lämnades AVSIKTLIGT oförändrat — det representerar användarens sparade golvbredd, inte den faktiska (nu ofta bredare) ritade bredden.
+
+**Test:** `OrsStripTagFreqLayoutTests` (4 nya, test_regression.py) — geometrihjälparen ger aldrig en taggzon smalare än `_cause_obj_w` i en trång cell, men expanderar långt förbi den gamla fasta gränsen i en bred cell samtidigt som frekvenszonen hamnar rätt ankrad mot prickmarginalen; en riktig cellrendering bekräftar att taggtextens pixlar faktiskt sträcker sig förbi den gamla 64px-gränsen (med frekvensen medvetet nollställd på raden för att inte blanda ihop dess text-pixlar, i samma mörka färg, med taggens); samt att ett klick på den nya, tidigare oräknade delen av en lång tagg fortfarande öppnar taggväljar-popupen. Verifierat via `git stash`/`git stash pop` — alla fyra föll korrekt utan fixen (tre med `AttributeError` eftersom hjälpmetoden inte fanns, pixel-testet med `AssertionError` eftersom taggen verkligen klipptes vid gamla gränsen). Full svit: `python -m unittest test_regression test_symbol_geometry` — 469/469 gröna.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **OCR-positioner är approximativa** — x,y-koordinater från OCR stämmer inte perfekt med PDF-koordinater vid hög zoom. Markörer kan hamna något fel.

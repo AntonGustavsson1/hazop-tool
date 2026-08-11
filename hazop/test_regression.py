@@ -8799,6 +8799,213 @@ class PinTopAlignedInTallRowsTests(unittest.TestCase):
             panel.deleteLater()
 
 
+class OrsStripTagFreqLayoutTests(unittest.TestCase):
+    """'Jag vill också kunna läsa ut hela tagnumret i orsaksbaren, nu blir
+    det lätt .... för att det finns för lite plats så flytta 0.1 åt höger
+    (högerställ).' Clarified when asked what "0.1" meant: 'Tag nummret
+    klipps av då frekvensen står för långt till vänster. högerställ
+    frekvens för att det ska rymma mer.' (2026-08-11)
+
+    Root cause: the ORS strip's tag zone was capped at the fixed
+    _cause_obj_w divider width (default 64px) no matter how much space
+    was actually free in the cell, because the frequency label was drawn
+    immediately after the tag rather than anchored to the strip's right
+    edge — so a wide cell left a stretch of blank space between the
+    (short) frequency text and the status dots while the tag itself kept
+    eliding. Fixed by right-anchoring the frequency zone against the dots
+    margin FIRST and letting the tag zone claim whatever is left over
+    (ScenarioTablePanel._ors_tag_zone_geometry), with _cause_obj_w kept as
+    a floor so the user-draggable divider still only ever WIDENS the
+    minimum, never narrows it. The same helper is used by the tag-zone
+    click hit-test in eventFilter() so a click on the newly-visible part
+    of a long tag doesn't hit a stale rectangle."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_orsfreq_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    _TEXT_DARK = (0x17, 0x19, 0x1C)
+
+    def _is_dark(self, px, tol=40):
+        return (abs(px.red()   - self._TEXT_DARK[0]) <= tol and
+                abs(px.green() - self._TEXT_DARK[1]) <= tol and
+                abs(px.blue()  - self._TEXT_DARK[2]) <= tol)
+
+    def _make_tagged_cause(self, tag="E1.M1.QMA127"):
+        from hazop import ScenarioTablePanel
+        panel = ScenarioTablePanel(self.db)
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(cause_id, comp_type='V', comp_tag=tag)
+        panel.load_node(node_id)
+        row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+        return panel, row, cause_id
+
+    def test_geometry_never_shrinks_tag_zone_below_the_dragged_divider_width(self):
+        """In a narrow cell there's no leftover space to reclaim — the tag
+        zone must fall back to exactly the user's persisted _cause_obj_w
+        floor, never below it (that would break the existing drag-to-
+        resize feature's promise)."""
+        panel, row, cause_id = self._make_tagged_cause()
+        try:
+            item = panel._table.item(row, panel._C_ORS)
+            self.assertEqual(panel._cause_obj_w, 64,
+                "test assumes the documented default divider width")
+            tag_zone_w, freq_zone_x, freq_zone_w, freq_str = \
+                panel._ors_tag_zone_geometry(item, tag_x=22, cell_right=120)
+            self.assertGreaterEqual(tag_zone_w, panel._cause_obj_w)
+        finally:
+            panel.deleteLater()
+
+    def test_geometry_expands_tag_zone_into_reclaimed_space_in_a_wide_cell(self):
+        """The actual bug: with a wide cell (plenty of room), the OLD code
+        still capped the tag at the fixed 64px divider width and left the
+        reclaimed space as a dead gap between the frequency text and the
+        dots. The fix must let the tag zone grow well past that fixed cap,
+        and must right-anchor the frequency zone against the dots margin
+        rather than gluing it to the tag."""
+        panel, row, cause_id = self._make_tagged_cause()
+        try:
+            item = panel._table.item(row, panel._C_ORS)
+            old_cap = panel._cause_obj_w
+            tag_zone_w, freq_zone_x, freq_zone_w, freq_str = \
+                panel._ors_tag_zone_geometry(item, tag_x=22, cell_right=500)
+            self.assertGreater(tag_zone_w, old_cap * 2,
+                "tag zone should reclaim the freed-up space in a wide cell, "
+                "not stay capped at the old fixed divider width")
+            self.assertGreater(freq_zone_x, 22 + old_cap,
+                "frequency zone must be right-anchored, not glued to the tag")
+            self.assertEqual(freq_zone_x + freq_zone_w, 500 - panel._ORS_DOTS_MARGIN,
+                "frequency zone must sit flush against the dots margin at "
+                "the strip's right edge")
+        finally:
+            panel.deleteLater()
+
+    def test_long_tag_renders_wider_than_old_fixed_cap_in_real_paint(self):
+        """Render a real cell (same path production code uses) and confirm
+        the tag's own text pixels extend past where the OLD flat 64px cap
+        would have already elided it, now that the cell has room to spare.
+        """
+        from PyQt6.QtGui import QFont, QFontMetrics
+        panel, row, cause_id = self._make_tagged_cause()
+        try:
+            # Null out the frequency for this row before rendering. A cause
+            # always carries SOME frequency (default likelihood=3, see
+            # Database.cause_f_level), and it's drawn in the same dark
+            # color as the tag — probing for "any dark pixel" past the old
+            # cap would otherwise just as likely land on the frequency
+            # text (which, under the OLD code, starts drawing immediately
+            # past that same cap) as on the tag, making the probe
+            # ambiguous. Blanking it isolates exactly what this test is
+            # about: whether the TAG itself is still being clipped.
+            item = panel._table.item(row, panel._C_ORS)
+            item.setData(Qt.ItemDataRole.UserRole + 3, None)
+            item.setData(Qt.ItemDataRole.UserRole + 5, None)
+
+            panel._table.setColumnWidth(panel._C_ORS, 400)
+            panel.resize(900, 400)
+            panel.show()
+            self.app.processEvents()
+            panel._resize_rows_manual()
+            self.app.processEvents()
+
+            index = panel._table.model().index(row, panel._C_ORS)
+            cell_rect = panel._table.visualRect(index)
+            pixmap = panel._table.viewport().grab(cell_rect)
+            panel.hide()
+            image = pixmap.toImage()
+
+            # Compute where the tag text actually ends using the SAME font
+            # construction paint() uses, so this test isn't a guess tied to
+            # one particular platform's default font metrics.
+            base_font = panel._table.font()
+            tag_font = QFont(base_font)
+            tag_font.setPointSize(max(6, base_font.pointSize() - 1))
+            tag_font.setBold(True)
+            text_w = QFontMetrics(tag_font).horizontalAdvance("E1.M1.QMA127")
+            tag_x = 22   # _PID_ICON_W
+            expected_text_end = tag_x + 2 + text_w
+            old_cap_end = tag_x + panel._cause_obj_w   # 22 + 64 = 86
+
+            self.assertGreater(expected_text_end, old_cap_end + 10,
+                "test setup issue: chosen tag isn't actually longer than "
+                "the old fixed cap — pick a longer tag")
+
+            probe_lo = old_cap_end + 5
+            probe_hi = min(expected_text_end - 2, image.width() - 1)
+            strip_h = 17  # _ORS_STRIP_H
+            found = False
+            for x in range(probe_lo, max(probe_lo + 1, probe_hi)):
+                for y in range(strip_h):
+                    if self._is_dark(image.pixelColor(x, y)):
+                        found = True
+                        break
+                if found:
+                    break
+            self.assertTrue(found,
+                f"expected tag text pixels somewhere in x=[{probe_lo},{probe_hi}] "
+                f"(beyond the old fixed cap at x={old_cap_end}) now that the "
+                "cell has room — the tag is still being clipped")
+        finally:
+            panel.deleteLater()
+
+    def test_tag_zone_click_hit_test_matches_the_expanded_paint_geometry(self):
+        """The tag-zone click (opens the tag-picker popup) used to be
+        hard-bounded by the raw _cause_obj_w divider width. After the fix,
+        clicking on the newly-visible part of a long tag (drawn wider than
+        that old bound) must still land inside the click zone — otherwise
+        the visible tag and its clickable area silently drift apart."""
+        panel, row, cause_id = self._make_tagged_cause()
+        try:
+            panel._table.setColumnWidth(panel._C_ORS, 400)
+            panel.resize(900, 400)
+            panel.show()
+            self.app.processEvents()
+            col_x = panel._table.columnViewportPosition(panel._C_ORS)
+            cell_right = col_x + panel._table.columnWidth(panel._C_ORS) - 1
+            item = panel._table.item(row, panel._C_ORS)
+            obj_start = col_x + 22  # _PID_ICON_W
+            tag_zone_w, _fx, _fw, _fs = panel._ors_tag_zone_geometry(
+                item, obj_start, cell_right)
+
+            # A click position well past the old fixed 64px cap but still
+            # inside the newly-expanded tag zone.
+            probe_x = obj_start + panel._cause_obj_w + 20
+            self.assertLess(probe_x, obj_start + tag_zone_w,
+                "test setup issue: probe point isn't actually within the "
+                "expanded tag zone")
+
+            popup_calls = []
+            panel._show_cause_obj_popup = lambda r, cid, gp: popup_calls.append((r, cid))
+
+            from PyQt6.QtCore import QPoint, QEvent
+            from PyQt6.QtGui import QMouseEvent
+            from PyQt6.QtCore import Qt as _Qt
+            row_y = panel._table.rowViewportPosition(row) + 3
+            pos = QPoint(probe_x, row_y)
+            ev = QMouseEvent(QEvent.Type.MouseButtonPress, pos.toPointF(),
+                             _Qt.MouseButton.LeftButton, _Qt.MouseButton.LeftButton,
+                             _Qt.KeyboardModifier.NoModifier)
+            panel.eventFilter(panel._table.viewport(), ev)
+            self.assertEqual(popup_calls, [(row, cause_id)],
+                "clicking within the expanded (paint-matching) tag zone "
+                "must still open the tag-picker popup")
+        finally:
+            panel.deleteLater()
+
+
 class ScenarioColumnWidthPersistenceTests(unittest.TestCase):
     """'Fyll skärm' checkbox state and manually-resized column widths are
     now persisted to app_config (2026-08-10, see NOTES.md) — previously
