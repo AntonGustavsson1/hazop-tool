@@ -9748,7 +9748,7 @@ class SettingsPanelProjektExpansionTests(unittest.TestCase):
             pass
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    def test_facility_leader_participants_round_trip(self):
+    def test_facility_leader_round_trip(self):
         from hazop import SettingsPanel
         panel = SettingsPanel(self.db)
         try:
@@ -9756,14 +9756,9 @@ class SettingsPanelProjektExpansionTests(unittest.TestCase):
             panel._proj_facility.editingFinished.emit()
             panel._proj_leader.setText("Anna Andersson")
             panel._proj_leader.editingFinished.emit()
-            panel._proj_participants.setPlainText("Anna Andersson\nBengt Bengtsson")
-            panel._proj_participants.focusOutEvent(QFocusEvent(QEvent.Type.FocusOut,
-                                                                Qt.FocusReason.OtherFocusReason))
 
             self.assertEqual(self.db.get_config('project_facility'), "Gävle Depå")
             self.assertEqual(self.db.get_config('project_hazop_leader'), "Anna Andersson")
-            self.assertEqual(self.db.get_config('project_participants'),
-                              "Anna Andersson\nBengt Bengtsson")
         finally:
             panel.deleteLater()
 
@@ -9800,6 +9795,371 @@ class SettingsPanelProjektExpansionTests(unittest.TestCase):
                     'project_facility', 'project_hazop_leader', 'project_participants'):
             self.assertIn(f"'{key}'", src,
                            f"Project-reset cleanup list should still mention {key!r}")
+
+
+class SettingsPanelDateWidgetsAndTodayButtonTests(unittest.TestCase):
+    """"Inställningarna under projekt ser konstig ut. Datumväljren tar upp
+    jättemycket plats. skulle även gilla om knappen today fanns."
+    (2026-08-11) — the date-range row's container (date_row_w) used to be
+    stretched to the tab's full width by QFormLayout's default
+    field-growth policy even though the two QDateEdit widgets inside it
+    only need a small fraction of that space; fixed by capping both the
+    QDateEdit widths and the container's own size policy. Also verifies
+    the newly added "Idag" (Today) buttons."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_settings_datewidgets_test_")
+        self.db_path = os.path.join(self._tmpdir, "test_project.db")
+        self.db = Database(path=self.db_path)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_date_edits_have_a_real_width_constraint(self):
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            for edit in (panel._proj_date_start, panel._proj_date_end):
+                max_w = edit.maximumWidth()
+                # Qt's "no maximum set" sentinel is 16777215; anything even
+                # remotely close to that means the widget was left
+                # unconstrained. A real cap should comfortably fit
+                # "yyyy-MM-dd" plus the calendar-popup arrow, i.e. well
+                # under 250px, and definitely nowhere near the full
+                # ~1100px+ a stretched QFormLayout field reaches.
+                self.assertLess(max_w, 250,
+                                 "QDateEdit should have a compact maximum width")
+                self.assertGreater(max_w, 0)
+        finally:
+            panel.deleteLater()
+
+    def test_date_row_container_does_not_stretch_to_full_tab_width(self):
+        """Renders the actual Projekt tab and confirms the date row's
+        container widget no longer stretches to the tab's full width the
+        way the other QLineEdit form rows still do (by design — this test
+        is what would have caught the original bug)."""
+        from hazop import SettingsPanel
+        from PyQt6.QtWidgets import QFormLayout
+        panel = SettingsPanel(self.db)
+        try:
+            panel.resize(900, 700)
+            panel.show()
+            self.app.processEvents()
+            tabs = panel._tabs
+            proj_idx = next(i for i in range(tabs.count())
+                             if tabs.tabText(i) == "Projekt")
+            tabs.setCurrentIndex(proj_idx)
+            self.app.processEvents()
+            proj_tab = tabs.widget(proj_idx)
+            fl = proj_tab.layout()
+            self.assertIsInstance(fl, QFormLayout)
+
+            name_field_w = panel._proj_name.width()
+            date_row_w = None
+            for r in range(fl.rowCount()):
+                item = fl.itemAt(r, QFormLayout.ItemRole.FieldRole)
+                if item and item.widget() is not None and item.widget() not in (
+                        panel._proj_name, panel._proj_facility,
+                        panel._proj_leader, panel._proj_rev):
+                    date_row_w = item.widget()
+                    break
+            self.assertIsNotNone(date_row_w, "Could not find the date row's container widget")
+            self.assertLess(date_row_w.width(), name_field_w * 0.8,
+                             "Date row container should be visibly narrower than a "
+                             "full-width text field row, not stretched to match it")
+        finally:
+            panel.deleteLater()
+
+    def test_today_button_sets_start_date_to_today(self):
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            panel._proj_date_start.setDate(QDate(2020, 1, 1))
+            panel._proj_date_start_today_btn.click()
+            self.assertEqual(panel._proj_date_start.date(), QDate.currentDate())
+        finally:
+            panel.deleteLater()
+
+    def test_today_button_sets_end_date_to_today(self):
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            panel._proj_date_end.setDate(QDate(2020, 1, 1))
+            panel._proj_date_end_today_btn.click()
+            self.assertEqual(panel._proj_date_end.date(), QDate.currentDate())
+        finally:
+            panel.deleteLater()
+
+    def test_start_today_button_does_not_touch_end_date(self):
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            panel._proj_date_end.setDate(QDate(2020, 1, 1))
+            panel._proj_date_start_today_btn.click()
+            self.assertEqual(panel._proj_date_end.date(), QDate(2020, 1, 1))
+        finally:
+            panel.deleteLater()
+
+
+class ParticipantMatrixTests(unittest.TestCase):
+    """"Jag tror det vore bra m du byggde en till flik med deltagare
+    istället där man definerar förnamn, efternamn, roll på y axel och
+    analystillfälen på x axeln så det blir en matris." (2026-08-11) —
+    replaces the old free-text "Deltagare" field/tab-row with a dedicated
+    "Deltagare" tab holding a QTableWidget: participants as rows
+    (Förnamn/Efternamn/Roll), analysis sessions as columns, attendance as
+    a checkbox per cell. Covers both the raw Database CRUD methods and the
+    ParticipantMatrixPanel UI wiring."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_participant_matrix_test_")
+        self.db_path = os.path.join(self._tmpdir, "test_project.db")
+        self.db = Database(path=self.db_path)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    # ── Database layer ───────────────────────────────────────────────────
+    def test_participant_crud_round_trips(self):
+        pid = self.db.add_participant("Anna", "Andersson", "Processägare")
+        rows = self.db.list_participants()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['first_name'], "Anna")
+        self.assertEqual(rows[0]['last_name'], "Andersson")
+        self.assertEqual(rows[0]['role'], "Processägare")
+
+        self.db.update_participant(pid, role="HAZOP-ledare")
+        rows = self.db.list_participants()
+        self.assertEqual(rows[0]['role'], "HAZOP-ledare")
+        self.assertEqual(rows[0]['first_name'], "Anna",
+                          "update_participant should leave other fields untouched "
+                          "when only one keyword is passed")
+
+        self.db.delete_participant(pid)
+        self.assertEqual(self.db.list_participants(), [])
+
+    def test_analysis_session_crud_round_trips(self):
+        sid = self.db.add_analysis_session("Session 1 (2026-09-01)")
+        rows = self.db.list_analysis_sessions()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['label'], "Session 1 (2026-09-01)")
+
+        self.db.update_analysis_session(sid, "Session 1 (omschemalagd)")
+        rows = self.db.list_analysis_sessions()
+        self.assertEqual(rows[0]['label'], "Session 1 (omschemalagd)")
+
+        self.db.delete_analysis_session(sid)
+        self.assertEqual(self.db.list_analysis_sessions(), [])
+
+    def test_attendance_round_trips_and_toggles(self):
+        pid = self.db.add_participant("Bengt", "Bengtsson", "Drift")
+        sid = self.db.add_analysis_session("Session 1")
+
+        self.assertFalse(self.db.get_attendance(pid, sid),
+                          "Attendance should default to False for an unrecorded pair")
+
+        self.db.set_attendance(pid, sid, True)
+        self.assertTrue(self.db.get_attendance(pid, sid))
+
+        # Toggling twice must not create duplicate rows (composite PK / upsert).
+        self.db.set_attendance(pid, sid, False)
+        self.db.set_attendance(pid, sid, True)
+        count = self.db.conn.execute(
+            "SELECT COUNT(*) FROM participant_attendance WHERE participant_id=? AND session_id=?",
+            (pid, sid)).fetchone()[0]
+        self.assertEqual(count, 1)
+        self.assertTrue(self.db.get_attendance(pid, sid))
+
+    def test_attendance_matrix_reflects_all_recorded_pairs(self):
+        p1 = self.db.add_participant("Anna", "Andersson", "")
+        p2 = self.db.add_participant("Bengt", "Bengtsson", "")
+        s1 = self.db.add_analysis_session("Session 1")
+        s2 = self.db.add_analysis_session("Session 2")
+        self.db.set_attendance(p1, s1, True)
+        self.db.set_attendance(p1, s2, False)
+        self.db.set_attendance(p2, s2, True)
+
+        matrix = self.db.get_attendance_matrix()
+        self.assertTrue(matrix.get((p1, s1)))
+        self.assertFalse(matrix.get((p1, s2), False))
+        self.assertTrue(matrix.get((p2, s2)))
+        self.assertNotIn((p2, s1), matrix,
+                          "Never-toggled pairs should not have a stored row at all")
+
+    def test_deleting_participant_cascades_attendance(self):
+        pid = self.db.add_participant("Anna", "Andersson", "")
+        sid = self.db.add_analysis_session("Session 1")
+        self.db.set_attendance(pid, sid, True)
+        self.db.delete_participant(pid)
+        count = self.db.conn.execute(
+            "SELECT COUNT(*) FROM participant_attendance WHERE participant_id=?",
+            (pid,)).fetchone()[0]
+        self.assertEqual(count, 0, "Deleting a participant should cascade-delete attendance rows")
+
+    def test_deleting_session_cascades_attendance(self):
+        pid = self.db.add_participant("Anna", "Andersson", "")
+        sid = self.db.add_analysis_session("Session 1")
+        self.db.set_attendance(pid, sid, True)
+        self.db.delete_analysis_session(sid)
+        count = self.db.conn.execute(
+            "SELECT COUNT(*) FROM participant_attendance WHERE session_id=?",
+            (sid,)).fetchone()[0]
+        self.assertEqual(count, 0, "Deleting a session should cascade-delete attendance rows")
+
+    # ── UI layer (ParticipantMatrixPanel) ────────────────────────────────
+    def test_panel_add_participant_creates_row_and_db_record(self):
+        from hazop import ParticipantMatrixPanel
+        panel = ParticipantMatrixPanel(self.db)
+        try:
+            panel._add_participant()
+            self.assertEqual(panel._table.rowCount(), 1)
+            self.assertEqual(len(self.db.list_participants()), 1)
+        finally:
+            panel.deleteLater()
+
+    def test_panel_add_session_creates_column(self):
+        from hazop import ParticipantMatrixPanel
+        panel = ParticipantMatrixPanel(self.db)
+        try:
+            with unittest.mock.patch.object(
+                    QInputDialog, 'getText', return_value=("Session 1", True)):
+                panel._add_session()
+            self.assertEqual(panel._table.columnCount(), len(panel._FIXED_COLS) + 1)
+            self.assertEqual(len(self.db.list_analysis_sessions()), 1)
+            self.assertEqual(
+                panel._table.horizontalHeaderItem(len(panel._FIXED_COLS)).text(), "Session 1")
+        finally:
+            panel.deleteLater()
+
+    def test_panel_editing_name_cells_persists_to_db(self):
+        from hazop import ParticipantMatrixPanel
+        panel = ParticipantMatrixPanel(self.db)
+        try:
+            panel._add_participant()
+            panel._table.item(0, 0).setText("Anna")
+            panel._table.item(0, 1).setText("Andersson")
+            panel._table.item(0, 2).setText("Processägare")
+            rows = self.db.list_participants()
+            self.assertEqual(rows[0]['first_name'], "Anna")
+            self.assertEqual(rows[0]['last_name'], "Andersson")
+            self.assertEqual(rows[0]['role'], "Processägare")
+        finally:
+            panel.deleteLater()
+
+    def test_panel_toggling_attendance_checkbox_persists_to_db(self):
+        from hazop import ParticipantMatrixPanel
+        panel = ParticipantMatrixPanel(self.db)
+        try:
+            panel._add_participant()
+            with unittest.mock.patch.object(
+                    QInputDialog, 'getText', return_value=("Session 1", True)):
+                panel._add_session()
+            pid = self.db.list_participants()[0]['id']
+            sid = self.db.list_analysis_sessions()[0]['id']
+
+            cell = panel._table.item(0, len(panel._FIXED_COLS))
+            self.assertEqual(cell.checkState(), Qt.CheckState.Unchecked)
+            cell.setCheckState(Qt.CheckState.Checked)
+            self.assertTrue(self.db.get_attendance(pid, sid))
+
+            cell.setCheckState(Qt.CheckState.Unchecked)
+            self.assertFalse(self.db.get_attendance(pid, sid))
+        finally:
+            panel.deleteLater()
+
+    def test_panel_delete_participant_removes_row_and_db_record(self):
+        from hazop import ParticipantMatrixPanel
+        panel = ParticipantMatrixPanel(self.db)
+        try:
+            panel._add_participant()
+            panel._table.setCurrentCell(0, 0)
+            panel._delete_participant()
+            self.assertEqual(panel._table.rowCount(), 0)
+            self.assertEqual(self.db.list_participants(), [])
+        finally:
+            panel.deleteLater()
+
+    def test_panel_delete_session_removes_column_and_db_record(self):
+        from hazop import ParticipantMatrixPanel
+        panel = ParticipantMatrixPanel(self.db)
+        try:
+            panel._add_participant()   # ensures there's a row to select a cell in
+            with unittest.mock.patch.object(
+                    QInputDialog, 'getText', return_value=("Session 1", True)):
+                panel._add_session()
+            panel._table.setCurrentCell(0, len(panel._FIXED_COLS))
+            panel._delete_session()
+            self.assertEqual(panel._table.columnCount(), len(panel._FIXED_COLS))
+            self.assertEqual(self.db.list_analysis_sessions(), [])
+        finally:
+            panel.deleteLater()
+
+    def test_panel_loads_existing_data_on_construction(self):
+        from hazop import ParticipantMatrixPanel
+        pid = self.db.add_participant("Anna", "Andersson", "Processägare")
+        sid = self.db.add_analysis_session("Session 1")
+        self.db.set_attendance(pid, sid, True)
+
+        panel = ParticipantMatrixPanel(self.db)
+        try:
+            self.assertEqual(panel._table.rowCount(), 1)
+            self.assertEqual(panel._table.item(0, 0).text(), "Anna")
+            self.assertEqual(panel._table.item(0, 1).text(), "Andersson")
+            self.assertEqual(panel._table.item(0, 2).text(), "Processägare")
+            self.assertEqual(
+                panel._table.item(0, len(panel._FIXED_COLS)).checkState(),
+                Qt.CheckState.Checked)
+        finally:
+            panel.deleteLater()
+
+    def test_deltagare_tab_exists_in_settings_panel(self):
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            titles = [panel._tabs.tabText(i) for i in range(panel._tabs.count())]
+            self.assertIn("Deltagare", titles)
+        finally:
+            panel.deleteLater()
+
+    def test_old_freetext_participants_field_is_gone(self):
+        """"istället" (instead) in the user's request means the new matrix
+        REPLACES the old free-text field — it must not still exist
+        alongside it."""
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            self.assertFalse(hasattr(panel, '_proj_participants'),
+                              "Old free-text Deltagare QPlainTextEdit should be removed")
+            titles = [panel._tabs.tabText(i) for i in range(panel._tabs.count())]
+            proj_idx = titles.index("Projekt")
+            proj_tab = panel._tabs.widget(proj_idx)
+            from PyQt6.QtWidgets import QFormLayout, QPlainTextEdit
+            fl = proj_tab.layout()
+            self.assertIsInstance(fl, QFormLayout)
+            for r in range(fl.rowCount()):
+                item = fl.itemAt(r, QFormLayout.ItemRole.FieldRole)
+                if item and item.widget() is not None:
+                    self.assertNotIsInstance(item.widget(), QPlainTextEdit,
+                                              "Projekt tab should no longer contain the "
+                                              "free-text participants QPlainTextEdit")
+        finally:
+            panel.deleteLater()
 
 
 class SettingsPanelPidTabRenameAndNewSettingsTests(unittest.TestCase):
