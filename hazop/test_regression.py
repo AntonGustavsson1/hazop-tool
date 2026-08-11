@@ -4645,11 +4645,16 @@ class AutodetectAllEquipmentTypesTests(unittest.TestCase):
 
 
 class EquipmentMarkerClickNavigationTests(unittest.TestCase):
-    """2026-08-06: valve markers on the P&ID are now clickable — clicking
-    one switches to Utrustningsregistret and selects the corresponding
-    row, the closest equivalent to _on_marker_navigate's tree-select
-    behaviour for cause/consequence/safeguard (equipment has no HAZOP tree
-    node of its own to select)."""
+    """2026-08-06: valve markers on the P&ID are now clickable. Originally
+    this always switched to Utrustningsregistret and selected the
+    corresponding row (the closest equivalent to _on_marker_navigate's
+    tree-select behaviour for cause/consequence/safeguard, since equipment
+    has no HAZOP tree node of its own to select).
+
+    2026-08-11: once equipment IS linked to a node (equipment_catalog.
+    node_id), clicking its marker instead shows that node's worksheet
+    (causes/consequences/safeguards together) — the register-select above
+    remains only as the fallback for equipment with no node yet."""
 
     def test_on_marker_navigate_switches_to_equipment_page_and_selects_row(self):
         with _TempDbMainWindow() as win:
@@ -4679,6 +4684,72 @@ class EquipmentMarkerClickNavigationTests(unittest.TestCase):
                 win._on_marker_navigate('equipment', marker_id)
             except Exception as e:
                 self.fail(f"must not raise for a marker with no linked equipment row: {e!r}")
+
+    def test_on_marker_navigate_equipment_with_node_shows_worksheet_not_register(self):
+        """2026-08-11: 'Om jag har lagt till ett objekt på P&ID ... och
+        klickar på det igen så vill jag att orsakerna där det nämns dyker
+        upp i hazop scenario ... Detta gäller även om de är tillagda på
+        konsekvens och safeguard.' Once equipment is linked to a node
+        (equipment_catalog.node_id, via Database.set_equipment_node),
+        clicking its marker must show that node's full worksheet — mirroring
+        _on_equipment_deviation_created's own load_node() call — instead of
+        switching away to the equipment register."""
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.get_or_create_deviation(node_id, "Högt tryck")
+            cause_id = win.db.add_cause(dev_id)
+            cons_id = win.db.add_consequence(cause_id)
+            sg_id = win.db.add_safeguard(cons_id)
+
+            eq_id = win.db.add_equipment_item("PSV-101", "PSV-101", "PSV", 0,
+                                               "Ventil", '', 0)
+            win.db.set_equipment_node(eq_id, node_id)
+            marker_id = win.db.add_equipment_marker(
+                eq_id, "PSV-101", 0, 100.0, 100.0, "Ventil", confidence=0.9,
+                link_method='leader')
+
+            load_node_spy = unittest.mock.Mock(wraps=win.scenario_panel.load_node)
+            win.scenario_panel.load_node = load_node_spy
+
+            win._on_marker_navigate('equipment', marker_id)
+
+            load_node_spy.assert_called_once_with(node_id)
+            self.assertNotEqual(win.view_stack.currentIndex(), 2,
+                "must not switch to the Utrustning register page when the "
+                "equipment has a node to show a worksheet for")
+            # load_node() pulls in every cause/consequence/safeguard under
+            # the node together — assert the consequence/safeguard created
+            # above are genuinely present, not just the cause, to prove
+            # this also covers tags mentioned on consequence/safeguard.
+            cons_and_sg_ids = {(m[2], m[3]) for m in win.scenario_panel._row_meta}
+            self.assertIn((cons_id, sg_id), cons_and_sg_ids,
+                "the node's consequence/safeguard row must be visible in "
+                "the scenario table, not just its cause")
+
+    def test_on_marker_navigate_equipment_without_node_still_uses_register_fallback(self):
+        """No node_id means there's no worksheet to show for this equipment
+        yet — the old register-select behaviour must remain as a fallback
+        so the click still does something useful."""
+        with _TempDbMainWindow() as win:
+            eq_id = win.db.add_equipment_item("HV-202", "HV-202", "HV", 0,
+                                               "Ventil", '', 0)
+            marker_id = win.db.add_equipment_marker(
+                eq_id, "HV-202", 0, 10.0, 10.0, "Ventil", confidence=0.9,
+                link_method='leader')
+            win.equipment_panel.refresh()
+
+            load_node_spy = unittest.mock.Mock(wraps=win.scenario_panel.load_node)
+            win.scenario_panel.load_node = load_node_spy
+
+            win._on_marker_navigate('equipment', marker_id)
+
+            load_node_spy.assert_not_called()
+            self.assertEqual(win.view_stack.currentIndex(), 2,
+                "with no node_id, the fallback must still switch to the "
+                "Utrustning page")
+            src_row = win.equipment_panel._proxy.mapToSource(
+                win.equipment_panel._tbl.currentIndex()).row()
+            self.assertEqual(win.equipment_panel._model.row_dict(src_row)['id'], eq_id)
 
     def test_select_row_by_equipment_id_clears_blocking_filter(self):
         """If a text filter is currently hiding the target row, selecting

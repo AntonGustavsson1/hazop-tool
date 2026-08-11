@@ -18972,17 +18972,43 @@ class MainWindow(QMainWindow):
         self._on_selected(t, item_id)
 
     def _on_equipment_marker_navigate(self, marker_id: int):
-        """Clicking a valve marker on the P&ID switches to Utrustningsregistret
-        and selects the corresponding row, mirroring _on_marker_navigate's
-        tree-select behaviour for cause/consequence/safeguard markers — the
-        closest equivalent to "navigate to this item" for equipment, which
-        has no HAZOP tree node of its own."""
+        """Clicking an already-placed (green) equipment marker on the P&ID
+        should surface the HAZOP scenario rows that mention it — causes,
+        consequences AND safeguards — the same way the worksheet looks right
+        after a cause was just created (2026-08-11, 'Om jag har lagt till
+        ett objekt på P&ID ... och klickar på det igen så vill jag att
+        orsakerna där det nämns dyker upp i hazop scenario ... Detta gäller
+        även om de är tillagda på konsekvens och safeguard').
+
+        Equipment only has a HAZOP tree node once it has been linked to one
+        (equipment_catalog.node_id, set via 'Nod ↔ Utrustning', see
+        Database.set_equipment_node). When that link exists we mirror
+        _on_equipment_deviation_created's own sequence exactly: refresh the
+        tree for that node and call scenario_panel.load_node(node_id),
+        which — unlike load_cause()/load_consequence() — pulls in every
+        deviation/cause/consequence/safeguard under the node together, so a
+        tag mentioned on a consequence or a safeguard shows up just as well
+        as one mentioned on a cause. No _switch_view() call is needed: the
+        marker can only be clicked while already on the P&ID page, and the
+        scenario table is the bottom pane of that same page.
+
+        If the equipment has no node yet, there is nothing to show in the
+        worksheet — keep the old "select the row in Utrustningsregistret"
+        behaviour as a fallback so the click still does something useful.
+        """
         row = self.db.conn.execute(
             "SELECT equipment_id FROM equipment_markers WHERE id=?", (marker_id,)).fetchone()
         if not row or row['equipment_id'] is None:
             return
-        self._switch_view(2)   # Utrustning page
-        self.equipment_panel.select_row_by_equipment_id(row['equipment_id'])
+        equipment_id = row['equipment_id']
+        node_id = self.db.equipment_node_id(equipment_id)
+        if node_id is not None:
+            self.tree_panel.refresh(NODE_T, node_id, emit_selection=False)
+            self.scenario_panel.load_node(node_id)
+            self.scenario_panel.refresh_placed()
+            return
+        self._switch_view(2)   # Utrustning page — fallback, no node to show a worksheet for
+        self.equipment_panel.select_row_by_equipment_id(equipment_id)
 
     def _on_equipment_deviation_created(self, deviation_id, equipment_id):
         """A deviation was checked on in EquipmentDeviationBar — refresh the

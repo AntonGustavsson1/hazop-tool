@@ -1108,6 +1108,20 @@ Utrustningsmarkörer på P&ID hade sedan tidigare EN badge (grön cirkel, övre 
 
 ---
 
+## Klick på redan placerad (grön) utrustningsmarkör visar nodens scenario (2026-08-11)
+
+**Rapport:** "Om jag har lagt till ett objekt på P&ID så det är grönmarkerad och klickar på det igen så vill jag att orsakerna där det nämns dyker upp i hazop scenario (så som det ser ut när jag lagt till nya orsaker precis). Detta gäller även om de är tillagda på konsekvens och safeguard."
+
+**Vad hände tidigare:** `MainWindow._on_equipment_marker_navigate()` gjorde alltid samma sak oavsett om utrustningen hade en HAZOP-nod kopplad eller inte: bytte till Utrustningsregistret (sida 2) och markerade raden där. Det visade aldrig orsaker/konsekvenser/safeguards — bara metadata om utrustningen i registret.
+
+**Fix:** funktionen slår nu upp `Database.equipment_node_id(equipment_id)` (samma `equipment_catalog.node_id`-koppling som "Nod ↔ Utrustning", se 2026-08-07-avsnittet ovan). Finns en nod kopplad speglas exakt samma sekvens som `_on_equipment_deviation_created()` redan använder efter att en avvikelse kryssats i på `EquipmentDeviationBar`: `tree_panel.refresh(NODE_T, node_id, emit_selection=False)` + `scenario_panel.load_node(node_id)` + `scenario_panel.refresh_placed()` — inget `_switch_view()`-anrop behövs eftersom markören bara går att klicka på när man redan står på P&ID-sidan, och scenario-tabellen är den nedre panelen på just den sidan. `load_node()` bygger in ALLA avvikelser/orsaker/konsekvenser/safeguards under noden tillsammans (bekräftat genom att läsa dess implementation), så en tagg som bara nämns på en konsekvens eller safeguard visas lika bra som en som nämns på en orsak — precis vad användarens "detta gäller även om de är tillagda på konsekvens och safeguard" efterfrågar. Ingen ny rad-specifik scrollnings-/markeringsmekanism uppfanns för just den klickade taggens rad (`ScenarioTablePanel.select_cause()` finns redan men matchar bara på cause_id, inte på utrustningstagg) — att visa hela nodens scenario räcker för att matcha "så som det ser ut när jag lagt till nya orsaker precis", exakt den jämförelse användaren själv gjorde.
+
+Saknar utrustningen fortfarande en nod (aldrig kopplad via "Nod ↔ Utrustning") finns det inget scenario att visa — det gamla registervals-beteendet är kvar oförändrat som fallback i det fallet, så klicket fortfarande gör något meningsfullt.
+
+**Test:** `EquipmentMarkerClickNavigationTests` fick 2 nya tester — `test_on_marker_navigate_equipment_with_node_shows_worksheet_not_register` (nod satt: `scenario_panel.load_node()` anropas med rätt node_id, INTE sida 2, och nodens konsekvens+safeguard — inte bara orsaken — syns i `_row_meta` efteråt) och `test_on_marker_navigate_equipment_without_node_still_uses_register_fallback` (ingen nod: `load_node()` anropas aldrig, gamla registerbeteendet oförändrat). Verifierat via `git stash push -- hazop.py` / `git stash pop`: utan fixen föll det första testet exakt på `load_node_spy.assert_called_once_with(node_id)` ("Called 0 times") medan det andra fortsatte gå grönt, precis som väntat eftersom fallback-vägen inte rörts. Full svit: `python -m unittest test_regression test_symbol_geometry`.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **OCR-positioner är approximativa** — x,y-koordinater från OCR stämmer inte perfekt med PDF-koordinater vid hög zoom. Markörer kan hamna något fel.
