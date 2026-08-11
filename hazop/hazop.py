@@ -18891,7 +18891,14 @@ class MainWindow(QMainWindow):
         self.pid_panel.try_reload_pdf()
 
     def _on_pid_analysis_done(self):
-        """Switch to Settings → Identifierade objekt after P&ID analysis."""
+        """Switch to Settings → Identifierade objekt after P&ID analysis,
+        then offer to chain straight into '🎯 Hitta objekt på P&ID' (2026-08-11):
+        'Efter jag klickat på analysera P&ID vill jag få upp samma popupruta
+        som innan, sedan vill jag att en popupfråga om jag vill hitta objekt
+        på P&ID ska komma upp. Då ska samma körning som "hitta objekt på
+        P&ID" knappen köras.' The 'Analys klar' popup itself is unchanged
+        (shown earlier, in PIDPanel._analyze_pid, before this signal fires);
+        this only adds the follow-up confirm + chained run."""
         self._switch_view(4)   # Settings page
         self.settings_panel.analysis_panel.refresh()
         # Switch to the "Identifierade objekt" tab inside settings
@@ -18901,6 +18908,18 @@ class MainWindow(QMainWindow):
                 if "Identifierade" in tabs.tabText(i):
                     tabs.setCurrentIndex(i)
                     break
+
+        reply = QMessageBox.question(
+            self, "Hitta objekt på P&ID",
+            "Vill du köra 🎯 Hitta objekt på P&ID nu, med de tagg-prefix "
+            "som just hittades?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes)
+        if reply == QMessageBox.StandardButton.Yes:
+            # Same run as clicking the button itself — refresh the register
+            # model first so it reflects the tags the analysis just wrote.
+            self.equipment_panel.refresh()
+            self.equipment_panel._autodetect()
 
     def _on_marker_navigate(self, item_type: str, item_id: int):
         """Navigate tree and detail panel when a P&ID marker is clicked."""

@@ -1081,6 +1081,16 @@ Två separata, sedan tidigare befintliga (inte introducerade denna session) bugg
 
 ---
 
+## "Analysera P&ID" kedjas till "Hitta objekt på P&ID" via en bekräftelsefråga (2026-08-11)
+
+**Rapport:** "Efter jag klickat på analysera P&ID vill jag få upp samma popupruta som innan, sedan vill jag att en popupfråga om jag vill hitta objekt på P&ID ska komma upp. Då ska samma körning som 'hitta objekt på P&ID' knappen köras."
+
+`MainWindow._on_pid_analysis_done()` (kopplad till `PIDPanel.pid_analysis_done`, som redan emitterades EFTER den befintliga "Analys klar ✅"-rutan i `_analyze_pid()` — den rutan är oförändrad) har fått en ny fråga i slutet: "Vill du köra 🎯 Hitta objekt på P&ID nu, med de tagg-prefix som just hittades?". Svarar användaren Ja körs exakt samma metod som knappen: `self.equipment_panel.refresh()` (så registret speglar de nyss skrivna taggarna från analysen) följt av `self.equipment_panel._autodetect()` — ingen duplicerad logik, bara samma anrop `_autodetect_btn.clicked` redan gör.
+
+**Test:** `PidAnalysisChainedAutodetectTests` (2 nya) — bygger en riktig `MainWindow` mot en scratch-databas (`_TempDbMainWindow`), mockar `QMessageBox.question` till Ja respektive Nej, och kontrollerar att `equipment_panel.refresh()`/`_autodetect()` anropas exakt vid Ja och aldrig vid Nej. Verifierat via `git stash`/`git stash pop` (Ja-testet föll korrekt mot `refresh` anropad 0 ggr utan fixen). Full svit: `python -m unittest test_regression test_symbol_geometry`.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **OCR-positioner är approximativa** — x,y-koordinater från OCR stämmer inte perfekt med PDF-koordinater vid hög zoom. Markörer kan hamna något fel.

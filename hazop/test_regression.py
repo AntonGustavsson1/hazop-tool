@@ -9118,5 +9118,40 @@ class NewCorpusPrefixReviewTests(unittest.TestCase):
         self.assertEqual(_equip_prefix_from_tag("PN-30"), '')
 
 
+class PidAnalysisChainedAutodetectTests(unittest.TestCase):
+    """'Efter jag klickat på analysera P&ID vill jag få upp samma popupruta
+    som innan, sedan vill jag att en popupfråga om jag vill hitta objekt på
+    P&ID ska komma upp. Då ska samma körning som "hitta objekt på P&ID"
+    knappen köras.' (2026-08-11) — MainWindow._on_pid_analysis_done now
+    asks a follow-up confirm after the existing 'Analys klar' popup (shown
+    earlier, in PIDPanel._analyze_pid, unaffected by this change) and, on
+    Yes, refreshes the equipment register and calls EquipmentPanel's own
+    _autodetect() — the exact method '🎯 Hitta objekt på P&ID' itself calls."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_yes_reply_refreshes_register_and_runs_autodetect(self):
+        with _TempDbMainWindow() as win:
+            with unittest.mock.patch('hazop.QMessageBox.question',
+                                      return_value=hazop.QMessageBox.StandardButton.Yes), \
+                 unittest.mock.patch.object(win.equipment_panel, 'refresh') as mock_refresh, \
+                 unittest.mock.patch.object(win.equipment_panel, '_autodetect') as mock_autodetect:
+                win._on_pid_analysis_done()
+                mock_refresh.assert_called_once()
+                mock_autodetect.assert_called_once()
+
+    def test_no_reply_does_not_run_autodetect(self):
+        with _TempDbMainWindow() as win:
+            with unittest.mock.patch('hazop.QMessageBox.question',
+                                      return_value=hazop.QMessageBox.StandardButton.No), \
+                 unittest.mock.patch.object(win.equipment_panel, 'refresh') as mock_refresh, \
+                 unittest.mock.patch.object(win.equipment_panel, '_autodetect') as mock_autodetect:
+                win._on_pid_analysis_done()
+                mock_refresh.assert_not_called()
+                mock_autodetect.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
