@@ -1157,6 +1157,18 @@ Nya grupper:
 
 ---
 
+## Rad krympte till en rad när en konsekvens-text suddades ut (2026-08-11)
+
+**Rapport:** "När jag har skapat en konsekvens och sedan suddar ut allt krymper raden och blir alltför låg vilket gör att jag inte ser vad som står på orsak och FA/antändning ser konstigt ut."
+
+**Grundorsak:** `_update_row_text_only()` (den snabba vägen som patchar EN cells text utan en full `_rebuild()`, se tidigare avsnitt) satte radens höjd via `self._table.setRowHeight(row, self._wrap_col_row_height(row, col))` — dvs enbart utifrån vad den NYSS REDIGERADE kolumnen (t.ex. KON) själv behövde, oavsett vad radens ÖVRIGA kolumner krävde. Så länge konsekvensens text var lång bidrog KON:s egen radbrytningshöjd tillräckligt (av en ren tillfällighet) för att även rymma en lång orsakstext i samma rad — men så fort användaren suddade ut konsekvensbeskrivningen till tomt, returnerade `_wrap_col_row_height` bara en enda kompakt rad, och HELA radens höjd sattes rakt av till det, oavsett hur lång orsakstexten (ORS) var eller att FA/Ant./Övriga-kolumnen (`_LopaWidget`, `setFixedHeight(_ROW_H*3+2)` = 50px) redan hade en egen, större fast höjd. Resultatet: orsakstexten klipptes av och LOPA-widgeten klämdes ihop under sin egna fasta höjd — "ser konstigt ut" är precis det en `QWidget` gör när den tvingas in i en rad kortare än sin `setFixedHeight()`.
+
+**Fix:** ny delad metod `ScenarioTablePanel._compute_row_height(row, fm=None)` — samma per-rad-loop som redan fanns inbakad i `_resize_rows_manual()` (ORS-radbrytning, KON-radbrytning, SG en rad, LOPA-widgetens `sizeHint()`), plus `_resize_rows()`s ORS-golv (`_min_ors`, tidigare bara tillämpat i en SEPARAT passering som den snabba vägen aldrig gick igenom) — allt i EN funktion, återanvänd av både `_resize_rows_manual()` (fullständig ombyggnad) och `_update_row_text_only()` (snabbväg). `_update_row_text_only()` anropar nu `_compute_row_height(row)` istället för `_wrap_col_row_height(row, col)`, så radens höjd alltid räknas ut från ALLA kolumner som faktiskt delar raden, inte bara den just redigerade. `_wrap_col_row_height()` (som bara räknar EN kolumns behov) finns kvar oanvänd i produktionskoden men behålls som en liten, fristående, redan testad hjälpfunktion — `TextOnlyEditFastPathTests.test_wrap_col_row_height_matches_resize_rows_manual_formula` fortsätter verifiera att den stämmer överens med en riktig `_resize_rows_manual()`-passering.
+
+**Test:** `ClearedConsequenceRowHeightTests` (1 ny) — bygger en orsak med garanterat flerradig text, lägger till en konsekvens, simulerar "skriv en lång konsekvenstext" följt av "sudda ut allt" via två `_update_row_text_only()`-anrop, och kontrollerar att radhöjden efteråt fortfarande räcker för BÅDE orsakstextens egna beräknade behov OCH LOPA-widgetens fasta höjd. Verifierat via `git stash`/`git stash pop`: utan fixen föll testet med radhöjd 18px mot ett förväntat behov på 523px — en konkret, mätbar bekräftelse av precis den rapporterade buggen. Full svit: `python -m unittest test_regression test_symbol_geometry`.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **Sid-orienteringsinställningen (P&ID-inställningar) är inte kopplad till faktisk rendering/skanning** — sparas i `pid_page_orientation_hint` men läses ännu inte av PDF-rendering, OCR-förbehandling eller taggskanning, som alla idag bara följer PDF-filens egen `/Rotate`-flagga direkt. Att koppla in den kräver att tråda en override genom flera lager, inklusive de flerprocess-skanningsarbetarna — inte gjort 2026-08-11, se ovan.

@@ -9833,5 +9833,51 @@ class SettingsPanelPidTabRenameAndNewSettingsTests(unittest.TestCase):
             self.assertTrue(use_ocr)
 
 
+class ClearedConsequenceRowHeightTests(unittest.TestCase):
+    """'När jag har skapat en konsekvens och sedan suddar ut allt krymper
+    raden och blir alltför låg vilket gör att jag inte ser vad som står på
+    orsak och FA/antändning ser konstigt ut.' (2026-08-11) —
+    _update_row_text_only()'s fast path used to set a row's height to ONLY
+    what the just-edited column needed (_wrap_col_row_height(row, col)),
+    discarding whatever a long ORS cause description or the fixed-height
+    _LopaWidget (FA/Ant./Övriga column) in the SAME row required. Clearing
+    a consequence's text back to empty shrank the row to one line,
+    clipping the cause text and squashing the LOPA widget."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_clearing_consequence_text_does_not_shrink_row_below_cause_and_lopa_needs(self):
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            long_cause = ("En mycket lång orsakstext som garanterat radbryts "
+                          "över flera rader i cellen. " * 3)
+            win.db.update_cause(cause_id, description=long_cause)
+            cons_id = win.db.add_consequence(cause_id)
+            panel.load_cause(cause_id)
+
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+
+            # Simulate: user types a long consequence description (growing
+            # the row), then erases it completely back to empty.
+            panel._update_row_text_only('consequence', cons_id,
+                                        "En lång konsekvensbeskrivning som också radbryts. " * 5)
+            panel._update_row_text_only('consequence', cons_id, "")
+
+            needed_for_cause = panel._wrap_col_row_height(row, panel._C_ORS)
+            lopa_widget = panel._table.cellWidget(row, panel._C_LOPA)
+            needed_for_lopa = lopa_widget.sizeHint().height() if lopa_widget else 0
+            actual = panel._table.rowHeight(row)
+
+            self.assertGreaterEqual(actual, needed_for_cause,
+                "row shrank below what the (still long, unchanged) cause text needs")
+            self.assertGreaterEqual(actual, needed_for_lopa,
+                "row shrank below the FA/Ant. widget's own fixed height")
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -12076,83 +12076,114 @@ class ScenarioTablePanel(QWidget):
             _span_col(col, _cat_key)
         logging.info('_apply_spans: J6 — RFORE/SLUT columns spanned, done')
 
+    def _compute_row_height(self, row, fm=None):
+        """The height `row` needs across EVERY column that can affect it —
+        ORS/KON wrapped text, the fixed-height _LopaWidget in the FA/Ant.
+        column, SG's one-line minimum, and the ORS readability floor —
+        folded into a single per-row function so a caller updating just
+        ONE column's text can never accidentally shrink the row below what
+        its OTHER columns need.
+
+        2026-08-11 ("skapat en konsekvens och sedan suddar ut allt krymper
+        raden ... jag inte ser vad som står på orsak och FA/antändning ser
+        konstigt ut"): before this, _update_row_text_only()'s fast path set
+        a row's height to ONLY what the just-edited column (e.g. KON, once
+        cleared back to empty text) needed, discarding whatever a long ORS
+        cause description or the LOPA widget's own fixed height required —
+        the row shrank to one line, clipping the cause text and squashing
+        the FA/Ant. widget below its own setFixedHeight(). This function is
+        now the single source of truth for "how tall must this row be",
+        used by both the full _resize_rows_manual() rebuild pass AND
+        _update_row_text_only()'s single-row fast path, so the two can
+        never again disagree about one row's height. Also folds in the ORS
+        minimum-readable-height floor _resize_rows() used to apply in a
+        SEPARATE pass reachable only from a full rebuild — the fast path
+        never went through that pass at all, so a short ORS text edited via
+        the fast path could previously end up below the floor too.
+        """
+        table = self._table
+        if fm is None:
+            fm = QFontMetrics(table.font())
+        one_line_h = fm.height() + 6
+        wrap_cols = (self._C_ORS, self._C_KON)
+        max_h = one_line_h
+        for col in range(table.columnCount()):
+            if table.isColumnHidden(col):
+                continue
+
+            if col == self._C_LOPA:
+                widget = table.cellWidget(row, col)
+                if widget is not None:
+                    h = widget.sizeHint().height()
+                    if h > max_h:
+                        max_h = h
+                continue
+
+            if col == self._C_SG:
+                # SG's description never word-wraps — a single
+                # compact line is always enough.
+                if one_line_h > max_h:
+                    max_h = one_line_h
+                continue
+
+            if col not in wrap_cols:
+                # Fixed one-line columns (matches _ScenarioDelegate's
+                # non-wrap branch) — no font-metric work needed.
+                continue
+
+            item = table.item(row, col)
+            text = item.text() if item is not None else ''
+            if not text:
+                continue
+
+            w = table.columnWidth(col)
+            if col == self._C_ORS:
+                cell_w = max(40, w - 6)
+                rect = fm.boundingRect(0, 0, cell_w, 10000,
+                                      Qt.TextFlag.TextWordWrap, text)
+                h = _ORS_STRIP_H + max(one_line_h, rect.height() + 4)
+            else:   # self._C_KON
+                cell_w = max(40, w - _PID_ICON_W - _KON_CAT_W)
+                rect = fm.boundingRect(0, 0, cell_w, 10000,
+                                      Qt.TextFlag.TextWordWrap, text)
+                h = max(one_line_h, rect.height() + 4)
+            if h > max_h:
+                max_h = h
+
+        ors_item = table.item(row, self._C_ORS)
+        if ors_item and ors_item.text():
+            min_ors = fm.height() * 2 + 20  # floor for ORS rows: ~2 lines + strip
+            if max_h < min_ors:
+                max_h = min_ors
+        return max_h
+
     def _resize_rows_manual(self):
         """
         Compute and apply each row's height directly in Python instead of
         calling QTableWidget.resizeRowsToContents() (see _resize_rows()
-        docstring for why). Mirrors the logic _ScenarioDelegate.sizeHint()
-        uses per-cell, but:
-
-          - Only the columns that actually need wrapping-height computation
-            (_C_ORS, _C_KON — see _ScenarioDelegate._size_hint_impl) run the
-            expensive QFontMetrics.boundingRect() path; every other column
-            is known to always report a fixed one-line height, so it's used
-            directly without going through sizeHint()/the delegate at all.
-            This keeps the cost roughly proportional to the old native call
-            instead of paying full per-cell sizeHint() overhead for every
-            column in tables with hundreds of rows (e.g. "all nodes" mode).
-          - Hidden columns (_C_NOD/_C_DEV in single-node mode) are skipped.
-          - The _C_LOPA column uses a fixed-height cell widget (_LopaWidget,
-            setFixedHeight(_ROW_H*3+2) — see class _LopaWidget), not a
-            delegate-painted item, so its height is read directly from the
-            widget rather than computed via QFontMetrics.
+        docstring for why). Delegates the actual per-row formula to
+        _compute_row_height() (shared with _update_row_text_only()'s fast
+        path — see that method's docstring) but keeps the QFontMetrics
+        instance built ONCE up here rather than once per row: only the
+        columns that actually need wrapping-height computation (_C_ORS,
+        _C_KON — see _ScenarioDelegate._size_hint_impl) run the expensive
+        QFontMetrics.boundingRect() path, but constructing QFontMetrics
+        itself hundreds of times (once per row, in "all nodes" mode) is
+        needless allocation churn worth avoiding when a single shared
+        instance works just as well.
         """
         table = self._table
         row_count = table.rowCount()
         col_count = table.columnCount()
-        fm_font = table.font()
-        fm = QFontMetrics(fm_font)
+        fm = QFontMetrics(table.font())
         one_line_h = fm.height() + 6
-        wrap_cols = (self._C_ORS, self._C_KON)
 
         logging.info('_resize_rows_manual: L0 — entry (rows=%d, cols=%d)',
                      row_count, col_count)
 
         for row in range(row_count):
-            max_h = one_line_h
             try:
-                for col in range(col_count):
-                    if table.isColumnHidden(col):
-                        continue
-
-                    if col == self._C_LOPA:
-                        widget = table.cellWidget(row, col)
-                        if widget is not None:
-                            h = widget.sizeHint().height()
-                            if h > max_h:
-                                max_h = h
-                        continue
-
-                    if col == self._C_SG:
-                        # SG's description never word-wraps — a single
-                        # compact line is always enough.
-                        if one_line_h > max_h:
-                            max_h = one_line_h
-                        continue
-
-                    if col not in wrap_cols:
-                        # Fixed one-line columns (matches _ScenarioDelegate's
-                        # non-wrap branch) — no font-metric work needed.
-                        continue
-
-                    item = table.item(row, col)
-                    text = item.text() if item is not None else ''
-                    if not text:
-                        continue
-
-                    w = table.columnWidth(col)
-                    if col == self._C_ORS:
-                        cell_w = max(40, w - 6)
-                        rect = fm.boundingRect(0, 0, cell_w, 10000,
-                                              Qt.TextFlag.TextWordWrap, text)
-                        h = _ORS_STRIP_H + max(one_line_h, rect.height() + 4)
-                    else:   # self._C_KON
-                        cell_w = max(40, w - _PID_ICON_W - _KON_CAT_W)
-                        rect = fm.boundingRect(0, 0, cell_w, 10000,
-                                              Qt.TextFlag.TextWordWrap, text)
-                        h = max(one_line_h, rect.height() + 4)
-                    if h > max_h:
-                        max_h = h
+                max_h = self._compute_row_height(row, fm=fm)
             except Exception:
                 # Defensive: this is user-facing rebuild code and a single
                 # row's height computation should never take down the whole
@@ -12162,7 +12193,7 @@ class ScenarioTablePanel(QWidget):
                 # method is to avoid the native resizeRowsToContents() path
                 # that was pinpointed as the actual crash site.
                 logging.exception('_resize_rows_manual: L1 — row %d height calc raised', row)
-                max_h = max(max_h, one_line_h)
+                max_h = one_line_h
 
             if max_h > 0:
                 table.setRowHeight(row, max_h)
@@ -12753,15 +12784,23 @@ class ScenarioTablePanel(QWidget):
                 if item is not None:
                     item.setText(new_desc)
                 if needs_height_recalc:
-                    self._table.setRowHeight(row, self._wrap_col_row_height(row, col))
+                    # Recompute the WHOLE row's height (_compute_row_height),
+                    # not just what this one column now needs — otherwise
+                    # clearing e.g. a consequence's text back to empty would
+                    # shrink the row below what a long cause description (or
+                    # the FA/Ant. column's fixed-height widget) in the SAME
+                    # row still requires (2026-08-11, see NOTES.md).
+                    self._table.setRowHeight(row, self._compute_row_height(row))
         finally:
             self._table.blockSignals(False)
 
     def _wrap_col_row_height(self, row, col):
-        """Height a single ORS/KON cell needs for its current text, matching
-        _resize_rows_manual()'s per-column formula exactly (kept in sync
-        with it deliberately — see that method for why boundingRect() is
-        only used for these two wrap-sensitive columns)."""
+        """Height a single ORS/KON cell alone needs for its current text —
+        no longer used by _update_row_text_only() (see _compute_row_height,
+        which considers the whole row), kept as a small standalone helper
+        purely because TextOnlyEditFastPathTests asserts it still agrees
+        with a real _resize_rows_manual() pass for a single column, so the
+        two formulas can never silently drift apart."""
         table = self._table
         fm = QFontMetrics(table.font())
         one_line_h = fm.height() + 6
