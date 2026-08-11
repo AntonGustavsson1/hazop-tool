@@ -345,11 +345,20 @@ sys.excepthook = _global_exception_hook
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _get_windows11_stylesheet():
-    """Near-monochrome theme with one signal accent, matching the design mockup."""
+    """Near-monochrome theme with one signal accent, matching the design mockup.
+
+    Deliberately no `font-size` here (2026-08-11, bug report: "möjligheten
+    att förstora och förminska texten" disappeared) — a universal `* {
+    font-size: ... }` rule wins over ANY later QWidget.setFont() call on a
+    matching widget (the same "QSS always wins over Qt::*Role" quirk
+    already documented elsewhere in this file for background/foreground
+    colors), which silently broke ScenarioTablePanel's "Textstorlek"
+    spinbox. The app-wide default size is set via QApplication.setFont()
+    in main() instead — that one DOES yield to a widget's own setFont().
+    """
     return """
     * {
         font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
-        font-size: 9pt;
     }
 
     QMainWindow, QDialog, QWidget {
@@ -10613,7 +10622,12 @@ class _PidDelegate(_ScenarioDelegate):
 
                 # Layout: [pin 22px][description ...][RRF badge 54px]
                 desc_w    = r.width() - _PID_ICON_W - _RRF_W
-                pin_rect  = QRect(r.left(), body_top, _PID_ICON_W, body_h)
+                # Pin anchored to the TOP of the cell (2026-08-11: "det vore
+                # snyggt om nålpluppen i HAZOP scenario stod i överkant") —
+                # _draw_pid_pin centers itself within whatever rect it's
+                # given, so a rect spanning the FULL (possibly tall) row
+                # left it drifting to the vertical middle instead.
+                pin_rect  = QRect(r.left(), body_top, _PID_ICON_W, min(body_h, _PID_ICON_W))
                 desc_rect = QRect(r.left() + _PID_ICON_W, body_top, desc_w, body_h)
                 rrf_rect  = QRect(r.right() - _RRF_W, body_top, _RRF_W, body_h)
 
@@ -10834,7 +10848,10 @@ class _PidDelegate(_ScenarioDelegate):
                 body_top = r.top()
                 body_h   = r.height()
 
-                pin_rect   = QRect(r.left(), body_top, _PID_ICON_W, body_h)
+                # Pin anchored to the TOP of the cell, not centered across a
+                # possibly tall wrapped-text row — see the SG cell's
+                # identical fix above for the full rationale.
+                pin_rect   = QRect(r.left(), body_top, _PID_ICON_W, min(body_h, _PID_ICON_W))
                 cat_rect   = QRect(r.left() + _PID_ICON_W, body_top, _KON_CAT_W, body_h)
                 txt_rect   = QRect(r.left() + _PID_ICON_W + _KON_CAT_W, body_top,
                                    r.width() - _PID_ICON_W - _KON_CAT_W, body_h)
@@ -11426,7 +11443,7 @@ class ScenarioTablePanel(QWidget):
             self._C_ORS:   (QHeaderView.ResizeMode.Interactive, 180),
             self._C_KON:   (QHeaderView.ResizeMode.Interactive, 180),
             self._C_RFORE: (QHeaderView.ResizeMode.Interactive,  85),
-            self._C_SG:    (QHeaderView.ResizeMode.Interactive, 160),
+            self._C_SG:    (QHeaderView.ResizeMode.Interactive, 130),
             self._C_LOPA:  (QHeaderView.ResizeMode.Interactive, 130),
             self._C_SLUT:  (QHeaderView.ResizeMode.Interactive,  85),
         }
@@ -20250,6 +20267,11 @@ if __name__ == '__main__':
 
     # Apply Windows 11 light theme
     app.setStyleSheet(_get_windows11_stylesheet())
+    # Default font size lives here, not in the QSS above — see that
+    # function's own docstring for why a QSS font-size rule would block
+    # widgets (like ScenarioTablePanel's "Textstorlek" spinbox) from ever
+    # changing their own font size again.
+    app.setFont(QFont("Segoe UI", 9))
 
     # Show splash screen during startup
     splash = SplashScreen()

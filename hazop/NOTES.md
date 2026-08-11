@@ -1067,6 +1067,20 @@ Två separata, sedan tidigare befintliga (inte introducerade denna session) bugg
 
 ---
 
+## Textstorlek slutade fungera, nålpluppen hamnade i mitten på höga rader, Barriärer-kolumnen för bred (2026-08-11)
+
+**Rapport (tre punkter ur samma stora lista):** "När du skrev om UI så försvann möjligheten att förstora och förminska texten." / "Det vore snyggt om nålpluppen i HAZOP scenario stod i överkant." / "Du kan göra kolumnen barriärer lite smalare."
+
+**Fix 1 — global `font-size: 9pt;` i QSS:ens universella `* {}`-regel blockerade "Textstorlek"-spinboxen.** Samma Qt-särdrag som redan hittats en gång tidigare för cellbakgrunder (2026-08-09), nu hittat igen för teckenstorlek: så fort NÅGON QSS-regel (även en universell `*`-selektor) sätter en CSS-styrbar egenskap på en widget, ignorerar Qt tyst widgetens EGNA `.setFont()`-anrop för samma egenskap vid rendering — spinboxen ändrade `self._cell_font_size`/anropade `.setFont()` som vanligt, men den globala stilmallens `font-size: 9pt` vann alltid över det. **Fix:** `font-size: 9pt;` borttagen ur den universella `* {}`-regeln; standardstorleken sätts istället en gång via `app.setFont(QFont("Segoe UI", 9))` i `main()` — en `QApplication`-standard som enskilda widgetars egna `.setFont()`-anrop fortfarande FÅR overrida (till skillnad från en QSS-regel).
+
+**Fix 2 — SG:s och KON:s `pin_rect` spände hela (ibland höga) cellhöjden, så centreringen i `_draw_pid_pin()` drev pluppen till radens mitt istället för överkant.** Händer så fort en rad blir hög av en lång radbruten orsaks-/konsekvensbeskrivning som delar rad med en kortare safeguard/konsekvens. **Fix:** `pin_rect` byggs nu med `min(body_h, _PID_ICON_W)` istället för `body_h` rakt av, så pluppen alltid ligger kvar nära cellens överkant oavsett radhöjd.
+
+**Fix 3 — Barriärer-kolumnen smalnades av** från 160px till 130px i `resize_modes`.
+
+**Test:** `GlobalStylesheetFontSizeTests` (1 ny) kontrollerar att den universella QSS-regeln aldrig innehåller `font-size`. `PinTopAlignedInTallRowsTests` (2 nya) renderar en riktig, tvingat hög rad och pixel-scannar efter den röda (ej taggade) pluppfärgen i cellens vänsterremsa — kräver att pluppen stannar inom de första 25px oavsett hur hög cellen är. Första testförsöket avslöjade en separat, oväntad bugg i testverktyget: hjälpmetoden anropade `QTableWidget.resizeRowsToContents()` (den inbyggda Qt-metoden), som — precis som `_resize_rows()`s egen docstring redan varnar för (native-krasch, se "Gömd text"-avsnittet ovan) — visade sig även tyst räkna ut FEL (för liten) radhöjd för en mycket hög radbruten cell, trots att delegatens `sizeHint()` korrekt returnerade rätt värde när den anropades direkt. Löst genom att testet istället anropar `panel._resize_rows_manual()`, samma renderingsväg produktionskoden faktiskt använder. Ett första gränsvärde (`max_y < cell_h/2`) visade sig också vara för löst — både buggen (plupp i mitten) och fixen (plupp nära topp) råkade hamna under den tröskeln för vissa textlängder, vilket inte särskiljde dem; skärpt till ett fast pixeltak (`max_y < 25`) som verifierades med `git stash`/`git stash pop` att verkligen fånga båda buggarna (utan fixen: y≈316–392 i en 634–785px hög cell; med fixen: y≈4–10). Full svit: `python -m unittest test_regression test_symbol_geometry`.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **OCR-positioner är approximativa** — x,y-koordinater från OCR stämmer inte perfekt med PDF-koordinater vid hög zoom. Markörer kan hamna något fel.

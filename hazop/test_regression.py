@@ -8422,6 +8422,34 @@ class RiskCellActualRenderColorTests(unittest.TestCase):
             panel.deleteLater()
 
 
+class GlobalStylesheetFontSizeTests(unittest.TestCase):
+    """'När du skrev om UI så försvann möjligheten att förstora och
+    förminska texten' (2026-08-11) — the near-monochrome theme's
+    universal `* { font-size: 9pt; }` rule wins over ANY later
+    QWidget.setFont() call for that property on a matching widget (the
+    same well-known "QSS always beats Qt::*Role/dynamic properties"
+    quirk already documented and fixed elsewhere in this file for cell
+    background/foreground colors) — silently freezing
+    ScenarioTablePanel's "Textstorlek" spinbox at 9pt no matter what
+    value the user picked. Testing the actual Qt style cascade
+    end-to-end is exactly the kind of thing this project's own history
+    has shown to be unreliable in a headless test (a synthetic,
+    real-render-free check can pass even when the real bug is present —
+    see RiskCellActualRenderColorTests' docstring) — so this instead
+    pins down the concrete, textual root cause: the universal selector
+    must never carry a font-size rule again."""
+
+    def test_universal_selector_has_no_font_size_rule(self):
+        import re
+        from hazop import _get_windows11_stylesheet
+        css = _get_windows11_stylesheet()
+        m = re.search(r'\*\s*\{([^}]*)\}', css)
+        self.assertIsNotNone(m, "expected a universal '*' selector block in the stylesheet")
+        self.assertNotIn('font-size', m.group(1),
+            "a font-size rule on the universal selector overrides every widget's own "
+            "setFont() call, including ScenarioTablePanel's zoom spinbox")
+
+
 class TaggedRowPinTurnsGreenTests(unittest.TestCase):
     """'Drar jag in ett objekt till safeguard eller konsekvens eller
     trädet så skall ju pluppen ändras från röd till grön' (2026-08-09).
@@ -8532,6 +8560,119 @@ class TaggedRowPinTurnsGreenTests(unittest.TestCase):
             found_green, found_red = self._pin_color_in_cell(panel, row, panel._C_KON)
             self.assertTrue(found_red, "an untagged, unmarked consequence's pin must stay red")
             self.assertFalse(found_green)
+        finally:
+            panel.deleteLater()
+
+
+class PinTopAlignedInTallRowsTests(unittest.TestCase):
+    """'Det vore snyggt om nålpluppen i HAZOP scenario stod i överkant'
+    (2026-08-11) — SG's and KON's pin_rect used to span the cell's FULL
+    (possibly tall, e.g. from a long wrapped description sharing the
+    same row) height, so _draw_pid_pin's own centering left the pin
+    drifting to the vertical middle of a tall row instead of staying
+    near the top. Fixed by capping the pin's own rect at _PID_ICON_W
+    tall, anchored at the cell's top."""
+
+    _PIN_RED = (0xe7, 0x4c, 0x3c)
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_pintop_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _pin_pixel_y_range(self, panel, row, col):
+        """Render the real cell and return (min_y, max_y, cell_height)
+        for every pixel matching the (untagged, unmarked) red pin
+        color found in its left icon strip.
+
+        Uses panel._resize_rows_manual() rather than the native
+        QTableWidget.resizeRowsToContents() — the latter was pinpointed
+        as a native crash site (see _resize_rows()'s docstring) and, on
+        top of that, was observed here to silently compute a wrong (far
+        too small) row height for a very tall wrapped-text row. Production
+        code never calls it either; matching that real render path is
+        what makes this test meaningful."""
+        panel.resize(600, 400)
+        panel.show()
+        self.app.processEvents()
+        panel._resize_rows_manual()
+        self.app.processEvents()
+        index = panel._table.model().index(row, col)
+        cell_rect = panel._table.visualRect(index)
+        pixmap = panel._table.viewport().grab(cell_rect)
+        panel.hide()
+        image = pixmap.toImage()
+        ys = []
+        strip_w = min(24, image.width())
+        for x in range(strip_w):
+            for y in range(image.height()):
+                px = image.pixelColor(x, y)
+                if (px.red(), px.green(), px.blue()) == self._PIN_RED:
+                    ys.append(y)
+        self.assertTrue(ys, "expected to find the (red, unmarked) pin somewhere in this cell")
+        return min(ys), max(ys), image.height()
+
+    def test_sg_pin_stays_near_top_of_a_tall_row(self):
+        from hazop import ScenarioTablePanel
+        panel = ScenarioTablePanel(self.db)
+        try:
+            node_id = self.db.add_node()
+            dev_id = self.db.deviations(node_id)[0]['id']
+            cause_id = self.db.add_cause(dev_id)
+            self.db.update_cause(
+                cause_id,
+                description="En mycket lång orsakstext som tvingar fram en hög "
+                            "rad genom radbrytning i cellen " * 4)
+            cons_id = self.db.add_consequence(cause_id)
+            sg_id = self.db.add_safeguard(cons_id)
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[3] == sg_id)
+
+            min_y, max_y, cell_h = self._pin_pixel_y_range(panel, row, panel._C_SG)
+            self.assertGreater(cell_h, 60, "the row must actually be tall for this test to mean anything")
+            # Fixed pixel budget (not cell_h/2): the pin_rect is capped at
+            # _PID_ICON_W tall, so a correctly top-anchored pin always stays
+            # within the first ~25px regardless of how tall the row grows.
+            # cell_h/2 was tried first but the bug (pin centered in the full
+            # row) and the fix (pin capped near the top) both landed under
+            # that threshold for some text lengths, making it not actually
+            # distinguish the two — see NOTES.md 2026-08-11.
+            self.assertLess(max_y, 25,
+                f"pin pixels reached y={max_y} in a {cell_h}px-tall cell — "
+                "must stay near the top, not drift toward the middle")
+        finally:
+            panel.deleteLater()
+
+    def test_kon_pin_stays_near_top_of_a_tall_row(self):
+        from hazop import ScenarioTablePanel
+        panel = ScenarioTablePanel(self.db)
+        try:
+            node_id = self.db.add_node()
+            dev_id = self.db.deviations(node_id)[0]['id']
+            cause_id = self.db.add_cause(dev_id)
+            cons_id = self.db.add_consequence(cause_id)
+            self.db.update_consequence(
+                cons_id,
+                "En mycket lång konsekvensbeskrivning som tvingar fram en hög "
+                "rad genom radbrytning i cellen " * 4, 3, '')
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+
+            min_y, max_y, cell_h = self._pin_pixel_y_range(panel, row, panel._C_KON)
+            self.assertGreater(cell_h, 60, "the row must actually be tall for this test to mean anything")
+            self.assertLess(max_y, 25,
+                f"pin pixels reached y={max_y} in a {cell_h}px-tall cell — "
+                "must stay near the top, not drift toward the middle")
         finally:
             panel.deleteLater()
 
