@@ -2792,6 +2792,31 @@ class Database:
             "SELECT COUNT(*) FROM deviations WHERE equipment_id=?", (equipment_id,)).fetchone()
         return row[0] if row else 0
 
+    def equipment_consequence_count(self, comp_tag, comp_type=''):
+        """How many consequences reference this equipment's tag — the
+        'förekomster i konsekvenser' counter (2026-08-11, see NOTES.md).
+        consequences has no equipment_id FK (only the flat comp_tag/
+        comp_type columns set by set_consequence_tag), so — unlike
+        equipment_deviation_count's FK join — this matches by tag+type."""
+        if not comp_tag:
+            return 0
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM consequences WHERE comp_tag=? AND comp_type=?",
+            (comp_tag, comp_type or '')).fetchone()
+        return row[0] if row else 0
+
+    def equipment_safeguard_count(self, comp_tag, comp_type=''):
+        """How many safeguards reference this equipment's tag — the
+        'förekomster i safeguards' counter (2026-08-11, see NOTES.md).
+        Mirrors equipment_consequence_count (safeguards also has no
+        equipment_id FK, only comp_tag/comp_type)."""
+        if not comp_tag:
+            return 0
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM safeguards WHERE comp_tag=? AND comp_type=?",
+            (comp_tag, comp_type or '')).fetchone()
+        return row[0] if row else 0
+
     def set_deviation_equipment(self, deviation_id, equipment_id):
         """Tie an EXISTING deviation to a specific equipment item — used
         when equipment is drag-and-dropped directly onto a deviation

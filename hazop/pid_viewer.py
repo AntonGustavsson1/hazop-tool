@@ -4799,7 +4799,8 @@ class PIDGraphicsView(QGraphicsView):
             self.add_zone_rect('safeguard', sg_id, x_pdf, y_pdf, rect_w, rect_h)
 
     def add_equipment_marker(self, marker_id, x_pdf, y_pdf, comp_type, tag='',
-                             confidence=0.0, outline_pdf=None, deviation_count=0):
+                             confidence=0.0, outline_pdf=None, deviation_count=0,
+                             consequence_count=0, safeguard_count=0):
         """Draw an auto-detected equipment symbol marker: a semi-transparent
         shape tracing the detected symbol's outline (or a generic
         valve-bowtie icon if no outline was captured), linked to `tag` via
@@ -4810,7 +4811,17 @@ class PIDGraphicsView(QGraphicsView):
         0 keeps the original red "not analysed yet" colour; >0 switches to
         green and adds a small numbered badge in the marker's top-right
         corner, so a glance at the P&ID shows which equipment already has
-        HAZOP deviations recorded against it."""
+        HAZOP deviations recorded against it.
+
+        `consequence_count`/`safeguard_count` (2026-08-11, see NOTES.md
+        "Tre räknare på P&ID") — two further badges (bottom-right/
+        bottom-left), each only drawn when >0, counting how many times
+        this equipment's tag appears in consequences/safeguards
+        (Database.equipment_consequence_count/equipment_safeguard_count —
+        tag+type match, since those tables have no equipment_id FK to
+        join on the way deviations does). Deliberately does NOT change
+        the red/green "analysed" colouring above, which stays tied to
+        deviation_count alone, unchanged from before this feature."""
         center = self.pdf_to_scene(x_pdf, y_pdf)
         r = 12.0
         has_deviations = deviation_count > 0
@@ -4841,6 +4852,10 @@ class PIDGraphicsView(QGraphicsView):
         tip = f"{tag + ': ' if tag else ''}{comp_type}\nAutodetekterad ({pct}% konfidens)"
         if has_deviations:
             tip += f"\n{deviation_count} avvikelse{'r' if deviation_count != 1 else ''} registrerad{'e' if deviation_count != 1 else ''}"
+        if consequence_count > 0:
+            tip += f"\n{consequence_count} konsekvens{'er' if consequence_count != 1 else ''}"
+        if safeguard_count > 0:
+            tip += f"\n{safeguard_count} safeguard{'s' if safeguard_count != 1 else ''}"
         # Gesture hints (2026-08-10, see NOTES.md) — Ctrl/Shift modifiers on
         # equipment markers have no other visible affordance in the UI.
         tip += ("\n\nCtrl+klick: markera flera\nCtrl+drag: gummiband-markera flera\n"
@@ -4852,18 +4867,16 @@ class PIDGraphicsView(QGraphicsView):
         item.setCursor(Qt.CursorShape.PointingHandCursor)   # matches cause/consequence/safeguard markers
         self._add_tracked(item, 'equipment')
 
-        if has_deviations:
-            poly_rect = QPolygonF(points).boundingRect()
+        def _draw_corner_badge(bx, by, count, outline, fill):
             badge_r = 8.0
-            bx, by = poly_rect.right(), poly_rect.top()
             badge = QGraphicsEllipseItem(bx - badge_r, by - badge_r, 2 * badge_r, 2 * badge_r)
-            badge.setPen(QPen(QColor(0, 100, 40), 1))
-            badge.setBrush(QBrush(QColor(0, 140, 60)))
+            badge.setPen(QPen(outline, 1))
+            badge.setBrush(QBrush(fill))
             badge.setZValue(Z_OVERLAY + 1)
             badge.setToolTip(tip)
             badge.setCursor(Qt.CursorShape.PointingHandCursor)
             self._add_tracked(badge, 'equipment')
-            count_txt = QGraphicsSimpleTextItem(str(deviation_count))
+            count_txt = QGraphicsSimpleTextItem(str(count))
             f = QFont(); f.setPointSize(8); f.setBold(True)
             count_txt.setFont(f)
             count_txt.setBrush(QBrush(QColor(255, 255, 255)))
@@ -4871,6 +4884,20 @@ class PIDGraphicsView(QGraphicsView):
             count_txt.setPos(bx - tb.width() / 2, by - tb.height() / 2)
             count_txt.setZValue(Z_OVERLAY + 2)
             self._add_tracked(count_txt, 'equipment')
+
+        poly_rect = QPolygonF(points).boundingRect()
+        # Three corners, one counter each — colours distinct from the
+        # cause/consequence/safeguard markers themselves (red/orange/green)
+        # so the two never get visually conflated at a glance.
+        if has_deviations:
+            _draw_corner_badge(poly_rect.right(), poly_rect.top(), deviation_count,
+                               QColor(0, 100, 40), QColor(0, 140, 60))
+        if consequence_count > 0:
+            _draw_corner_badge(poly_rect.right(), poly_rect.bottom(), consequence_count,
+                               QColor(180, 100, 0), QColor(230, 140, 20))
+        if safeguard_count > 0:
+            _draw_corner_badge(poly_rect.left(), poly_rect.bottom(), safeguard_count,
+                               QColor(20, 60, 130), QColor(52, 110, 200))
 
         if tag:
             self._place_label(tag, x_pdf, y_pdf, r, QColor(140, 0, 0), 'equipment')
@@ -8839,10 +8866,17 @@ class PIDPanel(QWidget):
                 md = dict(m)
                 dev_count = (self.db.equipment_deviation_count(md['equipment_id'])
                              if md.get('equipment_id') else 0)
+                tag_val = md.get('tag', '')
+                comp_type_val = md.get('comp_type', '')
+                cons_count = (self.db.equipment_consequence_count(tag_val, comp_type_val)
+                              if tag_val else 0)
+                sg_count = (self.db.equipment_safeguard_count(tag_val, comp_type_val)
+                            if tag_val else 0)
                 self.viewer.add_equipment_marker(
-                    md['id'], md['x'], md['y'], md.get('comp_type', ''),
-                    md.get('tag', ''), md.get('confidence', 0.0) or 0.0,
-                    outline_pdf=md.get('shape_outline'), deviation_count=dev_count)
+                    md['id'], md['x'], md['y'], comp_type_val,
+                    tag_val, md.get('confidence', 0.0) or 0.0,
+                    outline_pdf=md.get('shape_outline'), deviation_count=dev_count,
+                    consequence_count=cons_count, safeguard_count=sg_count)
 
         # ── Draw ALL connections after all pages, so cross-page lines work ──────
         all_cause_pos = {}

@@ -1091,6 +1091,23 @@ Två separata, sedan tidigare befintliga (inte introducerade denna session) bugg
 
 ---
 
+## Tre räknare på P&ID: orsaker, konsekvenser och safeguards (2026-08-11)
+
+**Rapport:** "Jag vill att det finns tre olika räknare på P&ID, dels en för hur många gånger den förekommer i orsaker som idag, dels en siffra hur många gånger i konsekvenser, och dels i safeguards."
+
+Utrustningsmarkörer på P&ID hade sedan tidigare EN badge (grön cirkel, övre högra hörnet) som visar `Database.equipment_deviation_count(equipment_id)` — ett antal `deviations`-rader kopplade via FK-kolumnen `deviations.equipment_id`. Den badgen är **oförändrad** ("som idag"). Två nya badges tillkommer:
+
+- **Konsekvenser** (orange, nedre högra hörnet) — `Database.equipment_consequence_count(comp_tag, comp_type)`.
+- **Safeguards** (blå, nedre vänstra hörnet) — `Database.equipment_safeguard_count(comp_tag, comp_type)`.
+
+`consequences` och `safeguards` har ingen `equipment_id`-FK att slå ihop mot (bara de platta `comp_tag`/`comp_type`-kolumnerna som sätts av `set_consequence_tag`/`set_safeguard_tag` när en markör dras till en KON/SG-cell) — de två nya räknarna matchar därför på tagg+typ istället för FK, en annan mekanism än den befintliga men den enda som faktiskt finns tillgänglig för dessa två tabeller. Båda kortsluter till 0 för en tom tagg, så en otaggad markör aldrig råkar matcha alla andra otaggade rader.
+
+`PIDGraphicsView.add_equipment_marker()` fick två nya parametrar (`consequence_count`, `safeguard_count`) och en gemensam `_draw_corner_badge()`-hjälpfunktion (tidigare dubblerad ~15-radskod för den enda badgen) — varje räknare ritas bara när den är > 0, precis som den befintliga. Tooltippen nämner nu alla tre siffror. Röd/grön-färgningen av själva markören styrs fortfarande enbart av `deviation_count`, oförändrat.
+
+**Test:** `EquipmentConsequenceSafeguardCountTests` (3 nya, hazop.py-lagret) — matchning på tagg+typ, att fel tagg/typ INTE räknas med, och att en tom tagg kortsluter till 0 istället för att av misstag matcha alla otaggade rader. `EquipmentMarkerThreeBadgesTests` (4 nya, pid_viewer.py-lagret) — inga badges vid alla räknare=0, exakt en badge per räknare>0, och att tooltippen nämner alla tre siffrorna. Verifierat via `git stash`/`git stash pop` (alla 7 nya testerna kastade `AttributeError`/`TypeError` utan fixen, som väntat eftersom metoderna/parametrarna inte fanns). Full svit: `python -m unittest test_regression test_symbol_geometry`.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **OCR-positioner är approximativa** — x,y-koordinater från OCR stämmer inte perfekt med PDF-koordinater vid hög zoom. Markörer kan hamna något fel.

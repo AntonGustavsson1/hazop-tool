@@ -4815,6 +4815,57 @@ class GetOrCreateDeviationEquipmentTests(unittest.TestCase):
         self.assertEqual(self.db.equipment_deviation_count(self.eq_id), 2)
 
 
+class EquipmentConsequenceSafeguardCountTests(unittest.TestCase):
+    """'Jag vill att det finns tre olika räknare på P&ID, dels en för hur
+    många gånger den förekommer i orsaker som idag, dels en siffra hur
+    många gånger i konsekvenser, och dels i safeguards.' (2026-08-11) —
+    equipment_deviation_count (causes/deviations) already existed via the
+    equipment_id FK; consequences/safeguards have no such FK, only flat
+    comp_tag/comp_type columns (set by set_consequence_tag/
+    set_safeguard_tag), so the two new counters match on those instead."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_eq_cons_sg_count_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        self.cause_id = self.db.add_cause(dev_id)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_consequence_count_matches_by_tag_and_type(self):
+        self.assertEqual(self.db.equipment_consequence_count("V-101", "Ventil"), 0)
+        c1 = self.db.add_consequence(self.cause_id)
+        c2 = self.db.add_consequence(self.cause_id)
+        self.db.set_consequence_tag(c1, "V-101", "Ventil")
+        self.db.set_consequence_tag(c2, "V-101", "Ventil")
+        self.assertEqual(self.db.equipment_consequence_count("V-101", "Ventil"), 2)
+        # A different tag or type must not be counted.
+        self.assertEqual(self.db.equipment_consequence_count("V-102", "Ventil"), 0)
+        self.assertEqual(self.db.equipment_consequence_count("V-101", "Pump"), 0)
+
+    def test_safeguard_count_matches_by_tag_and_type(self):
+        cons_id = self.db.add_consequence(self.cause_id)
+        self.assertEqual(self.db.equipment_safeguard_count("PSV-1", "Säkerhetsventil"), 0)
+        sg1 = self.db.add_safeguard(cons_id)
+        self.db.set_safeguard_tag(sg1, "PSV-1", "Säkerhetsventil")
+        self.assertEqual(self.db.equipment_safeguard_count("PSV-1", "Säkerhetsventil"), 1)
+        self.assertEqual(self.db.equipment_safeguard_count("PSV-2", "Säkerhetsventil"), 0)
+
+    def test_empty_tag_short_circuits_to_zero(self):
+        """No comp_tag to match against — must not run a query that would
+        match every untagged row via WHERE comp_tag=''."""
+        c1 = self.db.add_consequence(self.cause_id)
+        self.db.set_consequence_tag(c1, '', '')
+        self.assertEqual(self.db.equipment_consequence_count('', ''), 0)
+        self.assertEqual(self.db.equipment_safeguard_count('', ''), 0)
+
+
 class TreePanelEquipmentGroupingTests(unittest.TestCase):
     """TreePanel.refresh() groups a node's deviations by guide-word text
     FIRST (LEDORD_T — several deviation rows across different equipment can
@@ -9151,6 +9202,57 @@ class PidAnalysisChainedAutodetectTests(unittest.TestCase):
                 win._on_pid_analysis_done()
                 mock_refresh.assert_not_called()
                 mock_autodetect.assert_not_called()
+
+
+class EquipmentMarkerThreeBadgesTests(unittest.TestCase):
+    """PIDGraphicsView.add_equipment_marker draws one small numbered badge
+    per non-zero counter (deviation/consequence/safeguard) — see
+    EquipmentConsequenceSafeguardCountTests for the underlying Database
+    counters this feeds from. Counts QGraphicsEllipseItem badges added to
+    _type_items['equipment'] (the polygon marker itself is a
+    QGraphicsPolygonItem, so it's never mistaken for a badge)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def _badge_count(self, view):
+        from PyQt6.QtWidgets import QGraphicsEllipseItem
+        return sum(1 for item in view._type_items.get('equipment', [])
+                   if isinstance(item, QGraphicsEllipseItem))
+
+    def test_no_badges_when_all_counts_zero(self):
+        from pid_viewer import PIDGraphicsView
+        view = PIDGraphicsView()
+        view.add_equipment_marker(1, 0, 0, "Ventil", tag="V-101")
+        self.assertEqual(self._badge_count(view), 0)
+
+    def test_one_badge_per_nonzero_counter(self):
+        from pid_viewer import PIDGraphicsView
+        view = PIDGraphicsView()
+        view.add_equipment_marker(1, 0, 0, "Ventil", tag="V-101",
+                                  deviation_count=2, consequence_count=1, safeguard_count=3)
+        self.assertEqual(self._badge_count(view), 3)
+
+    def test_only_nonzero_counters_get_a_badge(self):
+        from pid_viewer import PIDGraphicsView
+        view = PIDGraphicsView()
+        view.add_equipment_marker(1, 0, 0, "Ventil", tag="V-101",
+                                  deviation_count=0, consequence_count=5, safeguard_count=0)
+        self.assertEqual(self._badge_count(view), 1)
+
+    def test_tooltip_mentions_all_three_counts(self):
+        from pid_viewer import PIDGraphicsView
+        from PyQt6.QtWidgets import QGraphicsPolygonItem
+        view = PIDGraphicsView()
+        view.add_equipment_marker(1, 0, 0, "Ventil", tag="V-101",
+                                  deviation_count=2, consequence_count=1, safeguard_count=3)
+        poly = next(item for item in view._type_items['equipment']
+                    if isinstance(item, QGraphicsPolygonItem))
+        tip = poly.toolTip()
+        self.assertIn("2 avvikelse", tip)
+        self.assertIn("1 konsekvens", tip)
+        self.assertIn("3 safeguard", tip)
 
 
 if __name__ == '__main__':
