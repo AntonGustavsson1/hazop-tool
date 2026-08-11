@@ -10716,9 +10716,10 @@ class _PidDelegate(_ScenarioDelegate):
             obj_data = index.data(Qt.ItemDataRole.UserRole + 2)
             if obj_data is not None:
                 comp_type, comp_tag = obj_data
-                freq_val   = index.data(Qt.ItemDataRole.UserRole + 3)
                 has_tag    = bool(comp_tag or comp_type)
-                base_freq_per_year  = index.data(Qt.ItemDataRole.UserRole + 5)
+                # freq_val/base_freq_per_year read inside
+                # _ors_tag_zone_geometry() below (shared with the click
+                # hit-test in eventFilter()) rather than here.
                 status_icon = index.data(Qt.ItemDataRole.UserRole + 6) or ''
 
                 meta_      = self._panel._row_meta
@@ -10769,17 +10770,27 @@ class _PidDelegate(_ScenarioDelegate):
                 else:
                     _draw_pid_pin(painter, pin_rect, False)
 
-                # ── Tag number (after pin, bold blue) ─────────────────────────
+                # ── Tag + frequency geometry (shared with the click hit-test
+                # in eventFilter() via _ors_tag_zone_geometry — see its
+                # docstring for why: 2026-08-11, "tag numret klipps av ...
+                # högerställ frekvens". The frequency zone is anchored to
+                # the dots margin at the strip's right edge FIRST; the tag
+                # zone then gets whatever room that leaves, instead of
+                # being capped at the fixed _cause_obj_w divider width
+                # regardless of free space. ─────────────────────────────
+                tag_x = r.left() + _PID_ICON_W
+                tag_zone_w, freq_zone_x, freq_zone_w, freq_str = \
+                    self._panel._ors_tag_zone_geometry(index, tag_x, r.right())
+
+                # ── Tag number (bold, left-aligned, now sized to leftover space)
                 tag_label = comp_tag or ''
                 tf = QFont(option.font)
                 tf.setPointSize(max(6, option.font.pointSize() - 1))
                 tf.setBold(True)
                 painter.setFont(tf)
                 tfm = painter.fontMetrics()
-                tag_x = r.left() + _PID_ICON_W
                 if has_tag:
-                    tag_w = min(tfm.horizontalAdvance(tag_label) + 6,
-                                self._panel._cause_obj_w)
+                    tag_w = min(tfm.horizontalAdvance(tag_label) + 6, tag_zone_w)
                     tag_draw_rect = QRect(tag_x, r.top(), tag_w, _SH)
                     tag_tc = (option.palette.highlightedText().color() if sel
                               else QColor('#17191C'))
@@ -10789,32 +10800,25 @@ class _PidDelegate(_ScenarioDelegate):
                                      tfm.elidedText(tag_label,
                                                     Qt.TextElideMode.ElideRight,
                                                     tag_draw_rect.width() - 3))
-                else:
-                    tag_w = 0
 
-                # ── Frequency label (after tag, same strip) ────────────────────
-                freq_x = tag_x + tag_w
-                if freq_val is not None:
-                    if base_freq_per_year is not None:
-                        bfv = float(base_freq_per_year)
-                        if bfv >= 0.1:    freq_str = f"{bfv:.2g}/år"
-                        elif bfv >= 0.001: freq_str = f"{bfv:.3g}/år"
-                        else:              freq_str = f"{bfv:.1e}".replace('e-0','e-') + "/år"
-                    else:
-                        freq_str = freq_axis_label(freq_val)
+                # ── Frequency label — right-anchored against the dots, not
+                # left-aligned right after the tag, so it no longer strands
+                # blank space between itself and the dots (the user's
+                # actual complaint: that stranded space is what the tag
+                # needed).
+                if freq_str is not None:
                     ff = QFont(option.font)
                     ff.setPointSize(max(6, option.font.pointSize() - 1))
                     painter.setFont(ff)
                     f_tc = (option.palette.highlightedText().color() if sel
                             else QColor('#17191C'))
                     painter.setPen(f_tc)
-                    freq_avail = r.right() - freq_x - 22   # leave room for dots
-                    freq_draw_rect = QRect(freq_x + 3, r.top(), freq_avail, _SH)
-                    painter.drawText(freq_draw_rect,
-                                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                    freq_draw_rect = QRect(freq_zone_x, r.top(), freq_zone_w, _SH)
+                    painter.drawText(freq_draw_rect.adjusted(0, 0, -3, 0),
+                                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                                      painter.fontMetrics().elidedText(
                                          freq_str, Qt.TextElideMode.ElideRight,
-                                         freq_avail - 2))
+                                         freq_zone_w - 3))
 
                 # ── Status + comment dots (right of strip) ─────────────────────
                 _STATUS_COLORS = {
@@ -13071,6 +13075,58 @@ class ScenarioTablePanel(QWidget):
         if popup.exec() == QDialog.DialogCode.Accepted:
             self._schedule_rebuild()
 
+    # ORS strip layout constants — shared between paint() (_PidDelegate,
+    # below) and the click hit-test in eventFilter() so the drawn tag zone
+    # and the clickable tag zone can never drift apart. This file has a
+    # documented history of exactly that kind of desync between paint code
+    # and geometry code computed elsewhere (see NOTES.md's notes on
+    # _wrap_col_row_height/_resize_rows_manual needing to stay in sync with
+    # paint) — keeping this one calculation in one place avoids repeating it.
+    _ORS_DOTS_MARGIN = 22   # room reserved for the status/comment dots at the strip's right edge
+    _ORS_FREQ_MAX_W  = 90   # sane ceiling; real frequency strings are short ("3/år", "1.2e-3/år")
+
+    def _ors_freq_label(self, freq_val, base_freq_per_year):
+        """The exact frequency text shown in the ORS strip. Split out so
+        the width calc below and the paint code always agree on what
+        string they're sizing/drawing."""
+        if freq_val is None:
+            return None
+        if base_freq_per_year is not None:
+            bfv = float(base_freq_per_year)
+            if bfv >= 0.1:     return f"{bfv:.2g}/år"
+            elif bfv >= 0.001: return f"{bfv:.3g}/år"
+            else:              return f"{bfv:.1e}".replace('e-0', 'e-') + "/år"
+        return freq_axis_label(freq_val)
+
+    def _ors_tag_zone_geometry(self, item, tag_x, cell_right):
+        """Return (tag_zone_w, freq_zone_x, freq_zone_w, freq_str) for the ORS strip.
+
+        2026-08-11: "tag numret klipps av ... högerställ frekvens" — the
+        tag used to be capped at the fixed _cause_obj_w divider width no
+        matter how much space was actually free, while the frequency was
+        drawn left-aligned right after it, stranding a gap of blank space
+        between the (short) frequency text and the status dots. Fix:
+        right-anchor the frequency zone against the dots margin FIRST,
+        then let the tag zone claim whatever is left over — reclaiming
+        exactly the space the old layout was wasting. _cause_obj_w (the
+        user-draggable divider, still used for the drag handle and its
+        persisted width) stays in play as a FLOOR so dragging it can still
+        only ever make the promised tag zone wider, never narrower than
+        what the user last set.
+        """
+        freq_val = item.data(Qt.ItemDataRole.UserRole + 3) if item else None
+        base_freq_per_year = item.data(Qt.ItemDataRole.UserRole + 5) if item else None
+        freq_str = self._ors_freq_label(freq_val, base_freq_per_year)
+        freq_zone_w = 0
+        if freq_str:
+            ff = QFont(self._table.font())
+            ff.setPointSize(max(6, self._table.font().pointSize() - 1))
+            freq_zone_w = min(QFontMetrics(ff).horizontalAdvance(freq_str) + 6,
+                              self._ORS_FREQ_MAX_W)
+        freq_zone_x = cell_right - self._ORS_DOTS_MARGIN - freq_zone_w
+        tag_zone_w  = max(self._cause_obj_w, freq_zone_x - tag_x - 3)
+        return tag_zone_w, freq_zone_x, freq_zone_w, freq_str
+
     def _show_cause_obj_popup(self, row, cause_id, global_pos):
         item      = self._table.item(row, self._C_ORS)
         obj_data  = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
@@ -13193,7 +13249,13 @@ class ScenarioTablePanel(QWidget):
         ctrl = bool(event.type() == QEvent.Type.KeyPress and
                     event.modifiers() & Qt.KeyboardModifier.ControlModifier)
 
-        # Viewport mouse: drag divider between obj-zone and text in ORS column
+        # Viewport mouse: drag divider between obj-zone and text in ORS column.
+        # This handle intentionally still tracks _cause_obj_w itself (the
+        # user's persisted minimum), NOT the wider tag_zone_w the strip may
+        # actually render at (2026-08-11, see _ors_tag_zone_geometry) — the
+        # handle is where the user asked the floor to be, and dragging it
+        # only ever raises or lowers that floor, regardless of how much
+        # extra elbow room a given row's tag currently happens to have.
         if obj is self._table.viewport() and event.type() == QEvent.Type.MouseMove:
             pos = event.pos()
             if self._drag_obj_w_active:
@@ -13327,11 +13389,20 @@ class ScenarioTablePanel(QWidget):
                         self._place_from_table(row, col)
                     return True  # consume left-click; right-click falls through to context menu
 
-            # Object-tag zone click — left (_PID_ICON_W .. _PID_ICON_W+_cause_obj_w) of cause cell
+            # Object-tag zone click — left (_PID_ICON_W .. _PID_ICON_W+tag_zone_w)
+            # of cause cell. tag_zone_w is computed the same way paint()
+            # computes it (via _ors_tag_zone_geometry) rather than the raw
+            # _cause_obj_w divider width — otherwise, once a long tag's
+            # DRAWN width expands past the old fixed cap (2026-08-11 fix),
+            # clicking on the now-visible-but-previously-uncounted part of
+            # the tag would silently do nothing (stale hit-test rectangle).
             if row >= 0 and col == self._C_ORS and row < len(self._row_meta):
-                col_x     = self._table.columnViewportPosition(col)
-                obj_start = col_x + _PID_ICON_W
-                obj_end   = obj_start + self._cause_obj_w
+                col_x      = self._table.columnViewportPosition(col)
+                obj_start  = col_x + _PID_ICON_W
+                cell_right = col_x + self._table.columnWidth(col) - 1
+                item       = self._table.item(row, col)
+                tag_zone_w, _fx, _fw, _fs = self._ors_tag_zone_geometry(item, obj_start, cell_right)
+                obj_end    = obj_start + tag_zone_w
                 if obj_start <= pos.x() < obj_end:
                     cause_id = self._row_meta[row][1]
                     if cause_id is not None:
