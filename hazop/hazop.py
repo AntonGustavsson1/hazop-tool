@@ -17,7 +17,7 @@ import inspect
 from pid_viewer import (
     PIDPanel, COMPONENT_TYPES, CONSEQUENCE_TEMPLATES, HAS_PYMUPDF,
     MODE_NAV, MODE_NODE, MODE_CONSEQUENCE, MODE_SAFEGUARD, MODE_PICK_REF_TAG,
-    scan_pdf_for_equipment, ocr_status, KNOWN_PREFIXES, invert_cause_text,
+    scan_pdf_for_equipment, ocr_status, resolve_ocr_scan_choice, KNOWN_PREFIXES, invert_cause_text,
     _RED_MARKUP_SYMBOLS, _get_red_symbol_svg,
     _equip_prefix_from_tag,
     detect_equipment_symbols, EquipmentMarkerReviewDialog,
@@ -33,9 +33,9 @@ from PyQt6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QStackedWidget,
     QTabWidget,
     QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout,
-    QLineEdit, QTextEdit, QLabel, QPushButton,
+    QLineEdit, QTextEdit, QPlainTextEdit, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QTableView,
-    QComboBox, QDialog, QDialogButtonBox,
+    QComboBox, QDialog, QDialogButtonBox, QDateEdit,
     QMessageBox, QFileDialog, QGroupBox,
     QMenu, QToolBar, QStatusBar, QSizePolicy,
     QSpinBox, QDoubleSpinBox, QSlider, QColorDialog, QFrame, QListWidget, QListWidgetItem,
@@ -45,7 +45,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import (
     Qt, pyqtSignal, QSize, QPointF, QRectF, QRect, QPoint, QTimer, QMimeData, QEvent,
-    QAbstractTableModel, QModelIndex, QSortFilterProxyModel,
+    QAbstractTableModel, QModelIndex, QSortFilterProxyModel, QDate,
 )
 from PyQt6.QtGui import QFont, QFontMetrics, QColor, QAction, QBrush, QPen, QPainter, QDrag, QPainterPath, QPixmap, QIcon, QPolygonF, QShortcut, QKeySequence, QCursor, QPalette, QTextLayout, QTextOption, QTextCharFormat
 
@@ -15918,6 +15918,7 @@ class SettingsPanel(QWidget):
         self._sev_def_edits  = {}   # (cat_id, sev_level) → QLineEdit, embedded in matrix grid
 
         tabs = QTabWidget()
+        self._tabs = tabs   # kept as an attribute for testability (tabText() lookups)
         main = QVBoxLayout(self)
         main.addWidget(tabs)
 
@@ -16044,7 +16045,6 @@ class SettingsPanel(QWidget):
             "background:#17191C; color:#fff; font-weight:bold; padding:4px 12px;")
         save_matrix_btn.clicked.connect(self._save_matrix)
         ml.addWidget(save_matrix_btn)
-        tabs.addTab(matrix_tab, "Riskmatris")
 
         # ── Tab: Kategorier ───────────────────────────────────────────────────
         cat_tab = QWidget()
@@ -16062,7 +16062,33 @@ class SettingsPanel(QWidget):
         for b in [btn_add, btn_ren, btn_del]: cat_btns.addWidget(b)
         cl.addLayout(cat_btns)
         cl.addStretch()
-        tabs.addTab(cat_tab, "Kategorier")
+
+        # ── Merged tab: Riskmatris & Kategorier ─────────────────────────────
+        # Design choice (2026-08-11, user request: "'riskmatris' och
+        # 'kategorier' borde gå att slå ihop till en sida" / "Låt Claude
+        # välja bästa GUI-lösningen"): a QSplitter, categories on the left
+        # and the matrix on the right, rather than a nested tab-within-tab.
+        # Reasoning: the matrix tab is inherently tall/wide (size controls +
+        # colour palette + a scrollable grid + axis controls + frequency
+        # presets + a save button), while the categories tab is just a short
+        # list with three buttons — putting categories in their own nested
+        # tab would hide them behind an extra click AND waste most of that
+        # tab's vertical space. Categories also feed the matrix conceptually
+        # (they're consequence-axis metadata), so keeping both visible
+        # side-by-side, with the narrow categories panel user-resizable via
+        # the splitter handle, reads as one coherent risk-classification
+        # screen instead of two unrelated hidden pages.
+        combined_tab = QWidget()
+        combined_l = QHBoxLayout(combined_tab)
+        combined_l.setContentsMargins(0, 0, 0, 0)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(cat_tab)
+        splitter.addWidget(matrix_tab)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([220, 760])
+        combined_l.addWidget(splitter)
+        tabs.addTab(combined_tab, "Riskmatris & Kategorier")
 
         # ── Tab: Projekt ──────────────────────────────────────────────────────
         proj_tab = QWidget()
@@ -16075,18 +16101,72 @@ class SettingsPanel(QWidget):
             lambda: self.db.set_config('project_name', self._proj_name.text()))
         pl.addRow("Projektnamn:", self._proj_name)
 
-        self._proj_date = QLineEdit()
-        self._proj_date.editingFinished.connect(
-            lambda: self.db.set_config('project_date', self._proj_date.text()))
-        pl.addRow("Datum:", self._proj_date)
+        self._proj_facility = QLineEdit()
+        self._proj_facility.editingFinished.connect(
+            lambda: self.db.set_config('project_facility', self._proj_facility.text()))
+        pl.addRow("Anläggning:", self._proj_facility)
+
+        self._proj_leader = QLineEdit()
+        self._proj_leader.editingFinished.connect(
+            lambda: self.db.set_config('project_hazop_leader', self._proj_leader.text()))
+        pl.addRow("HAZOP-ledare:", self._proj_leader)
+
+        # Datum: date RANGE (workshop start/end) instead of a single
+        # free-text field (2026-08-11, user request: "Gör så att datum kan
+        # väljas inom ett intervall"). Replaces the old single-value
+        # 'project_date' config key with 'project_date_start' /
+        # 'project_date_end' — see NOTES.md for the migration note and the
+        # project-reset cleanup list update.
+        date_row_w = QWidget()
+        date_row_l = QHBoxLayout(date_row_w)
+        date_row_l.setContentsMargins(0, 0, 0, 0)
+        self._proj_date_start = QDateEdit()
+        self._proj_date_start.setCalendarPopup(True)
+        self._proj_date_start.setDisplayFormat("yyyy-MM-dd")
+        self._proj_date_end = QDateEdit()
+        self._proj_date_end.setCalendarPopup(True)
+        self._proj_date_end.setDisplayFormat("yyyy-MM-dd")
+        self._proj_date_start.dateChanged.connect(
+            lambda d: self.db.set_config('project_date_start', d.toString('yyyy-MM-dd')))
+        self._proj_date_end.dateChanged.connect(
+            lambda d: self.db.set_config('project_date_end', d.toString('yyyy-MM-dd')))
+        date_row_l.addWidget(self._proj_date_start)
+        date_row_l.addWidget(QLabel("  –  "))
+        date_row_l.addWidget(self._proj_date_end)
+        date_row_l.addStretch()
+        pl.addRow("Datum (från–till):", date_row_w)
 
         self._proj_rev = QLineEdit()
         self._proj_rev.editingFinished.connect(
             lambda: self.db.set_config('project_revision', self._proj_rev.text()))
         pl.addRow("Revision:", self._proj_rev)
+
+        self._proj_participants = QPlainTextEdit()
+        self._proj_participants.setPlaceholderText(
+            "En deltagare per rad, t.ex.:\nAnna Andersson (Processägare)\nBengt Bengtsson (Drift)")
+        self._proj_participants.setFixedHeight(90)
+        # QPlainTextEdit has no editingFinished signal — save on focus-out
+        # instead, same pattern already used for multi-line description
+        # fields elsewhere in this file (e.g. NodeEditDialog.desc_edit).
+        _orig_participants_foe = QPlainTextEdit.focusOutEvent
+        def _participants_foe(e, _orig=_orig_participants_foe):
+            self.db.set_config('project_participants', self._proj_participants.toPlainText())
+            _orig(self._proj_participants, e)
+        self._proj_participants.focusOutEvent = _participants_foe
+        pl.addRow("Deltagare:", self._proj_participants)
         tabs.addTab(proj_tab, "Projekt")
 
-        # ── Tab: P&ID ─────────────────────────────────────────────────────────
+        # ── Tab: P&ID-inställningar ───────────────────────────────────────────
+        # Renamed from "P&ID" (2026-08-11, user request: "Fliken PID borde
+        # kunna ändras till något mer generiskt för inställning" / "Byt namn
+        # + lägg till OCR/sid-inställningar"). "P&ID-inställningar" was
+        # chosen over a fully generic name like "Analys" or "Inställningar"
+        # because this tab already lives inside a settings screen next to
+        # "Tagdatabas" and "Identifierade objekt" (both P&ID-specific DATA
+        # views) — a bare "Analys" would read as ambiguous next to those,
+        # while "P&ID-inställningar" keeps the P&ID scope clear but no
+        # longer implies (like the old "P&ID" name did) that tag-stripping
+        # is the only setting that belongs here.
         pid_tab = QWidget()
         pid_l = QVBoxLayout(pid_tab)
         pid_l.setContentsMargins(16, 16, 16, 16)
@@ -16106,8 +16186,77 @@ class SettingsPanel(QWidget):
         tag_gl.addWidget(self._strip_spaces_chk)
 
         pid_l.addWidget(tag_grp)
+
+        # ── OCR-standardval ───────────────────────────────────────────────
+        # Lets the user skip the per-scan "Använd OCR?" Yes/No prompt shown
+        # by "🔍 Skanna P&ID" (EquipmentPanel._scan, hazop.py) and "📋
+        # Analysera P&ID" (PIDPanel._analyze_pid, pid_viewer.py) by picking
+        # a fixed default engine ahead of time. Wired into both scan entry
+        # points via pid_viewer.resolve_ocr_scan_choice() — this is NOT a
+        # dead setting, it actually changes scan behaviour.
+        ocr_grp = QGroupBox("OCR-standardval")
+        ocr_gl = QVBoxLayout(ocr_grp)
+        ocr_gl.setSpacing(6)
+        ocr_lbl = QLabel(
+            "Motor att använda automatiskt vid P&ID-skanning\n"
+            "(🔍 Skanna P&ID / 📋 Analysera P&ID), utan att fråga varje gång:")
+        ocr_gl.addWidget(ocr_lbl)
+        self._ocr_default_combo = QComboBox()
+        self._ocr_default_combo.addItem("Fråga varje gång (standard)", 'ask')
+        self._ocr_default_combo.addItem("Automatiskt — bästa tillgängliga motor", 'auto')
+        _ocr_st = ocr_status()
+        if _ocr_st.get('rapidocr'):
+            self._ocr_default_combo.addItem("RapidOCR", 'rapidocr')
+        if _ocr_st.get('tesseract'):
+            self._ocr_default_combo.addItem("Tesseract", 'tesseract')
+        if _ocr_st.get('easyocr'):
+            self._ocr_default_combo.addItem("EasyOCR", 'easyocr')
+        self._ocr_default_combo.setToolTip(
+            "Styr om/vilken OCR-motor som används automatiskt vid P&ID-skanning —\n"
+            "hoppar då över Ja/Nej-frågan om OCR för den körningen.\n"
+            "\"Fråga varje gång\" behåller nuvarande beteende.")
+        self._ocr_default_combo.currentIndexChanged.connect(
+            lambda: self.db.set_config(
+                'ocr_default_engine', self._ocr_default_combo.currentData()))
+        ocr_gl.addWidget(self._ocr_default_combo)
+        pid_l.addWidget(ocr_grp)
+
+        # ── Sid-orientering ───────────────────────────────────────────────
+        # Investigated first (per process convention) whether an
+        # auto-detection system already exists: it does not — the app
+        # always just follows the PDF's own /Rotate page attribute
+        # (fitz_page.rotation_matrix, see PIDPanel._highlight_tags in
+        # pid_viewer.py), there is no heuristic "guess the orientation"
+        # layer to conflict with. This setting is therefore stored as a
+        # forward-looking override/hint only; it is NOT yet read by the
+        # rendering/scanning pipeline (that would mean threading an
+        # override through PDF rendering, OCR preprocessing, and the
+        # multi-process scan workers — out of scope for this change; see
+        # NOTES.md "Kända begränsningar" for this known limitation).
+        orient_grp = QGroupBox("Sid-orientering")
+        orient_gl = QVBoxLayout(orient_grp)
+        orient_gl.setSpacing(6)
+        orient_lbl = QLabel(
+            "Förvalt antagande om sidans orientering vid rendering/analys\n"
+            "av P&ID-sidor. OBS: sparas som inställning men styr ännu inte\n"
+            "den faktiska renderingen/analysen (appen använder idag alltid\n"
+            "PDF-filens egen rotationsflagga automatiskt) — känd begränsning,\n"
+            "se NOTES.md.")
+        orient_lbl.setWordWrap(True)
+        orient_gl.addWidget(orient_lbl)
+        self._page_orientation_combo = QComboBox()
+        self._page_orientation_combo.addItem(
+            "Använd PDF:ens egen rotation (standard)", 'auto')
+        self._page_orientation_combo.addItem("Tvinga liggande", 'landscape')
+        self._page_orientation_combo.addItem("Tvinga stående", 'portrait')
+        self._page_orientation_combo.currentIndexChanged.connect(
+            lambda: self.db.set_config(
+                'pid_page_orientation_hint', self._page_orientation_combo.currentData()))
+        orient_gl.addWidget(self._page_orientation_combo)
+        pid_l.addWidget(orient_grp)
+
         pid_l.addStretch()
-        tabs.addTab(pid_tab, "P&ID")
+        tabs.addTab(pid_tab, "P&ID-inställningar")
 
         # ── Tab: Tagdatabas ───────────────────────────────────────────────────
         self._tag_db_panel = TagDatabasePanel(self.db)
@@ -16140,10 +16289,29 @@ class SettingsPanel(QWidget):
         self._load_palette_ui()
         self._load_categories()
         self._proj_name.setText(self.db.get_config('project_name', ''))
-        self._proj_date.setText(self.db.get_config('project_date', ''))
+        self._proj_facility.setText(self.db.get_config('project_facility', ''))
+        self._proj_leader.setText(self.db.get_config('project_hazop_leader', ''))
         self._proj_rev.setText(self.db.get_config('project_revision', ''))
+        self._proj_participants.setPlainText(self.db.get_config('project_participants', ''))
+
+        today = QDate.currentDate()
+        start_str = self.db.get_config('project_date_start', '')
+        end_str   = self.db.get_config('project_date_end', '')
+        start_d = QDate.fromString(start_str, 'yyyy-MM-dd') if start_str else QDate()
+        end_d   = QDate.fromString(end_str, 'yyyy-MM-dd') if end_str else QDate()
+        self._proj_date_start.setDate(start_d if start_d.isValid() else today)
+        self._proj_date_end.setDate(end_d if end_d.isValid() else today)
+
         self._strip_spaces_chk.setChecked(
             self.db.get_config('tag_strip_spaces', '1') == '1')
+
+        idx = self._ocr_default_combo.findData(self.db.get_config('ocr_default_engine', 'ask'))
+        if idx >= 0:
+            self._ocr_default_combo.setCurrentIndex(idx)
+        idx = self._page_orientation_combo.findData(
+            self.db.get_config('pid_page_orientation_hint', 'auto'))
+        if idx >= 0:
+            self._page_orientation_combo.setCurrentIndex(idx)
 
     # ── Palette ───────────────────────────────────────────────────────────────
 
@@ -17876,23 +18044,13 @@ class EquipmentPanel(QWidget):
             QMessageBox.warning(self, "PDF-fel", f"Kunde inte öppna PDF:\n{e}")
             return
 
-        # OCR choice
-        st = ocr_status()
-        use_ocr = False
-        if st['tesseract'] or st['easyocr']:
-            engines = [n for n, v in [('pytesseract', st['tesseract']),
-                                       ('easyocr', st['easyocr'])] if v]
-            reply = QMessageBox.question(
-                self, "OCR",
-                f"Tillgänglig OCR-motor: {', '.join(engines)}\n\n"
-                "Använd OCR för sidor med lite text?\n"
-                "(Bättre för skannade ritningar, tar längre tid.)",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes)
-            use_ocr = (reply == QMessageBox.StandardButton.Yes)
+        # OCR choice -- honours "OCR-standardval" (Inställningar →
+        # P&ID-inställningar, config key 'ocr_default_engine') to skip the
+        # Yes/No prompt when the user has picked a specific default engine.
+        use_ocr, ocr_engine = resolve_ocr_scan_choice(self.db, self)
 
         dlg = PageProgressDialog("Skannar P&ID…", n_pages, self)
-        worker = ParallelTagScanWorker(path, use_ocr=use_ocr)
+        worker = ParallelTagScanWorker(path, use_ocr=use_ocr, ocr_engine=ocr_engine)
         self._scan_thread = worker   # keep a reference so it isn't GC'd mid-run
 
         cancelled_flag = {'v': False}
@@ -20042,6 +20200,12 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         for key in ('project_name', 'project_date', 'project_revision',
+                    # 'project_date' kept above for legacy DBs created before
+                    # the 2026-08-11 date-range change; it is no longer
+                    # written or read by SettingsPanel, only cleaned up here.
+                    'project_date_start', 'project_date_end',
+                    'project_facility', 'project_hazop_leader', 'project_participants',
+                    'ocr_default_engine', 'pid_page_orientation_hint',
                     'pid_path', 'pid_layout', 'fill_screen'):
             try:
                 self.db.conn.execute("DELETE FROM app_config WHERE key=?", (key,))

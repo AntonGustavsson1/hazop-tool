@@ -141,6 +141,45 @@ def ensure_ocr_available(parent=None) -> bool:
     return False
 
 
+def resolve_ocr_scan_choice(db, parent=None):
+    """Decide whether/which OCR engine to use for a P&ID scan ("🔍 Skanna
+    P&ID" / "📋 Analysera P&ID"), honouring the "OCR-standardval" setting
+    added to Inställningar → P&ID-inställningar (config key
+    'ocr_default_engine', 2026-08-11).
+
+    If that setting names a specific engine that is actually installed (or
+    'auto'), the interactive Yes/No prompt is skipped entirely and that
+    engine is used directly. Otherwise (setting is 'ask' — the default —
+    or names an engine that is no longer installed) falls back to the
+    original per-scan Yes/No question, unchanged.
+
+    Returns (use_ocr: bool, ocr_engine: str) — ocr_engine is only
+    meaningful when use_ocr is True and is otherwise 'auto'.
+    """
+    st = ocr_status()
+    default_choice = db.get_config('ocr_default_engine', 'ask') if db else 'ask'
+    if default_choice and default_choice != 'ask':
+        if default_choice == 'auto' and (st['tesseract'] or st['easyocr'] or st['rapidocr']):
+            return True, 'auto'
+        if default_choice in ('tesseract', 'easyocr', 'rapidocr') and st.get(default_choice):
+            return True, default_choice
+        # Configured engine no longer installed -- fall through to asking.
+
+    use_ocr = False
+    if st['tesseract'] or st['easyocr']:
+        engines = [n for n, v in [('pytesseract', st['tesseract']),
+                                   ('easyocr', st['easyocr'])] if v]
+        reply = QMessageBox.question(
+            parent, "OCR",
+            f"Tillgänglig OCR-motor: {', '.join(engines)}\n\n"
+            "Använd OCR för sidor med lite text?\n"
+            "(Bättre för skannade ritningar, tar längre tid.)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes)
+        use_ocr = (reply == QMessageBox.StandardButton.Yes)
+    return use_ocr, 'auto'
+
+
 CONSEQUENCE_TEMPLATES = [
     'Överfyllnad av {}',
     'Övertryck i {}',
@@ -7381,23 +7420,14 @@ class PIDPanel(QWidget):
 
         # Offer OCR auto-install if no engine is available at all, then ask
         # whether to actually use it for this scan (same prompt as "🔍 Skanna
-        # P&ID" in EquipmentPanel._scan, hazop.py).
+        # P&ID" in EquipmentPanel._scan, hazop.py) -- unless the user has
+        # set a specific default engine in Inställningar → P&ID-inställningar
+        # ("OCR-standardval"), in which case resolve_ocr_scan_choice() skips
+        # the prompt and uses that engine directly.
         st = ocr_status()
         if not st['tesseract'] and not st['easyocr']:
             ensure_ocr_available(self)
-        st = ocr_status()
-        use_ocr = False
-        if st['tesseract'] or st['easyocr']:
-            engines = [n for n, v in [('pytesseract', st['tesseract']),
-                                       ('easyocr', st['easyocr'])] if v]
-            reply = QMessageBox.question(
-                self, "OCR",
-                f"Tillgänglig OCR-motor: {', '.join(engines)}\n\n"
-                "Använd OCR för sidor med lite text?\n"
-                "(Bättre för skannade ritningar, tar längre tid.)",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes)
-            use_ocr = (reply == QMessageBox.StandardButton.Yes)
+        use_ocr, ocr_engine = resolve_ocr_scan_choice(self.db, self)
 
         path = self.db.get_pid_path()
         if not path or not Path(path).exists():
@@ -7406,7 +7436,7 @@ class PIDPanel(QWidget):
         n = self.viewer.pdf_doc.page_count
 
         dlg = PageProgressDialog("Analyserar P&ID…", n, self)
-        worker = ParallelTagScanWorker(path, use_ocr=use_ocr)
+        worker = ParallelTagScanWorker(path, use_ocr=use_ocr, ocr_engine=ocr_engine)
         self._scan_thread = worker   # keep a reference so it isn't GC'd mid-run
 
         cancelled_flag = {'v': False}

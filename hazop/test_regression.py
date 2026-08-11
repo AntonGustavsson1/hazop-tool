@@ -57,10 +57,10 @@ from hazop import (  # noqa: E402
 )
 from PyQt6.QtWidgets import (  # noqa: E402
     QApplication, QGraphicsPixmapItem, QTreeWidgetItemIterator, QCheckBox,
-    QComboBox, QPushButton, QMessageBox,
+    QComboBox, QPushButton, QMessageBox, QInputDialog,
 )
-from PyQt6.QtGui import QPixmap  # noqa: E402
-from PyQt6.QtCore import Qt, QPoint  # noqa: E402
+from PyQt6.QtGui import QPixmap, QFocusEvent  # noqa: E402
+from PyQt6.QtCore import Qt, QPoint, QDate, QEvent  # noqa: E402
 from equipment_detection import COMPONENT_TYPES  # noqa: E402
 
 
@@ -9531,6 +9531,306 @@ class EquipmentMarkerThreeBadgesTests(unittest.TestCase):
         self.assertIn("2 avvikelse", tip)
         self.assertIn("1 konsekvens", tip)
         self.assertIn("3 safeguard", tip)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# SettingsPanel: three bundled UI changes (2026-08-11)
+#   A. Riskmatris + Kategorier merged into one tab (QSplitter)
+#   B. Projekt tab expanded (facility, leader, participants, date RANGE)
+#   C. "P&ID" tab renamed to "P&ID-inställningar" + OCR default / page
+#      orientation settings added
+# ══════════════════════════════════════════════════════════════════════════
+
+class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
+    """"'riskmatris' och 'kategorier' borde gå att slå ihop till en sida.
+    Testa detta." / "Låt Claude välja bästa GUI-lösningen" (2026-08-11) —
+    SettingsPanel now builds a single "Riskmatris & Kategorier" tab holding
+    both former tabs side-by-side in a QSplitter (categories narrow/left,
+    matrix main/right — see the design-choice comment in
+    SettingsPanel.__init__). Verifies the merge dropped no functionality:
+    the old tab names are gone, the new combined name is present, and both
+    category CRUD and matrix grid editing/save still work unchanged."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_settings_merge_test_")
+        self.db_path = os.path.join(self._tmpdir, "test_project.db")
+        self.db = Database(path=self.db_path)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _tab_titles(self, panel):
+        return [panel._tabs.tabText(i) for i in range(panel._tabs.count())]
+
+    def test_tabs_merged_into_single_named_tab(self):
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            titles = self._tab_titles(panel)
+            self.assertIn("Riskmatris & Kategorier", titles)
+            self.assertNotIn("Riskmatris", titles)
+            self.assertNotIn("Kategorier", titles)
+        finally:
+            panel.deleteLater()
+
+    def test_category_add_rename_delete_still_works_from_merged_tab(self):
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            panel.db.add_category("Miljö")
+            panel._load_categories()
+            self.assertTrue(any(panel._cat_list.item(i).text() == "Miljö"
+                                 for i in range(panel._cat_list.count())))
+
+            for i in range(panel._cat_list.count()):
+                if panel._cat_list.item(i).text() == "Miljö":
+                    panel._cat_list.setCurrentRow(i)
+                    break
+
+            original_get_text = QInputDialog.getText
+            QInputDialog.getText = staticmethod(lambda *a, **k: ("Miljöpåverkan", True))
+            try:
+                panel._cat_rename()
+            finally:
+                QInputDialog.getText = original_get_text
+            self.assertTrue(any(panel._cat_list.item(i).text() == "Miljöpåverkan"
+                                 for i in range(panel._cat_list.count())))
+
+            for i in range(panel._cat_list.count()):
+                if panel._cat_list.item(i).text() == "Miljöpåverkan":
+                    panel._cat_list.setCurrentRow(i)
+                    break
+            panel._cat_delete()
+            self.assertFalse(any(panel._cat_list.item(i).text() == "Miljöpåverkan"
+                                  for i in range(panel._cat_list.count())))
+        finally:
+            panel.deleteLater()
+
+    def test_matrix_editing_and_save_still_works_from_merged_tab(self):
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            saved = []
+            panel.matrix_changed.connect(lambda: saved.append(True))
+            panel._rows_spin.setValue(4)
+            panel._cols_spin.setValue(5)
+            panel._apply_size()
+            self.assertEqual(len(panel._cell_buttons), 4)
+            # _save_matrix() shows a blocking QMessageBox.information("Sparat", ...)
+            # confirmation -- headless offscreen Qt still runs a real modal event
+            # loop for exec(), so it must be stubbed out or the test hangs forever
+            # waiting for a click that never comes.
+            original_information = QMessageBox.information
+            QMessageBox.information = staticmethod(lambda *a, **k: None)
+            try:
+                panel._save_matrix()
+            finally:
+                QMessageBox.information = original_information
+            self.assertTrue(saved, "matrix_changed signal should still fire on save")
+            cfg = self.db.get_risk_matrix()
+            self.assertEqual(cfg['rows'], 4)
+            self.assertEqual(cfg['cols'], 5)
+        finally:
+            panel.deleteLater()
+
+
+class SettingsPanelProjektExpansionTests(unittest.TestCase):
+    """"Fliken projekt innehåller bara Projektnamn, datum och revision,
+    utveckla detta. Gör så att datum kan väljas inom ett intervall osv." /
+    "Även Anläggning, HAZOP-ledare, Deltagare" (2026-08-11) — three new
+    fields (Anläggning, HAZOP-ledare, Deltagare) plus a start/end
+    QDateEdit date range replacing the old single free-text 'Datum' field.
+    Verifies every field round-trips through db.get_config/set_config,
+    including the new date-range keys ('project_date_start' /
+    'project_date_end')."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_settings_projekt_test_")
+        self.db_path = os.path.join(self._tmpdir, "test_project.db")
+        self.db = Database(path=self.db_path)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_facility_leader_participants_round_trip(self):
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            panel._proj_facility.setText("Gävle Depå")
+            panel._proj_facility.editingFinished.emit()
+            panel._proj_leader.setText("Anna Andersson")
+            panel._proj_leader.editingFinished.emit()
+            panel._proj_participants.setPlainText("Anna Andersson\nBengt Bengtsson")
+            panel._proj_participants.focusOutEvent(QFocusEvent(QEvent.Type.FocusOut,
+                                                                Qt.FocusReason.OtherFocusReason))
+
+            self.assertEqual(self.db.get_config('project_facility'), "Gävle Depå")
+            self.assertEqual(self.db.get_config('project_hazop_leader'), "Anna Andersson")
+            self.assertEqual(self.db.get_config('project_participants'),
+                              "Anna Andersson\nBengt Bengtsson")
+        finally:
+            panel.deleteLater()
+
+    def test_date_range_round_trips_through_config(self):
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            panel._proj_date_start.setDate(QDate(2026, 9, 1))
+            panel._proj_date_end.setDate(QDate(2026, 9, 3))
+            self.assertEqual(self.db.get_config('project_date_start'), "2026-09-01")
+            self.assertEqual(self.db.get_config('project_date_end'), "2026-09-03")
+        finally:
+            panel.deleteLater()
+
+    def test_date_range_reloads_from_config_on_new_panel(self):
+        from hazop import SettingsPanel
+        self.db.set_config('project_date_start', '2027-01-10')
+        self.db.set_config('project_date_end', '2027-01-12')
+        panel = SettingsPanel(self.db)
+        try:
+            self.assertEqual(panel._proj_date_start.date().toString('yyyy-MM-dd'), '2027-01-10')
+            self.assertEqual(panel._proj_date_end.date().toString('yyyy-MM-dd'), '2027-01-12')
+        finally:
+            panel.deleteLater()
+
+    def test_legacy_project_date_key_is_included_in_reset_cleanup(self):
+        """The old single-value 'project_date' key must not be silently
+        orphaned: MainWindow's project-reset cleanup list must still clear
+        it (for pre-existing databases) alongside all the new keys."""
+        import inspect
+        import hazop as hazop_mod
+        src = inspect.getsource(hazop_mod.MainWindow)
+        for key in ('project_date', 'project_date_start', 'project_date_end',
+                    'project_facility', 'project_hazop_leader', 'project_participants'):
+            self.assertIn(f"'{key}'", src,
+                           f"Project-reset cleanup list should still mention {key!r}")
+
+
+class SettingsPanelPidTabRenameAndNewSettingsTests(unittest.TestCase):
+    """"Fliken PID borde kunna ändras till något mer generiskt för
+    inställning. Detta borde även kunna utvecklas med fler inställningar."
+    / "Byt namn + lägg till OCR/sid-inställningar" (2026-08-11) — the old
+    "P&ID" tab is renamed "P&ID-inställningar" and gains two new setting
+    groups (OCR-standardval, Sid-orientering) while the pre-existing
+    Tagg-identifiering checkbox (tag_strip_spaces) keeps working exactly
+    as before."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_settings_pid_test_")
+        self.db_path = os.path.join(self._tmpdir, "test_project.db")
+        self.db = Database(path=self.db_path)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_tab_renamed(self):
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            titles = [panel._tabs.tabText(i) for i in range(panel._tabs.count())]
+            self.assertIn("P&ID-inställningar", titles)
+            self.assertNotIn("P&ID", titles)
+        finally:
+            panel.deleteLater()
+
+    def test_tag_strip_spaces_checkbox_still_works(self):
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            panel._strip_spaces_chk.setChecked(False)
+            self.assertEqual(self.db.get_config('tag_strip_spaces'), '0')
+            panel._strip_spaces_chk.setChecked(True)
+            self.assertEqual(self.db.get_config('tag_strip_spaces'), '1')
+        finally:
+            panel.deleteLater()
+
+    def test_ocr_default_engine_setting_persists(self):
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            idx = panel._ocr_default_combo.findData('auto')
+            self.assertGreaterEqual(idx, 0, "'Automatiskt' option should always be present")
+            panel._ocr_default_combo.setCurrentIndex(idx)
+            self.assertEqual(self.db.get_config('ocr_default_engine'), 'auto')
+        finally:
+            panel.deleteLater()
+
+    def test_ocr_default_engine_reloads_from_config(self):
+        from hazop import SettingsPanel
+        self.db.set_config('ocr_default_engine', 'auto')
+        panel = SettingsPanel(self.db)
+        try:
+            self.assertEqual(panel._ocr_default_combo.currentData(), 'auto')
+        finally:
+            panel.deleteLater()
+
+    def test_page_orientation_setting_persists(self):
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            idx = panel._page_orientation_combo.findData('landscape')
+            self.assertGreaterEqual(idx, 0)
+            panel._page_orientation_combo.setCurrentIndex(idx)
+            self.assertEqual(self.db.get_config('pid_page_orientation_hint'), 'landscape')
+        finally:
+            panel.deleteLater()
+
+    def test_ocr_default_engine_skips_prompt_when_configured(self):
+        """resolve_ocr_scan_choice() (pid_viewer.py) is the actual wiring
+        behind the OCR-standardval setting: with a specific, available
+        engine configured, it must return that engine directly without
+        showing the Yes/No prompt (QMessageBox.question must not be called)."""
+        from pid_viewer import resolve_ocr_scan_choice
+        with unittest.mock.patch('equipment_detection.ocr_status',
+                                  return_value={'tesseract': True, 'easyocr': False,
+                                                'rapidocr': False, 'pil': True}), \
+             unittest.mock.patch('pid_viewer.ocr_status',
+                                  return_value={'tesseract': True, 'easyocr': False,
+                                                'rapidocr': False, 'pil': True}), \
+             unittest.mock.patch('pid_viewer.QMessageBox.question') as mock_question:
+            self.db.set_config('ocr_default_engine', 'tesseract')
+            use_ocr, engine = resolve_ocr_scan_choice(self.db, None)
+            self.assertTrue(use_ocr)
+            self.assertEqual(engine, 'tesseract')
+            mock_question.assert_not_called()
+
+    def test_ask_default_falls_back_to_prompt(self):
+        """The default 'ask' setting must preserve the original behaviour
+        exactly: still show the Yes/No prompt."""
+        from pid_viewer import resolve_ocr_scan_choice
+        with unittest.mock.patch('pid_viewer.ocr_status',
+                                  return_value={'tesseract': True, 'easyocr': False,
+                                                'rapidocr': False, 'pil': True}), \
+             unittest.mock.patch('pid_viewer.QMessageBox.question',
+                                  return_value=hazop.QMessageBox.StandardButton.Yes) as mock_question:
+            self.db.set_config('ocr_default_engine', 'ask')
+            use_ocr, engine = resolve_ocr_scan_choice(self.db, None)
+            mock_question.assert_called_once()
+            self.assertTrue(use_ocr)
 
 
 if __name__ == '__main__':
