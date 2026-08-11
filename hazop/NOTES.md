@@ -1039,6 +1039,20 @@ Radens utseende (🔧-ikon, fet stil, "tagg — typ"-text) ändras INTE — bara
 
 ---
 
+## Gömd text på orsaksrader + "spöktext" vid redigering (2026-08-11)
+
+**Rapport:** "Ibland så göms text på raderna i hazop scenario. särskilt de som står under orsaker. Dessutom ser det ut som att en spöktext ligger kvar när man redigerar."
+
+Två separata, sedan tidigare befintliga (inte introducerade denna session) buggar i orsakscellens (ORS) radhöjdsberäkning, båda hittade genom att jämföra varje ställe som räknar ut eller använder cellens layout.
+
+**Bugg 1 — taggremsans höjd stämde inte överens mellan fem olika ställen.** ORS-cellens övre remsa ([pin|tagg|frekvens|prickar]) ritas och positioneras med höjd **17px** (`_PidDelegate.paint()`, `updateEditorGeometry`), men SJÄLVA RADHÖJDEN räknades ut på hela FYRA andra ställen (`_size_hint_impl`, `_resize_rows_manual`, `_wrap_col_row_height`, och därmed även `_update_row_text_only`s snabbväg som körs direkt efter varje redigering) som alla antog bara **14px** — 3px för lite reserverat för beskrivningstexten under remsan, vilket klippte bort botten av sista raden i varje flerradig orsakstext. Extra tydligt precis efter redigering, eftersom `_update_row_text_only` är den kod som räknar om höjden DÅ. **Fix:** ny delad konstant `_ORS_STRIP_H = 17` som alla fem ställen nu refererar till istället för sina egna, tidigare inkonsekventa literaler.
+
+**Bugg 2 — en odokumenterad höjdgräns klippte långa orsaker vid fyra rader, oavsett innehåll.** `_resize_rows()` (körs efter varje full ombyggnad av tabellen) hade en tvingande gräns: `_max = fm.height()*4 + 12` — VILKEN rad som helst vars korrekt uträknade höjd (från `_resize_rows_manual`) översteg "~4 textrader" klämdes tvångsmässigt ihop till den gränsen, utan någon visuell antydan om att något klippts bort. Ingen dokumenterad anledning till gränsen hittades i NOTES.md eller kodkommentarer. I ett säkerhetsdokumentationsverktyg är en hög rad ett mycket mindre problem än att en orsaks-/riskbeskrivning tyst saknar sina sista rader — gränsen är borttagen helt (den nedre golv-gränsen, `_min_ors`, som bara förhindrar orimligt korta rader, är kvar eftersom den aldrig gömmer något).
+
+**Test:** `OrsStripHeightConsistencyTests` (3 nya, test_regression.py) — kontrollerar direkt att utrymmet som faktiskt finns kvar under remsan vid radmålning alltid räcker för den radbrutna textens beräknade höjd, dels efter första inladdning, dels efter `_update_row_text_only` (den specifika "spöktext efter redigering"-vägen), samt att en text som garanterat behöver fler än fyra rader faktiskt FÅR fler än fyra rader istället för att klippas vid den gamla gränsen. Verifierat via `git stash`/`git stash pop` att alla tre genuint fångar respektive bugg (ett tydligt exempel: cap-testet visade radhöjd 60px både förväntat OCH faktiskt innan fixen — bevisar att gränsen verkligen slog till). Full svit: `python -m unittest test_regression test_symbol_geometry` — 446/446 gröna.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **OCR-positioner är approximativa** — x,y-koordinater från OCR stämmer inte perfekt med PDF-koordinater vid hög zoom. Markörer kan hamna något fel.

@@ -10344,11 +10344,10 @@ class _ScenarioDelegate(QStyledItemDelegate):
 
         w = option.rect.width() if option.rect.width() > 0 else 200
         if col == panel._C_ORS:
-            _STRIP_H = 14
             w = max(40, option.rect.width() - 6)
             rect = fm.boundingRect(0, 0, w, 10000, Qt.TextFlag.TextWordWrap, text)
             return QSize(option.rect.width(),
-                         _STRIP_H + max(one_line_h, rect.height() + 4))
+                         _ORS_STRIP_H + max(one_line_h, rect.height() + 4))
         elif col == panel._C_KON:
             w -= _PID_ICON_W + _KON_CAT_W
             w = max(40, w)
@@ -10417,6 +10416,17 @@ _PID_ICON_W  = 22          # pixels reserved on the left for the pin icon
 _KON_CAT_W   = 26          # pixels for the category badge zone in KON cells
 _ORS_COMMENT_W = 22        # 💬 comment icon zone (rightmost of ORS)
 _ORS_CLONE_W   = 22        # 📋 clone-scenario icon zone
+# Height of the ORS cell's top strip ([pin|tag|freq|dots], see _PidDelegate.
+# paint()'s "Cause cells" branch). MUST match everywhere a row's needed
+# height is computed (sizeHint/_resize_rows_manual/_wrap_col_row_height)
+# AND everywhere the strip is actually drawn/the editor is positioned below
+# it (paint()/updateEditorGeometry) — these used to disagree (14 vs 17px),
+# which under-allocated 3px of vertical space for the wrapped description
+# text below the strip on every ORS row, silently clipping its bottom few
+# pixels (2026-08-11, bug report: "text göms på raderna ... spöktext ligger
+# kvar när man redigerar" — the clipped-then-stale pixels from the
+# undersized row explain both symptoms). See NOTES.md.
+_ORS_STRIP_H = 17
 
 _ORS_FREQ_W  = 50          # pixels for the frequency badge zone after obj zone in ORS cells
 _RRF_W       = 54          # pixel width of the RRF badge column on the right of safeguard cells
@@ -10540,7 +10550,7 @@ class _PidDelegate(_ScenarioDelegate):
         col = index.column()
         if col == self._panel._C_ORS:
             # Editor sits in the description area, below the top strip
-            _STRIP_H = 17
+            _STRIP_H = _ORS_STRIP_H
             r = option.rect
             editor.setGeometry(QRect(r.left() + 2, r.top() + _STRIP_H,
                                      max(10, r.width() - 4),
@@ -10683,7 +10693,7 @@ class _PidDelegate(_ScenarioDelegate):
                     painter.fillRect(r, option.palette.base())
 
                 # ── Vertical split ────────────────────────────────────────────
-                _SH = 17   # strip height (top row)
+                _SH = _ORS_STRIP_H   # strip height (top row)
                 strip_rect = QRect(r.left(), r.top(), r.width(), _SH)
                 desc_rect  = QRect(r.left() + 2, r.top() + _SH,
                                    r.width() - 4, max(0, r.height() - _SH))
@@ -12075,11 +12085,10 @@ class ScenarioTablePanel(QWidget):
 
                     w = table.columnWidth(col)
                     if col == self._C_ORS:
-                        _STRIP_H = 14
                         cell_w = max(40, w - 6)
                         rect = fm.boundingRect(0, 0, cell_w, 10000,
                                               Qt.TextFlag.TextWordWrap, text)
-                        h = _STRIP_H + max(one_line_h, rect.height() + 4)
+                        h = _ORS_STRIP_H + max(one_line_h, rect.height() + 4)
                     else:   # self._C_KON
                         cell_w = max(40, w - _PID_ICON_W - _KON_CAT_W)
                         rect = fm.boundingRect(0, 0, cell_w, 10000,
@@ -12125,16 +12134,23 @@ class ScenarioTablePanel(QWidget):
         self._resize_rows_manual()
         logging.info('_resize_rows: K1 — manual row-height loop done')
         _fm  = QFontMetrics(self._table.font())
-        _max = _fm.height() * 4 + 12   # cap: max ~4 text lines
         _min_ors = _fm.height() * 2 + 20  # floor for ORS rows: ~2 lines + strip
         for _r in range(self._table.rowCount()):
             h = self._table.rowHeight(_r)
-            # ORS cell in this row has content → enforce minimum readable height
+            # ORS cell in this row has content → enforce minimum readable height.
+            # There used to also be an upper CAP here (~4 text lines) that
+            # silently shrank any row whose wrapped description needed more
+            # room than that, clipping the rest of the text with no visual
+            # indication anything was cut off — exactly the "text göms på
+            # raderna ... särskilt de som står under orsaker" bug report
+            # (2026-08-11, see NOTES.md). In a safety-documentation tool,
+            # a tall row is a far smaller problem than a hazard/cause
+            # description silently missing its last few lines, so the cap
+            # is gone — rows now grow to fit however much text is actually
+            # there, exactly what "flerradig, auto-höjd" is supposed to mean.
             ors_item = self._table.item(_r, self._C_ORS)
             if ors_item and ors_item.text() and h < _min_ors:
                 self._table.setRowHeight(_r, _min_ors)
-            elif h > _max:
-                self._table.setRowHeight(_r, _max)
         logging.info('_resize_rows: K2 — row-height pass done, restoring scroll position')
         self._table.verticalScrollBar().setValue(vscroll_value)
         self._table.horizontalScrollBar().setValue(hscroll_value)
@@ -12698,10 +12714,9 @@ class ScenarioTablePanel(QWidget):
             return one_line_h
         w = table.columnWidth(col)
         if col == self._C_ORS:
-            _STRIP_H = 14
             cell_w = max(40, w - 6)
             rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, text)
-            return _STRIP_H + max(one_line_h, rect.height() + 4)
+            return _ORS_STRIP_H + max(one_line_h, rect.height() + 4)
         else:   # self._C_KON
             cell_w = max(40, w - _PID_ICON_W - _KON_CAT_W)
             rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, text)

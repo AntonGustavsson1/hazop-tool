@@ -2860,6 +2860,127 @@ class ResizeRowsManualNoNativeCrashTests(unittest.TestCase):
             panel.deleteLater()
 
 
+class OrsStripHeightConsistencyTests(unittest.TestCase):
+    """'Ibland så göms text på raderna i hazop scenario. särskilt de som
+    står under orsaker. Dessutom ser det ut som att en spöktext ligger
+    kvar när man redigerar.' (2026-08-11). Root cause: the ORS cell's
+    top strip ([pin|tag|freq|dots]) is drawn/positioned at 17px
+    (_PidDelegate.paint(), updateEditorGeometry) but the row-height
+    calculations (sizeHint/_resize_rows_manual/_wrap_col_row_height —
+    including the fast-path _update_row_text_only() that runs right
+    after finishing an edit) only ever reserved 14px for it — a
+    long-standing, pre-existing mismatch across five places, none of
+    which agreed with each other. Every ORS row was silently 3px too
+    short for its own wrapped description, clipping the bottom of the
+    last line (worse right after an edit, since that's exactly when
+    _wrap_col_row_height's wrong number gets freshly (re)applied via
+    setRowHeight — the "ghost text" symptom). Fixed by unifying all
+    five call sites onto one shared _ORS_STRIP_H = 17 constant."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_orsstrip_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _row_for_cause(self, panel, cause_id):
+        return next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+
+    def _assert_enough_room_for_wrapped_text(self, panel, row):
+        from PyQt6.QtGui import QFontMetrics
+        from hazop import _ORS_STRIP_H
+        item = panel._table.item(row, panel._C_ORS)
+        fm = QFontMetrics(panel._table.font())
+        cell_w = max(40, panel._table.columnWidth(panel._C_ORS) - 6)
+        rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, item.text())
+        row_height = panel._table.rowHeight(row)
+        available_for_text = row_height - _ORS_STRIP_H
+        self.assertGreaterEqual(
+            available_for_text, rect.height(),
+            f"row height {row_height} leaves only {available_for_text}px below the "
+            f"strip, but the wrapped description needs {rect.height()}px — the last "
+            f"line will be clipped")
+
+    def test_row_height_leaves_enough_room_after_initial_load(self):
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(
+            cause_id,
+            description="En mycket lång orsakstext som ska radbrytas flera "
+                        "gånger i cellen för att verkligen tvinga fram en "
+                        "flerradig beskrivning under taggremsan " * 3)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = self._row_for_cause(panel, cause_id)
+            self._assert_enough_room_for_wrapped_text(panel, row)
+        finally:
+            panel.deleteLater()
+
+    def test_row_height_leaves_enough_room_after_editing_description(self):
+        """The specific "ghost text after editing" report — exercises the
+        fast-path _update_row_text_only(), not just the initial-load
+        sizing path above."""
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            long_text = ("En mycket lång orsakstext som ska radbrytas flera "
+                        "gånger i cellen efter redigering " * 3)
+            panel._update_row_text_only('cause', cause_id, long_text)
+            row = self._row_for_cause(panel, cause_id)
+            self._assert_enough_room_for_wrapped_text(panel, row)
+        finally:
+            panel.deleteLater()
+
+    def test_very_long_description_is_not_capped_at_four_lines(self):
+        """_resize_rows() used to forcibly shrink any row back down to
+        ~4 text lines' worth of height even when _resize_rows_manual()
+        had already correctly computed a taller one for a longer
+        description — silently clipping everything past the 4th line
+        with no visual sign anything was cut off. A HAZOP tool hiding
+        part of a cause description is a far worse failure mode than a
+        tall row, so the cap is gone; this pins that down directly with
+        a description long enough to need well over 4 lines."""
+        from hazop import ScenarioTablePanel
+        from PyQt6.QtGui import QFontMetrics
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(
+            cause_id,
+            description="En mycket lång orsakstext som garanterat radbryts till "
+                        "betydligt fler än fyra rader i cellen " * 8)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = self._row_for_cause(panel, cause_id)
+            row_height = panel._table.rowHeight(row)
+            fm = QFontMetrics(panel._table.font())
+            four_line_cap = fm.height() * 4 + 12
+            self.assertGreater(
+                row_height, four_line_cap,
+                "a description this long must grow the row past the old "
+                "4-line cap, not get silently clipped at it")
+            self._assert_enough_room_for_wrapped_text(panel, row)
+        finally:
+            panel.deleteLater()
+
+
 class ConsequenceStepPickerColumnsTests(unittest.TestCase):
     """Regression tests for ConsequenceStepPickerDialog's multi-column
     layout (all _N_STEPS 'Del N' columns shown side by side, replacing an
