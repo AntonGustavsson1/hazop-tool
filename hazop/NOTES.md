@@ -1169,6 +1169,18 @@ Nya grupper:
 
 ---
 
+## Kategorier: live-uppdatering av riskmatrisen vid borttag, samt omordning (2026-08-11)
+
+**Rapport:** "När jag lägger till eller tar bort en konsekvenskategori skall detta synas i riskmatrisen direkt. Jag vill även kunna justera ordningen, exempelvis genom vilken ordning de dyker upp."
+
+**Bugg — borttag uppdaterade inte riskmatrisen.** `_cat_add`/`_cat_rename` anropade redan `self._apply_size()` (som bygger om matrisrutnätet, inklusive de per-kategori severity-definitionsfälten) efter varje ändring — men `_cat_delete` gjorde det INTE, bara `self._load_categories()` (uppdaterar listan i sidopanelen) plus en `_sev_def_panel`-refresh om den fanns öppen. Matrisen fortsatte alltså visa den borttagna kategorins rad tills något helt orelaterat (t.ex. att dra i rad/kolumn-spinboxarna) råkade trigga en ombyggnad. **Fix:** `self._apply_size()` tillagt i `_cat_delete()`, samma mönster som redan fanns för lägg till/byt namn.
+
+**Ny funktion — omordning.** `consequence_categories`-tabellen hade redan en `sort_order`-kolumn och `Database.consequence_categories()` ordnade redan `ORDER BY sort_order, name` — bara själva möjligheten att ÄNDRA ordningen saknades. Ny `Database.reorder_categories(ordered_ids)` (samma mönster som befintlig `reorder_standard_deviations`), plus två nya ▲/▼-knappar bredvid kategorilistan (`_cat_move(direction)`) som byter plats på den valda kategorin och grannen, persisterar den nya ordningen, och anropar `_apply_size()` så matrisen omedelbart speglar den nya ordningen också.
+
+**Test:** 4 nya i `SettingsPanelMergedRiskmatrisKategorierTests` — borttag bevisligen bygger om `_cell_buttons` (identitetskontroll, inte bara längd, eftersom en matris med samma storlek annars kunnat dölja att ingen ombyggnad skett); omordning persisteras och läses tillbaka i rätt ordning från databasen (inte bara UI-listan); flytta uppåt vid toppen/nedåt vid botten är no-ops som varken kraschar eller stör ordningen. Alla fyra testerna behövde först städa bort `Database.__init__`s förinlagda standardkategorier (Person/Miljö/Ekonomi/...) för att inte kontamineras av dem — upptäckt genom att köra testerna en första gång och se ett oväntat 7-elements resultat istället för det förväntade 2-elements. Verifierat via `git stash`/`git stash pop`: alla tre nya (utöver den redan existerande add/rename/delete-testen) föll korrekt utan fixen (`AttributeError` för de två omordningstesterna eftersom `reorder_categories` inte fanns, `AssertionError` för borttag-testet eftersom `_cell_buttons` verkligen var samma objekt). Full svit: `python -m unittest test_regression test_symbol_geometry` — 489/489 gröna.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **Sid-orienteringsinställningen (P&ID-inställningar) är inte kopplad till faktisk rendering/skanning** — sparas i `pid_page_orientation_hint` men läses ännu inte av PDF-rendering, OCR-förbehandling eller taggskanning, som alla idag bara följer PDF-filens egen `/Rotate`-flagga direkt. Att koppla in den kräver att tråda en override genom flera lager, inklusive de flerprocess-skanningsarbetarna — inte gjort 2026-08-11, se ovan.

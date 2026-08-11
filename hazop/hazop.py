@@ -3065,6 +3065,16 @@ class Database:
         self.conn.execute("DELETE FROM consequence_categories WHERE id=?", (id_,))
         self.commit()
 
+    def reorder_categories(self, ordered_ids):
+        """Persist a new display order for consequence categories (2026-08-11,
+        'jag vill även kunna justera ordningen') — mirrors
+        reorder_standard_deviations()'s established pattern. consequence_categories()
+        already ORDERs BY sort_order, so this is the only piece that was missing."""
+        for i, id_ in enumerate(ordered_ids):
+            self.conn.execute(
+                "UPDATE consequence_categories SET sort_order=? WHERE id=?", (i, id_))
+        self.commit()
+
     def get_severity_definitions(self):
         """Return dict: severity_level (1-based int) -> {category_id -> description}."""
         rows = self.conn.execute(
@@ -16095,10 +16105,18 @@ class SettingsPanel(QWidget):
         btn_add  = QPushButton("+ Lägg till")
         btn_ren  = QPushButton("Byt namn")
         btn_del  = QPushButton("Ta bort")
+        btn_up   = QPushButton("▲")
+        btn_down = QPushButton("▼")
+        btn_up.setToolTip("Flytta vald kategori uppåt")
+        btn_down.setToolTip("Flytta vald kategori nedåt")
+        btn_up.setFixedWidth(CONFIG['W_ICON_BTN'])
+        btn_down.setFixedWidth(CONFIG['W_ICON_BTN'])
         btn_add.clicked.connect(self._cat_add)
         btn_ren.clicked.connect(self._cat_rename)
         btn_del.clicked.connect(self._cat_delete)
-        for b in [btn_add, btn_ren, btn_del]: cat_btns.addWidget(b)
+        btn_up.clicked.connect(lambda: self._cat_move(-1))
+        btn_down.clicked.connect(lambda: self._cat_move(1))
+        for b in [btn_add, btn_ren, btn_del, btn_up, btn_down]: cat_btns.addWidget(b)
         cl.addLayout(cat_btns)
         cl.addStretch()
 
@@ -16996,8 +17014,34 @@ class SettingsPanel(QWidget):
         if not item: return
         self.db.delete_category(item.data(Qt.ItemDataRole.UserRole))
         self._load_categories()
+        # 2026-08-11 fix ('När jag ... tar bort en konsekvenskategori skall
+        # detta synas i riskmatrisen direkt') — _cat_add/_cat_rename already
+        # called _apply_size() to rebuild the matrix grid; delete was
+        # missing this call, so the matrix kept showing the deleted
+        # category's severity-definition row until the next unrelated
+        # rebuild (e.g. resizing the rows/cols spinners).
+        self._apply_size()
         if hasattr(self, '_sev_def_panel') and self._sev_def_panel:
             self._sev_def_panel.refresh()
+
+    def _cat_move(self, direction):
+        """Move the selected category up (direction=-1) or down (+1) in
+        display order (2026-08-11, 'jag vill även kunna justera ordningen,
+        exempelvis genom vilken ordning de dyker upp')."""
+        item = self._cat_list.currentItem()
+        if not item:
+            return
+        row = self._cat_list.row(item)
+        new_row = row + direction
+        if not (0 <= new_row < self._cat_list.count()):
+            return
+        ordered_ids = [self._cat_list.item(i).data(Qt.ItemDataRole.UserRole)
+                       for i in range(self._cat_list.count())]
+        ordered_ids[row], ordered_ids[new_row] = ordered_ids[new_row], ordered_ids[row]
+        self.db.reorder_categories(ordered_ids)
+        self._load_categories()
+        self._cat_list.setCurrentRow(new_row)
+        self._apply_size()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

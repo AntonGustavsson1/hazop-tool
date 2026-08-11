@@ -9641,6 +9641,86 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_deleting_category_refreshes_matrix_cell_buttons(self):
+        """'När jag lägger till eller tar bort en konsekvenskategori skall
+        detta synas i riskmatrisen direkt.' (2026-08-11) — _cat_add already
+        called _apply_size() to rebuild the matrix grid; _cat_delete did
+        not, so the matrix silently kept its old grid after a delete. Use
+        _cell_buttons' identity (not just its length, which a fixed-size
+        matrix wouldn't change) to prove a real rebuild happened."""
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            panel.db.add_category("Miljö")
+            panel._load_categories()
+            for i in range(panel._cat_list.count()):
+                if panel._cat_list.item(i).text() == "Miljö":
+                    panel._cat_list.setCurrentRow(i)
+                    break
+
+            buttons_before = panel._cell_buttons
+            panel._cat_delete()
+            self.assertIsNot(panel._cell_buttons, buttons_before,
+                "_cell_buttons must be a freshly rebuilt list after deleting "
+                "a category — same object identity means _apply_size() never ran")
+        finally:
+            panel.deleteLater()
+
+    def test_reorder_categories_persists_new_order(self):
+        """'Jag vill även kunna justera ordningen, exempelvis genom vilken
+        ordning de dyker upp.' (2026-08-11) — up/down buttons move the
+        selected category and persist the new order via
+        Database.reorder_categories(), which consequence_categories()
+        (ORDER BY sort_order, name) then reflects."""
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            # Database() seeds default categories (Person/Miljö/Ekonomi/...)
+            # on creation -- clear them so this test only has to reason
+            # about its own two categories' relative order.
+            for cat in list(panel.db.consequence_categories()):
+                panel.db.delete_category(cat['id'])
+            a_id = panel.db.add_category("Alfa")
+            b_id = panel.db.add_category("Beta")
+            panel.db.reorder_categories([a_id, b_id])
+            panel._load_categories()
+            self.assertEqual(panel._cat_list.item(0).text(), "Alfa")
+            self.assertEqual(panel._cat_list.item(1).text(), "Beta")
+
+            panel._cat_list.setCurrentRow(1)   # select "Beta"
+            panel._cat_move(-1)                # move it up
+
+            names_in_ui = [panel._cat_list.item(i).text() for i in range(panel._cat_list.count())]
+            self.assertEqual(names_in_ui, ["Beta", "Alfa"])
+            names_in_db = [dict(c)['name'] for c in panel.db.consequence_categories()]
+            self.assertEqual(names_in_db, ["Beta", "Alfa"],
+                "new order must be persisted, not just reflected in the UI list")
+        finally:
+            panel.deleteLater()
+
+    def test_move_up_at_top_and_move_down_at_bottom_are_no_ops(self):
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            for cat in list(panel.db.consequence_categories()):
+                panel.db.delete_category(cat['id'])
+            a_id = panel.db.add_category("Alfa")
+            b_id = panel.db.add_category("Beta")
+            panel.db.reorder_categories([a_id, b_id])
+            panel._load_categories()
+
+            panel._cat_list.setCurrentRow(0)
+            panel._cat_move(-1)   # already at top -- must not raise or reorder
+            names = [panel._cat_list.item(i).text() for i in range(panel._cat_list.count())]
+            self.assertEqual(names, ["Alfa", "Beta"])
+
+            panel._cat_list.setCurrentRow(1)
+            panel._cat_move(1)    # already at bottom -- must not raise or reorder
+            names = [panel._cat_list.item(i).text() for i in range(panel._cat_list.count())]
+            self.assertEqual(names, ["Alfa", "Beta"])
+        finally:
+            panel.deleteLater()
+
 
 class SettingsPanelProjektExpansionTests(unittest.TestCase):
     """"Fliken projekt innehåller bara Projektnamn, datum och revision,
