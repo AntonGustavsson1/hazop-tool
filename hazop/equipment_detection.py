@@ -563,6 +563,34 @@ def _equip_prefix_from_tag(tag: str) -> str:
         return ''
     return fallback if re.search(r'[A-Z]', fallback) else ''
 
+
+def _bare_known_prefix(text: str) -> str:
+    """Is `text`, on its OWN and in its ENTIRETY, nothing more than an
+    already-curated KNOWN_PREFIXES entry (e.g. bare 'PI', 'FI')?
+
+    Used to exempt a digit-less tag candidate from _parse_tag's/
+    _score_tag_word's "must have a digit" guard (2026-08-10, see
+    NOTES.md) in exactly one narrow case: a real LOCAL indicator with no
+    loop number at all is a genuine ISA/P&ID convention — KNOWN_PREFIXES
+    itself already anticipated it ('PI': 'Tryckmätare (lokal)', 'FI':
+    'Flödesmätare (lokal)') — and the digit guard was rejecting it
+    outright, a real regression found on LKAB reference files
+    (2026-08-11, see NOTES.md: "programmet har svårt för att känna igen
+    instrument PI, FI").
+
+    Deliberately an EXACT, WHOLE-STRING match only — NOT a leading/
+    embedded substring match like _equip_prefix_from_tag itself uses.
+    A multi-word blob such as "ON/OFF" or "ON/OFFSWITCHLOCALLYMOUNTED"
+    contains the real prefix "ON" as a substring too, but is ordinary
+    annotation text (confirmed on a real file, 2026-08-10 sweep), not a
+    bare instrument tag — exempting it would undo that earlier fix.
+    Requiring the WHOLE string to equal a dictionary key, not just
+    contain one, is what keeps these two cases apart.
+    """
+    t = text.strip().upper()
+    return t if t in KNOWN_PREFIXES else ''
+
+
 # ── Equipment prefix knowledge base ──────────────────────────────────────────
 # Format: prefix → (swedish_display_name, COMPONENT_TYPES key)
 KNOWN_PREFIXES = {
@@ -1158,7 +1186,17 @@ def _parse_tag(text: str):
     # NOTES.md): without this guard, title-block/disclaimer words like
     # "THIS", "CONFIDENTIAL", "REPRODUCTION", "NODE" were accepted as
     # equipment tags across ~1500 distinct false "prefixes".
+    # EXCEPT: a bare, EXACT match to an already-curated KNOWN_PREFIXES
+    # entry (e.g. plain "PI"/"FI") — real LOCAL indicators (no loop
+    # number at all) are a genuine ISA convention KNOWN_PREFIXES itself
+    # already anticipated ("Tryckmätare (lokal)"), and the digit guard
+    # above was rejecting them outright, a real regression found on LKAB
+    # files (2026-08-11, see NOTES.md). See _bare_known_prefix() for why
+    # this is an EXACT whole-string match only, not a substring one.
     if not re.search(r'\d', text):
+        bare = _bare_known_prefix(text)
+        if bare:
+            return text, bare
         return None, None
 
     pfx = _equip_prefix_from_tag(text)
@@ -2501,6 +2539,14 @@ def _score_tag_word(raw: str):
     if re.search(r'\d', text):
         pfx = _equip_prefix_from_tag(text)
         if pfx and len(pfx) >= 2:
+            return text, 1
+    else:
+        # Exempt a bare, EXACT KNOWN_PREFIXES match (e.g. "PI"/"FI") from
+        # the digit requirement — see _bare_known_prefix's own docstring
+        # for why this is safe (a real local-indicator convention, not
+        # the "ON/OFF"-style noise the digit guard exists to reject).
+        bare = _bare_known_prefix(text)
+        if bare:
             return text, 1
     return None, 0
 

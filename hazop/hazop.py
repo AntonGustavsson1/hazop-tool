@@ -7294,7 +7294,18 @@ class TreePanel(QWidget):
                 for ci, cause in enumerate(self.db.causes_for_deviation(dev_id), 1):
                     placed_c = cause['id'] in marked_causes
                     tag    = (cause['comp_tag'] or '').strip() if cause['comp_tag'] else ''
-                    c_label = tag if tag else (cause['description'] or '')[:50]
+                    desc   = (cause['description'] or '').strip()
+                    # A REAL description is always more useful in the tree
+                    # than repeating the tag a second row down (the tag is
+                    # already visible one level up, on the equipment/
+                    # deviation header) — only fall back to the tag for a
+                    # still-untouched placeholder cause with nothing else
+                    # to show yet (2026-08-11, bug report: a real cause
+                    # "Flödesgivare felar -> styrventil stänger" was
+                    # showing as just "=E1.M1.QMA127", the same tag its
+                    # own parent row already displays, see NOTES.md).
+                    trivial_desc = desc in ('', 'Ny orsak')
+                    c_label = (tag if tag else desc[:50]) if trivial_desc else desc[:50]
                     citem = QTreeWidgetItem([f"    ⚙ {ci}. {c_label}"])
                     citem.setIcon(0, _make_pin_icon(placed_c))
                     citem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
@@ -20121,6 +20132,18 @@ class MainWindow(QMainWindow):
         # from self.scenario_panel above) — it has its own stale db reference.
         try:
             self.worksheet._table_panel.db = db
+        except Exception:
+            pass
+
+        # StudyManagementPanel (admin_panel) embeds its own PIDManagementPanel
+        # (revision history + sheet reordering) — same nested-sub-panel-with-
+        # its-own-db-reference pattern as equipment_panel._model/worksheet.
+        # _table_panel above, missed here until a real crash: "Cannot operate
+        # on a closed database" in Database.get_revisions() when switching to
+        # the Administration tab after a project reload (2026-08-11, see
+        # NOTES.md).
+        try:
+            self.admin_panel._pid_mgmt.db = db
         except Exception:
             pass
 

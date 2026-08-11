@@ -3546,6 +3546,43 @@ class ReloadAllPanelsDbSwapTests(unittest.TestCase):
             except sqlite3.ProgrammingError as e:
                 self.fail(f"equipment_panel.refresh() must not touch the closed old db, raised: {e!r}")
 
+    def test_admin_panels_nested_pid_mgmt_gets_new_db(self):
+        """Same bug class again, found via a real crash report
+        (2026-08-11, see NOTES.md): StudyManagementPanel (admin_panel)
+        embeds its own PIDManagementPanel (self._pid_mgmt, revision
+        history + sheet reordering) with its own separate db reference,
+        set once at __init__ and never touched by _reload_all_panels()'s
+        top-level panel.db = db loop."""
+        with _TempDbMainWindow() as win:
+            old_db = win.db
+            old_db.conn.close()
+            win.db = hazop.Database(path=old_db.path)
+            win._reload_all_panels()
+            self.assertIs(win.admin_panel.db, win.db)
+            self.assertIs(win.admin_panel._pid_mgmt.db, win.db,
+                "StudyManagementPanel's nested PIDManagementPanel must also receive the new db reference")
+
+    def test_admin_panel_refresh_pid_does_not_crash_after_db_swap(self):
+        """End-to-end regression for the exact reported crash: switching
+        to the Administration tab after a project reload used to raise
+        sqlite3.ProgrammingError('Cannot operate on a closed database')
+        from Database.get_revisions()."""
+        with _TempDbMainWindow() as win:
+            old_db = win.db
+            old_db.conn.execute(
+                "INSERT INTO pid_revisions (revision, notes, created_at, pdf_path) "
+                "VALUES ('Rev A', '', '2026-08-11', '')")
+            old_db.commit()
+
+            old_db.conn.close()
+            win.db = hazop.Database(path=old_db.path)
+            win._reload_all_panels()
+
+            try:
+                win.admin_panel.refresh_pid()
+            except sqlite3.ProgrammingError as e:
+                self.fail(f"admin_panel.refresh_pid() must not touch the closed old db, raised: {e!r}")
+
     def test_pid_analysis_panel_and_its_model_get_new_db(self):
         """Same bug, same fix, for Inställningar → Identifierade objekt
         (PIDAnalysisPanel / _IdentifiedTagsModel)."""
@@ -5011,6 +5048,46 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         labels = [c.args[0] for c in mock_menu.addAction.call_args_list if c.args]
         self.assertTrue(any("Lägg till orsak" in lbl for lbl in labels))
         self.assertTrue(any("Lägg till konsekvens" in lbl for lbl in labels))
+
+    def test_cause_row_shows_real_description_not_redundant_tag(self):
+        """'Det räcker om instrumentet E1.M1.QMA127 dyker upp på en rad
+        i trädhierarkin' (2026-08-11) — a cause with a REAL, meaningful
+        description was showing its tag instead (redundant with the
+        equipment header directly above it), because add_causes_to_item's
+        label logic always preferred the tag over the description
+        whenever a tag existed, regardless of whether the description
+        was meaningful. Confirmed on a real project database: a cause
+        reading "Flödesgivare felar -> styrventil stänger" displayed as
+        just "=E1.M1.QMA127", the same tag its own parent row already
+        shows."""
+        from hazop import _create_tagged_cause
+        eq_id = self.db.add_equipment_item("E1.M1.QMA127", "E1.M1.QMA127", "QMA", 0,
+                                           "Instrument / Sensor", '', 0)
+        node_id = self.db.add_node()
+        dev_id = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        cause_id, _cons_id = _create_tagged_cause(
+            self.db, dev_id, "Instrument / Sensor", "E1.M1.QMA127")
+        self.db.update_cause(cause_id, description="Flödesgivare felar -> styrventil stänger")
+        self.panel.refresh()
+
+        # A real description means the cause must NOT have merged into
+        # the equipment header (that merge only applies to a still-
+        # trivial cause) — it stays its own, separate CAUSE_T child.
+        cause_rows = [x for x in self._tree_items() if x[0] == CAUSE_T and x[1] == cause_id]
+        self.assertEqual(len(cause_rows), 1)
+
+        it = QTreeWidgetItemIterator(self.panel.tree)
+        cause_item = None
+        while it.value():
+            item = it.value()
+            if (item.data(0, Qt.ItemDataRole.UserRole + 1) == CAUSE_T
+                    and item.data(0, Qt.ItemDataRole.UserRole) == cause_id):
+                cause_item = item
+            it += 1
+        self.assertIsNotNone(cause_item)
+        self.assertIn("Flödesgivare felar", cause_item.text(0))
+        self.assertNotIn("E1.M1.QMA127", cause_item.text(0),
+            "must show the real description, not repeat the tag its parent row already shows")
 
     def test_merged_equipment_deviation_item_offers_add_cause_context_menu(self):
         """Right-clicking the equipment row used to be a dead end (EQUIP_T
@@ -8796,6 +8873,42 @@ class TagFallbackDigitGuardTests(unittest.TestCase):
         tag, score = _score_tag_word("HV-101")
         self.assertEqual(tag, "HV-101")
         self.assertGreaterEqual(score, 2)
+
+    def test_parse_tag_exempts_bare_known_instrument_codes(self):
+        """'programmet har svårt för att känna igen instrument PI, FI'
+        (2026-08-11) — a real regression the digit guard above
+        introduced: LKAB P&IDs genuinely label some LOCAL indicators
+        with just the bare ISA code and no loop number at all (a real
+        convention KNOWN_PREFIXES itself already anticipated —
+        'Tryckmätare (lokal)', 'Flödesmätare (lokal)'). Confirmed via
+        git-history diff against the real LKAB reference corpus: 'PI'/
+        'FI' were recognised before the digit guard, silently stopped
+        being recognised after it, with no other code change in
+        between."""
+        from equipment_detection import _parse_tag
+        self.assertEqual(_parse_tag("PI"), ("PI", "PI"))
+        self.assertEqual(_parse_tag("FI"), ("FI", "FI"))
+
+    def test_parse_tag_still_rejects_onoff_state_annotation(self):
+        """The exemption above must be an EXACT whole-string match only
+        — "ON" is ALSO a real KNOWN_PREFIXES entry (Avstängningsventil),
+        but "ON/OFF" (confirmed real noise on a NYA-corpus file,
+        2026-08-10) must stay rejected: it's ordinary valve-state
+        annotation text, not a bare instrument tag, even though "ON"
+        appears as a substring of it."""
+        from equipment_detection import _parse_tag
+        self.assertEqual(_parse_tag("ON/OFF"), (None, None))
+        self.assertEqual(_parse_tag("ON/OFFSWITCHLOCALLYMOUNTED"), (None, None))
+
+    def test_score_tag_word_exempts_bare_known_instrument_codes(self):
+        from equipment_detection import _score_tag_word
+        tag, score = _score_tag_word("PI")
+        self.assertEqual(tag, "PI")
+        self.assertGreaterEqual(score, 1)
+
+    def test_score_tag_word_still_rejects_onoff_state_annotation(self):
+        from equipment_detection import _score_tag_word
+        self.assertEqual(_score_tag_word("ON/OFF"), (None, 0))
 
 
 class SpatialCombineGlueWordTests(unittest.TestCase):
