@@ -5279,6 +5279,78 @@ class EquipmentMarkerNavigateFiltersScenarioTests(unittest.TestCase):
             mock_load_eq.assert_not_called()
 
 
+class EquipmentDeviationCheckboxKeepsScenarioFilterTests(unittest.TestCase):
+    """'en mindre fix är att det skall se ut såhär även när jag klickar på
+    en rödmarkerad och lägger till exempelvis lågt och högt flöde. Då
+    skall det enbart vara kopplat till det objektet.' (2026-08-12) —
+    checking a deviation box in EquipmentDeviationBar (right after
+    clicking a red/green marker filtered the worksheet to it via
+    load_equipment()) must not silently widen the worksheet back out to
+    the whole node. Two separate handlers fire for a single checkbox
+    toggle — _on_equipment_deviation_created (the deviation itself) AND
+    _on_cause_template_created (the auto-suggested cause EquipmentDeviationBar
+    creates right after) — both needed the same fix."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_on_equipment_deviation_created_calls_load_equipment_not_load_node(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            eq_id = win.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", '', 0)
+            win.db.set_equipment_node(eq_id, node_id)
+            dev_id = win.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+
+            with unittest.mock.patch.object(win.scenario_panel, 'load_equipment') as mock_eq, \
+                 unittest.mock.patch.object(win.scenario_panel, 'load_node') as mock_node:
+                win._on_equipment_deviation_created(dev_id, eq_id)
+
+            mock_eq.assert_called_once_with(eq_id)
+            mock_node.assert_not_called()
+
+    def test_cause_template_created_stays_filtered_when_equipment_filter_active(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            eq_id = win.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", '', 0)
+            dev_id = win.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+            cause_id = win.db.add_cause(dev_id)
+            win.db.update_cause(cause_id, comp_type="Ventil", comp_tag="PV-101")
+
+            win.scenario_panel.load_equipment(eq_id)   # simulate having clicked the marker first
+            refresh_spy = unittest.mock.Mock(wraps=win.scenario_panel.refresh)
+            win.scenario_panel.refresh = refresh_spy
+            load_node_spy = unittest.mock.Mock(wraps=win.scenario_panel.load_node)
+            win.scenario_panel.load_node = load_node_spy
+
+            win.pid_panel.cause_template_created.emit(cause_id)
+
+            refresh_spy.assert_called_once()
+            load_node_spy.assert_not_called()
+            self.assertEqual(win.scenario_panel._equipment_filter_id, eq_id,
+                "the equipment filter must remain active after the cause's "
+                "own template-created refresh")
+            cause_ids_shown = {m[1] for m in win.scenario_panel._row_meta if m[1] is not None}
+            self.assertIn(cause_id, cause_ids_shown,
+                "the newly auto-created cause must still show up under the filter")
+
+    def test_cause_template_created_falls_back_to_load_node_without_equipment_filter(self):
+        """Unaffected regression check for the normal (non-equipment-
+        filtered) P&ID cause flow — must keep working exactly as before."""
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.get_or_create_deviation(node_id, "Lågt flöde")
+            cause_id = win.db.add_cause(dev_id)
+            win.scenario_panel.load_node(node_id)   # normal (unfiltered) view
+
+            load_node_spy = unittest.mock.Mock(wraps=win.scenario_panel.load_node)
+            win.scenario_panel.load_node = load_node_spy
+
+            win.pid_panel.cause_template_created.emit(cause_id)
+
+            load_node_spy.assert_called_once_with(node_id)
+
+
 class TreePanelEquipmentGroupingTests(unittest.TestCase):
     """TreePanel.refresh() groups a node's deviations by guide-word text
     FIRST (LEDORD_T — several deviation rows across different equipment can

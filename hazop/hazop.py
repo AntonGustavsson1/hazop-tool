@@ -19887,7 +19887,20 @@ class MainWindow(QMainWindow):
             node_id = cause.get('node_id') if cause else None
             if node_id is not None:
                 self.pid_panel.set_active_cause(cid)
-                self.scenario_panel.load_node(node_id)
+                # Stay on the equipment filter if one is active (2026-08-12,
+                # see NOTES.md: 'en mindre fix är att det skall se ut såhär
+                # även när jag klickar på en rödmarkerad och lägger till
+                # exempelvis lågt och högt flöde') — this handler also fires
+                # for the auto-created cause right after
+                # _on_equipment_deviation_created's own load_equipment()
+                # call (checking a deviation box immediately suggests a
+                # cause), so an unconditional load_node() here would
+                # silently widen the just-filtered worksheet back out on
+                # every single checkbox toggle.
+                if self.scenario_panel._equipment_filter_id is not None:
+                    self.scenario_panel.refresh()
+                else:
+                    self.scenario_panel.load_node(node_id)
             self.scenario_panel.refresh_placed()
             # select_cause() itself refuses to steal the current cell from
             # an active edit / a row the user already navigated to (see
@@ -20121,29 +20134,36 @@ class MainWindow(QMainWindow):
         self.equipment_panel.select_row_by_equipment_id(equipment_id)
 
     def _on_equipment_deviation_created(self, deviation_id, equipment_id):
-        """A deviation was checked on in EquipmentDeviationBar — refresh the
-        tree (new LEDORD_T/EQUIP_T/DEV_T items) and worksheet.
+        """A deviation was checked (or unchecked) on in EquipmentDeviationBar
+        — refresh the tree (new LEDORD_T/EQUIP_T/DEV_T items) and worksheet.
 
-        emit_selection=False + explicit load_node() (2026-08-07 fix, real
-        crash-adjacent bug report: "kan inte lägga till konsekvens"): the
-        original version called tree_panel.refresh(DEV_T, deviation_id)
-        with the default emit_selection=True, which cascades into
-        _on_selected(DEV_T, ...) -> scenario_panel.load_deviation(...) —
-        narrowing the worksheet to just THIS ONE deviation on every single
-        checkbox toggle. That hid sibling deviations for the same
-        node/equipment (the user's "I want to see BOTH deviations"
-        complaint) and left keyboard focus inside the bar's comboboxes, so
-        the worksheet's Enter-to-add-consequence shortcut never fired
-        (the user's "I can't add a consequence" complaint) — same
-        emit_selection anti-pattern already fixed elsewhere per commit
-        84c8b7c (see _on_props_changed, _on_safeguard_created,
-        _on_marker_navigate). load_node() shows every deviation under the
-        node together instead, exactly like clicking the node itself.
+        emit_selection=False (2026-08-07 fix, real crash-adjacent bug
+        report: "kan inte lägga till konsekvens"): the original version
+        called tree_panel.refresh(DEV_T, deviation_id) with the default
+        emit_selection=True, which cascades into _on_selected(DEV_T, ...)
+        -> scenario_panel.load_deviation(...) — narrowing the worksheet to
+        just THIS ONE deviation on every single checkbox toggle. That hid
+        sibling deviations for the same node/equipment (the user's "I want
+        to see BOTH deviations" complaint) and left keyboard focus inside
+        the bar's comboboxes, so the worksheet's Enter-to-add-consequence
+        shortcut never fired (the user's "I can't add a consequence"
+        complaint) — same emit_selection anti-pattern already fixed
+        elsewhere per commit 84c8b7c (see _on_props_changed,
+        _on_safeguard_created, _on_marker_navigate).
+
+        scenario_panel.load_equipment(), not load_node() (2026-08-12, see
+        NOTES.md): if the worksheet was already filtered to this equipment
+        (the user just clicked its red/green marker), checking a deviation
+        box in the bar used to silently widen it back to the whole node —
+        'en mindre fix är att det skall se ut såhär även när jag klickar på
+        en rödmarkerad och lägger till exempelvis lågt och högt flöde. Då
+        skall det enbart vara kopplat till det objektet.' load_equipment()
+        still shows every deviation under THIS equipment together (same
+        "not narrowed to one deviation" property load_node() had), just
+        without pulling in the rest of the node's unrelated causes too.
         """
-        node_id = self.db.equipment_node_id(equipment_id)
         self.tree_panel.refresh(DEV_T, deviation_id, emit_selection=False)
-        if node_id is not None:
-            self.scenario_panel.load_node(node_id)
+        self.scenario_panel.load_equipment(equipment_id)
         self.scenario_panel.refresh_placed()
 
     def _on_safeguard_created(self, _sg_id):
