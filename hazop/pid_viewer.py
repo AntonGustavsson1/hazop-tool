@@ -4688,6 +4688,24 @@ class PIDGraphicsView(QGraphicsView):
             self._deselect_equipment_marker(marker_id)
         self._selected_equipment_markers.clear()
 
+    def _reapply_equipment_selection_overlays(self):
+        """Re-draw the dashed-blue selection overlay for every currently
+        selected marker after a full overlay rebuild. clear_overlays()
+        (called by PIDPanel._load_overlays() on every marker recolor —
+        e.g. right after checking a deviation in EquipmentDeviationBar)
+        removes ANY scene item whose zValue falls in the overlay range,
+        including these — they're plain addRect() items, not tracked in
+        _type_items like the markers themselves. Without this, the
+        highlight from a plain click (2026-08-12, see NOTES.md) would
+        vanish the instant the user checks a deviation on the very
+        marker they just selected, defeating its purpose."""
+        ids = list(self._selected_equipment_markers)
+        self._equip_selection_overlays.clear()
+        self._selected_equipment_markers.clear()
+        for marker_id in ids:
+            if self._find_equipment_item(marker_id) is not None:
+                self._select_equipment_marker(marker_id)
+
     def _equipment_markers_in_rect(self, band_rect):
         """Return equipment_markers.id values whose scene bounding rect
         intersects band_rect — shared by the Ctrl-drag rubber-band's live
@@ -5878,6 +5896,16 @@ class PIDGraphicsView(QGraphicsView):
                     itype = item.data(self._DATA_TYPE)
                     iid   = item.data(self._DATA_ID)
                     if itype in ('cause', 'consequence', 'safeguard', 'equipment') and iid is not None:
+                        if itype == 'equipment':
+                            # Plain click on a defined (red/green) object
+                            # marker highlights it blue, same dashed
+                            # overlay Ctrl-click multi-select already uses
+                            # — single-select semantics here: clicking a
+                            # new one replaces the old highlight (2026-08-12,
+                            # see NOTES.md). Selection is cleared elsewhere
+                            # for any other plain click (mousePressEvent).
+                            self._clear_equipment_selection()
+                            self._select_equipment_marker(int(iid))
                         self.marker_clicked.emit(itype, int(iid))
                         break
         self._press_pos = None
@@ -9250,6 +9278,7 @@ class PIDPanel(QWidget):
         self._draw_sheet_connections()
         # Reapply LOD so newly added items get correct visibility at current zoom
         self.viewer._apply_lod(self.viewer.transform().m11(), force=True)
+        self.viewer._reapply_equipment_selection_overlays()
 
     def start_cause_template_mode(self, deviation_id):
         """Switch to template placement mode for the given deviation."""
@@ -9505,7 +9534,10 @@ class PIDPanel(QWidget):
     # See NOTES.md "Nod → Utrustning → Avvikelse". Clicking an equipment
     # marker used to always navigate away to the Utrustningsregister
     # (marker_navigated.emit('equipment', ...)); it now opens the bottom
-    # bar instead, with a link inside it for the old navigation.
+    # bar instead. (2026-08-12: also re-emits marker_navigated again — the
+    # bar and the filtered-scenario-table navigation are no longer
+    # mutually exclusive, see NOTES.md "de orsaker som visas i hazop
+    # scenario är de där objektet finns med".)
 
     def _on_marker_clicked(self, item_type, item_id):
         if item_type == 'equipment':
@@ -9514,6 +9546,7 @@ class PIDPanel(QWidget):
             if row and row['equipment_id'] is not None:
                 self._equipment_bar.load(row['equipment_id'], item_id,
                                          active_node_id=self._active_node_id)
+            self.marker_navigated.emit(item_type, item_id)
             return
         self.marker_navigated.emit(item_type, item_id)
 

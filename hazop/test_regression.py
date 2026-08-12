@@ -3687,6 +3687,27 @@ class ReloadAllPanelsDbSwapTests(unittest.TestCase):
             except sqlite3.ProgrammingError as e:
                 self.fail(f"clicking an equipment marker must not touch the closed old db, raised: {e!r}")
 
+    def test_equipment_marker_click_opens_bar_and_filters_scenario_table(self):
+        """(2026-08-12, see NOTES.md) _on_marker_clicked used to return
+        early for 'equipment' without ever emitting marker_navigated —
+        opening EquipmentDeviationBar and filtering the scenario table
+        were mutually exclusive. Now both happen on the same click: the
+        full real chain (PIDPanel._on_marker_clicked -> marker_navigated
+        -> MainWindow._on_marker_navigate -> _on_equipment_marker_navigate
+        -> scenario_panel.load_equipment) must actually fire end to end."""
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            eq_id = win.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", '', 0)
+            win.db.set_equipment_node(eq_id, node_id)
+            marker_id = win.db.add_equipment_marker(eq_id, "PV-101", 0, 10.0, 10.0, "Ventil")
+
+            win.pid_panel._on_marker_clicked('equipment', marker_id)
+
+            self.assertEqual(win.pid_panel._equipment_bar.equipment_id, eq_id,
+                "the deviation checklist bar must still open, as before")
+            self.assertEqual(win.scenario_panel._equipment_filter_id, eq_id,
+                "the scenario table must now also be filtered to this equipment")
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # 9. Unified tag scanning — "🔍 Skanna P&ID" and "📋 Analysera P&ID" used to
@@ -4754,26 +4775,36 @@ class EquipmentMarkerClickNavigationTests(unittest.TestCase):
     has no HAZOP tree node of its own to select).
 
     2026-08-11: once equipment IS linked to a node (equipment_catalog.
-    node_id), clicking its marker instead shows that node's worksheet
-    (causes/consequences/safeguards together) — the register-select above
-    remains only as the fallback for equipment with no node yet."""
+    node_id), clicking its marker instead showed that node's WHOLE
+    worksheet (causes/consequences/safeguards together) — the
+    register-select above remained only as the fallback for equipment
+    with no node yet.
 
-    def test_on_marker_navigate_switches_to_equipment_page_and_selects_row(self):
+    2026-08-12: the user clarified the 2026-08-11 behaviour was too broad
+    ('de orsaker som visas i hazop scenario är de där objektet finns med')
+    — clicking a marker now filters the worksheet to ONLY the rows that
+    actually mention this equipment (scenario_panel.load_equipment()),
+    regardless of whether it has a node yet, and the register-page
+    fallback is gone: the scenario table (right there on the same P&ID
+    page) is always the right place to show the result, even if empty."""
+
+    def test_on_marker_navigate_equipment_marker_filters_scenario_table(self):
         with _TempDbMainWindow() as win:
             eq_id = win.db.add_equipment_item("HV-101", "HV-101", "HV", 0, "Ventil", '', 0)
             marker_id = win.db.add_equipment_marker(
                 eq_id, "HV-101", 0, 100.0, 100.0, "Ventil", confidence=0.9,
                 link_method='leader')
-            win.equipment_panel.refresh()
+
+            load_eq_spy = unittest.mock.Mock(wraps=win.scenario_panel.load_equipment)
+            win.scenario_panel.load_equipment = load_eq_spy
 
             win._on_marker_navigate('equipment', marker_id)
 
-            self.assertEqual(win.view_stack.currentIndex(), 2,
-                "clicking a valve marker must switch to the Utrustning page")
-            src_row = win.equipment_panel._proxy.mapToSource(
-                win.equipment_panel._tbl.currentIndex()).row()
-            self.assertEqual(win.equipment_panel._model.row_dict(src_row)['id'], eq_id,
-                "the register row for the clicked marker's equipment_id must be selected")
+            load_eq_spy.assert_called_once_with(eq_id)
+            self.assertNotEqual(win.view_stack.currentIndex(), 2,
+                "clicking a marker must stay on the P&ID page — the filtered "
+                "scenario table is the bottom pane of that same page, no "
+                "need to navigate away to the Utrustning register")
 
     def test_on_marker_navigate_equipment_with_no_linked_row_does_not_crash(self):
         """A marker whose equipment_id is NULL (e.g. an untagged shape hit
@@ -4787,21 +4818,23 @@ class EquipmentMarkerClickNavigationTests(unittest.TestCase):
             except Exception as e:
                 self.fail(f"must not raise for a marker with no linked equipment row: {e!r}")
 
-    def test_on_marker_navigate_equipment_with_node_shows_worksheet_not_register(self):
-        """2026-08-11: 'Om jag har lagt till ett objekt på P&ID ... och
-        klickar på det igen så vill jag att orsakerna där det nämns dyker
-        upp i hazop scenario ... Detta gäller även om de är tillagda på
-        konsekvens och safeguard.' Once equipment is linked to a node
-        (equipment_catalog.node_id, via Database.set_equipment_node),
-        clicking its marker must show that node's full worksheet — mirroring
-        _on_equipment_deviation_created's own load_node() call — instead of
-        switching away to the equipment register."""
+    def test_on_marker_navigate_equipment_with_node_shows_only_its_own_causes(self):
+        """'Om jag har lagt till ett objekt på P&ID ... och klickar på det
+        igen så vill jag att orsakerna där det nämns dyker upp i hazop
+        scenario ... Detta gäller även om de är tillagda på konsekvens och
+        safeguard' (2026-08-11), clarified 2026-08-12 to mean FILTERED, not
+        the whole node: a second, unrelated cause under the very same node
+        must NOT show up, only the one actually tagged to this equipment."""
         with _TempDbMainWindow() as win:
             node_id = win.db.add_node()
             dev_id = win.db.get_or_create_deviation(node_id, "Högt tryck")
             cause_id = win.db.add_cause(dev_id)
+            win.db.update_cause(cause_id, comp_type="Ventil", comp_tag="PSV-101")
             cons_id = win.db.add_consequence(cause_id)
             sg_id = win.db.add_safeguard(cons_id)
+
+            other_dev = win.db.get_or_create_deviation(node_id, "Lågt tryck")
+            other_cause = win.db.add_cause(other_dev)   # same node, not tagged to this equipment
 
             eq_id = win.db.add_equipment_item("PSV-101", "PSV-101", "PSV", 0,
                                                "Ventil", '', 0)
@@ -4810,48 +4843,43 @@ class EquipmentMarkerClickNavigationTests(unittest.TestCase):
                 eq_id, "PSV-101", 0, 100.0, 100.0, "Ventil", confidence=0.9,
                 link_method='leader')
 
-            load_node_spy = unittest.mock.Mock(wraps=win.scenario_panel.load_node)
-            win.scenario_panel.load_node = load_node_spy
+            load_eq_spy = unittest.mock.Mock(wraps=win.scenario_panel.load_equipment)
+            win.scenario_panel.load_equipment = load_eq_spy
 
             win._on_marker_navigate('equipment', marker_id)
 
-            load_node_spy.assert_called_once_with(node_id)
+            load_eq_spy.assert_called_once_with(eq_id)
             self.assertNotEqual(win.view_stack.currentIndex(), 2,
                 "must not switch to the Utrustning register page when the "
                 "equipment has a node to show a worksheet for")
-            # load_node() pulls in every cause/consequence/safeguard under
-            # the node together — assert the consequence/safeguard created
-            # above are genuinely present, not just the cause, to prove
-            # this also covers tags mentioned on consequence/safeguard.
             cons_and_sg_ids = {(m[2], m[3]) for m in win.scenario_panel._row_meta}
             self.assertIn((cons_id, sg_id), cons_and_sg_ids,
-                "the node's consequence/safeguard row must be visible in "
-                "the scenario table, not just its cause")
+                "the tagged cause's consequence/safeguard row must be "
+                "visible in the scenario table, not just its cause")
+            cause_ids_shown = {m[1] for m in win.scenario_panel._row_meta if m[1] is not None}
+            self.assertNotIn(other_cause, cause_ids_shown,
+                "an unrelated cause under the SAME node must be filtered out")
 
-    def test_on_marker_navigate_equipment_without_node_still_uses_register_fallback(self):
-        """No node_id means there's no worksheet to show for this equipment
-        yet — the old register-select behaviour must remain as a fallback
-        so the click still does something useful."""
+    def test_on_marker_navigate_equipment_without_node_still_filters_scenario_table(self):
+        """No node_id means the equipment itself isn't tied to a node yet,
+        but a cause elsewhere could still be tagged to its tag/type
+        directly — load_equipment() (tag-matching, not FK-only) is always
+        the right call, never the old register-page fallback."""
         with _TempDbMainWindow() as win:
             eq_id = win.db.add_equipment_item("HV-202", "HV-202", "HV", 0,
                                                "Ventil", '', 0)
             marker_id = win.db.add_equipment_marker(
                 eq_id, "HV-202", 0, 10.0, 10.0, "Ventil", confidence=0.9,
                 link_method='leader')
-            win.equipment_panel.refresh()
 
-            load_node_spy = unittest.mock.Mock(wraps=win.scenario_panel.load_node)
-            win.scenario_panel.load_node = load_node_spy
+            load_eq_spy = unittest.mock.Mock(wraps=win.scenario_panel.load_equipment)
+            win.scenario_panel.load_equipment = load_eq_spy
 
             win._on_marker_navigate('equipment', marker_id)
 
-            load_node_spy.assert_not_called()
-            self.assertEqual(win.view_stack.currentIndex(), 2,
-                "with no node_id, the fallback must still switch to the "
-                "Utrustning page")
-            src_row = win.equipment_panel._proxy.mapToSource(
-                win.equipment_panel._tbl.currentIndex()).row()
-            self.assertEqual(win.equipment_panel._model.row_dict(src_row)['id'], eq_id)
+            load_eq_spy.assert_called_once_with(eq_id)
+            self.assertNotEqual(win.view_stack.currentIndex(), 2,
+                "must not switch to the Utrustning page — no fallback anymore")
 
     def test_select_row_by_equipment_id_clears_blocking_filter(self):
         """If a text filter is currently hiding the target row, selecting
@@ -5037,6 +5065,218 @@ class EquipmentConsequenceSafeguardCountTests(unittest.TestCase):
         self.db.set_consequence_tag(c1, '', '')
         self.assertEqual(self.db.equipment_consequence_count('', ''), 0)
         self.assertEqual(self.db.equipment_safeguard_count('', ''), 0)
+
+
+class CausesForEquipmentTests(unittest.TestCase):
+    """Database.causes_for_equipment() — the query backing 'click an
+    equipment marker on P&ID -> show only causes mentioning it' (2026-08-12,
+    see NOTES.md: 'de orsaker som visas i hazop scenario är de där
+    objektet finns med'). A cause 'mentions' the equipment if its own
+    deviation is tied to it (deviations.equipment_id), OR the cause/one of
+    its consequences/one of its safeguards was tagged to it directly
+    (comp_tag+comp_type, e.g. via drag-and-drop) — mirrors the tag-matching
+    equipment_consequence_count/equipment_safeguard_count already use."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_causes_for_equip_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        self.node_id = self.db.add_node()
+        self.eq_id = self.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", '', 0)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_cause_under_equipment_owned_deviation_is_included(self):
+        dev_id = self.db.get_or_create_deviation(self.node_id, "Lågt flöde", equipment_id=self.eq_id)
+        cause_id = self.db.add_cause(dev_id)
+        ids = [dict(c)['id'] for c in self.db.causes_for_equipment(self.eq_id)]
+        self.assertEqual(ids, [cause_id])
+
+    def test_cause_tagged_directly_on_an_unrelated_deviation_is_included(self):
+        dev_id = self.db.deviations(self.node_id)[0]['id']   # generic, no equipment_id
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(cause_id, comp_type="Ventil", comp_tag="PV-101")
+        ids = [dict(c)['id'] for c in self.db.causes_for_equipment(self.eq_id)]
+        self.assertEqual(ids, [cause_id])
+
+    def test_cause_with_a_tagged_consequence_is_included(self):
+        dev_id = self.db.deviations(self.node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        self.db.set_consequence_tag(cons_id, "PV-101", "Ventil")
+        ids = [dict(c)['id'] for c in self.db.causes_for_equipment(self.eq_id)]
+        self.assertEqual(ids, [cause_id])
+
+    def test_cause_with_a_tagged_safeguard_is_included(self):
+        dev_id = self.db.deviations(self.node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        sg_id = self.db.add_safeguard(cons_id)
+        self.db.set_safeguard_tag(sg_id, "PV-101", "Ventil")
+        ids = [dict(c)['id'] for c in self.db.causes_for_equipment(self.eq_id)]
+        self.assertEqual(ids, [cause_id])
+
+    def test_unrelated_cause_is_excluded(self):
+        dev_id = self.db.deviations(self.node_id)[0]['id']
+        self.db.add_cause(dev_id)   # untagged, unrelated
+        other_dev = self.db.get_or_create_deviation(self.node_id, "Högt flöde")
+        other_cause = self.db.add_cause(other_dev)
+        self.db.update_cause(other_cause, comp_type="Pump", comp_tag="P-200")
+        ids = [dict(c)['id'] for c in self.db.causes_for_equipment(self.eq_id)]
+        self.assertEqual(ids, [])
+
+    def test_no_duplicate_rows_when_cause_matches_via_multiple_paths(self):
+        """A cause whose deviation IS the equipment's own AND whose
+        consequence is ALSO tagged to it must still only appear once."""
+        dev_id = self.db.get_or_create_deviation(self.node_id, "Lågt flöde", equipment_id=self.eq_id)
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        self.db.set_consequence_tag(cons_id, "PV-101", "Ventil")
+        rows = self.db.causes_for_equipment(self.eq_id)
+        self.assertEqual(len(rows), 1)
+
+    def test_equipment_with_no_tag_still_matches_via_deviation_fk_only(self):
+        eq_id2 = self.db.add_equipment_item("", "", "", 0, "", '', 0)
+        dev_id = self.db.get_or_create_deviation(self.node_id, "Lågt flöde", equipment_id=eq_id2)
+        cause_id = self.db.add_cause(dev_id)
+        ids = [dict(c)['id'] for c in self.db.causes_for_equipment(eq_id2)]
+        self.assertEqual(ids, [cause_id])
+
+
+class ScenarioPanelLoadEquipmentFilterTests(unittest.TestCase):
+    """ScenarioTablePanel.load_equipment() — the worksheet-side half of
+    'click an equipment marker on P&ID -> show only causes mentioning it'
+    (2026-08-12, see NOTES.md)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_load_equip_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        self.node_id = self.db.add_node()
+        self.eq_id = self.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", '', 0)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_only_matching_causes_appear_in_row_meta(self):
+        from hazop import ScenarioTablePanel
+        dev_id = self.db.get_or_create_deviation(self.node_id, "Lågt flöde", equipment_id=self.eq_id)
+        matching_cause = self.db.add_cause(dev_id)
+        self.db.add_consequence(matching_cause)
+
+        other_dev = self.db.get_or_create_deviation(self.node_id, "Högt flöde")
+        unrelated_cause = self.db.add_cause(other_dev)
+        self.db.add_consequence(unrelated_cause)
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_equipment(self.eq_id)
+            cause_ids_shown = {m[1] for m in panel._row_meta if m[1] is not None}
+            self.assertEqual(cause_ids_shown, {matching_cause})
+        finally:
+            panel.deleteLater()
+
+    def test_header_shows_the_equipment_tag(self):
+        from hazop import ScenarioTablePanel
+        dev_id = self.db.get_or_create_deviation(self.node_id, "Lågt flöde", equipment_id=self.eq_id)
+        cause_id = self.db.add_cause(dev_id)
+        self.db.add_consequence(cause_id)
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_equipment(self.eq_id)
+            self.assertIn("PV-101", panel._hdr_lbl.text())
+        finally:
+            panel.deleteLater()
+
+    def test_empty_result_shows_no_rows_and_no_crash(self):
+        from hazop import ScenarioTablePanel
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_equipment(self.eq_id)   # equipment exists, zero causes mention it
+            self.assertEqual(panel._row_meta, [])
+            self.assertIn("PV-101", panel._hdr_lbl.text())
+        finally:
+            panel.deleteLater()
+
+    def test_nod_and_dev_columns_are_visible_like_all_nodes_mode(self):
+        from hazop import ScenarioTablePanel
+        dev_id = self.db.get_or_create_deviation(self.node_id, "Lågt flöde", equipment_id=self.eq_id)
+        cause_id = self.db.add_cause(dev_id)
+        self.db.add_consequence(cause_id)
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_equipment(self.eq_id)
+            self.assertFalse(panel._table.isColumnHidden(panel._C_NOD))
+            self.assertFalse(panel._table.isColumnHidden(panel._C_DEV))
+        finally:
+            panel.deleteLater()
+
+    def test_load_node_after_load_equipment_clears_the_filter(self):
+        """Switching back to a normal node view must not leave the
+        equipment filter silently still active."""
+        from hazop import ScenarioTablePanel
+        dev_id = self.db.get_or_create_deviation(self.node_id, "Lågt flöde", equipment_id=self.eq_id)
+        cause_id = self.db.add_cause(dev_id)
+        self.db.add_consequence(cause_id)
+        other_dev = self.db.get_or_create_deviation(self.node_id, "Högt flöde")
+        other_cause = self.db.add_cause(other_dev)
+        self.db.add_consequence(other_cause)
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_equipment(self.eq_id)
+            panel.load_node(self.node_id)
+            self.assertIsNone(panel._equipment_filter_id)
+            cause_ids_shown = {m[1] for m in panel._row_meta if m[1] is not None}
+            self.assertEqual(cause_ids_shown, {cause_id, other_cause})
+        finally:
+            panel.deleteLater()
+
+
+class EquipmentMarkerNavigateFiltersScenarioTests(unittest.TestCase):
+    """MainWindow._on_equipment_marker_navigate() — plumbing from 'clicked
+    equipment marker on P&ID' to the filtered worksheet (2026-08-12, see
+    NOTES.md). An earlier version of this (2026-08-11) called
+    scenario_panel.load_node() (the whole node); the user clarified they
+    want only the rows mentioning the clicked object."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_calls_load_equipment_not_load_node(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            eq_id = win.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", '', 0)
+            win.db.set_equipment_node(eq_id, node_id)
+            marker_id = win.db.add_equipment_marker(eq_id, "PV-101", 0, 10.0, 10.0, "Ventil")
+
+            with unittest.mock.patch.object(win.scenario_panel, 'load_equipment') as mock_load_eq, \
+                 unittest.mock.patch.object(win.scenario_panel, 'load_node') as mock_load_node:
+                win._on_equipment_marker_navigate(marker_id)
+
+            mock_load_eq.assert_called_once_with(eq_id)
+            mock_load_node.assert_not_called()
+
+    def test_unlinked_marker_is_a_no_op(self):
+        with _TempDbMainWindow() as win:
+            marker_id = win.db.add_equipment_marker(None, "?", 0, 10.0, 10.0, "")
+            with unittest.mock.patch.object(win.scenario_panel, 'load_equipment') as mock_load_eq:
+                win._on_equipment_marker_navigate(marker_id)
+            mock_load_eq.assert_not_called()
 
 
 class TreePanelEquipmentGroupingTests(unittest.TestCase):
@@ -8669,6 +8909,116 @@ class EquipmentMultiSelectTests(unittest.TestCase):
         item = view._type_items['equipment'][0]
         self.assertIn("Ctrl", item.toolTip())
         self.assertIn("Shift", item.toolTip())
+
+
+class EquipmentPlainClickHighlightTests(unittest.TestCase):
+    """Reported feedback (2026-08-12, see NOTES.md): 'När jag klickar på ett
+    definerat objekt (rött eller grönt) vill jag att det blir blått så man
+    ser att det är markerat.' A plain (no-modifier) click on an existing
+    equipment marker now single-selects it — reusing the exact same
+    dashed-blue overlay mechanism Ctrl-click multi-select already draws
+    (EquipmentMultiSelectTests), just triggered from the ordinary NAV-mode
+    click-dispatch in mouseReleaseEvent instead of only from Ctrl+click."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def _make_view_with_markers(self, marker_positions):
+        from pid_viewer import PIDGraphicsView, MODE_NAV
+        view = PIDGraphicsView()
+        view.mode = MODE_NAV
+        items = {}
+        for marker_id, pos in marker_positions.items():
+            item = view._scene.addEllipse(pos.x() - 5, pos.y() - 5, 10, 10)
+            item.setData(view._DATA_TYPE, 'equipment')
+            item.setData(view._DATA_ID, marker_id)
+            view._type_items.setdefault('equipment', []).append(item)
+            items[marker_id] = item
+        return view, items
+
+    def _click(self, view, pos):
+        """Simulate a full plain-click (press + release, no movement) at
+        scene position `pos`, bypassing the real QGraphicsView base
+        implementation the same way EquipmentMultiSelectTests does."""
+        from PyQt6.QtWidgets import QGraphicsView
+        view.mapToScene = lambda pt: pos
+        event = unittest.mock.MagicMock()
+        event.button.return_value = Qt.MouseButton.LeftButton
+        event.modifiers.return_value = Qt.KeyboardModifier.NoModifier
+        event.position.return_value = pos
+        with unittest.mock.patch.object(QGraphicsView, 'mousePressEvent'):
+            view.mousePressEvent(event)
+        with unittest.mock.patch.object(QGraphicsView, 'mouseReleaseEvent'):
+            view.mouseReleaseEvent(event)
+
+    def test_plain_click_on_equipment_marker_selects_it(self):
+        from PyQt6.QtCore import QPointF
+        view, _items = self._make_view_with_markers({7: QPointF(50, 50)})
+        self._click(view, QPointF(50, 50))
+        self.assertEqual(view._selected_equipment_markers, {7})
+        self.assertIn(7, view._equip_selection_overlays)
+
+    def test_plain_click_on_equipment_marker_emits_marker_clicked(self):
+        from PyQt6.QtCore import QPointF
+        view, _items = self._make_view_with_markers({7: QPointF(50, 50)})
+        captured = []
+        view.marker_clicked.connect(lambda t, i: captured.append((t, i)))
+        self._click(view, QPointF(50, 50))
+        self.assertEqual(captured, [('equipment', 7)])
+
+    def test_clicking_a_second_marker_replaces_the_first_selection(self):
+        from PyQt6.QtCore import QPointF
+        view, _items = self._make_view_with_markers({
+            1: QPointF(10, 10), 2: QPointF(90, 90),
+        })
+        self._click(view, QPointF(10, 10))
+        self.assertEqual(view._selected_equipment_markers, {1})
+        self._click(view, QPointF(90, 90))
+        self.assertEqual(view._selected_equipment_markers, {2},
+            "clicking a new marker must replace the previous highlight, not add to it")
+
+    def test_reapply_equipment_selection_overlays_survives_marker_rebuild(self):
+        """_load_overlays() (triggered e.g. right after checking a
+        deviation, to recolor red->green) removes and recreates every
+        equipment marker item and calls clear_overlays(), which also wipes
+        the independent selection-overlay rects. Without reapplication the
+        blue highlight would vanish the instant the user interacts further
+        with the very marker they just selected."""
+        from PyQt6.QtCore import QPointF
+        view, items = self._make_view_with_markers({7: QPointF(50, 50)})
+        view._select_equipment_marker(7)
+        self.assertIn(7, view._equip_selection_overlays)
+
+        # Simulate clear_overlays() + marker rebuild: old overlay + old
+        # marker item both removed from the scene, a fresh marker item
+        # (same id) added in their place.
+        view._scene.removeItem(view._equip_selection_overlays[7])
+        view._scene.removeItem(items[7])
+        view._type_items['equipment'] = []
+        new_item = view._scene.addEllipse(45, 45, 10, 10)
+        new_item.setData(view._DATA_TYPE, 'equipment')
+        new_item.setData(view._DATA_ID, 7)
+        view._type_items['equipment'].append(new_item)
+
+        view._reapply_equipment_selection_overlays()
+
+        self.assertEqual(view._selected_equipment_markers, {7})
+        self.assertIn(7, view._equip_selection_overlays)
+
+    def test_reapply_equipment_selection_overlays_drops_deleted_markers(self):
+        from PyQt6.QtCore import QPointF
+        view, items = self._make_view_with_markers({7: QPointF(50, 50)})
+        view._select_equipment_marker(7)
+
+        view._scene.removeItem(view._equip_selection_overlays[7])
+        view._scene.removeItem(items[7])
+        view._type_items['equipment'] = []   # marker 7 genuinely gone now
+
+        view._reapply_equipment_selection_overlays()
+
+        self.assertEqual(view._selected_equipment_markers, set())
+        self.assertEqual(view._equip_selection_overlays, {})
 
 
 class EquipmentMarkerEditContextMenuTests(unittest.TestCase):

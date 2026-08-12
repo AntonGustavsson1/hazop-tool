@@ -3860,6 +3860,37 @@ class Database:
             "JOIN deviations d ON d.id=c.deviation_id "
             "WHERE d.node_id=?", (node_id,)).fetchall()
 
+    def causes_for_equipment(self, equipment_id):
+        """Every cause that 'mentions' this equipment anywhere in its own
+        chain — its deviation is directly tied to the equipment
+        (deviations.equipment_id), or the cause/one of its consequences/
+        one of its safeguards was tagged to it (comp_tag+comp_type, e.g.
+        via drag-and-drop) — used to filter the HAZOP scenario table to
+        just this object's rows when its P&ID marker is clicked (2026-08-12,
+        see NOTES.md: 'de orsaker som visas i hazop scenario är de där
+        objektet finns med'). Mirrors the tag-matching
+        equipment_consequence_count/equipment_safeguard_count already use
+        for their own occurrence counters."""
+        equip = self.get_equipment_by_id(equipment_id)
+        tag = (equip or {}).get('tag', '') or ''
+        comp_type = (equip or {}).get('equipment_type', '') or ''
+        if not tag:
+            return self.conn.execute(
+                "SELECT DISTINCT c.* FROM causes c "
+                "JOIN deviations d ON d.id=c.deviation_id "
+                "WHERE d.equipment_id=? ORDER BY c.id", (equipment_id,)).fetchall()
+        return self.conn.execute(
+            "SELECT DISTINCT c.* FROM causes c "
+            "JOIN deviations d ON d.id=c.deviation_id "
+            "LEFT JOIN consequences k ON k.cause_id=c.id "
+            "LEFT JOIN safeguards s ON s.consequence_id=k.id "
+            "WHERE d.equipment_id=? "
+            "   OR (c.comp_tag=? AND c.comp_type=?) "
+            "   OR (k.comp_tag=? AND k.comp_type=?) "
+            "   OR (s.comp_tag=? AND s.comp_type=?) "
+            "ORDER BY c.id",
+            (equipment_id, tag, comp_type, tag, comp_type, tag, comp_type)).fetchall()
+
     def consequences_for_node(self, node_id):
         """All consequences for a node across all causes."""
         return self.conn.execute(
@@ -11749,6 +11780,7 @@ class ScenarioTablePanel(QWidget):
         self._node_id = None
         self._deviation_id = None
         self._all_nodes = False  # if True, show every node's full hierarchy (set by load_all)
+        self._equipment_filter_id = None  # if set, show only causes mentioning this equipment_catalog id (set by load_equipment)
         self._show_empty_deviations = False  # if True, deviations with zero causes get a placeholder row instead of being omitted
         self._force_dev_column_visible = False  # if True, Avvikelse column stays visible regardless of _all_nodes (set by always_show_deviation_column)
         self._row_meta = []   # list of (dev_id, cause_id, cons_id, sg_id) per visible row
@@ -11919,6 +11951,7 @@ class ScenarioTablePanel(QWidget):
         self.cause_id = None
         self._cons_id = None
         self._all_nodes = False
+        self._equipment_filter_id = None
         self._set_all_nodes_columns_visible(False)
         self._rebuild()
 
@@ -11929,6 +11962,7 @@ class ScenarioTablePanel(QWidget):
         self.cause_id = None
         self._cons_id = None
         self._all_nodes = False
+        self._equipment_filter_id = None
         self._set_all_nodes_columns_visible(False)
         self._rebuild()
 
@@ -11938,6 +11972,7 @@ class ScenarioTablePanel(QWidget):
         self.cause_id = cause_id
         self._cons_id = None
         self._all_nodes = False
+        self._equipment_filter_id = None
         self._set_all_nodes_columns_visible(False)
         self._rebuild()
 
@@ -11949,6 +11984,7 @@ class ScenarioTablePanel(QWidget):
             self.cause_id = dict(row)['cause_id']
             self._cons_id = cons_id
             self._all_nodes = False
+            self._equipment_filter_id = None
             self._set_all_nodes_columns_visible(False)
             self._rebuild()
 
@@ -11959,6 +11995,25 @@ class ScenarioTablePanel(QWidget):
         self.cause_id = None
         self._cons_id = None
         self._all_nodes = True
+        self._equipment_filter_id = None
+        self._set_all_nodes_columns_visible(True)
+        self._rebuild()
+
+    def load_equipment(self, equipment_id):
+        """Filter the scenario table to only the causes that mention this
+        specific P&ID equipment object anywhere in their chain (deviation,
+        cause, consequence or safeguard) — used when the user clicks a
+        defined (red/green) equipment marker on the P&ID (2026-08-12, see
+        NOTES.md: 'de orsaker som visas i hazop scenario är de där
+        objektet finns med'). NOD/DEV/UTR columns are shown (same as "all
+        nodes" mode) since the matching rows can span several deviations
+        or even nodes."""
+        self._node_id = None
+        self._deviation_id = None
+        self.cause_id = None
+        self._cons_id = None
+        self._all_nodes = False
+        self._equipment_filter_id = equipment_id
         self._set_all_nodes_columns_visible(True)
         self._rebuild()
 
@@ -11972,6 +12027,7 @@ class ScenarioTablePanel(QWidget):
         self.cause_id = None
         self._cons_id = None
         self._all_nodes = False
+        self._equipment_filter_id = None
         self._show_empty_deviations = False
         self._set_all_nodes_columns_visible(False)
         self._table.setRowCount(0)
@@ -12162,6 +12218,19 @@ class ScenarioTablePanel(QWidget):
                 result.append((dict(c), dev_d))
         return result
 
+    def _causes_for_equipment(self, equipment_id):
+        """Return [(cause_dict, deviation_dict), ...] for every cause that
+        mentions this equipment anywhere in its chain — see
+        Database.causes_for_equipment(). Used by the "click an equipment
+        marker on P&ID" filter (load_equipment)."""
+        result = []
+        for c in self.db.causes_for_equipment(equipment_id):
+            c_d = dict(c)
+            dev = self.db.get_deviation(c_d.get('deviation_id'))
+            dev_d = dict(dev) if dev else {'id': None, 'node_id': c_d.get('node_id'), 'description': '—'}
+            result.append((c_d, dev_d))
+        return result
+
     def _build_rows(self):
         """
         Build the scenario table rows from current filters (node, deviation, cause, consequence).
@@ -12177,6 +12246,8 @@ class ScenarioTablePanel(QWidget):
         if self._all_nodes:
             for node_row in self.db.nodes():
                 causes_to_show.extend(self._causes_for_node(node_row['id']))
+        elif self._equipment_filter_id is not None:
+            causes_to_show.extend(self._causes_for_equipment(self._equipment_filter_id))
         elif self.cause_id is not None:
             c = self.db.get_cause(self.cause_id)
             if c:
@@ -12199,6 +12270,12 @@ class ScenarioTablePanel(QWidget):
                 # No nodes (or no deviations/causes) anywhere in the study yet —
                 # nothing sensible to show as a placeholder across all nodes.
                 self._hdr_lbl.setText("HAZOP Scenario — Hela studien")
+            elif self._equipment_filter_id is not None:
+                # No causes mention this equipment yet — nothing sensible to
+                # show as a placeholder (no single deviation to attach it to).
+                equip = self.db.get_equipment_by_id(self._equipment_filter_id)
+                tag = equip.get('tag', '?') if equip else '?'
+                self._hdr_lbl.setText(f"HAZOP Scenario — Objekt: {tag} (inga orsaker än)")
             elif self._deviation_id is not None:
                 dev = self.db.get_deviation(self._deviation_id)
                 if dev:
@@ -12229,6 +12306,10 @@ class ScenarioTablePanel(QWidget):
         node_name_hdr = node['name'] if node else '?'
         if self._all_nodes:
             self._hdr_lbl.setText("HAZOP Scenario — Hela studien")
+        elif self._equipment_filter_id is not None:
+            equip = self.db.get_equipment_by_id(self._equipment_filter_id)
+            tag = equip.get('tag', '?') if equip else '?'
+            self._hdr_lbl.setText(f"HAZOP Scenario — Objekt: {tag}")
         elif self._cons_id is not None:
             cons = self.db.get_consequence(self._cons_id)
             cons_desc = cons['description'] if cons else '?'
@@ -13030,7 +13111,7 @@ class ScenarioTablePanel(QWidget):
 
     def _update_ctx_bar(self, *_):
         """Refresh the sticky context bar to show Nod + Avvikelse of the topmost visible row."""
-        if self._all_nodes or self._force_dev_column_visible:
+        if self._all_nodes or self._force_dev_column_visible or self._equipment_filter_id is not None:
             # Multiple nodes are interleaved in one table in "all nodes" mode,
             # or the host (e.g. HAZOPWorksheet, via always_show_deviation_
             # column()) forces the Avvikelse column always visible — either
@@ -20015,29 +20096,17 @@ class MainWindow(QMainWindow):
         self._on_selected(t, item_id)
 
     def _on_equipment_marker_navigate(self, marker_id: int):
-        """Clicking an already-placed (green) equipment marker on the P&ID
-        should surface the HAZOP scenario rows that mention it — causes,
-        consequences AND safeguards — the same way the worksheet looks right
-        after a cause was just created (2026-08-11, 'Om jag har lagt till
-        ett objekt på P&ID ... och klickar på det igen så vill jag att
-        orsakerna där det nämns dyker upp i hazop scenario ... Detta gäller
-        även om de är tillagda på konsekvens och safeguard').
+        """Clicking an already-placed (red or green) equipment marker on the
+        P&ID should surface ONLY the HAZOP scenario rows that mention it —
+        causes, consequences AND safeguards (2026-08-12, see NOTES.md: 'de
+        orsaker som visas i hazop scenario är de där objektet finns med').
+        Filtered via scenario_panel.load_equipment(), not the whole node —
+        an earlier version of this feature (2026-08-11) showed the entire
+        node instead, which the user clarified was too broad.
 
-        Equipment only has a HAZOP tree node once it has been linked to one
-        (equipment_catalog.node_id, set via 'Nod ↔ Utrustning', see
-        Database.set_equipment_node). When that link exists we mirror
-        _on_equipment_deviation_created's own sequence exactly: refresh the
-        tree for that node and call scenario_panel.load_node(node_id),
-        which — unlike load_cause()/load_consequence() — pulls in every
-        deviation/cause/consequence/safeguard under the node together, so a
-        tag mentioned on a consequence or a safeguard shows up just as well
-        as one mentioned on a cause. No _switch_view() call is needed: the
-        marker can only be clicked while already on the P&ID page, and the
-        scenario table is the bottom pane of that same page.
-
-        If the equipment has no node yet, there is nothing to show in the
-        worksheet — keep the old "select the row in Utrustningsregistret"
-        behaviour as a fallback so the click still does something useful.
+        No _switch_view() call is needed: the marker can only be clicked
+        while already on the P&ID page, and the scenario table is the
+        bottom pane of that same page.
         """
         row = self.db.conn.execute(
             "SELECT equipment_id FROM equipment_markers WHERE id=?", (marker_id,)).fetchone()
@@ -20047,10 +20116,8 @@ class MainWindow(QMainWindow):
         node_id = self.db.equipment_node_id(equipment_id)
         if node_id is not None:
             self.tree_panel.refresh(NODE_T, node_id, emit_selection=False)
-            self.scenario_panel.load_node(node_id)
-            self.scenario_panel.refresh_placed()
-            return
-        self._switch_view(2)   # Utrustning page — fallback, no node to show a worksheet for
+        self.scenario_panel.load_equipment(equipment_id)
+        self.scenario_panel.refresh_placed()
         self.equipment_panel.select_row_by_equipment_id(equipment_id)
 
     def _on_equipment_deviation_created(self, deviation_id, equipment_id):
