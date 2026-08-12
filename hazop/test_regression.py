@@ -1190,12 +1190,8 @@ class TextOnlyEditFastPathTests(unittest.TestCase):
             win.db.add_consequence(ids['cause_id'])  # second consequence -> second row, same cause
             panel.load_cause(ids['cause_id'])
 
-            # Excludes the "+ Ny konsekvens"/"+ Ny barriär" quick-add rows
-            # (2026-08-12, see NOTES.md) — they share cause_id in row_meta
-            # too (so _update_row_text_only's OTHER exclusion of them is
-            # actually exercised here), but aren't real consequence rows.
             rows = [r for r, m in enumerate(panel._row_meta)
-                    if m[1] == ids['cause_id'] and r not in panel._plus_rows]
+                    if m[1] == ids['cause_id']]
             self.assertEqual(len(rows), 2, "expected two rows sharing the same cause_id")
 
             panel._update_row_text_only('cause', ids['cause_id'], "Uppdaterad orsakstext")
@@ -7365,13 +7361,16 @@ class PlusRowQuickAddTaggingTests(unittest.TestCase):
 
 
 class PlusRowRenderingTests(unittest.TestCase):
-    """The "+" quick-add rows themselves (2026-08-12, see NOTES.md) — one
-    appended at the bottom of each group that already has real content, a
-    single "+" (gray, italic — reported feedback that a full "+ Ny X"
-    label took up too much visual weight) in the ORS/KON/SG column
-    respectively. A group with zero content still only shows its existing
-    placeholder row (_add_placeholder_row/_add_empty_row, unchanged) —
-    Enter-to-add already invites filling that in."""
+    """The "+" quick-add affordance (2026-08-12, see NOTES.md). Originally
+    a separate blank row per group; the user rejected that too ("tar upp
+    alldeles för mycket plats då de tar hela rader med blankt") and asked
+    for a small "+" badge painted in the bottom-right corner of the LAST
+    real content row of a group instead, with clicking that badge zone
+    inserting a new row only then. `_row_plus_cols` (row -> {col: (kind,
+    group_id)}) marks which cells carry a badge; `_PidDelegate._draw_plus_badge`
+    paints it; the eventFilter's badge-rect hit-test (ahead of the
+    column's other right-edge zones — RRF badge, clone/comment icons)
+    dispatches the click."""
 
     @classmethod
     def setUpClass(cls):
@@ -7388,7 +7387,7 @@ class PlusRowRenderingTests(unittest.TestCase):
             pass
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    def test_plus_cause_row_appended_after_deviation_with_a_real_cause(self):
+    def test_plus_badge_marked_on_ors_cell_of_last_cause_row(self):
         from hazop import ScenarioTablePanel
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
@@ -7396,27 +7395,31 @@ class PlusRowRenderingTests(unittest.TestCase):
         panel = ScenarioTablePanel(self.db)
         try:
             panel.load_node(node_id)
-            plus_rows = [r for r, v in panel._plus_rows.items() if v[0] == 'cause']
-            self.assertEqual(len(plus_rows), 1)
-            self.assertEqual(panel._plus_rows[plus_rows[0]], ('cause', dev_id))
-            # Just "+" (2026-08-12, see NOTES.md) — reported feedback that
-            # "+ Ny orsak"-style labels took up too much visual weight.
-            self.assertEqual(panel._table.item(plus_rows[0], panel._C_ORS).text(), "+")
+            marked = [(r, c) for r, cols in panel._row_plus_cols.items()
+                      for c, v in cols.items() if v[0] == 'cause']
+            self.assertEqual(len(marked), 1)
+            row, col = marked[0]
+            self.assertEqual(col, panel._C_ORS)
+            self.assertEqual(panel._row_plus_cols[row][col], ('cause', dev_id))
+            # The badge is drawn ON TOP of the real cause's own text, not on
+            # a separate blank cell — no new row, no cleared text.
+            self.assertTrue(panel._table.item(row, panel._C_ORS).text())
         finally:
             panel.deleteLater()
 
-    def test_no_plus_cause_row_when_deviation_has_no_causes(self):
+    def test_no_plus_badge_when_deviation_has_no_causes(self):
         from hazop import ScenarioTablePanel
         node_id = self.db.add_node()
         panel = ScenarioTablePanel(self.db)
         try:
             panel.load_node(node_id)
-            plus_rows = [v for v in panel._plus_rows.values() if v[0] == 'cause']
-            self.assertEqual(plus_rows, [])
+            marked = [v for cols in panel._row_plus_cols.values() for v in cols.values()
+                      if v[0] == 'cause']
+            self.assertEqual(marked, [])
         finally:
             panel.deleteLater()
 
-    def test_plus_consequence_row_appended_after_cause_with_a_real_consequence(self):
+    def test_plus_badge_marked_on_kon_cell_of_last_consequence_row(self):
         from hazop import ScenarioTablePanel
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
@@ -7425,13 +7428,14 @@ class PlusRowRenderingTests(unittest.TestCase):
         panel = ScenarioTablePanel(self.db)
         try:
             panel.load_node(node_id)
-            plus_rows = [(r, v) for r, v in panel._plus_rows.items() if v[0] == 'consequence']
-            self.assertEqual(len(plus_rows), 1)
-            self.assertEqual(plus_rows[0][1], ('consequence', cause_id))
+            marked = [(r, c, v) for r, cols in panel._row_plus_cols.items()
+                      for c, v in cols.items() if v[0] == 'consequence']
+            self.assertEqual(len(marked), 1)
+            self.assertEqual(marked[0][2], ('consequence', cause_id))
         finally:
             panel.deleteLater()
 
-    def test_no_plus_consequence_row_when_cause_has_no_consequences(self):
+    def test_no_plus_badge_when_cause_has_no_consequences(self):
         from hazop import ScenarioTablePanel
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
@@ -7439,12 +7443,13 @@ class PlusRowRenderingTests(unittest.TestCase):
         panel = ScenarioTablePanel(self.db)
         try:
             panel.load_node(node_id)
-            plus_rows = [v for v in panel._plus_rows.values() if v[0] == 'consequence']
-            self.assertEqual(plus_rows, [])
+            marked = [v for cols in panel._row_plus_cols.values() for v in cols.values()
+                      if v[0] == 'consequence']
+            self.assertEqual(marked, [])
         finally:
             panel.deleteLater()
 
-    def test_plus_safeguard_row_appended_after_consequence_with_a_real_safeguard(self):
+    def test_plus_badge_marked_on_sg_cell_of_last_safeguard_row(self):
         from hazop import ScenarioTablePanel
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
@@ -7454,13 +7459,14 @@ class PlusRowRenderingTests(unittest.TestCase):
         panel = ScenarioTablePanel(self.db)
         try:
             panel.load_node(node_id)
-            plus_rows = [(r, v) for r, v in panel._plus_rows.items() if v[0] == 'safeguard']
-            self.assertEqual(len(plus_rows), 1)
-            self.assertEqual(plus_rows[0][1], ('safeguard', cons_id))
+            marked = [(r, c, v) for r, cols in panel._row_plus_cols.items()
+                      for c, v in cols.items() if v[0] == 'safeguard']
+            self.assertEqual(len(marked), 1)
+            self.assertEqual(marked[0][2], ('safeguard', cons_id))
         finally:
             panel.deleteLater()
 
-    def test_no_plus_safeguard_row_when_consequence_has_no_safeguards(self):
+    def test_no_plus_badge_when_consequence_has_no_safeguards(self):
         from hazop import ScenarioTablePanel
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
@@ -7469,31 +7475,51 @@ class PlusRowRenderingTests(unittest.TestCase):
         panel = ScenarioTablePanel(self.db)
         try:
             panel.load_node(node_id)
-            plus_rows = [v for v in panel._plus_rows.values() if v[0] == 'safeguard']
-            self.assertEqual(plus_rows, [])
+            marked = [v for cols in panel._row_plus_cols.values() for v in cols.values()
+                      if v[0] == 'safeguard']
+            self.assertEqual(marked, [])
         finally:
             panel.deleteLater()
 
-    def test_clicking_plus_cause_row_invokes_the_add_flow(self):
-        from hazop import ScenarioTablePanel
+    def test_clicking_the_badge_zone_invokes_the_add_flow(self):
+        """Simulates a real left-click at the badge's pixel position — the
+        same pattern used by test_tag_zone_click_hit_test_matches_the_expanded_paint_geometry
+        — rather than calling the dispatch directly, so this actually
+        exercises the eventFilter hit-test geometry, not just the callback
+        it eventually calls."""
+        from hazop import ScenarioTablePanel, _PLUS_BADGE_SIZE
+        from PyQt6.QtCore import QPoint, QEvent
+        from PyQt6.QtGui import QMouseEvent
+        from PyQt6.QtCore import Qt as _Qt
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
         self.db.add_cause(dev_id)
         panel = ScenarioTablePanel(self.db)
         try:
             panel.load_node(node_id)
-            plus_row = next(r for r, v in panel._plus_rows.items() if v[0] == 'cause')
+            panel.resize(900, 400)
+            panel.show()
+            self.app.processEvents()
+            row, col = next((r, c) for r, cols in panel._row_plus_cols.items()
+                             for c, v in cols.items() if v[0] == 'cause')
+
             with unittest.mock.patch.object(panel, '_add_cause_via_plus_row') as mock_add:
-                panel._on_cell_clicked(plus_row, panel._C_ORS)
-            mock_add.assert_called_once_with(dev_id)
+                idx = panel._table.model().index(row, col)
+                cr = panel._table.visualRect(idx)
+                sz = _PLUS_BADGE_SIZE
+                pos = QPoint(cr.right() - sz // 2 - 2, cr.bottom() - sz // 2 - 2)
+                ev = QMouseEvent(QEvent.Type.MouseButtonPress, pos.toPointF(),
+                                  _Qt.MouseButton.LeftButton, _Qt.MouseButton.LeftButton,
+                                  _Qt.KeyboardModifier.NoModifier)
+                handled = panel.eventFilter(panel._table.viewport(), ev)
+
+            self.assertTrue(handled)
+            mock_add.assert_called_once()
+            self.assertEqual(mock_add.call_args.args[0], dev_id)
         finally:
             panel.deleteLater()
 
-    def test_all_nodes_view_still_builds_without_error_with_plus_rows(self):
-        """Sanity check against the row-building engine's other consumers
-        (_apply_spans, resizeRowsToContents) — a "+" row's row_meta has
-        None ids for everything below its own group level, the same shape
-        _apply_spans already handles for placeholder rows."""
+    def test_all_nodes_view_still_builds_without_error_with_plus_badges(self):
         from hazop import ScenarioTablePanel
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
@@ -7505,78 +7531,7 @@ class PlusRowRenderingTests(unittest.TestCase):
             panel._all_nodes = True
             panel.load_all()
             self.assertGreater(panel._table.rowCount(), 0)
-            self.assertTrue(panel._plus_rows)
-        finally:
-            panel.deleteLater()
-
-    def test_update_row_text_only_does_not_corrupt_plus_row_ors_cell(self):
-        """_update_row_text_only('cause', ...) patches every row sharing a
-        cause_id — the "+ Ny konsekvens" row appended under this same
-        cause shares that id too (2026-08-12), but its ORS cell is
-        deliberately blank; the fast path must skip it, not overwrite it
-        with the cause's new description text."""
-        from hazop import ScenarioTablePanel
-        node_id = self.db.add_node()
-        dev_id = self.db.deviations(node_id)[0]['id']
-        cause_id = self.db.add_cause(dev_id)
-        self.db.add_consequence(cause_id)
-        panel = ScenarioTablePanel(self.db)
-        try:
-            panel.load_node(node_id)
-            plus_row = next(r for r, v in panel._plus_rows.items() if v[0] == 'consequence')
-
-            panel._update_row_text_only('cause', cause_id, "Uppdaterad orsakstext")
-
-            self.assertEqual(panel._table.item(plus_row, panel._C_ORS).text(), '')
-        finally:
-            panel.deleteLater()
-
-    def test_update_lopa_risk_does_not_corrupt_plus_row_slut_cell(self):
-        """_update_lopa_risk(cons_id) patches the SLUT cell of every row
-        sharing that cons_id — the "+ Ny barriär" row appended under this
-        same consequence shares that id too (2026-08-12), but its SLUT
-        cell is deliberately blank; the fast path must skip it, not write
-        a risk color/text into it."""
-        from hazop import ScenarioTablePanel
-        node_id = self.db.add_node()
-        dev_id = self.db.deviations(node_id)[0]['id']
-        cause_id = self.db.add_cause(dev_id)
-        cons_id = self.db.add_consequence(cause_id)
-        self.db.add_safeguard(cons_id)
-        panel = ScenarioTablePanel(self.db)
-        try:
-            panel.load_node(node_id)
-            plus_row = next(r for r, v in panel._plus_rows.items() if v[0] == 'safeguard')
-
-            panel._update_lopa_risk(cons_id)
-
-            self.assertEqual(panel._table.item(plus_row, panel._C_SLUT).text(), '')
-        finally:
-            panel.deleteLater()
-
-    def test_plus_rows_stay_one_line_tall_including_ors_column(self):
-        """Reported feedback (2026-08-12): the "+" row took up too much
-        space. ORS unconditionally reserves _ORS_STRIP_H for its pin/tag
-        strip and a 2-line floor for readability — both bugs found while
-        verifying this fix: neither is guarded against a "+" row's ORS
-        cell out of the box, so a "+ Ny orsak" row rendered ~2.5x taller
-        than the plain one-line height every other "+" row already got."""
-        from hazop import ScenarioTablePanel
-        from PyQt6.QtGui import QFontMetrics
-        node_id = self.db.add_node()
-        dev_id = self.db.deviations(node_id)[0]['id']
-        cause_id = self.db.add_cause(dev_id)
-        cons_id = self.db.add_consequence(cause_id)
-        self.db.add_safeguard(cons_id)
-        panel = ScenarioTablePanel(self.db)
-        try:
-            panel.load_node(node_id)
-            one_line_h = QFontMetrics(panel._table.font()).height() + 6
-            self.assertTrue(panel._plus_rows)
-            for row in panel._plus_rows:
-                self.assertEqual(panel._table.rowHeight(row), one_line_h,
-                    f"plus row {row} ({panel._plus_rows[row]}) must stay a single "
-                    "compact line regardless of which column its '+' is in")
+            self.assertTrue(panel._row_plus_cols)
         finally:
             panel.deleteLater()
 
@@ -7627,8 +7582,7 @@ class NewConsequenceSafeguardDashPlaceholderTests(unittest.TestCase):
         panel = ScenarioTablePanel(self.db)
         try:
             panel.load_node(node_id)
-            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id
-                       and r not in panel._plus_rows)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
             self.assertEqual(panel._table.item(row, panel._C_KON).text(), '—')
         finally:
             panel.deleteLater()
@@ -7641,8 +7595,7 @@ class NewConsequenceSafeguardDashPlaceholderTests(unittest.TestCase):
         panel = ScenarioTablePanel(self.db)
         try:
             panel.load_node(node_id)
-            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id
-                       and r not in panel._plus_rows)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
             self.assertEqual(panel._table.item(row, panel._C_SG).text(), '—')
         finally:
             panel.deleteLater()
@@ -7658,8 +7611,7 @@ class NewConsequenceSafeguardDashPlaceholderTests(unittest.TestCase):
         panel = ScenarioTablePanel(self.db)
         try:
             panel.load_node(node_id)
-            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id
-                       and r not in panel._plus_rows)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
             from PyQt6.QtWidgets import QStyleOptionViewItem
             index = panel._table.model().index(row, panel._C_KON)
             option = QStyleOptionViewItem()
