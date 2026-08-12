@@ -9437,8 +9437,22 @@ class PIDPanel(QWidget):
             dev_id, suggested_tag or '', detected_type, scene_pos, page, '')
 
     def place_cause_from_template(self, dev_id, scene_pos, page,
-                                  comp_type, comp_tag, description, frequency):
-        """Called by MainWindow after CauseObjectPopup is confirmed."""
+                                  comp_type, comp_tag, description, frequency,
+                                  draw_marker=True):
+        """Called by MainWindow after CauseObjectPopup is confirmed.
+
+        `draw_marker=False` (2026-08-12, see NOTES.md — reported
+        feedback: "blir det dubbla markeringar på P&ID viewer, dels ett
+        gummiband ... och ett objekt som ligger kvar fast") — used by
+        _create_cause_for_bar, where scene_pos is already the position of
+        an EXISTING equipment marker. That marker's own colour/badge
+        already represents "this equipment has causes"; drawing a second,
+        separate cause-marker circle right on top of it (or, for a
+        manually placed object with a drawn zone outline, on top of that
+        zone's still-interactive drag handles) is a redundant, confusing
+        second marker at the exact same spot. The classic P&ID-click flow
+        (no pre-existing equipment marker to color-code) still draws its
+        own marker as before — only the equipment-bar path opts out."""
         label = description or comp_tag or 'Ny orsak'
 
         try:
@@ -9471,10 +9485,11 @@ class PIDPanel(QWidget):
         else:
             pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
         self._pending_zone_pdf = None
-        self.db.add_cause_marker(cause_id, page, pdf_x, pdf_y, comp_type, comp_tag,
-                                  rect_w, rect_h)
-        self.viewer.add_cause_marker(cause_id, pdf_x, pdf_y, comp_type, label, comp_tag,
-                                     rect_w, rect_h)
+        if draw_marker:
+            self.db.add_cause_marker(cause_id, page, pdf_x, pdf_y, comp_type, comp_tag,
+                                      rect_w, rect_h)
+            self.viewer.add_cause_marker(cause_id, pdf_x, pdf_y, comp_type, label, comp_tag,
+                                         rect_w, rect_h)
 
         # ── Visual fingerprint (phash) only — tag memory written by update_cause ──
         if comp_type and comp_tag and rect_w and rect_h:
@@ -9563,7 +9578,8 @@ class PIDPanel(QWidget):
             return None
         scene_pos = self.viewer.pdf_to_scene(marker['x'], marker['y'], page=marker['pid_page'])
         return self.place_cause_from_template(
-            deviation_id, scene_pos, marker['pid_page'], comp_type, comp_tag, description, frequency)
+            deviation_id, scene_pos, marker['pid_page'], comp_type, comp_tag, description,
+            frequency, draw_marker=False)
 
     def _update_cause_for_bar(self, cause_id, comp_type, comp_tag, description, frequency=None):
         """Callback wired into EquipmentDeviationBar._update_cause_fn —

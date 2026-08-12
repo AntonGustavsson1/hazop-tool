@@ -4160,14 +4160,18 @@ class Database:
         return cur.lastrowid
 
     def add_consequence(self, cause_id):
+        # Empty, not the literal 'Ny konsekvens' (2026-08-12, see NOTES.md)
+        # — a freshly created row shows a plain "—" until actually defined
+        # (ScenarioTablePanel._add_row), same convention as an empty
+        # safeguard/deviation-with-no-cause row already used.
         cur = self.conn.execute(
-            "INSERT INTO consequences (cause_id,description,severity) VALUES (?,'Ny konsekvens',1)", (cause_id,))
+            "INSERT INTO consequences (cause_id,description,severity) VALUES (?,'',1)", (cause_id,))
         self.commit()
         return cur.lastrowid
 
     def add_safeguard(self, consequence_id):
         cur = self.conn.execute(
-            "INSERT INTO safeguards (consequence_id,description,rrf) VALUES (?,'Ny safeguard',1)", (consequence_id,))
+            "INSERT INTO safeguards (consequence_id,description,rrf) VALUES (?,'',1)", (consequence_id,))
         self.commit()
         return cur.lastrowid
 
@@ -10671,6 +10675,12 @@ class _ScenarioDelegate(QStyledItemDelegate):
         fm = self._fm
         one_line_h = fm.height() + 6
 
+        if index.row() in panel._plus_rows:
+            # A "+" quick-add row (2026-08-12, see NOTES.md) must stay a
+            # single compact line even in the ORS column, which otherwise
+            # always reserves _ORS_STRIP_H for its pin/tag strip.
+            return QSize(option.rect.width(), one_line_h)
+
         wrap_cols = {panel._C_ORS, panel._C_KON}
         if col not in wrap_cols:
             if col == panel._C_SG:
@@ -10835,7 +10845,16 @@ class _PidDelegate(_ScenarioDelegate):
         if editor is not None:
             # Show only the clean description (EditRole is already clean)
             raw = index.data(Qt.ItemDataRole.EditRole) or ''
-            editor.setText(_PID_ICON_RE.sub('', str(raw)))
+            clean = _PID_ICON_RE.sub('', str(raw))
+            # A brand-new/cleared KON or SG cell displays a plain "—"
+            # placeholder (2026-08-12, see NOTES.md) rather than literal
+            # "Ny konsekvens"/"Ny safeguard" text — QTableWidgetItem has
+            # no real Display-vs-EditRole divergence (setting one
+            # overwrites what the other reads back), so the dash reaches
+            # here too; start the editor blank instead of on top of it.
+            if clean == '—':
+                clean = ''
+            editor.setText(clean)
             if index.column() == self._panel._C_ORS:
                 self._attach_cause_completer(editor, index)
         return editor
@@ -11008,6 +11027,26 @@ class _PidDelegate(_ScenarioDelegate):
 
                 painter.restore()
                 return
+
+        # ── "+" quick-add row (2026-08-12, see NOTES.md) ──────────────────────
+        # Must never draw the pin/tag/frequency/dots strip below — that's
+        # what makes a real ORS row visually heavy, and this one carries
+        # no cause to show any of that for. Falls through to the same
+        # plain single-line paint every other empty cell in this row uses.
+        if row in self._panel._plus_rows:
+            r = option.rect
+            painter.save()
+            if row % 2 == 1:
+                painter.fillRect(r, option.palette.alternateBase())
+            else:
+                painter.fillRect(r, option.palette.base())
+            painter.setPen(option.palette.text().color())
+            painter.setFont(option.font)
+            painter.drawText(r.adjusted(4, 0, -2, 0),
+                             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                             index.data(Qt.ItemDataRole.DisplayRole) or '')
+            painter.restore()
+            return
 
         # ── Cause cells: top strip [pin|tag|freq|dots] + description below ────────
         if col == self._panel._C_ORS:
@@ -12423,6 +12462,13 @@ class ScenarioTablePanel(QWidget):
         if fm is None:
             fm = QFontMetrics(table.font())
         one_line_h = fm.height() + 6
+        if row in self._plus_rows:
+            # A "+" quick-add row (2026-08-12, see NOTES.md) is a
+            # lightweight affordance, not real content — it must never
+            # inherit the ORS 2-line-minimum floor or LOPA-widget sizing
+            # below, both of which exist purely for genuine cause/
+            # consequence/safeguard rows.
+            return one_line_h
         wrap_cols = (self._C_ORS, self._C_KON)
         max_h = one_line_h
         for col in range(table.columnCount()):
@@ -12554,6 +12600,11 @@ class ScenarioTablePanel(QWidget):
             # description silently missing its last few lines, so the cap
             # is gone — rows now grow to fit however much text is actually
             # there, exactly what "flerradig, auto-höjd" is supposed to mean.
+            if _r in self._plus_rows:
+                # A "+" quick-add row's ORS cell shows non-empty text
+                # ("+") but is not a real cause row — must not be forced
+                # up to the 2-line floor below (2026-08-12, see NOTES.md).
+                continue
             ors_item = self._table.item(_r, self._C_ORS)
             if ors_item and ors_item.text() and h < _min_ors:
                 self._table.setRowHeight(_r, _min_ors)
@@ -12681,33 +12732,50 @@ class ScenarioTablePanel(QWidget):
         dev_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self._table.setItem(r, self._C_DEV, dev_item)
 
-        _PLUS_LABELS = {
-            'cause':       ("+ Ny orsak", self._C_ORS,
+        # Just "+" — gray, italic, one point smaller than the general cell
+        # font (2026-08-12, see NOTES.md: "det räcker faktiskt med ett
+        # litet +", reported feedback that "+ Ny orsak"-style labels took
+        # up too much visual weight for what's meant to be a minimal,
+        # easy-to-ignore-until-you-need-it affordance).
+        _PLUS_TIPS = {
+            'cause':       (self._C_ORS,
                             "Klicka för att lägga till en ny orsak, valfritt kopplad till ett P&ID-objekt"),
-            'consequence': ("+ Ny konsekvens", self._C_KON,
+            'consequence': (self._C_KON,
                             "Klicka för att lägga till en ny konsekvens, valfritt kopplad till ett P&ID-objekt"),
-            'safeguard':   ("+ Ny barriär", self._C_SG,
+            'safeguard':   (self._C_SG,
                             "Klicka för att lägga till en ny barriär, valfritt kopplad till ett P&ID-objekt"),
         }
-        text, target_col, tip = _PLUS_LABELS[kind]
+        target_col, tip = _PLUS_TIPS[kind]
+
+        def _plus_item():
+            item = _ro('+')
+            item.setForeground(QBrush(QColor('#8D9299')))
+            f = item.font()
+            f.setItalic(True)
+            f.setPointSize(max(6, self._cell_font_size - 1))
+            item.setFont(f)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            item.setToolTip(tip)
+            return item
 
         if target_col == self._C_ORS:
-            ors = _ro(text)
+            ors = _plus_item()
             ors.setData(Qt.ItemDataRole.UserRole + 2, ('', ''))
-            ors.setToolTip(tip)
             self._table.setItem(r, self._C_ORS, ors)
             for col in (self._C_KON, self._C_RFORE, self._C_SG, self._C_LOPA, self._C_SLUT):
                 self._table.setItem(r, col, _ro())
         else:
             self._table.setItem(r, self._C_ORS, _ro())
             for col in (self._C_KON, self._C_RFORE, self._C_SG, self._C_LOPA, self._C_SLUT):
-                item = _ro(text) if col == target_col else _ro()
-                if col == target_col:
-                    item.setToolTip(tip)
-                self._table.setItem(r, col, item)
+                self._table.setItem(r, col, _plus_item() if col == target_col else _ro())
 
         group_id = {'cause': dev_id, 'consequence': cause_id, 'safeguard': cons_id}[kind]
         self._plus_rows[r] = (kind, group_id)
+        # Minimal fixed height — this row is a lightweight affordance, not
+        # real content, so it must not inherit the same wrap/LOPA-widget
+        # sizing rules real rows do (see _compute_row_height's guard for
+        # self._plus_rows).
+        self._table.setRowHeight(r, QFontMetrics(self._table.font()).height() + 6)
 
     def _add_row(self, node_name, dev_d, cause_d, freq, freq_lbl, cons_d, all_sgs, sg,
                  cat_info=None, excl_cat_names=None, excl_for_cat=None,
@@ -12832,7 +12900,13 @@ class ScenarioTablePanel(QWidget):
         display_desc = (build_consequence_text(cons_d['description'], chain_data)
                         or cons_d['description'])
 
-        kon_item = QTableWidgetItem(cons_d['description'])
+        # "—" placeholder when empty, not literal "Ny konsekvens" text
+        # (2026-08-12, see NOTES.md). No separate EditRole is set here —
+        # QTableWidgetItem aliases Display/EditRole to the same storage
+        # (verified: setData() on one overwrites what the other reads
+        # back), so _PidDelegate.createEditor() strips the "—" sentinel
+        # itself when opening the editor instead.
+        kon_item = QTableWidgetItem(cons_d['description'] or '—')
         kon_item.setData(Qt.ItemDataRole.UserRole, ('consequence', cid))
         kon_item.setData(Qt.ItemDataRole.UserRole + 3, None)   # no per-row cat badge
         kon_item.setData(Qt.ItemDataRole.UserRole + 4, n_cats)
@@ -12889,8 +12963,10 @@ class ScenarioTablePanel(QWidget):
             sg_item.setToolTip("Enter för att lägga till barriär")
         else:
             rrf = sg.get('rrf', 1) or 1
-            sg_item = QTableWidgetItem(sg['description'])
-            sg_item.setData(Qt.ItemDataRole.EditRole, sg['description'])
+            # "—" placeholder when empty (2026-08-12, see NOTES.md) — no
+            # separate EditRole set here, see the KON cell's comment above
+            # on why that would silently overwrite this back to empty.
+            sg_item = QTableWidgetItem(sg['description'] or '—')
             sg_item.setData(Qt.ItemDataRole.UserRole,     ('safeguard', sg['id']))
             sg_item.setData(Qt.ItemDataRole.UserRole + 1, rrf)
             # Yellow indicator: list of category names this sg is excluded from
@@ -13370,9 +13446,18 @@ class ScenarioTablePanel(QWidget):
                     self._add_safeguard_via_plus_row(group_id)
             return
         if col == self._C_ORS and row < len(self._row_meta):
-            cause_id = self._row_meta[row][1]
+            dev_id, cause_id = self._row_meta[row][0], self._row_meta[row][1]
             if cause_id is not None:
                 self.item_selected.emit(CAUSE_T, cause_id)
+            elif dev_id is not None:
+                # Empty placeholder ORS cell (2026-08-12, see NOTES.md) —
+                # open the same CauseObjectPopup as "+ Ny orsak" instead of
+                # starting inline text edit, so creating a cause behaves
+                # identically regardless of entry point.
+                idx = self._table.model().index(row, col)
+                gp = self._table.viewport().mapToGlobal(self._table.visualRect(idx).topLeft())
+                self._add_cause_via_plus_row(dev_id, global_pos=gp)
+                return
             # Feature 7: single-click on already-current ORS cell → start edit
             if self._table.currentRow() == row and self._table.currentColumn() == col:
                 QTimer.singleShot(200, lambda r=row, c=col: self._try_start_edit(r, c))
@@ -13996,68 +14081,68 @@ class ScenarioTablePanel(QWidget):
         pos   = self._table.viewport().mapToGlobal(rect.bottomLeft())
         menu.exec(pos)
 
-    def _quick_add_cause(self, deviation_id, equipment=None):
+    def _quick_add_cause(self, deviation_id, global_pos=None):
+        """Reported feedback (2026-08-12, see NOTES.md): a new/empty cause
+        in HAZOP scenario should open the same compact CauseObjectPopup
+        ("Orsak på P&ID" — Tag + Typ + Standardorsaker) already used
+        everywhere a cause's tag/type/description is edited, instead of
+        the larger StandardCausesPickerPopup this used to open. Reused by
+        both the "+ Ny orsak" affordance and clicking an empty ORS
+        placeholder cell (_on_cell_clicked), so both entry points behave
+        identically."""
         dev = self.db.get_deviation(deviation_id)
         dev_desc = dev['description'] if dev else ''
-        node_id = dev['node_id'] if dev else None
-        std_dev_id = _resolve_std_deviation_id(self.db, dev_desc)
 
-        popup = StandardCausesPickerPopup(
-            self.db, std_dev_id, deviation_name=dev_desc,
-            node_id=node_id, parent=self)
+        popup = CauseObjectPopup(
+            '', '', self.db, dev_description=dev_desc,
+            current_description='', deviation_id=deviation_id, parent=self)
 
-        def _on_picked(description, frequency):
-            new_id, cons_id = _create_cause_from_pick(self.db, deviation_id, description, frequency)
-            if equipment:
-                self.db.update_cause(new_id, comp_tag=equipment.get('tag') or '',
-                                      comp_type=equipment.get('equipment_type') or '')
+        def _on_committed(comp_type, comp_tag, description, frequency):
+            new_id = self.db.add_cause(deviation_id)
+            self.db.update_cause(new_id, comp_type=comp_type, comp_tag=comp_tag,
+                                  description=description or '',
+                                  base_frequency=frequency)
+            cons_id = self.db.add_consequence(new_id)
             # Jump straight to the new consequence's KON cell (not the cause's
             # own ORS cell) — the cause's description was already chosen in
             # the popup above, so typing the consequence is the next natural
             # step ("så fort jag lagt till en orsak", see NOTES.md).
             self.new_item_created.emit(CONS_T, cons_id)
 
-        popup.cause_picked.connect(_on_picked)
+        popup.committed.connect(_on_committed)
+        if global_pos is not None:
+            popup.adjustSize()
+            _scr   = QApplication.screenAt(global_pos) or QApplication.primaryScreen()
+            screen = _scr.availableGeometry()
+            pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
+            x, y   = global_pos.x(), global_pos.y() + 6
+            if y + ph > screen.bottom(): y = global_pos.y() - ph - 6
+            if x + pw > screen.right():  x = screen.right() - pw - 4
+            popup.move(max(screen.left() + 4, x), max(screen.top() + 4, y))
         popup.exec()
 
-    def _quick_add_consequence(self, cause_id, equipment=None):
+    def _quick_add_consequence(self, cause_id):
+        """Reported feedback (2026-08-12): unlike a new cause, a new
+        consequence should never show a popup — create it blank and jump
+        straight to inline editing (unchanged from before the object-
+        picker experiment). Tagging an object onto it is still done via
+        drag-and-drop from the P&ID, same as editing an existing row."""
         new_id = self.db.add_consequence(cause_id)
-        if equipment:
-            self.db.append_tag_to_consequence(
-                new_id, equipment.get('tag') or '', equipment.get('equipment_type') or '')
         self.new_item_created.emit(CONS_T, new_id)
 
-    def _quick_add_safeguard(self, cons_id, equipment=None):
+    def _quick_add_safeguard(self, cons_id):
+        """Same as _quick_add_consequence — no popup, straight to inline edit."""
         new_id = self.db.add_safeguard(cons_id)
-        if equipment:
-            self.db.append_tag_to_safeguard(
-                new_id, equipment.get('tag') or '', equipment.get('equipment_type') or '')
         self.new_item_created.emit(SG_T, new_id)
 
-    def _pick_object_for_new_row(self):
-        """Show ObjectPickerPopup; returns (proceed, equipment) — proceed
-        is False if the user cancelled the add entirely (Escape/closed),
-        True otherwise (equipment is a dict if one was picked, None if
-        explicitly skipped for free text)."""
-        popup = ObjectPickerPopup(self.db, self)
-        if popup.exec() != QDialog.DialogCode.Accepted:
-            return False, None
-        return True, popup.selected
-
-    def _add_cause_via_plus_row(self, deviation_id):
-        proceed, equipment = self._pick_object_for_new_row()
-        if proceed:
-            self._quick_add_cause(deviation_id, equipment=equipment)
+    def _add_cause_via_plus_row(self, deviation_id, global_pos=None):
+        self._quick_add_cause(deviation_id, global_pos=global_pos)
 
     def _add_consequence_via_plus_row(self, cause_id):
-        proceed, equipment = self._pick_object_for_new_row()
-        if proceed:
-            self._quick_add_consequence(cause_id, equipment=equipment)
+        self._quick_add_consequence(cause_id)
 
     def _add_safeguard_via_plus_row(self, cons_id):
-        proceed, equipment = self._pick_object_for_new_row()
-        if proceed:
-            self._quick_add_safeguard(cons_id, equipment=equipment)
+        self._quick_add_safeguard(cons_id)
 
     def select_item(self, type_, id_):
         """Move the current cell to the row for (type_, id_) and start inline
@@ -14130,8 +14215,11 @@ class ScenarioTablePanel(QWidget):
             self.item_edited.emit(CONS_T, id_)
 
         elif kind == 'safeguard':
+            # No 'Ny safeguard' fallback (2026-08-12, see NOTES.md) —
+            # clearing the text back to empty must actually save empty
+            # (displayed as "—"), not silently resurrect placeholder text.
             edit_val = item.data(Qt.ItemDataRole.EditRole)
-            desc = (str(edit_val).strip() if edit_val is not None else text.split('\n')[0].strip()) or 'Ny safeguard'
+            desc = str(edit_val).strip() if edit_val is not None else text.split('\n')[0].strip()
             sg = self.db.get_safeguard(id_)
             if sg:
                 self.db.update_safeguard(id_, desc, sg['rrf'] or 1)

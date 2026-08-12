@@ -4014,6 +4014,69 @@ class BowtieValveDetectionTests(unittest.TestCase):
         self.assertTrue(0 <= results[0]['y'] <= page_rect.height,
             f"y={results[0]['y']} must fall inside the rendered page (0..{page_rect.height})")
 
+    def test_find_valve_shapes_detects_small_valve_on_no_text_dense_noise_page(self):
+        """End-to-end reproduction of a real generalization failure found
+        while auditing against the "P&ID ref/" reference library (2026-
+        08-12): Loket, Smurfit Kappa, and one Swerim/NYA file all draw
+        EVERY piece of text as pure vector strokes via a non-embedded/
+        SHX-style font, so page.get_text() finds zero words/spans despite
+        tens of thousands of vector primitives (a real Loket page measured
+        54,396 primitives against 0 text spans, ~5x denser than a normal
+        text-bearing P&ID of the same size). Two compounding bugs hid real
+        valves on such pages: (1) dominant_text_size()'s blind 10.0pt
+        no-text fallback shrank norm_size for every real symbol until it
+        fell under classify_cluster's/find_valve_shapes' 1.5 floor, and
+        (2) cluster_primitives' dense-grid-cell skip fragmented a real
+        valve's own few edges into unmergeable singletons whenever they
+        shared a 20x20pt cell with a patch of glyph-stroke noise — visibly
+        intact bow-tie valve icons next to real tags (confirmed: Loket tag
+        "1-RV-25") queried as nothing but n_items=1 singleton clusters.
+        This test needs BOTH fixes together: fixing only the scale
+        wouldn't help while the valve's own primitives still can't merge,
+        and fixing only the clustering wouldn't help while the merged
+        valve's norm_size still falls under the floor."""
+        from equipment_detection import find_valve_shapes
+        import fitz
+        path = os.path.join(self._tmpdir, "no_text_dense_noise.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=200, height=200)
+        shape = page.new_shape()
+        # Small bow-tie valve (bbox diagonal ~11.3pt) — proportioned like
+        # many real bow-tie icons on the real Loket file.
+        shape.draw_polyline([fitz.Point(96, 96), fitz.Point(96, 104), fitz.Point(100, 100)])
+        shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+        shape.draw_polyline([fitz.Point(104, 96), fitz.Point(104, 104), fitz.Point(100, 100)])
+        shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+        # Dense "vector-outlined text" noise: 45 tiny primitives packed
+        # into the SAME 20x20pt grid cell as the valve (cell (4,4), pt
+        # range 80-100 on both axes), far enough from the valve's own bbox
+        # (>_CLUSTER_GAP=3.0pt) that they could never legitimately merge
+        # with it.
+        for i in range(45):
+            col, row = i % 9, i // 9
+            x = 80.0 + col * 0.12
+            y = 80.0 + row * 0.12
+            shape.draw_line(fitz.Point(x, y), fitz.Point(x + 0.05, y + 0.05))
+            shape.finish(color=(0, 0, 0), width=0.05, closePath=False)
+        shape.commit()
+        # Deliberately NO insert_text call anywhere on this page — the
+        # whole point is reproducing a page with zero native text.
+        doc.save(path)
+        doc.close()
+
+        doc = fitz.open(path)
+        try:
+            words = doc[0].get_text("words")
+            self.assertEqual(words, [], "fixture must have zero native text, matching the real files")
+            results = find_valve_shapes(doc)
+        finally:
+            doc.close()
+        self.assertEqual(len(results), 1,
+            "the small valve must be found despite the page having no "
+            "native text and a dense patch of glyph-noise-sized primitives "
+            "sharing its grid cell")
+        self.assertGreater(results[0]['confidence'], 0.5)
+
     def test_find_pump_shapes_detects_circle_with_impeller_diagonal(self):
         """find_pump_shapes() — the pump counterpart to find_valve_shapes(),
         added after studying real LKAB/Gryaab P&IDs: a pump is a circle
@@ -7056,8 +7119,14 @@ class AutoConsequenceOnCauseAddTests(unittest.TestCase):
         """ScenarioTablePanel._quick_add_cause (Ctrl+Enter in the worksheet)
         must emit new_item_created for the auto-created CONSEQUENCE, not
         for the cause itself — the cause's description was already chosen
-        in the picker popup, so the next thing to fill in is the
-        consequence."""
+        in the popup, so the next thing to fill in is the consequence.
+
+        Opens CauseObjectPopup, not StandardCausesPickerPopup (2026-08-12,
+        see NOTES.md) — mocking the wrong class here would leave the real
+        popup unmocked, blocking forever on exec() in a headless test run
+        (this is exactly what happened: an earlier version of this test
+        still mocked StandardCausesPickerPopup after the switch, hanging
+        the full suite)."""
         from PyQt6.QtWidgets import QDialog
         with _TempDbMainWindow() as win:
             panel = win.scenario_panel
@@ -7066,13 +7135,13 @@ class AutoConsequenceOnCauseAddTests(unittest.TestCase):
             panel.load_node(node_id)
 
             def _fake_exec(self):
-                self.cause_picked.emit("Ny orsak (test)", None)
+                self.committed.emit('', '', 'Ny orsak (test)', None)
                 return QDialog.DialogCode.Accepted
 
             captured = []
             panel.new_item_created.connect(lambda t, i: captured.append((t, i)))
 
-            with unittest.mock.patch.object(hazop.StandardCausesPickerPopup, 'exec', new=_fake_exec):
+            with unittest.mock.patch.object(hazop.CauseObjectPopup, 'exec', new=_fake_exec):
                 panel._quick_add_cause(dev_id)
 
             self.assertEqual(len(captured), 1)
@@ -7191,11 +7260,17 @@ class ObjectPickerPopupTests(unittest.TestCase):
 
 
 class PlusRowQuickAddTaggingTests(unittest.TestCase):
-    """The "+" quick-add rows (2026-08-12, see NOTES.md) route through
-    ObjectPickerPopup before creating a cause/consequence/safeguard —
-    picking an object tags the new row the same way a P&ID drag-and-drop
-    would, skipping leaves it untagged (unchanged prior behavior), and
-    cancelling the picker must not create anything at all."""
+    """The "+" quick-add rows (2026-08-12, see NOTES.md). Reported
+    feedback changed course mid-session on how these should behave:
+    a new consequence/safeguard must NEVER show a popup — straight to
+    inline editing, tagging stays a drag-and-drop-only affair — while a
+    new cause opens the same compact CauseObjectPopup ("Orsak på P&ID")
+    already used everywhere else a cause's tag/type/description is set,
+    replacing the earlier ObjectPickerPopup experiment entirely."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
 
     def _add_full_chain(self, db):
         node_id = db.add_node()
@@ -7204,37 +7279,37 @@ class PlusRowQuickAddTaggingTests(unittest.TestCase):
         cons_id = db.add_consequence(cause_id)
         return node_id, dev_id, cause_id, cons_id
 
-    def test_quick_add_consequence_tags_new_row_when_equipment_given(self):
+    def test_quick_add_consequence_creates_blank_row_no_popup(self):
         with _TempDbMainWindow() as win:
             panel = win.scenario_panel
             _n, _d, cause_id, _c = self._add_full_chain(win.db)
             captured = []
             panel.new_item_created.connect(lambda t, i: captured.append((t, i)))
 
-            panel._quick_add_consequence(
-                cause_id, equipment={'tag': 'PV-101', 'equipment_type': 'Ventil'})
+            with unittest.mock.patch('hazop.ObjectPickerPopup') as mock_popup_cls:
+                panel._quick_add_consequence(cause_id)
 
+            mock_popup_cls.assert_not_called()
+            self.assertEqual(len(captured), 1)
             new_id = captured[0][1]
-            cons = dict(win.db.get_consequence(new_id))
-            self.assertEqual(cons['comp_tag'], 'PV-101')
-            self.assertEqual(cons['comp_type'], 'Ventil')
+            self.assertEqual(dict(win.db.get_consequence(new_id))['description'], '')
 
-    def test_quick_add_safeguard_tags_new_row_when_equipment_given(self):
+    def test_quick_add_safeguard_creates_blank_row_no_popup(self):
         with _TempDbMainWindow() as win:
             panel = win.scenario_panel
             _n, _d, _c, cons_id = self._add_full_chain(win.db)
             captured = []
             panel.new_item_created.connect(lambda t, i: captured.append((t, i)))
 
-            panel._quick_add_safeguard(
-                cons_id, equipment={'tag': 'TT-201', 'equipment_type': 'Givare'})
+            with unittest.mock.patch('hazop.ObjectPickerPopup') as mock_popup_cls:
+                panel._quick_add_safeguard(cons_id)
 
+            mock_popup_cls.assert_not_called()
+            self.assertEqual(len(captured), 1)
             new_id = captured[0][1]
-            sg = dict(win.db.get_safeguard(new_id))
-            self.assertEqual(sg['comp_tag'], 'TT-201')
-            self.assertEqual(sg['comp_type'], 'Givare')
+            self.assertEqual(dict(win.db.get_safeguard(new_id))['description'], '')
 
-    def test_quick_add_cause_tags_new_cause_when_equipment_given(self):
+    def test_quick_add_cause_opens_cause_object_popup_and_creates_cause(self):
         from PyQt6.QtWidgets import QDialog
         with _TempDbMainWindow() as win:
             panel = win.scenario_panel
@@ -7242,50 +7317,22 @@ class PlusRowQuickAddTaggingTests(unittest.TestCase):
             dev_id = win.db.deviations(node_id)[0]['id']
 
             def _fake_exec(self):
-                self.cause_picked.emit("Ny orsak (test)", None)
+                self.committed.emit('Ventil', 'PV-101', 'Ventil stängd', 3)
                 return QDialog.DialogCode.Accepted
 
-            with unittest.mock.patch.object(hazop.StandardCausesPickerPopup, 'exec', new=_fake_exec):
-                panel._quick_add_cause(
-                    dev_id, equipment={'tag': 'PV-101', 'equipment_type': 'Ventil'})
+            with unittest.mock.patch.object(hazop.CauseObjectPopup, 'exec', new=_fake_exec):
+                panel._quick_add_cause(dev_id)
 
             causes = win.db.causes(dev_id)
             self.assertEqual(len(causes), 1)
             self.assertEqual(causes[0]['comp_tag'], 'PV-101')
             self.assertEqual(causes[0]['comp_type'], 'Ventil')
+            self.assertEqual(causes[0]['description'], 'Ventil stängd')
+            self.assertEqual(win.db.consequences(causes[0]['id']),
+                              win.db.consequences(causes[0]['id']))  # sanity: no crash
+            self.assertEqual(len(win.db.consequences(causes[0]['id'])), 1)
 
-    def test_quick_add_consequence_leaves_row_untagged_when_equipment_is_none(self):
-        with _TempDbMainWindow() as win:
-            panel = win.scenario_panel
-            _n, _d, cause_id, _c = self._add_full_chain(win.db)
-            captured = []
-            panel.new_item_created.connect(lambda t, i: captured.append((t, i)))
-
-            panel._quick_add_consequence(cause_id, equipment=None)
-
-            new_id = captured[0][1]
-            cons = dict(win.db.get_consequence(new_id))
-            self.assertFalse((cons.get('comp_tag') or '').strip())
-
-    def test_add_consequence_via_plus_row_uses_picker_selection(self):
-        from PyQt6.QtWidgets import QDialog
-        with _TempDbMainWindow() as win:
-            panel = win.scenario_panel
-            _n, _d, cause_id, _c = self._add_full_chain(win.db)
-            captured = []
-            panel.new_item_created.connect(lambda t, i: captured.append((t, i)))
-
-            fake_popup = unittest.mock.MagicMock()
-            fake_popup.exec.return_value = QDialog.DialogCode.Accepted
-            fake_popup.selected = {'tag': 'PV-101', 'equipment_type': 'Ventil'}
-            with unittest.mock.patch('hazop.ObjectPickerPopup', return_value=fake_popup):
-                panel._add_consequence_via_plus_row(cause_id)
-
-            new_id = captured[0][1]
-            self.assertEqual(dict(win.db.get_consequence(new_id))['comp_tag'], 'PV-101')
-
-    def test_add_consequence_via_plus_row_cancelled_creates_nothing(self):
-        from PyQt6.QtWidgets import QDialog
+    def test_add_consequence_via_plus_row_creates_blank_row_no_popup(self):
         with _TempDbMainWindow() as win:
             panel = win.scenario_panel
             _n, _d, cause_id, _c = self._add_full_chain(win.db)
@@ -7293,22 +7340,38 @@ class PlusRowQuickAddTaggingTests(unittest.TestCase):
             captured = []
             panel.new_item_created.connect(lambda t, i: captured.append((t, i)))
 
-            fake_popup = unittest.mock.MagicMock()
-            fake_popup.exec.return_value = QDialog.DialogCode.Rejected
-            with unittest.mock.patch('hazop.ObjectPickerPopup', return_value=fake_popup):
+            with unittest.mock.patch('hazop.ObjectPickerPopup') as mock_popup_cls:
                 panel._add_consequence_via_plus_row(cause_id)
 
-            self.assertEqual(len(win.db.consequences(cause_id)), before)
-            self.assertEqual(captured, [])
+            mock_popup_cls.assert_not_called()
+            self.assertEqual(len(win.db.consequences(cause_id)), before + 1)
+            self.assertEqual(len(captured), 1)
+
+    def test_add_cause_via_plus_row_opens_cause_object_popup(self):
+        from PyQt6.QtWidgets import QDialog
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+
+            def _fake_exec(self):
+                self.committed.emit('', '', '', None)
+                return QDialog.DialogCode.Accepted
+
+            with unittest.mock.patch.object(hazop.CauseObjectPopup, 'exec', new=_fake_exec):
+                panel._add_cause_via_plus_row(dev_id)
+
+            self.assertEqual(len(win.db.causes(dev_id)), 1)
 
 
 class PlusRowRenderingTests(unittest.TestCase):
     """The "+" quick-add rows themselves (2026-08-12, see NOTES.md) — one
-    appended at the bottom of each group that already has real content:
-    "+ Ny orsak" per deviation, "+ Ny konsekvens" per cause, "+ Ny
-    barriär" per consequence. A group with zero content still only shows
-    its existing placeholder row (_add_placeholder_row/_add_empty_row,
-    unchanged) — Enter-to-add already invites filling that in."""
+    appended at the bottom of each group that already has real content, a
+    single "+" (gray, italic — reported feedback that a full "+ Ny X"
+    label took up too much visual weight) in the ORS/KON/SG column
+    respectively. A group with zero content still only shows its existing
+    placeholder row (_add_placeholder_row/_add_empty_row, unchanged) —
+    Enter-to-add already invites filling that in."""
 
     @classmethod
     def setUpClass(cls):
@@ -7336,8 +7399,9 @@ class PlusRowRenderingTests(unittest.TestCase):
             plus_rows = [r for r, v in panel._plus_rows.items() if v[0] == 'cause']
             self.assertEqual(len(plus_rows), 1)
             self.assertEqual(panel._plus_rows[plus_rows[0]], ('cause', dev_id))
-            self.assertEqual(panel._table.item(plus_rows[0], panel._C_ORS).text(),
-                              "+ Ny orsak")
+            # Just "+" (2026-08-12, see NOTES.md) — reported feedback that
+            # "+ Ny orsak"-style labels took up too much visual weight.
+            self.assertEqual(panel._table.item(plus_rows[0], panel._C_ORS).text(), "+")
         finally:
             panel.deleteLater()
 
@@ -7487,6 +7551,208 @@ class PlusRowRenderingTests(unittest.TestCase):
             panel._update_lopa_risk(cons_id)
 
             self.assertEqual(panel._table.item(plus_row, panel._C_SLUT).text(), '')
+        finally:
+            panel.deleteLater()
+
+    def test_plus_rows_stay_one_line_tall_including_ors_column(self):
+        """Reported feedback (2026-08-12): the "+" row took up too much
+        space. ORS unconditionally reserves _ORS_STRIP_H for its pin/tag
+        strip and a 2-line floor for readability — both bugs found while
+        verifying this fix: neither is guarded against a "+" row's ORS
+        cell out of the box, so a "+ Ny orsak" row rendered ~2.5x taller
+        than the plain one-line height every other "+" row already got."""
+        from hazop import ScenarioTablePanel
+        from PyQt6.QtGui import QFontMetrics
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        self.db.add_safeguard(cons_id)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            one_line_h = QFontMetrics(panel._table.font()).height() + 6
+            self.assertTrue(panel._plus_rows)
+            for row in panel._plus_rows:
+                self.assertEqual(panel._table.rowHeight(row), one_line_h,
+                    f"plus row {row} ({panel._plus_rows[row]}) must stay a single "
+                    "compact line regardless of which column its '+' is in")
+        finally:
+            panel.deleteLater()
+
+
+class NewConsequenceSafeguardDashPlaceholderTests(unittest.TestCase):
+    """Reported feedback (2026-08-12, see NOTES.md): a newly created
+    consequence/safeguard showed the literal text "Ny konsekvens"/"Ny
+    safeguard" — unnecessary visual noise; a plain "—" until the row is
+    actually defined reads more like an empty/unset value, consistent
+    with how an already-absent safeguard row shows "—" today."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_dashplaceholder_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _add_full_chain(self):
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        return node_id, dev_id, cause_id
+
+    def test_add_consequence_stores_empty_description_not_ny_konsekvens(self):
+        _n, _d, cause_id = self._add_full_chain()
+        cons_id = self.db.add_consequence(cause_id)
+        self.assertEqual(dict(self.db.get_consequence(cons_id))['description'], '')
+
+    def test_add_safeguard_stores_empty_description_not_ny_safeguard(self):
+        _n, _d, cause_id = self._add_full_chain()
+        cons_id = self.db.add_consequence(cause_id)
+        sg_id = self.db.add_safeguard(cons_id)
+        self.assertEqual(dict(self.db.get_safeguard(sg_id))['description'], '')
+
+    def test_new_empty_consequence_cell_displays_dash(self):
+        from hazop import ScenarioTablePanel
+        node_id, _d, cause_id = self._add_full_chain()
+        self.db.add_consequence(cause_id)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id
+                       and r not in panel._plus_rows)
+            self.assertEqual(panel._table.item(row, panel._C_KON).text(), '—')
+        finally:
+            panel.deleteLater()
+
+    def test_new_empty_safeguard_cell_displays_dash(self):
+        from hazop import ScenarioTablePanel
+        node_id, _d, cause_id = self._add_full_chain()
+        cons_id = self.db.add_consequence(cause_id)
+        self.db.add_safeguard(cons_id)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id
+                       and r not in panel._plus_rows)
+            self.assertEqual(panel._table.item(row, panel._C_SG).text(), '—')
+        finally:
+            panel.deleteLater()
+
+    def test_editor_starts_blank_not_on_the_dash_sentinel(self):
+        """_PidDelegate.createEditor() must strip the "—" placeholder —
+        QTableWidgetItem has no real Display-vs-EditRole divergence
+        (verified: setData() on one overwrites what the other reads
+        back), so the dash reaches index.data(EditRole) too."""
+        from hazop import ScenarioTablePanel
+        node_id, _d, cause_id = self._add_full_chain()
+        self.db.add_consequence(cause_id)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id
+                       and r not in panel._plus_rows)
+            from PyQt6.QtWidgets import QStyleOptionViewItem
+            index = panel._table.model().index(row, panel._C_KON)
+            option = QStyleOptionViewItem()
+            option.font = panel._table.font()
+            editor = panel._delegate.createEditor(panel._table, option, index)
+            try:
+                self.assertEqual(editor.text(), '')
+            finally:
+                editor.deleteLater()
+        finally:
+            panel.deleteLater()
+
+    def test_clearing_safeguard_text_saves_empty_not_ny_safeguard(self):
+        """_on_cell_changed_inner used to resurrect 'Ny safeguard' whenever
+        the committed text was empty — clearing an existing description
+        must actually save empty (displayed as "—"), not silently revert
+        to placeholder text."""
+        from hazop import ScenarioTablePanel
+        node_id, _d, cause_id = self._add_full_chain()
+        cons_id = self.db.add_consequence(cause_id)
+        sg_id = self.db.add_safeguard(cons_id)
+        self.db.update_safeguard(sg_id, "Brandlarm", 10)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[3] == sg_id)
+            item = panel._table.item(row, panel._C_SG)
+            item.setData(Qt.ItemDataRole.EditRole, '')
+            panel._on_cell_changed_inner(row, panel._C_SG)
+            self.assertEqual(dict(self.db.get_safeguard(sg_id))['description'], '')
+        finally:
+            panel.deleteLater()
+
+
+class EmptyOrsCellClickOpensCausePopupTests(unittest.TestCase):
+    """Reported feedback (2026-08-12, see NOTES.md): clicking an empty
+    ORS placeholder cell (a deviation with no causes yet) used to start
+    inline text editing directly — now opens the same CauseObjectPopup
+    the "+ Ny orsak" row does, so creating a cause behaves identically
+    regardless of entry point."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_emptyorsclick_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_clicking_empty_ors_placeholder_opens_cause_popup(self):
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta)
+                       if m[0] == dev_id and m[1] is None)
+
+            with unittest.mock.patch.object(panel, '_add_cause_via_plus_row') as mock_add:
+                panel._on_cell_clicked(row, panel._C_ORS)
+
+            mock_add.assert_called_once()
+            self.assertEqual(mock_add.call_args.args[0], dev_id)
+        finally:
+            panel.deleteLater()
+
+    def test_clicking_a_real_ors_cell_still_selects_it_not_the_popup(self):
+        """Sanity check: the new empty-placeholder branch must not
+        accidentally hijack clicks on a real, already-defined cause."""
+        from hazop import ScenarioTablePanel, CAUSE_T
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+            captured = []
+            panel.item_selected.connect(lambda t, i: captured.append((t, i)))
+
+            with unittest.mock.patch.object(panel, '_add_cause_via_plus_row') as mock_add:
+                panel._on_cell_clicked(row, panel._C_ORS)
+
+            mock_add.assert_not_called()
+            self.assertEqual(captured, [(CAUSE_T, cause_id)])
         finally:
             panel.deleteLater()
 
@@ -8822,15 +9088,14 @@ class AutoConsequenceAndSafeguardOnCauseTemplateTests(unittest.TestCase):
         cons_list = self.db.consequences(cause_id)
         self.assertEqual(len(cons_list), 1)
         cons_id = cons_list[0]['id']
-        # db.add_consequence()/add_safeguard() default to placeholder text
-        # ("Ny konsekvens"/"Ny safeguard") — same as every other quick-add
-        # path (TreePanel.add_consequence(), _create_cause_from_pick())
-        # already uses; not blank, but still immediately overtype-able via
-        # the existing KON/SG inline-edit machinery.
-        self.assertEqual(cons_list[0]['description'], 'Ny konsekvens')
+        # db.add_consequence()/add_safeguard() default to empty (2026-08-12,
+        # see NOTES.md — shown as "—" until defined, not literal "Ny
+        # konsekvens"/"Ny safeguard" text) — still immediately overtype-
+        # able via the existing KON/SG inline-edit machinery either way.
+        self.assertEqual(cons_list[0]['description'], '')
         sg_list = self.db.safeguards(cons_id)
         self.assertEqual(len(sg_list), 1)
-        self.assertEqual(sg_list[0]['description'], 'Ny safeguard')
+        self.assertEqual(sg_list[0]['description'], '')
 
     def test_create_cause_for_bar_also_gets_consequence_and_safeguard(self):
         """The EquipmentDeviationBar checkbox flow specifically — routes
@@ -8849,6 +9114,48 @@ class AutoConsequenceAndSafeguardOnCauseTemplateTests(unittest.TestCase):
         cons_list = self.db.consequences(cause_id)
         self.assertEqual(len(cons_list), 1)
         self.assertEqual(len(self.db.safeguards(cons_list[0]['id'])), 1)
+
+    def test_create_cause_for_bar_does_not_draw_a_duplicate_marker(self):
+        """Reported feedback (2026-08-12, see NOTES.md): 'När jag skapat
+        ett manuellt objekt i pid viewer och sedan definerar en avikelse
+        blir det dubbla markeringar' — a cause created via the equipment-
+        bar checkbox flow used to draw a SECOND, separate cause-marker
+        circle at the exact same position as the equipment's own marker
+        (whose colour already represents "has causes"), on top of a
+        manually placed object's still-interactive drawn-zone outline.
+        _create_cause_for_bar must pass draw_marker=False through to
+        place_cause_from_template so no second marker (DB row or visual
+        item) gets created."""
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        eq_id = self.db.add_equipment_item("V-1", "V-1", "V", 0, "Ventil", '', 0)
+        marker_id = self.db.add_equipment_marker(
+            eq_id, "V-1", 0, 10.0, 10.0, "Ventil", confidence=1.0, link_method='manual')
+        self.panel._equipment_bar.load(eq_id, marker_id)
+
+        cause_id = self.panel._create_cause_for_bar(
+            dev_id, "Ventil", "V-1", "Ventil stängd")
+
+        self.assertIsNotNone(cause_id)
+        self.assertEqual(self.db.conn.execute(
+            "SELECT COUNT(*) FROM cause_markers WHERE cause_id=?", (cause_id,)
+        ).fetchone()[0], 0, "no separate cause_markers row should be created")
+
+    def test_classic_pid_click_flow_still_draws_its_own_marker(self):
+        """Regression guard: the classic P&ID right-click cause flow has
+        no pre-existing equipment marker to color-code, so it must keep
+        drawing its own cause marker exactly as before — only the
+        equipment-bar path (tested above) opts out."""
+        from PyQt6.QtCore import QPointF
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+
+        cause_id = self.panel.place_cause_from_template(
+            dev_id, QPointF(10, 10), 0, "Ventil", "HV-101", "Läckage", None)
+
+        self.assertEqual(self.db.conn.execute(
+            "SELECT COUNT(*) FROM cause_markers WHERE cause_id=?", (cause_id,)
+        ).fetchone()[0], 1)
 
     def test_kon_and_sg_cells_are_clickable_after_bar_driven_cause_creation(self):
         """End-to-end confirmation of the actual reported symptom: clicking
