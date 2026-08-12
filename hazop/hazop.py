@@ -5833,6 +5833,33 @@ def _mk_icon(name: str, sz: int = 28) -> QIcon:
     return icon
 
 
+# Emoji -> icons/<name>.svg mapping, shared by every button/menu-action
+# construction site being migrated off raw Unicode glyphs (2026-08-12, see
+# NOTES.md). Only emoji with an unambiguous, high-confidence icon match are
+# listed — anything not here (status dots, one-off glyphs) intentionally
+# keeps rendering as plain emoji text.
+_EMOJI_ICON = {
+    '📋': 'clipboard', '🗑': 'delete', '📍': 'pin',
+    '⚙': 'settings', '🔧': 'settings',
+    '✏': 'edit', '✎': 'edit', '📝': 'edit',
+    '💬': 'comment', '🔍': 'search', '🔎': 'search',
+    '👁': 'eye', '🎯': 'target', '🛡': 'shield', '⚠': 'warning',
+    '✓': 'check', '✅': 'check', '✕': 'close', '✖': 'close', '❌': 'close',
+    '💾': 'save', '🔗': 'link', '🔄': 'refresh',
+    '📤': 'export', '📂': 'import', '📄': 'document', '🏭': 'factory',
+}
+
+
+def _icon(name: str, sz: int = 16, color: str = '#17191C') -> QIcon:
+    """Single-state QIcon from icons/<name>.svg (or an _mk_pm() procedural
+    shape) for ordinary QPushButton/QAction/QToolButton icons — as opposed
+    to _mk_icon()'s two-state dark/white pair for the checkable P&ID markup
+    ribbon tool buttons. Default color matches the app's own body-text
+    color (#17191C) so the icon reads consistently against the QSS theme's
+    button/menu backgrounds (2026-08-12, see NOTES.md)."""
+    return QIcon(_mk_pm(name, sz, QColor(color)))
+
+
 # ── Style popup ───────────────────────────────────────────────────────────────
 
 class _StylePopup(QWidget):
@@ -6070,7 +6097,11 @@ class PropertiesRibbon(QWidget):
                 self._btns.append(lbl)
             else:
                 emoji, tip, slot = spec
-                btn = QPushButton(emoji)
+                icon_name = _EMOJI_ICON.get(emoji)
+                btn = QPushButton() if icon_name else QPushButton(emoji)
+                if icon_name:
+                    btn.setIcon(_icon(icon_name, 18))
+                    btn.setIconSize(QSize(18, 18))
                 btn.setFixedSize(self._BTN_SZ, self._BTN_SZ)
                 btn.setToolTip(tip)
                 btn.setStyleSheet(self._BTN_SS)
@@ -6895,13 +6926,13 @@ class MarkupTablePanel(QWidget):
             return
         menu = QMenu(self)
         n = len(rows)
-        lbl = f"🗑 Ta bort ({n} valda)" if n > 1 else "🗑 Ta bort"
-        act_del = menu.addAction(lbl)
+        lbl = f"Ta bort ({n} valda)" if n > 1 else "Ta bort"
+        act_del = menu.addAction(_icon('delete'), lbl)
         act_style = None
         act_dup   = None
         if n == 1:
-            act_style = menu.addAction("✏ Ändra stil...")
-            act_dup   = menu.addAction("📋 Duplicera")
+            act_style = menu.addAction(_icon('edit'), "Ändra stil...")
+            act_dup   = menu.addAction(_icon('clipboard'), "Duplicera")
         result = menu.exec(self._table.viewport().mapToGlobal(pos))
         if result == act_del:
             for item in rows:
@@ -7347,15 +7378,15 @@ class RedMarkupTablePanel(QWidget):
             return
         menu = QMenu(self)
         n = len(rows)
-        lbl = f"🗑 Ta bort ({n} valda)" if n > 1 else "🗑 Ta bort"
-        act_del = menu.addAction(lbl)
+        lbl = f"Ta bort ({n} valda)" if n > 1 else "Ta bort"
+        act_del = menu.addAction(_icon('delete'), lbl)
         act_style = None
         if n == 1:
             mu = self.db.get_node_red_markup(rows[0].data(Qt.ItemDataRole.UserRole))
             if mu and dict(mu).get('type') == 'symbol':
                 act_style = menu.addAction("📐 Ändra storlek/rotation...")
             else:
-                act_style = menu.addAction("✏ Ändra stil...")
+                act_style = menu.addAction(_icon('edit'), "Ändra stil...")
         result = menu.exec(self._table.viewport().mapToGlobal(pos))
         if result == act_del:
             for item in rows:
@@ -7554,12 +7585,14 @@ class TreePanel(QWidget):
         # an obvious parent item to right-click.
         action_row = QHBoxLayout()
         action_row.setSpacing(4)
-        for label, tip, slot in (
-            ("+ Nod",       "Lägg till ny nod",       self.add_node),
-            ("+ Avvikelse", "Lägg till ny avvikelse", self.add_deviation),
-            ("🗑 Ta bort",  "Ta bort markerat",       self.delete_selected),
+        for label, icon_name, tip, slot in (
+            ("+ Nod",       None,     "Lägg till ny nod",       self.add_node),
+            ("+ Avvikelse", None,     "Lägg till ny avvikelse", self.add_deviation),
+            ("Ta bort",     'delete', "Ta bort markerat",       self.delete_selected),
         ):
             btn = QPushButton(label)
+            if icon_name:
+                btn.setIcon(_icon(icon_name))
             btn.setToolTip(tip)
             btn.setFixedHeight(CONFIG['H_CTRL_STD'])
             btn.clicked.connect(slot)
@@ -7707,7 +7740,8 @@ class TreePanel(QWidget):
             for ni, node in enumerate(self.db.nodes(), 1):
                 node_on_pid = bool(node['markup_points'])
                 pid_pin = " 📍" if node_on_pid else ""
-                nitem = QTreeWidgetItem([f"🏭  {ni}. {node['name']}{pid_pin}"])
+                nitem = QTreeWidgetItem([f"  {ni}. {node['name']}{pid_pin}"])
+                nitem.setIcon(0, _icon('factory'))
                 nitem.setData(0, Qt.ItemDataRole.UserRole, node['id'])
                 nitem.setData(0, Qt.ItemDataRole.UserRole + 1, NODE_T)
                 nitem.setFont(0, bold_font)
@@ -7769,7 +7803,8 @@ class TreePanel(QWidget):
                     for eq_id, eq_devs in equipment_groups.items():
                         eq = self.db.get_equipment_by_id(eq_id)
                         eq_label = f"{eq['tag']} — {eq['equipment_type']}" if eq else f"Utrustning #{eq_id}"
-                        eitem = QTreeWidgetItem([f"    🔧  {eq_label}"])
+                        eitem = QTreeWidgetItem([f"    {eq_label}"])
+                        eitem.setIcon(0, _icon('settings'))
                         eq_font = QFont(); eq_font.setBold(True)
                         eitem.setFont(0, eq_font)
                         litem.addChild(eitem)
@@ -8081,9 +8116,9 @@ class TreePanel(QWidget):
         menu  = QMenu(self)
 
         if type_ == NODE_T:
-            menu.addAction("✏️ Döp om", lambda i=id_: self._rename_node(i))
+            menu.addAction(_icon('edit'), "Döp om", lambda i=id_: self._rename_node(i))
             menu.addAction("+ Lägg till avvikelse", self.add_deviation)
-            menu.addAction("✏️ Editera nodmarkup",
+            menu.addAction(_icon('edit'), "Editera nodmarkup",
                            lambda i=id_: self.edit_node_markup_requested.emit(i))
             menu.addAction("🔴 Editera redmarkup",
                            lambda i=id_: self.edit_red_markup_requested.emit(i))
@@ -8093,11 +8128,11 @@ class TreePanel(QWidget):
                     menu.addAction("🙈 Dölj nod på P&ID",
                                    lambda i=id_: self.node_markup_vis_requested.emit(i, False))
                 else:
-                    menu.addAction("👁 Visa nod på P&ID",
+                    menu.addAction(_icon('eye'), "Visa nod på P&ID",
                                    lambda i=id_: self.node_markup_vis_requested.emit(i, True))
         elif type_ == DEV_T:
             menu.addAction("+ Lägg till orsak", self.add_cause)
-            menu.addAction("📍 Lägg till orsaker på P&ID",
+            menu.addAction(_icon('pin'), "Lägg till orsaker på P&ID",
                            lambda i=id_: self.add_causes_on_pid_requested.emit(i))
         elif type_ == CAUSE_T:
             # "+ Lägg till orsak" also offered here (not just on DEV_T) so
@@ -8109,19 +8144,19 @@ class TreePanel(QWidget):
             # triggered it.
             menu.addAction("+ Lägg till orsak", self.add_cause)
             menu.addAction("+ Lägg till konsekvens", self.add_consequence)
-            menu.addAction("📍 Lägg till konsekvens på P&ID",
+            menu.addAction(_icon('pin'), "Lägg till konsekvens på P&ID",
                            lambda i=id_: self.add_consequences_on_pid_requested.emit(i))
         elif type_ == CONS_T:
             menu.addAction("+ Lägg till safeguard", self.add_safeguard)
-            menu.addAction("📍 Lägg till safeguard på P&ID",
+            menu.addAction(_icon('pin'), "Lägg till safeguard på P&ID",
                            lambda i=id_: self.add_safeguards_on_pid_requested.emit(i))
 
         # Copy
-        copy_labels = {CAUSE_T: "📋 Kopiera orsak",
-                       CONS_T:  "📋 Kopiera konsekvens",
-                       SG_T:    "📋 Kopiera safeguard"}
+        copy_labels = {CAUSE_T: "Kopiera orsak",
+                       CONS_T:  "Kopiera konsekvens",
+                       SG_T:    "Kopiera safeguard"}
         if type_ in copy_labels:
-            menu.addAction(copy_labels[type_],
+            menu.addAction(_icon('clipboard'), copy_labels[type_],
                            lambda t=type_, i=id_: self._copy_item(t, i))
 
         # Paste (only if clipboard is compatible with current target)
@@ -8133,7 +8168,7 @@ class TreePanel(QWidget):
                 (ct == SG_T    and type_ in (CONS_T, SG_T))
             )
             if can_paste:
-                menu.addAction("📋 Klistra in här", self._paste_item)
+                menu.addAction(_icon('clipboard'), "Klistra in här", self._paste_item)
 
         menu.addSeparator()
         menu.addAction("Ta bort", self.delete_selected)
@@ -8736,7 +8771,8 @@ class StandardCausesPickerPopup(QDialog):
 
         # Buttons
         btn_row = QHBoxLayout()
-        self._ok_btn = QPushButton("✓  Välj orsak")
+        self._ok_btn = QPushButton("Välj orsak")
+        self._ok_btn.setIcon(_icon('check', 16, '#ffffff'))
         self._ok_btn.setDefault(True)
         self._ok_btn.setMinimumHeight(CONFIG['H_BTN_OK'])
         self._ok_btn.setStyleSheet(
@@ -10148,7 +10184,8 @@ class ConsequenceStepPickerDialog(QDialog):
                 ref_edit.setText(existing[step].get('ref_tag', '') or '')
             elif step == 1 and self._initial_ref_tag:
                 ref_edit.setText(self._initial_ref_tag)
-            pin_btn = QPushButton("📍")
+            pin_btn = QPushButton()
+            pin_btn.setIcon(_icon('pin', 14, '#dc2626'))
             pin_btn.setFixedSize(22, 22)
             pin_btn.setToolTip("Klicka på P&ID för att välja referensobjekt")
             pin_btn.setStyleSheet(
@@ -10236,7 +10273,8 @@ class ConsequenceStepPickerDialog(QDialog):
 
         # ── Buttons ───────────────────────────────────────────────────────────
         btn_row = QHBoxLayout()
-        add_more_btn = QPushButton("📍 Lägg till ytterligare objekt")
+        add_more_btn = QPushButton("Lägg till ytterligare objekt")
+        add_more_btn.setIcon(_icon('pin', 16, '#ffffff'))
         add_more_btn.setToolTip(
             "Spara denna kedja och återgå till P&ID-läge\n"
             "för att omedelbart markera ytterligare ett objekt.")
@@ -13457,31 +13495,31 @@ class ScenarioTablePanel(QWidget):
         is_placed = self._is_cell_placed(row, col)
         menu = QMenu(self)
         if not is_placed:
-            a = menu.addAction("📍 Lägg till på P&ID")
+            a = menu.addAction(_icon('pin'), "Lägg till på P&ID")
             a.triggered.connect(lambda: self._place_from_table(row, col))
         else:
-            a1 = menu.addAction("📍 Lägg till ytterligare på P&ID")
+            a1 = menu.addAction(_icon('pin'), "Lägg till ytterligare på P&ID")
             a1.triggered.connect(lambda: self._place_from_table(row, col))
-            a2 = menu.addAction("🗑 Ta bort från P&ID")
+            a2 = menu.addAction(_icon('delete'), "Ta bort från P&ID")
             a2.triggered.connect(lambda: self._remove_from_pid(row, col))
         if col == self._C_KON and row < len(self._row_meta):
             cons_id = self._row_meta[row][2]
             if cons_id is not None:
                 menu.addSeparator()
-                a_chain = menu.addAction("📋 Redigera konsekvenskedja (Del1–Del5)…")
+                a_chain = menu.addAction(_icon('clipboard'), "Redigera konsekvenskedja (Del1–Del5)…")
                 a_chain.triggered.connect(lambda: self._open_chain_editor(cons_id))
         if col == self._C_SG and row < len(self._row_meta):
             sg_id = self._row_meta[row][3]
             if sg_id is not None:
                 menu.addSeparator()
-                a_rrf = menu.addAction("⚙ Ändra RRF...")
+                a_rrf = menu.addAction(_icon('settings'), "Ändra RRF...")
                 a_rrf.triggered.connect(lambda: self._show_rrf_popup(row, sg_id))
         # Feature 4: clone scenario to another deviation
         if col == self._C_ORS and row < len(self._row_meta):
             cause_id = self._row_meta[row][1]
             if cause_id is not None:
                 menu.addSeparator()
-                a_clone = menu.addAction("📋 Duplicera scenario till annan avvikelse…")
+                a_clone = menu.addAction(_icon('clipboard'), "Duplicera scenario till annan avvikelse…")
                 a_clone.triggered.connect(lambda: self._clone_scenario(cause_id))
         menu.exec(self._table.viewport().mapToGlobal(pos))
 
@@ -14135,11 +14173,11 @@ class ScenarioTablePanel(QWidget):
 
         menu = QMenu(self)
         menu.addSection("Lägg till i hierarkin")
-        menu.addAction(f'⚙  Ny orsak under avvikelse  [{dev_name}]',
+        menu.addAction(_icon('settings'), f'Ny orsak under avvikelse  [{dev_name}]',
                        lambda: self._quick_add_cause(dev_id))
-        menu.addAction("⚠  Ny konsekvens på denna orsak",
+        menu.addAction(_icon('warning'), "Ny konsekvens på denna orsak",
                        lambda: self._quick_add_consequence(cause_id))
-        sg_action = menu.addAction("🛡  Ny safeguard på denna konsekvens",
+        sg_action = menu.addAction(_icon('shield'), "Ny safeguard på denna konsekvens",
                        lambda: self._quick_add_safeguard(cons_id))
         sg_action.setEnabled(cons_id is not None)
 
@@ -14536,7 +14574,7 @@ class ScenarioTablePanel(QWidget):
         menu = QMenu(self)
 
         # ── Ctrl+C shortcut hint ────────────────────────────────────────
-        copy_row = menu.addAction("📋  Kopiera rad  (Ctrl+C)")
+        copy_row = menu.addAction(_icon('clipboard'), "Kopiera rad  (Ctrl+C)")
         copy_row.triggered.connect(lambda: self._copy_row_to_clipboard(row))
         menu.addSeparator()
 
@@ -14544,55 +14582,55 @@ class ScenarioTablePanel(QWidget):
         if col in (self._C_ORS, self._C_NOD, self._C_DEV) and cause_id:
             c = self.db.get_cause(cause_id)
             c_desc = dict(c).get('description', '?')[:40] if c else '?'
-            menu.addSection(f"⚙ Orsak: {c_desc}")
-            menu.addAction("✏  Redigera",
+            menu.addSection(_icon('settings'), f"Orsak: {c_desc}")
+            menu.addAction(_icon('edit'), "Redigera",
                 lambda: self._try_start_edit(row, self._C_ORS))
-            a_dup = menu.addAction("📄  Duplicera orsak (med konsekvenser)")
+            a_dup = menu.addAction(_icon('document'), "Duplicera orsak (med konsekvenser)")
             a_dup.triggered.connect(
                 lambda: self._duplicate_cause(cause_id))
             a_move = menu.addAction("↕  Flytta till annan avvikelse…")
             a_move.triggered.connect(
                 lambda: self._move_cause_dialog(cause_id))
             menu.addSeparator()
-            a_del = menu.addAction("🗑  Ta bort orsak")
+            a_del = menu.addAction(_icon('delete'), "Ta bort orsak")
             a_del.triggered.connect(lambda cid=cause_id: self._confirm_delete('cause', cid))
 
         # ── Konsekvens-åtgärder ─────────────────────────────────────────
         elif col in (self._C_KON, self._C_RFORE) and cons_id:
             k = self.db.get_consequence(cons_id)
             k_desc = dict(k).get('description', '?')[:40] if k else '?'
-            menu.addSection(f"⚠ Konsekvens: {k_desc}")
-            a_dup = menu.addAction("📄  Duplicera konsekvens (med barriärer)")
+            menu.addSection(_icon('warning'), f"Konsekvens: {k_desc}")
+            a_dup = menu.addAction(_icon('document'), "Duplicera konsekvens (med barriärer)")
             a_dup.triggered.connect(
                 lambda: self._duplicate_consequence(cons_id, cause_id))
             a_move = menu.addAction("↕  Flytta till annan orsak…")
             a_move.triggered.connect(
                 lambda: self._move_consequence_dialog(cons_id))
             if k and (dict(k).get('comp_tag') or dict(k).get('comp_type')):
-                a_untag = menu.addAction("✕  Ta bort tagg")
+                a_untag = menu.addAction(_icon('close'), "Ta bort tagg")
                 a_untag.triggered.connect(lambda cid=cons_id: self._untag_consequence(cid))
             menu.addSeparator()
-            a_del = menu.addAction("🗑  Ta bort konsekvens")
+            a_del = menu.addAction(_icon('delete'), "Ta bort konsekvens")
             a_del.triggered.connect(lambda cid=cons_id: self._confirm_delete('cons', cid))
 
         # ── Barriär-åtgärder ────────────────────────────────────────────
         elif col in (self._C_SG, self._C_LOPA, self._C_SLUT) and sg_id:
             sg = self.db.get_safeguard(sg_id)
             sg_desc = dict(sg).get('description', '?')[:40] if sg else '?'
-            menu.addSection(f"🛡 Barriär: {sg_desc}")
-            menu.addAction("✏  Redigera",
+            menu.addSection(_icon('shield'), f"Barriär: {sg_desc}")
+            menu.addAction(_icon('edit'), "Redigera",
                 lambda: self._try_start_edit(row, self._C_SG))
-            a_copy = menu.addAction("📋  Kopiera till annan konsekvens…")
+            a_copy = menu.addAction(_icon('clipboard'), "Kopiera till annan konsekvens…")
             a_copy.triggered.connect(
                 lambda: self._copy_safeguard_dialog(sg_id))
             a_move = menu.addAction("↕  Flytta till annan konsekvens…")
             a_move.triggered.connect(
                 lambda: self._move_safeguard_dialog(sg_id))
             if sg and (dict(sg).get('comp_tag') or dict(sg).get('comp_type')):
-                a_untag = menu.addAction("✕  Ta bort tagg")
+                a_untag = menu.addAction(_icon('close'), "Ta bort tagg")
                 a_untag.triggered.connect(lambda sid=sg_id: self._untag_safeguard(sid))
             menu.addSeparator()
-            a_del = menu.addAction("🗑  Ta bort barriär")
+            a_del = menu.addAction(_icon('delete'), "Ta bort barriär")
             a_del.triggered.connect(lambda sid=sg_id: self._confirm_delete('sg', sid))
 
         if not menu.isEmpty():
@@ -14880,8 +14918,10 @@ class ComponentEditorPanel(QWidget):
 
         comp_btns = QHBoxLayout()
         btn_add_c  = QPushButton("+ Lägg till")
-        btn_ren_c  = QPushButton("✎ Byt namn")
-        btn_del_c  = QPushButton("✕ Ta bort")
+        btn_ren_c  = QPushButton("Byt namn")
+        btn_ren_c.setIcon(_icon('edit'))
+        btn_del_c  = QPushButton("Ta bort")
+        btn_del_c.setIcon(_icon('delete'))
         btn_add_c.clicked.connect(self._comp_add)
         btn_ren_c.clicked.connect(self._comp_rename)
         btn_del_c.clicked.connect(self._comp_delete)
@@ -14912,7 +14952,8 @@ class ComponentEditorPanel(QWidget):
 
         mode_btns = QHBoxLayout()
         btn_add_m = QPushButton("+ Lägg till felmod")
-        btn_del_m = QPushButton("✕ Ta bort vald")
+        btn_del_m = QPushButton("Ta bort vald")
+        btn_del_m.setIcon(_icon('delete'))
         btn_add_m.clicked.connect(self._mode_add)
         btn_del_m.clicked.connect(self._mode_delete)
         mode_btns.addWidget(btn_add_m)
@@ -16228,7 +16269,8 @@ class TagMemoryPanel(QWidget):
         self._master_cb.setFont(f)
         master_row.addWidget(self._master_cb)
         master_row.addStretch()
-        btn_clear = QPushButton("🗑 Rensa allt")
+        btn_clear = QPushButton("Rensa allt")
+        btn_clear.setIcon(_icon('delete'))
         btn_clear.setToolTip("Ta bort alla lärda mappningar för detta projekt")
         btn_clear.clicked.connect(self._clear_all)
         master_row.addWidget(btn_clear)
@@ -16290,7 +16332,8 @@ class TagMemoryPanel(QWidget):
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        btn_del = QPushButton("🗑 Ta bort markerade")
+        btn_del = QPushButton("Ta bort markerade")
+        btn_del.setIcon(_icon('delete'))
         btn_del.clicked.connect(self._delete_selected)
         btn_row.addWidget(btn_del)
         lay.addLayout(btn_row)
@@ -16301,7 +16344,8 @@ class TagMemoryPanel(QWidget):
         fp_title.setFont(tf)
         fp_hdr.addWidget(fp_title)
         fp_hdr.addStretch()
-        btn_fp_clear = QPushButton("🗑 Rensa fingeravtryck")
+        btn_fp_clear = QPushButton("Rensa fingeravtryck")
+        btn_fp_clear.setIcon(_icon('delete'))
         btn_fp_clear.clicked.connect(self._clear_fingerprints)
         fp_hdr.addWidget(btn_fp_clear)
         lay.addLayout(fp_hdr)
@@ -16730,12 +16774,14 @@ class SettingsPanel(QWidget):
         add_col_btn.clicked.connect(self._palette_add)
         pal_lay.addWidget(add_col_btn)
 
-        edit_col_btn = QPushButton("✎ Redigera")
+        edit_col_btn = QPushButton("Redigera")
+        edit_col_btn.setIcon(_icon('edit'))
         edit_col_btn.setFixedHeight(CONFIG['H_ROW_STD'])
         edit_col_btn.clicked.connect(self._palette_edit)
         pal_lay.addWidget(edit_col_btn)
 
-        del_col_btn = QPushButton("✕ Ta bort")
+        del_col_btn = QPushButton("Ta bort")
+        del_col_btn.setIcon(_icon('delete'))
         del_col_btn.setFixedHeight(CONFIG['H_ROW_STD'])
         del_col_btn.clicked.connect(self._palette_delete)
         pal_lay.addWidget(del_col_btn)
@@ -16814,7 +16860,8 @@ class SettingsPanel(QWidget):
         preset_row.addStretch()
         ml.addLayout(preset_row)
 
-        save_matrix_btn = QPushButton("💾 Spara riskmatris")
+        save_matrix_btn = QPushButton("Spara riskmatris")
+        save_matrix_btn.setIcon(_icon('save', 16, '#ffffff'))
         save_matrix_btn.setStyleSheet(
             "background:#2F5FD0; color:#fff; font-weight:bold; padding:4px 12px;")
         save_matrix_btn.clicked.connect(self._save_matrix)
@@ -17823,7 +17870,8 @@ class PIDManagementPanel(QWidget):
         rev_hdr = QHBoxLayout()
         rev_hdr.addWidget(QLabel("Revisionshistorik:"))
         rev_hdr.addStretch()
-        clear_all_btn = QPushButton("🗑 Rensa samtliga P&ID och all data")
+        clear_all_btn = QPushButton("Rensa samtliga P&ID och all data")
+        clear_all_btn.setIcon(_icon('delete'))
         clear_all_btn.setStyleSheet(
             "QPushButton{color:#fff;background:#C62828;border-radius:4px;padding:4px 10px;}"
             "QPushButton:hover{background:#B71C1C;}")
@@ -17858,10 +17906,12 @@ class PIDManagementPanel(QWidget):
         sheet_hdr = QHBoxLayout()
         sheet_hdr.addWidget(QLabel("Bladordning — dra för att ändra ordning:"))
         sheet_hdr.addStretch()
-        rename_btn = QPushButton("✏️ Byt namn")
+        rename_btn = QPushButton("Byt namn")
+        rename_btn.setIcon(_icon('edit'))
         rename_btn.clicked.connect(self._rename_sheet)
         sheet_hdr.addWidget(rename_btn)
-        delete_btn = QPushButton("🗑 Ta bort")
+        delete_btn = QPushButton("Ta bort")
+        delete_btn.setIcon(_icon('delete'))
         delete_btn.clicked.connect(self._delete_sheets)
         sheet_hdr.addWidget(delete_btn)
         sheets_layout.addLayout(sheet_hdr)
@@ -18017,8 +18067,8 @@ class PIDManagementPanel(QWidget):
             return
         menu = QMenu(self)
         if len(selected) == 1:
-            menu.addAction("✏️ Byt namn", self._rename_sheet)
-        menu.addAction("🗑 Ta bort", self._delete_sheets)
+            menu.addAction(_icon('edit'), "Byt namn", self._rename_sheet)
+        menu.addAction(_icon('delete'), "Ta bort", self._delete_sheets)
         menu.exec(self._sheet_list.viewport().mapToGlobal(pos))
 
 
@@ -18051,10 +18101,12 @@ class StudyManagementPanel(QWidget):
         stats_layout.addWidget(self._stats_lbl)
 
         bar = QHBoxLayout()
-        refresh_btn = QPushButton("🔄 Uppdatera")
+        refresh_btn = QPushButton("Uppdatera")
+        refresh_btn.setIcon(_icon('refresh'))
         refresh_btn.clicked.connect(self.refresh)
         bar.addWidget(refresh_btn)
-        backup_btn = QPushButton("💾 Skapa säkerhetskopia nu")
+        backup_btn = QPushButton("Skapa säkerhetskopia nu")
+        backup_btn.setIcon(_icon('save'))
         backup_btn.setToolTip(
             "Automatiska säkerhetskopior sparas redan löpande i hazop_backups/ — "
             "denna knapp tvingar fram en omedelbar kopia, utan att vänta på nästa automatiska tillfälle.")
@@ -18720,7 +18772,8 @@ class EquipmentPanel(QWidget):
 
         # Toolbar
         tb = QHBoxLayout()
-        self._scan_btn = QPushButton("🔍 Skanna P&ID")
+        self._scan_btn = QPushButton("Skanna P&ID")
+        self._scan_btn.setIcon(_icon('scan', 16, '#ffffff'))
         self._scan_btn.setToolTip("Skannar inläst P&ID-fil efter utrustningstaggar")
         self._scan_btn.setStyleSheet(
             "background:#2F5FD0; color:white; border:none; border-radius:4px; padding:3px 10px;")
@@ -18730,14 +18783,16 @@ class EquipmentPanel(QWidget):
         add_btn.setToolTip("Lägg till en tagg manuellt")
         add_btn.clicked.connect(self._add_manual)
 
-        refresh_btn = QPushButton("🔄 Uppdatera")
+        refresh_btn = QPushButton("Uppdatera")
+        refresh_btn.setIcon(_icon('refresh'))
         refresh_btn.clicked.connect(self.refresh)
 
         self._create_btn = QPushButton("🏭 Skapa HAZOP-noder")
         self._create_btn.setToolTip("Skapar en nod per ikryssad rad")
         self._create_btn.clicked.connect(self._create_nodes)
 
-        self._autodetect_btn = QPushButton("🎯 Hitta objekt på P&ID")
+        self._autodetect_btn = QPushButton("Hitta objekt på P&ID")
+        self._autodetect_btn.setIcon(_icon('target'))
         self._autodetect_btn.setToolTip(
             "Analyserar utrustning (ventiler, pumpar, instrument m.fl.): kopplar\n"
             "varje känd tagg till dess ritade symbol OCH letar efter formigenkända\n"
@@ -18746,7 +18801,8 @@ class EquipmentPanel(QWidget):
             "Kör 🔍 Skanna P&ID först om registret är tomt.")
         self._autodetect_btn.clicked.connect(self._autodetect)
 
-        clear_btn = QPushButton("🗑 Rensa utrustning")
+        clear_btn = QPushButton("Rensa utrustning")
+        clear_btn.setIcon(_icon('delete'))
         clear_btn.setToolTip("Tar bort alla poster i utrustningsregistret")
         clear_btn.setStyleSheet("color:#c0392b; font-weight:bold;")
         clear_btn.clicked.connect(self._clear)
@@ -19542,25 +19598,25 @@ class MainWindow(QMainWindow):
         # selection rather than the document as a whole.
         mb = self.menuBar()
         file_menu = mb.addMenu("Fil")
-        file_menu.addAction("📄 Nytt projekt",      self._hzp_new)
-        file_menu.addAction("📂 Öppna (.hzp)…",     self._hzp_open)
+        file_menu.addAction(_icon('document'), "Nytt projekt",      self._hzp_new)
+        file_menu.addAction(_icon('import'), "Öppna (.hzp)…",     self._hzp_open)
         file_menu.addSeparator()
-        self._act_save = file_menu.addAction("💾 Spara",         self._hzp_save)
-        file_menu.addAction("💾 Spara som…",         self._hzp_save_as)
+        self._act_save = file_menu.addAction(_icon('save'), "Spara",         self._hzp_save)
+        file_menu.addAction(_icon('save'), "Spara som…",         self._hzp_save_as)
         file_menu.addSeparator()
-        file_menu.addAction("🖨 Skriv ut",           self._print_scenario_table)
+        file_menu.addAction(_icon('print'), "Skriv ut",           self._print_scenario_table)
         file_menu.addSeparator()
-        file_menu.addAction("❌ Avsluta",            self.close)
+        file_menu.addAction(_icon('close'), "Avsluta",            self.close)
 
         export_menu = mb.addMenu("Export")
         export_menu.addAction("📊 Excel",           self._export_excel)
-        export_menu.addAction("📄 PDF",             self._export_pdf)
-        export_menu.addAction("📋 Åtgärder",        self._export_actions_pdf)
+        export_menu.addAction(_icon('document'), "PDF",             self._export_pdf)
+        export_menu.addAction(_icon('clipboard'), "Åtgärder",        self._export_actions_pdf)
 
         analysis_menu = mb.addMenu("Analys")
         analysis_menu.addAction("🔀 Risk Scenario", self._open_risk_scenario_wizard)
         analysis_menu.addAction("📈 Statistik",     self._show_statistics)
-        analysis_menu.addAction("✅ Godkänn",       self._approve_node)
+        analysis_menu.addAction(_icon('check'), "Godkänn",       self._approve_node)
 
         settings_menu = mb.addMenu("Inställningar")
         settings_menu.addAction("🌙 Mörkt läge",    self._toggle_dark_mode)

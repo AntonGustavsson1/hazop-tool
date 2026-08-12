@@ -76,6 +76,21 @@ def _ensure_qapp():
     return app
 
 
+def _menu_action_labels(mock_menu):
+    """Extract the text label from each mocked QMenu.addAction() call.
+    Several addAction(text, ...) call sites became addAction(icon, text,
+    ...) during the 2026-08-12 emoji-to-icon sweep (see NOTES.md) — skip a
+    leading QIcon argument so callers keep getting plain label strings
+    regardless of which overload the call site now uses."""
+    from PyQt6.QtGui import QIcon
+    labels = []
+    for c in mock_menu.addAction.call_args_list:
+        args = [a for a in c.args if not isinstance(a, QIcon)]
+        if args:
+            labels.append(args[0])
+    return labels
+
+
 def _fake_pdf_loaded(panel, page=0):
     """Put a PIDPanel's viewer into a "PDF loaded, one page" state without
     touching disk or PyMuPDF, so PIDPanel._load_overlays() runs its real
@@ -5581,7 +5596,7 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
              unittest.mock.patch('hazop.QMenu') as mock_menu_cls:
             self.panel._context_menu(QPoint(0, 0))
         mock_menu = mock_menu_cls.return_value
-        labels = [c.args[0] for c in mock_menu.addAction.call_args_list if c.args]
+        labels = _menu_action_labels(mock_menu)
         self.assertTrue(any("Lägg till orsak" in lbl for lbl in labels))
         self.assertTrue(any("Lägg till konsekvens" in lbl for lbl in labels))
 
@@ -5650,7 +5665,7 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
             self.panel._context_menu(QPoint(0, 0))
         mock_menu_cls.assert_called_once()
         mock_menu = mock_menu_cls.return_value
-        labels = [c.args[0] for c in mock_menu.addAction.call_args_list if c.args]
+        labels = _menu_action_labels(mock_menu)
         self.assertTrue(any("Lägg till orsak" in lbl for lbl in labels))
 
     def test_lone_generic_deviation_skips_ledord_wrapper(self):
@@ -5820,7 +5835,7 @@ class TreeNodeRenameTests(unittest.TestCase):
             self.panel._context_menu(QPoint(0, 0))
 
         mock_menu = mock_menu_cls.return_value
-        labels = [c.args[0] for c in mock_menu.addAction.call_args_list if c.args]
+        labels = _menu_action_labels(mock_menu)
         self.assertTrue(any("Döp om" in lbl for lbl in labels), labels)
 
     def test_rename_updates_name_and_preserves_other_fields(self):
@@ -9248,7 +9263,7 @@ class TagDetachContextMenuTests(unittest.TestCase):
              unittest.mock.patch('hazop.QMenu') as mock_menu_cls:
             panel._on_context_menu(QPoint(0, 0))
         mock_menu = mock_menu_cls.return_value
-        return [c.args[0] for c in mock_menu.addAction.call_args_list if c.args]
+        return _menu_action_labels(mock_menu)
 
     def test_context_menu_offers_untag_when_kon_tagged(self):
         from hazop import ScenarioTablePanel
