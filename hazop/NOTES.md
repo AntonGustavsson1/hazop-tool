@@ -1384,6 +1384,28 @@ Nya grupper:
 
 ---
 
+## Stilpatch: en blå accentfärg (#2F5FD0) ersätter svart som "checked"-färg överallt (2026-08-12)
+
+**Rapport:** en extern stilpatch (skriven mot en läsning av filen via länkad mapp) föreslog att ersätta `_get_windows11_stylesheet()` helt, samt några namngivna klassers hårdkodade separatorer/bakgrunder. Patchens fullständiga funktionsersättning skulle dock ha RADERAT flera sektioner (QCheckBox/QRadioButton, QSpinBox/QDoubleSpinBox, QListWidget, QTabWidget) som lagts till i filen EFTER att patchen skrevs — applicerades därför som en riktad MERGE (bara `:checked`/`:focus`/`:default`/valda tillstånd bytte färg), inte en fullständig ersättning.
+
+**Upptäckt under granskning:** appen använder redan en nästan-monokrom ljus tema-palett (`#FBFBFA`/`#17191C`/`#E2E3E1`/`#8D9299`/`#F5F5F3`/`#E6ECFA`) konsekvent i den delade stilmallen OCH i ~20 andra, separata dialog-/panelklasser som sätter sin EGEN `setStyleSheet()` (och därför inte ärver den delade mallen) — men alla dessa använde svart (`#17191C`) som sin "detta är markerat/primärt/aktivt"-accentfärg, INTE bara den delade mallen. Bad användaren om vägledning (svarade: bygg ut blått överallt för full konsekvens) innan en så pass stor sweep gjordes.
+
+**Ändrat till `#2F5FD0` (blå accent), enbart för genuina "checked/focus/default/primär knapp/vald rad"-tillstånd — INTE brödtext:**
+- Delad stilmall: `QPushButton:checked/:focus/:default`, `QCheckBox`/`QRadioButton :indicator:checked`, `QSpinBox`/`QDoubleSpinBox:focus`, `QLineEdit` m.fl. `selection-background-color`+`:focus`-border, `QComboBox:focus`, `QTabBar::tab:selected`.
+- `QPalette.ColorRole.Highlight` (native Qt-highlight, används av `option.palette.highlight()` i delegates och native-renderade urval) — kommentaren ovanför den raden beskrev redan uttryckligen att detta ÄR appens "egen accent"-mekanism.
+- ~20 dialog-specifika förekomster: `PropertiesRibbon._OK_BTN_SS`, `NodeMarkupPanel`/`_SymbolSelectorPopup`s verktygsval, `StandardCausesPickerPopup` (objektval, header-band, listval-kantstreck, OK-knapp), `CauseObjectPopup` (default-knapp), RRF-preset-knappar (två separata popup-klasser), `SgRRFCategoryPopup`/`CatSGSelectionPopup`/`ConsCategoryMatrixPopup`s OK-knappar och matrisknappars valda tillstånd, `ConsequenceStepPickerDialog`s "ett val gjort"-kolumnindikator, `ScenarioTablePanel`s RRF-badge (vald rad), `EquipmentPanel`s skanna-knapp, riskmatris-inställningens spara-knapp, `ReuseDeviationCausesDialog`s två referens-toggelknappar. Varje primärknapps hover/pressed-nyanser (tidigare `#2A2E34`/`#0B0C0E`, mörkare varianter av svart) bytte till motsvarande blå nyanser (`#3D6BD8`/`#254B9E`).
+- Separatorer/kantlinjer som fortfarande använde det gamla `#ddd`/`#E8E8E8` istället för temats `#E2E3E1`: `NodePanel`/`ConsequencePanel`/`SafeguardPanel`/`_StylePopup`s rubrik-separatorer, `PropertiesRibbon`s bakgrund (`#F0F2F5`→`#FBFBFA`) och `_GRP_SS` (`#888`→`#8D9299`), `NodeMarkupPanel`/`RedMarkupPanel`s ramkant+separatorer, `SgRRFCategoryPopup`/`CatSGSelectionPopup`/`ConsCategoryMatrixPopup`s separatorer, samt en delegate-ritad avdelarlinje i KON-cellens kategori-badge-zon.
+
+**Medvetet ORÖRT (semantiska färger, inte tema-accent):**
+- `RedMarkupPanel`/`RedMarkupTablePanel`s egna röda `:checked`/tabellfärger (`#C62828`/`#FFEBEE`/`#D0D4DA`) — ett avsiktligt separat rött markup-lager, inte den ljusa temafärgen.
+- `ReuseDeviationCausesDialog`s lila "Invers"-knapp (`#8e44ad`) — en tredje, avsiktligt distinkt semantisk kategori.
+- `RiskBadge` (redan matchade patchens föreslagna kod exakt — troligen redan åtgärdat i en tidigare session), `MarkupTablePanel` (redan `#E2E3E1`/`#E6ECFA`/`#17191C`), toggle_bar/nav-rail (redan matchade patchens föreslagna design exakt — mörk `#17191C`-bakgrund är rälens EGEN mörka bakgrund, inte en "svart-som-accent"-instans; `lbl_db` som patchen nämnde finns inte, rälen är ikon-only).
+- Enstaka kvarvarande gråtoner (`#555`/`#666`/`#888`/`#aaa`/`#ebebeb`) på brödtext/sekundärknappar/status-dot på tvärs i filen — utanför denna sweepens scope (ren text-/sekundärfärg, inte "svart-som-accent"), rörda inte.
+
+**Test:** riktade körningar av `RiskCellColorTests`/`RiskMatrixPopupHoverStyleTests` (ej hela sviten denna gång — användaren bad om gles fulltestkörning under en period) — opåverkade eftersom de bygger på `risk_info()`s semantiska färger, inte tema-accenten. Ren QSS/hex-färgändring, ingen logik, inga scheman eller signaler rörda — låg regressionsrisk trots omfattningen. Fullständig svit bör köras innan nästa commit-tillfälle om möjligt.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **Sid-orienteringsinställningen (P&ID-inställningar) är inte kopplad till faktisk rendering/skanning** — sparas i `pid_page_orientation_hint` men läses ännu inte av PDF-rendering, OCR-förbehandling eller taggskanning, som alla idag bara följer PDF-filens egen `/Rotate`-flagga direkt. Att koppla in den kräver att tråda en override genom flera lager, inklusive de flerprocess-skanningsarbetarna — inte gjort 2026-08-11, se ovan. (Den nya per-blad-rotationsknappen från 2026-08-12 löser ett näraliggande men separat behov — manuell rotation av EN specifik sida — genom att mutera `fitz.Page`s rotation i minnet; den treväga globala inställningen är fortfarande inte inkopplad.)

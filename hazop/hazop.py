@@ -406,16 +406,16 @@ def _get_windows11_stylesheet():
         background-color: #E8E9E6;
     }
     QPushButton:checked {
-        background-color: #17191C;
+        background-color: #2F5FD0;
         color: #FFFFFF;
-        border-color: #17191C;
+        border-color: #2F5FD0;
     }
     QPushButton:focus {
-        outline: 2px solid #17191C;
+        outline: 2px solid #2F5FD0;
         outline-offset: 2px;
     }
     QPushButton:default {
-        border-color: #17191C;
+        border-color: #2F5FD0;
     }
 
     QCheckBox, QRadioButton { color: #17191C; spacing: 6px; }
@@ -428,8 +428,8 @@ def _get_windows11_stylesheet():
     QRadioButton::indicator { border-radius: 7px; }
     QCheckBox::indicator:hover, QRadioButton::indicator:hover { border-color: #17191C; }
     QCheckBox::indicator:checked, QRadioButton::indicator:checked {
-        background-color: #17191C;
-        border-color: #17191C;
+        background-color: #2F5FD0;
+        border-color: #2F5FD0;
     }
 
     QSpinBox, QDoubleSpinBox {
@@ -439,7 +439,7 @@ def _get_windows11_stylesheet():
         border-radius: 4px;
         padding: 3px 4px;
     }
-    QSpinBox:focus, QDoubleSpinBox:focus { border: 2px solid #17191C; }
+    QSpinBox:focus, QDoubleSpinBox:focus { border: 2px solid #2F5FD0; }
 
     QListWidget, QListView {
         background-color: #FFFFFF;
@@ -465,7 +465,7 @@ def _get_windows11_stylesheet():
     QTabBar::tab:hover { background-color: #E8E9E6; }
     QTabBar::tab:selected {
         background-color: #FFFFFF;
-        border-bottom: 2px solid #17191C;
+        border-bottom: 2px solid #2F5FD0;
     }
 
     QLineEdit, QTextEdit, QPlainTextEdit {
@@ -474,11 +474,11 @@ def _get_windows11_stylesheet():
         border: 1px solid #CFD1CE;
         border-radius: 4px;
         padding: 4px 6px;
-        selection-background-color: #17191C;
+        selection-background-color: #2F5FD0;
         selection-color: #FFFFFF;
     }
     QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {
-        border: 2px solid #17191C;
+        border: 2px solid #2F5FD0;
         padding: 3px 5px;
     }
 
@@ -489,7 +489,7 @@ def _get_windows11_stylesheet():
         border-radius: 4px;
         padding: 4px 8px;
     }
-    QComboBox:focus { border: 2px solid #17191C; }
+    QComboBox:focus { border: 2px solid #2F5FD0; }
     QComboBox::drop-down { border: none; width: 20px; }
     QComboBox::down-arrow { image: none; }
 
@@ -5184,7 +5184,7 @@ class NodePanel(QWidget):
         f = QFont(); f.setPointSize(12); f.setBold(True)
         self._title_lbl.setFont(f)
         layout.addWidget(self._title_lbl)
-        sep = QLabel(); sep.setFixedHeight(CONFIG['H_SEP_LINE']); sep.setStyleSheet("background:#ddd;")
+        sep = QLabel(); sep.setFixedHeight(CONFIG['H_SEP_LINE']); sep.setStyleSheet("background:#E2E3E1;")
         layout.addWidget(sep)
 
         form = QFormLayout()
@@ -5299,7 +5299,7 @@ class ConsequencePanel(QWidget):
         f = QFont(); f.setPointSize(15); f.setBold(True)
         title.setFont(f)
         layout.addWidget(title)
-        sep = QLabel(); sep.setFixedHeight(CONFIG['H_SEP_LINE']); sep.setStyleSheet("background:#ddd;")
+        sep = QLabel(); sep.setFixedHeight(CONFIG['H_SEP_LINE']); sep.setStyleSheet("background:#E2E3E1;")
         layout.addWidget(sep)
 
         # ── Beskrivning (bas-händelse) ─────────────────────────────────────────
@@ -5550,7 +5550,7 @@ class SafeguardPanel(QWidget):
         f = QFont(); f.setPointSize(15); f.setBold(True)
         title.setFont(f)
         layout.addWidget(title)
-        sep = QLabel(); sep.setFixedHeight(CONFIG['H_SEP_LINE']); sep.setStyleSheet("background:#ddd;")
+        sep = QLabel(); sep.setFixedHeight(CONFIG['H_SEP_LINE']); sep.setStyleSheet("background:#E2E3E1;")
         layout.addWidget(sep)
 
         form = QFormLayout()
@@ -5824,7 +5824,7 @@ class _StylePopup(QWidget):
         outer.addWidget(self._title_lbl)
 
         sep = QLabel(); sep.setFixedHeight(CONFIG['H_SEP_LINE'])
-        sep.setStyleSheet("background:#ddd;border:none;")
+        sep.setStyleSheet("background:#E2E3E1;border:none;")
         outer.addWidget(sep)
 
         # Colour swatches (always shown)
@@ -5970,9 +5970,9 @@ class PropertiesRibbon(QWidget):
         "QPushButton:hover{background:#F5F5F3;border-color:#CFD1CE;}"
         "QPushButton:pressed{background:#E8E9E6;}"
     )
-    _GRP_SS  = "font-size:8px;color:#888;margin:0px;padding:0px;"
+    _GRP_SS  = "font-size:8px;color:#8D9299;margin:0px;padding:0px;"
     # Shared style for the OK button inside floating popups
-    _OK_BTN_SS = ("background:#17191C;color:white;border:none;"
+    _OK_BTN_SS = ("background:#2F5FD0;color:white;border:none;"
                   "border-radius:4px;padding:4px 16px;")
 
     def __init__(self, db, main_window=None, parent=None):
@@ -5984,7 +5984,7 @@ class PropertiesRibbon(QWidget):
         self._btns       = []
 
         self.setFixedWidth(self._WIDTH)
-        self.setStyleSheet("background:#F0F2F5;")
+        self.setStyleSheet("background:#FBFBFA;")
         self._outer = QVBoxLayout(self)
         self._outer.setContentsMargins(6, 8, 6, 8)
         self._outer.setSpacing(3)
@@ -6017,7 +6017,7 @@ class PropertiesRibbon(QWidget):
         for spec in buttons:
             if spec is None:
                 sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
-                sep.setStyleSheet("background:#E8E8E8;max-height:1px;border:none;")
+                sep.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
                 sep.setFixedHeight(CONFIG['H_SEP_LINE'])
                 self._outer.addWidget(sep)
                 self._btns.append(sep)
@@ -6416,7 +6416,7 @@ class NodeMarkupPanel(QWidget):
         SZ = 48
         ISZ = 28   # icon size within button
         self.setFixedWidth(CONFIG['W_SPINNER'])
-        self.setStyleSheet("background:#FFFFFF; border-right: 1px solid #E8E8E8;")
+        self.setStyleSheet("background:#FFFFFF; border-right: 1px solid #E2E3E1;")
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(5, 6, 5, 6)
@@ -6425,7 +6425,7 @@ class NodeMarkupPanel(QWidget):
         _btn_ss = (
             "QPushButton{border:1px solid #E2E3E1;border-radius:5px;"
             "background:#FFFFFF;padding:0px;}"
-            "QPushButton:checked{background:#17191C;border-color:#17191C;}"
+            "QPushButton:checked{background:#2F5FD0;border-color:#2F5FD0;}"
             "QPushButton:hover:!checked{background:#F5F5F3;border-color:#CFD1CE;}")
 
         # ── Navigation row ────────────────────────────────────────────────────
@@ -6468,7 +6468,7 @@ class NodeMarkupPanel(QWidget):
         outer.addWidget(close_btn)
 
         sep1 = QFrame(); sep1.setFrameShape(QFrame.Shape.HLine)
-        sep1.setStyleSheet("background:#E8E8E8;max-height:1px;border:none;")
+        sep1.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
         outer.addWidget(sep1)
 
         # ── Tool buttons — each click selects tool AND opens per-tool popup ───
@@ -6486,7 +6486,7 @@ class NodeMarkupPanel(QWidget):
             self._tool_btns[tool] = btn
 
         sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
-        sep2.setStyleSheet("background:#E8E8E8;max-height:1px;border:none;")
+        sep2.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
         outer.addWidget(sep2)
 
         # ── Color strip ───────────────────────────────────────────────────────
@@ -6497,7 +6497,7 @@ class NodeMarkupPanel(QWidget):
         outer.addWidget(self._color_strip)
 
         sep3 = QFrame(); sep3.setFrameShape(QFrame.Shape.HLine)
-        sep3.setStyleSheet("background:#E8E8E8;max-height:1px;border:none;")
+        sep3.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
         outer.addWidget(sep3)
 
         # ── Visibility toggle ─────────────────────────────────────────────────
@@ -6920,7 +6920,7 @@ class _SymbolSelectorPopup(QFrame):
             "QPushButton{border:1px solid #E2E3E1;border-radius:4px;background:#FAFAFA;"
             "padding:2px;}"
             "QPushButton:hover{background:#F5F5F3;border-color:#CFD1CE;}"
-            "QPushButton:checked{background:#17191C;border-color:#17191C;}")
+            "QPushButton:checked{background:#2F5FD0;border-color:#2F5FD0;}")
         outer = QVBoxLayout(self)
         outer.setContentsMargins(8, 8, 8, 8)
         outer.setSpacing(4)
@@ -6996,7 +6996,7 @@ class RedMarkupPanel(QWidget):
         SZ = 48
         ISZ = 28
         self.setFixedWidth(CONFIG['W_SPINNER'])
-        self.setStyleSheet("background:#FFFFFF; border-right: 1px solid #E8E8E8;")
+        self.setStyleSheet("background:#FFFFFF; border-right: 1px solid #E2E3E1;")
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(5, 6, 5, 6)
@@ -7023,7 +7023,7 @@ class RedMarkupPanel(QWidget):
         outer.addWidget(close_btn)
 
         sep1 = QFrame(); sep1.setFrameShape(QFrame.Shape.HLine)
-        sep1.setStyleSheet("background:#E8E8E8;max-height:1px;border:none;")
+        sep1.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
         outer.addWidget(sep1)
 
         self._tool_btns = {}
@@ -7053,7 +7053,7 @@ class RedMarkupPanel(QWidget):
             self._tool_btns[tool] = btn
 
         sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
-        sep2.setStyleSheet("background:#E8E8E8;max-height:1px;border:none;")
+        sep2.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
         outer.addWidget(sep2)
 
         self._color_strip = QLabel()
@@ -7063,7 +7063,7 @@ class RedMarkupPanel(QWidget):
         outer.addWidget(self._color_strip)
 
         sep3 = QFrame(); sep3.setFrameShape(QFrame.Shape.HLine)
-        sep3.setStyleSheet("background:#E8E8E8;max-height:1px;border:none;")
+        sep3.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
         outer.addWidget(sep3)
 
         self._all_vis_btn = QPushButton()
@@ -8506,7 +8506,7 @@ class StandardCausesPickerPopup(QDialog):
         "QPushButton { text-align:left; padding:2px 6px; border:1px solid #E2E3E1;"
         " border-radius:3px; background:#FAFAFA; font-size:10px; }"
         "QPushButton:hover { background:#F5F5F3; border-color:#CFD1CE; }"
-        "QPushButton:checked { background:#17191C; color:white; border-color:#17191C;"
+        "QPushButton:checked { background:#2F5FD0; color:white; border-color:#2F5FD0;"
         " font-weight:bold; }")
 
     def __init__(self, db, deviation_id: int, deviation_name: str = '',
@@ -8547,7 +8547,7 @@ class StandardCausesPickerPopup(QDialog):
 
         # ── Coloured header band ──────────────────────────────────────────────
         hdr_w = QWidget()
-        hdr_w.setStyleSheet("background:#17191C;")
+        hdr_w.setStyleSheet("background:#2F5FD0;")
         hdr_l = QVBoxLayout(hdr_w)
         hdr_l.setContentsMargins(12, 8, 12, 8)
         hdr_l.setSpacing(3)
@@ -8669,7 +8669,7 @@ class StandardCausesPickerPopup(QDialog):
             "QListWidget { border:none; }"
             "QListWidget::item { padding:6px 10px; border-bottom:1px solid #f3f4f6; }"
             "QListWidget::item:selected { background:#E6ECFA; color:#17191C;"
-            "  border-left:3px solid #17191C; font-weight:bold; }"
+            "  border-left:3px solid #2F5FD0; font-weight:bold; }"
             "QListWidget::item:hover:!selected { background:#F5F5F3; }")
         cause_fl.addWidget(self._cause_list)
         splitter.addWidget(cause_frame)
@@ -8698,10 +8698,10 @@ class StandardCausesPickerPopup(QDialog):
         self._ok_btn.setDefault(True)
         self._ok_btn.setMinimumHeight(CONFIG['H_BTN_OK'])
         self._ok_btn.setStyleSheet(
-            "QPushButton { background:#17191C; color:white; border:none;"
+            "QPushButton { background:#2F5FD0; color:white; border:none;"
             " border-radius:5px; padding:6px 20px; font-weight:bold; font-size:11px; }"
-            "QPushButton:hover { background:#2A2E34; }"
-            "QPushButton:pressed { background:#0B0C0E; }")
+            "QPushButton:hover { background:#3D6BD8; }"
+            "QPushButton:pressed { background:#254B9E; }")
         self._ok_btn.clicked.connect(self._pick_selected)
         cancel_btn = QPushButton("Avbryt")
         cancel_btn.setMinimumHeight(CONFIG['H_BTN_OK'])
@@ -8981,8 +8981,8 @@ class CauseObjectPopup(QDialog):
         _btn_style = ("QPushButton{font-size:10px; padding:2px 10px;"
                       "border:1px solid #E2E3E1; border-radius:3px; background:#FFFFFF;}"
                       "QPushButton:hover{background:#F5F5F3;}"
-                      "QPushButton:default{background:#17191C; color:white; border-color:#17191C;}"
-                      "QPushButton:default:hover{background:#2A2E34;}")
+                      "QPushButton:default{background:#2F5FD0; color:white; border-color:#2F5FD0;}"
+                      "QPushButton:default:hover{background:#3D6BD8;}")
 
         layout = QVBoxLayout(self)
         layout.setSpacing(4)
@@ -9382,9 +9382,9 @@ class RRFPopup(QDialog):
             btn = QPushButton(str(val))
             btn.setFixedWidth(62)
             btn.setStyleSheet(
-                "QPushButton{background:#17191C;color:white;border:none;"
+                "QPushButton{background:#2F5FD0;color:white;border:none;"
                 "border-radius:4px;padding:5px;font-weight:bold;}"
-                "QPushButton:hover{background:#2A2E34;}")
+                "QPushButton:hover{background:#3D6BD8;}")
             btn.clicked.connect(partial(self._pick, val))
             presets.addWidget(btn)
         layout.addLayout(presets)
@@ -9479,9 +9479,9 @@ class FrequencyPickerPopup(QDialog):
     @staticmethod
     def _bstyle(selected: bool) -> str:
         if selected:
-            return ("QPushButton{background:#17191C;color:white;border:none;"
+            return ("QPushButton{background:#2F5FD0;color:white;border:none;"
                     "border-radius:4px;padding:5px;font-weight:bold;font-size:10px;}"
-                    "QPushButton:hover{background:#2A2E34;}")
+                    "QPushButton:hover{background:#3D6BD8;}")
         return ("QPushButton{background:#F5F5F3;color:#17191C;border:1px solid #CFD1CE;"
                 "border-radius:4px;padding:5px;font-size:10px;}"
                 "QPushButton:hover{background:#E8E9E6;border:1px solid #B3B7B2;}")
@@ -9976,7 +9976,7 @@ class ConsequenceStepPickerDialog(QDialog):
         "QListWidget::item { padding:3px 5px; border-radius:3px; font-size:10px; }"
         "QListWidget::item:selected {"
         "  background:#E6ECFA; color:#17191C; font-weight:bold;"
-        "  border:1px solid #17191C; }"
+        "  border:1px solid #2F5FD0; }"
         "QListWidget::item:hover:!selected { background:#F5F5F3; }"
     )
 
@@ -10199,7 +10199,7 @@ class ConsequenceStepPickerDialog(QDialog):
             "Spara denna kedja och återgå till P&ID-läge\n"
             "för att omedelbart markera ytterligare ett objekt.")
         add_more_btn.setStyleSheet(
-            "background:#17191C; color:white; border:none;"
+            "background:#2F5FD0; color:white; border:none;"
             "border-radius:4px; padding:4px 10px;")
         add_more_btn.clicked.connect(self._save_and_add_more)
         btn_row.addWidget(add_more_btn)
@@ -10379,7 +10379,7 @@ class ConsequenceStepPickerDialog(QDialog):
         has_opts = bool(self._options[step_idx])
         if has_sel:
             style = ("font-weight:bold; color:white; font-size:10px;"
-                     "background:#17191C; border-radius:3px; padding:3px;")
+                     "background:#2F5FD0; border-radius:3px; padding:3px;")
         elif not has_opts:
             style = ("font-weight:bold; color:#8D9299; font-size:10px;"
                      "background:#F5F5F3; border-radius:3px; padding:3px;")
@@ -11010,7 +11010,7 @@ class _PidDelegate(_ScenarioDelegate):
                     tagged_refs, option.font, tc, word_wrap=False)
 
                 # RRF badge (right column)
-                badge_bg = QColor('#17191C') if sel else QColor('#F5F5F3')
+                badge_bg = QColor('#2F5FD0') if sel else QColor('#F5F5F3')
                 painter.fillRect(rrf_rect, badge_bg)
                 badge_tc = QColor('#ffffff') if sel else QColor('#17191C')
                 painter.setPen(badge_tc)
@@ -11263,7 +11263,7 @@ class _PidDelegate(_ScenarioDelegate):
                 # features instead of always reserving visual weight for
                 # them).
 
-                painter.setPen(QPen(QColor('#ddd'), 1))
+                painter.setPen(QPen(QColor('#E2E3E1'), 1))
                 painter.drawLine(cat_rect.right(), r.top(), cat_rect.right(), r.bottom())
 
                 # Description text — word-wrapped, drag-appended tags in
@@ -11383,9 +11383,9 @@ class SgRRFCategoryPopup(QDialog):
             btn = QPushButton(str(v))
             btn.setFixedWidth(52)
             btn.setStyleSheet(
-                "QPushButton{background:#17191C;color:white;border:none;"
+                "QPushButton{background:#2F5FD0;color:white;border:none;"
                 "border-radius:3px;padding:3px;font-weight:bold;font-size:9px;}"
-                "QPushButton:hover{background:#2A2E34;}")
+                "QPushButton:hover{background:#3D6BD8;}")
             btn.clicked.connect(lambda _, v=v: self._spin.setValue(v))
             presets.addWidget(btn)
         outer.addLayout(presets)
@@ -11400,7 +11400,7 @@ class SgRRFCategoryPopup(QDialog):
 
         if self._sev_cat_list:
             sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
-            sep.setStyleSheet("color:#ddd;"); outer.addWidget(sep)
+            sep.setStyleSheet("color:#E2E3E1;"); outer.addWidget(sep)
             lbl = QLabel("Gäller ej för kategori:")
             lbl.setStyleSheet("font-size:9px; color:#666;")
             outer.addWidget(lbl)
@@ -11413,7 +11413,7 @@ class SgRRFCategoryPopup(QDialog):
 
         if self._cause_list:
             sep3 = QFrame(); sep3.setFrameShape(QFrame.Shape.HLine)
-            sep3.setStyleSheet("color:#ddd;"); outer.addWidget(sep3)
+            sep3.setStyleSheet("color:#E2E3E1;"); outer.addWidget(sep3)
             lbl2 = QLabel("Gäller ej för orsak:")
             lbl2.setStyleSheet("font-size:9px; color:#666;")
             outer.addWidget(lbl2)
@@ -11427,15 +11427,15 @@ class SgRRFCategoryPopup(QDialog):
                 outer.addWidget(cb)
 
         sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
-        sep2.setStyleSheet("color:#ddd;"); outer.addWidget(sep2)
+        sep2.setStyleSheet("color:#E2E3E1;"); outer.addWidget(sep2)
 
         btn_row = QHBoxLayout()
         ok = QPushButton("OK")
         ok.setDefault(True)
         ok.setStyleSheet(
             "QPushButton{font-size:10px;padding:2px 12px;"
-            "background:#17191C;color:white;border-radius:3px;}"
-            "QPushButton:hover{background:#2A2E34;}")
+            "background:#2F5FD0;color:white;border-radius:3px;}"
+            "QPushButton:hover{background:#3D6BD8;}")
         ok.clicked.connect(self._ok)
         cancel = QPushButton("Avbryt")
         cancel.setStyleSheet("font-size:10px; padding:2px 8px;")
@@ -11507,15 +11507,15 @@ class CatSGSelectionPopup(QDialog):
             outer.addWidget(cb)
 
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color:#ddd;"); outer.addWidget(sep)
+        sep.setStyleSheet("color:#E2E3E1;"); outer.addWidget(sep)
 
         btn_row = QHBoxLayout()
         ok = QPushButton("OK")
         ok.setDefault(True)
         ok.setStyleSheet(
             "QPushButton{font-size:10px;padding:2px 12px;"
-            "background:#17191C;color:white;border-radius:3px;}"
-            "QPushButton:hover{background:#2A2E34;}")
+            "background:#2F5FD0;color:white;border-radius:3px;}"
+            "QPushButton:hover{background:#3D6BD8;}")
         ok.clicked.connect(self._ok)
         cancel = QPushButton("Avbryt")
         cancel.setStyleSheet("font-size:10px; padding:2px 8px;")
@@ -11593,7 +11593,7 @@ class ConsCategoryMatrixPopup(QDialog):
             outer.addLayout(row_l)
 
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color:#ddd;"); outer.addWidget(sep)
+        sep.setStyleSheet("color:#E2E3E1;"); outer.addWidget(sep)
 
         btn_row = QHBoxLayout()
         clr = QPushButton("Rensa alla")
@@ -11603,8 +11603,8 @@ class ConsCategoryMatrixPopup(QDialog):
         ok.setDefault(True)
         ok.setStyleSheet(
             "QPushButton{font-size:10px;padding:2px 12px;"
-            "background:#17191C;color:white;border-radius:3px;}"
-            "QPushButton:hover{background:#2A2E34;}")
+            "background:#2F5FD0;color:white;border-radius:3px;}"
+            "QPushButton:hover{background:#3D6BD8;}")
         ok.clicked.connect(self._ok)
         cancel = QPushButton("Avbryt")
         cancel.setStyleSheet("font-size:10px; padding:2px 8px;")
@@ -11616,10 +11616,10 @@ class ConsCategoryMatrixPopup(QDialog):
     @staticmethod
     def _bstyle(selected: bool) -> str:
         if selected:
-            return ("QPushButton{background:#17191C;color:white;"
-                    "border:2px solid #17191C;border-radius:3px;"
+            return ("QPushButton{background:#2F5FD0;color:white;"
+                    "border:2px solid #2F5FD0;border-radius:3px;"
                     "font-size:9px;font-weight:bold;}"
-                    "QPushButton:hover{background:#2A2E34;}")
+                    "QPushButton:hover{background:#3D6BD8;}")
         return ("QPushButton{background:#F5F5F3;color:#17191C;"
                 "border:1px solid #CFD1CE;border-radius:3px;font-size:9px;}"
                 "QPushButton:hover{background:#E8E9E6;border:1px solid #B3B7B2;}")
@@ -16774,7 +16774,7 @@ class SettingsPanel(QWidget):
 
         save_matrix_btn = QPushButton("💾 Spara riskmatris")
         save_matrix_btn.setStyleSheet(
-            "background:#17191C; color:#fff; font-weight:bold; padding:4px 12px;")
+            "background:#2F5FD0; color:#fff; font-weight:bold; padding:4px 12px;")
         save_matrix_btn.clicked.connect(self._save_matrix)
         ml.addWidget(save_matrix_btn)
 
@@ -18681,7 +18681,7 @@ class EquipmentPanel(QWidget):
         self._scan_btn = QPushButton("🔍 Skanna P&ID")
         self._scan_btn.setToolTip("Skannar inläst P&ID-fil efter utrustningstaggar")
         self._scan_btn.setStyleSheet(
-            "background:#17191C; color:white; border:none; border-radius:4px; padding:3px 10px;")
+            "background:#2F5FD0; color:white; border:none; border-radius:4px; padding:3px 10px;")
         self._scan_btn.clicked.connect(self._scan)
 
         add_btn = QPushButton("+ Lägg till")
@@ -19191,9 +19191,9 @@ class ReuseDeviationCausesDialog(QDialog):
             ref_dev_btn.setCheckable(True)
             ref_dev_btn.setToolTip(f"Skapar en referensorsak med texten: {ref_label}")
             ref_dev_btn.setStyleSheet(
-                "QPushButton{font-size:10px;padding:2px 8px;border:1px solid #17191C;"
-                "border-radius:3px;background:transparent;color:#17191C;font-style:italic;}"
-                "QPushButton:checked{background:#17191C;color:white;font-style:normal;}"
+                "QPushButton{font-size:10px;padding:2px 8px;border:1px solid #2F5FD0;"
+                "border-radius:3px;background:transparent;color:#2F5FD0;font-style:italic;}"
+                "QPushButton:checked{background:#2F5FD0;color:white;font-style:normal;}"
                 "QPushButton:hover:!checked{background:#F5F5F3;}")
             ref_dev_btn.toggled.connect(
                 self._make_ref_handler(dev_key, ref_label, None, None, dev_pos))
@@ -19246,9 +19246,9 @@ class ReuseDeviationCausesDialog(QDialog):
                 ref_btn.setCheckable(True)
                 ref_btn.setFixedWidth(72)
                 ref_btn.setStyleSheet(
-                    "QPushButton{font-size:10px;padding:2px 4px;border:1px solid #17191C;"
+                    "QPushButton{font-size:10px;padding:2px 4px;border:1px solid #2F5FD0;"
                     "border-radius:3px;}"
-                    "QPushButton:checked{background:#17191C;color:white;}"
+                    "QPushButton:checked{background:#2F5FD0;color:white;}"
                     "QPushButton:hover:!checked{background:#F5F5F3;}")
 
                 has_inv = inv_text != orig
@@ -21497,7 +21497,7 @@ if __name__ == '__main__':
     # paints via option.palette.highlight(), combo box popups, etc.) show
     # a different blue than the one used throughout the QSS below.
     _palette = app.palette()
-    _palette.setColor(QPalette.ColorRole.Highlight, QColor('#17191C'))
+    _palette.setColor(QPalette.ColorRole.Highlight, QColor('#2F5FD0'))
     _palette.setColor(QPalette.ColorRole.HighlightedText, QColor('#FFFFFF'))
     _palette.setColor(QPalette.ColorRole.Window, QColor('#FBFBFA'))
     _palette.setColor(QPalette.ColorRole.Base, QColor('#FFFFFF'))
