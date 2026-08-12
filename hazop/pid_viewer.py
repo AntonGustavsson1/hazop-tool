@@ -2882,6 +2882,7 @@ class PIDGraphicsView(QGraphicsView):
     safeguard_at_marker_requested   = pyqtSignal(int)   # sg_id
     placement_cancelled = pyqtSignal()   # Escape pressed while in a cause/consequence/safeguard placement mode
     equipment_drag_finished = pyqtSignal()  # Shift+drag of an equipment marker released (drop accepted or not)
+    equipment_edit_requested = pyqtSignal(int)  # equipment_markers.id — right-click "✏️ Redigera objekt"
 
     # Keys for QGraphicsItem.setData / .data
     _DATA_TYPE      = 0    # 'cause' | 'consequence' | 'safeguard' | 'markup'
@@ -4679,7 +4680,7 @@ class PIDGraphicsView(QGraphicsView):
         for item in self._scene.items(sp):
             t = item.data(self._DATA_TYPE)
             i = item.data(self._DATA_ID)
-            if t in ('cause', 'consequence', 'safeguard') and i is not None:
+            if t in ('cause', 'consequence', 'safeguard', 'equipment') and i is not None:
                 hovered_type, hovered_id = t, int(i)
                 break
         if hovered_type == 'cause':
@@ -4696,6 +4697,16 @@ class PIDGraphicsView(QGraphicsView):
             act = menu.addAction("🛡️ Lägg till ytterligare safeguard här")
             cid = hovered_id
             act.triggered.connect(partial(self.safeguard_at_marker_requested.emit, cid))
+            menu.addSeparator()
+        elif hovered_type == 'equipment':
+            # Reported feedback: right-click an existing object to edit its
+            # tag number and equipment type (2026-08-12, see NOTES.md) —
+            # right-clicking it previously fell through to the generic
+            # "add new object here" menu with no way to edit the one
+            # already under the cursor.
+            act = menu.addAction("✏️ Redigera objekt")
+            mid = hovered_id
+            act.triggered.connect(partial(self.equipment_edit_requested.emit, mid))
             menu.addSeparator()
 
         menu.addAction("⚙️ Orsak",
@@ -7108,6 +7119,7 @@ class PIDPanel(QWidget):
     # single point has no rectangle to give it).
     equipment_placement_requested = pyqtSignal(str, object, int, object)
     # (suggested_tag, scene_pos, page, pdf_rect_or_None)
+    equipment_edit_requested = pyqtSignal(int)   # equipment_markers.id — bubbled from viewer
     ref_tag_picked            = pyqtSignal(str)   # forwarded from viewer after MODE_PICK_REF_TAG
     annotation_placed         = pyqtSignal(int)   # annotation id (feature 8)
     # Node markup signals
@@ -7372,6 +7384,7 @@ class PIDPanel(QWidget):
         self.viewer.safeguard_at_marker_requested.connect(self._on_add_safeguard_at_marker)
         self.viewer.placement_cancelled.connect(self._on_placement_cancelled)
         self.viewer.equipment_drag_finished.connect(self._on_equipment_drag_finished)
+        self.viewer.equipment_edit_requested.connect(self.equipment_edit_requested.emit)
         self.viewer.ref_tag_picked.connect(self.ref_tag_picked)
         self.viewer.annotation_clicked.connect(self._on_annotation_click)
         self._active_place_type  = None   # 'cause' | 'consequence' | 'safeguard'

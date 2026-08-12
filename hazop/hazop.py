@@ -7741,6 +7741,31 @@ class TreePanel(QWidget):
         self.refresh(NODE_T, new_id)
         self.structure_changed.emit()
 
+    def _rename_node(self, node_id):
+        """Right-click "✏️ Döp om" on a node (2026-08-12, see NOTES.md —
+        reported feedback: "jag vill kunna döpa om noder genom att
+        högerklicka på trädet"). A node could already be renamed via
+        PropertiesRibbon's own "Namn"/"P&ID-ref" popup, but only after
+        first selecting it there — this adds the more direct path asked
+        for. Only the name changes; every other field round-trips through
+        update_node() unchanged, same as PropertiesRibbon's own rename."""
+        node = self.db.get_node(node_id)
+        if not node:
+            return
+        node_d = dict(node)
+        name, ok = QInputDialog.getText(self, "Döp om nod", "Nytt namn:",
+                                         text=node_d.get('name') or '')
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            return
+        self.db.update_node(node_id, name, node_d.get('description') or '',
+                             node_d.get('pid_ref') or '', node_d.get('media') or '',
+                             node_d.get('pressure') or '', node_d.get('temperature') or '')
+        self.refresh(NODE_T, node_id)
+        self.structure_changed.emit()
+
     def add_deviation(self):
         type_, id_ = self._current()
         node_id = self._resolve_node_id(type_, id_) if type_ else None
@@ -7849,6 +7874,7 @@ class TreePanel(QWidget):
         menu  = QMenu(self)
 
         if type_ == NODE_T:
+            menu.addAction("✏️ Döp om", lambda i=id_: self._rename_node(i))
             menu.addAction("+ Lägg till avvikelse", self.add_deviation)
             menu.addAction("✏️ Editera nodmarkup",
                            lambda i=id_: self.edit_node_markup_requested.emit(i))
@@ -9440,11 +9466,17 @@ class RiskMatrixPopup(QDialog):
                 btn = QPushButton(lbl[:4])
                 btn.setFixedSize(50, 32)
                 btn.setToolTip(f"F={freq_val}  C={cons_val}  →  {lbl}")
+                # Hover style is intentionally NOT a solid black border —
+                # that looked identical to the is_current marker above,
+                # so hovering a different cell than the actual current one
+                # looked like "two cells are marked" (reported feedback).
+                # Dashed blue is unmistakably "just hovering", never "this
+                # is the current value".
                 btn.setStyleSheet(
                     f"QPushButton{{background:{color}; color:{fg};"
                     f"font-size:8px; font-weight:bold;"
                     f"border:{border}; border-radius:0px; margin:0px;}}"
-                    f"QPushButton:hover{{border:2px solid #000;}}")
+                    f"QPushButton:hover{{border:2px dashed #2f6fed;}}")
                 btn.clicked.connect(
                     lambda _, fv=freq_val, cv=cons_val: self._pick(fv, cv))
                 grid.addWidget(btn, r + 1, c + 1)
@@ -11532,10 +11564,10 @@ class ScenarioTablePanel(QWidget):
         'Nod',
         'Utrustning',
         'Avvikelse',
-        'Orsak  →',
+        'Orsak',
         'Konsekvens',
         'Risk före barriär',
-        'Barriärer  →',
+        'Barriärer',
         'FA / Ant. / Övriga',
         'Slutkonsekvens',
     ]
@@ -11550,6 +11582,12 @@ class ScenarioTablePanel(QWidget):
         self._show_empty_deviations = False  # if True, deviations with zero causes get a placeholder row instead of being omitted
         self._force_dev_column_visible = False  # if True, Avvikelse column stays visible regardless of _all_nodes (set by always_show_deviation_column)
         self._row_meta = []   # list of (dev_id, cause_id, cons_id, sg_id) per visible row
+        # row index -> ('cause', dev_id) | ('consequence', cause_id) |
+        # ('safeguard', cons_id) for the "+" quick-add rows appended at
+        # the bottom of a group that already has content (2026-08-12, see
+        # NOTES.md). A group with zero content already invites Enter-to-add
+        # on its existing placeholder row instead (unchanged).
+        self._plus_rows = {}
         self._cons_id  = None  # if set, show only this consequence (set by load_consequence)
         self._enter_row = -1
         self._enter_col = -1
@@ -11577,11 +11615,12 @@ class ScenarioTablePanel(QWidget):
         self._hdr_lbl.setFont(f)
         hdr_row.addWidget(self._hdr_lbl)
         hdr_row.addStretch()
-        self._fill_chk = QCheckBox("Fyll skärm")
-        self._fill_chk.setChecked(True)
-        self._fill_chk.setToolTip("Sträck kolumnerna så tabellen fyller hela bredden")
-        self._fill_chk.toggled.connect(self._apply_fill_mode)
-        hdr_row.addWidget(self._fill_chk)
+        self._fill_btn = QPushButton("↔ Fyll bredd")
+        self._fill_btn.setToolTip(
+            "Fördela om Orsak/Konsekvens/Barriärer-kolumnerna så de fyller "
+            "hela bredden just nu — kolumnerna går alltid att dra i")
+        self._fill_btn.clicked.connect(self._fill_width_once)
+        hdr_row.addWidget(self._fill_btn)
         hdr_row.addSpacing(8)
         hdr_row.addWidget(QLabel("Textstorlek:"))
         self._fs_spin = QSpinBox()
@@ -11645,15 +11684,12 @@ class ScenarioTablePanel(QWidget):
         for col in (self._C_ORS, self._C_KON, self._C_SG):
             self._table.setItemDelegateForColumn(col, self._pid_delegate)
         self._table.viewport().installEventFilter(self)
-        self._apply_fill_mode(True)   # default: stretch to fill screen
 
-        # ── Persist "Fyll skärm" + manually-resized column widths
-        # (2026-08-10, see NOTES.md) — previously reset to the hardcoded
-        # defaults every time the app restarted.
-        if self.db.get_config('scenario_fill_mode', '1') != '1':
-            self._fill_chk.setChecked(False)   # triggers _apply_fill_mode(False) above
-        self._fill_chk.toggled.connect(
-            lambda checked: self.db.set_config('scenario_fill_mode', '1' if checked else '0'))
+        # ── Persist manually-resized column widths (2026-08-10, see
+        # NOTES.md) — previously reset to the hardcoded defaults every
+        # time the app restarted. Columns are always Interactive (see
+        # resize_modes above) so dragging works regardless of whether
+        # "↔ Fyll bredd" has ever been clicked.
         saved_widths = self.db.get_config('scenario_col_widths', '')
         if saved_widths:
             try:
@@ -11775,54 +11811,50 @@ class ScenarioTablePanel(QWidget):
         must become visible so rows remain identifiable.
 
         `self._force_dev_column_visible` (set via always_show_deviation_column())
-        keeps the Avvikelse AND Utrustning columns visible regardless of
-        `visible` — for hosts like HAZOPWorksheet where deviation/equipment
-        context should always be in the grid, not just in the sticky header
-        bar. UTR follows DEV's visibility rather than getting its own flag:
-        a node can have MULTIPLE equipment groups (unlike a single node,
-        which is constant for every row in single-node view), so "show
-        which deviation this row is" and "show which equipment it belongs
-        to" are the same kind of per-row context, not per-node context."""
+        keeps only the Avvikelse column visible regardless of `visible` —
+        for hosts like HAZOPWorksheet/the embedded P&ID scenario panel
+        where deviation context should always be in the grid, not just in
+        the sticky header bar. Utrustning does NOT follow that same force
+        (reported feedback: it duplicated the tag already shown at the top
+        of each Orsak cell) — it only appears in genuine "all nodes" mode,
+        where it still earns its keep by disambiguating the several
+        equipment groups a single interleaved view can span."""
         self._table.setColumnHidden(self._C_NOD, not visible)
         self._table.setColumnHidden(
             self._C_DEV, not (visible or self._force_dev_column_visible))
-        self._table.setColumnHidden(
-            self._C_UTR, not (visible or self._force_dev_column_visible))
+        self._table.setColumnHidden(self._C_UTR, not visible)
 
     def always_show_deviation_column(self):
-        """Keep the Avvikelse (and Utrustning) column visible at all times,
-        regardless of "Visa samtliga noder" / "Visa avvikelser utan orsaker"
-        state — opt-in for hosts (e.g. HAZOPWorksheet) that want deviation
-        context always shown in the grid itself."""
+        """Keep the Avvikelse column visible at all times, regardless of
+        "Visa samtliga noder" / "Visa avvikelser utan orsaker" state —
+        opt-in for hosts (e.g. HAZOPWorksheet, the embedded P&ID scenario
+        panel) that want deviation context always shown in the grid
+        itself. Utrustning is unaffected — see _set_all_nodes_columns_visible."""
         self._force_dev_column_visible = True
         self._set_all_nodes_columns_visible(self._all_nodes)
 
     # Columns that stretch to fill remaining space in fill mode
     _STRETCH_COLS = None  # set after class constants are known
 
-    def _apply_fill_mode(self, fill: bool = True):
-        """Toggle between stretch-to-fill and interactive column widths."""
-        h = self._table.horizontalHeader()
-        stretch_cols = {self._C_ORS, self._C_KON, self._C_SG}
-        fixed_widths = {
-            self._C_RFORE: 85,
-            self._C_LOPA:  130, self._C_SLUT: 85,
-        }
-        if fill:
-            for col in stretch_cols:
-                h.setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)
-            for col, w in fixed_widths.items():
-                h.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
-                self._table.setColumnWidth(col, w)
-            self._table.setHorizontalScrollBarPolicy(
-                Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        else:
-            for col in stretch_cols:
-                h.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
-            for col in fixed_widths:
-                h.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
-            self._table.setHorizontalScrollBarPolicy(
-                Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    def _fill_width_once(self):
+        """Redistribute ORS/KON/SG to fill the table's current width right
+        now. Previously "Fyll skärm" was a persistent checkbox that locked
+        those columns into Stretch mode (blocking manual dragging
+        entirely) and locked RFORE/LOPA/SLUT into Fixed — unchecking it
+        only changed the resize MODE, not any pixel width, so it looked
+        like it "had no effect" (reported feedback). Columns are now
+        always Interactive (see resize_modes in __init__), so dragging
+        works regardless of whether this button has ever been clicked;
+        this just gives it one immediate, visible effect instead of a
+        silent mode flip."""
+        stretch_cols = [self._C_ORS, self._C_KON, self._C_SG]
+        other_cols = [c for c in range(self._table.columnCount())
+                      if c not in stretch_cols and not self._table.isColumnHidden(c)]
+        used = sum(self._table.columnWidth(c) for c in other_cols)
+        available = max(0, self._table.viewport().width() - used)
+        per_col = max(60, available // len(stretch_cols))
+        for col in stretch_cols:
+            self._table.setColumnWidth(col, per_col)
 
     def _on_column_resized(self, col, old_size, new_size):
         """Persist manually-resized column widths (2026-08-10, see
@@ -11903,6 +11935,7 @@ class ScenarioTablePanel(QWidget):
                 logging.info('_rebuild: E — reset meta')
                 self._row_meta = []
                 self._row_cat_info = []
+                self._plus_rows = {}
 
                 # Build rows with signals blocked
                 self._build_rows()
@@ -12137,10 +12170,29 @@ class ScenarioTablePanel(QWidget):
                                   n_cats=n_cats)
                     logging.info('_build_rows: H3 — _add_row cons_id=%s row_i=%d done',
                                  cons_d.get('id'), i)
+                # "+ Ny barriär" — only when this consequence already has
+                # at least one real safeguard; an empty one already
+                # invites Enter-to-add on its own placeholder row above.
+                if n_sgs > 0:
+                    self._add_plus_row('safeguard', node_name, dev_d,
+                                        cause_d=cause_d, cons_d=cons_d)
             if self._table.rowCount() == first_row_for_cause:
                 logging.info('_build_rows: G3 — cause %s had no rows, adding empty row',
                              cause_d.get('id'))
                 self._add_empty_row(node_name, dev_d, cause_d, freq, freq_lbl)
+            elif all_cons:
+                # "+ Ny konsekvens" — only when this cause already has at
+                # least one real consequence (mirrors the safeguard rule
+                # above; the empty case is _add_empty_row, just above).
+                self._add_plus_row('consequence', node_name, dev_d, cause_d=cause_d)
+            # "+ Ny orsak" — once per deviation, after its LAST real cause
+            # (sentinel/empty-deviation entries never reach this point,
+            # they `continue` above, so this only fires for deviations
+            # that had at least one real cause).
+            _next_dev_id = (causes_to_show[_cause_idx + 1][1].get('id')
+                            if _cause_idx + 1 < len(causes_to_show) else None)
+            if dev_d.get('id') != _next_dev_id:
+                self._add_plus_row('cause', node_name, dev_d)
         logging.info('_build_rows: I0 — cause loop complete, rowCount=%d',
                      self._table.rowCount())
 
@@ -12458,6 +12510,75 @@ class ScenarioTablePanel(QWidget):
 
         pass  # row height set by resizeRowsToContents at end of _rebuild
 
+    def _add_plus_row(self, kind, node_name, dev_d, cause_d=None, cons_d=None):
+        """Appends one "+" row at the bottom of a group that already has
+        real content — a discoverable alternative to Enter-to-add
+        (2026-08-12, see NOTES.md — reported feedback: "jag skall också på
+        något praktiskt sätt kunna skapa en ny orsak..."). A group with
+        zero content already invites Enter-to-add on its existing
+        placeholder row (_add_placeholder_row/_add_empty_row, unchanged),
+        so this is only ever called when the group is non-empty.
+
+        Built from the exact same plain, no-special-UserRole-data cell
+        shape those placeholder rows already use for their "not yet
+        filled in" columns (proven safe against _PidDelegate.paint()'s
+        column-specific rendering — ORS unconditionally draws its pin/tag
+        strip and needs UserRole+2, KON/SG gate their special painting on
+        UserRole data this shape never sets, falling through to plain
+        text) — just with the target column's text swapped from blank to
+        a clickable "+ Ny …" label. Routed to the right
+        _add_*_via_plus_row() by _on_cell_clicked via self._plus_rows.
+        """
+        r = self._table.rowCount()
+        self._table.insertRow(r)
+        dev_id   = dev_d['id'] if dev_d else None
+        cause_id = cause_d['id'] if cause_d else None
+        cons_id  = cons_d['id'] if cons_d else None
+        self._row_meta.append((dev_id, cause_id, cons_id, None))
+        self._row_cat_info.append(None)
+
+        def _ro(text=''):
+            item = QTableWidgetItem(text)
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            return item
+
+        self._table.setItem(r, self._C_NOD, _ro(node_name))
+        eq_id, eq_label = self._equipment_for_dev(dev_d or {})
+        utr = _ro(eq_label)
+        utr.setData(Qt.ItemDataRole.UserRole, eq_id)
+        self._table.setItem(r, self._C_UTR, utr)
+        dev_item = _ro(dev_d['description'] if dev_d else '')
+        dev_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self._table.setItem(r, self._C_DEV, dev_item)
+
+        _PLUS_LABELS = {
+            'cause':       ("+ Ny orsak", self._C_ORS,
+                            "Klicka för att lägga till en ny orsak, valfritt kopplad till ett P&ID-objekt"),
+            'consequence': ("+ Ny konsekvens", self._C_KON,
+                            "Klicka för att lägga till en ny konsekvens, valfritt kopplad till ett P&ID-objekt"),
+            'safeguard':   ("+ Ny barriär", self._C_SG,
+                            "Klicka för att lägga till en ny barriär, valfritt kopplad till ett P&ID-objekt"),
+        }
+        text, target_col, tip = _PLUS_LABELS[kind]
+
+        if target_col == self._C_ORS:
+            ors = _ro(text)
+            ors.setData(Qt.ItemDataRole.UserRole + 2, ('', ''))
+            ors.setToolTip(tip)
+            self._table.setItem(r, self._C_ORS, ors)
+            for col in (self._C_KON, self._C_RFORE, self._C_SG, self._C_LOPA, self._C_SLUT):
+                self._table.setItem(r, col, _ro())
+        else:
+            self._table.setItem(r, self._C_ORS, _ro())
+            for col in (self._C_KON, self._C_RFORE, self._C_SG, self._C_LOPA, self._C_SLUT):
+                item = _ro(text) if col == target_col else _ro()
+                if col == target_col:
+                    item.setToolTip(tip)
+                self._table.setItem(r, col, item)
+
+        group_id = {'cause': dev_id, 'consequence': cause_id, 'safeguard': cons_id}[kind]
+        self._plus_rows[r] = (kind, group_id)
+
     def _add_row(self, node_name, dev_d, cause_d, freq, freq_lbl, cons_d, all_sgs, sg,
                  cat_info=None, excl_cat_names=None, excl_for_cat=None,
                  cause_excl_sgs=None, sev_cat_list=None, all_cat_infos=None,
@@ -12625,7 +12746,10 @@ class ScenarioTablePanel(QWidget):
                        ('risk_click', cause_d['id'], cid, freq, sev))
         rb.setBackground(QBrush(QColor(bg_b)))
         rb.setForeground(QBrush(QColor(fg_b)))
-        rb.setFont(QFont("Consolas", 9))
+        # One point smaller than the general cell font (reported: this
+        # cell's text got cut off at the default 85px column width) and
+        # scales with "Textstorlek" instead of being hardcoded at 9pt.
+        rb.setFont(QFont("Consolas", max(6, self._cell_font_size - 1)))
         self._table.setItem(r, self._C_RFORE, rb)
 
         # ── Col 5: Barriär ───────────────────────────────────────────────────
@@ -12848,6 +12972,11 @@ class ScenarioTablePanel(QWidget):
             for row, (_, cid_row, cid, sg_id) in enumerate(self._row_meta):
                 if cid != cons_id:
                     continue
+                if row in self._plus_rows:
+                    # "+ Ny barriär" under this same consequence shares
+                    # cons_id in row_meta but its SLUT cell is deliberately
+                    # blank — must not get a risk color/text written in.
+                    continue
                 cat_info = self._row_cat_info[row] if row < len(self._row_cat_info) else None
 
                 # Build sg_rrf for this row
@@ -12915,6 +13044,13 @@ class ScenarioTablePanel(QWidget):
         try:
             for row, meta in enumerate(self._row_meta):
                 if meta[field_idx] != id_:
+                    continue
+                if row in self._plus_rows:
+                    # A "+" quick-add row for a DEEPER group (e.g. "+ Ny
+                    # barriär" under this same consequence/cause) shares
+                    # the same id in row_meta but its ORS/KON cell is
+                    # deliberately blank — patching it would leave stray
+                    # description text where "+ Ny …" should stay.
                     continue
                 item = self._table.item(row, col)
                 if item is not None:
@@ -13092,6 +13228,17 @@ class ScenarioTablePanel(QWidget):
         menu.exec(self._table.viewport().mapToGlobal(pos))
 
     def _on_cell_clicked(self, row, col):
+        plus = self._plus_rows.get(row)
+        if plus is not None:
+            kind, group_id = plus
+            if group_id is not None:
+                if kind == 'cause':
+                    self._add_cause_via_plus_row(group_id)
+                elif kind == 'consequence':
+                    self._add_consequence_via_plus_row(group_id)
+                elif kind == 'safeguard':
+                    self._add_safeguard_via_plus_row(group_id)
+            return
         if col == self._C_ORS and row < len(self._row_meta):
             cause_id = self._row_meta[row][1]
             if cause_id is not None:
@@ -13189,13 +13336,12 @@ class ScenarioTablePanel(QWidget):
             return
         row = item.row()
         col = item.column()
-        # Double-click on KON opens step picker instead of inline text edit
-        if col == self._C_KON and row < len(self._row_meta):
-            cons_id = self._row_meta[row][2]
-            if cons_id is not None:
-                self._open_chain_editor(cons_id)
-            return
-        if col in (self._C_ORS, self._C_SG):
+        # Double-click starts inline edit — consistent across ORS/KON/SG
+        # (reported feedback: KON used to open the "Konsekvenskedja" wizard
+        # instead, which felt out of place and inconsistent with ORS/SG's
+        # plain edit-in-place). The chain wizard remains reachable via the
+        # right-click context menu (_open_chain_editor, unchanged there).
+        if col in (self._C_ORS, self._C_KON, self._C_SG):
             if not bool(item.flags() & Qt.ItemFlag.ItemIsEditable):
                 return
             self._table.setFocus()
@@ -13720,7 +13866,7 @@ class ScenarioTablePanel(QWidget):
         pos   = self._table.viewport().mapToGlobal(rect.bottomLeft())
         menu.exec(pos)
 
-    def _quick_add_cause(self, deviation_id):
+    def _quick_add_cause(self, deviation_id, equipment=None):
         dev = self.db.get_deviation(deviation_id)
         dev_desc = dev['description'] if dev else ''
         node_id = dev['node_id'] if dev else None
@@ -13732,6 +13878,9 @@ class ScenarioTablePanel(QWidget):
 
         def _on_picked(description, frequency):
             new_id, cons_id = _create_cause_from_pick(self.db, deviation_id, description, frequency)
+            if equipment:
+                self.db.update_cause(new_id, comp_tag=equipment.get('tag') or '',
+                                      comp_type=equipment.get('equipment_type') or '')
             # Jump straight to the new consequence's KON cell (not the cause's
             # own ORS cell) — the cause's description was already chosen in
             # the popup above, so typing the consequence is the next natural
@@ -13741,13 +13890,44 @@ class ScenarioTablePanel(QWidget):
         popup.cause_picked.connect(_on_picked)
         popup.exec()
 
-    def _quick_add_consequence(self, cause_id):
+    def _quick_add_consequence(self, cause_id, equipment=None):
         new_id = self.db.add_consequence(cause_id)
+        if equipment:
+            self.db.append_tag_to_consequence(
+                new_id, equipment.get('tag') or '', equipment.get('equipment_type') or '')
         self.new_item_created.emit(CONS_T, new_id)
 
-    def _quick_add_safeguard(self, cons_id):
+    def _quick_add_safeguard(self, cons_id, equipment=None):
         new_id = self.db.add_safeguard(cons_id)
+        if equipment:
+            self.db.append_tag_to_safeguard(
+                new_id, equipment.get('tag') or '', equipment.get('equipment_type') or '')
         self.new_item_created.emit(SG_T, new_id)
+
+    def _pick_object_for_new_row(self):
+        """Show ObjectPickerPopup; returns (proceed, equipment) — proceed
+        is False if the user cancelled the add entirely (Escape/closed),
+        True otherwise (equipment is a dict if one was picked, None if
+        explicitly skipped for free text)."""
+        popup = ObjectPickerPopup(self.db, self)
+        if popup.exec() != QDialog.DialogCode.Accepted:
+            return False, None
+        return True, popup.selected
+
+    def _add_cause_via_plus_row(self, deviation_id):
+        proceed, equipment = self._pick_object_for_new_row()
+        if proceed:
+            self._quick_add_cause(deviation_id, equipment=equipment)
+
+    def _add_consequence_via_plus_row(self, cause_id):
+        proceed, equipment = self._pick_object_for_new_row()
+        if proceed:
+            self._quick_add_consequence(cause_id, equipment=equipment)
+
+    def _add_safeguard_via_plus_row(self, cons_id):
+        proceed, equipment = self._pick_object_for_new_row()
+        if proceed:
+            self._quick_add_safeguard(cons_id, equipment=equipment)
 
     def select_item(self, type_, id_):
         """Move the current cell to the row for (type_, id_) and start inline
@@ -17821,6 +18001,107 @@ def _tag_prefix(tag: str) -> str:
 _EQ_TYPE_ITEMS = [''] + sorted(COMPONENT_TYPES.keys()) + ['Rörledning', 'Övrigt / Okänd']
 
 
+class ObjectPickerPopup(QDialog):
+    """Lets the user pick an already-registered P&ID object
+    (equipment_catalog row — everything found via manual add or
+    "🎯 Hitta objekt på P&ID", regardless of its green/red marker state)
+    to auto-tag a newly created cause/consequence/safeguard. Used by the
+    "+" quick-add rows (2026-08-12, see NOTES.md) as an alternative to
+    having to drag-and-drop a marker from the P&ID for every new row.
+
+    Three outcomes, distinguished by `.selected` after a call to exec():
+    - exec() != Accepted (Escape/closed): whole add was cancelled, caller
+      must not create a new row at all.
+    - exec() == Accepted and .selected is a dict: user picked that object.
+    - exec() == Accepted and .selected is None: user explicitly skipped
+      tagging — caller still creates the row, just untagged (free text),
+      same as clicking "+" always did before this feature existed.
+    """
+
+    def __init__(self, db, parent=None):
+        super().__init__(parent)
+        self._db = db
+        self.selected = None
+        self.setWindowTitle("Välj objekt")
+        self.setMinimumWidth(340)
+        self.setMinimumHeight(380)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(6)
+
+        hdr = QLabel(
+            "Välj ett registrerat P&ID-objekt att koppla till den nya "
+            "raden, eller hoppa över för fri text.")
+        hdr.setWordWrap(True)
+        hdr.setStyleSheet("font-size:10px; color:#8D9299;")
+        layout.addWidget(hdr)
+
+        self._search = QLineEdit()
+        self._search.setPlaceholderText("Sök tagg, typ eller beskrivning…")
+        self._search.textChanged.connect(self._apply_filter)
+        layout.addWidget(self._search)
+
+        self._list = QListWidget()
+        self._list.itemSelectionChanged.connect(self._update_pick_enabled)
+        self._list.itemDoubleClicked.connect(lambda _item: self._accept_selected())
+        layout.addWidget(self._list, 1)
+
+        btns = QHBoxLayout()
+        self._pick_btn = QPushButton("Välj objekt")
+        self._pick_btn.setDefault(True)
+        self._pick_btn.setEnabled(False)
+        self._pick_btn.clicked.connect(self._accept_selected)
+        skip_btn = QPushButton("Hoppa över (fri text)")
+        skip_btn.clicked.connect(self._accept_skip)
+        btns.addWidget(self._pick_btn)
+        btns.addStretch()
+        btns.addWidget(skip_btn)
+        layout.addLayout(btns)
+
+        # Populated after _pick_btn exists — _populate() enables/disables
+        # it based on the current selection.
+        self._items = [dict(r) for r in db.equipment_items()]
+        self._populate(self._items)
+
+        self._search.setFocus()
+
+    def _populate(self, items):
+        self._list.clear()
+        for row in items:
+            label = f"{row.get('tag') or '(ingen tagg)'}  —  {row.get('equipment_type') or '?'}"
+            if row.get('description'):
+                label += f"  —  {row['description']}"
+            it = QListWidgetItem(label)
+            it.setData(Qt.ItemDataRole.UserRole, row)
+            self._list.addItem(it)
+        self._update_pick_enabled()
+
+    def _update_pick_enabled(self):
+        self._pick_btn.setEnabled(self._list.currentItem() is not None)
+
+    def _apply_filter(self, text):
+        text = (text or '').strip().lower()
+        if not text:
+            self._populate(self._items)
+            return
+        filtered = [r for r in self._items
+                    if text in (r.get('tag') or '').lower()
+                    or text in (r.get('equipment_type') or '').lower()
+                    or text in (r.get('description') or '').lower()]
+        self._populate(filtered)
+
+    def _accept_selected(self):
+        it = self._list.currentItem()
+        if it is None:
+            return
+        self.selected = it.data(Qt.ItemDataRole.UserRole)
+        self.accept()
+
+    def _accept_skip(self):
+        self.selected = None
+        self.accept()
+
+
 class EquipmentTagPopup(QDialog):
     """Small popup for the P&ID right-click menu's "🔧 Objekt" action —
     pick an object type and optionally set/edit its tag, independent of
@@ -19378,6 +19659,7 @@ class MainWindow(QMainWindow):
         self.pid_panel.cause_template_created.connect(_on_cause_template_created)
         self.pid_panel.cause_placement_requested.connect(self._on_cause_placement_requested)
         self.pid_panel.equipment_placement_requested.connect(self._on_equipment_placement_requested)
+        self.pid_panel.equipment_edit_requested.connect(self._on_equipment_edit_requested)
         self.pid_panel.risk_scenario_requested.connect(self._on_pid_risk_scenario)
         self.pid_panel.marker_navigated.connect(self._on_marker_navigate)
         self.pid_panel.equipment_deviation_created.connect(self._on_equipment_deviation_created)
@@ -19832,6 +20114,33 @@ class MainWindow(QMainWindow):
 
         def _on_picked(tag, comp_type):
             self.pid_panel.place_equipment_marker(tag, comp_type, scene_pos, page, pdf_rect=pdf_rect)
+
+        popup.committed.connect(_on_picked)
+        popup.exec()
+
+    def _on_equipment_edit_requested(self, marker_id):
+        """Right-click "✏️ Redigera objekt" on an existing equipment marker
+        (2026-08-12, see NOTES.md — reported feedback: "jag vill kunna
+        högerklicka på ett objekt och kunna editera det, både tagnummer
+        och vad det är för typ av utrustning"). Same EquipmentTagPopup as
+        placing a brand new object, just pre-filled from and writing back
+        to the existing equipment_catalog row instead of creating a new
+        marker/placement."""
+        equip = self.db.get_equipment_by_marker_id(marker_id)
+        if not equip:
+            QMessageBox.information(self, "Inget objekt",
+                "Den här markören är inte kopplad till något registrerat objekt.")
+            return
+        popup = EquipmentTagPopup(self.db, suggested_tag=equip.get('tag') or '',
+                                  suggested_type=equip.get('equipment_type') or '',
+                                  parent=self)
+
+        def _on_picked(tag, comp_type):
+            tag = tag.strip().upper()
+            pfx = _tag_prefix(tag) if tag else (equip.get('prefix') or '')
+            self.db.update_equipment_item(
+                equip['id'], tag, pfx, comp_type, equip.get('description') or '')
+            self.pid_panel.reload_overlays()
 
         popup.committed.connect(_on_picked)
         popup.exec()
