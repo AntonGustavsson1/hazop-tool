@@ -26,6 +26,7 @@ from pid_viewer import (
     PageProgressDialog,
     FREQ_LABELS, freq_to_idx, idx_to_freq,
     _obj_type_matches,
+    _mk_pm, _mk_icon, _icon, _EMOJI_ICON,
 )
 
 from PyQt6.QtWidgets import (
@@ -5633,232 +5634,6 @@ class SafeguardPanel(QWidget):
 # ══════════════════════════════════════════════════════════════════════════════
 # NODE MARKUP — RIBBON + STYLE POPUP + TABLE PANEL
 # ══════════════════════════════════════════════════════════════════════════════
-
-# ── Ribbon icon renderer ──────────────────────────────────────────────────────
-
-_ICONS_DIR = Path(__file__).parent / 'icons'
-_SVG_ICON_CACHE: dict[str, str] = {}   # name -> raw SVG text (read once, recolored per call)
-# Old procedural-shape names that now have a hand-drawn SVG equivalent under
-# icons/ (2026-08-12) — arrow_up/arrow_down previously matched no branch in
-# _mk_pm() at all and silently rendered blank icons (NodeMarkupPanel's
-# prev/next nav buttons); chevron-up/down fixes that as a side effect.
-_SVG_ICON_ALIASES = {'arrow_up': 'chevron-up', 'arrow_down': 'chevron-down'}
-
-
-def _load_svg_icon_pixmap(name: str, sz: int, fg: QColor) -> QPixmap | None:
-    """Render icons/<name>.svg (one of the flat-line icons, originally
-    stroked #42474d) recolored to fg, or None if no such file exists so
-    _mk_pm() can fall back to its older procedural shapes."""
-    name = _SVG_ICON_ALIASES.get(name, name)
-    svg_str = _SVG_ICON_CACHE.get(name)
-    if svg_str is None:
-        path = _ICONS_DIR / f'{name}.svg'
-        if not path.exists():
-            return None
-        svg_str = path.read_text(encoding='utf-8')
-        _SVG_ICON_CACHE[name] = svg_str
-    svg_str = svg_str.replace('#42474d', fg.name())
-    from PyQt6.QtSvg import QSvgRenderer
-    from PyQt6.QtCore import QByteArray
-    renderer = QSvgRenderer(QByteArray(svg_str.encode('utf-8')))
-    pm = QPixmap(sz, sz)
-    pm.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    if renderer.isValid():
-        renderer.render(p)
-    p.end()
-    return pm
-
-
-def _mk_pm(name: str, sz: int, fg: QColor) -> QPixmap:
-    """Render one icon onto a transparent QPixmap. Prefers a hand-drawn SVG
-    from icons/ (2026-08-12) when one matches; falls back to the older
-    procedural QPainter shapes below for names with no SVG equivalent
-    (select/polygon/polyline/text/smart — P&ID markup drawing tools)."""
-    svg_pm = _load_svg_icon_pixmap(name, sz, fg)
-    if svg_pm is not None:
-        return svg_pm
-
-    pm = QPixmap(sz, sz)
-    pm.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-    m  = sz * 0.11                 # margin
-    S  = sz - 2 * m               # drawable area side
-    sw = max(1.6, sz * 0.078)     # stroke width
-    dr = max(2.0, sz * 0.075)     # vertex dot radius
-
-    def pt(fx, fy):
-        return QPointF(m + S * fx, m + S * fy)
-
-    pen = QPen(fg, sw, Qt.PenStyle.SolidLine,
-               Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
-    no_pen   = QPen(Qt.PenStyle.NoPen)
-    solid_br = QBrush(fg)
-    no_br    = QBrush(Qt.BrushStyle.NoBrush)
-
-    if name == 'close':
-        p.setPen(QPen(fg, sw * 1.5, Qt.PenStyle.SolidLine,
-                      Qt.PenCapStyle.RoundCap))
-        p.drawLine(pt(0.08, 0.08), pt(0.92, 0.92))
-        p.drawLine(pt(0.92, 0.08), pt(0.08, 0.92))
-
-    elif name == 'select':
-        # Classic cursor arrow: tip at top-left, shaft goes down-right
-        path = QPainterPath()
-        coords = [
-            (0.00, 0.00),   # tip
-            (0.00, 0.82),   # left edge base
-            (0.26, 0.60),   # inner notch left
-            (0.46, 1.00),   # shaft bottom right-inner
-            (0.60, 0.93),   # shaft bottom right-outer
-            (0.38, 0.54),   # inner notch right
-            (0.66, 0.54),   # arrowhead right shoulder
-        ]
-        first = pt(*coords[0])
-        path.moveTo(first)
-        for c in coords[1:]:
-            path.lineTo(pt(*c))
-        path.closeSubpath()
-        p.setPen(pen)
-        p.setBrush(solid_br)
-        p.drawPath(path)
-
-    elif name == 'polygon':
-        # Irregular quadrilateral that reads as "polygon" + vertex dots
-        verts = [pt(0.10, 0.10), pt(0.90, 0.18),
-                 pt(0.82, 0.90), pt(0.12, 0.78)]
-        poly = QPolygonF(verts)
-        p.setPen(pen)
-        p.setBrush(no_br)
-        p.drawPolygon(poly)
-        p.setPen(no_pen)
-        p.setBrush(solid_br)
-        for v in verts:
-            p.drawEllipse(v, dr, dr)
-
-    elif name == 'polyline':
-        # 4-point zigzag with vertex dots
-        verts = [pt(0.04, 0.75), pt(0.34, 0.15),
-                 pt(0.66, 0.68), pt(0.96, 0.10)]
-        p.setPen(pen)
-        for i in range(len(verts) - 1):
-            p.drawLine(verts[i], verts[i + 1])
-        p.setPen(no_pen)
-        p.setBrush(solid_br)
-        for v in verts:
-            p.drawEllipse(v, dr, dr)
-
-    elif name == 'text':
-        # Bold "T" — same family as a label/text tool
-        font = QFont("Arial", max(10, int(sz * 0.60)))
-        font.setBold(True)
-        p.setFont(font)
-        p.setPen(QPen(fg))
-        p.drawText(QRectF(0, 0, sz, sz),
-                   Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
-                   "T")
-
-    elif name == 'comment':
-        # Speech bubble: rounded rect body + filled triangle tail
-        bw, bh = S, S * 0.70
-        radius = S * 0.15
-        p.setPen(pen)
-        p.setBrush(no_br)
-        p.drawRoundedRect(QRectF(m, m, bw, bh), radius, radius)
-        # Tail
-        tail = QPolygonF([
-            pt(0.16, 0.68),
-            pt(0.36, 0.68),
-            pt(0.18, 1.00),
-        ])
-        p.setPen(no_pen)
-        p.setBrush(solid_br)
-        p.drawPolygon(tail)
-        # Two horizontal text-lines inside the bubble
-        lpen = QPen(fg, sw * 0.75, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
-        p.setPen(lpen)
-        p.drawLine(pt(0.22, 0.28), pt(0.82, 0.28))
-        p.drawLine(pt(0.22, 0.50), pt(0.70, 0.50))
-
-    elif name == 'eye':
-        # Almond outline + solid pupil
-        cy_f = 0.50
-        path = QPainterPath()
-        path.moveTo(pt(0.02, cy_f))
-        path.cubicTo(pt(0.25, cy_f - 0.32), pt(0.75, cy_f - 0.32), pt(0.98, cy_f))
-        path.cubicTo(pt(0.75, cy_f + 0.32), pt(0.25, cy_f + 0.32), pt(0.02, cy_f))
-        p.setPen(pen)
-        p.setBrush(no_br)
-        p.drawPath(path)
-        pr = S * 0.14
-        p.setPen(no_pen)
-        p.setBrush(solid_br)
-        p.drawEllipse(pt(0.50, cy_f), pr, pr)
-
-    elif name == 'smart':
-        # Pipe-route icon: horizontal entry, 90° bend, vertical exit, with endpoint dots
-        p.setPen(pen)
-        p.setBrush(no_br)
-        # Horizontal segment bottom-left
-        p.drawLine(pt(0.05, 0.75), pt(0.45, 0.75))
-        # Bend corner
-        p.drawLine(pt(0.45, 0.75), pt(0.45, 0.25))
-        # Horizontal segment top-right
-        p.drawLine(pt(0.45, 0.25), pt(0.92, 0.25))
-        # Start dot (filled circle at left)
-        p.setPen(no_pen)
-        p.setBrush(solid_br)
-        p.drawEllipse(pt(0.05, 0.75), dr, dr)
-        # End dot (filled circle at right)
-        p.drawEllipse(pt(0.92, 0.25), dr, dr)
-        # Small waypoint at corner
-        small_r = dr * 0.65
-        p.drawEllipse(pt(0.45, 0.75), small_r, small_r)
-        p.drawEllipse(pt(0.45, 0.25), small_r, small_r)
-
-    p.end()
-    return pm
-
-
-def _mk_icon(name: str, sz: int = 28) -> QIcon:
-    """Return a QIcon with dark pixmap for normal state, white for checked state."""
-    icon = QIcon()
-    icon.addPixmap(_mk_pm(name, sz, QColor("#2c2c2c")),
-                   QIcon.Mode.Normal, QIcon.State.Off)
-    icon.addPixmap(_mk_pm(name, sz, QColor("#ffffff")),
-                   QIcon.Mode.Normal, QIcon.State.On)
-    return icon
-
-
-# Emoji -> icons/<name>.svg mapping, shared by every button/menu-action
-# construction site being migrated off raw Unicode glyphs (2026-08-12, see
-# NOTES.md). Only emoji with an unambiguous, high-confidence icon match are
-# listed — anything not here (status dots, one-off glyphs) intentionally
-# keeps rendering as plain emoji text.
-_EMOJI_ICON = {
-    '📋': 'clipboard', '🗑': 'delete', '📍': 'pin',
-    '⚙': 'settings', '🔧': 'settings',
-    '✏': 'edit', '✎': 'edit', '📝': 'edit',
-    '💬': 'comment', '🔍': 'search', '🔎': 'search',
-    '👁': 'eye', '🎯': 'target', '🛡': 'shield', '⚠': 'warning',
-    '✓': 'check', '✅': 'check', '✕': 'close', '✖': 'close', '❌': 'close',
-    '💾': 'save', '🔗': 'link', '🔄': 'refresh',
-    '📤': 'export', '📂': 'import', '📄': 'document', '🏭': 'factory',
-}
-
-
-def _icon(name: str, sz: int = 16, color: str = '#17191C') -> QIcon:
-    """Single-state QIcon from icons/<name>.svg (or an _mk_pm() procedural
-    shape) for ordinary QPushButton/QAction/QToolButton icons — as opposed
-    to _mk_icon()'s two-state dark/white pair for the checkable P&ID markup
-    ribbon tool buttons. Default color matches the app's own body-text
-    color (#17191C) so the icon reads consistently against the QSS theme's
-    button/menu backgrounds (2026-08-12, see NOTES.md)."""
-    return QIcon(_mk_pm(name, sz, QColor(color)))
-
 
 # ── Style popup ───────────────────────────────────────────────────────────────
 
@@ -11900,7 +11675,8 @@ class ScenarioTablePanel(QWidget):
         self._hdr_lbl.setFont(f)
         hdr_row.addWidget(self._hdr_lbl)
         hdr_row.addStretch()
-        self._fill_btn = QPushButton("↔ Fyll bredd")
+        self._fill_btn = QPushButton("Fyll bredd")
+        self._fill_btn.setIcon(_icon('resize-horizontal'))
         self._fill_btn.setToolTip(
             "Fördela om Orsak/Konsekvens/Barriärer-kolumnerna så de fyller "
             "hela bredden just nu — kolumnerna går alltid att dra i")
@@ -17133,7 +16909,7 @@ class SettingsPanel(QWidget):
 
         # ── Tab: Smart igenkänning ────────────────────────────────────────────
         self._tag_memory_panel = TagMemoryPanel(self.db)
-        tabs.addTab(self._tag_memory_panel, "🧠 Smart igenkänning")
+        tabs.addTab(self._tag_memory_panel, _icon('brain'), "Smart igenkänning")
         tabs.currentChanged.connect(
             lambda i: self._tag_memory_panel.refresh()
             if tabs.widget(i) is self._tag_memory_panel else None)
@@ -19609,17 +19385,17 @@ class MainWindow(QMainWindow):
         file_menu.addAction(_icon('close'), "Avsluta",            self.close)
 
         export_menu = mb.addMenu("Export")
-        export_menu.addAction("📊 Excel",           self._export_excel)
+        export_menu.addAction(_icon('chart'), "Excel",           self._export_excel)
         export_menu.addAction(_icon('document'), "PDF",             self._export_pdf)
         export_menu.addAction(_icon('clipboard'), "Åtgärder",        self._export_actions_pdf)
 
         analysis_menu = mb.addMenu("Analys")
-        analysis_menu.addAction("🔀 Risk Scenario", self._open_risk_scenario_wizard)
-        analysis_menu.addAction("📈 Statistik",     self._show_statistics)
+        analysis_menu.addAction(_icon('shuffle'), "Risk Scenario", self._open_risk_scenario_wizard)
+        analysis_menu.addAction(_icon('trend-chart'), "Statistik",     self._show_statistics)
         analysis_menu.addAction(_icon('check'), "Godkänn",       self._approve_node)
 
         settings_menu = mb.addMenu("Inställningar")
-        settings_menu.addAction("🌙 Mörkt läge",    self._toggle_dark_mode)
+        settings_menu.addAction(_icon('moon'), "Mörkt läge",    self._toggle_dark_mode)
 
         self._update_title()
 
@@ -19650,11 +19426,23 @@ class MainWindow(QMainWindow):
         toggle_lay.setContentsMargins(6, 12, 6, 12)
         toggle_lay.setSpacing(8)
 
-        self.btn_pid       = QPushButton("🗺")
-        self.btn_sheet     = QPushButton("📋")
-        self.btn_equip     = QPushButton("🔩")
-        self.btn_admin     = QPushButton("⚙")
-        self.btn_settings  = QPushButton("🔧")
+        def _rail_icon(name):
+            # Inverted two-state icon for the dark nav rail (2026-08-12,
+            # see NOTES.md) — white on the dark unchecked background,
+            # near-black on the white checked background. The opposite
+            # color pairing from _mk_icon()'s own dark/white convention
+            # (built for light-background toolbars), so built inline here
+            # rather than reusing it.
+            ic = QIcon()
+            ic.addPixmap(_mk_pm(name, 18, QColor('#ffffff')), QIcon.Mode.Normal, QIcon.State.Off)
+            ic.addPixmap(_mk_pm(name, 18, QColor('#17191C')), QIcon.Mode.Normal, QIcon.State.On)
+            return ic
+
+        self.btn_pid       = QPushButton()
+        self.btn_sheet     = QPushButton()
+        self.btn_equip     = QPushButton()
+        self.btn_admin     = QPushButton()
+        self.btn_settings  = QPushButton()
 
         _nav_labels = {
             self.btn_pid:      "P&ID-vy",
@@ -19663,12 +19451,21 @@ class MainWindow(QMainWindow):
             self.btn_admin:    "Studiehantering",
             self.btn_settings: "Inställningar",
         }
+        _nav_icons = {
+            self.btn_pid:      'map',
+            self.btn_sheet:    'clipboard',
+            self.btn_equip:    'bolt-nut',
+            self.btn_admin:    'document',
+            self.btn_settings: 'settings',
+        }
 
         for btn in (self.btn_pid, self.btn_sheet, self.btn_equip,
                     self.btn_admin, self.btn_settings):
             btn.setCheckable(True)
             btn.setFixedSize(40, 40)
             btn.setToolTip(_nav_labels[btn])
+            btn.setIcon(_rail_icon(_nav_icons[btn]))
+            btn.setIconSize(QSize(18, 18))
             btn.setStyleSheet(
                 "QPushButton{color:#fff;background:#2A2E34;border:none;"
                 "border-radius:6px;font-size:16px;}"

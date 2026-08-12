@@ -9377,9 +9377,14 @@ class ObjektInRubberBandMenuTests(unittest.TestCase):
 
         with unittest.mock.patch.object(QMenu, 'exec', new=_fake_exec):
             self.panel._on_zone_drawn(QRectF(0, 0, 10, 10), 0)
+        # 2026-08-12: Orsak/Konsekvens/Safeguard now carry a real icon
+        # (settings/warning/shield) instead of an emoji text prefix — see
+        # NOTES.md. Objekt deliberately keeps its emoji (🔧), since giving
+        # it the same 'settings' icon as Orsak would show two identical
+        # icons side by side in this same menu.
         self.assertEqual(texts[0], "🔧 Objekt")
         self.assertEqual(set(texts),
-                         {"🔧 Objekt", "⚙️ Orsak", "⚠️ Konsekvens", "🛡️ Safeguard"})
+                         {"🔧 Objekt", "Orsak", "Konsekvens", "Safeguard"})
 
     def test_choosing_objekt_emits_placement_signal_with_the_drawn_rect(self):
         from PyQt6.QtCore import QRectF

@@ -62,7 +62,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QThread, QPoint, QTimer, QMimeData
 from PyQt6.QtGui import (
     QColor, QPen, QBrush, QPainterPath, QPolygonF, QPixmap, QImage, QFont,
-    QPainter, QPicture, QCursor, QShortcut, QKeySequence, QDrag,
+    QPainter, QPicture, QCursor, QShortcut, QKeySequence, QDrag, QIcon,
 )
 
 # Optional OpenGL for GPU-accelerated rendering
@@ -123,6 +123,248 @@ CONFIG = {
     'H_ROW_STD': 34,                  # Standard row (scenario banner)
     'H_SMALL_BTN': 20,                # Small banner button
 }
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ICON RENDERER — shared with hazop.py (moved here 2026-08-12, see NOTES.md)
+# ══════════════════════════════════════════════════════════════════════════════
+# Originally lived in hazop.py, but hazop.py imports FROM pid_viewer.py (not
+# the reverse) — pid_viewer.py's own emoji (equipment-marker popups, gesture
+# tooltips, etc.) had no way to reach it without a circular import. Moved
+# here since this code has no Database/MainWindow dependency, only Qt +
+# stdlib; hazop.py re-imports _mk_pm/_mk_icon/_icon/_EMOJI_ICON from here so
+# every existing call site in hazop.py keeps working unchanged.
+
+_ICONS_DIR = Path(__file__).parent / 'icons'
+_SVG_ICON_CACHE: dict[str, str] = {}   # name -> raw SVG text (read once, recolored per call)
+# Old procedural-shape names that now have a hand-drawn SVG equivalent under
+# icons/ (2026-08-12) — arrow_up/arrow_down previously matched no branch in
+# _mk_pm() at all and silently rendered blank icons (NodeMarkupPanel's
+# prev/next nav buttons); chevron-up/down fixes that as a side effect.
+_SVG_ICON_ALIASES = {'arrow_up': 'chevron-up', 'arrow_down': 'chevron-down'}
+
+
+def _load_svg_icon_pixmap(name: str, sz: int, fg: QColor) -> QPixmap | None:
+    """Render icons/<name>.svg (one of the flat-line icons, originally
+    stroked #42474d) recolored to fg, or None if no such file exists so
+    _mk_pm() can fall back to its older procedural shapes."""
+    name = _SVG_ICON_ALIASES.get(name, name)
+    svg_str = _SVG_ICON_CACHE.get(name)
+    if svg_str is None:
+        path = _ICONS_DIR / f'{name}.svg'
+        if not path.exists():
+            return None
+        svg_str = path.read_text(encoding='utf-8')
+        _SVG_ICON_CACHE[name] = svg_str
+    svg_str = svg_str.replace('#42474d', fg.name())
+    from PyQt6.QtSvg import QSvgRenderer
+    from PyQt6.QtCore import QByteArray
+    renderer = QSvgRenderer(QByteArray(svg_str.encode('utf-8')))
+    pm = QPixmap(sz, sz)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    if renderer.isValid():
+        renderer.render(p)
+    p.end()
+    return pm
+
+
+def _mk_pm(name: str, sz: int, fg: QColor) -> QPixmap:
+    """Render one icon onto a transparent QPixmap. Prefers a hand-drawn SVG
+    from icons/ (2026-08-12) when one matches; falls back to the older
+    procedural QPainter shapes below for names with no SVG equivalent
+    (select/polygon/polyline/text/smart — P&ID markup drawing tools)."""
+    svg_pm = _load_svg_icon_pixmap(name, sz, fg)
+    if svg_pm is not None:
+        return svg_pm
+
+    pm = QPixmap(sz, sz)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    m  = sz * 0.11                 # margin
+    S  = sz - 2 * m               # drawable area side
+    sw = max(1.6, sz * 0.078)     # stroke width
+    dr = max(2.0, sz * 0.075)     # vertex dot radius
+
+    def pt(fx, fy):
+        return QPointF(m + S * fx, m + S * fy)
+
+    pen = QPen(fg, sw, Qt.PenStyle.SolidLine,
+               Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+    no_pen   = QPen(Qt.PenStyle.NoPen)
+    solid_br = QBrush(fg)
+    no_br    = QBrush(Qt.BrushStyle.NoBrush)
+
+    if name == 'close':
+        p.setPen(QPen(fg, sw * 1.5, Qt.PenStyle.SolidLine,
+                      Qt.PenCapStyle.RoundCap))
+        p.drawLine(pt(0.08, 0.08), pt(0.92, 0.92))
+        p.drawLine(pt(0.92, 0.08), pt(0.08, 0.92))
+
+    elif name == 'select':
+        # Classic cursor arrow: tip at top-left, shaft goes down-right
+        path = QPainterPath()
+        coords = [
+            (0.00, 0.00),   # tip
+            (0.00, 0.82),   # left edge base
+            (0.26, 0.60),   # inner notch left
+            (0.46, 1.00),   # shaft bottom right-inner
+            (0.60, 0.93),   # shaft bottom right-outer
+            (0.38, 0.54),   # inner notch right
+            (0.66, 0.54),   # arrowhead right shoulder
+        ]
+        first = pt(*coords[0])
+        path.moveTo(first)
+        for c in coords[1:]:
+            path.lineTo(pt(*c))
+        path.closeSubpath()
+        p.setPen(pen)
+        p.setBrush(solid_br)
+        p.drawPath(path)
+
+    elif name == 'polygon':
+        # Irregular quadrilateral that reads as "polygon" + vertex dots
+        verts = [pt(0.10, 0.10), pt(0.90, 0.18),
+                 pt(0.82, 0.90), pt(0.12, 0.78)]
+        poly = QPolygonF(verts)
+        p.setPen(pen)
+        p.setBrush(no_br)
+        p.drawPolygon(poly)
+        p.setPen(no_pen)
+        p.setBrush(solid_br)
+        for v in verts:
+            p.drawEllipse(v, dr, dr)
+
+    elif name == 'polyline':
+        # 4-point zigzag with vertex dots
+        verts = [pt(0.04, 0.75), pt(0.34, 0.15),
+                 pt(0.66, 0.68), pt(0.96, 0.10)]
+        p.setPen(pen)
+        for i in range(len(verts) - 1):
+            p.drawLine(verts[i], verts[i + 1])
+        p.setPen(no_pen)
+        p.setBrush(solid_br)
+        for v in verts:
+            p.drawEllipse(v, dr, dr)
+
+    elif name == 'text':
+        # Bold "T" — same family as a label/text tool
+        font = QFont("Arial", max(10, int(sz * 0.60)))
+        font.setBold(True)
+        p.setFont(font)
+        p.setPen(QPen(fg))
+        p.drawText(QRectF(0, 0, sz, sz),
+                   Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+                   "T")
+
+    elif name == 'comment':
+        # Speech bubble: rounded rect body + filled triangle tail
+        bw, bh = S, S * 0.70
+        radius = S * 0.15
+        p.setPen(pen)
+        p.setBrush(no_br)
+        p.drawRoundedRect(QRectF(m, m, bw, bh), radius, radius)
+        # Tail
+        tail = QPolygonF([
+            pt(0.16, 0.68),
+            pt(0.36, 0.68),
+            pt(0.18, 1.00),
+        ])
+        p.setPen(no_pen)
+        p.setBrush(solid_br)
+        p.drawPolygon(tail)
+        # Two horizontal text-lines inside the bubble
+        lpen = QPen(fg, sw * 0.75, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        p.setPen(lpen)
+        p.drawLine(pt(0.22, 0.28), pt(0.82, 0.28))
+        p.drawLine(pt(0.22, 0.50), pt(0.70, 0.50))
+
+    elif name == 'eye':
+        # Almond outline + solid pupil
+        cy_f = 0.50
+        path = QPainterPath()
+        path.moveTo(pt(0.02, cy_f))
+        path.cubicTo(pt(0.25, cy_f - 0.32), pt(0.75, cy_f - 0.32), pt(0.98, cy_f))
+        path.cubicTo(pt(0.75, cy_f + 0.32), pt(0.25, cy_f + 0.32), pt(0.02, cy_f))
+        p.setPen(pen)
+        p.setBrush(no_br)
+        p.drawPath(path)
+        pr = S * 0.14
+        p.setPen(no_pen)
+        p.setBrush(solid_br)
+        p.drawEllipse(pt(0.50, cy_f), pr, pr)
+
+    elif name == 'smart':
+        # Pipe-route icon: horizontal entry, 90° bend, vertical exit, with endpoint dots
+        p.setPen(pen)
+        p.setBrush(no_br)
+        # Horizontal segment bottom-left
+        p.drawLine(pt(0.05, 0.75), pt(0.45, 0.75))
+        # Bend corner
+        p.drawLine(pt(0.45, 0.75), pt(0.45, 0.25))
+        # Horizontal segment top-right
+        p.drawLine(pt(0.45, 0.25), pt(0.92, 0.25))
+        # Start dot (filled circle at left)
+        p.setPen(no_pen)
+        p.setBrush(solid_br)
+        p.drawEllipse(pt(0.05, 0.75), dr, dr)
+        # End dot (filled circle at right)
+        p.drawEllipse(pt(0.92, 0.25), dr, dr)
+        # Small waypoint at corner
+        small_r = dr * 0.65
+        p.drawEllipse(pt(0.45, 0.75), small_r, small_r)
+        p.drawEllipse(pt(0.45, 0.25), small_r, small_r)
+
+    p.end()
+    return pm
+
+
+def _mk_icon(name: str, sz: int = 28) -> QIcon:
+    """Return a QIcon with dark pixmap for normal state, white for checked state."""
+    icon = QIcon()
+    icon.addPixmap(_mk_pm(name, sz, QColor("#2c2c2c")),
+                   QIcon.Mode.Normal, QIcon.State.Off)
+    icon.addPixmap(_mk_pm(name, sz, QColor("#ffffff")),
+                   QIcon.Mode.Normal, QIcon.State.On)
+    return icon
+
+
+# Emoji -> icons/<name>.svg mapping, shared by every button/menu-action
+# construction site being migrated off raw Unicode glyphs (2026-08-12, see
+# NOTES.md). Only emoji with an unambiguous, high-confidence icon match are
+# listed — anything not here (status dots, one-off glyphs) intentionally
+# keeps rendering as plain emoji text.
+_EMOJI_ICON = {
+    '📋': 'clipboard', '🗑': 'delete', '📍': 'pin',
+    '⚙': 'settings', '🔧': 'settings',
+    '✏': 'edit', '✎': 'edit', '📝': 'edit',
+    '💬': 'comment', '🔍': 'search', '🔎': 'search',
+    '👁': 'eye', '🎯': 'target', '🛡': 'shield', '⚠': 'warning',
+    '✓': 'check', '✅': 'check', '✕': 'close', '✖': 'close', '❌': 'close',
+    '💾': 'save', '🔗': 'link', '🔄': 'refresh',
+    '📤': 'export', '📂': 'import', '📄': 'document', '🏭': 'factory',
+    '➕': 'add',
+    # Second batch (2026-08-12, designed against icon_requests/README.md)
+    '📊': 'chart', '↔': 'resize-horizontal', '📐': 'resize-rotate',
+    '🖱': 'cursor', '↕': 'resize-vertical', '⚡': 'lightning',
+    '🔬': 'microscope', '🔀': 'shuffle', '✨': 'sparkle',
+    '🏷': 'tag', '⚗': 'flask', '🧠': 'brain', '📈': 'trend-chart',
+    '🌙': 'moon', '🗺': 'map', '🔩': 'bolt-nut', '🦋': 'valve-shape',
+    '✂': 'unlink', '↩': 'undo',
+}
+
+
+def _icon(name: str, sz: int = 16, color: str = '#17191C') -> QIcon:
+    """Single-state QIcon from icons/<name>.svg (or an _mk_pm() procedural
+    shape) for ordinary QPushButton/QAction/QToolButton icons — as opposed
+    to _mk_icon()'s two-state dark/white pair for the checkable P&ID markup
+    ribbon tool buttons. Default color matches the app's own body-text
+    color (#17191C) so the icon reads consistently against the QSS theme's
+    button/menu backgrounds (2026-08-12, see NOTES.md)."""
+    return QIcon(_mk_pm(name, sz, QColor(color)))
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # OCR AUTO-INSTALLER
@@ -653,7 +895,8 @@ class EquipmentMarkerReviewDialog(QDialog):
         outer.addWidget(self._rejected_tbl)
 
         btn_row = QHBoxLayout()
-        save_btn = QPushButton("💾 Spara markörer")
+        save_btn = QPushButton("Spara markörer")
+        save_btn.setIcon(_icon('save'))
         save_btn.setDefault(True)
         save_btn.clicked.connect(self._save)
         cancel_btn = QPushButton("Avbryt")
@@ -778,7 +1021,8 @@ class TargetPickerDialog(QDialog):
 
         # Link to existing button (when db is available)
         if db is not None:
-            link_btn = QPushButton("🔗 Länka till befintlig konsekvens")
+            link_btn = QPushButton("Länka till befintlig konsekvens")
+            link_btn.setIcon(_icon('link'))
             link_btn.setStyleSheet(
                 "background:#2c7bb6; color:white; border:none; border-radius:4px; padding:4px 10px;")
             link_btn.clicked.connect(self._pick_existing)
@@ -925,7 +1169,8 @@ class ExistingConsequencePicker(QDialog):
         layout.addWidget(self._table)
 
         btns = QHBoxLayout()
-        ok_btn = QPushButton("🔗 Länka till markerad")
+        ok_btn = QPushButton("Länka till markerad")
+        ok_btn.setIcon(_icon('link'))
         ok_btn.clicked.connect(self._accept)
         cancel_btn = QPushButton("Avbryt")
         cancel_btn.clicked.connect(self.reject)
@@ -1008,7 +1253,8 @@ class ExistingSafeguardPicker(QDialog):
         layout.addWidget(self._table)
 
         btns = QHBoxLayout()
-        ok_btn = QPushButton("🔗 Länka till markerad")
+        ok_btn = QPushButton("Länka till markerad")
+        ok_btn.setIcon(_icon('link'))
         ok_btn.clicked.connect(self._accept)
         cancel_btn = QPushButton("Avbryt")
         cancel_btn.clicked.connect(self.reject)
@@ -1077,7 +1323,8 @@ class SafeguardPickerDialog(QDialog):
 
         # Link to existing button (shown when db is available)
         if db is not None:
-            link_btn = QPushButton("🔗 Länka till befintlig safeguard")
+            link_btn = QPushButton("Länka till befintlig safeguard")
+            link_btn.setIcon(_icon('link'))
             link_btn.setStyleSheet(
                 "background:#2c7bb6; color:white; border:none; border-radius:4px; padding:4px 10px;")
             link_btn.clicked.connect(self._pick_existing)
@@ -1135,7 +1382,8 @@ class SafeguardPickerDialog(QDialog):
         # Buttons: OK | + Lägg till ytterligare | Avbryt
         btn_row = QHBoxLayout()
 
-        ok_btn = QPushButton("✓ Spara")
+        ok_btn = QPushButton("Spara")
+        ok_btn.setIcon(_icon('check'))
         ok_btn.setDefault(True)
         ok_btn.clicked.connect(partial(self._on_accept, add_more=False))
         btn_row.addWidget(ok_btn)
@@ -4600,7 +4848,7 @@ class PIDGraphicsView(QGraphicsView):
             for gi in self._scene.items(sp):
                 if gi.data(self._DATA_MARKUP_ID) is not None:
                     menu = QMenu(self)
-                    menu.addAction("📋 Duplicera",
+                    menu.addAction(_icon('clipboard'), "Duplicera",
                                    partial(self.markup_duplicate_requested.emit, self._edit_mu_id))
                     menu.exec(event.globalPos())
                     event.accept()
@@ -4831,7 +5079,7 @@ class PIDGraphicsView(QGraphicsView):
         # entry doesn't hurt, and gives a keyboard-free way to do it too.
         if self._selected_equipment_markers:
             n = len(self._selected_equipment_markers)
-            act = menu.addAction(f"✖ Rensa markering ({n} objekt)")
+            act = menu.addAction(_icon('close'), f"Rensa markering ({n} objekt)")
             act.triggered.connect(self._clear_equipment_selection)
             menu.addSeparator()
 
@@ -4839,7 +5087,7 @@ class PIDGraphicsView(QGraphicsView):
         for item in self._scene.items(sp):
             conn_id = getattr(item, '_sheet_conn_id', None)
             if conn_id is not None:
-                act = menu.addAction("✂️ Bryt länk")
+                act = menu.addAction(_icon('unlink'), "Bryt länk")
                 _cid = conn_id
                 act.triggered.connect(partial(self.sheet_conn_break_requested.emit, _cid))
                 menu.exec(global_pos)
@@ -4848,7 +5096,7 @@ class PIDGraphicsView(QGraphicsView):
         # ── Check if right-click landed on a page (board layout) ───────────────
         clicked_page = self._hit_test_page(sp)
         if self.mode == MODE_BOARD_LAYOUT:
-            act = menu.addAction("🔗 Lägg till länk till annat blad…")
+            act = menu.addAction(_icon('link'), "Lägg till länk till annat blad…")
             _cp = clicked_page
             act.triggered.connect(partial(self._start_add_sheet_link, _cp))
             menu.exec(global_pos)
@@ -4863,17 +5111,17 @@ class PIDGraphicsView(QGraphicsView):
                 hovered_type, hovered_id = t, int(i)
                 break
         if hovered_type == 'cause':
-            act = menu.addAction("⚙️ Lägg till ytterligare orsak här")
+            act = menu.addAction(_icon('settings'), "Lägg till ytterligare orsak här")
             cid = hovered_id
             act.triggered.connect(partial(self.cause_at_marker_requested.emit, cid))
             menu.addSeparator()
         elif hovered_type == 'consequence':
-            act = menu.addAction("⚠️ Lägg till ytterligare konsekvens här")
+            act = menu.addAction(_icon('warning'), "Lägg till ytterligare konsekvens här")
             cid = hovered_id
             act.triggered.connect(partial(self.consequence_at_marker_requested.emit, cid))
             menu.addSeparator()
         elif hovered_type == 'safeguard':
-            act = menu.addAction("🛡️ Lägg till ytterligare safeguard här")
+            act = menu.addAction(_icon('shield'), "Lägg till ytterligare safeguard här")
             cid = hovered_id
             act.triggered.connect(partial(self.safeguard_at_marker_requested.emit, cid))
             menu.addSeparator()
@@ -4883,21 +5131,21 @@ class PIDGraphicsView(QGraphicsView):
             # right-clicking it previously fell through to the generic
             # "add new object here" menu with no way to edit the one
             # already under the cursor.
-            act = menu.addAction("✏️ Redigera objekt")
+            act = menu.addAction(_icon('edit'), "Redigera objekt")
             mid = hovered_id
             act.triggered.connect(partial(self.equipment_edit_requested.emit, mid))
             menu.addSeparator()
 
-        menu.addAction("⚙️ Orsak",
+        menu.addAction(_icon('settings'), "Orsak",
                        partial(self.context_action.emit, 'cause', sp, self.current_page))
-        menu.addAction("⚠️ Konsekvens",
+        menu.addAction(_icon('warning'), "Konsekvens",
                        partial(self.context_action.emit, 'consequence', sp, self.current_page))
-        menu.addAction("🛡️ Safeguard",
+        menu.addAction(_icon('shield'), "Safeguard",
                        partial(self.context_action.emit, 'safeguard', sp, self.current_page))
         menu.addAction("🔧 Objekt",
                        partial(self.context_action.emit, 'equipment', sp, self.current_page))
         menu.addSeparator()
-        menu.addAction("🔎 Hitta liknande symbol",
+        menu.addAction(_icon('search'), "Hitta liknande symbol",
                        partial(self.context_action.emit, 'find_similar', sp, self.current_page))
         menu.addSeparator()
         menu.addAction("🔀 Risk Scenario",
@@ -6485,7 +6733,8 @@ class TemplateCausePickerDialog(QDialog):
         sec_form.addRow("Sekundär komponent-ID:", self._sec_tag_edit)
         instr_layout.addLayout(sec_form)
 
-        mark_btn = QPushButton("📍 Markera objekt på P&ID")
+        mark_btn = QPushButton("Markera objekt på P&ID")
+        mark_btn.setIcon(_icon('pin'))
         mark_btn.setToolTip(
             "Spara orsaken och gå direkt till P&ID för att klicka på sekundärkomponenten")
         mark_btn.setStyleSheet(
@@ -6786,7 +7035,8 @@ class EquipmentDeviationBar(QWidget):
         register_btn.clicked.connect(
             lambda: self.show_in_register_requested.emit(self._equipment_id))
         hdr.addWidget(register_btn)
-        close_btn = QPushButton("✕")
+        close_btn = QPushButton()
+        close_btn.setIcon(_icon('close'))
         close_btn.setFixedWidth(28)
         close_btn.clicked.connect(lambda: self.setVisible(False))
         hdr.addWidget(close_btn)
@@ -7354,11 +7604,13 @@ class PIDPanel(QWidget):
 
         bar = QHBoxLayout(); bar.setSpacing(4)
 
-        self.open_btn = QPushButton("📂 Importera P&ID")
+        self.open_btn = QPushButton("Importera P&ID")
+        self.open_btn.setIcon(_icon('import'))
         self.open_btn.clicked.connect(self._import_pdf)
         bar.addWidget(self.open_btn)
 
-        self.analyze_btn = QPushButton("📋 Analysera P&ID")
+        self.analyze_btn = QPushButton("Analysera P&ID")
+        self.analyze_btn.setIcon(_icon('document'))
         self.analyze_btn.setToolTip(
             "Skannar hela P&ID:n, identifierar alla taggnummer-prefix\n"
             "och skapar en nyckel i Inställningar → Identifierade objekt.")
@@ -7366,7 +7618,8 @@ class PIDPanel(QWidget):
         self.analyze_btn.setEnabled(False)
         bar.addWidget(self.analyze_btn)
 
-        self.export_btn = QPushButton("📤 Exportera PDF")
+        self.export_btn = QPushButton("Exportera PDF")
+        self.export_btn.setIcon(_icon('export'))
         self.export_btn.setToolTip(
             "Exportera P&ID med alla HAZOP-markeringar (nodgränser, orsaker,\n"
             "konsekvenser, barriärer och kopplingslinjer) som en ny PDF-fil.")
@@ -7429,10 +7682,11 @@ class PIDPanel(QWidget):
         # (_on_context_action); only the standalone toolbar toggle is gone.
         self.mode_buttons = {}
         mode_defs = [
-            (MODE_NAV,         "🔍 Navigera"),
+            (MODE_NAV,         "Navigera", 'search'),
         ]
-        for mode, label in mode_defs:
+        for mode, label, icon_name in mode_defs:
             btn = QPushButton(label)
+            btn.setIcon(_icon(icon_name))
             btn.setCheckable(True)
             btn.clicked.connect(partial(self._set_mode, mode))
             bar.addWidget(btn)
@@ -7463,7 +7717,8 @@ class PIDPanel(QWidget):
         self._refresh_color_btn()
         sl.addWidget(self.color_btn)
 
-        self.create_node_btn = QPushButton("✅ Skapa Nod")
+        self.create_node_btn = QPushButton("Skapa Nod")
+        self.create_node_btn.setIcon(_icon('check'))
         self.create_node_btn.setEnabled(False)
         self.create_node_btn.clicked.connect(self._create_node_from_markup)
         sl.addWidget(self.create_node_btn)
@@ -7471,13 +7726,15 @@ class PIDPanel(QWidget):
         self.style_widget.setVisible(False)
         bar.addWidget(self.style_widget)
         bar.addWidget(_vline())
-        self.layout_btn = QPushButton("📐 Layout")
+        self.layout_btn = QPushButton("Layout")
+        self.layout_btn.setIcon(_icon('resize-rotate'))
         self.layout_btn.setCheckable(True)
         self.layout_btn.setToolTip("Dra ritningsbladen för att ordna om dem")
         self.layout_btn.toggled.connect(self._on_layout_mode_toggled)
         bar.addWidget(self.layout_btn)
 
-        self._annot_btn = QPushButton("📝 Notering")
+        self._annot_btn = QPushButton("Notering")
+        self._annot_btn.setIcon(_icon('edit'))
         self._annot_btn.setCheckable(True)
         self._annot_btn.setToolTip("Klicka på brädet för att lägga till en klisterlapps-notering")
         self._annot_btn.toggled.connect(
@@ -7485,7 +7742,8 @@ class PIDPanel(QWidget):
                         else self._set_mode(MODE_NAV)))
         bar.addWidget(self._annot_btn)
 
-        self.smart_btn = QPushButton("✨ Smart layout")
+        self.smart_btn = QPushButton("Smart layout")
+        self.smart_btn.setIcon(_icon('sparkle'))
         self.smart_btn.setToolTip(
             "Analyserar off-page connectors och föreslår optimal bladlayout (max 15 s)")
         self.smart_btn.clicked.connect(self._run_smart_layout)
@@ -7520,7 +7778,8 @@ class PIDPanel(QWidget):
                 # (arrow is just cosmetic)
         pill_row.addStretch()
 
-        self._sc_abort_btn = QPushButton("✕ Avbryt")
+        self._sc_abort_btn = QPushButton("Avbryt")
+        self._sc_abort_btn.setIcon(_icon('close', 16, '#ffffff'))
         self._sc_abort_btn.setFixedHeight(CONFIG['H_SMALL_BTN'])
         self._sc_abort_btn.setStyleSheet(
             "background:#c0392b; color:white; border:none; border-radius:3px; padding:0 8px;")
@@ -7545,7 +7804,8 @@ class PIDPanel(QWidget):
                      self._sc_instr.setText("Klicka på nästa safeguard på P&ID:n")))
         act_row.addWidget(self._sc_add_sg_btn)
 
-        self._sc_finish_btn = QPushButton("✓ Slutför")
+        self._sc_finish_btn = QPushButton("Slutför")
+        self._sc_finish_btn.setIcon(_icon('check', 16, '#ffffff'))
         self._sc_finish_btn.setFixedHeight(CONFIG['H_SMALL_BTN'])
         self._sc_finish_btn.setStyleSheet(
             "background:#2ecc71; color:white; border:none; border-radius:3px; padding:0 8px; font-weight:bold;")
@@ -7568,7 +7828,8 @@ class PIDPanel(QWidget):
         self._secondary_lbl.setStyleSheet("color:white; font-size:11px; font-weight:bold;")
         sb2_lay.addWidget(self._secondary_lbl)
         sb2_lay.addStretch()
-        sb2_cancel = QPushButton("✕ Avbryt")
+        sb2_cancel = QPushButton("Avbryt")
+        sb2_cancel.setIcon(_icon('close', 16, '#ffffff'))
         sb2_cancel.setFixedHeight(CONFIG['H_SMALL_BTN'])
         sb2_cancel.setStyleSheet(
             "background:#c0392b; color:white; border:none; border-radius:3px; padding:0 8px;")
@@ -8696,7 +8957,7 @@ class PIDPanel(QWidget):
             self._analyzer_progress_dlg.close()
             self._analyzer_progress_dlg = None
         self.smart_btn.setEnabled(True)
-        self.smart_btn.setText("✨ Smart layout")
+        self.smart_btn.setText("Smart layout")
 
         if not layout:
             QMessageBox.information(self, "Smart layout",
@@ -8737,7 +8998,8 @@ class PIDPanel(QWidget):
         box = QMessageBox(self)
         box.setWindowTitle("Smart layout")
         box.setText(msg)
-        undo_btn = box.addButton("↩ Ångra", QMessageBox.ButtonRole.ResetRole)
+        undo_btn = box.addButton("Ångra", QMessageBox.ButtonRole.ResetRole)
+        undo_btn.setIcon(_icon('undo'))
         box.addButton("OK", QMessageBox.ButtonRole.AcceptRole)
         box.exec()
         if box.clickedButton() == undo_btn:
@@ -8900,9 +9162,9 @@ class PIDPanel(QWidget):
         plain right-click "🔧 Objekt" action uses."""
         menu = QMenu(self)
         a_equip = menu.addAction("🔧 Objekt")
-        a_cause = menu.addAction("⚙️ Orsak")
-        a_cons  = menu.addAction("⚠️ Konsekvens")
-        a_sg    = menu.addAction("🛡️ Safeguard")
+        a_cause = menu.addAction(_icon('settings'), "Orsak")
+        a_cons  = menu.addAction(_icon('warning'), "Konsekvens")
+        a_sg    = menu.addAction(_icon('shield'), "Safeguard")
         chosen  = menu.exec(QCursor.pos())
         if chosen is None:
             return
