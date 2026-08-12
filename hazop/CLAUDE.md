@@ -113,6 +113,7 @@ The application is split into four modules:
 | `app_config` | `key` (PK), `value` |
 | `pid_config` | `key` (PK), `value` — stores PDF path under key `'path'` |
 | `cause_markers` / `consequence_markers` / `safeguard_markers` | marker positions on P&ID pages |
+| `pid_page_rotation` | `physical_page` (PK), `rotation` — manual per-page rotation override (0/90/180/270), composed with the PDF's own `/Rotate` flag, see NOTES.md 2026-08-12 |
 
 ## Key design decisions
 

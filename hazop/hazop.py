@@ -2319,6 +2319,16 @@ class Database:
                 attended       INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (participant_id, session_id)
             );
+            -- Manuell sidrotation (2026-08-12, see NOTES.md) — a user-chosen
+            -- extra rotation (0/90/180/270, clockwise) for one physical P&ID
+            -- page, composed on top of (not replacing) the PDF's own /Rotate
+            -- flag. Keyed by physical_page like the marker tables (not by
+            -- pid_sheets.id) so it survives re-sorting the virtual sheet
+            -- order, same rationale as cause_markers/consequence_markers.
+            CREATE TABLE IF NOT EXISTS pid_page_rotation (
+                physical_page INTEGER PRIMARY KEY,
+                rotation      INTEGER NOT NULL DEFAULT 0
+            );
         """)
 
         # Seed missing deviation_id for existing causes
@@ -3478,10 +3488,130 @@ class Database:
             "pid_sheets", "pid_revisions",
             "cause_markers", "consequence_markers", "safeguard_markers",
             "node_markups", "node_red_markups",
-            "off_page_connector", "pid_connection",
+            "off_page_connector", "pid_connection", "pid_page_rotation",
         ):
             self.conn.execute(f"DELETE FROM {table}")
         self.conn.execute("DELETE FROM pid_config WHERE key='path'")
+        self.commit()
+
+    # ── Manuell sidrotation (2026-08-12, see NOTES.md) ──────────────────────
+
+    def get_page_rotation(self, physical_page):
+        """Extra clockwise rotation (0/90/180/270) the user chose for this
+        physical page, on top of the PDF's own /Rotate. 0 if never set."""
+        row = self.conn.execute(
+            "SELECT rotation FROM pid_page_rotation WHERE physical_page=?",
+            (physical_page,)).fetchone()
+        return int(row['rotation']) if row else 0
+
+    def get_all_page_rotations(self):
+        """Return {physical_page: rotation} for every page with a non-default
+        override — used to repopulate PIDGraphicsView._page_rotation_override
+        whenever the PDF is (re)loaded, see PIDPanel._import_pdf/try_reload_pdf."""
+        rows = self.conn.execute("SELECT physical_page, rotation FROM pid_page_rotation").fetchall()
+        return {int(r['physical_page']): int(r['rotation']) for r in rows}
+
+    def set_page_rotation(self, physical_page, rotation):
+        rotation = int(rotation) % 360
+        self.conn.execute(
+            "INSERT INTO pid_page_rotation (physical_page, rotation) VALUES (?,?) "
+            "ON CONFLICT(physical_page) DO UPDATE SET rotation=excluded.rotation",
+            (physical_page, rotation))
+        self.commit()
+
+    def clear_page_rotations(self):
+        """Called alongside clear_sheets() whenever the working PDF is
+        entirely replaced (not appended-to) — physical page numbers from the
+        old file have nothing to do with the new one, so any rotation
+        override left over from it would apply to the wrong page."""
+        self.conn.execute("DELETE FROM pid_page_rotation")
+        self.commit()
+
+    def remap_page_rotation_positions(self, physical_page, transform_fn, angle_delta_deg=0):
+        """Re-anchor every position stored for `physical_page` to the same
+        physical point after PIDGraphicsView.set_page_rotation_override()
+        changes what that page's PDF-space coordinate system means.
+
+        `transform_fn(x, y) -> (new_x, new_y)` must map a point from the
+        OLD rotated PDF-space to the NEW rotated PDF-space (built by the
+        caller from the page's derotation_matrix/rotation_matrix before and
+        after the change — see PIDPanel._rotate_page). `angle_delta_deg` is
+        used only to decide whether axis-aligned rect_w/rect_h (and
+        node_red_markups' symbol_w/symbol_h) need to swap: a +-90 degree
+        turn swaps width and height, 0/180 do not.
+
+        Covers cause/consequence/safeguard/equipment markers, the node
+        outline (nodes.markup_points) and zone drawings (node_markups,
+        node_red_markups incl. symbol_rot). Does NOT cover off_page_connector
+        or board_annotations — deliberately deferred, see NOTES.md known
+        limitations.
+        """
+        swap_wh = (int(angle_delta_deg) % 180) == 90
+
+        def _swap(w, h):
+            if swap_wh and w is not None and h is not None:
+                return h, w
+            return w, h
+
+        for table, x_col, y_col in (
+                ('cause_markers', 'x', 'y'),
+                ('consequence_markers', 'x', 'y'),
+                ('safeguard_markers', 'x', 'y'),
+                ('equipment_markers', 'x', 'y')):
+            has_rect = table != 'equipment_markers'
+            cols = f"id, {x_col}, {y_col}" + (", rect_w, rect_h" if has_rect else "")
+            rows = self.conn.execute(
+                f"SELECT {cols} FROM {table} WHERE pid_page=?", (physical_page,)).fetchall()
+            for r in rows:
+                nx, ny = transform_fn(r[x_col], r[y_col])
+                if has_rect:
+                    nw, nh = _swap(r['rect_w'], r['rect_h'])
+                    self.conn.execute(
+                        f"UPDATE {table} SET {x_col}=?,{y_col}=?,rect_w=?,rect_h=? WHERE id=?",
+                        (nx, ny, nw, nh, r['id']))
+                else:
+                    self.conn.execute(
+                        f"UPDATE {table} SET {x_col}=?,{y_col}=? WHERE id=?",
+                        (nx, ny, r['id']))
+
+        for row in self.conn.execute(
+                "SELECT id, markup_points FROM nodes WHERE pid_page=?", (physical_page,)).fetchall():
+            try:
+                pts = json.loads(row['markup_points'] or '[]')
+            except Exception:
+                continue
+            if not pts:
+                continue
+            new_pts = [list(transform_fn(p[0], p[1])) for p in pts]
+            self.conn.execute("UPDATE nodes SET markup_points=? WHERE id=?",
+                              (json.dumps(new_pts), row['id']))
+
+        for row in self.conn.execute(
+                "SELECT id, points FROM node_markups WHERE pid_page=?", (physical_page,)).fetchall():
+            try:
+                pts = json.loads(row['points'] or '[]')
+            except Exception:
+                continue
+            if not pts:
+                continue
+            new_pts = [list(transform_fn(p[0], p[1])) for p in pts]
+            self.conn.execute("UPDATE node_markups SET points=? WHERE id=?",
+                              (json.dumps(new_pts), row['id']))
+
+        for row in self.conn.execute(
+                "SELECT id, points, symbol_w, symbol_h, symbol_rot FROM node_red_markups "
+                "WHERE pid_page=?", (physical_page,)).fetchall():
+            try:
+                pts = json.loads(row['points'] or '[]')
+            except Exception:
+                continue
+            new_pts = [list(transform_fn(p[0], p[1])) for p in pts] if pts else pts
+            nw, nh = _swap(row['symbol_w'], row['symbol_h'])
+            new_rot = (float(row['symbol_rot'] or 0) + float(angle_delta_deg)) % 360
+            self.conn.execute(
+                "UPDATE node_red_markups SET points=?,symbol_w=?,symbol_h=?,symbol_rot=? WHERE id=?",
+                (json.dumps(new_pts), nw, nh, new_rot, row['id']))
+
         self.commit()
 
     def add_node_with_markup(self, name, points, style, page):
@@ -20875,6 +21005,8 @@ class MainWindow(QMainWindow):
             # Deltagarmatris (2026-08-11) — replaces the old
             # 'project_participants' app_config field, see NOTES.md.
             'participants', 'analysis_sessions', 'participant_attendance',
+            # Manuell sidrotation (2026-08-12), see NOTES.md.
+            'pid_page_rotation',
         ]
         for tbl in _PROJECT_TABLES:
             try:
