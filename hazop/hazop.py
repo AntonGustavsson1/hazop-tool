@@ -5636,8 +5636,50 @@ class SafeguardPanel(QWidget):
 
 # ── Ribbon icon renderer ──────────────────────────────────────────────────────
 
+_ICONS_DIR = Path(__file__).parent / 'icons'
+_SVG_ICON_CACHE: dict[str, str] = {}   # name -> raw SVG text (read once, recolored per call)
+# Old procedural-shape names that now have a hand-drawn SVG equivalent under
+# icons/ (2026-08-12) — arrow_up/arrow_down previously matched no branch in
+# _mk_pm() at all and silently rendered blank icons (NodeMarkupPanel's
+# prev/next nav buttons); chevron-up/down fixes that as a side effect.
+_SVG_ICON_ALIASES = {'arrow_up': 'chevron-up', 'arrow_down': 'chevron-down'}
+
+
+def _load_svg_icon_pixmap(name: str, sz: int, fg: QColor) -> QPixmap | None:
+    """Render icons/<name>.svg (one of the flat-line icons, originally
+    stroked #42474d) recolored to fg, or None if no such file exists so
+    _mk_pm() can fall back to its older procedural shapes."""
+    name = _SVG_ICON_ALIASES.get(name, name)
+    svg_str = _SVG_ICON_CACHE.get(name)
+    if svg_str is None:
+        path = _ICONS_DIR / f'{name}.svg'
+        if not path.exists():
+            return None
+        svg_str = path.read_text(encoding='utf-8')
+        _SVG_ICON_CACHE[name] = svg_str
+    svg_str = svg_str.replace('#42474d', fg.name())
+    from PyQt6.QtSvg import QSvgRenderer
+    from PyQt6.QtCore import QByteArray
+    renderer = QSvgRenderer(QByteArray(svg_str.encode('utf-8')))
+    pm = QPixmap(sz, sz)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    if renderer.isValid():
+        renderer.render(p)
+    p.end()
+    return pm
+
+
 def _mk_pm(name: str, sz: int, fg: QColor) -> QPixmap:
-    """Render one icon onto a transparent QPixmap using QPainter."""
+    """Render one icon onto a transparent QPixmap. Prefers a hand-drawn SVG
+    from icons/ (2026-08-12) when one matches; falls back to the older
+    procedural QPainter shapes below for names with no SVG equivalent
+    (select/polygon/polyline/text/smart — P&ID markup drawing tools)."""
+    svg_pm = _load_svg_icon_pixmap(name, sz, fg)
+    if svg_pm is not None:
+        return svg_pm
+
     pm = QPixmap(sz, sz)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)

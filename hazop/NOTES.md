@@ -1406,6 +1406,18 @@ Nya grupper:
 
 ---
 
+## Nya SVG-ikoner under icons/ kopplade in (2026-08-12, påbörjat)
+
+**Rapport:** användaren lade till 29 egna, enhetliga linje-ikoner (24×24, streck `#42474d`, 1.8px, rundade ändar — `add/check/chevron-*/close/comment/delete/drag/edit/export/eye/eyeoff/filter/flag/import/link/more/pin/print/refresh/save/scan/search/settings/shield/tree/warning`) under `icons/` och bad att de apliceras, plus att fler skapas i samma stil för andra emoji-ställen.
+
+**Infrastruktur:** `_mk_pm(name, sz, fg)` (den befintliga ikon-renderaren för P&ID-markup-ribbonens verktygsknappar, tidigare bara procedurellt QPainter-ritade former för `close/select/polygon/polyline/text/comment/eye/smart`) föredrar nu en matchande SVG från `icons/` om en finns (`_load_svg_icon_pixmap`, cache:ar rå SVG-text per namn, återfärgar via en enkel strängersättning av `#42474d`→önskad `QColor`, renderar med `QtSvg.QSvgRenderer`) — faller annars tillbaka på de gamla procedurella formerna för namn utan SVG-motsvarighet (P&ID-ritverktygen har ingen naturlig ikon i den nya uppsättningen).
+
+**Bugg hittad på köpet:** `NodeMarkupPanel`s föregående/nästa-nod-knappar anropade `_mk_icon('arrow_up'/'arrow_down', 16)`, men `_mk_pm` hade ALDRIG haft en matchande `elif`-gren för de namnen — ikonerna renderades tysta som helt tomma (0 synliga pixlar, verifierat direkt mot pixmapens alfakanal). `chevron-up.svg`/`chevron-down.svg` mappas nu till `arrow_up`/`arrow_down` via en aliastabell (`_SVG_ICON_ALIASES`), vilket löser detta som en sidoeffekt.
+
+**Omfattning — påbörjat men INTE klart:** bara `_mk_pm`/`_mk_icon`-vägen (P&ID-markup-ribbonens verktygsknappar: close/comment/eye uppgraderade till de nya SVG-ikonerna, arrow_up/arrow_down-buggen fixad) är kopplad hittills. Resten av appen använder Unicode-emoji direkt inbakade i knapp-/menytext (`QPushButton("🔍 Skanna P&ID")`, `menu.addAction("🗑 Ta bort")`, osv.) på över hundra ställen — INTE en ren sträng-till-sträng-ersättning, kräver att varje anropsställe byggs om till `setIcon(...)` + text utan emoji. Given omfattningen frågade jag användaren om prioritering innan en så stor sweep påbörjas.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **Sid-orienteringsinställningen (P&ID-inställningar) är inte kopplad till faktisk rendering/skanning** — sparas i `pid_page_orientation_hint` men läses ännu inte av PDF-rendering, OCR-förbehandling eller taggskanning, som alla idag bara följer PDF-filens egen `/Rotate`-flagga direkt. Att koppla in den kräver att tråda en override genom flera lager, inklusive de flerprocess-skanningsarbetarna — inte gjort 2026-08-11, se ovan. (Den nya per-blad-rotationsknappen från 2026-08-12 löser ett näraliggande men separat behov — manuell rotation av EN specifik sida — genom att mutera `fitz.Page`s rotation i minnet; den treväga globala inställningen är fortfarande inte inkopplad.)
