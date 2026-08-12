@@ -5954,6 +5954,22 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         self.assertEqual(self.db.equipment_deviation_count(self.eq_id), 1)
         self.assertEqual(self.db.equipment_node_id(self.eq_id), node_id)
 
+    def test_add_new_button_hides_popup_and_emits_signal(self):
+        """"+ Lägg till nytt objekt" (2026-08-12, see NOTES.md) — the popup
+        has no P&ID position of its own, so its only job is to close
+        itself and let PIDPanel arm placement mode for the next click."""
+        from PyQt6.QtCore import QPoint
+        self.bar.load(self.eq_id, self.marker_id)
+        self.bar.show_near(QPoint(100, 100))
+        self.assertTrue(self.bar.isVisible())
+        captured = []
+        self.bar.add_new_requested.connect(lambda: captured.append(True))
+
+        self.bar._add_new_btn.click()
+
+        self.assertEqual(len(captured), 1)
+        self.assertFalse(self.bar.isVisible())
+
     def test_smart_node_default_assigns_active_node_when_equipment_has_none(self):
         """See NOTES.md 'Slippa välja nod varje gång': the popup assigns
         PIDPanel._active_node_id immediately when the equipment has no node
@@ -7118,6 +7134,40 @@ class EquipmentObjectPlacementTests(unittest.TestCase):
         self.assertEqual(len(markers), 1)
         equip = self.db.get_equipment_by_id(markers[0]['equipment_id'])
         self.assertEqual(equip['equipment_type'], "Pump")
+
+    def test_start_place_new_equipment_hides_bar_and_arms_mode(self):
+        """EquipmentDeviationBar's "+ Lägg till nytt objekt" button calls
+        this (2026-08-12, see NOTES.md) — the popup has no canvas position
+        of its own, so it arms MODE_PLACE_NEW_EQUIPMENT and waits for the
+        user's next P&ID click."""
+        from pid_viewer import MODE_PLACE_NEW_EQUIPMENT
+        from PyQt6.QtCore import QPointF
+        self.panel.place_equipment_marker("HV-201", "Ventil", QPointF(10, 10), 0)
+        self.assertTrue(self.panel._equipment_bar.isVisible())
+
+        self.panel.start_place_new_equipment()
+
+        self.assertFalse(self.panel._equipment_bar.isVisible())
+        self.assertEqual(self.panel.viewer.mode, MODE_PLACE_NEW_EQUIPMENT)
+
+    def test_canvas_click_while_armed_emits_placement_signal_and_reverts_mode(self):
+        from pid_viewer import MODE_NAV
+        from PyQt6.QtCore import QPointF
+        captured = []
+        self.panel.equipment_placement_requested.connect(
+            lambda tag, pos, page, pdf_rect: captured.append((tag, pos, page, pdf_rect)))
+        self.panel.start_place_new_equipment()
+        pt = QPointF(30, 40)
+
+        self.panel._on_place_new_equipment_click(pt, 3, "HV-305")
+
+        self.assertEqual(len(captured), 1)
+        tag, pos, page, pdf_rect = captured[0]
+        self.assertEqual(tag, "HV-305")
+        self.assertEqual(pos, pt)
+        self.assertEqual(page, 3)
+        self.assertEqual(self.panel.viewer.mode, MODE_NAV,
+            "must revert to navigation mode after placing, not stay armed")
 
 
 class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):

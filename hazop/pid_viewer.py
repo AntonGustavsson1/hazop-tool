@@ -478,6 +478,8 @@ MODE_BOARD_LAYOUT    = 14  # drag pages to reposition on study board
 MODE_ADD_SHEET_LINK  = 15  # click target page to create a manual inter-sheet link
 MODE_PICK_REF_TAG   = 16  # one-shot click: detect tag near point → emit ref_tag_picked
 MODE_ANNOTATION     = 17  # click on board to place a sticky note
+MODE_PLACE_NEW_EQUIPMENT = 18  # click P&ID to place a brand-new equipment object,
+                                # armed from EquipmentDeviationBar's "+" button
 
 # Placement-mode outline/fill colors — shared by the drag-rect preview and the
 # cursor-following ghost preview. Matches the tree-panel visibility buttons and
@@ -487,6 +489,7 @@ _PLACEMENT_MODE_COLORS = {
     MODE_SAFEGUARD:       (QColor(0x27, 0xae, 0x60), QColor(0x27, 0xae, 0x60, 35)),
     MODE_CAUSE_TEMPLATE:  (QColor(0xe7, 0x4c, 0x3c), QColor(0xe7, 0x4c, 0x3c, 35)),
     MODE_PLACE_EXISTING:  (QColor(0x14, 0x6e, 0xbe), QColor(0x14, 0x6e, 0xbe, 30)),
+    MODE_PLACE_NEW_EQUIPMENT: (QColor(0x14, 0x6e, 0xbe), QColor(0x14, 0x6e, 0xbe, 30)),
 }
 # Ghost preview radius per mode, matching the real marker's radius (see
 # add_cause_marker/add_consequence_marker/add_safeguard_marker).
@@ -495,6 +498,7 @@ _PLACEMENT_MODE_RADIUS = {
     MODE_SAFEGUARD:       12.0,
     MODE_CAUSE_TEMPLATE:  14.0,
     MODE_PLACE_EXISTING:  12.0,
+    MODE_PLACE_NEW_EQUIPMENT: 12.0,
 }
 
 # ── Off-page connector analysis ───────────────────────────────────────────────
@@ -3121,6 +3125,10 @@ class PIDGraphicsView(QGraphicsView):
     safeguard_clicked       = pyqtSignal(object, int, str)
     place_existing_clicked  = pyqtSignal(object, int)
     cause_template_clicked  = pyqtSignal(object, int, str)
+    # Canvas click while armed via PIDPanel.start_place_new_equipment() —
+    # requested from EquipmentDeviationBar's "+ Lägg till nytt objekt" button
+    # (2026-08-12, see NOTES.md).
+    place_new_equipment_clicked = pyqtSignal(object, int, str)
     context_action          = pyqtSignal(str, object, int)
     marker_clicked          = pyqtSignal(str, int)
     ref_tag_picked          = pyqtSignal(str)   # MODE_PICK_REF_TAG one-shot result
@@ -3858,7 +3866,8 @@ class PIDGraphicsView(QGraphicsView):
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
         elif mode in (MODE_CONSEQUENCE, MODE_SAFEGUARD,
-                      MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE):
+                      MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE,
+                      MODE_PLACE_NEW_EQUIPMENT):
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
         elif mode == MODE_SMART_POLYLINE:
@@ -5951,7 +5960,8 @@ class PIDGraphicsView(QGraphicsView):
                 # Priority 3: empty space → clear selection, fall through for panning
                 self._clear_edit_handles()
         elif self.mode in (MODE_CONSEQUENCE, MODE_SAFEGUARD,
-                           MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE):
+                           MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE,
+                           MODE_PLACE_NEW_EQUIPMENT):
             if event.button() == Qt.MouseButton.LeftButton:
                 # Start rubber-band rectangle selection (or simple click)
                 self._clear_ghost_preview()
@@ -6059,7 +6069,8 @@ class PIDGraphicsView(QGraphicsView):
         # ── Rect-select release for cause/consequence/safeguard ───────────────
         if (event.button() == Qt.MouseButton.LeftButton and
                 self.mode in (MODE_CONSEQUENCE, MODE_SAFEGUARD,
-                              MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE) and
+                              MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE,
+                              MODE_PLACE_NEW_EQUIPMENT) and
                 self._rect_start is not None):
 
             end_sp = self.mapToScene(event.position().toPoint())
@@ -6102,6 +6113,8 @@ class PIDGraphicsView(QGraphicsView):
                 self.place_existing_clicked.emit(center, self.current_page)
             elif self.mode == MODE_CAUSE_TEMPLATE:
                 self.cause_template_clicked.emit(center, self.current_page, suggested)
+            elif self.mode == MODE_PLACE_NEW_EQUIPMENT:
+                self.place_new_equipment_clicked.emit(center, self.current_page, suggested)
             elif self.mode == MODE_PICK_REF_TAG:
                 # One-shot: emit picked tag and return to NAV mode
                 self.ref_tag_picked.emit(suggested or '')
@@ -6326,7 +6339,8 @@ class PIDGraphicsView(QGraphicsView):
                 sp = self._snap_to_nearest(sp)
             self._update_rubber_band(sp)
         elif self.mode in (MODE_CONSEQUENCE, MODE_SAFEGUARD,
-                           MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE) \
+                           MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE,
+                           MODE_PLACE_NEW_EQUIPMENT) \
                 and self._rect_start is not None:
             # Actively sizing a marker's rect — the ghost preview (shown before
             # the click) is no longer needed; the dashed rect below takes over.
@@ -6354,7 +6368,8 @@ class PIDGraphicsView(QGraphicsView):
             # No live tag extraction during drag (PDF read is slow — tag extracted on release)
             event.accept(); return
         elif self.mode in (MODE_CONSEQUENCE, MODE_SAFEGUARD,
-                           MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE) \
+                           MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE,
+                           MODE_PLACE_NEW_EQUIPMENT) \
                 and self._rect_start is None:
             # Not dragging yet — show a ghost circle at the cursor previewing
             # what will be placed (color/size match the real marker).
@@ -6455,7 +6470,8 @@ class PIDGraphicsView(QGraphicsView):
                 self._finish_markup_drawing(); event.accept(); return
             elif event.key() == Qt.Key.Key_Escape:
                 self._cancel_drawing(); event.accept(); return
-        elif (self.mode in (MODE_CONSEQUENCE, MODE_SAFEGUARD, MODE_CAUSE_TEMPLATE)
+        elif (self.mode in (MODE_CONSEQUENCE, MODE_SAFEGUARD, MODE_CAUSE_TEMPLATE,
+                           MODE_PLACE_NEW_EQUIPMENT)
                 and event.key() == Qt.Key.Key_Escape):
             self._cancel_drawing()
             self.placement_cancelled.emit()
@@ -6977,6 +6993,11 @@ class EquipmentDeviationBar(QWidget):
     # "Kryssrutan ska gå att av-/aktivera", NOTES.md) — same refresh needs
     # as deviation_added (marker badge count, tree, worksheet).
     deviation_removed = pyqtSignal(int, int)   # (deviation_id, equipment_id)
+    # "+ Lägg till nytt objekt" was clicked — the popup has no P&ID position
+    # of its own to place a new object at, so it just closes itself and asks
+    # PIDPanel to arm placement mode for the user's next canvas click
+    # (2026-08-12, see NOTES.md).
+    add_new_requested = pyqtSignal()
 
     def __init__(self, db, parent=None):
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
@@ -7021,6 +7042,18 @@ class EquipmentDeviationBar(QWidget):
         scroll.setMaximumHeight(220)
         outer.addWidget(scroll)
 
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("color:#E2E3E1;")
+        outer.addWidget(sep)
+
+        self._add_new_btn = QPushButton("+ Lägg till nytt objekt")
+        self._add_new_btn.setIcon(_icon('add'))
+        self._add_new_btn.setToolTip(
+            "Stäng den här listan och klicka på P&ID:n för att placera ett nytt objekt")
+        self._add_new_btn.clicked.connect(self._on_add_new_clicked)
+        outer.addWidget(self._add_new_btn)
+
         # Number-key shortcuts (1-9, see NOTES.md "snabbknappar") — a
         # QShortcut with WidgetWithChildrenShortcut fires as long as focus
         # is anywhere inside the popup (including its checkboxes), unlike
@@ -7037,6 +7070,10 @@ class EquipmentDeviationBar(QWidget):
             cb = self._checklist_checkboxes[idx]
             if cb.isEnabled():
                 cb.setChecked(True)
+
+    def _on_add_new_clicked(self):
+        self.hide()
+        self.add_new_requested.emit()
 
     @property
     def equipment_id(self):
@@ -7582,6 +7619,7 @@ class PIDPanel(QWidget):
         self.viewer.safeguard_clicked.connect(self._on_safeguard_click)
         self.viewer.place_existing_clicked.connect(self._on_place_existing_click)
         self.viewer.cause_template_clicked.connect(self._on_cause_template_click)
+        self.viewer.place_new_equipment_clicked.connect(self._on_place_new_equipment_click)
         self.viewer.context_action.connect(self._on_context_action)
         self.viewer.zone_drawn.connect(self._on_zone_drawn)
         self.viewer.zone_resized.connect(self._on_zone_resized)
@@ -7621,6 +7659,7 @@ class PIDPanel(QWidget):
         self._equipment_bar = EquipmentDeviationBar(self.db, parent=self.viewer)
         self._equipment_bar.deviation_added.connect(self._on_equipment_deviation_added)
         self._equipment_bar.deviation_removed.connect(self._on_equipment_deviation_removed)
+        self._equipment_bar.add_new_requested.connect(self.start_place_new_equipment)
         # Plain callback, not a signal, so the popup gets the (created)
         # cause_id back synchronously — see EquipmentDeviationBar._create_cause_fn.
         self._equipment_bar._create_cause_fn = self._create_cause_for_bar
@@ -8327,6 +8366,26 @@ class PIDPanel(QWidget):
         self._active_place_type = type_str
         self._active_place_id   = id_
         self._set_mode(MODE_PLACE_EXISTING)
+
+    def start_place_new_equipment(self):
+        """Arm placement mode for a brand-new equipment object, requested
+        from EquipmentDeviationBar's "+ Lägg till nytt objekt" button
+        (2026-08-12, see NOTES.md). The popup has already closed itself;
+        the next canvas click resolves in _on_place_new_equipment_click."""
+        self._equipment_bar.hide()
+        self._set_mode(MODE_PLACE_NEW_EQUIPMENT)
+
+    def _on_place_new_equipment_click(self, scene_pos, page, suggested_tag):
+        """Canvas click while armed via start_place_new_equipment(). Mirrors
+        the plain right-click "🔧 Objekt" flow (_on_context_action's
+        'equipment' branch) and the rubber-band one (_on_zone_drawn's
+        a_equip branch): reuse equipment_placement_requested so
+        MainWindow's existing EquipmentTagPopup handler runs unchanged."""
+        self._set_mode(MODE_NAV)
+        pdf_rect = getattr(self.viewer, '_last_drawn_pdf_rect', None)
+        if hasattr(self.viewer, '_last_drawn_pdf_rect'):
+            self.viewer._last_drawn_pdf_rect = None
+        self.equipment_placement_requested.emit(suggested_tag or '', scene_pos, page, pdf_rect)
 
     def remove_existing_marker(self, type_str, id_):
         """Delete all P&ID markers for an existing item and refresh overlays."""

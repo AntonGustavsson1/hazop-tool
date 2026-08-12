@@ -1465,6 +1465,24 @@ Nya grupper:
 
 ---
 
+## EquipmentDeviationBar: "+ Lägg till nytt objekt"-knapp (2026-08-12)
+
+**Önskan:** "nu vill jag att om man vill definiera ett objekt så skall det utöver de val som finns i popup rutan även finnas en knapp för att lägga nya objekt." — direkt uppföljning av popup-ombygget ovan samma dag.
+
+**Problemet:** popupen är förankrad vid ett REDAN placerat objekts position (öppnas av `_on_marker_clicked`/`place_equipment_marker`). En knapp i popupen har alltså ingen egen P&ID-position att placera ett nytt objekt vid — positionen måste komma från ett SENARE klick på canvasen, inte från knapptrycket självt.
+
+**Lösning — samma "arm ett läge, invänta nästa klick"-idiom som redan finns för `MODE_CONSEQUENCE`/`MODE_SAFEGUARD`/`MODE_CAUSE_TEMPLATE`/`MODE_PLACE_EXISTING`:**
+- Nytt `MODE_PLACE_NEW_EQUIPMENT` (`pid_viewer.py`), tillagt i alla ställen där de fyra ovan redan grupperas (rubberband-start/release, ghost-preview, cursor, Escape-avbryt) samt i `_PLACEMENT_MODE_COLORS`/`_PLACEMENT_MODE_RADIUS` (samma blå som `MODE_PLACE_EXISTING`).
+- Ny signal `PIDGraphicsView.place_new_equipment_clicked(scene_pos, page, suggested_tag)`, emitteras i `mouseReleaseEvent`s befintliga rect-select-gren — återanvänder samma tag-extraktion (`_extract_tag_from_rect`/`find_tag_near_point`) och `_last_drawn_pdf_rect`-lagring som `MODE_CONSEQUENCE`/`MODE_CAUSE_TEMPLATE` redan gör, så både ett enkelt klick och en utdragen ruta fungerar.
+- `EquipmentDeviationBar` fick en ny knapp "+ Lägg till nytt objekt" (under kryssrutelistan, `_add_new_btn`) och signal `add_new_requested` — knappens klick-hanterare (`_on_add_new_clicked`) stänger popupen (`self.hide()`) och emitterar signalen; den lagrar ingen position, den har ingen.
+- `PIDPanel.start_place_new_equipment()` (kopplad till `add_new_requested`) döljer baren igen (idempotent) och sätter `MODE_PLACE_NEW_EQUIPMENT`. `_on_place_new_equipment_click(scene_pos, page, suggested_tag)` (kopplad till den nya viewer-signalen) återgår till `MODE_NAV` och **återanvänder det redan befintliga** `equipment_placement_requested`-signalen/`pdf_rect`-mönstret — samma som högerklick-"🔧 Objekt" och höger-drag-rubberbandmenyns "Objekt"-val redan använder. `MainWindow._on_equipment_placement_requested`, `EquipmentTagPopup` och `place_equipment_marker` är därför HELT OFÖRÄNDRADE — den nya knappen matar bara in i samma befintliga rör vid ett senare tillfälle.
+
+**Varför ingen ny dialog/popup byggdes:** `EquipmentTagPopup` (hazop.py) var redan helt frikopplad från placering (en av dess tre befintliga anropsplatser, `EquipmentPanel._add_manual`, har ingen P&ID-position alls) — den behöver bara tag+typ, oavsett varifrån anropet kommer. Ingen anledning att bygga en fjärde variant.
+
+**Test:** `EquipmentDeviationBarTests.test_add_new_button_hides_popup_and_emits_signal` (knappen döljer sig själv + emitterar signalen), `EquipmentObjectPlacementTests.test_start_place_new_equipment_hides_bar_and_arms_mode` + `test_canvas_click_while_armed_emits_placement_signal_and_reverts_mode` (hela arm→klick→signal→återgång-till-MODE_NAV-kedjan). Full svit körd innan commit (se nedan för resultat).
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **Sid-orienteringsinställningen (P&ID-inställningar) är inte kopplad till faktisk rendering/skanning** — sparas i `pid_page_orientation_hint` men läses ännu inte av PDF-rendering, OCR-förbehandling eller taggskanning, som alla idag bara följer PDF-filens egen `/Rotate`-flagga direkt. Att koppla in den kräver att tråda en override genom flera lager, inklusive de flerprocess-skanningsarbetarna — inte gjort 2026-08-11, se ovan. (Den nya per-blad-rotationsknappen från 2026-08-12 löser ett näraliggande men separat behov — manuell rotation av EN specifik sida — genom att mutera `fitz.Page`s rotation i minnet; den treväga globala inställningen är fortfarande inte inkopplad.)
