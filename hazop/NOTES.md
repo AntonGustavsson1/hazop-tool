@@ -1449,6 +1449,22 @@ Nya grupper:
 
 ---
 
+## EquipmentDeviationBar: från docka bar till minimalistisk popup (2026-08-12)
+
+**Rapport:** "kan du förbättra så det dyker upp en popup där jag kan välja lågt, högt flöde osv istället för den menyn som är nu. dvs när man klickar på ett objekt." — samma önskan som tidigare samma dag noterades som uppskjuten ("Jag ser hellre en liten popup på P&ID viewer... Resten av valen får jag nog göra nere i hazop scenario"), nu genomförd.
+
+**Vad ändrades:** `EquipmentDeviationBar` (`pid_viewer.py`) var en permanent, dockad `QWidget` längst ner i P&ID-panelen, med en header (Typ-combo, Nod-combo, "Visa i register", stäng-knapp) och per-avvikelse-rader som utöver kryssrutan även innehöll en orsaks-dropdown, en frekvens-combo och en klickbar numerisk frekvens-knapp. Den är nu:
+- Ett **flytande, självstängande popup-fönster** (`Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint`, samma mekanism som `hazop.py`s egna småpopups som `RiskMatrixPopup`) som visas precis vid det klickade objektet och stängs automatiskt vid klick utanför — ingen egen "stäng"-hantering behövs, Qt gör det åt oss.
+- **Bara kryssrutorna kvar** per avvikelse-rad (t.ex. "Lågt flöde", "Högt flöde") — orsaks-dropdownen, frekvens-combon och den numeriska frekvens-knappen är borttagna. Att kryssa i en avvikelse skapar fortfarande automatiskt den mest sannolika förslagsorsaken direkt (oförändrad logik, `_create_cause_fn`), men att ÄNDRA/redigera den orsaken görs nu i scenariotabellen (redan fullt redigerbar där sedan tidigare) istället för i denna popup.
+- **Typ-combo och Nod-combo borttagna från headern** — helt redundanta nu: typändring täcks redan av "✏️ Redigera objekt" (högerklick, byggt tidigare samma dag), och nod-tilldelning sker automatiskt via `active_node_id` (redan befintlig "slippa välja nod varje gång"-logik, oförändrad) eller manuellt i trädet.
+- **Positionering:** ny `show_near(global_pos)`-metod, screen-clampad likt hazop.py:s popup-mönster. Anropas från `_on_marker_clicked` (slår upp markörens `x/y/pid_page` och konverterar scen→global) och `place_equipment_marker` (har redan `scene_pos`).
+
+**Borttagen/oanvänd kod som en direkt konsekvens:** `_type_combo`/`_node_combo`/registerknapp/stängknapp (header), `cause_combo`/`freq_combo`/`freq_num_btn` (per rad), `_select_or_add_combo_item`, `_on_cause_combo_activated`, `_create_cause_from_bar` (den gamla, combo-medvetna versionen — ersatt av en enklare inline-anrop i `_activate_deviation`), `_on_freq_changed`, `_on_freq_numeric_clicked`, `_on_node_changed`, `_on_type_changed`, signalerna `equipment_retyped`/`show_in_register_requested`, samt `PIDPanel._update_cause_for_bar`/`_set_cause_frequency_for_bar` (deras enda anropare fanns i den borttagna UI:n).
+
+**Test:** `EquipmentDeviationBarTests` skrevs om helt (17 tester, från 24) — 9 tester som uteslutande testade den borttagna combo/frekvens-UI:n (`test_frequency_combo_*`, `test_numeric_frequency_label_*`, `test_picking_a_different_cause_updates_in_place...`, `test_reopening_bar_shows_already_saved_cause`, `test_changing_type_propagates_to_catalog_and_marker`) togs bort; resten skrevs om för att sätta nod via `db.set_equipment_node(...)` direkt istället för att manipulera en nu obefintlig `_node_combo`, plus två nya tester för själva popup-mekaniken (`Qt.WindowType.Popup`-flaggan sitter, `show_near()` gör den synlig). `ReloadAllPanelsDbSwapTests`/`EquipmentObjectPlacementTests`/`AutoConsequenceAndSafeguardOnCauseTemplateTests` (20 tester) krävde INGA ändringar — de höll sig till `.load()`/`.equipment_id`/`.marker_id`/`_create_cause_fn`/`.db`, som alla behölls oförändrade. Full svit körd innan commit (se nedan för resultat).
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **Sid-orienteringsinställningen (P&ID-inställningar) är inte kopplad till faktisk rendering/skanning** — sparas i `pid_page_orientation_hint` men läses ännu inte av PDF-rendering, OCR-förbehandling eller taggskanning, som alla idag bara följer PDF-filens egen `/Rotate`-flagga direkt. Att koppla in den kräver att tråda en override genom flera lager, inklusive de flerprocess-skanningsarbetarna — inte gjort 2026-08-11, se ovan. (Den nya per-blad-rotationsknappen från 2026-08-12 löser ett näraliggande men separat behov — manuell rotation av EN specifik sida — genom att mutera `fitz.Page`s rotation i minnet; den treväga globala inställningen är fortfarande inte inkopplad.)

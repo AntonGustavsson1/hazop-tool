@@ -5886,8 +5886,14 @@ class TreeNodeRenameTests(unittest.TestCase):
 
 
 class EquipmentDeviationBarTests(unittest.TestCase):
-    """The bottom-of-P&ID-view bar shown when an equipment marker is
-    clicked — see NOTES.md 'Nod → Utrustning → Avvikelse'."""
+    """The small popup shown near a clicked equipment marker on the P&ID —
+    see NOTES.md 'Nod → Utrustning → Avvikelse' and the 2026-08-12
+    follow-up ('en liten popup ... där jag kan välja lågt, högt flöde osv
+    istället för den menyn som är nu') that turned it from a persistent
+    bottom-docked bar with inline cause/frequency-combo editing into this
+    auto-dismissing popup with just a deviation checklist — editing a
+    cause's text/frequency once it exists is a scenario-table job now,
+    not this popup's."""
 
     @classmethod
     def setUpClass(cls):
@@ -5910,37 +5916,36 @@ class EquipmentDeviationBarTests(unittest.TestCase):
             pass
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    def test_load_shows_bar_and_populates_type_and_node(self):
+    def test_load_populates_title_with_tag_and_type(self):
         self.bar.load(self.eq_id, self.marker_id)
+        self.assertIn("V-101", self.bar._title_lbl.text())
+        self.assertIn("Ventil", self.bar._title_lbl.text())
+
+    def test_show_near_makes_the_popup_visible(self):
+        from PyQt6.QtCore import QPoint
+        self.bar.load(self.eq_id, self.marker_id)
+        self.bar.show_near(QPoint(100, 100))
         self.assertTrue(self.bar.isVisible())
-        self.assertEqual(self.bar._type_combo.currentText(), "Ventil")
 
-    def test_changing_type_propagates_to_catalog_and_marker(self):
-        """Known pre-existing gap fixed as part of this feature: changing
-        equipment_type used to update ONLY equipment_catalog, never the
-        already-drawn marker's own comp_type — see NOTES.md."""
-        self.bar.load(self.eq_id, self.marker_id)
-        other_type = next(t for t in sorted(COMPONENT_TYPES.keys()) if t != "Ventil")
-
-        self.bar._type_combo.setCurrentText(other_type)
-
-        cat = self.db.get_equipment_by_id(self.eq_id)
-        self.assertEqual(cat['equipment_type'], other_type)
-        marker = self.db.conn.execute(
-            "SELECT comp_type FROM equipment_markers WHERE id=?", (self.marker_id,)).fetchone()
-        self.assertEqual(marker['comp_type'], other_type)
+    def test_popup_uses_the_auto_dismiss_window_flag(self):
+        """Clicking outside must close it on its own — the whole point of
+        replacing the old persistent bar — which Qt.WindowType.Popup
+        gives for free, no manual outside-click detection needed."""
+        self.assertTrue(self.bar.windowFlags() & Qt.WindowType.Popup)
 
     def test_checking_deviation_without_a_node_selected_is_a_no_op(self):
         self.bar.load(self.eq_id, self.marker_id)
         self.assertEqual(self.db.equipment_deviation_count(self.eq_id), 0)
-        # No node picked yet — checkboxes must be disabled, nothing to toggle.
-        self.assertEqual(self.bar._node_combo.currentData(), None)
+        # No node yet (no active_node_id given, equipment has none of its
+        # own) — checkboxes must be disabled, nothing to toggle.
+        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        checkbox = row_widget.findChild(QCheckBox)
+        self.assertFalse(checkbox.isEnabled())
 
     def test_checking_deviation_after_node_selected_creates_it(self):
         node_id = self.db.add_node()
+        self.db.set_equipment_node(self.eq_id, node_id)
         self.bar.load(self.eq_id, self.marker_id)
-        idx = self.bar._node_combo.findData(node_id)
-        self.bar._node_combo.setCurrentIndex(idx)
 
         row_widget = self.bar._checklist_layout.itemAt(0).widget()
         checkbox = row_widget.findChild(QCheckBox)
@@ -5950,14 +5955,16 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         self.assertEqual(self.db.equipment_node_id(self.eq_id), node_id)
 
     def test_smart_node_default_assigns_active_node_when_equipment_has_none(self):
-        """See NOTES.md 'Slippa välja nod varje gång': the bar assigns
+        """See NOTES.md 'Slippa välja nod varje gång': the popup assigns
         PIDPanel._active_node_id immediately when the equipment has no node
         of its own yet, so checking a deviation works right away instead of
         forcing a manual node pick every time — explicit user request."""
         node_id = self.db.add_node()
         self.bar.load(self.eq_id, self.marker_id, active_node_id=node_id)
-        self.assertEqual(self.bar._node_combo.currentData(), node_id)
         self.assertEqual(self.db.equipment_node_id(self.eq_id), node_id)
+        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        checkbox = row_widget.findChild(QCheckBox)
+        self.assertTrue(checkbox.isEnabled())
 
     def test_smart_node_default_does_not_override_existing_node(self):
         node_id = self.db.add_node()
@@ -5968,9 +5975,8 @@ class EquipmentDeviationBarTests(unittest.TestCase):
 
     def test_number_key_shortcut_toggles_matching_checkbox(self):
         node_id = self.db.add_node()
+        self.db.set_equipment_node(self.eq_id, node_id)
         self.bar.load(self.eq_id, self.marker_id)
-        idx = self.bar._node_combo.findData(node_id)
-        self.bar._node_combo.setCurrentIndex(idx)
 
         self.assertGreaterEqual(len(self.bar._checklist_checkboxes), 1)
         self.bar._toggle_checkbox_by_number(1)
@@ -5980,20 +5986,19 @@ class EquipmentDeviationBarTests(unittest.TestCase):
 
     def test_number_key_shortcut_out_of_range_is_a_no_op(self):
         node_id = self.db.add_node()
+        self.db.set_equipment_node(self.eq_id, node_id)
         self.bar.load(self.eq_id, self.marker_id)
-        idx = self.bar._node_combo.findData(node_id)
-        self.bar._node_combo.setCurrentIndex(idx)
         # One past the last real row — must not raise or toggle anything.
         out_of_range = len(self.bar._checklist_checkboxes) + 1
         self.bar._toggle_checkbox_by_number(out_of_range)
         self.assertEqual(self.db.equipment_deviation_count(self.eq_id), 0)
 
     def _select_node_and_stub_cause_creation(self):
-        """Shared setup for the suggested-cause-chip / frequency tests:
-        picks a node and installs a fake _create_cause_fn that creates a
-        real cause row via Database directly, standing in for
-        PIDPanel._create_cause_for_bar (which needs a real P&ID marker/scene
-        this test class doesn't construct).
+        """Shared setup for the suggested-cause tests: assigns a node and
+        installs a fake _create_cause_fn that creates a real cause row via
+        Database directly, standing in for PIDPanel._create_cause_for_bar
+        (which needs a real P&ID marker/scene this test class doesn't
+        construct).
 
         Uses a Pump equipment item rather than self.eq_id ("Ventil") because
         standard_causes is only seeded per specific valve/equipment
@@ -6004,11 +6009,10 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         pump_marker_id = self.db.add_equipment_marker(
             pump_id, "P-101", 0, 200.0, 200.0, "Pump", confidence=0.9, link_method='leader')
         node_id = self.db.add_node()
+        self.db.set_equipment_node(pump_id, node_id)
         self.bar.load(pump_id, pump_marker_id)
-        idx = self.bar._node_combo.findData(node_id)
-        self.bar._node_combo.setCurrentIndex(idx)
 
-        created = {'pump_id': pump_id, 'node_id': node_id, 'update_calls': []}
+        created = {'pump_id': pump_id, 'node_id': node_id}
 
         def fake_create_cause(dev_id, comp_type, comp_tag, description, frequency=None):
             cause_id = self.db.add_cause(dev_id)
@@ -6016,8 +6020,7 @@ class EquipmentDeviationBarTests(unittest.TestCase):
             if frequency is not None:
                 # Stand-in for place_cause_from_template's real
                 # _compute_f_level() conversion — this test class only
-                # needs base_frequency to actually persist so the
-                # numeric-label UI has something real to read back.
+                # needs base_frequency to actually persist.
                 self.db.update_cause(cause_id, likelihood=0, base_frequency=frequency)
             created['cause_id'] = cause_id
             created['dev_id'] = dev_id
@@ -6025,41 +6028,14 @@ class EquipmentDeviationBarTests(unittest.TestCase):
             created['description'] = description
             return cause_id
 
-        def fake_update_cause(cause_id, comp_type, comp_tag, description, frequency=None):
-            self.db.update_cause(cause_id, description, comp_type=comp_type, comp_tag=comp_tag)
-            created['update_calls'].append(
-                {'cause_id': cause_id, 'description': description, 'frequency': frequency})
-
-        def fake_set_freq(cause_id, value):
-            f_level = 3 if value >= 0.01 else 0
-            self.db.update_cause(cause_id, likelihood=f_level, base_frequency=value)
-            created['set_freq_calls'] = created.get('set_freq_calls', []) + [(cause_id, value)]
-            return f_level
-
         self.bar._create_cause_fn = fake_create_cause
-        self.bar._update_cause_fn = fake_update_cause
-        self.bar._set_freq_fn = fake_set_freq
         return created
 
-    def test_frequency_combo_present_but_disabled_before_any_cause_exists(self):
-        """Bug report: 'Frekvensknappen dök först upp när jag valde någon
-        fritext' — the combo must always render (never hidden), just
-        disabled until this row actually has a cause_id to write against."""
-        node_id = self.db.add_node()
-        self.bar.load(self.eq_id, self.marker_id)
-        idx = self.bar._node_combo.findData(node_id)
-        self.bar._node_combo.setCurrentIndex(idx)
-
-        row_widget = self.bar._checklist_layout.itemAt(0).widget()
-        freq_combo = row_widget.findChildren(QComboBox)[-1]
-        self.assertFalse(freq_combo.isEnabled())
-
-    def test_checking_deviation_auto_creates_suggested_cause_and_enables_frequency_combo(self):
+    def test_checking_deviation_auto_creates_suggested_cause(self):
         """Förenklat orsaksval, ta bort dubbla val (NOTES.md): checking the
         deviation alone must create the top-suggested cause immediately —
-        no separate chip/button to click anymore, that was the 'dubbla
-        val' complaint (checkbox + chip + dropdown all doing overlapping
-        things)."""
+        no separate chip/dropdown needed, that editing now happens in the
+        scenario table once the cause row exists."""
         created = self._select_node_and_stub_cause_creation()
 
         row_widget = self.bar._checklist_layout.itemAt(0).widget()
@@ -6067,11 +6043,9 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         checkbox.setChecked(True)
 
         self.assertIn('cause_id', created)
-        cause_combo = row_widget.findChildren(QComboBox)[0]
-        self.assertEqual(cause_combo.currentText(), created['description'])
-        freq_combo = row_widget.findChildren(QComboBox)[-1]
-        self.assertTrue(freq_combo.isEnabled())
-        self.assertEqual(freq_combo.property('cause_id'), created['cause_id'])
+        causes = self.db.causes_for_deviation(created['dev_id'])
+        self.assertEqual(len(causes), 1)
+        self.assertEqual(causes[0]['description'], created['description'])
 
     def test_checking_deviation_passes_through_seeded_frequency(self):
         """'Pump stopp' is seeded with a real frequency estimate
@@ -6095,7 +6069,9 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         full unfiltered standard_deviations catalogue with no cause
         suggestions at all. The object-based fallback (_resolve_object_id +
         standard_causes_for_object) must find a substring match
-        (_obj_type_matches) and produce real suggestions instead."""
+        (_obj_type_matches) and produce a real suggestion instead — proven
+        here by checking the deviation and confirming a real (non-blank)
+        cause got auto-created for it, not just an empty placeholder."""
         self.assertEqual(
             self.db.standard_causes_for_comp_type("Ventil"), [],
             "sanity check: literal comp_type match is empty for this generic label")
@@ -6104,77 +6080,15 @@ class EquipmentDeviationBarTests(unittest.TestCase):
             obj_id, "expected a substring match against standard_objects (e.g. 'Manuell ventil')")
 
         node_id = self.db.add_node()
+        self.db.set_equipment_node(self.eq_id, node_id)
         self.bar.load(self.eq_id, self.marker_id)
-        idx = self.bar._node_combo.findData(node_id)
-        self.bar._node_combo.setCurrentIndex(idx)
-        row_widget = self.bar._checklist_layout.itemAt(0).widget()
-        cause_combo = row_widget.findChildren(QComboBox)[0]
-        # "+ orsak…" + at least one real suggestion + the free-text sentinel.
-        self.assertGreater(
-            cause_combo.count(), 2,
-            "expected real cause suggestions once the object-based fallback resolves")
-
-    def test_frequency_combo_change_writes_to_cause_likelihood(self):
-        created = self._select_node_and_stub_cause_creation()
-
+        captured = []
+        self.bar._create_cause_fn = lambda dev_id, ct, tag, desc, freq=None: (
+            captured.append(desc), self.db.add_cause(dev_id))[-1]
         row_widget = self.bar._checklist_layout.itemAt(0).widget()
         checkbox = row_widget.findChild(QCheckBox)
         checkbox.setChecked(True)
-
-        freq_combo = row_widget.findChildren(QComboBox)[-1]
-        freq_combo.setCurrentIndex(freq_to_idx(3))
-
-        cause = self.db.conn.execute(
-            "SELECT likelihood FROM causes WHERE id=?", (created['cause_id'],)).fetchone()
-        self.assertEqual(cause['likelihood'], 3)
-
-    def test_picking_a_different_cause_updates_in_place_instead_of_creating_a_second_one(self):
-        """Förenklat orsaksval, ta bort dubbla val (NOTES.md): the dropdown
-        is now a single 'pick or change the cause' control. Re-selecting a
-        DIFFERENT entry for a row that already auto-created a cause must
-        UPDATE that same cause (via _update_cause_fn), not create a
-        second, redundant one via _create_cause_fn."""
-        created = self._select_node_and_stub_cause_creation()
-        row_widget = self.bar._checklist_layout.itemAt(0).widget()
-        checkbox = row_widget.findChild(QCheckBox)
-        checkbox.setChecked(True)
-        first_cause_id = created['cause_id']
-
-        cause_combo = row_widget.findChildren(QComboBox)[0]
-        other_idx = next(
-            i for i in range(cause_combo.count())
-            if cause_combo.itemData(i) not in (None, created['description'],
-                                                self.bar._FREE_TEXT_SENTINEL))
-        other_text = cause_combo.itemData(other_idx)
-        cause_combo.setCurrentIndex(other_idx)
-        cause_combo.activated.emit(other_idx)
-
-        self.assertEqual(len(created['update_calls']), 1)
-        self.assertEqual(created['update_calls'][0]['cause_id'], first_cause_id)
-        self.assertEqual(created['update_calls'][0]['description'], other_text)
-        # No second cause row created for this deviation.
-        causes = self.db.causes_for_deviation(created['dev_id'])
-        self.assertEqual(len(causes), 1)
-        self.assertEqual(cause_combo.currentText(), other_text)
-
-    def test_reopening_bar_shows_already_saved_cause(self):
-        """Closing and reopening the bar for equipment that already has a
-        saved cause must show/enable that cause immediately — the row
-        shouldn't look unconfigured just because the bar was rebuilt."""
-        created = self._select_node_and_stub_cause_creation()
-        row_widget = self.bar._checklist_layout.itemAt(0).widget()
-        checkbox = row_widget.findChild(QCheckBox)
-        checkbox.setChecked(True)
-
-        # Simulate reopening: rebuild the checklist from scratch.
-        self.bar._rebuild_checklist()
-
-        row_widget2 = self.bar._checklist_layout.itemAt(0).widget()
-        cause_combo2 = row_widget2.findChildren(QComboBox)[0]
-        freq_combo2 = row_widget2.findChildren(QComboBox)[-1]
-        self.assertEqual(cause_combo2.currentText(), created['description'])
-        self.assertEqual(freq_combo2.property('cause_id'), created['cause_id'])
-        self.assertTrue(freq_combo2.isEnabled())
+        self.assertTrue(captured, "expected a real cause suggestion once the object-based fallback resolves")
 
     def test_unchecking_deviation_without_causes_deletes_silently(self):
         """Kryssrutan ska gå att av-/aktivera (NOTES.md) — unchecking a
@@ -6182,9 +6096,8 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         never picked one) must delete it right away with no confirmation
         prompt (nothing meaningful to lose)."""
         node_id = self.db.add_node()
+        self.db.set_equipment_node(self.eq_id, node_id)
         self.bar.load(self.eq_id, self.marker_id)
-        idx = self.bar._node_combo.findData(node_id)
-        self.bar._node_combo.setCurrentIndex(idx)
 
         row_widget = self.bar._checklist_layout.itemAt(0).widget()
         checkbox = row_widget.findChild(QCheckBox)
@@ -6222,16 +6135,13 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         self.assertIsNone(self.db.get_cause(created['cause_id']))
         self.assertEqual(self.db.equipment_deviation_count(created['pump_id']), 0)
 
-    def test_unchecking_emits_deviation_removed_and_resets_combos(self):
+    def test_unchecking_emits_deviation_removed(self):
         node_id = self.db.add_node()
+        self.db.set_equipment_node(self.eq_id, node_id)
         self.bar.load(self.eq_id, self.marker_id)
-        idx = self.bar._node_combo.findData(node_id)
-        self.bar._node_combo.setCurrentIndex(idx)
 
         row_widget = self.bar._checklist_layout.itemAt(0).widget()
         checkbox = row_widget.findChild(QCheckBox)
-        cause_combo = row_widget.findChildren(QComboBox)[0]
-        freq_combo = row_widget.findChildren(QComboBox)[-1]
 
         received = []
         self.bar.deviation_removed.connect(lambda dev_id, eq_id: received.append((dev_id, eq_id)))
@@ -6242,17 +6152,13 @@ class EquipmentDeviationBarTests(unittest.TestCase):
 
         self.assertEqual(len(received), 1)
         self.assertEqual(received[0][1], self.eq_id)
-        self.assertFalse(cause_combo.isEnabled())
-        self.assertFalse(freq_combo.isEnabled())
-        self.assertIsNone(freq_combo.property('cause_id'))
 
     def test_can_recheck_after_unchecking(self):
         """The whole point: checking, unchecking, and checking again must
         all work — not a one-way lock like the old v1 behavior."""
         node_id = self.db.add_node()
+        self.db.set_equipment_node(self.eq_id, node_id)
         self.bar.load(self.eq_id, self.marker_id)
-        idx = self.bar._node_combo.findData(node_id)
-        self.bar._node_combo.setCurrentIndex(idx)
 
         row_widget = self.bar._checklist_layout.itemAt(0).widget()
         checkbox = row_widget.findChild(QCheckBox)
@@ -6263,69 +6169,6 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         self.assertTrue(checkbox.isChecked())
         self.assertTrue(checkbox.isEnabled())
         self.assertEqual(self.db.equipment_deviation_count(self.eq_id), 1)
-
-    def test_numeric_frequency_label_shows_seeded_value_after_auto_create(self):
-        """'jag vill även ha med den numeriska frekvensen som finns
-        inlagt' — checking a deviation auto-creates 'Pump stopp' (seeded
-        frequency 0.02/år) and the row's numeric label must show it, not
-        just the F-level combo."""
-        self._select_node_and_stub_cause_creation()
-        row_widget = self.bar._checklist_layout.itemAt(0).widget()
-        checkbox = row_widget.findChild(QCheckBox)
-        checkbox.setChecked(True)
-
-        freq_combo = row_widget.findChildren(QComboBox)[-1]
-        num_btn = freq_combo.property('num_btn')
-        self.assertIsNotNone(num_btn)
-        self.assertTrue(num_btn.isEnabled())
-        self.assertIn("/år", num_btn.text())
-        self.assertNotEqual(num_btn.text(), "—")
-
-    def test_numeric_frequency_label_disabled_and_blank_before_any_cause(self):
-        node_id = self.db.add_node()
-        self.bar.load(self.eq_id, self.marker_id)
-        idx = self.bar._node_combo.findData(node_id)
-        self.bar._node_combo.setCurrentIndex(idx)
-
-        row_widget = self.bar._checklist_layout.itemAt(0).widget()
-        freq_combo = row_widget.findChildren(QComboBox)[-1]
-        num_btn = freq_combo.property('num_btn')
-        self.assertFalse(num_btn.isEnabled())
-        self.assertEqual(num_btn.text(), "—")
-
-    def test_clicking_numeric_frequency_label_writes_exact_value(self):
-        created = self._select_node_and_stub_cause_creation()
-        row_widget = self.bar._checklist_layout.itemAt(0).widget()
-        checkbox = row_widget.findChild(QCheckBox)
-        checkbox.setChecked(True)
-
-        freq_combo = row_widget.findChildren(QComboBox)[-1]
-        num_btn = freq_combo.property('num_btn')
-        with unittest.mock.patch(
-                'pid_viewer.QInputDialog.getDouble', return_value=(0.05, True)):
-            num_btn.click()
-
-        self.assertEqual(created['set_freq_calls'], [(created['cause_id'], 0.05)])
-        cause = self.db.get_cause(created['cause_id'])
-        self.assertEqual(cause['base_frequency'], 0.05)
-        self.assertEqual(cause['likelihood'], 3)   # per fake_set_freq's stand-in rule
-        self.assertEqual(freq_combo.currentIndex(), freq_to_idx(3))
-        self.assertIn("/år", num_btn.text())
-
-    def test_deactivating_resets_numeric_frequency_label(self):
-        self._select_node_and_stub_cause_creation()
-        row_widget = self.bar._checklist_layout.itemAt(0).widget()
-        checkbox = row_widget.findChild(QCheckBox)
-        checkbox.setChecked(True)
-        freq_combo = row_widget.findChildren(QComboBox)[-1]
-        num_btn = freq_combo.property('num_btn')
-        self.assertNotEqual(num_btn.text(), "—")
-
-        with unittest.mock.patch('pid_viewer.QMessageBox.question',
-                                  return_value=QMessageBox.StandardButton.Yes):
-            checkbox.setChecked(False)
-        self.assertEqual(num_btn.text(), "—")
-        self.assertFalse(num_btn.isEnabled())
 
     def test_unchecking_confirmation_states_full_cascade_counts(self):
         """The confirmation message must count consequences/safeguards too,
