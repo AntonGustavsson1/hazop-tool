@@ -1736,5 +1736,368 @@ class ClusterSimilarityTests(unittest.TestCase):
         self.assertIsNone(sg.find_cluster_at_point([], 0, 0))
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# No-native-text CAD exports (2026-08-12) — some real reference P&IDs
+# (confirmed on Loket, Smurfit Kappa, and one Swerim and one NYA file) draw
+# ALL text as pure vector strokes via a non-embedded/SHX-style font instead
+# of real searchable text objects: page.get_text() finds ZERO words/spans
+# anywhere on the page despite tens of thousands of vector primitives (a
+# real Loket page measured 54,396 primitives at a page.get_drawings() text
+# span count of 0). dominant_text_size()'s hardcoded 10.0pt fallback badly
+# overestimates such a page's real reference scale (measured: a real
+# Loket page's own small-glyph-stroke clusters sit around ~1.9pt, a >5x
+# gap), which shrinks every genuine symbol's norm_size by the same factor
+# and was confirmed (by directly querying find_symbol_clusters against
+# that file) to make classify_cluster/find_valve_shapes reject real,
+# correctly-shaped valve/instrument symbols outright — a visually obvious
+# bow-tie relief-valve pair next to tag "1-RV-25" scored norm_size well
+# under the 1.5 floor purely because of this fallback.
+# ══════════════════════════════════════════════════════════════════════════
+
+class NoTextScaleFallbackTests(unittest.TestCase):
+    def test_no_text_page_estimates_scale_from_vector_primitives(self):
+        """A page with plenty of vector geometry but zero extractable text
+        (no insert_text calls at all) must not fall back to the old blind
+        10.0pt default — it must derive a scale from the primitives'
+        own typical (small) size instead, close to their real median
+        length, not 10x too large."""
+        doc, page = _new_page(200, 200)
+        shape = page.new_shape()
+        # ~40 tiny "glyph stroke" primitives, length ~0.3-0.5pt each,
+        # simulating a CAD export's vector-outlined text — the same order
+        # of magnitude measured on the real Loket file (median primitive
+        # length 0.43pt).
+        for i in range(40):
+            x = 10.0 + (i % 10) * 4.0
+            y = 10.0 + (i // 10) * 4.0
+            shape.draw_line(fitz.Point(x, y), fitz.Point(x + 0.4, y + 0.3))
+            shape.finish(color=(0, 0, 0), width=0.1, closePath=False)
+        shape.commit()
+
+        scale = sg.dominant_text_size(page)
+        self.assertLess(scale, 3.0,
+            f"scale={scale} — must be derived from the ~0.3-0.5pt primitives "
+            "on this no-text page, not the old blind 10.0pt default")
+        self.assertGreater(scale, 0.0)
+        doc.close()
+
+    def test_no_text_no_drawings_page_uses_absolute_last_resort_default(self):
+        """A genuinely blank page (no text AND no vector primitives to
+        estimate from at all) has nothing to derive a scale from — must
+        still return the old 10.0pt default rather than crash or return 0."""
+        doc, page = _new_page(200, 200)
+        self.assertEqual(sg.dominant_text_size(page), 10.0)
+        doc.close()
+
+    def test_page_with_real_text_is_unaffected(self):
+        """Guard against overcorrecting: a page that DOES have real,
+        searchable text must keep using it exactly as before — the
+        primitive-derived fallback must only ever activate when native
+        text is completely absent."""
+        doc, page = _new_page(200, 200)
+        page.insert_text(fitz.Point(10, 20), "V-201", fontsize=8)
+        self.assertEqual(sg.dominant_text_size(page), 8.0)
+        doc.close()
+
+    def test_find_symbol_clusters_passes_shared_primitives_to_scale_estimation(self):
+        """find_symbol_clusters() already extracts primitives before
+        computing scale — it must reuse that same list for the no-text
+        fallback instead of re-extracting (a second get_drawings() call)."""
+        doc, page = _new_page(200, 200)
+        shape = page.new_shape()
+        for i in range(40):
+            x = 10.0 + (i % 10) * 4.0
+            y = 10.0 + (i // 10) * 4.0
+            shape.draw_line(fitz.Point(x, y), fitz.Point(x + 0.4, y + 0.3))
+            shape.finish(color=(0, 0, 0), width=0.1, closePath=False)
+        shape.commit()
+        # Must simply not raise and must return a list (smoke test that the
+        # shared-primitives wiring works end to end).
+        clusters = sg.find_symbol_clusters(page, min_confidence=0.0)
+        self.assertIsInstance(clusters, list)
+        doc.close()
+
+
+class SmallValveRejectedByBlindScaleDefaultTests(unittest.TestCase):
+    """A small valve, proportioned like a real small-format CAD export
+    (confirmed on the real Loket file: many real bow-tie valve icons have
+    a bbox diagonal well under 20pt), must not be rejected by
+    classify_cluster's norm_size floor just because the page has no
+    native text to compute a correct scale from."""
+
+    def _no_text_page_with_small_valve(self):
+        doc, page = _new_page(200, 200)
+        shape = page.new_shape()
+        # Small bow-tie: two triangles sharing an apex, bbox diagonal
+        # ~11.3pt — comfortably real-symbol-sized relative to the ~0.3-
+        # 0.5pt glyph-noise primitives below, but norm_size = 11.3/10.0 =
+        # 1.13 (< the 1.5 floor) under the OLD blind 10.0pt default.
+        shape.draw_polyline([fitz.Point(96, 96), fitz.Point(96, 104), fitz.Point(100, 100)])
+        shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+        shape.draw_polyline([fitz.Point(104, 96), fitz.Point(104, 104), fitz.Point(100, 100)])
+        shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+        # Dense "glyph noise" elsewhere on the page, far from the valve.
+        for i in range(40):
+            x = 10.0 + (i % 10) * 4.0
+            y = 10.0 + (i // 10) * 4.0
+            shape.draw_line(fitz.Point(x, y), fitz.Point(x + 0.4, y + 0.3))
+            shape.finish(color=(0, 0, 0), width=0.1, closePath=False)
+        shape.commit()
+        return doc, page
+
+    def test_small_valve_norm_size_clears_the_floor_on_a_no_text_page(self):
+        doc, page = self._no_text_page_with_small_valve()
+        clusters = sg.find_symbol_clusters(page, min_confidence=0.0)
+        valve = next((c for c in clusters if c['bbox'] == (96.0, 96.0, 104.0, 104.0)), None)
+        self.assertIsNotNone(valve, "expected the small valve as its own cluster")
+        self.assertGreaterEqual(valve['norm_size'], 1.5,
+            f"norm_size={valve['norm_size']} — must clear classify_cluster's "
+            "1.5 floor once scale is correctly derived from the page's own "
+            "vector geometry instead of the blind 10.0pt no-text default")
+        doc.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Dense glyph-noise grid cells (2026-08-12) — a CAD export that draws all
+# text as pure vector strokes floods individual _GRID_CELL-sized (20x20pt)
+# areas with far more than _MAX_CELL_DENSITY primitives. cluster_primitives'
+# original response to that overflow — skip the WHOLE cell's pairwise
+# check — also fragmented every real valve/instrument symbol that happened
+# to sit in or near such a dense patch into single-primitive singletons,
+# since not even the symbol's own handful of edges got compared to each
+# other. Confirmed on a real Loket page: querying every detected cluster in
+# a region containing two visibly intact bow-tie relief-valve icons (tag
+# "1-RV-25") and a divided instrument bubble ("FRC 64") returned nothing
+# but n_items=1 singletons.
+# ══════════════════════════════════════════════════════════════════════════
+
+class DenseGlyphNoiseCellClusteringTests(unittest.TestCase):
+    def test_valve_in_overdense_cell_still_merges_with_itself(self):
+        doc, page = _new_page(200, 200)
+        shape = page.new_shape()
+        # 45 tiny noise primitives (length ~0.07pt), packed into a small
+        # corner of grid cell (4,4) (pt range 80-100 on both axes) — well
+        # over _MAX_CELL_DENSITY=40 — but far enough (>_CLUSTER_GAP=3.0pt)
+        # from the valve below that they could never legitimately merge
+        # with it or each other.
+        for i in range(45):
+            col, row = i % 9, i // 9
+            x = 80.0 + col * 0.12
+            y = 80.0 + row * 0.12
+            shape.draw_line(fitz.Point(x, y), fitz.Point(x + 0.05, y + 0.05))
+            shape.finish(color=(0, 0, 0), width=0.05, closePath=False)
+        # A small bow-tie valve sitting in the SAME grid cell (4,4),
+        # comfortably clear of the noise corner above (nearest noise point
+        # is >(85-80.96)=4pt away from the valve's own bbox, over the 3.0pt
+        # cluster gap).
+        shape.draw_polyline([fitz.Point(85, 85), fitz.Point(85, 93), fitz.Point(89, 89)])
+        shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+        shape.draw_polyline([fitz.Point(93, 85), fitz.Point(93, 93), fitz.Point(89, 89)])
+        shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+        shape.commit()
+
+        prims = sg.extract_primitives(page)
+        # scale=1.0 — what a correctly-fixed dominant_text_size() would
+        # estimate for a real no-text CAD export page (see
+        # NoTextScaleFallbackTests), not the old blind 10.0pt default.
+        # rescue_dense_cells=True — the narrow opt-in find_symbol_clusters
+        # only enables for pages with no native text at all (see
+        # RescueDenseCellsGatingTests below for why it must default off).
+        groups = sg.cluster_primitives(prims, scale=1.0, rescue_dense_cells=True)
+        doc.close()
+
+        valve_groups = [g for g in groups
+                        if sg.cluster_features(prims, g, page_text_scale=1.0)['bbox']
+                        == (85.0, 85.0, 93.0, 93.0)]
+        self.assertEqual(len(valve_groups), 1,
+            "the valve's own two triangles must merge into one cluster "
+            "despite sitting in a >_MAX_CELL_DENSITY cell of unrelated "
+            "tiny glyph-noise primitives")
+
+    def test_rescue_disabled_by_default_leaves_valve_fragmented(self):
+        """Guard against the flag silently defaulting on: without
+        rescue_dense_cells=True, behaviour must be byte-for-byte the same
+        as before this feature existed — the valve's own triangles stay
+        fragmented into singletons, exactly like every other pre-existing
+        caller of cluster_primitives() (including find_symbol_clusters on
+        any page that DOES have native text) still experiences."""
+        doc, page = _new_page(200, 200)
+        shape = page.new_shape()
+        for i in range(45):
+            col, row = i % 9, i // 9
+            x = 80.0 + col * 0.12
+            y = 80.0 + row * 0.12
+            shape.draw_line(fitz.Point(x, y), fitz.Point(x + 0.05, y + 0.05))
+            shape.finish(color=(0, 0, 0), width=0.05, closePath=False)
+        shape.draw_polyline([fitz.Point(85, 85), fitz.Point(85, 93), fitz.Point(89, 89)])
+        shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+        shape.draw_polyline([fitz.Point(93, 85), fitz.Point(93, 93), fitz.Point(89, 89)])
+        shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+        shape.commit()
+
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=1.0)   # rescue_dense_cells defaults to False
+        doc.close()
+
+        valve_groups = [g for g in groups
+                        if sg.cluster_features(prims, g, page_text_scale=1.0)['bbox']
+                        == (85.0, 85.0, 93.0, 93.0)]
+        self.assertEqual(len(valve_groups), 0,
+            "with the default (rescue_dense_cells=False), the over-dense "
+            "cell must still be skipped outright — this is the pre-"
+            "existing, already-safe behaviour every other caller keeps")
+
+    def test_genuinely_huge_dense_cell_of_real_sized_primitives_still_skipped(self):
+        """Guard against overcorrecting: a cell packed with many primitives
+        that are ALL real-symbol-sized (a genuine dense hatching/grid
+        pattern, not glyph noise) must still be skipped for performance —
+        the fix only rescues cells that are dense because of TINY noise
+        specifically, not blanket-raise the density cap."""
+        doc, page = _new_page(200, 200)
+        shape = page.new_shape()
+        for i in range(45):
+            x = 80.0 + (i % 9) * 2.0
+            y = 80.0 + (i // 9) * 2.0
+            shape.draw_line(fitz.Point(x, y), fitz.Point(x + 8.0, y + 8.0))
+            shape.finish(color=(0, 0, 0), width=0.5, closePath=False)
+        shape.commit()
+
+        prims = sg.extract_primitives(page)
+        import time
+        t0 = time.time()
+        groups = sg.cluster_primitives(prims, scale=1.0, rescue_dense_cells=True)
+        elapsed = time.time() - t0
+        doc.close()
+        self.assertLess(elapsed, 5.0,
+            "a genuinely dense cell of real-sized primitives must still be "
+            "cheap — it must not fall through to an unbounded pairwise scan")
+
+
+class RescueDenseCellsGatingTests(unittest.TestCase):
+    """find_symbol_clusters() must only turn on cluster_primitives'
+    dense-cell rescue for pages with NO native text at all — confirmed
+    necessary on a real Hybrit P&ID: enabling it unconditionally bridged
+    a correctly-found valve's clean 26-primitive bow-tie into a 74-
+    primitive blob spanning a neighboring shape (bowtie_score dropping
+    from 0.58 to 0.0), losing a detection that worked before. A page's
+    own native text presence (already needed for _text_word_bboxes) is
+    the gate: no native text -> enable the rescue (the one condition it
+    was confirmed necessary for); any native text at all -> leave
+    clustering byte-for-byte identical to before this feature existed."""
+
+    def _page_with_dense_noise_and_valve(self, with_text):
+        doc, page = _new_page(200, 200)
+        shape = page.new_shape()
+        for i in range(45):
+            col, row = i % 9, i // 9
+            x = 80.0 + col * 0.12
+            y = 80.0 + row * 0.12
+            shape.draw_line(fitz.Point(x, y), fitz.Point(x + 0.05, y + 0.05))
+            shape.finish(color=(0, 0, 0), width=0.05, closePath=False)
+        shape.draw_polyline([fitz.Point(85, 85), fitz.Point(85, 93), fitz.Point(89, 89)])
+        shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+        shape.draw_polyline([fitz.Point(93, 85), fitz.Point(93, 93), fitz.Point(89, 89)])
+        shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+        shape.commit()
+        if with_text:
+            page.insert_text(fitz.Point(10, 20), "V-201", fontsize=8)
+        return doc, page
+
+    def test_no_native_text_page_enables_rescue(self):
+        doc, page = self._page_with_dense_noise_and_valve(with_text=False)
+        clusters = sg.find_symbol_clusters(page, min_confidence=0.0)
+        doc.close()
+        valve = next((c for c in clusters if c['bbox'] == (85.0, 85.0, 93.0, 93.0)), None)
+        self.assertIsNotNone(valve,
+            "a page with no native text at all must get the dense-cell "
+            "rescue, recovering the valve's own two triangles as one cluster")
+
+    def test_page_with_native_text_leaves_rescue_off(self):
+        doc, page = self._page_with_dense_noise_and_valve(with_text=True)
+        clusters = sg.find_symbol_clusters(page, min_confidence=0.0)
+        doc.close()
+        valve = next((c for c in clusters if c['bbox'] == (85.0, 85.0, 93.0, 93.0)), None)
+        self.assertIsNone(valve,
+            "a page WITH native text must NOT get the dense-cell rescue — "
+            "its clustering must stay exactly as it was before this "
+            "feature existed, to avoid the real Hybrit regression")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Pipe-run threshold vs. glyph-size scale decoupling (2026-08-12) —
+# confirmed necessary on a real Smurfit Kappa P&ID: feeding the corrected,
+# much smaller no-text `scale` estimate (see NoTextScaleFallbackTests)
+# into _is_pipe_run_line's threshold TOO shrank it enough (60pt -> ~30pt at
+# the estimated scale of ~5) to cut a real valve's own 40pt actuator-stem
+# connector, fragmenting a cluster that correctly merged into one 22-
+# primitive bow-tie (bowtie_score 0.92) under the OLD code into a useless
+# 1-primitive singleton. "How big is a single glyph" and "how long is too
+# long to be part of one symbol assembly" are unrelated physical
+# quantities that only happened to share one number before.
+# ══════════════════════════════════════════════════════════════════════════
+
+class PipeScaleDecoupledFromGlyphScaleTests(unittest.TestCase):
+    def _valve_with_40pt_stem_page(self):
+        doc, page = _new_page(200, 200)
+        shape = page.new_shape()
+        shape.draw_polyline([fitz.Point(90, 90), fitz.Point(90, 110), fitz.Point(100, 100)])
+        shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+        shape.draw_polyline([fitz.Point(110, 90), fitz.Point(110, 110), fitz.Point(100, 100)])
+        shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+        # A 40pt actuator-stem connector to another part of the same
+        # physical assembly (an actuator body) — over 6x a small (~5pt)
+        # glyph-calibrated scale's pipe-run threshold, but well under 6x
+        # the old, larger no-text default's threshold.
+        shape.draw_line(fitz.Point(100, 90), fitz.Point(100, 50))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_rect(fitz.Rect(95, 40, 105, 50))
+        shape.finish(color=(0, 0, 0), width=1)
+        shape.commit()
+        return doc, page
+
+    def test_small_scale_alone_fragments_the_stem_connection(self):
+        """Reproduces the bug in isolation: passing the SAME small value
+        for both scale and pipe-run purposes (the old, pre-decoupling
+        behavior) cuts the 40pt stem."""
+        doc, page = self._valve_with_40pt_stem_page()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=5.0)   # pipe_scale defaults to scale
+        doc.close()
+        sizes = sorted(len(g) for g in groups)
+        self.assertIn(1, sizes,
+            "with pipe_scale defaulting to the small scale, the stem "
+            "must be cut, leaving fragments — this documents the bug "
+            "pipe_scale exists to fix, not a desired outcome")
+
+    def test_explicit_pipe_scale_keeps_stem_connection_intact(self):
+        """The fix: pass the OLD, larger value via pipe_scale explicitly,
+        independent of a small `scale`."""
+        doc, page = self._valve_with_40pt_stem_page()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=5.0, pipe_scale=10.0)
+        doc.close()
+        sizes = sorted(len(g) for g in groups)
+        self.assertNotIn(1, sizes,
+            "with an explicit, larger pipe_scale, the 40pt stem must "
+            "still connect the valve to the actuator body, matching the "
+            "pre-existing (correct) behaviour")
+
+    def test_find_symbol_clusters_uses_old_default_for_pipe_scale_on_no_text_page(self):
+        """End-to-end: find_symbol_clusters() on a no-text page must keep
+        the valve+stem+actuator assembly merged (using the OLD, larger
+        _NO_TEXT_SCALE_DEFAULT for pipe-run purposes) even though its own
+        glyph-calibrated `scale` estimate is much smaller."""
+        doc, page = self._valve_with_40pt_stem_page()
+        clusters = sg.find_symbol_clusters(page, min_confidence=0.0)
+        doc.close()
+        # The valve's own two triangles must still be found as a compact
+        # bow-tie-scoring core, not obliterated by the stem/actuator being
+        # wrongly cut and diluting everything downstream.
+        bowtie = next((c for c in clusters if c.get('bowtie_score', 0) > 0.5), None)
+        self.assertIsNotNone(bowtie,
+            "the valve must still score as a bow-tie once pipe_scale is "
+            "correctly decoupled from the page's small glyph-based scale")
+
+
 if __name__ == '__main__':
     unittest.main()

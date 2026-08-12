@@ -3972,6 +3972,69 @@ class BowtieValveDetectionTests(unittest.TestCase):
         self.assertTrue(0 <= results[0]['y'] <= page_rect.height,
             f"y={results[0]['y']} must fall inside the rendered page (0..{page_rect.height})")
 
+    def test_find_valve_shapes_detects_small_valve_on_no_text_dense_noise_page(self):
+        """End-to-end reproduction of a real generalization failure found
+        while auditing against the "P&ID ref/" reference library (2026-
+        08-12): Loket, Smurfit Kappa, and one Swerim/NYA file all draw
+        EVERY piece of text as pure vector strokes via a non-embedded/
+        SHX-style font, so page.get_text() finds zero words/spans despite
+        tens of thousands of vector primitives (a real Loket page measured
+        54,396 primitives against 0 text spans, ~5x denser than a normal
+        text-bearing P&ID of the same size). Two compounding bugs hid real
+        valves on such pages: (1) dominant_text_size()'s blind 10.0pt
+        no-text fallback shrank norm_size for every real symbol until it
+        fell under classify_cluster's/find_valve_shapes' 1.5 floor, and
+        (2) cluster_primitives' dense-grid-cell skip fragmented a real
+        valve's own few edges into unmergeable singletons whenever they
+        shared a 20x20pt cell with a patch of glyph-stroke noise — visibly
+        intact bow-tie valve icons next to real tags (confirmed: Loket tag
+        "1-RV-25") queried as nothing but n_items=1 singleton clusters.
+        This test needs BOTH fixes together: fixing only the scale
+        wouldn't help while the valve's own primitives still can't merge,
+        and fixing only the clustering wouldn't help while the merged
+        valve's norm_size still falls under the floor."""
+        from equipment_detection import find_valve_shapes
+        import fitz
+        path = os.path.join(self._tmpdir, "no_text_dense_noise.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=200, height=200)
+        shape = page.new_shape()
+        # Small bow-tie valve (bbox diagonal ~11.3pt) — proportioned like
+        # many real bow-tie icons on the real Loket file.
+        shape.draw_polyline([fitz.Point(96, 96), fitz.Point(96, 104), fitz.Point(100, 100)])
+        shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+        shape.draw_polyline([fitz.Point(104, 96), fitz.Point(104, 104), fitz.Point(100, 100)])
+        shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+        # Dense "vector-outlined text" noise: 45 tiny primitives packed
+        # into the SAME 20x20pt grid cell as the valve (cell (4,4), pt
+        # range 80-100 on both axes), far enough from the valve's own bbox
+        # (>_CLUSTER_GAP=3.0pt) that they could never legitimately merge
+        # with it.
+        for i in range(45):
+            col, row = i % 9, i // 9
+            x = 80.0 + col * 0.12
+            y = 80.0 + row * 0.12
+            shape.draw_line(fitz.Point(x, y), fitz.Point(x + 0.05, y + 0.05))
+            shape.finish(color=(0, 0, 0), width=0.05, closePath=False)
+        shape.commit()
+        # Deliberately NO insert_text call anywhere on this page — the
+        # whole point is reproducing a page with zero native text.
+        doc.save(path)
+        doc.close()
+
+        doc = fitz.open(path)
+        try:
+            words = doc[0].get_text("words")
+            self.assertEqual(words, [], "fixture must have zero native text, matching the real files")
+            results = find_valve_shapes(doc)
+        finally:
+            doc.close()
+        self.assertEqual(len(results), 1,
+            "the small valve must be found despite the page having no "
+            "native text and a dense patch of glyph-noise-sized primitives "
+            "sharing its grid cell")
+        self.assertGreater(results[0]['confidence'], 0.5)
+
     def test_find_pump_shapes_detects_circle_with_impeller_diagonal(self):
         """find_pump_shapes() — the pump counterpart to find_valve_shapes(),
         added after studying real LKAB/Gryaab P&IDs: a pump is a circle

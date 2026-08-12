@@ -297,7 +297,20 @@ def _grid_bucketed_union_find(primitives, idxs, gap):
     return uf
 
 
-def cluster_primitives(primitives, gap=_CLUSTER_GAP, scale=10.0):
+_TINY_PRIM_SCALE_FRACTION = 1.0   # a primitive whose own length is under
+                                   # this many "reference scale" units is
+                                   # noise-sized — see cluster_primitives'
+                                   # dense-cell rescue below. Confirmed on
+                                   # a real Loket P&ID page: individual
+                                   # vector-drawn glyph-stroke clusters
+                                   # measured ~1.9pt against a ~2pt
+                                   # corrected page scale (right around
+                                   # 1x), while every real valve/instrument
+                                   # edge sampled was several times the
+                                   # page scale or more.
+
+
+def cluster_primitives(primitives, gap=_CLUSTER_GAP, scale=10.0, rescue_dense_cells=False, pipe_scale=None):
     """Group primitives into connected components by actual edge proximity
     (see _prim_gap — deliberately not bbox proximity).
 
@@ -308,7 +321,7 @@ def cluster_primitives(primitives, gap=_CLUSTER_GAP, scale=10.0):
 
     Cells denser than _MAX_CELL_DENSITY skip the pairwise check entirely.
     A real equipment symbol is a handful of primitives (a bowtie is 6, a
-    circle is 4); a 20pt cell packed with dozens+ primitives is a
+    circle is 4); a 20pt cell packed with dozens+ primitives is usually a
     hatching/fill-texture or dense title-block-table pattern, not a
     discrete symbol — measured on real P&ID reference files, a single
     such cell can hold 1000+ primitives, which made the O(k^2) pairwise
@@ -317,18 +330,72 @@ def cluster_primitives(primitives, gap=_CLUSTER_GAP, scale=10.0):
     (almost always low-confidence) singleton clusters — classify_cluster
     still runs on them, nothing is silently dropped from the result.
 
+    `rescue_dense_cells` (default False — see find_symbol_clusters for the
+    one narrow condition where it's turned on) filters an over-dense cell
+    down to its "non-tiny" members (length >= _TINY_PRIM_SCALE_FRACTION *
+    scale) instead of skipping it outright, and gives that filtered-down
+    set a normal pairwise check if it's itself back under the density cap.
+    This exists for a CAD export that draws ALL text as pure vector
+    strokes (no embedded/searchable font — confirmed on real Loket/
+    Smurfit Kappa/Swerim/NYA P&IDs, up to 68,000+ primitives on a single
+    ordinary-sized page): a real valve/instrument symbol can land in the
+    SAME 20x20pt cell as a dense patch of glyph-stroke noise, and an
+    outright skip there used to fragment that symbol's own few edges into
+    singletons too — not just the surrounding noise (confirmed on a real
+    Loket page: querying every cluster in a region containing two
+    visibly intact bow-tie relief-valve icons and a divided instrument
+    bubble returned nothing but n_items=1 singletons).
+
+    This is deliberately NOT the default: verified on a real, normally-
+    text-bearing Hybrit P&ID (dense hatching/linework, not glyph noise)
+    that turning it on unconditionally can bridge a cell's "non-tiny"
+    survivors into an unrelated neighboring shape that the outright skip
+    was — by accident, but usefully — keeping apart: a real valve's clean
+    26-primitive bow-tie (bowtie_score 0.58) fused into a 74-primitive
+    blob spanning a neighboring shape (bowtie_score 0.0, aspect 4.49),
+    losing a previously-correct detection. Gating this behind an explicit
+    flag that find_symbol_clusters only sets for pages with NO native
+    text at all keeps every already-working, text-bearing file's
+    clustering (and performance) byte-for-byte identical to before this
+    existed, while still recovering the no-text-CAD-export failure mode.
+
     `scale` (pass dominant_text_size(page), see find_symbol_clusters) sets
-    what counts as a "long" pipe-run line for _is_pipe_run_line — such
-    lines are never allowed to bridge two primitives into one cluster
-    (see that function for why: a valve merges with its own pipe network
-    otherwise). They still end up in the returned groups as their own
-    (harmless) cluster, same as any other ungrouped primitive.
+    the reference size used for the dense-cell rescue's "tiny" floor (see
+    above) — a DIFFERENT concept from `pipe_scale` below despite both
+    historically being fed the same single number.
+
+    `pipe_scale` (defaults to `scale` if not given, for backward
+    compatibility with every existing caller) sets what counts as a
+    "long" pipe-run line for _is_pipe_run_line — such lines are never
+    allowed to bridge two primitives into one cluster (see that function
+    for why: a valve merges with its own pipe network otherwise). They
+    still end up in the returned groups as their own (harmless) cluster,
+    same as any other ungrouped primitive.
+
+    These two are DELIBERATELY separate parameters, not one: "how big is
+    a single glyph" (what `scale` means on a no-text CAD export page,
+    since dominant_text_size falls back to estimating it from vector
+    primitives there — see that function) and "how long is too long to
+    be part of one symbol assembly rather than a pipe run" describe two
+    unrelated physical things that only happen to have been the same
+    number historically on a page with real, normal-sized text. Confirmed
+    necessary on a real Smurfit Kappa P&ID: feeding the corrected (much
+    smaller, glyph-calibrated) no-text scale into the pipe-run threshold
+    too shrunk it enough (60pt -> ~30pt) to cut a real valve's own 40pt
+    actuator-stem connector, fragmenting a cluster that used to merge
+    correctly when the pipe-run threshold stayed at the old, larger,
+    glyph-unrelated default. find_symbol_clusters passes the ORIGINAL
+    (larger) no-text default for `pipe_scale` specifically, while `scale`
+    itself carries the corrected small estimate for norm_size/rescue
+    purposes — see its own call site for exactly which value goes where.
 
     Returns a list of index-lists into `primitives` (one list per cluster).
     """
     n = len(primitives)
     if n == 0:
         return []
+    if pipe_scale is None:
+        pipe_scale = scale
     uf = _UnionFind(n)
     grid = {}
     for idx, prim in enumerate(primitives):
@@ -337,16 +404,21 @@ def cluster_primitives(primitives, gap=_CLUSTER_GAP, scale=10.0):
             for gy in range(int(y0 // _GRID_CELL), int(y1 // _GRID_CELL) + 1):
                 grid.setdefault((gx, gy), []).append(idx)
 
+    tiny_floor = _TINY_PRIM_SCALE_FRACTION * max(scale, 1.0)
     for cell_items in grid.values():
         if len(cell_items) > _MAX_CELL_DENSITY:
-            continue
+            if not rescue_dense_cells:
+                continue
+            cell_items = [i for i in cell_items if _prim_length(primitives[i]) >= tiny_floor]
+            if len(cell_items) < 2 or len(cell_items) > _MAX_CELL_DENSITY:
+                continue
         for a in range(len(cell_items)):
             i = cell_items[a]
             for b in range(a + 1, len(cell_items)):
                 j = cell_items[b]
                 if uf.find(i) == uf.find(j):
                     continue
-                if _is_pipe_run_line(primitives[i], scale) or _is_pipe_run_line(primitives[j], scale):
+                if _is_pipe_run_line(primitives[i], pipe_scale) or _is_pipe_run_line(primitives[j], pipe_scale):
                     continue
                 if _prim_gap(primitives[i], primitives[j]) <= gap:
                     uf.union(i, j)
@@ -1022,9 +1094,39 @@ def classify_cluster(features):
     return min(1.0, score)
 
 
-def dominant_text_size(page):
+_NO_TEXT_SCALE_DEFAULT = 10.0   # absolute last-resort default — only used
+                                # when a page has NEITHER native text NOR
+                                # any vector primitives to estimate a scale
+                                # from at all (a genuinely blank page).
+
+
+def dominant_text_size(page, primitives=None):
     """Median span font size on the page — used to normalize symbol sizes
-    across differently-scaled drawings (A4 vs A0/A1)."""
+    across differently-scaled drawings (A4 vs A0/A1).
+
+    Some real CAD exports (confirmed on Loket, Smurfit Kappa, and one
+    Swerim and one NYA reference P&ID) draw ALL text — tags, labels,
+    everything — as pure vector strokes via a non-embedded/SHX-style font
+    instead of real searchable text objects: page.get_text() finds ZERO
+    words/spans anywhere on the page despite tens of thousands of vector
+    primitives (a real Loket page measured 54,396 primitives against 0
+    text spans). The old hardcoded 10.0pt fallback badly overestimates
+    such a page's real reference scale — measured on that same real Loket
+    page: its own small-glyph-stroke clusters sit around ~1.9pt, a >5x
+    gap — which shrinks every genuine symbol's norm_size by the same
+    factor and was confirmed (by directly running find_symbol_clusters
+    against the file) to make classify_cluster/find_valve_shapes reject
+    real, correctly-shaped valve symbols outright (a visually obvious
+    bow-tie relief-valve pair next to tag "1-RV-25" scored well under the
+    1.5 norm_size floor for exactly this reason).
+
+    When no native text is found, falls back to estimating the scale from
+    the page's own vector primitives instead (see
+    _estimate_scale_from_primitives) rather than the blind default.
+    `primitives`, if given, is used as-is instead of re-extracting via a
+    second get_drawings() call — find_symbol_clusters already extracts
+    them before calling this and can pass the same list.
+    """
     sizes = []
     try:
         d = page.get_text("dict")
@@ -1037,9 +1139,85 @@ def dominant_text_size(page):
     except Exception:
         pass
     if not sizes:
-        return 10.0
+        prims = primitives if primitives is not None else extract_primitives(page)
+        return _estimate_scale_from_primitives(prims)
     sizes.sort()
     return sizes[len(sizes) // 2]
+
+
+_SCALE_ESTIMATE_MIN_ITEMS = 2    # a lone unmerged primitive isn't a whole
+                                 # glyph; see _estimate_scale_from_primitives.
+_SCALE_ESTIMATE_MAX_ITEMS = 20   # generous ceiling on "one glyph's worth of
+                                 # strokes" — well above what a single
+                                 # character needs, but far below a real
+                                 # merged word/label or a large assembly.
+_SCALE_ESTIMATE_MIN_SAMPLES = 15   # need this many small clusters before
+                                    # trusting their median as "one glyph's
+                                    # size" — a sparse page (a handful of
+                                    # real symbols and nothing else, e.g. a
+                                    # small synthetic fixture, or a real
+                                    # page with little text) has too few
+                                    # small clusters for the sample to mean
+                                    # anything, and they'd likely BE the
+                                    # real symbols themselves rather than
+                                    # glyph noise — confirmed necessary
+                                    # after this estimate, unguarded, self-
+                                    # referentially sized a lone test
+                                    # valve's own cluster as "the" glyph
+                                    # size, always failing its own
+                                    # norm_size floor. A real glyph-heavy
+                                    # no-text CAD export page has hundreds
+                                    # of qualifying small clusters (596 on
+                                    # a real Loket page), so this floor
+                                    # only ever falls back to the rougher
+                                    # bootstrap estimate on genuinely
+                                    # sparse pages.
+
+
+def _estimate_scale_from_primitives(primitives):
+    """Reference-scale estimate for a page with no native text at all —
+    see dominant_text_size's docstring for why the blind 10.0pt default
+    is wrong for such pages.
+
+    A single vector-outlined character is drawn as SEVERAL short strokes
+    (a "V" is 2 lines, an "8" or "0" several curve/line segments), so the
+    median length of a page's INDIVIDUAL primitives underestimates a
+    whole glyph's own size by several times — confirmed on a real Loket
+    page: median individual-primitive length ~0.43-1.0pt vs. a directly-
+    measured individual glyph-CLUSTER height of ~1.9-4pt. Using the
+    smaller, stroke-level number as the page's reference scale was
+    confirmed to under-correct: single vector-outlined characters (not
+    genuine symbols) still tested as plausibly "symbol-sized" downstream,
+    surfacing real false positives in find_valve_shapes on that same file
+    (e.g. the vector-outlined tag label "V-102" itself scoring as a
+    bow-tie).
+
+    So this is a two-stage bootstrap: first estimate a rough (deliberately
+    undershooting) scale from individual primitive lengths, use THAT to
+    run one real clustering pass (with the dense-cell rescue — see
+    cluster_primitives — enabled, since that's what's needed to merge
+    individual glyphs into their own small clusters at all on these
+    pages), then take the median bbox diagonal of the resulting small
+    (2-20 primitive) clusters as the final estimate — those clusters are
+    overwhelmingly individual glyphs on a text-heavy page like this
+    (vastly outnumbering the handful of primitives a real valve/pump/
+    instrument symbol has), so their own median size approximates "one
+    glyph" much more directly than individual stroke length does.
+    """
+    lengths = [_prim_length(p) for p in primitives if p['kind'] in ('l', 'c')]
+    lengths = [l for l in lengths if l > 0.01]
+    if not lengths:
+        return _NO_TEXT_SCALE_DEFAULT
+    lengths.sort()
+    bootstrap_scale = max(lengths[len(lengths) // 2], 1.0)
+
+    groups = cluster_primitives(primitives, scale=bootstrap_scale, rescue_dense_cells=True)
+    diags = [_bbox_diag(_group_bbox(primitives, g)) for g in groups
+              if _SCALE_ESTIMATE_MIN_ITEMS <= len(g) <= _SCALE_ESTIMATE_MAX_ITEMS]
+    if len(diags) < _SCALE_ESTIMATE_MIN_SAMPLES:
+        return bootstrap_scale
+    diags.sort()
+    return max(diags[len(diags) // 2], 1.0)
 
 
 def _group_bbox(primitives, group):
@@ -1408,8 +1586,28 @@ def find_symbol_clusters(page, min_confidence=0.3):
     primitives = extract_primitives(page)
     if not primitives:
         return []
-    scale = dominant_text_size(page)
+    scale = dominant_text_size(page, primitives=primitives)
     text_bboxes = _text_word_bboxes(page)
+    # cluster_primitives' dense-cell rescue (see its docstring) is only
+    # switched on for pages with NO native text at all — the one
+    # condition it was confirmed necessary for (Loket/Smurfit Kappa/
+    # Swerim/NYA CAD exports that draw all text as vector strokes) and
+    # confirmed UNSAFE to enable unconditionally (a real, normally text-
+    # bearing Hybrit page lost a correctly-found valve to an unwanted
+    # merge when it was on for every page). text_bboxes (already needed
+    # below) doubles as the "does this page have native text" signal —
+    # no extra get_text() call needed.
+    rescue_dense_cells = not text_bboxes
+    # The pipe-run-line threshold (see cluster_primitives' `pipe_scale`
+    # parameter) is a DIFFERENT concept from the glyph-calibrated `scale`
+    # above and must not shrink along with it on a no-text page: confirmed
+    # necessary on a real Smurfit Kappa P&ID, where feeding the corrected
+    # (much smaller) no-text `scale` into the pipe-run cutoff too cut a
+    # real valve's own 40pt actuator-stem connector that the OLD, larger
+    # no-text default (_NO_TEXT_SCALE_DEFAULT, unrelated to glyph size)
+    # left alone. A page WITH native text is unaffected either way — its
+    # `scale` already comes from real font size, not this fallback.
+    pipe_scale = scale if text_bboxes else _NO_TEXT_SCALE_DEFAULT
     # Every real file sampled draws circles with ONE convention
     # consistently across a whole page — true bezier curves everywhere
     # (LKAB/Gryaab/ITS), or zero curves anywhere (Sunpine/Swerim, which
@@ -1421,7 +1619,8 @@ def find_symbol_clusters(page, min_confidence=0.3):
     # clusters that were never going to contain one.
     try_polygon_circles = not any(p['kind'] == 'c' for p in primitives)
     results = []
-    for group in cluster_primitives(primitives, scale=scale):
+    for group in cluster_primitives(primitives, scale=scale, rescue_dense_cells=rescue_dense_cells,
+                                     pipe_scale=pipe_scale):
         feats = cluster_features(primitives, group, page_text_scale=scale)
         conf = classify_cluster(feats)
         if conf < min_confidence:
