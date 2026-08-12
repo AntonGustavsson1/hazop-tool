@@ -340,6 +340,30 @@ def _global_exception_hook(exc_type, exc_value, exc_tb):
 sys.excepthook = _global_exception_hook
 
 
+def _configure_utf8_console_output():
+    """Reconfigure stdout/stderr to UTF-8 so logging an emoji (the app's
+    log/status messages are full of them, e.g. 🏭/🎯/🔍) never crashes.
+
+    Windows' console/terminal streams default to the system codepage
+    (cp1252 here) rather than UTF-8 unless PYTHONUTF8/PYTHONIOENCODING is
+    set. The crash log's own FileHandler already passes encoding='utf-8'
+    explicitly, but the console echo handler wrote straight to the
+    unreconfigured sys.stderr — any emoji anywhere in a logged message
+    then raised UnicodeEncodeError: 'charmap' codec can't encode character
+    (real crash report, crash_20260807_115134_UnicodeEncodeError.json;
+    trivially reproducible on this machine via print('\U0001f3ed')).
+    errors='replace' rather than 'strict' so an exotic character can never
+    crash the console echo again, even one outside cp1252 AND unexpected
+    by whoever writes the next log message.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            try:
+                stream.reconfigure(encoding='utf-8', errors='replace')
+            except Exception:
+                pass
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # WINDOWS 11 THEME — LJUST TEMA
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1789,7 +1813,15 @@ class Database:
         # it *before* touching the schema so a buggy/failed migration can
         # always be recovered from. Brand-new (empty) DBs have nothing to lose.
         pre_existing_db = self.path.exists() and self.path.stat().st_size > 0
-        self.conn = sqlite3.connect(str(self.path))
+        # Python's sqlite3 default busy-timeout is only 5s — too short for
+        # real-world lock contention (the online-backup-API copy every
+        # commit() does, a previous instance still releasing its WAL lock
+        # on exit, or the .db file living in a OneDrive-synced folder as it
+        # does here). A DDL statement mid-migration hitting that window
+        # raised sqlite3.OperationalError: database is locked (real crash
+        # report, crash_20260807_162445_OperationalError.json). Raised to
+        # 30s so transient contention gets retried instead of crashing.
+        self.conn = sqlite3.connect(str(self.path), timeout=30.0)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")   # faster concurrent reads
@@ -6391,7 +6423,7 @@ class NodeMarkupPanel(QWidget):
         """Jump to previous node."""
         if self.node_id is None:
             return
-        all_nodes = [r[0] for r in self.db.nodes]
+        all_nodes = [r[0] for r in self.db.nodes()]
         try:
             current_idx = all_nodes.index(self.node_id)
             if current_idx > 0:
@@ -6404,7 +6436,7 @@ class NodeMarkupPanel(QWidget):
         """Jump to next node."""
         if self.node_id is None:
             return
-        all_nodes = [r[0] for r in self.db.nodes]
+        all_nodes = [r[0] for r in self.db.nodes()]
         try:
             current_idx = all_nodes.index(self.node_id)
             if current_idx < len(all_nodes) - 1:
@@ -19475,6 +19507,7 @@ class MainWindow(QMainWindow):
         self._cur_id   = None
         self.stack.setCurrentWidget(self.welcome_panel)
         self.scenario_panel.clear()
+        self.pid_panel.clear_active_selection()
         self.pid_panel.reload_overlays()
 
     def _on_sheets_changed(self):
@@ -20841,6 +20874,8 @@ class MainWindow(QMainWindow):
 
 if __name__ == '__main__':
     import logging
+
+    _configure_utf8_console_output()
 
     # ── Crash logger ───────────────────────────────────────────────────────────
     # Structured crash reporting: saves detailed diagnostic info to JSON files

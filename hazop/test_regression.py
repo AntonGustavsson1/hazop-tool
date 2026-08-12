@@ -29,6 +29,7 @@ so the suite runs without a display (CI, SSH, etc.).
 """
 
 import gc
+import io
 import os
 import sys
 import shutil
@@ -10317,6 +10318,300 @@ class ClearedConsequenceRowHeightTests(unittest.TestCase):
                 "row shrank below what the (still long, unchanged) cause text needs")
             self.assertGreaterEqual(actual, needed_for_lopa,
                 "row shrank below the FA/Ant. widget's own fixed height")
+
+
+class PIDPanelStaleActiveIdTests(unittest.TestCase):
+    """A cause/consequence deleted elsewhere (e.g. its node removed) while
+    still 'active' in the PIDPanel used to survive as a stale id into the
+    next placement click, crashing add_consequence/add_safeguard with
+    sqlite3.IntegrityError: FOREIGN KEY constraint failed (real crash
+    report, 2026-08-07 — crash_20260807_134324_IntegrityError.json)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_staleactive_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from pid_viewer import PIDPanel
+        self.panel = PIDPanel(self.db)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_consequence_click_with_deleted_cause_shows_message_not_crash(self):
+        from PyQt6.QtCore import QPointF
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.panel._active_cause_id = cause_id
+        self.db.delete_cause(cause_id)   # simulate deletion elsewhere
+
+        with unittest.mock.patch.object(QMessageBox, 'information') as mock_info:
+            self.panel._on_consequence_click(QPointF(5, 5), 0)
+
+        self.assertEqual(mock_info.call_count, 1)
+        self.assertIsNone(self.panel._active_cause_id)
+
+    def test_safeguard_click_with_deleted_consequence_shows_message_not_crash(self):
+        # The real SafeguardPickerDialog blocks on exec() waiting for user
+        # input, so patch it to blow up if the guard fails to fire and
+        # constructs it anyway — turns a hang into a clear test failure.
+        from PyQt6.QtCore import QPointF
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        self.panel._active_consequence_id = cons_id
+        self.db.delete_consequence(cons_id)   # simulate deletion elsewhere
+
+        with unittest.mock.patch.object(QMessageBox, 'information') as mock_info, \
+             unittest.mock.patch('pid_viewer.SafeguardPickerDialog',
+                                  side_effect=AssertionError(
+                                      "picker dialog must not open for a deleted consequence")):
+            self.panel._on_safeguard_click(QPointF(5, 5), 0)
+
+        self.assertEqual(mock_info.call_count, 1)
+        self.assertIsNone(self.panel._active_consequence_id)
+
+    def test_clear_active_selection_resets_all_placement_state(self):
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        self.panel._active_node_id        = node_id
+        self.panel._active_deviation_id   = dev_id
+        self.panel._active_cause_id       = cause_id
+        self.panel._active_consequence_id = cons_id
+
+        self.panel.clear_active_selection()
+
+        self.assertIsNone(self.panel._active_node_id)
+        self.assertIsNone(self.panel._active_deviation_id)
+        self.assertIsNone(self.panel._active_cause_id)
+        self.assertIsNone(self.panel._active_consequence_id)
+
+    def test_structure_changed_clears_pid_panel_stale_active_cause(self):
+        """End-to-end: deleting a node via the tree (which emits
+        structure_changed) must not leave MainWindow.pid_panel holding a
+        cause id belonging to the now-deleted node."""
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            win.pid_panel._active_cause_id = cause_id
+
+            win.db.delete_node(node_id)
+            win._on_structure_changed()
+
+            self.assertIsNone(win.pid_panel._active_cause_id)
+
+
+class DatabaseBusyTimeoutTests(unittest.TestCase):
+    """Database.__init__ used to connect with sqlite3's default 5s
+    busy-timeout — too short for real lock contention (the online-backup
+    copy every commit() does, a previous instance still releasing its WAL
+    lock, or the .db file living in a OneDrive-synced folder). A DDL
+    statement mid-migration hitting that window raised
+    sqlite3.OperationalError: database is locked (real crash report,
+    crash_20260807_162445_OperationalError.json)."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_busytimeout_test_")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_database_connects_with_generous_busy_timeout(self):
+        import sqlite3 as _sqlite3
+        real_connect = _sqlite3.connect
+        calls = []
+
+        def spy_connect(*a, **kw):
+            calls.append((a, kw))
+            return real_connect(*a, **kw)
+
+        db_path = os.path.join(self._tmpdir, "test_project.db")
+        with unittest.mock.patch.object(_sqlite3, 'connect', side_effect=spy_connect):
+            db = Database(path=db_path)
+        try:
+            main_conn_calls = [c for c in calls if db_path in c[0]]
+            self.assertTrue(main_conn_calls,
+                "Database.__init__ never called sqlite3.connect on the project db path")
+            _, kwargs = main_conn_calls[0]
+            self.assertGreaterEqual(kwargs.get('timeout', 5.0), 15.0,
+                "project db connection still uses sqlite3's short default busy-timeout")
+        finally:
+            del db
+
+
+class Utf8ConsoleOutputTests(unittest.TestCase):
+    """The console echo log handler wrote straight to the unreconfigured
+    sys.stderr, whose default encoding on a Windows console is the system
+    codepage (cp1252 here) rather than UTF-8 — logging any message
+    containing an emoji (the app's own status messages are full of them)
+    raised UnicodeEncodeError: 'charmap' codec can't encode character
+    (real crash report, crash_20260807_115134_UnicodeEncodeError.json;
+    trivially reproducible on this machine via print('\U0001f3ed'))."""
+
+    def test_configure_reconfigures_stdout_and_stderr_to_utf8(self):
+        real_stdout, real_stderr = hazop.sys.stdout, hazop.sys.stderr
+        fake_out = io.TextIOWrapper(io.BytesIO(), encoding='cp1252')
+        fake_err = io.TextIOWrapper(io.BytesIO(), encoding='cp1252')
+        try:
+            hazop.sys.stdout = fake_out
+            hazop.sys.stderr = fake_err
+            hazop._configure_utf8_console_output()
+            self.assertEqual(fake_out.encoding.lower(), 'utf-8')
+            self.assertEqual(fake_err.encoding.lower(), 'utf-8')
+        finally:
+            hazop.sys.stdout = real_stdout
+            hazop.sys.stderr = real_stderr
+
+    def test_writing_emoji_through_reconfigured_stream_does_not_raise(self):
+        stream = io.TextIOWrapper(io.BytesIO(), encoding='cp1252')
+        # Without the fix, this exact write raises UnicodeEncodeError —
+        # the same exception/message as the real crash report.
+        with self.assertRaises(UnicodeEncodeError):
+            stream.write('🏭 HAZOP Tool started')
+            stream.flush()
+
+        stream2 = io.TextIOWrapper(io.BytesIO(), encoding='cp1252')
+        stream2.reconfigure(encoding='utf-8', errors='replace')
+        stream2.write('🏭 HAZOP Tool started')  # must not raise
+        stream2.flush()
+
+
+class EquipmentDragNavButtonResetTests(unittest.TestCase):
+    """Shift-dragging an equipment marker onto the tree/scenario uses
+    QDrag.exec(), a native modal drag loop — Qt suppresses the normal
+    hover/leave events other widgets rely on to clear their pressed look
+    during it, which could leave the "🔍 Navigera" toolbar button visually
+    stuck looking pressed in after the drop even though nothing is
+    actually held down (reported: nav button stays pressed after
+    drag-and-dropping an equipment marker to the tree/hazop scenario)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_dragnav_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from pid_viewer import PIDPanel
+        self.panel = PIDPanel(self.db)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_equipment_drag_finished_releases_stuck_nav_button(self):
+        from pid_viewer import MODE_NAV
+        nav_btn = self.panel.mode_buttons[MODE_NAV]
+        nav_btn.setDown(True)   # simulate the stuck-pressed visual left by a native QDrag
+
+        self.panel.viewer.equipment_drag_finished.emit()
+
+        self.assertFalse(nav_btn.isDown())
+
+    def test_viewer_emits_equipment_drag_finished_after_shift_drag_release(self):
+        """The signal must actually fire once a real Shift+drag of an
+        equipment marker completes, not just work in isolation when
+        emitted by hand."""
+        from PyQt6.QtCore import QPointF
+        received = []
+        self.panel.viewer.equipment_drag_finished.connect(lambda: received.append(True))
+
+        with unittest.mock.patch('pid_viewer.QDrag') as mock_drag_cls:
+            mock_drag = mock_drag_cls.return_value
+            start = QPointF(0, 0)
+            self.panel.viewer._equip_drag_candidate = (999, start)
+            event = unittest.mock.MagicMock()
+            event.buttons.return_value = Qt.MouseButton.LeftButton
+            event.modifiers.return_value = Qt.KeyboardModifier.ShiftModifier
+            event.position.return_value = QPointF(
+                QApplication.startDragDistance() + 5, 0)
+
+            self.panel.viewer.mouseMoveEvent(event)
+
+        mock_drag.exec.assert_called_once()
+        self.assertEqual(len(received), 1,
+            "equipment_drag_finished must fire exactly once the drag.exec() call returns")
+
+
+class NodeMarkupPanelNavigateTests(unittest.TestCase):
+    """NodeMarkupPanel's prev/next node buttons (⬆/⬇) crashed with
+    TypeError: 'method' object is not iterable — _navigate_prev/
+    _navigate_next read `self.db.nodes` (the bound method itself) instead
+    of calling `self.db.nodes()` (2026-08-11 crash reports,
+    crash_20260811_162420/162424_TypeError.json)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_navtest_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_panel(self, node_id):
+        from hazop import NodeMarkupPanel
+        panel = NodeMarkupPanel(self.db)
+        panel.node_id = node_id
+        return panel
+
+    def test_navigate_prev_emits_previous_node_id(self):
+        node_a = self.db.add_node()
+        node_b = self.db.add_node()
+        panel = self._make_panel(node_b)
+        try:
+            seen = []
+            panel.navigate_node_requested.connect(seen.append)
+            panel._navigate_prev()
+            self.assertEqual(seen, [node_a])
+        finally:
+            panel.deleteLater()
+
+    def test_navigate_next_emits_next_node_id(self):
+        node_a = self.db.add_node()
+        node_b = self.db.add_node()
+        panel = self._make_panel(node_a)
+        try:
+            seen = []
+            panel.navigate_node_requested.connect(seen.append)
+            panel._navigate_next()
+            self.assertEqual(seen, [node_b])
+        finally:
+            panel.deleteLater()
+
+    def test_navigate_prev_at_first_node_is_noop(self):
+        node_a = self.db.add_node()
+        self.db.add_node()
+        panel = self._make_panel(node_a)
+        try:
+            seen = []
+            panel.navigate_node_requested.connect(seen.append)
+            panel._navigate_prev()
+            self.assertEqual(seen, [])
+        finally:
+            panel.deleteLater()
 
 
 if __name__ == '__main__':

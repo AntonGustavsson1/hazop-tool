@@ -2881,6 +2881,7 @@ class PIDGraphicsView(QGraphicsView):
     consequence_at_marker_requested = pyqtSignal(int)   # cons_id
     safeguard_at_marker_requested   = pyqtSignal(int)   # sg_id
     placement_cancelled = pyqtSignal()   # Escape pressed while in a cause/consequence/safeguard placement mode
+    equipment_drag_finished = pyqtSignal()  # Shift+drag of an equipment marker released (drop accepted or not)
 
     # Keys for QGraphicsItem.setData / .data
     _DATA_TYPE      = 0    # 'cause' | 'consequence' | 'safeguard' | 'markup'
@@ -5737,6 +5738,14 @@ class PIDGraphicsView(QGraphicsView):
                 drag = QDrag(self)
                 drag.setMimeData(mime)
                 drag.exec(Qt.DropAction.CopyAction)
+                # drag.exec() blocks until the drop is released; a native
+                # drag suppresses normal hover/leave events for widgets the
+                # cursor passes over (e.g. the toolbar's "🔍 Navigera"
+                # button), which can leave that button visually stuck in
+                # its pressed/hover look after the drop even though nothing
+                # is actually still held down (reported: the nav button
+                # stays "intryckt" after dropping onto the tree/scenario).
+                self.equipment_drag_finished.emit()
                 self._clear_equipment_selection()
                 return
         elif self._equip_drag_candidate is not None and not (
@@ -7362,6 +7371,7 @@ class PIDPanel(QWidget):
         self.viewer.consequence_at_marker_requested.connect(self._on_add_consequence_at_marker)
         self.viewer.safeguard_at_marker_requested.connect(self._on_add_safeguard_at_marker)
         self.viewer.placement_cancelled.connect(self._on_placement_cancelled)
+        self.viewer.equipment_drag_finished.connect(self._on_equipment_drag_finished)
         self.viewer.ref_tag_picked.connect(self.ref_tag_picked)
         self.viewer.annotation_clicked.connect(self._on_annotation_click)
         self._active_place_type  = None   # 'cause' | 'consequence' | 'safeguard'
@@ -8095,6 +8105,19 @@ class PIDPanel(QWidget):
         """Escape was pressed while placing a cause/consequence/safeguard — abort back to navigation."""
         self._set_mode(MODE_NAV)
 
+    def _on_equipment_drag_finished(self):
+        """Shift-dragging an equipment marker to the tree/scenario uses
+        QDrag.exec(), a native drag loop that suppresses the normal
+        hover/leave events toolbar buttons rely on to clear their pressed
+        look — the "🔍 Navigera" button could be left visually stuck
+        looking pressed in after the drop even though nothing is actually
+        held down anymore. Force every mode button's transient down/hover
+        state to release right as the drop itself is released."""
+        for btn in self.mode_buttons.values():
+            btn.setDown(False)
+            btn.setAttribute(Qt.WidgetAttribute.WA_UnderMouse, False)
+            btn.update()
+
     def _on_layout_mode_toggled(self, checked):
         if checked:
             self._set_mode(MODE_BOARD_LAYOUT)
@@ -8478,6 +8501,16 @@ class PIDPanel(QWidget):
             QMessageBox.information(self, "Välj orsak",
                 "Välj en cause i trädet innan du placerar en konsekvens.")
             return
+        if not self.db.get_cause(self._active_cause_id):
+            # The selected cause was deleted elsewhere (e.g. its node or
+            # deviation removed) while this panel still held its stale id —
+            # inserting against it would hit sqlite3.IntegrityError: FOREIGN
+            # KEY constraint failed (real crash report, 2026-08-07).
+            self._active_cause_id = None
+            QMessageBox.information(self, "Orsaken finns inte längre",
+                "Den valda orsaken har tagits bort. Välj en orsak i trädet "
+                "igen innan du placerar en konsekvens.")
+            return
 
         pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
         # Use pending zone (right-drag) or last drawn zone (left rubber-band)
@@ -8514,6 +8547,14 @@ class PIDPanel(QWidget):
         if self._active_consequence_id is None:
             QMessageBox.information(self, "Välj konsekvens",
                 "Välj en consequence i trädet innan du markerar en safeguard.")
+            return
+        if not self.db.get_consequence(self._active_consequence_id):
+            # Same stale-id class as the add_consequence FK crash above,
+            # but for a consequence deleted elsewhere while still active.
+            self._active_consequence_id = None
+            QMessageBox.information(self, "Konsekvensen finns inte längre",
+                "Den valda konsekvensen har tagits bort. Välj en konsekvens "
+                "i trädet igen innan du markerar en safeguard.")
             return
 
         all_sgs = self.db.safeguards(self._active_consequence_id)
@@ -9489,6 +9530,20 @@ class PIDPanel(QWidget):
         self._pending_secondary_deviation_id   = None
         self._pending_secondary_preselect_type = ''
         self._secondary_banner.setVisible(False)
+
+    def clear_active_selection(self):
+        """Reset every id used when placing new cause/consequence/safeguard
+        markers on the P&ID, so a deleted-elsewhere cause/consequence can
+        never survive as a stale id into a later placement click (root
+        cause of the add_consequence FOREIGN KEY crash, 2026-08-07 — see
+        NOTES.md). Called on every tree structural change, mirroring the
+        equally aggressive reset _on_structure_changed already does for
+        the scenario/tree selection."""
+        self._active_node_id      = None
+        self._active_deviation_id = None
+        self._active_cause_id     = None
+        self._active_consequence_id = None
+        self._cancel_secondary_placement()
 
     def set_active_node(self, node_id):
         self._active_node_id        = node_id
