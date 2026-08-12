@@ -1194,13 +1194,22 @@ class SafeguardPickerDialog(QDialog):
 
 class _PageRenderer(QThread):
     """Background thread that pre-renders PDF pages to raw pixel data for the page cache."""
-    page_ready = pyqtSignal(int, object, int, int, int)  # page_num, raw_bytes, w, h, stride
+    # page_num, raw_bytes, w, h, stride, scale (the fitz.Matrix scale actually used —
+    # callers need this because a page can now be rendered above the caller's
+    # nominal _RASTER_SCALE, see PIDGraphicsView._target_raster_scale)
+    page_ready = pyqtSignal(int, object, int, int, int, float)
 
-    def __init__(self, pdf_path, pages, scale, parent=None):
+    def __init__(self, pdf_path, pages, scale, parent=None, rotations=None):
         super().__init__(parent)
         self._path  = pdf_path
         self._pages = pages
         self._scale = scale
+        # {page_num: total rotation degrees} — this thread opens its OWN fitz
+        # document (can't safely share PIDGraphicsView.pdf_doc across
+        # threads), so a manual per-page rotation override applied there
+        # (see PIDGraphicsView._apply_page_rotation) has to be re-applied
+        # here too, or a background-rendered pixmap would silently ignore it.
+        self._rotations = rotations or {}
 
     def run(self):
         if not HAS_PYMUPDF:
@@ -1212,9 +1221,12 @@ class _PageRenderer(QThread):
                 if self.isInterruptionRequested():
                     break
                 page = doc.load_page(pn)
+                if pn in self._rotations:
+                    page.set_rotation(self._rotations[pn])
                 mat  = fitz.Matrix(self._scale, self._scale)
                 pix  = page.get_pixmap(matrix=mat, alpha=False)
-                self.page_ready.emit(pn, bytes(pix.samples), pix.width, pix.height, pix.stride)
+                self.page_ready.emit(pn, bytes(pix.samples), pix.width, pix.height,
+                                     pix.stride, self._scale)
         except Exception as e:
             # Log exception silently — thread errors shouldn't crash main UI
             import logging
@@ -2955,9 +2967,21 @@ class PIDGraphicsView(QGraphicsView):
         self._RASTER_SCALE    = 3.0
         self._pdf_path        = None
         self._page_cache: dict = {}
+        # Raster scale each cached pixmap was actually rendered at — a page
+        # can now be cached above _RASTER_SCALE when the adaptive-zoom
+        # re-rasterization (see _target_raster_scale) upgrades it.
+        self._page_cache_scale: dict = {}
         self._cache_order: list = []
         self._CACHE_SIZE      = 10
         self._prefetch_thread = None
+
+        # ── Manual per-page rotation override (2026-08-12, see NOTES.md) ──────
+        # Extra clockwise degrees (0/90/180/270) the user chose for a physical
+        # page, composed with (not replacing) the PDF's own /Rotate flag by
+        # mutating the in-memory fitz.Page's rotation — see
+        # _apply_page_rotation(). Never written back to the PDF file.
+        self._page_rotation_override: dict = {}   # physical_page -> extra degrees
+        self._intrinsic_rotation: dict = {}        # physical_page -> page.rotation before any override
 
         # ── Page level-of-detail (study board) ────────────────────────────────
         # Board pages render at _LOW_SCALE (cheap, small) and are scaled up to
@@ -2968,7 +2992,23 @@ class PIDGraphicsView(QGraphicsView):
         self._MAX_HIRES       = 6
         self._low_pixmaps: dict = {}    # pn → low-res QPixmap
         self._hires_pages: set  = set() # pages currently showing hi-res
+        # Raster scale actually displayed on the hi-res item for each hires
+        # page — may exceed _RASTER_SCALE, see adaptive re-rasterization below.
+        self._page_display_scale: dict = {}
         self._lod_renderer    = None    # background _PageRenderer for hi-res
+        # Supersampling margin: a tier is "crisp enough" once it supplies at
+        # least this many raw pixels per screen pixel. Shared by
+        # _hires_worthwhile() (low->hires threshold) and _target_raster_scale()
+        # (adaptive hires->sharper-hires threshold) so both tiers use the same
+        # visual standard for "still blurry".
+        self._LOD_MARGIN      = 1.25
+        # Adaptive re-rasterization caps (2026-08-12, see NOTES.md "P&ID blir
+        # suddig vid inzoomning") — a page can be re-rendered at a scale
+        # higher than _RASTER_SCALE once the view zooms in past what
+        # _RASTER_SCALE can supply crisply, but never above these safety caps
+        # so a pathological zoom level can't render an absurdly large pixmap.
+        self._MAX_RASTER_SCALE = self._RASTER_SCALE * 4   # absolute multiplier cap
+        self._MAX_RASTER_DIM   = 6000  # cap on the larger pixel dimension of any single raster
         self._lod_timer       = QTimer(self)
         self._lod_timer.setSingleShot(True)
         self._lod_timer.setInterval(150)
@@ -3094,7 +3134,7 @@ class PIDGraphicsView(QGraphicsView):
             self.pdf_doc = None
 
     def load_pdf(self, path, page=0, layout_offsets=None, active_pages=None,
-                 progress_cb=None):
+                 progress_cb=None, page_rotations=None):
         if not HAS_PYMUPDF:
             self._show_placeholder("Installera PyMuPDF:\n  pip install PyMuPDF")
             return False
@@ -3107,8 +3147,17 @@ class PIDGraphicsView(QGraphicsView):
         if self.pdf_doc.page_count == 0:
             self._show_placeholder("PDF saknar sidor.")
             return False
+        # A fresh document has no rotation state carried over from whatever
+        # was previously open — reset, then repopulate from the caller's
+        # persisted overrides (PIDPanel passes db.get_all_page_rotations()).
+        self._page_rotation_override.clear()
+        self._intrinsic_rotation.clear()
+        if page_rotations:
+            self._page_rotation_override.update(
+                {int(k): int(v) % 360 for k, v in page_rotations.items()})
         self._pdf_path = str(path)
         self._page_cache.clear()
+        self._page_cache_scale.clear()
         self._cache_order.clear()
         self._cancel_prefetch()
         self.current_page = max(0, min(page, self.pdf_doc.page_count - 1))
@@ -3167,6 +3216,7 @@ class PIDGraphicsView(QGraphicsView):
         self.page_item = None  # Clear reference to avoid double-removal errors
         self._low_pixmaps.clear()
         self._hires_pages.clear()
+        self._page_display_scale.clear()
         self._page_offsets.clear()
         self._page_widths_pdf.clear()
         self._page_heights_pdf.clear()
@@ -3180,6 +3230,11 @@ class PIDGraphicsView(QGraphicsView):
         x_cursor = 0.0
         for render_idx, pn in enumerate(pages_to_render):
             fitz_page = self.pdf_doc.load_page(pn)
+            # Compose the user's manual rotation override (if any) with the
+            # PDF's own /Rotate BEFORE reading rect/rendering — every
+            # coordinate/pixmap derived below (page.rect, get_pixmap()) then
+            # reflects it automatically. See _apply_page_rotation().
+            self._apply_page_rotation(pn)
             rect = fitz_page.rect
             pw_pdf = float(rect.width)
             ph_pdf = float(rect.height)
@@ -3223,6 +3278,46 @@ class PIDGraphicsView(QGraphicsView):
         self._update_board_scene_rect()
         self._schedule_lod_update()
 
+    # ── Manual per-page rotation (2026-08-12, see NOTES.md) ───────────────────
+
+    def _apply_page_rotation(self, pn):
+        """Compose the user's manual rotation override for physical page `pn`
+        with the PDF's own intrinsic /Rotate value, by mutating the
+        in-memory fitz.Page's rotation (never written back to the file).
+
+        Every existing rotation-aware code path — page.rect (hence
+        page_rect_width/height and the scene footprint), get_pixmap(),
+        rotation_matrix/derotation_matrix, and
+        equipment_detection._rotate_words — already keys off page.rotation,
+        so composing here makes the override transparent to all of them for
+        free instead of threading a separate override through each layer.
+        """
+        if self.pdf_doc is None:
+            return
+        page = self.pdf_doc.load_page(pn)
+        if pn not in self._intrinsic_rotation:
+            self._intrinsic_rotation[pn] = page.rotation
+        total = (self._intrinsic_rotation[pn] + self._page_rotation_override.get(pn, 0)) % 360
+        if page.rotation != total:
+            page.set_rotation(total)
+
+    def set_page_rotation_override(self, pn, degrees):
+        """Set/replace the manual rotation override (clockwise degrees,
+        normalized to 0/90/180/270) for physical page `pn`. Purges any
+        cached/displayed raster pixmaps for this page since they were
+        rendered at the old orientation and footprint — callers still need
+        to re-render (e.g. via _render_all_pages) to see the new page."""
+        degrees = int(degrees) % 360
+        self._page_rotation_override[pn] = degrees
+        self._apply_page_rotation(pn)
+        self._page_cache.pop(pn, None)
+        self._page_cache_scale.pop(pn, None)
+        if pn in self._cache_order:
+            self._cache_order.remove(pn)
+        self._hires_pages.discard(pn)
+        self._page_display_scale.pop(pn, None)
+        self._low_pixmaps.pop(pn, None)
+
     def _update_board_scene_rect(self):
         if not self._page_offsets:
             return
@@ -3240,13 +3335,15 @@ class PIDGraphicsView(QGraphicsView):
             self._prefetch_thread.requestInterruption()
             self._prefetch_thread.wait(300)
 
-    def _add_to_cache(self, pn, pixmap):
+    def _add_to_cache(self, pn, pixmap, scale=None):
         if pn in self._page_cache:
             self._cache_order.remove(pn)
         elif len(self._page_cache) >= self._CACHE_SIZE:
             oldest = self._cache_order.pop(0)
             del self._page_cache[oldest]
+            self._page_cache_scale.pop(oldest, None)
         self._page_cache[pn] = pixmap
+        self._page_cache_scale[pn] = scale if scale is not None else self._RASTER_SCALE
         self._cache_order.append(pn)
 
     def _update_lru(self, pn):
@@ -3268,14 +3365,18 @@ class PIDGraphicsView(QGraphicsView):
         if not to_fetch:
             return
         self._cancel_prefetch()
-        self._prefetch_thread = _PageRenderer(self._pdf_path, to_fetch, self._RASTER_SCALE)
+        rotations = {n: (self._intrinsic_rotation.get(n, 0) +
+                         self._page_rotation_override.get(n, 0)) % 360
+                    for n in to_fetch if n in self._page_rotation_override}
+        self._prefetch_thread = _PageRenderer(self._pdf_path, to_fetch, self._RASTER_SCALE,
+                                              rotations=rotations)
         self._prefetch_thread.page_ready.connect(self._on_page_prefetched)
         self._prefetch_thread.start()
 
-    def _on_page_prefetched(self, pn, raw, width, height, stride):
+    def _on_page_prefetched(self, pn, raw, width, height, stride, scale):
         if pn not in self._page_cache:
             img = QImage(raw, width, height, stride, QImage.Format.Format_RGB888)
-            self._add_to_cache(pn, QPixmap.fromImage(img))
+            self._add_to_cache(pn, QPixmap.fromImage(img), scale)
 
     # ── Page LOD: hi-res swap-in for visible pages at high zoom ──────────────
 
@@ -3291,9 +3392,45 @@ class PIDGraphicsView(QGraphicsView):
         self._lod_renderer = None
 
     def _hires_worthwhile(self):
-        # Hi-res pays off once one low-res pixel covers >1.25 screen pixels
+        # Hi-res pays off once one low-res pixel covers more than _LOD_MARGIN
+        # screen pixels — i.e. the low tier can no longer supply ~1 raw pixel
+        # per screen pixel with a small supersampling margin.
         zoom = self.transform().m11()
-        return zoom > 1.25 * self._LOW_SCALE / self._RASTER_SCALE
+        return zoom > self._LOD_MARGIN * self._LOW_SCALE / self._RASTER_SCALE
+
+    def _target_raster_scale(self, pw_pdf, ph_pdf):
+        """Adaptive re-rasterization (2026-08-12, see NOTES.md "P&ID blir
+        suddig vid inzoomning"): the fitz.Matrix scale a page should be
+        re-rendered at so its raster stays crisp at the CURRENT view zoom,
+        instead of a fixed _RASTER_SCALE that the QGraphicsView transform
+        then stretches (blur) once zoom exceeds what it can supply.
+
+        Uses the same "at least _LOD_MARGIN raw pixels per screen pixel"
+        standard as _hires_worthwhile(), just applied one tier further up.
+        render_scale (the scene-units-per-pdf-point factor every marker/
+        click-hit-test coordinate transform assumes, see scene_to_pdf/
+        pdf_to_scene) is NEVER changed by this — only which physical
+        pixmap resolution is displayed for that same scene footprint
+        (see _promote_page's item.setScale compensation).
+
+        Clamped to two safety caps so an extreme zoom can't render an
+        absurdly large pixmap: an absolute multiplier (_MAX_RASTER_SCALE)
+        and a cap on the resulting pixel dimensions (_MAX_RASTER_DIM),
+        whichever is more restrictive for this page's size. Never goes
+        below the baseline _RASTER_SCALE.
+        """
+        zoom = self.transform().m11()
+        ideal = zoom * self.render_scale / self._LOD_MARGIN
+        ideal = max(ideal, self._RASTER_SCALE)
+        dim_cap = self._MAX_RASTER_DIM / max(pw_pdf, ph_pdf, 1.0)
+        cap = max(min(self._MAX_RASTER_SCALE, dim_cap), self._RASTER_SCALE)
+        return min(ideal, cap)
+
+    # A target scale must exceed what's currently shown/cached by this factor
+    # before triggering a re-render — cheap hysteresis so a page that's
+    # already crisp enough (or slightly over-crisp from a previous, higher
+    # zoom level) isn't re-rendered on every debounce tick.
+    _RESCALE_HYSTERESIS = 1.15
 
     def _update_page_lod(self):
         if not self._all_page_items or self.pdf_doc is None:
@@ -3322,40 +3459,64 @@ class PIDGraphicsView(QGraphicsView):
                     item.setPixmap(low)
                     item.setScale(self.render_scale / self._LOW_SCALE)
                 self._hires_pages.discard(pn)
+                self._page_display_scale.pop(pn, None)
 
-        # Promote: use cached full-res pixmaps directly, render the rest async
+        # Promote/upgrade: a page needs (re-)rendering when what's currently
+        # shown (or cached) can't supply the target resolution for the
+        # CURRENT zoom — not just once, on the initial low->hires swap.
         to_render = []
+        target_scales = {}
         for pn in needed:
-            if pn in self._hires_pages:
-                continue
-            if pn in self._page_cache:
-                self._promote_page(pn, self._page_cache[pn])
+            pw = self._page_widths_pdf.get(pn, 0.0)
+            ph = self._page_heights_pdf.get(pn, 0.0)
+            target = self._target_raster_scale(pw, ph)
+            target_scales[pn] = target
+            displayed = self._page_display_scale.get(pn, 0.0) if pn in self._hires_pages else 0.0
+            if displayed and displayed >= target / self._RESCALE_HYSTERESIS:
+                continue  # already crisp enough on screen — nothing to do
+            cached_scale = self._page_cache_scale.get(pn, 0.0)
+            if pn in self._page_cache and cached_scale >= target / self._RESCALE_HYSTERESIS:
+                self._promote_page(pn, self._page_cache[pn], cached_scale)
                 self._update_lru(pn)
             else:
                 to_render.append(pn)
         if to_render and self._pdf_path:
+            # One fitz.Matrix scale per background-render batch — use the
+            # smallest of the individually-needed (and already capped)
+            # target scales so every page in the batch stays within its own
+            # safety cap even if page sizes differ.
+            batch_scale = max(min(target_scales[pn] for pn in to_render), self._RASTER_SCALE)
+            rotations = {pn: (self._intrinsic_rotation.get(pn, 0) +
+                              self._page_rotation_override.get(pn, 0)) % 360
+                        for pn in to_render}
             self._cancel_lod_render()
             self._lod_renderer = _PageRenderer(self._pdf_path, to_render,
-                                               self._RASTER_SCALE)
+                                               batch_scale, rotations=rotations)
             self._lod_renderer.page_ready.connect(self._on_lod_page_ready)
             self._lod_renderer.start()
 
-    def _promote_page(self, pn, pixmap):
+    def _promote_page(self, pn, pixmap, scale=None):
         item = self._all_page_items.get(pn)
         if item is None:
             return
+        scale = scale if scale is not None else self._RASTER_SCALE
         item.setPixmap(pixmap)
-        item.setScale(1.0)
+        # Compensate so the item's scene footprint (render_scale per PDF
+        # point) never changes regardless of which raster tier is shown —
+        # this is what keeps scene_to_pdf/pdf_to_scene and every marker
+        # coordinate correct across adaptive re-rasterization.
+        item.setScale(self.render_scale / scale)
         self._hires_pages.add(pn)
+        self._page_display_scale[pn] = scale
 
-    def _on_lod_page_ready(self, pn, raw, width, height, stride):
+    def _on_lod_page_ready(self, pn, raw, width, height, stride, scale):
         img = QImage(raw, width, height, stride, QImage.Format.Format_RGB888)
         pm  = QPixmap.fromImage(img)
-        self._add_to_cache(pn, pm)
+        self._add_to_cache(pn, pm, scale)
         # Zoom may have changed while rendering — only promote if still useful;
-        # a follow-up _update_page_lod demotes anything that became stale.
+        # a follow-up _update_page_lod demotes/upgrades anything now stale.
         if self._hires_worthwhile():
-            self._promote_page(pn, pm)
+            self._promote_page(pn, pm, scale)
 
     def page_count(self):
         return self.pdf_doc.page_count if self.pdf_doc else 0
@@ -7201,6 +7362,26 @@ class PIDPanel(QWidget):
 
         bar.addWidget(_vline())
 
+        # Manual per-page rotation (2026-08-12, see NOTES.md) — rotates the
+        # CURRENTLY VIEWED sheet 90° at a time, composed with (not replacing)
+        # the PDF's own /Rotate flag. Deliberately separate from the
+        # three-way "Sid-orientering" dropdown in P&ID-inställningar, which
+        # NOTES.md documents as unread by rendering — this is a coarser but
+        # actually-wired manual control for a specific rotated sheet.
+        self.rotate_left_btn = QPushButton("⟲")
+        self.rotate_left_btn.setFixedWidth(CONFIG['W_ICON_BTN'])
+        self.rotate_left_btn.setToolTip("Rotera detta blad 90° moturs")
+        self.rotate_left_btn.clicked.connect(lambda: self._rotate_page(-90))
+        bar.addWidget(self.rotate_left_btn)
+
+        self.rotate_right_btn = QPushButton("⟳")
+        self.rotate_right_btn.setFixedWidth(CONFIG['W_ICON_BTN'])
+        self.rotate_right_btn.setToolTip("Rotera detta blad 90° medurs")
+        self.rotate_right_btn.clicked.connect(lambda: self._rotate_page(90))
+        bar.addWidget(self.rotate_right_btn)
+
+        bar.addWidget(_vline())
+
         # "⚙️ Orsak"/"⚠️ Konsekvens" mode-toggle buttons removed 2026-08-07
         # (see NOTES.md) — redundant now that the P&ID right-click menu adds
         # cause/consequence/safeguard/objekt directly at the clicked point.
@@ -7811,7 +7992,8 @@ class PIDPanel(QWidget):
                 if not self.viewer.load_pdf(
                         str(working), page=0,
                         layout_offsets=None,
-                        progress_cb=lambda cur, tot: prog.setValue(cur)):
+                        progress_cb=lambda cur, tot: prog.setValue(cur),
+                        page_rotations=self.db.get_all_page_rotations()):
                     prog.close()
                     QMessageBox.warning(self, "Fel", "Kunde inte öppna PDF-filen.")
                     return
@@ -7819,6 +8001,7 @@ class PIDPanel(QWidget):
                 prog.setValue(total_pages)
                 self.db.set_pid_path(str(working))
                 self.db.clear_sheets()
+                self.db.clear_page_rotations()
                 self.db.add_revision(rev_label, rev_notes, str(working), created_at)
                 self.db.ensure_sheets_initialized(self.viewer.page_count())
                 self._current_display_page = 0
@@ -7861,7 +8044,8 @@ class PIDPanel(QWidget):
                 if not self.viewer.load_pdf(
                         str(working), page=keep_phys,
                         layout_offsets=None,
-                        progress_cb=lambda cur, tot: prog.setValue(cur)):
+                        progress_cb=lambda cur, tot: prog.setValue(cur),
+                        page_rotations=self.db.get_all_page_rotations()):
                     prog.close()
                     QMessageBox.warning(self, "Fel", "Kunde inte öppna sammanfogad PDF.")
                     return
@@ -7905,7 +8089,8 @@ class PIDPanel(QWidget):
             if not self.viewer.load_pdf(
                     str(working), page=0,
                     layout_offsets=None,
-                    progress_cb=lambda cur, tot: prog.setValue(cur)):
+                    progress_cb=lambda cur, tot: prog.setValue(cur),
+                    page_rotations=self.db.get_all_page_rotations()):
                 prog.close()
                 QMessageBox.warning(self, "Fel", "Kunde inte öppna PDF-filen.")
                 return
@@ -7913,6 +8098,7 @@ class PIDPanel(QWidget):
             prog.setValue(total_pages)
             self.db.set_pid_path(str(working))
             self.db.clear_sheets()
+            self.db.clear_page_rotations()
             self.db.add_revision(created_at, '', str(working), created_at)
             self.db.ensure_sheets_initialized(self.viewer.page_count())
             self._current_display_page = 0
@@ -7967,6 +8153,64 @@ class PIDPanel(QWidget):
 
     def _on_page_spin_changed(self):
         self._goto_page(self.page_spin.value() - 1)
+
+    def _current_physical_page(self):
+        """Physical page number behind self._current_display_page — same
+        display->physical resolution _goto_page uses, factored out here so
+        _rotate_page (2026-08-12) doesn't duplicate/diverge from it."""
+        display_n = self._current_display_page
+        if self._sheet_map:
+            return self._sheet_map.get(display_n, display_n)
+        if self.db.get_display_page_count() > 0:
+            return self.db.get_sheet_physical_page(display_n)
+        return display_n
+
+    def _rotate_page(self, delta_degrees):
+        """Rotate the currently-viewed sheet by delta_degrees (+-90),
+        composed on top of whatever the PDF file itself already declares via
+        /Rotate (2026-08-12, see NOTES.md "P&ID-sidrotation").
+
+        Markers/zones are stored in PDF-space (see cause_markers etc. in
+        CLAUDE.md's schema table), which this changes — every position
+        recorded for this physical page must be re-anchored to the same
+        physical point at the same time, or a rotated page would silently
+        move every marker on it. The transform is built from this page's
+        own derotation_matrix (old-rotated -> raw/physical-invariant space)
+        composed with its new rotation_matrix (raw -> new-rotated space),
+        i.e. the exact inverse of how equipment_detection._rotate_words
+        already converts raw PyMuPDF coordinates into this app's PDF-space.
+        """
+        if self.viewer.pdf_doc is None or not HAS_PYMUPDF:
+            return
+        physical = self._current_physical_page()
+        page = self.viewer.pdf_doc.load_page(physical)
+        old_extra = self.viewer._page_rotation_override.get(physical, 0)
+        old_derot = page.derotation_matrix   # current (pre-change) rotated-space -> raw
+        new_extra = (old_extra + delta_degrees) % 360
+
+        self.viewer.set_page_rotation_override(physical, new_extra)  # mutates page.rotation in place
+        new_rotmat = page.rotation_matrix    # raw -> new rotated-space, reflects the change above
+
+        def _tf(x, y):
+            raw = fitz.Point(float(x), float(y)) * old_derot
+            newp = raw * new_rotmat
+            return (newp.x, newp.y)
+
+        self.db.set_page_rotation(physical, new_extra)
+        self.db.remap_page_rotation_positions(physical, _tf, angle_delta_deg=delta_degrees)
+
+        self._save_page_view(self._current_display_page)
+        active = sorted(self.viewer._all_page_items.keys())
+        # Preserve whatever board layout (auto-flow or a user-dragged custom
+        # arrangement, see "📐 Layout") is currently on screen — only the
+        # rotated page's own footprint changes (width/height swap for a
+        # +-90 turn), everything else keeps its existing position. A
+        # rotated page's new footprint can end up overlapping its neighbour
+        # in that case — known limitation, see NOTES.md.
+        layout_offsets = dict(self.viewer._page_offsets)
+        self.viewer._render_all_pages(active_pages=active, layout_offsets=layout_offsets)
+        self._load_overlays()
+        self._restore_page_view(self._current_display_page)
 
     def _update_page_label(self):
         total = len(self._sheet_map) if self._sheet_map else (
@@ -9836,7 +10080,8 @@ class PIDPanel(QWidget):
             active_pages = ([int(s['physical_page']) for s in sheets]
                             if sheets else None)
             if self.viewer.load_pdf(path, page=0, layout_offsets=layout_offsets,
-                                    active_pages=active_pages):
+                                    active_pages=active_pages,
+                                    page_rotations=self.db.get_all_page_rotations()):
                 self.db.ensure_sheets_initialized(self.viewer.page_count())
                 self._rebuild_sheet_map()
                 self._current_display_page = 0

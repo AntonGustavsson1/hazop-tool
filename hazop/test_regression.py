@@ -10614,5 +10614,325 @@ class NodeMarkupPanelNavigateTests(unittest.TestCase):
             panel.deleteLater()
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# Adaptive re-rasterization on zoom (2026-08-12) — "P&ID blir suddig vid
+# inzoomning". PIDGraphicsView's hi-res tier used to always render at a
+# FIXED fitz.Matrix scale (_RASTER_SCALE) regardless of how far the
+# QGraphicsView itself was zoomed in, so zooming in past what that fixed
+# scale could physically supply just stretched the same bitmap (blur).
+# _target_raster_scale()/_update_page_lod() now track the current view zoom
+# and re-render sharper on demand (capped so an extreme zoom can't render an
+# absurdly large pixmap), without changing render_scale itself — the
+# scene-units-per-pdf-point factor every coordinate transform assumes.
+# ══════════════════════════════════════════════════════════════════════════
+
+class AdaptiveRasterZoomTests(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_lod_test_")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_pdf(self, w=400.0, h=300.0):
+        import fitz
+        path = os.path.join(self._tmpdir, "test.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=w, height=h)
+        page.draw_rect(fitz.Rect(10, 10, w - 10, h - 10))
+        doc.save(path)
+        doc.close()
+        return path
+
+    def test_target_raster_scale_at_default_zoom_equals_base(self):
+        from pid_viewer import PIDGraphicsView
+        view = PIDGraphicsView()
+        view.render_scale = view._RASTER_SCALE   # set by _render_all_pages() once a PDF is loaded
+        self.assertEqual(view.transform().m11(), 1.0)
+        target = view._target_raster_scale(1000.0, 800.0)
+        self.assertEqual(target, view._RASTER_SCALE,
+            "at normal (100%) zoom the fixed base raster is already crisp "
+            "enough — must not upgrade unnecessarily")
+
+    def test_target_raster_scale_increases_with_zoom(self):
+        """The bug report's exact scenario: zooming the QGraphicsView in
+        past what _RASTER_SCALE alone can supply must raise the target
+        render resolution instead of leaving it fixed."""
+        from pid_viewer import PIDGraphicsView
+        view = PIDGraphicsView()
+        view.render_scale = view._RASTER_SCALE
+        view.scale(4.0, 4.0)
+        # Small page so the pixel-dimension safety cap (tested separately
+        # below) doesn't also bind here — isolates the zoom-tracking behaviour.
+        target = view._target_raster_scale(100.0, 80.0)
+        self.assertGreater(target, view._RASTER_SCALE)
+        expected = 4.0 * view.render_scale / view._LOD_MARGIN
+        self.assertAlmostEqual(target, expected, places=6)
+
+    def test_target_raster_scale_capped_for_extreme_zoom(self):
+        """Safety cap: must not render an absurdly large pixmap just
+        because the view zoom is extreme — bounded by pixel dimensions."""
+        from pid_viewer import PIDGraphicsView
+        view = PIDGraphicsView()
+        view.render_scale = view._RASTER_SCALE
+        view.scale(1000.0, 1000.0)
+        pw, ph = 1200.0, 600.0   # dim cap = 6000/1200 = 5.0 (between base 3.0 and multiplier cap 12.0)
+        target = view._target_raster_scale(pw, ph)
+        self.assertAlmostEqual(target, 5.0, places=6)
+        self.assertLessEqual(target * pw, view._MAX_RASTER_DIM + 1e-6)
+
+    def test_update_page_lod_rerenders_sharper_when_zoomed_in_far(self):
+        from pid_viewer import PIDGraphicsView
+        path = self._make_pdf()
+        view = PIDGraphicsView()
+        self.assertTrue(view.load_pdf(path))
+        pn = 0
+        view.centerOn(view._all_page_items[pn].sceneBoundingRect().center())
+        old_footprint = view._all_page_items[pn].sceneBoundingRect()
+
+        view.scale(6.0, 6.0)   # well past what _RASTER_SCALE=3.0 alone can supply
+        view._update_page_lod()
+        self.assertIsNotNone(view._lod_renderer,
+            "zooming in far enough must trigger a background re-render")
+        self.assertTrue(view._lod_renderer.wait(5000),
+            "background re-render did not finish in time")
+        self.app.processEvents()
+
+        self.assertIn(pn, view._page_cache_scale)
+        self.assertGreater(view._page_cache_scale[pn], view._RASTER_SCALE,
+            "must have re-rasterized ABOVE the fixed base scale once zoomed in far")
+        self.assertEqual(view._page_display_scale.get(pn), view._page_cache_scale[pn])
+
+        # The scene footprint — what scene_to_pdf()/pdf_to_scene() and every
+        # marker coordinate assume — must be unchanged by the resolution
+        # upgrade; only the underlying pixmap got sharper.
+        new_footprint = view._all_page_items[pn].sceneBoundingRect()
+        self.assertAlmostEqual(old_footprint.width(),  new_footprint.width(),  places=3)
+        self.assertAlmostEqual(old_footprint.height(), new_footprint.height(), places=3)
+
+    def test_update_page_lod_does_not_rerender_when_already_crisp_enough(self):
+        """Hysteresis/debounce: a second LOD pass at the same zoom (e.g. a
+        follow-up debounce tick after scrolling, with no further zoom
+        change) must not kick off another background render."""
+        from pid_viewer import PIDGraphicsView
+        path = self._make_pdf()
+        view = PIDGraphicsView()
+        self.assertTrue(view.load_pdf(path))
+        pn = 0
+        view.centerOn(view._all_page_items[pn].sceneBoundingRect().center())
+
+        view.scale(6.0, 6.0)
+        view._update_page_lod()
+        self.assertTrue(view._lod_renderer.wait(5000))
+        self.app.processEvents()
+        self.assertIsNotNone(view._page_display_scale.get(pn))
+
+        view._lod_renderer = None
+        view._update_page_lod()
+        self.assertIsNone(view._lod_renderer,
+            "must not re-render when the currently-displayed tier already satisfies the zoom")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Manual per-page P&ID rotation (2026-08-12) — a toolbar rotate-left/right
+# control for the currently-viewed sheet, composed with (not replacing) the
+# PDF's own /Rotate flag via page.set_rotation() (see
+# PIDGraphicsView._apply_page_rotation). Distinct from the pre-existing,
+# still-unwired "Sid-orientering" three-way dropdown (pid_page_orientation_hint,
+# see NOTES.md known limitations). Every marker/zone position stored for the
+# rotated physical page is stored in PDF-space and must be re-anchored to the
+# same physical point at the same time, or rotating would silently move
+# every marker on that page.
+# ══════════════════════════════════════════════════════════════════════════
+
+class PidPageRotationTests(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        import fitz
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_rotate_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        self.pdf_path = os.path.join(self._tmpdir, "test.pdf")
+        doc = fitz.open()
+        doc.new_page(width=400.0, height=300.0)
+        doc.save(self.pdf_path)
+        doc.close()
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_panel(self):
+        from pid_viewer import PIDPanel
+        panel = PIDPanel(self.db)
+        panel.viewer.load_pdf(self.pdf_path)
+        self.db.ensure_sheets_initialized(panel.viewer.page_count())
+        panel._rebuild_sheet_map()
+        return panel
+
+    def test_db_rotation_round_trip(self):
+        self.assertEqual(self.db.get_page_rotation(0), 0)
+        self.db.set_page_rotation(0, 90)
+        self.assertEqual(self.db.get_page_rotation(0), 90)
+        self.assertEqual(self.db.get_all_page_rotations(), {0: 90})
+        self.db.set_page_rotation(0, 270)   # upsert, not a duplicate row
+        self.assertEqual(self.db.get_page_rotation(0), 270)
+        self.assertEqual(self.db.get_all_page_rotations(), {0: 270})
+
+    def test_rotation_override_composes_with_intrinsic_rotation(self):
+        from pid_viewer import PIDGraphicsView
+        view = PIDGraphicsView()
+        self.assertTrue(view.load_pdf(self.pdf_path))
+        page = view.pdf_doc.load_page(0)
+        self.assertEqual(page.rotation, 0)
+        w0, h0 = view._page_widths_pdf[0], view._page_heights_pdf[0]
+
+        view.set_page_rotation_override(0, 90)
+
+        self.assertEqual(page.rotation, 90,
+            "override must compose with (here: on top of a 0-degree) intrinsic /Rotate")
+        # An axis-aligned footprint swap is the observable proof that
+        # page.rect/get_pixmap() etc. now reflect the override for free.
+        self.assertAlmostEqual(page.rect.width,  h0, places=3)
+        self.assertAlmostEqual(page.rect.height, w0, places=3)
+
+    def test_rotate_button_updates_db_and_page_footprint(self):
+        panel = self._make_panel()
+        try:
+            w0 = panel.viewer._page_widths_pdf[0]
+            h0 = panel.viewer._page_heights_pdf[0]
+            panel._rotate_page(90)
+            self.assertEqual(self.db.get_page_rotation(0), 90)
+            self.assertAlmostEqual(panel.viewer._page_widths_pdf[0],  h0, places=3)
+            self.assertAlmostEqual(panel.viewer._page_heights_pdf[0], w0, places=3)
+        finally:
+            panel.deleteLater()
+
+    def test_marker_stays_on_same_physical_point_after_rotation(self):
+        """The critical correctness check the user explicitly asked for:
+        place a marker, rotate the page, confirm it's still anchored to the
+        same physical location — not just that rendering doesn't crash.
+        Verified by mapping both the before- and after-rotation marker
+        position back to the rotation-invariant raw/mediabox anchor via
+        derotation_matrix and checking they match."""
+        import fitz
+        panel = self._make_panel()
+        try:
+            node_id  = self.db.add_node()
+            dev_id   = self.db.deviations(node_id)[0]['id']
+            cause_id = self.db.add_cause(dev_id)
+            self.db.add_cause_marker(cause_id, 0, 100.0, 50.0, "Ventil")
+
+            page_before = panel.viewer.pdf_doc.load_page(0)
+            raw_anchor_before = fitz.Point(100.0, 50.0) * page_before.derotation_matrix
+
+            panel._rotate_page(90)
+
+            marker = self.db.get_cause_marker(cause_id)
+            page_after = panel.viewer.pdf_doc.load_page(0)
+            raw_anchor_after = fitz.Point(marker['x'], marker['y']) * page_after.derotation_matrix
+
+            self.assertAlmostEqual(raw_anchor_before.x, raw_anchor_after.x, places=3)
+            self.assertAlmostEqual(raw_anchor_before.y, raw_anchor_after.y, places=3)
+            # And the stored PDF-space coordinates actually changed — proves
+            # this isn't an accidental no-op/identity transform.
+            self.assertFalse(
+                abs(marker['x'] - 100.0) < 1e-3 and abs(marker['y'] - 50.0) < 1e-3,
+                "marker's stored PDF-space position must change across a rotation "
+                "even though its physical location doesn't")
+        finally:
+            panel.deleteLater()
+
+    def test_rect_marker_dimensions_swap_on_90_degree_rotation(self):
+        panel = self._make_panel()
+        try:
+            node_id  = self.db.add_node()
+            dev_id   = self.db.deviations(node_id)[0]['id']
+            cause_id = self.db.add_cause(dev_id)
+            self.db.add_cause_marker(cause_id, 0, 100.0, 50.0, "Ventil",
+                                     rect_w=40.0, rect_h=20.0)
+
+            panel._rotate_page(90)
+
+            row = dict(self.db.cause_markers_for_page(0)[0])
+            self.assertAlmostEqual(row['rect_w'], 20.0, places=3)
+            self.assertAlmostEqual(row['rect_h'], 40.0, places=3)
+        finally:
+            panel.deleteLater()
+
+    def test_rect_marker_dimensions_unchanged_on_180_degree_rotation(self):
+        panel = self._make_panel()
+        try:
+            node_id  = self.db.add_node()
+            dev_id   = self.db.deviations(node_id)[0]['id']
+            cause_id = self.db.add_cause(dev_id)
+            self.db.add_cause_marker(cause_id, 0, 100.0, 50.0, "Ventil",
+                                     rect_w=40.0, rect_h=20.0)
+
+            panel._rotate_page(90)
+            panel._rotate_page(90)   # net 180 degrees
+
+            row = dict(self.db.cause_markers_for_page(0)[0])
+            self.assertAlmostEqual(row['rect_w'], 40.0, places=3)
+            self.assertAlmostEqual(row['rect_h'], 20.0, places=3)
+        finally:
+            panel.deleteLater()
+
+    def test_node_outline_points_remapped_after_rotation(self):
+        """Covers the 'zone drawing' correctness the user asked to verify —
+        a node's outline (nodes.markup_points) is the simplest such zone."""
+        import fitz, json
+        panel = self._make_panel()
+        try:
+            pts_before = [[20.0, 30.0], [120.0, 30.0], [120.0, 130.0], [20.0, 130.0]]
+            node_id = self.db.add_node_with_markup("Node A", pts_before, {}, 0)
+
+            page_before = panel.viewer.pdf_doc.load_page(0)
+            raw_before = [fitz.Point(x, y) * page_before.derotation_matrix for x, y in pts_before]
+
+            panel._rotate_page(-90)
+
+            node = self.db.get_node(node_id)
+            pts_after = json.loads(node['markup_points'])
+            page_after = panel.viewer.pdf_doc.load_page(0)
+            raw_after = [fitz.Point(x, y) * page_after.derotation_matrix for x, y in pts_after]
+
+            for rb, ra in zip(raw_before, raw_after):
+                self.assertAlmostEqual(rb.x, ra.x, places=3)
+                self.assertAlmostEqual(rb.y, ra.y, places=3)
+        finally:
+            panel.deleteLater()
+
+    def test_full_rotation_cycle_returns_marker_to_original_position(self):
+        """Four 90-degree turns must be a no-op on every stored position —
+        a strong end-to-end sanity check of the compose/remap math."""
+        panel = self._make_panel()
+        try:
+            node_id  = self.db.add_node()
+            dev_id   = self.db.deviations(node_id)[0]['id']
+            cause_id = self.db.add_cause(dev_id)
+            self.db.add_cause_marker(cause_id, 0, 77.0, 133.0, "Ventil")
+
+            for _ in range(4):
+                panel._rotate_page(90)
+
+            self.assertEqual(self.db.get_page_rotation(0), 0)
+            marker = self.db.get_cause_marker(cause_id)
+            self.assertAlmostEqual(marker['x'], 77.0, places=3)
+            self.assertAlmostEqual(marker['y'], 133.0, places=3)
+        finally:
+            panel.deleteLater()
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
