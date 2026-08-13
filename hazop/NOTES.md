@@ -1588,6 +1588,27 @@ Nya grupper:
 
 ---
 
+## Rekommendationskolumn längst till höger i HAZOP scenario (2026-08-13)
+
+**Begäran:** "Längst till höger i hazop scenario fliken kan du lägga till en rekomendationskolumn på varje flik så det går att skapa rekommendationer till varje scenario."
+
+**Upptäckt under research:** appen hade redan en helt färdig, testad backend + UI-widget för exakt detta — men den var osynlig i appen. `actions`-tabellen (`id, consequence_id, description, responsible, due_date, status`) med fulla `Database`-metoder (`add_action`/`actions`/`update_action`/`delete_action`, alla sedan länge existerande) och `ActionEditor(QWidget)` (hazop.py, en liten tabell Åtgärd/Ansvarig/Datum/Status + "+ Lägg till åtgärd", redan helt kopplad till dessa DB-metoder) satt tidigare inbäddad i `ConsequencePanel` under rubriken "Åtgärder / Rekommendationer" — men `ConsequencePanel`/`self.stack` visas inte längre någonstans sedan `PropertiesRibbon`-migreringen (kommentar i `MainWindow.__init__`: panelerna hålls instansierade bara så befintlig signal-koppling kompilerar, men visas aldrig). Ingen användare kunde skapa en åtgärd/rekommendation via UI:t alls innan denna ändring.
+
+**Beslut (AskUserQuestion):** återanvänd denna befintliga modell (flera rekommendationer per scenario, med ansvarig/datum/status) istället för en ny enkel fritextkolumn — ger samtidigt den orphanade panelen en riktig plats i appen igen, istället för att bygga en konkurrerande mekanism. **Inget databasschema ändrat** — allt som behövdes fanns redan.
+
+**Implementation, helt i `ScenarioTablePanel` (hazop.py):**
+1. Ny kolumn `_C_REK` (index 9, sist) + header `'Rekommendation'` i `_COLS`, `resize_modes`-post (Interactive, 140px). Bakåtkompatibelt: sparade kolumnbredder (`scenario_col_widths`) hoppar redan tyst över okända index.
+2. Ny `RecommendationEditorDialog(QDialog)` — bara `ActionEditor` (den befintliga widgeten) + en "Stäng"-knapp i en liten dialog.
+3. `_add_row()`: ny "Col REK"-block direkt efter Slutkonsekvens-blocket, byggt av en ny `_recommendation_summary(acts)`-hjälpmetod: "—" (tom, samma konvention som KON/SG), åtgärdens egen beskrivning (en åtgärd), eller `"N åtgärder (M öppna)"` (flera).
+4. `_apply_spans()`: `_C_REK` tillagd i samma span-grupp som KON/LOPA (spannar hela konsekvensen, inte per kategori/safeguard-rad).
+5. `_on_cell_clicked()`: klick på REK-cellen öppnar `RecommendationEditorDialog`, positionerad via den redan existerande `_pos_near_cons_row`-hjälpen (samma mönster som `_open_chain_editor`/`RiskMatrixPopup` redan använder). Ny `_refresh_recommendation_cell(cons_id)` patchar cellen direkt efteråt utan full rebuild (modellerad exakt på `_update_row_text_only()`s mönster).
+
+Ingen delegate-ändring behövdes — REK är avsiktligt INTE med i `_pid_delegate`s kolumner (ORS/KON/SG-specifik drag-and-drop-taggning, irrelevant här) och INTE i `_ScenarioDelegate`s `wrap_cols` (REK:s sammanfattningstext ska vara enradig, som SG redan är).
+
+**Test:** ny klass `RecommendationColumnTests` (6 tester): kolumnen finns sist och heter rätt, tomt/en/flera-åtgärder-sammanfattningarna, klick öppnar dialogen och cellen uppdateras efteråt, flera safeguard-rader under en konsekvens delar EN sammanslagen REK-cell. Bredare svep av `ScenarioTablePanel`-relaterade klasser (ORS/KON/SG-klick, radhöjd, riskcell-rendering, dash-placeholders) gröna — ingen regression i span-/klick-logiken.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

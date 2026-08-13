@@ -7693,6 +7693,87 @@ class EmptyOrsCellClickOpensCausePopupTests(unittest.TestCase):
             panel.deleteLater()
 
 
+class RecommendationColumnTests(unittest.TestCase):
+    """"Längst till höger ... kan du lägga till en rekomendationskolumn
+    på varje flik så det går att skapa rekommendationer till varje
+    scenario." (2026-08-13) — backed by the pre-existing actions table/
+    ActionEditor (previously unreachable in the UI after the
+    PropertiesRibbon migration), not a new free-text field, since a
+    scenario can have several recommendations (responsible/due date/
+    status each)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_rekcol_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from hazop import ScenarioTablePanel
+        self.panel = ScenarioTablePanel(self.db)
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.cons_id = self.db.add_consequence(cause_id)
+        self.node_id = node_id
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _rek_item(self):
+        self.panel.load_node(self.node_id)
+        row = next(r for r, m in enumerate(self.panel._row_meta) if m[2] == self.cons_id)
+        return self.panel._table.item(row, self.panel._C_REK), row
+
+    def test_column_exists_last_and_is_named_rekommendation(self):
+        self.assertEqual(self.panel._COLS[-1], 'Rekommendation')
+        self.assertEqual(self.panel._C_REK, len(self.panel._COLS) - 1)
+
+    def test_consequence_with_no_actions_shows_dash_placeholder(self):
+        item, _ = self._rek_item()
+        self.assertEqual(item.text(), '—')
+
+    def test_single_action_shows_its_description(self):
+        self.db.add_action(self.cons_id)
+        item, _ = self._rek_item()
+        self.assertEqual(item.text(), 'Ny åtgärd')
+
+    def test_multiple_actions_show_a_count_with_open_total(self):
+        self.db.add_action(self.cons_id)
+        act_id = self.db.add_action(self.cons_id)
+        self.db.update_action(act_id, 'Klar sak', '', '', 'Klar')
+        item, _ = self._rek_item()
+        self.assertEqual(item.text(), '2 åtgärder (1 öppna)')
+
+    def test_clicking_cell_opens_editor_and_refreshes_summary_after(self):
+        from hazop import RecommendationEditorDialog
+        _, row = self._rek_item()
+        with unittest.mock.patch.object(
+                RecommendationEditorDialog, 'exec',
+                side_effect=lambda: self.db.add_action(self.cons_id)):
+            self.panel._on_cell_clicked(row, self.panel._C_REK)
+        item = self.panel._table.item(row, self.panel._C_REK)
+        self.assertEqual(item.text(), 'Ny åtgärd')
+
+    def test_recommendation_column_spans_across_safeguard_rows(self):
+        """Several safeguards under the same consequence must share ONE
+        merged REK cell, not one per safeguard row — same grouping KON/
+        LOPA already get."""
+        self.db.add_safeguard(self.cons_id)
+        self.db.add_safeguard(self.cons_id)
+        self.db.add_action(self.cons_id)
+        self.panel.load_node(self.node_id)
+        rows = [r for r, m in enumerate(self.panel._row_meta) if m[2] == self.cons_id]
+        self.assertGreaterEqual(len(rows), 2)
+        self.assertEqual(self.panel._table.rowSpan(rows[0], self.panel._C_REK), len(rows),
+            "the consequence's safeguard rows must be merged into one REK span")
+
+
 def _find_tree_item(tree, type_, id_=None):
     it = QTreeWidgetItemIterator(tree)
     while it.value():

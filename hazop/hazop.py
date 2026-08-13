@@ -5062,6 +5062,30 @@ class ActionEditor(QWidget):
         self.db.update_action(act_id, desc, resp, due, status)
 
 
+class RecommendationEditorDialog(QDialog):
+    """Popup opened from the Worksheet's "Rekommendation" column
+    (2026-08-13, see NOTES.md) — just ActionEditor (already fully wired
+    to the actions table) wrapped in a small dialog, since it previously
+    had no reachable place in the UI after the PropertiesRibbon
+    migration left ConsequencePanel unshown."""
+
+    def __init__(self, db, consequence_id, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Rekommendationer")
+        self.setMinimumWidth(480)
+        layout = QVBoxLayout(self)
+        self._editor = ActionEditor(db)
+        self._editor.load(consequence_id)
+        layout.addWidget(self._editor)
+        btns = QHBoxLayout()
+        btns.addStretch()
+        close_btn = QPushButton("Stäng")
+        close_btn.setDefault(True)
+        close_btn.clicked.connect(self.accept)
+        btns.addWidget(close_btn)
+        layout.addLayout(btns)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # DETAIL PANELS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -11440,7 +11464,7 @@ class ScenarioTablePanel(QWidget):
 
     # Column indices
     _C_NOD, _C_UTR, _C_DEV, _C_ORS, _C_KON, _C_RFORE = 0, 1, 2, 3, 4, 5
-    _C_SG, _C_LOPA, _C_SLUT                           = 6, 7, 8
+    _C_SG, _C_LOPA, _C_SLUT, _C_REK                   = 6, 7, 8, 9
 
     _COLS = [
         'Nod',
@@ -11452,6 +11476,7 @@ class ScenarioTablePanel(QWidget):
         'Barriärer',
         'FA / Ant. / Övriga',
         'Slutkonsekvens',
+        'Rekommendation',
     ]
 
     def __init__(self, db: Database):
@@ -11537,6 +11562,7 @@ class ScenarioTablePanel(QWidget):
             self._C_SG:    (QHeaderView.ResizeMode.Interactive, 130),
             self._C_LOPA:  (QHeaderView.ResizeMode.Interactive, 130),
             self._C_SLUT:  (QHeaderView.ResizeMode.Interactive,  85),
+            self._C_REK:   (QHeaderView.ResizeMode.Interactive, 140),
         }
         for col, (mode, width) in resize_modes.items():
             h.setSectionResizeMode(col, mode)
@@ -12196,10 +12222,12 @@ class ScenarioTablePanel(QWidget):
             cat_id   = cat_info[0] if cat_info else None
             return (cons_id, cat_id)
 
-        # KON and LOPA: span by cons_id (whole consequence merged)
-        for col in (self._C_KON, self._C_LOPA):
+        # KON, LOPA and REK: span by cons_id (whole consequence merged) —
+        # a recommendation belongs to the CONSEQUENCE, not to one of its
+        # safeguard rows, same as KON/LOPA already group.
+        for col in (self._C_KON, self._C_LOPA, self._C_REK):
             _span_col(col, lambda r: _meta(r, 2))
-        logging.info('_apply_spans: J5 — KON/LOPA columns spanned')
+        logging.info('_apply_spans: J5 — KON/LOPA/REK columns spanned')
 
         # RFORE, SLUT: span by (cons_id, cat_id)
         # → non-category rows all merge; per-category rows each stay separate
@@ -12715,7 +12743,33 @@ class ScenarioTablePanel(QWidget):
         rs.setFont(QFont("Consolas", 9))
         self._table.setItem(r, self._C_SLUT, rs)
 
+        # ── Col REK: Rekommendation (2026-08-13, see NOTES.md) ───────────────
+        # Backed by the pre-existing actions table/ActionEditor (previously
+        # unreachable in the UI) rather than a new free-text field — a
+        # scenario can have several recommendations (responsible/due date/
+        # status each), not just one line of text.
+        acts = self.db.actions(cid)
+        rek_item = QTableWidgetItem(self._recommendation_summary(acts))
+        rek_item.setFlags(rek_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        rek_item.setData(Qt.ItemDataRole.UserRole, ('recommendation', cid))
+        rek_item.setToolTip("Klicka för att lägga till/redigera rekommendationer")
+        if not acts:
+            rek_item.setForeground(QBrush(QColor('#8D9299')))
+        self._table.setItem(r, self._C_REK, rek_item)
+
         pass  # row height set by resizeRowsToContents at end of _rebuild
+
+    def _recommendation_summary(self, acts):
+        """Short REK-cell text for a consequence's action/recommendation
+        list — "—" placeholder when empty (same convention as KON/SG),
+        the single description when there's exactly one, otherwise a
+        count with how many are still open."""
+        if not acts:
+            return '—'
+        if len(acts) == 1:
+            return (acts[0]['description'] or 'Ny åtgärd')[:40]
+        open_n = sum(1 for a in acts if (a['status'] or 'Öppen') != 'Klar')
+        return f"{len(acts)} åtgärder ({open_n} öppna)" if open_n else f"{len(acts)} åtgärder"
 
     def _get_cons_context(self, cons_id: int):
         """Return (deviation, comp_type, cause_text) for the consequence."""
@@ -12765,6 +12819,37 @@ class ScenarioTablePanel(QWidget):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             # Rebuild risk cells (description changed)
             self._schedule_rebuild()
+
+    def _open_recommendation_editor(self, cons_id):
+        """Open the Rekommendation-column popup (2026-08-13, see
+        NOTES.md) — ActionEditor already persists every change itself,
+        so no Accepted/Rejected distinction is needed; just refresh the
+        cell's summary text once the dialog closes either way."""
+        dlg = RecommendationEditorDialog(self.db, cons_id, self)
+        dlg.move(self._pos_near_cons_row(cons_id, dlg.sizeHint()))
+        dlg.exec()
+        self._refresh_recommendation_cell(cons_id)
+
+    def _refresh_recommendation_cell(self, cons_id):
+        """Fast in-place patch of every row's REK cell for cons_id,
+        mirroring _update_row_text_only()'s pattern (same re-entrancy
+        guard, same table.item()-is-None check to skip span-covered
+        rows that have no real item of their own)."""
+        if getattr(self, '_rebuilding', False):
+            return
+        acts = self.db.actions(cons_id)
+        summary = self._recommendation_summary(acts)
+        self._table.blockSignals(True)
+        try:
+            for row, meta in enumerate(self._row_meta):
+                if meta[2] != cons_id:
+                    continue
+                item = self._table.item(row, self._C_REK)
+                if item is not None:
+                    item.setText(summary)
+                    item.setForeground(QBrush(QColor('#8D9299' if not acts else '#000000')))
+        finally:
+            self._table.blockSignals(False)
 
     def _edit_extra(self, cons_id):
         # This slot runs on the call stack of a _LopaWidget's _extra_btn
@@ -13102,6 +13187,11 @@ class ScenarioTablePanel(QWidget):
             # Feature 7: single-click on already-current SG cell → start edit
             if self._table.currentRow() == row and self._table.currentColumn() == col:
                 QTimer.singleShot(200, lambda r=row, c=col: self._try_start_edit(r, c))
+            return
+        if col == self._C_REK and row < len(self._row_meta):
+            cons_id = self._row_meta[row][2]
+            if cons_id is not None:
+                self._open_recommendation_editor(cons_id)
             return
         if col != self._C_RFORE:
             return
