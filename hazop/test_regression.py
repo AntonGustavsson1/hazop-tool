@@ -3513,9 +3513,27 @@ class UnifiedTagScanTests(unittest.TestCase):
         """Used to return the RDS-PP compound match completely raw (leading
         '=', dots kept as-is) instead of normalising it like _parse_tag's
         own EXT_TAG_RE branch already does — see NOTES.md 'Dubbla taggar
-        vid skanning' (2026-08-13, real LKAB file)."""
+        vid skanning' (2026-08-13, real LKAB file).
+
+        Only the separator right before the instrument code (QMA081)
+        becomes a dash — the dot between the area-hierarchy segments
+        (E1, M1) is LKAB's own real RDS-PP notation and must survive
+        (2026-08-13 follow-up: 'anger inte punkt för lkab taggarna utan
+        anger - istället'), not get collapsed to 'E1-M1-QMA081'."""
         from equipment_detection import _pick_best_tag
-        self.assertEqual(_pick_best_tag('=E1.M1.QMA081'), 'E1-M1-QMA081')
+        self.assertEqual(_pick_best_tag('=E1.M1.QMA081'), 'E1.M1-QMA081')
+
+    def test_parse_tag_preserves_rdspp_hierarchy_dots(self):
+        """_parse_tag's own EXT_TAG_RE branch (shared _normalize_ext_tag
+        helper with _pick_best_tag, 2026-08-13 follow-up) must preserve
+        the same LKAB dot-hierarchy notation, and still resolve the
+        correct instrument-code prefix for equipment-type lookup."""
+        from equipment_detection import _parse_tag
+        self.assertEqual(_parse_tag('=E1.M1.QMA081'), ('E1.M1-QMA081', 'QMA'))
+        self.assertEqual(_parse_tag('E1.M1.WPA001'), ('E1.M1-WPA001', 'WPA'))
+        # A separator already present right before the instrument code
+        # (not a dot) is left as a dash, unchanged.
+        self.assertEqual(_parse_tag('=E1.M1-QMA081'), ('E1.M1-QMA081', 'QMA'))
 
     def test_rdspp_compound_tag_deduped_against_its_own_bare_form(self):
         """Real LKAB file bug (2026-08-13, see NOTES.md 'Dubbla taggar vid
@@ -5680,6 +5698,36 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         replacing the old persistent bar — which Qt.WindowType.Popup
         gives for free, no manual outside-click detection needed."""
         self.assertTrue(self.bar.windowFlags() & Qt.WindowType.Popup)
+
+    def test_show_near_sizes_scroll_area_to_available_screen_space(self):
+        """2026-08-13 feedback: 'rulllistan väldigt kort på en liten
+        skärm' — the checklist's scroll area used to be pinned at a
+        fixed 220px no matter how much room was actually available; it
+        must now use up to its natural content height (a fresh node has
+        16 auto-seeded deviations, well past what fits in 220px), bounded
+        only by real screen space, and the whole popup must stay fully
+        on-screen either way."""
+        from PyQt6.QtCore import QPoint
+        node_id = self.db.add_node()
+        self.bar.load(self.eq_id, self.marker_id, active_node_id=node_id)
+        scr = QApplication.primaryScreen().availableGeometry()
+        self.bar.show_near(QPoint(scr.center().x(), scr.center().y()))
+        self.assertGreater(self.bar._checklist_scroll.maximumHeight(), 220)
+        self.assertGreaterEqual(self.bar.geometry().top(), scr.top())
+        self.assertLessEqual(self.bar.geometry().bottom(), scr.bottom())
+
+    def test_show_near_keeps_popup_on_screen_when_clicked_near_bottom_edge(self):
+        """A click near the screen's bottom edge must open the popup
+        UPWARD instead of letting it run off-screen — this is the actual
+        'liten skärm' scenario: less room below the click than the
+        checklist's natural height needs."""
+        from PyQt6.QtCore import QPoint
+        node_id = self.db.add_node()
+        self.bar.load(self.eq_id, self.marker_id, active_node_id=node_id)
+        scr = QApplication.primaryScreen().availableGeometry()
+        self.bar.show_near(QPoint(scr.center().x(), scr.bottom() - 20))
+        self.assertGreaterEqual(self.bar.geometry().top(), scr.top())
+        self.assertLessEqual(self.bar.geometry().bottom(), scr.bottom())
 
     def test_checking_deviation_without_a_node_selected_is_a_no_op(self):
         self.bar.load(self.eq_id, self.marker_id)
@@ -9881,6 +9929,64 @@ class EquipmentTagPopupDuplicateHintTests(unittest.TestCase):
             self.assertNotEqual(popup._dup_hint.text(), "")
             popup._tag_edit.setText("P-999")
             self.assertEqual(popup._dup_hint.text(), "")
+        finally:
+            popup.deleteLater()
+
+
+class EquipmentTagPopupCustomTypeTests(unittest.TestCase):
+    """"det är här jag vill kunna lägga till nya typer av objekt som inte
+    redan finns i listan" (2026-08-13) — the "Typ" combo used to be a
+    plain non-editable QComboBox limited to COMPONENT_TYPES + two
+    catch-alls; equipment_catalog.equipment_type is a free-text column
+    with nothing else in the app restricting its values, so making the
+    combo editable and just passing currentText() through unchanged is
+    enough."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_customtype_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_type_combo_is_editable(self):
+        from hazop import EquipmentTagPopup
+        popup = EquipmentTagPopup(self.db)
+        try:
+            self.assertTrue(popup._type_cb.isEditable())
+        finally:
+            popup.deleteLater()
+
+    def test_typing_a_brand_new_type_commits_it_unchanged(self):
+        from hazop import EquipmentTagPopup
+        popup = EquipmentTagPopup(self.db)
+        try:
+            popup._tag_edit.setText("XYZ-1")
+            popup._type_cb.setCurrentText("Ett helt nytt objekt")
+            captured = []
+            popup.committed.connect(lambda tag, typ: captured.append((tag, typ)))
+            popup._ok()
+            self.assertEqual(captured, [("XYZ-1", "Ett helt nytt objekt")])
+        finally:
+            popup.deleteLater()
+
+    def test_previously_used_custom_type_is_offered_again(self):
+        """Once a custom type has been used anywhere in the catalog, it
+        should be a selectable dropdown entry next time, not something
+        the user has to retype from scratch every time."""
+        from hazop import EquipmentTagPopup
+        self.db.add_equipment_item("XYZ-1", "XYZ-1", "XYZ", 0, "Ett helt nytt objekt", '', 0)
+        popup = EquipmentTagPopup(self.db)
+        try:
+            self.assertGreaterEqual(popup._type_cb.findText("Ett helt nytt objekt"), 0)
         finally:
             popup.deleteLater()
 

@@ -6457,12 +6457,17 @@ class EquipmentDeviationBar(QWidget):
         self._checklist_layout = QVBoxLayout(self._checklist_host)
         self._checklist_layout.setContentsMargins(0, 0, 0, 0)
         self._checklist_layout.setSpacing(2)
-        scroll = QScrollArea()
-        scroll.setWidget(self._checklist_host)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setMaximumHeight(220)
-        outer.addWidget(scroll)
+        self._checklist_scroll = QScrollArea()
+        self._checklist_scroll.setWidget(self._checklist_host)
+        self._checklist_scroll.setWidgetResizable(True)
+        self._checklist_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        # Real height is set per-popup in show_near() from the available
+        # screen space (2026-08-13 feedback: a fixed 220px looked "väldigt
+        # kort" once the list grew to every deviation in the node, which
+        # can be 16+ rows) — this fallback only matters before the first
+        # show_near() call.
+        self._checklist_scroll.setMaximumHeight(220)
+        outer.addWidget(self._checklist_scroll)
 
         # Number-key shortcuts (1-9, see NOTES.md "snabbknappar") — a
         # QShortcut with WidgetWithChildrenShortcut fires as long as focus
@@ -6518,13 +6523,38 @@ class EquipmentDeviationBar(QWidget):
         """Show the popup anchored near global_pos (a QPoint), clamped to
         stay on-screen — same screen-clamped positioning hazop.py's own
         popups (RiskMatrixPopup etc.) already use. Clicking anywhere else
-        closes it automatically (Qt.WindowType.Popup)."""
-        self.adjustSize()
+        closes it automatically (Qt.WindowType.Popup).
+
+        The checklist's scroll area is sized to whatever room is actually
+        available (opening downward or upward, whichever side of
+        global_pos has more space) instead of a fixed height (2026-08-13
+        feedback: "rulllistan väldigt kort på en liten skärm" — on a small
+        screen the old fixed 220px cap left very little of the popup's
+        already-small screen share usable, on top of now listing every
+        deviation in the node instead of a short suggestion subset)."""
         scr = (QApplication.screenAt(global_pos) or QApplication.primaryScreen()).availableGeometry()
+
+        # Measure the checklist's true, uncapped height first so the cap
+        # below never reserves blank space for a short list.
+        self._checklist_scroll.setMaximumHeight(16777215)
+        self.adjustSize()
+        natural_total_h = self.sizeHint().height()
+        natural_scroll_h = self._checklist_host.sizeHint().height()
+        chrome_h = natural_total_h - natural_scroll_h   # title + hint + margins
+
+        space_below = scr.bottom() - global_pos.y()
+        space_above = global_pos.y() - scr.top()
+        open_below = space_below >= space_above
+        available = (space_below if open_below else space_above) - chrome_h - 12
+        scroll_h = max(120, min(natural_scroll_h, available))
+        self._checklist_scroll.setMaximumHeight(int(scroll_h))
+        self.adjustSize()
+
         pw, ph = self.sizeHint().width(), self.sizeHint().height()
         x = min(global_pos.x(), scr.right() - pw)
-        y = min(global_pos.y(), scr.bottom() - ph)
-        self.move(max(scr.left(), x), max(scr.top(), y))
+        y = global_pos.y() if open_below else global_pos.y() - ph
+        y = min(max(scr.top(), y), scr.bottom() - ph)
+        self.move(max(scr.left(), x), y)
         self.show()
         self.setFocus()   # so number-key shortcuts work immediately
 

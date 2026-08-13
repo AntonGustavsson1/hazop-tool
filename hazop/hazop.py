@@ -17812,6 +17812,20 @@ def _tag_prefix(tag: str) -> str:
 _EQ_TYPE_ITEMS = [''] + sorted(COMPONENT_TYPES.keys()) + ['Rörledning', 'Övrigt / Okänd']
 
 
+def _equipment_type_options(db):
+    """_EQ_TYPE_ITEMS plus any custom equipment_type string already used
+    somewhere in the catalog (2026-08-13: 'vill kunna lägga till nya
+    typer av objekt som inte redan finns i listan' — EquipmentTagPopup's
+    type combo is now editable so a brand-new type can be typed in
+    directly; once typed once, it should be selectable again next time
+    instead of having to retype the exact same free-text string)."""
+    rows = db.conn.execute(
+        "SELECT DISTINCT equipment_type FROM equipment_catalog "
+        "WHERE equipment_type IS NOT NULL AND equipment_type != ''").fetchall()
+    extra = sorted({r[0] for r in rows} - set(_EQ_TYPE_ITEMS))
+    return _EQ_TYPE_ITEMS[:-2] + extra + _EQ_TYPE_ITEMS[-2:]
+
+
 class ObjectPickerPopup(QDialog):
     """Lets the user pick an already-registered P&ID object
     (equipment_catalog row — everything found via manual add or
@@ -17956,7 +17970,14 @@ class EquipmentTagPopup(QDialog):
         self._type_cb = QComboBox()
         self._type_cb.setFixedHeight(CONFIG['H_BTN_SMALL'])
         self._type_cb.setStyleSheet(_small)
-        self._type_cb.addItems(_EQ_TYPE_ITEMS)
+        # Editable (2026-08-13, see NOTES.md: "det är här jag vill kunna
+        # lägga till nya typer av objekt som inte redan finns i listan")
+        # — equipment_catalog.equipment_type is a plain free-text column,
+        # nothing else in the app restricts it to the standard catalogue,
+        # so typing a brand-new type here just works; _equipment_type_options()
+        # then makes it selectable again next time instead of a one-off.
+        self._type_cb.setEditable(True)
+        self._type_cb.addItems(_equipment_type_options(db))
         if suggested_type:
             idx = self._type_cb.findText(suggested_type)
             if idx < 0:

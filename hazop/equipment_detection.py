@@ -959,6 +959,38 @@ def _collapse_spaces(text: str) -> str:
     return collapsed
 
 
+def _normalize_ext_tag(matched: str) -> str:
+    """Normalise an _EXT_TAG_RE match's separators for storage/display.
+
+    Only the separator between the area-hierarchy prefix and the
+    trailing instrument-code segment (plus any separator INSIDE that
+    segment, e.g. "QMA-081"/"QMA.081"/"QMA_081") becomes a dash —
+    matching the plain, no-prefix bare tag's own dash convention, which
+    the "Dubbla taggar" dedup (tag.rpartition('-'), _scan_one_page_native)
+    relies on to find the split point between area path and instrument
+    code. Separators BETWEEN area-hierarchy segments keep their ORIGINAL
+    character: LKAB's own RDS-PP convention uses dots there
+    (e.g. "E1.M1.QMA081") — collapsing every separator to a dash
+    destroyed that real plant notation (2026-08-13 follow-up report:
+    "anger inte punkt för lkab taggarna utan anger - istället").
+
+    Shared by both _parse_tag's and _pick_best_tag's EXT_TAG_RE branches
+    so they can never drift apart again the way they did before the
+    2026-08-13 dedup fix (one preserved raw separators, the other
+    dashed everything, producing two different-looking tags for the
+    same instrument).
+    """
+    s = matched.lstrip('=')
+    m = re.search(r'([A-Z]{1,6})([_\-./]?)(\d{1,5}[A-Z]{0,3})$', s)
+    if not m:
+        norm = s.replace('_', '-').replace('.', '-').replace('/', '-')
+        return re.sub(r'-+', '-', norm).strip('-')
+    head = s[:m.start(1)].rstrip('-./_ ')
+    code, inner_sep, num = m.group(1), m.group(2), m.group(3)
+    tail = f"{code}-{num}" if inner_sep else f"{code}{num}"
+    return f"{head}-{tail}" if head else tail
+
+
 def _pick_best_tag(text: str) -> str:
     """Return the best equipment-tag match from arbitrary text, or ''.
 
@@ -969,21 +1001,20 @@ def _pick_best_tag(text: str) -> str:
     text = text.strip().upper()
 
     for candidate in _tag_candidates(text):
-        # 1. Extended tag with area prefix — normalise separators the same
-        # way _parse_tag's own EXT_TAG_RE branch already does (strip a
-        # leading RDS-PP '=', unify '.'/'_'/'/' to '-'). Used to return
-        # m.group(1) completely raw, which left an un-dashed, dotted
-        # compound tag (e.g. "=E1.M1.QMA081") looking like a totally
-        # different string from its own already-normalised bare form
-        # ("QMA-081") found elsewhere on the same page — both landed in
-        # equipment_catalog as two "duplicate" rows for one instrument,
+        # 1. Extended tag with area prefix — normalise via the shared
+        # _normalize_ext_tag(), same as _parse_tag's own EXT_TAG_RE branch
+        # (see its docstring: dash only right before the instrument code,
+        # original separators kept for the area-hierarchy prefix). Used to
+        # return m.group(1) completely raw, which left an un-dashed,
+        # dotted compound tag (e.g. "=E1.M1.QMA081") looking like a
+        # totally different string from its own already-normalised bare
+        # form ("QMA-081") found elsewhere on the same page — both landed
+        # in equipment_catalog as two "duplicate" rows for one instrument,
         # one with a dash and one without (real LKAB file, 2026-08-13, see
         # NOTES.md "Dubbla taggar vid skanning").
         m = _EXT_TAG_RE.search(candidate)
         if m:
-            norm = m.group(1).lstrip('=')
-            norm = norm.replace('_', '-').replace('.', '-').replace('/', '-')
-            return re.sub(r'-+', '-', norm).strip('-')
+            return _normalize_ext_tag(m.group(1))
         # 2. Simple tag (letter code + number)
         matches = _FULL_TAG_RE.findall(candidate)
         if matches and len(matches[0]) >= 2:
@@ -1156,10 +1187,7 @@ def _parse_tag(text: str):
         candidate = m.group(1).lstrip('=')
         pfx = _equip_prefix_from_tag(candidate)
         if pfx:
-            # Normalise separators in the instrument portion only
-            norm = candidate.replace('_', '-').replace('.', '-').replace('/', '-')
-            norm = re.sub(r'-+', '-', norm).strip('-')
-            return norm, pfx
+            return _normalize_ext_tag(candidate), pfx
 
     # --- Strip numeric area prefix: 20-PCV-101 → PCV-101 ---
     am = _AREA_TAG_RE.match(text)
