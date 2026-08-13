@@ -1718,194 +1718,6 @@ class CauseTemplateCreatedFocusStealBugTests(unittest.TestCase):
                 "row the user already navigated to")
 
 
-class EscapeCancelsPlacementTests(unittest.TestCase):
-    """Escape must abort an in-progress new-equipment placement on the P&ID
-    and return the viewer to MODE_NAV, mirroring the existing
-    Escape-cancels-drawing behavior for MODE_NODE/MARKUP_POLYGON. The
-    classic cause/consequence/safeguard placement modes this class used to
-    also cover were removed 2026-08-13 (see NOTES.md: the P&ID canvas is
-    now object-placement-only) — MODE_PLACE_NEW_EQUIPMENT is the only
-    placement mode left to cover.
-    """
-
-    @classmethod
-    def setUpClass(cls):
-        cls.app = _ensure_qapp()
-
-    def setUp(self):
-        self._tmpdir = tempfile.mkdtemp(prefix="hazop_esc_test_")
-        self.db_path = os.path.join(self._tmpdir, "test_project.db")
-        self.db = Database(path=self.db_path)
-
-    def tearDown(self):
-        try:
-            del self.db
-        except Exception:
-            pass
-        shutil.rmtree(self._tmpdir, ignore_errors=True)
-
-    def _press_escape(self, view):
-        from PyQt6.QtCore import Qt as _Qt
-        from PyQt6.QtGui import QKeyEvent
-        from PyQt6.QtCore import QEvent as _QEvent
-        ev = QKeyEvent(_QEvent.Type.KeyPress, _Qt.Key.Key_Escape, _Qt.KeyboardModifier.NoModifier)
-        view.keyPressEvent(ev)
-
-    def test_escape_cancels_place_new_equipment_mode(self):
-        from pid_viewer import PIDPanel, MODE_PLACE_NEW_EQUIPMENT, MODE_NAV
-        panel = PIDPanel(self.db)
-        try:
-            panel._set_mode(MODE_PLACE_NEW_EQUIPMENT)
-            self.assertEqual(panel.viewer.mode, MODE_PLACE_NEW_EQUIPMENT)
-            self._press_escape(panel.viewer)
-            self.assertEqual(panel.viewer.mode, MODE_NAV,
-                              "Escape must abort MODE_PLACE_NEW_EQUIPMENT back to MODE_NAV")
-        finally:
-            panel.deleteLater()
-
-    def test_escape_returns_navigate_button_to_checked(self):
-        """Cancelling via Escape must also update the toolbar button state,
-        not just the internal viewer.mode. The "⚙️ Orsak"/"⚠️ Konsekvens"
-        toggle buttons were removed 2026-08-07 (see NOTES.md — redundant
-        once the P&ID right-click menu did the same thing directly), so
-        "🔍 Navigera" is now the only button in mode_buttons; it must still
-        become checked again after an Escape-cancel out of
-        MODE_PLACE_NEW_EQUIPMENT (still settable programmatically, e.g. by
-        EquipmentDeviationBar's "+" button, even with no dedicated toolbar
-        button)."""
-        from pid_viewer import PIDPanel, MODE_PLACE_NEW_EQUIPMENT, MODE_NAV
-        panel = PIDPanel(self.db)
-        try:
-            panel._set_mode(MODE_PLACE_NEW_EQUIPMENT)
-            self.assertFalse(panel.mode_buttons[MODE_NAV].isChecked())
-            self._press_escape(panel.viewer)
-            self.assertEqual(panel.viewer.mode, MODE_NAV)
-            self.assertTrue(panel.mode_buttons[MODE_NAV].isChecked(),
-                             "Navigate toolbar button must become checked after Escape-cancel")
-        finally:
-            panel.deleteLater()
-
-    def test_escape_does_nothing_in_nav_mode(self):
-        """Escape while already navigating must not raise or change mode."""
-        from pid_viewer import PIDPanel, MODE_NAV
-        panel = PIDPanel(self.db)
-        try:
-            panel._set_mode(MODE_NAV)
-            self._press_escape(panel.viewer)
-            self.assertEqual(panel.viewer.mode, MODE_NAV)
-        finally:
-            panel.deleteLater()
-
-
-class GhostPreviewMarkerTests(unittest.TestCase):
-    """Cursor-following ghost preview in the new-equipment placement mode:
-    shows what will be placed before the first click, and must never linger
-    once placement is cancelled, a drag starts, or the mode changes — a
-    stale ghost item would visually overlap the real marker (see
-    _clear_ghost_preview() call sites). The classic cause/consequence/
-    safeguard placement modes this class used to also cover were removed
-    2026-08-13 (see NOTES.md: the P&ID canvas is now object-placement-only).
-    """
-
-    @classmethod
-    def setUpClass(cls):
-        cls.app = _ensure_qapp()
-
-    def setUp(self):
-        self._tmpdir = tempfile.mkdtemp(prefix="hazop_ghost_test_")
-        self.db_path = os.path.join(self._tmpdir, "test_project.db")
-        self.db = Database(path=self.db_path)
-
-    def tearDown(self):
-        try:
-            del self.db
-        except Exception:
-            pass
-        shutil.rmtree(self._tmpdir, ignore_errors=True)
-
-    def _move_to(self, view, scene_pos):
-        from PyQt6.QtCore import QPointF
-        view._update_ghost_preview(scene_pos)
-
-    def test_ghost_created_in_place_new_equipment_mode(self):
-        from pid_viewer import PIDPanel, MODE_PLACE_NEW_EQUIPMENT
-        from PyQt6.QtCore import QPointF
-        panel = PIDPanel(self.db)
-        try:
-            panel._set_mode(MODE_PLACE_NEW_EQUIPMENT)
-            self.assertIsNone(panel.viewer._ghost_preview_item)
-            self._move_to(panel.viewer, QPointF(50, 50))
-            self.assertIsNotNone(panel.viewer._ghost_preview_item,
-                                  "Ghost circle must appear once in a placement mode")
-        finally:
-            panel.deleteLater()
-
-    def test_ghost_reused_not_recreated_on_move(self):
-        """Moving the cursor should update the existing item's geometry, not
-        create a new scene item each time (perf pattern already used by the
-        drag-rect / right-drag rubber-band previews)."""
-        from pid_viewer import PIDPanel, MODE_PLACE_NEW_EQUIPMENT
-        from PyQt6.QtCore import QPointF
-        panel = PIDPanel(self.db)
-        try:
-            panel._set_mode(MODE_PLACE_NEW_EQUIPMENT)
-            self._move_to(panel.viewer, QPointF(10, 10))
-            first = panel.viewer._ghost_preview_item
-            self._move_to(panel.viewer, QPointF(80, 40))
-            self.assertIs(panel.viewer._ghost_preview_item, first,
-                          "Same graphics item must be reused across moves")
-        finally:
-            panel.deleteLater()
-
-    def test_ghost_cleared_on_mode_change(self):
-        from pid_viewer import PIDPanel, MODE_PLACE_NEW_EQUIPMENT, MODE_NAV
-        from PyQt6.QtCore import QPointF
-        panel = PIDPanel(self.db)
-        try:
-            panel._set_mode(MODE_PLACE_NEW_EQUIPMENT)
-            self._move_to(panel.viewer, QPointF(20, 20))
-            self.assertIsNotNone(panel.viewer._ghost_preview_item)
-            panel._set_mode(MODE_NAV)
-            self.assertIsNone(panel.viewer._ghost_preview_item,
-                              "Switching away from a placement mode must clear the ghost")
-        finally:
-            panel.deleteLater()
-
-    def test_ghost_cleared_when_drag_starts(self):
-        """The moment the user presses the mouse button to start sizing the
-        marker's rect, the ghost must disappear — otherwise it would sit on
-        top of the dashed drag-rect preview at Z_TEMP."""
-        from pid_viewer import PIDPanel, MODE_PLACE_NEW_EQUIPMENT
-        from PyQt6.QtCore import QPointF
-        panel = PIDPanel(self.db)
-        try:
-            panel._set_mode(MODE_PLACE_NEW_EQUIPMENT)
-            self._move_to(panel.viewer, QPointF(30, 30))
-            self.assertIsNotNone(panel.viewer._ghost_preview_item)
-            panel.viewer._clear_ghost_preview()   # what mousePressEvent triggers
-            panel.viewer._rect_start = QPointF(30, 30)
-            self.assertIsNone(panel.viewer._ghost_preview_item)
-        finally:
-            panel.deleteLater()
-
-    def test_ghost_color_matches_mode(self):
-        """Ghost fill must match the mode's real marker color, verified via
-        the shared _PLACEMENT_MODE_COLORS map rather than a duplicated
-        literal here."""
-        from pid_viewer import PIDPanel, MODE_PLACE_NEW_EQUIPMENT, _PLACEMENT_MODE_COLORS
-        from PyQt6.QtCore import QPointF
-        panel = PIDPanel(self.db)
-        try:
-            panel._set_mode(MODE_PLACE_NEW_EQUIPMENT)
-            self._move_to(panel.viewer, QPointF(15, 15))
-            item = panel.viewer._ghost_preview_item
-            _, expected_fill = _PLACEMENT_MODE_COLORS[MODE_PLACE_NEW_EQUIPMENT]
-            self.assertEqual(item.brush().color().rgb(), expected_fill.rgb())
-            panel.viewer._clear_ghost_preview()
-        finally:
-            panel.deleteLater()
-
-
 # ══════════════════════════════════════════════════════════════════════════
 # 6. Worksheet page: ScenarioTablePanel "all nodes" mode + HAZOPWorksheet
 #    node-picker/checkbox wiring (feature: Worksheet mirrors the full HAZOP
@@ -5890,22 +5702,6 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         self.assertEqual(self.db.equipment_deviation_count(self.eq_id), 1)
         self.assertEqual(self.db.equipment_node_id(self.eq_id), node_id)
 
-    def test_add_new_button_hides_popup_and_emits_signal(self):
-        """"+ Lägg till nytt objekt" (2026-08-12, see NOTES.md) — the popup
-        has no P&ID position of its own, so its only job is to close
-        itself and let PIDPanel arm placement mode for the next click."""
-        from PyQt6.QtCore import QPoint
-        self.bar.load(self.eq_id, self.marker_id)
-        self.bar.show_near(QPoint(100, 100))
-        self.assertTrue(self.bar.isVisible())
-        captured = []
-        self.bar.add_new_requested.connect(lambda: captured.append(True))
-
-        self.bar._add_new_btn.click()
-
-        self.assertEqual(len(captured), 1)
-        self.assertFalse(self.bar.isVisible())
-
     def test_smart_node_default_assigns_active_node_when_equipment_has_none(self):
         """See NOTES.md 'Slippa välja nod varje gång': the popup assigns
         PIDPanel._active_node_id immediately when the equipment has no node
@@ -7071,41 +6867,6 @@ class EquipmentObjectPlacementTests(unittest.TestCase):
         equip = self.db.get_equipment_by_id(markers[0]['equipment_id'])
         self.assertEqual(equip['equipment_type'], "Pump")
 
-    def test_start_place_new_equipment_hides_bar_and_arms_mode(self):
-        """EquipmentDeviationBar's "+ Lägg till nytt objekt" button calls
-        this (2026-08-12, see NOTES.md) — the popup has no canvas position
-        of its own, so it arms MODE_PLACE_NEW_EQUIPMENT and waits for the
-        user's next P&ID click."""
-        from pid_viewer import MODE_PLACE_NEW_EQUIPMENT
-        from PyQt6.QtCore import QPointF
-        self.panel.place_equipment_marker("HV-201", "Ventil", QPointF(10, 10), 0)
-        self.assertTrue(self.panel._equipment_bar.isVisible())
-
-        self.panel.start_place_new_equipment()
-
-        self.assertFalse(self.panel._equipment_bar.isVisible())
-        self.assertEqual(self.panel.viewer.mode, MODE_PLACE_NEW_EQUIPMENT)
-
-    def test_canvas_click_while_armed_emits_placement_signal_and_reverts_mode(self):
-        from pid_viewer import MODE_NAV
-        from PyQt6.QtCore import QPointF
-        captured = []
-        self.panel.equipment_placement_requested.connect(
-            lambda tag, pos, page, pdf_rect: captured.append((tag, pos, page, pdf_rect)))
-        self.panel.start_place_new_equipment()
-        pt = QPointF(30, 40)
-
-        self.panel._on_place_new_equipment_click(pt, 3, "HV-305")
-
-        self.assertEqual(len(captured), 1)
-        tag, pos, page, pdf_rect = captured[0]
-        self.assertEqual(tag, "HV-305")
-        self.assertEqual(pos, pt)
-        self.assertEqual(page, 3)
-        self.assertEqual(self.panel.viewer.mode, MODE_NAV,
-            "must revert to navigation mode after placing, not stay armed")
-
-
 class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
     """"⚙️ Orsak"/"⚠️ Konsekvens" mode-toggle buttons removed from the P&ID
     toolbar (2026-08-07, see NOTES.md). The right-click menu's own "Orsak"/
@@ -7136,9 +6897,8 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
     def test_only_navigate_button_remains(self):
         """The toolbar has exactly one mode button — Navigera. The P&ID
         canvas is object-placement-only (2026-08-13, see NOTES.md);
-        MODE_PLACE_NEW_EQUIPMENT is armed programmatically (from
-        EquipmentDeviationBar's "+" button or the right-click/rubber-band
-        menus), not via its own toolbar toggle."""
+        equipment placement is armed via the right-click/rubber-band menus,
+        not via its own toolbar toggle."""
         from pid_viewer import MODE_NAV
         self.assertIn(MODE_NAV, self.panel.mode_buttons)
         self.assertEqual(len(self.panel.mode_buttons), 1)

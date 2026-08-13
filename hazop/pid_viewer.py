@@ -474,19 +474,6 @@ MODE_BOARD_LAYOUT    = 14  # drag pages to reposition on study board
 MODE_ADD_SHEET_LINK  = 15  # click target page to create a manual inter-sheet link
 MODE_PICK_REF_TAG   = 16  # one-shot click: detect tag near point → emit ref_tag_picked
 MODE_ANNOTATION     = 17  # click on board to place a sticky note
-MODE_PLACE_NEW_EQUIPMENT = 18  # click P&ID to place a brand-new equipment object,
-                                # armed from EquipmentDeviationBar's "+" button
-
-# Placement-mode outline/fill colors — shared by the drag-rect preview and the
-# cursor-following ghost preview.
-_PLACEMENT_MODE_COLORS = {
-    MODE_PLACE_NEW_EQUIPMENT: (QColor(0x14, 0x6e, 0xbe), QColor(0x14, 0x6e, 0xbe, 30)),
-}
-# Ghost preview radius per mode, matching the real marker's radius (see
-# add_equipment_marker).
-_PLACEMENT_MODE_RADIUS = {
-    MODE_PLACE_NEW_EQUIPMENT: 12.0,
-}
 
 # ── Off-page connector analysis ───────────────────────────────────────────────
 _RE_TO_FROM = re.compile(
@@ -2971,10 +2958,6 @@ class ConnectorDotItem(QGraphicsEllipseItem):
 
 class PIDGraphicsView(QGraphicsView):
     node_markup_finished    = pyqtSignal(list, int)
-    # Canvas click while armed via PIDPanel.start_place_new_equipment() —
-    # requested from EquipmentDeviationBar's "+ Lägg till nytt objekt" button
-    # (2026-08-12, see NOTES.md).
-    place_new_equipment_clicked = pyqtSignal(object, int, str)
     context_action          = pyqtSignal(str, object, int)
     marker_clicked          = pyqtSignal(str, int)
     ref_tag_picked          = pyqtSignal(str)   # MODE_PICK_REF_TAG one-shot result
@@ -2990,7 +2973,6 @@ class PIDGraphicsView(QGraphicsView):
     sheet_conn_break_requested = pyqtSignal(int)          # connection row id
     sheet_conn_add_requested   = pyqtSignal(int, int)     # (from_page, to_page)
     zone_drawn    = pyqtSignal(object, int)                # (QRectF pdf_coords, page)
-    placement_cancelled = pyqtSignal()   # Escape pressed while placing a new equipment object
     equipment_drag_finished = pyqtSignal()  # Shift+drag of an equipment marker released (drop accepted or not)
     equipment_edit_requested = pyqtSignal(int)  # equipment_markers.id — right-click "✏️ Redigera objekt"
 
@@ -3034,8 +3016,6 @@ class PIDGraphicsView(QGraphicsView):
             QGraphicsView.OptimizationFlag.DontSavePainterState, True)
 
         self._press_pos  = None
-        self._rect_start = None
-        self._rect_item  = None
         # Shift+drag of an equipment marker onto a worksheet consequence row
         # (see mousePressEvent/mouseMoveEvent) — armed on Shift+press over a
         # marker, consumed by mouseMoveEvent once the drag distance is exceeded.
@@ -3117,7 +3097,6 @@ class PIDGraphicsView(QGraphicsView):
         self.draw_brush         = QBrush(QColor(255, 140, 0, 60))
         self.temp_items         = []
         self.rubber_line        = None
-        self._rect_label        = None   # QGraphicsTextItem — live tag inside rubber band
 
         # Cache for PDF line segments (for smart snapping to drawing details)
         self._pdf_line_segments: dict = {}  # page_num → list of line tuples (x1,y1,x2,y2)
@@ -3127,13 +3106,6 @@ class PIDGraphicsView(QGraphicsView):
         self._rband_preview_item = None
         self._rband_label_item   = None   # QGraphicsTextItem in right-drag rband
         self._rband_dragging     = False
-        # Last rubber-band rect from left-click placement modes (PDF coords)
-        self._last_drawn_pdf_rect = None
-
-        # Ghost preview circle — follows the cursor in the new-equipment
-        # placement mode, before the user clicks to place/size a marker.
-        # Shows what will be placed and roughly where.
-        self._ghost_preview_item = None
 
         # Label slot tracker: (qx, qy) → next free row index (reset on clear_overlays)
         self._label_slots: dict = {}
@@ -3660,8 +3632,7 @@ class PIDGraphicsView(QGraphicsView):
         Called from both set_mode() and clear_overlays() so there is a single
         canonical cleanup location; add new rubber-band attributes here only.
         """
-        for attr in ('_rect_item', '_rect_label',
-                     '_rband_preview_item', '_rband_label_item',
+        for attr in ('_rband_preview_item', '_rband_label_item',
                      '_ctrl_rband_preview_item', '_ctrl_rband_count_label'):
             item = getattr(self, attr, None)
             if item is not None:
@@ -3670,7 +3641,6 @@ class PIDGraphicsView(QGraphicsView):
                 except Exception:
                     pass
                 setattr(self, attr, None)
-        self._rect_start             = None
         self._rband_start_scene      = None
         self._rband_dragging         = False
         self._ctrl_rband_start_scene = None
@@ -3678,7 +3648,6 @@ class PIDGraphicsView(QGraphicsView):
 
     def set_mode(self, mode):
         self._purge_rubber_band_state()
-        self._clear_ghost_preview()
 
         self.mode = mode
         if mode == MODE_NAV:
@@ -3696,9 +3665,6 @@ class PIDGraphicsView(QGraphicsView):
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
         elif mode == MODE_ANNOTATION:
-            self.setDragMode(QGraphicsView.DragMode.NoDrag)
-            self.setCursor(Qt.CursorShape.CrossCursor)
-        elif mode == MODE_PLACE_NEW_EQUIPMENT:
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
         elif mode == MODE_SMART_POLYLINE:
@@ -5561,13 +5527,6 @@ class PIDGraphicsView(QGraphicsView):
                         event.accept(); return
                 # Priority 3: empty space → clear selection, fall through for panning
                 self._clear_edit_handles()
-        elif self.mode == MODE_PLACE_NEW_EQUIPMENT:
-            if event.button() == Qt.MouseButton.LeftButton:
-                # Start rubber-band rectangle selection (or simple click)
-                self._clear_ghost_preview()
-                self._rect_start = sp
-                self._rect_item  = None
-                event.accept(); return
 
         if event.button() == Qt.MouseButton.RightButton and self.mode in (MODE_NAV, MODE_BOARD_LAYOUT):
             # Start rubber-band drag; show context menu only if no drag occurs
@@ -5660,55 +5619,6 @@ class PIDGraphicsView(QGraphicsView):
             self._ctrl_rband_dragging    = False
             self._press_pos = None
             event.accept(); return
-
-        # ── Rect-select release for new-equipment placement ────────────────────
-        if (event.button() == Qt.MouseButton.LeftButton and
-                self.mode == MODE_PLACE_NEW_EQUIPMENT and
-                self._rect_start is not None):
-
-            end_sp = self.mapToScene(event.position().toPoint())
-            rect   = QRectF(self._rect_start, end_sp).normalized()
-
-            # Remove rubber-band rect + label
-            if self._rect_item is not None:
-                try: self._scene.removeItem(self._rect_item)
-                except RuntimeError as e: logging.warning(f"Failed to remove rect rubber-band: {e}")
-                self._rect_item = None
-            if self._rect_label is not None:
-                try: self._scene.removeItem(self._rect_label)
-                except RuntimeError as e: logging.warning(f"Failed to remove rect label: {e}")
-                self._rect_label = None
-            self._rect_start = None
-
-            # Convert to PDF coordinates
-            rs = self.render_scale
-            ox, oy = self._page_offsets.get(self.current_page, (0.0, 0.0))
-            pdf_rect = QRectF((rect.x() - ox) / rs, (rect.y() - oy) / rs,
-                               rect.width() / rs, rect.height() / rs)
-
-            # Extract tag text from the selected rectangle, with full-page fallback
-            suggested = self._extract_tag_from_rect(pdf_rect) or ''
-            if not suggested:
-                suggested = find_tag_near_point(
-                    self.pdf_doc, self.current_page,
-                    pdf_rect.center().x(), pdf_rect.center().y()) or ''
-
-            # Store the drawn zone so PIDPanel handlers can use it for marker size
-            self._last_drawn_pdf_rect = pdf_rect if (
-                pdf_rect.width() > 4 or pdf_rect.height() > 4) else None
-
-            center = rect.center()
-            if self.mode == MODE_PLACE_NEW_EQUIPMENT:
-                self.place_new_equipment_clicked.emit(center, self.current_page, suggested)
-            elif self.mode == MODE_PICK_REF_TAG:
-                # One-shot: emit picked tag and return to NAV mode
-                self.ref_tag_picked.emit(suggested or '')
-                self.mode = MODE_NAV
-                self.setCursor(Qt.CursorShape.ArrowCursor)
-            elif self.mode == MODE_ANNOTATION:
-                self.annotation_clicked.emit(center)
-            event.accept()
-            return
 
         # ── MARKUP_SELECT drag-aware release ──────────────────────────────────
         if self.mode == MODE_MARKUP_SELECT and self._drag_mode is not None and \
@@ -5918,66 +5828,7 @@ class PIDGraphicsView(QGraphicsView):
             if self.mode in (MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE):
                 sp = self._snap_to_nearest(sp)
             self._update_rubber_band(sp)
-        elif self.mode == MODE_PLACE_NEW_EQUIPMENT and self._rect_start is not None:
-            # Actively sizing a marker's rect — the ghost preview (shown before
-            # the click) is no longer needed; the dashed rect below takes over.
-            self._clear_ghost_preview()
-            current = self.mapToScene(event.position().toPoint())
-            rect = QRectF(self._rect_start, current).normalized()
-            if self._rect_item is not None:
-                try: self._scene.removeItem(self._rect_item)
-                except RuntimeError as e: logging.warning(f"Failed to remove motion rect item: {e}")
-            if self._rect_label is not None:
-                try: self._scene.removeItem(self._rect_label)
-                except RuntimeError as e: logging.warning(f"Failed to remove motion rect label: {e}")
-                self._rect_label = None
-            rc, fc = _PLACEMENT_MODE_COLORS.get(self.mode, (QColor(0, 100, 220), QColor(0, 100, 220, 30)))
-            # Reuse existing item — just update geometry (same fix as right-drag rubber-band)
-            if self._rect_item is None:
-                pen = QPen(rc, 1.5)
-                pen.setStyle(Qt.PenStyle.DashLine)
-                pen.setCosmetic(True)
-                self._rect_item = self._scene.addRect(rect, pen, QBrush(fc))
-                self._rect_item.setZValue(Z_TEMP)
-            else:
-                self._rect_item.setRect(rect)
-            # No live tag extraction during drag (PDF read is slow — tag extracted on release)
-            event.accept(); return
-        elif self.mode == MODE_PLACE_NEW_EQUIPMENT and self._rect_start is None:
-            # Not dragging yet — show a ghost circle at the cursor previewing
-            # what will be placed (color/size match the real marker).
-            self._update_ghost_preview(self.mapToScene(event.position().toPoint()))
-        elif self._ghost_preview_item is not None:
-            # Left the placement modes without going through _set_mode (e.g.
-            # programmatic mode change) — make sure the ghost doesn't linger.
-            self._clear_ghost_preview()
         super().mouseMoveEvent(event)
-
-    def _update_ghost_preview(self, scene_pos):
-        """Create/move the cursor-following ghost circle for placement modes."""
-        r = _PLACEMENT_MODE_RADIUS.get(self.mode, 12.0)
-        rc, fc = _PLACEMENT_MODE_COLORS.get(self.mode, (QColor(0, 100, 220), QColor(0, 100, 220, 30)))
-        rect = QRectF(scene_pos.x() - r, scene_pos.y() - r, 2 * r, 2 * r)
-        if self._ghost_preview_item is None:
-            pen = QPen(rc, 1.5)
-            pen.setStyle(Qt.PenStyle.DashLine)
-            pen.setCosmetic(True)
-            self._ghost_preview_item = self._scene.addEllipse(rect, pen, QBrush(fc))
-            self._ghost_preview_item.setZValue(Z_TEMP)
-            self._ghost_preview_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
-        else:
-            self._ghost_preview_item.setRect(rect)
-
-    def _clear_ghost_preview(self):
-        if self._ghost_preview_item is not None:
-            try: self._scene.removeItem(self._ghost_preview_item)
-            except RuntimeError as e: logging.warning(f"Failed to remove ghost preview: {e}")
-            self._ghost_preview_item = None
-
-    def leaveEvent(self, event):
-        # Mouse left the viewport — don't leave a stale ghost marker behind.
-        self._clear_ghost_preview()
-        super().leaveEvent(event)
 
     _LOD_THRESHOLD = 0.12   # view scale below which overview mode activates
 
@@ -6043,11 +5894,6 @@ class PIDGraphicsView(QGraphicsView):
                 self._finish_markup_drawing(); event.accept(); return
             elif event.key() == Qt.Key.Key_Escape:
                 self._cancel_drawing(); event.accept(); return
-        elif (self.mode == MODE_PLACE_NEW_EQUIPMENT
-                and event.key() == Qt.Key.Key_Escape):
-            self._cancel_drawing()
-            self.placement_cancelled.emit()
-            event.accept(); return
         elif self.mode == MODE_SMART_POLYLINE and self._smart_paths:
             k = event.key()
             if k in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
@@ -6543,19 +6389,28 @@ def _obj_type_matches(preselect: str, obj_name: str) -> bool:
 
 class EquipmentDeviationBar(QWidget):
     """Small popup that appears right next to a clicked equipment marker on
-    the P&ID and lets the user check off which deviations apply to it —
-    "Lågt flöde", "Högt flöde", etc. Auto-dismisses on an outside click
-    (Qt.WindowType.Popup), matching hazop.py's own small popups (RiskMatrixPopup
-    etc.) — replaces the earlier persistent bottom-docked bar + inline
-    cause/frequency-combo editing (2026-08-12, see NOTES.md: "en liten popup
-    på P&ID viewer som kommer upp tillfälligt ... Resten av valen får jag
-    nog göra nere i hazop scenario" — the rest of the editing already
-    happens in the scenario table once a cause exists, so this popup's job
-    is just the deviation checklist).
+    the P&ID and lets the user check off which of the node's deviations
+    apply to it — "Lågt flöde", "Högt flöde", etc. Auto-dismisses on an
+    outside click (Qt.WindowType.Popup), matching hazop.py's own small
+    popups (RiskMatrixPopup etc.) — replaces the earlier persistent
+    bottom-docked bar + inline cause/frequency-combo editing (2026-08-12,
+    see NOTES.md: "en liten popup på P&ID viewer som kommer upp tillfälligt
+    ... Resten av valen får jag nog göra nere i hazop scenario" — the rest
+    of the editing already happens in the scenario table once a cause
+    exists, so this popup's job is just the deviation checklist).
+
+    The checklist is driven by the equipment's NODE's own already-defined
+    deviations (2026-08-13, see NOTES.md "alla avvikelser i noden") — a
+    generic standard-catalog suggestion list only kicks in as a bootstrap
+    fallback for a brand new node with no deviations of its own yet.
 
     Retyping the equipment (comp_type) and reassigning it to a different
     node are handled elsewhere now (right-click "Redigera objekt" /
     dragging it in the tree) — dropped from here to keep this popup small.
+    An "add a brand-new object" button briefly lived here too (2026-08-12)
+    but was removed the same day it shipped: placing a new object doesn't
+    belong in a popup anchored to an EXISTING one — right-click "🔧 Objekt"
+    and the rubber-band menu already cover that.
     """
 
     # A deviation was newly created (or already existed) for this equipment —
@@ -6565,11 +6420,6 @@ class EquipmentDeviationBar(QWidget):
     # "Kryssrutan ska gå att av-/aktivera", NOTES.md) — same refresh needs
     # as deviation_added (marker badge count, tree, worksheet).
     deviation_removed = pyqtSignal(int, int)   # (deviation_id, equipment_id)
-    # "+ Lägg till nytt objekt" was clicked — the popup has no P&ID position
-    # of its own to place a new object at, so it just closes itself and asks
-    # PIDPanel to arm placement mode for the user's next canvas click
-    # (2026-08-12, see NOTES.md).
-    add_new_requested = pyqtSignal()
 
     def __init__(self, db, parent=None):
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
@@ -6614,18 +6464,6 @@ class EquipmentDeviationBar(QWidget):
         scroll.setMaximumHeight(220)
         outer.addWidget(scroll)
 
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color:#E2E3E1;")
-        outer.addWidget(sep)
-
-        self._add_new_btn = QPushButton("+ Lägg till nytt objekt")
-        self._add_new_btn.setIcon(_icon('add'))
-        self._add_new_btn.setToolTip(
-            "Stäng den här listan och klicka på P&ID:n för att placera ett nytt objekt")
-        self._add_new_btn.clicked.connect(self._on_add_new_clicked)
-        outer.addWidget(self._add_new_btn)
-
         # Number-key shortcuts (1-9, see NOTES.md "snabbknappar") — a
         # QShortcut with WidgetWithChildrenShortcut fires as long as focus
         # is anywhere inside the popup (including its checkboxes), unlike
@@ -6642,10 +6480,6 @@ class EquipmentDeviationBar(QWidget):
             cb = self._checklist_checkboxes[idx]
             if cb.isEnabled():
                 cb.setChecked(True)
-
-    def _on_add_new_clicked(self):
-        self.hide()
-        self.add_new_requested.emit()
 
     @property
     def equipment_id(self):
@@ -6710,27 +6544,37 @@ class EquipmentDeviationBar(QWidget):
         comp_type = eq['equipment_type'] or ''
         obj_id = self._resolve_object_id(comp_type)
 
-        # Same fallback chain as StandardCausesPickerPopup/_rebuild_causes
-        # (hazop.py) uses for its own object → deviation → comp_type
-        # lookups — the object-based standard_objects/standard_causes
-        # taxonomy is far richer than the flat comp_type string match this
-        # bar used to rely on exclusively (e.g. equipment_type "Ventil"
-        # matches zero comp_type rows — seeding is per specific sub-type
-        # like "Manuell ventil"/"On-off ventil" — but DOES match a
-        # standard_objects row via _obj_type_matches' substring check).
-        deviations = {}   # deviation_id -> name, insertion order preserved
-        if obj_id is not None:
-            for sd in self.db.deviations_for_object(obj_id):
-                deviations[sd['id']] = sd['description']
-        if not deviations:
+        # Show every deviation already defined in this node (2026-08-13:
+        # "jag vill att alla avvikelser i noden kommer upp som val inkl
+        # nummer") — a node's deviations are usually decided up front (guide
+        # words), so each piece of equipment in it should be checked
+        # against ALL of them, not a generic standard-catalog subset for
+        # its own equipment TYPE. The old type-based suggestion chain
+        # (object → comp_type → full catalogue) only kicks in as a
+        # bootstrap fallback for a brand new node that has no deviations
+        # of its own yet, so the checklist still isn't empty.
+        descriptions = []
+        seen = set()
+
+        def _add(desc):
+            if desc not in seen:
+                seen.add(desc)
+                descriptions.append(desc)
+
+        if node_id is not None:
+            for d in self.db.deviations(node_id):
+                _add(d['description'])
+        if not descriptions:
+            if obj_id is not None:
+                for sd in self.db.deviations_for_object(obj_id):
+                    _add(sd['description'])
+        if not descriptions:
             rows = self.db.standard_causes_for_comp_type(comp_type) if comp_type else []
             for r in rows:
-                deviations.setdefault(r['deviation_id'], r['deviation_name'])
-        if not deviations:
-            # No template causes for this comp_type yet — fall back to the
-            # full standard-deviation catalogue so the checklist isn't empty.
+                _add(r['deviation_name'])
+        if not descriptions:
             for sd in self.db.standard_deviations():
-                deviations[sd['id']] = sd['description']
+                _add(sd['description'])
 
         # Full row (not just a name-in-set check) so an already-checked
         # deviation's already-saved cause can be looked up and shown —
@@ -6740,10 +6584,12 @@ class EquipmentDeviationBar(QWidget):
 
         # Tracked in display order so number-key shortcuts (1-9, see
         # keyPressEvent) can toggle the matching row without the mouse —
-        # explicit user request ("snabbknappar 1, 2..").
+        # explicit user request ("snabbknappar 1, 2.."). The number LABEL
+        # is shown for every row regardless of count (2026-08-13); only
+        # the keyboard shortcut itself is capped at 1-9 (a real key limit).
         self._checklist_checkboxes = []
-        for i, (std_dev_id, name) in enumerate(deviations.items(), 1):
-            row_w = self._build_deviation_row(std_dev_id, name, existing_by_desc.get(name),
+        for i, desc in enumerate(descriptions, 1):
+            row_w = self._build_deviation_row(desc, existing_by_desc.get(desc),
                                               enabled=node_id is not None, number=i,
                                               obj_id=obj_id)
             self._checklist_layout.addWidget(row_w)
@@ -6759,16 +6605,27 @@ class EquipmentDeviationBar(QWidget):
                 return o['id']
         return None
 
-    def _build_deviation_row(self, std_dev_id, description, existing_dev, enabled, number, obj_id=None):
+    def _resolve_std_deviation_id(self, description):
+        """Best-effort match of a real per-node deviation's description
+        text against the standard_deviations catalogue, so the richer
+        object-based cause suggestions (standard_causes_for_object) can
+        still be tried for it — returns None for a custom/freeform
+        deviation with no catalogue match, which just falls through to
+        the plain comp_type-based lookup in _build_deviation_row."""
+        row = self.db.conn.execute(
+            "SELECT id FROM standard_deviations WHERE description=? COLLATE NOCASE LIMIT 1",
+            (description,)).fetchone()
+        return row[0] if row else None
+
+    def _build_deviation_row(self, description, existing_dev, enabled, number, obj_id=None):
         row_w = QWidget()
         row = QHBoxLayout(row_w)
         row.setContentsMargins(0, 0, 0, 0)
         checked = existing_dev is not None
-        if number <= 9:
-            num_lbl = QLabel(f"{number}.")
-            num_lbl.setFixedWidth(16)
-            num_lbl.setStyleSheet("color:#8D9299;")
-            row.addWidget(num_lbl)
+        num_lbl = QLabel(f"{number}.")
+        num_lbl.setFixedWidth(20)
+        num_lbl.setStyleSheet("color:#8D9299;")
+        row.addWidget(num_lbl)
         cb = QCheckBox(description)
         cb.setChecked(checked)
         cb.setEnabled(enabled)   # can be checked AND unchecked — see NOTES.md "av-/aktivera"
@@ -6779,31 +6636,37 @@ class EquipmentDeviationBar(QWidget):
         # first cause on check (2026-08-12, see NOTES.md — the cause
         # combo/frequency editing this used to render inline is gone;
         # editing a cause's text/frequency now happens in the scenario
-        # table, once it exists). Same fallback chain _rebuild_checklist()
-        # itself uses for the deviation list.
+        # table, once it exists).
         eq = self.db.get_equipment_by_id(self._equipment_id)
         comp_type = eq['equipment_type'] if eq else ''
+        std_dev_id = self._resolve_std_deviation_id(description)
         causes = []
-        if obj_id is not None:
+        if obj_id is not None and std_dev_id is not None:
             causes = self.db.standard_causes_for_object(std_dev_id, obj_id)
         if not causes and comp_type:
             causes = self.db.standard_causes_for_comp_type(comp_type, description)
         if not causes and comp_type:
             causes = self.db.standard_causes_for_comp_type(comp_type)
-        causes = [c for c in causes if c.get('deviation_id', std_dev_id) == std_dev_id]
+        # standard_causes_for_object already returns plain dicts;
+        # standard_causes_for_comp_type returns raw sqlite3.Row objects,
+        # which don't support .get() — normalise both to dicts before any
+        # .get() call here or in _activate_deviation's cause['frequency'].
+        causes = [dict(c) for c in causes]
+        if std_dev_id is not None:
+            causes = [c for c in causes if c.get('deviation_id', std_dev_id) == std_dev_id]
 
         cb.toggled.connect(
-            lambda on, sdid=std_dev_id, desc=description, box=cb, cs=causes:
-                self._on_deviation_toggled(sdid, desc, on, box, cs))
+            lambda on, desc=description, box=cb, cs=causes:
+                self._on_deviation_toggled(desc, on, box, cs))
         return row_w
 
-    def _on_deviation_toggled(self, std_dev_id, description, checked, checkbox, causes):
+    def _on_deviation_toggled(self, description, checked, checkbox, causes):
         if checked:
-            self._activate_deviation(std_dev_id, description, checkbox, causes)
+            self._activate_deviation(description, checkbox, causes)
         else:
             self._deactivate_deviation(description, checkbox)
 
-    def _activate_deviation(self, std_dev_id, description, checkbox, causes):
+    def _activate_deviation(self, description, checkbox, causes):
         eq = self.db.get_equipment_by_id(self._equipment_id)
         node_id = eq.get('node_id') if eq else None
         if node_id is None:
@@ -7085,10 +6948,8 @@ class PIDPanel(QWidget):
         self.viewer = PIDGraphicsView()
         self.viewer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.viewer.node_markup_finished.connect(self._on_markup_finished)
-        self.viewer.place_new_equipment_clicked.connect(self._on_place_new_equipment_click)
         self.viewer.context_action.connect(self._on_context_action)
         self.viewer.zone_drawn.connect(self._on_zone_drawn)
-        self.viewer.placement_cancelled.connect(self._on_placement_cancelled)
         self.viewer.equipment_drag_finished.connect(self._on_equipment_drag_finished)
         self.viewer.equipment_edit_requested.connect(self.equipment_edit_requested.emit)
         self.viewer.ref_tag_picked.connect(self.ref_tag_picked)
@@ -7112,7 +6973,6 @@ class PIDPanel(QWidget):
         self._equipment_bar = EquipmentDeviationBar(self.db, parent=self.viewer)
         self._equipment_bar.deviation_added.connect(self._on_equipment_deviation_added)
         self._equipment_bar.deviation_removed.connect(self._on_equipment_deviation_removed)
-        self._equipment_bar.add_new_requested.connect(self.start_place_new_equipment)
         # Plain callback, not a signal, so the popup gets the (created)
         # cause_id back synchronously — see EquipmentDeviationBar._create_cause_fn.
         self._equipment_bar._create_cause_fn = self._create_cause_for_bar
@@ -7814,35 +7674,11 @@ class PIDPanel(QWidget):
         self.viewer._apply_lod(self.viewer.transform().m11())
         self.viewer._schedule_lod_update()
 
-    def start_place_new_equipment(self):
-        """Arm placement mode for a brand-new equipment object, requested
-        from EquipmentDeviationBar's "+ Lägg till nytt objekt" button
-        (2026-08-12, see NOTES.md). The popup has already closed itself;
-        the next canvas click resolves in _on_place_new_equipment_click."""
-        self._equipment_bar.hide()
-        self._set_mode(MODE_PLACE_NEW_EQUIPMENT)
-
-    def _on_place_new_equipment_click(self, scene_pos, page, suggested_tag):
-        """Canvas click while armed via start_place_new_equipment(). Mirrors
-        the plain right-click "🔧 Objekt" flow (_on_context_action's
-        'equipment' branch) and the rubber-band one (_on_zone_drawn's
-        a_equip branch): reuse equipment_placement_requested so
-        MainWindow's existing EquipmentTagPopup handler runs unchanged."""
-        self._set_mode(MODE_NAV)
-        pdf_rect = getattr(self.viewer, '_last_drawn_pdf_rect', None)
-        if hasattr(self.viewer, '_last_drawn_pdf_rect'):
-            self.viewer._last_drawn_pdf_rect = None
-        self.equipment_placement_requested.emit(suggested_tag or '', scene_pos, page, pdf_rect)
-
     def _set_mode(self, mode):
         for m, btn in self.mode_buttons.items():
             btn.setChecked(m == mode)
         self.viewer.set_mode(mode)
         self.style_widget.setVisible(mode == MODE_NODE)
-
-    def _on_placement_cancelled(self):
-        """Escape was pressed while placing a new equipment object — abort back to navigation."""
-        self._set_mode(MODE_NAV)
 
     def _on_equipment_drag_finished(self):
         """Shift-dragging an equipment marker to the tree/scenario uses
