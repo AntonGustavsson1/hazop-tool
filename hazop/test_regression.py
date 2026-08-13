@@ -58,7 +58,7 @@ from hazop import (  # noqa: E402
 )
 from PyQt6.QtWidgets import (  # noqa: E402
     QApplication, QGraphicsPixmapItem, QTreeWidgetItemIterator, QCheckBox,
-    QComboBox, QPushButton, QMessageBox, QInputDialog,
+    QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit,
 )
 from PyQt6.QtGui import QPixmap, QFocusEvent  # noqa: E402
 from PyQt6.QtCore import Qt, QPoint, QDate, QEvent  # noqa: E402
@@ -11614,6 +11614,130 @@ class EquipmentDragNavButtonResetTests(unittest.TestCase):
                           self.panel.viewer.DragMode.ScrollHandDrag)
         self.assertEqual(self.panel.viewer.cursor().shape(), Qt.CursorShape.OpenHandCursor,
             "the cursor must be forced back to the idle open-hand look, not left as a closed hand")
+
+
+class ShiftClickInsertsTagIntoActiveEditorTests(unittest.TestCase):
+    """"Om jag skriver en konsekvens ... och sedan håller nere shift och
+    klickar på ett objekt vill jag att detta läggs till till
+    konsekvenskedjan automatiskt och att jag kan fortsätta skriva efter
+    objektet. Dvs att jag inte hoppar ut ur textediteringsvyn." (2026-08-13)
+
+    Every equipment-marker click today — Shift or not — already runs
+    marker_navigated -> MainWindow._on_equipment_marker_navigate ->
+    scenario_panel.load_equipment() -> _rebuild(), which explicitly
+    does focusWidget().clearFocus() then setRowCount(0): exactly what
+    would destroy an open ORS/KON/SG cell editor. Shift+click while a
+    cell is being edited must instead insert the marker's tag straight
+    into the live editor's text (mutating only the open QLineEdit, no
+    DB write) and swallow the click — no popup, no marker_navigated, no
+    rebuild — so the existing commit-on-editingFinished path persists
+    the final text normally and the user never leaves the editor."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_shiftclickinsert_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from hazop import ScenarioTablePanel
+        from pid_viewer import PIDPanel
+        self.panel = ScenarioTablePanel(self.db)
+        self.pid_panel = PIDPanel(self.db)
+        self.pid_panel._active_edit_query_fn = self.panel.active_edit_target
+
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.cons_id = self.db.add_consequence(cause_id)
+        self.node_id = node_id
+        self.panel.load_node(node_id)
+
+        self.eq_id = self.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", '', 0)
+        self.marker_id = self.db.add_equipment_marker(
+            self.eq_id, "PV-101", 0, 10.0, 10.0, "Ventil", confidence=0.9, link_method='leader')
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        self.pid_panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _start_editing_kon(self, text=''):
+        row = next(r for r, m in enumerate(self.panel._row_meta) if m[2] == self.cons_id)
+        item = self.panel._table.item(row, self.panel._C_KON)
+        self.panel._table.editItem(item)
+        editor = self.panel._table.focusWidget()
+        assert isinstance(editor, QLineEdit)
+        if text:
+            editor.setText(text)
+            editor.setCursorPosition(len(text))
+        return editor
+
+    def test_active_edit_target_is_none_when_nothing_is_being_edited(self):
+        self.assertIsNone(self.panel.active_edit_target())
+
+    def test_active_edit_target_returns_the_live_editor_for_a_kon_cell(self):
+        editor = self._start_editing_kon()
+        self.assertIs(self.panel.active_edit_target(), editor)
+
+    def test_insert_tag_into_editor_adds_spacing_on_both_sides(self):
+        editor = self._start_editing_kon("Högt flöde till")
+        self.pid_panel._insert_tag_into_editor(editor, "PV-101")
+        self.assertEqual(editor.text(), "Högt flöde till PV-101 ")
+        self.assertEqual(editor.cursorPosition(), len(editor.text()))
+
+    def test_insert_tag_into_editor_mid_text_keeps_the_remainder(self):
+        editor = self._start_editing_kon("Högt flöde stänger ventilen")
+        editor.setCursorPosition(len("Högt flöde "))
+        self.pid_panel._insert_tag_into_editor(editor, "PV-101")
+        self.assertEqual(editor.text(), "Högt flöde PV-101 stänger ventilen")
+
+    def test_insert_tag_into_empty_editor(self):
+        editor = self._start_editing_kon()
+        editor.clear()   # start from a genuinely empty editor, independent
+                          # of _PidDelegate's own "—" placeholder-stripping
+        self.pid_panel._insert_tag_into_editor(editor, "PV-101")
+        self.assertEqual(editor.text(), "PV-101 ")
+
+    def test_shift_click_while_editing_inserts_tag_and_does_not_navigate(self):
+        editor = self._start_editing_kon("Högt flöde till ")
+        captured = []
+        self.pid_panel.marker_navigated.connect(lambda t, i: captured.append((t, i)))
+
+        with unittest.mock.patch.object(
+                QApplication, 'keyboardModifiers', return_value=Qt.KeyboardModifier.ShiftModifier):
+            self.pid_panel._on_marker_clicked('equipment', self.marker_id)
+
+        self.assertIn("PV-101", editor.text())
+        self.assertEqual(captured, [], "marker_navigated must not fire while inserting into an active editor")
+
+    def test_plain_click_while_editing_falls_back_to_normal_navigation(self):
+        """Sanity check: the new branch must not hijack every click just
+        because a cell happens to be open for editing — only Shift+click
+        gets the new behaviour."""
+        self._start_editing_kon("Högt flöde till ")
+        captured = []
+        self.pid_panel.marker_navigated.connect(lambda t, i: captured.append((t, i)))
+
+        with unittest.mock.patch.object(
+                QApplication, 'keyboardModifiers', return_value=Qt.KeyboardModifier.NoModifier):
+            self.pid_panel._on_marker_clicked('equipment', self.marker_id)
+
+        self.assertEqual(captured, [('equipment', self.marker_id)])
+
+    def test_shift_click_with_no_active_editor_falls_back_to_normal_navigation(self):
+        captured = []
+        self.pid_panel.marker_navigated.connect(lambda t, i: captured.append((t, i)))
+
+        with unittest.mock.patch.object(
+                QApplication, 'keyboardModifiers', return_value=Qt.KeyboardModifier.ShiftModifier):
+            self.pid_panel._on_marker_clicked('equipment', self.marker_id)
+
+        self.assertEqual(captured, [('equipment', self.marker_id)])
 
 
 class NodeMarkupPanelNavigateTests(unittest.TestCase):

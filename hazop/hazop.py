@@ -13112,6 +13112,37 @@ class ScenarioTablePanel(QWidget):
                     QAbstractItemView.ScrollHint.PositionAtCenter)
                 return
 
+    def active_edit_target(self):
+        """Returns the live QLineEdit for the ORS/KON/SG cell currently
+        being edited, or None. Used by PIDPanel's Shift+click-on-marker
+        tag-insert feature (2026-08-13, see NOTES.md: "jag kan
+        fortsätta skriva efter objektet ... jag hoppar inte ut ur
+        textediteringsvyn") so it can insert into an already-open
+        editor instead of disturbing it — same EditingState guard
+        select_cause() above already uses to avoid stealing focus.
+
+        Resolves row/col from the editor's OWN 'editing_row'/'editing_col'
+        properties (set by _ScenarioDelegate.createEditor) rather than
+        self._table.currentItem()/currentRow() — those aren't reliably
+        in sync with which cell is actually mid-edit (e.g. right after
+        editItem()), while the editor's own properties always are, same
+        as eventFilter() already relies on elsewhere in this class."""
+        if self._table.state() != QAbstractItemView.State.EditingState:
+            return None
+        editor = self._table.focusWidget()
+        if not isinstance(editor, QLineEdit):
+            return None
+        row, col = editor.property('editing_row'), editor.property('editing_col')
+        if row is None or col is None:
+            return None
+        item = self._table.item(row, col)
+        if item is None:
+            return None
+        meta = item.data(Qt.ItemDataRole.UserRole)
+        if not meta or meta[0] not in ('cause', 'consequence', 'safeguard'):
+            return None
+        return editor
+
     def ors_cell_global_pos(self, dev_id):
         """Return global top-right corner of the first placeholder ORS cell for dev_id."""
         for row, meta in enumerate(self._row_meta):
@@ -19364,6 +19395,10 @@ class MainWindow(QMainWindow):
         self.pid_panel.equipment_placement_requested.connect(self._on_equipment_placement_requested)
         self.pid_panel.equipment_edit_requested.connect(self._on_equipment_edit_requested)
         self.pid_panel.marker_navigated.connect(self._on_marker_navigate)
+        # Shift+click a marker while an ORS/KON/SG cell is being edited
+        # inserts the tag into the open editor instead of navigating
+        # away and destroying it (2026-08-13, see NOTES.md).
+        self.pid_panel._active_edit_query_fn = self.scenario_panel.active_edit_target
         self.pid_panel.equipment_deviation_created.connect(self._on_equipment_deviation_created)
         self.pid_panel.pid_analysis_done.connect(self._on_pid_analysis_done)
         self.admin_panel._pid_mgmt.sheets_changed.connect(self._on_sheets_changed)

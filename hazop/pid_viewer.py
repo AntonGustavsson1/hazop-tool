@@ -6837,6 +6837,12 @@ class PIDPanel(QWidget):
         self._analyzer_thread        = None
         self._analyzer_progress_dlg  = None
         self._sheet_map: dict       = {}
+        # Set by MainWindow to ScenarioTablePanel.active_edit_target
+        # (2026-08-13, see NOTES.md) — lets a Shift+click on a marker
+        # insert its tag into an already-open ORS/KON/SG cell editor
+        # instead of navigating away and destroying it. None (and thus
+        # a no-op) when PIDPanel is used standalone, e.g. in tests.
+        self._active_edit_query_fn  = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -8593,6 +8599,28 @@ class PIDPanel(QWidget):
     # scenario är de där objektet finns med".)
 
     def _on_marker_clicked(self, item_type, item_id):
+        if item_type == 'equipment' and self._active_edit_query_fn is not None:
+            # Shift+click a marker while an ORS/KON/SG cell is being
+            # edited inserts its tag right into the open text instead
+            # of the normal navigate-to-equipment flow below, which
+            # would tear the editor down via a full scenario-table
+            # rebuild (2026-08-13, see NOTES.md: "jag hoppar inte ut ur
+            # textediteringsvyn"). Checked via QApplication.keyboardModifiers()
+            # rather than threading a modifier through marker_clicked's
+            # signature — zero risk to that signal's other callers.
+            shift_held = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier)
+            if shift_held:
+                editor = self._active_edit_query_fn()
+                if editor is not None:
+                    row = self.db.conn.execute(
+                        "SELECT equipment_id FROM equipment_markers WHERE id=?",
+                        (item_id,)).fetchone()
+                    eq = self.db.get_equipment_by_id(row['equipment_id']) \
+                        if row and row['equipment_id'] is not None else None
+                    tag = (eq.get('tag') or '').strip() if eq else ''
+                    if tag:
+                        self._insert_tag_into_editor(editor, tag)
+                    return   # swallow: no popup, no marker_navigated, no rebuild
         if item_type == 'equipment':
             row = self.db.conn.execute(
                 "SELECT equipment_id, x, y, pid_page FROM equipment_markers WHERE id=?",
@@ -8606,6 +8634,23 @@ class PIDPanel(QWidget):
             self.marker_navigated.emit(item_type, item_id)
             return
         self.marker_navigated.emit(item_type, item_id)
+
+    def _insert_tag_into_editor(self, editor, tag):
+        """Insert `tag` at the cursor of a live ORS/KON/SG QLineEdit
+        editor (Shift+click a P&ID marker while editing, 2026-08-13,
+        see NOTES.md) — mutates only the open editor's text, exactly as
+        if the user had typed it, so the existing commit-on-
+        editingFinished path persists it normally and the cursor lands
+        ready to keep typing right after. No DB write, no rebuild."""
+        pos = editor.cursorPosition()
+        text = editor.text()
+        before, after = text[:pos], text[pos:]
+        if before and not before.endswith(' '):
+            before += ' '
+        insert = tag if after.startswith(' ') else tag + ' '
+        editor.setText(before + insert + after)
+        editor.setCursorPosition(len(before) + len(insert))
+        editor.setFocus()
 
     def place_equipment_marker(self, tag, comp_type, scene_pos, page, pdf_rect=None):
         """Callback for EquipmentTagPopup (P&ID right-click -> "🔧 Objekt",
