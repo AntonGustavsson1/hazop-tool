@@ -10578,7 +10578,7 @@ class _ScenarioDelegate(QStyledItemDelegate):
         fm = self._fm
         one_line_h = fm.height() + 6
 
-        wrap_cols = {panel._C_ORS, panel._C_KON}
+        wrap_cols = {panel._C_ORS, panel._C_KON, panel._C_REK}
         if col not in wrap_cols:
             if col == panel._C_SG:
                 # SG's description never word-wraps (unlike ORS/KON) — a
@@ -11584,6 +11584,7 @@ class ScenarioTablePanel(QWidget):
         self._equipment_filter_id = None  # if set, show only causes mentioning this equipment_catalog id (set by load_equipment)
         self._show_empty_deviations = False  # if True, deviations with zero causes get a placeholder row instead of being omitted
         self._force_dev_column_visible = False  # if True, Avvikelse column stays visible regardless of _all_nodes (set by always_show_deviation_column)
+        self._force_utr_column_hidden = False  # if True, Utrustning column stays hidden regardless of _all_nodes (set by hide_equipment_column)
         self._row_meta = []   # list of (dev_id, cause_id, cons_id, sg_id) per visible row
         # row index -> {col: ('cause', dev_id) | ('consequence', cause_id) |
         # ('safeguard', cons_id)} — marks the LAST real row of a group that
@@ -11853,11 +11854,16 @@ class ScenarioTablePanel(QWidget):
         (reported feedback: it duplicated the tag already shown at the top
         of each Orsak cell) — it only appears in genuine "all nodes" mode,
         where it still earns its keep by disambiguating the several
-        equipment groups a single interleaved view can span."""
+        equipment groups a single interleaved view can span. `self.
+        _force_utr_column_hidden` (set via hide_equipment_column()) is the
+        opposite override — for a host that doesn't want Utrustning even
+        in "all nodes" mode (2026-08-13, see NOTES.md: "i worksheet
+        behöver inte objekt kolumnen synas")."""
         self._table.setColumnHidden(self._C_NOD, not visible)
         self._table.setColumnHidden(
             self._C_DEV, not (visible or self._force_dev_column_visible))
-        self._table.setColumnHidden(self._C_UTR, not visible)
+        self._table.setColumnHidden(
+            self._C_UTR, self._force_utr_column_hidden or not visible)
 
     def always_show_deviation_column(self):
         """Keep the Avvikelse column visible at all times, regardless of
@@ -11866,6 +11872,15 @@ class ScenarioTablePanel(QWidget):
         panel) that want deviation context always shown in the grid
         itself. Utrustning is unaffected — see _set_all_nodes_columns_visible."""
         self._force_dev_column_visible = True
+        self._set_all_nodes_columns_visible(self._all_nodes)
+
+    def hide_equipment_column(self):
+        """Keep the Utrustning column hidden even in "all nodes" mode
+        (2026-08-13, see NOTES.md) — opt-in for hosts (HAZOPWorksheet)
+        that don't need it disambiguating equipment groups in the
+        interleaved view; the tag is already shown at the top of each
+        Orsak cell regardless."""
+        self._force_utr_column_hidden = True
         self._set_all_nodes_columns_visible(self._all_nodes)
 
     # Columns that stretch to fill remaining space in fill mode
@@ -12383,7 +12398,7 @@ class ScenarioTablePanel(QWidget):
         if fm is None:
             fm = QFontMetrics(table.font())
         one_line_h = fm.height() + 6
-        wrap_cols = (self._C_ORS, self._C_KON)
+        wrap_cols = (self._C_ORS, self._C_KON, self._C_REK)
         max_h = one_line_h
         for col in range(table.columnCount()):
             if table.isColumnHidden(col):
@@ -12420,8 +12435,13 @@ class ScenarioTablePanel(QWidget):
                 rect = fm.boundingRect(0, 0, cell_w, 10000,
                                       Qt.TextFlag.TextWordWrap, text)
                 h = _ORS_STRIP_H + max(one_line_h, rect.height() + 4)
-            else:   # self._C_KON
+            elif col == self._C_KON:
                 cell_w = max(40, w - _KON_CAT_W)
+                rect = fm.boundingRect(0, 0, cell_w, 10000,
+                                      Qt.TextFlag.TextWordWrap, text)
+                h = max(one_line_h, rect.height() + 4)
+            else:   # self._C_REK
+                cell_w = max(40, w - 6)
                 rect = fm.boundingRect(0, 0, cell_w, 10000,
                                       Qt.TextFlag.TextWordWrap, text)
                 h = max(one_line_h, rect.height() + 4)
@@ -12877,16 +12897,18 @@ class ScenarioTablePanel(QWidget):
         pass  # row height set by resizeRowsToContents at end of _rebuild
 
     def _recommendation_summary(self, acts):
-        """Short REK-cell text for a consequence's action/recommendation
-        list — "—" placeholder when empty (same convention as KON/SG),
-        the single description when there's exactly one, otherwise a
-        count with how many are still open."""
+        """REK-cell text for a consequence's action/recommendation list
+        (2026-08-13, see NOTES.md: "samtliga tillagda rekomendationer
+        ... nummereras efter tilläggsordning") — "—" placeholder when
+        empty (same convention as KON/SG), otherwise EVERY recommendation
+        listed on its own line, numbered 1.. in the order they were
+        added (db.actions() already returns them ORDER BY id). The
+        column joins wrap_cols so multi-line content gets the row
+        height it needs, same as ORS/KON."""
         if not acts:
             return '—'
-        if len(acts) == 1:
-            return (acts[0]['description'] or 'Ny åtgärd')[:40]
-        open_n = sum(1 for a in acts if (a['status'] or 'Öppen') != 'Klar')
-        return f"{len(acts)} åtgärder ({open_n} öppna)" if open_n else f"{len(acts)} åtgärder"
+        return '\n'.join(f"{i}. {a['description'] or 'Ny åtgärd'}"
+                          for i, a in enumerate(acts, 1))
 
     def _get_cons_context(self, cons_id: int):
         """Return (deviation, comp_type, cause_text) for the consequence."""
@@ -14597,6 +14619,11 @@ class HAZOPWorksheet(QWidget):
         # deviation-picker (only a node dropdown), and rows aren't distinguishable
         # by node/deviation otherwise when neither checkbox above is checked.
         self._table_panel.always_show_deviation_column()
+        # "i worksheet behöver inte objekt kolumnen synas" (2026-08-13,
+        # see NOTES.md) — Utrustning stays hidden here even in "Visa
+        # samtliga noder" mode; the tag is already shown at the top of
+        # each Orsak cell regardless.
+        self._table_panel.hide_equipment_column()
         layout.addWidget(self._table_panel, 1)
 
         self._node_combo.currentIndexChanged.connect(self._on_node_combo_changed)

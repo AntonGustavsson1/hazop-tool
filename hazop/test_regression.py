@@ -2132,6 +2132,25 @@ class HAZOPWorksheetTests(unittest.TestCase):
         finally:
             ws.deleteLater()
 
+    def test_equipment_column_stays_hidden_even_in_all_nodes_mode(self):
+        """"i worksheet behöver inte objekt kolumnen synas" (2026-08-13)
+        — Utrustning normally reappears in "Visa samtliga noder" mode
+        (see ScenarioTablePanel._set_all_nodes_columns_visible's
+        docstring), but HAZOPWorksheet opts out of that via
+        hide_equipment_column(); the tag is already shown at the top of
+        each Orsak cell regardless."""
+        from hazop import HAZOPWorksheet
+        ws = HAZOPWorksheet(self.db)
+        try:
+            panel = ws._table_panel
+            self.assertTrue(panel._table.isColumnHidden(panel._C_UTR),
+                "Utrustning must start hidden")
+            ws._all_nodes_cb.setChecked(True)
+            self.assertTrue(panel._table.isColumnHidden(panel._C_UTR),
+                "Utrustning must stay hidden even in Visa samtliga noder mode")
+        finally:
+            ws.deleteLater()
+
     def test_refresh_after_creating_nodes_populates_and_loads(self):
         from hazop import HAZOPWorksheet
 
@@ -7774,14 +7793,32 @@ class RecommendationColumnTests(unittest.TestCase):
     def test_single_action_shows_its_description(self):
         self.db.add_action(self.cons_id)
         item, _ = self._rek_item()
-        self.assertEqual(item.text(), 'Ny åtgärd')
+        self.assertEqual(item.text(), '1. Ny åtgärd')
 
-    def test_multiple_actions_show_a_count_with_open_total(self):
+    def test_multiple_actions_are_all_listed_numbered_by_addition_order(self):
+        """"samtliga tillagda rekomendationer. de kan nummereras efter
+        tilläggsordning" (2026-08-13) — every recommendation shows, not
+        just a count, numbered 1.. in the order they were added."""
         self.db.add_action(self.cons_id)
         act_id = self.db.add_action(self.cons_id)
         self.db.update_action(act_id, 'Klar sak', '', '', 'Klar')
         item, _ = self._rek_item()
-        self.assertEqual(item.text(), '2 åtgärder (1 öppna)')
+        self.assertEqual(item.text(), '1. Ny åtgärd\n2. Klar sak')
+
+    def test_row_grows_to_fit_several_recommendations(self):
+        """REK joins wrap_cols (_ScenarioDelegate._size_hint_impl,
+        ScenarioTablePanel._compute_row_height) so a multi-line
+        recommendation list isn't clipped to one line like a plain
+        non-wrapping column would be."""
+        _, row = self._rek_item()
+        one_line_h = self.panel._table.rowHeight(row)
+        for _ in range(6):
+            self.db.add_action(self.cons_id)
+        self.panel.load_node(self.node_id)
+        row = next(r for r, m in enumerate(self.panel._row_meta) if m[2] == self.cons_id)
+        grown_h = self.panel._table.rowHeight(row)
+        self.assertGreater(grown_h, one_line_h,
+            "row must grow to fit 6 numbered recommendation lines")
 
     def test_clicking_cell_opens_editor_and_refreshes_summary_after(self):
         from hazop import RecommendationEditorDialog
@@ -7791,7 +7828,7 @@ class RecommendationColumnTests(unittest.TestCase):
                 side_effect=lambda: self.db.add_action(self.cons_id)):
             self.panel._on_cell_clicked(row, self.panel._C_REK)
         item = self.panel._table.item(row, self.panel._C_REK)
-        self.assertEqual(item.text(), 'Ny åtgärd')
+        self.assertEqual(item.text(), '1. Ny åtgärd')
 
     def test_recommendation_column_spans_across_safeguard_rows(self):
         """Several safeguards under the same consequence must share ONE

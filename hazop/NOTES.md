@@ -1706,6 +1706,18 @@ Ny `create`-flagga på `_deviation_item_at(event, source_obj, create=False)`: `D
 
 ---
 
+## Worksheet: dölj Utrustning-kolumnen; Rekommendation: visa alla, numrerade (2026-08-13)
+
+**Begäran:** "i worksheet behöver inte objekt kolumnen synas. i hazop scenario vill jag att samtliga tillagda rekomendationer. de kan nummereras efter tilläggsordning."
+
+**Del 1 — Utrustning-kolumnen i Worksheet:** `ScenarioTablePanel._set_all_nodes_columns_visible()` gör Utrustning synlig igen så fort "Visa samtliga noder" kryssas i (den disambiguerar annars vilken utrustning en interleaved rad hör till) — men i `HAZOPWorksheet` (den fristående Worksheet-sidan) behövs inte det, eftersom taggen redan visas högst upp i varje Orsak-cell. Ny opt-in-metod `ScenarioTablePanel.hide_equipment_column()` (samma mönster som den redan existerande `always_show_deviation_column()`, bara tvärtom — en ny `self._force_utr_column_hidden`-flagga som tvingar kolumnen dold OAVSETT `_all_nodes`-läge), anropad från `HAZOPWorksheet.__init__` bredvid dess befintliga `always_show_deviation_column()`-anrop. Den P&ID-inbäddade scenario-panelen (som INTE nämndes i begäran) är opåverkad — Utrustning uppträder där precis som innan.
+
+**Del 2 — Rekommendationskolumnen visar nu ALLA rekommendationer:** `_recommendation_summary()` (tillagd tidigare samma dag) visade bara en sammanfattning ("2 åtgärder (1 öppna)") för fler än en rekommendation — nu listas VARJE rekommendation på sin egen rad, numrerad 1.. i tillläggsordning (`db.actions()` returnerar redan `ORDER BY id`, dvs. exakt tilläggsordning, ingen extra sortering behövdes). Kolumnen lades till i `wrap_cols` (två ställen: `_ScenarioDelegate._size_hint_impl` och `ScenarioTablePanel._compute_row_height`) — annars klipptes flerradigt innehåll till en enda rad, samma flerradsstöd ORS/KON redan har. `_compute_row_height`s gamla `if/else`-gren (som blint antog "allt som inte är ORS måste vara KON") delades upp i en explicit `elif`/`else`-kedja så REK inte råkar få KON:s kategori-badge-breddavdrag.
+
+**Test:** `RecommendationColumnTests` uppdaterad — de gamla sammanfattnings-testerna (`test_multiple_actions_show_a_count_with_open_total` m.fl.) skrivna om till att förvänta den fullständiga, numrerade listan; ny `test_row_grows_to_fit_several_recommendations` (verifierat att den fångar regressionen: `wrap_cols`-tillägget temporärt borttaget → testet rött, 48==48; tillbaka → grönt). Ny `HAZOPWorksheetTests.test_equipment_column_stays_hidden_even_in_all_nodes_mode`. Hela båda testklasserna (19 tester) gröna.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.
