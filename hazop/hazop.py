@@ -1742,7 +1742,7 @@ def _create_cause_from_pick(db, deviation_id, description, frequency):
     return new_id, cons_id
 
 
-def _create_tagged_cause(db, deviation_id, comp_type, comp_tag):
+def _create_tagged_cause(db, deviation_id, comp_type, comp_tag, equipment_id=None):
     """Create a new cause under deviation_id (only its equipment tag/type
     set) plus one empty consequence — used when an equipment marker is
     dropped directly onto a deviation in the HAZOP tree (2026-08-08, see
@@ -1751,10 +1751,16 @@ def _create_tagged_cause(db, deviation_id, comp_type, comp_tag):
     was blank, unified to match every other auto-created cause/
     consequence/safeguard's placeholder-text convention), immediately
     inline-editable/overtype-able.
+
+    `equipment_id` (2026-08-13, see NOTES.md) links the cause's tag
+    strip live to the equipment_catalog row it came from, when the
+    caller already knows it (as every current caller does, from the
+    marker it just resolved) — no text-matching needed here.
     Returns (cause_id, consequence_id).
     """
     new_id = db.add_cause(deviation_id)
-    db.update_cause(new_id, description='Ny orsak', comp_type=comp_type, comp_tag=comp_tag)
+    db.update_cause(new_id, description='Ny orsak', comp_type=comp_type, comp_tag=comp_tag,
+                     equipment_id=equipment_id)
     cons_id = db.add_consequence(new_id)
     return new_id, cons_id
 
@@ -1978,6 +1984,13 @@ class Database:
             # helt orörda (equipment_id/node_id=NULL), inget backfill behövs.
             "ALTER TABLE equipment_catalog ADD COLUMN node_id INTEGER REFERENCES nodes(id)",
             "ALTER TABLE deviations ADD COLUMN equipment_id INTEGER REFERENCES equipment_catalog(id)",
+            # Live tag-länk mellan Orsak-cellens taggremsa och objektet på
+            # P&ID (2026-08-13, se NOTES.md) — samma equipment_id-FK-mönster
+            # som deviations.equipment_id ovan redan använder, istället för
+            # en frusen comp_tag/comp_type-strängkopia. Backfill (matcha
+            # comp_tag mot equipment_catalog.tag) körs separat efter denna
+            # lista, se _backfill_cause_equipment_ids().
+            "ALTER TABLE causes ADD COLUMN equipment_id INTEGER REFERENCES equipment_catalog(id)",
             # Drag-and-drop tagg från P&ID till konsekvens (2026-08-07, se
             # NOTES.md) — en konsekvens kan nu bära ett eget taggnummer
             # (t.ex. en pump nedströms orsaken), visat högst upp i
@@ -2033,6 +2046,34 @@ class Database:
 
         if error_count > 0:
             logging.warning(f"Migration had {error_count} real errors — database may be in inconsistent state")
+
+        self._backfill_cause_equipment_ids()
+
+    def _backfill_cause_equipment_ids(self):
+        """Best-effort backfill for the new causes.equipment_id FK
+        (2026-08-13, see NOTES.md) — matches each still-unlinked cause's
+        frozen comp_tag string against equipment_catalog.tag
+        (case-insensitive). Only links when EXACTLY ONE catalog row
+        matches; a tag with zero or multiple matches is left NULL rather
+        than guessed. Safe to re-run on every startup: the WHERE clause
+        only ever touches rows that are still unlinked, and re-deriving
+        the same match is a no-op."""
+        try:
+            rows = self.conn.execute(
+                "SELECT id, comp_tag FROM causes "
+                "WHERE equipment_id IS NULL AND comp_tag IS NOT NULL AND comp_tag != ''").fetchall()
+            for row in rows:
+                matches = self.conn.execute(
+                    "SELECT id FROM equipment_catalog WHERE LOWER(tag)=LOWER(?)",
+                    (row['comp_tag'],)).fetchall()
+                if len(matches) == 1:
+                    self.conn.execute(
+                        "UPDATE causes SET equipment_id=? WHERE id=?",
+                        (matches[0]['id'], row['id']))
+            if rows:
+                self.commit()
+        except sqlite3.OperationalError as e:
+            logging.warning(f"Could not backfill causes.equipment_id: {e}")
 
     def _migrate_tables_and_seed(self):
         self.conn.executescript("""
@@ -4412,7 +4453,7 @@ class Database:
 
     def update_cause(self, id_, description=None, likelihood=None, base_frequency=_SENTINEL,
                      standard_cause_id=_SENTINEL, comp_type=_SENTINEL, comp_tag=_SENTINEL,
-                     base_freq=_SENTINEL):
+                     base_freq=_SENTINEL, equipment_id=_SENTINEL):
         # Support old parameter name for backward compatibility
         if base_freq is not Database._SENTINEL and base_frequency is Database._SENTINEL:
             base_frequency = base_freq
@@ -4430,6 +4471,12 @@ class Database:
             sets.append("comp_type=?"); vals.append(comp_type)
         if comp_tag is not Database._SENTINEL:
             sets.append("comp_tag=?"); vals.append(comp_tag)
+        # Live link to equipment_catalog (2026-08-13, see NOTES.md) — an
+        # explicit None here means "sever the link" (a custom/unmatched
+        # tag), same optional-but-distinguishable-from-unset convention
+        # comp_type/comp_tag already use via _SENTINEL.
+        if equipment_id is not Database._SENTINEL:
+            sets.append("equipment_id=?"); vals.append(equipment_id)
         if sets:
             vals.append(id_)
             self.conn.execute(f"UPDATE causes SET {', '.join(sets)} WHERE id=?", vals)
@@ -11547,6 +11594,13 @@ class ScenarioTablePanel(QWidget):
         # its existing placeholder row instead (unchanged) — no badge
         # needed there since that row's own cell is already the target.
         self._row_plus_cols = {}
+        # Set by MainWindow to PIDPanel.reload_overlays (2026-08-13, see
+        # NOTES.md) — called after _apply_cause_obj renames an
+        # equipment_catalog row via the ORS tag strip, so P&ID markers
+        # reflect the new name immediately instead of on their next
+        # unrelated redraw. None (a no-op) when ScenarioTablePanel is
+        # used standalone, e.g. in tests.
+        self._on_equipment_renamed_fn = None
         self._cons_id  = None  # if set, show only this consequence (set by load_consequence)
         self._enter_row = -1
         self._enter_col = -1
@@ -11952,6 +12006,23 @@ class ScenarioTablePanel(QWidget):
             return None, ''
         eq = self.db.get_equipment_by_id(eq_id)
         return eq_id, (f"{eq['tag']} — {eq['equipment_type']}" if eq else '')
+
+    def _cause_tag_display(self, cause_d):
+        """(comp_type, comp_tag) for the ORS tag strip — resolved LIVE
+        from equipment_catalog via causes.equipment_id when the cause is
+        linked to a real object (2026-08-13, see NOTES.md: "taggen är
+        kopplad till objekten ... ändrar jag ... p&id" — renaming the
+        object must show up here on the very next redraw, same live-FK
+        pattern _equipment_for_dev above already uses for the Utrustning
+        column), falling back to the frozen comp_type/comp_tag strings
+        for a custom/unmatched tag (equipment_id is None) or if the
+        linked row was since deleted."""
+        eq_id = cause_d.get('equipment_id')
+        if eq_id:
+            eq = self.db.get_equipment_by_id(eq_id)
+            if eq:
+                return eq.get('equipment_type') or '', eq.get('tag') or ''
+        return cause_d.get('comp_type') or '', cause_d.get('comp_tag') or ''
 
     def _causes_for_node(self, node_id):
         """Return [(cause_dict, deviation_dict), ...] for every cause under
@@ -12514,8 +12585,7 @@ class ScenarioTablePanel(QWidget):
 
         ors = QTableWidgetItem(cause_d['description'])
         ors.setData(Qt.ItemDataRole.UserRole,     ('cause', cause_d['id']))
-        ors.setData(Qt.ItemDataRole.UserRole + 2, (cause_d.get('comp_type') or '',
-                                                    cause_d.get('comp_tag')  or ''))
+        ors.setData(Qt.ItemDataRole.UserRole + 2, self._cause_tag_display(cause_d))
         ors.setData(Qt.ItemDataRole.UserRole + 3, freq)
         self._table.setItem(r, self._C_ORS, ors)
 
@@ -12660,8 +12730,7 @@ class ScenarioTablePanel(QWidget):
 
         ors = QTableWidgetItem(cause_d['description'])
         ors.setData(Qt.ItemDataRole.UserRole,     ('cause', cause_d['id']))
-        ors.setData(Qt.ItemDataRole.UserRole + 2, (cause_d.get('comp_type') or '',
-                                                    cause_d.get('comp_tag')  or ''))
+        ors.setData(Qt.ItemDataRole.UserRole + 2, self._cause_tag_display(cause_d))
         ors.setData(Qt.ItemDataRole.UserRole + 3, freq)
         ors.setData(Qt.ItemDataRole.UserRole + 5, cause_d.get('base_frequency'))
         ors.setData(Qt.ItemDataRole.UserRole + 6, _status_icon)
@@ -13492,17 +13561,50 @@ class ScenarioTablePanel(QWidget):
         popup.exec()
 
     def _apply_cause_obj(self, row, cause_id, comp_type, comp_tag, description, frequency):
+        # Live tag link (2026-08-13, see NOTES.md: "taggen är kopplad
+        # till objekten i orsaken ... ändrar jag i hazop scenario
+        # ändras namnet på p&id och vice versa"). Two cases:
+        # - Already linked to a real object and the typed tag text now
+        #   differs from that object's own tag → RENAME the object
+        #   itself (equipment_catalog), everywhere in the app, not just
+        #   this cell's frozen comp_tag copy.
+        # - Not linked yet, but the typed tag happens to match an
+        #   existing object's tag exactly → just link to it (no rename,
+        #   nothing to rename FROM).
+        cause = self.db.get_cause(cause_id)
+        old_equipment_id = cause.get('equipment_id') if cause else None
+        new_tag = (comp_tag or '').strip()
+        equipment_id = old_equipment_id
+        renamed = False
+        if old_equipment_id is not None:
+            old_eq = self.db.get_equipment_by_id(old_equipment_id)
+            if old_eq and new_tag and new_tag != (old_eq.get('tag') or ''):
+                self.db.update_equipment_item(
+                    old_equipment_id, new_tag, old_eq.get('prefix') or '',
+                    old_eq.get('equipment_type') or comp_type, old_eq.get('description') or '')
+                if self._on_equipment_renamed_fn is not None:
+                    self._on_equipment_renamed_fn()
+                renamed = True
+        elif new_tag:
+            match = self.db.get_equipment_by_tag(new_tag)
+            equipment_id = match['id'] if match else None
+
         # Do all DB writes first — learning is handled inside update_cause
-        self.db.update_cause(cause_id, comp_type=comp_type, comp_tag=comp_tag)
+        self.db.update_cause(cause_id, comp_type=comp_type, comp_tag=comp_tag,
+                              equipment_id=equipment_id)
         if description:
             kwargs = {'description': description}
             if frequency is not None:
                 kwargs['base_frequency'] = frequency
             self.db.update_cause(cause_id, **kwargs)
-            # Description changed → full rebuild (item refs are stale after rebuild anyway)
+        if description or renamed:
+            # Description changed, or a rename may affect OTHER rows
+            # sharing the same equipment_id too → full rebuild (item
+            # refs are stale after rebuild anyway).
             self._schedule_rebuild()
         else:
-            # Only tag/type changed → update item in-place with signals blocked
+            # Only this row's own tag/type changed → update item in-place
+            # with signals blocked.
             self._table.blockSignals(True)
             item = self._table.item(row, self._C_ORS)
             if item:
@@ -19437,6 +19539,11 @@ class MainWindow(QMainWindow):
         # inserts the tag into the open editor instead of navigating
         # away and destroying it (2026-08-13, see NOTES.md).
         self.pid_panel._active_edit_query_fn = self.scenario_panel.active_edit_target
+        # Renaming an equipment via the ORS tag strip (2026-08-13, see
+        # NOTES.md) reaches into equipment_catalog directly from
+        # ScenarioTablePanel — keep the P&ID markers' own overlay text
+        # in sync right away too, not just on their next unrelated redraw.
+        self.scenario_panel._on_equipment_renamed_fn = self.pid_panel.reload_overlays
         self.pid_panel.equipment_deviation_created.connect(self._on_equipment_deviation_created)
         self.pid_panel.pid_analysis_done.connect(self._on_pid_analysis_done)
         self.admin_panel._pid_mgmt.sheets_changed.connect(self._on_sheets_changed)
@@ -19723,6 +19830,11 @@ class MainWindow(QMainWindow):
             self.db.update_equipment_item(
                 equip['id'], tag, pfx, comp_type, equip.get('description') or '')
             self.pid_panel.reload_overlays()
+            # Live tag link (2026-08-13, see NOTES.md) — any ORS tag
+            # strip linked to this equipment resolves its display live
+            # via causes.equipment_id, so a rebuild here shows the new
+            # name immediately instead of on the next unrelated redraw.
+            self.scenario_panel._schedule_rebuild()
 
         popup.committed.connect(_on_picked)
         popup.exec()
@@ -19762,7 +19874,8 @@ class MainWindow(QMainWindow):
                 self.db.set_deviation_equipment(dev_id, equip['id'])
                 dev_equipment_id = equip['id']
             cause_id, _cons_id = _create_tagged_cause(
-                self.db, dev_id, equip.get('equipment_type', ''), equip.get('tag', ''))
+                self.db, dev_id, equip.get('equipment_type', ''), equip.get('tag', ''),
+                equipment_id=equip['id'])
             last_cause_id = cause_id
         if last_cause_id is not None:
             self.tree_panel.refresh(CAUSE_T, last_cause_id)

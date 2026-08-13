@@ -1688,6 +1688,24 @@ Ny `create`-flagga på `_deviation_item_at(event, source_obj, create=False)`: `D
 
 ---
 
+## Live tag-länk mellan Orsak-cellens taggremsa och utrustningsobjektet (2026-08-13)
+
+**Begäran:** "fixa till så att taggen är kopplad till objekten i orsaken på hazop scenario. så ändrar jag i hazop scenario ändras namnet på p&id och vice versa."
+
+**Utredning avslöjade rätt struktur att koppla till:** ORS-cellen (Orsak) har redan en tydligt avgränsad taggremsa, ritad SEPARAT från orsakstexten (`_PidDelegate.paint()`s ORS-gren, kommentar "Cause cells: top strip [tag|freq|dots] + description below") — inte inbäddad i en fri mening som KON/SG-cellerna (de fetmarkerar taggen INUTI beskrivningen istället, en tagg-remsa de själva hade fram till 2026-08-10 men som togs bort, se `TagDetachContextMenuTests`). Klick på ORS-remsan öppnar redan `CauseObjectPopup` med ett vanligt `QLineEdit` för taggtexten. Detta gjorde uppgiften väsentligt enklare än den först verkade — ingen ny UI, ingen fri-text-substräng-spårning behövs.
+
+**Fix:**
+1. Ny `causes.equipment_id`-kolumn (idempotent migrering + separat, säker backfill-metod `Database._backfill_cause_equipment_ids()`, matchar befintliga `comp_tag`-strängar mot `equipment_catalog.tag` skiftlägesokänsligt — bara vid EXAKT EN träff, annars lämnas `NULL`) — exakt samma FK-mönster som den redan befintliga, fungerande `deviations.equipment_id` (2026-08-07).
+2. `_create_tagged_cause()` (drag-och-släpp-på-avvikelse-flödena) och `Database.update_cause()` tar nu en valfri `equipment_id`-parameter, satt direkt av anropare som redan har `equip['id']` i scope.
+3. Ny `ScenarioTablePanel._cause_tag_display(cause_d)` — slår upp taggremsans `(comp_type, comp_tag)` LEVANDE via `equipment_id`/`get_equipment_by_id` när kopplingen finns, annars faller tillbaka till de frusna strängarna. Samma `get_equipment_by_id`-mönster Utrustning-kolumnen redan använder för avvikelser. `MainWindow._on_equipment_edit_requested` ("✏️ Redigera objekt") kör nu även en `scenario_panel`-ombyggnad direkt efter namnbytet, inte bara P&ID-overlays.
+4. `ScenarioTablePanel._apply_cause_obj()` (CauseObjectPopup-commit): om orsaken redan är länkad och den nya taggtexten skiljer sig från det länkade objektets EGEN tagg → byter namn på den FAKTISKA `equipment_catalog`-raden (`update_equipment_item`) — inte bara den här cellens privata kopia, vilket gör namnbytet synligt för VARJE annan orsak som råkar peka på samma objekt. Om orsaken INTE är länkad än men den skrivna taggen matchar ett befintligt objekt exakt → länkas den utan att döpa om något (inget att döpa om FRÅN). En ny `ScenarioTablePanel._on_equipment_renamed_fn`-callback (samma sibling-till-sibling-mönster som gårdagens `_active_edit_query_fn`, kopplad av `MainWindow` till `pid_panel.reload_overlays`) håller P&ID-markörerna i synk direkt efter ett sådant namnbyte också.
+
+**Medvetet avgränsat:** gäller bara Orsak (ORS) — konsekvens/safeguard saknar en motsvarande separat tagg-remsa sedan den togs bort 2026-08-10, och nämndes inte i begäran.
+
+**Test:** ny klass `CauseTagLiveLinkTests` (10 tester): `_create_tagged_cause` länkar `equipment_id`; taggremsan speglar objektets NUVARANDE namn efter ett P&ID-namnbyte utan att röra `causes`-raden; redigering av taggtexten i popupen byter namn på det faktiska objektet; en ANNAN orsak som pekar på samma objekt visar också det nya namnet; namnbytet triggar `_on_equipment_renamed_fn`; en ny, matchande tagg länkas utan namnbyte; en anpassad/omatchad tagg förblir olänkad utan krasch; backfill länkar en entydig `comp_tag` men lämnar en tvetydig (två objekt med samma tagg) olänkad; hela `MainWindow`-kopplingen (`_on_equipment_edit_requested` → `scenario_panel._schedule_rebuild()`) bekräftad end-to-end. Verifierat manuellt end-to-end med ett fristående skript innan testerna skrevs (båda riktningarna, plus delad länk mellan två orsaker, plus en olänkad anpassad tagg). Bredare svep (`EquipmentEditRequestedHandlerTests`, `EquipmentDropOnTreeDeviationTests`, `CausesForEquipmentTests`, `EquipmentConsequenceSafeguardCountTests`, `ShiftClickInsertsTagIntoActiveEditorTests`) gröna — ingen regression.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

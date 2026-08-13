@@ -9088,6 +9088,173 @@ class EquipmentEditRequestedHandlerTests(unittest.TestCase):
             mock_info.assert_called_once()
 
 
+class CauseTagLiveLinkTests(unittest.TestCase):
+    """"fixa till så att taggen är kopplad till objekten i orsaken på
+    hazop scenario. så ändrar jag i hazop scenario ändras namnet på
+    p&id och vice versa" (2026-08-13) — the ORS cell's tag strip
+    (comp_type/comp_tag) used to be a frozen text snapshot with no
+    connection to equipment_catalog. causes.equipment_id is now a real
+    FK (same pattern as the pre-existing deviations.equipment_id),
+    resolved live at render time (_cause_tag_display) so a rename on
+    the P&ID shows up immediately, and _apply_cause_obj (the
+    CauseObjectPopup commit handler) renames the ACTUAL
+    equipment_catalog row when the user edits the tag text of an
+    already-linked cause, instead of just overwriting this one cell's
+    private copy."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_causetaglink_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from hazop import ScenarioTablePanel
+        self.panel = ScenarioTablePanel(self.db)
+        self.node_id = self.db.add_node()
+        self.dev_id = self.db.deviations(self.node_id)[0]['id']
+        self.eq_id = self.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", '', 0)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _ors_tag(self, cause_id):
+        self.panel.load_node(self.node_id)
+        row = next(r for r, m in enumerate(self.panel._row_meta) if m[1] == cause_id)
+        item = self.panel._table.item(row, self.panel._C_ORS)
+        return item.data(Qt.ItemDataRole.UserRole + 2), row
+
+    def test_create_tagged_cause_links_equipment_id(self):
+        from hazop import _create_tagged_cause
+        cause_id, _ = _create_tagged_cause(
+            self.db, self.dev_id, "Ventil", "PV-101", equipment_id=self.eq_id)
+        self.assertEqual(self.db.get_cause(cause_id)['equipment_id'], self.eq_id)
+
+    def test_ors_strip_reflects_current_equipment_tag_after_pid_rename(self):
+        """The P&ID-rename → hazop-scenario direction: renaming the
+        object updates the strip on the very next redraw, with no
+        write to the causes row at all."""
+        from hazop import _create_tagged_cause
+        cause_id, _ = _create_tagged_cause(
+            self.db, self.dev_id, "Ventil", "PV-101", equipment_id=self.eq_id)
+
+        self.db.update_equipment_item(self.eq_id, "PV-102", "PV", "Ventil", "")
+        (comp_type, comp_tag), _ = self._ors_tag(cause_id)
+        self.assertEqual(comp_tag, "PV-102")
+        self.assertEqual(comp_type, "Ventil")
+        # The row's own comp_tag snapshot is untouched by the rename —
+        # only the live resolution changed what's displayed.
+        self.assertEqual(self.db.get_cause(cause_id)['comp_tag'], "PV-101")
+
+    def test_editing_tag_in_popup_renames_the_actual_equipment(self):
+        """The hazop-scenario → P&ID direction: editing the tag text of
+        an already-linked cause renames equipment_catalog itself."""
+        from hazop import _create_tagged_cause
+        cause_id, _ = _create_tagged_cause(
+            self.db, self.dev_id, "Ventil", "PV-101", equipment_id=self.eq_id)
+        _, row = self._ors_tag(cause_id)
+
+        self.panel._apply_cause_obj(row, cause_id, "Ventil", "PV-103", "", None)
+
+        self.assertEqual(self.db.get_equipment_by_id(self.eq_id)['tag'], "PV-103")
+
+    def test_rename_via_popup_is_visible_from_a_different_cause_on_the_same_equipment(self):
+        """Confirms the link is shared via equipment_id, not private to
+        the one cell that triggered the rename."""
+        from hazop import _create_tagged_cause
+        cause_id, _ = _create_tagged_cause(
+            self.db, self.dev_id, "Ventil", "PV-101", equipment_id=self.eq_id)
+        other_cause_id, _ = _create_tagged_cause(
+            self.db, self.dev_id, "Ventil", "PV-101", equipment_id=self.eq_id)
+        _, row = self._ors_tag(cause_id)
+
+        self.panel._apply_cause_obj(row, cause_id, "Ventil", "PV-103", "", None)
+
+        (_, other_tag), _ = self._ors_tag(other_cause_id)
+        self.assertEqual(other_tag, "PV-103")
+
+    def test_editing_tag_calls_the_equipment_renamed_callback(self):
+        from hazop import _create_tagged_cause
+        cause_id, _ = _create_tagged_cause(
+            self.db, self.dev_id, "Ventil", "PV-101", equipment_id=self.eq_id)
+        _, row = self._ors_tag(cause_id)
+        called = []
+        self.panel._on_equipment_renamed_fn = lambda: called.append(True)
+
+        self.panel._apply_cause_obj(row, cause_id, "Ventil", "PV-103", "", None)
+
+        self.assertEqual(called, [True])
+
+    def test_new_tag_matching_an_existing_object_links_without_renaming(self):
+        """A cause with no link yet, whose typed tag happens to match an
+        existing object exactly, gets LINKED — there's nothing to
+        rename FROM, so the object itself is untouched."""
+        cause_id = self.db.add_cause(self.dev_id)
+        _, row = self._ors_tag(cause_id)
+
+        self.panel._apply_cause_obj(row, cause_id, "Ventil", "PV-101", "", None)
+
+        self.assertEqual(self.db.get_cause(cause_id)['equipment_id'], self.eq_id)
+        self.assertEqual(self.db.get_equipment_by_id(self.eq_id)['tag'], "PV-101")
+
+    def test_custom_unmatched_tag_stays_unlinked(self):
+        cause_id = self.db.add_cause(self.dev_id)
+        _, row = self._ors_tag(cause_id)
+
+        self.panel._apply_cause_obj(row, cause_id, "Övrigt", "CUSTOM-999", "", None)
+
+        self.assertIsNone(self.db.get_cause(cause_id)['equipment_id'])
+
+    def test_backfill_links_an_unambiguous_existing_comp_tag(self):
+        cause_id = self.db.add_cause(self.dev_id)
+        self.db.update_cause(cause_id, comp_type="Ventil", comp_tag="PV-101")
+        self.db.conn.execute("UPDATE causes SET equipment_id=NULL WHERE id=?", (cause_id,))
+        self.db.commit()
+
+        self.db._backfill_cause_equipment_ids()
+
+        self.assertEqual(self.db.get_cause(cause_id)['equipment_id'], self.eq_id)
+
+    def test_backfill_leaves_ambiguous_comp_tag_unlinked(self):
+        dup_eq_id = self.db.add_equipment_item("PV-101", "PV-101", "PV", 1, "Ventil", '', 0)
+        cause_id = self.db.add_cause(self.dev_id)
+        self.db.update_cause(cause_id, comp_type="Ventil", comp_tag="PV-101")
+        self.db.conn.execute("UPDATE causes SET equipment_id=NULL WHERE id=?", (cause_id,))
+        self.db.commit()
+
+        self.db._backfill_cause_equipment_ids()
+
+        self.assertIsNone(self.db.get_cause(cause_id)['equipment_id'])
+
+    def test_pid_rename_triggers_scenario_rebuild_via_mainwindow_wiring(self):
+        """End-to-end confirmation of the MainWindow-level wiring, not
+        just the panel's own logic in isolation."""
+        from PyQt6.QtWidgets import QDialog
+        eq_id = self.db.add_equipment_item("V-1", "V-1", "V", 0, "Ventil", "", 0)
+        marker_id = self.db.add_equipment_marker(eq_id, "V-1", 0, 1.0, 1.0, "Ventil")
+
+        with _TempDbMainWindow() as win:
+            win.db = self.db
+            win.pid_panel.db = self.db
+            win.scenario_panel.db = self.db
+
+            def _fake_exec(self):
+                self.committed.emit("V-2", "Ventil")
+                return QDialog.DialogCode.Accepted
+
+            with unittest.mock.patch.object(hazop.EquipmentTagPopup, 'exec', new=_fake_exec), \
+                 unittest.mock.patch.object(win.pid_panel, 'reload_overlays'), \
+                 unittest.mock.patch.object(win.scenario_panel, '_schedule_rebuild') as mock_rebuild:
+                win._on_equipment_edit_requested(marker_id)
+
+            mock_rebuild.assert_called_once()
+
+
 class TagDetachContextMenuTests(unittest.TestCase):
     """The KON/SG tag strip (with its inline "×") was removed 2026-08-10
     (see NOTES.md, "ta bort tagg remsa") — a tag now shows only inline,
