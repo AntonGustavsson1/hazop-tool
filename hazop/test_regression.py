@@ -3794,6 +3794,39 @@ class UnifiedTagScanTests(unittest.TestCase):
         self.assertTrue(any('PCV' in t for t in all_tags),
             f"expected a PCV tag rejoined from split tokens, got: {all_tags}")
 
+    def test_pick_best_tag_normalises_rdspp_compound_separators(self):
+        """Used to return the RDS-PP compound match completely raw (leading
+        '=', dots kept as-is) instead of normalising it like _parse_tag's
+        own EXT_TAG_RE branch already does — see NOTES.md 'Dubbla taggar
+        vid skanning' (2026-08-13, real LKAB file)."""
+        from equipment_detection import _pick_best_tag
+        self.assertEqual(_pick_best_tag('=E1.M1.QMA081'), 'E1-M1-QMA081')
+
+    def test_rdspp_compound_tag_deduped_against_its_own_bare_form(self):
+        """Real LKAB file bug (2026-08-13, see NOTES.md 'Dubbla taggar vid
+        skanning'): an RDS-PP path tag like '=E1.M1.QMA081' used to survive
+        as a SECOND, differently-formatted duplicate of the same
+        instrument's bare code 'QMA-081' — Pass 1's full-text regex found
+        the bare form (dashed) by fragmenting the compound into short
+        letter+digit chunks before _parse_tag ever saw it whole, while
+        Pass 2's _pick_best_tag returned the compound form completely
+        unnormalised (dotted, leading '='). Both landed in
+        equipment_catalog as separate rows for one physical instrument —
+        "one with a dash, one without", per the bug report."""
+        import fitz
+        from equipment_detection import scan_pdf_for_equipment
+        doc = fitz.open()
+        page = doc.new_page(width=200, height=200)
+        page.insert_text(fitz.Point(10, 20), "=E1.M1.QMA081", fontsize=10)
+        try:
+            result = scan_pdf_for_equipment(doc, use_ocr=False)
+        finally:
+            doc.close()
+        result.pop('_meta', None)
+        qma_tags = result.get('QMA', {}).get('tags', [])
+        self.assertEqual(qma_tags, ['QMA-081'],
+            f"expected only the bare form, got duplicate(s): {qma_tags}")
+
     def test_spatial_combine_returns_bbox_tuples(self):
         from equipment_detection import _spatial_combine
         import fitz

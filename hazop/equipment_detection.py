@@ -969,10 +969,21 @@ def _pick_best_tag(text: str) -> str:
     text = text.strip().upper()
 
     for candidate in _tag_candidates(text):
-        # 1. Extended tag with area prefix — return as-is (preserve original separators)
+        # 1. Extended tag with area prefix — normalise separators the same
+        # way _parse_tag's own EXT_TAG_RE branch already does (strip a
+        # leading RDS-PP '=', unify '.'/'_'/'/' to '-'). Used to return
+        # m.group(1) completely raw, which left an un-dashed, dotted
+        # compound tag (e.g. "=E1.M1.QMA081") looking like a totally
+        # different string from its own already-normalised bare form
+        # ("QMA-081") found elsewhere on the same page — both landed in
+        # equipment_catalog as two "duplicate" rows for one instrument,
+        # one with a dash and one without (real LKAB file, 2026-08-13, see
+        # NOTES.md "Dubbla taggar vid skanning").
         m = _EXT_TAG_RE.search(candidate)
         if m:
-            return m.group(1)
+            norm = m.group(1).lstrip('=')
+            norm = norm.replace('_', '-').replace('.', '-').replace('/', '-')
+            return re.sub(r'-+', '-', norm).strip('-')
         # 2. Simple tag (letter code + number)
         matches = _FULL_TAG_RE.findall(candidate)
         if matches and len(matches[0]) >= 2:
@@ -1259,8 +1270,24 @@ def _scan_one_page_native(page, page_num):
             # Pass-2 upgrade: more precise coords for a tag pass 1 already
             # found (via the coarser full-text regex) on THIS page.
             existing['cx'], existing['cy'] = cx, cy
-        else:
-            _row(tag, prefix, cx, cy)
+            continue
+
+        # A compound RDS-PP-style tag (area path + instrument code, e.g.
+        # "E1-M1-QMA081") is a duplicate of the bare instrument code alone
+        # ("QMA-081") when that bare form was already found on this page —
+        # same physical instrument printed twice on the drawing, once with
+        # its full hierarchy path and once as just the loop number (real
+        # LKAB file, 2026-08-13, see NOTES.md "Dubbla taggar vid
+        # skanning"). Keep only the simpler form every other tag in the
+        # same file already uses instead of adding both as separate rows.
+        area, _, last_segment = tag.rpartition('-')
+        if area:
+            bare_tag, bare_prefix = _parse_tag(last_segment)
+            if (bare_tag and bare_prefix == prefix and
+                    any(r['tag'] == bare_tag and r['prefix'] == prefix for r in rows)):
+                continue
+
+        _row(tag, prefix, cx, cy)
     return rows
 
 

@@ -1483,6 +1483,22 @@ Nya grupper:
 
 ---
 
+## Dubbla taggar vid skanning — RDS-PP-sökvägar dubblerade sin egen bara kod (2026-08-13)
+
+**Rapport:** "När jag har gjort scanning på exempelvis LKAB PID 155 så får många objekt dubbla taggar, både en med streck och en utan." Reproducerat direkt mot den riktiga referensfilen (`P&ID ref/Ref från LKAB Demo/S0000155.PDF`): `scan_pdf_for_equipment(doc, use_ocr=False)` gav 64 taggar, varav ~20 var dubbletter under samma prefix — t.ex. `QMA: ['=E1.M1.QMA081', 'QMA-081', ...]` (nio instrument, alla dubblerade), samt `CMA`/`GPA`/`HMA`/`HXA`/`WPA`/`WPC`.
+
+**Grundorsak:** `_pick_best_tag()` (`equipment_detection.py`, Pass 2/spatial-combine-vägen) hade en egen, ANNAN implementation av samma `_EXT_TAG_RE`-gren (RDS-PP-sammansatta taggar med områdes-sökväg, t.ex. "E1.M1.QMA081") än `_parse_tag()` — och den returnerade träffen helt orenoverad (`return m.group(1)`, kommentar: "preserve original separators"): kvarvarande inlednings-"=" och punkter ISTÄLLET för streck. Samtidigt fragmenterar Pass 1:s (`_FULL_TAG_RE.finditer(full_text)`) grövre reguljära uttryck den SAMMA sammansatta strängen ("=E1.M1.QMA081") i flera KORTA separata träffar ("E1", "M1", "QMA081") INNAN `_parse_tag()` ens ser den som en helhet — och `_parse_tag("QMA081")` normaliserar korrekt till "QMA-081" via sin "ingen separator"-gren. Resultat: samma fysiska instrument dyker upp två gånger under samma prefix-bucket — en gång som den råa, opunkterade RDS-PP-sökvägen (`=E1.M1.QMA081`, inget streck), en gång som den rena bara koden (`QMA-081`, streck) — exakt "en med streck och en utan".
+
+**Fix (`equipment_detection.py`):**
+1. `_pick_best_tag()`s `_EXT_TAG_RE`-gren normaliserar nu separatorerna EXAKT som `_parse_tag()`s egen `_EXT_TAG_RE`-gren redan gör (strip `=`, `.`/`_`/`/` → `-`, kollapsa upprepade streck) — inga fler råa, opunkterade taggar i resultatet.
+2. `_scan_one_page_native()`s Pass 2-loop dedupar nu explicit: om den normaliserade sammansatta taggens SISTA segment (efter sista `-`) självt tolkas som en giltig bar tagg via `_parse_tag()` OCH den bara taggen redan finns som en rad på samma sida (från Pass 1) — hoppa över den sammansatta dubbletten, behåll bara den enklare formen (samma konvention alla andra taggar i filen redan använder).
+
+**Resultat på den riktiga filen:** 64 → 45 taggar (native-only), noll kvarvarande streck/utan-streck-dubbletter av samma bas-tagg. En kvarvarande, ANNORLUNDA (inte streck-relaterad) dubblett upptäcktes för `HMA` (`['HMA-1', 'M1-HMA1-GLX1']`) — `M1-HMA1-GLX1` har ett eget, redan-streckat suffix ("-GLX1") som INTE matchar `HMA-1` när man delar på sista strecket, så dedup-kontrollen (medvetet) rör den inte — ett genuint annorlunda, sammansatt referensformat (HMA1 länkad till GLX1), inte samma enkla dash/no-dash-artefakt som resten. Inte åtgärdat i denna omgång — kräver en bredare "matcha VILKET tidigare segment som helst" jämförelse, som riskerar att slå ihop legitimt distinkta sammansatta referenser om den görs för löst.
+
+**Test:** `UnifiedTagScanTests.test_pick_best_tag_normalises_rdspp_compound_separators` (ren funktionstest på normaliseringen) + `test_rdspp_compound_tag_deduped_against_its_own_bare_form` (hela `scan_pdf_for_equipment`-vägen med en syntetisk PDF-sida, samma reproduktion som den riktiga LKAB-filen). Full svit körd innan commit (se nedan för resultat).
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **Sid-orienteringsinställningen (P&ID-inställningar) är inte kopplad till faktisk rendering/skanning** — sparas i `pid_page_orientation_hint` men läses ännu inte av PDF-rendering, OCR-förbehandling eller taggskanning, som alla idag bara följer PDF-filens egen `/Rotate`-flagga direkt. Att koppla in den kräver att tråda en override genom flera lager, inklusive de flerprocess-skanningsarbetarna — inte gjort 2026-08-11, se ovan. (Den nya per-blad-rotationsknappen från 2026-08-12 löser ett näraliggande men separat behov — manuell rotation av EN specifik sida — genom att mutera `fitz.Page`s rotation i minnet; den treväga globala inställningen är fortfarande inte inkopplad.)
