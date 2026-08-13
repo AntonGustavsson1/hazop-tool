@@ -463,10 +463,6 @@ def _pid_build_chain_text(base: str, chain: dict) -> str:
 
 MODE_NAV             = 0
 MODE_NODE            = 1
-MODE_CONSEQUENCE     = 3
-MODE_SAFEGUARD       = 4
-MODE_PLACE_EXISTING  = 5   # place a pre-existing item (no new item created)
-MODE_CAUSE_TEMPLATE  = 6   # place cause from template list for a specific deviation
 MODE_MARKUP_POLYGON  = 7   # draw closed polygon markup on a node
 MODE_MARKUP_POLYLINE = 8   # draw open polyline markup on a node
 MODE_MARKUP_TEXT     = 9   # click to place a text label markup
@@ -482,22 +478,13 @@ MODE_PLACE_NEW_EQUIPMENT = 18  # click P&ID to place a brand-new equipment objec
                                 # armed from EquipmentDeviationBar's "+" button
 
 # Placement-mode outline/fill colors — shared by the drag-rect preview and the
-# cursor-following ghost preview. Matches the tree-panel visibility buttons and
-# the final rendered markers (cause=red, consequence=orange, safeguard=green).
+# cursor-following ghost preview.
 _PLACEMENT_MODE_COLORS = {
-    MODE_CONSEQUENCE:     (QColor(0xe6, 0x7e, 0x22), QColor(0xe6, 0x7e, 0x22, 35)),
-    MODE_SAFEGUARD:       (QColor(0x27, 0xae, 0x60), QColor(0x27, 0xae, 0x60, 35)),
-    MODE_CAUSE_TEMPLATE:  (QColor(0xe7, 0x4c, 0x3c), QColor(0xe7, 0x4c, 0x3c, 35)),
-    MODE_PLACE_EXISTING:  (QColor(0x14, 0x6e, 0xbe), QColor(0x14, 0x6e, 0xbe, 30)),
     MODE_PLACE_NEW_EQUIPMENT: (QColor(0x14, 0x6e, 0xbe), QColor(0x14, 0x6e, 0xbe, 30)),
 }
 # Ghost preview radius per mode, matching the real marker's radius (see
-# add_cause_marker/add_consequence_marker/add_safeguard_marker).
+# add_equipment_marker).
 _PLACEMENT_MODE_RADIUS = {
-    MODE_CONSEQUENCE:     12.0,
-    MODE_SAFEGUARD:       12.0,
-    MODE_CAUSE_TEMPLATE:  14.0,
-    MODE_PLACE_EXISTING:  12.0,
     MODE_PLACE_NEW_EQUIPMENT: 12.0,
 }
 
@@ -1306,142 +1293,6 @@ class ExistingSafeguardPicker(QDialog):
         if item:
             self.selected_id = item.data(Qt.ItemDataRole.UserRole)
             self.accept()
-
-
-class SafeguardPickerDialog(QDialog):
-    def __init__(self, parent=None, suggested_tag='', existing_safeguards=None, db=None,
-                 existing_bpcs_count=0):
-        super().__init__(parent)
-        self.setWindowTitle("Markera safeguard / barriär")
-        self.setMinimumWidth(440)
-        self._db              = db
-        self.tag              = ''
-        self.description      = ''
-        self.sg_type          = 'Övrigt'
-        self.rrf              = 1
-        self.add_more         = False
-        self.link_to_id       = None
-        self._existing_bpcs   = existing_bpcs_count
-
-        layout = QVBoxLayout(self)
-
-        # Link to existing button (shown when db is available)
-        if db is not None:
-            link_btn = QPushButton("Länka till befintlig safeguard")
-            link_btn.setIcon(_icon('link'))
-            link_btn.setStyleSheet(
-                "background:#2c7bb6; color:white; border:none; border-radius:4px; padding:4px 10px;")
-            link_btn.clicked.connect(self._pick_existing)
-            layout.addWidget(link_btn)
-
-            sep = QLabel("— eller skapa ny —")
-            sep.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            sep.setStyleSheet("color:#888; font-size:10px;")
-            layout.addWidget(sep)
-
-        form = QFormLayout()
-
-        self.tag_edit = QLineEdit(suggested_tag)
-        self.tag_edit.setPlaceholderText("t.ex. PSV-101  (lästes från PDF)")
-        form.addRow("ID / tag:", self.tag_edit)
-
-        self.desc_edit = QLineEdit()
-        self.desc_edit.setPlaceholderText("t.ex. Säkerhetsventil, Nivålarm LAH-101")
-        form.addRow("Beskrivning:", self.desc_edit)
-
-        self.type_combo = QComboBox()
-        self.type_combo.addItems(SG_TYPES)
-        self.type_combo.setCurrentIndex(len(SG_TYPES) - 1)  # default Övrigt
-        self.type_combo.currentIndexChanged.connect(self._on_type_changed)
-        form.addRow("Typ av barriär:", self.type_combo)
-
-        self.rrf_combo = QComboBox()
-        self.rrf_combo.addItems(RRF_LABELS)
-        form.addRow("RRF:", self.rrf_combo)
-
-        layout.addLayout(form)
-
-        # BPCS warning (IEC 61511 — two BPCS layers ≤ RRF10 combined)
-        self._bpcs_warn = QLabel(
-            "⚠️  Redan en BPCS-barriär på denna konsekvens. "
-            "Enligt IEC 61511 får två BPCS-skydd inte ge mer än RRF 10 totalt.")
-        self._bpcs_warn.setWordWrap(True)
-        self._bpcs_warn.setStyleSheet(
-            "background:#fff3cd; color:#856404; border:1px solid #ffc107;"
-            "border-radius:4px; padding:6px 8px; font-size:11px;")
-        self._bpcs_warn.setVisible(False)
-        layout.addWidget(self._bpcs_warn)
-
-        if existing_safeguards:
-            lbl = QLabel("Snabbval (befintliga safeguards för denna konsekvens):")
-            lbl.setStyleSheet("font-size:10px; color:#555;")
-            layout.addWidget(lbl)
-            for sg_text in existing_safeguards[:6]:
-                btn = QPushButton(sg_text)
-                btn.setFlat(True)
-                btn.setStyleSheet("text-align:left; color:#1a7a40; padding:2px; font-size:10px;")
-                btn.clicked.connect(partial(self.desc_edit.setText, sg_text))
-                layout.addWidget(btn)
-
-        # Buttons: OK | + Lägg till ytterligare | Avbryt
-        btn_row = QHBoxLayout()
-
-        ok_btn = QPushButton("Spara")
-        ok_btn.setIcon(_icon('check'))
-        ok_btn.setDefault(True)
-        ok_btn.clicked.connect(partial(self._on_accept, add_more=False))
-        btn_row.addWidget(ok_btn)
-
-        add_btn = QPushButton("➕ Spara och lägg till ytterligare")
-        add_btn.setToolTip(
-            "Sparar denna safeguard och håller läget klart\n"
-            "för att lägga till ytterligare safeguard på kartan.")
-        add_btn.setStyleSheet(
-            "background:#1F4E79; color:white; border:none;"
-            "border-radius:4px; padding:4px 10px; font-weight:bold;")
-        add_btn.clicked.connect(partial(self._on_accept, add_more=True))
-        btn_row.addWidget(add_btn)
-
-        cancel_btn = QPushButton("Avbryt")
-        cancel_btn.clicked.connect(self.reject)
-        btn_row.addWidget(cancel_btn)
-
-        layout.addLayout(btn_row)
-
-        # Show warning immediately if BPCS already present and BPCS is pre-selected
-        self._on_type_changed(self.type_combo.currentIndex())
-
-    def _on_type_changed(self, idx):
-        selected = SG_TYPES[idx] if idx < len(SG_TYPES) else 'Övrigt'
-        self._bpcs_warn.setVisible(selected == 'BPCS' and self._existing_bpcs >= 1)
-
-    def _pick_existing(self):
-        if self._db is None:
-            return
-        dlg = ExistingSafeguardPicker(self._db, self)
-        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_id:
-            self.link_to_id = dlg.selected_id
-            self.add_more   = False
-            self.accept()
-
-    def _on_accept(self, add_more=False):
-        self.tag         = self.tag_edit.text().strip()
-        self.description = self.desc_edit.text().strip()
-        if not self.description:
-            self.description = self.tag or 'Safeguard'
-        # Bounds check before accessing arrays to avoid IndexError on -1 index
-        type_idx = self.type_combo.currentIndex()
-        if type_idx >= 0:
-            self.sg_type = SG_TYPES[type_idx]
-        else:
-            self.sg_type = SG_TYPES[0]  # Default to 'BPCS' if combo not initialized
-        rrf_idx = self.rrf_combo.currentIndex()
-        if rrf_idx >= 0:
-            self.rrf = _RRF_VALUES[rrf_idx]
-        else:
-            self.rrf = _RRF_VALUES[0]  # Default to RRF=1 if combo not initialized
-        self.add_more = add_more
-        self.accept()
 
 
 class _PageRenderer(QThread):
@@ -3120,11 +2971,6 @@ class ConnectorDotItem(QGraphicsEllipseItem):
 
 class PIDGraphicsView(QGraphicsView):
     node_markup_finished    = pyqtSignal(list, int)
-    # Third parameter = extracted tag text from drawn rectangle (may be empty)
-    consequence_clicked     = pyqtSignal(object, int, str)
-    safeguard_clicked       = pyqtSignal(object, int, str)
-    place_existing_clicked  = pyqtSignal(object, int)
-    cause_template_clicked  = pyqtSignal(object, int, str)
     # Canvas click while armed via PIDPanel.start_place_new_equipment() —
     # requested from EquipmentDeviationBar's "+ Lägg till nytt objekt" button
     # (2026-08-12, see NOTES.md).
@@ -3144,11 +2990,7 @@ class PIDGraphicsView(QGraphicsView):
     sheet_conn_break_requested = pyqtSignal(int)          # connection row id
     sheet_conn_add_requested   = pyqtSignal(int, int)     # (from_page, to_page)
     zone_drawn    = pyqtSignal(object, int)                # (QRectF pdf_coords, page)
-    zone_resized  = pyqtSignal(str, int, float, float, float, float)  # type_,id_,cx,cy,w,h
-    cause_at_marker_requested       = pyqtSignal(int)   # cause_id
-    consequence_at_marker_requested = pyqtSignal(int)   # cons_id
-    safeguard_at_marker_requested   = pyqtSignal(int)   # sg_id
-    placement_cancelled = pyqtSignal()   # Escape pressed while in a cause/consequence/safeguard placement mode
+    placement_cancelled = pyqtSignal()   # Escape pressed while placing a new equipment object
     equipment_drag_finished = pyqtSignal()  # Shift+drag of an equipment marker released (drop accepted or not)
     equipment_edit_requested = pyqtSignal(int)  # equipment_markers.id — right-click "✏️ Redigera objekt"
 
@@ -3157,8 +2999,6 @@ class PIDGraphicsView(QGraphicsView):
     _DATA_ID        = 1    # database id
     _DATA_MARKUP_ID = 2    # markup id (for markup items)
     _DATA_MARKUP_PTS = 3   # stores PDF points list on path/text items
-    _DATA_ZONE_KEY  = 4    # (marker_type, marker_id) on zone rect/handle items
-    _DATA_ZONE_CIDX = 5    # corner index 0=TL,1=TR,2=BR,3=BL on zone handle items
     _DATA_SYMBOL_W   = 6   # float PDF-unit width stored on symbol items
     _DATA_SYMBOL_H   = 7   # float PDF-unit height stored on symbol items
     _DATA_SYMBOL_ROT = 8   # float rotation degrees stored on symbol items
@@ -3290,20 +3130,13 @@ class PIDGraphicsView(QGraphicsView):
         # Last rubber-band rect from left-click placement modes (PDF coords)
         self._last_drawn_pdf_rect = None
 
-        # Ghost preview circle — follows the cursor in cause/consequence/
-        # safeguard placement modes, before the user clicks to place/size a
-        # marker. Shows what will be placed and roughly where.
+        # Ghost preview circle — follows the cursor in the new-equipment
+        # placement mode, before the user clicks to place/size a marker.
+        # Shows what will be placed and roughly where.
         self._ghost_preview_item = None
 
-        # Zone rectangle overlays: (type_, id_) → {rect_item, handles:[4]}
-        self._zone_rects: dict = {}
         # Label slot tracker: (qx, qy) → next free row index (reset on clear_overlays)
         self._label_slots: dict = {}
-        # Zone corner resize state
-        self._zone_resize_key   = None   # (type_, id_)
-        self._zone_resize_cidx  = None   # 0=TL,1=TR,2=BR,3=BL
-        self._zone_resize_start = None   # QPointF scene
-        self._zone_resize_orig  = None   # QRectF scene
         self._pending_path_item = None
 
         # Markup overlay tracking: markup_id → list of QGraphicsItems
@@ -3865,9 +3698,7 @@ class PIDGraphicsView(QGraphicsView):
         elif mode == MODE_ANNOTATION:
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
-        elif mode in (MODE_CONSEQUENCE, MODE_SAFEGUARD,
-                      MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE,
-                      MODE_PLACE_NEW_EQUIPMENT):
+        elif mode == MODE_PLACE_NEW_EQUIPMENT:
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
         elif mode == MODE_SMART_POLYLINE:
@@ -4985,101 +4816,6 @@ class PIDGraphicsView(QGraphicsView):
             except Exception:
                 pass
 
-    # ── Zone rectangle overlays ───────────────────────────────────────────────
-
-    def add_zone_rect(self, marker_type, marker_id, cx_pdf, cy_pdf, w_pdf, h_pdf):
-        """Draw a transparent green rectangle centered at (cx_pdf, cy_pdf) with corner handles."""
-        key = (marker_type, marker_id)
-        if key in self._zone_rects:
-            self._remove_zone_items(key)
-        rs = self.render_scale
-        center = self.pdf_to_scene(cx_pdf, cy_pdf)
-        cx = center.x();   cy = center.y()
-        w  = w_pdf  * rs;  h  = h_pdf  * rs
-        scene_rect = QRectF(cx - w / 2, cy - h / 2, w, h)
-        pen = QPen(QColor(0, 180, 80, 220), 2)
-        pen.setCosmetic(True)
-        rect_item = self._scene.addRect(scene_rect, pen, QBrush(QColor(0, 200, 100, 40)))
-        rect_item.setZValue(Z_OVERLAY - 1)
-        rect_item.setData(self._DATA_ZONE_KEY, key)
-        handles = []
-        HR = 6.0
-        corners = [scene_rect.topLeft(), scene_rect.topRight(),
-                   scene_rect.bottomRight(), scene_rect.bottomLeft()]
-        for i, corner in enumerate(corners):
-            h_item = QGraphicsEllipseItem(-HR, -HR, 2 * HR, 2 * HR)
-            h_item.setBrush(QBrush(QColor(255, 255, 255, 220)))
-            h_item.setPen(QPen(QColor(0, 160, 70), 1.5))
-            h_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
-            h_item.setPos(corner)
-            h_item.setZValue(Z_OVERLAY + 4)
-            h_item.setData(self._DATA_ZONE_KEY, key)
-            h_item.setData(self._DATA_ZONE_CIDX, i)
-            h_item.setCursor(Qt.CursorShape.SizeFDiagCursor)
-            self._scene.addItem(h_item)
-            handles.append(h_item)
-        self._zone_rects[key] = {'rect_item': rect_item, 'handles': handles}
-        self._add_tracked(rect_item, marker_type)
-        for h in handles:
-            self._add_tracked(h, marker_type)
-
-    def _remove_zone_items(self, key):
-        if key not in self._zone_rects:
-            return
-        info = self._zone_rects.pop(key)
-        for item in [info['rect_item']] + info['handles']:
-            try: self._scene.removeItem(item)
-            except RuntimeError as e: logging.warning(f"Failed to remove zone item: {e}")
-
-    def _zone_handle_hit(self, view_point):
-        """Return (key, cidx) if view_point (QPoint) is within 12px of a zone corner handle."""
-        for key, info in self._zone_rects.items():
-            for cidx, h in enumerate(info['handles']):
-                hvp = self.mapFromScene(h.pos())
-                dx = view_point.x() - hvp.x()
-                dy = view_point.y() - hvp.y()
-                if dx * dx + dy * dy < 144:
-                    return (key, cidx)
-        return None
-
-    def _do_zone_resize(self, scene_pos):
-        key = self._zone_resize_key
-        if key not in self._zone_rects:
-            return
-        orig  = self._zone_resize_orig
-        delta = scene_pos - self._zone_resize_start
-        x0, y0 = orig.left(),  orig.top()
-        x1, y1 = orig.right(), orig.bottom()
-        cidx = self._zone_resize_cidx
-        if   cidx == 0: x0 += delta.x(); y0 += delta.y()
-        elif cidx == 1: x1 += delta.x(); y0 += delta.y()
-        elif cidx == 2: x1 += delta.x(); y1 += delta.y()
-        elif cidx == 3: x0 += delta.x(); y1 += delta.y()
-        new_rect = QRectF(QPointF(x0, y0), QPointF(x1, y1)).normalized()
-        self._zone_rects[key]['rect_item'].setRect(new_rect)
-        corners = [new_rect.topLeft(), new_rect.topRight(),
-                   new_rect.bottomRight(), new_rect.bottomLeft()]
-        for h, corner in zip(self._zone_rects[key]['handles'], corners):
-            h.setPos(corner)
-
-    def _finish_zone_resize(self):
-        key = self._zone_resize_key
-        if key and key in self._zone_rects:
-            scene_rect = self._zone_rects[key]['rect_item'].rect()
-            rs = self.render_scale
-            ox, oy = self._page_offsets.get(self.current_page, (0.0, 0.0))
-            cx = (scene_rect.center().x() - ox) / rs
-            cy = (scene_rect.center().y() - oy) / rs
-            w  = scene_rect.width()              / rs
-            h  = scene_rect.height()             / rs
-            type_, id_ = key
-            self.zone_resized.emit(type_, id_, cx, cy, w, h)
-        self._zone_resize_key   = None
-        self._zone_resize_cidx  = None
-        self._zone_resize_start = None
-        self._zone_resize_orig  = None
-        self.setCursor(Qt.CursorShape.ArrowCursor)
-
     def _show_context_menu(self, sp, global_pos):
         menu = QMenu(self.viewport())
 
@@ -5111,30 +4847,15 @@ class PIDGraphicsView(QGraphicsView):
             menu.exec(global_pos)
             return
 
-        # If cursor is on an existing marker, offer "add another here" at the top
+        # If cursor is on an existing equipment marker, offer to edit it at the top
         hovered_type = hovered_id = None
         for item in self._scene.items(sp):
             t = item.data(self._DATA_TYPE)
             i = item.data(self._DATA_ID)
-            if t in ('cause', 'consequence', 'safeguard', 'equipment') and i is not None:
+            if t == 'equipment' and i is not None:
                 hovered_type, hovered_id = t, int(i)
                 break
-        if hovered_type == 'cause':
-            act = menu.addAction(_icon('settings'), "Lägg till ytterligare orsak här")
-            cid = hovered_id
-            act.triggered.connect(partial(self.cause_at_marker_requested.emit, cid))
-            menu.addSeparator()
-        elif hovered_type == 'consequence':
-            act = menu.addAction(_icon('warning'), "Lägg till ytterligare konsekvens här")
-            cid = hovered_id
-            act.triggered.connect(partial(self.consequence_at_marker_requested.emit, cid))
-            menu.addSeparator()
-        elif hovered_type == 'safeguard':
-            act = menu.addAction(_icon('shield'), "Lägg till ytterligare safeguard här")
-            cid = hovered_id
-            act.triggered.connect(partial(self.safeguard_at_marker_requested.emit, cid))
-            menu.addSeparator()
-        elif hovered_type == 'equipment':
+        if hovered_type == 'equipment':
             # Reported feedback: right-click an existing object to edit its
             # tag number and equipment type (2026-08-12, see NOTES.md) —
             # right-clicking it previously fell through to the generic
@@ -5145,20 +4866,11 @@ class PIDGraphicsView(QGraphicsView):
             act.triggered.connect(partial(self.equipment_edit_requested.emit, mid))
             menu.addSeparator()
 
-        menu.addAction(_icon('settings'), "Orsak",
-                       partial(self.context_action.emit, 'cause', sp, self.current_page))
-        menu.addAction(_icon('warning'), "Konsekvens",
-                       partial(self.context_action.emit, 'consequence', sp, self.current_page))
-        menu.addAction(_icon('shield'), "Safeguard",
-                       partial(self.context_action.emit, 'safeguard', sp, self.current_page))
         menu.addAction("🔧 Objekt",
                        partial(self.context_action.emit, 'equipment', sp, self.current_page))
         menu.addSeparator()
         menu.addAction(_icon('search'), "Hitta liknande symbol",
                        partial(self.context_action.emit, 'find_similar', sp, self.current_page))
-        menu.addSeparator()
-        menu.addAction("🔀 Risk Scenario",
-                       partial(self.context_action.emit, 'risk_scenario', sp, self.current_page))
         menu.exec(global_pos)
 
     def _start_add_sheet_link(self, source_page: int):
@@ -5195,95 +4907,6 @@ class PIDGraphicsView(QGraphicsView):
 
         self._add_tracked(bg, marker_type)
         self._add_tracked(txt, marker_type)
-
-    def add_cause_marker(self, cause_id, x_pdf, y_pdf, comp_type, label, tag='',
-                         rect_w=None, rect_h=None):
-        center = self.pdf_to_scene(x_pdf, y_pdf)
-        r = 14.0
-        circle = QGraphicsEllipseItem(center.x() - r, center.y() - r, 2 * r, 2 * r)
-        circle.setPen(QPen(QColor(160, 0, 0), 2))
-        circle.setBrush(QBrush(QColor(231, 76, 60, 200)))
-        circle.setZValue(Z_OVERLAY)
-        tip = f"{tag + ': ' if tag else ''}{comp_type}" + (f"\n{label}" if label else '')
-        tip += "\n🖱 Klicka för att navigera i trädet"
-        circle.setToolTip(tip)
-        circle.setData(self._DATA_TYPE, 'cause')
-        circle.setData(self._DATA_ID,   cause_id)
-        circle.setAcceptHoverEvents(True)
-        circle.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._add_tracked(circle, 'cause')
-
-        display = tag if tag else comp_type[:3].upper()
-        inner = QGraphicsSimpleTextItem(display)
-        f = QFont(); f.setPointSize(7 if len(display) > 4 else 8); f.setBold(True)
-        inner.setFont(f)
-        inner.setBrush(QBrush(QColor(255, 255, 255)))
-        ibr = inner.boundingRect()
-        inner.setPos(center.x() - ibr.width() / 2, center.y() - ibr.height() / 2)
-        inner.setZValue(Z_OVERLAY + 1)
-        self._add_tracked(inner, 'cause')
-
-        if label:
-            self._place_label(label, x_pdf, y_pdf, r, QColor(120, 0, 0), 'cause')
-        if rect_w is not None and rect_h is not None and rect_w > 0 and rect_h > 0:
-            self.add_zone_rect('cause', cause_id, x_pdf, y_pdf, rect_w, rect_h)
-
-    def add_consequence_marker(self, cons_id, x_pdf, y_pdf, target,
-                               rect_w=None, rect_h=None):
-        center = self.pdf_to_scene(x_pdf, y_pdf)
-        r = 12.0
-        circle = QGraphicsEllipseItem(center.x() - r, center.y() - r, 2 * r, 2 * r)
-        circle.setPen(QPen(QColor(180, 100, 0), 2))
-        circle.setBrush(QBrush(QColor(243, 156, 18, 190)))
-        circle.setZValue(Z_OVERLAY)
-        circle.setToolTip((target or '') + "\n🖱 Klicka för att navigera i trädet")
-        circle.setData(self._DATA_TYPE, 'consequence')
-        circle.setData(self._DATA_ID,   cons_id)
-        circle.setAcceptHoverEvents(True)
-        circle.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._add_tracked(circle, 'consequence')
-
-        inner = QGraphicsSimpleTextItem("K")
-        f = QFont(); f.setPointSize(8); f.setBold(True)
-        inner.setFont(f); inner.setBrush(QBrush(QColor(255, 255, 255)))
-        ibr = inner.boundingRect()
-        inner.setPos(center.x() - ibr.width() / 2, center.y() - ibr.height() / 2)
-        inner.setZValue(Z_OVERLAY + 1)
-        self._add_tracked(inner, 'consequence')
-        if target:
-            self._place_label(target, x_pdf, y_pdf, r, QColor(130, 70, 0), 'consequence')
-        if rect_w is not None and rect_h is not None and rect_w > 0 and rect_h > 0:
-            self.add_zone_rect('consequence', cons_id, x_pdf, y_pdf, rect_w, rect_h)
-
-    def add_safeguard_marker(self, sg_id, x_pdf, y_pdf, tag, description,
-                             rect_w=None, rect_h=None):
-        center = self.pdf_to_scene(x_pdf, y_pdf)
-        r = 12.0
-        circle = QGraphicsEllipseItem(center.x() - r, center.y() - r, 2 * r, 2 * r)
-        circle.setPen(QPen(QColor(20, 120, 20), 2))
-        circle.setBrush(QBrush(QColor(39, 174, 96, 200)))
-        circle.setZValue(Z_OVERLAY)
-        tip = f"{tag + ': ' if tag else ''}{description}\n🖱 Klicka för att navigera i trädet"
-        circle.setToolTip(tip)
-        circle.setData(self._DATA_TYPE, 'safeguard')
-        circle.setData(self._DATA_ID,   sg_id)
-        circle.setAcceptHoverEvents(True)
-        circle.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._add_tracked(circle, 'safeguard')
-
-        display = tag if tag else 'SG'
-        inner = QGraphicsSimpleTextItem(display[:4])
-        f = QFont(); f.setPointSize(7 if len(display) > 3 else 8); f.setBold(True)
-        inner.setFont(f); inner.setBrush(QBrush(QColor(255, 255, 255)))
-        ibr = inner.boundingRect()
-        inner.setPos(center.x() - ibr.width() / 2, center.y() - ibr.height() / 2)
-        inner.setZValue(Z_OVERLAY + 1)
-        self._add_tracked(inner, 'safeguard')
-
-        if description:
-            self._place_label(description, x_pdf, y_pdf, r, QColor(20, 100, 20), 'safeguard')
-        if rect_w is not None and rect_h is not None and rect_w > 0 and rect_h > 0:
-            self.add_zone_rect('safeguard', sg_id, x_pdf, y_pdf, rect_w, rect_h)
 
     def add_equipment_marker(self, marker_id, x_pdf, y_pdf, comp_type, tag='',
                              confidence=0.0, outline_pdf=None, deviation_count=0,
@@ -5512,14 +5135,6 @@ class PIDGraphicsView(QGraphicsView):
             if item.zValue() == Z_HIGHLIGHT:
                 try: self._scene.removeItem(item)
                 except RuntimeError as e: logging.warning(f"Failed to remove highlight item: {e}")
-
-    def add_connection_line(self, start: QPointF, end: QPointF, color: str, dashed=False):
-        pen = QPen(QColor(color), 1.5)
-        pen.setCosmetic(True)
-        if dashed:
-            pen.setStyle(Qt.PenStyle.DashLine)
-        line = self._scene.addLine(start.x(), start.y(), end.x(), end.y(), pen)
-        line.setZValue(Z_CONNECT)
 
     def _conn_obstacles(self, src_page, dst_page):
         """Inflated scene rects of every page except the connection's own two."""
@@ -5752,10 +5367,9 @@ class PIDGraphicsView(QGraphicsView):
             try: self._scene.removeItem(self._pending_path_item)
             except RuntimeError as e: logging.warning(f"Failed to remove pending path item: {e}")
             self._pending_path_item = None
-        # Clear per-type item lists, zone rect dict, and label slots
+        # Clear per-type item lists and label slots
         for key in self._type_items:
             self._type_items[key] = []
-        self._zone_rects.clear()
         self._label_slots.clear()
 
     def mousePressEvent(self, event):
@@ -5800,18 +5414,6 @@ class PIDGraphicsView(QGraphicsView):
                         _ci.setVisible(False)
                 event.accept(); return
             super().mousePressEvent(event); return
-
-        # ── Zone corner handle — intercept LEFT click in any mode ─────────────
-        if event.button() == Qt.MouseButton.LeftButton:
-            hit = self._zone_handle_hit(event.position().toPoint())
-            if hit:
-                key, cidx = hit
-                sp2 = self.mapToScene(event.position().toPoint())
-                self._zone_resize_key   = key
-                self._zone_resize_cidx  = cidx
-                self._zone_resize_start = sp2
-                self._zone_resize_orig  = self._zone_rects[key]['rect_item'].rect()
-                event.accept(); return
 
         if self.mode in (MODE_NAV, MODE_MARKUP_SELECT):
             self._press_pos = event.position()
@@ -5959,9 +5561,7 @@ class PIDGraphicsView(QGraphicsView):
                         event.accept(); return
                 # Priority 3: empty space → clear selection, fall through for panning
                 self._clear_edit_handles()
-        elif self.mode in (MODE_CONSEQUENCE, MODE_SAFEGUARD,
-                           MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE,
-                           MODE_PLACE_NEW_EQUIPMENT):
+        elif self.mode == MODE_PLACE_NEW_EQUIPMENT:
             if event.button() == Qt.MouseButton.LeftButton:
                 # Start rubber-band rectangle selection (or simple click)
                 self._clear_ghost_preview()
@@ -6008,11 +5608,6 @@ class PIDGraphicsView(QGraphicsView):
             self._update_board_scene_rect()
             layout = {str(p): [off[0], off[1]] for p, off in self._page_offsets.items()}
             self.board_layout_changed.emit(json.dumps(layout))
-            event.accept(); return
-
-        # ── Zone corner resize end ────────────────────────────────────────────
-        if self._zone_resize_key is not None and event.button() == Qt.MouseButton.LeftButton:
-            self._finish_zone_resize()
             event.accept(); return
 
         # ── Right-drag rubber band end ────────────────────────────────────────
@@ -6066,11 +5661,9 @@ class PIDGraphicsView(QGraphicsView):
             self._press_pos = None
             event.accept(); return
 
-        # ── Rect-select release for cause/consequence/safeguard ───────────────
+        # ── Rect-select release for new-equipment placement ────────────────────
         if (event.button() == Qt.MouseButton.LeftButton and
-                self.mode in (MODE_CONSEQUENCE, MODE_SAFEGUARD,
-                              MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE,
-                              MODE_PLACE_NEW_EQUIPMENT) and
+                self.mode == MODE_PLACE_NEW_EQUIPMENT and
                 self._rect_start is not None):
 
             end_sp = self.mapToScene(event.position().toPoint())
@@ -6105,15 +5698,7 @@ class PIDGraphicsView(QGraphicsView):
                 pdf_rect.width() > 4 or pdf_rect.height() > 4) else None
 
             center = rect.center()
-            if self.mode == MODE_CONSEQUENCE:
-                self.consequence_clicked.emit(center, self.current_page, suggested)
-            elif self.mode == MODE_SAFEGUARD:
-                self.safeguard_clicked.emit(center, self.current_page, suggested)
-            elif self.mode == MODE_PLACE_EXISTING:
-                self.place_existing_clicked.emit(center, self.current_page)
-            elif self.mode == MODE_CAUSE_TEMPLATE:
-                self.cause_template_clicked.emit(center, self.current_page, suggested)
-            elif self.mode == MODE_PLACE_NEW_EQUIPMENT:
+            if self.mode == MODE_PLACE_NEW_EQUIPMENT:
                 self.place_new_equipment_clicked.emit(center, self.current_page, suggested)
             elif self.mode == MODE_PICK_REF_TAG:
                 # One-shot: emit picked tag and return to NAV mode
@@ -6227,11 +5812,6 @@ class PIDGraphicsView(QGraphicsView):
             self._all_page_items[self._dragging_page].setPos(new_ox, new_oy)
             event.accept(); return
 
-        # ── Zone corner resize drag ───────────────────────────────────────────
-        if self._zone_resize_key is not None:
-            self._do_zone_resize(self.mapToScene(event.position().toPoint()))
-            event.accept(); return
-
         # ── Right-drag rubber band ────────────────────────────────────────────
         if (self._rband_start_scene is not None and
                 event.buttons() & Qt.MouseButton.RightButton):
@@ -6338,10 +5918,7 @@ class PIDGraphicsView(QGraphicsView):
             if self.mode in (MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE):
                 sp = self._snap_to_nearest(sp)
             self._update_rubber_band(sp)
-        elif self.mode in (MODE_CONSEQUENCE, MODE_SAFEGUARD,
-                           MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE,
-                           MODE_PLACE_NEW_EQUIPMENT) \
-                and self._rect_start is not None:
+        elif self.mode == MODE_PLACE_NEW_EQUIPMENT and self._rect_start is not None:
             # Actively sizing a marker's rect — the ghost preview (shown before
             # the click) is no longer needed; the dashed rect below takes over.
             self._clear_ghost_preview()
@@ -6354,7 +5931,6 @@ class PIDGraphicsView(QGraphicsView):
                 try: self._scene.removeItem(self._rect_label)
                 except RuntimeError as e: logging.warning(f"Failed to remove motion rect label: {e}")
                 self._rect_label = None
-            # Color matches tree-panel visibility button: cause=red, cons=orange, sg=green
             rc, fc = _PLACEMENT_MODE_COLORS.get(self.mode, (QColor(0, 100, 220), QColor(0, 100, 220, 30)))
             # Reuse existing item — just update geometry (same fix as right-drag rubber-band)
             if self._rect_item is None:
@@ -6367,10 +5943,7 @@ class PIDGraphicsView(QGraphicsView):
                 self._rect_item.setRect(rect)
             # No live tag extraction during drag (PDF read is slow — tag extracted on release)
             event.accept(); return
-        elif self.mode in (MODE_CONSEQUENCE, MODE_SAFEGUARD,
-                           MODE_PLACE_EXISTING, MODE_CAUSE_TEMPLATE,
-                           MODE_PLACE_NEW_EQUIPMENT) \
-                and self._rect_start is None:
+        elif self.mode == MODE_PLACE_NEW_EQUIPMENT and self._rect_start is None:
             # Not dragging yet — show a ghost circle at the cursor previewing
             # what will be placed (color/size match the real marker).
             self._update_ghost_preview(self.mapToScene(event.position().toPoint()))
@@ -6470,8 +6043,7 @@ class PIDGraphicsView(QGraphicsView):
                 self._finish_markup_drawing(); event.accept(); return
             elif event.key() == Qt.Key.Key_Escape:
                 self._cancel_drawing(); event.accept(); return
-        elif (self.mode in (MODE_CONSEQUENCE, MODE_SAFEGUARD, MODE_CAUSE_TEMPLATE,
-                           MODE_PLACE_NEW_EQUIPMENT)
+        elif (self.mode == MODE_PLACE_NEW_EQUIPMENT
                 and event.key() == Qt.Key.Key_Escape):
             self._cancel_drawing()
             self.placement_cancelled.emit()
@@ -7308,19 +6880,10 @@ class EquipmentDeviationBar(QWidget):
 
 class PIDPanel(QWidget):
     node_created            = pyqtSignal(int)
-    cause_created           = pyqtSignal(int)
     cause_template_created  = pyqtSignal(int)
-    consequence_created     = pyqtSignal(int)
-    safeguard_created       = pyqtSignal(int)
-    existing_marker_placed  = pyqtSignal(str, int)
-    risk_scenario_requested = pyqtSignal(int, object, int)
     marker_navigated        = pyqtSignal(str, int)
     equipment_deviation_created = pyqtSignal(int, int)   # (deviation_id, equipment_id)
     pid_analysis_done       = pyqtSignal()
-    # Emitted when user clicks P&ID in cause-template mode;
-    # MainWindow shows CauseObjectPopup then calls place_cause_from_template()
-    cause_placement_requested = pyqtSignal(int, str, str, object, int, str)
-    # (deviation_id, suggested_tag, detected_comp_type, scene_pos, page)
     # Emitted when user right-clicks P&ID -> "🔧 Objekt"; MainWindow shows
     # EquipmentTagPopup then calls place_equipment_marker() (2026-08-07,
     # see NOTES.md).
@@ -7355,16 +6918,11 @@ class PIDPanel(QWidget):
         self._active_node_id              = None
         self._active_cause_id             = None
         self._active_consequence_id       = None
-        self._active_deviation_id         = None   # set during MODE_CAUSE_TEMPLATE
+        self._active_deviation_id         = None   # kept in sync with the current tree selection
         self._active_markup_class         = 'node' # 'node' or 'red'
         self._active_symbol_id            = None   # set when red markup symbol tool selected
         self._pending_markup_pts          = None
         self._pending_markup_page         = None
-        self._pending_secondary_cause_id    = None   # set to queue secondary marker after instrument cause
-        self._pending_secondary_comp_type  = ''
-        self._pending_secondary_tag        = ''
-        self._pending_secondary_deviation_id   = None   # for re-opening dialog after secondary placement
-        self._pending_secondary_preselect_type = ''
         self._current_display_page  = 0
         self._smart_layout_prev      = None   # {page: (ox, oy)} for undo
         self._analyzer_thread        = None
@@ -7449,10 +7007,8 @@ class PIDPanel(QWidget):
         bar.addWidget(_vline())
 
         # "⚙️ Orsak"/"⚠️ Konsekvens" mode-toggle buttons removed 2026-08-07
-        # (see NOTES.md) — redundant now that the P&ID right-click menu adds
-        # cause/consequence/safeguard/objekt directly at the clicked point.
-        # MODE_CONSEQUENCE is still used internally by that right-click flow
-        # (_on_context_action); only the standalone toolbar toggle is gone.
+        # (see NOTES.md); the P&ID canvas is now equipment-object-placement-
+        # only (2026-08-13, see NOTES.md) — Navigera is the only toolbar mode.
         self.mode_buttons = {}
         mode_defs = [
             (MODE_NAV,         "Navigera", 'search'),
@@ -7525,115 +7081,18 @@ class PIDPanel(QWidget):
         bar.addStretch()
         layout.addLayout(bar)
 
-        # ── Scenario guided-mode banner ───────────────────────────────────────
-        self._scenario_active = False
-        self._scenario_step   = 0   # 1=cause 2=consequence 3+=safeguard
-
-        self._scenario_banner = QFrame()
-        self._scenario_banner.setStyleSheet(
-            "QFrame{background:#1F4E79; border-radius:4px; padding:2px;}")
-        self._scenario_banner.setFixedHeight(46)
-        sb_lay = QVBoxLayout(self._scenario_banner)
-        sb_lay.setContentsMargins(8, 2, 8, 2)
-        sb_lay.setSpacing(2)
-
-        # Top row: step pills
-        pill_row = QHBoxLayout(); pill_row.setSpacing(4)
-        self._step_pills = []
-        _PILL_BASE = "border-radius:3px; padding:1px 6px; font-size:10px; font-weight:bold;"
-        for txt in ["1 ⚙️ Orsak", "2 ⚠️ Konsekvens", "3 🛡️ Safeguard"]:
-            lbl = QLabel(txt)
-            lbl.setStyleSheet(_PILL_BASE + "background:#3a6fa3; color:#aac;")
-            pill_row.addWidget(lbl)
-            self._step_pills.append(lbl)
-            if txt != "3 🛡️ Safeguard":
-                pill_row.addWidget(QLabel("→").setStyleSheet and QLabel("→"))
-                # (arrow is just cosmetic)
-        pill_row.addStretch()
-
-        self._sc_abort_btn = QPushButton("Avbryt")
-        self._sc_abort_btn.setIcon(_icon('close', 16, '#ffffff'))
-        self._sc_abort_btn.setFixedHeight(CONFIG['H_SMALL_BTN'])
-        self._sc_abort_btn.setStyleSheet(
-            "background:#c0392b; color:white; border:none; border-radius:3px; padding:0 8px;")
-        self._sc_abort_btn.clicked.connect(self._scenario_abort)
-        pill_row.addWidget(self._sc_abort_btn)
-        sb_lay.addLayout(pill_row)
-
-        # Bottom row: instruction + action buttons
-        act_row = QHBoxLayout(); act_row.setSpacing(6)
-        self._sc_instr = QLabel("")
-        self._sc_instr.setStyleSheet("color:white; font-size:11px;")
-        act_row.addWidget(self._sc_instr)
-        act_row.addStretch()
-
-        self._sc_add_sg_btn = QPushButton("+ Fler safeguards")
-        self._sc_add_sg_btn.setFixedHeight(CONFIG['H_SMALL_BTN'])
-        self._sc_add_sg_btn.setStyleSheet(
-            "background:#27ae60; color:white; border:none; border-radius:3px; padding:0 8px;")
-        self._sc_add_sg_btn.setVisible(False)
-        self._sc_add_sg_btn.clicked.connect(
-            lambda: (self._set_mode(MODE_SAFEGUARD),
-                     self._sc_instr.setText("Klicka på nästa safeguard på P&ID:n")))
-        act_row.addWidget(self._sc_add_sg_btn)
-
-        self._sc_finish_btn = QPushButton("Slutför")
-        self._sc_finish_btn.setIcon(_icon('check', 16, '#ffffff'))
-        self._sc_finish_btn.setFixedHeight(CONFIG['H_SMALL_BTN'])
-        self._sc_finish_btn.setStyleSheet(
-            "background:#2ecc71; color:white; border:none; border-radius:3px; padding:0 8px; font-weight:bold;")
-        self._sc_finish_btn.setVisible(False)
-        self._sc_finish_btn.clicked.connect(self._scenario_finish)
-        act_row.addWidget(self._sc_finish_btn)
-        sb_lay.addLayout(act_row)
-
-        self._scenario_banner.setVisible(False)
-        layout.addWidget(self._scenario_banner)
-
-        # ── Secondary placement banner ─────────────────────────────────────────
-        self._secondary_banner = QFrame()
-        self._secondary_banner.setStyleSheet(
-            "QFrame{background:#6c3483; border-radius:4px; padding:2px;}")
-        self._secondary_banner.setFixedHeight(CONFIG['H_ROW_STD'])
-        sb2_lay = QHBoxLayout(self._secondary_banner)
-        sb2_lay.setContentsMargins(8, 4, 8, 4)
-        self._secondary_lbl = QLabel("")
-        self._secondary_lbl.setStyleSheet("color:white; font-size:11px; font-weight:bold;")
-        sb2_lay.addWidget(self._secondary_lbl)
-        sb2_lay.addStretch()
-        sb2_cancel = QPushButton("Avbryt")
-        sb2_cancel.setIcon(_icon('close', 16, '#ffffff'))
-        sb2_cancel.setFixedHeight(CONFIG['H_SMALL_BTN'])
-        sb2_cancel.setStyleSheet(
-            "background:#c0392b; color:white; border:none; border-radius:3px; padding:0 8px;")
-        sb2_cancel.clicked.connect(self._cancel_secondary_placement)
-        sb2_lay.addWidget(sb2_cancel)
-        self._secondary_banner.setVisible(False)
-        layout.addWidget(self._secondary_banner)
-
         # ── Viewer ────────────────────────────────────────────────────────────
         self.viewer = PIDGraphicsView()
         self.viewer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.viewer.node_markup_finished.connect(self._on_markup_finished)
-        self.viewer.consequence_clicked.connect(self._on_consequence_click)
-        self.viewer.safeguard_clicked.connect(self._on_safeguard_click)
-        self.viewer.place_existing_clicked.connect(self._on_place_existing_click)
-        self.viewer.cause_template_clicked.connect(self._on_cause_template_click)
         self.viewer.place_new_equipment_clicked.connect(self._on_place_new_equipment_click)
         self.viewer.context_action.connect(self._on_context_action)
         self.viewer.zone_drawn.connect(self._on_zone_drawn)
-        self.viewer.zone_resized.connect(self._on_zone_resized)
-        self.viewer.cause_at_marker_requested.connect(self._on_add_cause_at_marker)
-        self.viewer.consequence_at_marker_requested.connect(self._on_add_consequence_at_marker)
-        self.viewer.safeguard_at_marker_requested.connect(self._on_add_safeguard_at_marker)
         self.viewer.placement_cancelled.connect(self._on_placement_cancelled)
         self.viewer.equipment_drag_finished.connect(self._on_equipment_drag_finished)
         self.viewer.equipment_edit_requested.connect(self.equipment_edit_requested.emit)
         self.viewer.ref_tag_picked.connect(self.ref_tag_picked)
         self.viewer.annotation_clicked.connect(self._on_annotation_click)
-        self._active_place_type  = None   # 'cause' | 'consequence' | 'safeguard'
-        self._active_place_id    = None
-        self._pending_zone_pdf   = None   # QRectF while zone dialog chain is open
         self.viewer.marker_clicked.connect(self._on_marker_clicked)
         self.viewer.markup_moved.connect(self.markup_moved)
         self.viewer.markup_label_edited.connect(self.markup_label_edited)
@@ -7643,12 +7102,6 @@ class PIDPanel(QWidget):
         self.viewer.board_layout_changed.connect(self._load_overlays)
         self.viewer.sheet_conn_break_requested.connect(self._break_sheet_link)
         self.viewer.sheet_conn_add_requested.connect(self._add_sheet_link)
-
-        # Connect existing signals for scenario auto-progression
-        self.cause_created.connect(self._sc_on_cause)
-        self.cause_template_created.connect(self._sc_on_cause)   # template flow also advances
-        self.consequence_created.connect(self._sc_on_consequence)
-        self.safeguard_created.connect(self._sc_on_safeguard)
 
         layout.addWidget(self.viewer)
 
@@ -8361,12 +7814,6 @@ class PIDPanel(QWidget):
         self.viewer._apply_lod(self.viewer.transform().m11())
         self.viewer._schedule_lod_update()
 
-    def start_place_existing(self, type_str, id_):
-        """Enter placement mode for a pre-existing item (no new item created)."""
-        self._active_place_type = type_str
-        self._active_place_id   = id_
-        self._set_mode(MODE_PLACE_EXISTING)
-
     def start_place_new_equipment(self):
         """Arm placement mode for a brand-new equipment object, requested
         from EquipmentDeviationBar's "+ Lägg till nytt objekt" button
@@ -8387,60 +7834,14 @@ class PIDPanel(QWidget):
             self.viewer._last_drawn_pdf_rect = None
         self.equipment_placement_requested.emit(suggested_tag or '', scene_pos, page, pdf_rect)
 
-    def remove_existing_marker(self, type_str, id_):
-        """Delete all P&ID markers for an existing item and refresh overlays."""
-        if type_str == 'cause':
-            self.db.remove_cause_marker(id_)
-        elif type_str == 'consequence':
-            self.db.remove_consequence_marker(id_)
-        elif type_str == 'safeguard':
-            self.db.remove_safeguard_marker(id_)
-        self._load_overlays()
-
-    def _on_place_existing_click(self, scene_pos, page):
-        """Place a marker for an existing item without creating anything new."""
-        type_str = self._active_place_type
-        id_      = self._active_place_id
-        self._active_place_type = None
-        self._active_place_id   = None
-        self._set_mode(MODE_NAV)
-
-        if type_str is None or id_ is None:
-            return
-
-        pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
-
-        if type_str == 'cause':
-            cause = self.db.get_cause(id_)
-            desc  = cause['description'] if cause else ''
-            self.db.add_cause_marker(id_, page, pdf_x, pdf_y, 'Orsak', '')
-            self.viewer.add_cause_marker(id_, pdf_x, pdf_y, 'Orsak', desc, '')
-            self.existing_marker_placed.emit(type_str, id_)
-        elif type_str == 'consequence':
-            cons  = self.db.get_consequence(id_)
-            desc  = cons['description'] if cons else ''
-            self.db.add_consequence_marker(id_, page, pdf_x, pdf_y, '')
-            self.viewer.add_consequence_marker(id_, pdf_x, pdf_y, desc)
-            self.existing_marker_placed.emit(type_str, id_)
-        elif type_str == 'safeguard':
-            sg   = self.db.get_safeguard(id_)
-            desc = sg['description'] if sg else ''
-            self.db.add_safeguard_marker(id_, page, pdf_x, pdf_y, '')
-            self.viewer.add_safeguard_marker(id_, pdf_x, pdf_y, '', desc)
-            self.existing_marker_placed.emit(type_str, id_)
-
-        self._load_overlays()
-
     def _set_mode(self, mode):
-        if mode != MODE_CAUSE_TEMPLATE:
-            self._cancel_secondary_placement()
         for m, btn in self.mode_buttons.items():
             btn.setChecked(m == mode)
         self.viewer.set_mode(mode)
         self.style_widget.setVisible(mode == MODE_NODE)
 
     def _on_placement_cancelled(self):
-        """Escape was pressed while placing a cause/consequence/safeguard — abort back to navigation."""
+        """Escape was pressed while placing a new equipment object — abort back to navigation."""
         self._set_mode(MODE_NAV)
 
     def _on_equipment_drag_finished(self):
@@ -8835,133 +8236,15 @@ class PIDPanel(QWidget):
         self._load_overlays()
         self.node_created.emit(node_id)
 
-    def _on_consequence_click(self, scene_pos, page, suggested_tag=''):
-        if self._active_cause_id is None:
-            QMessageBox.information(self, "Välj orsak",
-                "Välj en cause i trädet innan du placerar en konsekvens.")
-            return
-        if not self.db.get_cause(self._active_cause_id):
-            # The selected cause was deleted elsewhere (e.g. its node or
-            # deviation removed) while this panel still held its stale id —
-            # inserting against it would hit sqlite3.IntegrityError: FOREIGN
-            # KEY constraint failed (real crash report, 2026-08-07).
-            self._active_cause_id = None
-            QMessageBox.information(self, "Orsaken finns inte längre",
-                "Den valda orsaken har tagits bort. Välj en orsak i trädet "
-                "igen innan du placerar en konsekvens.")
-            return
-
-        pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
-        # Use pending zone (right-drag) or last drawn zone (left rubber-band)
-        zone = self._pending_zone_pdf or getattr(self.viewer, '_last_drawn_pdf_rect', None)
-        rect_w = zone.width()  if zone else None
-        rect_h = zone.height() if zone else None
-        if zone:
-            pdf_x, pdf_y = zone.center().x(), zone.center().y()
-        self._pending_zone_pdf = None
-        if hasattr(self.viewer, '_last_drawn_pdf_rect'):
-            self.viewer._last_drawn_pdf_rect = None
-
-        # Store the clicked tag so the step picker can pre-fill it
-        self._pending_cons_tag = suggested_tag or ''
-
-        # Create the consequence with a placeholder description;
-        # ConsequenceStepPickerDialog (opened from consequence_created signal)
-        # will set the real description and steps.
-        placeholder = suggested_tag if suggested_tag else 'Ny konsekvens'
-        cons_id = self.db.add_consequence(self._active_cause_id)
-        try:
-            self.db.update_consequence(cons_id, placeholder, 1, '', '')
-        except TypeError:
-            self.db.update_consequence(cons_id, placeholder, 1)
-
-        self.db.add_consequence_marker(cons_id, page, pdf_x, pdf_y,
-                                       suggested_tag,
-                                       rect_w=rect_w, rect_h=rect_h)
-        self.viewer.add_consequence_marker(cons_id, pdf_x, pdf_y, placeholder,
-                                           rect_w=rect_w, rect_h=rect_h)
-        self.consequence_created.emit(cons_id)
-
-    def _on_safeguard_click(self, scene_pos, page, suggested_tag=''):
-        if self._active_consequence_id is None:
-            QMessageBox.information(self, "Välj konsekvens",
-                "Välj en consequence i trädet innan du markerar en safeguard.")
-            return
-        if not self.db.get_consequence(self._active_consequence_id):
-            # Same stale-id class as the add_consequence FK crash above,
-            # but for a consequence deleted elsewhere while still active.
-            self._active_consequence_id = None
-            QMessageBox.information(self, "Konsekvensen finns inte längre",
-                "Den valda konsekvensen har tagits bort. Välj en konsekvens "
-                "i trädet igen innan du markerar en safeguard.")
-            return
-
-        all_sgs = self.db.safeguards(self._active_consequence_id)
-        existing = [s['description'] for s in all_sgs]
-        bpcs_count = sum(1 for s in all_sgs
-                         if dict(s).get('sg_type', 'Övrigt') == 'BPCS')
-
-        dlg = SafeguardPickerDialog(self, suggested_tag=suggested_tag,
-                                    existing_safeguards=existing, db=self.db,
-                                    existing_bpcs_count=bpcs_count)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-
-        pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
-
-        if dlg.link_to_id:
-            # ── Link to existing safeguard ────────────────────────────────────
-            sg_id = self.db.copy_safeguard(dlg.link_to_id, self._active_consequence_id)
-            if sg_id is None:
-                return
-            sg = self.db.get_safeguard(sg_id)
-            tag         = ''
-            description = sg['description'] if sg else '🔗 Länkad safeguard'
-        else:
-            # ── Create new safeguard ──────────────────────────────────────────
-            tag         = dlg.tag
-            description = dlg.description
-            sg_id = self.db.add_safeguard(self._active_consequence_id)
-            self.db.update_safeguard(sg_id, description, dlg.rrf, dlg.sg_type)
-
-        zone = self._pending_zone_pdf or getattr(self.viewer, '_last_drawn_pdf_rect', None)
-        rect_w = zone.width()  if zone else None
-        rect_h = zone.height() if zone else None
-        if zone:
-            pdf_x, pdf_y = zone.center().x(), zone.center().y()
-        self._pending_zone_pdf = None
-        if hasattr(self.viewer, '_last_drawn_pdf_rect'):
-            self.viewer._last_drawn_pdf_rect = None
-        self.db.add_safeguard_marker(sg_id, page, pdf_x, pdf_y, tag,
-                                     rect_w=rect_w, rect_h=rect_h)
-        self.viewer.add_safeguard_marker(sg_id, pdf_x, pdf_y, tag, description,
-                                         rect_w=rect_w, rect_h=rect_h)
-        self.safeguard_created.emit(sg_id)
-
-        # "Lägg till ytterligare" — reset banner to ready state for next safeguard
-        if dlg.add_more and self._scenario_active:
-            self._sc_instr.setText("Klicka på nästa safeguard på P&ID:n")
-            self._sc_add_sg_btn.setVisible(False)
-            self._sc_finish_btn.setVisible(False)
-            self._set_mode(MODE_SAFEGUARD)
-
     def _on_zone_drawn(self, pdf_rect, page):
-        """Right-drag rubber band completed — let user pick objekt/orsak/
-        konsekvens/safeguard. "🔧 Objekt" (2026-08-09, see NOTES.md) is
-        listed first per Anton's request — manually adding a valve/
-        instrument/pump/etc. this way gives it a real outline shape (the
-        drawn rectangle) instead of the generic bowtie-icon fallback the
-        plain right-click "🔧 Objekt" action uses."""
-        menu = QMenu(self)
-        a_equip = menu.addAction("🔧 Objekt")
-        a_cause = menu.addAction(_icon('settings'), "Orsak")
-        a_cons  = menu.addAction(_icon('warning'), "Konsekvens")
-        a_sg    = menu.addAction(_icon('shield'), "Safeguard")
-        chosen  = menu.exec(QCursor.pos())
-        if chosen is None:
-            return
-
-        self._pending_zone_pdf = pdf_rect
+        """Right-drag rubber band completed — places a new equipment object
+        with the drawn rectangle as its outline shape (2026-08-09, see
+        NOTES.md), instead of the generic bowtie-icon fallback the plain
+        right-click "🔧 Objekt" action uses. Used to offer a menu of
+        objekt/orsak/konsekvens/safeguard here; the P&ID canvas is now
+        object-placement-only (2026-08-13, see NOTES.md), so the drawn
+        zone always becomes a new equipment object directly — no menu
+        needed for a single choice."""
         rs = self.viewer.render_scale
         center_scene = QPointF(pdf_rect.center().x() * rs, pdf_rect.center().y() * rs)
 
@@ -8980,23 +8263,7 @@ class PIDPanel(QWidget):
                 cy = pdf_rect.center().y()
                 tag = find_tag_near_point(self.viewer.pdf_doc, page, cx, cy)
 
-        # Extract full text from rubber-banded area (native PDF text first, OCR fallback)
-        full_text = self.viewer._text_in_rect(pdf_rect) if HAS_PYMUPDF and self.viewer.pdf_doc else ''
-        strip = hasattr(self.db, 'get_config') and self.db.get_config('tag_strip_spaces', '1') == '1'
-
-        if chosen is a_equip:
-            self.equipment_placement_requested.emit(tag or '', center_scene, page, pdf_rect)
-        elif chosen is a_cause:
-            dev_id   = self._active_deviation_id or 0
-            detected = self._db_comp_for_tag(tag) if tag else ''
-            suggested = (full_text or tag or '').replace(' ', '') if strip else (full_text or tag or '')
-            self.cause_placement_requested.emit(dev_id, tag or '', detected, center_scene, page, suggested)
-        elif chosen is a_cons:
-            suggested = (full_text or tag or '').replace(' ', '') if strip else (full_text or tag or '')
-            self._on_consequence_click(center_scene, page, suggested)
-        elif chosen is a_sg:
-            suggested = (full_text or tag or '').replace(' ', '') if strip else (full_text or tag or '')
-            self._on_safeguard_click(center_scene, page, suggested)
+        self.equipment_placement_requested.emit(tag or '', center_scene, page, pdf_rect)
 
     def _on_annotation_click(self, scene_pos):
         """Feature 8: create a sticky note annotation at scene_pos."""
@@ -9031,34 +8298,8 @@ class PIDPanel(QWidget):
         txt.setTextWidth(w - 12)
         txt.setZValue(0.1)   # slightly above parent (rect is at Z_TEMP+2 in scene coords)
 
-    def _on_zone_resized(self, marker_type, marker_id, cx, cy, w, h):
-        """Zone corner was dragged — update DB marker center and rect dimensions."""
-        if hasattr(self.db, 'update_marker_rect'):
-            self.db.update_marker_rect(marker_type, marker_id,
-                                       self.viewer.current_page, cx, cy, w, h)
-
     def _on_context_action(self, action, pos, page):
-        if action == 'cause':
-            pdf_x, pdf_y = self.viewer.scene_to_pdf(pos)
-            tag = find_tag_near_point(
-                self.viewer.pdf_doc, page, pdf_x, pdf_y, radius=100) \
-                if self.viewer.pdf_doc else ''
-            # Pass the tag — the popup derives the type directly from its Tag-ID field
-            dev_id = self._active_deviation_id or 0
-            self.cause_placement_requested.emit(dev_id, tag or '', '', pos, page, '')
-        elif action == 'consequence':
-            self._set_mode(MODE_CONSEQUENCE)
-            tag = find_tag_near_point(self.viewer.pdf_doc, page,
-                                      *self.viewer.scene_to_pdf(pos)) \
-                  if self.viewer.pdf_doc else ''
-            self._on_consequence_click(pos, page, tag)
-        elif action == 'safeguard':
-            self._set_mode(MODE_SAFEGUARD)
-            tag = find_tag_near_point(self.viewer.pdf_doc, page,
-                                      *self.viewer.scene_to_pdf(pos)) \
-                  if self.viewer.pdf_doc else ''
-            self._on_safeguard_click(pos, page, tag)
-        elif action == 'node':
+        if action == 'node':
             self._set_mode(MODE_NODE)
         elif action == 'equipment':
             pdf_x, pdf_y = self.viewer.scene_to_pdf(pos)
@@ -9068,9 +8309,6 @@ class PIDPanel(QWidget):
             self.equipment_placement_requested.emit(tag or '', pos, page, None)
         elif action == 'find_similar':
             self._find_similar_symbol(pos, page)
-        elif action == 'risk_scenario':
-            node_id = self._active_node_id or 0
-            self.risk_scenario_requested.emit(node_id, pos, page)
 
     def _find_similar_symbol(self, pos, page):
         """🔎 Hitta liknande symbol (2026-08-10, see NOTES.md) — the click
@@ -9245,33 +8483,6 @@ class PIDPanel(QWidget):
                         float(m.get('symbol_w', 40)), float(m.get('symbol_h', 40)),
                         float(m.get('symbol_rot', 0)))
 
-            for m in self.db.cause_markers_for_page(page):
-                md    = dict(m)
-                cause = self.db.get_cause(md['cause_id'])
-                label = dict(cause).get('description', '') if cause else ''
-                self.viewer.add_cause_marker(
-                    md['cause_id'], md['x'], md['y'],
-                    md.get('component_type', ''), label, md.get('component_tag', ''),
-                    rect_w=md.get('rect_w'), rect_h=md.get('rect_h'))
-
-            for m in self.db.consequence_markers_for_page(page):
-                md   = dict(m)
-                cons = self.db.get_consequence(md['consequence_id'])
-                desc = dict(cons).get('description', '') if cons else md.get('target_name', '')
-                self.viewer.add_consequence_marker(
-                    md['consequence_id'], md['x'], md['y'], desc,
-                    rect_w=md.get('rect_w'), rect_h=md.get('rect_h'))
-
-            for m in self.db.safeguard_markers_for_page(page):
-                md = dict(m)
-                sg = self.db.conn.execute(
-                    "SELECT description FROM safeguards WHERE id=?",
-                    (md['safeguard_id'],)).fetchone()
-                desc = sg['description'] if sg else ''
-                self.viewer.add_safeguard_marker(
-                    md['safeguard_id'], md['x'], md['y'], md.get('tag', ''), desc,
-                    rect_w=md.get('rect_w'), rect_h=md.get('rect_h'))
-
             for m in self.db.equipment_markers_for_page(page):
                 md = dict(m)
                 dev_count = (self.db.equipment_deviation_count(md['equipment_id'])
@@ -9288,39 +8499,6 @@ class PIDPanel(QWidget):
                     outline_pdf=md.get('shape_outline'), deviation_count=dev_count,
                     consequence_count=cons_count, safeguard_count=sg_count)
 
-        # ── Draw ALL connections after all pages, so cross-page lines work ──────
-        all_cause_pos = {}
-        all_cons_pos  = {}
-        all_sg_pos    = {}
-        for page in active_pages:
-            for m in self.db.cause_markers_for_page(page):
-                all_cause_pos.setdefault(m['cause_id'], []).append(
-                    self.viewer.pdf_to_scene(m['x'], m['y'], page=page))
-            for m in self.db.consequence_markers_for_page(page):
-                all_cons_pos.setdefault(m['consequence_id'], []).append(
-                    self.viewer.pdf_to_scene(m['x'], m['y'], page=page))
-            for m in self.db.safeguard_markers_for_page(page):
-                all_sg_pos.setdefault(m['safeguard_id'], []).append(
-                    self.viewer.pdf_to_scene(m['x'], m['y'], page=page))
-
-        for cid, cpos_list in all_cons_pos.items():
-            c = self.db.get_consequence(cid)
-            if c:
-                cause_id = dict(c).get('cause_id') if c else None
-                if cause_id and cause_id in all_cause_pos:
-                    for cpos in cpos_list:
-                        for capos in all_cause_pos[cause_id]:
-                            self.viewer.add_connection_line(capos, cpos, '#c0392b')
-
-        for sid, spos_list in all_sg_pos.items():
-            s = self.db.get_safeguard(sid)
-            if s:
-                cons_id = dict(s).get('consequence_id') if s else None
-                if cons_id and cons_id in all_cons_pos:
-                    for spos in spos_list:
-                        for kpos in all_cons_pos[cons_id]:
-                            self.viewer.add_connection_line(kpos, spos, '#27ae60', dashed=True)
-
         # Feature 8: load sticky note annotations
         if hasattr(self.db, 'get_board_annotations'):
             for ann in self.db.get_board_annotations():
@@ -9333,11 +8511,6 @@ class PIDPanel(QWidget):
         # Reapply LOD so newly added items get correct visibility at current zoom
         self.viewer._apply_lod(self.viewer.transform().m11(), force=True)
         self.viewer._reapply_equipment_selection_overlays()
-
-    def start_cause_template_mode(self, deviation_id):
-        """Switch to template placement mode for the given deviation."""
-        self._active_deviation_id = deviation_id
-        self._set_mode(MODE_CAUSE_TEMPLATE)
 
     def reload_overlays(self):
         """Public helper to refresh all P&ID markers and connection lines."""
@@ -9498,44 +8671,13 @@ class PIDPanel(QWidget):
             self.markup_item_selected.emit(mu_id)
             self.viewer.highlight_markup(mu_id)
 
-    def _on_cause_template_click(self, scene_pos, page, suggested_tag=''):
-        # If secondary placement is pending, place secondary marker instead of opening dialog
-        if self._pending_secondary_cause_id is not None:
-            self._place_secondary_marker(scene_pos, page, suggested_tag)
-            return
-
-        dev_id = self._active_deviation_id
-        if not dev_id:
-            return
-
-        # Compute zone phash now (while _pending_zone_pdf still set) for fingerprint lookup
-        phash = ''
-        zone = self._pending_zone_pdf
-        if zone:
-            cx, cy = zone.center().x(), zone.center().y()
-            phash = self._compute_zone_phash(page, cx, cy, zone.width(), zone.height())
-
-        detected_type = self._db_comp_for_tag(suggested_tag or '')
-        self.cause_placement_requested.emit(
-            dev_id, suggested_tag or '', detected_type, scene_pos, page, '')
-
-    def place_cause_from_template(self, dev_id, scene_pos, page,
-                                  comp_type, comp_tag, description, frequency,
-                                  draw_marker=True):
-        """Called by MainWindow after CauseObjectPopup is confirmed.
-
-        `draw_marker=False` (2026-08-12, see NOTES.md — reported
-        feedback: "blir det dubbla markeringar på P&ID viewer, dels ett
-        gummiband ... och ett objekt som ligger kvar fast") — used by
-        _create_cause_for_bar, where scene_pos is already the position of
-        an EXISTING equipment marker. That marker's own colour/badge
-        already represents "this equipment has causes"; drawing a second,
-        separate cause-marker circle right on top of it (or, for a
-        manually placed object with a drawn zone outline, on top of that
-        zone's still-interactive drag handles) is a redundant, confusing
-        second marker at the exact same spot. The classic P&ID-click flow
-        (no pre-existing equipment marker to color-code) still draws its
-        own marker as before — only the equipment-bar path opts out."""
+    def place_cause_from_template(self, dev_id, comp_type, comp_tag, description, frequency):
+        """Called by EquipmentDeviationBar._create_cause_for_bar — the only
+        remaining caller since the classic P&ID-click cause flow was
+        removed (2026-08-13, see NOTES.md: the P&ID canvas is now
+        object-placement-only). No cause marker is drawn on the P&ID — the
+        equipment marker's own colour/badge already represents "this
+        equipment has causes"."""
         label = description or comp_tag or 'Ny orsak'
 
         try:
@@ -9551,34 +8693,9 @@ class PIDPanel(QWidget):
         # Auto-create an empty consequence + safeguard (2026-08-09, see
         # NOTES.md) so the HAZOP scenario row is immediately ready for
         # direct inline editing on KON and SG — no separate add-
-        # consequence/add-safeguard step. Same "så fort jag lagt till en
-        # orsak" pattern _create_cause_from_pick/_create_tagged_cause
-        # already use, extended one level further since a safeguard needs
-        # defining too. This function is the shared path for BOTH the
-        # classic P&ID-click cause flow and the EquipmentDeviationBar
-        # checkbox flow, so both get this for free.
+        # consequence/add-safeguard step.
         cons_id = self.db.add_consequence(cause_id)
         self.db.add_safeguard(cons_id)
-
-        zone = self._pending_zone_pdf
-        rect_w = zone.width()  if zone else None
-        rect_h = zone.height() if zone else None
-        if zone:
-            pdf_x, pdf_y = zone.center().x(), zone.center().y()
-        else:
-            pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
-        self._pending_zone_pdf = None
-        if draw_marker:
-            self.db.add_cause_marker(cause_id, page, pdf_x, pdf_y, comp_type, comp_tag,
-                                      rect_w, rect_h)
-            self.viewer.add_cause_marker(cause_id, pdf_x, pdf_y, comp_type, label, comp_tag,
-                                         rect_w, rect_h)
-
-        # ── Visual fingerprint (phash) only — tag memory written by update_cause ──
-        if comp_type and comp_tag and rect_w and rect_h:
-            phash = self._compute_zone_phash(page, pdf_x, pdf_y, rect_w, rect_h)
-            if phash and hasattr(self.db, 'store_fingerprint'):
-                self.db.store_fingerprint(phash, comp_type, comp_tag)
 
         self._load_overlays()
         self.cause_template_created.emit(cause_id)
@@ -9665,14 +8782,12 @@ class PIDPanel(QWidget):
         is passed straight through to place_cause_from_template's existing
         _compute_f_level() conversion — see NOTES.md."""
         marker = self.db.conn.execute(
-            "SELECT x, y, pid_page FROM equipment_markers WHERE id=?",
+            "SELECT 1 FROM equipment_markers WHERE id=?",
             (self._equipment_bar.marker_id,)).fetchone()
         if not marker:
             return None
-        scene_pos = self.viewer.pdf_to_scene(marker['x'], marker['y'], page=marker['pid_page'])
         return self.place_cause_from_template(
-            deviation_id, scene_pos, marker['pid_page'], comp_type, comp_tag, description,
-            frequency, draw_marker=False)
+            deviation_id, comp_type, comp_tag, description, frequency)
 
 
     def _refresh_equipment_marker_visual(self, _equipment_id):
@@ -9681,189 +8796,6 @@ class PIDPanel(QWidget):
         reclassification) — _load_overlays() re-reads every marker's
         current deviation count from the DB, see add_equipment_marker."""
         self._load_overlays()
-
-    def _on_add_cause_at_marker(self, cause_id: int):
-        """Right-click on existing cause marker → create another cause at the same position."""
-        page = self.viewer.current_page
-        markers = self.db.cause_markers_for_page(page)
-        marker = next((dict(m) for m in markers if m['cause_id'] == cause_id), None)
-        if not marker:
-            return
-
-        pdf_x  = marker['x']
-        pdf_y  = marker['y']
-        rect_w = marker.get('rect_w')
-        rect_h = marker.get('rect_h')
-
-        # Reuse the same zone rectangle
-        if rect_w and rect_h:
-            self._pending_zone_pdf = QRectF(
-                pdf_x - rect_w / 2, pdf_y - rect_h / 2, rect_w, rect_h)
-
-        # Pre-fill comp_type and comp_tag from the existing cause
-        cause = self.db.get_cause(cause_id)
-        cause_d = dict(cause) if cause else {}
-        dev_id   = cause_d.get('deviation_id') or 0
-        comp_tag = cause_d.get('comp_tag') or marker.get('component_tag', '')
-        comp_type = cause_d.get('comp_type') or marker.get('component_type', '')
-
-        node_id = cause_d.get('node_id')
-        if node_id:
-            self._active_node_id = node_id
-
-        scene_pos = self.viewer.pdf_to_scene(pdf_x, pdf_y)
-        self.cause_placement_requested.emit(dev_id, comp_tag, comp_type, scene_pos, page, '')
-
-    def _on_add_consequence_at_marker(self, cons_id: int):
-        """Right-click on existing consequence marker → add another consequence here."""
-        page = self.viewer.current_page
-        markers = self.db.consequence_markers_for_page(page)
-        marker = next((dict(m) for m in markers if m['consequence_id'] == cons_id), None)
-        if not marker:
-            return
-
-        pdf_x  = marker['x']
-        pdf_y  = marker['y']
-        rect_w = marker.get('rect_w')
-        rect_h = marker.get('rect_h')
-
-        if rect_w and rect_h:
-            self._pending_zone_pdf = QRectF(
-                pdf_x - rect_w / 2, pdf_y - rect_h / 2, rect_w, rect_h)
-
-        # Set active cause to the cause of the clicked consequence
-        cons = self.db.get_consequence(cons_id)
-        if cons:
-            self._active_cause_id = dict(cons).get('cause_id')
-
-        scene_pos = self.viewer.pdf_to_scene(pdf_x, pdf_y)
-        self._on_consequence_click(scene_pos, page)
-
-    def _on_add_safeguard_at_marker(self, sg_id: int):
-        """Right-click on existing safeguard marker → add another safeguard here."""
-        page = self.viewer.current_page
-        markers = self.db.safeguard_markers_for_page(page)
-        marker = next((dict(m) for m in markers if m['safeguard_id'] == sg_id), None)
-        if not marker:
-            return
-
-        pdf_x  = marker['x']
-        pdf_y  = marker['y']
-        rect_w = marker.get('rect_w')
-        rect_h = marker.get('rect_h')
-
-        if rect_w and rect_h:
-            self._pending_zone_pdf = QRectF(
-                pdf_x - rect_w / 2, pdf_y - rect_h / 2, rect_w, rect_h)
-
-        # Set active consequence to the consequence of the clicked safeguard
-        sg = self.db.get_safeguard(sg_id)
-        if sg:
-            self._active_consequence_id = dict(sg).get('consequence_id')
-
-        scene_pos = self.viewer.pdf_to_scene(pdf_x, pdf_y)
-        self._on_safeguard_click(scene_pos, page)
-
-    def _place_secondary_marker(self, scene_pos, page, suggested_tag=''):
-        """Place the queued secondary marker, then re-open the dialog for the same deviation."""
-        cause_id     = self._pending_secondary_cause_id
-        comp_type    = self._pending_secondary_comp_type
-        tag          = suggested_tag or self._pending_secondary_tag
-        reopen_dev   = self._pending_secondary_deviation_id
-        reopen_type  = self._pending_secondary_preselect_type
-        self._cancel_secondary_placement()
-
-        pdf_x, pdf_y = self.viewer.scene_to_pdf(scene_pos)
-        self.db.add_cause_marker(cause_id, page, pdf_x, pdf_y, comp_type, tag)
-        row = self.db.get_cause(cause_id)
-        label = row['description'] if row else ''
-        self.viewer.add_cause_marker(cause_id, pdf_x, pdf_y, comp_type, label, tag)
-        self._load_overlays()
-
-        # Re-open dialog for same deviation so user can continue
-        if reopen_dev:
-            self._open_template_dialog_for_deviation(reopen_dev, reopen_type)
-
-    def _open_template_dialog_for_deviation(self, dev_id, preselect_type=''):
-        """Open StandardCausesPickerPopup (Avvikelse→Objekt→Orsak) for a deviation."""
-        dev = self.db.get_deviation(dev_id)
-        if not dev:
-            return
-        dev_name = dev['description']
-
-        # dev_id is from 'deviations' (node instance); we need 'standard_deviations' id
-        std_row = self.db.conn.execute(
-            "SELECT id FROM standard_deviations WHERE description=? COLLATE NOCASE LIMIT 1",
-            (dev_name,)).fetchone()
-        std_dev_id = std_row[0] if std_row else None
-
-        try:
-            from hazop import StandardCausesPickerPopup as _SP
-            dlg = _SP(self.db, std_dev_id, deviation_name=dev_name,
-                      comp_type=preselect_type, parent=self)
-        except Exception:
-            dlg = None
-
-        if dlg is None:
-            return
-
-        picked = {}
-        def _on_pick(desc, freq):
-            picked['desc'] = desc
-            picked['freq'] = freq
-
-        dlg.cause_picked.connect(_on_pick)
-        if dlg.exec() != QDialog.DialogCode.Accepted or not picked.get('desc'):
-            return
-
-        cause_desc = picked['desc']
-        std_freq   = picked.get('freq')
-
-        # Feature 2: auto-fill tag from equipment catalog based on selected object type
-        checked   = next((b for b in dlg._obj_btn_group if b.isChecked()), None)
-        comp_type = checked.property('obj_name') if checked else ''
-        tag        = ''
-        if comp_type:
-            page = self.viewer.current_page
-            try:
-                rows = self.db.conn.execute(
-                    "SELECT tag FROM equipment_catalog "
-                    "WHERE pid_page=? AND equipment_type=? AND include=1 LIMIT 1",
-                    (page, comp_type)).fetchone()
-                if rows:
-                    tag = rows[0]
-            except Exception:
-                pass
-
-        try:
-            cause_id = self.db.add_cause(dev_id)
-        except Exception as e:
-            QMessageBox.critical(self, "Databasfel", f"Kunde inte skapa orsak:\n{e}")
-            return
-        self.db.update_cause(cause_id, cause_desc, comp_type=comp_type, comp_tag=tag)
-        if std_freq is not None:
-            f_level = self._compute_f_level(std_freq)
-            self.db.update_cause(cause_id, likelihood=f_level, base_freq=std_freq)
-        self.cause_template_created.emit(cause_id)
-
-        # If user wants secondary again, queue it
-        if dlg.wants_secondary_placement and dlg.secondary_description:
-            self._pending_secondary_cause_id       = cause_id
-            self._pending_secondary_comp_type      = dlg.secondary_comp_type
-            self._pending_secondary_tag            = dlg.secondary_component_tag
-            self._pending_secondary_deviation_id   = dev_id
-            self._pending_secondary_preselect_type = dlg.component_type
-            self._secondary_lbl.setText(
-                f"Klicka nu på sekundärkomponenten på P&ID:n  —  {dlg.secondary_description}")
-            self._secondary_banner.setVisible(True)
-
-    def _cancel_secondary_placement(self):
-        self._pending_secondary_cause_id       = None
-        self._pending_secondary_comp_type      = ''
-        self._pending_secondary_tag            = ''
-        self._pending_secondary_deviation_id   = None
-        self._pending_secondary_preselect_type = ''
-        self._secondary_banner.setVisible(False)
 
     def clear_active_selection(self):
         """Reset every id used when placing new cause/consequence/safeguard
@@ -9877,7 +8809,6 @@ class PIDPanel(QWidget):
         self._active_deviation_id = None
         self._active_cause_id     = None
         self._active_consequence_id = None
-        self._cancel_secondary_placement()
 
     def set_active_node(self, node_id):
         self._active_node_id        = node_id
@@ -9910,106 +8841,6 @@ class PIDPanel(QWidget):
             cause = self.db.get_cause(cause_id)
             if cause:
                 self._active_node_id = dict(cause).get('node_id')
-
-    # ── Guided Risk Scenario mode ─────────────────────────────────────────────
-
-    def start_scenario_mode(self, node_id=None):
-        """Start guided Risk Scenario: Välj avvikelse → Orsak → Konsekvens → Safeguard."""
-        if node_id:
-            self._active_node_id = node_id
-        if not self._active_node_id:
-            QMessageBox.information(self, "Välj nod",
-                "Välj en nod i trädet eller på P&ID:n innan du startar Risk Scenario.")
-            return
-
-        # Pick deviation — standard causes are organised per deviation
-        devs = self.db.deviations(self._active_node_id) if hasattr(self.db, 'deviations') else []
-        if not devs:
-            QMessageBox.information(self, "Inga avvikelser",
-                "Noden har inga avvikelser. Lägg till avvikelser i trädet först.")
-            return
-        dev_labels = [d['description'] for d in devs]
-        choice, ok = QInputDialog.getItem(
-            None, "Välj avvikelse",
-            "Vilken avvikelse gäller scenariot för?",
-            dev_labels, 0, False)
-        if not ok:
-            return
-        chosen = next((d for d in devs if d['description'] == choice), None)
-        if not chosen:
-            return
-        self._active_deviation_id = chosen['id']
-
-        self._scenario_active = True
-        self._scenario_step   = 1
-        self._scenario_banner.setVisible(True)
-        self._sc_add_sg_btn.setVisible(False)
-        self._sc_finish_btn.setVisible(False)
-        self._update_scenario_ui()
-        self._set_mode(MODE_CAUSE_TEMPLATE)
-
-    def _update_scenario_ui(self):
-        step = self._scenario_step
-        _ACTIVE  = "border-radius:3px; padding:1px 6px; font-size:10px; font-weight:bold; background:#ffffff; color:#1F4E79;"
-        _DONE    = "border-radius:3px; padding:1px 6px; font-size:10px; font-weight:bold; background:#27ae60; color:white;"
-        _WAITING = "border-radius:3px; padding:1px 6px; font-size:10px; font-weight:bold; background:#3a6fa3; color:#aac;"
-
-        for i, pill in enumerate(self._step_pills):
-            s = i + 1
-            if s < step:
-                pill.setStyleSheet(_DONE)
-            elif s == step:
-                pill.setStyleSheet(_ACTIVE)
-            else:
-                pill.setStyleSheet(_WAITING)
-
-        instructions = {
-            1: "Klicka på utrustning på P&ID:n — välj orsak ur standardlistan",
-            2: "Klicka på konsekvens/målobjekt på P&ID:n",
-            3: "Klicka på safeguard/barriär på P&ID:n",
-        }
-        self._sc_instr.setText(instructions.get(step, ""))
-
-    def _sc_on_cause(self, cause_id):
-        if not self._scenario_active:
-            return
-        self._scenario_step = 2
-        self.set_active_cause(cause_id)
-        self._update_scenario_ui()
-        self._set_mode(MODE_CONSEQUENCE)
-
-    def _sc_on_consequence(self, cons_id):
-        if not self._scenario_active:
-            return
-        self._scenario_step = 3
-        self.set_active_consequence(cons_id)
-        self._update_scenario_ui()
-        self._set_mode(MODE_SAFEGUARD)
-
-    def _sc_on_safeguard(self, _sg_id):
-        if not self._scenario_active:
-            return
-        # Show action buttons — stay in safeguard mode for adding more
-        self._sc_instr.setText("Safeguard markerad! Lägg till fler eller slutför.")
-        self._sc_add_sg_btn.setVisible(True)
-        self._sc_finish_btn.setVisible(True)
-        self._set_mode(MODE_SAFEGUARD)
-
-    def _scenario_finish(self):
-        self._scenario_active = False
-        self._scenario_banner.setVisible(False)
-        self._sc_add_sg_btn.setVisible(False)
-        self._sc_finish_btn.setVisible(False)
-        self._set_mode(MODE_NAV)
-
-    def _scenario_abort(self):
-        self._scenario_active = False
-        self._scenario_banner.setVisible(False)
-        self._sc_add_sg_btn.setVisible(False)
-        self._sc_finish_btn.setVisible(False)
-        self._set_mode(MODE_NAV)
-
-    # ── Tag-database component lookup ─────────────────────────────────────────
 
     # Maps Excel category strings → component_type keys used in the app
     _CAT_TO_COMP = {

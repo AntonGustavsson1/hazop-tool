@@ -620,69 +620,15 @@ class GuiSmokeTests(unittest.TestCase):
 
     # ── (a) delete cause -> reload P&ID overlays must not crash ──────────
 
-    def test_delete_cause_then_reload_overlays_no_crash(self):
-        """Reproduces the original crash: orphaned consequence/safeguard
-        markers on the P&ID caused KeyError/AttributeError when
-        PIDPanel._load_overlays() tried to draw connection lines."""
-        from pid_viewer import PIDPanel
-
-        panel = PIDPanel(self.db)
-        try:
-            ids = self._make_full_chain()
-
-            # Place markers on a fake "page 0" so the marker-drawing code
-            # path in _load_overlays() actually iterates real marker rows
-            # (not just an early-return because no PDF is loaded).
-            self.db.add_cause_marker(ids['cause_id'], 0, 10.0, 10.0, 'Ventil')
-            self.db.add_consequence_marker(ids['cons_id'], 0, 20.0, 20.0, 'target')
-            self.db.add_safeguard_marker(ids['sg_id'], 0, 30.0, 30.0, 'SG-1')
-
-            # Fake a "PDF loaded with one page" state without touching disk /
-            # PyMuPDF, so _load_overlays() doesn't bail out on
-            # `if self.viewer.pdf_doc is None: return`.
-            _fake_pdf_loaded(panel)
-
-            # Delete the cause -- consequence/safeguard become orphaned
-            # (or cascade-deleted, depending on FK enforcement) while their
-            # marker rows remain on the P&ID.
-            self.db.delete_cause(ids['cause_id'])
-
-            try:
-                panel.reload_overlays()
-            except Exception as e:
-                self.fail(f"reload_overlays() raised after deleting cause: {e!r}")
-
-            # Also drive it through _load_overlays() directly (reload_overlays
-            # is a thin wrapper around it) for good measure.
-            try:
-                panel._load_overlays()
-            except Exception as e:
-                self.fail(f"_load_overlays() raised after deleting cause: {e!r}")
-        finally:
-            panel.deleteLater()
-
-    def test_delete_consequence_then_reload_overlays_no_crash(self):
-        """Same crash class, triggered by deleting the consequence directly
-        (leaving its safeguard's marker dangling)."""
-        from pid_viewer import PIDPanel
-
-        panel = PIDPanel(self.db)
-        try:
-            ids = self._make_full_chain()
-            self.db.add_cause_marker(ids['cause_id'], 0, 10.0, 10.0, 'Ventil')
-            self.db.add_consequence_marker(ids['cons_id'], 0, 20.0, 20.0, 'target')
-            self.db.add_safeguard_marker(ids['sg_id'], 0, 30.0, 30.0, 'SG-1')
-
-            _fake_pdf_loaded(panel)
-
-            self.db.delete_consequence(ids['cons_id'])
-
-            try:
-                panel.reload_overlays()
-            except Exception as e:
-                self.fail(f"reload_overlays() raised after deleting consequence: {e!r}")
-        finally:
-            panel.deleteLater()
+    # NOTE: test_delete_cause_then_reload_overlays_no_crash and
+    # test_delete_consequence_then_reload_overlays_no_crash were removed
+    # 2026-08-13 (see NOTES.md: the P&ID canvas is now
+    # object-placement-only) — they reproduced a crash class specific to
+    # orphaned cause/consequence/safeguard *markers* on the P&ID, via
+    # Database.add_cause_marker/add_consequence_marker/add_safeguard_marker
+    # (also removed, see NOTES.md). _load_overlays() no longer reads those
+    # tables at all, so the crash class they guarded against can no longer
+    # occur by construction — nothing left to regression-test there.
 
     # ── (b) select a safeguard node in the tree -> _on_selected ──────────
 
@@ -765,9 +711,6 @@ class GuiSmokeTests(unittest.TestCase):
         panel = PIDPanel(self.db)
         try:
             ids = self._make_full_chain()
-            self.db.add_cause_marker(ids['cause_id'], 0, 10.0, 10.0, 'Ventil')
-            self.db.add_consequence_marker(ids['cons_id'], 0, 20.0, 20.0, 'target')
-            self.db.add_safeguard_marker(ids['sg_id'], 0, 30.0, 30.0, 'SG-1')
 
             tree.refresh(CAUSE_T, ids['cause_id'])
             current = tree.tree.currentItem()
@@ -1556,29 +1499,6 @@ class SafeguardCreatedDoubleRebuildTests(unittest.TestCase):
             'cause_id': cause_id, 'cons_id': cons_id, 'sg_id': sg_id,
         }
 
-    def test_on_safeguard_created_rebuilds_scenario_panel_exactly_once(self):
-        """Placing a new safeguard marker on the P&ID (PIDPanel.safeguard_created
-        -> MainWindow._on_safeguard_created) must rebuild the scenario table
-        exactly once, not twice.
-        """
-        with _TempDbMainWindow() as win:
-            ids = self._make_full_chain(win.db)
-            win._cur_type = CONS_T
-            win._cur_id = ids['cons_id']
-
-            rebuild_spy = unittest.mock.Mock(wraps=win.scenario_panel._rebuild)
-            win.scenario_panel._rebuild = rebuild_spy
-
-            win._on_safeguard_created(ids['sg_id'])
-
-            self.assertEqual(
-                rebuild_spy.call_count, 1,
-                "_on_safeguard_created() must rebuild the scenario panel "
-                "exactly once per safeguard creation (it used to rebuild "
-                "twice: once via the explicit scenario_panel.load_consequence() "
-                "call, once via tree_panel.refresh()'s setCurrentItem cascade "
-                "into _on_selected -> scenario_panel.load_consequence() again)")
-
     def test_new_item_created_safeguard_rebuilds_scenario_panel_exactly_once(self):
         """Quick-adding a safeguard directly from the scenario table (Enter-to
         -add-next-row flow, ScenarioTablePanel._quick_add_safeguard ->
@@ -1799,9 +1719,13 @@ class CauseTemplateCreatedFocusStealBugTests(unittest.TestCase):
 
 
 class EscapeCancelsPlacementTests(unittest.TestCase):
-    """Escape must abort an in-progress cause/consequence/safeguard placement
-    on the P&ID and return the viewer to MODE_NAV, mirroring the existing
-    Escape-cancels-drawing behavior for MODE_NODE/MARKUP_POLYGON.
+    """Escape must abort an in-progress new-equipment placement on the P&ID
+    and return the viewer to MODE_NAV, mirroring the existing
+    Escape-cancels-drawing behavior for MODE_NODE/MARKUP_POLYGON. The
+    classic cause/consequence/safeguard placement modes this class used to
+    also cover were removed 2026-08-13 (see NOTES.md: the P&ID canvas is
+    now object-placement-only) — MODE_PLACE_NEW_EQUIPMENT is the only
+    placement mode left to cover.
     """
 
     @classmethod
@@ -1827,37 +1751,15 @@ class EscapeCancelsPlacementTests(unittest.TestCase):
         ev = QKeyEvent(_QEvent.Type.KeyPress, _Qt.Key.Key_Escape, _Qt.KeyboardModifier.NoModifier)
         view.keyPressEvent(ev)
 
-    def test_escape_cancels_cause_mode(self):
-        from pid_viewer import PIDPanel, MODE_CAUSE_TEMPLATE, MODE_NAV
+    def test_escape_cancels_place_new_equipment_mode(self):
+        from pid_viewer import PIDPanel, MODE_PLACE_NEW_EQUIPMENT, MODE_NAV
         panel = PIDPanel(self.db)
         try:
-            panel._set_mode(MODE_CAUSE_TEMPLATE)
-            self.assertEqual(panel.viewer.mode, MODE_CAUSE_TEMPLATE)
+            panel._set_mode(MODE_PLACE_NEW_EQUIPMENT)
+            self.assertEqual(panel.viewer.mode, MODE_PLACE_NEW_EQUIPMENT)
             self._press_escape(panel.viewer)
             self.assertEqual(panel.viewer.mode, MODE_NAV,
-                              "Escape must abort MODE_CAUSE_TEMPLATE back to MODE_NAV")
-        finally:
-            panel.deleteLater()
-
-    def test_escape_cancels_consequence_mode(self):
-        from pid_viewer import PIDPanel, MODE_CONSEQUENCE, MODE_NAV
-        panel = PIDPanel(self.db)
-        try:
-            panel._set_mode(MODE_CONSEQUENCE)
-            self._press_escape(panel.viewer)
-            self.assertEqual(panel.viewer.mode, MODE_NAV,
-                              "Escape must abort MODE_CONSEQUENCE back to MODE_NAV")
-        finally:
-            panel.deleteLater()
-
-    def test_escape_cancels_safeguard_mode(self):
-        from pid_viewer import PIDPanel, MODE_SAFEGUARD, MODE_NAV
-        panel = PIDPanel(self.db)
-        try:
-            panel._set_mode(MODE_SAFEGUARD)
-            self._press_escape(panel.viewer)
-            self.assertEqual(panel.viewer.mode, MODE_NAV,
-                              "Escape must abort MODE_SAFEGUARD back to MODE_NAV")
+                              "Escape must abort MODE_PLACE_NEW_EQUIPMENT back to MODE_NAV")
         finally:
             panel.deleteLater()
 
@@ -1867,13 +1769,14 @@ class EscapeCancelsPlacementTests(unittest.TestCase):
         toggle buttons were removed 2026-08-07 (see NOTES.md — redundant
         once the P&ID right-click menu did the same thing directly), so
         "🔍 Navigera" is now the only button in mode_buttons; it must still
-        become checked again after an Escape-cancel out of MODE_CAUSE_TEMPLATE
-        (still settable programmatically, e.g. by the right-click flow's
-        internal _set_mode calls, even with no dedicated toolbar button)."""
-        from pid_viewer import PIDPanel, MODE_CAUSE_TEMPLATE, MODE_NAV
+        become checked again after an Escape-cancel out of
+        MODE_PLACE_NEW_EQUIPMENT (still settable programmatically, e.g. by
+        EquipmentDeviationBar's "+" button, even with no dedicated toolbar
+        button)."""
+        from pid_viewer import PIDPanel, MODE_PLACE_NEW_EQUIPMENT, MODE_NAV
         panel = PIDPanel(self.db)
         try:
-            panel._set_mode(MODE_CAUSE_TEMPLATE)
+            panel._set_mode(MODE_PLACE_NEW_EQUIPMENT)
             self.assertFalse(panel.mode_buttons[MODE_NAV].isChecked())
             self._press_escape(panel.viewer)
             self.assertEqual(panel.viewer.mode, MODE_NAV)
@@ -1895,11 +1798,13 @@ class EscapeCancelsPlacementTests(unittest.TestCase):
 
 
 class GhostPreviewMarkerTests(unittest.TestCase):
-    """Cursor-following ghost preview in cause/consequence/safeguard placement
-    modes: shows what will be placed before the first click, and must never
-    linger once placement is cancelled, a drag starts, or the mode changes —
-    a stale ghost item would visually overlap the real marker (see
-    _clear_ghost_preview() call sites).
+    """Cursor-following ghost preview in the new-equipment placement mode:
+    shows what will be placed before the first click, and must never linger
+    once placement is cancelled, a drag starts, or the mode changes — a
+    stale ghost item would visually overlap the real marker (see
+    _clear_ghost_preview() call sites). The classic cause/consequence/
+    safeguard placement modes this class used to also cover were removed
+    2026-08-13 (see NOTES.md: the P&ID canvas is now object-placement-only).
     """
 
     @classmethod
@@ -1922,12 +1827,12 @@ class GhostPreviewMarkerTests(unittest.TestCase):
         from PyQt6.QtCore import QPointF
         view._update_ghost_preview(scene_pos)
 
-    def test_ghost_created_in_cause_mode(self):
-        from pid_viewer import PIDPanel, MODE_CAUSE_TEMPLATE
+    def test_ghost_created_in_place_new_equipment_mode(self):
+        from pid_viewer import PIDPanel, MODE_PLACE_NEW_EQUIPMENT
         from PyQt6.QtCore import QPointF
         panel = PIDPanel(self.db)
         try:
-            panel._set_mode(MODE_CAUSE_TEMPLATE)
+            panel._set_mode(MODE_PLACE_NEW_EQUIPMENT)
             self.assertIsNone(panel.viewer._ghost_preview_item)
             self._move_to(panel.viewer, QPointF(50, 50))
             self.assertIsNotNone(panel.viewer._ghost_preview_item,
@@ -1939,11 +1844,11 @@ class GhostPreviewMarkerTests(unittest.TestCase):
         """Moving the cursor should update the existing item's geometry, not
         create a new scene item each time (perf pattern already used by the
         drag-rect / right-drag rubber-band previews)."""
-        from pid_viewer import PIDPanel, MODE_CONSEQUENCE
+        from pid_viewer import PIDPanel, MODE_PLACE_NEW_EQUIPMENT
         from PyQt6.QtCore import QPointF
         panel = PIDPanel(self.db)
         try:
-            panel._set_mode(MODE_CONSEQUENCE)
+            panel._set_mode(MODE_PLACE_NEW_EQUIPMENT)
             self._move_to(panel.viewer, QPointF(10, 10))
             first = panel.viewer._ghost_preview_item
             self._move_to(panel.viewer, QPointF(80, 40))
@@ -1953,11 +1858,11 @@ class GhostPreviewMarkerTests(unittest.TestCase):
             panel.deleteLater()
 
     def test_ghost_cleared_on_mode_change(self):
-        from pid_viewer import PIDPanel, MODE_SAFEGUARD, MODE_NAV
+        from pid_viewer import PIDPanel, MODE_PLACE_NEW_EQUIPMENT, MODE_NAV
         from PyQt6.QtCore import QPointF
         panel = PIDPanel(self.db)
         try:
-            panel._set_mode(MODE_SAFEGUARD)
+            panel._set_mode(MODE_PLACE_NEW_EQUIPMENT)
             self._move_to(panel.viewer, QPointF(20, 20))
             self.assertIsNotNone(panel.viewer._ghost_preview_item)
             panel._set_mode(MODE_NAV)
@@ -1970,11 +1875,11 @@ class GhostPreviewMarkerTests(unittest.TestCase):
         """The moment the user presses the mouse button to start sizing the
         marker's rect, the ghost must disappear — otherwise it would sit on
         top of the dashed drag-rect preview at Z_TEMP."""
-        from pid_viewer import PIDPanel, MODE_CAUSE_TEMPLATE
+        from pid_viewer import PIDPanel, MODE_PLACE_NEW_EQUIPMENT
         from PyQt6.QtCore import QPointF
         panel = PIDPanel(self.db)
         try:
-            panel._set_mode(MODE_CAUSE_TEMPLATE)
+            panel._set_mode(MODE_PLACE_NEW_EQUIPMENT)
             self._move_to(panel.viewer, QPointF(30, 30))
             self.assertIsNotNone(panel.viewer._ghost_preview_item)
             panel.viewer._clear_ghost_preview()   # what mousePressEvent triggers
@@ -1984,21 +1889,19 @@ class GhostPreviewMarkerTests(unittest.TestCase):
             panel.deleteLater()
 
     def test_ghost_color_matches_mode(self):
-        """Ghost fill must match the mode's real marker color (cause=red,
-        consequence=orange, safeguard=green) — verified via the shared
-        _PLACEMENT_MODE_COLORS map rather than duplicated literals here."""
-        from pid_viewer import (PIDPanel, MODE_CAUSE_TEMPLATE, MODE_CONSEQUENCE,
-                                 MODE_SAFEGUARD, _PLACEMENT_MODE_COLORS)
+        """Ghost fill must match the mode's real marker color, verified via
+        the shared _PLACEMENT_MODE_COLORS map rather than a duplicated
+        literal here."""
+        from pid_viewer import PIDPanel, MODE_PLACE_NEW_EQUIPMENT, _PLACEMENT_MODE_COLORS
         from PyQt6.QtCore import QPointF
         panel = PIDPanel(self.db)
         try:
-            for mode in (MODE_CAUSE_TEMPLATE, MODE_CONSEQUENCE, MODE_SAFEGUARD):
-                panel._set_mode(mode)
-                self._move_to(panel.viewer, QPointF(15, 15))
-                item = panel.viewer._ghost_preview_item
-                _, expected_fill = _PLACEMENT_MODE_COLORS[mode]
-                self.assertEqual(item.brush().color().rgb(), expected_fill.rgb())
-                panel.viewer._clear_ghost_preview()
+            panel._set_mode(MODE_PLACE_NEW_EQUIPMENT)
+            self._move_to(panel.viewer, QPointF(15, 15))
+            item = panel.viewer._ghost_preview_item
+            _, expected_fill = _PLACEMENT_MODE_COLORS[MODE_PLACE_NEW_EQUIPMENT]
+            self.assertEqual(item.brush().color().rgb(), expected_fill.rgb())
+            panel.viewer._clear_ghost_preview()
         finally:
             panel.deleteLater()
 
@@ -7205,13 +7108,12 @@ class EquipmentObjectPlacementTests(unittest.TestCase):
 
 class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
     """"⚙️ Orsak"/"⚠️ Konsekvens" mode-toggle buttons removed from the P&ID
-    toolbar, and "🔧 Objekt" added to the right-click menu's action chain
-    (2026-08-07, see NOTES.md). The old MODE_CAUSE mode/signal chain (only
-    ever set by the removed button) was itself removed as dead code
-    (2026-08-09, see NOTES.md) — cause creation now always goes through
-    MODE_CAUSE_TEMPLATE. MODE_CONSEQUENCE must still work since the
-    right-click menu's own "⚠️ Konsekvens" action still relies on it
-    internally."""
+    toolbar (2026-08-07, see NOTES.md). The right-click menu's own "Orsak"/
+    "Konsekvens"/"Safeguard" actions, and the MODE_CAUSE_TEMPLATE/
+    MODE_CONSEQUENCE/MODE_SAFEGUARD modes they drove, were later removed
+    entirely (2026-08-13, see NOTES.md: the P&ID canvas is now
+    object-placement-only) — "🔧 Objekt" is the only right-click action
+    left that creates something new."""
 
     @classmethod
     def setUpClass(cls):
@@ -7232,24 +7134,14 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
     def test_only_navigate_button_remains(self):
-        from pid_viewer import MODE_NAV, MODE_CAUSE_TEMPLATE, MODE_CONSEQUENCE
+        """The toolbar has exactly one mode button — Navigera. The P&ID
+        canvas is object-placement-only (2026-08-13, see NOTES.md);
+        MODE_PLACE_NEW_EQUIPMENT is armed programmatically (from
+        EquipmentDeviationBar's "+" button or the right-click/rubber-band
+        menus), not via its own toolbar toggle."""
+        from pid_viewer import MODE_NAV
         self.assertIn(MODE_NAV, self.panel.mode_buttons)
-        self.assertNotIn(MODE_CAUSE_TEMPLATE, self.panel.mode_buttons)
-        self.assertNotIn(MODE_CONSEQUENCE, self.panel.mode_buttons)
-
-    def test_context_menu_consequence_action_still_sets_mode(self):
-        """The toolbar toggle is gone, but the right-click menu's own
-        "⚠️ Konsekvens" action must still work exactly as before."""
-        from pid_viewer import MODE_CONSEQUENCE
-        from PyQt6.QtCore import QPointF
-        node_id = self.db.add_node()
-        dev_id = self.db.deviations(node_id)[0]['id']
-        cause_id = self.db.add_cause(dev_id)
-        self.panel._active_cause_id = cause_id
-
-        self.panel._on_context_action('consequence', QPointF(5, 5), 0)
-
-        self.assertEqual(self.panel.viewer.mode, MODE_CONSEQUENCE)
+        self.assertEqual(len(self.panel.mode_buttons), 1)
 
     def test_context_menu_equipment_action_emits_placement_signal(self):
         from PyQt6.QtCore import QPointF
@@ -9267,12 +9159,15 @@ class TagDetachContextMenuTests(unittest.TestCase):
 
 class ObjektInRubberBandMenuTests(unittest.TestCase):
     """'När jag håller nere högerknappen och drar fram gummiband vill jag
-    ... även kunna välja Objekt. Objekt ska stå högst upp i rullgardinen.'
-    (2026-08-09, see NOTES.md) — the right-drag rubber-band menu
-    (PIDPanel._on_zone_drawn) gains a "🔧 Objekt" entry, listed first,
-    which reuses the existing EquipmentTagPopup flow but threads the
-    drawn rectangle through so the new marker gets a real outline shape
-    instead of the generic bowtie-icon fallback a bare point gets."""
+    ... även kunna välja Objekt.' (2026-08-09, see NOTES.md) — the
+    right-drag rubber-band handler (PIDPanel._on_zone_drawn) originally
+    showed a menu of Objekt/Orsak/Konsekvens/Safeguard. Since the P&ID
+    canvas is now object-placement-only (2026-08-13, see NOTES.md — the
+    other three actions were removed), a drawn rectangle always becomes a
+    new equipment object directly — no menu needed for a single choice.
+    Still reuses the existing EquipmentTagPopup flow and threads the drawn
+    rectangle through so the new marker gets a real outline shape instead
+    of the generic bowtie-icon fallback a bare point gets."""
 
     @classmethod
     def setUpClass(cls):
@@ -9292,39 +9187,17 @@ class ObjektInRubberBandMenuTests(unittest.TestCase):
             pass
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    def test_objekt_is_the_first_menu_entry(self):
-        from PyQt6.QtCore import QRectF
-        from PyQt6.QtWidgets import QMenu
-        texts = []
-
-        def _fake_exec(menu_self, _pos=None):
-            texts.extend(a.text() for a in menu_self.actions())
-            return menu_self.actions()[0]
-
-        with unittest.mock.patch.object(QMenu, 'exec', new=_fake_exec):
-            self.panel._on_zone_drawn(QRectF(0, 0, 10, 10), 0)
-        # 2026-08-12: Orsak/Konsekvens/Safeguard now carry a real icon
-        # (settings/warning/shield) instead of an emoji text prefix — see
-        # NOTES.md. Objekt deliberately keeps its emoji (🔧), since giving
-        # it the same 'settings' icon as Orsak would show two identical
-        # icons side by side in this same menu.
-        self.assertEqual(texts[0], "🔧 Objekt")
-        self.assertEqual(set(texts),
-                         {"🔧 Objekt", "Orsak", "Konsekvens", "Safeguard"})
-
     def test_choosing_objekt_emits_placement_signal_with_the_drawn_rect(self):
+        """No menu to choose from anymore — a drawn rectangle always
+        becomes a new equipment object directly (2026-08-13, see
+        NOTES.md)."""
         from PyQt6.QtCore import QRectF
-        from PyQt6.QtWidgets import QMenu
         captured = []
         self.panel.equipment_placement_requested.connect(
             lambda tag, pos, page, rect: captured.append((tag, pos, page, rect)))
         pdf_rect = QRectF(5.0, 6.0, 10.0, 8.0)
 
-        def _fake_exec(menu_self, _pos=None):
-            return menu_self.actions()[0]
-
-        with unittest.mock.patch.object(QMenu, 'exec', new=_fake_exec):
-            self.panel._on_zone_drawn(pdf_rect, 3)
+        self.panel._on_zone_drawn(pdf_rect, 3)
 
         self.assertEqual(len(captured), 1)
         tag, pos, page, rect = captured[0]
@@ -9370,13 +9243,15 @@ class ObjektInRubberBandMenuTests(unittest.TestCase):
 class AutoConsequenceAndSafeguardOnCauseTemplateTests(unittest.TestCase):
     """'När jag definerar avvikelse för objektet så ska jag kunna klicka på
     konsekvens ... och definiera detta. ... Dessutom vill jag kunna göra
-    samma med safeguard.' (2026-08-09, see NOTES.md) — checking a
-    deviation in EquipmentDeviationBar (and the classic P&ID-click cause
-    flow, which shares the same underlying place_cause_from_template)
-    used to create a cause with NO consequence/safeguard at all, so the
-    KON/SG cells for that row had no real item to click into. Both are
-    now auto-created empty, immediately ready for the already-existing
-    KON/SG inline-edit machinery (from earlier sessions, see NOTES.md)."""
+    samma med safeguard.' (2026-08-09, see NOTES.md) — checking a deviation
+    in EquipmentDeviationBar used to create a cause with NO consequence/
+    safeguard at all, so the KON/SG cells for that row had no real item to
+    click into. Both are now auto-created empty, immediately ready for the
+    already-existing KON/SG inline-edit machinery (from earlier sessions,
+    see NOTES.md). The classic P&ID-click cause flow this class used to
+    also cover was removed 2026-08-13 (see NOTES.md: the P&ID canvas is
+    now object-placement-only) — place_cause_from_template's only
+    remaining caller is EquipmentDeviationBar's _create_cause_for_bar."""
 
     @classmethod
     def setUpClass(cls):
@@ -9397,12 +9272,11 @@ class AutoConsequenceAndSafeguardOnCauseTemplateTests(unittest.TestCase):
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
     def test_place_cause_from_template_creates_empty_consequence_and_safeguard(self):
-        from PyQt6.QtCore import QPointF
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
 
         cause_id = self.panel.place_cause_from_template(
-            dev_id, QPointF(10, 10), 0, "Ventil", "HV-101", "Läckage", None)
+            dev_id, "Ventil", "HV-101", "Läckage", None)
 
         self.assertIsNotNone(cause_id)
         cons_list = self.db.consequences(cause_id)
@@ -9460,22 +9334,6 @@ class AutoConsequenceAndSafeguardOnCauseTemplateTests(unittest.TestCase):
         self.assertEqual(self.db.conn.execute(
             "SELECT COUNT(*) FROM cause_markers WHERE cause_id=?", (cause_id,)
         ).fetchone()[0], 0, "no separate cause_markers row should be created")
-
-    def test_classic_pid_click_flow_still_draws_its_own_marker(self):
-        """Regression guard: the classic P&ID right-click cause flow has
-        no pre-existing equipment marker to color-code, so it must keep
-        drawing its own cause marker exactly as before — only the
-        equipment-bar path (tested above) opts out."""
-        from PyQt6.QtCore import QPointF
-        node_id = self.db.add_node()
-        dev_id = self.db.deviations(node_id)[0]['id']
-
-        cause_id = self.panel.place_cause_from_template(
-            dev_id, QPointF(10, 10), 0, "Ventil", "HV-101", "Läckage", None)
-
-        self.assertEqual(self.db.conn.execute(
-            "SELECT COUNT(*) FROM cause_markers WHERE cause_id=?", (cause_id,)
-        ).fetchone()[0], 1)
 
     def test_kon_and_sg_cells_are_clickable_after_bar_driven_cause_creation(self):
         """End-to-end confirmation of the actual reported symptom: clicking
@@ -9857,233 +9715,6 @@ class GlobalStylesheetFontSizeTests(unittest.TestCase):
         self.assertNotIn('font-size', m.group(1),
             "a font-size rule on the universal selector overrides every widget's own "
             "setFont() call, including ScenarioTablePanel's zoom spinbox")
-
-
-class TaggedRowPinTurnsGreenTests(unittest.TestCase):
-    """'Drar jag in ett objekt till safeguard eller konsekvens eller
-    trädet så skall ju pluppen ändras från röd till grön' (2026-08-09).
-    The pin icon on ORS/KON/SG previously only reflected whether a real
-    P&ID marker existed for that row (cause_markers/consequence_markers/
-    safeguard_markers) — dragging an equipment tag into the row's text
-    doesn't create one of those, so the pin stayed red even though the
-    row is now genuinely connected to the P&ID (via the dragged
-    equipment marker's own placement there)."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.app = _ensure_qapp()
-
-    def setUp(self):
-        self._tmpdir = tempfile.mkdtemp(prefix="hazop_pincolor_test_")
-        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
-
-    def tearDown(self):
-        try:
-            del self.db
-        except Exception:
-            pass
-        shutil.rmtree(self._tmpdir, ignore_errors=True)
-
-    _PIN_GREEN = (0x27, 0xae, 0x60)
-    _PIN_RED   = (0xe7, 0x4c, 0x3c)
-
-    def _pin_color_in_cell(self, panel, row, col):
-        """Render the real cell and report which pin color (green/red/
-        neither) appears anywhere in its left icon strip. Scans pixels
-        rather than intercepting _draw_pid_pin() calls directly: a single
-        real paint pass can invoke the delegate's paint() more than once
-        per cell (confirmed while writing this test — an early pass can
-        run before layout/row-height settles), so asserting on every
-        individual call is fragile; the final rendered pixels are what
-        the user actually sees and are what should be verified."""
-        panel.resize(600, 400)
-        panel.show()
-        self.app.processEvents()
-        panel._table.resizeRowsToContents()
-        self.app.processEvents()
-        index = panel._table.model().index(row, col)
-        cell_rect = panel._table.visualRect(index)
-        pixmap = panel._table.viewport().grab(cell_rect)
-        panel.hide()
-        image = pixmap.toImage()
-        found_green = found_red = False
-        strip_w = min(24, image.width())
-        for x in range(strip_w):
-            for y in range(image.height()):
-                px = image.pixelColor(x, y)
-                rgb = (px.red(), px.green(), px.blue())
-                if rgb == self._PIN_GREEN:
-                    found_green = True
-                elif rgb == self._PIN_RED:
-                    found_red = True
-        return found_green, found_red
-
-    def test_kon_pin_is_green_when_tagged_without_a_real_marker(self):
-        from hazop import ScenarioTablePanel
-        panel = ScenarioTablePanel(self.db)
-        try:
-            node_id = self.db.add_node()
-            dev_id = self.db.deviations(node_id)[0]['id']
-            cause_id = self.db.add_cause(dev_id)
-            cons_id = self.db.add_consequence(cause_id)
-            self.db.append_tag_to_consequence(cons_id, "TA-1", "Tank")
-            panel.load_node(node_id)
-            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
-
-            found_green, found_red = self._pin_color_in_cell(panel, row, panel._C_KON)
-            self.assertTrue(found_green, "a tagged consequence's pin must be green even with no real P&ID marker")
-            self.assertFalse(found_red)
-        finally:
-            panel.deleteLater()
-
-    def test_sg_pin_is_green_when_tagged_without_a_real_marker(self):
-        from hazop import ScenarioTablePanel
-        panel = ScenarioTablePanel(self.db)
-        try:
-            node_id = self.db.add_node()
-            dev_id = self.db.deviations(node_id)[0]['id']
-            cause_id = self.db.add_cause(dev_id)
-            cons_id = self.db.add_consequence(cause_id)
-            sg_id = self.db.add_safeguard(cons_id)
-            self.db.append_tag_to_safeguard(sg_id, "PSH-101", "Tryckvakt")
-            panel.load_node(node_id)
-            row = next(r for r, m in enumerate(panel._row_meta) if m[3] == sg_id)
-
-            found_green, found_red = self._pin_color_in_cell(panel, row, panel._C_SG)
-            self.assertTrue(found_green, "a tagged safeguard's pin must be green even with no real P&ID marker")
-            self.assertFalse(found_red)
-        finally:
-            panel.deleteLater()
-
-    def test_kon_pin_stays_red_when_neither_tagged_nor_marked(self):
-        from hazop import ScenarioTablePanel
-        panel = ScenarioTablePanel(self.db)
-        try:
-            node_id = self.db.add_node()
-            dev_id = self.db.deviations(node_id)[0]['id']
-            cause_id = self.db.add_cause(dev_id)
-            cons_id = self.db.add_consequence(cause_id)
-            panel.load_node(node_id)
-            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
-
-            found_green, found_red = self._pin_color_in_cell(panel, row, panel._C_KON)
-            self.assertTrue(found_red, "an untagged, unmarked consequence's pin must stay red")
-            self.assertFalse(found_green)
-        finally:
-            panel.deleteLater()
-
-
-class PinTopAlignedInTallRowsTests(unittest.TestCase):
-    """'Det vore snyggt om nålpluppen i HAZOP scenario stod i överkant'
-    (2026-08-11) — SG's and KON's pin_rect used to span the cell's FULL
-    (possibly tall, e.g. from a long wrapped description sharing the
-    same row) height, so _draw_pid_pin's own centering left the pin
-    drifting to the vertical middle of a tall row instead of staying
-    near the top. Fixed by capping the pin's own rect at _PID_ICON_W
-    tall, anchored at the cell's top."""
-
-    _PIN_RED = (0xe7, 0x4c, 0x3c)
-
-    @classmethod
-    def setUpClass(cls):
-        cls.app = _ensure_qapp()
-
-    def setUp(self):
-        self._tmpdir = tempfile.mkdtemp(prefix="hazop_pintop_test_")
-        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
-
-    def tearDown(self):
-        try:
-            del self.db
-        except Exception:
-            pass
-        shutil.rmtree(self._tmpdir, ignore_errors=True)
-
-    def _pin_pixel_y_range(self, panel, row, col):
-        """Render the real cell and return (min_y, max_y, cell_height)
-        for every pixel matching the (untagged, unmarked) red pin
-        color found in its left icon strip.
-
-        Uses panel._resize_rows_manual() rather than the native
-        QTableWidget.resizeRowsToContents() — the latter was pinpointed
-        as a native crash site (see _resize_rows()'s docstring) and, on
-        top of that, was observed here to silently compute a wrong (far
-        too small) row height for a very tall wrapped-text row. Production
-        code never calls it either; matching that real render path is
-        what makes this test meaningful."""
-        panel.resize(600, 400)
-        panel.show()
-        self.app.processEvents()
-        panel._resize_rows_manual()
-        self.app.processEvents()
-        index = panel._table.model().index(row, col)
-        cell_rect = panel._table.visualRect(index)
-        pixmap = panel._table.viewport().grab(cell_rect)
-        panel.hide()
-        image = pixmap.toImage()
-        ys = []
-        strip_w = min(24, image.width())
-        for x in range(strip_w):
-            for y in range(image.height()):
-                px = image.pixelColor(x, y)
-                if (px.red(), px.green(), px.blue()) == self._PIN_RED:
-                    ys.append(y)
-        self.assertTrue(ys, "expected to find the (red, unmarked) pin somewhere in this cell")
-        return min(ys), max(ys), image.height()
-
-    def test_sg_pin_stays_near_top_of_a_tall_row(self):
-        from hazop import ScenarioTablePanel
-        panel = ScenarioTablePanel(self.db)
-        try:
-            node_id = self.db.add_node()
-            dev_id = self.db.deviations(node_id)[0]['id']
-            cause_id = self.db.add_cause(dev_id)
-            self.db.update_cause(
-                cause_id,
-                description="En mycket lång orsakstext som tvingar fram en hög "
-                            "rad genom radbrytning i cellen " * 4)
-            cons_id = self.db.add_consequence(cause_id)
-            sg_id = self.db.add_safeguard(cons_id)
-            panel.load_node(node_id)
-            row = next(r for r, m in enumerate(panel._row_meta) if m[3] == sg_id)
-
-            min_y, max_y, cell_h = self._pin_pixel_y_range(panel, row, panel._C_SG)
-            self.assertGreater(cell_h, 60, "the row must actually be tall for this test to mean anything")
-            # Fixed pixel budget (not cell_h/2): the pin_rect is capped at
-            # _PID_ICON_W tall, so a correctly top-anchored pin always stays
-            # within the first ~25px regardless of how tall the row grows.
-            # cell_h/2 was tried first but the bug (pin centered in the full
-            # row) and the fix (pin capped near the top) both landed under
-            # that threshold for some text lengths, making it not actually
-            # distinguish the two — see NOTES.md 2026-08-11.
-            self.assertLess(max_y, 25,
-                f"pin pixels reached y={max_y} in a {cell_h}px-tall cell — "
-                "must stay near the top, not drift toward the middle")
-        finally:
-            panel.deleteLater()
-
-    def test_kon_pin_stays_near_top_of_a_tall_row(self):
-        from hazop import ScenarioTablePanel
-        panel = ScenarioTablePanel(self.db)
-        try:
-            node_id = self.db.add_node()
-            dev_id = self.db.deviations(node_id)[0]['id']
-            cause_id = self.db.add_cause(dev_id)
-            cons_id = self.db.add_consequence(cause_id)
-            self.db.update_consequence(
-                cons_id,
-                "En mycket lång konsekvensbeskrivning som tvingar fram en hög "
-                "rad genom radbrytning i cellen " * 4, 3, '')
-            panel.load_node(node_id)
-            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
-
-            min_y, max_y, cell_h = self._pin_pixel_y_range(panel, row, panel._C_KON)
-            self.assertGreater(cell_h, 60, "the row must actually be tall for this test to mean anything")
-            self.assertLess(max_y, 25,
-                f"pin pixels reached y={max_y} in a {cell_h}px-tall cell — "
-                "must stay near the top, not drift toward the middle")
-        finally:
-            panel.deleteLater()
 
 
 class OrsStripTagFreqLayoutTests(unittest.TestCase):
@@ -11638,7 +11269,13 @@ class PIDPanelStaleActiveIdTests(unittest.TestCase):
     still 'active' in the PIDPanel used to survive as a stale id into the
     next placement click, crashing add_consequence/add_safeguard with
     sqlite3.IntegrityError: FOREIGN KEY constraint failed (real crash
-    report, 2026-08-07 — crash_20260807_134324_IntegrityError.json)."""
+    report, 2026-08-07 — crash_20260807_134324_IntegrityError.json). The
+    P&ID-click reproduction tests for this were removed 2026-08-13 (see
+    NOTES.md: _on_consequence_click/_on_safeguard_click no longer exist —
+    the P&ID canvas is now object-placement-only) — the underlying
+    stale-id reset logic they exercised is still covered by the tests
+    below, which drive it directly rather than through a removed click
+    handler."""
 
     @classmethod
     def setUpClass(cls):
@@ -11657,41 +11294,6 @@ class PIDPanelStaleActiveIdTests(unittest.TestCase):
         except Exception:
             pass
         shutil.rmtree(self._tmpdir, ignore_errors=True)
-
-    def test_consequence_click_with_deleted_cause_shows_message_not_crash(self):
-        from PyQt6.QtCore import QPointF
-        node_id = self.db.add_node()
-        dev_id = self.db.deviations(node_id)[0]['id']
-        cause_id = self.db.add_cause(dev_id)
-        self.panel._active_cause_id = cause_id
-        self.db.delete_cause(cause_id)   # simulate deletion elsewhere
-
-        with unittest.mock.patch.object(QMessageBox, 'information') as mock_info:
-            self.panel._on_consequence_click(QPointF(5, 5), 0)
-
-        self.assertEqual(mock_info.call_count, 1)
-        self.assertIsNone(self.panel._active_cause_id)
-
-    def test_safeguard_click_with_deleted_consequence_shows_message_not_crash(self):
-        # The real SafeguardPickerDialog blocks on exec() waiting for user
-        # input, so patch it to blow up if the guard fails to fire and
-        # constructs it anyway — turns a hang into a clear test failure.
-        from PyQt6.QtCore import QPointF
-        node_id = self.db.add_node()
-        dev_id = self.db.deviations(node_id)[0]['id']
-        cause_id = self.db.add_cause(dev_id)
-        cons_id = self.db.add_consequence(cause_id)
-        self.panel._active_consequence_id = cons_id
-        self.db.delete_consequence(cons_id)   # simulate deletion elsewhere
-
-        with unittest.mock.patch.object(QMessageBox, 'information') as mock_info, \
-             unittest.mock.patch('pid_viewer.SafeguardPickerDialog',
-                                  side_effect=AssertionError(
-                                      "picker dialog must not open for a deleted consequence")):
-            self.panel._on_safeguard_click(QPointF(5, 5), 0)
-
-        self.assertEqual(mock_info.call_count, 1)
-        self.assertIsNone(self.panel._active_consequence_id)
 
     def test_clear_active_selection_resets_all_placement_state(self):
         node_id = self.db.add_node()
@@ -12122,6 +11724,21 @@ class PidPageRotationTests(unittest.TestCase):
         panel._rebuild_sheet_map()
         return panel
 
+    def _insert_cause_marker(self, cause_id, page, x, y, comp_type,
+                             rect_w=None, rect_h=None):
+        """Database.add_cause_marker was removed 2026-08-13 (see NOTES.md:
+        the P&ID canvas is now object-placement-only, so nothing creates
+        cause_markers rows anymore) — the table/schema itself is untouched
+        (no migration, no data loss for existing projects), and
+        remap_page_rotation_positions still has to remap any legacy rows
+        that exist there correctly. Insert directly so these tests keep
+        exercising that generic remap logic against a real row shape."""
+        self.db.conn.execute(
+            "INSERT INTO cause_markers (cause_id,pid_page,x,y,component_type,rect_w,rect_h) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (cause_id, page, x, y, comp_type, rect_w, rect_h))
+        self.db.commit()
+
     def test_db_rotation_round_trip(self):
         self.assertEqual(self.db.get_page_rotation(0), 0)
         self.db.set_page_rotation(0, 90)
@@ -12173,14 +11790,14 @@ class PidPageRotationTests(unittest.TestCase):
             node_id  = self.db.add_node()
             dev_id   = self.db.deviations(node_id)[0]['id']
             cause_id = self.db.add_cause(dev_id)
-            self.db.add_cause_marker(cause_id, 0, 100.0, 50.0, "Ventil")
+            self._insert_cause_marker(cause_id, 0, 100.0, 50.0, "Ventil")
 
             page_before = panel.viewer.pdf_doc.load_page(0)
             raw_anchor_before = fitz.Point(100.0, 50.0) * page_before.derotation_matrix
 
             panel._rotate_page(90)
 
-            marker = self.db.get_cause_marker(cause_id)
+            marker = dict(self.db.cause_markers_for_page(0)[0])
             page_after = panel.viewer.pdf_doc.load_page(0)
             raw_anchor_after = fitz.Point(marker['x'], marker['y']) * page_after.derotation_matrix
 
@@ -12201,8 +11818,8 @@ class PidPageRotationTests(unittest.TestCase):
             node_id  = self.db.add_node()
             dev_id   = self.db.deviations(node_id)[0]['id']
             cause_id = self.db.add_cause(dev_id)
-            self.db.add_cause_marker(cause_id, 0, 100.0, 50.0, "Ventil",
-                                     rect_w=40.0, rect_h=20.0)
+            self._insert_cause_marker(cause_id, 0, 100.0, 50.0, "Ventil",
+                                      rect_w=40.0, rect_h=20.0)
 
             panel._rotate_page(90)
 
@@ -12218,8 +11835,8 @@ class PidPageRotationTests(unittest.TestCase):
             node_id  = self.db.add_node()
             dev_id   = self.db.deviations(node_id)[0]['id']
             cause_id = self.db.add_cause(dev_id)
-            self.db.add_cause_marker(cause_id, 0, 100.0, 50.0, "Ventil",
-                                     rect_w=40.0, rect_h=20.0)
+            self._insert_cause_marker(cause_id, 0, 100.0, 50.0, "Ventil",
+                                      rect_w=40.0, rect_h=20.0)
 
             panel._rotate_page(90)
             panel._rotate_page(90)   # net 180 degrees
@@ -12263,13 +11880,13 @@ class PidPageRotationTests(unittest.TestCase):
             node_id  = self.db.add_node()
             dev_id   = self.db.deviations(node_id)[0]['id']
             cause_id = self.db.add_cause(dev_id)
-            self.db.add_cause_marker(cause_id, 0, 77.0, 133.0, "Ventil")
+            self._insert_cause_marker(cause_id, 0, 77.0, 133.0, "Ventil")
 
             for _ in range(4):
                 panel._rotate_page(90)
 
             self.assertEqual(self.db.get_page_rotation(0), 0)
-            marker = self.db.get_cause_marker(cause_id)
+            marker = dict(self.db.cause_markers_for_page(0)[0])
             self.assertAlmostEqual(marker['x'], 77.0, places=3)
             self.assertAlmostEqual(marker['y'], 133.0, places=3)
         finally:

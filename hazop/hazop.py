@@ -16,7 +16,7 @@ import inspect
 
 from pid_viewer import (
     PIDPanel, COMPONENT_TYPES, CONSEQUENCE_TEMPLATES, HAS_PYMUPDF,
-    MODE_NAV, MODE_NODE, MODE_CONSEQUENCE, MODE_SAFEGUARD, MODE_PICK_REF_TAG,
+    MODE_NAV, MODE_NODE, MODE_PICK_REF_TAG,
     scan_pdf_for_equipment, ocr_status, resolve_ocr_scan_choice, KNOWN_PREFIXES, invert_cause_text,
     _RED_MARKUP_SYMBOLS, _get_red_symbol_svg,
     _equip_prefix_from_tag,
@@ -3622,53 +3622,6 @@ class Database:
         self.commit()
         return cur.lastrowid
 
-    def add_cause_marker(self, cause_id, page, x, y, comp_type, tag='',
-                         rect_w=None, rect_h=None):
-        self.conn.execute(
-            "INSERT INTO cause_markers "
-            "(cause_id,pid_page,x,y,component_type,component_tag,rect_w,rect_h) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            (cause_id, page, x, y, comp_type, tag, rect_w, rect_h))
-        self.commit()
-
-    def add_consequence_marker(self, cons_id, page, x, y, target,
-                               rect_w=None, rect_h=None):
-        self.conn.execute(
-            "INSERT INTO consequence_markers "
-            "(consequence_id,pid_page,x,y,target_name,rect_w,rect_h) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (cons_id, page, x, y, target, rect_w, rect_h))
-        self.commit()
-
-    def add_safeguard_marker(self, sg_id, page, x, y, tag='',
-                             rect_w=None, rect_h=None):
-        self.conn.execute(
-            "INSERT INTO safeguard_markers "
-            "(safeguard_id,pid_page,x,y,tag,rect_w,rect_h) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (sg_id, page, x, y, tag, rect_w, rect_h))
-        self.commit()
-
-    def update_marker_rect(self, marker_type, marker_id, page,
-                           cx, cy, rect_w, rect_h):
-        """Update center position + zone rect dimensions for a placed marker."""
-        if marker_type == 'cause':
-            self.conn.execute(
-                "UPDATE cause_markers SET x=?,y=?,rect_w=?,rect_h=? "
-                "WHERE cause_id=? AND pid_page=?",
-                (cx, cy, rect_w, rect_h, marker_id, page))
-        elif marker_type == 'consequence':
-            self.conn.execute(
-                "UPDATE consequence_markers SET x=?,y=?,rect_w=?,rect_h=? "
-                "WHERE consequence_id=? AND pid_page=?",
-                (cx, cy, rect_w, rect_h, marker_id, page))
-        elif marker_type == 'safeguard':
-            self.conn.execute(
-                "UPDATE safeguard_markers SET x=?,y=?,rect_w=?,rect_h=? "
-                "WHERE safeguard_id=? AND pid_page=?",
-                (cx, cy, rect_w, rect_h, marker_id, page))
-        self.commit()
-
     def cause_markers_for_page(self, page):
         return self.conn.execute(
             "SELECT * FROM cause_markers WHERE pid_page=?", (page,)).fetchall()
@@ -3681,54 +3634,12 @@ class Database:
         return self.conn.execute(
             "SELECT * FROM safeguard_markers WHERE pid_page=?", (page,)).fetchall()
 
-    def marked_cause_ids(self):
-        return {r[0] for r in self.conn.execute(
-            "SELECT DISTINCT cause_id FROM cause_markers").fetchall()}
-
-    def marked_consequence_ids(self):
-        return {r[0] for r in self.conn.execute(
-            "SELECT DISTINCT consequence_id FROM consequence_markers").fetchall()}
-
-    def marked_safeguard_ids(self):
-        return {r[0] for r in self.conn.execute(
-            "SELECT DISTINCT safeguard_id FROM safeguard_markers").fetchall()}
-
-    def remove_cause_marker(self, cause_id):
-        self.conn.execute("DELETE FROM cause_markers WHERE cause_id=?", (cause_id,))
-        self.commit()
-
-    def remove_consequence_marker(self, consequence_id):
-        self.conn.execute("DELETE FROM consequence_markers WHERE consequence_id=?", (consequence_id,))
-        self.commit()
-
-    def remove_safeguard_marker(self, safeguard_id):
-        self.conn.execute("DELETE FROM safeguard_markers WHERE safeguard_id=?", (safeguard_id,))
-        self.commit()
-
-    def get_cause_marker(self, cause_id):
-        row = self.conn.execute(
-            "SELECT pid_page, x, y FROM cause_markers WHERE cause_id=? LIMIT 1",
-            (cause_id,)).fetchone()
-        return dict(row) if row else None
-
     def cause_markers_for_cause(self, cause_id):
         """Return all markers for a specific cause (page, x, y, comp_type, tag)."""
         return self.conn.execute(
             "SELECT pid_page, x, y, component_type, component_tag "
             "FROM cause_markers WHERE cause_id=?",
             (cause_id,)).fetchall()
-
-    def get_consequence_marker(self, consequence_id):
-        row = self.conn.execute(
-            "SELECT pid_page, x, y FROM consequence_markers WHERE consequence_id=? LIMIT 1",
-            (consequence_id,)).fetchone()
-        return dict(row) if row else None
-
-    def get_safeguard_marker(self, safeguard_id):
-        row = self.conn.execute(
-            "SELECT pid_page, x, y FROM safeguard_markers WHERE safeguard_id=? LIMIT 1",
-            (safeguard_id,)).fetchone()
-        return dict(row) if row else None
 
     # ── Equipment markers (auto-detected symbols, "🎯 Hitta på P&ID") ──────────
     def add_equipment_marker(self, equipment_id, tag, page, x, y, comp_type,
@@ -5280,7 +5191,6 @@ class NodePanel(QWidget):
 
 class ConsequencePanel(QWidget):
     saved        = pyqtSignal(int)
-    place_on_pid = pyqtSignal()
 
     def __init__(self, db: Database):
         super().__init__()
@@ -5535,7 +5445,6 @@ class ConsequencePanel(QWidget):
 
 class SafeguardPanel(QWidget):
     saved        = pyqtSignal(int)
-    place_on_pid = pyqtSignal()
 
     def __init__(self, db: Database):
         super().__init__()
@@ -7294,9 +7203,6 @@ class _PickDeviationDialog(QDialog):
 
 class TreePanel(QWidget):
     item_selected               = pyqtSignal(int, int)
-    add_causes_on_pid_requested       = pyqtSignal(int)   # deviation_id
-    add_consequences_on_pid_requested = pyqtSignal(int)   # cause_id
-    add_safeguards_on_pid_requested   = pyqtSignal(int)   # consequence_id
     edit_node_markup_requested        = pyqtSignal(int)        # node_id
     edit_red_markup_requested         = pyqtSignal(int)        # node_id
     node_markup_vis_requested         = pyqtSignal(int, bool)  # node_id, visible
@@ -7425,10 +7331,6 @@ class TreePanel(QWidget):
             target = None
             bold_font = QFont(); bold_font.setBold(True)
 
-            marked_causes = self.db.marked_cause_ids()
-            marked_consequences = self.db.marked_consequence_ids()
-            marked_safeguards = self.db.marked_safeguard_ids()
-
             def add_cause_children(citem, cause):
                 """Append the consequence/safeguard subtree for a single
                 cause as children of citem — factored out of
@@ -7443,9 +7345,7 @@ class TreePanel(QWidget):
                     cause_freq = self.db.cause_frequency_level(cause)
                     level, _, _ = risk_info(cause_freq, cons['severity'])
                     risk_icon = RISK_ICON.get(level, '⚪')
-                    placed_k = cons['id'] in marked_consequences
                     kitem = QTreeWidgetItem([f"      {risk_icon}  {ki}. {cons['description'][:40]}"])
-                    kitem.setIcon(0, _make_pin_icon(placed_k))
                     kitem.setData(0, Qt.ItemDataRole.UserRole, cons['id'])
                     kitem.setData(0, Qt.ItemDataRole.UserRole + 1, CONS_T)
                     citem.addChild(kitem)
@@ -7460,9 +7360,7 @@ class TreePanel(QWidget):
                         except (IndexError, KeyError):
                             linked = False
                         sg_icon = "🔗🛡" if linked else "🛡"
-                        placed_s = sg['id'] in marked_safeguards
                         sgitem = QTreeWidgetItem([f"         {sg_icon}  {si}. {sg['description'][:35]}  [{rrf_str}]"])
-                        sgitem.setIcon(0, _make_pin_icon(placed_s))
                         sgitem.setData(0, Qt.ItemDataRole.UserRole, sg['id'])
                         sgitem.setData(0, Qt.ItemDataRole.UserRole + 1, SG_T)
                         kitem.addChild(sgitem)
@@ -7477,7 +7375,6 @@ class TreePanel(QWidget):
                 item (2026-08-09, see NOTES.md "kaka på kaka")."""
                 nonlocal target
                 for ci, cause in enumerate(self.db.causes_for_deviation(dev_id), 1):
-                    placed_c = cause['id'] in marked_causes
                     tag    = (cause['comp_tag'] or '').strip() if cause['comp_tag'] else ''
                     desc   = (cause['description'] or '').strip()
                     # A REAL description is always more useful in the tree
@@ -7492,7 +7389,6 @@ class TreePanel(QWidget):
                     trivial_desc = desc in ('', 'Ny orsak')
                     c_label = (tag if tag else desc[:50]) if trivial_desc else desc[:50]
                     citem = QTreeWidgetItem([f"    ⚙ {ci}. {c_label}"])
-                    citem.setIcon(0, _make_pin_icon(placed_c))
                     citem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
                     citem.setData(0, Qt.ItemDataRole.UserRole + 1, CAUSE_T)
                     ditem.addChild(citem)
@@ -7623,8 +7519,6 @@ class TreePanel(QWidget):
                                 # moment the cause gets a real description,
                                 # or a second cause is added.
                                 cause = dev_causes[0]
-                                placed_c = cause['id'] in marked_causes
-                                eitem.setIcon(0, _make_pin_icon(placed_c))
                                 eitem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
                                 eitem.setData(0, Qt.ItemDataRole.UserRole + 1, CAUSE_T)
                                 if (CAUSE_T, cause['id']) in expanded: eitem.setExpanded(True)
@@ -7907,8 +7801,6 @@ class TreePanel(QWidget):
                                    lambda i=id_: self.node_markup_vis_requested.emit(i, True))
         elif type_ == DEV_T:
             menu.addAction("+ Lägg till orsak", self.add_cause)
-            menu.addAction(_icon('pin'), "Lägg till orsaker på P&ID",
-                           lambda i=id_: self.add_causes_on_pid_requested.emit(i))
         elif type_ == CAUSE_T:
             # "+ Lägg till orsak" also offered here (not just on DEV_T) so
             # a cause row that merged with its deviation's own header
@@ -7919,12 +7811,8 @@ class TreePanel(QWidget):
             # triggered it.
             menu.addAction("+ Lägg till orsak", self.add_cause)
             menu.addAction("+ Lägg till konsekvens", self.add_consequence)
-            menu.addAction(_icon('pin'), "Lägg till konsekvens på P&ID",
-                           lambda i=id_: self.add_consequences_on_pid_requested.emit(i))
         elif type_ == CONS_T:
             menu.addAction("+ Lägg till safeguard", self.add_safeguard)
-            menu.addAction(_icon('pin'), "Lägg till safeguard på P&ID",
-                           lambda i=id_: self.add_safeguards_on_pid_requested.emit(i))
 
         # Copy
         copy_labels = {CAUSE_T: "Kopiera orsak",
@@ -10582,12 +10470,12 @@ class _ScenarioDelegate(QStyledItemDelegate):
             return QSize(option.rect.width(),
                          _ORS_STRIP_H + max(one_line_h, rect.height() + 4))
         elif col == panel._C_KON:
-            w -= _PID_ICON_W + _KON_CAT_W
+            w -= _KON_CAT_W
             w = max(40, w)
             rect = fm.boundingRect(0, 0, w, 10000, Qt.TextFlag.TextWordWrap, text)
             return QSize(option.rect.width(), max(one_line_h, rect.height() + 4))
         elif col == panel._C_SG:
-            w -= _PID_ICON_W + _RRF_W
+            w -= _RRF_W
         w = max(40, w)
         rect = fm.boundingRect(0, 0, w, 10000,
                                Qt.TextFlag.TextWordWrap, text)
@@ -10800,21 +10688,18 @@ class _PidDelegate(_ScenarioDelegate):
                                      max(10, r.height() - _STRIP_H)))
             return
         elif col == self._panel._C_KON:
-            offset = _PID_ICON_W + _KON_CAT_W
+            offset = _KON_CAT_W
             editor.setGeometry(QRect(r.left() + offset, r.top(),
                                      max(10, r.width() - offset), r.height()))
             return
         elif col == self._panel._C_SG:
             # 2026-08-10 fix: this used to span the full remaining width,
             # visually covering the RRF badge (_RRF_W) while editing.
-            editor.setGeometry(QRect(r.left() + _PID_ICON_W, r.top(),
-                                     max(10, r.width() - _PID_ICON_W - _RRF_W),
+            editor.setGeometry(QRect(r.left(), r.top(),
+                                     max(10, r.width() - _RRF_W),
                                      r.height()))
             return
-        else:
-            offset = _PID_ICON_W
-        editor.setGeometry(QRect(r.left() + offset, r.top(),
-                                 max(10, r.width() - offset), r.height()))
+        editor.setGeometry(r)
 
     def paint(self, painter, option, index):
         row, col = index.row(), index.column()
@@ -10834,24 +10719,12 @@ class _PidDelegate(_ScenarioDelegate):
                 else:
                     painter.fillRect(r, option.palette.base())
 
-                # Tag data still tracked (drives pin color below) but no
-                # longer shown as its own strip (2026-08-10, see NOTES.md
-                # "ta bort tagg remsa") — a dragged-in tag now only shows
-                # inline, bolded in the description text.
-                comp_type, comp_tag = index.data(Qt.ItemDataRole.UserRole + 6) or ('', '')
-                has_tag = bool(comp_tag or comp_type)
                 body_top = r.top()
                 body_h   = r.height()
 
-                # Layout: [pin 22px][description ...][RRF badge 54px]
-                desc_w    = r.width() - _PID_ICON_W - _RRF_W
-                # Pin anchored to the TOP of the cell (2026-08-11: "det vore
-                # snyggt om nålpluppen i HAZOP scenario stod i överkant") —
-                # _draw_pid_pin centers itself within whatever rect it's
-                # given, so a rect spanning the FULL (possibly tall) row
-                # left it drifting to the vertical middle instead.
-                pin_rect  = QRect(r.left(), body_top, _PID_ICON_W, min(body_h, _PID_ICON_W))
-                desc_rect = QRect(r.left() + _PID_ICON_W, body_top, desc_w, body_h)
+                # Layout: [description ...][RRF badge 54px]
+                desc_w    = r.width() - _RRF_W
+                desc_rect = QRect(r.left(), body_top, desc_w, body_h)
                 rrf_rect  = QRect(r.right() - _RRF_W, body_top, _RRF_W, body_h)
 
                 # Description text (elided to one line), drag-appended tags
@@ -10895,22 +10768,11 @@ class _PidDelegate(_ScenarioDelegate):
                     painter.drawEllipse(circ)
                     painter.setBrush(Qt.BrushStyle.NoBrush)
 
-                # Pin icon — green once EITHER a real P&ID marker exists OR
-                # an object has been drag-appended (2026-08-09, see
-                # NOTES.md: "drar jag in ett objekt ... så skall ju pluppen
-                # ändras från röd till grön") — a dragged-in object is a
-                # real connection to the P&ID (the equipment marker itself
-                # is placed there) even without a separate marker of its
-                # own for this row.
-                if self._panel._cell_has_item(row, col):
-                    _draw_pid_pin(painter, pin_rect,
-                                 self._panel._is_cell_placed(row, col) or has_tag)
-
                 self._draw_plus_badge(painter, r, row, col)
                 painter.restore()
                 return
 
-        # ── Cause cells: top strip [pin|tag|freq|dots] + description below ────────
+        # ── Cause cells: top strip [tag|freq|dots] + description below ────────
         if col == self._panel._C_ORS:
             obj_data = index.data(Qt.ItemDataRole.UserRole + 2)
             if obj_data is not None:
@@ -10959,16 +10821,6 @@ class _PidDelegate(_ScenarioDelegate):
                 painter.setPen(QPen(QColor('#bcd'), 1))
                 painter.drawLine(r.left(), r.top() + _SH, r.right(), r.top() + _SH)
 
-                # ── Pin icon (left of strip) — green once EITHER a real
-                # P&ID marker exists OR an object has been drag-appended
-                # (2026-08-09, see NOTES.md) ────────────────────────────
-                pin_rect = QRect(r.left(), r.top(), _PID_ICON_W, _SH)
-                if _cause_id is not None:
-                    _draw_pid_pin(painter, pin_rect,
-                                 self._panel._is_cell_placed(row, col) or has_tag)
-                else:
-                    _draw_pid_pin(painter, pin_rect, False)
-
                 # ── Tag + frequency geometry (shared with the click hit-test
                 # in eventFilter() via _ors_tag_zone_geometry — see its
                 # docstring for why: 2026-08-11, "tag numret klipps av ...
@@ -10977,7 +10829,7 @@ class _PidDelegate(_ScenarioDelegate):
                 # zone then gets whatever room that leaves, instead of
                 # being capped at the fixed _cause_obj_w divider width
                 # regardless of free space. ─────────────────────────────
-                tag_x = r.left() + _PID_ICON_W
+                tag_x = r.left()
                 tag_zone_w, freq_zone_x, freq_zone_w, freq_str = \
                     self._panel._ors_tag_zone_geometry(index, tag_x, r.right())
 
@@ -11055,7 +10907,7 @@ class _PidDelegate(_ScenarioDelegate):
                 painter.restore()
                 return
 
-        # ── Consequence cells: [pin][cat-badge][description] ──────────────────
+        # ── Consequence cells: [cat-badge][description] ────────────────────────
         if col == self._panel._C_KON:
             con_data = index.data(Qt.ItemDataRole.UserRole)
             if con_data and con_data[0] == 'consequence':
@@ -11068,22 +10920,12 @@ class _PidDelegate(_ScenarioDelegate):
                 else:
                     painter.fillRect(r, option.palette.base())
 
-                # Tag data still tracked (drives pin color below) but no
-                # longer shown as its own strip (2026-08-10, see NOTES.md
-                # "ta bort tagg remsa") — a dragged-in tag now only shows
-                # inline, bolded in the description text.
-                comp_type, comp_tag = index.data(Qt.ItemDataRole.UserRole + 7) or ('', '')
-                has_tag = bool(comp_tag or comp_type)
                 body_top = r.top()
                 body_h   = r.height()
 
-                # Pin anchored to the TOP of the cell, not centered across a
-                # possibly tall wrapped-text row — see the SG cell's
-                # identical fix above for the full rationale.
-                pin_rect   = QRect(r.left(), body_top, _PID_ICON_W, min(body_h, _PID_ICON_W))
-                cat_rect   = QRect(r.left() + _PID_ICON_W, body_top, _KON_CAT_W, body_h)
-                txt_rect   = QRect(r.left() + _PID_ICON_W + _KON_CAT_W, body_top,
-                                   r.width() - _PID_ICON_W - _KON_CAT_W, body_h)
+                cat_rect   = QRect(r.left(), body_top, _KON_CAT_W, body_h)
+                txt_rect   = QRect(r.left() + _KON_CAT_W, body_top,
+                                   r.width() - _KON_CAT_W, body_h)
 
                 # Category badges — stacked vertically, one per category
                 n_cats      = index.data(Qt.ItemDataRole.UserRole + 4) or 0
@@ -11131,34 +10973,12 @@ class _PidDelegate(_ScenarioDelegate):
                     painter, txt_rect.adjusted(2, 2, -2, -2), display,
                     tagged_refs, option.font, tc, word_wrap=True)
 
-                # Pin icon — green once EITHER a real P&ID marker exists OR
-                # an object has been drag-appended (2026-08-09, see NOTES.md)
-                meta = self._panel._row_meta
-                _cid = meta[row][2] if row < len(meta) else None
-                if _cid is not None:
-                    _draw_pid_pin(painter, pin_rect,
-                                 self._panel._is_cell_placed(row, col) or has_tag)
-                else:
-                    _draw_pid_pin(painter, pin_rect, False)
                 self._draw_plus_badge(painter, r, row, col)
                 painter.restore()
                 return
 
-        # ── Default: shift content right, draw pin on left ────────────────────
-        opt = QStyleOptionViewItem(option)
-        opt.rect = option.rect.adjusted(_PID_ICON_W, 0, 0, 0)
-        super().paint(painter, opt, index)
-        icon_rect = QRect(option.rect.left(), option.rect.top(),
-                          _PID_ICON_W, option.rect.height())
-        if sel:
-            painter.fillRect(icon_rect, option.palette.highlight())
-        elif row % 2 == 1:
-            painter.fillRect(icon_rect, option.palette.alternateBase())
-        else:
-            painter.fillRect(icon_rect, option.palette.base())
-        if not self._panel._cell_has_item(row, col):
-            return
-        _draw_pid_pin(painter, icon_rect, self._panel._is_cell_placed(row, col))
+        # ── Default: delegate straight to the base description painting ────────
+        super().paint(painter, option, index)
 
     def _draw_plus_badge(self, painter, rect, row, col):
         """Small "+" in a cell's bottom-right corner, offering to add
@@ -11606,10 +11426,6 @@ class ScenarioTablePanel(QWidget):
     item_selected              = pyqtSignal(int, int)   # (type_, id_) — cell clicked → open right panel
     new_item_created           = pyqtSignal(int, int)   # (type_, id_) — after quick-add via Enter menu
     item_edited                = pyqtSignal(int, int)   # (type_, id_) — cell edit committed → sync right panel
-    place_requested            = pyqtSignal(int, int)   # (type_, id_) — place/add marker
-    navigate_to_pid            = pyqtSignal(int, int)   # (type_, id_) — navigate to existing marker
-    remove_requested           = pyqtSignal(int, int)   # (type_, id_) — delete all markers
-    add_causes_on_pid_requested = pyqtSignal(int)       # deviation_id — red pin click on empty ORS row
     structure_changed          = pyqtSignal()           # item moved/deleted/duplicated → refresh tree
 
     # Column indices
@@ -11761,10 +11577,6 @@ class ScenarioTablePanel(QWidget):
             except Exception:
                 pass
         h.sectionResized.connect(self._on_column_resized)
-
-        self._placed_causes       = set()
-        self._placed_consequences = set()
-        self._placed_safeguards   = set()
 
         # ── Sticky context bar — always shows current Nod + Avvikelse ──────────
         self._ctx_bar = QLabel()
@@ -12452,7 +12264,7 @@ class ScenarioTablePanel(QWidget):
                                       Qt.TextFlag.TextWordWrap, text)
                 h = _ORS_STRIP_H + max(one_line_h, rect.height() + 4)
             else:   # self._C_KON
-                cell_w = max(40, w - _PID_ICON_W - _KON_CAT_W)
+                cell_w = max(40, w - _KON_CAT_W)
                 rect = fm.boundingRect(0, 0, cell_w, 10000,
                                       Qt.TextFlag.TextWordWrap, text)
                 h = max(one_line_h, rect.height() + 4)
@@ -13158,18 +12970,17 @@ class ScenarioTablePanel(QWidget):
             rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, text)
             return _ORS_STRIP_H + max(one_line_h, rect.height() + 4)
         else:   # self._C_KON
-            cell_w = max(40, w - _PID_ICON_W - _KON_CAT_W)
+            cell_w = max(40, w - _KON_CAT_W)
             rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, text)
             return max(one_line_h, rect.height() + 4)
 
     def refresh_placed(self):
-        """Reload which IDs are placed on the P&ID and repaint the table."""
-        try:
-            self._placed_causes       = set(self.db.marked_cause_ids())
-            self._placed_consequences = set(self.db.marked_consequence_ids())
-            self._placed_safeguards   = set(self.db.marked_safeguard_ids())
-        except Exception:
-            pass
+        """Repaint the table — kept as a thin call so its many existing
+        call sites (after any data change that might affect what's shown)
+        keep working unchanged; it no longer tracks P&ID placement state
+        (2026-08-13, see NOTES.md: the P&ID canvas is now
+        object-placement-only, so cause/consequence/safeguard rows have no
+        "placed on P&ID" concept anymore)."""
         self._table.viewport().update()
 
     def select_cause(self, cause_id: int):
@@ -13214,51 +13025,6 @@ class ScenarioTablePanel(QWidget):
             return sg_id is not None
         return False
 
-    def _is_cell_placed(self, row, col):
-        if row >= len(self._row_meta):
-            return False
-        _dev_id, cause_id, cons_id, sg_id = self._row_meta[row]
-        if col == self._C_ORS:
-            return cause_id in self._placed_causes
-        if col == self._C_KON:
-            return cons_id in self._placed_consequences
-        if col == self._C_SG:
-            return sg_id is not None and sg_id in self._placed_safeguards
-        return False
-
-    def _place_from_table(self, row, col):
-        if row >= len(self._row_meta):
-            return
-        _dev_id, cause_id, cons_id, sg_id = self._row_meta[row]
-        if col == self._C_ORS and cause_id is not None:
-            self.place_requested.emit(CAUSE_T, cause_id)
-        elif col == self._C_KON and cons_id is not None:
-            self.place_requested.emit(CONS_T, cons_id)
-        elif col == self._C_SG and sg_id is not None:
-            self.place_requested.emit(SG_T, sg_id)
-
-    def _emit_navigate(self, row, col):
-        if row >= len(self._row_meta):
-            return
-        _dev_id, cause_id, cons_id, sg_id = self._row_meta[row]
-        if col == self._C_ORS and cause_id is not None:
-            self.navigate_to_pid.emit(CAUSE_T, cause_id)
-        elif col == self._C_KON and cons_id is not None:
-            self.navigate_to_pid.emit(CONS_T, cons_id)
-        elif col == self._C_SG and sg_id is not None:
-            self.navigate_to_pid.emit(SG_T, sg_id)
-
-    def _remove_from_pid(self, row, col):
-        if row >= len(self._row_meta):
-            return
-        _dev_id, cause_id, cons_id, sg_id = self._row_meta[row]
-        if col == self._C_ORS and cause_id is not None:
-            self.remove_requested.emit(CAUSE_T, cause_id)
-        elif col == self._C_KON and cons_id is not None:
-            self.remove_requested.emit(CONS_T, cons_id)
-        elif col == self._C_SG and sg_id is not None:
-            self.remove_requested.emit(SG_T, sg_id)
-
     def _on_table_context_menu(self, pos):
         col = self._table.columnAt(pos.x())
         row = self._table.rowAt(pos.y())
@@ -13267,17 +13033,8 @@ class ScenarioTablePanel(QWidget):
         if col not in (self._C_ORS, self._C_KON, self._C_SG):
             return
         if not self._cell_has_item(row, col):
-            return  # no item to place/remove — e.g. safeguard row with no safeguard yet
-        is_placed = self._is_cell_placed(row, col)
+            return  # no item here at all — e.g. safeguard row with no safeguard yet
         menu = QMenu(self)
-        if not is_placed:
-            a = menu.addAction(_icon('pin'), "Lägg till på P&ID")
-            a.triggered.connect(lambda: self._place_from_table(row, col))
-        else:
-            a1 = menu.addAction(_icon('pin'), "Lägg till ytterligare på P&ID")
-            a1.triggered.connect(lambda: self._place_from_table(row, col))
-            a2 = menu.addAction(_icon('delete'), "Ta bort från P&ID")
-            a2.triggered.connect(lambda: self._remove_from_pid(row, col))
         if col == self._C_KON and row < len(self._row_meta):
             cons_id = self._row_meta[row][2]
             if cons_id is not None:
@@ -13654,7 +13411,7 @@ class ScenarioTablePanel(QWidget):
                 self._cause_obj_w = max(30, min(300, self._drag_obj_w_start_w + delta))
                 self._table.viewport().update()
                 return True
-            div_x = self._table.columnViewportPosition(self._C_ORS) + _PID_ICON_W + self._cause_obj_w
+            div_x = self._table.columnViewportPosition(self._C_ORS) + self._cause_obj_w
             if abs(pos.x() - div_x) <= 4:
                 self._table.viewport().setCursor(Qt.CursorShape.SizeHorCursor)
             else:
@@ -13667,24 +13424,6 @@ class ScenarioTablePanel(QWidget):
                 self.db.set_config('cause_obj_w', str(self._cause_obj_w))
                 return True
 
-        # Right-click: pin-zone toggles P&ID placement; elsewhere → context menu
-        if (obj is self._table.viewport() and
-                event.type() == QEvent.Type.MouseButtonPress and
-                event.button() == Qt.MouseButton.RightButton):
-            pos = event.pos()
-            col = self._table.columnAt(pos.x())
-            row = self._table.rowAt(pos.y())
-            if row >= 0 and col in (self._C_ORS, self._C_KON, self._C_SG):
-                col_x = self._table.columnViewportPosition(col)
-                if pos.x() - col_x < _PID_ICON_W and self._cell_has_item(row, col):
-                    if self._is_cell_placed(row, col):
-                        self._remove_from_pid(row, col)
-                    else:
-                        self._place_from_table(row, col)
-                    return True
-            # Let Qt dispatch CustomContextMenu signal (falls through to _on_context_menu)
-            return False
-
         # ── Drag: record press position for potential drag-start ─────────────────
         if (obj is self._table.viewport() and
                 event.type() == QEvent.Type.MouseButtonPress and
@@ -13693,11 +13432,9 @@ class ScenarioTablePanel(QWidget):
             row = self._table.rowAt(pos.y())
             col = self._table.columnAt(pos.x())
             if row >= 0 and col in (self._C_ORS, self._C_KON, self._C_SG):
-                col_x = self._table.columnViewportPosition(col)
-                if pos.x() - col_x >= _PID_ICON_W:   # not in pin zone
-                    self._drag_press_pos = pos
-                    self._drag_press_row = row
-                    self._drag_press_col = col
+                self._drag_press_pos = pos
+                self._drag_press_row = row
+                self._drag_press_col = col
             else:
                 self._drag_press_pos = None
 
@@ -13748,7 +13485,7 @@ class ScenarioTablePanel(QWidget):
                 event.button() == Qt.MouseButton.LeftButton):
             pos = event.pos()
             # Check for divider drag start before any other click handling
-            div_x = self._table.columnViewportPosition(self._C_ORS) + _PID_ICON_W + self._cause_obj_w
+            div_x = self._table.columnViewportPosition(self._C_ORS) + self._cause_obj_w
             if abs(pos.x() - div_x) <= 4:
                 self._drag_obj_w_active = True
                 self._drag_obj_w_start_x = pos.x()
@@ -13757,28 +13494,6 @@ class ScenarioTablePanel(QWidget):
                 return True
             col = self._table.columnAt(pos.x())
             row = self._table.rowAt(pos.y())
-            if row >= 0 and col in (self._C_ORS, self._C_KON, self._C_SG):
-                col_x = self._table.columnViewportPosition(col)
-                if pos.x() - col_x < _PID_ICON_W:
-                    if not self._cell_has_item(row, col):
-                        # Placeholder ORS row — red pin click → enter P&ID placement mode
-                        if col == self._C_ORS and row < len(self._row_meta):
-                            dev_id = self._row_meta[row][0]
-                            if dev_id is not None:
-                                self.add_causes_on_pid_requested.emit(dev_id)
-                        return True
-                    if self._is_cell_placed(row, col):
-                        # 🟢 → navigate to marker on P&ID
-                        self._emit_navigate(row, col)
-                    elif col == self._C_ORS and row < len(self._row_meta):
-                        # 🔴 on existing unplaced cause → open P&ID add panel
-                        dev_id = self._row_meta[row][0]
-                        if dev_id is not None:
-                            self.add_causes_on_pid_requested.emit(dev_id)
-                    else:
-                        # 🔴 other columns → place this item
-                        self._place_from_table(row, col)
-                    return True  # consume left-click; right-click falls through to context menu
 
             # ➕ In-cell "+" quick-add badge — bottom-right corner of the last
             # row of a group (2026-08-12 redesign, see NOTES.md: replaces the
@@ -13806,8 +13521,8 @@ class ScenarioTablePanel(QWidget):
                                 self._add_safeguard_via_plus_row(group_id)
                         return True
 
-            # Object-tag zone click — left (_PID_ICON_W .. _PID_ICON_W+tag_zone_w)
-            # of cause cell. tag_zone_w is computed the same way paint()
+            # Object-tag zone click — left (0 .. tag_zone_w) of cause cell.
+            # tag_zone_w is computed the same way paint()
             # computes it (via _ors_tag_zone_geometry) rather than the raw
             # _cause_obj_w divider width — otherwise, once a long tag's
             # DRAWN width expands past the old fixed cap (2026-08-11 fix),
@@ -13815,7 +13530,7 @@ class ScenarioTablePanel(QWidget):
             # the tag would silently do nothing (stale hit-test rectangle).
             if row >= 0 and col == self._C_ORS and row < len(self._row_meta):
                 col_x      = self._table.columnViewportPosition(col)
-                obj_start  = col_x + _PID_ICON_W
+                obj_start  = col_x
                 cell_right = col_x + self._table.columnWidth(col) - 1
                 item       = self._table.item(row, col)
                 tag_zone_w, _fx, _fw, _fs = self._ors_tag_zone_geometry(item, obj_start, cell_right)
@@ -13849,7 +13564,7 @@ class ScenarioTablePanel(QWidget):
             # 📊 Category badge click in KON cell
             if row >= 0 and col == self._C_KON and row < len(self._row_meta):
                 col_x     = self._table.columnViewportPosition(col)
-                cat_start = col_x + _PID_ICON_W
+                cat_start = col_x
                 cat_end   = cat_start + _KON_CAT_W
                 if cat_start <= pos.x() < cat_end:
                     cons_id = self._row_meta[row][2]
@@ -14565,14 +14280,9 @@ class HAZOPWorksheet(QWidget):
     see load_all()/_all_nodes on ScenarioTablePanel.
     """
 
-    def __init__(self, db: Database, main_window=None):
+    def __init__(self, db: Database):
         super().__init__()
         self.db = db
-        # Optional back-reference to MainWindow, used only to wire the
-        # embedded ScenarioTablePanel's navigate_to_pid signal (jumping to
-        # the P&ID view from a row here). Left None-safe throughout so this
-        # widget still works standalone (e.g. in tests).
-        self._main_window = main_window
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -14608,18 +14318,6 @@ class HAZOPWorksheet(QWidget):
         self._all_nodes_cb.toggled.connect(self._on_all_nodes_toggled)
         self._show_empty_dev_cb.toggled.connect(self._table_panel.set_show_empty_deviations)
 
-        # navigate_to_pid ("go to P&ID" pin click on a row): MainWindow's own
-        # scenario_panel wires this to _on_scenario_navigate_to_pid, which
-        # switches view_stack to the P&ID page and zooms to the marker. Reuse
-        # that exact handler here when a MainWindow reference is available,
-        # so the embedded worksheet instance behaves identically. Left
-        # unconnected when main_window is None (e.g. headless/unit tests).
-        if self._main_window is not None:
-            self._table_panel.navigate_to_pid.connect(
-                self._main_window._on_scenario_navigate_to_pid)
-        # place_requested (placing NEW markers on the P&ID canvas) is not
-        # wired: it only makes sense in the P&ID page's own placement-mode
-        # context, not from the Worksheet page.
         # item_selected (row click -> update right-hand properties ribbon)
         # is not wired for v1: the Worksheet page has no properties ribbon
         # of its own, and piping it to MainWindow's ribbon would couple this
@@ -18983,275 +18681,6 @@ class EquipmentPanel(QWidget):
         dlg.exec()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# REUSE CAUSES DIALOG
-# ══════════════════════════════════════════════════════════════════════════════
-
-class ReuseDeviationCausesDialog(QDialog):
-    """Pre-step dialog shown before P&ID placement.
-
-    Lists causes from other deviations in the same node, organised by
-    deviation with hierarchical reference labels (e.g. 1.2.3).
-    User can toggle Referera / Invers per cause; accepted selections are
-    created as new causes in the target deviation before P&ID mode opens.
-    """
-
-    SKIP = 2   # dialog result code for "Hoppa över"
-
-    def __init__(self, target_dev_name, existing_causes, parent=None):
-        """
-        existing_causes — list of dicts with keys:
-            id, description, deviation_name, deviation_id,
-            ref_label (e.g. '1.2.3'), dev_label (e.g. '1.2')
-        """
-        super().__init__(parent)
-        self.setWindowTitle("Återanvänd orsaker från andra avvikelser")
-        self.setMinimumWidth(720)
-        self.setMinimumHeight(560)
-        self.resize(800, 640)
-
-        # key → (mode, description, original_cause_id)
-        # key is cause_id (int) for individual causes, or f"dev_{dev_id}" for deviation-level
-        # original_cause_id is None for deviation-level entries (no marker to copy)
-        self._selections: dict = {}
-
-        layout = QVBoxLayout(self)
-
-        hdr = QLabel(
-            f"Lägger till orsaker under avvikelsen: <b>{target_dev_name}</b><br>"
-            "<span style='color:gray;font-size:11px'>"
-            "Välj orsaker från andra avvikelser att referera (kopiera) eller invertera "
-            "(högt↔lågt, stänger↔öppnar, …).</span>")
-        hdr.setWordWrap(True)
-        layout.addWidget(hdr)
-
-        # ── Scrollable cause list ─────────────────────────────────────────────
-        inner = QWidget()
-        inner_layout = QVBoxLayout(inner)
-        inner_layout.setContentsMargins(2, 2, 2, 2)
-        inner_layout.setSpacing(2)
-
-        grouped: dict = {}
-        order:   list = []
-        for c in existing_causes:
-            dn = c['deviation_name']
-            if dn not in grouped:
-                grouped[dn] = []
-                order.append(dn)
-            grouped[dn].append(c)
-
-        global_pos = 0
-        for dev_n in order:
-            causes  = grouped[dev_n]
-            dev_lbl = causes[0]['dev_label']
-            dev_id  = causes[0]['deviation_id']
-            dev_key = f"dev_{dev_id}"
-            dev_pos = global_pos
-            global_pos += 1
-
-            # ── Deviation header row ──────────────────────────────────────────
-            hdr_w = QWidget()
-            hdr_w.setStyleSheet("background:#ebebeb;border-radius:3px;")
-            hdr_h = QHBoxLayout(hdr_w)
-            hdr_h.setContentsMargins(6, 3, 4, 3)
-            hdr_h.setSpacing(6)
-
-            hdr_lbl = QLabel(
-                f"<b><span style='color:#555'>{dev_lbl}</span>&nbsp;&nbsp;{dev_n}</b>")
-            hdr_h.addWidget(hdr_lbl, 1)
-
-            ref_label   = f"Se {dev_lbl}"
-            ref_dev_btn = QPushButton(f"↗ {ref_label}")
-            ref_dev_btn.setCheckable(True)
-            ref_dev_btn.setToolTip(f"Skapar en referensorsak med texten: {ref_label}")
-            ref_dev_btn.setStyleSheet(
-                "QPushButton{font-size:10px;padding:2px 8px;border:1px solid #2F5FD0;"
-                "border-radius:3px;background:transparent;color:#2F5FD0;font-style:italic;}"
-                "QPushButton:checked{background:#2F5FD0;color:white;font-style:normal;}"
-                "QPushButton:hover:!checked{background:#F5F5F3;}")
-            ref_dev_btn.toggled.connect(
-                self._make_ref_handler(dev_key, ref_label, None, None, dev_pos))
-            hdr_h.addWidget(ref_dev_btn)
-            inner_layout.addWidget(hdr_w)
-
-            for cause in causes:
-                cid       = cause['id']
-                orig      = cause['description']
-                inv_text  = invert_cause_text(orig)
-                comp_type = cause['comp_type'] or ''
-                comp_tag  = cause['comp_tag']  or ''
-                c_pos     = global_pos
-                global_pos += 1
-
-                row_w = QWidget()
-                row_h = QHBoxLayout(row_w)
-                row_h.setContentsMargins(12, 1, 4, 1)
-                row_h.setSpacing(6)
-
-                num_lbl = QLabel(
-                    f"<span style='color:#888;font-family:monospace'>"
-                    f"{cause['ref_label']}</span>")
-                num_lbl.setFixedWidth(42)
-                row_h.addWidget(num_lbl)
-
-                # Equipment icon + tag badge (only if tag is set)
-                if comp_tag:
-                    icon_px = QPixmap(18, 18)
-                    icon_px.fill(Qt.GlobalColor.transparent)
-                    _ip = QPainter(icon_px)
-                    _draw_equip_icon(_ip, QRect(0, 0, 18, 18), comp_type)
-                    _ip.end()
-                    icon_lbl = QLabel()
-                    icon_lbl.setPixmap(icon_px)
-                    row_h.addWidget(icon_lbl)
-
-                    tag_lbl = QLabel(f"<b>{comp_tag}</b>")
-                    tag_lbl.setStyleSheet(
-                        "color:#17191C; background:#F5F5F3; border-radius:3px;"
-                        "padding:0px 4px; font-size:10px;")
-                    tag_lbl.setToolTip(comp_type or "Okänd typ")
-                    row_h.addWidget(tag_lbl)
-
-                desc_lbl = QLabel(orig)
-                desc_lbl.setToolTip(orig)
-                row_h.addWidget(desc_lbl, 1)
-
-                ref_btn = QPushButton("Referera")
-                ref_btn.setCheckable(True)
-                ref_btn.setFixedWidth(72)
-                ref_btn.setStyleSheet(
-                    "QPushButton{font-size:10px;padding:2px 4px;border:1px solid #2F5FD0;"
-                    "border-radius:3px;}"
-                    "QPushButton:checked{background:#2F5FD0;color:white;}"
-                    "QPushButton:hover:!checked{background:#F5F5F3;}")
-
-                has_inv = inv_text != orig
-                inv_btn = QPushButton("Invers")
-                inv_btn.setCheckable(has_inv)
-                inv_btn.setEnabled(has_inv)
-                inv_btn.setFixedWidth(56)
-                if has_inv:
-                    inv_btn.setToolTip(f"Skapar: {inv_text}")
-                    inv_btn.setStyleSheet(
-                        "QPushButton{font-size:10px;padding:2px 4px;border:1px solid #8e44ad;"
-                        "border-radius:3px;}"
-                        "QPushButton:checked{background:#8e44ad;color:white;}"
-                        "QPushButton:hover:!checked{background:#e8daef;}")
-                else:
-                    inv_btn.setToolTip("Ingen invers hittades för denna orsak")
-                    inv_btn.setStyleSheet(
-                        "QPushButton{font-size:10px;padding:2px 4px;border:1px solid #ccc;"
-                        "border-radius:3px;color:#aaa;background:#f5f5f5;}")
-
-                ref_btn.toggled.connect(
-                    self._make_ref_handler(cid, orig, inv_btn, cid, c_pos,
-                                           comp_type, comp_tag))
-                if has_inv:
-                    inv_btn.toggled.connect(
-                        self._make_inv_handler(cid, inv_text, ref_btn, cid, c_pos,
-                                               comp_type, comp_tag))
-
-                row_h.addWidget(ref_btn)
-                row_h.addWidget(inv_btn)
-                inner_layout.addWidget(row_w)
-
-        inner_layout.addStretch()
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(inner)
-        layout.addWidget(scroll, 1)
-
-        # ── Summary ───────────────────────────────────────────────────────────
-        self._summary_lbl = QLabel("Inga orsaker markerade — tryck 'Hoppa över' för att gå direkt till P&ID.")
-        self._summary_lbl.setStyleSheet("color:gray;font-style:italic;font-size:11px;")
-        layout.addWidget(self._summary_lbl)
-
-        # ── Buttons ───────────────────────────────────────────────────────────
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
-
-        self._create_btn = QPushButton("✔ Skapa markerade och fortsätt till P&ID")
-        self._create_btn.setEnabled(False)
-        self._create_btn.setStyleSheet(
-            "QPushButton{background:#27ae60;color:white;border:none;border-radius:4px;"
-            "padding:6px 12px;font-weight:bold;}"
-            "QPushButton:hover:enabled{background:#2ecc71;}"
-            "QPushButton:disabled{background:#aaa;}")
-        self._create_btn.clicked.connect(self.accept)
-        btn_row.addWidget(self._create_btn, 1)
-
-        skip_btn = QPushButton("Hoppa över →")
-        skip_btn.setToolTip("Gå direkt till P&ID utan att skapa orsaker härifrån")
-        skip_btn.setStyleSheet(
-            "QPushButton{border:1px solid #aaa;border-radius:4px;padding:6px 10px;}"
-            "QPushButton:hover{background:#f0f0f0;}")
-        skip_btn.clicked.connect(lambda: self.done(self.SKIP))
-        btn_row.addWidget(skip_btn)
-
-        cancel_btn = QPushButton("Avbryt")
-        cancel_btn.setStyleSheet(
-            "QPushButton{border:1px solid #aaa;border-radius:4px;padding:6px 10px;}"
-            "QPushButton:hover{background:#f0f0f0;}")
-        cancel_btn.clicked.connect(self.reject)
-        btn_row.addWidget(cancel_btn)
-
-        layout.addLayout(btn_row)
-
-    # ── Helpers ───────────────────────────────────────────────────────────────
-
-    def _make_ref_handler(self, cid, description, inv_btn, original_cause_id, sort_pos,
-                          comp_type='', comp_tag=''):
-        def handler(checked):
-            if checked:
-                self._selections[cid] = (
-                    'ref', description, original_cause_id, sort_pos, comp_type, comp_tag)
-                if inv_btn is not None:
-                    inv_btn.blockSignals(True)
-                    inv_btn.setChecked(False)
-                    inv_btn.blockSignals(False)
-            else:
-                self._selections.pop(cid, None)
-            self._update_summary()
-        return handler
-
-    def _make_inv_handler(self, cid, inv_text, ref_btn, original_cause_id, sort_pos,
-                          comp_type='', comp_tag=''):
-        def handler(checked):
-            if checked:
-                self._selections[cid] = (
-                    'inv', inv_text, original_cause_id, sort_pos, comp_type, comp_tag)
-                ref_btn.blockSignals(True)
-                ref_btn.setChecked(False)
-                ref_btn.blockSignals(False)
-            else:
-                self._selections.pop(cid, None)
-            self._update_summary()
-        return handler
-
-    def _update_summary(self):
-        n = len(self._selections)
-        if n == 0:
-            self._summary_lbl.setText(
-                "Inga orsaker markerade — tryck 'Hoppa över' för att gå direkt till P&ID.")
-            self._create_btn.setEnabled(False)
-        else:
-            kinds = {'ref': 0, 'inv': 0}
-            for v in self._selections.values():
-                kinds[v[0]] += 1
-            parts = []
-            if kinds['ref']: parts.append(f"{kinds['ref']} referens")
-            if kinds['inv']: parts.append(f"{kinds['inv']} invers")
-            self._summary_lbl.setText(f"{n} orsak(er) markerade: {', '.join(parts)}")
-            self._create_btn.setEnabled(True)
-
-    def get_selections(self):
-        """Return (description, original_cause_id, comp_type, comp_tag) in list order."""
-        sorted_vals = sorted(self._selections.values(), key=lambda v: v[3])
-        return [(v[1], v[2], v[4] if len(v) > 4 else '',
-                 v[5] if len(v) > 5 else '') for v in sorted_vals]
-
-
 # ── Feature 19: Global search dialog ──────────────────────────────────────────
 class GlobalSearchDialog(QDialog):
     """Ctrl+F floating search across all nodes, causes, consequences, safeguards."""
@@ -19367,7 +18796,7 @@ class MainWindow(QMainWindow):
         # Former toolbar row folded into menus, grouped by purpose:
         #   Fil          — project + Skriv ut
         #   Export       — Excel / PDF / Åtgärder
-        #   Analys       — Risk Scenario / Statistik / Godkänn
+        #   Analys       — Statistik / Godkänn
         #   Inställningar — Mörkt läge
         # Node/deviation/delete actions moved to a button row in TreePanel
         # instead (see TreePanel.__init__), since they act on the tree
@@ -19390,7 +18819,6 @@ class MainWindow(QMainWindow):
         export_menu.addAction(_icon('clipboard'), "Åtgärder",        self._export_actions_pdf)
 
         analysis_menu = mb.addMenu("Analys")
-        analysis_menu.addAction(_icon('shuffle'), "Risk Scenario", self._open_risk_scenario_wizard)
         analysis_menu.addAction(_icon('trend-chart'), "Statistik",     self._show_statistics)
         analysis_menu.addAction(_icon('check'), "Godkänn",       self._approve_node)
 
@@ -19562,7 +18990,7 @@ class MainWindow(QMainWindow):
         self._outer_splitter.setSizes([640, 220])
 
         # ── Page 1: Worksheet ─────────────────────────────────────────────────
-        self.worksheet = HAZOPWorksheet(self.db, main_window=self)
+        self.worksheet = HAZOPWorksheet(self.db)
         self.view_stack.addWidget(self.worksheet)
 
         # ── Page 2: Equipment ─────────────────────────────────────────────────
@@ -19607,11 +19035,6 @@ class MainWindow(QMainWindow):
         self.sg_panel.saved.connect(
             lambda id_: self.tree_panel.refresh(SG_T, id_))
 
-        self.cons_panel.place_on_pid.connect(
-            lambda: self.pid_panel._set_mode(MODE_CONSEQUENCE))
-        self.sg_panel.place_on_pid.connect(
-            lambda: self.pid_panel._set_mode(MODE_SAFEGUARD))
-
         self.scenario_panel.item_selected.connect(self._on_scenario_item_selected)
         self.scenario_panel.new_item_created.connect(
             lambda type_, id_: (
@@ -19635,20 +19058,11 @@ class MainWindow(QMainWindow):
                 # the next cause/consequence in one flow.
                 self.scenario_panel.select_item(type_, id_)))
         self.scenario_panel.item_edited.connect(self._on_scenario_item_edited)
-        self.scenario_panel.place_requested.connect(self._on_scenario_place_requested)
-        self.scenario_panel.navigate_to_pid.connect(self._on_scenario_navigate_to_pid)
-        self.scenario_panel.remove_requested.connect(self._on_scenario_remove_from_pid)
-        self.scenario_panel.add_causes_on_pid_requested.connect(self._on_add_causes_on_pid)
         self.scenario_panel.structure_changed.connect(
             lambda: (self.tree_panel.refresh(), self.pid_panel.reload_overlays()))
 
         self.tree_panel.equipment_dropped_on_deviation.connect(
             self._on_equipment_dropped_on_deviation)
-        self.tree_panel.add_causes_on_pid_requested.connect(self._on_add_causes_on_pid_tree)
-        self.tree_panel.add_consequences_on_pid_requested.connect(
-            self._on_add_consequences_on_pid)
-        self.tree_panel.add_safeguards_on_pid_requested.connect(
-            self._on_add_safeguards_on_pid)
         self.tree_panel.edit_node_markup_requested.connect(self._on_edit_node_markup)
         self.tree_panel.edit_red_markup_requested.connect(self._on_edit_red_markup)
         self.tree_panel.node_markup_vis_requested.connect(self._on_node_markup_vis)
@@ -19728,42 +19142,7 @@ class MainWindow(QMainWindow):
             # and schedule zoom_to_node() twice.
             lambda nid: (self.tree_panel.refresh(NODE_T, nid, emit_selection=False),
                          self._on_selected(NODE_T, nid)))
-        self.pid_panel.cause_created.connect(
-            lambda cid: (self.tree_panel.refresh(CAUSE_T, cid),
-                         self.scenario_panel.refresh_placed()))
-        def _on_consequence_created(cid):
-            logging.info('consequence_created: cid=%s — entering handler', cid)
-            try:
-                logging.info('consequence_created: step 1 — calling _open_consequence_step_picker')
-                self._open_consequence_step_picker(cid)
-                logging.info('consequence_created: step 2 — picker returned, scheduling deferred refresh')
-                def _deferred(c=cid):
-                    logging.info('consequence_created: deferred step — tree_panel.refresh(%s)', c)
-                    try:
-                        # emit_selection=False: if the dialog was accepted,
-                        # _open_consequence_step_picker() above already called
-                        # scenario_panel._rebuild() directly. Letting this
-                        # refresh()'s setCurrentItem cascade via
-                        # currentItemChanged -> _on_select -> item_selected ->
-                        # _on_selected would trigger a second, redundant
-                        # scenario_panel._rebuild() on the next event-loop tick
-                        # (same anti-pattern fixed in _on_marker_navigate,
-                        # commit 84c8b7c) — extra rebuild volume that raises
-                        # the odds of racing a cell editor's focus-out.
-                        self.tree_panel.refresh(CONS_T, c, emit_selection=False)
-                        logging.info('consequence_created: deferred step — tree refresh done')
-                        self.scenario_panel.refresh_placed()
-                        logging.info('consequence_created: deferred step — refresh_placed done')
-                    except Exception:
-                        logging.exception('consequence_created: CRASH in deferred refresh')
-                QTimer.singleShot(0, _deferred)
-                logging.info('consequence_created: handler done (deferred refresh scheduled)')
-            except Exception:
-                logging.exception('consequence_created: CRASH in handler')
-        self.pid_panel.consequence_created.connect(_on_consequence_created)
         self.pid_panel.ref_tag_picked.connect(self._on_ref_tag_picked)
-        self.pid_panel.safeguard_created.connect(self._on_safeguard_created)
-        self.pid_panel.existing_marker_placed.connect(self._on_existing_marker_placed)
         def _on_cause_template_created(cid):
             # emit_selection=False + explicit load_node (2026-08-07
             # follow-up — same "kan inte lägga till konsekvens" bug class
@@ -19808,10 +19187,8 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         self.pid_panel.cause_template_created.connect(_on_cause_template_created)
-        self.pid_panel.cause_placement_requested.connect(self._on_cause_placement_requested)
         self.pid_panel.equipment_placement_requested.connect(self._on_equipment_placement_requested)
         self.pid_panel.equipment_edit_requested.connect(self._on_equipment_edit_requested)
-        self.pid_panel.risk_scenario_requested.connect(self._on_pid_risk_scenario)
         self.pid_panel.marker_navigated.connect(self._on_marker_navigate)
         self.pid_panel.equipment_deviation_created.connect(self._on_equipment_deviation_created)
         self.pid_panel.pid_analysis_done.connect(self._on_pid_analysis_done)
@@ -20061,192 +19438,6 @@ class MainWindow(QMainWindow):
         self.scenario_panel.load_equipment(equipment_id)
         self.scenario_panel.refresh_placed()
 
-    def _on_safeguard_created(self, _sg_id):
-        if self._cur_type == CONS_T and self._cur_id is not None:
-            self.scenario_panel.load_consequence(self._cur_id)
-            # emit_selection=False: load_consequence() above already rebuilt the
-            # scenario panel for this item — letting refresh()'s setCurrentItem
-            # cascade via currentItemChanged -> _on_select -> item_selected ->
-            # _on_selected would redundantly call load_consequence() a second
-            # time (same anti-pattern fixed in _on_marker_navigate, commit
-            # 84c8b7c). The tree's current-item highlight is still updated
-            # inside refresh() while signals are blocked, so nothing is lost.
-            self.tree_panel.refresh(CONS_T, self._cur_id, emit_selection=False)
-        self.scenario_panel.refresh_placed()
-
-    def _on_scenario_place_requested(self, type_, id_):
-        """User clicked red pin or context menu 'Lägg till på P&ID' — fast path, no panel reload."""
-        # Set only what the P&ID panel needs; skip full _on_selected to avoid heavy reloads
-        if type_ == CAUSE_T:
-            self.pid_panel.set_active_cause(id_)
-        elif type_ == CONS_T:
-            self.pid_panel.set_active_consequence(id_)
-        elif type_ == SG_T:
-            sg = self.db.get_safeguard(id_)
-            if sg:
-                self.pid_panel.set_active_consequence(sg['consequence_id'])
-        self._switch_view(0)
-        type_str = {CAUSE_T: 'cause', CONS_T: 'consequence', SG_T: 'safeguard'}.get(type_)
-        if type_str:
-            self.pid_panel.start_place_existing(type_str, id_)
-
-    def _on_scenario_navigate_to_pid(self, type_, id_):
-        """User clicked green pin — switch to P&ID view and zoom to the marker."""
-        marker = None
-        if type_ == CAUSE_T:
-            marker = self.db.get_cause_marker(id_)
-        elif type_ == CONS_T:
-            marker = self.db.get_consequence_marker(id_)
-        elif type_ == SG_T:
-            marker = self.db.get_safeguard_marker(id_)
-        if not marker:
-            return
-        self._on_selected(type_, id_)
-        self._switch_view(0)
-        self.pid_panel.navigate_to_marker(marker['pid_page'], marker['x'], marker['y'])
-
-    def _on_scenario_remove_from_pid(self, type_, id_):
-        """Context menu 'Ta bort från P&ID' — delete all markers for this item."""
-        type_str = {CAUSE_T: 'cause', CONS_T: 'consequence', SG_T: 'safeguard'}.get(type_)
-        if not type_str:
-            return
-        self.pid_panel.remove_existing_marker(type_str, id_)
-        self.scenario_panel.refresh_placed()
-        self.tree_panel.refresh()
-
-    def _on_add_causes_on_pid(self, deviation_id):
-        """Red-pin click in scenario table → enter P&ID cause-placement mode directly."""
-        dev = self.db.get_deviation(deviation_id)
-        if not dev:
-            return
-        self.pid_panel.set_active_node(dev['node_id'])
-        self._switch_view(0)
-        self.pid_panel.start_cause_template_mode(deviation_id)
-
-    def _on_add_causes_on_pid_tree(self, deviation_id):
-        """Right-click deviation in tree → show reuse dialog, then enter P&ID mode."""
-        dev = self.db.get_deviation(deviation_id)
-        if not dev:
-            return
-        node_id  = dev['node_id']
-        dev_name = dev['description']
-
-        # Build hierarchical reference labels for causes from other deviations
-        all_nodes    = self.db.nodes()
-        node_idx     = next((i + 1 for i, n in enumerate(all_nodes) if n['id'] == node_id), 1)
-        all_devs     = self.db.deviations(node_id)
-        dev_pos_map  = {d['id']: i + 1 for i, d in enumerate(all_devs)}
-        cause_pos_map = {}
-        for d in all_devs:
-            for j, c in enumerate(self.db.causes_for_deviation(d['id'])):
-                cause_pos_map[c['id']] = j + 1
-
-        raw = self.db.causes_for_node_excluding_deviation(node_id, deviation_id)
-        existing_causes = []
-        for c in raw:
-            cd = dict(c)
-            dp = dev_pos_map.get(cd['deviation_id'], 0)
-            cp = cause_pos_map.get(cd['id'], 0)
-            cd['dev_label'] = f"{node_idx}.{dp}"
-            cd['ref_label'] = f"{node_idx}.{dp}.{cp}"
-            existing_causes.append(cd)
-
-        if existing_causes:
-            dlg = ReuseDeviationCausesDialog(dev_name, existing_causes, parent=self)
-            result = dlg.exec()
-            if result == QDialog.DialogCode.Rejected:
-                return
-            if result == QDialog.DialogCode.Accepted:
-                markers_need_reload = False
-                for desc, orig_cause_id, comp_type, comp_tag in dlg.get_selections():
-                    new_cid = self.db.add_cause(deviation_id)
-                    self.db.update_cause(new_cid, desc,
-                                         comp_type=comp_type, comp_tag=comp_tag)
-                    if orig_cause_id is not None:
-                        for m in self.db.cause_markers_for_cause(orig_cause_id):
-                            self.db.add_cause_marker(
-                                new_cid, m['pid_page'], m['x'], m['y'],
-                                m['component_type'], m['component_tag'])
-                            markers_need_reload = True
-                self.tree_panel.refresh()
-                if markers_need_reload:
-                    self.pid_panel.reload_overlays()
-
-        self.pid_panel.set_active_node(node_id)
-        self._switch_view(0)
-        self.pid_panel.start_cause_template_mode(deviation_id)
-
-    def _on_cause_placement_requested(self, dev_id, suggested_tag, detected_type,
-                                       scene_pos, page, suggested_desc=''):
-        """P&ID clicked in cause-template mode — show StandardCausesPickerPopup."""
-        dev_row  = self.db.get_deviation(dev_id) if dev_id else None
-        dev_desc = dev_row['description'] if dev_row else ''
-        node_id  = dev_row['node_id'] if dev_row else getattr(
-            self.pid_panel, '_active_node_id', None)
-
-        # Fallback: use first available node when no node is active
-        if node_id is None:
-            first_node = next(iter(self.db.nodes()), None)
-            if first_node:
-                node_id = first_node['id']
-
-        # Look up standard_deviations.id from the description
-        std_dev_id = None
-        if dev_desc:
-            row = self.db.conn.execute(
-                "SELECT id FROM standard_deviations WHERE description=? COLLATE NOCASE LIMIT 1",
-                (dev_desc,)).fetchone()
-            if row:
-                std_dev_id = row[0]
-
-        # Tag for the popup: prefer the parsed tag over raw area-text.
-        # suggested_tag is the clean parsed tag (e.g. 'E1.M1.GPA4').
-        # suggested_desc is full area text — used only when no tag was parsed.
-        effective_tag = (suggested_tag or suggested_desc or '').strip()
-        if self.db.get_config('tag_strip_spaces', '1') == '1':
-            effective_tag = effective_tag.replace(' ', '')
-
-        popup = StandardCausesPickerPopup(
-            self.db, std_dev_id,
-            deviation_name=dev_desc,
-            comp_type=detected_type or '',
-            initial_tag=effective_tag,
-            node_id=node_id,
-            parent=self)
-        popup.setWindowFlags(popup.windowFlags() | Qt.WindowType.Window)
-
-        # Position near the ORS cell or cursor
-        gp = self.scenario_panel.ors_cell_global_pos(dev_id) if dev_id else None
-        if gp is None:
-            gp = QCursor.pos()
-        screen = (QApplication.screenAt(gp) or QApplication.primaryScreen()).availableGeometry()
-        popup.adjustSize()
-        pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
-        x = min(gp.x() + 4, screen.right()  - pw)
-        y = min(gp.y(),      screen.bottom() - ph)
-        popup.move(max(screen.left(), x), max(screen.top(), y))
-
-        def _on_picked(desc, freq):
-            try:
-                actual_dev_id = popup.selected_node_dev_id or dev_id
-                if not actual_dev_id:
-                    QMessageBox.warning(popup, "Välj avvikelse",
-                                        "Välj en avvikelse innan du lägger till orsaken.")
-                    return
-                checked   = next((b for b in popup._obj_btn_group if b.isChecked()), None)
-                comp_type = checked.property('obj_name') if checked else ''
-                tag_text  = popup._tag_edit.text().strip() if hasattr(popup, '_tag_edit') else effective_tag
-
-                self.pid_panel.place_cause_from_template(
-                    actual_dev_id, scene_pos, page, comp_type, tag_text, desc, freq)
-            except Exception as e:
-                import traceback
-                QMessageBox.critical(self, "Fel vid tillägg av orsak",
-                                     f"{type(e).__name__}: {e}\n\n{traceback.format_exc()}")
-
-        popup.cause_picked.connect(_on_picked)
-        popup.exec()
-
     def _on_equipment_placement_requested(self, suggested_tag, scene_pos, page, pdf_rect=None):
         """P&ID right-click OR right-drag-rubber-band menu -> "🔧 Objekt"
         (2026-08-07/2026-08-09, see NOTES.md). pdf_rect (rubber-band case
@@ -20332,30 +19523,6 @@ class MainWindow(QMainWindow):
             if node_id is not None:
                 self.scenario_panel.load_node(node_id)
 
-    def _on_add_consequences_on_pid(self, cause_id):
-        """Right-click cause → 'Lägg till konsekvens på P&ID'."""
-        cause = self.db.get_cause(cause_id)
-        if not cause:
-            return
-        node_id = cause['node_id']
-        self.pid_panel.set_active_node(node_id)
-        self.pid_panel.set_active_cause(cause_id)
-        self._switch_view(0)
-        self.pid_panel._set_mode(MODE_CONSEQUENCE)
-
-    def _on_add_safeguards_on_pid(self, cons_id):
-        """Right-click consequence → 'Lägg till safeguard på P&ID'."""
-        cons = self.db.get_consequence(cons_id)
-        if not cons:
-            return
-        cause = self.db.get_cause(cons['cause_id'])
-        node_id = cause['node_id'] if cause else None
-        if node_id:
-            self.pid_panel.set_active_node(node_id)
-        self.pid_panel.set_active_consequence(cons_id)
-        self._switch_view(0)
-        self.pid_panel._set_mode(MODE_SAFEGUARD)
-
     def _open_consequence_step_picker(self, cons_id: int):
         """Open ConsequenceStepPickerDialog after a new consequence is created on P&ID."""
         logging.info('_open_consequence_step_picker: cons_id=%s', cons_id)
@@ -20376,7 +19543,7 @@ class MainWindow(QMainWindow):
                     if dev:
                         dev_desc = dev['description'] or ''
 
-            initial_tag = getattr(self.pid_panel, '_pending_cons_tag', '') or ''
+            initial_tag = ''
             # If the consequence tag is known, look up the object type via
             # smart recognition so the dialog can pre-select the right category.
             if initial_tag and not comp:
@@ -20405,9 +19572,6 @@ class MainWindow(QMainWindow):
                     logging.info('_open_consequence_step_picker: _rebuild() done')
                 except Exception:
                     logging.exception('_open_consequence_step_picker: CRASH in _rebuild()')
-                if dlg.add_more_requested:
-                    logging.info('_open_consequence_step_picker: add_more_requested — set MODE_CONSEQUENCE')
-                    self.pid_panel._set_mode(MODE_CONSEQUENCE)
             else:
                 logging.info('_open_consequence_step_picker: cancelled/rejected')
                 self._active_step_picker = None
@@ -20612,44 +19776,12 @@ class MainWindow(QMainWindow):
             self.pid_panel.refresh_markup_overlays()
             self.markup_table_panel.refresh()
 
-    def _on_existing_marker_placed(self, type_str, id_):
-        """Marker placed via 'place existing' flow — refresh pins and tree without reloading panels."""
-        type_ = {'cause': CAUSE_T, 'consequence': CONS_T, 'safeguard': SG_T}.get(type_str)
-        if type_ is not None:
-            self.tree_panel.refresh(type_, id_)
-        self.scenario_panel.refresh_placed()
-
     def _on_matrix_changed(self):
         if self._cur_type == CONS_T and self._cur_id is not None:
             self.cons_panel.load(self._cur_id)
         self.tree_panel.refresh()
         if self._cur_type == CAUSE_T and self._cur_id:
             self.scenario_panel.load_cause(self._cur_id)
-
-    def _open_risk_scenario_wizard(self, node_id=None):
-        """Start guided Risk Scenario mode using existing P&ID dialogs."""
-        # Resolve node from current selection if not supplied
-        if not node_id:
-            if self._cur_type in (NODE_T, CAUSE_T, CONS_T, SG_T) and self._cur_id:
-                node_id = self.tree_panel._resolve_node_id(self._cur_type, self._cur_id)
-        if not node_id:
-            nodes = self.db.nodes()
-            if not nodes:
-                QMessageBox.information(self, "Ingen nod",
-                    "Lägg till en nod i trädet innan du startar Risk Scenario.")
-                return
-            node_id = nodes[0]['id']
-
-        # Switch to P&ID view if not already there
-        self._switch_view(0)
-
-        # Start guided mode in PIDPanel
-        self.pid_panel.start_scenario_mode(node_id)
-        self.status_bar.showMessage(
-            "Risk Scenario startat — följ stegen i bannern ovan P&ID:n.", 5000)
-
-    def _on_pid_risk_scenario(self, node_id, pos, page):
-        self._open_risk_scenario_wizard(node_id)
 
     def _export_excel(self):
         path, _ = QFileDialog.getSaveFileName(
