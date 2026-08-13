@@ -5702,6 +5702,22 @@ class PIDGraphicsView(QGraphicsView):
                 # is actually still held down (reported: the nav button
                 # stays "intryckt" after dropping onto the tree/scenario).
                 self.equipment_drag_finished.emit()
+                # The mousePressEvent that started this gesture fell through
+                # to super().mousePressEvent() (needed so a Shift+click that
+                # never crosses the drag threshold still click-dispatches
+                # normally), which armed Qt's OWN ScrollHandDrag hand-scroll
+                # tracking for MODE_NAV — cursor switched to a closed hand,
+                # internal "currently panning" flag set. Because drag.exec()
+                # took over instead of a normal mouseMoveEvent/mouseReleaseEvent
+                # pair, Qt never saw the matching release that would close
+                # that out, leaving the view's cursor/pan state stuck as if
+                # still mid-drag after the drop (2026-08-13 follow-up report:
+                # "musen sitter kvar i dra-läge"). Toggling the drag mode off
+                # and back on resets Qt's internal hand-scroll state cleanly.
+                if self.mode == MODE_NAV:
+                    self.setDragMode(QGraphicsView.DragMode.NoDrag)
+                    self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+                    self.setCursor(Qt.CursorShape.OpenHandCursor)
                 self._clear_equipment_selection()
                 return
         elif self._equip_drag_candidate is not None and not (

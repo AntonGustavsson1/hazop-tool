@@ -11575,6 +11575,46 @@ class EquipmentDragNavButtonResetTests(unittest.TestCase):
         self.assertEqual(len(received), 1,
             "equipment_drag_finished must fire exactly once the drag.exec() call returns")
 
+    def test_shift_drag_resets_scroll_hand_drag_mode_after_native_drag(self):
+        """2026-08-13 follow-up report: 'musen sitter kvar i dra-läge' —
+        the earlier fix above only cleared the toolbar button's stuck
+        LOOK; it didn't address the actual root cause. MODE_NAV's press
+        handler falls through to super().mousePressEvent() (needed so a
+        Shift+click that never crosses the drag threshold still
+        click-dispatches normally), which arms Qt's own ScrollHandDrag
+        hand-scroll tracking. Because drag.exec() hijacks the gesture
+        instead of a normal move/release pair, Qt never sees the
+        matching release that would close that out — leaving the
+        viewport's cursor/pan state stuck as if still mid-drag. Toggling
+        dragMode off and back on must run right after drag.exec()
+        returns, for every drop target (this is what "till alla celler"
+        needs — the reset isn't conditional on where the drop landed)."""
+        from PyQt6.QtCore import QPointF
+        from pid_viewer import MODE_NAV
+        self.panel.viewer.set_mode(MODE_NAV)
+        # Simulate what the real mousePressEvent's fallthrough to
+        # super().mousePressEvent() leaves behind: Qt's ScrollHandDrag
+        # switches the cursor to a closed hand the moment the button
+        # went down, before mouseMoveEvent ever gets a chance to hijack
+        # the gesture into a native drag.
+        self.panel.viewer.setCursor(Qt.CursorShape.ClosedHandCursor)
+
+        with unittest.mock.patch('pid_viewer.QDrag'):
+            start = QPointF(0, 0)
+            self.panel.viewer._equip_drag_candidate = (999, start)
+            event = unittest.mock.MagicMock()
+            event.buttons.return_value = Qt.MouseButton.LeftButton
+            event.modifiers.return_value = Qt.KeyboardModifier.ShiftModifier
+            event.position.return_value = QPointF(
+                QApplication.startDragDistance() + 5, 0)
+
+            self.panel.viewer.mouseMoveEvent(event)
+
+        self.assertEqual(self.panel.viewer.dragMode(),
+                          self.panel.viewer.DragMode.ScrollHandDrag)
+        self.assertEqual(self.panel.viewer.cursor().shape(), Qt.CursorShape.OpenHandCursor,
+            "the cursor must be forced back to the idle open-hand look, not left as a closed hand")
+
 
 class NodeMarkupPanelNavigateTests(unittest.TestCase):
     """NodeMarkupPanel's prev/next node buttons (⬆/⬇) crashed with
