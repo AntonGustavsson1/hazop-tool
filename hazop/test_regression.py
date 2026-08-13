@@ -8376,6 +8376,98 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             self.assertEqual(len(captured), 1)
             self.assertEqual(captured[0], (dev_id, [42]))
 
+    def test_tree_drop_on_ledord_wrapper_with_existing_equipment_still_resolves(self):
+        """Bug report (2026-08-13): 'om det redan ligger ett objekt på
+        lågt flöde i trädet och jag drar ett nytt objekt dit så kan jag
+        inte detta' — once a guide word has ANY equipment linked, "Lågt
+        flöde" no longer renders as a plain DEV_T item; it becomes a
+        LEDORD_T wrapper, which the drop handler used to reject outright
+        (only literal DEV_T resolved), silently swallowing the drop of a
+        second/different object onto that same guide word."""
+        with _TempDbMainWindow() as win:
+            tree_panel = win.tree_panel
+            existing_eq = win.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
+            node_id = win.db.add_node()
+            win.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=existing_eq)
+            tree_panel.refresh()
+            tree_panel.tree.expandAll()
+            ledord_item = _find_tree_item(tree_panel.tree, LEDORD_T, f"{node_id}:Lågt flöde")
+            self.assertIsNotNone(ledord_item,
+                "sanity: an already-equipped guide word must render as a LEDORD_T wrapper")
+            pos = tree_panel.tree.visualItemRect(ledord_item).center()
+
+            captured = []
+            tree_panel.equipment_dropped_on_deviation.connect(
+                lambda d, ids: captured.append((d, ids)))
+
+            event = self._make_drop_event('hzp:equipment:42:-1:-1', pos)
+            handled = tree_panel.eventFilter(tree_panel.tree.viewport(), event)
+
+            self.assertTrue(handled)
+            self.assertEqual(len(captured), 1, "the drop must resolve to a deviation, not be swallowed")
+            resolved_dev_id, marker_ids = captured[0]
+            self.assertEqual(marker_ids, [42])
+            resolved = win.db.get_deviation(resolved_dev_id)
+            self.assertEqual(resolved['node_id'], node_id)
+            self.assertEqual(resolved['description'], "Lågt flöde")
+            self.assertIsNone(resolved['equipment_id'],
+                "must land on the guide word's own still-generic row, not steal the first object's")
+
+    def test_drag_move_over_ledord_wrapper_accepts_without_writing_to_db(self):
+        """The DragMove hover-feedback path must only ever check whether
+        a drop WOULD be valid — it must not create a deviation row (a DB
+        write) just because the mouse passed over the item."""
+        with _TempDbMainWindow() as win:
+            tree_panel = win.tree_panel
+            existing_eq = win.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
+            node_id = win.db.add_node()
+            win.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=existing_eq)
+            tree_panel.refresh()
+            tree_panel.tree.expandAll()
+            ledord_item = _find_tree_item(tree_panel.tree, LEDORD_T, f"{node_id}:Lågt flöde")
+            pos = tree_panel.tree.visualItemRect(ledord_item).center()
+            before = win.db.deviations(node_id)
+
+            from PyQt6.QtCore import QEvent, QMimeData, QPointF
+            mime = QMimeData(); mime.setText('hzp:equipment:42:-1:-1')
+            event = unittest.mock.MagicMock()
+            event.type.return_value = QEvent.Type.DragMove
+            event.mimeData.return_value = mime
+            event.position.return_value = QPointF(pos)
+            tree_panel.eventFilter(tree_panel.tree.viewport(), event)
+
+            event.acceptProposedAction.assert_called_once()
+            self.assertEqual(win.db.deviations(node_id), before,
+                "hovering must not create a new deviation row")
+
+    def test_tree_drop_on_merged_single_equipment_cause_row_resolves_its_own_deviation(self):
+        """The other tree shape an equipped guide word can collapse into
+        (2026-08-09 'kaka på kaka'): a CAUSE_T-typed merged row when the
+        linked equipment's only cause is still trivial/untouched. This
+        must resolve back to that SAME equipment's own deviation, not
+        be rejected either."""
+        with _TempDbMainWindow() as win:
+            tree_panel = win.tree_panel
+            eq_id = win.db.add_equipment_item("=M1.GPA6", "=M1.GPA6", "M1", 0, "Pump", '', 0)
+            node_id = win.db.add_node()
+            dev_id = win.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+            from hazop import _create_tagged_cause
+            _create_tagged_cause(win.db, dev_id, "Pump", "=M1.GPA6")
+            tree_panel.refresh()
+            tree_panel.tree.expandAll()
+            merged_item = _find_tree_item(tree_panel.tree, CAUSE_T)
+            self.assertIsNotNone(merged_item,
+                "sanity: the trivial tagged cause must have merged into a CAUSE_T row")
+            pos = tree_panel.tree.visualItemRect(merged_item).center()
+
+            captured = []
+            tree_panel.equipment_dropped_on_deviation.connect(
+                lambda d, ids: captured.append((d, ids)))
+            event = self._make_drop_event('hzp:equipment:43:-1:-1', pos)
+            tree_panel.eventFilter(tree_panel.tree.viewport(), event)
+
+            self.assertEqual(captured, [(dev_id, [43])])
+
     def test_tree_drop_on_non_deviation_item_is_ignored(self):
         with _TempDbMainWindow() as win:
             tree_panel = win.tree_panel
@@ -11682,7 +11774,9 @@ class ShiftClickInsertsTagIntoActiveEditorTests(unittest.TestCase):
 
     def test_active_edit_target_returns_the_live_editor_for_a_kon_cell(self):
         editor = self._start_editing_kon()
-        self.assertIs(self.panel.active_edit_target(), editor)
+        got_editor, kind, id_ = self.panel.active_edit_target()
+        self.assertIs(got_editor, editor)
+        self.assertEqual((kind, id_), ('consequence', self.cons_id))
 
     def test_insert_tag_into_editor_adds_spacing_on_both_sides(self):
         editor = self._start_editing_kon("Högt flöde till")
@@ -11714,6 +11808,59 @@ class ShiftClickInsertsTagIntoActiveEditorTests(unittest.TestCase):
 
         self.assertIn("PV-101", editor.text())
         self.assertEqual(captured, [], "marker_navigated must not fire while inserting into an active editor")
+
+    def test_shift_click_syncs_tagged_refs_so_the_tag_gets_bold_highlighted(self):
+        """"att den blir fetstil om jag är i skrivläget på konsekvens och
+        håller [shift]" (2026-08-13) — the drag-and-drop path already
+        bolds any tag it appends via tagged_refs (_PidDelegate paint);
+        Shift+click-insert must give the same treatment, not just plain
+        text, even though the description write itself is deferred to
+        the normal edit-commit."""
+        self._start_editing_kon("Högt flöde till ")
+
+        with unittest.mock.patch.object(
+                QApplication, 'keyboardModifiers', return_value=Qt.KeyboardModifier.ShiftModifier):
+            self.pid_panel._on_marker_clicked('equipment', self.marker_id)
+
+        cons = self.db.get_consequence(self.cons_id)
+        self.assertIn("PV-101", (cons['tagged_refs'] or '').split(','))
+        self.assertEqual(cons['comp_tag'], "PV-101")
+        self.assertEqual(cons['comp_type'], "Ventil")
+
+    def test_shift_click_tag_sync_does_not_overwrite_the_persisted_description(self):
+        """The DB description column must stay untouched by the sync —
+        only the live editor's text (already updated by
+        _insert_tag_into_editor) changes; the normal edit-commit path
+        is what eventually saves the full text, so writing a stale
+        pre-edit description here would just be overwritten a moment
+        later and risks a race with what the user is still typing."""
+        original_desc = self.db.get_consequence(self.cons_id)['description']
+        self._start_editing_kon("Högt flöde till ")
+
+        with unittest.mock.patch.object(
+                QApplication, 'keyboardModifiers', return_value=Qt.KeyboardModifier.ShiftModifier):
+            self.pid_panel._on_marker_clicked('equipment', self.marker_id)
+
+        self.assertEqual(self.db.get_consequence(self.cons_id)['description'], original_desc)
+
+    def test_shift_click_on_safeguard_cell_also_syncs_tagged_refs(self):
+        sg_id = self.db.add_safeguard(self.cons_id)
+        self.panel.load_node(self.node_id)
+        row = next(r for r, m in enumerate(self.panel._row_meta) if m[3] == sg_id)
+        item = self.panel._table.item(row, self.panel._C_SG)
+        self.panel._table.editItem(item)
+        editor = self.panel._table.focusWidget()
+        editor.setText("Larm vid ")
+        editor.setCursorPosition(len(editor.text()))
+
+        with unittest.mock.patch.object(
+                QApplication, 'keyboardModifiers', return_value=Qt.KeyboardModifier.ShiftModifier):
+            self.pid_panel._on_marker_clicked('equipment', self.marker_id)
+
+        self.assertIn("PV-101", editor.text())
+        sg = self.db.get_safeguard(sg_id)
+        self.assertIn("PV-101", (sg['tagged_refs'] or '').split(','))
+        self.assertEqual(sg['comp_tag'], "PV-101")
 
     def test_plain_click_while_editing_falls_back_to_normal_navigation(self):
         """Sanity check: the new branch must not hijack every click just

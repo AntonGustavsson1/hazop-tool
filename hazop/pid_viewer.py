@@ -8610,8 +8610,9 @@ class PIDPanel(QWidget):
             # signature — zero risk to that signal's other callers.
             shift_held = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier)
             if shift_held:
-                editor = self._active_edit_query_fn()
-                if editor is not None:
+                target = self._active_edit_query_fn()
+                if target is not None:
+                    editor, kind, target_id = target
                     row = self.db.conn.execute(
                         "SELECT equipment_id FROM equipment_markers WHERE id=?",
                         (item_id,)).fetchone()
@@ -8620,6 +8621,8 @@ class PIDPanel(QWidget):
                     tag = (eq.get('tag') or '').strip() if eq else ''
                     if tag:
                         self._insert_tag_into_editor(editor, tag)
+                        self._sync_tag_ref(kind, target_id, tag,
+                                           (eq.get('equipment_type') or '') if eq else '')
                     return   # swallow: no popup, no marker_navigated, no rebuild
         if item_type == 'equipment':
             row = self.db.conn.execute(
@@ -8651,6 +8654,44 @@ class PIDPanel(QWidget):
         editor.setText(before + insert + after)
         editor.setCursorPosition(len(before) + len(insert))
         editor.setFocus()
+
+    def _sync_tag_ref(self, kind, id_, tag, comp_type):
+        """Immediately records `tag` in tagged_refs/comp_tag/comp_type
+        (2026-08-13, see NOTES.md: "att den blir fetstil") so the
+        description text _insert_tag_into_editor just inserted gets the
+        same bold-tag-highlight treatment the drag-and-drop path
+        already gives KON/SG cells (_PidDelegate's paint, via
+        find_tag_bold_ranges/parse_tag_refs, hazop.py). Deliberately
+        does NOT touch the description column here — the live editor's
+        full text (already updated) is what the normal edit-commit path
+        saves when editing finishes; writing the STALE pre-edit
+        description here too would just get overwritten a moment later
+        anyway. 'cause' (ORS) has no tagged_refs column at all — its tag
+        still lands as plain, un-bolded text via _insert_tag_into_editor.
+
+        Small local reimplementation of hazop.py's add_tag_ref() — can't
+        import it directly (hazop.py imports FROM pid_viewer.py, never
+        the reverse)."""
+        def _add_ref(raw, t):
+            refs = [r for r in (s.strip() for s in (raw or '').split(',')) if r and r != t]
+            refs.append(t)
+            return ','.join(refs)
+
+        if kind == 'consequence':
+            row = self.db.get_consequence(id_)
+            if not row:
+                return
+            new_refs = _add_ref(row.get('tagged_refs'), tag)
+            self.db.update_consequence(id_, row['description'], row['severity'],
+                                        row['category'] or '', row.get('consequence_chain') or '',
+                                        comp_tag=tag, comp_type=comp_type, tagged_refs=new_refs)
+        elif kind == 'safeguard':
+            row = self.db.get_safeguard(id_)
+            if not row:
+                return
+            new_refs = _add_ref(row.get('tagged_refs'), tag)
+            self.db.update_safeguard(id_, tagged_refs=new_refs)
+            self.db.set_safeguard_tag(id_, tag, comp_type)
 
     def place_equipment_marker(self, tag, comp_type, scene_pos, page, pdf_rect=None):
         """Callback for EquipmentTagPopup (P&ID right-click -> "🔧 Objekt",

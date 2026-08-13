@@ -8013,13 +8013,50 @@ class TreePanel(QWidget):
             return self.tree.viewport().mapFrom(self.tree, pos)
         return pos
 
-    def _deviation_item_at(self, event, source_obj):
-        """Return the DEV_T tree item under the drag position, or None."""
+    def _deviation_item_at(self, event, source_obj, create=False):
+        """Return the dev_id a drag position resolves to, or None.
+
+        A literal DEV_T item resolves directly. Once a guide word has
+        ANY equipment linked to it, "Lågt flöde" no longer renders as a
+        plain DEV_T item — it becomes a LEDORD_T wrapper (or, for the
+        single-equipment "kaka på kaka" merge, a CAUSE_T item) — so
+        those must resolve too, or dropping a further/different object
+        onto that same guide word silently does nothing (2026-08-13 bug
+        report: "om det redan ligger ett objekt på 'lågt flöde' i
+        trädet och jag drar ett nytt objekt dit så kan jag inte detta").
+
+        `create=False` (the DragMove hover-feedback caller) only ever
+        SELECTs — it must never write to the DB just because the mouse
+        passed over a tree item. `create=True` (the actual Drop) may
+        create the node's still-generic (equipment_id IS NULL) seeded
+        deviation row for that guide word if none exists yet, via the
+        same get_or_create_deviation() every other equipment-linking
+        path already uses — so a SECOND/different object dropped on an
+        already-equipped guide word lands on its own deviation row,
+        never stealing the first object's."""
         pos = self._event_pos_in_viewport(event, source_obj)
         target = self.tree.itemAt(pos)
-        if target is None or target.data(0, Qt.ItemDataRole.UserRole + 1) != DEV_T:
+        if target is None:
             return None
-        return target
+        type_ = target.data(0, Qt.ItemDataRole.UserRole + 1)
+        id_ = target.data(0, Qt.ItemDataRole.UserRole)
+        if type_ == DEV_T:
+            return id_
+        if type_ == CAUSE_T:
+            return self._resolve_deviation_id(CAUSE_T, id_)
+        if type_ == LEDORD_T:
+            try:
+                node_id_str, description = str(id_).split(':', 1)
+                node_id = int(node_id_str)
+            except (ValueError, IndexError):
+                return None
+            if create:
+                return self.db.get_or_create_deviation(node_id, description)
+            row = self.db.conn.execute(
+                "SELECT id FROM deviations WHERE node_id=? AND description=? ORDER BY id LIMIT 1",
+                (node_id, description)).fetchone()
+            return row[0] if row else None
+        return None
 
     def _handle_equipment_drop(self, event, source_obj):
         text = event.mimeData().text()
@@ -8034,10 +8071,7 @@ class TreePanel(QWidget):
         if not marker_ids:
             event.ignore(); return
 
-        target = self._deviation_item_at(event, source_obj)
-        if target is None:
-            event.ignore(); return
-        dev_id = target.data(0, Qt.ItemDataRole.UserRole)
+        dev_id = self._deviation_item_at(event, source_obj, create=True)
         if dev_id is None:
             event.ignore(); return
 
@@ -13113,13 +13147,17 @@ class ScenarioTablePanel(QWidget):
                 return
 
     def active_edit_target(self):
-        """Returns the live QLineEdit for the ORS/KON/SG cell currently
-        being edited, or None. Used by PIDPanel's Shift+click-on-marker
-        tag-insert feature (2026-08-13, see NOTES.md: "jag kan
-        fortsätta skriva efter objektet ... jag hoppar inte ut ur
-        textediteringsvyn") so it can insert into an already-open
-        editor instead of disturbing it — same EditingState guard
-        select_cause() above already uses to avoid stealing focus.
+        """Returns (editor, kind, id_) for the ORS/KON/SG cell currently
+        being edited, or None — kind is 'cause'/'consequence'/'safeguard',
+        id_ the matching cause_id/cons_id/sg_id. Used by PIDPanel's
+        Shift+click-on-marker tag-insert feature (2026-08-13, see
+        NOTES.md: "jag kan fortsätta skriva efter objektet ... jag
+        hoppar inte ut ur textediteringsvyn") so it can insert into an
+        already-open editor instead of disturbing it — same EditingState
+        guard select_cause() above already uses to avoid stealing focus.
+        kind/id_ let the caller also sync tagged_refs so the eventual
+        saved text gets the same bold-tag-highlight treatment the
+        drag-and-drop path already gives KON/SG cells.
 
         Resolves row/col from the editor's OWN 'editing_row'/'editing_col'
         properties (set by _ScenarioDelegate.createEditor) rather than
@@ -13141,7 +13179,7 @@ class ScenarioTablePanel(QWidget):
         meta = item.data(Qt.ItemDataRole.UserRole)
         if not meta or meta[0] not in ('cause', 'consequence', 'safeguard'):
             return None
-        return editor
+        return editor, meta[0], meta[1]
 
     def ors_cell_global_pos(self, dev_id):
         """Return global top-right corner of the first placeholder ORS cell for dev_id."""
