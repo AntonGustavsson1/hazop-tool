@@ -5229,36 +5229,69 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         self.assertEqual(self.panel._resolve_equipment_id(DEV_T, pump_dev), pump_id)
         self.assertEqual(self.panel._resolve_equipment_id(DEV_T, valve_dev), valve_id)
 
-    def test_numbering_of_later_guide_words_does_not_skip_after_adding_equipment(self):
+    def test_numbering_stays_sequential_and_visible_after_linking_equipment(self):
         """Bug report (2026-08-13): 'Nummereringen av lågt flöde, högt
         flöde osv blir konstig när man lägger till objekt i trädet.'
-        add_node() seeds 'Lågt flöde' (di=1 if shown) then 'Högt flöde'
-        (di=2) as plain, ungrouped, single-deviation guide words — each
-        rendered via the "skip the Ledord wrapper" shortcut, which shows
-        a running number. Merging an equipment onto 'Lågt flöde' (still
-        no cause on the now-scaffolding generic copy, so it stays
-        hidden) used to bump the shared `di` counter for the equipment's
-        own merged row even though that row is never itself labelled
-        with a number — silently eating a number and pushing every
-        LATER guide word's displayed number one too high."""
+        First fix attempt made the merged equipment row simply consume
+        no number at all — which then made a SECOND report surface:
+        'jag vill att den ska kvarstå så att det alltid syns att det är
+        exempelvis 16 avikelser' (the guide word's own number must stay
+        visible even once it's wrapped/merged, not disappear). The
+        Ledord wrapper itself now carries the guide word's number, and
+        equipment/deviation-instance items inside it use their own
+        separate local counter that can never steal from this top-level,
+        one-per-guide-word sequence."""
         eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
         node_id = self.db.add_node()
         self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
         self.panel.refresh()
 
         it = QTreeWidgetItemIterator(self.panel.tree)
-        hogt_item = None
+        lagt_wrapper = hogt_item = None
         while it.value():
             item = it.value()
-            if (item.data(0, Qt.ItemDataRole.UserRole + 1) == DEV_T
-                    and item.parent() is not None
+            t = item.data(0, Qt.ItemDataRole.UserRole + 1)
+            if t == LEDORD_T and "Lågt flöde" in item.text(0):
+                lagt_wrapper = item
+            if (t == DEV_T and item.parent() is not None
                     and item.parent().data(0, Qt.ItemDataRole.UserRole + 1) == NODE_T
                     and "Högt flöde" in item.text(0)):
                 hogt_item = item
             it += 1
+        self.assertIsNotNone(lagt_wrapper, "'Lågt flöde' must be wrapped once equipment is linked")
+        self.assertIn("1. Lågt flöde", lagt_wrapper.text(0),
+            f"the guide word's own number must stay visible after wrapping, got: {lagt_wrapper.text(0)!r}")
         self.assertIsNotNone(hogt_item, "'Högt flöde' must still attach directly to the node")
-        self.assertIn("1. Högt flöde", hogt_item.text(0),
-            f"expected the first visible number, got: {hogt_item.text(0)!r}")
+        self.assertIn("2. Högt flöde", hogt_item.text(0),
+            f"expected the next sequential number, got: {hogt_item.text(0)!r}")
+
+    def test_all_seeded_guide_words_stay_numbered_one_through_sixteen(self):
+        """Direct check of the user's own framing: 'jag vill att den ska
+        kvarstå så att det alltid syns att det är exempelvis 16
+        avikelser om jag inte lägger till nya avikelser i trädet' — a
+        fresh node's 16 auto-seeded guide words must show as a gapless
+        1..16 sequence, and linking equipment to any ONE of them (moving
+        it from the plain to the wrapped rendering path) must not change
+        that count or leave a gap/duplicate anywhere."""
+        import re
+        node_id = self.db.add_node()
+        n_seeded = len(self.db.deviations(node_id))
+        eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
+        self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        self.panel.refresh()
+
+        numbers = []
+        it = QTreeWidgetItemIterator(self.panel.tree)
+        while it.value():
+            item = it.value()
+            t = item.data(0, Qt.ItemDataRole.UserRole + 1)
+            if t in (DEV_T, LEDORD_T):
+                m = re.search(r'(\d+)\.\s', item.text(0))
+                if m:
+                    numbers.append(int(m.group(1)))
+            it += 1
+        self.assertEqual(sorted(numbers), list(range(1, n_seeded + 1)),
+            f"expected a gapless 1..{n_seeded} sequence, got: {sorted(numbers)}")
 
     def test_merged_equipment_deviation_item_does_not_repeat_guide_word_text(self):
         """Exact reported bug: '=M1.GPA6 — Pump' nested under 'Lågt flöde'

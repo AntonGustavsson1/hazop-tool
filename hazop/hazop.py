@@ -7486,7 +7486,21 @@ class TreePanel(QWidget):
                         add_deviation_subtree(nitem, ungrouped_devs[0], di)
                         continue
 
-                    litem = QTreeWidgetItem([f"  ⬡  {description}"])
+                    # The Ledord wrapper itself carries the guide word's
+                    # running number now (2026-08-13 follow-up: "jag vill
+                    # att den ska kvarstå så att det alltid syns att det
+                    # är exempelvis 16 avikelser") — linking an object to
+                    # a guide word switches it from the plain, ungrouped
+                    # branch above to this wrapped one, and the number
+                    # must not disappear just because of that. Equipment/
+                    # deviation-instance items INSIDE this group get their
+                    # own separate local counter (sub_di below) so they
+                    # never steal from this top-level, one-per-guide-word
+                    # sequence — that shared-counter bug is exactly what
+                    # caused the earlier "nummereringen blir konstig" report.
+                    di += 1
+                    sub_di = 0
+                    litem = QTreeWidgetItem([f"  ⬡  {di}. {description}"])
                     ledord_key = f"{node['id']}:{description}"
                     litem.setData(0, Qt.ItemDataRole.UserRole, ledord_key)
                     litem.setData(0, Qt.ItemDataRole.UserRole + 1, LEDORD_T)
@@ -7570,8 +7584,8 @@ class TreePanel(QWidget):
                             if (EQUIP_T, eq_id) in expanded: eitem.setExpanded(True)
                             if select_type == EQUIP_T and select_id == eq_id: target = eitem
                             for dev in eq_devs:
-                                di += 1
-                                add_deviation_subtree(eitem, dev, di)
+                                sub_di += 1
+                                add_deviation_subtree(eitem, dev, sub_di)
 
                     for dev in ungrouped_devs:
                         # Every node is auto-seeded with one empty, generic
