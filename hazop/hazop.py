@@ -7495,7 +7495,17 @@ class TreePanel(QWidget):
                             # equipment-dropped-on-deviation — previously
                             # dead ends when the row was EQUIP_T.
                             dev = eq_devs[0]
-                            di += 1
+                            # NOT "di += 1" here (2026-08-13 bug report:
+                            # "Nummereringen ... blir konstig när man
+                            # lägger till objekt i trädet") — this branch's
+                            # eitem keeps its equipment-tag label from
+                            # above (never relabelled with "{di}. "), so
+                            # bumping the counter here silently ate a
+                            # number that the NEXT plain guide word's
+                            # add_deviation_subtree() call would otherwise
+                            # have shown, making every later number one
+                            # (or more) higher than it should be as soon
+                            # as any object got added to a node.
                             dev_causes = self.db.causes_for_deviation(dev['id'])
                             merge_tag = ((eq['tag'] or '').strip() if eq else '')
                             trivial_desc = (dev_causes[0]['description'] or '').strip() in ('', 'Ny orsak') \
@@ -17967,16 +17977,17 @@ class EquipmentTagPopup(QDialog):
         tag_lbl.setStyleSheet(_small)
         form.addRow(tag_lbl, self._tag_edit)
 
+        # Non-editable dropdown (2026-08-13 follow-up: "Rullgardinen ...
+        # har försvunnit. Det ska vara de valen som det var innan" — an
+        # editable QComboBox loses its usual dropdown-arrow affordance
+        # under this app's global stylesheet, so it looked broken instead
+        # of just "also typable"). A brand-new type is instead added via
+        # the "+" button next to it, which keeps the normal pick-from-list
+        # experience intact and adds a distinct, explicit action for the
+        # rarer "this type doesn't exist yet" case.
         self._type_cb = QComboBox()
         self._type_cb.setFixedHeight(CONFIG['H_BTN_SMALL'])
         self._type_cb.setStyleSheet(_small)
-        # Editable (2026-08-13, see NOTES.md: "det är här jag vill kunna
-        # lägga till nya typer av objekt som inte redan finns i listan")
-        # — equipment_catalog.equipment_type is a plain free-text column,
-        # nothing else in the app restricts it to the standard catalogue,
-        # so typing a brand-new type here just works; _equipment_type_options()
-        # then makes it selectable again next time instead of a one-off.
-        self._type_cb.setEditable(True)
         self._type_cb.addItems(_equipment_type_options(db))
         if suggested_type:
             idx = self._type_cb.findText(suggested_type)
@@ -17984,9 +17995,17 @@ class EquipmentTagPopup(QDialog):
                 self._type_cb.addItem(suggested_type)
                 idx = self._type_cb.count() - 1
             self._type_cb.setCurrentIndex(idx)
+        typ_row = QHBoxLayout()
+        typ_row.setSpacing(4)
+        typ_row.addWidget(self._type_cb)
+        add_type_btn = QPushButton("+")
+        add_type_btn.setFixedSize(CONFIG['H_BTN_SMALL'], CONFIG['H_BTN_SMALL'])
+        add_type_btn.setToolTip("Lägg till en ny objekttyp")
+        add_type_btn.clicked.connect(self._add_new_type)
+        typ_row.addWidget(add_type_btn)
         typ_lbl = QLabel("Typ:")
         typ_lbl.setStyleSheet(_small)
-        form.addRow(typ_lbl, self._type_cb)
+        form.addRow(typ_lbl, typ_row)
         layout.addLayout(form)
 
         # Duplicate-tag hint (2026-08-10, see NOTES.md) — place_equipment_marker
@@ -18015,6 +18034,21 @@ class EquipmentTagPopup(QDialog):
         layout.addLayout(btns)
 
         self._tag_edit.returnPressed.connect(self._ok)
+
+    def _add_new_type(self):
+        """"+" button next to the Typ dropdown (2026-08-13 follow-up) —
+        equipment_catalog.equipment_type is plain free text, so a brand
+        new type just needs adding to the combo and selecting; no DB
+        write happens until the popup itself is committed via _ok()."""
+        name, ok = QInputDialog.getText(self, "Ny objekttyp", "Namn:")
+        name = (name or '').strip()
+        if not ok or not name:
+            return
+        idx = self._type_cb.findText(name)
+        if idx < 0:
+            self._type_cb.addItem(name)
+            idx = self._type_cb.count() - 1
+        self._type_cb.setCurrentIndex(idx)
 
     def _check_duplicate_tag(self, text):
         tag = (text or '').strip()

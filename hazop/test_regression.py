@@ -5229,6 +5229,37 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         self.assertEqual(self.panel._resolve_equipment_id(DEV_T, pump_dev), pump_id)
         self.assertEqual(self.panel._resolve_equipment_id(DEV_T, valve_dev), valve_id)
 
+    def test_numbering_of_later_guide_words_does_not_skip_after_adding_equipment(self):
+        """Bug report (2026-08-13): 'Nummereringen av lågt flöde, högt
+        flöde osv blir konstig när man lägger till objekt i trädet.'
+        add_node() seeds 'Lågt flöde' (di=1 if shown) then 'Högt flöde'
+        (di=2) as plain, ungrouped, single-deviation guide words — each
+        rendered via the "skip the Ledord wrapper" shortcut, which shows
+        a running number. Merging an equipment onto 'Lågt flöde' (still
+        no cause on the now-scaffolding generic copy, so it stays
+        hidden) used to bump the shared `di` counter for the equipment's
+        own merged row even though that row is never itself labelled
+        with a number — silently eating a number and pushing every
+        LATER guide word's displayed number one too high."""
+        eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
+        node_id = self.db.add_node()
+        self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        self.panel.refresh()
+
+        it = QTreeWidgetItemIterator(self.panel.tree)
+        hogt_item = None
+        while it.value():
+            item = it.value()
+            if (item.data(0, Qt.ItemDataRole.UserRole + 1) == DEV_T
+                    and item.parent() is not None
+                    and item.parent().data(0, Qt.ItemDataRole.UserRole + 1) == NODE_T
+                    and "Högt flöde" in item.text(0)):
+                hogt_item = item
+            it += 1
+        self.assertIsNotNone(hogt_item, "'Högt flöde' must still attach directly to the node")
+        self.assertIn("1. Högt flöde", hogt_item.text(0),
+            f"expected the first visible number, got: {hogt_item.text(0)!r}")
+
     def test_merged_equipment_deviation_item_does_not_repeat_guide_word_text(self):
         """Exact reported bug: '=M1.GPA6 — Pump' nested under 'Lågt flöde'
         used to show ANOTHER child item labelled '1. Lågt flöde' — the
@@ -9935,12 +9966,13 @@ class EquipmentTagPopupDuplicateHintTests(unittest.TestCase):
 
 class EquipmentTagPopupCustomTypeTests(unittest.TestCase):
     """"det är här jag vill kunna lägga till nya typer av objekt som inte
-    redan finns i listan" (2026-08-13) — the "Typ" combo used to be a
-    plain non-editable QComboBox limited to COMPONENT_TYPES + two
-    catch-alls; equipment_catalog.equipment_type is a free-text column
-    with nothing else in the app restricting its values, so making the
-    combo editable and just passing currentText() through unchanged is
-    enough."""
+    redan finns i listan" (2026-08-13). First attempt made the "Typ"
+    combo editable directly — reverted the same day ("Rullgardinen ...
+    har försvunnit. Det ska vara de valen som det var innan") because an
+    editable QComboBox loses its usual dropdown-arrow affordance under
+    this app's global stylesheet. The combo stays non-editable with its
+    original pick-from-list behaviour; a dedicated "+" button next to it
+    opens a text prompt to add a brand-new type instead."""
 
     @classmethod
     def setUpClass(cls):
@@ -9957,20 +9989,45 @@ class EquipmentTagPopupCustomTypeTests(unittest.TestCase):
             pass
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    def test_type_combo_is_editable(self):
+    def test_type_combo_is_not_editable(self):
         from hazop import EquipmentTagPopup
         popup = EquipmentTagPopup(self.db)
         try:
-            self.assertTrue(popup._type_cb.isEditable())
+            self.assertFalse(popup._type_cb.isEditable())
         finally:
             popup.deleteLater()
 
-    def test_typing_a_brand_new_type_commits_it_unchanged(self):
+    def test_plus_button_adds_and_selects_a_new_type(self):
+        from hazop import EquipmentTagPopup
+        popup = EquipmentTagPopup(self.db)
+        try:
+            with unittest.mock.patch.object(
+                    hazop.QInputDialog, 'getText', return_value=("Ett helt nytt objekt", True)):
+                popup._add_new_type()
+            self.assertEqual(popup._type_cb.currentText(), "Ett helt nytt objekt")
+        finally:
+            popup.deleteLater()
+
+    def test_plus_button_cancelled_leaves_selection_unchanged(self):
+        from hazop import EquipmentTagPopup
+        popup = EquipmentTagPopup(self.db)
+        try:
+            before = popup._type_cb.currentText()
+            with unittest.mock.patch.object(
+                    hazop.QInputDialog, 'getText', return_value=("", False)):
+                popup._add_new_type()
+            self.assertEqual(popup._type_cb.currentText(), before)
+        finally:
+            popup.deleteLater()
+
+    def test_new_type_from_plus_button_commits_unchanged(self):
         from hazop import EquipmentTagPopup
         popup = EquipmentTagPopup(self.db)
         try:
             popup._tag_edit.setText("XYZ-1")
-            popup._type_cb.setCurrentText("Ett helt nytt objekt")
+            with unittest.mock.patch.object(
+                    hazop.QInputDialog, 'getText', return_value=("Ett helt nytt objekt", True)):
+                popup._add_new_type()
             captured = []
             popup.committed.connect(lambda tag, typ: captured.append((tag, typ)))
             popup._ok()
