@@ -17915,15 +17915,21 @@ _EQ_TYPE_ITEMS = [''] + sorted(COMPONENT_TYPES.keys()) + ['Rörledning', 'Övrig
 def _equipment_type_options(db):
     """_EQ_TYPE_ITEMS plus any custom equipment_type string already used
     somewhere in the catalog (2026-08-13: 'vill kunna lägga till nya
-    typer av objekt som inte redan finns i listan' — EquipmentTagPopup's
-    type combo is now editable so a brand-new type can be typed in
-    directly; once typed once, it should be selectable again next time
-    instead of having to retype the exact same free-text string)."""
+    typer av objekt som inte redan finns i listan') PLUS every name in
+    the Standardobjekt list (`standard_objects` — the admin-managed
+    catalogue used by the cause-suggestion forms, Inställningar →
+    Standardobjekt). The two lists must "prata med varandra" (2026-08-13
+    follow-up): a type added here also becomes a standard object (see
+    EquipmentTagPopup._add_new_type), and a standard object added via
+    Inställningar shows up here too, without either side needing a
+    special-cased import of the other."""
     rows = db.conn.execute(
         "SELECT DISTINCT equipment_type FROM equipment_catalog "
         "WHERE equipment_type IS NOT NULL AND equipment_type != ''").fetchall()
-    extra = sorted({r[0] for r in rows} - set(_EQ_TYPE_ITEMS))
-    return _EQ_TYPE_ITEMS[:-2] + extra + _EQ_TYPE_ITEMS[-2:]
+    known = set(_EQ_TYPE_ITEMS)
+    extra = {r[0] for r in rows} - known
+    extra |= {o['name'] for o in db.standard_objects()} - known
+    return _EQ_TYPE_ITEMS[:-2] + sorted(extra) + _EQ_TYPE_ITEMS[-2:]
 
 
 class ObjectPickerPopup(QDialog):
@@ -18128,8 +18134,13 @@ class EquipmentTagPopup(QDialog):
     def _add_new_type(self):
         """"+" button next to the Typ dropdown (2026-08-13 follow-up) —
         equipment_catalog.equipment_type is plain free text, so a brand
-        new type just needs adding to the combo and selecting; no DB
-        write happens until the popup itself is committed via _ok()."""
+        new type just needs adding to the combo and selecting; no
+        equipment_catalog write happens until the popup itself is
+        committed via _ok(). Also registers the name as a Standardobjekt
+        right away (2026-08-13, same-day follow-up: "lägger jag till
+        ytterligare något här skall det också dyka upp i standardobjekt
+        ... Dessa skall prata med varandra") so it's immediately
+        available in the cause-suggestion forms too, not just here."""
         name, ok = QInputDialog.getText(self, "Ny objekttyp", "Namn:")
         name = (name or '').strip()
         if not ok or not name:
@@ -18139,6 +18150,10 @@ class EquipmentTagPopup(QDialog):
             self._type_cb.addItem(name)
             idx = self._type_cb.count() - 1
         self._type_cb.setCurrentIndex(idx)
+        exists = self._db.conn.execute(
+            "SELECT 1 FROM standard_objects WHERE LOWER(name)=LOWER(?)", (name,)).fetchone()
+        if not exists:
+            self._db.add_standard_object(name)
 
     def _check_duplicate_tag(self, text):
         tag = (text or '').strip()

@@ -1609,6 +1609,20 @@ Ingen delegate-ändring behövdes — REK är avsiktligt INTE med i `_pid_delega
 
 ---
 
+## "+"-knappen för objekttyp ska prata med Standardobjekt (2026-08-13)
+
+**Begäran, direkt efter "+"-knapps-fixen ovan:** "Rullgardinen från nytt objekt på P&ID har finns nu igen, men lägger jag till ytterligare något här skall det också dyka upp i standardobjekt. Dessa skall prata med varandra."
+
+**Bakgrund:** appen har sedan tidigare en helt separat, admin-hanterad `standard_objects`-tabell/lista ("Standardobjekt", Inställningar-fliken, `StandardObjectsSettingsPanel`, hazop.py) — "dessa objekttyper är tillgängliga i orsaksformulären och kan kopplas till orsaksbeskrivningar" (används av `_resolve_object_id`/`_obj_type_matches` för orsaksförslag på `EquipmentDeviationBar`). `EquipmentTagPopup`s "Typ"-kombo (`_equipment_type_options`) var en HELT ANNAN, oberoende lista (COMPONENT_TYPES + redan använda `equipment_catalog.equipment_type`-värden) — en ny typ skriven in via "+"-knappen syntes ALDRIG i Standardobjekt-listan, och tvärtom.
+
+**Fix — dubbelriktad synk:**
+1. `EquipmentTagPopup._add_new_type()`: efter att den nya typen lagts till i kombon, registreras den ÄVEN som ett Standardobjekt (`db.add_standard_object(name)`) om den inte redan finns där (skiftlägesokänslig `LOWER(name)=LOWER(?)`-kontroll, för att inte skapa en nästan-dubblett som bara skiljer sig i skiftläge).
+2. `_equipment_type_options(db)`: hämtar nu ÄVEN alla namn från `db.standard_objects()` (deduplicerat), inte bara redan använda `equipment_catalog.equipment_type`-värden — ett Standardobjekt tillagt via Inställningar dyker alltså upp i "Typ"-kombon direkt, utan någon särskild importlogik.
+
+**Test:** tre nya tester i `EquipmentTagPopupCustomTypeTests`: "+"-knappen skapar ett Standardobjekt, en skiftlägesskillnad mot ett befintligt Standardobjekt skapar INTE en dubblett, och ett Standardobjekt satt via Inställningar (utan att röra denna popup alls) dyker upp i kombon. Bredare svep (`EquipmentObjectPlacementTests`, `EquipmentPanelManualAddUnificationTests`, `ObjectMenuAndToolbarButtonsTests`) gröna.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

@@ -10089,6 +10089,52 @@ class EquipmentTagPopupCustomTypeTests(unittest.TestCase):
         finally:
             popup.deleteLater()
 
+    def test_plus_button_also_registers_it_as_a_standard_object(self):
+        """"lägger jag till ytterligare något här skall det också dyka
+        upp i standardobjekt. Dessa skall prata med varandra."
+        (2026-08-13) — a brand-new type typed via the "+" button must
+        immediately become a Standardobjekt too, not just a local combo
+        entry, so it's available in the cause-suggestion forms."""
+        from hazop import EquipmentTagPopup
+        popup = EquipmentTagPopup(self.db)
+        try:
+            with unittest.mock.patch.object(
+                    hazop.QInputDialog, 'getText', return_value=("Ett helt nytt objekt", True)):
+                popup._add_new_type()
+            names = [o['name'] for o in self.db.standard_objects()]
+            self.assertIn("Ett helt nytt objekt", names)
+        finally:
+            popup.deleteLater()
+
+    def test_plus_button_does_not_duplicate_an_existing_standard_object(self):
+        """Case-insensitive match against an existing Standardobjekt
+        (e.g. one added via Inställningar) must not create a near-
+        duplicate entry that only differs by case."""
+        from hazop import EquipmentTagPopup
+        self.db.add_standard_object("Ventil")
+        popup = EquipmentTagPopup(self.db)
+        try:
+            with unittest.mock.patch.object(
+                    hazop.QInputDialog, 'getText', return_value=("ventil", True)):
+                popup._add_new_type()
+            names = [o['name'] for o in self.db.standard_objects()]
+            self.assertEqual(names.count("Ventil") + names.count("ventil"), 1)
+        finally:
+            popup.deleteLater()
+
+    def test_standard_object_added_elsewhere_appears_in_type_dropdown(self):
+        """The reverse direction of the same sync: a Standardobjekt added
+        via Inställningar (not through this popup at all) must show up
+        as a selectable type here too."""
+        from hazop import EquipmentTagPopup
+        self.db.add_standard_object("Ett objekt satt via Inställningar")
+        popup = EquipmentTagPopup(self.db)
+        try:
+            self.assertGreaterEqual(
+                popup._type_cb.findText("Ett objekt satt via Inställningar"), 0)
+        finally:
+            popup.deleteLater()
+
     def test_plus_button_cancelled_leaves_selection_unchanged(self):
         from hazop import EquipmentTagPopup
         popup = EquipmentTagPopup(self.db)
