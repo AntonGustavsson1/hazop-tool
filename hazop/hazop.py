@@ -2198,6 +2198,13 @@ class Database:
                 name       TEXT NOT NULL UNIQUE,
                 sort_order INTEGER DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS symbol_templates (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                name          TEXT NOT NULL UNIQUE,
+                features_json TEXT NOT NULL,
+                comp_type     TEXT DEFAULT '',
+                created       TEXT DEFAULT ''
+            );
             CREATE TABLE IF NOT EXISTS cause_descriptions (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 cause_id        INTEGER NOT NULL REFERENCES standard_causes(id) ON DELETE CASCADE,
@@ -4119,6 +4126,30 @@ class Database:
     def reorder_standard_objects(self, ordered_ids):
         for i, id_ in enumerate(ordered_ids):
             self.conn.execute("UPDATE standard_objects SET sort_order=? WHERE id=?", (i, id_))
+        self.commit()
+
+    # ── Symbol templates ("Hitta liknande symbol" — bibliotek, 2026-08-15,
+    # see NOTES.md "uppföljningsfunktioner") ────────────────────────────────
+    def symbol_templates(self):
+        return [dict(r) for r in self.conn.execute(
+            "SELECT id, name, features_json, comp_type, created "
+            "FROM symbol_templates ORDER BY name")]
+
+    def get_symbol_template(self, id_):
+        row = self.conn.execute(
+            "SELECT id, name, features_json, comp_type, created "
+            "FROM symbol_templates WHERE id=?", (id_,)).fetchone()
+        return dict(row) if row else None
+
+    def add_symbol_template(self, name, features_json, comp_type=''):
+        cur = self.conn.execute(
+            "INSERT INTO symbol_templates (name, features_json, comp_type, created) "
+            "VALUES (?,?,?,datetime('now'))", (name, features_json, comp_type))
+        self.commit()
+        return cur.lastrowid
+
+    def delete_symbol_template(self, id_):
+        self.conn.execute("DELETE FROM symbol_templates WHERE id=?", (id_,))
         self.commit()
 
     # ── Cause descriptions ────────────────────────────────────────────────────

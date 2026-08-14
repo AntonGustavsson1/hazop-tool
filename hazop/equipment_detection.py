@@ -1718,6 +1718,50 @@ def detect_equipment_symbols(pdf_doc, requests, min_confidence=0.3):
     return results
 
 
+_TAG_SEQUENCE_RE = re.compile(r'^(.*?)(\d+)(\D*)$')
+
+
+def _next_tag_sequence(start_tag, count, existing_tags=None):
+    """Generate `count` tags starting from start_tag's own number,
+    incrementing its last digit run while preserving zero-padding width
+    (e.g. "101" → "102", never "1010"), skipping any tag already in
+    existing_tags (case-insensitive) or already generated earlier in
+    this same call — used by EquipmentMarkerReviewDialog's mass-tagging
+    action (2026-08-15, see NOTES.md "Hitta liknande symbol" —
+    uppföljningsfunktioner: "bra om jag kan välja att koppla det till
+    typ av objekt och förhoppningsvis tagg nummer").
+
+    If start_tag has no digit run at all, falls back to appending
+    "-2", "-3", ... after the unchanged first tag — still deterministic,
+    never crashes or loops forever (the counter always advances even
+    when a candidate is skipped as already-taken)."""
+    existing = {t.upper() for t in (existing_tags or [])}
+    m = _TAG_SEQUENCE_RE.match(start_tag or '')
+    if not m:
+        out = []
+        n = 1
+        candidate = start_tag or ''
+        while len(out) < count:
+            if candidate.upper() not in existing:
+                out.append(candidate)
+                existing.add(candidate.upper())
+            n += 1
+            candidate = f"{start_tag}-{n}"
+        return out
+
+    prefix, digits, suffix = m.group(1), m.group(2), m.group(3)
+    width = len(digits)
+    number = int(digits)
+    out = []
+    while len(out) < count:
+        candidate = f"{prefix}{str(number).zfill(width)}{suffix}"
+        if candidate.upper() not in existing:
+            out.append(candidate)
+            existing.add(candidate.upper())
+        number += 1
+    return out
+
+
 def resolve_reference_cluster(pdf_doc, ref_page, ref_x, ref_y):
     """Resolve the vector cluster at (ref_x, ref_y) on ref_page — the
     same reference resolution find_similar_shapes() itself does,
@@ -1746,9 +1790,62 @@ def resolve_reference_cluster(pdf_doc, ref_page, ref_x, ref_y):
     return primitives, cluster['_index_group'], cluster
 
 
+def _scan_candidates(pdf_doc, ref_features, ref_page, ref_native_index_group, pages=None,
+                     rotation_mode='none', ignore_scale=False,
+                     progress_callback=None, should_cancel=None):
+    """Un-thresholded, unsorted (sim, page_num, x, y, outline) candidate
+    list — the shared, expensive half of find_similar_shapes() (2026-08-15,
+    see NOTES.md "Hitta liknande symbol" — uppföljningsfunktioner), split
+    out so a caller can run it ONCE — e.g. in a background thread
+    (SimilarSymbolSearchWorker, pid_viewer.py) — and reuse the same raw
+    result for both a live match-count-vs-threshold preview and the
+    final thresholded search, instead of scanning the document twice.
+
+    should_cancel: an optional zero-arg callable (e.g. a QThread's
+    isInterruptionRequested) checked once per page — mirrors
+    detect_equipment_and_valves()'s existing cancellation convention.
+
+    ref_native_index_group identifies which of ref_page's own
+    auto-detected clusters IS the reference itself, by exact primitive-
+    index-list EQUALITY rather than object identity — this must survive
+    being recomputed from scratch in a different thread/process against
+    the same PDF file (extract_primitives()/cluster_primitives() are
+    deterministic but produce fresh objects there), and it must still
+    correctly identify the reference even when the caller's actual
+    ref_features came from a user-EDITED index group (excluding a
+    wrongly-merged primitive) — the thing being excluded from its own
+    candidate list is the raw auto-detected cluster, not the edited one.
+    """
+    if pages is None:
+        pages = range(pdf_doc.page_count)
+    pages = list(pages)
+    candidates = []
+    total = len(pages)
+    for page_num in pages:
+        if should_cancel and should_cancel():
+            break
+        if progress_callback:
+            progress_callback(page_num, total, f"Sida {page_num + 1}/{total} — jämför symboler…")
+        page = pdf_doc[page_num]
+        clusters = symbol_geometry.find_symbol_clusters(page, min_confidence=0.0,
+                                                         return_groups=True)
+        cand_primitives = symbol_geometry.extract_primitives(page)
+        cand_scale = symbol_geometry.dominant_text_size(page)
+        for c in clusters:
+            if page_num == ref_page and c['_index_group'] == ref_native_index_group:
+                continue
+            cand_feats = symbol_geometry.similarity_features(
+                cand_primitives, c['_index_group'], cand_scale, rotation_mode=rotation_mode)
+            sim = symbol_geometry.cluster_similarity(ref_features, cand_feats,
+                                                      ignore_scale=ignore_scale)
+            x0, y0, x1, y1 = c['bbox']
+            candidates.append((sim, page_num, (x0 + x1) / 2, (y0 + y1) / 2, c['outline']))
+    return candidates
+
+
 def find_similar_shapes(pdf_doc, ref_page, ref_x, ref_y, pages=None, min_similarity=0.6,
                         comp_type='', progress_callback=None, ignore_scale=False,
-                        rotation_mode='none', ref_index_group=None):
+                        rotation_mode='none', ref_index_group=None, should_cancel=None):
     """"Hitta liknande symbol" (2026-08-10, see NOTES.md): given a
     reference point the user picked (ref_page/ref_x/ref_y — anywhere on
     the P&ID, tagged or not, already a known equipment marker or not),
@@ -1792,9 +1889,6 @@ def find_similar_shapes(pdf_doc, ref_page, ref_x, ref_y, pages=None, min_similar
     """
     if not HAS_PYMUPDF or pdf_doc is None:
         return []
-    if pages is None:
-        pages = range(pdf_doc.page_count)
-    pages = list(pages)
 
     ref_fitz_page = pdf_doc[ref_page]
     ref_primitives = symbol_geometry.extract_primitives(ref_fitz_page)
@@ -1810,32 +1904,24 @@ def find_similar_shapes(pdf_doc, ref_page, ref_x, ref_y, pages=None, min_similar
     ref_feats = symbol_geometry.similarity_features(
         ref_primitives, index_group, ref_scale, rotation_mode=rotation_mode)
 
-    candidates = []
-    total = len(pages)
-    for i, page_num in enumerate(pages):
-        if progress_callback:
-            progress_callback(page_num, total, f"Sida {page_num + 1}/{total} — jämför symboler…")
-        page = pdf_doc[page_num]
-        clusters = (ref_clusters if page_num == ref_page
-                   else symbol_geometry.find_symbol_clusters(page, min_confidence=0.0,
-                                                              return_groups=True))
-        cand_primitives = ref_primitives if page_num == ref_page \
-            else symbol_geometry.extract_primitives(page)
-        cand_scale = ref_scale if page_num == ref_page \
-            else symbol_geometry.dominant_text_size(page)
-        for c in clusters:
-            if page_num == ref_page and c is ref_cluster:
-                continue
-            cand_feats = symbol_geometry.similarity_features(
-                cand_primitives, c['_index_group'], cand_scale, rotation_mode=rotation_mode)
-            sim = symbol_geometry.cluster_similarity(ref_feats, cand_feats,
-                                                      ignore_scale=ignore_scale)
-            if sim < min_similarity:
-                continue
-            x0, y0, x1, y1 = c['bbox']
-            candidates.append((sim, page_num, (x0 + x1) / 2, (y0 + y1) / 2, c['outline']))
+    candidates = _scan_candidates(
+        pdf_doc, ref_feats, ref_page, ref_cluster['_index_group'], pages=pages,
+        rotation_mode=rotation_mode, ignore_scale=ignore_scale,
+        progress_callback=progress_callback, should_cancel=should_cancel)
+    candidates = [c for c in candidates if c[0] >= min_similarity]
+    return shape_similar_results(candidates, comp_type)
 
-    candidates.sort(key=lambda t: -t[0])
+
+def shape_similar_results(candidates, comp_type=''):
+    """Sort candidates ((sim, page_num, x, y, outline) tuples)
+    descending, cap to 50, and shape into the dict contract
+    EquipmentMarkerReviewDialog expects — shared by find_similar_shapes()
+    and SimilarSymbolSearchDialog's "Sök" (2026-08-15, see NOTES.md
+    "Hitta liknande symbol" — uppföljningsfunktioner), so the dialog's
+    already-computed (via SimilarSymbolSearchWorker/_scan_candidates)
+    candidate list doesn't need a second, duplicate document scan just
+    to get shaped, thresholded output."""
+    candidates = sorted(candidates, key=lambda t: -t[0])
     results = []
     for i, (sim, page_num, x, y, outline) in enumerate(candidates[:50]):
         results.append({
@@ -1846,6 +1932,29 @@ def find_similar_shapes(pdf_doc, ref_page, ref_x, ref_y, pages=None, min_similar
             'detection_confidence': sim,
         })
     return results
+
+
+def find_shapes_matching_features(pdf_doc, ref_features, pages=None, min_similarity=0.6,
+                                   comp_type='', progress_callback=None, ignore_scale=False,
+                                   rotation_mode='none', should_cancel=None):
+    """Symbol-library counterpart to find_similar_shapes() (2026-08-15,
+    see NOTES.md "Hitta liknande symbol" — uppföljningsfunktioner): same
+    _scan_candidates()-based search, but against an already-known
+    reference feature dict (e.g. a Database.symbol_templates() row's
+    saved features_json, loaded via json.loads) instead of resolving a
+    live click point on a specific page — there is no "this page's own
+    reference cluster" to exclude from its own candidate list here, so
+    ref_page/ref_native_index_group are passed as values that can never
+    match any real page/index_group (every page's clusters are always
+    real candidates when searching from a saved template)."""
+    if not HAS_PYMUPDF or pdf_doc is None:
+        return []
+    candidates = _scan_candidates(
+        pdf_doc, ref_features, -1, [], pages=pages,
+        rotation_mode=rotation_mode, ignore_scale=ignore_scale,
+        progress_callback=progress_callback, should_cancel=should_cancel)
+    candidates = [c for c in candidates if c[0] >= min_similarity]
+    return shape_similar_results(candidates, comp_type)
 
 
 def find_valve_shapes(pdf_doc, pages=None, min_bowtie_score=0.5, progress_callback=None):

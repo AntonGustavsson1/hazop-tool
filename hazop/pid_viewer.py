@@ -4,6 +4,7 @@
 import re
 import json
 import os
+import sqlite3
 import shutil
 import tempfile
 import datetime
@@ -22,7 +23,7 @@ from equipment_detection import (
     _get_easyocr_reader, _preprocess_for_ocr,
     COMPONENT_TYPES, VALVE_COMPONENT_TYPES, KNOWN_PREFIXES,
     _equip_prefix_from_tag, _extract_prefix, _spatial_combine, _rotate_words,
-    _pick_best_tag,
+    _pick_best_tag, _next_tag_sequence,
     scan_pdf_for_equipment, apply_scan_result_to_equipment_catalog,
     upsert_identified_tags_from_scan, detect_equipment_symbols,
     find_valve_shapes, detect_equipment_and_valves, find_tag_near_point,
@@ -57,7 +58,7 @@ from PyQt6.QtWidgets import (
     QSlider, QColorDialog, QFileDialog, QMessageBox, QInputDialog,
     QSizePolicy, QMenu, QTableWidget, QTableWidgetItem, QHeaderView,
     QProgressDialog, QApplication, QGridLayout, QTextEdit, QButtonGroup,
-    QScrollArea,
+    QScrollArea, QProgressBar,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QThread, QPoint, QTimer, QMimeData
 from PyQt6.QtGui import (
@@ -816,6 +817,15 @@ class _ClusterPreviewCanvas(QWidget):
     def has_edits(self):
         return bool(self._excluded)
 
+    def native_index_group(self):
+        """The original, un-edited full index group this canvas was
+        constructed with (2026-08-15, see NOTES.md "Hitta liknande
+        symbol" — uppföljningsfunktioner) — used to identify the
+        reference cluster itself when re-scanning the document (see
+        equipment_detection._scan_candidates' ref_native_index_group),
+        regardless of what the user has excluded in edited_index_group()."""
+        return list(self._index_group)
+
     def _bbox(self):
         xs, ys = [], []
         for i in self._index_group:
@@ -892,11 +902,10 @@ class _ClusterPreviewCanvas(QWidget):
 
 
 class SimilarSymbolSearchDialog(QDialog):
-    """Sökparametrar för "Hitta liknande symbol" (2026-08-14, see
+    """Sökparametrar för "Hitta liknande symbol" (2026-08-14/15, see
     NOTES.md) — opens right after a reference cluster is resolved
-    (PIDPanel._find_similar_symbol), before find_similar_shapes()
-    actually runs. Lets the user prune the reference shape's own
-    primitives (_ClusterPreviewCanvas) and choose:
+    (PIDPanel._find_similar_symbol). Lets the user prune the reference
+    shape's own primitives (_ClusterPreviewCanvas) and choose:
     - Likhetströskel (similarity threshold)
     - Skala: endast liknande storlek, eller alla storlekar
       (ignore_scale)
@@ -914,21 +923,61 @@ class SimilarSymbolSearchDialog(QDialog):
     equipment_detection.py's module docstring) — there is nothing
     meaningful to filter candidates on before they're reviewed/tagged,
     so that control was deliberately left out rather than shipped as
-    a no-op."""
+    a no-op.
 
-    def __init__(self, primitives, index_group, parent=None):
+    2026-08-15 uppföljningsfunktioner (see NOTES.md): the document scan
+    (SimilarSymbolSearchWorker/equipment_detection._scan_candidates) now
+    runs in a background thread as soon as the dialog opens (and again
+    whenever a setting that affects the candidate SCORES changes:
+    reference edits, skala, rotation, omfattning) — with inline
+    progress + a real cancel (via the same "Avbryt" button, which also
+    closes the dialog). The un-thresholded result is cached in
+    self._candidates: the similarity-threshold slider alone never
+    re-scans, it just re-filters/re-counts that cached list locally,
+    which is also what powers the live "≈ N träffar" label and the
+    optional on-canvas "Visa på P&ID" preview. "Sök" reuses the same
+    cached list (via equipment_detection.shape_similar_results) instead
+    of running a second, duplicate scan.
+
+    Symbolbibliotek (2026-08-15, see NOTES.md): "💾 Spara som mall…"
+    persists the (possibly edited) reference's similarity_features() as
+    a named Database.symbol_templates() row. Passing template_features
+    (+ template_name) instead of primitives/index_group switches the
+    dialog into "mall-läge": no _ClusterPreviewCanvas (there are no live
+    primitives to show for a saved template), and Rotation's "alla
+    vinklar" toggle is disabled — a template's features were already
+    computed in one fixed rotation basis when it was saved, so there's
+    nothing left here to recompute against a different one."""
+
+    def __init__(self, primitives, index_group, pdf_path, ref_page, ref_scale,
+                 db=None, viewer=None, template_name=None, template_features=None,
+                 parent=None):
         super().__init__(parent)
         self.setWindowTitle("Hitta liknande symbol")
         self.setMinimumWidth(360)
+        self._db        = db
+        self._pdf_path  = pdf_path
+        self._ref_page  = ref_page
+        self._ref_scale = ref_scale
+        self._viewer    = viewer
+        self._template_features = template_features
+        self._worker     = None
+        self._candidates = []   # raw (sim, page_num, x, y, outline) tuples
 
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
 
-        layout.addWidget(QLabel(
-            "<b>Referensform</b> — klicka ett segment för att utesluta det "
-            "(t.ex. en ledning som råkade följa med en ventil):"))
-        self._canvas = _ClusterPreviewCanvas(primitives, index_group)
-        layout.addWidget(self._canvas)
+        if template_features is not None:
+            layout.addWidget(QLabel(
+                f"<b>Sökning baserad på sparad mall:</b> {template_name}"))
+            self._canvas = None
+        else:
+            layout.addWidget(QLabel(
+                "<b>Referensform</b> — klicka ett segment för att utesluta det "
+                "(t.ex. en ledning som råkade följa med en ventil):"))
+            self._canvas = _ClusterPreviewCanvas(primitives, index_group)
+            self._canvas.selection_changed.connect(self._restart_scan)
+            layout.addWidget(self._canvas)
 
         form = QFormLayout()
         form.setSpacing(6)
@@ -937,8 +986,7 @@ class SimilarSymbolSearchDialog(QDialog):
         self._threshold.setRange(0, 100)
         self._threshold.setValue(60)
         self._threshold_lbl = QLabel("60%")
-        self._threshold.valueChanged.connect(
-            lambda v: self._threshold_lbl.setText(f"{v}%"))
+        self._threshold.valueChanged.connect(self._on_threshold_changed)
         thr_row = QHBoxLayout()
         thr_row.addWidget(self._threshold)
         thr_row.addWidget(self._threshold_lbl)
@@ -950,6 +998,7 @@ class SimilarSymbolSearchDialog(QDialog):
         self._scale_same.setChecked(True)
         self._scale_group.addButton(self._scale_same)
         self._scale_group.addButton(self._scale_any)
+        self._scale_same.toggled.connect(self._restart_scan)
         scale_row = QVBoxLayout()
         scale_row.addWidget(self._scale_same)
         scale_row.addWidget(self._scale_any)
@@ -960,6 +1009,13 @@ class SimilarSymbolSearchDialog(QDialog):
         rot_note.setStyleSheet("color:#8D9299; font-size:10px;")
         rot_note.setWordWrap(True)
         self._rotation_any = QCheckBox("Sök i alla vinklar (experimentell, långsammare)")
+        if template_features is not None:
+            self._rotation_any.setEnabled(False)
+            self._rotation_any.setToolTip(
+                "Inte tillgängligt för sparade mallar — mallen sparades redan "
+                "i ett fast rotationsläge.")
+        else:
+            self._rotation_any.toggled.connect(self._restart_scan)
         rot_col = QVBoxLayout()
         rot_col.addWidget(rot_note)
         rot_col.addWidget(self._rotation_any)
@@ -971,6 +1027,7 @@ class SimilarSymbolSearchDialog(QDialog):
         self._scope_doc.setChecked(True)
         self._scope_group.addButton(self._scope_page)
         self._scope_group.addButton(self._scope_doc)
+        self._scope_page.toggled.connect(self._restart_scan)
         scope_row = QVBoxLayout()
         scope_row.addWidget(self._scope_page)
         scope_row.addWidget(self._scope_doc)
@@ -978,19 +1035,58 @@ class SimilarSymbolSearchDialog(QDialog):
 
         layout.addLayout(form)
 
+        status_row = QHBoxLayout()
+        self._status_lbl = QLabel("")
+        self._status_lbl.setStyleSheet("color:#8D9299; font-size:10px;")
+        self._count_lbl = QLabel("")
+        self._count_lbl.setStyleSheet("font-weight:600;")
+        status_row.addWidget(self._status_lbl)
+        status_row.addStretch()
+        status_row.addWidget(self._count_lbl)
+        layout.addLayout(status_row)
+
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setVisible(False)
+        self._progress_bar.setFixedHeight(6)
+        self._progress_bar.setTextVisible(False)
+        layout.addWidget(self._progress_bar)
+
+        preview_row = QHBoxLayout()
+        self._preview_cb = QCheckBox("Visa på P&ID")
+        self._preview_cb.setEnabled(viewer is not None)
+        if viewer is None:
+            self._preview_cb.setToolTip("Ingen P&ID-vy kopplad till den här sökningen.")
+        self._preview_cb.toggled.connect(self._update_preview)
+        preview_row.addWidget(self._preview_cb)
+        preview_row.addStretch()
+        self._save_template_btn = QPushButton("💾 Spara som mall…")
+        self._save_template_btn.setEnabled(db is not None and template_features is None)
+        if template_features is not None:
+            self._save_template_btn.setToolTip(
+                "Redan en sparad mall — inget nytt att spara.")
+        elif db is None:
+            self._save_template_btn.setToolTip("Ingen databas kopplad till den här sökningen.")
+        self._save_template_btn.clicked.connect(self._save_as_template)
+        preview_row.addWidget(self._save_template_btn)
+        layout.addLayout(preview_row)
+
         btns = QHBoxLayout()
-        search_btn = QPushButton("Sök")
-        search_btn.setDefault(True)
-        search_btn.clicked.connect(self.accept)
+        self._search_btn = QPushButton("Sök")
+        self._search_btn.setDefault(True)
+        self._search_btn.setEnabled(False)
+        self._search_btn.clicked.connect(self.accept)
         cancel_btn = QPushButton("Avbryt")
         cancel_btn.clicked.connect(self.reject)
         btns.addStretch()
         btns.addWidget(cancel_btn)
-        btns.addWidget(search_btn)
+        btns.addWidget(self._search_btn)
         layout.addLayout(btns)
 
+        self.finished.connect(self._on_dialog_finished)
+        self._restart_scan()
+
     def edited_index_group(self):
-        return self._canvas.edited_index_group()
+        return self._canvas.edited_index_group() if self._canvas else None
 
     def min_similarity(self):
         return self._threshold.value() / 100.0
@@ -1004,8 +1100,169 @@ class SimilarSymbolSearchDialog(QDialog):
     def search_this_page_only(self):
         return self._scope_page.isChecked()
 
-    def same_type_only(self):
-        return self._same_type_only.isChecked() and self._same_type_only.isEnabled()
+    def final_results(self, comp_type=''):
+        """The thresholded, shaped result list, reusing the already-
+        computed candidate scan — no second document scan."""
+        threshold = self.min_similarity()
+        filtered = [c for c in self._candidates if c[0] >= threshold]
+        return equipment_detection.shape_similar_results(filtered, comp_type)
+
+    def _restart_scan(self, *_args):
+        """(Re-)run the background scan — whenever the reference itself
+        or a setting that affects candidate SCORES changes (segment
+        exclusion, skala, rotation, omfattning). The threshold slider
+        alone does NOT call this — see _on_threshold_changed."""
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.requestInterruption()
+            self._worker.wait()
+        self._candidates = []
+        self._search_btn.setEnabled(False)
+        self._count_lbl.setText("")
+        self._status_lbl.setText("Beräknar…")
+        self._progress_bar.setRange(0, 0)   # indeterminate until the first page reports in
+        self._progress_bar.setVisible(True)
+
+        if self._template_features is not None:
+            ref_features = self._template_features
+            ref_native_index_group = []
+        else:
+            ref_features = symbol_geometry.similarity_features(
+                self._canvas._primitives, self.edited_index_group(),
+                self._ref_scale, rotation_mode=self.rotation_mode())
+            ref_native_index_group = self._canvas.native_index_group()
+        pages = [self._ref_page] if self.search_this_page_only() else None
+        self._worker = SimilarSymbolSearchWorker(
+            self._pdf_path, ref_features, self._ref_page,
+            ref_native_index_group, pages=pages,
+            ignore_scale=self.ignore_scale(), rotation_mode=self.rotation_mode(),
+            parent=self)
+        self._worker.progress.connect(self._on_scan_progress)
+        self._worker.finished_scan.connect(self._on_scan_finished)
+        self._worker.start()
+
+    def _on_scan_progress(self, page_num, total, msg):
+        self._progress_bar.setRange(0, max(total, 1))
+        self._progress_bar.setValue(page_num + 1)
+        self._status_lbl.setText(msg)
+
+    def _on_scan_finished(self, candidates):
+        self._candidates = candidates
+        self._progress_bar.setVisible(False)
+        self._status_lbl.setText("")
+        self._search_btn.setEnabled(True)
+        self._update_count_label()
+        self._update_preview()
+
+    def _update_count_label(self):
+        threshold = self.min_similarity()
+        n = sum(1 for c in self._candidates if c[0] >= threshold)
+        self._count_lbl.setText(f"≈ {n} träffar")
+
+    def _on_threshold_changed(self, value):
+        self._threshold_lbl.setText(f"{value}%")
+        self._update_count_label()
+        self._update_preview()
+
+    def _update_preview(self, *_args):
+        if not self._viewer:
+            return
+        self._viewer.clear_shape_preview()
+        if not self._preview_cb.isChecked():
+            return
+        threshold = self.min_similarity()
+        cur_page = getattr(self._viewer, 'current_page', None)
+        for sim, page_num, _x, _y, outline in self._candidates:
+            if sim >= threshold and page_num == cur_page:
+                self._viewer.add_shape_highlight(outline)
+
+    def _on_dialog_finished(self, _result):
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.requestInterruption()
+            self._worker.wait()
+        if self._viewer:
+            self._viewer.clear_shape_preview()
+
+    def _save_as_template(self):
+        """"💾 Spara som mall…" (2026-08-15, see NOTES.md "Hitta liknande
+        symbol" — uppföljningsfunktioner: symbolbibliotek) — persists
+        the (possibly segment-edited) reference's similarity_features()
+        as a named Database.symbol_templates() row, reusable later via
+        "🔎 Hitta liknande symbol (från mall)" without picking a point
+        on this specific document again."""
+        if not self._db or self._canvas is None:
+            return
+        name, ok = QInputDialog.getText(self, "Spara som mall", "Namn:")
+        name = (name or '').strip()
+        if not ok or not name:
+            return
+        ref_features = symbol_geometry.similarity_features(
+            self._canvas._primitives, self.edited_index_group(),
+            self._ref_scale, rotation_mode=self.rotation_mode())
+        try:
+            self._db.add_symbol_template(name, json.dumps(ref_features))
+        except sqlite3.IntegrityError:
+            QMessageBox.warning(self, "Namnet finns redan",
+                f'En mall med namnet "{name}" finns redan.')
+            return
+        QMessageBox.information(self, "Mall sparad", f'"{name}" sparades som mall.')
+
+
+class SymbolTemplatePickerDialog(QDialog):
+    """"🔎 Hitta liknande symbol (från mall)" (2026-08-15, see NOTES.md
+    "Hitta liknande symbol" — uppföljningsfunktioner: symbolbibliotek) —
+    pick a saved Database.symbol_templates() row to search with,
+    instead of clicking a reference point on the current document."""
+
+    def __init__(self, db, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Välj mall")
+        self.setMinimumWidth(320)
+        self._db = db
+        self.selected_template = None
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Sparade symbolmallar:"))
+        self._list = QListWidget()
+        self._list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        layout.addWidget(self._list)
+        self._reload()
+
+        btns = QHBoxLayout()
+        del_btn = QPushButton("Ta bort")
+        del_btn.clicked.connect(self._delete_selected)
+        ok_btn = QPushButton("Sök med mall")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(self._accept_selected)
+        cancel_btn = QPushButton("Avbryt")
+        cancel_btn.clicked.connect(self.reject)
+        btns.addWidget(del_btn)
+        btns.addStretch()
+        btns.addWidget(cancel_btn)
+        btns.addWidget(ok_btn)
+        layout.addLayout(btns)
+
+    def _reload(self):
+        self._list.clear()
+        for row in self._db.symbol_templates():
+            label = row['name'] + (f" ({row['comp_type']})" if row['comp_type'] else '')
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, row['id'])
+            self._list.addItem(item)
+
+    def _delete_selected(self):
+        item = self._list.currentItem()
+        if not item:
+            return
+        self._db.delete_symbol_template(item.data(Qt.ItemDataRole.UserRole))
+        self._reload()
+
+    def _accept_selected(self):
+        item = self._list.currentItem()
+        if not item:
+            QMessageBox.information(self, "Ingen mall vald", "Välj en mall i listan.")
+            return
+        self.selected_template = self._db.get_symbol_template(item.data(Qt.ItemDataRole.UserRole))
+        self.accept()
 
 
 class EquipmentMarkerReviewDialog(QDialog):
@@ -1083,6 +1340,29 @@ class EquipmentMarkerReviewDialog(QDialog):
         outer.addWidget(self._tbl)
         self._populate()
 
+        # ── Mass-tagging (2026-08-15, see NOTES.md "Hitta liknande
+        # symbol" — uppföljningsfunktioner: "bra om jag kan välja att
+        # koppla det till typ av objekt och förhoppningsvis tagg
+        # nummer") — a similarity search often returns many untagged
+        # hits of the same real-world type; typing Typ+Tagg for each
+        # one individually is exactly the tedium this avoids. Only
+        # touches CHECKED rows, always overwrites their Typ/Tagg cells
+        # (simple, predictable — no partial "only if empty" rules).
+        mass_row = QHBoxLayout()
+        mass_row.addWidget(QLabel("Tillämpa på ikryssade:"))
+        self._mass_type_cb = QComboBox()
+        self._mass_type_cb.setEditable(True)
+        self._mass_type_cb.addItems(sorted(COMPONENT_TYPES.keys()))
+        self._mass_type_cb.setCurrentText('')
+        mass_row.addWidget(self._mass_type_cb)
+        self._mass_tag_edit = QLineEdit()
+        self._mass_tag_edit.setPlaceholderText("Starttagg, t.ex. V-101")
+        mass_row.addWidget(self._mass_tag_edit)
+        mass_apply_btn = QPushButton("Tillämpa")
+        mass_apply_btn.clicked.connect(self._apply_mass_tag)
+        mass_row.addWidget(mass_apply_btn)
+        outer.addLayout(mass_row)
+
         self._rejected_toggle = QPushButton(f"▸ Visa avvisade kandidater ({len(self._rejected)})")
         self._rejected_toggle.setCheckable(True)
         self._rejected_toggle.setEnabled(bool(self._rejected))
@@ -1149,8 +1429,12 @@ class EquipmentMarkerReviewDialog(QDialog):
             pg_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self._tbl.setItem(r, self._C_PAGE, pg_item)
 
+            # Editable (2026-08-15, see NOTES.md "Hitta liknande symbol"
+            # — uppföljningsfunktioner) — was read-only; _save() below
+            # now reads this cell instead of the frozen res['comp_type'],
+            # so a manual correction here (or a mass-tag apply) actually
+            # takes effect.
             type_item = QTableWidgetItem(res['comp_type'])
-            type_item.setFlags(type_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self._tbl.setItem(r, self._C_TYPE, type_item)
 
             conf = _row_confidence(res)
@@ -1184,6 +1468,12 @@ class EquipmentMarkerReviewDialog(QDialog):
                 continue
             tag_item = self._tbl.item(r, self._C_TAG)
             tag = tag_item.text().strip() if tag_item and tag_item.text().strip() else res['tag']
+            # Typ is now editable (2026-08-15, see NOTES.md) — read the
+            # cell's current text, not the frozen res['comp_type'], so a
+            # manual correction or a mass-tag apply actually takes effect.
+            type_item = self._tbl.item(r, self._C_TYPE)
+            comp_type = type_item.text().strip() if type_item and type_item.text().strip() \
+                else res['comp_type']
             equipment_id = res.get('equipment_id')
 
             # Rows with no equipment_id yet (shape-anchored hits that
@@ -1194,12 +1484,12 @@ class EquipmentMarkerReviewDialog(QDialog):
             if equipment_id is None and tag:
                 prefix = _equip_prefix_from_tag(tag) or ''
                 equipment_id = self.db.add_equipment_item(
-                    tag, tag, prefix, res['page'], res['comp_type'], '', 0)
+                    tag, tag, prefix, res['page'], comp_type, '', 0)
 
             outline_json = json.dumps(res['outline']) if res.get('outline') else ''
             self.db.add_equipment_marker(
                 equipment_id, tag, res['page'], res['x'], res['y'],
-                res['comp_type'], shape_outline=outline_json,
+                comp_type, shape_outline=outline_json,
                 confidence=_row_confidence(res), link_method=res['link_method'],
                 detection_confidence=res.get('detection_confidence'),
                 tag_reading_confidence=res.get('tag_reading_confidence'),
@@ -1215,6 +1505,34 @@ class EquipmentMarkerReviewDialog(QDialog):
             QMessageBox.information(self, "Inget sparat", "Inga rader var ikryssade.")
             return
         self.accept()
+
+    def _apply_mass_tag(self):
+        """"Tillämpa på ikryssade" (2026-08-15, see NOTES.md) — writes
+        the chosen type into every checked row's Typ cell, and (if a
+        start tag was given) an auto-incrementing tag sequence into
+        their Tagg cells, in table row order. Always overwrites —
+        simple and predictable, matching this dialog's existing
+        straightforward per-cell-editing model."""
+        rows = [r for r in range(self._tbl.rowCount())
+                if (chk := self._tbl.item(r, self._C_CHK)) and
+                   chk.checkState() == Qt.CheckState.Checked]
+        if not rows:
+            QMessageBox.information(self, "Inga rader ikryssade",
+                "Kryssa i minst en rad att tillämpa på.")
+            return
+        comp_type = self._mass_type_cb.currentText().strip()
+        start_tag = self._mass_tag_edit.text().strip()
+        if not comp_type and not start_tag:
+            return
+        tags = None
+        if start_tag:
+            existing = {e['tag'] for e in self.db.equipment_items()}
+            tags = _next_tag_sequence(start_tag, len(rows), existing_tags=existing)
+        for i, r in enumerate(rows):
+            if comp_type:
+                self._tbl.item(r, self._C_TYPE).setText(comp_type)
+            if tags:
+                self._tbl.item(r, self._C_TAG).setText(tags[i])
 
 
 class TargetPickerDialog(QDialog):
@@ -2743,6 +3061,56 @@ class EquipmentAnalysisWorker(QThread):
             import logging
             logging.error(f"EquipmentAnalysisWorker.run() failed: {e}", exc_info=True)
             self.finished_analysis.emit([], [])
+        finally:
+            if doc is not None:
+                try:
+                    doc.close()
+                except Exception:
+                    pass
+
+
+class SimilarSymbolSearchWorker(QThread):
+    """Runs equipment_detection._scan_candidates() off the UI thread for
+    SimilarSymbolSearchDialog (2026-08-15, see NOTES.md "Hitta liknande
+    symbol" — uppföljningsfunktioner), modelled exactly on
+    EquipmentAnalysisWorker above: opens its own fitz.open() in run(),
+    never touches Database, always emits finished_scan even on an
+    exception or cancellation (self.requestInterruption() + waiting for
+    this to finish is how the dialog cancels a running scan) so the
+    dialog's inline progress UI can never hang.
+
+    Returns the RAW, unthresholded candidate list — the dialog applies
+    min_similarity itself, both for the live match-count/on-canvas
+    preview as the threshold slider moves and again when the search is
+    finally confirmed, without ever re-scanning the document."""
+    progress      = pyqtSignal(int, int, str)   # (page_num, total, msg)
+    finished_scan = pyqtSignal(list)             # ALWAYS emitted
+
+    def __init__(self, pdf_path, ref_features, ref_page, ref_native_index_group,
+                 pages=None, ignore_scale=False, rotation_mode='none', parent=None):
+        super().__init__(parent)
+        self._pdf_path              = str(pdf_path)
+        self._ref_features          = ref_features
+        self._ref_page              = ref_page
+        self._ref_native_index_group = list(ref_native_index_group)
+        self._pages                 = list(pages) if pages is not None else None
+        self._ignore_scale          = ignore_scale
+        self._rotation_mode         = rotation_mode
+
+    def run(self):
+        doc = None
+        try:
+            doc = fitz.open(self._pdf_path)
+            candidates = equipment_detection._scan_candidates(
+                doc, self._ref_features, self._ref_page, self._ref_native_index_group,
+                pages=self._pages, rotation_mode=self._rotation_mode,
+                ignore_scale=self._ignore_scale,
+                progress_callback=lambda pn, total, msg: self.progress.emit(pn, total, msg),
+                should_cancel=self.isInterruptionRequested)
+            self.finished_scan.emit(candidates)
+        except Exception as e:
+            logging.error(f"SimilarSymbolSearchWorker.run() failed: {e}", exc_info=True)
+            self.finished_scan.emit([])
         finally:
             if doc is not None:
                 try:
@@ -5070,6 +5438,8 @@ class PIDGraphicsView(QGraphicsView):
         menu.addSeparator()
         menu.addAction(_icon('search'), "Hitta liknande symbol",
                        partial(self.context_action.emit, 'find_similar', sp, self.current_page))
+        menu.addAction(_icon('search'), "Hitta liknande symbol (från mall)…",
+                       partial(self.context_action.emit, 'find_similar_template', sp, self.current_page))
         menu.exec(global_pos)
 
     def _start_add_sheet_link(self, source_page: int):
@@ -5334,6 +5704,32 @@ class PIDGraphicsView(QGraphicsView):
             if item.zValue() == Z_HIGHLIGHT:
                 try: self._scene.removeItem(item)
                 except RuntimeError as e: logging.warning(f"Failed to remove highlight item: {e}")
+
+    def add_shape_highlight(self, outline_pdf, color='#2F5FD0'):
+        """Draw a semi-transparent polygon preview of a candidate's
+        outline — used by SimilarSymbolSearchDialog's "Visa på P&ID"
+        live preview (2026-08-15, see NOTES.md "Hitta liknande symbol"
+        — uppföljningsfunktioner). Modelled on add_equipment_marker's
+        outline-drawing, but on Z_TEMP (ephemeral, explicitly cleared —
+        same convention as this class's rubber-band/drag previews)
+        instead of Z_OVERLAY, and with no marker_id/DB link at all —
+        this is a preview, not a saved marker."""
+        if not outline_pdf or len(outline_pdf) < 3:
+            return None
+        points = [self.pdf_to_scene(px, py) for px, py in outline_pdf]
+        item = self._scene.addPolygon(
+            QPolygonF(points), QPen(QColor(color), 1.5), QBrush(QColor(color)))
+        item.setOpacity(0.30)
+        item.setZValue(Z_TEMP)
+        return item
+
+    def clear_shape_preview(self):
+        """Remove all "Visa på P&ID" preview polygons (Z_TEMP items) —
+        see add_shape_highlight()."""
+        for item in list(self._scene.items()):
+            if item.zValue() == Z_TEMP:
+                try: self._scene.removeItem(item)
+                except RuntimeError as e: logging.warning(f"Failed to remove preview item: {e}")
 
     def _conn_obstacles(self, src_page, dst_page):
         """Inflated scene rects of every page except the connection's own two."""
@@ -8430,12 +8826,14 @@ class PIDPanel(QWidget):
             self.equipment_placement_requested.emit(tag or '', pos, page, None)
         elif action == 'find_similar':
             self._find_similar_symbol(pos, page)
+        elif action == 'find_similar_template':
+            self._find_similar_symbol_from_template()
 
     def _find_similar_symbol(self, pos, page):
         """🔎 Hitta liknande symbol (2026-08-10, see NOTES.md) — the click
         point becomes the reference shape; every other vector-drawn
         cluster in the document is scored against it
-        (equipment_detection.find_similar_shapes / symbol_geometry.
+        (equipment_detection._scan_candidates / symbol_geometry.
         cluster_similarity) and surfaced through the same
         EquipmentMarkerReviewDialog "🎯 Hitta objekt på P&ID" already
         uses, so confirming/renaming/saving works identically.
@@ -8449,15 +8847,13 @@ class PIDPanel(QWidget):
         defaults and no way to fix a reference cluster that pulled in
         an unwanted neighbour (e.g. a pipe stub next to a valve).
 
-        Synchronous (no background worker, unlike the multi-page tag
-        scan/shape-hunt flows) — a real, documented limitation: on a
-        large, dense document this can take a while with only a wait
-        cursor for feedback, no cancel button and no per-page progress.
-        Acceptable for a first version since a single point-and-click
-        search of THIS kind is normally run against a specific area of
-        interest, not routinely over an entire large document like a
-        full "Analysera P&ID" — worth revisiting if that assumption
-        turns out wrong in practice."""
+        2026-08-15 (see NOTES.md "Hitta liknande symbol" —
+        uppföljningsfunktioner): the dialog now runs the document scan
+        itself, in a background thread, with live progress/cancel and
+        a live match-count/on-canvas preview as the threshold slider
+        moves — so by the time it's accepted the result is already
+        computed; final_results() reuses it directly instead of this
+        method running find_similar_shapes() a second time."""
         if not HAS_PYMUPDF or self.viewer.pdf_doc is None:
             QMessageBox.warning(self, "Ingen P&ID", "Öppna en P&ID-fil först.")
             return
@@ -8472,22 +8868,15 @@ class PIDPanel(QWidget):
                 "(rasteriserad) sida har ingen sådan data att jämföra.")
             return
         primitives, index_group, _ref_cluster = resolved
+        ref_scale = symbol_geometry.dominant_text_size(self.viewer.pdf_doc[page])
 
-        params_dlg = SimilarSymbolSearchDialog(primitives, index_group, parent=self)
+        params_dlg = SimilarSymbolSearchDialog(
+            primitives, index_group, self.viewer._pdf_path, page, ref_scale,
+            db=self.db, viewer=self.viewer, parent=self)
         if params_dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
-        self.setCursor(Qt.CursorShape.WaitCursor)
-        try:
-            results = equipment_detection.find_similar_shapes(
-                self.viewer.pdf_doc, page, pdf_x, pdf_y,
-                pages=[page] if params_dlg.search_this_page_only() else None,
-                min_similarity=params_dlg.min_similarity(),
-                ignore_scale=params_dlg.ignore_scale(),
-                rotation_mode=params_dlg.rotation_mode(),
-                ref_index_group=params_dlg.edited_index_group())
-        finally:
-            self.unsetCursor()
+        results = params_dlg.final_results()
         if not results:
             QMessageBox.information(
                 self, "Inget liknande hittat",
@@ -8495,6 +8884,50 @@ class PIDPanel(QWidget):
                 "sökinställningarna.\n\n"
                 "Fungerar bara på sidor med vektorritad geometri — en skannad "
                 "(rasteriserad) sida har ingen sådan data att jämföra.")
+            return
+        review_dlg = EquipmentMarkerReviewDialog(results, self.db, parent=self, rejected=[])
+        if review_dlg.exec():
+            self.reload_overlays()
+
+    def _find_similar_symbol_from_template(self):
+        """"🔎 Hitta liknande symbol (från mall)" (2026-08-15, see
+        NOTES.md "Hitta liknande symbol" — uppföljningsfunktioner:
+        symbolbibliotek) — search using a previously saved
+        Database.symbol_templates() row's features instead of clicking
+        a reference point on this specific document. Otherwise
+        identical to _find_similar_symbol from here on: same
+        SimilarSymbolSearchDialog (in "mall-läge" — no
+        _ClusterPreviewCanvas, no rotation toggle) and the same
+        EquipmentMarkerReviewDialog confirm/save step."""
+        if not HAS_PYMUPDF or self.viewer.pdf_doc is None:
+            QMessageBox.warning(self, "Ingen P&ID", "Öppna en P&ID-fil först.")
+            return
+        if not self.db.symbol_templates():
+            QMessageBox.information(
+                self, "Inga sparade mallar",
+                'Inga symbolmallar sparade än. Spara en via "💾 Spara som mall…" '
+                'i sökdialogen för "Hitta liknande symbol".')
+            return
+        picker = SymbolTemplatePickerDialog(self.db, parent=self)
+        if picker.exec() != QDialog.DialogCode.Accepted or not picker.selected_template:
+            return
+        template = picker.selected_template
+        ref_features = json.loads(template['features_json'])
+        page = self.viewer.current_page
+
+        params_dlg = SimilarSymbolSearchDialog(
+            None, None, self.viewer._pdf_path, page, None,
+            db=self.db, viewer=self.viewer,
+            template_name=template['name'], template_features=ref_features, parent=self)
+        if params_dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        results = params_dlg.final_results(comp_type=template.get('comp_type', ''))
+        if not results:
+            QMessageBox.information(
+                self, "Inget liknande hittat",
+                "Inga tillräckligt lika symboler hittades med de valda "
+                "sökinställningarna.")
             return
         review_dlg = EquipmentMarkerReviewDialog(results, self.db, parent=self, rejected=[])
         if review_dlg.exec():

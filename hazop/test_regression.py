@@ -61,7 +61,7 @@ from PyQt6.QtWidgets import (  # noqa: E402
     QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit,
 )
 from PyQt6.QtGui import QPixmap, QFocusEvent  # noqa: E402
-from PyQt6.QtCore import Qt, QPoint, QDate, QEvent  # noqa: E402
+from PyQt6.QtCore import Qt, QPoint, QDate, QEvent, QThread, pyqtSignal  # noqa: E402
 from equipment_detection import COMPONENT_TYPES  # noqa: E402
 
 
@@ -3244,6 +3244,96 @@ class EquipmentMarkerReviewDialogTests(unittest.TestCase):
         finally:
             dlg.deleteLater()
 
+    def test_editing_typ_cell_corrects_the_saved_type(self):
+        """"Hitta liknande symbol" — uppföljningsfunktioner (2026-08-15,
+        see NOTES.md) — the Typ column used to be read-only and
+        _save() always wrote the frozen res['comp_type']; it's now
+        editable and _save() must respect a correction the same way
+        the Tagg column already does."""
+        from pid_viewer import EquipmentMarkerReviewDialog
+        from PyQt6.QtCore import Qt as _Qt
+        dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db)
+        try:
+            self.assertTrue(dlg._tbl.item(0, dlg._C_TYPE).flags() & _Qt.ItemFlag.ItemIsEditable,
+                "Typ cell must be editable")
+            dlg._tbl.item(0, dlg._C_TYPE).setText('Pump')
+            dlg._save()
+            rows = [dict(r) for r in self.db.equipment_markers_for_page(0)]
+            self.assertEqual(rows[0]['comp_type'], 'Pump')
+        finally:
+            dlg.deleteLater()
+
+    def test_mass_apply_sets_type_and_tag_sequence_on_checked_rows_only(self):
+        """"bra om jag kan välja att koppla det till typ av objekt och
+        förhoppningsvis tagg nummer" (2026-08-15) — "Tillämpa på
+        ikryssade" writes the chosen type and an auto-incrementing tag
+        sequence into every CHECKED row, leaving unchecked rows alone."""
+        from pid_viewer import EquipmentMarkerReviewDialog
+        results = [
+            {'tag': '', 'page': 0, 'comp_type': '', 'x': 1.0, 'y': 1.0, 'outline': [],
+             'link_method': 'similar', 'tag_status': 'untagged',
+             'temporary_id': 'SIMILAR-0-0', 'detection_confidence': 0.9},
+            {'tag': '', 'page': 0, 'comp_type': '', 'x': 2.0, 'y': 2.0, 'outline': [],
+             'link_method': 'similar', 'tag_status': 'untagged',
+             'temporary_id': 'SIMILAR-0-1', 'detection_confidence': 0.8},
+            {'tag': '', 'page': 0, 'comp_type': '', 'x': 3.0, 'y': 3.0, 'outline': [],
+             'link_method': 'similar', 'tag_status': 'untagged',
+             'temporary_id': 'SIMILAR-0-2', 'detection_confidence': 0.05},
+        ]
+        dlg = EquipmentMarkerReviewDialog(results, self.db)
+        try:
+            dlg._tbl.item(2, dlg._C_CHK).setCheckState(Qt.CheckState.Unchecked)
+            dlg._mass_type_cb.setCurrentText('Ventil')
+            dlg._mass_tag_edit.setText('V-201')
+            dlg._apply_mass_tag()
+            self.assertEqual(dlg._tbl.item(0, dlg._C_TYPE).text(), 'Ventil')
+            self.assertEqual(dlg._tbl.item(1, dlg._C_TYPE).text(), 'Ventil')
+            self.assertEqual(dlg._tbl.item(0, dlg._C_TAG).text(), 'V-201')
+            self.assertEqual(dlg._tbl.item(1, dlg._C_TAG).text(), 'V-202')
+            # Unchecked row untouched (its Tagg cell pre-fills with the
+            # untagged placeholder temporary_id — see _populate())
+            self.assertEqual(dlg._tbl.item(2, dlg._C_TYPE).text(), '')
+            self.assertEqual(dlg._tbl.item(2, dlg._C_TAG).text(), 'SIMILAR-0-2')
+        finally:
+            dlg.deleteLater()
+
+    def test_mass_apply_persists_via_normal_save(self):
+        from pid_viewer import EquipmentMarkerReviewDialog
+        results = [
+            {'tag': '', 'page': 0, 'comp_type': '', 'x': 1.0, 'y': 1.0, 'outline': [],
+             'link_method': 'similar', 'tag_status': 'untagged',
+             'temporary_id': 'SIMILAR-0-0', 'detection_confidence': 0.9},
+            {'tag': '', 'page': 0, 'comp_type': '', 'x': 2.0, 'y': 2.0, 'outline': [],
+             'link_method': 'similar', 'tag_status': 'untagged',
+             'temporary_id': 'SIMILAR-0-1', 'detection_confidence': 0.9},
+        ]
+        dlg = EquipmentMarkerReviewDialog(results, self.db)
+        try:
+            dlg._mass_type_cb.setCurrentText('Ventil')
+            dlg._mass_tag_edit.setText('V-301')
+            dlg._apply_mass_tag()
+            dlg._save()
+            rows = sorted((dict(r) for r in self.db.equipment_markers_for_page(0)),
+                         key=lambda r: r['tag'])
+            self.assertEqual([r['tag'] for r in rows], ['V-301', 'V-302'])
+            self.assertEqual([r['comp_type'] for r in rows], ['Ventil', 'Ventil'])
+        finally:
+            dlg.deleteLater()
+
+    def test_mass_apply_with_nothing_checked_shows_info(self):
+        from pid_viewer import EquipmentMarkerReviewDialog
+        from PyQt6.QtWidgets import QMessageBox
+        dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db)
+        try:
+            for r in range(dlg._tbl.rowCount()):
+                dlg._tbl.item(r, dlg._C_CHK).setCheckState(Qt.CheckState.Unchecked)
+            dlg._mass_type_cb.setCurrentText('Ventil')
+            with unittest.mock.patch.object(QMessageBox, 'information') as mock_info:
+                dlg._apply_mass_tag()
+            mock_info.assert_called_once()
+        finally:
+            dlg.deleteLater()
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # 8. _reload_all_panels() must swap self.db on EVERY panel that holds its
@@ -4429,6 +4519,98 @@ class FindSimilarShapesTests(unittest.TestCase):
         self.assertLessEqual(len(results), 50)
 
 
+class NextTagSequenceTests(unittest.TestCase):
+    """_next_tag_sequence() (equipment_detection.py) — mass-tagging in
+    EquipmentMarkerReviewDialog (2026-08-15, see NOTES.md "Hitta
+    liknande symbol" — uppföljningsfunktioner)."""
+
+    def test_increments_preserving_zero_padding(self):
+        from equipment_detection import _next_tag_sequence
+        self.assertEqual(_next_tag_sequence('FT-009', 3), ['FT-009', 'FT-010', 'FT-011'])
+
+    def test_does_not_overflow_into_extra_digits(self):
+        from equipment_detection import _next_tag_sequence
+        # "101" is a 3-digit run — the 900th increment must still be
+        # zero-padded to 3 digits' worth of width, not silently grown.
+        seq = _next_tag_sequence('V-101', 2)
+        self.assertEqual(seq, ['V-101', 'V-102'])
+
+    def test_skips_tags_already_taken(self):
+        from equipment_detection import _next_tag_sequence
+        seq = _next_tag_sequence('V-101', 3, existing_tags=['V-102'])
+        self.assertEqual(seq, ['V-101', 'V-103', 'V-104'])
+
+    def test_skips_tags_already_taken_case_insensitively(self):
+        from equipment_detection import _next_tag_sequence
+        seq = _next_tag_sequence('V-101', 2, existing_tags=['v-102'])
+        self.assertEqual(seq, ['V-101', 'V-103'])
+
+    def test_no_digit_run_falls_back_to_dash_suffix(self):
+        from equipment_detection import _next_tag_sequence
+        self.assertEqual(_next_tag_sequence('PUMP', 3), ['PUMP', 'PUMP-2', 'PUMP-3'])
+
+    def test_never_generates_a_duplicate_within_the_same_batch(self):
+        from equipment_detection import _next_tag_sequence
+        seq = _next_tag_sequence('V-1', 10)
+        self.assertEqual(len(seq), len(set(t.upper() for t in seq)))
+
+
+class SymbolTemplateDatabaseTests(unittest.TestCase):
+    """Database symbol_templates CRUD (2026-08-15, see NOTES.md "Hitta
+    liknande symbol" — uppföljningsfunktioner: symbolbibliotek)."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_symboltemplate_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_add_and_list_symbol_template(self):
+        tid = self.db.add_symbol_template(
+            "Metso-ventil", '{"aspect": 2.0, "norm_size": 4.5}', comp_type='Ventil')
+        rows = self.db.symbol_templates()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['id'], tid)
+        self.assertEqual(rows[0]['name'], "Metso-ventil")
+        self.assertEqual(rows[0]['comp_type'], 'Ventil')
+        self.assertTrue(rows[0]['created'])
+
+    def test_get_symbol_template_by_id(self):
+        tid = self.db.add_symbol_template("Endress+Hauser", '{"aspect": 1.0}')
+        row = self.db.get_symbol_template(tid)
+        self.assertEqual(row['name'], "Endress+Hauser")
+
+    def test_get_symbol_template_missing_id_returns_none(self):
+        self.assertIsNone(self.db.get_symbol_template(9999))
+
+    def test_delete_symbol_template(self):
+        tid = self.db.add_symbol_template("Att ta bort", '{}')
+        self.db.delete_symbol_template(tid)
+        self.assertIsNone(self.db.get_symbol_template(tid))
+        self.assertEqual(self.db.symbol_templates(), [])
+
+    def test_name_must_be_unique(self):
+        self.db.add_symbol_template("Samma namn", '{}')
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.add_symbol_template("Samma namn", '{}')
+
+    def test_features_json_round_trips_through_json_module(self):
+        """cluster_features()/similarity_features()'s dict is already
+        JSON-safe (float/int/bool/tuple-of-floats, no numpy types) —
+        confirms the actual save/load path a real caller uses."""
+        import json
+        feats = {'aspect': 2.0, 'norm_size': 4.5, 'fold_ratio': 3.1,
+                 'has_curve': False, 'has_diagonal': True, 'has_closed_or_filled': True}
+        tid = self.db.add_symbol_template("JSON-test", json.dumps(feats))
+        row = self.db.get_symbol_template(tid)
+        self.assertEqual(json.loads(row['features_json'])['aspect'], 2.0)
+
+
 class FindSimilarShapesSearchParametersTests(unittest.TestCase):
     """"Hitta liknande symbol" — sökparametrar (2026-08-14, see NOTES.md):
     find_similar_shapes()'s new ignore_scale/rotation_mode/
@@ -4591,6 +4773,134 @@ class FindSimilarShapesSearchParametersTests(unittest.TestCase):
         self.assertTrue(any_results,
             "rotation_mode='any' must let a 45°-rotated copy pass the same threshold")
 
+    def test_scan_candidates_returns_unthresholded_unsorted_tuples(self):
+        """_scan_candidates() (2026-08-15, see NOTES.md "Hitta liknande
+        symbol" — uppföljningsfunktioner) is the shared, expensive half
+        of find_similar_shapes(), split out so SimilarSymbolSearchWorker
+        can run it once and reuse it for both the live match-count
+        preview and the final thresholded search. It must NOT apply
+        min_similarity itself — that's find_similar_shapes()'s job."""
+        import fitz
+        from equipment_detection import _scan_candidates, resolve_reference_cluster
+        from symbol_geometry import similarity_features
+        path = os.path.join(self._tmpdir, "scancand.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=400, height=400)
+        shape = page.new_shape()
+        self._bowtie(shape, 60, 60)
+        self._bowtie(shape, 300, 300)
+        shape.draw_rect(fitz.Rect(60, 300, 260, 320))   # plainly different, low similarity
+        shape.finish(color=(0, 0, 0), width=1)
+        shape.commit()
+        doc.save(path)
+        doc.close()
+
+        doc = fitz.open(path)
+        try:
+            primitives, index_group, cluster = resolve_reference_cluster(doc, 0, 60, 60)
+            ref_feats = similarity_features(primitives, index_group)
+            candidates = _scan_candidates(
+                doc, ref_feats, 0, cluster['_index_group'], pages=[0])
+        finally:
+            doc.close()
+        self.assertTrue(candidates)
+        # Both a high-similarity (the clean bow-tie copy) and a
+        # low-similarity (the rect) candidate must be present —
+        # min_similarity was never applied.
+        sims = [c[0] for c in candidates]
+        self.assertGreater(max(sims), 0.9)
+        self.assertLess(min(sims), 0.5)
+
+    def test_scan_candidates_should_cancel_stops_before_any_page_is_scanned(self):
+        import fitz
+        from equipment_detection import _scan_candidates, resolve_reference_cluster
+        from symbol_geometry import similarity_features
+        path = os.path.join(self._tmpdir, "cancel.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=400, height=400)
+        shape = page.new_shape()
+        self._bowtie(shape, 60, 60)
+        self._bowtie(shape, 300, 300)
+        shape.commit()
+        doc.save(path)
+        doc.close()
+
+        doc = fitz.open(path)
+        try:
+            primitives, index_group, cluster = resolve_reference_cluster(doc, 0, 60, 60)
+            ref_feats = similarity_features(primitives, index_group)
+            candidates = _scan_candidates(
+                doc, ref_feats, 0, cluster['_index_group'], pages=[0],
+                should_cancel=lambda: True)
+        finally:
+            doc.close()
+        self.assertEqual(candidates, [])
+
+    def test_find_similar_shapes_should_cancel_yields_no_results(self):
+        import fitz
+        from equipment_detection import find_similar_shapes
+        path = os.path.join(self._tmpdir, "cancel2.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=400, height=400)
+        shape = page.new_shape()
+        self._bowtie(shape, 60, 60)
+        self._bowtie(shape, 300, 300)
+        shape.commit()
+        doc.save(path)
+        doc.close()
+
+        doc = fitz.open(path)
+        try:
+            results = find_similar_shapes(doc, ref_page=0, ref_x=60, ref_y=60,
+                                          pages=[0], min_similarity=0.0,
+                                          should_cancel=lambda: True)
+        finally:
+            doc.close()
+        self.assertEqual(results, [])
+
+    def test_find_shapes_matching_features_finds_matches_from_a_foreign_reference(self):
+        """Symbolbibliotek (2026-08-15, see NOTES.md "Hitta liknande
+        symbol" — uppföljningsfunktioner): searching from a saved
+        template's features (computed against a COMPLETELY different
+        document) must still find matching shapes here — there is no
+        live reference page/cluster to resolve or exclude."""
+        import fitz
+        from equipment_detection import find_shapes_matching_features, resolve_reference_cluster
+        from symbol_geometry import similarity_features
+
+        target_path = os.path.join(self._tmpdir, "target.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=400, height=400)
+        shape = page.new_shape()
+        self._bowtie(shape, 60, 60)
+        self._bowtie(shape, 300, 300)
+        shape.commit()
+        doc.save(target_path)
+        doc.close()
+
+        # The "template" reference lives on an entirely separate document.
+        ref_doc = fitz.open()
+        ref_page = ref_doc.new_page(width=200, height=200)
+        ref_shape = ref_page.new_shape()
+        self._bowtie(ref_shape, 50, 50, s=5)
+        ref_shape.commit()
+        primitives, index_group, _cluster = resolve_reference_cluster(ref_doc, 0, 50, 50)
+        ref_features = similarity_features(primitives, index_group)
+        ref_doc.close()
+
+        doc = fitz.open(target_path)
+        try:
+            results = find_shapes_matching_features(doc, ref_features, pages=[0],
+                                                     min_similarity=0.5, comp_type='Ventil')
+        finally:
+            doc.close()
+        self.assertEqual(len(results), 2)
+        self.assertTrue(all(r['comp_type'] == 'Ventil' for r in results))
+
+    def test_find_shapes_matching_features_returns_empty_for_no_pdf(self):
+        from equipment_detection import find_shapes_matching_features
+        self.assertEqual(find_shapes_matching_features(None, {}), [])
+
 
 class ClusterPreviewCanvasTests(unittest.TestCase):
     """_ClusterPreviewCanvas (pid_viewer.py) — the segment-exclusion
@@ -4674,24 +4984,98 @@ class ClusterPreviewCanvasTests(unittest.TestCase):
             canvas.deleteLater()
 
 
+class _SyncFakeSimilarSymbolSearchWorker(QThread):
+    """Test double for SimilarSymbolSearchWorker (2026-08-15, see
+    NOTES.md "Hitta liknande symbol" — uppföljningsfunktioner) — a real
+    QThread subclass (so SimilarSymbolSearchDialog's real
+    .progress.connect()/.finished_scan.connect() wiring works exactly
+    as in production) but start() runs synchronously on the calling
+    thread and emits a pre-set candidate list immediately, instead of
+    opening a real fitz.Document in a real background thread. Set
+    `next_candidates` (a class attribute) before constructing the
+    dialog to control what the "scan" finds."""
+    progress      = pyqtSignal(int, int, str)
+    finished_scan = pyqtSignal(list)
+
+    next_candidates = []   # overridden per-test
+
+    def __init__(self, pdf_path, ref_features, ref_page, ref_native_index_group,
+                 pages=None, ignore_scale=False, rotation_mode='none', parent=None):
+        super().__init__()
+        self.start_count = 0
+        self._ref_features = ref_features
+        self._ref_page = ref_page
+        self._ref_native_index_group = ref_native_index_group
+        self._pages = pages
+        self._ignore_scale = ignore_scale
+        self._rotation_mode = rotation_mode
+        type(self).instances.append(self)
+
+    instances = []   # every instance constructed during a test, for call-count assertions
+
+    def start(self):
+        self.start_count += 1
+        self.finished_scan.emit(list(type(self).next_candidates))
+
+    def isRunning(self):
+        return False
+
+    def requestInterruption(self):
+        pass
+
+    def wait(self, *a):
+        pass
+
+
 class SimilarSymbolSearchDialogTests(unittest.TestCase):
     """SimilarSymbolSearchDialog (pid_viewer.py) — search-parameter
-    controls for "Hitta liknande symbol" (2026-08-14, see NOTES.md
-    "Hitta liknande symbol" — sökparametrar)."""
+    controls for "Hitta liknande symbol" (2026-08-14/15, see NOTES.md
+    "Hitta liknande symbol" — sökparametrar / uppföljningsfunktioner).
+    The document scan itself (SimilarSymbolSearchWorker) is replaced
+    with _SyncFakeSimilarSymbolSearchWorker so these tests exercise the
+    dialog's real wiring (progress/finished_scan signals, live count,
+    restart-on-setting-change) without a real background thread or PDF."""
 
     @classmethod
     def setUpClass(cls):
         cls.app = _ensure_qapp()
+
+    def setUp(self):
+        _SyncFakeSimilarSymbolSearchWorker.next_candidates = []
+        _SyncFakeSimilarSymbolSearchWorker.instances = []
+        self._worker_patcher = unittest.mock.patch(
+            'pid_viewer.SimilarSymbolSearchWorker', _SyncFakeSimilarSymbolSearchWorker)
+        self._worker_patcher.start()
+        self.db = None   # set by the "Spara som mall" tests only
+
+    def tearDown(self):
+        self._worker_patcher.stop()
+        if self.db is not None:
+            try:
+                del self.db
+            except Exception:
+                pass
 
     def _line(self, x0, y0, x1, y1):
         return {'kind': 'l', 'bbox': (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)),
                 'p0': (x0, y0), 'p1': (x1, y1), 'closed': False, 'filled': False,
                 'width': 1.0, 'source': 0}
 
-    def _dialog(self):
+    def _dialog(self, viewer=None, db=None):
         from pid_viewer import SimilarSymbolSearchDialog
         prims = [self._line(0, 0, 10, 0), self._line(10, 0, 10, 10)]
-        return SimilarSymbolSearchDialog(prims, [0, 1])
+        return SimilarSymbolSearchDialog(prims, [0, 1], 'fake.pdf', 0, 10.0,
+                                          db=db, viewer=viewer)
+
+    def _template_dialog(self, template_features=None, db=None, viewer=None):
+        from pid_viewer import SimilarSymbolSearchDialog
+        return SimilarSymbolSearchDialog(
+            None, None, 'fake.pdf', 0, None, db=db, viewer=viewer,
+            template_name="Test-mall",
+            template_features=template_features or {'aspect': 1.0, 'norm_size': 2.0,
+                                                    'fold_ratio': 1.0, 'has_curve': False,
+                                                    'has_diagonal': True,
+                                                    'has_closed_or_filled': True})
 
     def test_default_values_match_find_similar_shapes_defaults(self):
         dlg = self._dialog()
@@ -4704,6 +5088,28 @@ class SimilarSymbolSearchDialogTests(unittest.TestCase):
         finally:
             dlg.deleteLater()
 
+    def test_scan_runs_automatically_on_open(self):
+        """The scan starts as soon as the dialog is constructed —
+        no separate "start search" step needed before the live
+        count/preview are useful."""
+        dlg = self._dialog()
+        try:
+            self.assertEqual(len(_SyncFakeSimilarSymbolSearchWorker.instances), 1)
+            self.assertEqual(_SyncFakeSimilarSymbolSearchWorker.instances[0].start_count, 1)
+        finally:
+            dlg.deleteLater()
+
+    def test_search_button_disabled_until_scan_finishes(self):
+        """Real behaviour: the fake worker emits finished_scan
+        synchronously from start(), so by the time __init__ returns the
+        button is already re-enabled — this asserts THAT happened via
+        _on_scan_finished, not that it starts disabled and stays so."""
+        dlg = self._dialog()
+        try:
+            self.assertTrue(dlg._search_btn.isEnabled())
+        finally:
+            dlg.deleteLater()
+
     def test_threshold_slider_maps_percent_to_0_1_range(self):
         dlg = self._dialog()
         try:
@@ -4712,35 +5118,58 @@ class SimilarSymbolSearchDialogTests(unittest.TestCase):
         finally:
             dlg.deleteLater()
 
-    def test_choosing_alla_storlekar_sets_ignore_scale(self):
+    def test_threshold_change_updates_live_count_without_a_new_scan(self):
+        _SyncFakeSimilarSymbolSearchWorker.next_candidates = [
+            (0.9, 0, 1.0, 1.0, []), (0.7, 0, 2.0, 2.0, []), (0.3, 0, 3.0, 3.0, []),
+        ]
+        dlg = self._dialog()
+        try:
+            self.assertEqual(len(_SyncFakeSimilarSymbolSearchWorker.instances), 1)
+            dlg._threshold.setValue(60)
+            self.assertEqual(dlg._count_lbl.text(), "≈ 2 träffar")
+            dlg._threshold.setValue(80)
+            self.assertEqual(dlg._count_lbl.text(), "≈ 1 träffar")
+            # No new worker was constructed just from moving the slider.
+            self.assertEqual(len(_SyncFakeSimilarSymbolSearchWorker.instances), 1)
+        finally:
+            dlg.deleteLater()
+
+    def test_choosing_alla_storlekar_sets_ignore_scale_and_restarts_scan(self):
         dlg = self._dialog()
         try:
             dlg._scale_any.setChecked(True)
             self.assertTrue(dlg.ignore_scale())
+            self.assertEqual(len(_SyncFakeSimilarSymbolSearchWorker.instances), 2,
+                "changing Skala affects candidate scores — must trigger a fresh scan")
         finally:
             dlg.deleteLater()
 
-    def test_choosing_alla_vinklar_sets_rotation_mode_any(self):
+    def test_choosing_alla_vinklar_sets_rotation_mode_any_and_restarts_scan(self):
         dlg = self._dialog()
         try:
             dlg._rotation_any.setChecked(True)
             self.assertEqual(dlg.rotation_mode(), 'any')
+            self.assertEqual(len(_SyncFakeSimilarSymbolSearchWorker.instances), 2)
         finally:
             dlg.deleteLater()
 
-    def test_choosing_denna_sida_sets_search_this_page_only(self):
+    def test_choosing_denna_sida_sets_search_this_page_only_and_restarts_scan(self):
         dlg = self._dialog()
         try:
             dlg._scope_page.setChecked(True)
             self.assertTrue(dlg.search_this_page_only())
+            self.assertEqual(len(_SyncFakeSimilarSymbolSearchWorker.instances), 2)
         finally:
             dlg.deleteLater()
 
-    def test_excluding_a_segment_in_the_canvas_is_reflected_in_edited_index_group(self):
+    def test_excluding_a_segment_in_the_canvas_restarts_the_scan(self):
         dlg = self._dialog()
         try:
             dlg._canvas._excluded.add(1)
+            dlg._canvas.selection_changed.emit()
             self.assertEqual(dlg.edited_index_group(), [0])
+            self.assertEqual(len(_SyncFakeSimilarSymbolSearchWorker.instances), 2,
+                "editing the reference shape changes ref_features — must re-scan")
         finally:
             dlg.deleteLater()
 
@@ -4763,6 +5192,266 @@ class SimilarSymbolSearchDialogTests(unittest.TestCase):
             self.assertEqual(dlg.result(), QDialog.DialogCode.Rejected)
         finally:
             dlg.deleteLater()
+
+    def test_final_results_reuses_cached_candidates_shaped_and_thresholded(self):
+        _SyncFakeSimilarSymbolSearchWorker.next_candidates = [
+            (0.9, 0, 1.0, 1.0, [[0, 0], [1, 0], [1, 1]]),
+            (0.3, 0, 2.0, 2.0, [[0, 0], [1, 0], [1, 1]]),
+        ]
+        dlg = self._dialog()
+        try:
+            results = dlg.final_results(comp_type='Ventil')
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]['comp_type'], 'Ventil')
+            self.assertAlmostEqual(results[0]['detection_confidence'], 0.9)
+        finally:
+            dlg.deleteLater()
+
+    def test_preview_checkbox_disabled_without_a_viewer(self):
+        dlg = self._dialog(viewer=None)
+        try:
+            self.assertFalse(dlg._preview_cb.isEnabled())
+        finally:
+            dlg.deleteLater()
+
+    def test_preview_checkbox_draws_only_current_page_candidates_above_threshold(self):
+        _SyncFakeSimilarSymbolSearchWorker.next_candidates = [
+            (0.9, 0, 1.0, 1.0, [[0, 0], [1, 0], [1, 1]]),   # right page, above threshold
+            (0.9, 1, 5.0, 5.0, [[0, 0], [1, 0], [1, 1]]),   # wrong page
+            (0.3, 0, 2.0, 2.0, [[0, 0], [1, 0], [1, 1]]),   # right page, below threshold
+        ]
+        fake_viewer = unittest.mock.Mock()
+        fake_viewer.current_page = 0
+        dlg = self._dialog(viewer=fake_viewer)
+        try:
+            dlg._preview_cb.setChecked(True)
+            fake_viewer.add_shape_highlight.assert_called_once_with([[0, 0], [1, 0], [1, 1]])
+        finally:
+            dlg.deleteLater()
+
+    def test_dialog_finished_clears_preview_and_stops_any_running_worker(self):
+        fake_viewer = unittest.mock.Mock()
+        fake_viewer.current_page = 0
+        dlg = self._dialog(viewer=fake_viewer)
+        try:
+            dlg.reject()
+            fake_viewer.clear_shape_preview.assert_called()
+        finally:
+            dlg.deleteLater()
+
+    def test_save_as_template_button_disabled_without_db(self):
+        dlg = self._dialog(db=None)
+        try:
+            self.assertFalse(dlg._save_template_btn.isEnabled())
+        finally:
+            dlg.deleteLater()
+
+    def test_save_as_template_persists_current_reference_features(self):
+        import json
+        self.db = Database(path=os.path.join(
+            tempfile.mkdtemp(prefix="hazop_savetemplate_test_"), "test_project.db"))
+        dlg = self._dialog(db=self.db)
+        try:
+            self.assertTrue(dlg._save_template_btn.isEnabled())
+            with unittest.mock.patch('pid_viewer.QInputDialog.getText',
+                                     return_value=("Min ventil", True)), \
+                 unittest.mock.patch('pid_viewer.QMessageBox.information'):
+                dlg._save_as_template()
+            rows = self.db.symbol_templates()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]['name'], "Min ventil")
+            feats = json.loads(rows[0]['features_json'])
+            self.assertIn('aspect', feats)
+        finally:
+            dlg.deleteLater()
+
+    def test_save_as_template_warns_on_duplicate_name(self):
+        self.db = Database(path=os.path.join(
+            tempfile.mkdtemp(prefix="hazop_savetemplate_test_"), "test_project.db"))
+        self.db.add_symbol_template("Upptaget namn", '{}')
+        dlg = self._dialog(db=self.db)
+        try:
+            with unittest.mock.patch('pid_viewer.QInputDialog.getText',
+                                     return_value=("Upptaget namn", True)), \
+                 unittest.mock.patch('pid_viewer.QMessageBox.warning') as mock_warn:
+                dlg._save_as_template()
+            mock_warn.assert_called_once()
+            self.assertEqual(len(self.db.symbol_templates()), 1)
+        finally:
+            dlg.deleteLater()
+
+    def test_template_mode_has_no_canvas_and_disables_rotation_toggle(self):
+        """A saved template has no live primitives to preview/edit, and
+        its features were already computed in one fixed rotation basis
+        when saved — "alla vinklar" has nothing to recompute against."""
+        dlg = self._template_dialog()
+        try:
+            self.assertIsNone(dlg._canvas)
+            self.assertIsNone(dlg.edited_index_group())
+            self.assertFalse(dlg._rotation_any.isEnabled())
+            self.assertFalse(dlg._save_template_btn.isEnabled(),
+                "no new reference to save — this already IS a saved template")
+        finally:
+            dlg.deleteLater()
+
+    def test_template_mode_scan_uses_the_given_features_directly(self):
+        template_feats = {'aspect': 3.3, 'norm_size': 9.9, 'fold_ratio': 1.0,
+                          'has_curve': False, 'has_diagonal': True,
+                          'has_closed_or_filled': True}
+        dlg = self._template_dialog(template_features=template_feats)
+        try:
+            self.assertEqual(len(_SyncFakeSimilarSymbolSearchWorker.instances), 1)
+            worker = _SyncFakeSimilarSymbolSearchWorker.instances[0]
+            self.assertEqual(worker._ref_features, template_feats)
+        finally:
+            dlg.deleteLater()
+
+
+class SymbolTemplatePickerDialogTests(unittest.TestCase):
+    """SymbolTemplatePickerDialog (pid_viewer.py) — "🔎 Hitta liknande
+    symbol (från mall)" (2026-08-15, see NOTES.md "Hitta liknande
+    symbol" — uppföljningsfunktioner: symbolbibliotek)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_templatepicker_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_lists_saved_templates(self):
+        from pid_viewer import SymbolTemplatePickerDialog
+        self.db.add_symbol_template("Metso-ventil", '{}', comp_type='Ventil')
+        self.db.add_symbol_template("Endress+Hauser", '{}')
+        dlg = SymbolTemplatePickerDialog(self.db)
+        try:
+            self.assertEqual(dlg._list.count(), 2)
+        finally:
+            dlg.deleteLater()
+
+    def test_selecting_a_template_and_accepting_sets_selected_template(self):
+        from pid_viewer import SymbolTemplatePickerDialog
+        tid = self.db.add_symbol_template("Metso-ventil", '{"aspect": 2.0}')
+        dlg = SymbolTemplatePickerDialog(self.db)
+        try:
+            dlg._list.setCurrentRow(0)
+            dlg._accept_selected()
+            self.assertEqual(dlg.result(), 1)   # QDialog.Accepted
+            self.assertEqual(dlg.selected_template['id'], tid)
+        finally:
+            dlg.deleteLater()
+
+    def test_accepting_with_no_selection_shows_info_and_does_not_accept(self):
+        from pid_viewer import SymbolTemplatePickerDialog
+        self.db.add_symbol_template("Metso-ventil", '{}')
+        dlg = SymbolTemplatePickerDialog(self.db)
+        try:
+            with unittest.mock.patch('pid_viewer.QMessageBox.information') as mock_info:
+                dlg._accept_selected()
+            mock_info.assert_called_once()
+            self.assertIsNone(dlg.selected_template)
+        finally:
+            dlg.deleteLater()
+
+    def test_delete_removes_the_template_and_refreshes_the_list(self):
+        from pid_viewer import SymbolTemplatePickerDialog
+        self.db.add_symbol_template("Att ta bort", '{}')
+        dlg = SymbolTemplatePickerDialog(self.db)
+        try:
+            dlg._list.setCurrentRow(0)
+            dlg._delete_selected()
+            self.assertEqual(dlg._list.count(), 0)
+            self.assertEqual(self.db.symbol_templates(), [])
+        finally:
+            dlg.deleteLater()
+
+
+class SimilarSymbolSearchWorkerTests(unittest.TestCase):
+    """SimilarSymbolSearchWorker (pid_viewer.py) — the REAL QThread
+    behind SimilarSymbolSearchDialog's background scan (2026-08-15, see
+    NOTES.md "Hitta liknande symbol" — uppföljningsfunktioner), tested
+    directly (not via the dialog's fake test double). Modelled on
+    EquipmentAnalysisWorkerTests: must always emit finished_scan, even
+    when fitz.open() itself raises, and must actually find a real
+    candidate end-to-end against a real synthetic PDF."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_simsearchworker_test_")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_finished_scan_emitted_even_when_pdf_open_fails(self):
+        from pid_viewer import SimilarSymbolSearchWorker
+        received = {}
+
+        def _capture(candidates):
+            received['candidates'] = candidates
+
+        worker = SimilarSymbolSearchWorker(
+            '/nonexistent/path/does-not-exist.pdf', {}, 0, [])
+        worker.finished_scan.connect(_capture)
+        worker.start()
+        self.assertTrue(worker.wait(5000), "worker.run() did not finish within 5s")
+        self.app.processEvents()   # pump the queued cross-thread signal delivery
+        self.assertIn('candidates', received,
+            "finished_scan must fire even when fitz.open() raises")
+        self.assertEqual(received['candidates'], [])
+
+    def test_finds_a_real_candidate_end_to_end(self):
+        import fitz
+        import symbol_geometry as sg
+        from equipment_detection import resolve_reference_cluster
+        from pid_viewer import SimilarSymbolSearchWorker
+
+        path = os.path.join(self._tmpdir, "worker.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=400, height=400)
+        shape = page.new_shape()
+
+        def bowtie(cx, cy):
+            shape.draw_polyline([fitz.Point(cx - 10, cy - 10), fitz.Point(cx - 10, cy + 10),
+                                 fitz.Point(cx, cy)])
+            shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+            shape.draw_polyline([fitz.Point(cx + 10, cy - 10), fitz.Point(cx + 10, cy + 10),
+                                 fitz.Point(cx, cy)])
+            shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+
+        bowtie(60, 60)
+        bowtie(300, 300)
+        shape.commit()
+        doc.save(path)
+        doc.close()
+
+        doc = fitz.open(path)
+        try:
+            primitives, index_group, cluster = resolve_reference_cluster(doc, 0, 60, 60)
+            ref_features = sg.similarity_features(primitives, index_group)
+        finally:
+            doc.close()
+
+        received = {}
+        worker = SimilarSymbolSearchWorker(
+            path, ref_features, 0, cluster['_index_group'], pages=[0])
+        worker.finished_scan.connect(lambda c: received.setdefault('candidates', c))
+        worker.start()
+        self.assertTrue(worker.wait(5000), "worker.run() did not finish within 5s")
+        self.app.processEvents()
+        candidates = received.get('candidates')
+        self.assertTrue(candidates)
+        self.assertGreater(max(c[0] for c in candidates), 0.9)
 
 
 class EquipmentAnalysisWorkerTests(unittest.TestCase):
@@ -7394,22 +8083,18 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
             self.panel._on_context_action('find_similar', QPointF(5, 5), 0)
         mock_warn.assert_called_once()
 
-    def _mock_accepted_search_params_dialog(self, mock_dlg_cls, min_similarity=0.6,
-                                            ignore_scale=False, rotation_mode='none',
-                                            this_page_only=False, edited_group=None):
-        """SimilarSymbolSearchDialog is a real modal QDialog — tests
-        that just want the flow past it (not the dialog itself) mock
-        the class and stub its accessor methods, mirroring how other
-        modal-dialog call sites in this file are tested (see
+    def _mock_accepted_search_params_dialog(self, mock_dlg_cls, final_results=None):
+        """SimilarSymbolSearchDialog is a real modal QDialog that runs
+        its own background scan (2026-08-15, see NOTES.md "Hitta
+        liknande symbol" — uppföljningsfunktioner) — tests that just
+        want the flow past it (not the dialog itself) mock the class
+        and stub final_results(), mirroring how other modal-dialog call
+        sites in this file are tested (see
         test_edit_extra_defers_rebuild_instead_of_calling_it_directly)."""
         from PyQt6.QtWidgets import QDialog
         inst = mock_dlg_cls.return_value
         inst.exec.return_value = QDialog.DialogCode.Accepted
-        inst.min_similarity.return_value = min_similarity
-        inst.ignore_scale.return_value = ignore_scale
-        inst.rotation_mode.return_value = rotation_mode
-        inst.search_this_page_only.return_value = this_page_only
-        inst.edited_index_group.return_value = edited_group if edited_group is not None else []
+        inst.final_results.return_value = final_results if final_results is not None else []
         return inst
 
     def test_find_similar_symbol_warns_when_no_reference_cluster_resolved(self):
@@ -7428,17 +8113,16 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
         mock_info.assert_called_once()
         mock_params_dlg.assert_not_called()
 
-    def test_find_similar_symbol_does_not_search_when_params_dialog_cancelled(self):
+    def test_find_similar_symbol_does_not_check_results_when_params_dialog_cancelled(self):
         from PyQt6.QtCore import QPointF
         from PyQt6.QtWidgets import QDialog
         self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
         with unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
                                  return_value=([], [], {})), \
-             unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg, \
-             unittest.mock.patch('pid_viewer.equipment_detection.find_similar_shapes') as mock_find:
+             unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg:
             mock_params_dlg.return_value.exec.return_value = QDialog.DialogCode.Rejected
             self.panel._on_context_action('find_similar', QPointF(5, 5), 0)
-        mock_find.assert_not_called()
+        mock_params_dlg.return_value.final_results.assert_not_called()
 
     def test_find_similar_symbol_shows_info_when_nothing_found(self):
         from PyQt6.QtCore import QPointF
@@ -7447,12 +8131,9 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
         with unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
                                  return_value=([], [], {})), \
              unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg, \
-             unittest.mock.patch('pid_viewer.equipment_detection.find_similar_shapes',
-                                 return_value=[]) as mock_find, \
              unittest.mock.patch.object(QMessageBox, 'information') as mock_info:
-            self._mock_accepted_search_params_dialog(mock_params_dlg)
+            self._mock_accepted_search_params_dialog(mock_params_dlg, final_results=[])
             self.panel._on_context_action('find_similar', QPointF(5, 5), 0)
-        mock_find.assert_called_once()
         mock_info.assert_called_once()
 
     def test_find_similar_symbol_opens_review_dialog_and_reloads_on_accept(self):
@@ -7464,11 +8145,9 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
         with unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
                                  return_value=([], [], {})), \
              unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg, \
-             unittest.mock.patch('pid_viewer.equipment_detection.find_similar_shapes',
-                                 return_value=fake_results), \
              unittest.mock.patch('pid_viewer.EquipmentMarkerReviewDialog') as mock_dlg_cls, \
              unittest.mock.patch.object(self.panel, 'reload_overlays') as mock_reload:
-            self._mock_accepted_search_params_dialog(mock_params_dlg)
+            self._mock_accepted_search_params_dialog(mock_params_dlg, final_results=fake_results)
             mock_dlg_cls.return_value.exec.return_value = 1   # QDialog.Accepted
             self.panel._on_context_action('find_similar', QPointF(5, 5), 0)
         mock_dlg_cls.assert_called_once()
@@ -7476,31 +8155,79 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
         self.assertEqual(args[0], fake_results)
         mock_reload.assert_called_once()
 
-    def test_find_similar_symbol_passes_search_params_dialog_choices_through(self):
-        """The dialog's threshold/scale/rotation/scope/edited-group
-        choices must reach find_similar_shapes() unchanged — this is
-        the whole point of resolving the reference and asking first."""
+    def test_find_similar_symbol_constructs_dialog_with_pdf_path_page_scale_and_viewer(self):
+        """The dialog now runs its own background scan, so it needs the
+        PDF path (its worker opens its own fitz.Document), the
+        reference page, the page's text scale, and the viewer (for the
+        on-canvas preview) — not just primitives/index_group."""
         from PyQt6.QtCore import QPointF
-        fake_results = [{'tag': '', 'page': 2, 'comp_type': '', 'x': 1.0, 'y': 1.0,
-                         'outline': [], 'link_method': 'similar', 'tag_status': 'untagged',
-                         'temporary_id': 'SIMILAR-2-0', 'detection_confidence': 0.9}]
         self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
+        self.panel.viewer._pdf_path = '/fake/path.pdf'
         with unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
-                                 return_value=([], [], {})), \
-             unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg, \
-             unittest.mock.patch('pid_viewer.equipment_detection.find_similar_shapes',
-                                 return_value=fake_results) as mock_find, \
-             unittest.mock.patch('pid_viewer.EquipmentMarkerReviewDialog'):
-            self._mock_accepted_search_params_dialog(
-                mock_params_dlg, min_similarity=0.85, ignore_scale=True,
-                rotation_mode='any', this_page_only=True, edited_group=[1, 3])
-            self.panel._on_context_action('find_similar', QPointF(5, 5), 2)
-        _args, kwargs = mock_find.call_args
-        self.assertEqual(kwargs['pages'], [2])
-        self.assertEqual(kwargs['min_similarity'], 0.85)
-        self.assertEqual(kwargs['ignore_scale'], True)
-        self.assertEqual(kwargs['rotation_mode'], 'any')
-        self.assertEqual(kwargs['ref_index_group'], [1, 3])
+                                 return_value=(['prims'], ['idx'], {})), \
+             unittest.mock.patch('pid_viewer.symbol_geometry.dominant_text_size',
+                                 return_value=12.5), \
+             unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg:
+            self._mock_accepted_search_params_dialog(mock_params_dlg, final_results=[])
+            with unittest.mock.patch.object(QMessageBox, 'information'):
+                self.panel._on_context_action('find_similar', QPointF(5, 5), 3)
+        args, kwargs = mock_params_dlg.call_args
+        self.assertEqual(args[0], ['prims'])
+        self.assertEqual(args[1], ['idx'])
+        self.assertEqual(args[2], '/fake/path.pdf')
+        self.assertEqual(args[3], 3)
+        self.assertEqual(args[4], 12.5)
+        self.assertEqual(kwargs['viewer'], self.panel.viewer)
+
+    def test_find_similar_symbol_from_template_warns_with_no_pid_open(self):
+        from pid_viewer import PIDPanel
+        panel = PIDPanel(self.db)
+        try:
+            with unittest.mock.patch.object(QMessageBox, 'warning') as mock_warn:
+                panel._find_similar_symbol_from_template()
+            mock_warn.assert_called_once()
+        finally:
+            panel.deleteLater()
+
+    def test_find_similar_symbol_from_template_shows_info_with_no_saved_templates(self):
+        self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
+        with unittest.mock.patch.object(QMessageBox, 'information') as mock_info, \
+             unittest.mock.patch('pid_viewer.SymbolTemplatePickerDialog') as mock_picker:
+            self.panel._find_similar_symbol_from_template()
+        mock_info.assert_called_once()
+        mock_picker.assert_not_called()
+
+    def test_find_similar_symbol_from_template_does_nothing_when_picker_cancelled(self):
+        from PyQt6.QtWidgets import QDialog
+        self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
+        self.db.add_symbol_template("Test-mall", '{"aspect": 1.0}')
+        with unittest.mock.patch('pid_viewer.SymbolTemplatePickerDialog') as mock_picker, \
+             unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg:
+            mock_picker.return_value.exec.return_value = QDialog.DialogCode.Rejected
+            self.panel._find_similar_symbol_from_template()
+        mock_params_dlg.assert_not_called()
+
+    def test_find_similar_symbol_from_template_opens_search_dialog_in_template_mode(self):
+        from PyQt6.QtWidgets import QDialog
+        self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
+        self.panel.viewer._pdf_path = '/fake/path.pdf'
+        self.panel.viewer.current_page = 4
+        self.db.add_symbol_template("Metso-ventil", '{"aspect": 2.0}', comp_type='Ventil')
+        template_row = self.db.symbol_templates()[0]
+        with unittest.mock.patch('pid_viewer.SymbolTemplatePickerDialog') as mock_picker, \
+             unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg:
+            mock_picker.return_value.exec.return_value = QDialog.DialogCode.Accepted
+            mock_picker.return_value.selected_template = template_row
+            self._mock_accepted_search_params_dialog(mock_params_dlg, final_results=[])
+            with unittest.mock.patch.object(QMessageBox, 'information'):
+                self.panel._find_similar_symbol_from_template()
+        args, kwargs = mock_params_dlg.call_args
+        self.assertIsNone(args[0])
+        self.assertIsNone(args[1])
+        self.assertEqual(args[2], '/fake/path.pdf')
+        self.assertEqual(args[3], 4)
+        self.assertEqual(kwargs['template_name'], 'Metso-ventil')
+        self.assertEqual(kwargs['template_features'], {"aspect": 2.0})
 
 
 class AutoConsequenceOnCauseAddTests(unittest.TestCase):
