@@ -1718,8 +1718,37 @@ def detect_equipment_symbols(pdf_doc, requests, min_confidence=0.3):
     return results
 
 
+def resolve_reference_cluster(pdf_doc, ref_page, ref_x, ref_y):
+    """Resolve the vector cluster at (ref_x, ref_y) on ref_page — the
+    same reference resolution find_similar_shapes() itself does,
+    split out so SimilarSymbolSearchDialog (pid_viewer.py, 2026-08-14,
+    see NOTES.md "Hitta liknande symbol" — sökparametrar) can render
+    and let the user prune the cluster's primitives BEFORE the actual
+    search runs (find_similar_shapes' own ref_index_group parameter
+    then carries the possibly-edited result).
+
+    Returns (primitives, index_group, cluster_dict) — primitives is
+    ref_page's full extract_primitives() list (index_group indexes
+    into it), cluster_dict is the raw find_symbol_clusters() entry
+    (has comp-type-relevant features like bbox/aspect if a caller wants
+    them). Returns None if there's no vector data, or nothing close
+    enough to (ref_x, ref_y)."""
+    if not HAS_PYMUPDF or pdf_doc is None:
+        return None
+    ref_fitz_page = pdf_doc[ref_page]
+    primitives = symbol_geometry.extract_primitives(ref_fitz_page)
+    clusters = symbol_geometry.find_symbol_clusters(
+        ref_fitz_page, min_confidence=0.0, return_groups=True)
+    scale = symbol_geometry.dominant_text_size(ref_fitz_page)
+    cluster = symbol_geometry.find_cluster_at_point(clusters, ref_x, ref_y, max_distance=scale * 3)
+    if cluster is None:
+        return None
+    return primitives, cluster['_index_group'], cluster
+
+
 def find_similar_shapes(pdf_doc, ref_page, ref_x, ref_y, pages=None, min_similarity=0.6,
-                        comp_type='', progress_callback=None):
+                        comp_type='', progress_callback=None, ignore_scale=False,
+                        rotation_mode='none', ref_index_group=None):
     """"Hitta liknande symbol" (2026-08-10, see NOTES.md): given a
     reference point the user picked (ref_page/ref_x/ref_y — anywhere on
     the P&ID, tagged or not, already a known equipment marker or not),
@@ -1744,6 +1773,22 @@ def find_similar_shapes(pdf_doc, ref_page, ref_x, ref_y, pages=None, min_similar
     comp_type, if given (e.g. the reference's own already-known type),
     is copied onto every result row so the review dialog's Typ column
     isn't just blank for every hit.
+
+    ignore_scale/rotation_mode/ref_index_group (2026-08-14, see NOTES.md
+    "Hitta liknande symbol" — sökparametrar): search-parameter controls
+    surfaced in SimilarSymbolSearchDialog (pid_viewer.py).
+    - ignore_scale: passed straight through to cluster_similarity() —
+      match the same figure at any size, not just a similar one.
+    - rotation_mode: 'none'/'90' (equivalent — cluster_features() is
+      already exactly invariant under 90°-multiple rotation, see
+      symbol_geometry.oriented_features()'s docstring) or 'any' (uses
+      the rotation-invariant oriented_features() for both sides).
+    - ref_index_group: override for which of the reference page's own
+      extract_primitives() indices make up the reference shape — lets a
+      user-edited selection (e.g. excluding a wrongly-merged pipe
+      segment) replace the auto-detected cluster's own index group.
+      Requires find_symbol_clusters(..., return_groups=True) to resolve
+      the auto-detected group in the first place.
     """
     if not HAS_PYMUPDF or pdf_doc is None:
         return []
@@ -1752,24 +1797,39 @@ def find_similar_shapes(pdf_doc, ref_page, ref_x, ref_y, pages=None, min_similar
     pages = list(pages)
 
     ref_fitz_page = pdf_doc[ref_page]
-    ref_clusters = symbol_geometry.find_symbol_clusters(ref_fitz_page, min_confidence=0.0)
+    ref_primitives = symbol_geometry.extract_primitives(ref_fitz_page)
+    ref_clusters = symbol_geometry.find_symbol_clusters(
+        ref_fitz_page, min_confidence=0.0, return_groups=True)
     ref_scale = symbol_geometry.dominant_text_size(ref_fitz_page)
     ref_cluster = symbol_geometry.find_cluster_at_point(ref_clusters, ref_x, ref_y,
                                                          max_distance=ref_scale * 3)
     if ref_cluster is None:
         return []
+    index_group = (ref_index_group if ref_index_group is not None
+                   else ref_cluster['_index_group'])
+    ref_feats = symbol_geometry.similarity_features(
+        ref_primitives, index_group, ref_scale, rotation_mode=rotation_mode)
 
     candidates = []
     total = len(pages)
     for i, page_num in enumerate(pages):
         if progress_callback:
             progress_callback(page_num, total, f"Sida {page_num + 1}/{total} — jämför symboler…")
+        page = pdf_doc[page_num]
         clusters = (ref_clusters if page_num == ref_page
-                   else symbol_geometry.find_symbol_clusters(pdf_doc[page_num], min_confidence=0.0))
+                   else symbol_geometry.find_symbol_clusters(page, min_confidence=0.0,
+                                                              return_groups=True))
+        cand_primitives = ref_primitives if page_num == ref_page \
+            else symbol_geometry.extract_primitives(page)
+        cand_scale = ref_scale if page_num == ref_page \
+            else symbol_geometry.dominant_text_size(page)
         for c in clusters:
             if page_num == ref_page and c is ref_cluster:
                 continue
-            sim = symbol_geometry.cluster_similarity(ref_cluster, c)
+            cand_feats = symbol_geometry.similarity_features(
+                cand_primitives, c['_index_group'], cand_scale, rotation_mode=rotation_mode)
+            sim = symbol_geometry.cluster_similarity(ref_feats, cand_feats,
+                                                      ignore_scale=ignore_scale)
             if sim < min_similarity:
                 continue
             x0, y0, x1, y1 = c['bbox']

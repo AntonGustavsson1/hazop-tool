@@ -775,6 +775,239 @@ class PDFVectorItem(QGraphicsItem):
         return self._rect.height()
 
 
+def _point_segment_distance(px, py, x0, y0, x1, y1):
+    """Shortest distance from (px,py) to the segment (x0,y0)-(x1,y1) —
+    used by _ClusterPreviewCanvas's click hit-test."""
+    dx, dy = x1 - x0, y1 - y0
+    length_sq = dx * dx + dy * dy
+    if length_sq < 1e-9:
+        return math.hypot(px - x0, py - y0)
+    t = max(0.0, min(1.0, ((px - x0) * dx + (py - y0) * dy) / length_sq))
+    return math.hypot(px - (x0 + t * dx), py - (y0 + t * dy))
+
+
+class _ClusterPreviewCanvas(QWidget):
+    """Small custom-painted preview of a resolved reference cluster's
+    primitives, for SimilarSymbolSearchDialog (2026-08-14, see NOTES.md
+    "Hitta liknande symbol" — sökparametrar). Click a segment to
+    exclude/include it from the reference shape — directly solves
+    "ta bort något som inte tillhör" (Anton's example: a valve whose
+    auto-detected cluster pulled in an attached pipe stub). The
+    surviving (non-excluded) primitive indices become
+    find_similar_shapes()'s ref_index_group."""
+
+    selection_changed = pyqtSignal()
+
+    _MARGIN = 12
+    _HIT_TOL = 7.0   # px
+
+    def __init__(self, primitives, index_group, parent=None):
+        super().__init__(parent)
+        self._primitives = primitives
+        self._index_group = list(index_group)
+        self._excluded = set()
+        self.setMinimumSize(240, 180)
+
+    def edited_index_group(self):
+        """The surviving (non-excluded) primitive indices — this
+        widget's whole reason for existing."""
+        return [i for i in self._index_group if i not in self._excluded]
+
+    def has_edits(self):
+        return bool(self._excluded)
+
+    def _bbox(self):
+        xs, ys = [], []
+        for i in self._index_group:
+            x0, y0, x1, y1 = self._primitives[i]['bbox']
+            xs += [x0, x1]
+            ys += [y0, y1]
+        if not xs:
+            return (0.0, 0.0, 1.0, 1.0)
+        return (min(xs), min(ys), max(xs), max(ys))
+
+    def _transform(self):
+        """(scale, offset_x, offset_y) mapping this cluster's PDF-space
+        points into the widget's pixel rect, preserving aspect ratio
+        and centering the result."""
+        x0, y0, x1, y1 = self._bbox()
+        w, h = max(x1 - x0, 1e-6), max(y1 - y0, 1e-6)
+        avail_w = max(self.width() - 2 * self._MARGIN, 1)
+        avail_h = max(self.height() - 2 * self._MARGIN, 1)
+        scale = min(avail_w / w, avail_h / h)
+        off_x = self._MARGIN + (avail_w - w * scale) / 2 - x0 * scale
+        off_y = self._MARGIN + (avail_h - h * scale) / 2 - y0 * scale
+        return scale, off_x, off_y
+
+    def _to_widget(self, x, y):
+        scale, ox, oy = self._transform()
+        return x * scale + ox, y * scale + oy
+
+    def _primitive_polyline(self, i):
+        """Points to draw/hit-test as a connected polyline — p0/p1 for
+        lines/curves, the as-drawn corners (closing back to the first)
+        for rects/quads, same convention _prim_corner_edges uses."""
+        prim = self._primitives[i]
+        if prim['kind'] in ('l', 'c'):
+            return [prim['p0'], prim['p1']]
+        corners = prim.get('corners')
+        if not corners:
+            x0, y0, x1, y1 = prim['bbox']
+            corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+        return corners + [corners[0]]
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor('#ffffff'))
+        for i in self._index_group:
+            pts = [self._to_widget(x, y) for x, y in self._primitive_polyline(i)]
+            excluded = i in self._excluded
+            pen = QPen(QColor('#B3B7B2') if excluded else QColor('#17191C'),
+                      1.6 if excluded else 2.0)
+            pen.setStyle(Qt.PenStyle.DashLine if excluded else Qt.PenStyle.SolidLine)
+            painter.setPen(pen)
+            for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+                painter.drawLine(QPointF(x0, y0), QPointF(x1, y1))
+        painter.end()
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        pos = event.position()
+        best_i, best_d = None, self._HIT_TOL
+        for i in self._index_group:
+            pts = [self._to_widget(x, y) for x, y in self._primitive_polyline(i)]
+            for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+                d = _point_segment_distance(pos.x(), pos.y(), x0, y0, x1, y1)
+                if d < best_d:
+                    best_d, best_i = d, i
+        if best_i is not None:
+            if best_i in self._excluded:
+                self._excluded.discard(best_i)
+            else:
+                self._excluded.add(best_i)
+            self.update()
+            self.selection_changed.emit()
+
+
+class SimilarSymbolSearchDialog(QDialog):
+    """Sökparametrar för "Hitta liknande symbol" (2026-08-14, see
+    NOTES.md) — opens right after a reference cluster is resolved
+    (PIDPanel._find_similar_symbol), before find_similar_shapes()
+    actually runs. Lets the user prune the reference shape's own
+    primitives (_ClusterPreviewCanvas) and choose:
+    - Likhetströskel (similarity threshold)
+    - Skala: endast liknande storlek, eller alla storlekar
+      (ignore_scale)
+    - Omfattning: bara denna sida, eller hela dokumentet (pages)
+    An informational note explains that 90°-rotated symbols are
+    already found automatically (cluster_features() is exactly
+    invariant under 90°-multiple rotation — see
+    symbol_geometry.oriented_features()'s docstring); "Alla vinklar"
+    is a real, separate, slower opt-in mode
+    (symbol_geometry.oriented_features()), not a placebo toggle.
+
+    No "bara samma typ" filter: a shape-similarity candidate has no
+    type of its own yet (equipment TYPE is inferred from a tag prefix
+    elsewhere in this codebase, never from shape — see
+    equipment_detection.py's module docstring) — there is nothing
+    meaningful to filter candidates on before they're reviewed/tagged,
+    so that control was deliberately left out rather than shipped as
+    a no-op."""
+
+    def __init__(self, primitives, index_group, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Hitta liknande symbol")
+        self.setMinimumWidth(360)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        layout.addWidget(QLabel(
+            "<b>Referensform</b> — klicka ett segment för att utesluta det "
+            "(t.ex. en ledning som råkade följa med en ventil):"))
+        self._canvas = _ClusterPreviewCanvas(primitives, index_group)
+        layout.addWidget(self._canvas)
+
+        form = QFormLayout()
+        form.setSpacing(6)
+
+        self._threshold = QSlider(Qt.Orientation.Horizontal)
+        self._threshold.setRange(0, 100)
+        self._threshold.setValue(60)
+        self._threshold_lbl = QLabel("60%")
+        self._threshold.valueChanged.connect(
+            lambda v: self._threshold_lbl.setText(f"{v}%"))
+        thr_row = QHBoxLayout()
+        thr_row.addWidget(self._threshold)
+        thr_row.addWidget(self._threshold_lbl)
+        form.addRow("Likhetströskel:", thr_row)
+
+        self._scale_group = QButtonGroup(self)
+        self._scale_same = QRadioButton("Endast liknande storlek")
+        self._scale_any = QRadioButton("Alla storlekar")
+        self._scale_same.setChecked(True)
+        self._scale_group.addButton(self._scale_same)
+        self._scale_group.addButton(self._scale_any)
+        scale_row = QVBoxLayout()
+        scale_row.addWidget(self._scale_same)
+        scale_row.addWidget(self._scale_any)
+        form.addRow("Skala:", scale_row)
+
+        rot_note = QLabel(
+            "🔄 Symboler roterade i 90° steg hittas redan automatiskt.")
+        rot_note.setStyleSheet("color:#8D9299; font-size:10px;")
+        rot_note.setWordWrap(True)
+        self._rotation_any = QCheckBox("Sök i alla vinklar (experimentell, långsammare)")
+        rot_col = QVBoxLayout()
+        rot_col.addWidget(rot_note)
+        rot_col.addWidget(self._rotation_any)
+        form.addRow("Rotation:", rot_col)
+
+        self._scope_group = QButtonGroup(self)
+        self._scope_page = QRadioButton("Denna sida")
+        self._scope_doc = QRadioButton("Hela dokumentet")
+        self._scope_doc.setChecked(True)
+        self._scope_group.addButton(self._scope_page)
+        self._scope_group.addButton(self._scope_doc)
+        scope_row = QVBoxLayout()
+        scope_row.addWidget(self._scope_page)
+        scope_row.addWidget(self._scope_doc)
+        form.addRow("Omfattning:", scope_row)
+
+        layout.addLayout(form)
+
+        btns = QHBoxLayout()
+        search_btn = QPushButton("Sök")
+        search_btn.setDefault(True)
+        search_btn.clicked.connect(self.accept)
+        cancel_btn = QPushButton("Avbryt")
+        cancel_btn.clicked.connect(self.reject)
+        btns.addStretch()
+        btns.addWidget(cancel_btn)
+        btns.addWidget(search_btn)
+        layout.addLayout(btns)
+
+    def edited_index_group(self):
+        return self._canvas.edited_index_group()
+
+    def min_similarity(self):
+        return self._threshold.value() / 100.0
+
+    def ignore_scale(self):
+        return self._scale_any.isChecked()
+
+    def rotation_mode(self):
+        return 'any' if self._rotation_any.isChecked() else 'none'
+
+    def search_this_page_only(self):
+        return self._scope_page.isChecked()
+
+    def same_type_only(self):
+        return self._same_type_only.isChecked() and self._same_type_only.isEnabled()
+
+
 class EquipmentMarkerReviewDialog(QDialog):
     """Review/correct auto-detected equipment-symbol matches before saving
     them as a new 'equipment' marker layer on the P&ID.
@@ -8207,6 +8440,15 @@ class PIDPanel(QWidget):
         EquipmentMarkerReviewDialog "🎯 Hitta objekt på P&ID" already
         uses, so confirming/renaming/saving works identically.
 
+        2026-08-14 (see NOTES.md "Hitta liknande symbol" —
+        sökparametrar): the reference cluster is now resolved FIRST
+        (equipment_detection.resolve_reference_cluster) and shown in
+        SimilarSymbolSearchDialog for pruning + search-parameter
+        choices (threshold/scale/rotation/scope) before the actual
+        search runs — previously this ran immediately with fixed
+        defaults and no way to fix a reference cluster that pulled in
+        an unwanted neighbour (e.g. a pipe stub next to a valve).
+
         Synchronous (no background worker, unlike the multi-page tag
         scan/shape-hunt flows) — a real, documented limitation: on a
         large, dense document this can take a while with only a wait
@@ -8220,17 +8462,37 @@ class PIDPanel(QWidget):
             QMessageBox.warning(self, "Ingen P&ID", "Öppna en P&ID-fil först.")
             return
         pdf_x, pdf_y = self.viewer.scene_to_pdf(pos)
+        resolved = equipment_detection.resolve_reference_cluster(
+            self.viewer.pdf_doc, page, pdf_x, pdf_y)
+        if resolved is None:
+            QMessageBox.information(
+                self, "Inget liknande hittat",
+                "Hittade ingen symbol att jämföra med på den positionen.\n\n"
+                "Fungerar bara på sidor med vektorritad geometri — en skannad "
+                "(rasteriserad) sida har ingen sådan data att jämföra.")
+            return
+        primitives, index_group, _ref_cluster = resolved
+
+        params_dlg = SimilarSymbolSearchDialog(primitives, index_group, parent=self)
+        if params_dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
         self.setCursor(Qt.CursorShape.WaitCursor)
         try:
             results = equipment_detection.find_similar_shapes(
-                self.viewer.pdf_doc, page, pdf_x, pdf_y)
+                self.viewer.pdf_doc, page, pdf_x, pdf_y,
+                pages=[page] if params_dlg.search_this_page_only() else None,
+                min_similarity=params_dlg.min_similarity(),
+                ignore_scale=params_dlg.ignore_scale(),
+                rotation_mode=params_dlg.rotation_mode(),
+                ref_index_group=params_dlg.edited_index_group())
         finally:
             self.unsetCursor()
         if not results:
             QMessageBox.information(
                 self, "Inget liknande hittat",
-                "Hittade ingen symbol att jämföra med på den positionen, eller inga "
-                "tillräckligt lika symboler någon annanstans i dokumentet.\n\n"
+                "Inga tillräckligt lika symboler hittades med de valda "
+                "sökinställningarna.\n\n"
                 "Fungerar bara på sidor med vektorritad geometri — en skannad "
                 "(rasteriserad) sida har ingen sådan data att jämföra.")
             return

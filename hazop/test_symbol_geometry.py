@@ -1714,6 +1714,23 @@ class ClusterSimilarityTests(unittest.TestCase):
         self.assertGreater(sim, 0.5)
         self.assertLess(sim, 1.0)
 
+    def test_ignore_scale_gives_full_credit_for_a_size_difference(self):
+        """"leta olika skalor på samma figur" (2026-08-14, see NOTES.md
+        "Hitta liknande symbol" — sökparametrar) — with ignore_scale,
+        a pure size difference (everything else identical) must no
+        longer cost any score at all."""
+        a = self._feats(norm_size=2.0)
+        b = self._feats(norm_size=200.0)
+        self.assertLess(sg.cluster_similarity(a, b), 1.0)
+        self.assertAlmostEqual(sg.cluster_similarity(a, b, ignore_scale=True), 1.0)
+
+    def test_ignore_scale_still_penalizes_other_differences(self):
+        a = self._feats(norm_size=2.0, aspect=1.0)
+        b = self._feats(norm_size=200.0, aspect=10.0)
+        sim = sg.cluster_similarity(a, b, ignore_scale=True)
+        self.assertLess(sim, 1.0)
+        self.assertGreater(sim, 0.0)
+
     def _cluster(self, bbox):
         return {'bbox': bbox}
 
@@ -1734,6 +1751,88 @@ class ClusterSimilarityTests(unittest.TestCase):
 
     def test_find_cluster_at_point_empty_list_returns_none(self):
         self.assertIsNone(sg.find_cluster_at_point([], 0, 0))
+
+
+class OrientedFeaturesRotationSearchTests(unittest.TestCase):
+    """oriented_features()/similarity_features() — "leta i alla
+    rotationer" (2026-08-14, see NOTES.md "Hitta liknande symbol" —
+    sökparametrar). Two separate, verified claims:
+    (1) cluster_features()'s plain aspect/norm_size/fold_ratio are
+    ALREADY exactly invariant under 90°/180°/270° rotation — so
+    rotation_mode='none'/'90' both just use cluster_features()
+    unchanged, no new code needed for that case.
+    (2) for a non-90°-multiple angle (e.g. 30/45/60°), plain
+    cluster_features() similarity degrades, but oriented_features()
+    (rotation_mode='any') recovers most of it by measuring aspect/
+    norm_size relative to the shape's own minimum-area bounding box
+    instead of the page's raw x/y axes."""
+
+    def _bowtie_lines(self, cx=20.0, cy=10.0, source=0):
+        """A simple wide-narrow-wide (bow-tie-like) silhouette built
+        from plain 'l' primitives — pure geometry, no PDF needed."""
+        def line(x0, y0, x1, y1):
+            return {'kind': 'l', 'bbox': (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)),
+                    'p0': (x0, y0), 'p1': (x1, y1),
+                    'closed': False, 'filled': False, 'width': 1.0, 'source': source}
+        return [
+            line(cx - 20, cy - 10, cx, cy),
+            line(cx - 20, cy + 10, cx, cy),
+            line(cx, cy, cx + 20, cy - 10),
+            line(cx, cy, cx + 20, cy + 10),
+        ]
+
+    def _rotated(self, prims, degrees, cx=20.0, cy=10.0):
+        rad = math.radians(degrees)
+        cos_a, sin_a = math.cos(rad), math.sin(rad)
+        def rot(x, y):
+            dx, dy = x - cx, y - cy
+            return cx + dx * cos_a - dy * sin_a, cy + dx * sin_a + dy * cos_a
+        out = []
+        for p in prims:
+            x0, y0 = rot(*p['p0'])
+            x1, y1 = rot(*p['p1'])
+            out.append({**p, 'p0': (x0, y0), 'p1': (x1, y1),
+                        'bbox': (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))})
+        return out
+
+    def test_plain_features_already_invariant_under_90_degree_rotation(self):
+        prims = self._bowtie_lines()
+        idx = list(range(len(prims)))
+        rotated = self._rotated(prims, 90)
+        a = sg.cluster_features(prims, idx)
+        b = sg.cluster_features(rotated, idx)
+        for key in ('aspect', 'norm_size', 'fold_ratio', 'has_diagonal'):
+            self.assertAlmostEqual(a[key], b[key], places=6,
+                msg=f"{key} should already be exactly unchanged after a 90° rotation")
+        self.assertAlmostEqual(sg.cluster_similarity(a, b), 1.0)
+
+    def test_similarity_features_none_and_90_are_equivalent(self):
+        prims = self._bowtie_lines()
+        idx = list(range(len(prims)))
+        none_feats = sg.similarity_features(prims, idx, rotation_mode='none')
+        step90_feats = sg.similarity_features(prims, idx, rotation_mode='90')
+        self.assertEqual(none_feats, step90_feats)
+
+    def test_arbitrary_angle_similarity_degrades_without_oriented_mode(self):
+        prims = self._bowtie_lines()
+        idx = list(range(len(prims)))
+        rotated45 = self._rotated(prims, 45)
+        a = sg.similarity_features(prims, idx, rotation_mode='none')
+        b = sg.similarity_features(rotated45, idx, rotation_mode='none')
+        self.assertLess(sg.cluster_similarity(a, b), 0.95)
+
+    def test_oriented_mode_recovers_similarity_at_an_arbitrary_angle(self):
+        prims = self._bowtie_lines()
+        idx = list(range(len(prims)))
+        rotated45 = self._rotated(prims, 45)
+        a = sg.similarity_features(prims, idx, rotation_mode='any')
+        b = sg.similarity_features(rotated45, idx, rotation_mode='any')
+        self.assertGreater(sg.cluster_similarity(a, b), 0.95)
+
+    def test_oriented_features_of_an_empty_group_does_not_crash(self):
+        feats = sg.oriented_features([], [])
+        self.assertEqual(feats['aspect'], 1.0)
+        self.assertEqual(feats['norm_size'], 0.0)
 
 
 # ══════════════════════════════════════════════════════════════════════════

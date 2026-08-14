@@ -4429,6 +4429,342 @@ class FindSimilarShapesTests(unittest.TestCase):
         self.assertLessEqual(len(results), 50)
 
 
+class FindSimilarShapesSearchParametersTests(unittest.TestCase):
+    """"Hitta liknande symbol" — sökparametrar (2026-08-14, see NOTES.md):
+    find_similar_shapes()'s new ignore_scale/rotation_mode/
+    ref_index_group parameters, and resolve_reference_cluster() (the
+    reference-resolution split out for SimilarSymbolSearchDialog's
+    segment-exclusion preview, pid_viewer.py)."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_findsimilar_params_test_")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _bowtie(self, shape, cx, cy, s=10, deg=0):
+        import fitz
+        import math
+        rad = math.radians(deg)
+        def rot(x, y):
+            dx, dy = x - cx, y - cy
+            return fitz.Point(cx + dx * math.cos(rad) - dy * math.sin(rad),
+                              cy + dx * math.sin(rad) + dy * math.cos(rad))
+        shape.draw_polyline([rot(cx - s, cy - s), rot(cx - s, cy + s), rot(cx, cy)])
+        shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+        shape.draw_polyline([rot(cx + s, cy - s), rot(cx + s, cy + s), rot(cx, cy)])
+        shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+
+    def test_resolve_reference_cluster_returns_primitives_and_index_group(self):
+        import fitz
+        from equipment_detection import resolve_reference_cluster
+        path = os.path.join(self._tmpdir, "ref.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=200, height=200)
+        shape = page.new_shape()
+        self._bowtie(shape, 60, 60)
+        shape.commit()
+        doc.save(path)
+        doc.close()
+
+        doc = fitz.open(path)
+        try:
+            resolved = resolve_reference_cluster(doc, 0, 60, 60)
+        finally:
+            doc.close()
+        self.assertIsNotNone(resolved)
+        primitives, index_group, cluster = resolved
+        self.assertTrue(primitives)
+        self.assertTrue(index_group)
+        self.assertIn('bbox', cluster)
+
+    def test_resolve_reference_cluster_returns_none_with_no_vector_data(self):
+        import fitz
+        from equipment_detection import resolve_reference_cluster
+        path = os.path.join(self._tmpdir, "blank.pdf")
+        doc = fitz.open()
+        doc.new_page(width=200, height=200)
+        doc.save(path)
+        doc.close()
+
+        doc = fitz.open(path)
+        try:
+            resolved = resolve_reference_cluster(doc, 0, 100, 100)
+        finally:
+            doc.close()
+        self.assertIsNone(resolved)
+
+    def test_ref_index_group_excludes_a_wrongly_merged_stray_line(self):
+        """The reference case the whole feature exists for: a valve
+        whose auto-detected cluster happens to include an attached
+        pipe stub. Excluding the stub's primitive indices (as
+        SimilarSymbolSearchDialog's segment editor would do) must
+        raise the similarity to a clean, unattached copy of the same
+        shape elsewhere in the document."""
+        import fitz
+        from equipment_detection import find_similar_shapes, resolve_reference_cluster
+        path = os.path.join(self._tmpdir, "stray.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=400, height=400)
+        shape = page.new_shape()
+        self._bowtie(shape, 60, 60)   # reference — gets a stray line attached below
+        shape.draw_line(fitz.Point(70, 60), fitz.Point(100, 60))
+        shape.finish(color=(0, 0, 0), width=1)
+        self._bowtie(shape, 300, 300)   # clean copy elsewhere, no stray line
+        shape.commit()
+        doc.save(path)
+        doc.close()
+
+        doc = fitz.open(path)
+        try:
+            default_results = find_similar_shapes(doc, ref_page=0, ref_x=60, ref_y=60,
+                                                   pages=[0], min_similarity=0.0)
+            default_best = max((r['detection_confidence'] for r in default_results), default=0.0)
+
+            primitives, index_group, _cluster = resolve_reference_cluster(doc, 0, 60, 60)
+            stray_prims = {i for i in index_group
+                           if primitives[i]['p0'] in ((70.0, 60.0), (100.0, 60.0))
+                           or primitives[i]['p1'] in ((70.0, 60.0), (100.0, 60.0))}
+            edited_group = [i for i in index_group if i not in stray_prims]
+            self.assertLess(len(edited_group), len(index_group),
+                "test setup issue: the stray line wasn't part of the auto-detected cluster")
+
+            edited_results = find_similar_shapes(doc, ref_page=0, ref_x=60, ref_y=60,
+                                                 pages=[0], min_similarity=0.0,
+                                                 ref_index_group=edited_group)
+            edited_best = max((r['detection_confidence'] for r in edited_results), default=0.0)
+        finally:
+            doc.close()
+        self.assertGreater(edited_best, default_best,
+            "excluding the stray line must improve the match against the clean copy")
+        self.assertAlmostEqual(edited_best, 1.0, places=3)
+
+    def test_ignore_scale_finds_a_much_larger_copy_past_the_default_threshold(self):
+        import fitz
+        from equipment_detection import find_similar_shapes
+        path = os.path.join(self._tmpdir, "scale.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=600, height=600)
+        shape = page.new_shape()
+        self._bowtie(shape, 60, 60, s=10)
+        self._bowtie(shape, 400, 400, s=60)   # same shape, 6x bigger, far away
+        shape.commit()
+        doc.save(path)
+        doc.close()
+
+        doc = fitz.open(path)
+        try:
+            default_results = find_similar_shapes(doc, ref_page=0, ref_x=60, ref_y=60,
+                                                   pages=[0], min_similarity=0.85)
+            scaled_results = find_similar_shapes(doc, ref_page=0, ref_x=60, ref_y=60,
+                                                 pages=[0], min_similarity=0.85, ignore_scale=True)
+        finally:
+            doc.close()
+        self.assertEqual(default_results, [],
+            "test setup issue: the size difference should already fail the default threshold")
+        self.assertTrue(scaled_results,
+            "ignore_scale must let a pure size difference pass the same threshold")
+
+    def test_rotation_mode_any_finds_a_45_degree_copy_past_the_default_threshold(self):
+        import fitz
+        from equipment_detection import find_similar_shapes
+        path = os.path.join(self._tmpdir, "rot.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=600, height=600)
+        shape = page.new_shape()
+        self._bowtie(shape, 60, 60, s=10, deg=0)
+        self._bowtie(shape, 400, 400, s=10, deg=45)
+        shape.commit()
+        doc.save(path)
+        doc.close()
+
+        doc = fitz.open(path)
+        try:
+            default_results = find_similar_shapes(doc, ref_page=0, ref_x=60, ref_y=60,
+                                                   pages=[0], min_similarity=0.95)
+            any_results = find_similar_shapes(doc, ref_page=0, ref_x=60, ref_y=60,
+                                              pages=[0], min_similarity=0.95, rotation_mode='any')
+        finally:
+            doc.close()
+        self.assertEqual(default_results, [],
+            "test setup issue: the 45° rotation should already fail the default threshold")
+        self.assertTrue(any_results,
+            "rotation_mode='any' must let a 45°-rotated copy pass the same threshold")
+
+
+class ClusterPreviewCanvasTests(unittest.TestCase):
+    """_ClusterPreviewCanvas (pid_viewer.py) — the segment-exclusion
+    preview in SimilarSymbolSearchDialog (2026-08-14, see NOTES.md
+    "Hitta liknande symbol" — sökparametrar). Directly implements
+    "ta bort något som inte tillhör"."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def _line(self, x0, y0, x1, y1):
+        return {'kind': 'l', 'bbox': (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)),
+                'p0': (x0, y0), 'p1': (x1, y1), 'closed': False, 'filled': False,
+                'width': 1.0, 'source': 0}
+
+    def test_edited_index_group_starts_as_the_full_group(self):
+        from pid_viewer import _ClusterPreviewCanvas
+        prims = [self._line(0, 0, 10, 0), self._line(10, 0, 10, 10)]
+        canvas = _ClusterPreviewCanvas(prims, [0, 1])
+        try:
+            self.assertEqual(canvas.edited_index_group(), [0, 1])
+            self.assertFalse(canvas.has_edits())
+        finally:
+            canvas.deleteLater()
+
+    def _click_at(self, canvas, x, y):
+        from PyQt6.QtCore import QPoint, QEvent, Qt as _Qt
+        from PyQt6.QtGui import QMouseEvent
+        pos = QPoint(int(x), int(y))
+        ev = QMouseEvent(QEvent.Type.MouseButtonPress, pos.toPointF(),
+                         _Qt.MouseButton.LeftButton, _Qt.MouseButton.LeftButton,
+                         _Qt.KeyboardModifier.NoModifier)
+        canvas.mousePressEvent(ev)
+
+    def test_clicking_a_segment_toggles_its_exclusion(self):
+        from pid_viewer import _ClusterPreviewCanvas
+        prims = [self._line(0, 0, 10, 0), self._line(0, 20, 10, 20)]
+        canvas = _ClusterPreviewCanvas(prims, [0, 1])
+        try:
+            canvas.resize(240, 180)
+            scale, ox, oy = canvas._transform()
+            x0, y0 = prims[0]['p0']
+            x1, y1 = prims[0]['p1']
+            mx, my = (x0 + x1) / 2 * scale + ox, (y0 + y1) / 2 * scale + oy
+
+            self._click_at(canvas, mx, my)
+            self.assertEqual(canvas.edited_index_group(), [1])
+            self.assertTrue(canvas.has_edits())
+
+            self._click_at(canvas, mx, my)   # click again — re-include it
+            self.assertEqual(canvas.edited_index_group(), [0, 1])
+            self.assertFalse(canvas.has_edits())
+        finally:
+            canvas.deleteLater()
+
+    def test_clicking_far_from_any_segment_changes_nothing(self):
+        from pid_viewer import _ClusterPreviewCanvas
+        prims = [self._line(0, 0, 10, 0)]
+        canvas = _ClusterPreviewCanvas(prims, [0])
+        try:
+            canvas.resize(240, 180)
+            self._click_at(canvas, 1, 1)   # far corner, well away from the segment
+            self.assertEqual(canvas.edited_index_group(), [0])
+        finally:
+            canvas.deleteLater()
+
+    def test_selection_changed_signal_emitted_on_click(self):
+        from pid_viewer import _ClusterPreviewCanvas
+        prims = [self._line(0, 0, 10, 0)]
+        canvas = _ClusterPreviewCanvas(prims, [0])
+        try:
+            canvas.resize(240, 180)
+            scale, ox, oy = canvas._transform()
+            mx, my = 5 * scale + ox, 0 * scale + oy
+            spy = unittest.mock.Mock()
+            canvas.selection_changed.connect(spy)
+            self._click_at(canvas, mx, my)
+            spy.assert_called_once()
+        finally:
+            canvas.deleteLater()
+
+
+class SimilarSymbolSearchDialogTests(unittest.TestCase):
+    """SimilarSymbolSearchDialog (pid_viewer.py) — search-parameter
+    controls for "Hitta liknande symbol" (2026-08-14, see NOTES.md
+    "Hitta liknande symbol" — sökparametrar)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def _line(self, x0, y0, x1, y1):
+        return {'kind': 'l', 'bbox': (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)),
+                'p0': (x0, y0), 'p1': (x1, y1), 'closed': False, 'filled': False,
+                'width': 1.0, 'source': 0}
+
+    def _dialog(self):
+        from pid_viewer import SimilarSymbolSearchDialog
+        prims = [self._line(0, 0, 10, 0), self._line(10, 0, 10, 10)]
+        return SimilarSymbolSearchDialog(prims, [0, 1])
+
+    def test_default_values_match_find_similar_shapes_defaults(self):
+        dlg = self._dialog()
+        try:
+            self.assertAlmostEqual(dlg.min_similarity(), 0.6)
+            self.assertFalse(dlg.ignore_scale())
+            self.assertEqual(dlg.rotation_mode(), 'none')
+            self.assertFalse(dlg.search_this_page_only())
+            self.assertEqual(dlg.edited_index_group(), [0, 1])
+        finally:
+            dlg.deleteLater()
+
+    def test_threshold_slider_maps_percent_to_0_1_range(self):
+        dlg = self._dialog()
+        try:
+            dlg._threshold.setValue(85)
+            self.assertAlmostEqual(dlg.min_similarity(), 0.85)
+        finally:
+            dlg.deleteLater()
+
+    def test_choosing_alla_storlekar_sets_ignore_scale(self):
+        dlg = self._dialog()
+        try:
+            dlg._scale_any.setChecked(True)
+            self.assertTrue(dlg.ignore_scale())
+        finally:
+            dlg.deleteLater()
+
+    def test_choosing_alla_vinklar_sets_rotation_mode_any(self):
+        dlg = self._dialog()
+        try:
+            dlg._rotation_any.setChecked(True)
+            self.assertEqual(dlg.rotation_mode(), 'any')
+        finally:
+            dlg.deleteLater()
+
+    def test_choosing_denna_sida_sets_search_this_page_only(self):
+        dlg = self._dialog()
+        try:
+            dlg._scope_page.setChecked(True)
+            self.assertTrue(dlg.search_this_page_only())
+        finally:
+            dlg.deleteLater()
+
+    def test_excluding_a_segment_in_the_canvas_is_reflected_in_edited_index_group(self):
+        dlg = self._dialog()
+        try:
+            dlg._canvas._excluded.add(1)
+            self.assertEqual(dlg.edited_index_group(), [0])
+        finally:
+            dlg.deleteLater()
+
+    def test_search_button_accepts_the_dialog(self):
+        from PyQt6.QtWidgets import QDialog
+        dlg = self._dialog()
+        try:
+            search_btn = [b for b in dlg.findChildren(QPushButton) if b.text() == 'Sök'][0]
+            search_btn.click()
+            self.assertEqual(dlg.result(), QDialog.DialogCode.Accepted)
+        finally:
+            dlg.deleteLater()
+
+    def test_cancel_button_rejects_the_dialog(self):
+        from PyQt6.QtWidgets import QDialog
+        dlg = self._dialog()
+        try:
+            cancel_btn = [b for b in dlg.findChildren(QPushButton) if b.text() == 'Avbryt'][0]
+            cancel_btn.click()
+            self.assertEqual(dlg.result(), QDialog.DialogCode.Rejected)
+        finally:
+            dlg.deleteLater()
+
+
 class EquipmentAnalysisWorkerTests(unittest.TestCase):
     """EquipmentAnalysisWorker (pid_viewer.py) — the QThread behind
     EquipmentPanel._autodetect(). Modelled on ConnectorAnalyzer: must
@@ -7058,13 +7394,63 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
             self.panel._on_context_action('find_similar', QPointF(5, 5), 0)
         mock_warn.assert_called_once()
 
+    def _mock_accepted_search_params_dialog(self, mock_dlg_cls, min_similarity=0.6,
+                                            ignore_scale=False, rotation_mode='none',
+                                            this_page_only=False, edited_group=None):
+        """SimilarSymbolSearchDialog is a real modal QDialog — tests
+        that just want the flow past it (not the dialog itself) mock
+        the class and stub its accessor methods, mirroring how other
+        modal-dialog call sites in this file are tested (see
+        test_edit_extra_defers_rebuild_instead_of_calling_it_directly)."""
+        from PyQt6.QtWidgets import QDialog
+        inst = mock_dlg_cls.return_value
+        inst.exec.return_value = QDialog.DialogCode.Accepted
+        inst.min_similarity.return_value = min_similarity
+        inst.ignore_scale.return_value = ignore_scale
+        inst.rotation_mode.return_value = rotation_mode
+        inst.search_this_page_only.return_value = this_page_only
+        inst.edited_index_group.return_value = edited_group if edited_group is not None else []
+        return inst
+
+    def test_find_similar_symbol_warns_when_no_reference_cluster_resolved(self):
+        """2026-08-14 follow-up (see NOTES.md "Hitta liknande symbol" —
+        sökparametrar): the reference cluster is now resolved BEFORE
+        the search-parameters dialog even opens — nothing to configure
+        a search around if there's no cluster at the click point."""
+        from PyQt6.QtCore import QPointF
+        from PyQt6.QtWidgets import QMessageBox
+        self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
+        with unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
+                                 return_value=None), \
+             unittest.mock.patch.object(QMessageBox, 'information') as mock_info, \
+             unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg:
+            self.panel._on_context_action('find_similar', QPointF(5, 5), 0)
+        mock_info.assert_called_once()
+        mock_params_dlg.assert_not_called()
+
+    def test_find_similar_symbol_does_not_search_when_params_dialog_cancelled(self):
+        from PyQt6.QtCore import QPointF
+        from PyQt6.QtWidgets import QDialog
+        self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
+        with unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
+                                 return_value=([], [], {})), \
+             unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg, \
+             unittest.mock.patch('pid_viewer.equipment_detection.find_similar_shapes') as mock_find:
+            mock_params_dlg.return_value.exec.return_value = QDialog.DialogCode.Rejected
+            self.panel._on_context_action('find_similar', QPointF(5, 5), 0)
+        mock_find.assert_not_called()
+
     def test_find_similar_symbol_shows_info_when_nothing_found(self):
         from PyQt6.QtCore import QPointF
         from PyQt6.QtWidgets import QMessageBox
         self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
-        with unittest.mock.patch('pid_viewer.equipment_detection.find_similar_shapes',
+        with unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
+                                 return_value=([], [], {})), \
+             unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg, \
+             unittest.mock.patch('pid_viewer.equipment_detection.find_similar_shapes',
                                  return_value=[]) as mock_find, \
              unittest.mock.patch.object(QMessageBox, 'information') as mock_info:
+            self._mock_accepted_search_params_dialog(mock_params_dlg)
             self.panel._on_context_action('find_similar', QPointF(5, 5), 0)
         mock_find.assert_called_once()
         mock_info.assert_called_once()
@@ -7075,16 +7461,46 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
                          'outline': [], 'link_method': 'similar', 'tag_status': 'untagged',
                          'temporary_id': 'SIMILAR-0-0', 'detection_confidence': 0.9}]
         self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
-        with unittest.mock.patch('pid_viewer.equipment_detection.find_similar_shapes',
+        with unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
+                                 return_value=([], [], {})), \
+             unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg, \
+             unittest.mock.patch('pid_viewer.equipment_detection.find_similar_shapes',
                                  return_value=fake_results), \
              unittest.mock.patch('pid_viewer.EquipmentMarkerReviewDialog') as mock_dlg_cls, \
              unittest.mock.patch.object(self.panel, 'reload_overlays') as mock_reload:
+            self._mock_accepted_search_params_dialog(mock_params_dlg)
             mock_dlg_cls.return_value.exec.return_value = 1   # QDialog.Accepted
             self.panel._on_context_action('find_similar', QPointF(5, 5), 0)
         mock_dlg_cls.assert_called_once()
         args, kwargs = mock_dlg_cls.call_args
         self.assertEqual(args[0], fake_results)
         mock_reload.assert_called_once()
+
+    def test_find_similar_symbol_passes_search_params_dialog_choices_through(self):
+        """The dialog's threshold/scale/rotation/scope/edited-group
+        choices must reach find_similar_shapes() unchanged — this is
+        the whole point of resolving the reference and asking first."""
+        from PyQt6.QtCore import QPointF
+        fake_results = [{'tag': '', 'page': 2, 'comp_type': '', 'x': 1.0, 'y': 1.0,
+                         'outline': [], 'link_method': 'similar', 'tag_status': 'untagged',
+                         'temporary_id': 'SIMILAR-2-0', 'detection_confidence': 0.9}]
+        self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
+        with unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
+                                 return_value=([], [], {})), \
+             unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg, \
+             unittest.mock.patch('pid_viewer.equipment_detection.find_similar_shapes',
+                                 return_value=fake_results) as mock_find, \
+             unittest.mock.patch('pid_viewer.EquipmentMarkerReviewDialog'):
+            self._mock_accepted_search_params_dialog(
+                mock_params_dlg, min_similarity=0.85, ignore_scale=True,
+                rotation_mode='any', this_page_only=True, edited_group=[1, 3])
+            self.panel._on_context_action('find_similar', QPointF(5, 5), 2)
+        _args, kwargs = mock_find.call_args
+        self.assertEqual(kwargs['pages'], [2])
+        self.assertEqual(kwargs['min_similarity'], 0.85)
+        self.assertEqual(kwargs['ignore_scale'], True)
+        self.assertEqual(kwargs['rotation_mode'], 'any')
+        self.assertEqual(kwargs['ref_index_group'], [1, 3])
 
 
 class AutoConsequenceOnCauseAddTests(unittest.TestCase):

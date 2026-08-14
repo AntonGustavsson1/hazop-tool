@@ -543,7 +543,7 @@ _SIMILARITY_WEIGHTS = {
 }
 
 
-def cluster_similarity(ref_feats, cand_feats):
+def cluster_similarity(ref_feats, cand_feats, ignore_scale=False):
     """0..1 similarity between two clusters' cluster_features() dicts —
     used by "Hitta liknande symbol" (2026-08-10, see NOTES.md) to rank
     candidates against a user-picked reference shape.
@@ -555,17 +555,128 @@ def cluster_similarity(ref_feats, cand_feats):
     magnitude (1.0 - relative_difference, floored at 0) — this makes the
     same absolute gap matter less for two large symbols than for two
     tiny ones, consistent with how norm_size itself is already scale-
-    normalized against the page's own text size."""
+    normalized against the page's own text size.
+
+    ignore_scale (2026-08-14, see NOTES.md "Hitta liknande symbol" —
+    sökparametrar): when True, drop norm_size from the score entirely
+    and redistribute its weight proportionally across the remaining
+    features, so a search for "any size of the same figure" isn't held
+    back by a real size difference — the whole point of that mode."""
+    weights = _SIMILARITY_WEIGHTS
+    if ignore_scale:
+        remaining = 1.0 - _SIMILARITY_WEIGHTS['norm_size']
+        weights = {k: (0.0 if k == 'norm_size' else v / remaining)
+                   for k, v in _SIMILARITY_WEIGHTS.items()}
     score = 0.0
     for key in ('has_curve', 'has_diagonal', 'has_closed_or_filled'):
         if ref_feats[key] == cand_feats[key]:
-            score += _SIMILARITY_WEIGHTS[key]
+            score += weights[key]
     for key in ('aspect', 'norm_size', 'fold_ratio'):
+        if key == 'norm_size' and ignore_scale:
+            continue
         a, b = ref_feats[key], cand_feats[key]
         denom = max(a, b, 0.01)
         closeness = max(0.0, 1.0 - abs(a - b) / denom)
-        score += _SIMILARITY_WEIGHTS[key] * closeness
+        score += weights[key] * closeness
     return score
+
+
+def _sample_cluster_points(primitives, index_group, n=20):
+    """All boundary sample points across every primitive in a group,
+    reusing _sample_primitive_points (built for bowtie_score's
+    silhouette analysis) — the same point sampling this module already
+    trusts, applied here to the whole cluster instead of one slice
+    axis."""
+    pts = []
+    for i in index_group:
+        pts.extend(_sample_primitive_points(primitives[i]))
+    return pts
+
+
+def _oriented_bbox_candidate_angles(primitives, index_group):
+    """Angles (0..90°, mod-90 since a bbox is unchanged by a 90° swap of
+    its own sides) worth testing as the cluster's own minimum-area
+    bounding-box orientation: every distinct edge direction actually
+    present in the group. A polygon's true minimum-area bounding box
+    always aligns with one of its own edges (the classical "rotating
+    calipers" result) — used here as a practical candidate set for a
+    possibly non-convex, multi-primitive symbol outline, not a formal
+    minimality proof, which is good enough for ranking search
+    candidates that a human reviews before anything is saved."""
+    angles = set()
+    for i in index_group:
+        prim = primitives[i]
+        if prim['kind'] == 'l':
+            edges = [(prim['p0'], prim['p1'])]
+        elif prim['kind'] in ('re', 'qu'):
+            edges = _prim_corner_edges(prim)
+        else:
+            continue
+        for (x0, y0), (x1, y1) in edges:
+            if math.hypot(x1 - x0, y1 - y0) < 1e-6:
+                continue
+            angles.add(round(math.degrees(math.atan2(y1 - y0, x1 - x0)) % 90.0, 3))
+    return sorted(angles) or [0.0]
+
+
+def oriented_features(primitives, index_group, page_text_scale=10.0):
+    """Rotation-invariant counterpart to aspect/norm_size, used ONLY by
+    cluster_similarity's "sök i alla vinklar" path (2026-08-14, see
+    NOTES.md "Hitta liknande symbol" — sökparametrar) — deliberately a
+    SEPARATE function, not a change to cluster_features() itself:
+    aspect/norm_size there are load-bearing for several other already-
+    tuned heuristics elsewhere in this module (classify_cluster,
+    bowtie_score's own filters), so changing their definition would
+    risk regressing those, which have nothing to do with this feature.
+
+    cluster_features()'s plain (page-axis-aligned) aspect/norm_size are
+    ALREADY exactly invariant under 90°/180°/270° rotation — verified:
+    swapping/keeping width and height under a 90°-multiple rotation
+    leaves both the aspect ratio and the bbox diagonal unchanged, so
+    "Hitta liknande symbol" already finds symbols rotated in 90° steps
+    with no extra work. This function instead finds the group's own
+    minimum-area ORIENTED bounding box (see
+    _oriented_bbox_candidate_angles) and computes aspect/norm_size
+    relative to THAT frame — invariant to any rotation angle, not just
+    multiples of 90°. has_diagonal/fold_ratio are left as-is by the
+    caller (fold_ratio is already rotation-invariant for any angle;
+    has_diagonal stays page-axis-relative, an accepted imprecision in
+    this mode — every result still goes through human review before
+    anything is saved, same as the rest of this feature)."""
+    pts = _sample_cluster_points(primitives, index_group)
+    if not pts:
+        return {'aspect': 1.0, 'norm_size': 0.0}
+    best = None
+    for ang in _oriented_bbox_candidate_angles(primitives, index_group):
+        rad = -math.radians(ang)
+        cos_a, sin_a = math.cos(rad), math.sin(rad)
+        rxs = [x * cos_a - y * sin_a for x, y in pts]
+        rys = [x * sin_a + y * cos_a for x, y in pts]
+        w, h = max(rxs) - min(rxs), max(rys) - min(rys)
+        if best is None or w * h < best[0]:
+            best = (w * h, w, h)
+    _, w, h = best
+    scale = max(page_text_scale, 1.0)
+    return {
+        'aspect': max(w, h) / max(min(w, h), 0.1),
+        'norm_size': math.hypot(w, h) / scale,
+    }
+
+
+def similarity_features(primitives, index_group, page_text_scale=10.0, rotation_mode='none'):
+    """cluster_features(), optionally swapping in oriented_features()'s
+    rotation-invariant aspect/norm_size (rotation_mode='any') — the
+    single place find_similar_shapes() decides which feature set feeds
+    cluster_similarity(), so that function itself stays a plain,
+    unchanged comparison of two feature dicts regardless of mode.
+    rotation_mode='none' and '90' are equivalent: both use
+    cluster_features() unchanged, since it already handles 90°-multiple
+    rotations for free (see oriented_features()'s docstring)."""
+    feats = cluster_features(primitives, index_group, page_text_scale)
+    if rotation_mode == 'any':
+        feats = dict(feats)
+        feats.update(oriented_features(primitives, index_group, page_text_scale))
+    return feats
 
 
 def find_cluster_at_point(clusters, x, y, max_distance=None):
@@ -1555,7 +1666,7 @@ def _has_closed_loop(primitives, group, tol=_LOOP_CLOSURE_TOL):
                for root, members_ in comp_nodes.items())
 
 
-def find_symbol_clusters(page, min_confidence=0.3):
+def find_symbol_clusters(page, min_confidence=0.3, return_groups=False):
     """Extract, cluster, and score all vector-drawn symbol candidates on a
     page. Returns a list of dicts (cluster features + 'confidence' +
     'bowtie_score' + 'outline', sorted by confidence descending). `outline`
@@ -1565,6 +1676,16 @@ def find_symbol_clusters(page, min_confidence=0.3):
     hunting for valve shapes specifically can pass min_confidence=0.0 and
     filter on bowtie_score instead of the generic "is this a symbol at
     all" confidence.
+
+    return_groups (2026-08-14, see NOTES.md "Hitta liknande symbol" —
+    sökparametrar): when True, each result dict also carries
+    '_index_group' — the raw list of primitive indices (into
+    extract_primitives(page)) backing that cluster, so a caller can
+    recompute features for an edited subset of them (e.g. a user
+    excluding a wrongly-merged pipe segment) via cluster_features()/
+    similarity_features(). False by default and never touches the
+    existing keys, so every other caller (valve hunting, tag linking,
+    …) is unaffected.
 
     'confidence' always reflects the FULL cluster (including any
     appendage) — an attached stem/stub is still part of one real symbol,
@@ -1647,6 +1768,7 @@ def find_symbol_clusters(page, min_confidence=0.3):
             'pump_bboxes': pump_shapes_in_cluster(primitives, group, islands=islands),
             'instrument_bboxes': instrument_shapes_in_cluster(primitives, group, islands=islands),
             'outline': [[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
+            **({'_index_group': core} if return_groups else {}),
         })
         for extra_core in cores[1:]:
             extra_feats = cluster_features(primitives, extra_core, page_text_scale=scale)
@@ -1657,6 +1779,7 @@ def find_symbol_clusters(page, min_confidence=0.3):
                 'bowtie_score': bowtie_score(primitives, extra_core),
                 'pump_bboxes': [], 'instrument_bboxes': [],
                 'outline': [[ex0, ey0], [ex1, ey0], [ex1, ey1], [ex0, ey1]],
+                **({'_index_group': extra_core} if return_groups else {}),
             })
     results.sort(key=lambda r: -r['confidence'])
     return results
