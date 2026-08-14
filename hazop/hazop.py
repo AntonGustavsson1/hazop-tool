@@ -3891,6 +3891,23 @@ class Database:
             (node_id, description, equipment_id)).fetchone()
         return row[0] if row else self.add_deviation(node_id, description, equipment_id)
 
+    def default_frequency_for_deviation(self, description):
+        """Best-effort preset frequency for a guide word, shown in
+        DeviationPickerPopup (2026-08-14, see NOTES.md: "på avvikelserna
+        ska man se den förvalda frekvensen"). Deviations themselves have
+        no frequency column — this is derived, not stored: the lowest
+        standard_causes.frequency among rows whose standard_deviations
+        entry matches the deviation's description text, across all
+        object types. None if there's no match or none have a
+        frequency set."""
+        rows = self.conn.execute(
+            "SELECT sc.frequency FROM standard_causes sc "
+            "JOIN standard_deviations sd ON sc.deviation_id = sd.id "
+            "WHERE sd.description=? AND sc.frequency IS NOT NULL",
+            (description,)).fetchall()
+        freqs = [r[0] for r in rows if r[0] is not None]
+        return min(freqs) if freqs else None
+
     # ── Standard deviation / cause template library ───────────────────────────
     def standard_deviations(self):
         return self.conn.execute(
@@ -9220,6 +9237,82 @@ class CauseObjectPopup(QDialog):
         self.accept()
 
 
+class CauseTagPopup(QDialog):
+    """Minimalistic popup for a plain click on the ORS tag zone — just
+    tag + type, nothing else (2026-08-14, see NOTES.md: "klickar man på
+    tagen justerar man tagen ... gör samtliga minimalistiska").
+    CauseObjectPopup (above) still has the full avvikelse-context +
+    standard-cause picker, unchanged, for its other two entry points
+    (the detail panel and quick-add) — this only replaces what a bare
+    tag click opens. Modelled on EquipmentTagPopup's compact style."""
+    committed = pyqtSignal(str, str)  # (comp_type, comp_tag)
+
+    def __init__(self, db, comp_type='', comp_tag='', parent=None):
+        super().__init__(parent)
+        self._db = db
+        self.setWindowTitle("Tagg")
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setMinimumWidth(220)
+
+        _small = "font-size:10px;"
+        layout = QVBoxLayout(self)
+        layout.setSpacing(4)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        form = QFormLayout()
+        form.setSpacing(3)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self._tag_edit = QLineEdit(comp_tag)
+        self._tag_edit.setPlaceholderText("t.ex. PV-101")
+        self._tag_edit.setFixedHeight(CONFIG['H_BTN_SMALL'])
+        self._tag_edit.setStyleSheet(_small)
+        completer = _make_tag_completer(db, self)
+        if completer:
+            self._tag_edit.setCompleter(completer)
+        tag_lbl = QLabel("Tag:")
+        tag_lbl.setStyleSheet(_small)
+        form.addRow(tag_lbl, self._tag_edit)
+
+        self._type_cb = QComboBox()
+        self._type_cb.setFixedHeight(CONFIG['H_BTN_SMALL'])
+        self._type_cb.setStyleSheet(_small)
+        self._type_cb.addItems(_equipment_type_options(db))
+        if comp_type:
+            idx = self._type_cb.findText(comp_type)
+            if idx < 0:
+                self._type_cb.addItem(comp_type)
+                idx = self._type_cb.count() - 1
+            self._type_cb.setCurrentIndex(idx)
+        typ_lbl = QLabel("Typ:")
+        typ_lbl.setStyleSheet(_small)
+        form.addRow(typ_lbl, self._type_cb)
+        layout.addLayout(form)
+
+        btns = QHBoxLayout()
+        btns.setSpacing(4)
+        ok = QPushButton("OK")
+        ok.setDefault(True)
+        ok.setFixedHeight(CONFIG['H_CTRL_STD'])
+        ok.clicked.connect(self._ok)
+        cancel = QPushButton("Avbryt")
+        cancel.setFixedHeight(CONFIG['H_CTRL_STD'])
+        cancel.clicked.connect(self.reject)
+        btns.addWidget(ok)
+        btns.addStretch()
+        btns.addWidget(cancel)
+        layout.addLayout(btns)
+        self._tag_edit.returnPressed.connect(self._ok)
+        self._tag_edit.setFocus()
+
+    def _ok(self):
+        tag = self._tag_edit.text().strip().upper()
+        comp_type = self._type_cb.currentText().strip()
+        self.committed.emit(comp_type, tag)
+        self.accept()
+
+
 class RRFPopup(QDialog):
     """Quick-pick popup for setting a safeguard's RRF value and type."""
     rrf_selected = pyqtSignal(int, str)   # (rrf_value, sg_type)
@@ -9390,6 +9483,100 @@ class FrequencyPickerPopup(QDialog):
         return popup
 
 
+class DeviationPickerPopup(QDialog):
+    """Minimalistic popup for a click on the Avvikelse (_C_DEV) cell —
+    pick an existing deviation for the node, each showing its derived
+    default frequency when one exists, or type a new/custom deviation
+    (2026-08-14, see NOTES.md: "klockan man på avvikelsen justerar man
+    avvikelsen ... avvikelsen skall bestå dels av celler med förvalda
+    och dels med möjlighet att välja text själv"). Mirrors
+    FrequencyPickerPopup's "preset buttons + custom field" layout.
+    Distinct from the pre-existing "↕ Flytta till annan avvikelse…"
+    context-menu action (_move_cause_dialog, a plain QInputDialog
+    list) — this is the same underlying move, just reachable with one
+    click and previewing each preset's frequency."""
+
+    # (deviation_id_or_None, new_description_or_None) — exactly one is non-None.
+    deviation_picked = pyqtSignal(object, object)
+
+    def __init__(self, db, node_id, current_deviation_id=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Avvikelse")
+        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(6)
+        layout.addWidget(QLabel("<b>Avvikelse</b>"))
+
+        # Existing deviations for this node, deduped by description text
+        # (a node can end up with more than one row sharing the same
+        # guide word after merges — only one button per distinct text).
+        seen = {}
+        for d in db.deviations(node_id):
+            seen.setdefault(d['description'], d['id'])
+
+        presets = QGridLayout()
+        presets.setSpacing(4)
+        per_row = 3
+        for i, (desc, dev_id) in enumerate(seen.items()):
+            freq = db.default_frequency_for_deviation(desc)
+            label = desc if freq is None else f"{desc}\n({freq:g}/år)"
+            btn = QPushButton(label)
+            btn.setToolTip(desc if freq is None
+                           else f"{desc} — förvald frekvens {freq:g}/år")
+            btn.setStyleSheet(self._bstyle(dev_id == current_deviation_id))
+            btn.clicked.connect(partial(self._pick_existing, dev_id))
+            presets.addWidget(btn, i // per_row, i % per_row)
+        layout.addLayout(presets)
+
+        custom_row = QHBoxLayout()
+        custom_row.addWidget(QLabel("Ny/egen:"))
+        self._freetext = QLineEdit()
+        self._freetext.setPlaceholderText("t.ex. Omvänt flöde")
+        custom_row.addWidget(self._freetext)
+        ok_btn = QPushButton("OK")
+        ok_btn.clicked.connect(self._pick_freetext)
+        custom_row.addWidget(ok_btn)
+        layout.addLayout(custom_row)
+        self._freetext.returnPressed.connect(self._pick_freetext)
+
+        self.adjustSize()
+
+    @staticmethod
+    def _bstyle(selected: bool) -> str:
+        if selected:
+            return ("QPushButton{background:#2F5FD0;color:white;border:none;"
+                    "border-radius:4px;padding:5px;font-weight:bold;font-size:10px;}"
+                    "QPushButton:hover{background:#3D6BD8;}")
+        return ("QPushButton{background:#F5F5F3;color:#17191C;border:1px solid #CFD1CE;"
+                "border-radius:4px;padding:5px;font-size:10px;}"
+                "QPushButton:hover{background:#E8E9E6;border:1px solid #B3B7B2;}")
+
+    def _pick_existing(self, dev_id):
+        self.deviation_picked.emit(dev_id, None)
+        self.accept()
+
+    def _pick_freetext(self):
+        text = self._freetext.text().strip()
+        if not text:
+            return
+        self.deviation_picked.emit(None, text)
+        self.accept()
+
+    @classmethod
+    def create_positioned(cls, db, node_id, current_deviation_id, global_pos, parent=None):
+        popup = cls(db, node_id, current_deviation_id, parent)
+        popup.adjustSize()
+        scr = (QApplication.screenAt(global_pos) or QApplication.primaryScreen()).availableGeometry()
+        pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
+        x = min(global_pos.x(), scr.right() - pw)
+        y = min(global_pos.y() + 4, scr.bottom() - ph)
+        popup.move(max(scr.left(), x), max(scr.top(), y))
+        return popup
+
+
 class RiskMatrixPopup(QDialog):
     """Popup risk matrix matching the configured format in Settings."""
 
@@ -9501,6 +9688,18 @@ class RiskMatrixPopup(QDialog):
                 btn = QPushButton(lbl[:4])
                 btn.setFixedSize(50, 32)
                 btn.setToolTip(f"F={freq_val}  C={cons_val}  →  {lbl}")
+                # Qt auto-assigns one pushbutton in a QDialog as the
+                # "default"/initially-focused button (normally the first
+                # one created) — the app's global stylesheet then paints
+                # THAT button with an extra blue focus/default outline
+                # (QPushButton:focus/:default rules) on top of whichever
+                # cell already has the real black is_current border below,
+                # so two cells looked marked regardless of hover
+                # (2026-08-14 follow-up to the hover fix below — a
+                # second, independent cause of the same symptom).
+                btn.setAutoDefault(False)
+                btn.setDefault(False)
+                btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
                 # Hover style is intentionally NOT a solid black border —
                 # that looked identical to the is_current marker above,
                 # so hovering a different cell than the actual current one
@@ -10872,12 +11071,15 @@ class _PidDelegate(_ScenarioDelegate):
                 badge_tc = QColor('#ffffff') if sel else QColor('#17191C')
                 painter.setPen(badge_tc)
                 badge_font = QFont(option.font)
-                badge_font.setPointSize(max(6, option.font.pointSize() - 2))
                 badge_font.setBold(True)
                 painter.setFont(badge_font)
+                # Just the number — "RRF" now lives in the column header
+                # instead, so this single-line badge doesn't force the
+                # row taller than the ORS/description content needs
+                # (2026-08-14, see NOTES.md).
                 painter.drawText(rrf_rect.adjusted(2, 1, -2, -1),
                                  Qt.AlignmentFlag.AlignCenter,
-                                 f"RRF\n{rrf}")
+                                 f"{rrf}")
 
                 # Separator line between description and badge
                 painter.setPen(QPen(QColor('#bcd'), 1))
@@ -11568,7 +11770,7 @@ class ScenarioTablePanel(QWidget):
         'Orsak',
         'Konsekvens',
         'Risk före barriär',
-        'Barriärer',
+        'Barriärer (RRF)',
         'FA / Ant. / Övriga',
         'Slutkonsekvens',
         'Rekommendation',
@@ -13550,26 +13752,19 @@ class ScenarioTablePanel(QWidget):
         return tag_zone_w, freq_zone_x, freq_zone_w, freq_str
 
     def _show_cause_obj_popup(self, row, cause_id, global_pos):
+        """A plain click on the ORS tag zone opens just a tag+type
+        popup (2026-08-14, see NOTES.md) — the full avvikelse-context +
+        standard-cause CauseObjectPopup is still reachable, unchanged,
+        from the detail panel (_edit_cause_obj) and quick-add
+        (_quick_add_cause)."""
         item      = self._table.item(row, self._C_ORS)
         obj_data  = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
         comp_type, comp_tag = obj_data if obj_data else ('', '')
-        current_desc = (item.text() if item else '') or ''
 
-        dev_id   = self._row_meta[row][0] if row < len(self._row_meta) else None
-        dev_desc = None
-        if dev_id is not None:
-            dev_row = self.db.get_deviation(dev_id)
-            if dev_row:
-                dev_desc = dev_row['description']
-
-        popup = CauseObjectPopup(
-            comp_type, comp_tag, self.db,
-            dev_description=dev_desc,
-            current_description=current_desc,
-            parent=self)
+        popup = CauseTagPopup(self.db, comp_type, comp_tag, parent=self)
         popup.committed.connect(
-            lambda ct, tg, desc, freq, r=row, cid=cause_id:
-                self._apply_cause_obj(r, cid, ct, tg, desc, freq))
+            lambda ct, tg, r=row, cid=cause_id:
+                self._apply_cause_obj(r, cid, ct, tg, '', None))
         popup.adjustSize()
         _scr   = QApplication.screenAt(global_pos) or QApplication.primaryScreen()
         screen = _scr.availableGeometry()
@@ -13636,6 +13831,30 @@ class ScenarioTablePanel(QWidget):
 
     def _update_sg_rrf(self, row, sg_id, rrf, sg_type=None):
         self.db.update_safeguard(sg_id, rrf=rrf, sg_type=sg_type)
+        self._schedule_rebuild()
+
+    def _on_ors_frequency_picked(self, cause_id, f_level, numeric):
+        """FrequencyPickerPopup.frequency_selected handler for the ORS
+        strip's frequency zone click (2026-08-14, see NOTES.md). Exactly
+        one of f_level/numeric is non-None — a preset sets the matrix
+        F-level and clears any manual numeric override; a custom value
+        sets base_frequency directly (causes.likelihood is then derived
+        from it, see _sync_f_levels_from_base_frequency)."""
+        if f_level is not None:
+            self.db.update_cause(cause_id, likelihood=f_level, base_frequency=None)
+        else:
+            self.db.update_cause(cause_id, base_frequency=numeric)
+        self._schedule_rebuild()
+
+    def _on_deviation_picked(self, cause_id, node_id, dev_id, new_desc):
+        """DeviationPickerPopup.deviation_picked handler for the
+        Avvikelse cell click (2026-08-14, see NOTES.md). Exactly one of
+        dev_id/new_desc is non-None — a preset moves the cause directly;
+        free text gets-or-creates that deviation first."""
+        target_dev_id = dev_id if dev_id is not None else \
+            self.db.get_or_create_deviation(node_id, new_desc)
+        self.db.move_cause_to_deviation(cause_id, target_dev_id)
+        self.structure_changed.emit()
         self._schedule_rebuild()
 
     def _open_comment_popup(self, row, cause_id, global_pos):
@@ -13828,6 +14047,24 @@ class ScenarioTablePanel(QWidget):
                                 self._add_safeguard_via_plus_row(group_id)
                         return True
 
+            # Avvikelse cell click — reassign which deviation the row's
+            # cause belongs to (2026-08-14, see NOTES.md: "klockan man
+            # på avvikelsen justerar man avvikelsen"). Only meaningful
+            # once the row actually has a cause (placeholder "no causes
+            # yet" rows have cause_id None and nothing to move).
+            if row >= 0 and col == self._C_DEV and row < len(self._row_meta):
+                dev_id, cause_id = self._row_meta[row][0], self._row_meta[row][1]
+                if cause_id is not None and dev_id is not None:
+                    node_id = self.db.get_deviation(dev_id)['node_id']
+                    gp = self._table.viewport().mapToGlobal(pos)
+                    popup = DeviationPickerPopup.create_positioned(
+                        self.db, node_id, dev_id, gp, parent=self)
+                    popup.deviation_picked.connect(
+                        lambda picked_dev_id, new_desc, cid=cause_id, nid=node_id:
+                            self._on_deviation_picked(cid, nid, picked_dev_id, new_desc))
+                    popup.exec()
+                    return True
+
             # Object-tag zone click — left (0 .. tag_zone_w) of cause cell.
             # tag_zone_w is computed the same way paint()
             # computes it (via _ors_tag_zone_geometry) rather than the raw
@@ -13848,6 +14085,40 @@ class ScenarioTablePanel(QWidget):
                         gp = self._table.viewport().mapToGlobal(pos)
                         self._show_cause_obj_popup(row, cause_id, gp)
                     return True
+
+            # Frequency zone click — between the tag zone and the status
+            # dots, using the exact same freq_zone_x/freq_zone_w geometry
+            # paint() draws the text with (2026-08-14, see NOTES.md:
+            # "klickar man på frekvens skall man kunna justera frekvens").
+            # Checked here, BEFORE the clone/comment zone below, so a
+            # click anywhere on the actually-rendered frequency text
+            # always wins — the clone zone's own (independently sized)
+            # boundary can geometrically overlap the visible frequency
+            # text when it's long, and this ordering is what stops that
+            # overlap from silently triggering "clone" instead (2026-08-14
+            # research finding). Restricted to the strip's own height so
+            # it doesn't also swallow clicks on the description below.
+            if (row >= 0 and col == self._C_ORS and row < len(self._row_meta) and
+                    pos.y() - self._table.rowViewportPosition(row) < _ORS_STRIP_H):
+                cause_id = self._row_meta[row][1]
+                if cause_id is not None:
+                    col_x      = self._table.columnViewportPosition(col)
+                    cell_right = col_x + self._table.columnWidth(col) - 1
+                    item       = self._table.item(row, col)
+                    _tw, freq_zone_x, freq_zone_w, freq_str = \
+                        self._ors_tag_zone_geometry(item, col_x, cell_right)
+                    if freq_str and freq_zone_x <= pos.x() < freq_zone_x + freq_zone_w:
+                        gp = self._table.viewport().mapToGlobal(pos)
+                        cur_f_level = item.data(Qt.ItemDataRole.UserRole + 3) if item else None
+                        cur_numeric = item.data(Qt.ItemDataRole.UserRole + 5) if item else None
+                        popup = FrequencyPickerPopup.create_positioned(
+                            gp, current_f_level=cur_f_level,
+                            current_numeric_freq=cur_numeric, parent=self)
+                        popup.frequency_selected.connect(
+                            lambda f_level, numeric, cid=cause_id:
+                                self._on_ors_frequency_picked(cid, f_level, numeric))
+                        popup.exec()
+                        return True
 
             # 💬 Comment + 📋 Clone icon clicks in ORS cell (inline, replaces context menu)
             if row >= 0 and col == self._C_ORS and row < len(self._row_meta):

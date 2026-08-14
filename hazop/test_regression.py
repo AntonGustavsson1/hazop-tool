@@ -11735,6 +11735,371 @@ class RiskMatrixPopupHoverStyleTests(unittest.TestCase):
         finally:
             popup.deleteLater()
 
+    def test_grid_buttons_never_get_qts_own_default_or_focus_outline(self):
+        """2026-08-14 follow-up: the hover fix above wasn't the only cause
+        of "two cells look marked" — Qt auto-assigns one pushbutton in a
+        QDialog as the default/initially-focused button, and the app's
+        global stylesheet paints THAT button with its own blue focus/
+        default outline regardless of is_current. Every grid button must
+        opt out of both."""
+        from hazop import RiskMatrixPopup
+        from PyQt6.QtWidgets import QPushButton
+        popup = RiskMatrixPopup(current_freq=2, current_cons=3)
+        try:
+            matrix_buttons = [b for b in popup.findChildren(QPushButton) if b.styleSheet()]
+            self.assertTrue(matrix_buttons)
+            for btn in matrix_buttons:
+                self.assertFalse(btn.autoDefault(), "grid buttons must not be auto-default")
+                self.assertFalse(btn.isDefault(), "grid buttons must not be the dialog's default")
+                self.assertEqual(btn.focusPolicy(), Qt.FocusPolicy.NoFocus,
+                    "grid buttons must not be focusable, so Qt can't paint a focus outline on one")
+        finally:
+            popup.deleteLater()
+
+
+class SafeguardRRFBadgeHeaderTests(unittest.TestCase):
+    """"rrf rutan på safeguard blir väldigt hög. gör denna lägre genom
+    att ta bort rrf och låta det stå i kolumneubriken istället."
+    (2026-08-14) — the badge text used to be a two-line "RRF\\n{rrf}",
+    which forced the badge box (and thus visually the cell) taller than
+    a plain number needs. Move the "RRF" label into the column header
+    instead and paint just the number in the cell."""
+
+    def test_safeguard_badge_paints_only_the_number(self):
+        import inspect
+        import hazop as hazop_mod
+        src = inspect.getsource(hazop_mod._PidDelegate.paint)
+        self.assertNotIn('RRF\\n{rrf}', src,
+            "SG badge must no longer draw the two-line 'RRF\\n<value>' text")
+        self.assertIn('f"{rrf}"', src,
+            "SG badge should paint just the bare RRF number")
+
+    def test_barriarer_column_header_mentions_rrf(self):
+        from hazop import ScenarioTablePanel
+        self.assertIn('RRF', ScenarioTablePanel._COLS[ScenarioTablePanel._C_SG],
+            "since the cell badge no longer spells out 'RRF', the column header must")
+
+
+class OrsTagZoneOpensMinimalPopupTests(unittest.TestCase):
+    """"klickarna man på tagen justerar man tagen ... gör samtliga
+    minimalistiska" (2026-08-14) — a plain click on the ORS tag zone
+    used to open the large combined CauseObjectPopup (tag+type+
+    avvikelse-picker+standard-cause list). It now opens the much
+    smaller CauseTagPopup instead. CauseObjectPopup itself is
+    untouched and still used, unchanged, by the detail panel
+    (_edit_cause_obj) and quick-add (_quick_add_cause) — see
+    CauseTagLiveLinkTests, which still exercises _apply_cause_obj the
+    same way regardless of which popup calls it."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_orstagzone_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from hazop import ScenarioTablePanel
+        self.panel = ScenarioTablePanel(self.db)
+        self.node_id = self.db.add_node()
+        self.dev_id = self.db.deviations(self.node_id)[0]['id']
+        self.cause_id = self.db.add_cause(self.dev_id)
+        self.panel.load_node(self.node_id)
+        self.row = next(r for r, m in enumerate(self.panel._row_meta) if m[1] == self.cause_id)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_tag_zone_click_opens_cause_tag_popup_not_cause_object_popup(self):
+        from PyQt6.QtCore import QSize
+        fake_popup = unittest.mock.Mock()
+        fake_popup.sizeHint.return_value = QSize(200, 100)
+        with unittest.mock.patch('hazop.CauseTagPopup', return_value=fake_popup) as MockPopup, \
+             unittest.mock.patch('hazop.CauseObjectPopup') as MockBigPopup:
+            self.panel._show_cause_obj_popup(self.row, self.cause_id, QPoint(100, 100))
+            MockPopup.assert_called_once()
+            MockBigPopup.assert_not_called()
+            fake_popup.exec.assert_called_once()
+
+    def test_committing_the_tag_popup_calls_apply_cause_obj_with_empty_description(self):
+        """The commit path must reuse _apply_cause_obj's existing "only
+        tag/type changed" fast path (empty description, no frequency)
+        instead of duplicating its persistence logic."""
+        from PyQt6.QtCore import QSize
+        apply_spy = unittest.mock.Mock()
+        self.panel._apply_cause_obj = apply_spy
+        fake_popup = unittest.mock.Mock()
+        fake_popup.sizeHint.return_value = QSize(200, 100)
+        captured = {}
+        fake_popup.committed.connect = lambda slot: captured.__setitem__('slot', slot)
+        with unittest.mock.patch('hazop.CauseTagPopup', return_value=fake_popup):
+            self.panel._show_cause_obj_popup(self.row, self.cause_id, QPoint(100, 100))
+        captured['slot']('Ventil', 'PV-999')
+        apply_spy.assert_called_once_with(self.row, self.cause_id, 'Ventil', 'PV-999', '', None)
+
+
+class OrsFrequencyZoneClickTests(unittest.TestCase):
+    """"klickar man på frekvens skall man kunna justera frekvens"
+    (2026-08-14) — the ORS strip's frequency label had no click zone at
+    all; a click there fell through to plain cell selection/edit.
+    FrequencyPickerPopup already existed, fully built, but was never
+    wired up anywhere. Also covers the "frequency text collides with
+    the invisible clone-icon zone" mismatch found while implementing
+    this: the frequency check now runs BEFORE the clone/comment check,
+    so a click anywhere on the actual rendered frequency text always
+    opens the frequency popup regardless of that overlap."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_orsfreqclick_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from hazop import ScenarioTablePanel
+        self.panel = ScenarioTablePanel(self.db)
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        self.cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(self.cause_id, comp_type='V', comp_tag='PV-101')
+        self.panel.load_node(node_id)
+        self.row = next(r for r, m in enumerate(self.panel._row_meta) if m[1] == self.cause_id)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _freq_zone_geometry(self):
+        panel = self.panel
+        panel._table.setColumnWidth(panel._C_ORS, 220)
+        panel.resize(900, 400)
+        panel.show()
+        self.app.processEvents()
+        col_x = panel._table.columnViewportPosition(panel._C_ORS)
+        cell_right = col_x + panel._table.columnWidth(panel._C_ORS) - 1
+        item = panel._table.item(self.row, panel._C_ORS)
+        return panel._ors_tag_zone_geometry(item, col_x, cell_right)
+
+    def _click(self, x, y):
+        from PyQt6.QtGui import QMouseEvent
+        from PyQt6.QtCore import Qt as _Qt
+        pos = QPoint(x, y)
+        ev = QMouseEvent(QEvent.Type.MouseButtonPress, pos.toPointF(),
+                          _Qt.MouseButton.LeftButton, _Qt.MouseButton.LeftButton,
+                          _Qt.KeyboardModifier.NoModifier)
+        return self.panel.eventFilter(self.panel._table.viewport(), ev)
+
+    def test_clicking_frequency_zone_opens_frequency_picker_popup(self):
+        _tw, freq_zone_x, freq_zone_w, freq_str = self._freq_zone_geometry()
+        self.assertTrue(freq_str, "test setup issue: cause has no frequency label to click on")
+        row_y = self.panel._table.rowViewportPosition(self.row) + 3
+        fake_popup = unittest.mock.Mock()
+        with unittest.mock.patch('hazop.FrequencyPickerPopup.create_positioned',
+                                  return_value=fake_popup) as mock_create:
+            handled = self._click(freq_zone_x + freq_zone_w // 2, row_y)
+        self.assertTrue(handled)
+        mock_create.assert_called_once()
+        fake_popup.exec.assert_called_once()
+
+    def test_clicking_below_the_strip_does_not_open_the_frequency_popup(self):
+        """The frequency zone must be confined to the strip's own
+        height, so a click on the wrapped description text below it
+        (same x range) doesn't also open the popup. A click there can
+        legitimately fall through to the pre-existing (unrelated, out
+        of scope here) clone/comment/plus-badge zones instead — those
+        are stubbed out so this test only asserts on the one thing it
+        owns: the frequency popup must not fire."""
+        from hazop import _ORS_STRIP_H
+        _tw, freq_zone_x, freq_zone_w, freq_str = self._freq_zone_geometry()
+        self.panel._row_plus_cols = {}
+        self.panel._clone_scenario = unittest.mock.Mock()
+        self.panel._open_comment_popup = unittest.mock.Mock()
+        row_y = self.panel._table.rowViewportPosition(self.row)
+        with unittest.mock.patch('hazop.FrequencyPickerPopup.create_positioned') as mock_create:
+            self._click(freq_zone_x + freq_zone_w // 2, row_y + _ORS_STRIP_H + 5)
+            mock_create.assert_not_called()
+
+    def test_picking_a_preset_frequency_sets_likelihood_and_clears_base_frequency(self):
+        self.db.update_cause(self.cause_id, base_frequency=3.5)
+        rebuild_spy = unittest.mock.Mock()
+        self.panel._schedule_rebuild = rebuild_spy
+
+        self.panel._on_ors_frequency_picked(self.cause_id, 2, None)
+
+        cause = self.db.get_cause(self.cause_id)
+        self.assertEqual(cause['likelihood'], 2)
+        self.assertIsNone(cause['base_frequency'])
+        rebuild_spy.assert_called_once()
+
+    def test_picking_a_numeric_frequency_sets_base_frequency(self):
+        rebuild_spy = unittest.mock.Mock()
+        self.panel._schedule_rebuild = rebuild_spy
+
+        self.panel._on_ors_frequency_picked(self.cause_id, None, 0.5)
+
+        cause = self.db.get_cause(self.cause_id)
+        self.assertEqual(cause['base_frequency'], 0.5)
+        rebuild_spy.assert_called_once()
+
+
+class DeviationDefaultFrequencyTests(unittest.TestCase):
+    """"på avvikelserna ska man se den förvalda frekvensen" (2026-08-14)
+    — deviations have no frequency column of their own (confirmed via
+    AskUserQuestion, deliberately no new schema column). The default
+    shown is DERIVED from standard_causes instead: the lowest
+    standard_causes.frequency among rows whose standard_deviations
+    entry matches the deviation's description text."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_devdefaultfreq_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_returns_none_when_no_matching_standard_deviation(self):
+        self.assertIsNone(self.db.default_frequency_for_deviation("Helt påhittad avvikelse"))
+
+    def test_returns_none_when_matching_causes_have_no_frequency(self):
+        # A deliberately unique guide word — DEVIATION_TYPES/the seeded
+        # standard library already ships real entries like "Högt flöde"
+        # with their own preset frequencies, which would silently leak
+        # into this test's result if reused here.
+        dev_id = self.db.add_standard_deviation("ZZZ_Testavvikelse_Unik_1")
+        self.db.add_standard_cause(dev_id, "Ventilfel")
+        self.assertIsNone(self.db.default_frequency_for_deviation("ZZZ_Testavvikelse_Unik_1"))
+
+    def test_returns_lowest_frequency_among_matching_standard_causes(self):
+        dev_id = self.db.add_standard_deviation("ZZZ_Testavvikelse_Unik_2")
+        c1 = self.db.add_standard_cause(dev_id, "Ventilfel")
+        c2 = self.db.add_standard_cause(dev_id, "Sensorfel")
+        self.db.update_standard_cause(c1, frequency=0.5)
+        self.db.update_standard_cause(c2, frequency=0.1)
+        self.assertEqual(
+            self.db.default_frequency_for_deviation("ZZZ_Testavvikelse_Unik_2"), 0.1)
+
+
+class AvvikelseCellPickerTests(unittest.TestCase):
+    """"klockan man på avvikelsen justerar man avvikelsen" (2026-08-14)
+    — a click on the Avvikelse (_C_DEV) cell opens DeviationPickerPopup:
+    presets for the node's existing deviations (each showing its
+    derived default frequency) plus a free-text field for a new one.
+    Distinct from the pre-existing "↕ Flytta till annan avvikelse…"
+    context-menu action (_move_cause_dialog) — both end up calling the
+    same db.move_cause_to_deviation, just via different UI entry points."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_devcellclick_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from hazop import ScenarioTablePanel
+        self.panel = ScenarioTablePanel(self.db)
+        self.panel.always_show_deviation_column()
+        self.node_id = self.db.add_node()
+        self.dev_id = self.db.deviations(self.node_id)[0]['id']
+        self.cause_id = self.db.add_cause(self.dev_id)
+        self.panel.load_node(self.node_id)
+        self.row = next(r for r, m in enumerate(self.panel._row_meta) if m[1] == self.cause_id)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _click_cell(self, row, col):
+        from PyQt6.QtGui import QMouseEvent
+        from PyQt6.QtCore import Qt as _Qt
+        self.panel._table.setColumnWidth(col, 150)
+        self.panel.resize(900, 400)
+        self.panel.show()
+        self.app.processEvents()
+        idx = self.panel._table.model().index(row, col)
+        cr = self.panel._table.visualRect(idx)
+        pos = cr.center()
+        ev = QMouseEvent(QEvent.Type.MouseButtonPress, pos.toPointF(),
+                          _Qt.MouseButton.LeftButton, _Qt.MouseButton.LeftButton,
+                          _Qt.KeyboardModifier.NoModifier)
+        return self.panel.eventFilter(self.panel._table.viewport(), ev)
+
+    def test_clicking_avvikelse_cell_opens_deviation_picker_popup(self):
+        from PyQt6.QtCore import QSize
+        fake_popup = unittest.mock.Mock()
+        fake_popup.sizeHint.return_value = QSize(200, 100)
+        with unittest.mock.patch('hazop.DeviationPickerPopup.create_positioned',
+                                  return_value=fake_popup) as mock_create:
+            handled = self._click_cell(self.row, self.panel._C_DEV)
+        self.assertTrue(handled)
+        mock_create.assert_called_once()
+        self.assertEqual(mock_create.call_args.args[1], self.node_id)
+        self.assertEqual(mock_create.call_args.args[2], self.dev_id)
+        fake_popup.exec.assert_called_once()
+
+    def test_picking_an_existing_deviation_moves_the_cause(self):
+        other_dev_id = self.db.add_deviation(self.node_id, "Omvänt flöde")
+        rebuild_spy = unittest.mock.Mock()
+        self.panel._schedule_rebuild = rebuild_spy
+        structure_spy = unittest.mock.Mock()
+        self.panel.structure_changed.connect(structure_spy)
+
+        self.panel._on_deviation_picked(self.cause_id, self.node_id, other_dev_id, None)
+
+        self.assertEqual(self.db.get_cause(self.cause_id)['deviation_id'], other_dev_id)
+        rebuild_spy.assert_called_once()
+        structure_spy.assert_called_once()
+
+    def test_freetext_creates_and_moves_to_a_new_deviation(self):
+        # A deliberately unique guide word — add_node() already auto-
+        # seeds every DEVIATION_TYPES entry (including real ones like
+        # "Omvänt flöde") for a new node, which would silently match
+        # via get_or_create_deviation instead of exercising the
+        # "actually create a new one" path this test is about.
+        self.panel._schedule_rebuild = unittest.mock.Mock()
+
+        self.panel._on_deviation_picked(self.cause_id, self.node_id, None, "Helt Ny Text 42")
+
+        new_dev = self.db.get_deviation(self.db.get_cause(self.cause_id)['deviation_id'])
+        self.assertEqual(new_dev['description'], "Helt Ny Text 42")
+
+    def test_freetext_reuses_an_existing_deviation_with_the_same_text(self):
+        """get_or_create_deviation must not create a duplicate row when
+        the typed text matches an existing deviation exactly."""
+        existing_dev_id = self.db.add_deviation(self.node_id, "Helt Ny Text 42")
+        self.panel._schedule_rebuild = unittest.mock.Mock()
+
+        self.panel._on_deviation_picked(self.cause_id, self.node_id, None, "Helt Ny Text 42")
+
+        self.assertEqual(self.db.get_cause(self.cause_id)['deviation_id'], existing_dev_id)
+
+    def test_placeholder_row_with_no_cause_does_not_open_the_popup(self):
+        """A deviation with zero causes yet has cause_id None in
+        _row_meta — nothing to move, so the click must be a no-op."""
+        empty_dev_id = self.db.add_deviation(self.node_id, "Tom avvikelse")
+        self.panel.set_show_empty_deviations(True)
+        self.panel.load_node(self.node_id)
+        row = next(r for r, m in enumerate(self.panel._row_meta)
+                   if m[0] == empty_dev_id and m[1] is None)
+        with unittest.mock.patch('hazop.DeviationPickerPopup.create_positioned') as mock_create:
+            self._click_cell(row, self.panel._C_DEV)
+            mock_create.assert_not_called()
+
 
 class DatabaseBusyTimeoutTests(unittest.TestCase):
     """Database.__init__ used to connect with sqlite3's default 5s
