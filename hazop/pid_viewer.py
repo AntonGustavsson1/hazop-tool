@@ -826,6 +826,22 @@ class _ClusterPreviewCanvas(QWidget):
         regardless of what the user has excluded in edited_index_group()."""
         return list(self._index_group)
 
+    def edited_outline(self):
+        """The bbox-corner polygon of just the surviving (non-excluded)
+        primitives — same [[x,y], ...] shape find_symbol_clusters()'s
+        own 'outline' key already uses (2026-08-15, see NOTES.md
+        "städa bort en ledning från en ventil/pump" — MarkerShapeEditDialog).
+        [] if everything has been excluded."""
+        xs, ys = [], []
+        for i in self.edited_index_group():
+            x0, y0, x1, y1 = self._primitives[i]['bbox']
+            xs += [x0, x1]
+            ys += [y0, y1]
+        if not xs:
+            return []
+        x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
+        return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+
     def _bbox(self):
         xs, ys = [], []
         for i in self._index_group:
@@ -899,6 +915,42 @@ class _ClusterPreviewCanvas(QWidget):
                 self._excluded.add(best_i)
             self.update()
             self.selection_changed.emit()
+
+
+class MarkerShapeEditDialog(QDialog):
+    """"finns det något bra sätt att städa bort ledningen från en
+    ventil eller pump" (2026-08-15, see NOTES.md) — reuses
+    _ClusterPreviewCanvas (built for "Hitta liknande symbol"'s
+    reference editing) so ANY detected equipment marker, not just a
+    similarity-search reference, can have a wrongly-merged pipe/stem
+    clicked away before it's saved. Opened from
+    EquipmentMarkerReviewDialog's per-row "✏ Form" button."""
+
+    def __init__(self, primitives, index_group, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Redigera form")
+        self.setMinimumWidth(280)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(
+            "Klicka ett segment för att utesluta det (t.ex. en ledning "
+            "som råkade följa med):"))
+        self._canvas = _ClusterPreviewCanvas(primitives, index_group)
+        layout.addWidget(self._canvas)
+
+        btns = QHBoxLayout()
+        ok_btn = QPushButton("OK")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(self.accept)
+        cancel_btn = QPushButton("Avbryt")
+        cancel_btn.clicked.connect(self.reject)
+        btns.addStretch()
+        btns.addWidget(cancel_btn)
+        btns.addWidget(ok_btn)
+        layout.addLayout(btns)
+
+    def edited_outline(self):
+        return self._canvas.edited_outline()
 
 
 class SimilarSymbolSearchDialog(QDialog):
@@ -1289,9 +1341,19 @@ class EquipmentMarkerReviewDialog(QDialog):
     valve-shape filter (see _valve_rejection_reason) — shown in an
     optional, read-only, in-memory-only section; never written to the
     database, purely a debugging aid for this review session.
+
+    `pdf_path` (2026-08-15, see NOTES.md "städa bort en ledning från en
+    ventil/pump"): if given, each row with a detected outline gets a
+    "✏ Form" button that re-resolves that marker's own vector cluster
+    (equipment_detection.resolve_reference_cluster, the exact same
+    lookup "Hitta liknande symbol" uses) and opens MarkerShapeEditDialog
+    — the same segment-exclusion canvas — so a wrongly-merged pipe/stem
+    can be clicked away from ANY detected marker before it's saved, not
+    just a similarity-search reference. Without pdf_path (e.g. an older
+    caller that hasn't been updated) the column is simply omitted.
     """
 
-    _C_CHK, _C_TAG, _C_PAGE, _C_TYPE, _C_CONF, _C_METHOD = range(6)
+    _C_CHK, _C_TAG, _C_PAGE, _C_TYPE, _C_CONF, _C_METHOD, _C_EDIT = range(7)
 
     _METHOD_LABELS = {
         'leader':    '📐 Ledarlinje',
@@ -1303,11 +1365,12 @@ class EquipmentMarkerReviewDialog(QDialog):
         'not_found': '⚠ Tagg ej hittad på sidan',
     }
 
-    def __init__(self, results: list, db, parent=None, rejected: list = None):
+    def __init__(self, results: list, db, parent=None, rejected: list = None, pdf_path=None):
         super().__init__(parent)
         self.db = db
         self._results = results   # dicts: tag,page,comp_type,x,y,confidence(_es),link_method,outline,equipment_id
         self._rejected = rejected or []
+        self._pdf_path = pdf_path
         self.setWindowTitle("Granska autodetekterad utrustning")
         self.setMinimumSize(760, 480)
 
@@ -1327,13 +1390,14 @@ class EquipmentMarkerReviewDialog(QDialog):
             "padding:5px; background:#F5F5F3; border:1px solid #E2E3E1; border-radius:4px;")
         outer.addWidget(hdr)
 
-        self._tbl = QTableWidget(0, 6)
+        self._tbl = QTableWidget(0, 7)
         self._tbl.setHorizontalHeaderLabels(
-            ['✓', 'Tagg', 'Sida', 'Typ', 'Konfidens', 'Metod'])
+            ['✓', 'Tagg', 'Sida', 'Typ', 'Konfidens', 'Metod', ''])
         hh = self._tbl.horizontalHeader()
         hh.setSectionResizeMode(self._C_TAG, QHeaderView.ResizeMode.Stretch)
         for col, w in ((self._C_CHK, 30), (self._C_PAGE, 50),
-                       (self._C_TYPE, 160), (self._C_CONF, 80), (self._C_METHOD, 160)):
+                       (self._C_TYPE, 160), (self._C_CONF, 80), (self._C_METHOD, 160),
+                       (self._C_EDIT, 70)):
             self._tbl.setColumnWidth(col, w)
         self._tbl.verticalHeader().setVisible(False)
         self._tbl.setAlternatingRowColors(True)
@@ -1459,6 +1523,51 @@ class EquipmentMarkerReviewDialog(QDialog):
             if res['link_method'] in ('none', 'not_found'):
                 method_item.setForeground(QBrush(QColor('#aaa')))
             self._tbl.setItem(r, self._C_METHOD, method_item)
+
+            # "Städa bort en ledning" (2026-08-15, see NOTES.md) — only
+            # meaningful when there's both a pdf to re-resolve the
+            # cluster from and an actual detected outline to prune.
+            if self._pdf_path and res.get('outline'):
+                edit_btn = QPushButton("✏ Form")
+                edit_btn.setToolTip(
+                    "Ta bort segment (t.ex. en ledning) från den här markörens form")
+                edit_btn.clicked.connect(partial(self._edit_shape, r))
+                self._tbl.setCellWidget(r, self._C_EDIT, edit_btn)
+
+    def _edit_shape(self, row):
+        """"✏ Form" button — re-resolves this row's own vector cluster
+        (equipment_detection.resolve_reference_cluster, same lookup
+        "Hitta liknande symbol" uses) and lets the user prune it via
+        MarkerShapeEditDialog, updating this row's outline (and its
+        x/y, re-centred on whatever's left) on OK."""
+        res = self._results[row]
+        try:
+            doc = fitz.open(self._pdf_path)
+        except Exception as e:
+            QMessageBox.warning(self, "Kunde inte öppna PDF", str(e))
+            return
+        try:
+            resolved = equipment_detection.resolve_reference_cluster(
+                doc, res['page'], res['x'], res['y'])
+        finally:
+            doc.close()
+        if resolved is None:
+            QMessageBox.information(
+                self, "Ingen form att redigera",
+                "Hittade ingen vektorform att redigera på den här positionen.")
+            return
+        primitives, index_group, _cluster = resolved
+        editor = MarkerShapeEditDialog(primitives, index_group, parent=self)
+        if editor.exec() != QDialog.DialogCode.Accepted:
+            return
+        outline = editor.edited_outline()
+        if not outline:
+            return
+        res['outline'] = outline
+        xs = [p[0] for p in outline]
+        ys = [p[1] for p in outline]
+        res['x'] = (min(xs) + max(xs)) / 2
+        res['y'] = (min(ys) + max(ys)) / 2
 
     def _save(self):
         saved = 0
@@ -8885,7 +8994,8 @@ class PIDPanel(QWidget):
                 "Fungerar bara på sidor med vektorritad geometri — en skannad "
                 "(rasteriserad) sida har ingen sådan data att jämföra.")
             return
-        review_dlg = EquipmentMarkerReviewDialog(results, self.db, parent=self, rejected=[])
+        review_dlg = EquipmentMarkerReviewDialog(
+            results, self.db, parent=self, rejected=[], pdf_path=self.viewer._pdf_path)
         if review_dlg.exec():
             self.reload_overlays()
 
@@ -8929,7 +9039,8 @@ class PIDPanel(QWidget):
                 "Inga tillräckligt lika symboler hittades med de valda "
                 "sökinställningarna.")
             return
-        review_dlg = EquipmentMarkerReviewDialog(results, self.db, parent=self, rejected=[])
+        review_dlg = EquipmentMarkerReviewDialog(
+            results, self.db, parent=self, rejected=[], pdf_path=self.viewer._pdf_path)
         if review_dlg.exec():
             self.reload_overlays()
 

@@ -3334,6 +3334,100 @@ class EquipmentMarkerReviewDialogTests(unittest.TestCase):
         finally:
             dlg.deleteLater()
 
+    def test_no_edit_shape_button_without_pdf_path(self):
+        """"finns det något bra sätt att städa bort ledningen från en
+        ventil eller pump" (2026-08-15, see NOTES.md) — without a
+        pdf_path there's nothing to re-resolve a cluster from, so the
+        column stays empty rather than showing a button that can't work."""
+        from pid_viewer import EquipmentMarkerReviewDialog
+        dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db)
+        try:
+            self.assertIsNone(dlg._tbl.cellWidget(0, dlg._C_EDIT))
+        finally:
+            dlg.deleteLater()
+
+    def test_edit_shape_button_only_shown_for_rows_with_an_outline(self):
+        from pid_viewer import EquipmentMarkerReviewDialog
+        from PyQt6.QtWidgets import QPushButton
+        dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db, pdf_path='fake.pdf')
+        try:
+            self.assertIsInstance(dlg._tbl.cellWidget(0, dlg._C_EDIT), QPushButton)
+            self.assertIsNone(dlg._tbl.cellWidget(1, dlg._C_EDIT))
+        finally:
+            dlg.deleteLater()
+
+    def test_edit_shape_updates_outline_and_recenters_x_y_on_accept(self):
+        from pid_viewer import EquipmentMarkerReviewDialog
+        from PyQt6.QtWidgets import QDialog
+        dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db, pdf_path='fake.pdf')
+        try:
+            with unittest.mock.patch('pid_viewer.fitz.open'), \
+                 unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
+                                     return_value=(['prims'], ['idx'], {})), \
+                 unittest.mock.patch('pid_viewer.MarkerShapeEditDialog') as mock_editor_cls:
+                mock_editor_cls.return_value.exec.return_value = QDialog.DialogCode.Accepted
+                mock_editor_cls.return_value.edited_outline.return_value = \
+                    [[0, 0], [20, 0], [20, 10], [0, 10]]
+                dlg._edit_shape(0)
+            self.assertEqual(dlg._results[0]['outline'], [[0, 0], [20, 0], [20, 10], [0, 10]])
+            self.assertEqual(dlg._results[0]['x'], 10.0)
+            self.assertEqual(dlg._results[0]['y'], 5.0)
+        finally:
+            dlg.deleteLater()
+
+    def test_edit_shape_leaves_outline_unchanged_when_editor_cancelled(self):
+        from pid_viewer import EquipmentMarkerReviewDialog
+        from PyQt6.QtWidgets import QDialog
+        dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db, pdf_path='fake.pdf')
+        try:
+            original_outline = list(dlg._results[0]['outline'])
+            with unittest.mock.patch('pid_viewer.fitz.open'), \
+                 unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
+                                     return_value=(['prims'], ['idx'], {})), \
+                 unittest.mock.patch('pid_viewer.MarkerShapeEditDialog') as mock_editor_cls:
+                mock_editor_cls.return_value.exec.return_value = QDialog.DialogCode.Rejected
+                dlg._edit_shape(0)
+            self.assertEqual(dlg._results[0]['outline'], original_outline)
+        finally:
+            dlg.deleteLater()
+
+    def test_edit_shape_shows_info_when_no_cluster_resolved(self):
+        from pid_viewer import EquipmentMarkerReviewDialog
+        from PyQt6.QtWidgets import QMessageBox
+        dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db, pdf_path='fake.pdf')
+        try:
+            with unittest.mock.patch('pid_viewer.fitz.open'), \
+                 unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
+                                     return_value=None), \
+                 unittest.mock.patch.object(QMessageBox, 'information') as mock_info:
+                dlg._edit_shape(0)
+            mock_info.assert_called_once()
+        finally:
+            dlg.deleteLater()
+
+    def test_edited_shape_is_persisted_on_save(self):
+        """The whole point: an edited outline must actually reach the
+        database, not just live in the row's in-memory dict."""
+        import json
+        from pid_viewer import EquipmentMarkerReviewDialog
+        from PyQt6.QtWidgets import QDialog
+        dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db, pdf_path='fake.pdf')
+        try:
+            with unittest.mock.patch('pid_viewer.fitz.open'), \
+                 unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
+                                     return_value=(['prims'], ['idx'], {})), \
+                 unittest.mock.patch('pid_viewer.MarkerShapeEditDialog') as mock_editor_cls:
+                mock_editor_cls.return_value.exec.return_value = QDialog.DialogCode.Accepted
+                mock_editor_cls.return_value.edited_outline.return_value = \
+                    [[0, 0], [20, 0], [20, 10], [0, 10]]
+                dlg._edit_shape(0)
+            dlg._save()
+            rows = [dict(r) for r in self.db.equipment_markers_for_page(0)]
+            saved = next(r for r in rows if r['tag'] == 'V-101')
+            self.assertEqual(json.loads(saved['shape_outline']), [[0, 0], [20, 0], [20, 10], [0, 10]])
+        finally:
+            dlg.deleteLater()
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # 8. _reload_all_panels() must swap self.db on EVERY panel that holds its
@@ -4982,6 +5076,70 @@ class ClusterPreviewCanvasTests(unittest.TestCase):
             spy.assert_called_once()
         finally:
             canvas.deleteLater()
+
+    def test_edited_outline_is_bbox_of_surviving_primitives_only(self):
+        """"städa bort en ledning från en ventil/pump" (2026-08-15, see
+        NOTES.md) — excluding the "pipe" primitive must shrink the
+        returned outline to just the remaining ("valve") primitives."""
+        from pid_viewer import _ClusterPreviewCanvas
+        valve = self._line(0, 0, 10, 10)     # bbox (0,0,10,10)
+        pipe = self._line(10, 10, 100, 10)   # bbox (10,10,100,10) — stretches the outline far out
+        canvas = _ClusterPreviewCanvas([valve, pipe], [0, 1])
+        try:
+            self.assertEqual(canvas.edited_outline(), [[0, 0], [100, 0], [100, 10], [0, 10]])
+            canvas._excluded.add(1)   # exclude the "pipe"
+            self.assertEqual(canvas.edited_outline(), [[0, 0], [10, 0], [10, 10], [0, 10]])
+        finally:
+            canvas.deleteLater()
+
+    def test_edited_outline_empty_when_everything_excluded(self):
+        from pid_viewer import _ClusterPreviewCanvas
+        canvas = _ClusterPreviewCanvas([self._line(0, 0, 10, 0)], [0])
+        try:
+            canvas._excluded.add(0)
+            self.assertEqual(canvas.edited_outline(), [])
+        finally:
+            canvas.deleteLater()
+
+
+class MarkerShapeEditDialogTests(unittest.TestCase):
+    """MarkerShapeEditDialog (pid_viewer.py) — "finns det något bra
+    sätt att städa bort ledningen från en ventil eller pump" (2026-08-15,
+    see NOTES.md). Reuses _ClusterPreviewCanvas so ANY detected marker
+    (not just a similarity-search reference) can be pruned before saving."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def _line(self, x0, y0, x1, y1):
+        return {'kind': 'l', 'bbox': (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)),
+                'p0': (x0, y0), 'p1': (x1, y1), 'closed': False, 'filled': False,
+                'width': 1.0, 'source': 0}
+
+    def test_ok_returns_the_canvas_edited_outline(self):
+        from pid_viewer import MarkerShapeEditDialog
+        from PyQt6.QtWidgets import QDialog
+        prims = [self._line(0, 0, 10, 0), self._line(10, 0, 50, 0)]
+        dlg = MarkerShapeEditDialog(prims, [0, 1])
+        try:
+            dlg._canvas._excluded.add(1)
+            dlg.accept()
+            self.assertEqual(dlg.result(), QDialog.DialogCode.Accepted)
+            self.assertEqual(dlg.edited_outline(), [[0, 0], [10, 0], [10, 0], [0, 0]])
+        finally:
+            dlg.deleteLater()
+
+    def test_cancel_rejects_the_dialog(self):
+        from pid_viewer import MarkerShapeEditDialog
+        from PyQt6.QtWidgets import QDialog, QPushButton
+        dlg = MarkerShapeEditDialog([self._line(0, 0, 10, 0)], [0])
+        try:
+            cancel_btn = [b for b in dlg.findChildren(QPushButton) if b.text() == 'Avbryt'][0]
+            cancel_btn.click()
+            self.assertEqual(dlg.result(), QDialog.DialogCode.Rejected)
+        finally:
+            dlg.deleteLater()
 
 
 class _SyncFakeSimilarSymbolSearchWorker(QThread):

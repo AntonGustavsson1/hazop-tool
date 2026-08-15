@@ -19344,7 +19344,8 @@ class EquipmentPanel(QWidget):
                 QMessageBox.information(self, "Inget hittat",
                     "Inga objekt eller symboler hittades.")
                 return
-            review_dlg = EquipmentMarkerReviewDialog(results, self.db, parent=self, rejected=rejected)
+            review_dlg = EquipmentMarkerReviewDialog(
+                results, self.db, parent=self, rejected=rejected, pdf_path=path)
             if review_dlg.exec():
                 self.markers_saved.emit()
 

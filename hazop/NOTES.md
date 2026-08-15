@@ -1785,6 +1785,24 @@ Samma research hittade att frekvenstextens synliga yta delvis kan ligga inom den
 
 ---
 
+## "Städa bort en ledning från en ventil/pump" i EquipmentMarkerReviewDialog (2026-08-15)
+
+**Rapport:** "när man har markerat något kommer typ alltid en ledning med om man inte tar direkt från en legend. finns det något bra sätt att 'städa bort' ledningen från en ventil eller pump" → "Ja, gör det" (efter att jag föreslagit att återanvända segment-uteslutnings-canvasen från 'Hitta liknande symbol' i granskningsdialogen).
+
+**Vad som redan fanns (förklarat till Anton, inte nytt denna gång):** `symbol_geometry._cluster_core`/`_cluster_cores` försöker redan trimma bort korta bihang (ventilskaft, dräneringsstumpar) automatiskt genom att växa klustret utåt så länge aspect-ratio ≤ 3.0 och storleken håller sig rimlig. Fungerar mätt och bekräftat för korta skaft (~14pt). **Känd, odokumenterad-fram-till-nu begränsning:** när den anslutna ledningen är lång nog spränger HELA klustrets aspect-ratio gränsen (uppmätt riktigt fall: aspect 9.05 på en LKAB-fil) — och då trimmas INGET, ventil+ledning rapporteras som en enda form. Redan dokumenterat i "Kända begränsningar" sedan tidigare, "Ej åtgärdat".
+
+**Vad som var nytt:** `_ClusterPreviewCanvas` (byggd för "Hitta liknande symbol", 2026-08-14/15) lät bara redigera SÖK-referensen, inte en markör som faktiskt skulle sparas — `EquipmentMarkerReviewDialog` (granskningsdialogen för "🎯 Hitta objekt på P&ID", "🦋 Hitta ventilformer" m.fl.) hade noll formvisning/redigering, bara kryssruta + tagg/typ-text.
+
+**Lösning:**
+- Ny `pid_viewer.MarkerShapeEditDialog` — tunn wrapper runt `_ClusterPreviewCanvas` (OK/Avbryt), plus ny `_ClusterPreviewCanvas.edited_outline()` som returnerar en bbox-hörn-polygon av bara de KVARVARANDE (icke-uteslutna) primitiverna — samma `[[x,y],...]`-form `find_symbol_clusters()`s egen `outline`-nyckel redan använder.
+- `EquipmentMarkerReviewDialog` får en ny valfri `pdf_path`-parameter och en ny "✏ Form"-kolumn/knapp per rad (bara synlig när `pdf_path` gavs OCH raden har en detekterad `outline` — inget att redigera annars). Klick anropar `_edit_shape(row)`: öppnar sin EGEN korta `fitz.open(pdf_path)` (stängs direkt efter), återanvänder `equipment_detection.resolve_reference_cluster(doc, page, x, y)` (SAMMA uppslag "Hitta liknande symbol" redan använder) för att hämta primitiver+index_group för just DEN markörens position, öppnar `MarkerShapeEditDialog`. Vid OK: raden får en ny, trimmad `outline` OCH en omräknad `x`/`y` (centrum av den nya, snävare formen — annars hade markören sett konstigt förskjuten ut mot den bortklippta ledningsänden).
+- Trådades igenom `pdf_path` i alla tre ställen som skapar `EquipmentMarkerReviewDialog`: `pid_viewer.py`s två "Hitta liknande symbol"-anrop (`self.viewer._pdf_path`) och `hazop.py`s `EquipmentPanel._autodetect()` (redan har `path = self.db.get_pid_path()` lokalt tillgängligt).
+- Ingen ändring av själva klustrings-/trimningslogiken (`_cluster_core`s aspect-gräns rörs inte) — detta är en KOMPLETTERANDE, manuell efterhandsredigering, inte en fix av den automatiska heuristiken.
+
+**Test:** `ClusterPreviewCanvasTests` (+2: `edited_outline()`), `MarkerShapeEditDialogTests` (2, ny klass), `EquipmentMarkerReviewDialogTests` (+6: knapp visas/döljs korrekt, uppdaterar outline+x/y vid OK, lämnar orört vid Avbryt, infomeddelande när inget kluster hittas, sparas verkligen till databasen). Outline/x/y-uppdateringen verifierad röd→grön. Full svit: `test_regression.py` + `test_symbol_geometry.py`.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.
