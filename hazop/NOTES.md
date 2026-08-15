@@ -1869,6 +1869,16 @@ Anton frågade om förbättringsförslag. Jag föreslog att verifiera bildläget
 
 **Test:** befintlig svit (`test_image_symbol_matching.py`, `SimilarSymbolSearchDialogTests`, `ImageSymbolSearchWorkerTests`) omkörd oförändrad efter DPI-ändringen — alla gröna (DPI påverkar bara verklig matchningskvalitet/prestanda, inte de syntetiska testens logik). Full svit grön.
 
+### Uppföljning samma dag: validering mot fler objekttyper och filer (2026-08-15)
+
+Anton: "försöker med lite andra objekt exempelvis pumpar och annat på detta eller andra p&id för att förbättra." Manuellt lokaliserade riktiga symboler (inga syntetiska fixtures) i `P&ID ref/`-mappen och körde `find_similar_shapes_visual` direkt (ingen kodändring gjordes i detta steg — ren validering):
+
+- **Pumpar, ren fil** (`262010 Smurfit kappa/R1-077-003 MATARVATTENPUMPAR.pdf`, en centrifugalpump-symbol utan intilliggande text i referensen): exakt 1 kandidat, sim=0.931, träffade den andra pumpen (07712) inom ~2pt — noll falska positiva.
+- **Pumpar, tät fil** (`262029 loket/1100pefs102.pdf`, 6383 vektorprimitiver — samma "täta CAD-export"-kategori som den ursprungliga PEFS 1500-buggen): referens = pump C bland fyra likadana pumpar (A/B/C/D). Alla tre ÖVRIGA pumpar hittades korrekt (sim 0.637–0.819) — INGA äkta falska positiva bland toppträffarna, trots den höga tätheten.
+- **Instrumentbubblor** (samma täta fil): en delad cirkel med unik tagg-text ("TI-2 5") gav måttlig (inte hög) konfidens mot andra instrumentbubblor (0.52–0.75) — förväntat och korrekt, eftersom varje bubbla har OLIKA inbäddad tagg-text, så pixel-för-pixel-korrelationen kan aldrig bli lika hög som för en textfri symbol som en pump. Fångar ändå "liknande TYP" vid standardtröskeln 60%.
+
+**Slutsats: ingen ny kodändring behövdes.** DPI-fixen ovan löste redan huvudproblemet (för grov upplösning på en liten referens); pumpar och instrument på både en ren och en genuint tät fil visade goda resultat utan justering. Det ursprungliga PEFS 1500-fallets svaga resultat (fynd 1 i föregående uppföljning) berodde specifikt på att REFERENSEN råkade innehålla en intilliggande textetikett ("1/2''") — inte på objekttypen (ventil) eller på filens täthet i sig.
+
 ---
 
 ## Kända begränsningar och tekniska skulder
