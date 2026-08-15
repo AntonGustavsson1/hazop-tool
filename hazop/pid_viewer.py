@@ -1263,7 +1263,8 @@ class SimilarSymbolSearchDialog(QDialog):
         try:
             doc = fitz.open(self._pdf_path)
             gray = image_symbol_matching.render_gray(
-                doc[self._ref_page], bbox=self._ref_bbox, dpi=150)
+                doc[self._ref_page], bbox=self._ref_bbox,
+                dpi=image_symbol_matching._DEFAULT_DPI)
             h, w = gray.shape
             qimg = QImage(gray.tobytes(), w, h, w, QImage.Format.Format_Grayscale8)
             self._image_preview_lbl.setPixmap(

@@ -28,8 +28,8 @@ SimilarSymbolSearchDialog can plug either matching method into the SAME
 threshold-filtering/live-count/on-canvas-preview/shape_similar_results()
 pipeline with zero duplicated UI code.
 
-Known performance tradeoff (not hidden): a full A0/A1-size page rendered
-at 150 DPI, matched across up to 7 scale factors and 4-12 rotation steps,
+Known performance tradeoff (not hidden): a full-size page rendered at
+300 DPI, matched across up to 7 scale factors and 4-12 rotation steps,
 is meaningfully more expensive than vector clustering. Mitigated by a
 conservative default DPI, per-page progress/cancellation (same pattern as
 _scan_candidates), and the existing "this page only" scope option.
@@ -62,7 +62,21 @@ _EXTRA_ROTATIONS = (30, 60, 120, 150, 210, 240, 300, 330)
 
 _SCALE_FACTORS = (0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3)
 
-_DEFAULT_DPI = 150
+# 2026-08-15 follow-up (see NOTES.md "Bildbaserad 'hitta liknande symbol'"
+# — real-file verification): confirmed on the real Shell/St1 PEFS 1500
+# file that 150 DPI renders a typical small valve reference (roughly
+# 5-15pt across) as only ~11-30px — too coarse to be visually distinctive,
+# so cv2.matchTemplate scored huge numbers of unrelated page content at
+# a similar, unhelpfully generic ~0.7 "confidence" (200+ candidates above
+# the UI's default 60% threshold on a single A4 page). Raising to 300 DPI
+# measurably reduced that same search's >=60%-confidence count from 200
+# to 7 on the same file — and, counterintuitively, ran FASTER (4s vs 14s
+# for the same page), apparently because cv2.matchTemplate's internal
+# algorithm selection is less efficient for extremely tiny kernels than
+# for a merely small one. 450/600 DPI reduced false positives further but
+# cost far more (35-43s for one A4 page) for diminishing returns — 300 is
+# the empirically-grounded sweet spot, not an arbitrary guess.
+_DEFAULT_DPI = 300
 _NMS_IOU_THRESHOLD = 0.3
 # A candidate on the reference's own page overlapping the reference region
 # at least this much is treated as "the reference matching itself" and

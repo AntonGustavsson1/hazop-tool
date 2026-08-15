@@ -1850,9 +1850,24 @@ Samma research hittade att frekvenstextens synliga yta delvis kan ligga inom den
 - Godtycklig sub-30°-rotation som DEFAULT — bara i "alla vinklar"-läget, och då i 30°-steg (kostnadsavvägning: `cv2.warpAffine` med expanderad kanvas är dyrare än `np.rot90`).
 - `EquipmentMarkerReviewDialog`/`MarkerShapeEditDialog` (formtrimning av redan sparade markörer) rörs inte — bildmatchning är en sökfunktion, inte en trimningsfunktion.
 
-**Känd prestandaavvägning (dokumenterad i modulens docstring):** en hel A0/A1-sida vid 150 DPI × upp till 7 skalor × 4–12 rotationer är dyrare per sida än vektorklustring. Mildrat av konservativ default-DPI, bakgrundstråd med sid-för-sida-progress/avbryt (samma mönster som redan finns) och det befintliga "Denna sida"-omfångsvalet.
+**Känd prestandaavvägning (dokumenterad i modulens docstring):** en hel sida vid 300 DPI × upp till 7 skalor × 4–12 rotationer är dyrare per sida än vektorklustring. Mildrat av konservativ default-DPI, bakgrundstråd med sid-för-sida-progress/avbryt (samma mönster som redan finns) och det befintliga "Denna sida"-omfångsvalet.
 
 **Test:** nytt `test_image_symbol_matching.py` (11 test — hittar en duplicerad form, avvisar en tydligt olik form, självuteslutning, 90°-rotation hittas per default, `ignore_scale` hittar en omskalad duplicett, `should_cancel` avbryter efter aktuell sida, graciös tomlista utan cv2, NMS slår ihop närliggande dubbletter). `test_regression.py`: `ImageSymbolSearchWorkerTests` (2, mirrorar `SimilarSymbolSearchWorkerTests`), `SimilarSymbolSearchDialogTests` +7 (metod-växel synlig/dold korrekt, tvingat bildläge utan vektorkluster, växling startar om sökningen med rätt workerklass, canvas/förhandsgranskning följer växeln, "Spara som mall" inaktiveras i bildläge), `ObjectMenuAndToolbarButtonsTests` uppdaterad (det gamla avslagsmeddelandet är borta — testar nu det nya tvingade bildläget istället). Röd→grön verifierat separat för `_nms` (utan den samlas alla överlappande dubbletter, inte bara den bästa) och metod-växelns gren i `_restart_scan` (utan den skapas aldrig `ImageSymbolSearchWorker`). Full svit (`test_regression.py` + `test_symbol_geometry.py` + `test_image_symbol_matching.py`, 755 test totalt) grön.
+
+### Uppföljning samma dag: verifiering mot riktig fil, DPI-fix (2026-08-15)
+
+Anton frågade om förbättringsförslag. Jag föreslog att verifiera bildläget mot den riktiga PEFS 1500-filen (allt hittills bara testat mot syntetiska fixtures) innan vi gissar vad som behöver trimmas. Anton: "gör detta."
+
+**Vad testet visade:** körde `find_similar_shapes_visual` mot den riktiga 1/2"-ventilen (samma fil/koordinat som föregående fix). Två konkreta, oväntade fynd:
+
+1. **Referens-bboxen som vektorklustringen räknar fram innehåller ofta INTE bara ventilen** — den befintliga tighta bboxen (187.08, 540.48, 203.4, 554.4) visade sig (bekräftat via zoomad rendering) innehålla både bowtie-ikonen OCH texten "1/2''" bredvid den. En snävare, handplockad bbox med bara ventil+skaft (196.0, 543.0, 201.5, 553.5) gav OVÄNTAT SÄMRE resultat (fler falska positiva, lägre toppoäng) — se punkt 2 för varför.
+2. **Default-DPI (150) var för grov för en liten ventilsymbol.** En ~5.5×10.5pt ventil blir bara ~11×22 PIXLAR vid 150 DPI — för lite detalj för att `cv2.matchTemplate` ska skilja den från generiskt linjebrus på en tät sida: 200 kandidater över standardtröskeln 60% på EN enda A4-sida, ingen över 0.77. Höjde DPI stegvis (150→300→450→600) och mätte: 300 DPI gav bara 7 kandidater över 60% — OCH kördes snabbare (4s mot 14s för samma sida; troligen sämre algoritmval i `cv2.matchTemplate` för extremt små kärnor). 450/600 DPI minskade falska positiva ytterligare men kostade 35–43s för en enda sida — klart sämre avkastning. **300 DPI ändrat till ny default** (`image_symbol_matching._DEFAULT_DPI`), empiriskt underbyggt, inte en gissning.
+
+**Kvarstående, INTE åtgärdat den här omgången (dokumenterat för framtida beslut):**
+- Sidan har bara EN sida och (så vitt undersökt) ingen exakt bildmässig dubblett av just denna 1/2"-ventil — även vid 300 DPI hittades ingen kandidat över ~0.63 på den riktiga filen. Detta kan bero på att verkligt olika bordiametrar (1/2", 3/4", 1" osv.) ritas som olika stora ikoner även när de är "samma typ" av ventil — `ignore_scale`s ±30%-intervall kanske inte räcker för att täcka det spannet. Inte verifierat mot en känd sann dubblett ännu.
+- Bildläget har INGEN segmentredigering (till skillnad från vektorläget) — användaren kan inte själv snäva av referens-bboxen om den (som i fynd 1) råkar innehålla en intilliggande textetikett. Given hur mycket bbox-precision visade sig spela roll, är detta en rimlig framtida förbättring (t.ex. ett enkelt gummibands-beskärningsverktyg på förhandsgranskningsbilden) — inte byggd nu.
+
+**Test:** befintlig svit (`test_image_symbol_matching.py`, `SimilarSymbolSearchDialogTests`, `ImageSymbolSearchWorkerTests`) omkörd oförändrad efter DPI-ändringen — alla gröna (DPI påverkar bara verklig matchningskvalitet/prestanda, inte de syntetiska testens logik). Full svit grön.
 
 ---
 
