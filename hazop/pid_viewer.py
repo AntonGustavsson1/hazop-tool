@@ -909,51 +909,14 @@ class _ClusterPreviewCanvas(QWidget):
             corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
         return corners + [corners[0]]
 
-    def _group_points(self, indices):
-        """Every (widget-space) point belonging to this group's
-        primitives, in whatever order extract_primitives happened to
-        list them."""
-        pts = []
-        for i in indices:
-            pts.extend(self._to_widget(x, y) for x, y in self._primitive_polyline(i))
-        return pts
-
-    @staticmethod
-    def _convex_hull(points):
-        """Standard monotone-chain convex hull. Used (not a reconstructed
-        boundary path) to approximate a filled group's solid region —
-        chaining a tessellated shape's fragments in extraction order as
-        if they were sequential boundary edges is fragile: a single
-        drawn path can hold SEVERAL disjoint contours (a text glyph's
-        outer edge plus its own inner hole, or genuinely unconnected
-        tessellated pieces sharing one source) and welding them into one
-        subpath made fillPath()'s winding rule mostly cancel itself out,
-        rendering as a near-hollow outline instead of the solid black
-        region a real PDF viewer draws — confirmed by directly rendering
-        the real Shell/St1 PEFS valve (2026-08-15, see NOTES.md). A
-        convex hull needs no ordering assumption at all, and is exact
-        for the motivating case (a bow-tie valve's own triangle halves
-        are already convex)."""
-        pts = sorted(set(points))
-        if len(pts) <= 2:
-            return pts
-
-        def cross(o, a, b):
-            return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
-
-        lower = []
-        for p in pts:
-            while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
-                lower.pop()
-            lower.append(p)
-        upper = []
-        for p in reversed(pts):
-            while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
-                upper.pop()
-            upper.append(p)
-        return lower[:-1] + upper[:-1]
-
     def paintEvent(self, event):
+        """2026-08-15 (see NOTES.md "Referens-canvasen"): filled groups
+        used to render as a convex-hull fill, but Anton found the result
+        visually unconvincing in practice ("Det blev inte jättelyckat
+        med att fylla dem") — reverted to plain stroked outlines for
+        every group. The per-source CLICK grouping (a whole tessellated
+        shape toggles as one unit) stays; only the fill rendering is
+        gone."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), QColor('#ffffff'))
@@ -962,21 +925,13 @@ class _ClusterPreviewCanvas(QWidget):
                 continue
             excluded = source in self._excluded_sources
             color = QColor('#B3B7B2') if excluded else QColor('#17191C')
-            if self._primitives[indices[0]]['filled']:
-                hull = self._convex_hull(self._group_points(indices))
-                if len(hull) >= 3:
-                    painter.setPen(Qt.PenStyle.NoPen)
-                    painter.setBrush(color)
-                    painter.drawPolygon(QPolygonF([QPointF(x, y) for x, y in hull]))
-                    painter.setBrush(Qt.BrushStyle.NoBrush)
-            else:
-                pen = QPen(color, 1.6 if excluded else 2.0)
-                pen.setStyle(Qt.PenStyle.DashLine if excluded else Qt.PenStyle.SolidLine)
-                painter.setPen(pen)
-                for i in indices:
-                    pts = [self._to_widget(x, y) for x, y in self._primitive_polyline(i)]
-                    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
-                        painter.drawLine(QPointF(x0, y0), QPointF(x1, y1))
+            pen = QPen(color, 1.6 if excluded else 2.0)
+            pen.setStyle(Qt.PenStyle.DashLine if excluded else Qt.PenStyle.SolidLine)
+            painter.setPen(pen)
+            for i in indices:
+                pts = [self._to_widget(x, y) for x, y in self._primitive_polyline(i)]
+                for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+                    painter.drawLine(QPointF(x0, y0), QPointF(x1, y1))
         painter.end()
 
     def mousePressEvent(self, event):

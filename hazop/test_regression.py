@@ -5232,17 +5232,17 @@ class ClusterPreviewCanvasTests(unittest.TestCase):
         finally:
             canvas.deleteLater()
 
-    def test_filled_group_renders_as_a_solid_region(self):
-        """Anton's screenshot report (2026-08-15, see NOTES.md): a
-        filled shape tessellated into many strokes used to render as a
-        tangle of thin lines instead of the solid black region a real
-        PDF viewer draws. Sample actual rendered pixels (same technique
-        RiskCellActualRenderColorTests already uses) to verify a point
-        INSIDE the filled triangle is dark and a point clearly OUTSIDE
-        it is still the white background."""
+    def test_filled_group_still_renders_as_stroked_outline_only(self):
+        """2026-08-15 follow-up (see NOTES.md "Referens-canvasen"): a
+        convex-hull SOLID fill for filled=True groups was tried and
+        shipped, but Anton reported it wasn't visually convincing in
+        practice ("Det blev inte jättelyckat med att fylla dem") and
+        asked for it to be removed — the per-source CLICK grouping
+        stays, only the fill rendering is gone. Sample actual rendered
+        pixels (same technique RiskCellActualRenderColorTests already
+        uses) to confirm a point INSIDE a filled=True triangle's
+        interior stays the white background — only its edges are drawn."""
         from pid_viewer import _ClusterPreviewCanvas
-        # A filled right triangle, its 3 edges tessellated into separate
-        # 'l' primitives (mirrors a real tessellated fill), all one source.
         prims = [
             self._line(0, 0, 40, 0, source=1, filled=True),
             self._line(40, 0, 0, 40, source=1, filled=True),
@@ -5254,14 +5254,10 @@ class ClusterPreviewCanvasTests(unittest.TestCase):
             pix = canvas.grab()
             img = pix.toImage()
             scale, ox, oy = canvas._transform()
-            # Well inside the triangle (near its centroid).
+            # Well inside the triangle (near its centroid) — must NOT be filled.
             inside = img.pixelColor(int(12 * scale + ox), int(12 * scale + oy))
-            # Outside the triangle's bbox entirely — must stay background white.
-            outside = img.pixelColor(int(img.width() - 5), int(5))
-            self.assertLess(inside.lightness(), 128,
-                f"inside the filled triangle should be dark, got {inside.name()}")
-            self.assertGreater(outside.lightness(), 200,
-                f"outside the shape should stay white background, got {outside.name()}")
+            self.assertGreater(inside.lightness(), 200,
+                f"filled=True must no longer solid-fill — got {inside.name()}")
         finally:
             canvas.deleteLater()
 

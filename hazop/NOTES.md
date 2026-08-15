@@ -1932,6 +1932,16 @@ Ett första försök (kedja ihop varje grupps primitiver i extraherad ordning ti
 
 **Test:** `ClusterPreviewCanvasTests` +3 (två primitiver som delar en källa växlas TILLSAMMANS vid ett klick; `edited_index_group()` förblir primitiv-granulär trots källbaserad uteslutning; en fylld grupp renderar som en solid region — pixel-sampling via `.grab()`/`QImage`, samma teknik `RiskCellActualRenderColorTests` redan använder). Röd→grön verifierat separat för källgrupperingen (tillfälligt återgick till primitiv-index-baserad växling) OCH fyllnadslogiken (tillfälligt inaktiverade `fillPath`-grenen). Full svit grön.
 
+### Uppföljning samma dag: fyllnaden togs bort, klickgrupperingen behölls (2026-08-15)
+
+Anton: "Det blev inte jättelyckat med att fylla dem. Dock är klickgranulitet förenklad bra för att kunna identifera... Ta bort det där med att fyllda rutor renderas som svart." Konvexa skrov gav ibland missvisande resultat i praktiken (t.ex. blandat ventil-/textinnehåll, se den kända nyansen ovan) — istället för att fortsätta trimma fyllnadsheuristiken togs den bort helt.
+
+- `_ClusterPreviewCanvas.paintEvent` — `_group_points`/`_convex_hull`-hjälparna och `fillPath`-grenen borttagna. VARJE grupp (fylld eller ej) renderas nu återigen som strokade linjer, EXAKT som innan fyllnadsförsöket — enda skillnaden mot ursprungsläget (innan hela denna omgång) är att klick/uteslutning fortfarande sker per `source`-grupp, inte per primitiv (den del Anton uttryckligen ville behålla).
+- `test_filled_group_renders_as_a_solid_region` omskriven till `test_filled_group_still_renders_as_stroked_outline_only` — bekräftar nu att en `filled=True`-grupps INRE förblir vit bakgrund (inte längre solid), medan grupperingslogiken (samma källa = samma klickmål) är oförändrad och fortsatt testad.
+- Antons fråga "Skulle du kunna genom förenklad klickgranulitet kunna markera flera linjer och på så sätt kunna hitta symboler med liknande" — detta är REDAN hur funktionen fungerar: varje klick växlar en hel `source`-grupp av/på, och VILKA grupper som är kvar (kan vara flera, valfri kombination) blir `edited_index_group()` → `similarity_features()` → referensen för "hitta liknande symbol". Inget nytt behövdes här — men flaggat till Anton om han menade något MER, t.ex. ett snabbare sätt att markera flera grupper på en gång (gummiband-markering, likt beskärningsverktyget i bildläget) istället för ett klick i taget.
+
+**Test:** befintlig svit omkörd — grupperingstesterna oförändrat gröna, fyllnadstestet omskrivet för ny (borttagen) fyllnadslogik. Full svit grön.
+
 ---
 
 ## Kända begränsningar och tekniska skulder
