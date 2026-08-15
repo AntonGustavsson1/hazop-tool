@@ -5191,6 +5191,43 @@ class _SyncFakeSimilarSymbolSearchWorker(QThread):
         pass
 
 
+class _SyncFakeImageSymbolSearchWorker(QThread):
+    """Test double for ImageSymbolSearchWorker (2026-08-15, see NOTES.md
+    "Bildbaserad 'hitta liknande symbol' — vid sidan av vektorlogiken")
+    — same synchronous-start convention as
+    _SyncFakeSimilarSymbolSearchWorker above, just matching
+    ImageSymbolSearchWorker's own constructor signature."""
+    progress      = pyqtSignal(int, int, str)
+    finished_scan = pyqtSignal(list)
+
+    next_candidates = []
+    instances = []
+
+    def __init__(self, pdf_path, ref_page, ref_bbox, pages=None,
+                 ignore_scale=False, rotation_mode='none', parent=None):
+        super().__init__()
+        self.start_count = 0
+        self._ref_page = ref_page
+        self._ref_bbox = ref_bbox
+        self._pages = pages
+        self._ignore_scale = ignore_scale
+        self._rotation_mode = rotation_mode
+        type(self).instances.append(self)
+
+    def start(self):
+        self.start_count += 1
+        self.finished_scan.emit(list(type(self).next_candidates))
+
+    def isRunning(self):
+        return False
+
+    def requestInterruption(self):
+        pass
+
+    def wait(self, *a):
+        pass
+
+
 class SimilarSymbolSearchDialogTests(unittest.TestCase):
     """SimilarSymbolSearchDialog (pid_viewer.py) — search-parameter
     controls for "Hitta liknande symbol" (2026-08-14/15, see NOTES.md
@@ -5210,10 +5247,16 @@ class SimilarSymbolSearchDialogTests(unittest.TestCase):
         self._worker_patcher = unittest.mock.patch(
             'pid_viewer.SimilarSymbolSearchWorker', _SyncFakeSimilarSymbolSearchWorker)
         self._worker_patcher.start()
+        _SyncFakeImageSymbolSearchWorker.next_candidates = []
+        _SyncFakeImageSymbolSearchWorker.instances = []
+        self._image_worker_patcher = unittest.mock.patch(
+            'pid_viewer.ImageSymbolSearchWorker', _SyncFakeImageSymbolSearchWorker)
+        self._image_worker_patcher.start()
         self.db = None   # set by the "Spara som mall" tests only
 
     def tearDown(self):
         self._worker_patcher.stop()
+        self._image_worker_patcher.stop()
         if self.db is not None:
             try:
                 del self.db
@@ -5229,7 +5272,14 @@ class SimilarSymbolSearchDialogTests(unittest.TestCase):
         from pid_viewer import SimilarSymbolSearchDialog
         prims = [self._line(0, 0, 10, 0), self._line(10, 0, 10, 10)]
         return SimilarSymbolSearchDialog(prims, [0, 1], 'fake.pdf', 0, 10.0,
-                                          db=db, viewer=viewer)
+                                          ref_bbox=(0, 0, 10, 10), db=db, viewer=viewer)
+
+    def _forced_image_dialog(self, viewer=None, db=None):
+        """No vector cluster resolved at all — primitives/index_group
+        both None, matching _find_similar_symbol's own fallback."""
+        from pid_viewer import SimilarSymbolSearchDialog
+        return SimilarSymbolSearchDialog(None, None, 'fake.pdf', 0, 10.0,
+                                          ref_bbox=(0, 0, 10, 10), db=db, viewer=viewer)
 
     def _template_dialog(self, template_features=None, db=None, viewer=None):
         from pid_viewer import SimilarSymbolSearchDialog
@@ -5444,6 +5494,83 @@ class SimilarSymbolSearchDialogTests(unittest.TestCase):
         finally:
             dlg.deleteLater()
 
+    def test_method_toggle_visible_when_a_vector_cluster_was_resolved(self):
+        dlg = self._dialog()
+        try:
+            self.assertIsNotNone(dlg._method_image)
+            self.assertFalse(dlg.use_image_matching())
+        finally:
+            dlg.deleteLater()
+
+    def test_method_toggle_absent_in_template_mode(self):
+        dlg = self._template_dialog()
+        try:
+            self.assertIsNone(dlg._method_image)
+            self.assertFalse(dlg.use_image_matching())
+        finally:
+            dlg.deleteLater()
+
+    def test_forced_image_mode_when_no_vector_cluster_resolved(self):
+        """primitives=None/index_group=None (no vector cluster at all,
+        see _find_similar_symbol's fallback) — image matching is the
+        only option, no toggle shown."""
+        dlg = self._forced_image_dialog()
+        try:
+            self.assertIsNone(dlg._method_image)
+            self.assertIsNone(dlg._canvas)
+            self.assertTrue(dlg.use_image_matching())
+            self.assertEqual(_SyncFakeImageSymbolSearchWorker.instances[-1].start_count, 1)
+            self.assertEqual(_SyncFakeSimilarSymbolSearchWorker.instances, [],
+                "forced image mode must never construct the vector worker")
+        finally:
+            dlg.deleteLater()
+
+    def test_switching_to_bildmatchning_restarts_scan_with_image_worker(self):
+        dlg = self._dialog()
+        try:
+            self.assertEqual(len(_SyncFakeSimilarSymbolSearchWorker.instances), 1)
+            self.assertEqual(len(_SyncFakeImageSymbolSearchWorker.instances), 0)
+            dlg._method_image.setChecked(True)
+            self.assertTrue(dlg.use_image_matching())
+            self.assertEqual(len(_SyncFakeImageSymbolSearchWorker.instances), 1,
+                "toggling to Bildmatchning must (re-)run the scan via the image worker")
+            self.assertEqual(len(_SyncFakeSimilarSymbolSearchWorker.instances), 1,
+                "no extra vector scan should be triggered by the method toggle")
+        finally:
+            dlg.deleteLater()
+
+    def test_switching_back_to_vector_restarts_scan_with_vector_worker(self):
+        dlg = self._dialog()
+        try:
+            dlg._method_image.setChecked(True)
+            dlg._method_vector.setChecked(True)
+            self.assertFalse(dlg.use_image_matching())
+            self.assertEqual(len(_SyncFakeSimilarSymbolSearchWorker.instances), 2)
+        finally:
+            dlg.deleteLater()
+
+    def test_canvas_and_image_preview_visibility_follow_the_method_toggle(self):
+        dlg = self._dialog()
+        try:
+            self.assertFalse(dlg._canvas.isHidden())
+            self.assertTrue(dlg._image_preview_lbl.isHidden())
+            dlg._method_image.setChecked(True)
+            self.assertTrue(dlg._canvas.isHidden())
+            self.assertFalse(dlg._image_preview_lbl.isHidden())
+        finally:
+            dlg.deleteLater()
+
+    def test_save_template_button_disabled_in_image_mode(self):
+        self.db = Database(path=os.path.join(
+            tempfile.mkdtemp(prefix="hazop_savetemplate_test_"), "test_project.db"))
+        dlg = self._dialog(db=self.db)
+        try:
+            self.assertTrue(dlg._save_template_btn.isEnabled())
+            dlg._method_image.setChecked(True)
+            self.assertFalse(dlg._save_template_btn.isEnabled())
+        finally:
+            dlg.deleteLater()
+
     def test_template_mode_has_no_canvas_and_disables_rotation_toggle(self):
         """A saved template has no live primitives to preview/edit, and
         its features were already computed in one fixed rotation basis
@@ -5609,6 +5736,72 @@ class SimilarSymbolSearchWorkerTests(unittest.TestCase):
         received = {}
         worker = SimilarSymbolSearchWorker(
             path, ref_features, 0, cluster['_index_group'], pages=[0])
+        worker.finished_scan.connect(lambda c: received.setdefault('candidates', c))
+        worker.start()
+        self.assertTrue(worker.wait(5000), "worker.run() did not finish within 5s")
+        self.app.processEvents()
+        candidates = received.get('candidates')
+        self.assertTrue(candidates)
+        self.assertGreater(max(c[0] for c in candidates), 0.9)
+
+
+class ImageSymbolSearchWorkerTests(unittest.TestCase):
+    """ImageSymbolSearchWorker (pid_viewer.py) — the REAL QThread behind
+    SimilarSymbolSearchDialog's image-matching mode (2026-08-15, see
+    NOTES.md "Bildbaserad 'hitta liknande symbol' — vid sidan av
+    vektorlogiken"), tested directly. Modelled exactly on
+    SimilarSymbolSearchWorkerTests above: must always emit finished_scan,
+    even when fitz.open() itself raises, and must actually find a real
+    candidate end-to-end against a real synthetic PDF."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_imgsearchworker_test_")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_finished_scan_emitted_even_when_pdf_open_fails(self):
+        from pid_viewer import ImageSymbolSearchWorker
+        received = {}
+        worker = ImageSymbolSearchWorker(
+            '/nonexistent/path/does-not-exist.pdf', 0, (0, 0, 10, 10))
+        worker.finished_scan.connect(lambda c: received.setdefault('candidates', c))
+        worker.start()
+        self.assertTrue(worker.wait(5000), "worker.run() did not finish within 5s")
+        self.app.processEvents()
+        self.assertIn('candidates', received,
+            "finished_scan must fire even when fitz.open() raises")
+        self.assertEqual(received['candidates'], [])
+
+    def test_finds_a_real_candidate_end_to_end(self):
+        import fitz
+        from pid_viewer import ImageSymbolSearchWorker
+
+        path = os.path.join(self._tmpdir, "imgworker.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=400, height=400)
+        shape = page.new_shape()
+
+        def bowtie(cx, cy):
+            shape.draw_polyline([fitz.Point(cx - 10, cy - 10), fitz.Point(cx - 10, cy + 10),
+                                 fitz.Point(cx, cy)])
+            shape.finish(color=(0, 0, 0), fill=(0, 0, 0), closePath=True)
+            shape.draw_polyline([fitz.Point(cx + 10, cy - 10), fitz.Point(cx + 10, cy + 10),
+                                 fitz.Point(cx, cy)])
+            shape.finish(color=(0, 0, 0), fill=(0, 0, 0), closePath=True)
+
+        bowtie(60, 60)
+        bowtie(300, 300)
+        shape.commit()
+        doc.save(path)
+        doc.close()
+
+        received = {}
+        worker = ImageSymbolSearchWorker(path, 0, (48, 48, 72, 72), pages=[0])
         worker.finished_scan.connect(lambda c: received.setdefault('candidates', c))
         worker.start()
         self.assertTrue(worker.wait(5000), "worker.run() did not finish within 5s")
@@ -8261,28 +8454,36 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
         inst.final_results.return_value = final_results if final_results is not None else []
         return inst
 
-    def test_find_similar_symbol_warns_when_no_reference_cluster_resolved(self):
-        """2026-08-14 follow-up (see NOTES.md "Hitta liknande symbol" —
-        sökparametrar): the reference cluster is now resolved BEFORE
-        the search-parameters dialog even opens — nothing to configure
-        a search around if there's no cluster at the click point."""
+    def test_find_similar_symbol_falls_back_to_image_mode_when_no_reference_cluster_resolved(self):
+        """2026-08-15 (see NOTES.md "Bildbaserad 'hitta liknande symbol'
+        — vid sidan av vektorlogiken"): a click with no vector cluster
+        nearby (a scanned page, or an empty spot) no longer dead-ends
+        with a rejection message — it opens SimilarSymbolSearchDialog in
+        forced image-matching mode instead, with primitives/index_group
+        both None and a click-centered ref_bbox."""
         from PyQt6.QtCore import QPointF
-        from PyQt6.QtWidgets import QMessageBox
+        from PyQt6.QtWidgets import QMessageBox, QDialog
         self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
         with unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
                                  return_value=None), \
              unittest.mock.patch.object(QMessageBox, 'information') as mock_info, \
              unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg:
+            mock_params_dlg.return_value.exec.return_value = QDialog.DialogCode.Rejected
             self.panel._on_context_action('find_similar', QPointF(5, 5), 0)
-        mock_info.assert_called_once()
-        mock_params_dlg.assert_not_called()
+        mock_info.assert_not_called()
+        mock_params_dlg.assert_called_once()
+        args, kwargs = mock_params_dlg.call_args
+        self.assertIsNone(args[0])
+        self.assertIsNone(args[1])
+        self.assertIn('ref_bbox', kwargs)
+        self.assertIsNotNone(kwargs['ref_bbox'])
 
     def test_find_similar_symbol_does_not_check_results_when_params_dialog_cancelled(self):
         from PyQt6.QtCore import QPointF
         from PyQt6.QtWidgets import QDialog
         self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
         with unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
-                                 return_value=([], [], {})), \
+                                 return_value=([], [], {'bbox': (0, 0, 10, 10)})), \
              unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg:
             mock_params_dlg.return_value.exec.return_value = QDialog.DialogCode.Rejected
             self.panel._on_context_action('find_similar', QPointF(5, 5), 0)
@@ -8293,7 +8494,7 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
         from PyQt6.QtWidgets import QMessageBox
         self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
         with unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
-                                 return_value=([], [], {})), \
+                                 return_value=([], [], {'bbox': (0, 0, 10, 10)})), \
              unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg, \
              unittest.mock.patch.object(QMessageBox, 'information') as mock_info:
             self._mock_accepted_search_params_dialog(mock_params_dlg, final_results=[])
@@ -8307,7 +8508,7 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
                          'temporary_id': 'SIMILAR-0-0', 'detection_confidence': 0.9}]
         self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
         with unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
-                                 return_value=([], [], {})), \
+                                 return_value=([], [], {'bbox': (0, 0, 10, 10)})), \
              unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg, \
              unittest.mock.patch('pid_viewer.EquipmentMarkerReviewDialog') as mock_dlg_cls, \
              unittest.mock.patch.object(self.panel, 'reload_overlays') as mock_reload:
@@ -8328,7 +8529,7 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
         self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
         self.panel.viewer._pdf_path = '/fake/path.pdf'
         with unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
-                                 return_value=(['prims'], ['idx'], {})), \
+                                 return_value=(['prims'], ['idx'], {'bbox': (0, 0, 10, 10)})), \
              unittest.mock.patch('pid_viewer.symbol_geometry.dominant_text_size',
                                  return_value=12.5), \
              unittest.mock.patch('pid_viewer.symbol_geometry.primitives_near_point',

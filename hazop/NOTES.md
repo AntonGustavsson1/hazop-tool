@@ -1826,6 +1826,36 @@ Samma research hittade att frekvenstextens synliga yta delvis kan ligga inom den
 
 ---
 
+## Bildbaserad "hitta liknande symbol" — vid sidan av vektorlogiken (2026-08-15)
+
+**Bakgrund:** direkt uppföljning på ovanstående fix. Anton: "Om programmet jobbar mer visuellt istället och bygger ihop formen på något bra sätt. För mig är det väldigt lätt att känna igen en ventil visuellt men det verkar svårt för dej att bygga detta med vektorer?" — jag höll med och föreslog en bildbaserad matchningsväg VID SIDAN AV (inte istället för) vektorlogiken. Anton: "Ja, skissa på detta och bygg vid sidan om." Planerad i plan mode, godkänd.
+
+**Varför detta är en genuint annan lösning, inte en variant av föregående fix:** vektorklustring (symbol_geometry.py/equipment_detection.py) kan bara någonsin gruppera vad `extract_primitives()` hittar — på en hårt tesselerad CAD-export eller en skannad (rasteriserad) sida utan vektordata alls har den ingenting att jämföra. `equipment_detection.find_similar_shapes()`s egen docstring flaggade redan detta explicit: "This is the vector/geometry half of the feature... A pixel/image-based fallback for those pages is a separate, not-yet-built undertaking." Det är precis detta som byggts nu.
+
+**Ny modul: `image_symbol_matching.py`** (ingen Qt, samma fristående-importerbar-princip som symbol_geometry.py/equipment_detection.py):
+- `render_gray(fitz_page, bbox=None, dpi=150)` → 2D uint8 numpy gråskale-array via `page.get_pixmap(..., colorspace=fitz.csGRAY)`.
+- `_match_page`/`find_similar_shapes_visual`: renderar referensregionen + varje kandidatsida, matchar med OpenCVs normaliserade korskorrelation (`cv2.matchTemplate(..., cv2.TM_CCOEFF_NORMED)`) över en uppsättning skalor (`ignore_scale=True` → 7 steg 0.7–1.3×) och rotationer (alltid 0/90/180/270 — lösningsfri via `np.rot90`, samma paritetspåstående som vektorläget redan gör; `rotation_mode='any'` lägger till grövre 30°-steg via `cv2.warpAffine`, märkt "experimentell, långsammare" i UI:t, samma etikett som den befintliga vektor-kryssrutan).
+- `_nms` — girig icke-max-undertryckning, återanvänder **redan existerande `symbol_geometry.bbox_iou()`** istället för en ny IoU-funktion.
+- Referensen på sin egen sida utesluts från resultaten via bbox-IoU (`_SELF_MATCH_IOU=0.5`) — motsvarar vektorlägets index-grupp-baserade självuteslutning.
+- **Candidate-kontraktet är IDENTISKT** med `equipment_detection._scan_candidates()`s `(sim, page_num, x, y, outline)`-tupler — därför kan `SimilarSymbolSearchDialog`s hela befintliga tröskel/live-antal/P&ID-förhandsvisning/`shape_similar_results()`-pipeline återanvändas rakt av, oavsett vilken metod som fyllde listan.
+- `opencv-python`/`numpy` är INTE nya beroenden — båda fanns redan transitivt installerade via `rapidocr_onnxruntime` (redan ett krav för OCR), men läggs nu till explicit i requirements.txt eftersom koden importerar dem direkt.
+
+**`pid_viewer.py`:**
+- Ny `ImageSymbolSearchWorker(QThread)` — exakt samma mall som `SimilarSymbolSearchWorker` (egen `fitz.open()`, rör aldrig Database, emitterar alltid `finished_scan`), anropar `image_symbol_matching.find_similar_shapes_visual` istället för `equipment_detection._scan_candidates`.
+- `SimilarSymbolSearchDialog` fick en ny `ref_bbox`-parameter + en "Matchningsmetod: Vektorform / Bildmatchning"-växel — bara synlig när ett vektorkluster faktiskt hittades (annars finns inget genuint val). I bildläge döljs `_ClusterPreviewCanvas` (segmentredigering är meningslös för en rasterbild) och en liten förhandsgranskningsbild av den beskurna referensen visas istället — direkt svar på "jag vill se hela ventilen", nu som en riktig bild. `_restart_scan` grenar på metodvalet men fyller SAMMA `self._candidates`/tröskel/live-antal-kod — noll dubblettlogik i resten av dialogen. "💾 Spara som mall" inaktiveras i bildläge (bildmallar är en rimlig framtida utökning, inte byggd nu — dubblerar mycket UI/DB-yta).
+- **Ny genuin förbättring, inte bara en täckningsyta:** `PIDPanel._find_similar_symbol` gjorde tidigare ett hårt avslag ("Hittade ingen symbol... Fungerar bara på sidor med vektorritad geometri") när `resolve_reference_cluster` returnerade `None` (ingen vektordata alls vid klickpunkten). Nu öppnas `SimilarSymbolSearchDialog` istället i TVINGAT bildläge (`primitives=None, index_group=None`, en klick-centrerad `ref_bbox` beräknad från sidans textstorlek) — exakt den lucka `find_similar_shapes()`s docstring redan pekade ut. Fungerar nu även på skannade/rasteriserade sidor.
+
+**Avgränsat bort från v1 (dokumenterat, inte tyst utelämnat):**
+- Bildbaserade sparade mallar — knappen inaktiveras med tooltip, ingen ny DB-tabell/kolumn.
+- Godtycklig sub-30°-rotation som DEFAULT — bara i "alla vinklar"-läget, och då i 30°-steg (kostnadsavvägning: `cv2.warpAffine` med expanderad kanvas är dyrare än `np.rot90`).
+- `EquipmentMarkerReviewDialog`/`MarkerShapeEditDialog` (formtrimning av redan sparade markörer) rörs inte — bildmatchning är en sökfunktion, inte en trimningsfunktion.
+
+**Känd prestandaavvägning (dokumenterad i modulens docstring):** en hel A0/A1-sida vid 150 DPI × upp till 7 skalor × 4–12 rotationer är dyrare per sida än vektorklustring. Mildrat av konservativ default-DPI, bakgrundstråd med sid-för-sida-progress/avbryt (samma mönster som redan finns) och det befintliga "Denna sida"-omfångsvalet.
+
+**Test:** nytt `test_image_symbol_matching.py` (11 test — hittar en duplicerad form, avvisar en tydligt olik form, självuteslutning, 90°-rotation hittas per default, `ignore_scale` hittar en omskalad duplicett, `should_cancel` avbryter efter aktuell sida, graciös tomlista utan cv2, NMS slår ihop närliggande dubbletter). `test_regression.py`: `ImageSymbolSearchWorkerTests` (2, mirrorar `SimilarSymbolSearchWorkerTests`), `SimilarSymbolSearchDialogTests` +7 (metod-växel synlig/dold korrekt, tvingat bildläge utan vektorkluster, växling startar om sökningen med rätt workerklass, canvas/förhandsgranskning följer växeln, "Spara som mall" inaktiveras i bildläge), `ObjectMenuAndToolbarButtonsTests` uppdaterad (det gamla avslagsmeddelandet är borta — testar nu det nya tvingade bildläget istället). Röd→grön verifierat separat för `_nms` (utan den samlas alla överlappande dubbletter, inte bara den bästa) och metod-växelns gren i `_restart_scan` (utan den skapas aldrig `ImageSymbolSearchWorker`). Full svit (`test_regression.py` + `test_symbol_geometry.py` + `test_image_symbol_matching.py`, 755 test totalt) grön.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

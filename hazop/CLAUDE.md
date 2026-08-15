@@ -12,7 +12,7 @@ Or double-click `starta_hazop.bat` (installs dependencies automatically on Windo
 
 Install dependencies manually:
 ```
-pip install PyQt6 openpyxl reportlab PyMuPDF
+pip install PyQt6 openpyxl reportlab PyMuPDF opencv-python numpy
 ```
 
 Optional OCR (for scanning scanned P&ID PDFs):
@@ -23,7 +23,7 @@ pip install easyocr       # pure pip, downloads ~1 GB models on first use
 
 Syntax check without running the GUI:
 ```
-python -m py_compile hazop.py && python -m py_compile pid_viewer.py && python -m py_compile equipment_detection.py && python -m py_compile symbol_geometry.py
+python -m py_compile hazop.py && python -m py_compile pid_viewer.py && python -m py_compile equipment_detection.py && python -m py_compile symbol_geometry.py && python -m py_compile image_symbol_matching.py
 ```
 
 ## Session context
@@ -51,7 +51,7 @@ At the start of EVERY session, Claude automatically checks for new crash reports
 After every meaningful change, commit and push so no work is ever lost:
 
 ```
-git add hazop.py pid_viewer.py equipment_detection.py symbol_geometry.py CLAUDE.md   # stage only source files, not .db/.pdf/.pyc
+git add hazop.py pid_viewer.py equipment_detection.py symbol_geometry.py image_symbol_matching.py CLAUDE.md   # stage only source files, not .db/.pdf/.pyc
 git commit -m "short descriptive message"
 git push
 ```
@@ -73,7 +73,9 @@ __pycache__/
 
 ## Architecture
 
-The application is split into four modules:
+The application is split into five modules:
+
+**`image_symbol_matching.py`** — pixel/image-based "hitta liknande symbol" (no Qt, 2026-08-15, see NOTES.md "Bildbaserad 'hitta liknande symbol' — vid sidan av vektorlogiken") — renders a reference region and each candidate page to grayscale bitmaps and matches with OpenCV normalized cross-correlation (`find_similar_shapes_visual`), instead of vector geometry. Lives alongside `equipment_detection.py`'s vector-based matching, not instead of it — for CAD exports where a symbol's own strokes are too fragmented for vector clustering to group back together.
 
 **`equipment_detection.py`** — PDF/vector analysis for equipment & valve detection (no Qt, split out of `pid_viewer.py` 2026-08-06 once this layer grew large enough on its own — see NOTES.md)
 - `scan_pdf_for_equipment(pdf_doc, use_ocr, ...)` — three-pass scanner: (1) full-text regex, (2) word-by-word with positions, (3) optional OCR. Returns `{prefix: {tags, pages, positions, ocr_pages}, '_meta': {...}}`.

@@ -18,6 +18,7 @@ from functools import partial
 
 import symbol_geometry
 import equipment_detection
+import image_symbol_matching
 from equipment_detection import (
     ocr_status, cleanup_ocr_resources,
     _get_easyocr_reader, _preprocess_for_ocr,
@@ -1003,11 +1004,38 @@ class SimilarSymbolSearchDialog(QDialog):
     primitives to show for a saved template), and Rotation's "alla
     vinklar" toggle is disabled — a template's features were already
     computed in one fixed rotation basis when it was saved, so there's
-    nothing left here to recompute against a different one."""
+    nothing left here to recompute against a different one.
+
+    Bildmatchning (2026-08-15, see NOTES.md "Bildbaserad 'hitta liknande
+    symbol' — vid sidan av vektorlogiken"): a second, independent
+    matching method living alongside the vector one above, for exactly
+    the case the vector docstrings already flag — heavily-tessellated
+    CAD exports where a real symbol's own strokes end up split across
+    many disconnected drawing paths, leaving vector clustering nothing
+    complete to compare. `ref_bbox` (PDF-space bbox of the reference
+    region) is required for this — used to crop+render a reference
+    bitmap, matched via image_symbol_matching.find_similar_shapes_visual
+    (ImageSymbolSearchWorker) instead of the vector
+    SimilarSymbolSearchWorker. A "Vektorform"/"Bildmatchning" toggle
+    appears whenever a real choice exists (a vector cluster WAS
+    resolved, i.e. `primitives` is not None, and this isn't mall-läge —
+    a saved template has no image counterpart in this first version).
+    When no vector cluster was resolved at all (`primitives is None` —
+    a scanned page, or a click with no nearby vector data), the dialog
+    silently runs in image-only mode instead of refusing outright, since
+    that is precisely the gap the vector path's own docstring already
+    called out as "a separate, not-yet-built undertaking". Both
+    matching methods emit the exact same (sim, page_num, x, y, outline)
+    candidate contract, so every downstream piece — threshold slider,
+    live count, "Visa på P&ID" preview, "Sök" — needs no branching of
+    its own to work with either. "💾 Spara som mall…" stays disabled in
+    Bildmatchning-läge for now — image-based templates would need their
+    own storage format, a reasonable future extension not built here."""
 
     def __init__(self, primitives, index_group, pdf_path, ref_page, ref_scale,
-                 db=None, viewer=None, template_name=None, template_features=None,
-                 initial_excluded=None, native_index_group=None, parent=None):
+                 ref_bbox=None, db=None, viewer=None, template_name=None,
+                 template_features=None, initial_excluded=None,
+                 native_index_group=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Hitta liknande symbol")
         self.setMinimumWidth(360)
@@ -1015,8 +1043,13 @@ class SimilarSymbolSearchDialog(QDialog):
         self._pdf_path  = pdf_path
         self._ref_page  = ref_page
         self._ref_scale = ref_scale
+        self._ref_bbox  = ref_bbox
         self._viewer    = viewer
         self._template_features = template_features
+        # No vector cluster was resolved at all (a scanned page, or a
+        # click far from any vector geometry) — image matching is the
+        # ONLY option, not a toggled choice; see class docstring.
+        self._forced_image_only = template_features is None and primitives is None
         # The auto-detected group ALONE (never the wider, nearby-primitives
         # display set _ClusterPreviewCanvas may also show — see
         # initial_excluded above) — this is what identifies the reference
@@ -1031,9 +1064,15 @@ class SimilarSymbolSearchDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
 
+        self._method_image = None   # set below only when a real choice exists
         if template_features is not None:
             layout.addWidget(QLabel(
                 f"<b>Sökning baserad på sparad mall:</b> {template_name}"))
+            self._canvas = None
+        elif self._forced_image_only:
+            layout.addWidget(QLabel(
+                "<b>Ingen vektorgeometri hittades</b> här — söker med "
+                "bildmatchning istället (fungerar även på skannade sidor):"))
             self._canvas = None
         else:
             layout.addWidget(QLabel(
@@ -1045,6 +1084,27 @@ class SimilarSymbolSearchDialog(QDialog):
                 primitives, index_group, initial_excluded=initial_excluded)
             self._canvas.selection_changed.connect(self._restart_scan)
             layout.addWidget(self._canvas)
+
+            method_row = QHBoxLayout()
+            method_row.addWidget(QLabel("Matchningsmetod:"))
+            self._method_group_btns = QButtonGroup(self)
+            self._method_vector = QRadioButton("Vektorform")
+            self._method_image = QRadioButton("Bildmatchning")
+            self._method_vector.setChecked(True)
+            self._method_group_btns.addButton(self._method_vector)
+            self._method_group_btns.addButton(self._method_image)
+            self._method_vector.toggled.connect(self._on_method_changed)
+            method_row.addWidget(self._method_vector)
+            method_row.addWidget(self._method_image)
+            method_row.addStretch()
+            layout.addLayout(method_row)
+
+        self._image_preview_lbl = QLabel()
+        self._image_preview_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._image_preview_lbl.setStyleSheet(
+            "background:#1c1e21; border:1px solid #3a3d42; min-height:60px;")
+        layout.addWidget(self._image_preview_lbl)
+        self._update_method_visibility()
 
         form = QFormLayout()
         form.setSpacing(6)
@@ -1127,15 +1187,10 @@ class SimilarSymbolSearchDialog(QDialog):
         preview_row.addWidget(self._preview_cb)
         preview_row.addStretch()
         self._save_template_btn = QPushButton("💾 Spara som mall…")
-        self._save_template_btn.setEnabled(db is not None and template_features is None)
-        if template_features is not None:
-            self._save_template_btn.setToolTip(
-                "Redan en sparad mall — inget nytt att spara.")
-        elif db is None:
-            self._save_template_btn.setToolTip("Ingen databas kopplad till den här sökningen.")
         self._save_template_btn.clicked.connect(self._save_as_template)
         preview_row.addWidget(self._save_template_btn)
         layout.addLayout(preview_row)
+        self._update_save_template_button()
 
         btns = QHBoxLayout()
         self._search_btn = QPushButton("Sök")
@@ -1154,6 +1209,74 @@ class SimilarSymbolSearchDialog(QDialog):
 
     def edited_index_group(self):
         return self._canvas.edited_index_group() if self._canvas else None
+
+    def use_image_matching(self):
+        """True if this search should run via image_symbol_matching
+        (ImageSymbolSearchWorker) rather than the vector path — either
+        because the user picked "Bildmatchning", or because no vector
+        cluster was resolved at all and image matching is the only
+        option (see class docstring, _forced_image_only)."""
+        if self._template_features is not None:
+            return False
+        if self._forced_image_only:
+            return True
+        return self._method_image is not None and self._method_image.isChecked()
+
+    def _on_method_changed(self, *_args):
+        self._update_method_visibility()
+        self._update_save_template_button()
+        self._restart_scan()
+
+    def _update_save_template_button(self):
+        if self._template_features is not None:
+            self._save_template_btn.setEnabled(False)
+            self._save_template_btn.setToolTip(
+                "Redan en sparad mall — inget nytt att spara.")
+        elif self.use_image_matching():
+            self._save_template_btn.setEnabled(False)
+            self._save_template_btn.setToolTip(
+                "Inte tillgängligt för bildmatchning ännu — bara vektorformer "
+                "kan sparas som mall i den här versionen.")
+        elif self._db is None:
+            self._save_template_btn.setEnabled(False)
+            self._save_template_btn.setToolTip("Ingen databas kopplad till den här sökningen.")
+        else:
+            self._save_template_btn.setEnabled(True)
+            self._save_template_btn.setToolTip("")
+
+    def _update_method_visibility(self):
+        use_image = self.use_image_matching()
+        if self._canvas is not None:
+            self._canvas.setVisible(not use_image)
+        self._image_preview_lbl.setVisible(use_image)
+        if use_image:
+            self._render_image_preview()
+
+    def _render_image_preview(self):
+        """Populate the reference-crop preview shown in Bildmatchning-
+        läge — direct visual confirmation of what will actually be
+        matched, instead of a vector segment editor that has nothing
+        meaningful to show for a raster template."""
+        if self._ref_bbox is None:
+            return
+        doc = None
+        try:
+            doc = fitz.open(self._pdf_path)
+            gray = image_symbol_matching.render_gray(
+                doc[self._ref_page], bbox=self._ref_bbox, dpi=150)
+            h, w = gray.shape
+            qimg = QImage(gray.tobytes(), w, h, w, QImage.Format.Format_Grayscale8)
+            self._image_preview_lbl.setPixmap(
+                QPixmap.fromImage(qimg).scaledToHeight(
+                    120, Qt.TransformationMode.SmoothTransformation))
+        except Exception:
+            self._image_preview_lbl.setText("(kunde inte rendera förhandsgranskning)")
+        finally:
+            if doc is not None:
+                try:
+                    doc.close()
+                except Exception:
+                    pass
 
     def min_similarity(self):
         return self._threshold.value() / 100.0
@@ -1189,20 +1312,26 @@ class SimilarSymbolSearchDialog(QDialog):
         self._progress_bar.setRange(0, 0)   # indeterminate until the first page reports in
         self._progress_bar.setVisible(True)
 
-        if self._template_features is not None:
-            ref_features = self._template_features
-            ref_native_index_group = []
-        else:
-            ref_features = symbol_geometry.similarity_features(
-                self._canvas._primitives, self.edited_index_group(),
-                self._ref_scale, rotation_mode=self.rotation_mode())
-            ref_native_index_group = self._native_index_group
         pages = [self._ref_page] if self.search_this_page_only() else None
-        self._worker = SimilarSymbolSearchWorker(
-            self._pdf_path, ref_features, self._ref_page,
-            ref_native_index_group, pages=pages,
-            ignore_scale=self.ignore_scale(), rotation_mode=self.rotation_mode(),
-            parent=self)
+        if self.use_image_matching():
+            self._worker = ImageSymbolSearchWorker(
+                self._pdf_path, self._ref_page, self._ref_bbox, pages=pages,
+                ignore_scale=self.ignore_scale(), rotation_mode=self.rotation_mode(),
+                parent=self)
+        else:
+            if self._template_features is not None:
+                ref_features = self._template_features
+                ref_native_index_group = []
+            else:
+                ref_features = symbol_geometry.similarity_features(
+                    self._canvas._primitives, self.edited_index_group(),
+                    self._ref_scale, rotation_mode=self.rotation_mode())
+                ref_native_index_group = self._native_index_group
+            self._worker = SimilarSymbolSearchWorker(
+                self._pdf_path, ref_features, self._ref_page,
+                ref_native_index_group, pages=pages,
+                ignore_scale=self.ignore_scale(), rotation_mode=self.rotation_mode(),
+                parent=self)
         self._worker.progress.connect(self._on_scan_progress)
         self._worker.finished_scan.connect(self._on_scan_finished)
         self._worker.start()
@@ -3249,6 +3378,51 @@ class SimilarSymbolSearchWorker(QThread):
             self.finished_scan.emit(candidates)
         except Exception as e:
             logging.error(f"SimilarSymbolSearchWorker.run() failed: {e}", exc_info=True)
+            self.finished_scan.emit([])
+        finally:
+            if doc is not None:
+                try:
+                    doc.close()
+                except Exception:
+                    pass
+
+
+class ImageSymbolSearchWorker(QThread):
+    """Image/pixel-based counterpart to SimilarSymbolSearchWorker above
+    (2026-08-15, see NOTES.md "Bildbaserad 'hitta liknande symbol' — vid
+    sidan av vektorlogiken") — same structure exactly (own fitz.open(),
+    never touches Database, always emits finished_scan even on an
+    exception or cancellation), calling
+    image_symbol_matching.find_similar_shapes_visual() instead of
+    equipment_detection._scan_candidates(). Returns the same
+    (sim, page_num, x, y, outline) tuple contract, so
+    SimilarSymbolSearchDialog's threshold/count/preview code needs no
+    branching of its own to handle either matching method's results."""
+    progress      = pyqtSignal(int, int, str)
+    finished_scan = pyqtSignal(list)
+
+    def __init__(self, pdf_path, ref_page, ref_bbox, pages=None,
+                 ignore_scale=False, rotation_mode='none', parent=None):
+        super().__init__(parent)
+        self._pdf_path     = str(pdf_path)
+        self._ref_page     = ref_page
+        self._ref_bbox     = tuple(ref_bbox)
+        self._pages        = list(pages) if pages is not None else None
+        self._ignore_scale = ignore_scale
+        self._rotation_mode = rotation_mode
+
+    def run(self):
+        doc = None
+        try:
+            doc = fitz.open(self._pdf_path)
+            candidates = image_symbol_matching.find_similar_shapes_visual(
+                doc, self._ref_page, self._ref_bbox, pages=self._pages,
+                ignore_scale=self._ignore_scale, rotation_mode=self._rotation_mode,
+                progress_callback=lambda pn, total, msg: self.progress.emit(pn, total, msg),
+                should_cancel=self.isInterruptionRequested)
+            self.finished_scan.emit(candidates)
+        except Exception as e:
+            logging.error(f"ImageSymbolSearchWorker.run() failed: {e}", exc_info=True)
             self.finished_scan.emit([])
         finally:
             if doc is not None:
@@ -9003,35 +9177,46 @@ class PIDPanel(QWidget):
         there to click and ADD. Needed on very densely-fragmented CAD
         exports where a real symbol's own strokes can end up split
         across many small, ungrouped pieces that auto-detection alone
-        has nothing complete to offer for."""
+        has nothing complete to offer for.
+
+        2026-08-15 follow-up (see NOTES.md "Bildbaserad 'hitta liknande
+        symbol' — vid sidan av vektorlogiken"): a click with NO nearby
+        vector data at all (a scanned page, or just an empty spot) used
+        to be a hard dead end here. It now falls through to opening
+        SimilarSymbolSearchDialog in forced image-matching mode instead,
+        using a scale-sized square around the click point as the
+        reference region — exactly the gap
+        equipment_detection.find_similar_shapes()'s own docstring
+        already flagged as "a separate, not-yet-built undertaking"."""
         if not HAS_PYMUPDF or self.viewer.pdf_doc is None:
             QMessageBox.warning(self, "Ingen P&ID", "Öppna en P&ID-fil först.")
             return
         pdf_x, pdf_y = self.viewer.scene_to_pdf(pos)
         resolved = equipment_detection.resolve_reference_cluster(
             self.viewer.pdf_doc, page, pdf_x, pdf_y)
-        if resolved is None:
-            QMessageBox.information(
-                self, "Inget liknande hittat",
-                "Hittade ingen symbol att jämföra med på den positionen.\n\n"
-                "Fungerar bara på sidor med vektorritad geometri — en skannad "
-                "(rasteriserad) sida har ingen sådan data att jämföra.")
-            return
-        primitives, native_index_group, _ref_cluster = resolved
         ref_scale = symbol_geometry.dominant_text_size(self.viewer.pdf_doc[page])
-        radius = max(ref_scale * 1.0, 12.0)
-        nearby = symbol_geometry.primitives_near_point(
-            primitives, pdf_x, pdf_y, radius, scale=ref_scale)
-        # Union, not just "nearby": the auto-detected group's own
-        # primitives must always be shown too, even on the rare occasion
-        # one of them happens to sit outside the click-radius circle.
-        wide_index_group = sorted(set(nearby) | set(native_index_group))
-        initial_excluded = set(wide_index_group) - set(native_index_group)
+        if resolved is None:
+            half = max(ref_scale * 2.0, 20.0)
+            fallback_bbox = (pdf_x - half, pdf_y - half, pdf_x + half, pdf_y + half)
+            params_dlg = SimilarSymbolSearchDialog(
+                None, None, self.viewer._pdf_path, page, ref_scale,
+                ref_bbox=fallback_bbox, db=self.db, viewer=self.viewer, parent=self)
+        else:
+            primitives, native_index_group, ref_cluster = resolved
+            radius = max(ref_scale * 1.0, 12.0)
+            nearby = symbol_geometry.primitives_near_point(
+                primitives, pdf_x, pdf_y, radius, scale=ref_scale)
+            # Union, not just "nearby": the auto-detected group's own
+            # primitives must always be shown too, even on the rare occasion
+            # one of them happens to sit outside the click-radius circle.
+            wide_index_group = sorted(set(nearby) | set(native_index_group))
+            initial_excluded = set(wide_index_group) - set(native_index_group)
 
-        params_dlg = SimilarSymbolSearchDialog(
-            primitives, wide_index_group, self.viewer._pdf_path, page, ref_scale,
-            db=self.db, viewer=self.viewer, initial_excluded=initial_excluded,
-            native_index_group=native_index_group, parent=self)
+            params_dlg = SimilarSymbolSearchDialog(
+                primitives, wide_index_group, self.viewer._pdf_path, page, ref_scale,
+                ref_bbox=ref_cluster['bbox'], db=self.db, viewer=self.viewer,
+                initial_excluded=initial_excluded, native_index_group=native_index_group,
+                parent=self)
         if params_dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
@@ -9040,9 +9225,7 @@ class PIDPanel(QWidget):
             QMessageBox.information(
                 self, "Inget liknande hittat",
                 "Inga tillräckligt lika symboler hittades med de valda "
-                "sökinställningarna.\n\n"
-                "Fungerar bara på sidor med vektorritad geometri — en skannad "
-                "(rasteriserad) sida har ingen sådan data att jämföra.")
+                "sökinställningarna.")
             return
         review_dlg = EquipmentMarkerReviewDialog(
             results, self.db, parent=self, rejected=[], pdf_path=self.viewer._pdf_path)
