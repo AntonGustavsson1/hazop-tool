@@ -5148,6 +5148,111 @@ class MarkerShapeEditDialogTests(unittest.TestCase):
             dlg.deleteLater()
 
 
+class ImageRefCropCanvasTests(unittest.TestCase):
+    """_ImageRefCropCanvas (pid_viewer.py) — the rubber-band crop tool
+    for the image-matching reference preview (2026-08-15, see NOTES.md
+    "Bildbaserad 'hitta liknande symbol'" real-file verification
+    follow-up). Directly answers the earlier finding that a reference
+    bbox including an adjacent tag label scores far worse than a
+    tightly-cropped symbol-only region — image mode previously had no
+    way for the user to fix that themselves."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def _gray(self, w=100, h=80):
+        import numpy as np
+        return np.full((h, w), 255, dtype=np.uint8)
+
+    def _drag(self, canvas, x0, y0, x1, y1):
+        from PyQt6.QtCore import QPoint, QEvent, Qt as _Qt
+        from PyQt6.QtGui import QMouseEvent
+        press = QMouseEvent(QEvent.Type.MouseButtonPress, QPoint(x0, y0).toPointF(),
+                             _Qt.MouseButton.LeftButton, _Qt.MouseButton.LeftButton,
+                             _Qt.KeyboardModifier.NoModifier)
+        canvas.mousePressEvent(press)
+        move = QMouseEvent(QEvent.Type.MouseMove, QPoint(x1, y1).toPointF(),
+                            _Qt.MouseButton.NoButton, _Qt.MouseButton.LeftButton,
+                            _Qt.KeyboardModifier.NoModifier)
+        canvas.mouseMoveEvent(move)
+        release = QMouseEvent(QEvent.Type.MouseButtonRelease, QPoint(x1, y1).toPointF(),
+                               _Qt.MouseButton.LeftButton, _Qt.MouseButton.NoButton,
+                               _Qt.KeyboardModifier.NoModifier)
+        canvas.mouseReleaseEvent(release)
+
+    def test_current_bbox_is_the_full_reference_before_any_crop(self):
+        from pid_viewer import _ImageRefCropCanvas
+        canvas = _ImageRefCropCanvas()
+        try:
+            canvas.set_reference(self._gray(), (10.0, 20.0, 30.0, 40.0))
+            self.assertFalse(canvas.has_crop())
+            self.assertEqual(canvas.current_bbox(), (10.0, 20.0, 30.0, 40.0))
+        finally:
+            canvas.deleteLater()
+
+    def test_dragging_a_rectangle_crops_to_a_pdf_space_sub_bbox(self):
+        from pid_viewer import _ImageRefCropCanvas
+        canvas = _ImageRefCropCanvas()
+        try:
+            canvas.resize(240, 180)
+            canvas.set_reference(self._gray(100, 80), (0.0, 0.0, 100.0, 80.0))
+            self._drag(canvas, 20, 20, 100, 100)
+            self.assertTrue(canvas.has_crop())
+            x0, y0, x1, y1 = canvas.current_bbox()
+            # The dragged rectangle must be a strict sub-region of the
+            # full reference, not the whole thing again.
+            self.assertGreater(x0, 0.0)
+            self.assertGreater(y0, 0.0)
+            self.assertLess(x1, 100.0)
+            self.assertLess(y1, 80.0)
+        finally:
+            canvas.deleteLater()
+
+    def test_a_stray_click_does_not_create_a_crop(self):
+        from pid_viewer import _ImageRefCropCanvas
+        canvas = _ImageRefCropCanvas()
+        try:
+            canvas.resize(240, 180)
+            canvas.set_reference(self._gray(), (0.0, 0.0, 100.0, 80.0))
+            self._drag(canvas, 50, 50, 51, 51)   # a sub-pixel-scale jitter, not a real drag
+            self.assertFalse(canvas.has_crop())
+        finally:
+            canvas.deleteLater()
+
+    def test_reset_crop_restores_the_full_reference_and_emits_once(self):
+        from pid_viewer import _ImageRefCropCanvas
+        canvas = _ImageRefCropCanvas()
+        try:
+            canvas.resize(240, 180)
+            canvas.set_reference(self._gray(), (0.0, 0.0, 100.0, 80.0))
+            self._drag(canvas, 20, 20, 100, 100)
+            spy = unittest.mock.Mock()
+            canvas.crop_changed.connect(spy)
+            canvas.reset_crop()
+            self.assertFalse(canvas.has_crop())
+            self.assertEqual(canvas.current_bbox(), (0.0, 0.0, 100.0, 80.0))
+            spy.assert_called_once()
+            canvas.reset_crop()   # already reset — must not emit again
+            spy.assert_called_once()
+        finally:
+            canvas.deleteLater()
+
+    def test_set_reference_clears_any_previous_crop(self):
+        from pid_viewer import _ImageRefCropCanvas
+        canvas = _ImageRefCropCanvas()
+        try:
+            canvas.resize(240, 180)
+            canvas.set_reference(self._gray(), (0.0, 0.0, 100.0, 80.0))
+            self._drag(canvas, 20, 20, 100, 100)
+            self.assertTrue(canvas.has_crop())
+            canvas.set_reference(self._gray(), (5.0, 5.0, 105.0, 85.0))
+            self.assertFalse(canvas.has_crop())
+            self.assertEqual(canvas.current_bbox(), (5.0, 5.0, 105.0, 85.0))
+        finally:
+            canvas.deleteLater()
+
+
 class _SyncFakeSimilarSymbolSearchWorker(QThread):
     """Test double for SimilarSymbolSearchWorker (2026-08-15, see
     NOTES.md "Hitta liknande symbol" — uppföljningsfunktioner) — a real
@@ -5556,6 +5661,44 @@ class SimilarSymbolSearchDialogTests(unittest.TestCase):
         finally:
             dlg.deleteLater()
 
+    def test_dragging_a_crop_in_image_mode_narrows_what_gets_searched(self):
+        """Integration check that _restart_scan actually reads
+        _image_ref_canvas.current_bbox() rather than the dialog's raw
+        _ref_bbox — the whole point of the crop tool."""
+        from PyQt6.QtCore import QPoint, QEvent, Qt as _Qt
+        from PyQt6.QtGui import QMouseEvent
+        import numpy as np
+
+        def drag(canvas, x0, y0, x1, y1):
+            canvas.resize(240, 180)
+            press = QMouseEvent(QEvent.Type.MouseButtonPress, QPoint(x0, y0).toPointF(),
+                                 _Qt.MouseButton.LeftButton, _Qt.MouseButton.LeftButton,
+                                 _Qt.KeyboardModifier.NoModifier)
+            canvas.mousePressEvent(press)
+            move = QMouseEvent(QEvent.Type.MouseMove, QPoint(x1, y1).toPointF(),
+                                _Qt.MouseButton.NoButton, _Qt.MouseButton.LeftButton,
+                                _Qt.KeyboardModifier.NoModifier)
+            canvas.mouseMoveEvent(move)
+            release = QMouseEvent(QEvent.Type.MouseButtonRelease, QPoint(x1, y1).toPointF(),
+                                   _Qt.MouseButton.LeftButton, _Qt.MouseButton.NoButton,
+                                   _Qt.KeyboardModifier.NoModifier)
+            canvas.mouseReleaseEvent(release)
+
+        dlg = self._dialog()
+        try:
+            dlg._method_image.setChecked(True)
+            canvas = dlg._image_ref_canvas
+            canvas.set_reference(np.full((80, 100), 255, dtype='uint8'), (0, 0, 10, 10))
+            n_before = len(_SyncFakeImageSymbolSearchWorker.instances)
+            drag(canvas, 20, 20, 100, 100)   # crop_changed -> _restart_scan
+            self.assertEqual(len(_SyncFakeImageSymbolSearchWorker.instances), n_before + 1,
+                "dragging a crop must re-run the scan")
+            searched_bbox = _SyncFakeImageSymbolSearchWorker.instances[-1]._ref_bbox
+            self.assertNotEqual(searched_bbox, (0, 0, 10, 10),
+                "the worker must search the CROPPED bbox, not the original full one")
+        finally:
+            dlg.deleteLater()
+
     def test_switching_back_to_vector_restarts_scan_with_vector_worker(self):
         dlg = self._dialog()
         try:
@@ -5570,10 +5713,10 @@ class SimilarSymbolSearchDialogTests(unittest.TestCase):
         dlg = self._dialog()
         try:
             self.assertFalse(dlg._canvas.isHidden())
-            self.assertTrue(dlg._image_preview_lbl.isHidden())
+            self.assertTrue(dlg._image_ref_container.isHidden())
             dlg._method_image.setChecked(True)
             self.assertTrue(dlg._canvas.isHidden())
-            self.assertFalse(dlg._image_preview_lbl.isHidden())
+            self.assertFalse(dlg._image_ref_container.isHidden())
         finally:
             dlg.deleteLater()
 

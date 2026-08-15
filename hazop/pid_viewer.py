@@ -958,6 +958,145 @@ class MarkerShapeEditDialog(QDialog):
         return self._canvas.edited_outline()
 
 
+class _ImageRefCropCanvas(QWidget):
+    """Rubber-band crop tool for the image-matching reference preview
+    (2026-08-15, see NOTES.md "Bildbaserad 'hitta liknande symbol'" —
+    real-file verification follow-up). Unlike _ClusterPreviewCanvas
+    (which edits a set of vector primitives to exclude/include), there
+    is nothing to "exclude" in a raster template — it's either the whole
+    rendered reference region or a smaller rectangle the user drags out
+    on top of it. Needed because bbox precision measurably affects match
+    quality (a reference that happened to include an adjacent tag label
+    scored far worse than a tightly-cropped symbol-only region — see
+    NOTES.md), and image mode previously had no way to fix that the way
+    vector mode's segment editor can.
+
+    Drag a rectangle to crop; click without dragging (or drag a
+    smaller-than-a-few-pixels rectangle) leaves the current crop alone,
+    same "not a real gesture" tolerance _ClusterPreviewCanvas uses for
+    stray clicks."""
+
+    crop_changed = pyqtSignal()
+
+    _MARGIN = 8
+    _MIN_DRAG_PX = 4
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(240, 140)
+        self._gray = None          # numpy array, the full rendered reference
+        self._full_bbox = None     # PDF-space bbox the array was rendered from
+        self._drag_start = None
+        self._drag_current = None
+        self._crop_px = None       # (x0,y0,x1,y1) in ARRAY pixel space, or None = full
+
+    def set_reference(self, gray, full_bbox):
+        """Load a newly-rendered reference crop — resets any previous
+        manual crop, since it belonged to the old rendering."""
+        self._gray = gray
+        self._full_bbox = full_bbox
+        self._crop_px = None
+        self._drag_start = self._drag_current = None
+        self.update()
+
+    def has_crop(self):
+        return self._crop_px is not None
+
+    def reset_crop(self):
+        if self._crop_px is not None:
+            self._crop_px = None
+            self.update()
+            self.crop_changed.emit()
+
+    def current_bbox(self):
+        """The PDF-space bbox to actually search with — the full
+        rendered region if the user hasn't dragged a crop, else the
+        sub-rectangle they selected, mapped back through the known
+        render scale."""
+        if self._full_bbox is None:
+            return None
+        if self._crop_px is None:
+            return self._full_bbox
+        h, w = self._gray.shape
+        x0, y0, x1, y1 = self._full_bbox
+        px0, py0, px1, py1 = self._crop_px
+        sx, sy = (x1 - x0) / w, (y1 - y0) / h
+        return (x0 + px0 * sx, y0 + py0 * sy, x0 + px1 * sx, y0 + py1 * sy)
+
+    def _transform(self):
+        """(scale, offset_x, offset_y) mapping the rendered array's own
+        pixel space into this widget's pixel rect — same centered,
+        aspect-preserving convention as _ClusterPreviewCanvas._transform,
+        just over image pixels instead of PDF points."""
+        if self._gray is None:
+            return 1.0, 0.0, 0.0
+        h, w = self._gray.shape
+        avail_w = max(self.width() - 2 * self._MARGIN, 1)
+        avail_h = max(self.height() - 2 * self._MARGIN, 1)
+        scale = min(avail_w / w, avail_h / h)
+        off_x = self._MARGIN + (avail_w - w * scale) / 2
+        off_y = self._MARGIN + (avail_h - h * scale) / 2
+        return scale, off_x, off_y
+
+    def _widget_to_px(self, wx, wy):
+        scale, ox, oy = self._transform()
+        h, w = self._gray.shape
+        return (max(0.0, min(w, (wx - ox) / scale)),
+                max(0.0, min(h, (wy - oy) / scale)))
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor('#1c1e21'))
+        if self._gray is None:
+            painter.end()
+            return
+        h, w = self._gray.shape
+        qimg = QImage(self._gray.tobytes(), w, h, w, QImage.Format.Format_Grayscale8)
+        scale, ox, oy = self._transform()
+        painter.drawImage(QRectF(ox, oy, w * scale, h * scale), qimg)
+
+        rect_px = None
+        if self._drag_start and self._drag_current:
+            (x0, y0), (x1, y1) = self._drag_start, self._drag_current
+            rect_px = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+        elif self._crop_px is not None:
+            rect_px = self._crop_px
+        if rect_px:
+            x0, y0, x1, y1 = rect_px
+            painter.setPen(QPen(QColor('#4da3ff'), 2))
+            painter.drawRect(QRectF(x0 * scale + ox, y0 * scale + oy,
+                                     (x1 - x0) * scale, (y1 - y0) * scale))
+        painter.end()
+
+    def mousePressEvent(self, event):
+        if self._gray is None:
+            return
+        px = self._widget_to_px(event.position().x(), event.position().y())
+        self._drag_start = px
+        self._drag_current = px
+        self.update()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_start is None:
+            return
+        self._drag_current = self._widget_to_px(event.position().x(), event.position().y())
+        self.update()
+
+    def mouseReleaseEvent(self, event):
+        if self._drag_start is None:
+            return
+        (x0, y0), (x1, y1) = self._drag_start, self._drag_current
+        self._drag_start = self._drag_current = None
+        rx0, ry0 = min(x0, x1), min(y0, y1)
+        rx1, ry1 = max(x0, x1), max(y0, y1)
+        if (rx1 - rx0) < self._MIN_DRAG_PX or (ry1 - ry0) < self._MIN_DRAG_PX:
+            self.update()   # a stray click, not a real crop gesture
+            return
+        self._crop_px = (rx0, ry0, rx1, ry1)
+        self.update()
+        self.crop_changed.emit()
+
+
 class SimilarSymbolSearchDialog(QDialog):
     """Sökparametrar för "Hitta liknande symbol" (2026-08-14/15, see
     NOTES.md) — opens right after a reference cluster is resolved
@@ -1099,11 +1238,23 @@ class SimilarSymbolSearchDialog(QDialog):
             method_row.addStretch()
             layout.addLayout(method_row)
 
-        self._image_preview_lbl = QLabel()
-        self._image_preview_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._image_preview_lbl.setStyleSheet(
-            "background:#1c1e21; border:1px solid #3a3d42; min-height:60px;")
-        layout.addWidget(self._image_preview_lbl)
+        self._image_ref_container = QWidget()
+        image_ref_row = QVBoxLayout(self._image_ref_container)
+        image_ref_row.setContentsMargins(0, 0, 0, 0)
+        self._image_ref_canvas = _ImageRefCropCanvas()
+        self._image_ref_canvas.crop_changed.connect(self._restart_scan)
+        image_ref_row.addWidget(self._image_ref_canvas)
+        crop_btns_row = QHBoxLayout()
+        crop_note = QLabel("Dra en ram i förhandsgranskningen för att beskära referensen.")
+        crop_note.setStyleSheet("color:#8D9299; font-size:10px;")
+        crop_note.setWordWrap(True)
+        crop_btns_row.addWidget(crop_note)
+        crop_btns_row.addStretch()
+        self._reset_crop_btn = QPushButton("Återställ beskärning")
+        self._reset_crop_btn.clicked.connect(self._image_ref_canvas.reset_crop)
+        crop_btns_row.addWidget(self._reset_crop_btn)
+        image_ref_row.addLayout(crop_btns_row)
+        layout.addWidget(self._image_ref_container)
         self._update_method_visibility()
 
         form = QFormLayout()
@@ -1248,15 +1399,16 @@ class SimilarSymbolSearchDialog(QDialog):
         use_image = self.use_image_matching()
         if self._canvas is not None:
             self._canvas.setVisible(not use_image)
-        self._image_preview_lbl.setVisible(use_image)
-        if use_image:
+        self._image_ref_container.setVisible(use_image)
+        if use_image and not self._image_ref_canvas.has_crop():
             self._render_image_preview()
 
     def _render_image_preview(self):
-        """Populate the reference-crop preview shown in Bildmatchning-
-        läge — direct visual confirmation of what will actually be
-        matched, instead of a vector segment editor that has nothing
-        meaningful to show for a raster template."""
+        """Load the reference-crop preview into _image_ref_canvas —
+        direct visual confirmation of what will actually be matched,
+        instead of a vector segment editor that has nothing meaningful
+        to show for a raster template. Also what the user's rubber-band
+        crop (2026-08-15, see NOTES.md) draws on top of."""
         if self._ref_bbox is None:
             return
         doc = None
@@ -1265,13 +1417,9 @@ class SimilarSymbolSearchDialog(QDialog):
             gray = image_symbol_matching.render_gray(
                 doc[self._ref_page], bbox=self._ref_bbox,
                 dpi=image_symbol_matching._DEFAULT_DPI)
-            h, w = gray.shape
-            qimg = QImage(gray.tobytes(), w, h, w, QImage.Format.Format_Grayscale8)
-            self._image_preview_lbl.setPixmap(
-                QPixmap.fromImage(qimg).scaledToHeight(
-                    120, Qt.TransformationMode.SmoothTransformation))
+            self._image_ref_canvas.set_reference(gray, self._ref_bbox)
         except Exception:
-            self._image_preview_lbl.setText("(kunde inte rendera förhandsgranskning)")
+            pass
         finally:
             if doc is not None:
                 try:
@@ -1330,8 +1478,9 @@ class SimilarSymbolSearchDialog(QDialog):
 
         pages = [self._ref_page] if self.search_this_page_only() else None
         if self.use_image_matching():
+            search_bbox = self._image_ref_canvas.current_bbox() or self._ref_bbox
             self._worker = ImageSymbolSearchWorker(
-                self._pdf_path, self._ref_page, self._ref_bbox, pages=pages,
+                self._pdf_path, self._ref_page, search_bbox, pages=pages,
                 ignore_scale=self.ignore_scale(), rotation_mode=self.rotation_mode(),
                 parent=self)
         else:

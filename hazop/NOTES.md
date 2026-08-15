@@ -1879,6 +1879,21 @@ Anton: "försöker med lite andra objekt exempelvis pumpar och annat på detta e
 
 **Slutsats: ingen ny kodändring behövdes.** DPI-fixen ovan löste redan huvudproblemet (för grov upplösning på en liten referens); pumpar och instrument på både en ren och en genuint tät fil visade goda resultat utan justering. Det ursprungliga PEFS 1500-fallets svaga resultat (fynd 1 i föregående uppföljning) berodde specifikt på att REFERENSEN råkade innehålla en intilliggande textetikett ("1/2''") — inte på objekttypen (ventil) eller på filens täthet i sig.
 
+### Uppföljning samma dag: åtgärdade de två kvarstående punkterna, plus en riktig krasch hittad på vägen (2026-08-15)
+
+Anton: "fixa även dina punkter" — de två öppna punkterna från föregående uppföljning (bredare skalintervall; ingen beskärning i bildläge). Mitt i arbetet: "Programmet kraschade" — se separat krasch-fix nedan, adresserad först.
+
+**Punkt 1 — bredare `ignore_scale`-intervall: TESTAD, INTE infört.** Testade ett 14-stegs intervall (0.4×–3.0×, mot dagens 7-stegs 0.7×–1.3×) mot den riktiga PEFS 1500-filen: antalet kandidater över 60%-tröskeln gick från 241 till **1173** — nästan 5× fler falska positiva, utan att jag kunde bekräfta att det faktiskt hittade en äkta "samma ventiltyp, annan bordiameter"-dubblett (filen har bara EN ventil av den här typen, så det gick inte att verifiera nyttan). Att bredda intervallet byter alltså en spekulativ förbättring mot ett konkret, mätbart sämre resultat. **Beslut: `_SCALE_FACTORS` lämnas oförändrat** (0.7–1.3×) — dokumenterat som medvetet avstått, inte bara bortglömt.
+
+**Punkt 2 — beskärningsverktyg i bildläge: BYGGT.** Ny `pid_viewer._ImageRefCropCanvas(QWidget)` — ersätter den tidigare enkla `QLabel`-förhandsgranskningen. Dra en ram i förhandsgranskningsbilden för att beskära referensen till en mindre rektangel (samma "dra en ram"-interaktion en användare redan förväntar sig från bildredigeringsverktyg); en "Återställ beskärning"-knapp går tillbaka till hela den ursprungliga regionen. Löser direkt det konkreta, redan bekräftade problemet (referensen råkade innehålla en intilliggande textetikett).
+- `current_bbox()` returnerar den (ev. beskurna) PDF-rymds-bboxen; `_restart_scan` läser nu `self._image_ref_canvas.current_bbox()` istället för dialogens råa `self._ref_bbox` när bildläge är aktivt.
+- Ett nytt `set_reference(gray, full_bbox)`-anrop nollställer alltid en tidigare beskärning när en NY referens laddas (t.ex. efter att `_render_image_preview` körs på nytt) — men `_update_method_visibility` undviker att kalla det igen om användaren redan har en aktiv beskärning, så ett tillfälligt hopp till vektorläge och tillbaka inte tyst slänger bort en noggrant vald beskärning.
+- Koordinattransformen (`_transform`/`_widget_to_px`) mirrorar `_ClusterPreviewCanvas`s egen centrerade, proportionsbevarande konvention — bara över bild-PIXLAR istället för PDF-punkter.
+
+**Krasch hittad och fixad på vägen** (`crashes/crash_20260815_095533_ValueError.json`, från tidigare samma dag): att utesluta ALLA primitiver i vektorreferens-canvasen lämnade en tom `index_group`, vilket kraschade ända ner i `symbol_geometry.cluster_features()` (`min()` på en tom lista) så fort sökningen försökte starta om. I den riktiga appen triggar detta `hazop.py`s egen `sys.excepthook`, som visar en blockerande `QMessageBox` — därav "Programmet kraschade" ur användarens perspektiv. `_restart_scan` visar nu ett statusmeddelande ("Inget kvar av referensformen…") och avstår från att starta en sökning istället för att krascha. Bekräftat röd→grön INDIREKT: utan fixen HÄNGDE regressionstestet (samma blockerande `QMessageBox` väntade på en klick som aldrig kom i den headless testmiljön) — det är exakt den signal som bekräftar att kraschvägen verkligen triggades.
+
+**Test:** `ImageRefCropCanvasTests` (5, ny klass — full bbox innan beskärning, drag ger korrekt sub-bbox, en småskaklig klick skapar ingen beskärning, återställning återger hela regionen och emitterar bara en gång, `set_reference` nollställer en tidigare beskärning), `SimilarSymbolSearchDialogTests` +2 (drag i bildläge smalnar av vad som faktiskt söks; den tomma-referensen-kraschen visar ett meddelande istället för att krascha — röd→grön verifierat separat för båda). Full svit grön.
+
 ---
 
 ## Kända begränsningar och tekniska skulder
