@@ -5387,6 +5387,23 @@ class SimilarSymbolSearchDialogTests(unittest.TestCase):
         finally:
             dlg.deleteLater()
 
+    def test_excluding_every_segment_shows_a_message_instead_of_crashing(self):
+        """Real crash found in the wild (2026-08-15, see NOTES.md):
+        excluding EVERY primitive left an empty index_group, which
+        crashed all the way down in symbol_geometry.cluster_features()
+        (min() on an empty list of members) the instant the scan tried
+        to restart."""
+        dlg = self._dialog()
+        try:
+            dlg._canvas._excluded.update({0, 1})
+            dlg._canvas.selection_changed.emit()   # must not raise
+            self.assertEqual(dlg.edited_index_group(), [])
+            self.assertIn("Inget kvar", dlg._status_lbl.text())
+            self.assertFalse(dlg._search_btn.isEnabled())
+            self.assertFalse(dlg._progress_bar.isVisible())
+        finally:
+            dlg.deleteLater()
+
     def test_search_button_accepts_the_dialog(self):
         from PyQt6.QtWidgets import QDialog
         dlg = self._dialog()

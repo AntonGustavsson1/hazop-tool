@@ -1309,6 +1309,21 @@ class SimilarSymbolSearchDialog(QDialog):
         self._candidates = []
         self._search_btn.setEnabled(False)
         self._count_lbl.setText("")
+        self._progress_bar.setVisible(False)
+
+        # Crash found in the wild (2026-08-15, see NOTES.md): excluding
+        # EVERY primitive in the vector reference canvas leaves an empty
+        # index_group, which used to crash all the way down in
+        # symbol_geometry.cluster_features() (min() on an empty list) the
+        # instant the scan tried to restart. Nothing to search for with
+        # zero reference primitives — show a status message instead of
+        # starting a worker at all.
+        if (not self.use_image_matching() and self._template_features is None
+                and not self.edited_index_group()):
+            self._status_lbl.setText(
+                "Inget kvar av referensformen — inkludera minst ett segment.")
+            return
+
         self._status_lbl.setText("Beräknar…")
         self._progress_bar.setRange(0, 0)   # indeterminate until the first page reports in
         self._progress_bar.setVisible(True)
