@@ -1762,6 +1762,38 @@ def _next_tag_sequence(start_tag, count, existing_tags=None):
     return out
 
 
+def apply_page_rotations(doc, page_rotations):
+    """Compose each page's own intrinsic /Rotate with an EXTRA manual
+    override (a {physical_page: extra_clockwise_degrees} dict, as
+    returned by Database.get_all_page_rotations()), by mutating
+    page.rotation in place — mirrors
+    pid_viewer.PIDGraphicsView._apply_page_rotation exactly (2026-08-15,
+    see NOTES.md "Hitta liknande symbol placerar fel — sidrotation").
+
+    A background worker's own freshly-opened fitz.Document never goes
+    through _apply_page_rotation (that's a PIDGraphicsView-only method,
+    tied to the live view's Database-backed override dict) — without
+    this, a page with a manual rotation override gets its vector
+    geometry computed in the page's NATIVE coordinate space while the
+    live viewer expects the OVERRIDDEN space, silently misplacing every
+    result found on (or via) that page. Confirmed on a real file: the
+    same primitive's bbox differs completely between rotation=0 and
+    rotation=90 on the identical page — cluster_similarity's shape
+    scoring doesn't care (already rotation-invariant in 90-degree steps),
+    so matches are still found correctly, but their returned x/y/outline
+    land in the wrong space entirely.
+
+    No-op if `page_rotations` is empty/None (the overwhelmingly common
+    case — most pages have no manual override at all)."""
+    if not page_rotations:
+        return
+    for pn, extra in page_rotations.items():
+        pn = int(pn)
+        if 0 <= pn < doc.page_count:
+            page = doc.load_page(pn)
+            page.set_rotation((page.rotation + int(extra)) % 360)
+
+
 def resolve_reference_cluster(pdf_doc, ref_page, ref_x, ref_y):
     """Resolve the vector cluster at (ref_x, ref_y) on ref_page — the
     same reference resolution find_similar_shapes() itself does,

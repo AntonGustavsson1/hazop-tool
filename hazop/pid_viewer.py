@@ -1174,7 +1174,7 @@ class SimilarSymbolSearchDialog(QDialog):
     def __init__(self, primitives, index_group, pdf_path, ref_page, ref_scale,
                  ref_bbox=None, db=None, viewer=None, template_name=None,
                  template_features=None, initial_excluded=None,
-                 native_index_group=None, parent=None):
+                 native_index_group=None, page_rotations=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Hitta liknande symbol")
         self.setMinimumWidth(360)
@@ -1183,6 +1183,11 @@ class SimilarSymbolSearchDialog(QDialog):
         self._ref_page  = ref_page
         self._ref_scale = ref_scale
         self._ref_bbox  = ref_bbox
+        # {physical_page: extra_degrees} — re-applied inside the worker's
+        # own freshly-opened document, since it never sees PIDGraphicsView's
+        # live manual-rotation-override state otherwise (2026-08-15, see
+        # NOTES.md "Hitta liknande symbol placerar fel — sidrotation").
+        self._page_rotations = page_rotations
         self._viewer    = viewer
         self._template_features = template_features
         # No vector cluster was resolved at all (a scanned page, or a
@@ -1414,6 +1419,12 @@ class SimilarSymbolSearchDialog(QDialog):
         doc = None
         try:
             doc = fitz.open(self._pdf_path)
+            # self._ref_bbox is in the LIVE view's (possibly manually
+            # rotation-overridden) coordinate space — this fresh document
+            # needs the same override re-applied before rendering, or the
+            # preview crops the wrong region entirely (2026-08-15, see
+            # NOTES.md "Hitta liknande symbol placerar fel — sidrotation").
+            equipment_detection.apply_page_rotations(doc, self._page_rotations)
             gray = image_symbol_matching.render_gray(
                 doc[self._ref_page], bbox=self._ref_bbox,
                 dpi=image_symbol_matching._DEFAULT_DPI)
@@ -1482,7 +1493,7 @@ class SimilarSymbolSearchDialog(QDialog):
             self._worker = ImageSymbolSearchWorker(
                 self._pdf_path, self._ref_page, search_bbox, pages=pages,
                 ignore_scale=self.ignore_scale(), rotation_mode=self.rotation_mode(),
-                parent=self)
+                page_rotations=self._page_rotations, parent=self)
         else:
             if self._template_features is not None:
                 ref_features = self._template_features
@@ -1496,7 +1507,7 @@ class SimilarSymbolSearchDialog(QDialog):
                 self._pdf_path, ref_features, self._ref_page,
                 ref_native_index_group, pages=pages,
                 ignore_scale=self.ignore_scale(), rotation_mode=self.rotation_mode(),
-                parent=self)
+                page_rotations=self._page_rotations, parent=self)
         self._worker.progress.connect(self._on_scan_progress)
         self._worker.finished_scan.connect(self._on_scan_finished)
         self._worker.start()
@@ -1863,6 +1874,13 @@ class EquipmentMarkerReviewDialog(QDialog):
             QMessageBox.warning(self, "Kunde inte öppna PDF", str(e))
             return
         try:
+            # res['x']/['y'] were resolved against the LIVE view's document,
+            # which has any manual per-page rotation override already
+            # applied — this freshly-opened one needs the same override
+            # re-applied, or the lookup misses/misplaces entirely on a
+            # page with an override (2026-08-15, see NOTES.md "Hitta
+            # liknande symbol placerar fel — sidrotation").
+            equipment_detection.apply_page_rotations(doc, self.db.get_all_page_rotations())
             resolved = equipment_detection.resolve_reference_cluster(
                 doc, res['page'], res['x'], res['y'])
             if resolved is not None:
@@ -3515,12 +3533,22 @@ class SimilarSymbolSearchWorker(QThread):
     Returns the RAW, unthresholded candidate list — the dialog applies
     min_similarity itself, both for the live match-count/on-canvas
     preview as the threshold slider moves and again when the search is
-    finally confirmed, without ever re-scanning the document."""
+    finally confirmed, without ever re-scanning the document.
+
+    page_rotations (2026-08-15, see NOTES.md "Hitta liknande symbol
+    placerar fel — sidrotation"): {physical_page: extra_degrees}, as
+    Database.get_all_page_rotations() returns — this worker's own
+    fitz.open() never goes through PIDGraphicsView's manual-rotation-
+    override machinery, so without re-applying it here, a page with an
+    override gets its geometry computed in the wrong coordinate space
+    entirely, silently misplacing every result found on/via that page
+    even though the shape matching itself still works correctly."""
     progress      = pyqtSignal(int, int, str)   # (page_num, total, msg)
     finished_scan = pyqtSignal(list)             # ALWAYS emitted
 
     def __init__(self, pdf_path, ref_features, ref_page, ref_native_index_group,
-                 pages=None, ignore_scale=False, rotation_mode='none', parent=None):
+                 pages=None, ignore_scale=False, rotation_mode='none',
+                 page_rotations=None, parent=None):
         super().__init__(parent)
         self._pdf_path              = str(pdf_path)
         self._ref_features          = ref_features
@@ -3529,11 +3557,13 @@ class SimilarSymbolSearchWorker(QThread):
         self._pages                 = list(pages) if pages is not None else None
         self._ignore_scale          = ignore_scale
         self._rotation_mode         = rotation_mode
+        self._page_rotations        = dict(page_rotations) if page_rotations else {}
 
     def run(self):
         doc = None
         try:
             doc = fitz.open(self._pdf_path)
+            equipment_detection.apply_page_rotations(doc, self._page_rotations)
             candidates = equipment_detection._scan_candidates(
                 doc, self._ref_features, self._ref_page, self._ref_native_index_group,
                 pages=self._pages, rotation_mode=self._rotation_mode,
@@ -3562,12 +3592,21 @@ class ImageSymbolSearchWorker(QThread):
     equipment_detection._scan_candidates(). Returns the same
     (sim, page_num, x, y, outline) tuple contract, so
     SimilarSymbolSearchDialog's threshold/count/preview code needs no
-    branching of its own to handle either matching method's results."""
+    branching of its own to handle either matching method's results.
+
+    page_rotations — same purpose/reasoning as
+    SimilarSymbolSearchWorker's own parameter above: this worker's own
+    fitz.open() never sees PIDGraphicsView's manual rotation overrides,
+    so ref_bbox itself (already in the LIVE view's rotated coordinate
+    space) would be cropped from the WRONG region of a freshly-opened,
+    un-rotated page, and any found candidate's outline would land in
+    the wrong space too."""
     progress      = pyqtSignal(int, int, str)
     finished_scan = pyqtSignal(list)
 
     def __init__(self, pdf_path, ref_page, ref_bbox, pages=None,
-                 ignore_scale=False, rotation_mode='none', parent=None):
+                 ignore_scale=False, rotation_mode='none',
+                 page_rotations=None, parent=None):
         super().__init__(parent)
         self._pdf_path     = str(pdf_path)
         self._ref_page     = ref_page
@@ -3575,11 +3614,13 @@ class ImageSymbolSearchWorker(QThread):
         self._pages        = list(pages) if pages is not None else None
         self._ignore_scale = ignore_scale
         self._rotation_mode = rotation_mode
+        self._page_rotations = dict(page_rotations) if page_rotations else {}
 
     def run(self):
         doc = None
         try:
             doc = fitz.open(self._pdf_path)
+            equipment_detection.apply_page_rotations(doc, self._page_rotations)
             candidates = image_symbol_matching.find_similar_shapes_visual(
                 doc, self._ref_page, self._ref_bbox, pages=self._pages,
                 ignore_scale=self._ignore_scale, rotation_mode=self._rotation_mode,
@@ -9365,7 +9406,8 @@ class PIDPanel(QWidget):
             fallback_bbox = (pdf_x - half, pdf_y - half, pdf_x + half, pdf_y + half)
             params_dlg = SimilarSymbolSearchDialog(
                 None, None, self.viewer._pdf_path, page, ref_scale,
-                ref_bbox=fallback_bbox, db=self.db, viewer=self.viewer, parent=self)
+                ref_bbox=fallback_bbox, db=self.db, viewer=self.viewer,
+                page_rotations=self.db.get_all_page_rotations(), parent=self)
         else:
             primitives, native_index_group, ref_cluster = resolved
             radius = max(ref_scale * 1.0, 12.0)
@@ -9381,7 +9423,7 @@ class PIDPanel(QWidget):
                 primitives, wide_index_group, self.viewer._pdf_path, page, ref_scale,
                 ref_bbox=ref_cluster['bbox'], db=self.db, viewer=self.viewer,
                 initial_excluded=initial_excluded, native_index_group=native_index_group,
-                parent=self)
+                page_rotations=self.db.get_all_page_rotations(), parent=self)
         if params_dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
@@ -9426,7 +9468,8 @@ class PIDPanel(QWidget):
         params_dlg = SimilarSymbolSearchDialog(
             None, None, self.viewer._pdf_path, page, None,
             db=self.db, viewer=self.viewer,
-            template_name=template['name'], template_features=ref_features, parent=self)
+            template_name=template['name'], template_features=ref_features,
+            page_rotations=self.db.get_all_page_rotations(), parent=self)
         if params_dlg.exec() != QDialog.DialogCode.Accepted:
             return
 

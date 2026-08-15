@@ -1894,6 +1894,24 @@ Anton: "fixa även dina punkter" — de två öppna punkterna från föregående
 
 **Test:** `ImageRefCropCanvasTests` (5, ny klass — full bbox innan beskärning, drag ger korrekt sub-bbox, en småskaklig klick skapar ingen beskärning, återställning återger hela regionen och emitterar bara en gång, `set_reference` nollställer en tidigare beskärning), `SimilarSymbolSearchDialogTests` +2 (drag i bildläge smalnar av vad som faktiskt söks; den tomma-referensen-kraschen visar ett meddelande istället för att krascha — röd→grön verifierat separat för båda). Full svit grön.
 
+## "Hitta liknande symbol" placerar fel — sidrotation (2026-08-15)
+
+**Rapport:** "Det ser ut som den hittar massa liknande med vektor men den placerar ut dem felaktigt på P&ID:et."
+
+**Root cause, bekräftat direkt mot det aktiva projektet** (`hazop_project.db` har `pid_page_rotation = [(0, 90)]` — sida 0 manuellt roterad 90° för visning): `SimilarSymbolSearchWorker`/`ImageSymbolSearchWorker` öppnar sin EGEN `fitz.open(pdf_path)` i bakgrundstråden (avsiktligt, för att aldrig röra `Database`/den redan öppna huvuddokumentet — se befintlig konvention). Men den LEVANDE vyns dokument (`PIDGraphicsView.pdf_doc`) har redan fått den manuella rotationsöverridern applicerad via `_apply_page_rotation()`, som MUTERAR `page.rotation` i minnet (`page.set_rotation(total)`) — arbetartrådens färska dokument går ALDRIG genom den metoden.
+
+Bekräftat direkt: samma primitivs bbox blir HELT olika beroende på om `page.rotation` är 0 (arbetartrådens färska, oöverridda dokument) eller 90 (den levande vyns dokument) — t.ex. `(219.12, 412.68, 219.24, 412.80)` vs `(429.12, 219.12, 429.24, 219.24)` för exakt samma vektorstreck. `cluster_similarity`s formjämförelse är redan exakt rotationsinvariant i 90°-steg (se `oriented_features()`s docstring) — så SJÄLVA matchningen fungerar fortfarande (därav "hittar massa liknande"), men de returnerade `x`/`y`/`outline`-koordinaterna hamnar i fel koordinatrymd helt och hållet (därav "placerar dem felaktigt").
+
+**Fix:** ny `equipment_detection.apply_page_rotations(doc, page_rotations)` — komponerar varje sidas egen `/Rotate` med en EXTRA override (`{fysisk_sida: extra_grader}`, samma format som `Database.get_all_page_rotations()` redan returnerar), genom att mutera `page.rotation` — mirrorar `PIDGraphicsView._apply_page_rotation()` exakt, bara duplicerad så en bakgrundsarbetares fristående dokument kan göra samma sak.
+- `SimilarSymbolSearchWorker`/`ImageSymbolSearchWorker` fick en ny `page_rotations=None`-parameter, applicerad direkt efter `fitz.open()` i `run()`, INNAN någon geometri beräknas.
+- `SimilarSymbolSearchDialog` fick samma parameter, trådad igenom till `_restart_scan`s worker-konstruktion OCH `_render_image_preview` (som ÄVEN den öppnar ett eget färskt dokument för förhandsgranskningsbeskärningen — samma bugg, annars beskärs fel region när ett bildläge används på en roterad sida).
+- Alla tre konstruktionsställen för `SimilarSymbolSearchDialog` (`_find_similar_symbol`, dess "inget vektorkluster"-fallback, `_find_similar_symbol_from_template`) skickar nu `page_rotations=self.db.get_all_page_rotations()`.
+- Samma bugg hittades och fixades i `EquipmentMarkerReviewDialog._edit_shape()` (formredigering av en REDAN sparad markör) — exakt samma mönster (färskt dokument, ingen override), skulle annars missa eller felplacera formen för en markör på en roterad sida.
+
+**Inte fixat den här omgången (dokumenterat, inte tyst utelämnat):** `EquipmentAnalysisWorker`/`detect_equipment_and_valves()` (den äldre "🎯 Hitta objekt på P&ID"-autodetekteringen) har strukturellt SAMMA gap (eget färskt dokument, ingen `page_rotations`-parameter alls) — troligen samma sorts felplacering på en sida med manuell rotationsöverride, men inte rapporterat av Anton och inte verifierat/fixat nu. Värt att åtgärda i en framtida omgång med samma mönster.
+
+**Test:** `ApplyPageRotationsTests` (4, ny klass — no-op utan override, komponerar override med intrinsic rotation, ogiltiga sidnummer ignoreras tyst, samma primitiv hamnar i EXAKT samma koordinater som den levande vyns dokument efter fixen). `SimilarSymbolSearchWorkerTests` +1 (integrationstest: en referens löst mot ett roterat dokument hittar rätt dubblett, och dubblettens rapporterade position matchar den ROTERADE rymden, inte den naturliga). Röd→grön verifierat: utan fixen rapporterade samma dubblett vid `(300, 300)` (naturlig rymd) istället för `(100, 300)` (roterad rymd, den korrekta). Full svit grön.
+
 ---
 
 ## Kända begränsningar och tekniska skulder

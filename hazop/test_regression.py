@@ -4711,6 +4711,94 @@ class SymbolTemplateDatabaseTests(unittest.TestCase):
         self.assertEqual(json.loads(row['features_json'])['aspect'], 2.0)
 
 
+class ApplyPageRotationsTests(unittest.TestCase):
+    """equipment_detection.apply_page_rotations() (2026-08-15, see
+    NOTES.md "Hitta liknande symbol placerar fel — sidrotation"). Real
+    bug: "Det ser ut som den hittar massa liknande med vektor men den
+    placerar ut dem felaktigt på P&ID:et." Root cause: a background
+    worker's own freshly-opened fitz.Document never sees
+    PIDGraphicsView's live manual-rotation-override state, so a page
+    with an override (confirmed on the real active project: page 0 has
+    a 90-degree override in pid_page_rotation) gets its vector geometry
+    computed in the WRONG coordinate space — cluster_similarity's shape
+    scoring is already rotation-invariant in 90-degree steps so matches
+    are still found, but their x/y/outline land nowhere near where the
+    live view expects them."""
+
+    def test_noop_without_any_override(self):
+        import fitz
+        import equipment_detection as ed
+        doc = fitz.open()
+        doc.new_page(width=200, height=100)
+        ed.apply_page_rotations(doc, None)
+        self.assertEqual(doc[0].rotation, 0)
+        ed.apply_page_rotations(doc, {})
+        self.assertEqual(doc[0].rotation, 0)
+        doc.close()
+
+    def test_composes_extra_rotation_with_intrinsic(self):
+        import fitz
+        import equipment_detection as ed
+        doc = fitz.open()
+        doc.new_page(width=200, height=100)
+        doc[0].set_rotation(0)
+        ed.apply_page_rotations(doc, {0: 90})
+        self.assertEqual(doc[0].rotation, 90)
+        doc.close()
+
+    def test_out_of_range_page_numbers_are_ignored(self):
+        import fitz
+        import equipment_detection as ed
+        doc = fitz.open()
+        doc.new_page(width=200, height=100)
+        ed.apply_page_rotations(doc, {5: 90})   # must not raise
+        self.assertEqual(doc[0].rotation, 0)
+        doc.close()
+
+    def test_same_primitive_lands_in_the_same_coordinates_as_the_live_view(self):
+        """The actual bug, reproduced directly: without re-applying the
+        override, a freshly-opened document computes primitives in a
+        completely different coordinate space than the live view's own
+        (already-overridden) document — this is what silently misplaced
+        every "hitta liknande symbol" result."""
+        import fitz
+        import symbol_geometry as sg
+        import equipment_detection as ed
+        path = None
+        import tempfile, os
+        tmpdir = tempfile.mkdtemp(prefix="hazop_pagerot_test_")
+        path = os.path.join(tmpdir, "t.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=200, height=100)
+        shape = page.new_shape()
+        shape.draw_line(fitz.Point(10, 20), fitz.Point(30, 20))
+        shape.finish(color=(0, 0, 0))
+        shape.commit()
+        doc.save(path)
+        doc.close()
+
+        # LIVE view: override applied directly to the live document.
+        live_doc = fitz.open(path)
+        live_doc[0].set_rotation(90)
+        live_bbox = sg.extract_primitives(live_doc[0])[0]['bbox']
+        live_doc.close()
+
+        # Worker WITHOUT the fix: fresh doc, override never re-applied.
+        broken_doc = fitz.open(path)
+        broken_bbox = sg.extract_primitives(broken_doc[0])[0]['bbox']
+        broken_doc.close()
+        self.assertNotEqual(broken_bbox, live_bbox,
+            "sanity check: an unfixed fresh document really does diverge")
+
+        # Worker WITH the fix.
+        fixed_doc = fitz.open(path)
+        ed.apply_page_rotations(fixed_doc, {0: 90})
+        fixed_bbox = sg.extract_primitives(fixed_doc[0])[0]['bbox']
+        fixed_doc.close()
+        self.assertEqual(fixed_bbox, live_bbox)
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 class FindSimilarShapesSearchParametersTests(unittest.TestCase):
     """"Hitta liknande symbol" — sökparametrar (2026-08-14, see NOTES.md):
     find_similar_shapes()'s new ignore_scale/rotation_mode/
@@ -5269,7 +5357,8 @@ class _SyncFakeSimilarSymbolSearchWorker(QThread):
     next_candidates = []   # overridden per-test
 
     def __init__(self, pdf_path, ref_features, ref_page, ref_native_index_group,
-                 pages=None, ignore_scale=False, rotation_mode='none', parent=None):
+                 pages=None, ignore_scale=False, rotation_mode='none',
+                 page_rotations=None, parent=None):
         super().__init__()
         self.start_count = 0
         self._ref_features = ref_features
@@ -5278,6 +5367,7 @@ class _SyncFakeSimilarSymbolSearchWorker(QThread):
         self._pages = pages
         self._ignore_scale = ignore_scale
         self._rotation_mode = rotation_mode
+        self._page_rotations = page_rotations
         type(self).instances.append(self)
 
     instances = []   # every instance constructed during a test, for call-count assertions
@@ -5309,7 +5399,8 @@ class _SyncFakeImageSymbolSearchWorker(QThread):
     instances = []
 
     def __init__(self, pdf_path, ref_page, ref_bbox, pages=None,
-                 ignore_scale=False, rotation_mode='none', parent=None):
+                 ignore_scale=False, rotation_mode='none',
+                 page_rotations=None, parent=None):
         super().__init__()
         self.start_count = 0
         self._ref_page = ref_page
@@ -5317,6 +5408,7 @@ class _SyncFakeImageSymbolSearchWorker(QThread):
         self._pages = pages
         self._ignore_scale = ignore_scale
         self._rotation_mode = rotation_mode
+        self._page_rotations = page_rotations
         type(self).instances.append(self)
 
     def start(self):
@@ -5903,6 +5995,64 @@ class SimilarSymbolSearchWorkerTests(unittest.TestCase):
         candidates = received.get('candidates')
         self.assertTrue(candidates)
         self.assertGreater(max(c[0] for c in candidates), 0.9)
+
+    def test_page_rotations_places_candidates_in_the_live_views_coordinate_space(self):
+        """The actual reported bug ("hittar massa liknande med vektor men
+        placerar ut dem felaktigt"): without page_rotations, a candidate
+        found on a page with a manual rotation override is reported in
+        the page's NATIVE coordinate space while the live view expects
+        the OVERRIDDEN one — same physical symbol, wrong reported
+        position. Confirmed on the real active project (page 0 has a
+        90-degree override in pid_page_rotation)."""
+        import fitz
+        import symbol_geometry as sg
+        from equipment_detection import resolve_reference_cluster
+        from pid_viewer import SimilarSymbolSearchWorker
+
+        path = os.path.join(self._tmpdir, "rotworker.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=400, height=400)
+        shape = page.new_shape()
+
+        def bowtie(cx, cy):
+            shape.draw_polyline([fitz.Point(cx - 10, cy - 10), fitz.Point(cx - 10, cy + 10),
+                                 fitz.Point(cx, cy)])
+            shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+            shape.draw_polyline([fitz.Point(cx + 10, cy - 10), fitz.Point(cx + 10, cy + 10),
+                                 fitz.Point(cx, cy)])
+            shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
+
+        bowtie(60, 60)
+        bowtie(300, 300)
+        shape.commit()
+        doc.save(path)
+        doc.close()
+
+        # LIVE view: the manual override already applied, as PIDGraphicsView
+        # would — the reference is resolved using ROTATED-space coordinates.
+        live_doc = fitz.open(path)
+        live_doc[0].set_rotation(90)
+        primitives, index_group, cluster = resolve_reference_cluster(live_doc, 0, 340, 60)
+        self.assertIsNotNone(cluster, "sanity check: reference must resolve in rotated space")
+        ref_features = sg.similarity_features(primitives, index_group)
+        native_index_group = cluster['_index_group']
+        live_doc.close()
+
+        received = {}
+        worker = SimilarSymbolSearchWorker(
+            path, ref_features, 0, native_index_group, pages=[0],
+            page_rotations={0: 90})
+        worker.finished_scan.connect(lambda c: received.setdefault('candidates', c))
+        worker.start()
+        self.assertTrue(worker.wait(5000), "worker.run() did not finish within 5s")
+        self.app.processEvents()
+        candidates = [c for c in received.get('candidates', []) if c[0] > 0.9]
+        self.assertTrue(candidates, "the other bow-tie must still be found")
+        cx, cy = candidates[0][2], candidates[0][3]
+        # Rotated-space center of the OTHER bow-tie is ~(100, 300) — its
+        # NATIVE-space center (300, 300) would mean the fix is inert.
+        self.assertAlmostEqual(cx, 100.0, delta=2.0)
+        self.assertAlmostEqual(cy, 300.0, delta=2.0)
 
 
 class ImageSymbolSearchWorkerTests(unittest.TestCase):
