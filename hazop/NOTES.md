@@ -1914,6 +1914,26 @@ Bekräftat direkt: samma primitivs bbox blir HELT olika beroende på om `page.ro
 
 ---
 
+## Referens-canvasen: rendera fyllnad som svart + gruppera klick per ritad väg (2026-08-15)
+
+**Rapport:** Anton skickade en skärmdump (`hazop/Screenshot 2026-08-15 182045.png`) av referensformen i "Hitta liknande symbol" — en ventil visad som ett virrvarr av tunna, delvis parallella linjer. Hans diagnos: "Jag gissar att det är dubbla linjer för att det ska finnas en gräns för var vilken del som ska renderas svart." Två önskemål: (1) rendera fyllda ytor som svart, "om det är så pdf-läsaren renderar det", (2) förenkla klustret så det blir lättare att välja liknande symboler — gissade "7 streck" borde räcka. Planerad i plan mode, godkänd.
+
+**Root cause:** `_ClusterPreviewCanvas.paintEvent` (pid_viewer.py) ritade VARJE primitiv som en egen tunn `QPen`-linje, aldrig med fyllnad — så en tesselerad triangel (samma ventil som i föregående rondar: 103 primitiver) visades som dussintals nästan överlappande strecksegment istället för EN svart kil.
+
+**Fix 1 — gruppering per `source` istället för per primitiv:**
+- `symbol_geometry.extract_primitives()` sätter redan `filled` EN gång per ritad väg (`source`-index) — en redan existerande, principbaserad gruppering att återanvända, ingen ny uppfinning. Verifierat mot den riktiga filen: 103 primitiver → **12** källgrupper (nära Antons gissning "7", utan att hårdkoda ett godtyckligt tal).
+- `_ClusterPreviewCanvas` fick `self._groups` (source → primitiv-index) och `self._excluded_sources` (ersätter `self._excluded`, nu en mängd KÄLLOR inte primitiv-index). `edited_index_group()` behåller sitt PUBLIKA kontrakt (primitiv-index) — bara omräknat via källa. `mousePressEvent` slår upp klickad primitivs `source` och växlar HELA källan.
+- 17 befintliga testreferenser till `_excluded`/hårdkodade `'source': 0`-fixturer migrerade — `_line()`-hjälparna i tre testklasser fick ett `source=`-argument, uppdaterade att skicka distinkta källor där oberoende klick-beteende testas.
+
+**Fix 2 — fyllda grupper renderas som konvext skrov, inte en hopkedjad kontur:**
+Ett första försök (kedja ihop varje grupps primitiver i extraherad ordning till EN `QPainterPath`) visade sig FEL vid faktisk rendering mot den riktiga ventilen — en enda ritad väg kan innehålla FLERA separata konturer (en textglyfs yttre kant PLUS dess egna hål, eller genuint osammanhängande tesselerade bitar som råkar dela källa), och att svetsa ihop dem till EN sammanhängande deltakontur fick `fillPath()`s "winding rule" att nästan ta ut sig själv — resultatet blev en nästan-ihålig kontur istället för den solida svarta ytan. Löst med en **konvext skrov** (monotone-chain) av alla en grupps punkter istället — kräver ingen antagande om ordning alls, och är EXAKT för det drivande fallet (en bowtie-ventils triangelhalvor är redan konvexa). Verifierat visuellt mot både den riktiga ventilen och en riktig pump (Smurfit Kappa-filen från föregående runda) — båda nu tydligt igenkännbara som solida svarta former istället för strecksoppa.
+
+**Känd kvarstående nyans (inte en bugg, en data-tvetydighet redan dokumenterad i en tidigare rond):** för just DEN specifika ventilen visade det sig tidigare att referens-bboxen råkar innehålla både ventilikonen OCH den intilliggande texten "1/2''" geometriskt sammanflätade — konvexa skrov av blandat ventil-/textinnehåll ger inte alltid en perfekt visuellt "ren" uppdelning för just detta fall. Detta är samma kända begränsning som redan noterades i "Bildbaserad 'hitta liknande symbol'"-rondens fynd 1, inte en ny brist i den här fixen.
+
+**Test:** `ClusterPreviewCanvasTests` +3 (två primitiver som delar en källa växlas TILLSAMMANS vid ett klick; `edited_index_group()` förblir primitiv-granulär trots källbaserad uteslutning; en fylld grupp renderar som en solid region — pixel-sampling via `.grab()`/`QImage`, samma teknik `RiskCellActualRenderColorTests` redan använder). Röd→grön verifierat separat för källgrupperingen (tillfälligt återgick till primitiv-index-baserad växling) OCH fyllnadslogiken (tillfälligt inaktiverade `fillPath`-grenen). Full svit grön.
+
+---
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

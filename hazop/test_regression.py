@@ -5100,14 +5100,14 @@ class ClusterPreviewCanvasTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = _ensure_qapp()
 
-    def _line(self, x0, y0, x1, y1):
+    def _line(self, x0, y0, x1, y1, source=0, filled=False):
         return {'kind': 'l', 'bbox': (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)),
-                'p0': (x0, y0), 'p1': (x1, y1), 'closed': False, 'filled': False,
-                'width': 1.0, 'source': 0}
+                'p0': (x0, y0), 'p1': (x1, y1), 'closed': False, 'filled': filled,
+                'width': 1.0, 'source': source}
 
     def test_edited_index_group_starts_as_the_full_group(self):
         from pid_viewer import _ClusterPreviewCanvas
-        prims = [self._line(0, 0, 10, 0), self._line(10, 0, 10, 10)]
+        prims = [self._line(0, 0, 10, 0, source=0), self._line(10, 0, 10, 10, source=1)]
         canvas = _ClusterPreviewCanvas(prims, [0, 1])
         try:
             self.assertEqual(canvas.edited_index_group(), [0, 1])
@@ -5126,7 +5126,7 @@ class ClusterPreviewCanvasTests(unittest.TestCase):
 
     def test_clicking_a_segment_toggles_its_exclusion(self):
         from pid_viewer import _ClusterPreviewCanvas
-        prims = [self._line(0, 0, 10, 0), self._line(0, 20, 10, 20)]
+        prims = [self._line(0, 0, 10, 0, source=0), self._line(0, 20, 10, 20, source=1)]
         canvas = _ClusterPreviewCanvas(prims, [0, 1])
         try:
             canvas.resize(240, 180)
@@ -5176,12 +5176,12 @@ class ClusterPreviewCanvasTests(unittest.TestCase):
         NOTES.md) — excluding the "pipe" primitive must shrink the
         returned outline to just the remaining ("valve") primitives."""
         from pid_viewer import _ClusterPreviewCanvas
-        valve = self._line(0, 0, 10, 10)     # bbox (0,0,10,10)
-        pipe = self._line(10, 10, 100, 10)   # bbox (10,10,100,10) — stretches the outline far out
+        valve = self._line(0, 0, 10, 10, source=0)     # bbox (0,0,10,10)
+        pipe = self._line(10, 10, 100, 10, source=1)   # bbox (10,10,100,10) — stretches the outline far out
         canvas = _ClusterPreviewCanvas([valve, pipe], [0, 1])
         try:
             self.assertEqual(canvas.edited_outline(), [[0, 0], [100, 0], [100, 10], [0, 10]])
-            canvas._excluded.add(1)   # exclude the "pipe"
+            canvas._excluded_sources.add(1)   # exclude the "pipe"
             self.assertEqual(canvas.edited_outline(), [[0, 0], [10, 0], [10, 10], [0, 10]])
         finally:
             canvas.deleteLater()
@@ -5190,8 +5190,78 @@ class ClusterPreviewCanvasTests(unittest.TestCase):
         from pid_viewer import _ClusterPreviewCanvas
         canvas = _ClusterPreviewCanvas([self._line(0, 0, 10, 0)], [0])
         try:
-            canvas._excluded.add(0)
+            canvas._excluded_sources.add(0)
             self.assertEqual(canvas.edited_outline(), [])
+        finally:
+            canvas.deleteLater()
+
+    def test_primitives_sharing_a_source_toggle_together(self):
+        """The whole point of grouping by source (2026-08-15, see
+        NOTES.md "Referens-canvasen: rendera fyllnad som svart + gruppera
+        klick per ritad väg") — a tessellated shape's fragments all
+        share one drawn path and must exclude/include as ONE unit, not
+        one tiny fragment at a time."""
+        from pid_viewer import _ClusterPreviewCanvas
+        # Two fragments of the SAME source, physically apart within the
+        # canvas — clicking either one must toggle BOTH.
+        frag_a = self._line(0, 0, 2, 0, source=5)
+        frag_b = self._line(0, 20, 2, 20, source=5)
+        other = self._line(50, 50, 52, 50, source=9)
+        canvas = _ClusterPreviewCanvas([frag_a, frag_b, other], [0, 1, 2])
+        try:
+            canvas.resize(240, 180)
+            scale, ox, oy = canvas._transform()
+            mx, my = 1 * scale + ox, 0 * scale + oy
+            self._click_at(canvas, mx, my)
+            self.assertEqual(canvas.edited_index_group(), [2],
+                "clicking one fragment of source 5 must exclude BOTH its fragments")
+        finally:
+            canvas.deleteLater()
+
+    def test_edited_index_group_stays_primitive_granular(self):
+        """Even though exclusion is per-source, the public contract
+        (edited_index_group -> similarity_features's ref_index_group)
+        must still be primitive indices, not source ids."""
+        from pid_viewer import _ClusterPreviewCanvas
+        prims = [self._line(0, 0, 2, 0, source=5), self._line(0, 20, 2, 20, source=5)]
+        canvas = _ClusterPreviewCanvas(prims, [0, 1])
+        try:
+            self.assertEqual(canvas.edited_index_group(), [0, 1])
+            canvas._excluded_sources.add(5)
+            self.assertEqual(canvas.edited_index_group(), [])
+        finally:
+            canvas.deleteLater()
+
+    def test_filled_group_renders_as_a_solid_region(self):
+        """Anton's screenshot report (2026-08-15, see NOTES.md): a
+        filled shape tessellated into many strokes used to render as a
+        tangle of thin lines instead of the solid black region a real
+        PDF viewer draws. Sample actual rendered pixels (same technique
+        RiskCellActualRenderColorTests already uses) to verify a point
+        INSIDE the filled triangle is dark and a point clearly OUTSIDE
+        it is still the white background."""
+        from pid_viewer import _ClusterPreviewCanvas
+        # A filled right triangle, its 3 edges tessellated into separate
+        # 'l' primitives (mirrors a real tessellated fill), all one source.
+        prims = [
+            self._line(0, 0, 40, 0, source=1, filled=True),
+            self._line(40, 0, 0, 40, source=1, filled=True),
+            self._line(0, 40, 0, 0, source=1, filled=True),
+        ]
+        canvas = _ClusterPreviewCanvas(prims, [0, 1, 2])
+        try:
+            canvas.resize(200, 200)
+            pix = canvas.grab()
+            img = pix.toImage()
+            scale, ox, oy = canvas._transform()
+            # Well inside the triangle (near its centroid).
+            inside = img.pixelColor(int(12 * scale + ox), int(12 * scale + oy))
+            # Outside the triangle's bbox entirely — must stay background white.
+            outside = img.pixelColor(int(img.width() - 5), int(5))
+            self.assertLess(inside.lightness(), 128,
+                f"inside the filled triangle should be dark, got {inside.name()}")
+            self.assertGreater(outside.lightness(), 200,
+                f"outside the shape should stay white background, got {outside.name()}")
         finally:
             canvas.deleteLater()
 
@@ -5206,18 +5276,18 @@ class MarkerShapeEditDialogTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = _ensure_qapp()
 
-    def _line(self, x0, y0, x1, y1):
+    def _line(self, x0, y0, x1, y1, source=0):
         return {'kind': 'l', 'bbox': (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)),
                 'p0': (x0, y0), 'p1': (x1, y1), 'closed': False, 'filled': False,
-                'width': 1.0, 'source': 0}
+                'width': 1.0, 'source': source}
 
     def test_ok_returns_the_canvas_edited_outline(self):
         from pid_viewer import MarkerShapeEditDialog
         from PyQt6.QtWidgets import QDialog
-        prims = [self._line(0, 0, 10, 0), self._line(10, 0, 50, 0)]
+        prims = [self._line(0, 0, 10, 0, source=0), self._line(10, 0, 50, 0, source=1)]
         dlg = MarkerShapeEditDialog(prims, [0, 1])
         try:
-            dlg._canvas._excluded.add(1)
+            dlg._canvas._excluded_sources.add(1)
             dlg.accept()
             self.assertEqual(dlg.result(), QDialog.DialogCode.Accepted)
             self.assertEqual(dlg.edited_outline(), [[0, 0], [10, 0], [10, 0], [0, 0]])
@@ -5460,14 +5530,14 @@ class SimilarSymbolSearchDialogTests(unittest.TestCase):
             except Exception:
                 pass
 
-    def _line(self, x0, y0, x1, y1):
+    def _line(self, x0, y0, x1, y1, source=0):
         return {'kind': 'l', 'bbox': (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)),
                 'p0': (x0, y0), 'p1': (x1, y1), 'closed': False, 'filled': False,
-                'width': 1.0, 'source': 0}
+                'width': 1.0, 'source': source}
 
     def _dialog(self, viewer=None, db=None):
         from pid_viewer import SimilarSymbolSearchDialog
-        prims = [self._line(0, 0, 10, 0), self._line(10, 0, 10, 10)]
+        prims = [self._line(0, 0, 10, 0, source=0), self._line(10, 0, 10, 10, source=1)]
         return SimilarSymbolSearchDialog(prims, [0, 1], 'fake.pdf', 0, 10.0,
                                           ref_bbox=(0, 0, 10, 10), db=db, viewer=viewer)
 
@@ -5576,7 +5646,7 @@ class SimilarSymbolSearchDialogTests(unittest.TestCase):
     def test_excluding_a_segment_in_the_canvas_restarts_the_scan(self):
         dlg = self._dialog()
         try:
-            dlg._canvas._excluded.add(1)
+            dlg._canvas._excluded_sources.add(1)
             dlg._canvas.selection_changed.emit()
             self.assertEqual(dlg.edited_index_group(), [0])
             self.assertEqual(len(_SyncFakeSimilarSymbolSearchWorker.instances), 2,
@@ -5592,7 +5662,7 @@ class SimilarSymbolSearchDialogTests(unittest.TestCase):
         to restart."""
         dlg = self._dialog()
         try:
-            dlg._canvas._excluded.update({0, 1})
+            dlg._canvas._excluded_sources.update({0, 1})
             dlg._canvas.selection_changed.emit()   # must not raise
             self.assertEqual(dlg.edited_index_group(), [])
             self.assertIn("Inget kvar", dlg._status_lbl.text())

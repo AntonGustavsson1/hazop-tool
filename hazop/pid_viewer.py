@@ -807,7 +807,22 @@ class _ClusterPreviewCanvas(QWidget):
     missed, not just exclude one it wrongly included — needed on very
     densely-fragmented CAD exports where a real symbol's own strokes can
     end up split across many small, ungrouped pieces that auto-detection
-    alone has nothing complete to offer for."""
+    alone has nothing complete to offer for.
+
+    Click/exclusion/render granularity is per drawn PATH (`source`), not
+    per individual primitive (2026-08-15, see NOTES.md "Referens-
+    canvasen: rendera fyllnad som svart + gruppera klick per ritad väg").
+    A single filled shape (a valve's triangle) can be tessellated into
+    dozens of tiny line/curve fragments that all share one `source` —
+    confirmed on a real file: one small valve's own body+stem spanned
+    ~103 primitives across ~12 sources. Rendering and toggling each
+    fragment independently made the reference look like a tangle of
+    thin strokes instead of the solid filled shape a real PDF viewer
+    draws, and made "exclude the one wrong piece" impractical to click
+    precisely. Grouping by `source` (already the unit `extract_primitives`
+    itself groups a fill flag by — every primitive from one drawn path
+    shares the same `filled` value) fixes both: a whole shape toggles as
+    one unit, and a filled group renders as one solid region."""
 
     selection_changed = pyqtSignal()
 
@@ -818,16 +833,25 @@ class _ClusterPreviewCanvas(QWidget):
         super().__init__(parent)
         self._primitives = primitives
         self._index_group = list(index_group)
-        self._excluded = set(initial_excluded) if initial_excluded else set()
+        self._groups = {}   # source -> [primitive indices], in index_group order
+        for i in self._index_group:
+            self._groups.setdefault(primitives[i]['source'], []).append(i)
+        if initial_excluded:
+            self._excluded_sources = {primitives[i]['source'] for i in initial_excluded}
+        else:
+            self._excluded_sources = set()
         self.setMinimumSize(240, 180)
 
     def edited_index_group(self):
         """The surviving (non-excluded) primitive indices — this
-        widget's whole reason for existing."""
-        return [i for i in self._index_group if i not in self._excluded]
+        widget's whole reason for existing. Still primitive-index-
+        granular (find_similar_shapes()'s own contract), even though
+        exclusion itself now operates per source group."""
+        return [i for i in self._index_group
+                if self._primitives[i]['source'] not in self._excluded_sources]
 
     def has_edits(self):
-        return bool(self._excluded)
+        return bool(self._excluded_sources)
 
     def edited_outline(self):
         """The bbox-corner polygon of just the surviving (non-excluded)
@@ -885,19 +909,74 @@ class _ClusterPreviewCanvas(QWidget):
             corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
         return corners + [corners[0]]
 
+    def _group_points(self, indices):
+        """Every (widget-space) point belonging to this group's
+        primitives, in whatever order extract_primitives happened to
+        list them."""
+        pts = []
+        for i in indices:
+            pts.extend(self._to_widget(x, y) for x, y in self._primitive_polyline(i))
+        return pts
+
+    @staticmethod
+    def _convex_hull(points):
+        """Standard monotone-chain convex hull. Used (not a reconstructed
+        boundary path) to approximate a filled group's solid region —
+        chaining a tessellated shape's fragments in extraction order as
+        if they were sequential boundary edges is fragile: a single
+        drawn path can hold SEVERAL disjoint contours (a text glyph's
+        outer edge plus its own inner hole, or genuinely unconnected
+        tessellated pieces sharing one source) and welding them into one
+        subpath made fillPath()'s winding rule mostly cancel itself out,
+        rendering as a near-hollow outline instead of the solid black
+        region a real PDF viewer draws — confirmed by directly rendering
+        the real Shell/St1 PEFS valve (2026-08-15, see NOTES.md). A
+        convex hull needs no ordering assumption at all, and is exact
+        for the motivating case (a bow-tie valve's own triangle halves
+        are already convex)."""
+        pts = sorted(set(points))
+        if len(pts) <= 2:
+            return pts
+
+        def cross(o, a, b):
+            return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+        lower = []
+        for p in pts:
+            while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+                lower.pop()
+            lower.append(p)
+        upper = []
+        for p in reversed(pts):
+            while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+                upper.pop()
+            upper.append(p)
+        return lower[:-1] + upper[:-1]
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), QColor('#ffffff'))
-        for i in self._index_group:
-            pts = [self._to_widget(x, y) for x, y in self._primitive_polyline(i)]
-            excluded = i in self._excluded
-            pen = QPen(QColor('#B3B7B2') if excluded else QColor('#17191C'),
-                      1.6 if excluded else 2.0)
-            pen.setStyle(Qt.PenStyle.DashLine if excluded else Qt.PenStyle.SolidLine)
-            painter.setPen(pen)
-            for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
-                painter.drawLine(QPointF(x0, y0), QPointF(x1, y1))
+        for source, indices in self._groups.items():
+            if not indices:
+                continue
+            excluded = source in self._excluded_sources
+            color = QColor('#B3B7B2') if excluded else QColor('#17191C')
+            if self._primitives[indices[0]]['filled']:
+                hull = self._convex_hull(self._group_points(indices))
+                if len(hull) >= 3:
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(color)
+                    painter.drawPolygon(QPolygonF([QPointF(x, y) for x, y in hull]))
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+            else:
+                pen = QPen(color, 1.6 if excluded else 2.0)
+                pen.setStyle(Qt.PenStyle.DashLine if excluded else Qt.PenStyle.SolidLine)
+                painter.setPen(pen)
+                for i in indices:
+                    pts = [self._to_widget(x, y) for x, y in self._primitive_polyline(i)]
+                    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+                        painter.drawLine(QPointF(x0, y0), QPointF(x1, y1))
         painter.end()
 
     def mousePressEvent(self, event):
@@ -912,10 +991,11 @@ class _ClusterPreviewCanvas(QWidget):
                 if d < best_d:
                     best_d, best_i = d, i
         if best_i is not None:
-            if best_i in self._excluded:
-                self._excluded.discard(best_i)
+            source = self._primitives[best_i]['source']
+            if source in self._excluded_sources:
+                self._excluded_sources.discard(source)
             else:
-                self._excluded.add(best_i)
+                self._excluded_sources.add(source)
             self.update()
             self.selection_changed.emit()
 
