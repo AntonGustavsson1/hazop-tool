@@ -795,18 +795,29 @@ class _ClusterPreviewCanvas(QWidget):
     "ta bort något som inte tillhör" (Anton's example: a valve whose
     auto-detected cluster pulled in an attached pipe stub). The
     surviving (non-excluded) primitive indices become
-    find_similar_shapes()'s ref_index_group."""
+    find_similar_shapes()'s ref_index_group.
+
+    `initial_excluded` (2026-08-15, see NOTES.md "'Hitta liknande
+    symbol' visar bara ett streck") — `index_group` can be WIDER than
+    just what auto-detection found (e.g. every primitive within some
+    radius of the click point, via symbol_geometry.primitives_near_point),
+    with everything outside the auto-detected core starting excluded.
+    This lets the user click to ADD a nearby primitive the clustering
+    missed, not just exclude one it wrongly included — needed on very
+    densely-fragmented CAD exports where a real symbol's own strokes can
+    end up split across many small, ungrouped pieces that auto-detection
+    alone has nothing complete to offer for."""
 
     selection_changed = pyqtSignal()
 
     _MARGIN = 12
     _HIT_TOL = 7.0   # px
 
-    def __init__(self, primitives, index_group, parent=None):
+    def __init__(self, primitives, index_group, parent=None, initial_excluded=None):
         super().__init__(parent)
         self._primitives = primitives
         self._index_group = list(index_group)
-        self._excluded = set()
+        self._excluded = set(initial_excluded) if initial_excluded else set()
         self.setMinimumSize(240, 180)
 
     def edited_index_group(self):
@@ -816,15 +827,6 @@ class _ClusterPreviewCanvas(QWidget):
 
     def has_edits(self):
         return bool(self._excluded)
-
-    def native_index_group(self):
-        """The original, un-edited full index group this canvas was
-        constructed with (2026-08-15, see NOTES.md "Hitta liknande
-        symbol" — uppföljningsfunktioner) — used to identify the
-        reference cluster itself when re-scanning the document (see
-        equipment_detection._scan_candidates' ref_native_index_group),
-        regardless of what the user has excluded in edited_index_group()."""
-        return list(self._index_group)
 
     def edited_outline(self):
         """The bbox-corner polygon of just the surviving (non-excluded)
@@ -926,16 +928,18 @@ class MarkerShapeEditDialog(QDialog):
     clicked away before it's saved. Opened from
     EquipmentMarkerReviewDialog's per-row "✏ Form" button."""
 
-    def __init__(self, primitives, index_group, parent=None):
+    def __init__(self, primitives, index_group, parent=None, initial_excluded=None):
         super().__init__(parent)
         self.setWindowTitle("Redigera form")
         self.setMinimumWidth(280)
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(
-            "Klicka ett segment för att utesluta det (t.ex. en ledning "
-            "som råkade följa med):"))
-        self._canvas = _ClusterPreviewCanvas(primitives, index_group)
+            "Klicka ett segment för att utesluta eller lägga till det "
+            "(t.ex. en ledning som råkade följa med, eller en bit som "
+            "inte hittades automatiskt):"))
+        self._canvas = _ClusterPreviewCanvas(
+            primitives, index_group, initial_excluded=initial_excluded)
         layout.addWidget(self._canvas)
 
         btns = QHBoxLayout()
@@ -1003,7 +1007,7 @@ class SimilarSymbolSearchDialog(QDialog):
 
     def __init__(self, primitives, index_group, pdf_path, ref_page, ref_scale,
                  db=None, viewer=None, template_name=None, template_features=None,
-                 parent=None):
+                 initial_excluded=None, native_index_group=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Hitta liknande symbol")
         self.setMinimumWidth(360)
@@ -1013,6 +1017,14 @@ class SimilarSymbolSearchDialog(QDialog):
         self._ref_scale = ref_scale
         self._viewer    = viewer
         self._template_features = template_features
+        # The auto-detected group ALONE (never the wider, nearby-primitives
+        # display set _ClusterPreviewCanvas may also show — see
+        # initial_excluded above) — this is what identifies the reference
+        # among its own page's candidates during a scan (see _restart_scan),
+        # so widening what's shown for editing must never widen what's
+        # excluded from the results as "the reference itself" too.
+        self._native_index_group = (native_index_group if native_index_group is not None
+                                    else index_group)
         self._worker     = None
         self._candidates = []   # raw (sim, page_num, x, y, outline) tuples
 
@@ -1025,9 +1037,12 @@ class SimilarSymbolSearchDialog(QDialog):
             self._canvas = None
         else:
             layout.addWidget(QLabel(
-                "<b>Referensform</b> — klicka ett segment för att utesluta det "
-                "(t.ex. en ledning som råkade följa med en ventil):"))
-            self._canvas = _ClusterPreviewCanvas(primitives, index_group)
+                "<b>Referensform</b> — klicka ett segment för att utesluta "
+                "eller lägga till det (t.ex. en ledning som råkade följa med "
+                "en ventil, eller en bit av ventilen som inte hittades "
+                "automatiskt):"))
+            self._canvas = _ClusterPreviewCanvas(
+                primitives, index_group, initial_excluded=initial_excluded)
             self._canvas.selection_changed.connect(self._restart_scan)
             layout.addWidget(self._canvas)
 
@@ -1181,7 +1196,7 @@ class SimilarSymbolSearchDialog(QDialog):
             ref_features = symbol_geometry.similarity_features(
                 self._canvas._primitives, self.edited_index_group(),
                 self._ref_scale, rotation_mode=self.rotation_mode())
-            ref_native_index_group = self._canvas.native_index_group()
+            ref_native_index_group = self._native_index_group
         pages = [self._ref_page] if self.search_this_page_only() else None
         self._worker = SimilarSymbolSearchWorker(
             self._pdf_path, ref_features, self._ref_page,
@@ -1539,7 +1554,14 @@ class EquipmentMarkerReviewDialog(QDialog):
         (equipment_detection.resolve_reference_cluster, same lookup
         "Hitta liknande symbol" uses) and lets the user prune it via
         MarkerShapeEditDialog, updating this row's outline (and its
-        x/y, re-centred on whatever's left) on OK."""
+        x/y, re-centred on whatever's left) on OK.
+
+        2026-08-15 follow-up (see NOTES.md "'Hitta liknande symbol'
+        visar bara ett streck"): also shows every primitive within a
+        generous radius of the marker, not just what auto-detection
+        grouped together — see _find_similar_symbol's matching note for
+        why (densely-fragmented CAD exports can leave a real symbol's
+        own strokes split across many small, ungrouped pieces)."""
         res = self._results[row]
         try:
             doc = fitz.open(self._pdf_path)
@@ -1549,6 +1571,8 @@ class EquipmentMarkerReviewDialog(QDialog):
         try:
             resolved = equipment_detection.resolve_reference_cluster(
                 doc, res['page'], res['x'], res['y'])
+            if resolved is not None:
+                ref_scale = symbol_geometry.dominant_text_size(doc[res['page']])
         finally:
             doc.close()
         if resolved is None:
@@ -1556,8 +1580,14 @@ class EquipmentMarkerReviewDialog(QDialog):
                 self, "Ingen form att redigera",
                 "Hittade ingen vektorform att redigera på den här positionen.")
             return
-        primitives, index_group, _cluster = resolved
-        editor = MarkerShapeEditDialog(primitives, index_group, parent=self)
+        primitives, native_index_group, _cluster = resolved
+        radius = max(ref_scale * 1.0, 12.0)
+        nearby = symbol_geometry.primitives_near_point(
+            primitives, res['x'], res['y'], radius, scale=ref_scale)
+        wide_index_group = sorted(set(nearby) | set(native_index_group))
+        initial_excluded = set(wide_index_group) - set(native_index_group)
+        editor = MarkerShapeEditDialog(
+            primitives, wide_index_group, parent=self, initial_excluded=initial_excluded)
         if editor.exec() != QDialog.DialogCode.Accepted:
             return
         outline = editor.edited_outline()
@@ -8962,7 +8992,18 @@ class PIDPanel(QWidget):
         a live match-count/on-canvas preview as the threshold slider
         moves — so by the time it's accepted the result is already
         computed; final_results() reuses it directly instead of this
-        method running find_similar_shapes() a second time."""
+        method running find_similar_shapes() a second time.
+
+        2026-08-15 follow-up (see NOTES.md "'Hitta liknande symbol'
+        visar bara ett streck"): the reference canvas now also shows
+        every primitive within a generous radius of the click point
+        (symbol_geometry.primitives_near_point), not just what
+        auto-detection grouped together — everything outside the
+        auto-detected core starts excluded/unchecked, but is still
+        there to click and ADD. Needed on very densely-fragmented CAD
+        exports where a real symbol's own strokes can end up split
+        across many small, ungrouped pieces that auto-detection alone
+        has nothing complete to offer for."""
         if not HAS_PYMUPDF or self.viewer.pdf_doc is None:
             QMessageBox.warning(self, "Ingen P&ID", "Öppna en P&ID-fil först.")
             return
@@ -8976,12 +9017,21 @@ class PIDPanel(QWidget):
                 "Fungerar bara på sidor med vektorritad geometri — en skannad "
                 "(rasteriserad) sida har ingen sådan data att jämföra.")
             return
-        primitives, index_group, _ref_cluster = resolved
+        primitives, native_index_group, _ref_cluster = resolved
         ref_scale = symbol_geometry.dominant_text_size(self.viewer.pdf_doc[page])
+        radius = max(ref_scale * 1.0, 12.0)
+        nearby = symbol_geometry.primitives_near_point(
+            primitives, pdf_x, pdf_y, radius, scale=ref_scale)
+        # Union, not just "nearby": the auto-detected group's own
+        # primitives must always be shown too, even on the rare occasion
+        # one of them happens to sit outside the click-radius circle.
+        wide_index_group = sorted(set(nearby) | set(native_index_group))
+        initial_excluded = set(wide_index_group) - set(native_index_group)
 
         params_dlg = SimilarSymbolSearchDialog(
-            primitives, index_group, self.viewer._pdf_path, page, ref_scale,
-            db=self.db, viewer=self.viewer, parent=self)
+            primitives, wide_index_group, self.viewer._pdf_path, page, ref_scale,
+            db=self.db, viewer=self.viewer, initial_excluded=initial_excluded,
+            native_index_group=native_index_group, parent=self)
         if params_dlg.exec() != QDialog.DialogCode.Accepted:
             return
 

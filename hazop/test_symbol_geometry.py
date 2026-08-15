@@ -1917,6 +1917,108 @@ class NoTextScaleFallbackTests(unittest.TestCase):
         doc.close()
 
 
+class TessellatedSourceGroupingScaleTests(unittest.TestCase):
+    """_estimate_scale_from_primitives (2026-08-15, see NOTES.md "'Hitta
+    liknande symbol' visar bara ett streck") — a single drawn path can be
+    tessellated into many tiny fragments; the bootstrap estimate must use
+    each PATH's (source's) own grouped size, not individual fragment
+    length, or a heavily-tessellated file's true scale collapses toward
+    the fragment floor."""
+
+    def _line(self, x0, y0, x1, y1, source):
+        return {'kind': 'l', 'bbox': (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)),
+                'p0': (x0, y0), 'p1': (x1, y1), 'closed': False, 'filled': False,
+                'width': 0.1, 'source': source}
+
+    def test_grouped_path_diagonal_used_not_individual_fragment_length(self):
+        # Twenty tessellated "paths": each is one drawn source split into
+        # an 8-segment zigzag chain (consecutive points close enough to
+        # merge into one cluster — real tessellated fragments are
+        # spatially contiguous, unlike unrelated noise) whose individual
+        # segments are ~0.46pt long but whose overall chain spans a
+        # ~2.8pt diagonal — the same order of magnitude measured on the
+        # real Shell/St1 PEFS file (0.34pt individual vs ~3pt grouped).
+        # Enough sources (20 >= _SCALE_ESTIMATE_MIN_SAMPLES) that the
+        # real second-stage clustering pass — not the fallback — decides
+        # the final value.
+        prims = []
+        for src in range(20):
+            ox = src * 20.0
+            pts = [(ox + 0.3 * (k % 2), k * 0.35) for k in range(9)]
+            for k in range(8):
+                x0, y0 = pts[k]
+                x1, y1 = pts[k + 1]
+                prims.append(self._line(x0, y0, x1, y1, src))
+        scale = sg._estimate_scale_from_primitives(prims)
+        self.assertGreater(scale, 1.5,
+            f"scale={scale} — must reflect the ~2.8pt per-source grouped "
+            "chain diagonal, not collapse toward the ~0.46pt individual "
+            "fragment length")
+
+    def test_single_primitive_per_source_glyph_noise_is_unaffected(self):
+        """Guard against overcorrecting: when each drawn path really is
+        just one short primitive (the existing vector-outlined-text-noise
+        fixtures elsewhere in this file), grouping by source degenerates
+        to per-primitive length exactly as before — this must stay tiny."""
+        prims = [self._line(i * 4.0, 0.0, i * 4.0 + 0.4, 0.3, source=i) for i in range(40)]
+        scale = sg._estimate_scale_from_primitives(prims)
+        self.assertLess(scale, 3.0,
+            f"scale={scale} — one-primitive-per-source noise must not be "
+            "inflated by the source-grouping change")
+
+
+class NearbyPrimitivesForPointTests(unittest.TestCase):
+    """primitives_near_point (2026-08-15, see NOTES.md "'Hitta liknande
+    symbol' visar bara ett streck") — lets a user manually widen a
+    reference beyond what automatic clustering grouped, by clicking to
+    add whatever else is physically nearby."""
+
+    def _line(self, x0, y0, x1, y1):
+        return {'kind': 'l', 'bbox': (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)),
+                'p0': (x0, y0), 'p1': (x1, y1), 'closed': False, 'filled': False,
+                'width': 1.0, 'source': 0}
+
+    def test_returns_primitives_with_bbox_center_within_radius(self):
+        near = self._line(0, 0, 2, 0)     # center (1, 0) — within radius 5 of (0, 0)
+        far = self._line(100, 100, 102, 100)
+        prims = [near, far]
+        result = sg.primitives_near_point(prims, 0, 0, radius=5)
+        self.assertEqual(result, [0])
+
+    def test_radius_is_inclusive_boundary(self):
+        prim = self._line(5, 0, 5, 0)   # bbox center exactly 5 away from origin
+        result = sg.primitives_near_point([prim], 0, 0, radius=5)
+        self.assertEqual(result, [0])
+
+    def test_without_scale_a_long_pipe_run_line_is_not_filtered(self):
+        """No scale given — no way to judge "too long to be a pipe run",
+        so a long line whose bbox center happens to sit near the point is
+        still returned (matches find_cluster_at_point's tolerance
+        elsewhere: filtering is opt-in via `scale`)."""
+        pipe = self._line(-100, 0, 100, 0)   # 200pt long, center at origin
+        result = sg.primitives_near_point([pipe], 0, 0, radius=5)
+        self.assertEqual(result, [0])
+
+    def test_with_scale_a_long_pipe_run_line_is_excluded(self):
+        """The real bug this guards: a long pipe run spliced directly into
+        a valve can have its bbox CENTER land within the click radius even
+        though the line itself stretches far beyond it — confirmed on a
+        real Shell/St1 PEFS file (a 121pt pipe run's center sat under 30pt
+        from the valve it was merely spliced into). With `scale` given,
+        anything _is_pipe_run_line already classifies as a pipe run must
+        be excluded from the "nearby, click to add" set."""
+        scale = 1.0   # threshold length = 6.0 * scale = 6.0pt
+        pipe = self._line(-100, 0, 100, 0)   # 200pt long, well over the threshold
+        valve_stroke = self._line(-1, 0, 1, 0)   # 2pt long, well under it
+        result = sg.primitives_near_point([pipe, valve_stroke], 0, 0, radius=5, scale=scale)
+        self.assertEqual(result, [1])
+
+    def test_far_primitives_excluded_regardless_of_scale(self):
+        prim = self._line(50, 50, 52, 50)
+        result = sg.primitives_near_point([prim], 0, 0, radius=5, scale=1.0)
+        self.assertEqual(result, [])
+
+
 class SmallValveRejectedByBlindScaleDefaultTests(unittest.TestCase):
     """A small valve, proportioned like a real small-format CAD export
     (confirmed on the real Loket file: many real bow-tie valve icons have

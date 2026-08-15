@@ -3364,6 +3364,8 @@ class EquipmentMarkerReviewDialogTests(unittest.TestCase):
             with unittest.mock.patch('pid_viewer.fitz.open'), \
                  unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
                                      return_value=(['prims'], ['idx'], {})), \
+                 unittest.mock.patch('pid_viewer.symbol_geometry.primitives_near_point',
+                                     return_value=[]), \
                  unittest.mock.patch('pid_viewer.MarkerShapeEditDialog') as mock_editor_cls:
                 mock_editor_cls.return_value.exec.return_value = QDialog.DialogCode.Accepted
                 mock_editor_cls.return_value.edited_outline.return_value = \
@@ -3384,6 +3386,8 @@ class EquipmentMarkerReviewDialogTests(unittest.TestCase):
             with unittest.mock.patch('pid_viewer.fitz.open'), \
                  unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
                                      return_value=(['prims'], ['idx'], {})), \
+                 unittest.mock.patch('pid_viewer.symbol_geometry.primitives_near_point',
+                                     return_value=[]), \
                  unittest.mock.patch('pid_viewer.MarkerShapeEditDialog') as mock_editor_cls:
                 mock_editor_cls.return_value.exec.return_value = QDialog.DialogCode.Rejected
                 dlg._edit_shape(0)
@@ -3416,6 +3420,8 @@ class EquipmentMarkerReviewDialogTests(unittest.TestCase):
             with unittest.mock.patch('pid_viewer.fitz.open'), \
                  unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
                                      return_value=(['prims'], ['idx'], {})), \
+                 unittest.mock.patch('pid_viewer.symbol_geometry.primitives_near_point',
+                                     return_value=[]), \
                  unittest.mock.patch('pid_viewer.MarkerShapeEditDialog') as mock_editor_cls:
                 mock_editor_cls.return_value.exec.return_value = QDialog.DialogCode.Accepted
                 mock_editor_cls.return_value.edited_outline.return_value = \
@@ -8325,17 +8331,23 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
                                  return_value=(['prims'], ['idx'], {})), \
              unittest.mock.patch('pid_viewer.symbol_geometry.dominant_text_size',
                                  return_value=12.5), \
+             unittest.mock.patch('pid_viewer.symbol_geometry.primitives_near_point',
+                                 return_value=[]), \
              unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg:
             self._mock_accepted_search_params_dialog(mock_params_dlg, final_results=[])
             with unittest.mock.patch.object(QMessageBox, 'information'):
                 self.panel._on_context_action('find_similar', QPointF(5, 5), 3)
         args, kwargs = mock_params_dlg.call_args
         self.assertEqual(args[0], ['prims'])
+        # No nearby primitives found (mocked empty) — the widened group is
+        # just the auto-detected native group, unioned with nothing.
         self.assertEqual(args[1], ['idx'])
         self.assertEqual(args[2], '/fake/path.pdf')
         self.assertEqual(args[3], 3)
         self.assertEqual(args[4], 12.5)
         self.assertEqual(kwargs['viewer'], self.panel.viewer)
+        self.assertEqual(kwargs['native_index_group'], ['idx'])
+        self.assertEqual(kwargs['initial_excluded'], set())
 
     def test_find_similar_symbol_from_template_warns_with_no_pid_open(self):
         from pid_viewer import PIDPanel

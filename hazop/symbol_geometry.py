@@ -704,6 +704,39 @@ def find_cluster_at_point(clusters, x, y, max_distance=None):
     return nearest
 
 
+def primitives_near_point(primitives, x, y, radius, scale=None):
+    """Indices of every primitive whose bbox CENTER lies within `radius`
+    of (x, y) — used to let a user manually ADD nearby primitives that
+    the automatic clustering missed (2026-08-15, see NOTES.md "'Hitta
+    liknande symbol' visar bara ett streck") to a reference shape, not
+    just exclude ones it wrongly included. Needed because on some very
+    densely-fragmented CAD exports (confirmed on a real Shell/St1 PEFS
+    file: 45,000+ primitives on one page, a single valve's own strokes
+    split across 30+ separate drawing paths in one small area) the
+    clustering step's own density-overload safeguard can leave a real
+    symbol's pieces ungrouped — auto-detection alone then has nothing
+    complete to show, no matter how good the reference-scale estimate
+    is; the user has to be able to point at what's actually there.
+
+    `scale`, if given, excludes any primitive long enough to count as a
+    pipe run by the SAME test _is_pipe_run_line already uses elsewhere —
+    without it, a long pipe/hatch line's bbox CENTER can land within
+    `radius` purely by chance (the line itself stretches far beyond it),
+    flooding the "nearby, click to add" set with something the user
+    essentially never wants in a symbol reference (confirmed on the same
+    real file: a 121pt pipe run's bbox center sat under 30pt from a
+    valve it was merely spliced into, next to nothing else that long)."""
+    result = []
+    for i, p in enumerate(primitives):
+        if scale is not None and _is_pipe_run_line(p, scale):
+            continue
+        x0, y0, x1, y1 = p['bbox']
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        if math.hypot(cx - x, cy - y) <= radius:
+            result.append(i)
+    return result
+
+
 def _sample_primitive_points(prim, n=20):
     """Sample n evenly-spaced points along a primitive's extent, used for
     silhouette-profile analysis (bowtie_score). A line/curve's two
@@ -1314,8 +1347,48 @@ def _estimate_scale_from_primitives(primitives):
     (vastly outnumbering the handful of primitives a real valve/pump/
     instrument symbol has), so their own median size approximates "one
     glyph" much more directly than individual stroke length does.
+
+    2026-08-15 fix (see NOTES.md "'Hitta liknande symbol' visar bara ett
+    streck") — the bootstrap stage groups primitives by their originating
+    drawn PATH (`source`, one get_drawings() dict) before measuring
+    length, instead of measuring each individual primitive. A single
+    drawn path (one glyph, one small curve) can be tessellated into
+    wildly different numbers of tiny line/curve fragments depending on
+    the exporting CAD tool's flattening — confirmed on a real Shell/St1
+    PEFS file: 45,514 primitives (24,030 of them curve fragments) with a
+    median INDIVIDUAL primitive length of just 0.34pt collapsed the old
+    per-primitive estimate straight to the 1.0pt floor, making
+    _is_pipe_run_line's length threshold (6× this) reject almost every
+    real symbol edge as "too long to be part of a symbol" and fragment
+    every valve into disconnected single-primitive clusters (visible in
+    the app as "Hitta liknande symbol" showing a single stray line
+    instead of the whole valve). The same file's median PATH diagonal —
+    grouping those same fragments back by which one drawing call
+    produced them — was ~3pt, a far more plausible "one small glyph/
+    shape" size, regardless of how finely its own curves happened to be
+    flattened.
+
+    The grouped-by-source value is only used to SEED the real clustering
+    pass below — when that pass doesn't find enough small clusters to
+    trust (fewer than _SCALE_ESTIMATE_MIN_SAMPLES), the fallback returns
+    the plain per-PRIMITIVE median instead of the grouped bootstrap value.
+    This matters on a page with almost nothing on it besides the target
+    symbol itself: the symbol's own two-or-so drawn paths then become the
+    ONLY calibration data, and the grouped (per-path) estimate is close
+    to the symbol's own size — self-referential rather than a genuine
+    "typical small object" reference (confirmed: a synthetic page holding
+    only a bow-tie valve's two triangle halves, nothing else, computed a
+    grouped bootstrap close enough to the valve's own bbox diagonal that
+    classify_cluster's norm_size floor rejected it). The per-primitive
+    median stays deliberately undershooting (see above) regardless of how
+    few/many primitives share a source, which is the safety margin this
+    fallback always relied on before source-grouping was introduced.
     """
-    lengths = [_prim_length(p) for p in primitives if p['kind'] in ('l', 'c')]
+    by_source = {}
+    for i, p in enumerate(primitives):
+        if p['kind'] in ('l', 'c'):
+            by_source.setdefault(p['source'], []).append(i)
+    lengths = [_bbox_diag(_group_bbox(primitives, idxs)) for idxs in by_source.values()]
     lengths = [l for l in lengths if l > 0.01]
     if not lengths:
         return _NO_TEXT_SCALE_DEFAULT
@@ -1326,7 +1399,13 @@ def _estimate_scale_from_primitives(primitives):
     diags = [_bbox_diag(_group_bbox(primitives, g)) for g in groups
               if _SCALE_ESTIMATE_MIN_ITEMS <= len(g) <= _SCALE_ESTIMATE_MAX_ITEMS]
     if len(diags) < _SCALE_ESTIMATE_MIN_SAMPLES:
-        return bootstrap_scale
+        individual_lengths = sorted(
+            l for l in (_prim_length(primitives[i])
+                        for idxs in by_source.values() for i in idxs)
+            if l > 0.01)
+        if not individual_lengths:
+            return bootstrap_scale
+        return max(individual_lengths[len(individual_lengths) // 2], 1.0)
     diags.sort()
     return max(diags[len(diags) // 2], 1.0)
 
