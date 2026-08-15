@@ -1942,6 +1942,18 @@ Anton: "Det blev inte jättelyckat med att fylla dem. Dock är klickgranulitet f
 
 **Test:** befintlig svit omkörd — grupperingstesterna oförändrat gröna, fyllnadstestet omskrivet för ny (borttagen) fyllnadslogik. Full svit grön.
 
+### Uppföljning samma dag: "du behöver bara leta inom det jag definerar som ett objekt" (2026-08-15)
+
+Anton: "du behöver bara ta med det jag markerat inom den röda rutan. nu tar du saker utanför" → efter förtydligande (inget nytt skärmdump; "alltså det jag definerar som ett objekt. du behöver bara leta inom detta") och en uppföljningsfråga bekräftades: **referensformen visar för mycket** — `primitives_near_point`s rena radie-sökning tar med ALLT vars bbox-CENTRUM råkar ligga inom radien, oavsett om det faktiskt sitter ihop med referensen. Bekräftat direkt mot den riktiga ventilen: en "1/2''"-textetikett ~1.6pt från ventilen (inom radien men inte sammanhängande) visades som en "klicka för att lägga till"-grupp trots att ingen människa skulle kalla den en del av ventilen.
+
+**Fix:** ny `symbol_geometry.widen_by_connectivity(primitives, seed_indices, candidate_indices, gap=_CLUSTER_GAP)` — växer referensen genom FAKTISK ritad-kant-närhet (`_touches_any`/`_prim_gap`, exakt samma gap-test `cluster_primitives` redan använder för att avgöra vad som slås ihop), inte rått avstånd från klickpunkten. En kandidat accepteras bara om NÅGOT redan accepterat vidrör den — tillväxten stannar alltså vid en verklig lucka (gränsen mellan objektet och orelaterat men närliggande innehåll) istället för att blint acceptera allt `primitives_near_point`s radie råkade svepa in.
+- Båda anropsställena (`PIDPanel._find_similar_symbol`, `EquipmentMarkerReviewDialog._edit_shape`) byter `wide_index_group = sorted(set(nearby) | set(native_index_group))` mot `sorted(symbol_geometry.widen_by_connectivity(primitives, native_index_group, nearby))`.
+- Verifierat mot den riktiga ventilen: 103 primitiver (ren radie) → 101 (anslutningsbaserad) — en rörlednings-dashgrupp med en verklig lucka (source 875, andra sidan om ventilen) uteslöts korrekt, medan allt genuint hopsittande behölls.
+
+**Känd kvarstående begränsning (inte löst, ärligt rapporterad):** just DEN här filens "1/2''"-text sitter bara ~1.6pt från ventilen — under `_CLUSTER_GAP`s tolerans (3.0pt) — så anslutningsbaserad tillväxt särskiljer INTE text och ventil när avståndet är mindre än gap-toleransen själv. Detta är samma "data-tvetydighet" som redan noterats i tidigare rondar (referensbboxen innehåller genuint sammanflätat ventil- och textinnehåll på just denna fil) — inte en ny brist i den här fixen, men inte heller fullständigt löst av den. Användaren kan fortfarande manuellt utesluta den enskilda textgruppen med ETT klick (tack vare den tidigare källgrupperingen).
+
+**Test:** `WidenByConnectivityTests` (5, ny klass — en vidrörande kandidat accepteras, en kandidat med en verklig lucka avvisas [den faktiska rapporterade buggen], tillväxt kedjar genom flera vidrörande kandidater i flera omgångar, en kandidat precis utanför gap-toleransen avvisas, seed-index inkluderas alltid även utan kandidater). Röd→grön verifierat (tillfälligt återgick till ren union, bekräftade att gap-avvisningstesterna blev röda). Full svit grön.
+
 ---
 
 ## Kända begränsningar och tekniska skulder

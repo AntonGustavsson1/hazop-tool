@@ -737,6 +737,42 @@ def primitives_near_point(primitives, x, y, radius, scale=None):
     return result
 
 
+def widen_by_connectivity(primitives, seed_indices, candidate_indices, gap=_CLUSTER_GAP):
+    """Grow `seed_indices` outward through `candidate_indices` by actual
+    drawn-edge proximity (_touches_any/_prim_gap — the same gap test
+    cluster_primitives itself uses to decide what merges), not raw
+    distance from a click point.
+
+    2026-08-15 (see NOTES.md "det jag definerar som ett objekt — du
+    behöver bara leta inom detta"): primitives_near_point's plain radius
+    search accepts anything whose bbox CENTER lands within the radius,
+    with no regard for whether it's actually connected to the reference
+    at all — confirmed on a real file: a tag label sitting right next to
+    a valve (but not touching it) got pulled into "nearby, click to add"
+    just because it happened to be close enough, even though a human
+    would never call it part of the same object. Only ever ACCEPT a
+    candidate once something already accepted touches it, so growth
+    stops at a real gap (the boundary between the object and
+    unrelated-but-nearby content) instead of accepting everything
+    primitives_near_point's radius merely swept up.
+
+    Not a complete fix for content that sits closer to the object than
+    `gap` itself (e.g. a label placed unusually tight against a valve) —
+    still contained by _CLUSTER_GAP, the same tolerance the rest of the
+    clustering pipeline already lives with."""
+    accepted = set(seed_indices)
+    remaining = set(candidate_indices) - accepted
+    changed = True
+    while changed and remaining:
+        changed = False
+        for i in list(remaining):
+            if _touches_any(primitives, i, accepted, gap=gap):
+                accepted.add(i)
+                remaining.discard(i)
+                changed = True
+    return accepted
+
+
 def _sample_primitive_points(prim, n=20):
     """Sample n evenly-spaced points along a primitive's extent, used for
     silhouette-profile analysis (bowtie_score). A line/curve's two

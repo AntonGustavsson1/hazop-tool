@@ -2019,6 +2019,63 @@ class NearbyPrimitivesForPointTests(unittest.TestCase):
         self.assertEqual(result, [])
 
 
+class WidenByConnectivityTests(unittest.TestCase):
+    """widen_by_connectivity (2026-08-15, see NOTES.md "det jag definerar
+    som ett objekt — du behöver bara leta inom detta"). Anton reported
+    the reference form for "Hitta liknande symbol" showed more than what
+    he considered the object — primitives_near_point's plain radius
+    search accepts anything within reach of the click point regardless
+    of whether it's actually connected to the reference. This grows the
+    reference by real drawn-edge proximity instead (the same _touches_any/
+    _prim_gap test cluster_primitives itself already uses), so growth
+    stops at a genuine gap."""
+
+    def _line(self, x0, y0, x1, y1):
+        return {'kind': 'l', 'bbox': (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)),
+                'p0': (x0, y0), 'p1': (x1, y1), 'closed': False, 'filled': False,
+                'width': 1.0, 'source': 0}
+
+    def test_a_touching_candidate_is_accepted(self):
+        seed = self._line(0, 0, 10, 0)
+        touching = self._line(10, 0, 20, 0)   # shares the endpoint exactly
+        prims = [seed, touching]
+        result = sg.widen_by_connectivity(prims, [0], [1])
+        self.assertEqual(result, {0, 1})
+
+    def test_a_candidate_with_a_real_gap_is_rejected(self):
+        """The actual reported bug: a tag label sitting near — but not
+        touching — a valve must not be pulled into the reference just
+        because primitives_near_point's radius happened to reach it."""
+        seed = self._line(0, 0, 10, 0)
+        far_label = self._line(50, 50, 60, 50)   # nowhere near touching
+        prims = [seed, far_label]
+        result = sg.widen_by_connectivity(prims, [0], [1])
+        self.assertEqual(result, {0})
+
+    def test_growth_chains_through_multiple_touching_candidates(self):
+        """B doesn't touch the seed directly, only A does — B must still
+        be accepted once A has been, via a second growth round."""
+        seed = self._line(0, 0, 10, 0)
+        a = self._line(10, 0, 20, 0)     # touches seed
+        b = self._line(20, 0, 30, 0)     # touches "a", not the seed directly
+        prims = [seed, a, b]
+        result = sg.widen_by_connectivity(prims, [0], [1, 2])
+        self.assertEqual(result, {0, 1, 2})
+
+    def test_candidate_just_beyond_the_gap_tolerance_is_rejected(self):
+        seed = self._line(0, 0, 10, 0)
+        just_too_far = self._line(10 + sg._CLUSTER_GAP + 1.0, 0,
+                                   20 + sg._CLUSTER_GAP + 1.0, 0)
+        prims = [seed, just_too_far]
+        result = sg.widen_by_connectivity(prims, [0], [1], gap=sg._CLUSTER_GAP)
+        self.assertEqual(result, {0})
+
+    def test_seed_indices_are_always_included_even_with_no_candidates(self):
+        seed = self._line(0, 0, 10, 0)
+        result = sg.widen_by_connectivity([seed], [0], [])
+        self.assertEqual(result, {0})
+
+
 class SmallValveRejectedByBlindScaleDefaultTests(unittest.TestCase):
     """A small valve, proportioned like a real small-format CAD export
     (confirmed on the real Loket file: many real bow-tie valve icons have

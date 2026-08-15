@@ -1931,7 +1931,8 @@ class EquipmentMarkerReviewDialog(QDialog):
         radius = max(ref_scale * 1.0, 12.0)
         nearby = symbol_geometry.primitives_near_point(
             primitives, res['x'], res['y'], radius, scale=ref_scale)
-        wide_index_group = sorted(set(nearby) | set(native_index_group))
+        wide_index_group = sorted(symbol_geometry.widen_by_connectivity(
+            primitives, native_index_group, nearby))
         initial_excluded = set(wide_index_group) - set(native_index_group)
         editor = MarkerShapeEditDialog(
             primitives, wide_index_group, parent=self, initial_excluded=initial_excluded)
@@ -9448,10 +9449,16 @@ class PIDPanel(QWidget):
             radius = max(ref_scale * 1.0, 12.0)
             nearby = symbol_geometry.primitives_near_point(
                 primitives, pdf_x, pdf_y, radius, scale=ref_scale)
-            # Union, not just "nearby": the auto-detected group's own
-            # primitives must always be shown too, even on the rare occasion
-            # one of them happens to sit outside the click-radius circle.
-            wide_index_group = sorted(set(nearby) | set(native_index_group))
+            # Connectivity-grown, not just "nearby" (2026-08-15, see
+            # NOTES.md "det jag definerar som ett objekt"): only ACCEPT a
+            # nearby primitive once something already accepted touches
+            # it (symbol_geometry.widen_by_connectivity), so a tag label
+            # or other unrelated content that merely happens to sit
+            # within the search radius — but isn't actually connected to
+            # the reference — stays out entirely, instead of starting as
+            # a "click to add" option the user has to notice and reject.
+            wide_index_group = sorted(symbol_geometry.widen_by_connectivity(
+                primitives, native_index_group, nearby))
             initial_excluded = set(wide_index_group) - set(native_index_group)
 
             params_dlg = SimilarSymbolSearchDialog(
