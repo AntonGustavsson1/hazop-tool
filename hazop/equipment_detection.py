@@ -1901,6 +1901,30 @@ def _scan_candidates(pdf_doc, ref_features, ref_page, ref_native_index_group, pa
                 continue
             if not ignore_scale and (c['aspect'] > 3.0 or not (1.5 <= c['norm_size'] <= 40.0)):
                 continue
+            if not (c['has_diagonal'] or c['has_curve']):
+                # A real equipment symbol's own defining geometry is
+                # either diagonal (a valve's bow-tie triangle edges) or
+                # curved (a pump/instrument's circle) — piping, text
+                # label boxes, vessel-outline frames, and empty gaps
+                # between parallel pipe lines are all built from purely
+                # axis-aligned straight segments with neither. Confirmed
+                # on the active project's own hazop_project_pid.pdf
+                # (2026-08-16, see NOTES.md "Anton rapporterade 1070
+                # träffar" follow-up: "gemensamma nämnare för ventiler,
+                # pumpar, instrument"): of the 45 clusters surviving the
+                # aspect/norm_size filter above, most were empty
+                # whitespace "clusters" between pipes or plain text-label
+                # rectangles that happened to fall in a plausible size
+                # band — this filter alone cut those 45 down to 9, 7 of
+                # which were confirmed (by rendering and visually
+                # inspecting each) to be real valve/pump/instrument
+                # content, up from roughly 8 of 45 before. Checked against
+                # every other real file this session already resolved a
+                # reference on (Hybrit, Sunpine, ITS, LKAB) — every one of
+                # those confirmed valve/pump/motor references already has
+                # has_diagonal or has_curve True, so this does not regress
+                # any of them.
+                continue
             cand_feats = symbol_geometry.similarity_features(
                 cand_primitives, c['_index_group'], cand_scale, rotation_mode=rotation_mode)
             sim = symbol_geometry.cluster_similarity(ref_features, cand_feats,

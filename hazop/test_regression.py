@@ -5019,6 +5019,45 @@ class FindSimilarShapesSearchParametersTests(unittest.TestCase):
         self.assertGreater(max(sims), 0.9)
         self.assertLess(min(sims), 0.5)
 
+    def test_scan_candidates_rejects_plain_rectangle_with_no_diagonal_or_curve(self):
+        """_scan_candidates()'s has_diagonal-or-has_curve pre-filter
+        (2026-08-16, see NOTES.md "Anton rapporterade 1070 träffar"
+        follow-up — "gemensamma nämnare för ventiler, pumpar,
+        instrument"): a real equipment symbol's own defining geometry is
+        either diagonal (valve bow-tie edges) or curved (pump/instrument
+        circles). Found directly on the active project's own
+        hazop_project_pid.pdf: a size/aspect-plausible cluster can still
+        be nothing more than a plain axis-aligned rectangle — an empty
+        gap between two pipe lines, or a text-label box — with neither.
+        Reproduced here with a plain closed rectangle, size/aspect-
+        plausible enough to survive the OTHER pre-filter."""
+        import fitz
+        from equipment_detection import _scan_candidates, resolve_reference_cluster
+        from symbol_geometry import similarity_features
+        path = os.path.join(self._tmpdir, "norectangle.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=400, height=400)
+        page.insert_text(fitz.Point(200, 380), "TAG-001", fontsize=8)
+        shape = page.new_shape()
+        self._bowtie(shape, 60, 60)
+        shape.draw_rect(fitz.Rect(140, 50, 170, 70))   # plain rect: no diagonal, no curve
+        shape.finish(color=(0, 0, 0), width=1)
+        shape.commit()
+        doc.save(path)
+        doc.close()
+
+        doc = fitz.open(path)
+        try:
+            primitives, index_group, cluster = resolve_reference_cluster(doc, 0, 60, 60)
+            ref_feats = similarity_features(primitives, index_group)
+            candidates = _scan_candidates(
+                doc, ref_feats, 0, cluster['_index_group'], pages=[0])
+        finally:
+            doc.close()
+        self.assertEqual(candidates, [],
+            "the plain rectangle has neither a diagonal nor a curve and must be excluded, "
+            "even though it is size/aspect-plausible and min_similarity was never applied")
+
     def test_scan_candidates_should_cancel_stops_before_any_page_is_scanned(self):
         import fitz
         from equipment_detection import _scan_candidates, resolve_reference_cluster
