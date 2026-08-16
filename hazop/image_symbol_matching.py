@@ -133,15 +133,30 @@ def _nms(matches, iou_threshold=_NMS_IOU_THRESHOLD):
     return kept
 
 
-def _match_page(page_gray, template_gray, min_similarity, scales, rotations):
+def _match_page(page_gray, template_gray, min_similarity, scales, rotations, should_cancel=None):
     """All (score, bbox_px) matches of `template_gray` inside
     `page_gray` at >= min_similarity, across every (scale, rotation)
-    combination — NOT yet de-duplicated (see _nms)."""
+    combination — NOT yet de-duplicated (see _nms).
+
+    should_cancel, if given, is checked once per (scale, rotation)
+    combination — NOT just once per page like find_similar_shapes_visual's
+    own check. Found necessary (2026-08-16, see NOTES.md "Bildmatchning
+    visar ingen symbol och kraschar lätt"): with ignore_scale=True and
+    rotation_mode='any', one page's own full scan is up to 7 scales x 12
+    rotations = 84 cv2.matchTemplate calls, each potentially taking a
+    meaningful fraction of a second on a large page — a per-page-only
+    cancellation check meant closing the search dialog mid-scan could
+    leave SimilarSymbolSearchDialog._on_dialog_finished's un-timed
+    `self._worker.wait()` blocking the UI thread for however long that
+    one page's REMAINING combinations took to finish, which reads as a
+    hang/crash to a user who then force-closes the app."""
     import numpy as np
     import cv2
     page_h, page_w = page_gray.shape
     raw = []
     for scale in scales:
+        if should_cancel and should_cancel():
+            break
         th, tw = template_gray.shape
         new_w, new_h = max(1, round(tw * scale)), max(1, round(th * scale))
         if new_w < 3 or new_h < 3:
@@ -149,6 +164,8 @@ def _match_page(page_gray, template_gray, min_similarity, scales, rotations):
         interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
         resized = cv2.resize(template_gray, (new_w, new_h), interpolation=interp)
         for angle in rotations:
+            if should_cancel and should_cancel():
+                break
             rotated = _rotate_gray(resized, angle)
             rh, rw = rotated.shape
             if rh > page_h or rw > page_w:
@@ -173,8 +190,10 @@ def find_similar_shapes_visual(pdf_doc, ref_page, ref_bbox, pages=None,
 
     ref_bbox: PDF-space (x0,y0,x1,y1) of the reference region on
     ref_page — cropped and rendered once as the template.
-    should_cancel: optional zero-arg callable checked once per page,
-    same convention as _scan_candidates.
+    should_cancel: optional zero-arg callable, checked once per page AND
+    (see _match_page) once per (scale, rotation) combination within a
+    page — a page-only check left cancellation unresponsive for however
+    long that one page's remaining scale/rotation combinations took.
     """
     if not (HAS_CV2 and HAS_NUMPY and HAS_PYMUPDF) or pdf_doc is None:
         return []
@@ -201,7 +220,8 @@ def find_similar_shapes_visual(pdf_doc, ref_page, ref_bbox, pages=None,
         page_gray = render_gray(page, bbox=None, dpi=dpi)
         origin_x, origin_y = page.rect.x0, page.rect.y0
         for score, (px0, py0, px1, py1) in _match_page(
-                page_gray, template_gray, min_similarity, scales, rotations):
+                page_gray, template_gray, min_similarity, scales, rotations,
+                should_cancel=should_cancel):
             x0 = px0 / pdf_scale + origin_x
             y0 = py0 / pdf_scale + origin_y
             x1 = px1 / pdf_scale + origin_x

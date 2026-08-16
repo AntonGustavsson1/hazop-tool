@@ -1284,6 +1284,24 @@ class SimilarSymbolSearchDialog(QDialog):
         self._image_ref_canvas = _ImageRefCropCanvas()
         self._image_ref_canvas.crop_changed.connect(self._restart_scan)
         image_ref_row.addWidget(self._image_ref_canvas)
+        # "Bildmatchningen visar ingen symbol" (2026-08-16, see NOTES.md
+        # "Bildmatchning visar ingen symbol och kraschar lätt"):
+        # resolve_reference_cluster() is deliberately permissive (lets a
+        # user reference literally any vector shape — see its own
+        # docstring), so a click can easily resolve to a degenerate
+        # sliver of a cluster (confirmed on the active project's own
+        # hazop_project_pid.pdf: a real click resolved to a 1.3x1.3pt
+        # cluster) — the rendered reference crop is then only a handful
+        # of pixels across and visually reads as "nothing shown", not a
+        # crash, just an unhelpfully tiny/blank preview. This warning
+        # makes that visible instead of leaving the user to guess why
+        # the preview looks empty.
+        self._tiny_ref_warning = QLabel(
+            "⚠ Referensen verkar mycket liten — kontrollera att du klickade på rätt symbol.")
+        self._tiny_ref_warning.setStyleSheet("color:#d9822b; font-size:10px;")
+        self._tiny_ref_warning.setWordWrap(True)
+        self._tiny_ref_warning.setVisible(False)
+        image_ref_row.addWidget(self._tiny_ref_warning)
         crop_btns_row = QHBoxLayout()
         crop_note = QLabel("Dra en ram i förhandsgranskningen för att beskära referensen.")
         crop_note.setStyleSheet("color:#8D9299; font-size:10px;")
@@ -1464,6 +1482,7 @@ class SimilarSymbolSearchDialog(QDialog):
                 doc[self._ref_page], bbox=self._ref_bbox,
                 dpi=image_symbol_matching._DEFAULT_DPI)
             self._image_ref_canvas.set_reference(gray, self._ref_bbox)
+            self._update_tiny_ref_warning()
         except Exception:
             pass
         finally:
@@ -1472,6 +1491,21 @@ class SimilarSymbolSearchDialog(QDialog):
                     doc.close()
                 except Exception:
                     pass
+
+    def _update_tiny_ref_warning(self):
+        """Show a warning when the reference bbox is implausibly small
+        relative to the page's own dominant scale — same "plausible
+        symbol size" floor _scan_candidates uses for candidates
+        (1.5 * scale), applied here to warn about the REFERENCE itself
+        instead of silently filtering. See _render_image_preview's
+        caller and NOTES.md "Bildmatchning visar ingen symbol och
+        kraschar lätt"."""
+        if self._ref_bbox is None or not self._ref_scale:
+            self._tiny_ref_warning.setVisible(False)
+            return
+        x0, y0, x1, y1 = self._ref_bbox
+        diag = math.hypot(x1 - x0, y1 - y0)
+        self._tiny_ref_warning.setVisible(diag < 1.5 * self._ref_scale)
 
     def min_similarity(self):
         return self._threshold.value() / 100.0

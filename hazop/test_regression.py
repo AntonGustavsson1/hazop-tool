@@ -5878,6 +5878,33 @@ class SimilarSymbolSearchDialogTests(unittest.TestCase):
         finally:
             dlg.deleteLater()
 
+    def test_tiny_reference_bbox_shows_warning(self):
+        """"Bildmatchning visar ingen symbol" (2026-08-16, see NOTES.md
+        "Bildmatchning visar ingen symbol och kraschar lätt") —
+        resolve_reference_cluster() is deliberately permissive and can
+        resolve a click to a degenerate sliver of a cluster (confirmed
+        on the active project's own hazop_project_pid.pdf: a real click
+        resolved to a 1.3x1.3pt cluster). _update_tiny_ref_warning() must
+        flag that instead of silently showing a near-blank preview."""
+        from pid_viewer import SimilarSymbolSearchDialog
+        prims = [self._line(0, 0, 1, 0, source=0)]
+        dlg = SimilarSymbolSearchDialog(prims, [0], 'fake.pdf', 0, 10.0,
+                                         ref_bbox=(0, 0, 1, 1), viewer=None)
+        try:
+            dlg._update_tiny_ref_warning()
+            self.assertFalse(dlg._tiny_ref_warning.isHidden())
+        finally:
+            dlg.deleteLater()
+
+    def test_normal_reference_bbox_hides_warning(self):
+        dlg = self._dialog()
+        try:
+            dlg._ref_bbox = (0, 0, 40, 40)   # diag ~56.6, comfortably above the 1.5*scale=15pt floor
+            dlg._update_tiny_ref_warning()
+            self.assertTrue(dlg._tiny_ref_warning.isHidden())
+        finally:
+            dlg.deleteLater()
+
     def test_dragging_a_crop_in_image_mode_narrows_what_gets_searched(self):
         """Integration check that _restart_scan actually reads
         _image_ref_canvas.current_bbox() rather than the dialog's raw

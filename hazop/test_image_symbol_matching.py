@@ -165,6 +165,58 @@ class FindSimilarShapesVisualTests(unittest.TestCase):
             "should_cancel must stop the scan before a second page is processed")
         doc.close()
 
+    def test_should_cancel_stops_mid_page_not_just_at_page_boundaries(self):
+        """Found in the wild (2026-08-16, see NOTES.md "Bildmatchning
+        visar ingen symbol och kraschar lätt"): should_cancel used to be
+        checked only once per PAGE — with ignore_scale=True and
+        rotation_mode='any' (up to 7 scales x 12 rotations = 84
+        cv2.matchTemplate calls for a single page), cancelling mid-scan
+        had to wait for that entire page's remaining combinations to
+        finish before it took effect, which could block
+        SimilarSymbolSearchDialog._on_dialog_finished's un-timed
+        `worker.wait()` long enough to read as a hang/crash. Verifies
+        should_cancel is now checked far more often than once — well
+        under the full scales x rotations product — by counting how many
+        times cv2.matchTemplate actually runs before a should_cancel that
+        fires on its very first call takes effect."""
+        doc, page = _new_page(400, 300)
+        shape = page.new_shape()
+        _draw_bowtie(shape, 60, 60)
+        shape.commit()
+
+        call_count = {'n': 0}
+        cancel_state = {'checks': 0}
+        import cv2
+        real_match_template = cv2.matchTemplate
+
+        def counting_match_template(*args, **kwargs):
+            call_count['n'] += 1
+            return real_match_template(*args, **kwargs)
+
+        def should_cancel():
+            # False for the page-level check and the first couple of
+            # (scale, rotation) checks, then True — so the ONLY way this
+            # can stop the scan this early is if should_cancel() is
+            # actually being polled repeatedly WITHIN the page, not just
+            # once at the page boundary (which already happened, and
+            # returned False, before any of these later calls occur).
+            cancel_state['checks'] += 1
+            return cancel_state['checks'] > 2
+
+        with unittest.mock.patch.object(cv2, 'matchTemplate', side_effect=counting_match_template):
+            ism.find_similar_shapes_visual(
+                doc, 0, (50, 50, 70, 70), pages=[0], min_similarity=0.6,
+                ignore_scale=True, rotation_mode='any',
+                should_cancel=should_cancel)
+        # scales x rotations is up to 7 x 12 = 84 combinations — if
+        # should_cancel were only checked once per page (as before this
+        # fix), it would already have returned False at that single check
+        # and the full 84 combinations would run, each triggering its own
+        # cv2.matchTemplate call.
+        self.assertLess(call_count['n'], 84,
+            "should_cancel must be polled within a page, not just once at the page boundary")
+        doc.close()
+
     def test_returns_empty_list_without_cv2(self):
         doc = self._two_bowties_and_a_decoy()
         with unittest.mock.patch.object(ism, 'HAS_CV2', False):
