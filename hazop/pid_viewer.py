@@ -1148,13 +1148,24 @@ class SimilarSymbolSearchDialog(QDialog):
     is a real, separate, slower opt-in mode
     (symbol_geometry.oriented_features()), not a placebo toggle.
 
-    No "bara samma typ" filter: a shape-similarity candidate has no
+    No "bara samma typ" FILTER: a shape-similarity candidate has no
     type of its own yet (equipment TYPE is inferred from a tag prefix
     elsewhere in this codebase, never from shape — see
     equipment_detection.py's module docstring) — there is nothing
     meaningful to filter candidates on before they're reviewed/tagged,
     so that control was deliberately left out rather than shipped as
     a no-op.
+
+    There IS a Typ LABEL, though (2026-08-16, see NOTES.md "kunna välja
+    vilken typ av objekt det är i både raster och vektor") — an editable
+    combo box (selected_comp_type(), same COMPONENT_TYPES list
+    EquipmentMarkerReviewDialog's own mass-type combo already uses) the
+    user sets BEFORE running the search, applied to every result via
+    final_results(comp_type=...) — in both Vektorform and Bildmatchning,
+    since it's attached to the search's INTENT, not derived from shape.
+    Pre-filled from the template's own comp_type in mall-läge (still
+    editable), matching what final_results() already did silently there
+    before this control existed.
 
     2026-08-15 uppföljningsfunktioner (see NOTES.md): the document scan
     (SimilarSymbolSearchWorker/equipment_detection._scan_candidates) now
@@ -1209,7 +1220,8 @@ class SimilarSymbolSearchDialog(QDialog):
     def __init__(self, primitives, index_group, pdf_path, ref_page, ref_scale,
                  ref_bbox=None, db=None, viewer=None, template_name=None,
                  template_features=None, initial_excluded=None,
-                 native_index_group=None, page_rotations=None, parent=None):
+                 native_index_group=None, page_rotations=None,
+                 initial_comp_type='', parent=None):
         super().__init__(parent)
         self.setWindowTitle("Hitta liknande symbol")
         self.setMinimumWidth(360)
@@ -1369,6 +1381,25 @@ class SimilarSymbolSearchDialog(QDialog):
         scope_row.addWidget(self._scope_doc)
         form.addRow("Omfattning:", scope_row)
 
+        # Typ (2026-08-16, see NOTES.md "kunna välja vilken typ av objekt
+        # det är i både raster och vektor") — a shape-similarity candidate
+        # has no type of its own (see this class's own docstring above:
+        # equipment TYPE is inferred from a tag prefix elsewhere, never
+        # from shape), so this is NOT a candidate filter — it's a label
+        # the user attaches up front, applied to every result exactly the
+        # way a saved template's own comp_type already was (see
+        # final_results below) — just now also available for an ad-hoc
+        # (non-template) search, in both Vektorform and Bildmatchning,
+        # instead of only reachable afterwards via
+        # EquipmentMarkerReviewDialog's own "Tillämpa på ikryssade"
+        # mass-type step. Same editable-combobox convention that dialog
+        # already uses for exactly this list.
+        self._type_cb = QComboBox()
+        self._type_cb.setEditable(True)
+        self._type_cb.addItems(sorted(equipment_detection.COMPONENT_TYPES.keys()))
+        self._type_cb.setCurrentText(initial_comp_type or '')
+        form.addRow("Typ:", self._type_cb)
+
         layout.addLayout(form)
 
         status_row = QHBoxLayout()
@@ -1418,6 +1449,14 @@ class SimilarSymbolSearchDialog(QDialog):
 
     def edited_index_group(self):
         return self._canvas.edited_index_group() if self._canvas else None
+
+    def selected_comp_type(self):
+        """The user-chosen equipment type (2026-08-16, see NOTES.md
+        "kunna välja vilken typ av objekt det är i både raster och
+        vektor") — applied to every result via final_results(comp_type=...)
+        regardless of matching method, same as a saved template's own
+        comp_type already was."""
+        return self._type_cb.currentText().strip()
 
     def use_image_matching(self):
         """True if this search should run via image_symbol_matching
@@ -9503,7 +9542,7 @@ class PIDPanel(QWidget):
         if params_dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
-        results = params_dlg.final_results()
+        results = params_dlg.final_results(comp_type=params_dlg.selected_comp_type())
         if not results:
             QMessageBox.information(
                 self, "Inget liknande hittat",
@@ -9545,11 +9584,12 @@ class PIDPanel(QWidget):
             None, None, self.viewer._pdf_path, page, None,
             db=self.db, viewer=self.viewer,
             template_name=template['name'], template_features=ref_features,
+            initial_comp_type=template.get('comp_type', ''),
             page_rotations=self.db.get_all_page_rotations(), parent=self)
         if params_dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
-        results = params_dlg.final_results(comp_type=template.get('comp_type', ''))
+        results = params_dlg.final_results(comp_type=params_dlg.selected_comp_type())
         if not results:
             QMessageBox.information(
                 self, "Inget liknande hittat",

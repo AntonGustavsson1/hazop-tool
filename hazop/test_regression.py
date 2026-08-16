@@ -5603,7 +5603,7 @@ class SimilarSymbolSearchDialogTests(unittest.TestCase):
         return SimilarSymbolSearchDialog(None, None, 'fake.pdf', 0, 10.0,
                                           ref_bbox=(0, 0, 10, 10), db=db, viewer=viewer)
 
-    def _template_dialog(self, template_features=None, db=None, viewer=None):
+    def _template_dialog(self, template_features=None, db=None, viewer=None, initial_comp_type=''):
         from pid_viewer import SimilarSymbolSearchDialog
         return SimilarSymbolSearchDialog(
             None, None, 'fake.pdf', 0, None, db=db, viewer=viewer,
@@ -5611,7 +5611,8 @@ class SimilarSymbolSearchDialogTests(unittest.TestCase):
             template_features=template_features or {'aspect': 1.0, 'norm_size': 2.0,
                                                     'fold_ratio': 1.0, 'has_curve': False,
                                                     'has_diagonal': True,
-                                                    'has_closed_or_filled': True})
+                                                    'has_closed_or_filled': True},
+            initial_comp_type=initial_comp_type)
 
     def test_default_values_match_find_similar_shapes_defaults(self):
         dlg = self._dialog()
@@ -5621,6 +5622,39 @@ class SimilarSymbolSearchDialogTests(unittest.TestCase):
             self.assertEqual(dlg.rotation_mode(), 'none')
             self.assertFalse(dlg.search_this_page_only())
             self.assertEqual(dlg.edited_index_group(), [0, 1])
+        finally:
+            dlg.deleteLater()
+
+    def test_type_selector_defaults_to_empty_and_is_settable(self):
+        """"kunna välja vilken typ av objekt det är i både raster och
+        vektor" (2026-08-16, see NOTES.md) — an ad-hoc (non-template)
+        search starts with no type chosen, but the user can set one
+        before running "Sök", and it must be reflected by
+        selected_comp_type() regardless of matching method."""
+        dlg = self._dialog()
+        try:
+            self.assertEqual(dlg.selected_comp_type(), '')
+            dlg._type_cb.setCurrentText('Ventil')
+            self.assertEqual(dlg.selected_comp_type(), 'Ventil')
+            dlg._method_image.setChecked(True)
+            self.assertEqual(dlg.selected_comp_type(), 'Ventil',
+                "the chosen type must survive switching to Bildmatchning")
+        finally:
+            dlg.deleteLater()
+
+    def test_type_selector_offers_every_known_component_type(self):
+        import equipment_detection
+        dlg = self._dialog()
+        try:
+            items = {dlg._type_cb.itemText(i) for i in range(dlg._type_cb.count())}
+            self.assertEqual(items, set(equipment_detection.COMPONENT_TYPES.keys()))
+        finally:
+            dlg.deleteLater()
+
+    def test_template_mode_prefills_type_selector_from_template(self):
+        dlg = self._template_dialog(initial_comp_type='Pump')
+        try:
+            self.assertEqual(dlg.selected_comp_type(), 'Pump')
         finally:
             dlg.deleteLater()
 
