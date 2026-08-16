@@ -1023,6 +1023,7 @@ class _ImageRefCropCanvas(QWidget):
         self._full_bbox = None     # PDF-space bbox the array was rendered from
         self._drag_start = None
         self._drag_current = None
+        self._press_widget_pos = None   # WIDGET pixels — for the min-drag-distance check
         self._crop_px = None       # (x0,y0,x1,y1) in ARRAY pixel space, or None = full
 
     def set_reference(self, gray, full_bbox):
@@ -1106,6 +1107,7 @@ class _ImageRefCropCanvas(QWidget):
     def mousePressEvent(self, event):
         if self._gray is None:
             return
+        self._press_widget_pos = (event.position().x(), event.position().y())
         px = self._widget_to_px(event.position().x(), event.position().y())
         self._drag_start = px
         self._drag_current = px
@@ -1124,7 +1126,22 @@ class _ImageRefCropCanvas(QWidget):
         self._drag_start = self._drag_current = None
         rx0, ry0 = min(x0, x1), min(y0, y1)
         rx1, ry1 = max(x0, x1), max(y0, y1)
-        if (rx1 - rx0) < self._MIN_DRAG_PX or (ry1 - ry0) < self._MIN_DRAG_PX:
+        # "Real gesture" tolerance measured in WIDGET pixels (2026-08-16,
+        # see NOTES.md "rutan i bildmatchning stämmer inte med det
+        # markerade"), NOT array pixels like before this fix — a real
+        # reference can be tiny (confirmed on the active project's own
+        # hazop_project_pid.pdf: a resolved reference array was only
+        # 12x24px) and still gets rendered zoomed way up to fill the
+        # widget (10x+ in that case). At that zoom, a completely normal,
+        # deliberate on-screen drag of dozens of widget pixels can
+        # convert to under 4 ARRAY pixels in one dimension — the
+        # `_MIN_DRAG_PX` check silently discarded the whole gesture as
+        # "just a stray click", so the crop box shown never matched what
+        # was actually dragged, especially for thin/small references.
+        press_x, press_y = self._press_widget_pos
+        release_x, release_y = event.position().x(), event.position().y()
+        if (abs(release_x - press_x) < self._MIN_DRAG_PX
+                or abs(release_y - press_y) < self._MIN_DRAG_PX):
             self.update()   # a stray click, not a real crop gesture
             return
         self._crop_px = (rx0, ry0, rx1, ry1)

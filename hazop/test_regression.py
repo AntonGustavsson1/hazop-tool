@@ -5463,6 +5463,37 @@ class ImageRefCropCanvasTests(unittest.TestCase):
         finally:
             canvas.deleteLater()
 
+    def test_normal_drag_on_a_tiny_zoomed_in_reference_still_creates_a_crop(self):
+        """Found in the wild (2026-08-16, see NOTES.md "rutan i
+        bildmatchning stämmer inte med det markerade" — Anton: "Det
+        verkar inte som rutan som visas på bildmatchning stämmer
+        överens med vad jag markerat."): a real resolved reference on
+        the active project's own hazop_project_pid.pdf was only 12x24
+        ARRAY pixels — rendered at ~9-10x zoom to fill a normal-sized
+        dialog widget. At that zoom, the OLD min-drag-distance check
+        (measured in ARRAY pixels, after the zoom) meant a completely
+        normal ~30 on-screen-pixel drag converted to under 4 array
+        pixels and was silently discarded as "just a stray click" — so
+        the crop box shown never matched what was actually dragged.
+        The check must be measured in WIDGET pixels (what the user
+        actually sees/controls) instead."""
+        from pid_viewer import _ImageRefCropCanvas
+        import numpy as np
+        canvas = _ImageRefCropCanvas()
+        try:
+            canvas.resize(240, 180)
+            canvas.set_reference(np.full((12, 24), 255, dtype='uint8'), (0.0, 0.0, 24.0, 12.0))
+            # A visually obvious, deliberate 130x30 on-screen drag — but
+            # at this reference's own zoom level (~9.3x to fill the
+            # widget), 30 widget px converts to ~3.2 ARRAY px, under the
+            # old (wrong) array-space threshold of 4.
+            self._drag(canvas, 20, 50, 150, 80)
+            self.assertTrue(canvas.has_crop(),
+                "a clear ~130x30 on-screen drag must not be discarded as a stray click, "
+                "even when the reference is tiny and heavily zoomed to fill the widget")
+        finally:
+            canvas.deleteLater()
+
     def test_a_stray_click_does_not_create_a_crop(self):
         from pid_viewer import _ImageRefCropCanvas
         canvas = _ImageRefCropCanvas()

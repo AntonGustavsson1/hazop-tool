@@ -2070,6 +2070,30 @@ Anton, direkt efter fixen ovan: "Om du Går igenom PFD 1500 och hittar de gemens
 
 **Test:** `MatchPageRangeWorkerTests` utökad till 6 tester (cancel_event-respekt, kastar nu istället för att svälja fel). `FindSimilarShapesSearchParametersTests` fick ett nytt test för fynd 2. Full svit (797 tester) grön.
 
+## Rutan i bildmatchning stämmer inte med det markerade (2026-08-16)
+
+**Rapport:** Anton, mitt i en genomgång av raster-sökningens träffsäkerhet mot riktiga ventiler på PFD 1500: "Det verkar inte som rutan som visas på bildmatchning stämmer överens med vad jag markerat. Kanske är den låst till något visst format."
+
+**Root cause:** `_ImageRefCropCanvas`s "riktig gest, inte ett stray-klick"-tolerans (`_MIN_DRAG_PX=4`) mättes i klustrets egna ARRAY-pixlar (efter uppzoomning för att fylla widgeten), inte i de WIDGET-pixlar användaren faktiskt ser och drar med musen i. Bekräftat direkt mot en riktig, automatiskt uppslagen referens på `hazop_project_pid.pdf`: en 12×24 array-pixlars referens renderad vid ~9-10x zoom för att fylla dialogens widget — vid den zoomen konverterar en fullt normal, avsiktlig ~130×30 pixlars skärmdragning till bara ~3 array-pixlar i höjdled, under 4-pixelgränsen. Hela dragningen kastades tyst som "bara ett struttklick", så rutan som visades matchade aldrig det användaren faktiskt drog.
+
+**Fix:** `_MIN_DRAG_PX`-kontrollen mäts nu i WIDGET-pixlar (`event.position()` vid press respektive release) istället för de redan zoomade array-pixlarna. Ny `_press_widget_pos`-instansvariabel sparar tryckpositionen i widget-utrymme.
+
+**Test:** `test_normal_drag_on_a_tiny_zoomed_in_reference_still_creates_a_crop` (ny) — en 12×24-pixlars referens (samma proportioner som den riktiga bekräftade buggen) med en tydlig ~130×30 skärmdragning måste skapa en beskärning. Röd→grön verifierat. Full svit (798 tester) grön.
+
+## Högre DPI för bildmatchning — testat, ingen förbättring (2026-08-16)
+
+**Fråga:** Anton, efter att ha bekräftat att raster-sökningen hittar ventiler med god precision (men ofullständigt återfynd): "Tror du att du kan identifiera den som lite mer högupplöst och även leta mer högupplöst för bättre korrekthet?"
+
+**Testat direkt** mot samma ventil-referens och samma bekräftade rätta/felaktiga träffar från genomgången ovan, vid 300/450/600 DPI:
+
+| DPI | Tid (1 sida) | Träffar ≥60% | Känd RIKTIG ventils poäng | Kända FELAKTIGA träffars poäng |
+|---|---|---|---|---|
+| 300 | 20,5s | 380 | 0,659 | 0,650-0,654 |
+| 450 | 47,3s | 700 | 0,640 | 0,600-0,654 |
+| 600 | 23,2s | 597 | 0,634 | 0,591-0,656 |
+
+**Slutsats:** högre upplösning gör det INTE bättre — snarare sämre. Den kända riktiga ventilens poäng SJUNKER vid högre DPI (0,659→0,634), medan de kända felaktiga träffarnas poäng inte sjunker lika mycket (en av dem hamnar t.o.m. HÖGRE än den riktiga ventilen vid 600 DPI: 0,656 mot 0,634). Fler råa träffar totalt (700 vid 450 DPI, mot 380 vid 300 DPI) — mer brus, inte mindre. Detta bekräftar och utökar den redan dokumenterade DPI-avvägningen i `image_symbol_matching.py`s egen kod (300 DPI valdes redan tidigare som en empiriskt grundad "sweet spot" — högre DPI minskade INTE falska positiva då heller). Ingen kodändring gjord — bara empiriskt bekräftat att 300 DPI redan är rätt val, inte en gissning.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.
