@@ -1847,6 +1847,39 @@ def _scan_candidates(pdf_doc, ref_features, ref_page, ref_native_index_group, pa
     ref_features came from a user-EDITED index group (excluding a
     wrongly-merged primitive) — the thing being excluded from its own
     candidate list is the raw auto-detected cluster, not the edited one.
+
+    Candidates are pre-filtered to aspect<=3.0 and 1.5<=norm_size<=40.0 —
+    the same "plausible discrete symbol, not a pipe run/title-block frame/
+    stray glyph fragment" bounds find_valve_shapes' own docstring already
+    established (classify_cluster's hard-exclude bounds, reused here
+    rather than invented fresh). Confirmed necessary on the active
+    project's own hazop_project_pid.pdf (2026-08-16, reported by Anton:
+    "det skall inte stå 1070 träffar utan vi kanske pratar om 20-30
+    ventiler"): this file has NO real text layer at all (page.get_text()
+    returns zero words despite 45,514 vector primitives — every tag label
+    is drawn as tiny vector glyph strokes instead), so find_symbol_clusters'
+    own min_confidence=0.0 here (deliberately permissive — see
+    resolve_reference_cluster, which lets a user reference ANY shape) lets
+    through 42,811 raw clusters, the overwhelming majority of them
+    single-glyph-stroke fragments far too small to be a real symbol.
+    Comparing the reference against every one of them is why a search that
+    should surface ~20-30 real valves instead reported ~1070 "matches" —
+    plenty of tiny fragments coincidentally score similarly enough on the
+    OTHER shape dimensions (aspect, has_diagonal, etc.) to cross a 60%
+    threshold even though their absolute size makes them obviously not a
+    discrete symbol. Confirmed directly against that file: this filter
+    alone cuts 42,811 raw clusters down to 195 plausible-size candidates.
+    dominant_text_size() already derives cand_scale from the page's own
+    vector content when there's no real text (see its own docstring, same
+    Loket/Smurfit Kappa precedent) — so this bound adapts per-page rather
+    than using an absolute pixel size. Only applied when NOT ignore_scale:
+    that flag means "find any size of the same figure" — on a page with
+    very few, very differently-sized shapes (confirmed directly against
+    this repo's own ignore_scale regression test), dominant_text_size()'s
+    median-based estimate can itself skew toward whichever shape happens
+    to dominate the page, so a deliberately-huge-or-tiny match ignore_scale
+    is specifically meant to find could otherwise fail this bound too —
+    defeating the point of asking for it.
     """
     if pages is None:
         pages = range(pdf_doc.page_count)
@@ -1865,6 +1898,8 @@ def _scan_candidates(pdf_doc, ref_features, ref_page, ref_native_index_group, pa
         cand_scale = symbol_geometry.dominant_text_size(page)
         for c in clusters:
             if page_num == ref_page and c['_index_group'] == ref_native_index_group:
+                continue
+            if not ignore_scale and (c['aspect'] > 3.0 or not (1.5 <= c['norm_size'] <= 40.0)):
                 continue
             cand_feats = symbol_geometry.similarity_features(
                 cand_primitives, c['_index_group'], cand_scale, rotation_mode=rotation_mode)

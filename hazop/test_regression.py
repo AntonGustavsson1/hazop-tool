@@ -4974,11 +4974,30 @@ class FindSimilarShapesSearchParametersTests(unittest.TestCase):
         path = os.path.join(self._tmpdir, "scancand.pdf")
         doc = fitz.open()
         page = doc.new_page(width=400, height=400)
+        # A little real text so dominant_text_size() uses the normal
+        # per-glyph estimate instead of its no-text vector-bootstrap
+        # fallback — on a page with only a couple of shapes, that
+        # fallback ties its own scale estimate to the very shapes being
+        # measured (confirmed directly: it otherwise locks to almost
+        # exactly the bow-tie's own size, pinning norm_size right at the
+        # aspect/norm_size pre-filter's own boundary below). Any real
+        # P&ID has actual text; this keeps the fixture representative.
+        page.insert_text(fitz.Point(200, 380), "TAG-001", fontsize=8)
         shape = page.new_shape()
         self._bowtie(shape, 60, 60)
         self._bowtie(shape, 300, 300)
-        shape.draw_rect(fitz.Rect(60, 300, 260, 320))   # plainly different, low similarity
-        shape.finish(color=(0, 0, 0), width=1)
+        # Plainly different shape-wise (no diagonal/curve mismatch vs the
+        # bow-tie's own triangle edges) but still a plausible-symbol
+        # size/aspect — a long thin rect was used here before
+        # _scan_candidates gained its own aspect/norm_size pre-filter
+        # (2026-08-16, see NOTES.md "Anton rapporterade 1070 träffar
+        # istället för 20-30 ventiler"), which now excludes anything that
+        # implausible before ever comparing shape features at all; a
+        # filled oval keeps this test's original intent (verify
+        # min_similarity itself isn't applied) without tripping that new,
+        # unrelated pre-filter.
+        shape.draw_oval(fitz.Rect(140, 50, 180, 70))
+        shape.finish(color=(0, 0, 0), fill=(1, 0, 0), closePath=True)
         shape.commit()
         doc.save(path)
         doc.close()
@@ -4993,8 +5012,9 @@ class FindSimilarShapesSearchParametersTests(unittest.TestCase):
             doc.close()
         self.assertTrue(candidates)
         # Both a high-similarity (the clean bow-tie copy) and a
-        # low-similarity (the rect) candidate must be present —
-        # min_similarity was never applied.
+        # low-similarity (the oval, no diagonal edges, has_curve
+        # mismatch) candidate must be present — min_similarity was never
+        # applied.
         sims = [c[0] for c in candidates]
         self.assertGreater(max(sims), 0.9)
         self.assertLess(min(sims), 0.5)
