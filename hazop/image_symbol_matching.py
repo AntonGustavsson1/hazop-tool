@@ -77,6 +77,20 @@ _SCALE_FACTORS = (0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3)
 # cost far more (35-43s for one A4 page) for diminishing returns — 300 is
 # the empirically-grounded sweet spot, not an arbitrary guess.
 _DEFAULT_DPI = 300
+# find_similar_shapes_visual's own default min_similarity — NOT a mere
+# convenience default, unlike e.g. equipment_detection._scan_candidates
+# (which has no threshold parameter at all and is genuinely
+# unthresholded). Confirmed necessary (2026-08-16, see NOTES.md
+# "raster-sökning — parallellisering över flera processer"): passing
+# min_similarity=0.0 here makes cv2.matchTemplate's own
+# np.where(result >= min_similarity) match nearly every pixel position
+# on a page (correlation scores cluster near/above 0 almost everywhere),
+# producing so many raw (score, bbox) pairs that _nms's greedy
+# suppression alone hung for minutes on a single page. Named here (not
+# just a bare literal in the signature below) so
+# pid_viewer.ImageSymbolSearchWorker's parallel path can pass the exact
+# same value to _match_page_range_worker instead of guessing/duplicating it.
+_DEFAULT_MIN_SIMILARITY_FOR_SCAN = 0.6
 _NMS_IOU_THRESHOLD = 0.3
 # A candidate on the reference's own page overlapping the reference region
 # at least this much is treated as "the reference matching itself" and
@@ -177,37 +191,16 @@ def _match_page(page_gray, template_gray, min_similarity, scales, rotations, sho
     return _nms(raw)
 
 
-def find_similar_shapes_visual(pdf_doc, ref_page, ref_bbox, pages=None,
-                                min_similarity=0.6, ignore_scale=False,
-                                rotation_mode='none', dpi=_DEFAULT_DPI,
-                                progress_callback=None, should_cancel=None):
-    """Image/pixel-based counterpart to
-    equipment_detection._scan_candidates() — same
-    (sim, page_num, x, y, outline) tuple contract, un-thresholded (the
-    caller, e.g. SimilarSymbolSearchDialog, filters by min_similarity
-    itself for live re-filtering without a second scan), so either
-    matching method can fill pid_viewer.py's shared results pipeline.
-
-    ref_bbox: PDF-space (x0,y0,x1,y1) of the reference region on
-    ref_page — cropped and rendered once as the template.
-    should_cancel: optional zero-arg callable, checked once per page AND
-    (see _match_page) once per (scale, rotation) combination within a
-    page — a page-only check left cancellation unresponsive for however
-    long that one page's remaining scale/rotation combinations took.
-    """
-    if not (HAS_CV2 and HAS_NUMPY and HAS_PYMUPDF) or pdf_doc is None:
-        return []
-    ref_fitz_page = pdf_doc[ref_page]
-    template_gray = render_gray(ref_fitz_page, bbox=ref_bbox, dpi=dpi)
-    if template_gray.size == 0 or min(template_gray.shape) < 3:
-        return []
-
-    scales = _SCALE_FACTORS if ignore_scale else (1.0,)
-    rotations = _BASE_ROTATIONS + (_EXTRA_ROTATIONS if rotation_mode == 'any' else ())
-
-    if pages is None:
-        pages = range(pdf_doc.page_count)
-    pages = list(pages)
+def _match_pages(pdf_doc, template_gray, ref_page, ref_bbox, pages, min_similarity,
+                  scales, rotations, dpi, progress_callback=None, should_cancel=None):
+    """Run _match_page across `pages` of an already-open pdf_doc against
+    an already-rendered template_gray, producing (sim, page_num, x, y,
+    outline) tuples in PDF space. The shared core both
+    find_similar_shapes_visual's sequential path and
+    _match_page_range_worker's parallel path use (2026-08-16, see
+    NOTES.md "raster-sökning — parallellisering över flera processer") —
+    so the self-match-exclusion/coordinate-transform logic exists in
+    exactly one place regardless of which path runs."""
     total = len(pages)
     pdf_scale = dpi / 72.0
     candidates = []
@@ -232,3 +225,135 @@ def find_similar_shapes_visual(pdf_doc, ref_page, ref_bbox, pages=None,
             outline = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
             candidates.append((score, page_num, (x0 + x1) / 2, (y0 + y1) / 2, outline))
     return candidates
+
+
+def find_similar_shapes_visual(pdf_doc, ref_page, ref_bbox, pages=None,
+                                min_similarity=_DEFAULT_MIN_SIMILARITY_FOR_SCAN,
+                                ignore_scale=False,
+                                rotation_mode='none', dpi=_DEFAULT_DPI,
+                                progress_callback=None, should_cancel=None):
+    """Image/pixel-based counterpart to
+    equipment_detection._scan_candidates() — same
+    (sim, page_num, x, y, outline) tuple contract, un-thresholded (the
+    caller, e.g. SimilarSymbolSearchDialog, filters by min_similarity
+    itself for live re-filtering without a second scan), so either
+    matching method can fill pid_viewer.py's shared results pipeline.
+
+    ref_bbox: PDF-space (x0,y0,x1,y1) of the reference region on
+    ref_page — cropped and rendered once as the template.
+    should_cancel: optional zero-arg callable, checked once per page AND
+    (see _match_page) once per (scale, rotation) combination within a
+    page — a page-only check left cancellation unresponsive for however
+    long that one page's remaining scale/rotation combinations took.
+
+    This is the SEQUENTIAL path — one page at a time, on whatever thread
+    calls it. For a multi-page "Hela dokumentet" search,
+    pid_viewer.ImageSymbolSearchWorker instead splits `pages` across
+    several worker PROCESSES (_match_page_range_worker below) when there
+    are enough pages to be worth it, and only falls back to this
+    function directly otherwise — see that class's own docstring.
+    """
+    if not (HAS_CV2 and HAS_NUMPY and HAS_PYMUPDF) or pdf_doc is None:
+        return []
+    ref_fitz_page = pdf_doc[ref_page]
+    template_gray = render_gray(ref_fitz_page, bbox=ref_bbox, dpi=dpi)
+    if template_gray.size == 0 or min(template_gray.shape) < 3:
+        return []
+
+    scales = _SCALE_FACTORS if ignore_scale else (1.0,)
+    rotations = _BASE_ROTATIONS + (_EXTRA_ROTATIONS if rotation_mode == 'any' else ())
+
+    if pages is None:
+        pages = range(pdf_doc.page_count)
+    pages = list(pages)
+    return _match_pages(pdf_doc, template_gray, ref_page, ref_bbox, pages, min_similarity,
+                         scales, rotations, dpi, progress_callback=progress_callback,
+                         should_cancel=should_cancel)
+
+
+def _match_page_range_worker(pdf_path, ref_page, ref_bbox, page_range, min_similarity,
+                              ignore_scale, rotation_mode, dpi, page_rotations,
+                              progress_queue=None, n_workers=1):
+    """Multiprocessing target for a parallel Bildmatchning scan
+    (2026-08-16, see NOTES.md "raster-sökning — parallellisering över
+    flera processer") — module-level (not a closure) so it can be
+    pickled/imported by a spawned child process on Windows, mirroring
+    equipment_detection._scan_page_range_worker's exact same shape:
+    opens its OWN fitz.Document (Document/Pixmap objects can't cross a
+    process boundary), re-applies page_rotations the same way every
+    other background worker in this codebase already has to (see
+    equipment_detection.apply_page_rotations's own docstring), and
+    re-renders+re-matches the reference template independently — there
+    is no cheaper way to hand a live cv2/numpy template across a process
+    boundary than to just rebuild it from the same (ref_page, ref_bbox)
+    every worker was given.
+
+    No should_cancel here — same tradeoff
+    _scan_page_range_worker/ParallelTagScanWorker already accept:
+    once a chunk of pages has been dispatched to a worker process, it
+    runs to completion; only chunks that haven't started yet can be
+    cancelled (via the orchestrating QThread cancelling their Future).
+
+    progress_queue, if given (a multiprocessing.Manager().Queue()), gets
+    a (page_num, 'running'|'done') tuple pushed around each page —
+    polled by ImageSymbolSearchWorker to drive the dialog's progress bar,
+    same convention _drain_progress_queue already expects elsewhere.
+
+    n_workers: how many sibling worker processes are running this SAME
+    scan concurrently — used to constrain cv2's OWN internal thread pool
+    (see _limit_ocr_engine_threads in equipment_detection.py for the
+    identical fix already applied there, and its docstring for the
+    original real-world measurement this mirrors). Confirmed directly:
+    cv2.getNumThreads() defaults to the FULL logical core count in this
+    process — meaning each of N worker processes independently tries to
+    use every core for its own cv2.matchTemplate calls, oversubscribing
+    the machine instead of adding throughput. Measured on a real 5-page,
+    A0-sized document (14 logical cores): unconstrained cv2 threading
+    across 5 worker processes measured only a 1.2x speedup over the
+    sequential path despite 5-way process parallelism; constraining each
+    worker to max(1, cpu_count // n_workers) threads recovered the
+    expected scaling.
+
+    Returns the same (sim, page_num, x, y, outline) tuple list
+    find_similar_shapes_visual itself returns for this page range."""
+    doc = None
+    try:
+        if HAS_CV2:
+            import cv2
+            import os
+            cv2.setNumThreads(max(1, (os.cpu_count() or 4) // max(1, n_workers)))
+        doc = fitz.open(pdf_path)
+        import equipment_detection
+        equipment_detection.apply_page_rotations(doc, page_rotations)
+        ref_fitz_page = doc[ref_page]
+        template_gray = render_gray(ref_fitz_page, bbox=ref_bbox, dpi=dpi)
+        if template_gray.size == 0 or min(template_gray.shape) < 3:
+            return []
+        scales = _SCALE_FACTORS if ignore_scale else (1.0,)
+        rotations = _BASE_ROTATIONS + (_EXTRA_ROTATIONS if rotation_mode == 'any' else ())
+
+        def _report(page_num, _total, _msg):
+            if progress_queue is not None:
+                try:
+                    progress_queue.put((page_num, 'running'))
+                except Exception:
+                    pass
+
+        candidates = _match_pages(
+            doc, template_gray, ref_page, ref_bbox, list(page_range), min_similarity,
+            scales, rotations, dpi, progress_callback=_report)
+        if progress_queue is not None:
+            for page_num in page_range:
+                try:
+                    progress_queue.put((page_num, 'done'))
+                except Exception:
+                    pass
+        return candidates
+    except Exception:
+        return []
+    finally:
+        if doc is not None:
+            try:
+                doc.close()
+            except Exception:
+                pass

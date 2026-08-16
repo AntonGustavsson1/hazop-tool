@@ -3709,7 +3709,28 @@ class ImageSymbolSearchWorker(QThread):
     so ref_bbox itself (already in the LIVE view's rotated coordinate
     space) would be cropped from the WRONG region of a freshly-opened,
     un-rotated page, and any found candidate's outline would land in
-    the wrong space too."""
+    the wrong space too.
+
+    Parallel across CPU-core PROCESSES for "Hela dokumentet" (2026-08-16,
+    see NOTES.md "raster-sökning — parallellisering över flera
+    processer") — Bildmatchning renders every candidate page at 300 DPI
+    and runs cv2.matchTemplate across every (scale, rotation)
+    combination, which measured 5-6 seconds for ONE large-format (A0)
+    page at default settings and up to 35s with "alla storlekar" on —
+    purely sequential before this, so a multi-page document search took
+    that times the page count. Modelled EXACTLY on
+    ParallelTagScanWorker/_scan_page_range_worker above/in
+    equipment_detection.py: _should_parallelize gates whether it's worth
+    the ProcessPoolExecutor startup cost at all, _pick_worker_count picks
+    how many processes (reused with use_ocr=False — Bildmatchning has no
+    OCR engine to budget threads for, so that parameter is simply
+    inert), each process opens its OWN fitz.Document and independently
+    re-renders+re-matches the reference template
+    (image_symbol_matching._match_page_range_worker — Document/Pixmap/
+    cv2 state can't cross a process boundary, so there's no cheaper way
+    to hand a live template across than to just rebuild it), and only
+    already-PENDING (not yet started) chunks can be cancelled — same
+    tradeoff the existing tag-scan parallelization already accepts."""
     progress      = pyqtSignal(int, int, str)
     finished_scan = pyqtSignal(list)
 
@@ -3729,15 +3750,47 @@ class ImageSymbolSearchWorker(QThread):
         doc = None
         try:
             doc = fitz.open(self._pdf_path)
+            pages = self._pages if self._pages is not None else list(range(doc.page_count))
+        except Exception as e:
+            logging.error(f"ImageSymbolSearchWorker.run() failed to open PDF: {e}", exc_info=True)
+            self.finished_scan.emit([])
+            return
+        finally:
+            if doc is not None:
+                try:
+                    doc.close()
+                except Exception:
+                    pass
+
+        n_workers = _pick_worker_count(len(pages), use_ocr=False, ocr_engine='auto')
+        if not _should_parallelize(len(pages), n_workers):
+            self._run_sequential(pages)
+            return
+        try:
+            self._run_parallel(pages, n_workers)
+        except Exception as e:
+            logging.error(f"ImageSymbolSearchWorker.run() parallel path failed, "
+                          f"falling back to sequential: {e}", exc_info=True)
+            try:
+                self._run_sequential(pages)
+            except Exception as e2:
+                logging.error(f"ImageSymbolSearchWorker: sequential fallback also "
+                              f"failed: {e2}", exc_info=True)
+                self.finished_scan.emit([])
+
+    def _run_sequential(self, pages):
+        doc = None
+        try:
+            doc = fitz.open(self._pdf_path)
             equipment_detection.apply_page_rotations(doc, self._page_rotations)
             candidates = image_symbol_matching.find_similar_shapes_visual(
-                doc, self._ref_page, self._ref_bbox, pages=self._pages,
+                doc, self._ref_page, self._ref_bbox, pages=pages,
                 ignore_scale=self._ignore_scale, rotation_mode=self._rotation_mode,
                 progress_callback=lambda pn, total, msg: self.progress.emit(pn, total, msg),
                 should_cancel=self.isInterruptionRequested)
             self.finished_scan.emit(candidates)
         except Exception as e:
-            logging.error(f"ImageSymbolSearchWorker.run() failed: {e}", exc_info=True)
+            logging.error(f"ImageSymbolSearchWorker._run_sequential failed: {e}", exc_info=True)
             self.finished_scan.emit([])
         finally:
             if doc is not None:
@@ -3745,6 +3798,84 @@ class ImageSymbolSearchWorker(QThread):
                     doc.close()
                 except Exception:
                     pass
+
+    def _run_parallel(self, pages, n_workers):
+        total = len(pages)
+        chunks = [[pages[i] for i in idx_chunk]
+                  for idx_chunk in equipment_detection._split_into_chunks(total, n_workers)]
+        all_candidates = []
+        cancelled = False
+        manager = multiprocessing.Manager()
+        progress_queue = manager.Queue()
+        try:
+            executor = concurrent.futures.ProcessPoolExecutor(max_workers=len(chunks))
+            try:
+                futures = [executor.submit(
+                    image_symbol_matching._match_page_range_worker,
+                    self._pdf_path, self._ref_page, self._ref_bbox, chunk,
+                    # min_similarity: the sequential path (find_similar_shapes_visual)
+                    # never overrides this either, relying on its own 0.6 default —
+                    # NOT truly "unthresholded" the way the vector path's
+                    # _scan_candidates is. Confirmed directly: passing 0.0 here
+                    # makes cv2.matchTemplate's own np.where(result >= 0.0) match
+                    # nearly every pixel position on the page (correlation scores
+                    # cluster near/above 0 almost everywhere), producing so many
+                    # raw (score, bbox) pairs that _nms's greedy suppression alone
+                    # made a single page hang for minutes. Kept in parity with the
+                    # sequential path rather than "fixed" to true zero.
+                    image_symbol_matching._DEFAULT_MIN_SIMILARITY_FOR_SCAN,
+                    self._ignore_scale, self._rotation_mode,
+                    image_symbol_matching._DEFAULT_DPI, self._page_rotations,
+                    progress_queue, len(chunks))
+                    for chunk in chunks]
+                pending = set(futures)
+                while pending:
+                    self._emit_progress(progress_queue, total)
+                    if self.isInterruptionRequested():
+                        cancelled = True
+                        for f in pending:
+                            f.cancel()
+                        break
+                    _done, pending = concurrent.futures.wait(
+                        pending, timeout=0.1, return_when=concurrent.futures.FIRST_COMPLETED)
+                self._emit_progress(progress_queue, total)
+                if not cancelled:
+                    for f in futures:
+                        try:
+                            all_candidates.extend(f.result())
+                        except concurrent.futures.CancelledError:
+                            continue
+                        except Exception as e:
+                            logging.error(f"ImageSymbolSearchWorker: a worker "
+                                          f"process failed: {e}", exc_info=True)
+                            continue
+            finally:
+                # wait=True even when cancelled: cancel_futures=True skips
+                # any not-yet-STARTED task, but a worker process already
+                # spawned/mid-startup at cancel time keeps running and
+                # reaches for the manager's queue proxy — tearing down
+                # `manager` before that process finishes connecting to it
+                # orphans it with a noisy WinError/FileNotFoundError
+                # traceback (confirmed directly: an earlier wait=not
+                # cancelled version of this reproduced exactly that on a
+                # real cancellation test). Same fix already applied to
+                # ParallelTagScanWorker._run_parallel above for the exact
+                # same reason — bounds "Avbryt" latency to one in-flight
+                # chunk's remaining work, not instant, but always clean.
+                executor.shutdown(wait=True, cancel_futures=cancelled)
+        finally:
+            manager.shutdown()
+        if cancelled:
+            self.finished_scan.emit([])
+            return
+        self.finished_scan.emit(all_candidates)
+
+    def _emit_progress(self, progress_queue, total):
+        def _emit(page_num, status):
+            msg = f"Sida {page_num + 1}/{total} — bildmatchning…" if status == 'running' else ''
+            if status == 'running':
+                self.progress.emit(page_num, total, msg)
+        _drain_progress_queue(progress_queue, _emit)
 
 
 # ══════════════════════════════════════════════════════════════════════════

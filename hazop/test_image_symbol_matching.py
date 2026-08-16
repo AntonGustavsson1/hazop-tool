@@ -10,7 +10,10 @@ Run with:
     python -m unittest hazop.test_image_symbol_matching -v
 """
 import math
+import os
+import shutil
 import sys
+import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -223,6 +226,92 @@ class FindSimilarShapesVisualTests(unittest.TestCase):
             cands = ism.find_similar_shapes_visual(doc, 0, (50, 50, 70, 70), pages=[0])
         self.assertEqual(cands, [])
         doc.close()
+
+
+class MatchPageRangeWorkerTests(unittest.TestCase):
+    """_match_page_range_worker (2026-08-16, see NOTES.md "raster-sökning
+    — parallellisering över flera processer") — the multiprocessing
+    target pid_viewer.ImageSymbolSearchWorker dispatches to
+    ProcessPoolExecutor workers for a multi-page "Hela dokumentet" scan.
+    Tested here directly (not through the process pool — these tests run
+    it in-process, same as _scan_page_range_worker's own direct-call
+    tests in test_regression.py) since it's a plain, picklable,
+    module-level function with no Qt dependency."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_matchrangeworker_test_")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _multi_page_pdf(self, n_pages=3):
+        path = os.path.join(self._tmpdir, "worker.pdf")
+        doc = fitz.open()
+        for _ in range(n_pages):
+            page = doc.new_page(width=400, height=300)
+            shape = page.new_shape()
+            _draw_bowtie(shape, 60, 60)
+            shape.commit()
+        doc.save(path)
+        doc.close()
+        return path
+
+    def test_finds_candidates_across_its_assigned_page_range(self):
+        path = self._multi_page_pdf(3)
+        cands = ism._match_page_range_worker(
+            path, 0, (50, 50, 70, 70), [1, 2], 0.6, False, 'none', ism._DEFAULT_DPI, None)
+        pages_found = {c[1] for c in cands if c[0] > 0.9}
+        self.assertEqual(pages_found, {1, 2})
+
+    def test_reports_progress_via_the_queue(self):
+        import multiprocessing
+        path = self._multi_page_pdf(3)
+        manager = multiprocessing.Manager()
+        try:
+            queue = manager.Queue()
+            ism._match_page_range_worker(
+                path, 0, (50, 50, 70, 70), [1, 2], 0.6, False, 'none',
+                ism._DEFAULT_DPI, None, progress_queue=queue)
+            events = []
+            while not queue.empty():
+                events.append(queue.get_nowait())
+            self.assertIn((1, 'running'), events)
+            self.assertIn((1, 'done'), events)
+            self.assertIn((2, 'running'), events)
+            self.assertIn((2, 'done'), events)
+        finally:
+            manager.shutdown()
+
+    def test_limits_cv2_threads_by_worker_count(self):
+        """Same fix as equipment_detection._limit_ocr_engine_threads,
+        applied to cv2 instead of onnxruntime — confirmed necessary via a
+        real benchmark (2026-08-16, see NOTES.md): cv2.getNumThreads()
+        defaults to the full logical core count, so N worker PROCESSES
+        each trying to use every core oversubscribes the machine instead
+        of adding throughput (measured 1.2x speedup for 5-way process
+        parallelism on a 14-core machine before this fix, 1.9x after)."""
+        path = self._multi_page_pdf(1)
+        with unittest.mock.patch('cv2.setNumThreads') as mock_set_threads, \
+             unittest.mock.patch('os.cpu_count', return_value=14):
+            ism._match_page_range_worker(
+                path, 0, (50, 50, 70, 70), [0], 0.6, False, 'none',
+                ism._DEFAULT_DPI, None, n_workers=5)
+        mock_set_threads.assert_called_once_with(2)   # max(1, 14 // 5)
+
+    def test_defaults_to_full_threads_when_n_workers_is_1(self):
+        path = self._multi_page_pdf(1)
+        with unittest.mock.patch('cv2.setNumThreads') as mock_set_threads, \
+             unittest.mock.patch('os.cpu_count', return_value=14):
+            ism._match_page_range_worker(
+                path, 0, (50, 50, 70, 70), [0], 0.6, False, 'none',
+                ism._DEFAULT_DPI, None)   # n_workers defaults to 1
+        mock_set_threads.assert_called_once_with(14)
+
+    def test_returns_empty_list_on_bad_pdf_path(self):
+        cands = ism._match_page_range_worker(
+            '/nonexistent/path.pdf', 0, (50, 50, 70, 70), [0], 0.6, False, 'none',
+            ism._DEFAULT_DPI, None)
+        self.assertEqual(cands, [])
 
 
 class NmsTests(unittest.TestCase):

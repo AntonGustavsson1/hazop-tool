@@ -6306,6 +6306,62 @@ class ImageSymbolSearchWorkerTests(unittest.TestCase):
         self.assertTrue(candidates)
         self.assertGreater(max(c[0] for c in candidates), 0.9)
 
+    def _multi_page_bowtie_pdf(self, n_pages):
+        """n_pages pages, each with the SAME bow-tie at (60, 60) — used
+        to force the real parallel path (see _should_parallelize, which
+        requires >= 4 pages) and confirm it finds the expected match on
+        every non-reference page, not just page 0."""
+        import fitz
+        path = os.path.join(self._tmpdir, "multipage.pdf")
+        doc = fitz.open()
+        for _ in range(n_pages):
+            page = doc.new_page(width=200, height=200)
+            shape = page.new_shape()
+            shape.draw_polyline([fitz.Point(50, 50), fitz.Point(50, 70), fitz.Point(60, 60)])
+            shape.finish(color=(0, 0, 0), fill=(0, 0, 0), closePath=True)
+            shape.draw_polyline([fitz.Point(70, 50), fitz.Point(70, 70), fitz.Point(60, 60)])
+            shape.finish(color=(0, 0, 0), fill=(0, 0, 0), closePath=True)
+            shape.commit()
+        doc.save(path)
+        doc.close()
+        return path
+
+    def test_parallel_path_finds_candidates_across_multiple_pages(self):
+        """raster-sökning — parallellisering över flera processer
+        (2026-08-16, see NOTES.md): a 5-page document forces
+        _should_parallelize's real ProcessPoolExecutor path (not just the
+        untouched sequential fallback single-page searches already
+        exercise above) — must still find the same bow-tie on every
+        OTHER page, with results shaped identically to the sequential
+        path (same (sim, page_num, x, y, outline) tuple contract)."""
+        from pid_viewer import ImageSymbolSearchWorker
+        path = self._multi_page_bowtie_pdf(5)
+        received = {}
+        worker = ImageSymbolSearchWorker(path, 0, (48, 48, 72, 72))   # pages=None -> whole document
+        worker.finished_scan.connect(lambda c: received.setdefault('candidates', c))
+        worker.start()
+        self.assertTrue(worker.wait(20000), "parallel worker.run() did not finish within 20s")
+        self.app.processEvents()
+        candidates = received.get('candidates')
+        self.assertTrue(candidates)
+        found_pages = {c[1] for c in candidates if c[0] > 0.9}
+        self.assertEqual(found_pages, {1, 2, 3, 4},
+            "the bow-tie must be found on every page except the reference's own (page 0)")
+
+    def test_parallel_path_emits_finished_scan_on_cancel(self):
+        """Same contract ParallelTagScanWorkerTests already establishes
+        for the tag scan's own parallel path: finished_scan must fire
+        even when cancelled before any worker process completes."""
+        from pid_viewer import ImageSymbolSearchWorker
+        path = self._multi_page_bowtie_pdf(5)
+        worker = ImageSymbolSearchWorker(path, 0, (48, 48, 72, 72))
+        received = {}
+        worker.finished_scan.connect(lambda c: received.setdefault('candidates', c))
+        with unittest.mock.patch.object(worker, 'isInterruptionRequested', return_value=True):
+            worker.run()
+        self.assertIn('candidates', received)
+        self.assertEqual(received['candidates'], [])
+
 
 class EquipmentAnalysisWorkerTests(unittest.TestCase):
     """EquipmentAnalysisWorker (pid_viewer.py) — the QThread behind
