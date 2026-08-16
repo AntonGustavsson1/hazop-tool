@@ -686,13 +686,30 @@ def find_cluster_at_point(clusters, x, y, max_distance=None):
     the P&ID click-to-place flows already use. Returns None for an
     empty cluster list, or if max_distance is given and the nearest
     cluster's center is further than that.
+
+    When SEVERAL clusters' bboxes contain the point, the one with the
+    SMALLEST bbox area wins, not the first found in list order —
+    confirmed necessary on a real Gryaab P&ID, where a large colored
+    background rectangle (a valid, low-confidence selectable cluster in
+    its own right, since resolve_reference_cluster's min_confidence=0.0
+    intentionally lets a user reference any vector shape) also contained
+    a pump icon's click point and, being earlier in list order, won over
+    the pump's own much smaller cluster. Smallest-area matches human
+    intuition: "I clicked ON the pump, not the whole colored area it
+    happens to sit in."
     """
     if not clusters:
         return None
+    containing = []
     for c in clusters:
         x0, y0, x1, y1 = c['bbox']
         if x0 <= x <= x1 and y0 <= y <= y1:
-            return c
+            containing.append(c)
+    if containing:
+        def _area(c):
+            x0, y0, x1, y1 = c['bbox']
+            return (x1 - x0) * (y1 - y0)
+        return min(containing, key=_area)
 
     def _center_dist(c):
         x0, y0, x1, y1 = c['bbox']
@@ -1539,6 +1556,17 @@ _CORE_MAX_MEMBERS = 80   # real valve/pump/instrument cores measured this
                          # that per-round cost directly, where the norm_size
                          # cap alone does not.
 
+_MIN_LINE_ONLY_SEED_CANDIDATES = 3   # a bow-tie's minimum edge count (two
+                                     # triangles sharing an apex need at
+                                     # least 3 distinct lines to read as
+                                     # anything) — the floor for treating
+                                     # an all-'l' cluster (no qu/re/c at
+                                     # all) as plausibly containing a real
+                                     # symbol, rather than just leftover
+                                     # connector/pipe debris. See
+                                     # _cluster_core's/_cluster_cores' own
+                                     # all-'l' seed fallback.
+
 
 def _cluster_core(primitives, group, text_bboxes=None, scale=10.0):
     """A cluster's compact "symbol core", grown outward from its most
@@ -1598,9 +1626,36 @@ def _cluster_core(primitives, group, text_bboxes=None, scale=10.0):
     if not seed_candidates:
         seed_candidates = [i for i in group if primitives[i]['kind'] == 'c']
     if not seed_candidates:
+        # No closed-shape primitive at all — some real P&IDs (Sunpine, ITS,
+        # and per _has_closed_loop's own docstring, Swerim) draw a valve's
+        # two triangles as separate unclosed 'l' segments, never a
+        # qu/re/filled shape. Without this fallback, an all-'l' valve gets
+        # zero trimming (falls straight through to find_symbol_clusters'
+        # own `core = group` fallback) instead of growing a compact core
+        # like every other symbol does. Excludes lines already long enough
+        # to be a connecting pipe run so growth doesn't accidentally seed
+        # from the pipe itself.
+        #
+        # Requires at least _MIN_LINE_ONLY_SEED_CANDIDATES (a triangle's
+        # worth of edges) before engaging at all — otherwise a single
+        # leftover connector line (e.g. what remains in _cluster_cores'
+        # `remaining` set after peeling every real qu/re/c-seeded valve
+        # out of a bridged cluster) would get treated as its own
+        # one-line "symbol core" instead of being left alone. Confirmed
+        # necessary: a synthetic two-quad-valve-plus-connector cluster
+        # regressed from 2 real cores to 3 (the connector became a
+        # phantom third core) before this floor was added.
+        line_candidates = [
+            i for i in group
+            if primitives[i]['kind'] == 'l' and not _is_pipe_run_line(primitives[i], scale)
+        ]
+        if len(line_candidates) >= _MIN_LINE_ONLY_SEED_CANDIDATES:
+            seed_candidates = line_candidates
+    if not seed_candidates:
         return list(group)
     seed = max(seed_candidates, key=lambda i: _prim_length(primitives[i]))
     core = {seed}
+    seed_bbox = primitives[seed]['bbox']
     best_score = bowtie_score(primitives, list(core))
     remaining = set(group) - core
     progress = True
@@ -1613,6 +1668,19 @@ def _cluster_core(primitives, group, text_bboxes=None, scale=10.0):
             if text_bboxes and _is_text_glyph_primitive(primitives[i], text_bboxes):
                 remaining.discard(i)
                 continue
+            if _is_pipe_run_line(primitives[i], scale):
+                # A genuinely long connecting pipe segment can keep the
+                # AGGREGATE core+candidate bbox aspect under
+                # _CORE_ASPECT_LIMIT even though it is clearly a separate
+                # appendage — confirmed on a real Hybrit P&ID where a
+                # pump's connected pipe stub landed the combined bbox at
+                # aspect ~2.36, well under the 3.0 ceiling, so the aspect
+                # check alone never rejected it. Reject on the primitive's
+                # own long-line classification directly instead of relying
+                # solely on the aggregate proportion, which this case
+                # shows can be fooled.
+                remaining.discard(i)
+                continue
             candidate = core | {i}
             x0, y0, x1, y1 = _group_bbox(primitives, candidate)
             w, h = x1 - x0, y1 - y0
@@ -1620,6 +1688,28 @@ def _cluster_core(primitives, group, text_bboxes=None, scale=10.0):
             if aspect > _CORE_ASPECT_LIMIT:
                 continue
             if math.hypot(w, h) / max(scale, 1.0) > _CORE_MAX_NORM_SIZE:
+                continue
+            # A pipe run is often not ONE long line but a chain of short
+            # dash/tick-mark segments (a common P&ID "break" convention
+            # indicating the pipe continues off-page) — each individually
+            # well under _is_pipe_run_line's own length threshold, so the
+            # per-segment check above never fires for any single one of
+            # them. Confirmed on a real Hybrit P&ID: a pump's connecting
+            # pipe stub grew the core across 80 primitives, none
+            # individually classified as a pipe run, while the elongated
+            # pump housing itself kept the AGGREGATE bbox aspect at ~2.36
+            # throughout — under _CORE_ASPECT_LIMIT the entire time.
+            # Tracking cumulative reach FROM THE SEED's own footprint
+            # (rather than either a single segment's length or the whole
+            # core's aspect) catches this: once growth has extended the
+            # core's bbox this far past the seed's own edge in any
+            # direction, it no longer reads as "the seed's own geometry
+            # plus a stem/drain-stub", regardless of how many small steps
+            # it took to get there.
+            overhang = max(0.0,
+                           seed_bbox[0] - x0, x1 - seed_bbox[2],
+                           seed_bbox[1] - y0, y1 - seed_bbox[3])
+            if overhang > _LONG_LINE_SCALE * max(scale, 1.0):
                 continue
             # bowtie_score is real sampling/scoring work (not a cheap
             # arithmetic check like aspect), so it's only ever computed
@@ -1687,7 +1777,24 @@ def _cluster_cores(primitives, group, text_bboxes=None, scale=10.0):
     while remaining and len(cores) < _CLUSTER_CORES_MAX:
         seed_candidates = [i for i in remaining if primitives[i]['kind'] in ('qu', 're', 'c')]
         if not seed_candidates:
-            break
+            # Mirrors _cluster_core's own all-'l' fallback (Sunpine/ITS/
+            # Swerim-style valves with no closed-shape primitive at all) —
+            # without this, the loop breaks here before ever calling
+            # _cluster_core, even though _cluster_core itself now knows
+            # how to seed from a non-pipe-run line. Same
+            # _MIN_LINE_ONLY_SEED_CANDIDATES floor as _cluster_core's own
+            # fallback: without it, whatever single connector line is
+            # left in `remaining` after every real qu/re/c-seeded valve
+            # has already been peeled off (see this function's own
+            # docstring) would get peeled out as its own phantom
+            # one-line "core" on the next iteration, instead of correctly
+            # stopping here.
+            seed_candidates = [
+                i for i in remaining
+                if primitives[i]['kind'] == 'l' and not _is_pipe_run_line(primitives[i], scale)
+            ]
+            if len(seed_candidates) < _MIN_LINE_ONLY_SEED_CANDIDATES:
+                break
         core = _cluster_core(primitives, remaining, text_bboxes=text_bboxes, scale=scale)
         if not core:
             break

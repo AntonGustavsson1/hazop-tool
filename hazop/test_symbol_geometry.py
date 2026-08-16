@@ -858,6 +858,188 @@ class ClusterCoresPeelingTests(unittest.TestCase):
             "growth must stop at the member cap even though aspect/size never trigger")
 
 
+class ClusterCoreAllLineSeedFallbackTests(unittest.TestCase):
+    """_cluster_core()/_cluster_cores()'s fallback seed for clusters with
+    NO qu/re/c primitive at all — found on real Sunpine and ITS P&IDs (and
+    documented in _has_closed_loop's own docstring as a widespread
+    convention on Swerim too): a valve's two triangles are drawn as
+    separate unclosed 'l' segments, never a single closed/filled shape.
+    Before this fallback, _cluster_core returned list(group) unchanged
+    (zero trimming) and _cluster_cores broke immediately, returning []
+    without ever calling _cluster_core at all — so find_symbol_clusters
+    fell back to the entire raw, unpeeled cluster as "the core"."""
+
+    def _all_line_bowtie_page(self):
+        doc, page = _new_page()
+        shape = page.new_shape()
+        # Bow-tie drawn as 6 separate unclosed segments (Sunpine/ITS
+        # convention) instead of a single closed/filled shape — so no
+        # primitive here is 'qu'/'re'/'c' at all.
+        shape.draw_line(fitz.Point(90, 90), fitz.Point(90, 110))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(90, 90), fitz.Point(100, 100))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(90, 110), fitz.Point(100, 100))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(110, 90), fitz.Point(110, 110))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(110, 90), fitz.Point(100, 100))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(110, 110), fitz.Point(100, 100))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        return doc, page
+
+    def test_cluster_core_seeds_from_a_line_instead_of_bailing_out(self):
+        doc, page = self._all_line_bowtie_page()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        self.assertEqual(len(groups), 1,
+            "sanity check: the bow-tie's own edges must merge into one raw cluster")
+        self.assertTrue(all(prims[i]['kind'] == 'l' for i in groups[0]),
+            "sanity check: no qu/re/c primitive exists in this group at all")
+        core = sg._cluster_core(prims, groups[0])
+        self.assertEqual(set(core), set(groups[0]),
+            "with no appendage to trim, the fallback-seeded core must still recover the whole bow-tie")
+
+    def test_cluster_cores_recovers_a_core_instead_of_breaking_immediately(self):
+        """The regression this fallback exists for: before it, this
+        exact all-'l' input made _cluster_cores's own top-of-loop
+        seed_candidates check empty on the very first iteration, so it
+        broke immediately and returned [] — without ever once calling
+        _cluster_core, even though _cluster_core itself already knew how
+        to grow a core from a line seed by the time this runs."""
+        doc, page = self._all_line_bowtie_page()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        cores = sg._cluster_cores(prims, groups[0])
+        self.assertEqual(len(cores), 1,
+            "must recover one core instead of breaking before ever calling _cluster_core")
+        self.assertEqual(set(cores[0]), set(groups[0]))
+
+    def test_pipe_run_line_is_never_picked_as_the_fallback_seed(self):
+        """A connected pipe run long enough (65pt, over the 60pt
+        threshold at scale=10.0) to classify as _is_pipe_run_line is, by
+        construction, ALSO too long to ever merge into the same raw
+        cluster_primitives() group in the first place (see
+        cluster_primitives's own pairwise pipe-run block) — so it can
+        never reach _cluster_core's fallback seed selection at all.
+        Confirms that base-clustering guarantee still holds for an
+        all-'l' bow-tie specifically (not just the qu/re-seeded cases
+        the rest of the test suite already covers)."""
+        doc, page = self._all_line_bowtie_page()
+        shape = page.new_shape()
+        shape.draw_line(fitz.Point(110, 110), fitz.Point(110, 175))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        self.assertEqual(len(groups), 2,
+            "the pipe run must NOT bridge into the bow-tie's own raw cluster")
+        bowtie_group = max(groups, key=len)
+        core = sg._cluster_core(prims, bowtie_group)
+        self.assertEqual(set(core), set(bowtie_group),
+            "the bow-tie's own core is unaffected by the separate pipe-run cluster")
+
+class ClusterCorePipeRunRejectionTests(unittest.TestCase):
+    """_cluster_core()'s growth loop rejecting a pipe run's cumulative
+    reach from the seed, even when no SINGLE segment is long enough for
+    _is_pipe_run_line to flag it and the AGGREGATE bbox aspect never
+    exceeds _CORE_ASPECT_LIMIT either.
+
+    Found on a real Hybrit P&ID: a pump's connecting pipe is drawn as a
+    chain of short dash/tick-mark segments (a common P&ID "break"
+    convention marking that a pipe continues off-page) — none
+    individually long enough to classify as a pipe run on its own (so
+    cluster_primitives's own pairwise pipe-run block, which would
+    otherwise refuse to bridge a genuinely long single line into the
+    cluster at all, never applies), while the pump housing's own
+    elongated shape kept the combined pump+chain bbox aspect at ~2.36
+    throughout — comfortably under the 3.0 ceiling. The chain was
+    absorbed into the pump's own "compact core" one short, individually
+    innocuous-looking segment at a time."""
+
+    def _pump_with_dash_chain_pipe_page(self):
+        doc, page = _new_page(200, 200)
+        shape = page.new_shape()
+        # An elongated pump body, 80pt wide x 40pt tall (aspect 2.0 on
+        # its own) — same proportions as a real Hybrit pump housing.
+        q = fitz.Quad(fitz.Point(90, 90), fitz.Point(170, 90),
+                      fitz.Point(90, 130), fitz.Point(170, 130))
+        shape.draw_quad(q)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        # A pipe drawn as 5 chained dash segments, 13pt each (well under
+        # the 60pt pipe-run threshold at scale=10.0 individually), each
+        # touching the next (gap 0) so cluster_primitives still bridges
+        # the whole chain into one cluster. The chain's cumulative reach
+        # from the pump's own top edge (y=90) is 5*13=65pt — over the
+        # 60pt threshold — while the combined pump+chain bbox
+        # (90,25)-(170,130), 80 wide x 105 tall, is aspect ~1.31: still
+        # comfortably under the 3.0 ceiling throughout every intermediate
+        # step, exactly the Hybrit case.
+        y = 90.0
+        for _ in range(5):
+            shape.draw_line(fitz.Point(130, y), fitz.Point(130, y - 13))
+            shape.finish(color=(0, 0, 0), width=1, closePath=False)
+            y -= 13.0
+        shape.commit()
+        return doc, page
+
+    def test_pipe_chain_rejected_even_though_no_single_segment_is_long(self):
+        doc, page = self._pump_with_dash_chain_pipe_page()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        self.assertEqual(len(groups), 1,
+            "sanity check: the dash chain must actually bridge into the pump's cluster")
+        line_idxs = [i for i in groups[0] if prims[i]['kind'] == 'l']
+        self.assertEqual(len(line_idxs), 5)
+        for i in line_idxs:
+            self.assertFalse(sg._is_pipe_run_line(prims[i], 10.0),
+                "sanity check: no single dash segment may classify as a pipe run on its own")
+        x0, y0, x1, y1 = sg._group_bbox(prims, groups[0])
+        aggregate_aspect = max(x1 - x0, y1 - y0) / max(min(x1 - x0, y1 - y0), 0.1)
+        self.assertLessEqual(aggregate_aspect, sg._CORE_ASPECT_LIMIT,
+            "sanity check: the aggregate aspect alone would not have rejected the chain")
+
+        core = sg._cluster_core(prims, groups[0])
+        self.assertLess(len(core), len(groups[0]),
+            "growth must stop before absorbing the entire dash chain")
+        core_x0, core_y0, core_x1, core_y1 = sg._group_bbox(prims, core)
+        seed_y1 = prims[[i for i in groups[0] if prims[i]['kind'] == 'qu'][0]]['bbox'][1]
+        self.assertLessEqual(seed_y1 - core_y0, sg._LONG_LINE_SCALE * 10.0,
+            "the core must not reach further from the pump's own edge than one pipe run's length")
+        farthest_idx = min(line_idxs, key=lambda i: prims[i]['bbox'][1])
+        self.assertNotIn(farthest_idx, core,
+            "the chain's farthest segment (over the cumulative reach limit) must be excluded")
+
+    def test_short_connected_line_that_is_not_a_pipe_run_is_unaffected(self):
+        """Guard against overcorrecting: a short connected line (like a
+        drain stub, well under the pipe-run length threshold) must still
+        be governed by the pre-existing aspect/size checks, not
+        rejected outright just for being a line."""
+        doc, page = _new_page(200, 200)
+        shape = page.new_shape()
+        q = fitz.Quad(fitz.Point(90, 90), fitz.Point(110, 90),
+                      fitz.Point(90, 110), fitz.Point(110, 110))
+        shape.draw_quad(q)
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.draw_line(fitz.Point(100, 110), fitz.Point(102, 115))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        prims = sg.extract_primitives(page)
+        groups = sg.cluster_primitives(prims, scale=10.0)
+        doc.close()
+        self.assertEqual(len(groups), 1)
+        stub_idx = [i for i in groups[0] if prims[i]['kind'] == 'l'][0]
+        self.assertFalse(sg._is_pipe_run_line(prims[stub_idx], 10.0))
+        core = sg._cluster_core(prims, groups[0])
+        self.assertEqual(len(core), 2, "the short stub must still be absorbed into the core")
+
+
 class ClosedShapeFilterTests(unittest.TestCase):
     """Found on a real LKAB P&ID: the vector-drawn letter "M" (a motor
     label rendered as outline strokes rather than searchable text) is an
@@ -1738,6 +1920,22 @@ class ClusterSimilarityTests(unittest.TestCase):
         clusters = [self._cluster((0, 0, 10, 10)), self._cluster((20, 20, 30, 30))]
         found = sg.find_cluster_at_point(clusters, 25, 25)
         self.assertIs(found, clusters[1])
+
+    def test_find_cluster_at_point_prefers_smallest_of_several_containing_clusters(self):
+        """Found on a real Gryaab P&ID: a large colored background
+        rectangle (a valid, low-confidence selectable cluster in its own
+        right — resolve_reference_cluster intentionally uses
+        min_confidence=0.0) also contained a pump icon's click point.
+        Listed FIRST, it used to win over the pump's own much smaller
+        cluster just by list order. The smallest-area match must win
+        regardless of list order."""
+        big_background = self._cluster((0, 0, 200, 200))
+        small_pump = self._cluster((90, 90, 110, 110))
+        found = sg.find_cluster_at_point([big_background, small_pump], 100, 100)
+        self.assertIs(found, small_pump)
+        # Order must not matter.
+        found_reversed = sg.find_cluster_at_point([small_pump, big_background], 100, 100)
+        self.assertIs(found_reversed, small_pump)
 
     def test_find_cluster_at_point_falls_back_to_nearest(self):
         clusters = [self._cluster((0, 0, 10, 10)), self._cluster((100, 100, 110, 110))]
