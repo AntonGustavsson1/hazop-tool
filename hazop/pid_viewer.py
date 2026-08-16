@@ -1149,6 +1149,26 @@ class _ImageRefCropCanvas(QWidget):
         self.crop_changed.emit()
 
 
+# Rendering DPI for the reference PREVIEW shown in _ImageRefCropCanvas —
+# deliberately separate from image_symbol_matching._DEFAULT_DPI (300),
+# which is the empirically-grounded sweet spot for actual MATCHING
+# accuracy (see NOTES.md "Högre DPI för bildmatchning — testat, ingen
+# förbättring": higher DPI measurably makes matching WORSE, not better).
+# The preview is a different concern entirely — a human looking at a
+# tiny reference (confirmed on the active project's own
+# hazop_project_pid.pdf: a real resolved reference rendered to only
+# 12x24 pixels at 300 DPI) sees a blocky, illegible thumbnail once
+# _ImageRefCropCanvas zooms it up to fill the widget, even though the
+# MATCHING itself works fine on that same low-resolution data. Anton:
+# "Det ser väldigt B ut när det visas en så lågupplöst version av
+# ventilen." (2026-08-16, see NOTES.md). Rendering ONLY the preview
+# crop (never a whole page — cheap regardless of DPI) at 4x the
+# matching DPI gives roughly 4x the linear pixel detail to display,
+# with no effect whatsoever on what find_similar_shapes_visual actually
+# searches with.
+_PREVIEW_DPI = image_symbol_matching._DEFAULT_DPI * 4
+
+
 class SimilarSymbolSearchDialog(QDialog):
     """Sökparametrar för "Hitta liknande symbol" (2026-08-14/15, see
     NOTES.md) — opens right after a reference cluster is resolved
@@ -1536,7 +1556,7 @@ class SimilarSymbolSearchDialog(QDialog):
             equipment_detection.apply_page_rotations(doc, self._page_rotations)
             gray = image_symbol_matching.render_gray(
                 doc[self._ref_page], bbox=self._ref_bbox,
-                dpi=image_symbol_matching._DEFAULT_DPI)
+                dpi=_PREVIEW_DPI)
             self._image_ref_canvas.set_reference(gray, self._ref_bbox)
             self._update_tiny_ref_warning()
         except Exception:
@@ -1798,7 +1818,8 @@ class EquipmentMarkerReviewDialog(QDialog):
     caller that hasn't been updated) the column is simply omitted.
     """
 
-    _C_CHK, _C_TAG, _C_PAGE, _C_TYPE, _C_CONF, _C_METHOD, _C_EDIT = range(7)
+    _C_CHK, _C_THUMB, _C_TAG, _C_PAGE, _C_TYPE, _C_CONF, _C_METHOD, _C_EDIT = range(8)
+    _THUMB_SIZE = 96   # px — zoomed enough to see the symbol's own shape clearly
 
     _METHOD_LABELS = {
         'leader':    '📐 Ledarlinje',
@@ -1835,14 +1856,14 @@ class EquipmentMarkerReviewDialog(QDialog):
             "padding:5px; background:#F5F5F3; border:1px solid #E2E3E1; border-radius:4px;")
         outer.addWidget(hdr)
 
-        self._tbl = QTableWidget(0, 7)
+        self._tbl = QTableWidget(0, 8)
         self._tbl.setHorizontalHeaderLabels(
-            ['✓', 'Tagg', 'Sida', 'Typ', 'Konfidens', 'Metod', ''])
+            ['✓', 'Bild', 'Tagg', 'Sida', 'Typ', 'Konfidens', 'Metod', ''])
         hh = self._tbl.horizontalHeader()
         hh.setSectionResizeMode(self._C_TAG, QHeaderView.ResizeMode.Stretch)
-        for col, w in ((self._C_CHK, 30), (self._C_PAGE, 50),
-                       (self._C_TYPE, 160), (self._C_CONF, 80), (self._C_METHOD, 160),
-                       (self._C_EDIT, 70)):
+        for col, w in ((self._C_CHK, 30), (self._C_THUMB, self._THUMB_SIZE + 12),
+                       (self._C_PAGE, 50), (self._C_TYPE, 160), (self._C_CONF, 80),
+                       (self._C_METHOD, 160), (self._C_EDIT, 70)):
             self._tbl.setColumnWidth(col, w)
         self._tbl.verticalHeader().setVisible(False)
         self._tbl.setAlternatingRowColors(True)
@@ -1913,71 +1934,151 @@ class EquipmentMarkerReviewDialog(QDialog):
 
     def _populate(self):
         self._tbl.setRowCount(0)
-        for res in self._results:
-            r = self._tbl.rowCount()
-            self._tbl.insertRow(r)
+        # "Dvs så man kan se grafiskt att det är korrekt och inte bara
+        # en lista" (2026-08-16, see NOTES.md "zoomad bild per rad i
+        # granskningsdialogen") — one fitz.Document opened ONCE for the
+        # whole table (not per row: rows routinely span the same few
+        # pages, and re-opening + re-rendering a full page per row would
+        # be needlessly slow), same page-rotation-override handling
+        # _edit_shape's own re-open already needs. Gracefully absent
+        # (every row's thumbnail cell just stays empty) when no
+        # pdf_path was given — same "older caller, column simply
+        # unused" convention the ✏ Form column already established.
+        thumb_doc = None
+        page_scale_cache = {}
+        if self._pdf_path:
+            try:
+                thumb_doc = fitz.open(self._pdf_path)
+                equipment_detection.apply_page_rotations(thumb_doc, self.db.get_all_page_rotations())
+            except Exception:
+                thumb_doc = None
+        try:
+            for res in self._results:
+                r = self._tbl.rowCount()
+                self._tbl.insertRow(r)
+                self._tbl.setRowHeight(r, self._THUMB_SIZE + 8)
 
-            chk = QTableWidgetItem()
-            untagged_ok = (res.get('tag_status') == 'untagged'
-                          and res.get('detection_confidence', 0.0) >= 0.5)
-            include_default = res['link_method'] not in ('none', 'not_found') or untagged_ok
-            chk.setCheckState(
-                Qt.CheckState.Checked if include_default else Qt.CheckState.Unchecked)
-            chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
-            self._tbl.setItem(r, self._C_CHK, chk)
+                if thumb_doc is not None:
+                    pixmap = self._render_thumbnail(thumb_doc, res, page_scale_cache)
+                    if pixmap is not None:
+                        lbl = QLabel()
+                        lbl.setPixmap(pixmap)
+                        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                        self._tbl.setCellWidget(r, self._C_THUMB, lbl)
 
-            tag_text = res['tag'] or (res.get('temporary_id', '') if res.get('tag_status') == 'untagged' else '')
-            tag_item = QTableWidgetItem(tag_text)
-            if res.get('tag_status') == 'untagged':
-                tag_item.setToolTip("Ingen tagg hittades nära denna symbol — döp den eller "
-                                    "lämna det tillfälliga id:et.")
-            self._tbl.setItem(r, self._C_TAG, tag_item)
+                chk = QTableWidgetItem()
+                untagged_ok = (res.get('tag_status') == 'untagged'
+                              and res.get('detection_confidence', 0.0) >= 0.5)
+                include_default = res['link_method'] not in ('none', 'not_found') or untagged_ok
+                chk.setCheckState(
+                    Qt.CheckState.Checked if include_default else Qt.CheckState.Unchecked)
+                chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+                self._tbl.setItem(r, self._C_CHK, chk)
 
-            pg_item = QTableWidgetItem(str(res['page'] + 1))
-            pg_item.setFlags(pg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            pg_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._tbl.setItem(r, self._C_PAGE, pg_item)
+                tag_text = res['tag'] or (res.get('temporary_id', '') if res.get('tag_status') == 'untagged' else '')
+                tag_item = QTableWidgetItem(tag_text)
+                if res.get('tag_status') == 'untagged':
+                    tag_item.setToolTip("Ingen tagg hittades nära denna symbol — döp den eller "
+                                        "lämna det tillfälliga id:et.")
+                self._tbl.setItem(r, self._C_TAG, tag_item)
 
-            # Editable (2026-08-15, see NOTES.md "Hitta liknande symbol"
-            # — uppföljningsfunktioner) — was read-only; _save() below
-            # now reads this cell instead of the frozen res['comp_type'],
-            # so a manual correction here (or a mass-tag apply) actually
-            # takes effect.
-            type_item = QTableWidgetItem(res['comp_type'])
-            self._tbl.setItem(r, self._C_TYPE, type_item)
+                pg_item = QTableWidgetItem(str(res['page'] + 1))
+                pg_item.setFlags(pg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                pg_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self._tbl.setItem(r, self._C_PAGE, pg_item)
 
-            conf = _row_confidence(res)
-            pct = int(round(conf * 100))
-            conf_item = QTableWidgetItem(f"{pct}%")
-            conf_item.setFlags(conf_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            conf_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            breakdown = _row_confidence_breakdown(res)
-            if breakdown:
-                conf_item.setToolTip(breakdown)
-            if pct >= 70:
-                conf_item.setForeground(QBrush(QColor('#1a7a40')))
-            elif pct >= 40:
-                conf_item.setForeground(QBrush(QColor('#b8860b')))
+                # Editable (2026-08-15, see NOTES.md "Hitta liknande symbol"
+                # — uppföljningsfunktioner) — was read-only; _save() below
+                # now reads this cell instead of the frozen res['comp_type'],
+                # so a manual correction here (or a mass-tag apply) actually
+                # takes effect.
+                type_item = QTableWidgetItem(res['comp_type'])
+                self._tbl.setItem(r, self._C_TYPE, type_item)
+
+                conf = _row_confidence(res)
+                pct = int(round(conf * 100))
+                conf_item = QTableWidgetItem(f"{pct}%")
+                conf_item.setFlags(conf_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                conf_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                breakdown = _row_confidence_breakdown(res)
+                if breakdown:
+                    conf_item.setToolTip(breakdown)
+                if pct >= 70:
+                    conf_item.setForeground(QBrush(QColor('#1a7a40')))
+                elif pct >= 40:
+                    conf_item.setForeground(QBrush(QColor('#b8860b')))
+                else:
+                    conf_item.setForeground(QBrush(QColor('#8D9299')))
+                self._tbl.setItem(r, self._C_CONF, conf_item)
+
+                method_item = QTableWidgetItem(
+                    self._METHOD_LABELS.get(res['link_method'], res['link_method']))
+                method_item.setFlags(method_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if res['link_method'] in ('none', 'not_found'):
+                    method_item.setForeground(QBrush(QColor('#aaa')))
+                self._tbl.setItem(r, self._C_METHOD, method_item)
+
+                # "Städa bort en ledning" (2026-08-15, see NOTES.md) — only
+                # meaningful when there's both a pdf to re-resolve the
+                # cluster from and an actual detected outline to prune.
+                if self._pdf_path and res.get('outline'):
+                    edit_btn = QPushButton("✏ Form")
+                    edit_btn.setToolTip(
+                        "Ta bort segment (t.ex. en ledning) från den här markörens form")
+                    edit_btn.clicked.connect(partial(self._edit_shape, r))
+                    self._tbl.setCellWidget(r, self._C_EDIT, edit_btn)
+        finally:
+            if thumb_doc is not None:
+                try:
+                    thumb_doc.close()
+                except Exception:
+                    pass
+
+    def _render_thumbnail(self, doc, res, page_scale_cache):
+        """A small, zoomed crop around this row's detected position —
+        "Dvs så man kan se grafiskt att det är korrekt och inte bara en
+        lista" (2026-08-16, see NOTES.md). Framed on the detected
+        outline's own bbox (padded) when available — the same shape a
+        real symbol boundary already gives — else a default radius
+        around (x, y) scaled to the page's own text size, same
+        convention _edit_shape's own nearby-primitives radius already
+        uses. Rendered at _PREVIEW_DPI (see that constant's own
+        docstring — display-only, has no effect on any matching), then
+        scaled down to fit _THUMB_SIZE for a consistent row height
+        regardless of how large a region got captured. Returns None on
+        any failure (bad page number, non-numeric fields, an image
+        library hiccup) — a missing thumbnail must never block
+        reviewing/saving the rest of the table."""
+        try:
+            page_num = res['page']
+            if not (0 <= page_num < doc.page_count):
+                return None
+            page = doc[page_num]
+            if res.get('outline'):
+                xs = [p[0] for p in res['outline']]
+                ys = [p[1] for p in res['outline']]
+                x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
+                pad = max((x1 - x0), (y1 - y0)) * 0.25 + 4.0
             else:
-                conf_item.setForeground(QBrush(QColor('#8D9299')))
-            self._tbl.setItem(r, self._C_CONF, conf_item)
-
-            method_item = QTableWidgetItem(
-                self._METHOD_LABELS.get(res['link_method'], res['link_method']))
-            method_item.setFlags(method_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            if res['link_method'] in ('none', 'not_found'):
-                method_item.setForeground(QBrush(QColor('#aaa')))
-            self._tbl.setItem(r, self._C_METHOD, method_item)
-
-            # "Städa bort en ledning" (2026-08-15, see NOTES.md) — only
-            # meaningful when there's both a pdf to re-resolve the
-            # cluster from and an actual detected outline to prune.
-            if self._pdf_path and res.get('outline'):
-                edit_btn = QPushButton("✏ Form")
-                edit_btn.setToolTip(
-                    "Ta bort segment (t.ex. en ledning) från den här markörens form")
-                edit_btn.clicked.connect(partial(self._edit_shape, r))
-                self._tbl.setCellWidget(r, self._C_EDIT, edit_btn)
+                if page_num not in page_scale_cache:
+                    page_scale_cache[page_num] = symbol_geometry.dominant_text_size(page)
+                pad = max(page_scale_cache[page_num] * 1.5, 15.0)
+                x0, y0 = res['x'], res['y']
+                x1, y1 = x0, y0
+            clip = fitz.Rect(x0 - pad, y0 - pad, x1 + pad, y1 + pad) & page.rect
+            if clip.is_empty or clip.width < 1 or clip.height < 1:
+                return None
+            gray = image_symbol_matching.render_gray(page, bbox=tuple(clip), dpi=_PREVIEW_DPI)
+            if gray.size == 0 or min(gray.shape) < 1:
+                return None
+            h, w = gray.shape
+            qimg = QImage(gray.tobytes(), w, h, w, QImage.Format.Format_Grayscale8)
+            pixmap = QPixmap.fromImage(qimg)
+            return pixmap.scaled(
+                self._THUMB_SIZE, self._THUMB_SIZE,
+                Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        except Exception:
+            return None
 
     def _edit_shape(self, row):
         """"✏ Form" button — re-resolves this row's own vector cluster

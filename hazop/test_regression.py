@@ -3205,6 +3205,31 @@ class EquipmentMarkerReviewDialogTests(unittest.TestCase):
         finally:
             dlg.deleteLater()
 
+    def test_similarity_search_results_default_checked_regardless_of_confidence(self):
+        """"Här skall alla vara förvalda per default" (2026-08-16, see
+        NOTES.md "zoomad bild per rad i granskningsdialogen") — a
+        "hitta liknande symbol" result (link_method='similar') must
+        default to checked even at a low similarity score, unlike a
+        shape-only autodetection hit (which only defaults checked at
+        detection_confidence>=0.5, see the 'untagged_ok' branch above).
+        The user already reviewed similarity BEFORE reaching this
+        dialog (picked a reference, chose a threshold) — every row here
+        already passed that bar, so there is no separate confidence
+        gate to apply again."""
+        from pid_viewer import EquipmentMarkerReviewDialog
+        from PyQt6.QtCore import Qt
+        results = [
+            {'tag': '', 'page': 0, 'comp_type': 'Ventil', 'x': 1.0, 'y': 1.0,
+             'confidence': 0.61, 'link_method': 'similar', 'outline': [],
+             'equipment_id': None, 'tag_status': 'untagged',
+             'temporary_id': 'UNASSIGNED-VALVE-1', 'detection_confidence': 0.61},
+        ]
+        dlg = EquipmentMarkerReviewDialog(results, self.db)
+        try:
+            self.assertEqual(dlg._tbl.item(0, dlg._C_CHK).checkState(), Qt.CheckState.Checked)
+        finally:
+            dlg.deleteLater()
+
     def test_save_writes_only_checked_rows(self):
         from pid_viewer import EquipmentMarkerReviewDialog
         dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db)
@@ -3343,6 +3368,48 @@ class EquipmentMarkerReviewDialogTests(unittest.TestCase):
         dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db)
         try:
             self.assertIsNone(dlg._tbl.cellWidget(0, dlg._C_EDIT))
+        finally:
+            dlg.deleteLater()
+
+    def test_thumbnail_rendered_for_rows_with_a_real_pdf(self):
+        """"Dvs så man kan se grafiskt att det är korrekt och inte bara
+        en lista" (2026-08-16, see NOTES.md "zoomad bild per rad i
+        granskningsdialogen") — each row with a resolvable page/pdf_path
+        gets a small rendered crop, not just text columns."""
+        import fitz
+        from PyQt6.QtWidgets import QLabel
+        from pid_viewer import EquipmentMarkerReviewDialog
+        path = os.path.join(self._tmpdir, "thumb.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=200, height=200)
+        shape = page.new_shape()
+        shape.draw_rect(fitz.Rect(90, 90, 110, 110))
+        shape.finish(color=(0, 0, 0), fill=(0, 0, 0))
+        shape.commit()
+        doc.save(path)
+        doc.close()
+
+        dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db, pdf_path=path)
+        try:
+            lbl = dlg._tbl.cellWidget(0, dlg._C_THUMB)
+            self.assertIsInstance(lbl, QLabel)
+            self.assertFalse(lbl.pixmap().isNull())
+        finally:
+            dlg.deleteLater()
+
+    def test_no_thumbnail_without_pdf_path(self):
+        from pid_viewer import EquipmentMarkerReviewDialog
+        dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db)
+        try:
+            self.assertIsNone(dlg._tbl.cellWidget(0, dlg._C_THUMB))
+        finally:
+            dlg.deleteLater()
+
+    def test_thumbnail_absent_but_no_crash_with_unresolvable_pdf_path(self):
+        from pid_viewer import EquipmentMarkerReviewDialog
+        dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db, pdf_path='fake.pdf')
+        try:
+            self.assertIsNone(dlg._tbl.cellWidget(0, dlg._C_THUMB))
         finally:
             dlg.deleteLater()
 
@@ -6010,6 +6077,46 @@ class SimilarSymbolSearchDialogTests(unittest.TestCase):
             self.assertTrue(dlg._tiny_ref_warning.isHidden())
         finally:
             dlg.deleteLater()
+
+    def test_reference_preview_renders_at_a_higher_dpi_than_matching_uses(self):
+        """"Det ser väldigt B ut när det visas en så lågupplöst version
+        av ventilen." (2026-08-16, see NOTES.md "Rutan i bildmatchning
+        stämmer inte med det markerade" follow-up) — a real resolved
+        reference can be just a handful of pixels across at the matching
+        DPI (300), reading as an illegible, blocky thumbnail once
+        _ImageRefCropCanvas zooms it up to fill the widget. The PREVIEW
+        must render at pid_viewer._PREVIEW_DPI (4x the matching DPI),
+        independent of image_symbol_matching._DEFAULT_DPI, which stays
+        at 300 for MATCHING accuracy (see NOTES.md "Högre DPI för
+        bildmatchning — testat, ingen förbättring" — higher DPI
+        measurably makes matching worse, not better)."""
+        import fitz
+        from pid_viewer import SimilarSymbolSearchDialog, _PREVIEW_DPI
+        import image_symbol_matching
+        self.assertGreater(_PREVIEW_DPI, image_symbol_matching._DEFAULT_DPI,
+            "the preview DPI must be higher than the matching DPI, not equal to it")
+        tmpdir = tempfile.mkdtemp(prefix="hazop_previewdpi_test_")
+        try:
+            path = os.path.join(tmpdir, "previewdpi.pdf")
+            doc = fitz.open()
+            doc.new_page(width=200, height=200)
+            doc.save(path)
+            doc.close()
+
+            ref_bbox = (10.0, 10.0, 20.0, 15.0)   # 10x5pt — tiny, like a real degenerate reference
+            dlg = SimilarSymbolSearchDialog(None, None, path, 0, 10.0,
+                                             ref_bbox=ref_bbox, viewer=None)
+            try:
+                dlg._render_image_preview()
+                h, w = dlg._image_ref_canvas._gray.shape
+                expected_h = round(5.0 * _PREVIEW_DPI / 72.0)
+                expected_w = round(10.0 * _PREVIEW_DPI / 72.0)
+                self.assertAlmostEqual(h, expected_h, delta=1)
+                self.assertAlmostEqual(w, expected_w, delta=1)
+            finally:
+                dlg.deleteLater()
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
     def test_dragging_a_crop_in_image_mode_narrows_what_gets_searched(self):
         """Integration check that _restart_scan actually reads
