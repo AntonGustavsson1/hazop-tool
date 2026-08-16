@@ -5058,6 +5058,47 @@ class FindSimilarShapesSearchParametersTests(unittest.TestCase):
             "the plain rectangle has neither a diagonal nor a curve and must be excluded, "
             "even though it is size/aspect-plausible and min_similarity was never applied")
 
+    def test_scan_candidates_rejects_pipe_run_aspect_even_with_ignore_scale(self):
+        """Found in review (2026-08-16, see NOTES.md "raster-sökning"
+        follow-up): an earlier version of the aspect/norm_size pre-filter
+        bundled BOTH checks under `not ignore_scale`, so checking "Alla
+        storlekar" silently let long/thin pipe-run clusters back into
+        similarity scoring — the exact noise the filter exists to
+        reject. ignore_scale is specifically about SIZE
+        (cluster_similarity drops norm_size from the score entirely,
+        aspect stays fully weighted regardless — see its own docstring)
+        so the aspect>3.0 pipe-run exclusion must apply UNCONDITIONALLY,
+        with or without ignore_scale."""
+        import fitz
+        from equipment_detection import _scan_candidates, resolve_reference_cluster
+        from symbol_geometry import similarity_features
+        path = os.path.join(self._tmpdir, "pipe_ignore_scale.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=400, height=400)
+        page.insert_text(fitz.Point(200, 380), "TAG-001", fontsize=8)
+        shape = page.new_shape()
+        self._bowtie(shape, 60, 60)
+        # A long diagonal line: aspect >> 3.0 (a pipe run), but WITH
+        # has_diagonal=True so it isn't excluded by that OTHER filter —
+        # isolates the aspect check specifically.
+        shape.draw_line(fitz.Point(140, 50), fitz.Point(300, 90))
+        shape.finish(color=(0, 0, 0), width=1, closePath=False)
+        shape.commit()
+        doc.save(path)
+        doc.close()
+
+        doc = fitz.open(path)
+        try:
+            primitives, index_group, cluster = resolve_reference_cluster(doc, 0, 60, 60)
+            ref_feats = similarity_features(primitives, index_group)
+            candidates = _scan_candidates(
+                doc, ref_feats, 0, cluster['_index_group'], pages=[0], ignore_scale=True)
+        finally:
+            doc.close()
+        self.assertEqual(candidates, [],
+            "the long diagonal pipe-run line must stay excluded (aspect>3.0) even "
+            "when ignore_scale=True, since that flag is about size, not shape/aspect")
+
     def test_scan_candidates_should_cancel_stops_before_any_page_is_scanned(self):
         import fitz
         from equipment_detection import _scan_candidates, resolve_reference_cluster

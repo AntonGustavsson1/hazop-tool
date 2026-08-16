@@ -1872,14 +1872,26 @@ def _scan_candidates(pdf_doc, ref_features, ref_page, ref_native_index_group, pa
     dominant_text_size() already derives cand_scale from the page's own
     vector content when there's no real text (see its own docstring, same
     Loket/Smurfit Kappa precedent) — so this bound adapts per-page rather
-    than using an absolute pixel size. Only applied when NOT ignore_scale:
-    that flag means "find any size of the same figure" — on a page with
-    very few, very differently-sized shapes (confirmed directly against
-    this repo's own ignore_scale regression test), dominant_text_size()'s
-    median-based estimate can itself skew toward whichever shape happens
-    to dominate the page, so a deliberately-huge-or-tiny match ignore_scale
-    is specifically meant to find could otherwise fail this bound too —
-    defeating the point of asking for it.
+    than using an absolute pixel size. The norm_size half of this is only
+    applied when NOT ignore_scale: that flag means "find any size of the
+    same figure" — on a page with very few, very differently-sized shapes
+    (confirmed directly against this repo's own ignore_scale regression
+    test), dominant_text_size()'s median-based estimate can itself skew
+    toward whichever shape happens to dominate the page, so a
+    deliberately-huge-or-tiny match ignore_scale is specifically meant to
+    find could otherwise fail this bound too — defeating the point of
+    asking for it.
+
+    aspect, by contrast, is NOT gated by ignore_scale — that flag is
+    specifically about SIZE (symbol_geometry.cluster_similarity's own
+    ignore_scale docstring: "drop norm_size from the score entirely",
+    aspect stays fully weighted regardless). Found in review (2026-08-16,
+    see NOTES.md "raster-sökning" follow-up): an earlier version of this
+    bundled `c['aspect'] > 3.0` into the same `not ignore_scale` condition
+    as the size bound, so checking "Alla storlekar" silently let long/thin
+    pipe-run clusters — the exact noise this filter exists to reject —
+    back into similarity scoring, since only the has_diagonal/has_curve
+    filter below still applied.
     """
     if pages is None:
         pages = range(pdf_doc.page_count)
@@ -1899,7 +1911,9 @@ def _scan_candidates(pdf_doc, ref_features, ref_page, ref_native_index_group, pa
         for c in clusters:
             if page_num == ref_page and c['_index_group'] == ref_native_index_group:
                 continue
-            if not ignore_scale and (c['aspect'] > 3.0 or not (1.5 <= c['norm_size'] <= 40.0)):
+            if c['aspect'] > 3.0:
+                continue
+            if not ignore_scale and not (1.5 <= c['norm_size'] <= 40.0):
                 continue
             if not (c['has_diagonal'] or c['has_curve']):
                 # A real equipment symbol's own defining geometry is

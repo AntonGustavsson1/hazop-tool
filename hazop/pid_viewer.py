@@ -3807,6 +3807,25 @@ class ImageSymbolSearchWorker(QThread):
         cancelled = False
         manager = multiprocessing.Manager()
         progress_queue = manager.Queue()
+        # A cross-process cancellation signal (2026-08-16, see NOTES.md
+        # "raster-sökning" follow-up) — a QThread's own
+        # isInterruptionRequested is a bound method and can't cross a
+        # process boundary, but a Manager-backed Event can. Without this,
+        # cancelling PENDING futures below only stops chunks that hadn't
+        # started yet; an already-dispatched chunk ran to full completion
+        # with ZERO cancellation checking at all inside it (unlike the
+        # sequential path, which checks should_cancel once per scale AND
+        # once per rotation — see _match_page). Confirmed directly: on a
+        # 4-page, A0-sized "Hela dokumentet" scan with "Alla storlekar",
+        # requesting cancellation while workers were mid-flight left
+        # worker.wait() blocking the UI thread for 63 SECONDS — the exact
+        # "hang reads as a crash" complaint this whole investigation
+        # started from, just relocated to the new parallel path instead
+        # of fixed by it. _match_page_range_worker threads this through
+        # to _match_pages' existing should_cancel parameter, so an
+        # already-running worker now notices at its next scale/rotation
+        # boundary instead of running its entire remaining chunk.
+        cancel_event = manager.Event()
         try:
             executor = concurrent.futures.ProcessPoolExecutor(max_workers=len(chunks))
             try:
@@ -3826,13 +3845,14 @@ class ImageSymbolSearchWorker(QThread):
                     image_symbol_matching._DEFAULT_MIN_SIMILARITY_FOR_SCAN,
                     self._ignore_scale, self._rotation_mode,
                     image_symbol_matching._DEFAULT_DPI, self._page_rotations,
-                    progress_queue, len(chunks))
+                    progress_queue, len(chunks), cancel_event)
                     for chunk in chunks]
                 pending = set(futures)
                 while pending:
                     self._emit_progress(progress_queue, total)
                     if self.isInterruptionRequested():
                         cancelled = True
+                        cancel_event.set()
                         for f in pending:
                             f.cancel()
                         break

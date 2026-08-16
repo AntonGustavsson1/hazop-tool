@@ -282,6 +282,25 @@ class MatchPageRangeWorkerTests(unittest.TestCase):
         finally:
             manager.shutdown()
 
+    def test_cancel_event_stops_the_scan(self):
+        """cancel_event (2026-08-16, see NOTES.md "raster-sökning"
+        follow-up) is threaded straight through to _match_pages' own
+        should_cancel — a cross-process-safe substitute for a QThread's
+        isInterruptionRequested (which can't cross a process boundary at
+        all). Confirmed necessary: without this, a chunk already
+        dispatched to a worker process ran to FULL completion with ZERO
+        cancellation checking inside it, measured as a real 63-second UI
+        freeze on cancel. A pre-set event must stop the scan before any
+        page in the range is even started."""
+        class _AlreadyCancelled:
+            def is_set(self):
+                return True
+        path = self._multi_page_pdf(3)
+        cands = ism._match_page_range_worker(
+            path, 0, (50, 50, 70, 70), [0, 1, 2], 0.6, False, 'none',
+            ism._DEFAULT_DPI, None, cancel_event=_AlreadyCancelled())
+        self.assertEqual(cands, [])
+
     def test_limits_cv2_threads_by_worker_count(self):
         """Same fix as equipment_detection._limit_ocr_engine_threads,
         applied to cv2 instead of onnxruntime — confirmed necessary via a
@@ -307,11 +326,20 @@ class MatchPageRangeWorkerTests(unittest.TestCase):
                 ism._DEFAULT_DPI, None)   # n_workers defaults to 1
         mock_set_threads.assert_called_once_with(14)
 
-    def test_returns_empty_list_on_bad_pdf_path(self):
-        cands = ism._match_page_range_worker(
-            '/nonexistent/path.pdf', 0, (50, 50, 70, 70), [0], 0.6, False, 'none',
-            ism._DEFAULT_DPI, None)
-        self.assertEqual(cands, [])
+    def test_raises_on_bad_pdf_path_instead_of_swallowing_it(self):
+        """Deliberately does NOT catch broadly (2026-08-16, see NOTES.md
+        "raster-sökning" follow-up) — mirrors
+        equipment_detection._scan_page_range_worker, which also lets a
+        bad path propagate for its own caller
+        (ParallelTagScanWorker._run_parallel's f.result() try/except) to
+        log. An earlier version of this function caught everything and
+        returned [] here, silently converting a whole chunk's worth of
+        pages into "no matches found" with no log line at all whenever
+        anything inside it failed."""
+        with self.assertRaises(Exception):
+            ism._match_page_range_worker(
+                '/nonexistent/path.pdf', 0, (50, 50, 70, 70), [0], 0.6, False, 'none',
+                ism._DEFAULT_DPI, None)
 
 
 class NmsTests(unittest.TestCase):

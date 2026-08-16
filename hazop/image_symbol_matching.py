@@ -273,7 +273,7 @@ def find_similar_shapes_visual(pdf_doc, ref_page, ref_bbox, pages=None,
 
 def _match_page_range_worker(pdf_path, ref_page, ref_bbox, page_range, min_similarity,
                               ignore_scale, rotation_mode, dpi, page_rotations,
-                              progress_queue=None, n_workers=1):
+                              progress_queue=None, n_workers=1, cancel_event=None):
     """Multiprocessing target for a parallel Bildmatchning scan
     (2026-08-16, see NOTES.md "raster-sökning — parallellisering över
     flera processer") — module-level (not a closure) so it can be
@@ -288,11 +288,20 @@ def _match_page_range_worker(pdf_path, ref_page, ref_bbox, page_range, min_simil
     boundary than to just rebuild it from the same (ref_page, ref_bbox)
     every worker was given.
 
-    No should_cancel here — same tradeoff
-    _scan_page_range_worker/ParallelTagScanWorker already accept:
-    once a chunk of pages has been dispatched to a worker process, it
-    runs to completion; only chunks that haven't started yet can be
-    cancelled (via the orchestrating QThread cancelling their Future).
+    cancel_event, if given (a multiprocessing.Manager().Event(), NOT a
+    plain threading.Event — a QThread's own isInterruptionRequested is a
+    bound method and can't cross a process boundary at all), is passed
+    straight through as _match_pages'/`_match_page`'s existing
+    should_cancel — checked once per (scale, rotation) combination, same
+    granularity the sequential path already gets. Added after a real
+    measurement (2026-08-16, see NOTES.md "raster-sökning" follow-up):
+    without this, once a chunk was dispatched to a worker process it ran
+    to FULL completion with zero cancellation checking inside it at all
+    (only not-yet-dispatched chunks could be cancelled), which measured
+    as a 63-SECOND UI freeze on a real 4-page "Alla storlekar" cancel —
+    the exact "hang reads as a crash" complaint the whole raster-search
+    investigation started from, just relocated into the new parallel
+    path instead of fixed by it.
 
     progress_queue, if given (a multiprocessing.Manager().Queue()), gets
     a (page_num, 'running'|'done') tuple pushed around each page —
@@ -315,7 +324,22 @@ def _match_page_range_worker(pdf_path, ref_page, ref_bbox, page_range, min_simil
     expected scaling.
 
     Returns the same (sim, page_num, x, y, outline) tuple list
-    find_similar_shapes_visual itself returns for this page range."""
+    find_similar_shapes_visual itself returns for this page range.
+
+    Deliberately does NOT catch exceptions from the matching work itself
+    (only doc.close() is protected) — mirrors
+    equipment_detection._scan_page_range_worker exactly. A real error
+    here propagates out through the Future to
+    ImageSymbolSearchWorker._run_parallel's own
+    `except Exception as e: logging.error(...)` around f.result(),
+    which is what actually surfaces it. An earlier version of this
+    function wrapped the whole body in a blanket `except Exception:
+    return []` with no logging at all — found in review (2026-08-16,
+    see NOTES.md "raster-sökning — parallellisering över flera
+    processer", uppföljning): that silently converted ANY error in one
+    worker's ENTIRE page range (not just the offending page) into an
+    empty result with zero indication anything went wrong, making the
+    orchestrator's own already-correct logging dead code."""
     doc = None
     try:
         if HAS_CV2:
@@ -341,7 +365,8 @@ def _match_page_range_worker(pdf_path, ref_page, ref_bbox, page_range, min_simil
 
         candidates = _match_pages(
             doc, template_gray, ref_page, ref_bbox, list(page_range), min_similarity,
-            scales, rotations, dpi, progress_callback=_report)
+            scales, rotations, dpi, progress_callback=_report,
+            should_cancel=cancel_event.is_set if cancel_event is not None else None)
         if progress_queue is not None:
             for page_num in page_range:
                 try:
@@ -349,8 +374,6 @@ def _match_page_range_worker(pdf_path, ref_page, ref_bbox, page_range, min_simil
                 except Exception:
                     pass
         return candidates
-    except Exception:
-        return []
     finally:
         if doc is not None:
             try:
