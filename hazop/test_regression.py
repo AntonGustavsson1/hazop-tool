@@ -9259,8 +9259,9 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
         from PyQt6.QtCore import QPointF
         self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
         self.panel.viewer._pdf_path = '/fake/path.pdf'
+        fake_primitives = [{'bbox': (1.0, 2.0, 3.0, 4.0)}]
         with unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
-                                 return_value=(['prims'], ['idx'], {'bbox': (0, 0, 10, 10)})), \
+                                 return_value=(fake_primitives, [0], {'bbox': (0, 0, 10, 10)})), \
              unittest.mock.patch('pid_viewer.symbol_geometry.dominant_text_size',
                                  return_value=12.5), \
              unittest.mock.patch('pid_viewer.symbol_geometry.primitives_near_point',
@@ -9270,16 +9271,53 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
             with unittest.mock.patch.object(QMessageBox, 'information'):
                 self.panel._on_context_action('find_similar', QPointF(5, 5), 3)
         args, kwargs = mock_params_dlg.call_args
-        self.assertEqual(args[0], ['prims'])
+        self.assertEqual(args[0], fake_primitives)
         # No nearby primitives found (mocked empty) — the widened group is
         # just the auto-detected native group, unioned with nothing.
-        self.assertEqual(args[1], ['idx'])
+        self.assertEqual(args[1], [0])
         self.assertEqual(args[2], '/fake/path.pdf')
         self.assertEqual(args[3], 3)
         self.assertEqual(args[4], 12.5)
         self.assertEqual(kwargs['viewer'], self.panel.viewer)
-        self.assertEqual(kwargs['native_index_group'], ['idx'])
+        self.assertEqual(kwargs['native_index_group'], [0])
         self.assertEqual(kwargs['initial_excluded'], set())
+
+    def test_find_similar_symbol_ref_bbox_covers_the_widened_group_not_just_the_tiny_core(self):
+        """Bildmatchning's reference crop is built directly from this
+        ref_bbox (see SimilarSymbolSearchDialog._render_image_preview) —
+        it must cover the whole connectivity-widened group, not just
+        resolve_reference_cluster's own auto-detected core, or a
+        densely-fragmented file whose core seed is a single tiny
+        fragment (confirmed on the active project's own
+        hazop_project_pid.pdf: a real instrument bubble's resolved core
+        was one lone 6x6pt curve — a single corner of the circle, while
+        the connectivity-widened group's own bbox tightly covered the
+        whole circle+label) crops Bildmatchning down to a sliver of the
+        actual symbol instead of the whole thing (2026-08-16, see
+        NOTES.md "Bildmatchning klipper fel — visar bara en del av det
+        markerade fältet")."""
+        from PyQt6.QtCore import QPointF
+        self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
+        self.panel.viewer._pdf_path = '/fake/path.pdf'
+        fake_primitives = [
+            {'bbox': (10.0, 10.0, 11.0, 11.0)},   # index 0: tiny native "core"
+            {'bbox': (0.0, 0.0, 30.0, 25.0)},     # index 1: much bigger, widened-in
+        ]
+        with unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
+                                 return_value=(fake_primitives, [0],
+                                               {'bbox': (10.0, 10.0, 11.0, 11.0)})), \
+             unittest.mock.patch('pid_viewer.symbol_geometry.dominant_text_size',
+                                 return_value=12.5), \
+             unittest.mock.patch('pid_viewer.symbol_geometry.primitives_near_point',
+                                 return_value=[1]), \
+             unittest.mock.patch('pid_viewer.symbol_geometry.widen_by_connectivity',
+                                 return_value={0, 1}), \
+             unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg:
+            self._mock_accepted_search_params_dialog(mock_params_dlg, final_results=[])
+            with unittest.mock.patch.object(QMessageBox, 'information'):
+                self.panel._on_context_action('find_similar', QPointF(5, 5), 3)
+        _, kwargs = mock_params_dlg.call_args
+        self.assertEqual(kwargs['ref_bbox'], (0.0, 0.0, 30.0, 25.0))
 
     def test_find_similar_symbol_from_template_warns_with_no_pid_open(self):
         from pid_viewer import PIDPanel

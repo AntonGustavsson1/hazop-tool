@@ -2108,6 +2108,16 @@ Anton, direkt efter fixen ovan: "Om du Går igenom PFD 1500 och hittar de gemens
 
 **Test:** Full svit (803 tester) grön genom hela arbetet.
 
+## Bildmatchning klipper fel — visar bara en del av det markerade fältet (2026-08-16)
+
+**Rapport:** Anton, efter förra fixen (referensrutan matchade inte draget): "Den verkar fortfarande klippa konstigt när jag har markera ett fält, exempelvis ett instrument. I bildmatchning visas bara en del av det jag markerat."
+
+**Root cause:** `_find_similar_symbol` (pid_viewer.py) satte Bildmatchningens `ref_bbox` till `ref_cluster['bbox']` — bara `resolve_reference_cluster`s egen auto-detekterade "kärna". På den aktiva projektfilen (`hazop_project_pid.pdf`, 45 514 primitiver på EN sida — ett extremt tessellerat CAD-/faxexport utan textlager) visade sig detta konkret: ett instrument ("15 FI 33") klickades, och den returnerade kärnan var EN enda 6×6pt kurvfragment — bara ETT hörn av cirkeln (verifierat genom att rendera exakt den bboxen: bilden visade bara en liten bit av ringen). `_render_image_preview` renderar ALLTID exakt `ref_bbox` som "hela" referensen — `_ImageRefCropCanvas`s beskärningsverktyg kan bara krympa INÅT det redan renderade, aldrig växa utanför det — så användaren hade ingen möjlighet att dra ut till hela symbolen, oavsett hur den drog. Samma `ref_bbox` används dessutom direkt som den FAKTISKA sökreferensen om ingen manuell beskärning gjorts (`current_bbox() or self._ref_bbox`), så själva sökningen (inte bara förhandsgranskningen) skulle ha kört på detta meningslösa fragment.
+
+**Fix:** `ref_bbox` byggs nu från unionen av `wide_index_group` — samma anslutningsväxta grupp som redan visas/går att redigera i Vektorform (via `primitives_near_point` + `widen_by_connectivity`) — istället för bara `ref_cluster['bbox']`. Verifierat direkt mot den riktiga instrumentbubblan: unionsbboxen täcker nu hela cirkeln + texten exakt, inte bara ett hörn. Faller tillbaka på `ref_cluster['bbox']` om `wide_index_group` skulle vara tom (inget att facka ihop över — en genuint degenererad referens, inte samma bugg).
+
+**Test:** `test_find_similar_symbol_ref_bbox_covers_the_widened_group_not_just_the_tiny_core` (ny, röd→grön verifierad). `test_find_similar_symbol_constructs_dialog_with_pdf_path_page_scale_and_viewer` uppdaterad till realistiska primitiv-/index-mockar (den gamla mockade `primitives=['prims']`/`index_group=['idx']` med strängar istället för riktiga dict/int-index, vilket kraschat med den nya bbox-unionskoden). Full svit (804 tester) grön.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

@@ -9803,9 +9803,38 @@ class PIDPanel(QWidget):
                 primitives, native_index_group, nearby))
             initial_excluded = set(wide_index_group) - set(native_index_group)
 
+            # Bildmatchning's reference crop is exactly this bbox (see
+            # SimilarSymbolSearchDialog._render_image_preview) — using
+            # ref_cluster['bbox'] (the auto-detected core ALONE) here cuts
+            # the raster reference down to whatever tiny fragment
+            # resolve_reference_cluster happened to seed the core from on
+            # a densely-fragmented file, so only a sliver of the actual
+            # symbol was ever shown or searched with (2026-08-16, see
+            # NOTES.md "Bildmatchning klipper fel — visar bara en del av
+            # det markerade fältet": confirmed on the active project's own
+            # hazop_project_pid.pdf — an instrument bubble's resolved core
+            # was a single 6x6pt curve fragment, one corner of the circle,
+            # while the wider connectivity-grown group's own bbox tightly
+            # covers the whole circle+label). Union over wide_index_group
+            # instead — the same set already shown/editable in Vektorform —
+            # so switching to Bildmatchning never loses what Vektorform
+            # already had.
+            # An empty wide_index_group (e.g. resolve_reference_cluster
+            # itself returned an empty native group with nothing nearby to
+            # widen with — a genuinely empty/degenerate reference) has
+            # nothing to union over; fall back to the auto-detected
+            # cluster's own bbox rather than crashing on min()/max() of an
+            # empty sequence.
+            image_ref_bbox = ref_cluster['bbox'] if not wide_index_group else (
+                min(primitives[i]['bbox'][0] for i in wide_index_group),
+                min(primitives[i]['bbox'][1] for i in wide_index_group),
+                max(primitives[i]['bbox'][2] for i in wide_index_group),
+                max(primitives[i]['bbox'][3] for i in wide_index_group),
+            )
+
             params_dlg = SimilarSymbolSearchDialog(
                 primitives, wide_index_group, self.viewer._pdf_path, page, ref_scale,
-                ref_bbox=ref_cluster['bbox'], db=self.db, viewer=self.viewer,
+                ref_bbox=image_ref_bbox, db=self.db, viewer=self.viewer,
                 initial_excluded=initial_excluded, native_index_group=native_index_group,
                 page_rotations=self.db.get_all_page_rotations(), parent=self)
         if params_dlg.exec() != QDialog.DialogCode.Accepted:
