@@ -8526,6 +8526,88 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
                 self.fail(f"right-clicking a LEDORD_T item must not raise: {e!r}")
             mock_menu_cls.assert_not_called()
 
+    def _equip_item(self, eq_id):
+        it = QTreeWidgetItemIterator(self.panel.tree)
+        while it.value():
+            item = it.value()
+            if item.text(0).strip().startswith(self.db.get_equipment_by_id(eq_id)['tag']):
+                return item
+            it += 1
+        return None
+
+    def test_undefined_equipment_shows_ej_definierad_italic(self):
+        """"Idag: 'TAG-ABC —' ... Ska bli 'TAG-ABC, ej definierad' ...
+        (kursivt)" (2026-08-17) — an equipment_type of '' used to leave a
+        bare trailing dash with nothing after it."""
+        eq_id = self.db.add_equipment_item("TAG-ABC", "TAG-ABC", "T", 0, "", "", 0)
+        node_id = self.db.add_node()
+        self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        self.panel.refresh()
+
+        item = self._equip_item(eq_id)
+        self.assertIsNotNone(item)
+        self.assertIn("TAG-ABC, ej definierad", item.text(0))
+        self.assertNotIn("—", item.text(0))
+        self.assertTrue(item.font(0).italic())
+
+    def test_defined_equipment_shows_type_not_italic(self):
+        eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", "", 0)
+        node_id = self.db.add_node()
+        self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        self.panel.refresh()
+
+        item = self._equip_item(eq_id)
+        self.assertIsNotNone(item)
+        self.assertIn("V-101, Ventil", item.text(0))
+        self.assertFalse(item.font(0).italic())
+
+    def test_double_click_undefined_equipment_opens_type_picker_and_persists(self):
+        """"Dubbelklick på 'ej definierad'/'ventil' -> välj typ från
+        Standardobjekt -> uppdaterar överallt taggen förekommer" (2026-08-17).
+        Forces the genuinely-EQUIP_T (un-merged) code path via two manual
+        add_deviation() calls sharing one equipment_id + guide word — the
+        idempotent get_or_create_deviation used everywhere else in the app
+        never produces this combination "in practice" (see this class's
+        own docstring), but the code path exists and must work."""
+        eq_id = self.db.add_equipment_item("TAG-XYZ", "TAG-XYZ", "T", 0, "", "", 0)
+        self.db.add_standard_object("Ventil")
+        node_id = self.db.add_node()
+        self.db.add_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        self.db.add_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        self.panel.refresh()
+
+        item = self._equip_item(eq_id)
+        self.assertIsNotNone(item)
+        self.assertEqual(item.data(0, Qt.ItemDataRole.UserRole + 1), EQUIP_T,
+                          "sanity: two deviations sharing one equipment+guide-word "
+                          "must produce a real (un-merged) EQUIP_T row")
+
+        with unittest.mock.patch.object(
+                QInputDialog, 'getItem', return_value=("Ventil", True)):
+            self.panel._on_item_double_click(item, 0)
+
+        self.assertEqual(self.db.get_equipment_by_id(eq_id)['equipment_type'], "Ventil")
+        item_after = self._equip_item(eq_id)
+        self.assertIn("TAG-XYZ, Ventil", item_after.text(0))
+
+    def test_double_click_equipment_type_picker_emits_item_edited_inline(self):
+        eq_id = self.db.add_equipment_item("TAG-XYZ", "TAG-XYZ", "T", 0, "", "", 0)
+        # "Pump" is already present in the default seeded standard_objects
+        # library (Database() seeds it on construction) — no need to add it.
+        node_id = self.db.add_node()
+        self.db.add_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        self.db.add_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        self.panel.refresh()
+        item = self._equip_item(eq_id)
+
+        captured = []
+        self.panel.item_edited_inline.connect(lambda t, i: captured.append((t, i)))
+        with unittest.mock.patch.object(
+                QInputDialog, 'getItem', return_value=("Pump", True)):
+            self.panel._on_item_double_click(item, 0)
+
+        self.assertEqual(captured, [(EQUIP_T, eq_id)])
+
 
 class TreeNodeRenameTests(unittest.TestCase):
     """Reported feedback (2026-08-12, see NOTES.md): "jag vill kunna döpa

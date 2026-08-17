@@ -7757,10 +7757,23 @@ class TreePanel(QWidget):
 
                     for eq_id, eq_devs in equipment_groups.items():
                         eq = self.db.get_equipment_by_id(eq_id)
-                        eq_label = f"{eq['tag']} — {eq['equipment_type']}" if eq else f"Utrustning #{eq_id}"
+                        etype = (eq.get('equipment_type') or '').strip() if eq else ''
+                        # "TAG-ABC —" (2026-08-17, see NOTES.md "ej
+                        # definierad-hantering") — an empty equipment_type
+                        # used to leave a bare trailing dash with nothing
+                        # after it. Now reads "TAG-ABC, ej definierad"
+                        # (italic, a visible call to action) instead of
+                        # silently looking broken; a real type reads
+                        # "TAG-ABC, ventil" (not italic — nothing left to do).
+                        undefined = not eq or not etype
+                        eq_label = (f"{eq['tag']}, {etype}" if eq and etype
+                                    else f"{eq['tag']}, ej definierad" if eq
+                                    else f"Utrustning #{eq_id}")
                         eitem = QTreeWidgetItem([f"    {eq_label}"])
                         eitem.setIcon(0, _icon('settings'))
-                        eq_font = QFont(); eq_font.setBold(True)
+                        eq_font = QFont()
+                        eq_font.setBold(True)
+                        eq_font.setItalic(undefined)
                         eitem.setFont(0, eq_font)
                         litem.addChild(eitem)
                         if len(eq_devs) == 1:
@@ -8070,8 +8083,38 @@ class TreePanel(QWidget):
         if type_ == NODE_T and self.db.has_node_markups(id_):
             self.node_jump_to_markup.emit(id_)
             return
+        if type_ == EQUIP_T:
+            self._assign_equipment_type(id_)
+            return
         if type_ in self._INLINE_EDIT_TYPES:
             self._begin_inline_edit(item, type_, id_)
+
+    def _assign_equipment_type(self, eq_id):
+        """Double-click an "ej definierad"/typed equipment header row ->
+        pick a type from Standardobjekt (2026-08-17, see NOTES.md
+        "'ej definierad'-hantering"). Only reachable when the tree item's
+        own identity is genuinely EQUIP_T — the common case where a
+        single-deviation equipment group collapses onto a DEV_T/CAUSE_T
+        row instead (see add_deviation_subtree's neighboring comments)
+        keeps that row's double-click as a normal inline text edit;
+        assigning a type there already has an existing path via the
+        scenario table's "🏷 Redigera objekttyp och tag-ID" flow."""
+        eq = self.db.get_equipment_by_id(eq_id)
+        if not eq:
+            return
+        types = [o['name'] for o in self.db.standard_objects()]
+        if not types:
+            return
+        current = (eq.get('equipment_type') or '').strip()
+        start_idx = types.index(current) if current in types else 0
+        name, ok = QInputDialog.getItem(
+            self, "Välj typ", f"Typ för {eq['tag']}:", types, start_idx, editable=False)
+        if not ok or not name:
+            return
+        self.db.update_equipment_item(
+            eq_id, eq['tag'], eq.get('prefix') or '', name, eq.get('description') or '')
+        self.refresh(EQUIP_T, eq_id, emit_selection=False)
+        self.item_edited_inline.emit(EQUIP_T, eq_id)
 
     def _raw_text_for(self, type_, id_):
         """Current raw description for an editable item, fetched fresh from
