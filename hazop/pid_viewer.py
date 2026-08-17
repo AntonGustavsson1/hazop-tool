@@ -9165,7 +9165,7 @@ class PIDPanel(QWidget):
                 self.db.clear_sheets()
                 self.db.clear_page_rotations()
                 self.db.add_revision(rev_label, rev_notes, str(working), created_at)
-                self.db.ensure_sheets_initialized(self.viewer.page_count())
+                self.db.ensure_sheets_initialized(self.viewer.page_count(), str(working))
                 self._current_display_page = 0
 
             else:
@@ -9215,11 +9215,14 @@ class PIDPanel(QWidget):
                 prog.setValue(total_pages)
 
                 if self.db.get_display_page_count() == 0:
-                    self.db.ensure_sheets_initialized(existing_pg_cnt)
+                    self.db.ensure_sheets_initialized(existing_pg_cnt, str(working))
 
                 rev_id = self.db.add_revision(rev_label, rev_notes, str(working), created_at)
                 physical_pages = list(range(existing_pg_cnt, existing_pg_cnt + n_new))
-                sheet_names    = [f"Blad {existing_pg_cnt + i + 1}"
+                # Bladnamn = "Filnamn – sida N" (2026-08-17, user-confirmed
+                # format, see NOTES.md), same as ensure_sheets_initialized.
+                stem = Path(working).stem
+                sheet_names    = [f"{stem} – sida {existing_pg_cnt + i + 1}"
                                   for i in range(n_new)]
                 self.db.append_sheets(physical_pages, sheet_names, rev_id)
 
@@ -9262,7 +9265,7 @@ class PIDPanel(QWidget):
             self.db.clear_sheets()
             self.db.clear_page_rotations()
             self.db.add_revision(created_at, '', str(working), created_at)
-            self.db.ensure_sheets_initialized(self.viewer.page_count())
+            self.db.ensure_sheets_initialized(self.viewer.page_count(), str(working))
             self._current_display_page = 0
 
         # Phase 2: apply active-page filter if needed, then load markers/connections
@@ -10831,7 +10834,7 @@ class PIDPanel(QWidget):
             if self.viewer.load_pdf(path, page=0, layout_offsets=layout_offsets,
                                     active_pages=active_pages,
                                     page_rotations=self.db.get_all_page_rotations()):
-                self.db.ensure_sheets_initialized(self.viewer.page_count())
+                self.db.ensure_sheets_initialized(self.viewer.page_count(), path)
                 self._rebuild_sheet_map()
                 self._current_display_page = 0
                 self._update_page_label()

@@ -3500,13 +3500,18 @@ class Database:
         self.conn.execute("DELETE FROM project_custom_fields WHERE id=?", (id_,))
         self.commit()
 
-    def ensure_sheets_initialized(self, page_count):
+    def ensure_sheets_initialized(self, page_count, pdf_path=None):
         existing = self.conn.execute("SELECT COUNT(*) FROM pid_sheets").fetchone()[0]
         if existing == 0 and page_count > 0:
+            # Bladnamn = "Filnamn – sida N" (2026-08-17, user-confirmed
+            # format, see NOTES.md) instead of the old generic "Blad N" —
+            # falls back to "Blad N" only if no path was supplied.
+            stem = Path(pdf_path).stem if pdf_path else None
             for i in range(page_count):
+                name = f"{stem} – sida {i + 1}" if stem else f"Blad {i + 1}"
                 self.conn.execute(
                     "INSERT INTO pid_sheets (display_order,physical_page,sheet_name) VALUES (?,?,?)",
-                    (i, i, f"Blad {i + 1}"))
+                    (i, i, name))
             self.commit()
 
     def get_sheets(self):
@@ -3533,6 +3538,11 @@ class Database:
 
     def update_sheet_name(self, id_, name):
         self.conn.execute("UPDATE pid_sheets SET sheet_name=? WHERE id=?", (name, id_))
+        self.commit()
+
+    def set_sheet_revision(self, id_, revision_id):
+        self.conn.execute(
+            "UPDATE pid_sheets SET revision_id=? WHERE id=?", (revision_id, id_))
         self.commit()
 
     def delete_sheets(self, ids):
@@ -4482,6 +4492,30 @@ class Database:
         return self.conn.execute(
             "SELECT * FROM node_markups WHERE pid_page=? ORDER BY sort_order,id",
             (page,)).fetchall()
+
+    def nodes_on_page(self, physical_page):
+        """Nodes appearing on a physical page — either via the node's own
+        (singular) pid_page, or via any node_markups row on that page (a
+        node can have markup on multiple pages), 2026-08-17 see NOTES.md
+        "Ny Noder-flik"."""
+        rows = self.conn.execute(
+            """SELECT DISTINCT n.* FROM nodes n
+               LEFT JOIN node_markups nm ON nm.node_id = n.id
+               WHERE n.pid_page = ? OR nm.pid_page = ?
+               ORDER BY n.id""",
+            (physical_page, physical_page)).fetchall()
+        return [dict(r) for r in rows]
+
+    def pages_for_node(self, node_id):
+        """Physical pages a node appears on (own pid_page + all node_markups
+        pages), deduplicated and sorted."""
+        node = self.get_node(node_id)
+        pages = set()
+        if node and node['pid_page'] is not None:
+            pages.add(node['pid_page'])
+        for m in self.node_markups_for_node(node_id):
+            pages.add(m['pid_page'])
+        return sorted(pages)
 
     def get_node_markup(self, mu_id):
         row = self.conn.execute(
@@ -17174,6 +17208,8 @@ class HAZOPPreparationPanel(QWidget):
     MainWindow.__init__ connect both to the same handler."""
 
     matrix_changed = pyqtSignal()
+    sheets_changed = pyqtSignal()
+    structure_changed = pyqtSignal()   # a node was added/renamed from the Noder tab
 
     def __init__(self, db: Database):
         super().__init__()
@@ -17507,6 +17543,78 @@ class HAZOPPreparationPanel(QWidget):
         self._std_causes_panel = StandardCausesSettingsPanel(self.db)
         tabs.addTab(self._std_causes_panel, "Avvikelser & Orsaker")
 
+        # ── Tab: Blad (moved from Studiehantering → PID-hantering, 2026-08-17,
+        # see NOTES.md) ───────────────────────────────────────────────────────
+        sheets_widget = QWidget()
+        sheets_layout = QVBoxLayout(sheets_widget)
+        sheets_layout.setContentsMargins(8, 8, 8, 8)
+        sheets_layout.setSpacing(6)
+
+        sheet_hdr = QHBoxLayout()
+        sheet_hdr.addWidget(QLabel("Bladordning — dra för att ändra ordning:"))
+        sheet_hdr.addStretch()
+        rename_btn = QPushButton("Byt namn")
+        rename_btn.setIcon(_icon('edit'))
+        rename_btn.clicked.connect(self._rename_sheet)
+        sheet_hdr.addWidget(rename_btn)
+        delete_btn = QPushButton("Ta bort")
+        delete_btn.setIcon(_icon('delete'))
+        delete_btn.clicked.connect(self._delete_sheets)
+        sheet_hdr.addWidget(delete_btn)
+        sheets_layout.addLayout(sheet_hdr)
+
+        rev_row = QHBoxLayout()
+        rev_row.addWidget(QLabel("P&ID-revision för valt blad:"))
+        self._sheet_rev_combo = QComboBox()
+        self._sheet_rev_combo.currentIndexChanged.connect(self._on_sheet_revision_changed)
+        rev_row.addWidget(self._sheet_rev_combo, 1)
+        sheets_layout.addLayout(rev_row)
+
+        self._sheet_list = QListWidget()
+        self._sheet_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+        self._sheet_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self._sheet_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self._sheet_list.model().rowsMoved.connect(self._on_sheets_reordered)
+        self._sheet_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._sheet_list.customContextMenuRequested.connect(self._sheet_context_menu)
+        self._sheet_list.currentItemChanged.connect(self._on_sheet_selection_changed)
+        _base_kp = self._sheet_list.keyPressEvent
+        def _sheet_key_press(event, _base=_base_kp):
+            if event.key() == Qt.Key.Key_Delete:
+                self._delete_sheets()
+            else:
+                _base(event)
+        self._sheet_list.keyPressEvent = _sheet_key_press
+        sheets_layout.addWidget(self._sheet_list)
+        tabs.addTab(sheets_widget, "Blad")
+
+        # ── Tab: Noder ────────────────────────────────────────────────────────
+        # Mirrors the HAZOP tree's node list both ways: renaming/creating a
+        # node here refreshes the tree via structure_changed, and any tree
+        # change that calls this panel's refresh_nodes() shows up here
+        # (2026-08-17, see NOTES.md "Ny Noder-flik").
+        nodes_widget = QWidget()
+        nodes_layout = QVBoxLayout(nodes_widget)
+        nodes_layout.setContentsMargins(8, 8, 8, 8)
+        nodes_layout.setSpacing(6)
+        nodes_hdr = QHBoxLayout()
+        nodes_hdr.addWidget(QLabel("Alla noder:"))
+        nodes_hdr.addStretch()
+        add_node_btn = QPushButton("+ Ny nod")
+        add_node_btn.clicked.connect(self._add_node_from_noder_tab)
+        nodes_hdr.addWidget(add_node_btn)
+        nodes_layout.addLayout(nodes_hdr)
+        self._nodes_table = QTableWidget(0, 3)
+        self._nodes_table.setHorizontalHeaderLabels(["Nummer", "Namn", "Blad"])
+        self._nodes_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._nodes_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self._nodes_table.verticalHeader().setVisible(False)
+        self._nodes_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._nodes_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._nodes_table.cellDoubleClicked.connect(self._on_nodes_table_double_clicked)
+        nodes_layout.addWidget(self._nodes_table)
+        tabs.addTab(nodes_widget, "Noder")
+
         self._load_all()
 
     def _load_all(self):
@@ -17528,6 +17636,178 @@ class HAZOPPreparationPanel(QWidget):
 
         self._load_project_revisions()
         self._load_project_custom_fields()
+        self.refresh_sheets()
+        self.refresh_nodes()
+
+    # ── Blad (2026-08-17, moved from PIDManagementPanel, see NOTES.md) ──────
+    def refresh_sheets(self):
+        self._sheet_rev_combo.blockSignals(True)
+        self._sheet_rev_combo.clear()
+        self._sheet_rev_combo.addItem("(ingen)", None)
+        for rev in self.db.get_revisions():
+            self._sheet_rev_combo.addItem(rev['revision'] or f"Revision {rev['id']}", rev['id'])
+        self._sheet_rev_combo.blockSignals(False)
+
+        self._sheet_list.clear()
+        for sheet in self.db.get_sheets():
+            item = QListWidgetItem(
+                f"{sheet['display_order'] + 1}. {sheet['sheet_name']}  "
+                f"(PDF-sida {sheet['physical_page'] + 1})")
+            item.setData(Qt.ItemDataRole.UserRole, sheet['id'])
+            item.setData(Qt.ItemDataRole.UserRole + 1, sheet['revision_id'])
+            nodes = self.db.nodes_on_page(sheet['physical_page'])
+            if nodes:
+                names = ', '.join(n['name'] or f"Nod {n['id']}" for n in nodes)
+                item.setToolTip(f"Noder på detta blad: {names}")
+            self._sheet_list.addItem(item)
+
+    def _on_sheets_reordered(self, *_):
+        ids = [self._sheet_list.item(i).data(Qt.ItemDataRole.UserRole)
+               for i in range(self._sheet_list.count())]
+        self.db.reorder_sheets(ids)
+        self.refresh_sheets()
+
+    def _rename_sheet(self):
+        item = self._sheet_list.currentItem()
+        if not item:
+            return
+        sheet_id = item.data(Qt.ItemDataRole.UserRole)
+        current_name = ''
+        for s in self.db.get_sheets():
+            if s['id'] == sheet_id:
+                current_name = s['sheet_name']
+                break
+        name, ok = QInputDialog.getText(self, "Byt namn", "Bladnamn:", text=current_name)
+        if ok and name.strip():
+            self.db.update_sheet_name(sheet_id, name.strip())
+            self.refresh_sheets()
+
+    def _delete_sheets(self):
+        selected = self._sheet_list.selectedItems()
+        if not selected:
+            return
+        ids = [item.data(Qt.ItemDataRole.UserRole) for item in selected]
+
+        all_sheets = {s['id']: s for s in self.db.get_sheets()}
+        pages_info = [(ids[i], all_sheets[ids[i]]['physical_page'],
+                       all_sheets[ids[i]]['sheet_name'])
+                      for i in range(len(ids)) if ids[i] in all_sheets]
+        physical_pages = [p for _, p, _ in pages_info]
+
+        objects = self.db.objects_on_pages(physical_pages)
+        affected_lines = []
+        for sheet_id, phys, name in pages_info:
+            obj = objects.get(phys, {})
+            parts = []
+            if obj.get('markups'):
+                parts.append(f"{obj['markups']} nodmarkering{'ar' if obj['markups'] != 1 else ''}")
+            if obj.get('causes'):
+                parts.append(f"{obj['causes']} orsak{'er' if obj['causes'] != 1 else ''}")
+            if obj.get('consequences'):
+                parts.append(f"{obj['consequences']} konsekvens{'er' if obj['consequences'] != 1 else ''}")
+            if obj.get('safeguards'):
+                parts.append(f"{obj['safeguards']} safeguard{'s' if obj['safeguards'] != 1 else ''}")
+            if parts:
+                affected_lines.append(f"• {name}: {', '.join(parts)}")
+
+        if affected_lines:
+            detail = "\n".join(affected_lines)
+            box = QMessageBox(self)
+            box.setWindowTitle("Ta bort blad")
+            box.setIcon(QMessageBox.Icon.Warning)
+            count = len(selected)
+            box.setText(
+                f"{'Dessa blad innehåller' if count > 1 else 'Detta blad innehåller'} "
+                f"HAZOP-objekt som kommer tas bort:")
+            box.setInformativeText(detail)
+            box.setStandardButtons(
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            box.setDefaultButton(QMessageBox.StandardButton.No)
+            box.button(QMessageBox.StandardButton.Yes).setText("Ta bort ändå")
+            box.button(QMessageBox.StandardButton.No).setText("Avbryt")
+            if box.exec() != QMessageBox.StandardButton.Yes:
+                return
+        else:
+            count = len(selected)
+            msg = (f"Ta bort {count} blad?" if count > 1
+                   else f"Ta bort '{all_sheets[ids[0]]['sheet_name']}'?")
+            ans = QMessageBox.question(self, "Ta bort blad", msg,
+                                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+
+        self.db.delete_objects_on_pages(physical_pages)
+        self.db.delete_sheets(ids)
+        self.refresh_sheets()
+        self.sheets_changed.emit()
+
+    def _sheet_context_menu(self, pos):
+        selected = self._sheet_list.selectedItems()
+        if not selected:
+            return
+        menu = QMenu(self)
+        if len(selected) == 1:
+            menu.addAction(_icon('edit'), "Byt namn", self._rename_sheet)
+        menu.addAction(_icon('delete'), "Ta bort", self._delete_sheets)
+        menu.exec(self._sheet_list.viewport().mapToGlobal(pos))
+
+    def _on_sheet_selection_changed(self, current, previous):
+        self._sheet_rev_combo.blockSignals(True)
+        if current is None:
+            self._sheet_rev_combo.setCurrentIndex(0)
+        else:
+            rev_id = current.data(Qt.ItemDataRole.UserRole + 1)
+            idx = self._sheet_rev_combo.findData(rev_id)
+            self._sheet_rev_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._sheet_rev_combo.blockSignals(False)
+
+    def _on_sheet_revision_changed(self, _index):
+        item = self._sheet_list.currentItem()
+        if item is None:
+            return
+        sheet_id = item.data(Qt.ItemDataRole.UserRole)
+        rev_id = self._sheet_rev_combo.currentData()
+        self.db.set_sheet_revision(sheet_id, rev_id)
+        item.setData(Qt.ItemDataRole.UserRole + 1, rev_id)
+
+    # ── Noder (2026-08-17, see NOTES.md "Ny Noder-flik") ─────────────────────
+    def refresh_nodes(self):
+        sheets_by_page = {s['physical_page']: s['sheet_name'] for s in self.db.get_sheets()}
+        nodes = self.db.nodes()
+        self._nodes_table.setRowCount(len(nodes))
+        for row, node in enumerate(nodes):
+            self._nodes_table.setItem(row, 0, QTableWidgetItem(str(node['id'])))
+            name_item = QTableWidgetItem(node['name'] or f"Nod {node['id']}")
+            name_item.setData(Qt.ItemDataRole.UserRole, node['id'])
+            self._nodes_table.setItem(row, 1, name_item)
+            pages = self.db.pages_for_node(node['id'])
+            sheet_names = [sheets_by_page.get(p, f"sida {p + 1}") for p in pages]
+            self._nodes_table.setItem(row, 2, QTableWidgetItem(', '.join(sheet_names)))
+
+    def _add_node_from_noder_tab(self):
+        self.db.add_node()
+        self.refresh_nodes()
+        self.structure_changed.emit()
+
+    def _on_nodes_table_double_clicked(self, row, col):
+        if col != 1:
+            return
+        item = self._nodes_table.item(row, 1)
+        if item is None:
+            return
+        node_id = item.data(Qt.ItemDataRole.UserRole)
+        node = self.db.get_node(node_id)
+        if not node:
+            return
+        name, ok = QInputDialog.getText(self, "Döp om nod", "Nytt namn:",
+                                         text=node['name'] or '')
+        if not ok or not name.strip():
+            return
+        self.db.update_node(node_id, name.strip(), node.get('description') or '',
+                             node.get('pid_ref') or '', node.get('media') or '',
+                             node.get('pressure') or '', node.get('temperature') or '')
+        self.refresh_nodes()
+        self.structure_changed.emit()
 
     def _next_revision_letter(self):
         n = len(self.db.project_revisions())
@@ -18551,42 +18831,11 @@ class PIDManagementPanel(QWidget):
         rev_layout.addWidget(self._rev_table)
         tabs.addTab(rev_widget, "Revisioner")
 
-        # ── Tab 1: Sheet management ───────────────────────────────────────────
-        sheets_widget = QWidget()
-        sheets_layout = QVBoxLayout(sheets_widget)
-        sheets_layout.setContentsMargins(8, 8, 8, 8)
-        sheets_layout.setSpacing(6)
-
-        sheet_hdr = QHBoxLayout()
-        sheet_hdr.addWidget(QLabel("Bladordning — dra för att ändra ordning:"))
-        sheet_hdr.addStretch()
-        rename_btn = QPushButton("Byt namn")
-        rename_btn.setIcon(_icon('edit'))
-        rename_btn.clicked.connect(self._rename_sheet)
-        sheet_hdr.addWidget(rename_btn)
-        delete_btn = QPushButton("Ta bort")
-        delete_btn.setIcon(_icon('delete'))
-        delete_btn.clicked.connect(self._delete_sheets)
-        sheet_hdr.addWidget(delete_btn)
-        sheets_layout.addLayout(sheet_hdr)
-
-        self._sheet_list = QListWidget()
-        self._sheet_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
-        self._sheet_list.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self._sheet_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
-        self._sheet_list.model().rowsMoved.connect(self._on_sheets_reordered)
-        self._sheet_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._sheet_list.customContextMenuRequested.connect(self._sheet_context_menu)
-        _base_kp = self._sheet_list.keyPressEvent
-        def _sheet_key_press(event, _base=_base_kp):
-            if event.key() == Qt.Key.Key_Delete:
-                self._delete_sheets()
-            else:
-                _base(event)
-        self._sheet_list.keyPressEvent = _sheet_key_press
-        sheets_layout.addWidget(self._sheet_list)
-        tabs.addTab(sheets_widget, "Blad")
-
+        # "Blad" (sheet ordering/rename/delete) moved out to
+        # HAZOPPreparationPanel (2026-08-17, see NOTES.md) — this panel now
+        # only manages revision history. sheets_changed is still emitted
+        # from here by _clear_all_pid (which also wipes sheets), so the
+        # moved Blad list can still react to a full-clear from this tab.
         self.refresh()
 
     def refresh(self):
@@ -18600,96 +18849,6 @@ class PIDManagementPanel(QWidget):
             fname = Path(rev['pdf_path']).name if rev['pdf_path'] else ''
             self._rev_table.setItem(r, 3, QTableWidgetItem(fname))
             self._rev_table.setRowHeight(r, 24)
-
-        self._sheet_list.clear()
-        for sheet in self.db.get_sheets():
-            item = QListWidgetItem(
-                f"{sheet['display_order'] + 1}. {sheet['sheet_name']}  "
-                f"(PDF-sida {sheet['physical_page'] + 1})")
-            item.setData(Qt.ItemDataRole.UserRole, sheet['id'])
-            self._sheet_list.addItem(item)
-
-    def _on_sheets_reordered(self, *_):
-        ids = [self._sheet_list.item(i).data(Qt.ItemDataRole.UserRole)
-               for i in range(self._sheet_list.count())]
-        self.db.reorder_sheets(ids)
-        self.refresh()
-
-    def _rename_sheet(self):
-        item = self._sheet_list.currentItem()
-        if not item:
-            return
-        sheet_id = item.data(Qt.ItemDataRole.UserRole)
-        current_name = ''
-        for s in self.db.get_sheets():
-            if s['id'] == sheet_id:
-                current_name = s['sheet_name']
-                break
-        name, ok = QInputDialog.getText(self, "Byt namn", "Bladnamn:", text=current_name)
-        if ok and name.strip():
-            self.db.update_sheet_name(sheet_id, name.strip())
-            self.refresh()
-
-    def _delete_sheets(self):
-        selected = self._sheet_list.selectedItems()
-        if not selected:
-            return
-        ids = [item.data(Qt.ItemDataRole.UserRole) for item in selected]
-
-        # Resolve sheet IDs → physical pages and names
-        all_sheets = {s['id']: s for s in self.db.get_sheets()}
-        pages_info = [(ids[i], all_sheets[ids[i]]['physical_page'],
-                       all_sheets[ids[i]]['sheet_name'])
-                      for i in range(len(ids)) if ids[i] in all_sheets]
-        physical_pages = [p for _, p, _ in pages_info]
-
-        # Check for HAZOP objects on these pages
-        objects = self.db.objects_on_pages(physical_pages)
-        affected_lines = []
-        for sheet_id, phys, name in pages_info:
-            obj = objects.get(phys, {})
-            parts = []
-            if obj.get('markups'):
-                parts.append(f"{obj['markups']} nodmarkering{'ar' if obj['markups'] != 1 else ''}")
-            if obj.get('causes'):
-                parts.append(f"{obj['causes']} orsak{'er' if obj['causes'] != 1 else ''}")
-            if obj.get('consequences'):
-                parts.append(f"{obj['consequences']} konsekvens{'er' if obj['consequences'] != 1 else ''}")
-            if obj.get('safeguards'):
-                parts.append(f"{obj['safeguards']} safeguard{'s' if obj['safeguards'] != 1 else ''}")
-            if parts:
-                affected_lines.append(f"• {name}: {', '.join(parts)}")
-
-        if affected_lines:
-            detail = "\n".join(affected_lines)
-            box = QMessageBox(self)
-            box.setWindowTitle("Ta bort blad")
-            box.setIcon(QMessageBox.Icon.Warning)
-            count = len(selected)
-            box.setText(
-                f"{'Dessa blad innehåller' if count > 1 else 'Detta blad innehåller'} "
-                f"HAZOP-objekt som kommer tas bort:")
-            box.setInformativeText(detail)
-            box.setStandardButtons(
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-            box.setDefaultButton(QMessageBox.StandardButton.No)
-            box.button(QMessageBox.StandardButton.Yes).setText("Ta bort ändå")
-            box.button(QMessageBox.StandardButton.No).setText("Avbryt")
-            if box.exec() != QMessageBox.StandardButton.Yes:
-                return
-        else:
-            count = len(selected)
-            msg = (f"Ta bort {count} blad?" if count > 1
-                   else f"Ta bort '{all_sheets[ids[0]]['sheet_name']}'?")
-            ans = QMessageBox.question(self, "Ta bort blad", msg,
-                                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-            if ans != QMessageBox.StandardButton.Yes:
-                return
-
-        self.db.delete_objects_on_pages(physical_pages)
-        self.db.delete_sheets(ids)
-        self.refresh()
-        self.sheets_changed.emit()
 
     def _clear_all_pid(self):
         count = len(self.db.get_revisions())
@@ -18714,16 +18873,6 @@ class PIDManagementPanel(QWidget):
         self.db.clear_all_pid_data()
         self.refresh()
         self.sheets_changed.emit()
-
-    def _sheet_context_menu(self, pos):
-        selected = self._sheet_list.selectedItems()
-        if not selected:
-            return
-        menu = QMenu(self)
-        if len(selected) == 1:
-            menu.addAction(_icon('edit'), "Byt namn", self._rename_sheet)
-        menu.addAction(_icon('delete'), "Ta bort", self._delete_sheets)
-        menu.exec(self._sheet_list.viewport().mapToGlobal(pos))
 
 
 class StudyManagementPanel(QWidget):
@@ -20281,6 +20430,9 @@ class MainWindow(QMainWindow):
         # ── Wire signals ──────────────────────────────────────────────────────
         self.tree_panel.item_selected.connect(self._on_selected)
         self.tree_panel.structure_changed.connect(self._on_structure_changed)
+        # Noder tab (HAZOPPreparationPanel, 2026-08-17) must reflect node
+        # add/rename/delete that originated in the tree, not just its own edits.
+        self.tree_panel.structure_changed.connect(self.hazop_prep_panel.refresh_nodes)
         self.tree_panel.visibility_changed.connect(
             lambda t, v: self.pid_panel.viewer.set_marker_visibility(t, v))
 
@@ -20466,6 +20618,13 @@ class MainWindow(QMainWindow):
         self.pid_panel.equipment_deviation_created.connect(self._on_equipment_deviation_created)
         self.pid_panel.pid_analysis_done.connect(self._on_pid_analysis_done)
         self.admin_panel._pid_mgmt.sheets_changed.connect(self._on_sheets_changed)
+        # Blad moved to HAZOPPreparationPanel (2026-08-17, see NOTES.md) — it
+        # needs its own sheets_changed wired to the same reload, AND to
+        # refresh when "Rensa samtliga P&ID" (still in Revisioner) wipes
+        # sheets out from under it.
+        self.hazop_prep_panel.sheets_changed.connect(self._on_sheets_changed)
+        self.admin_panel._pid_mgmt.sheets_changed.connect(self.hazop_prep_panel.refresh_sheets)
+        self.hazop_prep_panel.structure_changed.connect(self._on_hazop_prep_structure_changed)
 
         self._cur_type = None
         self._cur_id   = None
@@ -20607,6 +20766,13 @@ class MainWindow(QMainWindow):
     def _on_sheets_changed(self):
         """Reload the study board after sheets are added or deleted."""
         self.pid_panel.try_reload_pdf()
+
+    def _on_hazop_prep_structure_changed(self):
+        """A node was added/renamed from HAZOPPreparationPanel's Noder tab
+        (2026-08-17) — the tree doesn't know about it on its own since the
+        edit didn't originate there, unlike TreePanel's own structure_changed."""
+        self.tree_panel.refresh()
+        self._on_structure_changed()
 
     def _on_pid_analysis_done(self):
         """Switch to Settings → Identifierade objekt after P&ID analysis,

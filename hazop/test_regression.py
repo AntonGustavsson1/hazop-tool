@@ -1599,6 +1599,153 @@ class StandardCausesNodeTypeTests(unittest.TestCase):
             panel.deleteLater()
 
 
+class HAZOPPreparationBladNoderTests(unittest.TestCase):
+    """Fas C (2026-08-17, see NOTES.md "Blad flyttas till HAZOP preparation
+    + ny Noder-flik"): "Blad" moved from Studiehantering → PID-hantering
+    into HAZOPPreparationPanel, sheet names now come from the PDF filename,
+    P&ID-revision is settable per blad, and a new "Noder" tab mirrors the
+    HAZOP tree both ways."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_blad_noder_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_blad_tab_lives_in_hazop_preparation_not_pid_management(self):
+        from hazop import HAZOPPreparationPanel, PIDManagementPanel
+        prep = HAZOPPreparationPanel(self.db)
+        mgmt = PIDManagementPanel(self.db)
+        try:
+            prep_titles = [prep._tabs.tabText(i) for i in range(prep._tabs.count())]
+            self.assertIn("Blad", prep_titles)
+            self.assertTrue(hasattr(prep, '_sheet_list'))
+            self.assertFalse(hasattr(mgmt, '_sheet_list'),
+                              "Blad's sheet list must no longer live on PIDManagementPanel")
+        finally:
+            prep.deleteLater(); mgmt.deleteLater()
+
+    def test_sheet_name_derived_from_pdf_filename(self):
+        self.db.ensure_sheets_initialized(2, '/some/path/Process P&ID Rev A.pdf')
+        sheets = self.db.get_sheets()
+        self.assertEqual(sheets[0]['sheet_name'], 'Process P&ID Rev A – sida 1')
+        self.assertEqual(sheets[1]['sheet_name'], 'Process P&ID Rev A – sida 2')
+
+    def test_sheet_name_falls_back_to_generic_when_no_path_given(self):
+        self.db.ensure_sheets_initialized(1)
+        self.assertEqual(self.db.get_sheets()[0]['sheet_name'], 'Blad 1')
+
+    def test_appended_sheets_also_use_filename_format(self):
+        from pid_viewer import PIDPanel
+        panel = PIDPanel(self.db)
+        try:
+            self.db.ensure_sheets_initialized(1, '/x/Original.pdf')
+            rev_id = self.db.add_revision('B', '', '/x/Merged File.pdf', '2026-08-17')
+            self.db.append_sheets([1, 2], ['Merged File – sida 2', 'Merged File – sida 3'], rev_id)
+            names = [s['sheet_name'] for s in self.db.get_sheets()]
+            self.assertIn('Merged File – sida 2', names)
+            self.assertIn('Merged File – sida 3', names)
+        finally:
+            panel.deleteLater()
+
+    def test_set_sheet_revision_round_trips(self):
+        self.db.ensure_sheets_initialized(1, '/x/Fil.pdf')
+        sheet_id = self.db.get_sheets()[0]['id']
+        rev_id = self.db.add_revision('A', 'notes', '/x/Fil.pdf', '2026-08-17')
+        self.db.set_sheet_revision(sheet_id, rev_id)
+        self.assertEqual(self.db.get_sheets()[0]['revision_id'], rev_id)
+
+    def test_sheet_revision_combo_reflects_selection_and_writes_on_change(self):
+        from hazop import HAZOPPreparationPanel
+        self.db.ensure_sheets_initialized(2, '/x/Fil.pdf')
+        rev_id = self.db.add_revision('A', '', '/x/Fil.pdf', '2026-08-17')
+        panel = HAZOPPreparationPanel(self.db)
+        try:
+            panel._sheet_list.setCurrentRow(0)
+            idx = panel._sheet_rev_combo.findData(rev_id)
+            panel._sheet_rev_combo.setCurrentIndex(idx)
+            sheet_id = panel._sheet_list.item(0).data(Qt.ItemDataRole.UserRole)
+            self.assertEqual(
+                next(s for s in self.db.get_sheets() if s['id'] == sheet_id)['revision_id'],
+                rev_id)
+        finally:
+            panel.deleteLater()
+
+    def test_nodes_on_page_finds_nodes_via_own_pid_page_and_via_markup(self):
+        node_a = self.db.add_node()
+        self.db.conn.execute("UPDATE nodes SET pid_page=0 WHERE id=?", (node_a,))
+        node_b = self.db.add_node()
+        self.db.add_node_markup(node_b, 'polygon', [[0, 0], [1, 1]], '', '#000', 0.5, 4, 0)
+        self.db.commit()
+        found_ids = {n['id'] for n in self.db.nodes_on_page(0)}
+        self.assertIn(node_a, found_ids)
+        self.assertIn(node_b, found_ids)
+
+    def test_noder_tab_lists_all_nodes_with_sheet_names(self):
+        from hazop import HAZOPPreparationPanel
+        self.db.ensure_sheets_initialized(1, '/x/MinFil.pdf')
+        node_id = self.db.add_node()
+        self.db.conn.execute("UPDATE nodes SET pid_page=0, name=? WHERE id=?",
+                              ('Nod Alpha', node_id))
+        self.db.commit()
+        panel = HAZOPPreparationPanel(self.db)
+        try:
+            panel.refresh_nodes()
+            rows = {panel._nodes_table.item(r, 1).text(): panel._nodes_table.item(r, 2).text()
+                    for r in range(panel._nodes_table.rowCount())}
+            self.assertIn('Nod Alpha', rows)
+            self.assertIn('MinFil – sida 1', rows['Nod Alpha'])
+        finally:
+            panel.deleteLater()
+
+    def test_add_node_from_noder_tab_emits_structure_changed_and_syncs_to_tree(self):
+        with _TempDbMainWindow() as win:
+            before = len(win.db.nodes())
+            win.hazop_prep_panel._add_node_from_noder_tab()
+            self.assertEqual(len(win.db.nodes()), before + 1)
+            # structure_changed -> MainWindow._on_hazop_prep_structure_changed -> tree_panel.refresh()
+            new_id = win.db.nodes()[-1]['id']
+            item = _find_tree_item(win.tree_panel.tree, NODE_T, new_id)
+            self.assertIsNotNone(item, "a node added from the Noder tab must appear in the tree")
+
+    def test_renaming_node_from_noder_tab_syncs_to_tree(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            win.tree_panel.refresh()
+            win.hazop_prep_panel.refresh_nodes()
+            row = next(r for r in range(win.hazop_prep_panel._nodes_table.rowCount())
+                       if win.hazop_prep_panel._nodes_table.item(r, 1).data(
+                           Qt.ItemDataRole.UserRole) == node_id)
+            with unittest.mock.patch.object(
+                    QInputDialog, 'getText', return_value=("Nytt namn", True)):
+                win.hazop_prep_panel._on_nodes_table_double_clicked(row, 1)
+            self.assertEqual(win.db.get_node(node_id)['name'], "Nytt namn")
+            item = _find_tree_item(win.tree_panel.tree, NODE_T, node_id)
+            self.assertIsNotNone(item)
+            self.assertIn("Nytt namn", item.text(0))
+
+    def test_renaming_node_from_tree_syncs_to_noder_tab(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            win.tree_panel.refresh()
+            with unittest.mock.patch.object(
+                    QInputDialog, 'getText', return_value=("Från trädet", True)):
+                win.tree_panel._rename_node(node_id)
+            win.hazop_prep_panel.refresh_nodes()
+            names = [win.hazop_prep_panel._nodes_table.item(r, 1).text()
+                     for r in range(win.hazop_prep_panel._nodes_table.rowCount())]
+            self.assertIn("Från trädet", names)
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 4. ConnectorAnalyzer thread-hang regression (bug #5)
 # ══════════════════════════════════════════════════════════════════════════
