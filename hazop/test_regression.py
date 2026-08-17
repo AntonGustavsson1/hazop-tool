@@ -16110,6 +16110,121 @@ class NodeMarkupDockingTests(unittest.TestCase):
             self.assertFalse(win.props_ribbon.isHidden())
 
 
+class RedMarkupConsolidationTests(unittest.TestCase):
+    """Fas F del 2 (2026-08-17, see NOTES.md "Red markup konsolideras") —
+    "Skrota allt utom 'Välj P&ID-symbol', flytta in i nodmarkup-panelen."
+    RedMarkupPanel keeps only Välj/flytta (needed to select an
+    already-placed symbol for size/rotation editing) + Lägg ut
+    P&ID-symbol; NodeMarkupPanel gets a new button that's the sole entry
+    point now (the tree's own "Editera redmarkup" context-menu action is
+    gone). The two edit-mode state machines stay technically separate —
+    placing a symbol briefly switches into red-markup mode and back."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_redmarkup_consolidation_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_red_markup_panel_only_has_select_and_symbol_tools(self):
+        from hazop import RedMarkupPanel
+        panel = RedMarkupPanel(self.db)
+        try:
+            self.assertEqual(set(panel._tool_btns.keys()), {'select', 'symbol'})
+            self.assertFalse(hasattr(panel, '_all_vis_btn'))
+            self.assertFalse(hasattr(panel, '_color_strip'))
+        finally:
+            panel.deleteLater()
+
+    def test_tree_context_menu_no_longer_offers_editera_redmarkup(self):
+        db = self.db
+        panel = TreePanel(db)
+        try:
+            node_id = db.add_node()
+            panel.refresh()
+            item = _find_tree_item(panel.tree, NODE_T, node_id)
+            self.assertIsNotNone(item)
+            with unittest.mock.patch.object(panel.tree, 'itemAt', return_value=item), \
+                 unittest.mock.patch('hazop.QMenu') as mock_menu_cls:
+                mock_menu = mock_menu_cls.return_value
+                panel._context_menu(QPoint(0, 0))
+                all_str_args = [a for call in mock_menu.addAction.call_args_list
+                                 for a in list(call.args) + list(call.kwargs.values())
+                                 if isinstance(a, str)]
+                self.assertFalse(any('redmarkup' in s.lower() for s in all_str_args),
+                    "the standalone 'Editera redmarkup' menu entry must be gone")
+                self.assertTrue(any('nodmarkup' in s.lower() for s in all_str_args),
+                    "sanity: 'Editera nodmarkup' must still be offered")
+        finally:
+            panel.deleteLater()
+
+    def test_node_markup_panel_has_place_symbol_button(self):
+        from hazop import NodeMarkupPanel
+        panel = NodeMarkupPanel(self.db)
+        try:
+            seen = []
+            panel.place_symbol_requested.connect(lambda: seen.append(True))
+            panel._place_symbol_btn.click()
+            self.assertEqual(seen, [True])
+        finally:
+            panel.deleteLater()
+
+    def test_place_symbol_switches_to_red_markup_and_opens_picker(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            win._on_edit_node_markup(node_id)
+            try:
+                with unittest.mock.patch.object(
+                        win.red_markup_panel, 'open_symbol_picker') as mock_open:
+                    win._on_place_symbol_requested()
+                    mock_open.assert_called_once()
+                self.assertFalse(win.red_markup_panel.isHidden())
+                self.assertTrue(win.node_markup_panel.isHidden())
+                self.assertEqual(win._return_to_node_markup_node_id, node_id)
+            finally:
+                win._on_close_red_markup()
+
+    def test_closing_red_markup_returns_to_node_markup_for_same_node(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            win._on_edit_node_markup(node_id)
+            win._on_place_symbol_requested()
+
+            win._on_close_red_markup()
+
+            self.assertIsNone(win._return_to_node_markup_node_id)
+            self.assertFalse(win.node_markup_panel.isHidden())
+            self.assertTrue(win.red_markup_panel.isHidden())
+            self.assertEqual(win.node_markup_panel.node_id, node_id)
+            win._on_close_node_markup()
+
+    def test_closing_red_markup_without_place_symbol_flow_goes_to_welcome(self):
+        """If red-markup mode were ever entered WITHOUT going through
+        _on_place_symbol_requested (defensive — no such path exists
+        anymore, but _on_close_red_markup must still degrade safely),
+        closing it must fall back to the normal closed state instead of
+        crashing on a stale/missing return target."""
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            win._on_edit_red_markup(node_id)
+            self.assertIsNone(win._return_to_node_markup_node_id)
+
+            win._on_close_red_markup()
+
+            self.assertFalse(win.tree_panel.isHidden())
+            self.assertFalse(win.scenario_panel.isHidden())
+            self.assertTrue(win.red_markup_panel.isHidden())
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # Adaptive re-rasterization on zoom (2026-08-12) — "P&ID blir suddig vid
 # inzoomning". PIDGraphicsView's hi-res tier used to always render at a

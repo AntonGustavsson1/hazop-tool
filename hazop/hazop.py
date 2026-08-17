@@ -6412,6 +6412,11 @@ class NodeMarkupPanel(QWidget):
     snap_changed    = pyqtSignal(bool)
     navigate_node_requested = pyqtSignal(int)  # node_id
     bottom_panel_toggled = pyqtSignal(bool)   # True = show HAZOP scenario, False = Nodmarkeringar
+    # "Lägg ut P&ID-symbol" moved in from Red markup (2026-08-17, see
+    # NOTES.md "Red markup konsolideras") — MainWindow briefly switches
+    # into the (separate, trimmed-down) red-markup edit mode to place the
+    # symbol, then returns here automatically.
+    place_symbol_requested = pyqtSignal()
 
     _TOOLS = [
         ('select',   'select',   'Välj/flytta'),
@@ -6505,6 +6510,25 @@ class NodeMarkupPanel(QWidget):
             btn.clicked.connect(lambda _, t=tool, b=btn: self._on_tool(t, b))
             outer.addWidget(btn)
             self._tool_btns[tool] = btn
+
+        # ── Lägg ut P&ID-symbol (moved in from Red markup, 2026-08-17) ─────────
+        symbol_pm = QPixmap(ISZ, ISZ)
+        symbol_pm.fill(Qt.GlobalColor.transparent)
+        _p = QPainter(symbol_pm)
+        _p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        _p.setPen(QPen(QColor("#CC0000"), 3))
+        _p.drawText(QRect(0, 0, ISZ, ISZ), Qt.AlignmentFlag.AlignCenter, "⚙")
+        _p.end()
+        symbol_icon = QIcon()
+        symbol_icon.addPixmap(symbol_pm, QIcon.Mode.Normal)
+        self._place_symbol_btn = QPushButton()
+        self._place_symbol_btn.setFixedSize(SZ, SZ)
+        self._place_symbol_btn.setToolTip("Lägg ut P&ID-symbol")
+        self._place_symbol_btn.setIcon(symbol_icon)
+        self._place_symbol_btn.setIconSize(QSize(ISZ, ISZ))
+        self._place_symbol_btn.setStyleSheet(_btn_ss)
+        self._place_symbol_btn.clicked.connect(self.place_symbol_requested.emit)
+        outer.addWidget(self._place_symbol_btn)
 
         sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
         sep2.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
@@ -7008,36 +7032,35 @@ class _SymbolSelectorPopup(QFrame):
 
 
 class RedMarkupPanel(QWidget):
-    """Narrow vertical ribbon for red markup tool selection (P&ID symbols + shapes)."""
+    """Narrow vertical ribbon for red markup — trimmed 2026-08-17 (see
+    NOTES.md "Red markup konsolideras") to just Välj/flytta (needed to
+    select an already-placed symbol for size/rotation editing) and Lägg
+    ut P&ID-symbol; every other drawing tool (polygon/polyline/smart/
+    comment), the color/opacity/width popup, and the show/hide-all toggle
+    are gone per explicit request ("skrota allt utom 'Välj P&ID-symbol'").
+    This panel is no longer reachable from the tree's own context menu —
+    NodeMarkupPanel's own "Lägg ut P&ID-symbol" button is the sole entry
+    point now (see MainWindow._on_place_symbol_requested), which is why
+    the two edit-mode state machines stayed technically separate rather
+    than being merged: lower regression risk for the heavily-tested P&ID
+    drawing code, at the cost of a brief "you're now in a different mode"
+    transition under the hood that the user never has to think about."""
     closed          = pyqtSignal()
     tool_changed    = pyqtSignal(str)
     symbol_selected = pyqtSignal(str)   # symbol_id
-    all_vis_toggled = pyqtSignal(bool)
-    style_changed   = pyqtSignal(str, float, int)   # color, opacity, line_width
-    snap_changed    = pyqtSignal(bool)
     symbol_dims_changed = pyqtSignal(float, float, float)  # w, h, rot
 
     _TOOLS = [
-        ('select',   'select',   'Välj/flytta'),
-        ('polygon',  'polygon',  'Rita polygon'),
-        ('polyline', 'polyline', 'Rita polylinje'),
-        ('smart',    'smart',    'Smart polylinje'),
-        ('comment',  'comment',  'Lägg till kommentar'),
-        ('symbol',   'symbol',   'Lägg ut P&ID-symbol'),
+        ('select', 'select', 'Välj/flytta'),
+        ('symbol', 'symbol', 'Lägg ut P&ID-symbol'),
     ]
 
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
         self.db            = db
         self.node_id       = None
-        self._color        = '#CC0000'
-        self._opacity      = 1.0
-        self._width        = 4
-        self._font_size    = 16
-        self._snap         = True
         self._current_tool = 'select'
         self._selected_symbol_id = None
-        self._popup        = None
         self._sym_popup    = None
 
         SZ = 48
@@ -7099,39 +7122,6 @@ class RedMarkupPanel(QWidget):
             outer.addWidget(btn)
             self._tool_btns[tool] = btn
 
-        sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
-        sep2.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
-        outer.addWidget(sep2)
-
-        self._color_strip = QLabel()
-        self._color_strip.setFixedHeight(CONFIG['H_COLOR_STRIP'])
-        self._color_strip.setStyleSheet(
-            f"background:{self._color};border-radius:3px;border:none;")
-        outer.addWidget(self._color_strip)
-
-        sep3 = QFrame(); sep3.setFrameShape(QFrame.Shape.HLine)
-        sep3.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
-        outer.addWidget(sep3)
-
-        self._all_vis_btn = QPushButton()
-        self._all_vis_btn.setFixedSize(SZ, SZ)
-        self._all_vis_btn.setCheckable(True)
-        self._all_vis_btn.setChecked(True)
-        self._all_vis_btn.setToolTip("Dölj/visa alla redmarkeringar")
-        eye_icon = QIcon()
-        eye_icon.addPixmap(_mk_pm('eye', ISZ, QColor("#ffffff")),
-                           QIcon.Mode.Normal, QIcon.State.Off)
-        eye_icon.addPixmap(_mk_pm('eye', ISZ, QColor("#ffffff")),
-                           QIcon.Mode.Normal, QIcon.State.On)
-        self._all_vis_btn.setIcon(eye_icon)
-        self._all_vis_btn.setIconSize(QSize(ISZ, ISZ))
-        self._all_vis_btn.setStyleSheet(
-            "QPushButton{border:none;border-radius:5px;padding:0px;"
-            "background:#27AE60;}"
-            "QPushButton:!checked{background:#E74C3C;}")
-        self._all_vis_btn.clicked.connect(self._on_all_vis)
-        outer.addWidget(self._all_vis_btn)
-
         outer.addStretch()
         self._on_tool('select')
 
@@ -7139,11 +7129,12 @@ class RedMarkupPanel(QWidget):
 
     def load(self, node_id):
         self.node_id = node_id
-        self._all_vis_btn.setChecked(True)
         self._on_tool('select')
 
     def get_current_style(self):
-        return self._color, self._opacity, self._width, self._font_size
+        # Select/symbol don't use a drawn-shape color/opacity/width — fixed
+        # defaults kept only because callers still unpack this 4-tuple.
+        return '#CC0000', 1.0, 4, 16
 
     def get_selected_symbol(self):
         return self._selected_symbol_id
@@ -7151,6 +7142,12 @@ class RedMarkupPanel(QWidget):
     def get_symbol_dims(self):
         """Returns (w, h, rot) for the currently selected symbol."""
         return 40.0, 40.0, 0.0
+
+    def open_symbol_picker(self):
+        """Entry point for NodeMarkupPanel's "Lägg ut P&ID-symbol" button
+        (2026-08-17) — opens the same picker a click on this panel's own
+        symbol button would, without requiring that extra click."""
+        self._on_tool('symbol', self._tool_btns['symbol'])
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
@@ -7164,45 +7161,12 @@ class RedMarkupPanel(QWidget):
                 self._sym_popup.symbol_selected.connect(self._on_symbol_selected)
             self._sym_popup.show_near(btn)
             return
-        elif tool != 'select' and btn is not None:
-            self._show_tool_popup(tool, btn)
         self.tool_changed.emit(tool)
 
     def _on_symbol_selected(self, symbol_id):
         self._selected_symbol_id = symbol_id
         self.symbol_selected.emit(symbol_id)
         self.tool_changed.emit('symbol')
-
-    def _show_tool_popup(self, tool, btn):
-        if self._popup is None:
-            self._popup = _StylePopup(self)
-        self._popup.show_for(tool, btn)
-
-    def _on_all_vis(self, checked):
-        if self.node_id is None:
-            return
-        self.db.set_all_node_red_markups_visible(self.node_id, checked)
-        self.all_vis_toggled.emit(checked)
-
-    def _apply_color(self, hex_c):
-        self._color = hex_c
-        self._color_strip.setStyleSheet(f"background:{hex_c};border-radius:3px;")
-        self.style_changed.emit(self._color, self._opacity, self._width)
-
-    def _apply_opacity(self, val):
-        self._opacity = val / 100.0
-        self.style_changed.emit(self._color, self._opacity, self._width)
-
-    def _apply_width(self, val):
-        self._width = val
-        self.style_changed.emit(self._color, self._opacity, self._width)
-
-    def _apply_font(self, val):
-        self._font_size = val
-
-    def _apply_snap(self, enabled):
-        self._snap = enabled
-        self.snap_changed.emit(enabled)
 
 
 class RedMarkupTablePanel(QWidget):
@@ -7494,7 +7458,6 @@ class _PickDeviationDialog(QDialog):
 class TreePanel(QWidget):
     item_selected               = pyqtSignal(int, int)
     edit_node_markup_requested        = pyqtSignal(int)        # node_id
-    edit_red_markup_requested         = pyqtSignal(int)        # node_id
     node_markup_vis_requested         = pyqtSignal(int, bool)  # node_id, visible
     node_jump_to_markup               = pyqtSignal(int)         # node_id
     structure_changed           = pyqtSignal()
@@ -8232,8 +8195,6 @@ class TreePanel(QWidget):
             menu.addAction("+ Lägg till avvikelse", self.add_deviation)
             menu.addAction(_icon('edit'), "Editera nodmarkup",
                            lambda i=id_: self.edit_node_markup_requested.emit(i))
-            menu.addAction("🔴 Editera redmarkup",
-                           lambda i=id_: self.edit_red_markup_requested.emit(i))
             if self.db.has_node_markups(id_):
                 is_vis = self.db.has_visible_node_markups(id_)
                 if is_vis:
@@ -20645,7 +20606,6 @@ class MainWindow(QMainWindow):
         self.tree_panel.equipment_dropped_on_deviation.connect(
             self._on_equipment_dropped_on_deviation)
         self.tree_panel.edit_node_markup_requested.connect(self._on_edit_node_markup)
-        self.tree_panel.edit_red_markup_requested.connect(self._on_edit_red_markup)
         self.tree_panel.node_markup_vis_requested.connect(self._on_node_markup_vis)
         self.tree_panel.node_jump_to_markup.connect(self._on_jump_to_node_markup)
 
@@ -20663,6 +20623,8 @@ class MainWindow(QMainWindow):
             self.pid_panel.viewer.set_snap)
         self.node_markup_panel.navigate_node_requested.connect(self._on_edit_node_markup)
         self.node_markup_panel.bottom_panel_toggled.connect(self._on_toggle_bottom_panel)
+        self.node_markup_panel.place_symbol_requested.connect(self._on_place_symbol_requested)
+        self._return_to_node_markup_node_id = None
         # Red markup ribbon signals
         self.red_markup_panel.closed.connect(self._on_close_red_markup)
         self.red_markup_panel.tool_changed.connect(
@@ -20673,13 +20635,6 @@ class MainWindow(QMainWindow):
             lambda sid: self.pid_panel.set_red_markup_tool(
                 'symbol', *self.red_markup_panel.get_current_style()[:3],
                 symbol_id=sid))
-        self.red_markup_panel.all_vis_toggled.connect(
-            lambda _: self.pid_panel.refresh_red_markup_overlays())
-        self.red_markup_panel.style_changed.connect(
-            lambda color, opacity, width: self.pid_panel.viewer.set_pen_style(
-                color, width, int(opacity * 210)))
-        self.red_markup_panel.snap_changed.connect(
-            self.pid_panel.viewer.set_snap)
         # Markup table panel signals
         self.markup_table_panel.item_deleted.connect(
             lambda _: self.pid_panel.refresh_markup_overlays())
@@ -21264,30 +21219,60 @@ class MainWindow(QMainWindow):
         self._markup_undo_stack.clear()
         self._undo_shortcut.setEnabled(False)
 
+    def _on_place_symbol_requested(self):
+        """NodeMarkupPanel's "Lägg ut P&ID-symbol" button (2026-08-17, see
+        NOTES.md "Red markup konsolideras") — the two edit modes stay
+        technically separate under the hood (lower regression risk in the
+        heavily-tested P&ID drawing code than merging their state
+        machines), but the user experience is a single, continuous flow:
+        briefly switch into red-markup mode to place the symbol, then
+        _on_close_red_markup returns to node markup editing automatically."""
+        node_id = self.node_markup_panel.node_id
+        if node_id is None:
+            return
+        self._return_to_node_markup_node_id = node_id
+        self._on_edit_red_markup(node_id)
+        self.red_markup_panel.open_symbol_picker()
+
     def _on_edit_red_markup(self, node_id):
-        """Tree right-click NODE → 'Editera redmarkup'."""
+        """Enter red-markup edit mode — 2026-08-17: only reachable via
+        _on_place_symbol_requested now (the tree's own "Editera redmarkup"
+        context-menu entry was removed, see NOTES.md "Red markup
+        konsolideras"). tree_panel/props_ribbon stay visible, matching
+        node markup's own docking fix — this mode is always a brief detour
+        FROM node markup editing now, so hiding and reshowing them across
+        the transition would just be visual noise."""
         self._switch_view(1)
         self.red_markup_panel.load(node_id)
         self.red_markup_table_panel.load(node_id)
-        self.tree_panel.setVisible(False)
-        self.props_ribbon.setVisible(False)
+        self.node_markup_panel.setVisible(False)
         self.red_markup_panel.setVisible(True)
+        self.markup_table_panel.setVisible(False)
         self.scenario_panel.setVisible(False)
         self.red_markup_table_panel.setVisible(True)
-        self._h_splitter.setSizes([0, 800, 0, 0, 64])
+        self._h_splitter.setSizes([260, 600, 62, 0, 220])
         self._v_splitter.setSizes([0, 0, 200])
         self._outer_splitter.setSizes([560, 200])
         self.pid_panel.enter_red_markup_edit(node_id)
 
     def _on_close_red_markup(self):
-        """Red markup ribbon close button clicked — leave red markup edit mode."""
+        """Red markup ribbon close button clicked — leave red markup edit
+        mode. 2026-08-17: always returns to node markup editing for the
+        same node now (see _on_place_symbol_requested) rather than closing
+        everything, since the user only ever asked to place a symbol, not
+        to leave node markup editing."""
         self.pid_panel.exit_red_markup_mode()
         self.pid_panel.reload_overlays()
+        self.red_markup_panel.setVisible(False)
+        self.red_markup_table_panel.setVisible(False)
+        return_node_id = self._return_to_node_markup_node_id
+        self._return_to_node_markup_node_id = None
+        if return_node_id is not None:
+            self._on_edit_node_markup(return_node_id)
+            return
         self.tree_panel.setVisible(True)
         self.props_ribbon.setVisible(True)
-        self.red_markup_panel.setVisible(False)
         self.scenario_panel.setVisible(True)
-        self.red_markup_table_panel.setVisible(False)
         self._h_splitter.setSizes([260, 650, 370, 0, 0])
         self._v_splitter.setSizes([220, 0, 0])
         self._outer_splitter.setSizes([640, 220])
