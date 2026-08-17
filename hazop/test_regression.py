@@ -8319,7 +8319,7 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         self.assertIsNotNone(header_item)
 
         with unittest.mock.patch.object(self.panel.tree, 'itemAt', return_value=header_item), \
-             unittest.mock.patch('hazop.QMenu') as mock_menu_cls:
+             unittest.mock.patch('tree_panel.QMenu') as mock_menu_cls:
             self.panel._context_menu(QPoint(0, 0))
         mock_menu = mock_menu_cls.return_value
         labels = _menu_action_labels(mock_menu)
@@ -8387,7 +8387,7 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         self.assertIsNotNone(dev_item)
 
         with unittest.mock.patch.object(self.panel.tree, 'itemAt', return_value=dev_item), \
-             unittest.mock.patch('hazop.QMenu') as mock_menu_cls:
+             unittest.mock.patch('tree_panel.QMenu') as mock_menu_cls:
             self.panel._context_menu(QPoint(0, 0))
         mock_menu_cls.assert_called_once()
         mock_menu = mock_menu_cls.return_value
@@ -8519,7 +8519,7 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         self.assertIsNotNone(ledord_item)
 
         with unittest.mock.patch.object(self.panel.tree, 'itemAt', return_value=ledord_item), \
-             unittest.mock.patch('hazop.QMenu') as mock_menu_cls:
+             unittest.mock.patch('tree_panel.QMenu') as mock_menu_cls:
             try:
                 self.panel._context_menu(QPoint(0, 0))
             except Exception as e:
@@ -8639,7 +8639,7 @@ class TreeNodeRenameTests(unittest.TestCase):
         self.assertIsNotNone(item)
 
         with unittest.mock.patch.object(self.panel.tree, 'itemAt', return_value=item), \
-             unittest.mock.patch('hazop.QMenu') as mock_menu_cls:
+             unittest.mock.patch('tree_panel.QMenu') as mock_menu_cls:
             self.panel._context_menu(QPoint(0, 0))
 
         mock_menu = mock_menu_cls.return_value
@@ -16269,7 +16269,7 @@ class RedMarkupConsolidationTests(unittest.TestCase):
             item = _find_tree_item(panel.tree, NODE_T, node_id)
             self.assertIsNotNone(item)
             with unittest.mock.patch.object(panel.tree, 'itemAt', return_value=item), \
-                 unittest.mock.patch('hazop.QMenu') as mock_menu_cls:
+                 unittest.mock.patch('tree_panel.QMenu') as mock_menu_cls:
                 mock_menu = mock_menu_cls.return_value
                 panel._context_menu(QPoint(0, 0))
                 all_str_args = [a for call in mock_menu.addAction.call_args_list
