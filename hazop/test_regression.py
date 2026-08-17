@@ -1429,6 +1429,176 @@ class StandardCausesObjectCrudTests(unittest.TestCase):
             panel.deleteLater()
 
 
+class StandardCausesNodeTypeTests(unittest.TestCase):
+    """"Ny kolumn till vänster om Avvikelse för nodtyper (standard: en typ,
+    'Processnod', men användaren ska kunna skapa fler) — med drag-and-drop
+    mellan nodtyper (kopiera avvikelser)" (2026-08-17). Drag-and-drop
+    COPIES (deep, independent — user confirmed via AskUserQuestion, not a
+    move/link). Also covers the tab rename ("Standardorsaker" →
+    "Avvikelser & Orsaker") and the full removal of the Orsaksbeskrivningar
+    column."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_nodetype_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_drop_event(self, text, pos):
+        from PyQt6.QtCore import QEvent, QMimeData, QPointF
+        mime = QMimeData()
+        mime.setText(text)
+        event = unittest.mock.MagicMock()
+        event.type.return_value = QEvent.Type.Drop
+        event.mimeData.return_value = mime
+        event.position.return_value = QPointF(pos)
+        return event
+
+    def test_tab_renamed_to_avvikelser_och_orsaker(self):
+        from hazop import HAZOPPreparationPanel
+        panel = HAZOPPreparationPanel(self.db)
+        try:
+            titles = [panel._tabs.tabText(i) for i in range(panel._tabs.count())]
+            self.assertIn("Avvikelser & Orsaker", titles)
+            self.assertNotIn("Standardorsaker", titles)
+        finally:
+            panel.deleteLater()
+
+    def test_orsaksbeskrivningar_column_fully_removed(self):
+        from hazop import StandardCausesSettingsPanel
+        panel = StandardCausesSettingsPanel(self.db)
+        try:
+            self.assertFalse(hasattr(panel, '_desc_list'))
+            self.assertFalse(hasattr(panel, '_add_desc'))
+            self.assertFalse(hasattr(self.db, 'cause_descriptions'))
+        finally:
+            panel.deleteLater()
+
+    def test_default_processnod_type_is_seeded(self):
+        types = self.db.node_types()
+        self.assertEqual(len(types), 1)
+        self.assertEqual(types[0]['name'], 'Processnod')
+
+    def test_pre_existing_deviation_with_no_type_shows_under_default(self):
+        """standard_deviations.node_type_id is NULL for every pre-migration
+        row — it must fall back to the default (first) node type, never be
+        silently hidden."""
+        dev_id = self.db.add_standard_deviation('Legacy-avvikelse')   # node_type_id=None
+        from hazop import StandardCausesSettingsPanel
+        panel = StandardCausesSettingsPanel(self.db)
+        try:
+            shown_ids = {panel._dev_list.item(i).data(Qt.ItemDataRole.UserRole)
+                         for i in range(panel._dev_list.count())}
+            self.assertIn(dev_id, shown_ids)
+        finally:
+            panel.deleteLater()
+
+    def test_add_node_type_and_filter_deviations(self):
+        from hazop import StandardCausesSettingsPanel
+        panel = StandardCausesSettingsPanel(self.db)
+        try:
+            default_dev_id = panel._dev_list.item(0).data(Qt.ItemDataRole.UserRole)
+            panel._add_node_type()
+            new_type_row = panel._nodetype_list.currentRow()
+            self.assertEqual(panel._nodetype_list.count(), 2)
+            # The new (empty) node type shows no deviations yet.
+            self.assertEqual(panel._dev_list.count(), 0)
+            # Switching back to the default type shows the original deviation again.
+            panel._nodetype_list.setCurrentRow(0)
+            shown_ids = {panel._dev_list.item(i).data(Qt.ItemDataRole.UserRole)
+                         for i in range(panel._dev_list.count())}
+            self.assertIn(default_dev_id, shown_ids)
+        finally:
+            panel.deleteLater()
+
+    def test_delete_last_node_type_is_blocked(self):
+        from hazop import StandardCausesSettingsPanel
+        panel = StandardCausesSettingsPanel(self.db)
+        try:
+            with unittest.mock.patch.object(QMessageBox, 'information', staticmethod(lambda *a, **k: None)):
+                panel._del_node_type()
+            self.assertEqual(len(self.db.node_types()), 1,
+                              "the only remaining node type must not be deletable")
+        finally:
+            panel.deleteLater()
+
+    def test_deleting_node_type_reassigns_its_deviations_to_default(self):
+        from hazop import StandardCausesSettingsPanel
+        panel = StandardCausesSettingsPanel(self.db)
+        try:
+            panel._add_node_type()
+            new_type_id = panel._nodetype_list.currentItem().data(Qt.ItemDataRole.UserRole)
+            dev_id = self.db.add_standard_deviation('I nya typen', new_type_id)
+            panel._load_deviations()
+
+            with unittest.mock.patch.object(QMessageBox, 'question',
+                                             return_value=QMessageBox.StandardButton.Yes):
+                panel._del_node_type()
+
+            default_id = self.db.node_types()[0]['id']
+            dev = self.db.conn.execute(
+                "SELECT node_type_id FROM standard_deviations WHERE id=?", (dev_id,)).fetchone()
+            self.assertIsNone(dev['node_type_id'])   # falls back to default via NULL, not re-pointed
+            panel._nodetype_list.setCurrentRow(0)
+            self.assertEqual(panel._nodetype_list.item(0).data(Qt.ItemDataRole.UserRole), default_id)
+            shown_ids = {panel._dev_list.item(i).data(Qt.ItemDataRole.UserRole)
+                         for i in range(panel._dev_list.count())}
+            self.assertIn(dev_id, shown_ids)
+        finally:
+            panel.deleteLater()
+
+    def test_drag_deviation_onto_node_type_creates_independent_deep_copy(self):
+        """User-confirmed semantics (AskUserQuestion): dragging COPIES the
+        deviation and its causes as a brand-new, fully independent row —
+        not a move, not a link — editable on its own afterward."""
+        src_dev_id = self.db.add_standard_deviation('Test-avvikelse för kopiering')
+        obj_id = self.db.add_standard_object('Ventil-X')
+        cause_id = self.db.add_standard_cause_with_object(src_dev_id, obj_id, 'Orsak A')
+        self.db.update_standard_cause(cause_id, frequency=0.05)
+        src_description = 'Test-avvikelse för kopiering'
+
+        from hazop import StandardCausesSettingsPanel
+        panel = StandardCausesSettingsPanel(self.db)
+        try:
+            panel._add_node_type()
+            target_item = panel._nodetype_list.currentItem()
+            target_id = target_item.data(Qt.ItemDataRole.UserRole)
+            pos = panel._nodetype_list.visualItemRect(target_item).center()
+
+            event = self._make_drop_event(f'hzp:stddev:{src_dev_id}', pos)
+            handled = panel.eventFilter(panel._nodetype_list.viewport(), event)
+            self.assertTrue(handled)
+
+            devs_in_target = [d for d in self.db.standard_deviations()
+                               if d['node_type_id'] == target_id]
+            self.assertEqual(len(devs_in_target), 1)
+            new_dev_id = devs_in_target[0]['id']
+            self.assertNotEqual(new_dev_id, src_dev_id)
+            self.assertEqual(devs_in_target[0]['description'], src_description)
+
+            new_causes = self.db.standard_causes(new_dev_id)
+            self.assertEqual(len(new_causes), 1)
+            self.assertNotEqual(new_causes[0]['id'], cause_id)
+            self.assertEqual(new_causes[0]['description'], 'Orsak A')
+            self.assertEqual(new_causes[0]['frequency'], 0.05)
+
+            # Independent afterward: editing the copy must not touch the original.
+            self.db.update_standard_cause(new_causes[0]['id'], description='Orsak A (ändrad)')
+            original_causes = self.db.standard_causes(src_dev_id)
+            self.assertEqual(original_causes[0]['description'], 'Orsak A')
+        finally:
+            panel.deleteLater()
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 4. ConnectorAnalyzer thread-hang regression (bug #5)
 # ══════════════════════════════════════════════════════════════════════════

@@ -1600,62 +1600,6 @@ def _sync_f_levels_from_base_frequency(conn):
 _sync_cause_likelihoods_from_frequency = _sync_f_levels_from_base_frequency
 
 
-# ── Default cause descriptions per component-type cause ───────────────────────
-# Keyed by normalized cause text prefix; each value is a list of short phrases
-# that describe *how* this cause manifests. These are the third hierarchy level
-# shown in the TemplateCausePickerDialog.
-_CAUSE_DESCRIPTIONS: dict = {
-    # Ventiler
-    "Manuell ventil":          ["Felaktigt stängd", "Felaktigt öppnad", "Kvarglömd i fel läge efter underhåll", "Inte märkt / fel märkning"],
-    "On-off ventil":           ["Felar stängd (fail-close)", "Felar öppen (fail-open)", "Fastnar i mellanlage", "Aktuatorsignal förlorad"],
-    "Reglerventil":            ["Felar stängd (fail-close)", "Felar öppen (fail-open)", "Stiction — fastnar i fel läge", "Positioneringsfel (signal/kalibrering)"],
-    "Backventil":              ["Defekt sätestätning — ej tätt", "Fastnar öppen", "Fastnar stängd", "Monterad baklänges"],
-    "Säkerhetsventil / sprängbleck": ["Öppnar vid för lågt tryck (felkalibrerad)", "Öppnar inte (igensatt / rostfri)", "Avspärrad under underhåll", "Sprängbleck har brustit"],
-    # Roterande utrustning
-    "Pump":                    ["Pump stopp (elfel / motorskydd)", "Kavitation (lågt NPSH)", "Tätningsläckage", "Lagerhaveri", "Deadhead (stängt utlopp)", "Felkopplad motor — roterar baklänges"],
-    "Kompressor / fläkt":      ["Kompressorstopp", "Surge (instabilt flöde)", "Tätningsläckage", "Igensatt inloppsfilter", "Deadhead (stängt utlopp)"],
-    "Blandare / omrörare":     ["Motor stopp", "Rörverksbrott", "Lagerhaveri", "Tätningsläckage"],
-    # Statisk utrustning
-    "Filter / sil":            ["Igensatt (högt DP)", "Felaktig installation", "Bristande underhåll"],
-    "Värmeväxlare / kylare / värmare": ["Igensatta rör (fouling)", "Intern läcka (rörbrott)", "Kylvattenflöde avbryts", "Värmekällan faller bort", "Differenstrycksskydd stänger"],
-    "Tank / kärl / kolonn":    ["Yttre läcka (korrosion / spricka)", "Överfyllnad", "Undertryck (vakuumkollaps)", "Exoterm reaktion / polymerisation", "Nivåmätning felaktig"],
-    # Rör och kopplingar
-    "Rörledning / slang":      ["Korrosionsgenomslag", "Mekanisk skada", "Isblockering / hydratblockering", "Felaktig rörkoppling (monteringsfel)", "Slangbrott"],
-    "Fläns / koppling / packning": ["Packningsläckage", "Felåtdragen fläns", "Fel packningsmaterial", "Korroderad flänsbult"],
-    # Instrument och styrning
-    "Instrument":              ["Signalfel högt", "Signalfel lågt", "Igensatt mätintag", "Felkalibrerad", "Mätledning bruten / läckande"],
-    "Styrsystem / PLC / DCS":  ["Styrsignalfel (hög signal)", "Styrsignalfel (låg signal)", "Kommunikationsavbrott", "Felaktig styrlogik", "Operatörsinmatning felaktig"],
-    # Hjälpsystem
-    "Elförsörjning":           ["Strömavbrott (nätfel)", "Säkring / jordfelsbrytare löser ut", "UPS-batteri tömt", "Generator startar ej"],
-    "Tryckluft / instrumentluft": ["Lufttryck faller (kompressorstopp)", "Läckage i luftledning", "Fukt / föroreningar i luft", "Instrument-air-torkare havererar"],
-    "Kylsystem / värmesystem": ["Kylvattenpump stopp", "Kylmedelsläckage", "Blockeringsventil stängd", "Värmekällan faller bort"],
-    # Övrigt
-    "Operatör / procedur / underhåll": ["Felaktig manöver", "Procedurfel / steg utelämnat", "Fel enhet manövrerad", "Kommunikationsfel vid skiftbyte", "Otillräcklig utbildning"],
-    "Övrigt":                  ["Se kommentar", "Utredning pågår"],
-}
-
-
-def _seed_cause_descriptions(conn):
-    """Add default cause descriptions under matching standard_causes (idempotent)."""
-    for i, cause_row in enumerate(
-            conn.execute("SELECT id, description, comp_type FROM standard_causes").fetchall()):
-        cid   = cause_row[0]
-        cdesc = cause_row[1] or ''
-        comp  = cause_row[2] or ''
-        # Match by comp_type first, then by description prefix
-        descs = _CAUSE_DESCRIPTIONS.get(comp) or _CAUSE_DESCRIPTIONS.get(cdesc.split()[0] if cdesc else '')
-        if not descs:
-            continue
-        # Only insert if none exist yet
-        if conn.execute("SELECT COUNT(*) FROM cause_descriptions WHERE cause_id=?",
-                        (cid,)).fetchone()[0]:
-            continue
-        for j, d in enumerate(descs):
-            conn.execute(
-                "INSERT INTO cause_descriptions (cause_id, description, sort_order) VALUES (?,?,?)",
-                (cid, d, j))
-    conn.commit()
-
 
 def _tag_letter_prefix(tag: str) -> str:
     """Extract the instrument-code letter prefix from a P&ID tag.
@@ -2012,6 +1956,9 @@ class Database:
             # varje förekomst av dem i texten.
             "ALTER TABLE consequences ADD COLUMN tagged_refs TEXT DEFAULT ''",
             "ALTER TABLE safeguards ADD COLUMN tagged_refs TEXT DEFAULT ''",
+            # Nodtyper i Avvikelser & Orsaker (2026-08-17, se NOTES.md) —
+            # nullable, seedas mot "Processnod" lazily av Database.node_types().
+            "ALTER TABLE standard_deviations ADD COLUMN node_type_id INTEGER REFERENCES node_types(id)",
         ]
 
         for sql in migrations:
@@ -2501,13 +2448,6 @@ class Database:
             _seed_component_causes(self.conn)
             self.conn.execute(
                 "INSERT OR REPLACE INTO app_config (key,value) VALUES ('comp_causes_seeded_v5','1')")
-
-        # Seed default cause descriptions per standard cause (idempotent)
-        if not self.conn.execute(
-                "SELECT value FROM app_config WHERE key='cause_descs_seeded_v1'").fetchone():
-            _seed_cause_descriptions(self.conn)
-            self.conn.execute(
-                "INSERT OR REPLACE INTO app_config (key,value) VALUES ('cause_descs_seeded_v1','1')")
 
         # Ensure every node has all standard deviations from template library
         std_devs = [r[0] for r in self.conn.execute(
@@ -4038,12 +3978,13 @@ class Database:
         return self.conn.execute(
             "SELECT * FROM standard_deviations ORDER BY sort_order, id").fetchall()
 
-    def add_standard_deviation(self, description):
+    def add_standard_deviation(self, description, node_type_id=None):
         max_ord = self.conn.execute(
             "SELECT COALESCE(MAX(sort_order),0) FROM standard_deviations").fetchone()[0]
         cur = self.conn.execute(
-            "INSERT INTO standard_deviations (description, sort_order) VALUES (?,?)",
-            (description, max_ord + 1))
+            "INSERT INTO standard_deviations (description, sort_order, node_type_id) "
+            "VALUES (?,?,?)",
+            (description, max_ord + 1, node_type_id))
         self.commit()
         return cur.lastrowid
 
@@ -4061,6 +4002,76 @@ class Database:
             self.conn.execute(
                 "UPDATE standard_deviations SET sort_order=? WHERE id=?", (i, id_))
         self.commit()
+
+    def node_types(self):
+        """List of node types for Avvikelser & Orsaker's leftmost column
+        (2026-08-17). Lazily seeds a single 'Processnod' row the first
+        time this is called on a database that has none yet, rather than
+        a migration-time seed — simpler, and idempotent either way."""
+        rows = self.conn.execute(
+            "SELECT * FROM node_types ORDER BY sort_order, id").fetchall()
+        if not rows:
+            self.conn.execute(
+                "INSERT INTO node_types (name, sort_order) VALUES ('Processnod', 0)")
+            self.commit()
+            rows = self.conn.execute(
+                "SELECT * FROM node_types ORDER BY sort_order, id").fetchall()
+        return [dict(r) for r in rows]
+
+    def add_node_type(self, name):
+        max_ord = (self.conn.execute(
+            "SELECT COALESCE(MAX(sort_order),-1) FROM node_types").fetchone()[0])
+        cur = self.conn.execute(
+            "INSERT INTO node_types (name, sort_order) VALUES (?,?)", (name, max_ord + 1))
+        self.commit()
+        return cur.lastrowid
+
+    def rename_node_type(self, id_, name):
+        self.conn.execute("UPDATE node_types SET name=? WHERE id=?", (name, id_))
+        self.commit()
+
+    def delete_node_type(self, id_):
+        # Deviations left behind fall back to NULL, which the UI treats as
+        # belonging to the first/default node type (normally "Processnod")
+        # — never silently hidden.
+        self.conn.execute(
+            "UPDATE standard_deviations SET node_type_id=NULL WHERE node_type_id=?", (id_,))
+        self.conn.execute("DELETE FROM node_types WHERE id=?", (id_,))
+        self.commit()
+
+    def set_deviation_node_type(self, deviation_id, node_type_id):
+        self.conn.execute(
+            "UPDATE standard_deviations SET node_type_id=? WHERE id=?",
+            (node_type_id, deviation_id))
+        self.commit()
+
+    def copy_standard_deviation_to_node_type(self, deviation_id, node_type_id):
+        """Deep, independent copy of a standard deviation AND its standard
+        causes into another node type (2026-08-17, drag-and-drop between
+        node types — user confirmed this must COPY, and the copy must be
+        editable on its own afterward, not linked back to the original)."""
+        dev = self.conn.execute(
+            "SELECT * FROM standard_deviations WHERE id=?", (deviation_id,)).fetchone()
+        if not dev:
+            return None
+        max_ord = (self.conn.execute(
+            "SELECT COALESCE(MAX(sort_order),0) FROM standard_deviations").fetchone()[0])
+        cur = self.conn.execute(
+            "INSERT INTO standard_deviations (description, sort_order, node_type_id) "
+            "VALUES (?,?,?)",
+            (dev['description'], max_ord + 1, node_type_id))
+        new_dev_id = cur.lastrowid
+        causes = self.conn.execute(
+            "SELECT * FROM standard_causes WHERE deviation_id=? ORDER BY sort_order, id",
+            (deviation_id,)).fetchall()
+        for c in causes:
+            self.conn.execute(
+                "INSERT INTO standard_causes (deviation_id, description, sort_order, "
+                "object_id, comp_type, frequency, use_in_cause_form) VALUES (?,?,?,?,?,?,?)",
+                (new_dev_id, c['description'], c['sort_order'], c['object_id'],
+                 c['comp_type'], c['frequency'], c['use_in_cause_form']))
+        self.commit()
+        return new_dev_id
 
     def get_standard_cause(self, id_):
         row = self.conn.execute(
@@ -4268,36 +4279,6 @@ class Database:
 
     def delete_symbol_template(self, id_):
         self.conn.execute("DELETE FROM symbol_templates WHERE id=?", (id_,))
-        self.commit()
-
-    # ── Cause descriptions ────────────────────────────────────────────────────
-    def cause_descriptions(self, cause_id):
-        return [dict(r) for r in self.conn.execute(
-            "SELECT id, description, sort_order FROM cause_descriptions "
-            "WHERE cause_id=? ORDER BY sort_order, id", (cause_id,))]
-
-    def add_cause_description(self, cause_id, description):
-        max_ord = (self.conn.execute(
-            "SELECT COALESCE(MAX(sort_order),0) FROM cause_descriptions WHERE cause_id=?",
-            (cause_id,)).fetchone()[0] or 0)
-        cur = self.conn.execute(
-            "INSERT INTO cause_descriptions (cause_id, description, sort_order) VALUES (?,?,?)",
-            (cause_id, description, max_ord + 1))
-        self.commit()
-        return cur.lastrowid
-
-    def update_cause_description(self, id_, description):
-        self.conn.execute("UPDATE cause_descriptions SET description=? WHERE id=?",
-                          (description, id_))
-        self.commit()
-
-    def delete_cause_description(self, id_):
-        self.conn.execute("DELETE FROM cause_descriptions WHERE id=?", (id_,))
-        self.commit()
-
-    def reorder_cause_descriptions(self, ordered_ids):
-        for i, id_ in enumerate(ordered_ids):
-            self.conn.execute("UPDATE cause_descriptions SET sort_order=? WHERE id=?", (i, id_))
         self.commit()
 
     def add_cause(self, deviation_id):
@@ -15845,20 +15826,60 @@ class MatrixCellButton(QPushButton):
 
 
 class StandardCausesSettingsPanel(QWidget):
-    """3-level editable hierarchy: Avvikelse → Objekt → Orsaker (+Orsaksbeskrivningar)."""
+    """4-level editable hierarchy: Nodtyp → Avvikelse → Objekt → Orsaker."""
 
     def __init__(self, db, parent=None):
         super().__init__(parent)
         self.db = db
         self._loading = False
+        self._loading_nt = False
+        self._node_type_ids = []
 
         layout = QHBoxLayout(self)
+
+        # ── Col 0: Nodtyp (2026-08-17 user request) ──────────────────────────
+        # Filters _dev_list to deviations belonging to the selected node
+        # type; drag a deviation from _dev_list onto a node type here to
+        # COPY it (deep, independent copy incl. its causes — user confirmed
+        # via AskUserQuestion, not a move/link) into that type.
+        c0 = QVBoxLayout()
+        c0.addWidget(QLabel("<b>Nodtyp</b>"))
+        self._nodetype_list = QListWidget()
+        self._nodetype_list.currentRowChanged.connect(lambda _row: self._load_deviations())
+        self._nodetype_list.itemChanged.connect(self._on_nodetype_item_changed)
+        self._nodetype_list.setAcceptDrops(True)
+        self._nodetype_list.viewport().setAcceptDrops(True)
+        self._nodetype_list.installEventFilter(self)
+        self._nodetype_list.viewport().installEventFilter(self)
+        c0.addWidget(self._nodetype_list)
+        c0b = QHBoxLayout()
+        for icon, slot in (('+', self._add_node_type), ('−', self._del_node_type)):
+            b = QPushButton(icon); b.setFixedWidth(28); b.clicked.connect(slot); c0b.addWidget(b)
+        c0b.addStretch(); c0.addLayout(c0b)
+        # _load_node_types() is deferred to the end of __init__ (below,
+        # after _dev_list exists) — its setCurrentRow() call fires
+        # currentRowChanged immediately, which cascades into
+        # _load_deviations(), so calling it here (before _dev_list is
+        # built) would crash with AttributeError.
 
         # ── Col 1: Avvikelse ──────────────────────────────────────────────────
         c1 = QVBoxLayout()
         c1.addWidget(QLabel("<b>Avvikelse</b>"))
         self._dev_list = QListWidget()
         self._dev_list.currentRowChanged.connect(self._on_dev_sel)
+        self._dev_list.setDragEnabled(True)
+        # Instance-level override (same monkeypatch pattern already used
+        # elsewhere in this file, e.g. ParticipantMatrixPanel's Enter-key
+        # handling) — carries the deviation's DB id as custom mime text
+        # instead of Qt's default internal model-index payload, so the
+        # Nodtyp column's drop handler can read it directly.
+        def _dev_list_mime_data(items, _list=self._dev_list):
+            md = QMimeData()
+            if items:
+                dev_id = items[0].data(Qt.ItemDataRole.UserRole)
+                md.setText(f'hzp:stddev:{dev_id}')
+            return md
+        self._dev_list.mimeData = _dev_list_mime_data
         c1.addWidget(self._dev_list)
         c1b = QHBoxLayout()
         for icon, slot in (('+', self._add_dev), ('−', self._del_dev),
@@ -15935,30 +15956,121 @@ class StandardCausesSettingsPanel(QWidget):
         io_row.addWidget(btn_exp); io_row.addWidget(btn_imp)
         c3.addLayout(io_row)
 
-        # ── Col 4: Orsaksbeskrivningar ────────────────────────────────────────
-        c4 = QVBoxLayout()
-        self._desc_lbl = QLabel("<b>Orsaksbeskrivningar</b>")
-        c4.addWidget(self._desc_lbl)
-        self._desc_list = QListWidget()
-        c4.addWidget(self._desc_list)
-        c4b = QHBoxLayout()
-        for icon, slot in (('+', self._add_desc), ('−', self._del_desc),
-                           ('↑', lambda: self._move_desc(-1)), ('↓', lambda: self._move_desc(1))):
-            b = QPushButton(icon); b.setFixedWidth(28); b.clicked.connect(slot); c4b.addWidget(b)
-        c4b.addStretch(); c4.addLayout(c4b)
-
+        layout.addLayout(c0, 1)
         layout.addLayout(c1, 1)
         layout.addLayout(c2, 1)
         layout.addLayout(c3, 1)
-        layout.addLayout(c4, 1)
-        self._load_deviations()
+        self._load_node_types()   # cascades into _load_deviations() via currentRowChanged
 
     # ── Load helpers ──────────────────────────────────────────────────────────
+    # ── Node type CRUD (2026-08-17, see NOTES.md) ────────────────────────────
+    def _load_node_types(self):
+        self._loading_nt = True
+        cur = self._nodetype_list.currentRow()
+        self._nodetype_list.clear()
+        types = self.db.node_types()
+        self._node_type_ids = [t['id'] for t in types]
+        for t in types:
+            item = QListWidgetItem(t['name'])
+            item.setData(Qt.ItemDataRole.UserRole, t['id'])
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+            self._nodetype_list.addItem(item)
+        self._loading_nt = False
+        self._nodetype_list.setCurrentRow(max(0, min(cur, self._nodetype_list.count() - 1)))
+
+    def _current_node_type_id(self):
+        item = self._nodetype_list.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def _on_nodetype_item_changed(self, item):
+        if self._loading_nt:
+            return
+        id_ = item.data(Qt.ItemDataRole.UserRole)
+        name = item.text().strip()
+        if id_ is not None and name:
+            self.db.rename_node_type(id_, name)
+
+    def _add_node_type(self):
+        new_id = self.db.add_node_type('Ny nodtyp')
+        item = QListWidgetItem('Ny nodtyp')
+        item.setData(Qt.ItemDataRole.UserRole, new_id)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+        self._nodetype_list.addItem(item)
+        self._node_type_ids.append(new_id)
+        self._nodetype_list.setCurrentItem(item)
+        self._nodetype_list.editItem(item)
+
+    def _del_node_type(self):
+        item = self._nodetype_list.currentItem()
+        if not item:
+            return
+        id_ = item.data(Qt.ItemDataRole.UserRole)
+        if len(self._node_type_ids) <= 1:
+            QMessageBox.information(self, 'Kan inte ta bort',
+                                     'Minst en nodtyp måste finnas kvar.')
+            return
+        if QMessageBox.question(
+                self, 'Ta bort nodtyp',
+                'Ta bort nodtypen? Avvikelser under den flyttas till standardtypen.',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                ) == QMessageBox.StandardButton.Yes:
+            self.db.delete_node_type(id_)
+            self._load_node_types()
+
+    def eventFilter(self, obj, event):
+        from PyQt6.QtCore import QEvent
+        _drop_targets = (self._nodetype_list, self._nodetype_list.viewport())
+        if obj in _drop_targets and event.type() == QEvent.Type.DragEnter:
+            if event.mimeData().hasText() and event.mimeData().text().startswith('hzp:stddev:'):
+                event.acceptProposedAction()
+                return True
+        if obj in _drop_targets and event.type() == QEvent.Type.DragMove:
+            if event.mimeData().hasText() and event.mimeData().text().startswith('hzp:stddev:'):
+                event.acceptProposedAction()
+                return True
+        if obj in _drop_targets and event.type() == QEvent.Type.Drop:
+            text = event.mimeData().text() if event.mimeData().hasText() else ''
+            if text.startswith('hzp:stddev:'):
+                self._handle_deviation_drop(event, obj)
+                return True
+        return super().eventFilter(obj, event)
+
+    def _handle_deviation_drop(self, event, source_obj):
+        text = event.mimeData().text()
+        try:
+            dev_id = int(text.split(':')[2])
+        except (IndexError, ValueError):
+            event.ignore()
+            return
+        pos = event.position().toPoint() if hasattr(event, 'position') else event.pos()
+        # Qt delivers drop events to either the outer QListWidget or its
+        # viewport depending on version/setup (same lesson as TreePanel's
+        # equipment-drop handling) — itemAt() always expects viewport
+        # coordinates, so remap only when the event landed on the outer
+        # widget instead of the viewport directly.
+        if source_obj is self._nodetype_list:
+            pos = self._nodetype_list.viewport().mapFrom(self._nodetype_list, pos)
+        item = self._nodetype_list.itemAt(pos)
+        if item is None:
+            event.ignore()
+            return
+        node_type_id = item.data(Qt.ItemDataRole.UserRole)
+        self.db.copy_standard_deviation_to_node_type(dev_id, node_type_id)
+        event.acceptProposedAction()
+        if node_type_id == self._current_node_type_id():
+            self._load_deviations()
+
     def _load_deviations(self):
         self._loading = True
         cur = self._dev_list.currentRow()
         self._dev_list.clear()
+        nt_id = self._current_node_type_id()
+        default_nt_id = self._node_type_ids[0] if self._node_type_ids else None
         for d in self.db.standard_deviations():
+            d_nt = d['node_type_id']
+            belongs = (d_nt == nt_id) or (d_nt is None and nt_id == default_nt_id)
+            if not belongs:
+                continue
             item = QListWidgetItem(d['description'])
             item.setData(Qt.ItemDataRole.UserRole, d['id'])
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
@@ -16038,29 +16150,6 @@ class StandardCausesSettingsPanel(QWidget):
             self._freq_edit.clear()
             self._freq_level_lbl.setText('')
 
-    def _current_cause_id(self):
-        item = self._cause_list.currentItem()
-        return item.data(Qt.ItemDataRole.UserRole) if item else None
-
-    def _load_descriptions(self, cause_id):
-        self._desc_list.blockSignals(True)
-        try:
-            self._desc_list.clear()
-            if cause_id is None:
-                return
-            for d in self.db.cause_descriptions(cause_id):
-                item = QListWidgetItem(d['description'])
-                item.setData(Qt.ItemDataRole.UserRole, d['id'])
-                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
-                self._desc_list.addItem(item)
-        finally:
-            self._desc_list.blockSignals(False)
-            try:
-                self._desc_list.itemChanged.disconnect(self._on_desc_changed)
-            except TypeError:
-                pass   # wasn't connected yet (first call)
-            self._desc_list.itemChanged.connect(self._on_desc_changed)
-
     # ── Slot chains ───────────────────────────────────────────────────────────
     def _on_dev_sel(self, row):
         if self._loading: return
@@ -16076,8 +16165,6 @@ class StandardCausesSettingsPanel(QWidget):
     def _on_cause_sel(self, row):
         if self._loading: return
         item = self._cause_list.item(row)
-        cid = item.data(Qt.ItemDataRole.UserRole) if item else None
-        self._load_descriptions(cid)
         # Populate freq field
         freq = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
         self._freq_edit.blockSignals(True)
@@ -16114,7 +16201,7 @@ class StandardCausesSettingsPanel(QWidget):
 
     # ── Deviation CRUD ────────────────────────────────────────────────────────
     def _add_dev(self):
-        new_id = self.db.add_standard_deviation('Ny avvikelse')
+        new_id = self.db.add_standard_deviation('Ny avvikelse', self._current_node_type_id())
         item = QListWidgetItem('Ny avvikelse')
         item.setData(Qt.ItemDataRole.UserRole, new_id)
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
@@ -16238,39 +16325,6 @@ class StandardCausesSettingsPanel(QWidget):
         if id_:
             self.db.update_standard_cause(id_, description=item.text().strip())
 
-    # ── Description CRUD ──────────────────────────────────────────────────────
-    def _add_desc(self):
-        cid = self._current_cause_id()
-        if cid is None: return
-        new_id = self.db.add_cause_description(cid, 'Ny beskrivning')
-        item = QListWidgetItem('Ny beskrivning')
-        item.setData(Qt.ItemDataRole.UserRole, new_id)
-        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
-        self._desc_list.addItem(item)
-        self._desc_list.editItem(item)
-
-    def _del_desc(self):
-        item = self._desc_list.currentItem()
-        if not item: return
-        id_ = item.data(Qt.ItemDataRole.UserRole)
-        if id_: self.db.delete_cause_description(id_)
-        self._desc_list.takeItem(self._desc_list.row(item))
-
-    def _move_desc(self, d):
-        row = self._desc_list.currentRow()
-        new_row = row + d
-        if not (0 <= new_row < self._desc_list.count()): return
-        a = self._desc_list.takeItem(row)
-        self._desc_list.insertItem(new_row, a)
-        self._desc_list.setCurrentRow(new_row)
-        ids = [self._desc_list.item(i).data(Qt.ItemDataRole.UserRole)
-               for i in range(self._desc_list.count())]
-        self.db.reorder_cause_descriptions(ids)
-
-    def _on_desc_changed(self, item):
-        id_ = item.data(Qt.ItemDataRole.UserRole)
-        if id_: self.db.update_cause_description(id_, item.text().strip())
-
     # ── Sync ──────────────────────────────────────────────────────────────────
     def _sync_freqs(self):
         ret = QMessageBox.question(self, 'Synka frekvenser',
@@ -16291,10 +16345,8 @@ class StandardCausesSettingsPanel(QWidget):
             dd = {'description': dev['description'], 'causes': []}
             for c in self.db.standard_causes(dev['id']):
                 cd = dict(c)
-                cd['descriptions'] = [d['description']
-                                       for d in self.db.cause_descriptions(cd['id'])]
                 dd['causes'].append({k: cd.get(k) for k in
-                    ['description', 'comp_type', 'frequency', 'object_id', 'descriptions']})
+                    ['description', 'comp_type', 'frequency', 'object_id']})
             data['deviations'].append(dd)
         for obj in self.db.standard_objects():
             data['objects'].append(obj['name'])
@@ -17453,7 +17505,7 @@ class HAZOPPreparationPanel(QWidget):
 
         # ── Tab: Standardorsaker ─────────────────────────────────────────────
         self._std_causes_panel = StandardCausesSettingsPanel(self.db)
-        tabs.addTab(self._std_causes_panel, "Standardorsaker")
+        tabs.addTab(self._std_causes_panel, "Avvikelser & Orsaker")
 
         self._load_all()
 
