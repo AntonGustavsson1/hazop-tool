@@ -2130,6 +2130,16 @@ Anton, direkt efter fixen ovan: "Om du Går igenom PFD 1500 och hittar de gemens
 
 **Test:** `test_metod_column_is_narrow`, `test_typ_dropdown_includes_standardobjekt_entries`, `test_dialog_is_larger_than_before`, `test_autodetect_tags_button_disabled_without_pdf_path`, `test_autodetect_tags_fills_in_the_nearest_native_text_for_checked_rows`, `test_autodetect_tags_leaves_tag_untouched_when_nothing_found_nearby`, `test_autodetect_tags_with_nothing_checked_shows_info` (alla nya). `test_editing_typ_cell_corrects_the_saved_type` och `test_mass_apply_sets_type_and_tag_sequence_on_checked_rows_only` uppdaterade till combobox-läsning. Röd→grön verifierat för samtliga nya tester. Full svit (811 tester) grön.
 
+## Radbilder i granskningsdialogen klippte igenom LKAB-stilens avlånga instrumentbubblor (2026-08-17)
+
+**Rapport:** Anton: "I granska och detektera får du gärna visa en lite mer utzoomad bild." Följt av förtydligande: "På varje objekt" — gäller alltså båda grenarna i `EquipmentMarkerReviewDialog._render_thumbnail`, inte bara ett specialfall.
+
+**Root cause:** bekräftat direkt mot ett riktigt LKAB-P&ID (S0000156) — en punktbaserad rad (ingen outline, bara x/y) använde `pad = max(page_scale*1.5, 15.0)`, vilket för en avlång "PI"-instrumentbubbla (ISA-stil kapsel, vanlig i LKAB:s ritningar) klippte rakt igenom den — de rundade ändarna hamnade helt utanför bildrutan, bara mittbandet och texten syntes. Samma eftersläpande snävhet fanns i outline-grenen (`pad = max(w,h)*0.25+4.0`), om än mindre allvarligt eftersom den redan utgår från symbolens egen uppmätta form.
+
+**Fix:** båda grenarnas padding fördubblad ungefär: punktfallet `1.5×/15pt-golv` → `3.0×/28pt-golv`, outline-fallet `0.25×+4pt` → `0.5×+8pt`. Verifierat direkt mot den riktiga PI-bubblan och en riktig ventil-bowtie på samma fil — hela symbolen ryms nu med bekväm marginal i båda fallen.
+
+**Test:** `test_thumbnail_crop_is_wider_than_before_for_a_point_only_row` (ny, spionerar på `image_symbol_matching.render_gray`s bbox-argument, röd→grön verifierad). Full svit (812 tester) grön (körningen tog ovanligt lång tid denna gång, ~460s mot normalt ~120s — sannolikt tillfällig systembelastning, ingen ny hängning: alla test passerade).
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

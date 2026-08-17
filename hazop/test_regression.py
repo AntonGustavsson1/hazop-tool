@@ -3501,6 +3501,47 @@ class EquipmentMarkerReviewDialogTests(unittest.TestCase):
         finally:
             dlg.deleteLater()
 
+    def test_thumbnail_crop_is_wider_than_before_for_a_point_only_row(self):
+        """"jag granska och detektera får du gärna visa en lite mer
+        utzoomad bild" / "På varje objekt" (2026-08-17, see NOTES.md) —
+        a row with no outline (just an x/y point) used to crop at
+        1.5x the page's own text scale (floor 15pt), tight enough to
+        cut straight through a real LKAB-style oblong instrument bubble.
+        Must now use a comfortably wider crop."""
+        import fitz
+        import symbol_geometry as sg
+        import image_symbol_matching
+        from pid_viewer import EquipmentMarkerReviewDialog
+        path = os.path.join(self._tmpdir, "thumb_wide.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=400, height=400)
+        page.insert_text((150, 150), "AAAAAAAAAA", fontsize=10)
+        doc.save(path)
+        doc.close()
+
+        results = [{'tag': 'V-777', 'page': 0, 'comp_type': 'Ventil', 'x': 200.0, 'y': 200.0,
+                    'confidence': 0.9, 'link_method': 'shape', 'outline': []}]
+        dlg = EquipmentMarkerReviewDialog(results, self.db, pdf_path=path)
+        try:
+            live_doc = fitz.open(path)
+            scale = sg.dominant_text_size(live_doc[0])
+            live_doc.close()
+            captured = {}
+            real_render_gray = image_symbol_matching.render_gray
+
+            def _spy(page_, bbox=None, dpi=300):
+                captured['bbox'] = bbox
+                return real_render_gray(page_, bbox=bbox, dpi=dpi)
+
+            with unittest.mock.patch('pid_viewer.image_symbol_matching.render_gray', _spy):
+                thumb_doc = fitz.open(path)
+                dlg._render_thumbnail(thumb_doc, results[0], {})
+                thumb_doc.close()
+            x0, y0, x1, y1 = captured['bbox']
+            self.assertGreaterEqual((x1 - x0) / 2, max(scale * 3.0, 28.0) - 0.01)
+        finally:
+            dlg.deleteLater()
+
     def test_no_thumbnail_without_pdf_path(self):
         from pid_viewer import EquipmentMarkerReviewDialog
         dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db)

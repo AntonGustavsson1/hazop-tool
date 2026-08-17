@@ -2114,11 +2114,19 @@ class EquipmentMarkerReviewDialog(QDialog):
                 xs = [p[0] for p in res['outline']]
                 ys = [p[1] for p in res['outline']]
                 x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
-                pad = max((x1 - x0), (y1 - y0)) * 0.25 + 4.0
+                pad = max((x1 - x0), (y1 - y0)) * 0.5 + 8.0
             else:
                 if page_num not in page_scale_cache:
                     page_scale_cache[page_num] = symbol_geometry.dominant_text_size(page)
-                pad = max(page_scale_cache[page_num] * 1.5, 15.0)
+                # "En lite mer utzoomad bild" / "På varje objekt" (2026-08-17,
+                # see NOTES.md) — the previous 1.5x/15pt floor cropped tight
+                # enough to cut straight through an LKAB-style oblong
+                # instrument bubble (confirmed on a real "PI" symbol: the
+                # capsule's own rounded ends fell outside the frame
+                # entirely, showing only its middle band and label). Wider
+                # on both branches so every row's thumbnail shows the whole
+                # symbol with a comfortable margin, not just its center.
+                pad = max(page_scale_cache[page_num] * 3.0, 28.0)
                 x0, y0 = res['x'], res['y']
                 x1, y1 = x0, y0
             clip = fitz.Rect(x0 - pad, y0 - pad, x1 + pad, y1 + pad) & page.rect
