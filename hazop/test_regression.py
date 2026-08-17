@@ -11928,6 +11928,177 @@ class TreeInlineEditTests(unittest.TestCase):
             self.assertTrue(refresh_calls, "scenario table must refresh after an inline tree edit")
 
 
+class TreeInternalReparentDragDropTests(unittest.TestCase):
+    """"implementera även drag and drop I hazop trädet mellan olika nivåer.
+    drar man konsekvens till ett objekt skall exempelvis både konsekvens
+    och safeguard hänga med. håller man inne shift och drar skall det
+    kopieras" (2026-08-17). Reuses the same move_cause_to_deviation/
+    move_consequence/move_safeguard and copy_cause/copy_consequence/
+    copy_safeguard DB methods the tree's own right-click Kopiera/Klistra
+    in feature already uses (ScenarioTablePanel's near-identical drag/drop
+    was the template for the eventFilter shape)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_tree_dnd_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        self.panel = TreePanel(self.db)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _drop(self, text, target_item, shift=False, event_type=None):
+        # A bare, never-shown TreePanel has no real widget geometry, so
+        # visualItemRect()-based hit testing returns degenerate rects —
+        # mock itemAt() directly instead, same convention already used by
+        # TreePanelEquipmentGroupingTests for this exact reason.
+        from PyQt6.QtCore import QEvent, QMimeData, QPointF
+        mime = QMimeData()
+        mime.setText(text)
+        event = unittest.mock.MagicMock()
+        event.type.return_value = event_type or QEvent.Type.Drop
+        event.mimeData.return_value = mime
+        event.position.return_value = QPointF(0, 0)
+        modifiers = (Qt.KeyboardModifier.ShiftModifier if shift
+                     else Qt.KeyboardModifier.NoModifier)
+        with unittest.mock.patch.object(self.panel.tree, 'itemAt', return_value=target_item), \
+             unittest.mock.patch('hazop.QApplication.keyboardModifiers', return_value=modifiers):
+            handled = self.panel.eventFilter(self.panel.tree.viewport(), event)
+        return handled, event
+
+    def test_mime_data_only_encodes_cause_cons_sg(self):
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        self.panel.refresh()
+        dev_item = _find_tree_item(self.panel.tree, DEV_T, dev_id)
+        node_item = _find_tree_item(self.panel.tree, NODE_T, node_id)
+        self.assertEqual(self.panel.tree.mimeData([dev_item]).text(), '')
+        self.assertEqual(self.panel.tree.mimeData([node_item]).text(), '')
+        self.assertEqual(self.panel.tree.mimeData([dev_item, node_item]).text(), '',
+                          "multi-selection must not produce a mime payload")
+
+    def test_drag_cause_onto_different_deviation_moves_it(self):
+        node_id = self.db.add_node()
+        dev_a, dev_b = self.db.deviations(node_id)[0]['id'], self.db.deviations(node_id)[1]['id']
+        cause_id = self.db.add_cause(dev_a)
+        self.panel.refresh()
+        dev_b_item = _find_tree_item(self.panel.tree, DEV_T, dev_b)
+
+        handled, event = self._drop(f'hzp:treeitem:{CAUSE_T}:{cause_id}', dev_b_item)
+
+        self.assertTrue(handled)
+        event.acceptProposedAction.assert_called_once()
+        self.assertEqual(self.db.get_cause(cause_id)['deviation_id'], dev_b)
+
+    def test_drag_consequence_onto_different_cause_brings_safeguard_along(self):
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_a = self.db.add_cause(dev_id)
+        cause_b = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_a)
+        sg_id = self.db.add_safeguard(cons_id)
+        self.panel.refresh()
+        cause_b_item = _find_tree_item(self.panel.tree, CAUSE_T, cause_b)
+
+        handled, event = self._drop(f'hzp:treeitem:{CONS_T}:{cons_id}', cause_b_item)
+
+        self.assertTrue(handled)
+        event.acceptProposedAction.assert_called_once()
+        self.assertEqual(self.db.get_consequence(cons_id)['cause_id'], cause_b)
+        # The safeguard was never touched — it still points at the SAME
+        # consequence id, so it "follows" for free.
+        self.assertEqual(self.db.get_safeguard(sg_id)['consequence_id'], cons_id)
+
+    def test_drag_safeguard_onto_different_consequence_moves_it(self):
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_a = self.db.add_consequence(cause_id)
+        cons_b = self.db.add_consequence(cause_id)
+        sg_id = self.db.add_safeguard(cons_a)
+        self.panel.refresh()
+        cons_b_item = _find_tree_item(self.panel.tree, CONS_T, cons_b)
+
+        handled, event = self._drop(f'hzp:treeitem:{SG_T}:{sg_id}', cons_b_item)
+
+        self.assertTrue(handled)
+        self.assertEqual(self.db.get_safeguard(sg_id)['consequence_id'], cons_b)
+
+    def test_shift_drag_copies_instead_of_moving(self):
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_a = self.db.add_cause(dev_id)
+        cause_b = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_a)
+        self.db.update_consequence(cons_id, "Original", 3)
+        self.panel.refresh()
+        cause_b_item = _find_tree_item(self.panel.tree, CAUSE_T, cause_b)
+
+        handled, event = self._drop(f'hzp:treeitem:{CONS_T}:{cons_id}', cause_b_item, shift=True)
+
+        self.assertTrue(handled)
+        # Original untouched, still under cause_a.
+        self.assertEqual(self.db.get_consequence(cons_id)['cause_id'], cause_a)
+        # A NEW, independent copy now exists under cause_b.
+        copies = [c for c in self.db.consequences(cause_b) if c['source_id'] == cons_id]
+        self.assertEqual(len(copies), 1)
+        self.assertEqual(copies[0]['description'], "Original")
+
+    def test_dropping_onto_same_parent_is_a_noop(self):
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.panel.refresh()
+        dev_item = _find_tree_item(self.panel.tree, DEV_T, dev_id)
+
+        handled, event = self._drop(f'hzp:treeitem:{CAUSE_T}:{cause_id}', dev_item)
+
+        self.assertTrue(handled)
+        event.ignore.assert_called_once()
+        event.acceptProposedAction.assert_not_called()
+
+    def test_drag_cause_onto_node_uses_or_creates_ovrigt_deviation(self):
+        node_a = self.db.add_node()
+        node_b = self.db.add_node()
+        dev_a = self.db.deviations(node_a)[0]['id']
+        cause_id = self.db.add_cause(dev_a)
+        self.panel.refresh()
+        node_b_item = _find_tree_item(self.panel.tree, NODE_T, node_b)
+
+        handled, event = self._drop(f'hzp:treeitem:{CAUSE_T}:{cause_id}', node_b_item)
+
+        self.assertTrue(handled)
+        event.acceptProposedAction.assert_called_once()
+        new_dev_id = self.db.get_cause(cause_id)['deviation_id']
+        self.assertEqual(self.db.get_deviation(new_dev_id)['node_id'], node_b)
+
+    def test_drag_move_over_target_accepts_without_writing_to_db(self):
+        """DragMove is only ever hover feedback — it must never write to
+        the DB just because the cursor passed over a valid target."""
+        from PyQt6.QtCore import QEvent
+        node_id = self.db.add_node()
+        dev_a, dev_b = self.db.deviations(node_id)[0]['id'], self.db.deviations(node_id)[1]['id']
+        cause_id = self.db.add_cause(dev_a)
+        self.panel.refresh()
+        dev_b_item = _find_tree_item(self.panel.tree, DEV_T, dev_b)
+
+        handled, event = self._drop(f'hzp:treeitem:{CAUSE_T}:{cause_id}', dev_b_item,
+                                     event_type=QEvent.Type.DragMove)
+
+        self.assertTrue(handled)
+        event.acceptProposedAction.assert_called_once()
+        self.assertEqual(self.db.get_cause(cause_id)['deviation_id'], dev_a,
+                          "hovering during drag must not move the cause yet")
+
+
 class EquipmentMultiSelectTests(unittest.TestCase):
     """Multi-select of equipment markers on the P&ID (2026-08-08, see
     NOTES.md): Ctrl+click toggles, Ctrl+drag rubber-bands several at once,

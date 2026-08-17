@@ -7554,6 +7554,32 @@ class TreePanel(QWidget):
         self.tree.itemChanged.connect(self._on_tree_item_text_edited)
         self._inline_edit_target = None   # (type_, id_) while an inline edit is in progress
         self.tree.installEventFilter(self)   # keyboard navigation (feature 17)
+        # Internal drag-and-drop between tree levels (2026-08-17, user
+        # request: drag a Cause/Consequence/Safeguard onto a different
+        # parent to reparent it there — e.g. dragging a Consequence onto
+        # a different object/cause brings its own Safeguards along for
+        # free, since they're only ever looked up via the Consequence's
+        # own id, never copied/duplicated). Shift+drag copies instead of
+        # moving (uses the same copy_cause/copy_consequence/copy_safeguard
+        # DB methods already proven by the tree's own right-click
+        # Kopiera/Klistra in feature). setDragEnabled + a custom
+        # mimeData() override — same instance-level-override convention
+        # already used for StandardCausesSettingsPanel._dev_list — rather
+        # than Qt's own internal DragDropMode, matching this tree's
+        # existing "no built-in drag-reordering" design (see the
+        # setAcceptDrops comment above) since reparenting across
+        # non-adjacent levels needs custom resolution logic, not a simple
+        # row move.
+        self.tree.setDragEnabled(True)
+        def _tree_mime_data(items, _tree=self.tree):
+            md = QMimeData()
+            if len(items) == 1:
+                type_ = items[0].data(0, Qt.ItemDataRole.UserRole + 1)
+                id_ = items[0].data(0, Qt.ItemDataRole.UserRole)
+                if type_ in (CAUSE_T, CONS_T, SG_T) and id_ is not None:
+                    md.setText(f'hzp:treeitem:{type_}:{id_}')
+            return md
+        self.tree.mimeData = _tree_mime_data
         layout.addWidget(self.tree)
 
         # ── Collapse/Expand buttons (compact control bar) ───────────────────────
@@ -8314,6 +8340,23 @@ class TreePanel(QWidget):
                 self._handle_equipment_drop(event, obj)
                 return True
 
+        # ── Internal drag-and-drop between tree levels (2026-08-17) ──────────
+        if obj in _drop_targets and event.type() == QEvent.Type.DragEnter:
+            if event.mimeData().hasText() and event.mimeData().text().startswith('hzp:treeitem:'):
+                event.acceptProposedAction()
+                return True
+        if obj in _drop_targets and event.type() == QEvent.Type.DragMove:
+            if event.mimeData().hasText() and event.mimeData().text().startswith('hzp:treeitem:'):
+                if self._tree_reparent_target_at(event, obj) is not None:
+                    event.acceptProposedAction()
+                else:
+                    event.ignore()
+                return True
+        if obj in _drop_targets and event.type() == QEvent.Type.Drop:
+            if event.mimeData().hasText() and event.mimeData().text().startswith('hzp:treeitem:'):
+                self._handle_tree_reparent_drop(event, obj)
+                return True
+
         if obj is not self.tree or event.type() != QEvent.Type.KeyPress:
             return super().eventFilter(obj, event)
         key  = event.key()
@@ -8433,6 +8476,102 @@ class TreePanel(QWidget):
 
         self.equipment_dropped_on_deviation.emit(dev_id, marker_ids)
         event.acceptProposedAction()
+
+    def _tree_reparent_target_at(self, event, source_obj):
+        """Return (target_type, target_id) the drop position resolves to,
+        or None if there's no tree item there. Actual compatibility
+        (whether THIS source type can legally land there) is checked by
+        the caller via _resolve_deviation_id/_resolve_cause_id/
+        _resolve_consequence_id — same resolvers the tree's own Kopiera/
+        Klistra in feature already uses, so drag-and-drop accepts exactly
+        the same targets paste does."""
+        pos = self._event_pos_in_viewport(event, source_obj)
+        item = self.tree.itemAt(pos)
+        if item is None:
+            return None
+        return (item.data(0, Qt.ItemDataRole.UserRole + 1),
+                item.data(0, Qt.ItemDataRole.UserRole))
+
+    def _handle_tree_reparent_drop(self, event, source_obj):
+        text = event.mimeData().text()
+        parts = text.split(':')   # ['hzp', 'treeitem', type, id]
+        if len(parts) < 4:
+            event.ignore(); return
+        try:
+            src_type = int(parts[2])
+            src_id = int(parts[3])
+        except ValueError:
+            event.ignore(); return
+
+        target = self._tree_reparent_target_at(event, source_obj)
+        if target is None:
+            event.ignore(); return
+        tgt_type, tgt_id = target
+
+        # Shift+drag copies (reuses the same copy_cause/copy_consequence/
+        # copy_safeguard the right-click Kopiera/Klistra in feature already
+        # uses); a plain drag moves. Checked against the LIVE keyboard
+        # state rather than event.dropAction() — Qt's own drag-modifier ->
+        # drop-action mapping is platform-specific (e.g. Windows maps
+        # Ctrl to copy, not Shift), and the user asked specifically for
+        # Shift here regardless of platform convention.
+        is_copy = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier)
+
+        if src_type == CAUSE_T:
+            dev_id = self._resolve_deviation_id(tgt_type, tgt_id)
+            if dev_id is None:
+                # Same NODE_T fallback _paste_item uses: dropping a cause
+                # directly on a node lands it on that node's "Övrigt"
+                # deviation (created on demand) rather than being rejected.
+                node_id = self._resolve_node_id(tgt_type, tgt_id)
+                if node_id is None:
+                    event.ignore(); return
+                dev_id = self.db.get_or_create_deviation(node_id)
+            src_cause = self.db.get_cause(src_id)
+            if not src_cause or dev_id == src_cause.get('deviation_id'):
+                event.ignore(); return   # no-op: dropped back onto its own parent
+            if is_copy:
+                new_id = self.db.copy_cause(src_id, dev_id)
+            else:
+                self.db.move_cause_to_deviation(src_id, dev_id)
+                new_id = src_id
+            self.refresh(CAUSE_T, new_id)
+            self.structure_changed.emit()
+            event.acceptProposedAction()
+
+        elif src_type == CONS_T:
+            cause_id = self._resolve_cause_id(tgt_type, tgt_id)
+            if cause_id is None:
+                event.ignore(); return
+            src_cons = self.db.get_consequence(src_id)
+            if not src_cons or cause_id == src_cons.get('cause_id'):
+                event.ignore(); return
+            if is_copy:
+                new_id = self.db.copy_consequence(src_id, cause_id)
+            else:
+                self.db.move_consequence(src_id, cause_id)
+                new_id = src_id
+            self.refresh(CONS_T, new_id)
+            self.structure_changed.emit()
+            event.acceptProposedAction()
+
+        elif src_type == SG_T:
+            cons_id = self._resolve_consequence_id(tgt_type, tgt_id)
+            if cons_id is None:
+                event.ignore(); return
+            src_sg = self.db.get_safeguard(src_id)
+            if not src_sg or cons_id == src_sg.get('consequence_id'):
+                event.ignore(); return
+            if is_copy:
+                new_id = self.db.copy_safeguard(src_id, cons_id)
+            else:
+                self.db.move_safeguard(src_id, cons_id)
+                new_id = src_id
+            self.refresh(SG_T, new_id)
+            self.structure_changed.emit()
+            event.acceptProposedAction()
+        else:
+            event.ignore()
 
     def _add_cause_for_deviation(self, dev_id):
         self._open_cause_picker_for_deviation(dev_id)
