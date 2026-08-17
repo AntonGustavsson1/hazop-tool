@@ -11695,6 +11695,157 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             self.assertIn('T-1', utr_item.text())
 
 
+class TreeInlineEditTests(unittest.TestCase):
+    """Fas E (2026-08-17, see NOTES.md "Trädet: inline-redigering, synk,
+    'ej definierad'-hantering") — double-click Nod/Avvikelse/Orsak/
+    Konsekvens/Safeguard edits the description directly in the tree
+    instead of only via the scenario table, and the result must propagate
+    to scenario_panel + P&ID overlays exactly like an edit made there."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def _commit(self, tree_panel, item, type_, id_, new_text):
+        """Simulate a completed inline edit without driving Qt's real
+        interactive editor widget — same direct-commit convention already
+        used for ScenarioTablePanel's _on_cell_changed_inner tests."""
+        tree_panel._inline_edit_target = (type_, id_)
+        item.setText(0, new_text)
+        tree_panel._on_tree_item_text_edited(item, 0)
+
+    def test_double_click_deviation_starts_inline_edit(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            win.tree_panel.refresh()
+            win.tree_panel.tree.expandAll()
+            item = _find_tree_item(win.tree_panel.tree, DEV_T, dev_id)
+            self.assertIsNotNone(item)
+
+            win.tree_panel._on_item_double_click(item, 0)
+
+            self.assertEqual(win.tree_panel._inline_edit_target, (DEV_T, dev_id))
+            self.assertTrue(bool(item.flags() & Qt.ItemFlag.ItemIsEditable))
+            self.assertEqual(item.text(0), win.db.get_deviation(dev_id)['description'])
+
+    def test_node_with_markup_still_jumps_instead_of_editing(self):
+        """Existing behavior (double-click a node that already has P&ID
+        markup jumps the view there) must survive unchanged — inline
+        editing only kicks in for a node WITHOUT markup."""
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            # has_node_markups() checks the node_markups TABLE (the newer
+            # multi-markup system), not the legacy nodes.markup_points
+            # column that add_node_with_markup() sets.
+            win.db.add_node_markup(node_id, 'polygon', [[0, 0], [10, 0], [10, 10]], '', '#000', 0.5, 4, 0)
+            win.tree_panel.refresh()
+            win.tree_panel.tree.expandAll()
+            item = _find_tree_item(win.tree_panel.tree, NODE_T, node_id)
+            self.assertIsNotNone(item)
+
+            jumped = []
+            win.tree_panel.node_jump_to_markup.connect(jumped.append)
+            win.tree_panel._on_item_double_click(item, 0)
+
+            self.assertEqual(jumped, [node_id])
+            self.assertIsNone(win.tree_panel._inline_edit_target)
+
+    def test_committing_node_rename_persists_and_keeps_other_fields(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            win.db.update_node(node_id, "Original", "Beskrivning X", "P-101", "Vatten", "10 bar", "80 C")
+            win.tree_panel.refresh()
+            item = _find_tree_item(win.tree_panel.tree, NODE_T, node_id)
+            self._commit(win.tree_panel, item, NODE_T, node_id, "Nytt namn")
+
+            node = win.db.get_node(node_id)
+            self.assertEqual(node['name'], "Nytt namn")
+            self.assertEqual(node['description'], "Beskrivning X")
+            self.assertEqual(node['pid_ref'], "P-101")
+
+    def test_committing_deviation_edit_persists(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            win.tree_panel.refresh()
+            item = _find_tree_item(win.tree_panel.tree, DEV_T, dev_id)
+            self._commit(win.tree_panel, item, DEV_T, dev_id, "Anpassad avvikelse")
+            self.assertEqual(win.db.get_deviation(dev_id)['description'], "Anpassad avvikelse")
+
+    def test_committing_cause_edit_persists(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            win.tree_panel.refresh()
+            item = _find_tree_item(win.tree_panel.tree, CAUSE_T, cause_id)
+            self._commit(win.tree_panel, item, CAUSE_T, cause_id, "Ny orsakstext")
+            self.assertEqual(win.db.get_cause(cause_id)['description'], "Ny orsakstext")
+
+    def test_committing_consequence_edit_keeps_severity_and_category(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            cons_id = win.db.add_consequence(cause_id)
+            win.db.update_consequence(cons_id, "Original", 3, "Miljö")
+            win.tree_panel.refresh()
+            item = _find_tree_item(win.tree_panel.tree, CONS_T, cons_id)
+            self._commit(win.tree_panel, item, CONS_T, cons_id, "Ny konsekvens")
+
+            cons = win.db.get_consequence(cons_id)
+            self.assertEqual(cons['description'], "Ny konsekvens")
+            self.assertEqual(cons['severity'], 3)
+            self.assertEqual(cons['category'], "Miljö")
+
+    def test_committing_safeguard_edit_keeps_rrf(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            cons_id = win.db.add_consequence(cause_id)
+            sg_id = win.db.add_safeguard(cons_id)
+            win.db.update_safeguard(sg_id, "Original", 100)
+            win.tree_panel.refresh()
+            item = _find_tree_item(win.tree_panel.tree, SG_T, sg_id)
+            self._commit(win.tree_panel, item, SG_T, sg_id, "Nytt skydd")
+
+            sg = win.db.get_safeguard(sg_id)
+            self.assertEqual(sg['description'], "Nytt skydd")
+            self.assertEqual(sg['rrf'], 100)
+
+    def test_editable_flag_cleared_after_commit(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            win.tree_panel.refresh()
+            item = _find_tree_item(win.tree_panel.tree, DEV_T, dev_id)
+            self._commit(win.tree_panel, item, DEV_T, dev_id, "X")
+            # refresh() rebuilds the tree, so re-fetch the (new) item object.
+            item_after = _find_tree_item(win.tree_panel.tree, DEV_T, dev_id)
+            self.assertFalse(bool(item_after.flags() & Qt.ItemFlag.ItemIsEditable))
+
+    def test_inline_edit_refreshes_scenario_and_pid_overlays(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            win.tree_panel.refresh()
+            item = _find_tree_item(win.tree_panel.tree, CAUSE_T, cause_id)
+
+            reload_calls = []
+            win.pid_panel.reload_overlays = lambda *a, **k: reload_calls.append(True)
+            refresh_calls = []
+            original_refresh = win.scenario_panel.refresh
+            win.scenario_panel.refresh = lambda *a, **k: (refresh_calls.append(True), original_refresh())[1]
+
+            self._commit(win.tree_panel, item, CAUSE_T, cause_id, "Uppdaterad")
+
+            self.assertTrue(reload_calls, "P&ID overlays must reload after an inline tree edit")
+            self.assertTrue(refresh_calls, "scenario table must refresh after an inline tree edit")
+
+
 class EquipmentMultiSelectTests(unittest.TestCase):
     """Multi-select of equipment markers on the P&ID (2026-08-08, see
     NOTES.md): Ctrl+click toggles, Ctrl+drag rubber-bands several at once,

@@ -7477,6 +7477,11 @@ class TreePanel(QWidget):
     # "Lågt flöde") — 2026-08-08, see NOTES.md. Args: (deviation_id, list
     # of equipment_markers.id).
     equipment_dropped_on_deviation = pyqtSignal(int, object)
+    # A Nod/Avvikelse/Orsak/Konsekvens/Safeguard's text was edited inline in
+    # the tree (2026-08-17, see NOTES.md "Dubbelklick -> redigera direkt i
+    # trädet") — args: (type_, id_), same shape as ScenarioTablePanel's own
+    # item_edited, so MainWindow can refresh scenario/P&ID the same way.
+    item_edited_inline = pyqtSignal(int, int)
 
     def __init__(self, db: Database):
         super().__init__()
@@ -7556,6 +7561,8 @@ class TreePanel(QWidget):
         self.tree.customContextMenuRequested.connect(self._context_menu)
         self.tree.currentItemChanged.connect(self._on_select)
         self.tree.itemDoubleClicked.connect(self._on_item_double_click)
+        self.tree.itemChanged.connect(self._on_tree_item_text_edited)
+        self._inline_edit_target = None   # (type_, id_) while an inline edit is in progress
         self.tree.installEventFilter(self)   # keyboard navigation (feature 17)
         layout.addWidget(self.tree)
 
@@ -8050,6 +8057,11 @@ class TreePanel(QWidget):
         id_   = current.data(0, Qt.ItemDataRole.UserRole)
         self.item_selected.emit(type_, id_)
 
+    # Types editable directly in the tree via double-click (2026-08-17, see
+    # NOTES.md "Dubbelklick -> redigera direkt i trädet"). EQUIP_T/LEDORD_T
+    # are pure grouping views with no DB row of their own — not included.
+    _INLINE_EDIT_TYPES = (NODE_T, DEV_T, CAUSE_T, CONS_T, SG_T)
+
     def _on_item_double_click(self, item, col):
         if item is None:
             return
@@ -8057,6 +8069,80 @@ class TreePanel(QWidget):
         id_   = item.data(0, Qt.ItemDataRole.UserRole)
         if type_ == NODE_T and self.db.has_node_markups(id_):
             self.node_jump_to_markup.emit(id_)
+            return
+        if type_ in self._INLINE_EDIT_TYPES:
+            self._begin_inline_edit(item, type_, id_)
+
+    def _raw_text_for(self, type_, id_):
+        """Current raw description for an editable item, fetched fresh from
+        the DB rather than reverse-engineered from the tree's decorated
+        display text (numbering/icons/emoji/truncation baked directly into
+        item text at construction time, see add_deviation_subtree etc.)."""
+        if type_ == NODE_T:
+            node = self.db.get_node(id_)
+            return (node.get('name') or '') if node else ''
+        if type_ == DEV_T:
+            dev = self.db.get_deviation(id_)
+            return (dev.get('description') or '') if dev else ''
+        if type_ == CAUSE_T:
+            cause = self.db.get_cause(id_)
+            return (cause.get('description') or '') if cause else ''
+        if type_ == CONS_T:
+            cons = self.db.get_consequence(id_)
+            return (cons.get('description') or '') if cons else ''
+        if type_ == SG_T:
+            sg = self.db.get_safeguard(id_)
+            return (sg.get('description') or '') if sg else ''
+        return ''
+
+    def _begin_inline_edit(self, item, type_, id_):
+        raw = self._raw_text_for(type_, id_)
+        self._inline_edit_target = (type_, id_)
+        # Swap the decorated display text ("    ⚙ 1. Beskrivning...") for
+        # the plain raw description while editing — itemChanged below
+        # writes back exactly what's in the box, and a full refresh()
+        # afterward restores the decoration around whatever was typed.
+        # Known minor limitation: pressing Escape to cancel leaves the
+        # item showing this undecorated raw text until the next refresh()
+        # (nothing is written to the DB) — Qt's own item-editing machinery
+        # closes the editor on Escape without emitting a signal this class
+        # can hook to restore decoration immediately; low-impact enough
+        # (self-heals on the next selection change or edit) not to justify
+        # a full delegate-based editor for this alone.
+        self.tree.blockSignals(True)
+        item.setText(0, raw)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+        self.tree.blockSignals(False)
+        self.tree.editItem(item, 0)
+
+    def _on_tree_item_text_edited(self, item, col):
+        if col != 0 or self._inline_edit_target is None:
+            return
+        type_, id_ = self._inline_edit_target
+        self._inline_edit_target = None
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        text = item.text(0).strip()
+
+        if type_ == NODE_T:
+            node = self.db.get_node(id_)
+            if node:
+                self.db.update_node(id_, text, node.get('description') or '',
+                                     node.get('pid_ref') or '', node.get('media') or '',
+                                     node.get('pressure') or '', node.get('temperature') or '')
+        elif type_ == DEV_T:
+            self.db.update_deviation(id_, text)
+        elif type_ == CAUSE_T:
+            self.db.update_cause(id_, description=text)
+        elif type_ == CONS_T:
+            cons = self.db.get_consequence(id_)
+            if cons:
+                self.db.update_consequence(id_, text, cons['severity'], cons['category'] or '')
+        elif type_ == SG_T:
+            sg = self.db.get_safeguard(id_)
+            self.db.update_safeguard(id_, text, (sg['rrf'] or 1) if sg else 1)
+
+        self.refresh(type_, id_, emit_selection=False)
+        self.item_edited_inline.emit(type_, id_)
 
     def _context_menu(self, pos):
         item = self.tree.itemAt(pos)
@@ -20433,6 +20519,15 @@ class MainWindow(QMainWindow):
         # Noder tab (HAZOPPreparationPanel, 2026-08-17) must reflect node
         # add/rename/delete that originated in the tree, not just its own edits.
         self.tree_panel.structure_changed.connect(self.hazop_prep_panel.refresh_nodes)
+        # Inline tree editing (2026-08-17, see NOTES.md) — mirrors
+        # scenario_panel.item_edited's own connection (_on_scenario_item_edited)
+        # but in the opposite direction: an edit made IN THE TREE must also
+        # refresh the scenario table + P&ID overlays (bold tag references,
+        # markers/tooltips) since they all read from the same DB rows.
+        self.tree_panel.item_edited_inline.connect(
+            lambda type_, id_: (self.scenario_panel.refresh(),
+                                 self.pid_panel.reload_overlays()))
+        self.tree_panel.item_edited_inline.connect(self.hazop_prep_panel.refresh_nodes)
         self.tree_panel.visibility_changed.connect(
             lambda t, v: self.pid_panel.viewer.set_marker_visibility(t, v))
 
