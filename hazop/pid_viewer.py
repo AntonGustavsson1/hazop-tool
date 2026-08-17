@@ -8829,6 +8829,25 @@ class PIDPanel(QWidget):
         for phys in page_order:
             out_doc.insert_pdf(src_doc, from_page=phys, to_page=phys)
 
+        # A page with a manual rotation override (Database.get_all_page_
+        # rotations(), keyed by PHYSICAL page number) must be rotated in
+        # out_doc too, or the export comes out sideways/upside-down on
+        # exactly the pages the live viewer shows rotated (2026-08-17,
+        # see NOTES.md "Exportera PDF hanterar inte P&ID-rotation").
+        # Every marker's own x/y below is stored in the LIVE view's
+        # already-rotated coordinate space (same reason
+        # equipment_detection.apply_page_rotations exists at all — see
+        # its own docstring), so out_doc's pages must be rotated BEFORE
+        # any drawing happens, not after. Remap physical-page keys to
+        # OUTPUT page indices first — out_doc's own page order follows
+        # page_order, which is not necessarily identity (custom sheet
+        # ordering via get_sheets()).
+        raw_rotations = self.db.get_all_page_rotations()
+        out_rotations = {out_idx: raw_rotations[phys]
+                          for out_idx, phys in enumerate(page_order)
+                          if phys in raw_rotations}
+        equipment_detection.apply_page_rotations(out_doc, out_rotations)
+
         for out_idx, phys_page in enumerate(page_order):
             prog.setValue(out_idx)
             QApplication.processEvents()
@@ -8866,9 +8885,21 @@ class PIDPanel(QWidget):
                     cx = sum(p.x for p in pts) / len(pts)
                     cy = sum(p.y for p in pts) / len(pts)
                     try:
+                        # 11pt to match the on-screen node label exactly
+                        # (PIDGraphicsView.add_node_overlay's QFont
+                        # setPointSize(11)) — this used to be hardcoded
+                        # to 8pt here with no relation to the live view
+                        # at all (2026-08-17, see NOTES.md "text i fel
+                        # storlek vid PDF-export"). Centered using
+                        # PyMuPDF's own text-width measurement instead of
+                        # a per-character magic-number guess, since that
+                        # guess was tuned for the old 8pt size and would
+                        # have needed re-tuning by hand for 11pt too.
+                        fontsize = 11
+                        text_w = fitz.get_text_length(name, fontname='helv', fontsize=fontsize)
                         shape.insert_text(
-                            fitz.Point(cx - len(name) * 2.5, cy + 3.5),
-                            name, fontsize=8, color=color, fontname='helv')
+                            fitz.Point(cx - text_w / 2, cy + fontsize * 0.35),
+                            name, fontsize=fontsize, color=color, fontname='helv')
                     except Exception:
                         pass
                 shape.commit()
@@ -8938,8 +8969,20 @@ class PIDPanel(QWidget):
                             rect_h = font_sz * 1.7
                             rect   = fitz.Rect(x, y - rect_h,
                                                x + rect_w, y + 2)
-                            bg = ([1.0, 1.0, 0.82] if mu_type == 'comment'
-                                  else list(fill_rgb))
+                            # Only 'comment' gets a visible highlight box
+                            # on screen (_add_markup_text_item's own
+                            # `if type_ == 'comment':` guard) — a plain
+                            # 'text' node-name label never has one there.
+                            # This used to fill EVERY text-type item with
+                            # fill_rgb regardless, giving node-name labels
+                            # a background they never show live
+                            # (2026-08-17, see NOTES.md "text får en
+                            # bakgrundsfärg som inte syns annars"). None
+                            # is PyMuPDF's own "no fill" convention here
+                            # (confirmed empirically: annot.colors['fill']
+                            # comes back [] and the rendered box shows no
+                            # background at all).
+                            bg = [1.0, 1.0, 0.82] if mu_type == 'comment' else None
                             annot = page.add_freetext_annot(
                                 rect, txt,
                                 fontsize=font_sz,
@@ -8994,6 +9037,24 @@ class PIDPanel(QWidget):
                 desc = row['description'] if row else ''
                 tag  = md.get('tag', '')
                 _draw_pid_marker(page, x, y, (0.15, 0.62, 0.27), 'S', tag or desc)
+
+            # ── Equipment/object markers ──────────────────────────────────
+            # Missing entirely before this fix (2026-08-17, see NOTES.md
+            # "övriga objekt jag satt ut på P&ID... kommer inte med,
+            # varken dom röda eller gröna") — the loop below simply
+            # didn't exist; only cause/consequence/safeguard markers were
+            # ever drawn. Same red/green split as PIDGraphicsView.
+            # add_equipment_marker's on-screen pen/brush colours
+            # (0,130,60 green / 160,0,0 red, scaled to PyMuPDF's 0-1
+            # range), keyed on the same deviation_count PIDPanel.
+            # _load_overlays() already computes for the live marker.
+            for m in self.db.equipment_markers_for_page(phys_page):
+                md = dict(m)
+                x, y = float(md['x']), float(md['y'])
+                dev_count = (self.db.equipment_deviation_count(md['equipment_id'])
+                             if md.get('equipment_id') else 0)
+                rgb = (0.0, 0.51, 0.24) if dev_count > 0 else (0.63, 0.0, 0.0)
+                _draw_pid_marker(page, x, y, rgb, 'O', md.get('tag', ''))
 
             # ── Connection lines ──────────────────────────────────────────
             shape = page.new_shape()

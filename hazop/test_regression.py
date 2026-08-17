@@ -752,9 +752,9 @@ class GuiSmokeTests(unittest.TestCase):
         SettingsPanel._cat_delete() needs to either instantiate/guard that
         attribute or stop referencing it.
         """
-        from hazop import SettingsPanel
+        from hazop import HAZOPPreparationPanel
 
-        panel = SettingsPanel(self.db)
+        panel = HAZOPPreparationPanel(self.db)
         try:
             self.db.add_category("TestCategory")
             panel._load_categories()
@@ -4085,8 +4085,8 @@ class ReloadAllPanelsDbSwapTests(unittest.TestCase):
             win.db = hazop.Database(path=old_db.path)
             win._reload_all_panels()
             self.assertIs(
-                win.settings_panel._participant_matrix_panel.db, win.db,
-                "SettingsPanel's nested ParticipantMatrixPanel must also receive the new db reference")
+                win.hazop_prep_panel._participant_matrix_panel.db, win.db,
+                "HAZOPPreparationPanel's nested ParticipantMatrixPanel must also receive the new db reference")
 
     def test_add_participant_does_not_crash_after_db_swap(self):
         """End-to-end regression for the exact reported crash: "Programmet
@@ -4101,7 +4101,7 @@ class ReloadAllPanelsDbSwapTests(unittest.TestCase):
             win._reload_all_panels()
 
             try:
-                win.settings_panel._participant_matrix_panel._add_participant()
+                win.hazop_prep_panel._participant_matrix_panel._add_participant()
             except sqlite3.ProgrammingError as e:
                 self.fail(f"_add_participant() must not touch the closed old db, raised: {e!r}")
 
@@ -7161,7 +7161,7 @@ class EquipmentMarkerClickNavigationTests(unittest.TestCase):
             win._on_marker_navigate('equipment', marker_id)
 
             load_eq_spy.assert_called_once_with(eq_id)
-            self.assertNotEqual(win.view_stack.currentIndex(), 2,
+            self.assertNotEqual(win.view_stack.currentIndex(), 3,
                 "clicking a marker must stay on the P&ID page — the filtered "
                 "scenario table is the bottom pane of that same page, no "
                 "need to navigate away to the Utrustning register")
@@ -7209,7 +7209,7 @@ class EquipmentMarkerClickNavigationTests(unittest.TestCase):
             win._on_marker_navigate('equipment', marker_id)
 
             load_eq_spy.assert_called_once_with(eq_id)
-            self.assertNotEqual(win.view_stack.currentIndex(), 2,
+            self.assertNotEqual(win.view_stack.currentIndex(), 3,
                 "must not switch to the Utrustning register page when the "
                 "equipment has a node to show a worksheet for")
             cons_and_sg_ids = {(m[2], m[3]) for m in win.scenario_panel._row_meta}
@@ -7238,7 +7238,7 @@ class EquipmentMarkerClickNavigationTests(unittest.TestCase):
             win._on_marker_navigate('equipment', marker_id)
 
             load_eq_spy.assert_called_once_with(eq_id)
-            self.assertNotEqual(win.view_stack.currentIndex(), 2,
+            self.assertNotEqual(win.view_stack.currentIndex(), 3,
                 "must not switch to the Utrustning page — no fallback anymore")
 
     def test_select_row_by_equipment_id_clears_blocking_filter(self):
@@ -13644,8 +13644,8 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         return [panel._tabs.tabText(i) for i in range(panel._tabs.count())]
 
     def test_tabs_merged_into_single_named_tab(self):
-        from hazop import SettingsPanel
-        panel = SettingsPanel(self.db)
+        from hazop import HAZOPPreparationPanel
+        panel = HAZOPPreparationPanel(self.db)
         try:
             titles = self._tab_titles(panel)
             self.assertIn("Riskmatris & Kategorier", titles)
@@ -13655,8 +13655,8 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             panel.deleteLater()
 
     def test_category_add_rename_delete_still_works_from_merged_tab(self):
-        from hazop import SettingsPanel
-        panel = SettingsPanel(self.db)
+        from hazop import HAZOPPreparationPanel
+        panel = HAZOPPreparationPanel(self.db)
         try:
             panel.db.add_category("Miljö")
             panel._load_categories()
@@ -13688,8 +13688,8 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             panel.deleteLater()
 
     def test_matrix_editing_and_save_still_works_from_merged_tab(self):
-        from hazop import SettingsPanel
-        panel = SettingsPanel(self.db)
+        from hazop import HAZOPPreparationPanel
+        panel = HAZOPPreparationPanel(self.db)
         try:
             saved = []
             panel.matrix_changed.connect(lambda: saved.append(True))
@@ -13721,8 +13721,8 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         not, so the matrix silently kept its old grid after a delete. Use
         _cell_buttons' identity (not just its length, which a fixed-size
         matrix wouldn't change) to prove a real rebuild happened."""
-        from hazop import SettingsPanel
-        panel = SettingsPanel(self.db)
+        from hazop import HAZOPPreparationPanel
+        panel = HAZOPPreparationPanel(self.db)
         try:
             panel.db.add_category("Miljö")
             panel._load_categories()
@@ -13745,8 +13745,8 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         selected category and persist the new order via
         Database.reorder_categories(), which consequence_categories()
         (ORDER BY sort_order, name) then reflects."""
-        from hazop import SettingsPanel
-        panel = SettingsPanel(self.db)
+        from hazop import HAZOPPreparationPanel
+        panel = HAZOPPreparationPanel(self.db)
         try:
             # Database() seeds default categories (Person/Miljö/Ekonomi/...)
             # on creation -- clear them so this test only has to reason
@@ -13772,8 +13772,8 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             panel.deleteLater()
 
     def test_move_up_at_top_and_move_down_at_bottom_are_no_ops(self):
-        from hazop import SettingsPanel
-        panel = SettingsPanel(self.db)
+        from hazop import HAZOPPreparationPanel
+        panel = HAZOPPreparationPanel(self.db)
         try:
             for cat in list(panel.db.consequence_categories()):
                 panel.db.delete_category(cat['id'])
@@ -13822,8 +13822,8 @@ class SettingsPanelProjektExpansionTests(unittest.TestCase):
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
     def test_facility_leader_round_trip(self):
-        from hazop import SettingsPanel
-        panel = SettingsPanel(self.db)
+        from hazop import HAZOPPreparationPanel
+        panel = HAZOPPreparationPanel(self.db)
         try:
             panel._proj_facility.setText("Gävle Depå")
             panel._proj_facility.editingFinished.emit()
@@ -13836,8 +13836,8 @@ class SettingsPanelProjektExpansionTests(unittest.TestCase):
             panel.deleteLater()
 
     def test_date_range_round_trips_through_config(self):
-        from hazop import SettingsPanel
-        panel = SettingsPanel(self.db)
+        from hazop import HAZOPPreparationPanel
+        panel = HAZOPPreparationPanel(self.db)
         try:
             panel._proj_date_start.setDate(QDate(2026, 9, 1))
             panel._proj_date_end.setDate(QDate(2026, 9, 3))
@@ -13847,10 +13847,10 @@ class SettingsPanelProjektExpansionTests(unittest.TestCase):
             panel.deleteLater()
 
     def test_date_range_reloads_from_config_on_new_panel(self):
-        from hazop import SettingsPanel
+        from hazop import HAZOPPreparationPanel
         self.db.set_config('project_date_start', '2027-01-10')
         self.db.set_config('project_date_end', '2027-01-12')
-        panel = SettingsPanel(self.db)
+        panel = HAZOPPreparationPanel(self.db)
         try:
             self.assertEqual(panel._proj_date_start.date().toString('yyyy-MM-dd'), '2027-01-10')
             self.assertEqual(panel._proj_date_end.date().toString('yyyy-MM-dd'), '2027-01-12')
@@ -13897,8 +13897,8 @@ class SettingsPanelDateWidgetsAndTodayButtonTests(unittest.TestCase):
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
     def test_date_edits_have_a_real_width_constraint(self):
-        from hazop import SettingsPanel
-        panel = SettingsPanel(self.db)
+        from hazop import HAZOPPreparationPanel
+        panel = HAZOPPreparationPanel(self.db)
         try:
             for edit in (panel._proj_date_start, panel._proj_date_end):
                 max_w = edit.maximumWidth()
@@ -13919,9 +13919,9 @@ class SettingsPanelDateWidgetsAndTodayButtonTests(unittest.TestCase):
         container widget no longer stretches to the tab's full width the
         way the other QLineEdit form rows still do (by design — this test
         is what would have caught the original bug)."""
-        from hazop import SettingsPanel
+        from hazop import HAZOPPreparationPanel
         from PyQt6.QtWidgets import QFormLayout
-        panel = SettingsPanel(self.db)
+        panel = HAZOPPreparationPanel(self.db)
         try:
             panel.resize(900, 700)
             panel.show()
@@ -13952,8 +13952,8 @@ class SettingsPanelDateWidgetsAndTodayButtonTests(unittest.TestCase):
             panel.deleteLater()
 
     def test_today_button_sets_start_date_to_today(self):
-        from hazop import SettingsPanel
-        panel = SettingsPanel(self.db)
+        from hazop import HAZOPPreparationPanel
+        panel = HAZOPPreparationPanel(self.db)
         try:
             panel._proj_date_start.setDate(QDate(2020, 1, 1))
             panel._proj_date_start_today_btn.click()
@@ -13962,8 +13962,8 @@ class SettingsPanelDateWidgetsAndTodayButtonTests(unittest.TestCase):
             panel.deleteLater()
 
     def test_today_button_sets_end_date_to_today(self):
-        from hazop import SettingsPanel
-        panel = SettingsPanel(self.db)
+        from hazop import HAZOPPreparationPanel
+        panel = HAZOPPreparationPanel(self.db)
         try:
             panel._proj_date_end.setDate(QDate(2020, 1, 1))
             panel._proj_date_end_today_btn.click()
@@ -13972,8 +13972,8 @@ class SettingsPanelDateWidgetsAndTodayButtonTests(unittest.TestCase):
             panel.deleteLater()
 
     def test_start_today_button_does_not_touch_end_date(self):
-        from hazop import SettingsPanel
-        panel = SettingsPanel(self.db)
+        from hazop import HAZOPPreparationPanel
+        panel = HAZOPPreparationPanel(self.db)
         try:
             panel._proj_date_end.setDate(QDate(2020, 1, 1))
             panel._proj_date_start_today_btn.click()
@@ -14202,8 +14202,8 @@ class ParticipantMatrixTests(unittest.TestCase):
             panel.deleteLater()
 
     def test_deltagare_tab_exists_in_settings_panel(self):
-        from hazop import SettingsPanel
-        panel = SettingsPanel(self.db)
+        from hazop import HAZOPPreparationPanel
+        panel = HAZOPPreparationPanel(self.db)
         try:
             titles = [panel._tabs.tabText(i) for i in range(panel._tabs.count())]
             self.assertIn("Deltagare", titles)
@@ -14214,8 +14214,8 @@ class ParticipantMatrixTests(unittest.TestCase):
         """"istället" (instead) in the user's request means the new matrix
         REPLACES the old free-text field — it must not still exist
         alongside it."""
-        from hazop import SettingsPanel
-        panel = SettingsPanel(self.db)
+        from hazop import HAZOPPreparationPanel
+        panel = HAZOPPreparationPanel(self.db)
         try:
             self.assertFalse(hasattr(panel, '_proj_participants'),
                               "Old free-text Deltagare QPlainTextEdit should be removed")
@@ -15601,6 +15601,166 @@ class PidPageRotationTests(unittest.TestCase):
             marker = dict(self.db.cause_markers_for_page(0)[0])
             self.assertAlmostEqual(marker['x'], 77.0, places=3)
             self.assertAlmostEqual(marker['y'], 133.0, places=3)
+        finally:
+            panel.deleteLater()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# PIDPanel._export_pdf — four separate bugs reported together (2026-08-17,
+# see NOTES.md): "Dels kan den inte hantera om P&ID har roterats. Dels blir
+# texten i fel storlek. Dels får text en bakrungsfärg som inte syns annars.
+# Och dels kommer inte övriga objekt jag satt ut på P&ID med, dvs objekt,
+# varken dom röda eller gröna."
+# ══════════════════════════════════════════════════════════════════════════
+
+class ExportPdfMarkupTests(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        import fitz
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_export_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        # _export_pdf reads _working_pdf_path(), derived purely from
+        # db.path — the test PDF must live at that exact name for the
+        # live viewer and the exporter to agree on the same file.
+        db_path = Path(self.db.path)
+        self.pdf_path = str(db_path.with_name(db_path.stem + '_pid.pdf'))
+        doc = fitz.open()
+        doc.new_page(width=400.0, height=300.0)
+        doc.save(self.pdf_path)
+        doc.close()
+        self.out_path = os.path.join(self._tmpdir, "out.pdf")
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_panel(self):
+        from pid_viewer import PIDPanel
+        panel = PIDPanel(self.db)
+        panel.viewer.load_pdf(self.pdf_path)
+        self.db.ensure_sheets_initialized(panel.viewer.page_count())
+        panel._rebuild_sheet_map()
+        return panel
+
+    def _export(self, panel):
+        # QMessageBox.information's final "Export klar" success popup is a
+        # REAL modal dialog — unmocked, it blocks forever in a headless
+        # test run waiting for a click that will never come.
+        with unittest.mock.patch('pid_viewer.QFileDialog.getSaveFileName',
+                                  return_value=(self.out_path, '')), \
+             unittest.mock.patch.object(QMessageBox, 'information'):
+            panel._export_pdf()
+
+    def test_export_applies_page_rotation_override(self):
+        """"Dels kan den inte hantera om P&ID har roterats" — the export
+        opened its own fresh fitz.Document and never called
+        equipment_detection.apply_page_rotations(), unlike every other
+        code path that opens the PDF independently of the live viewer."""
+        panel = self._make_panel()
+        try:
+            self.db.set_page_rotation(0, 90)
+            self._export(panel)
+            import fitz
+            out = fitz.open(self.out_path)
+            self.assertEqual(out.load_page(0).rotation, 90)
+            out.close()
+        finally:
+            panel.deleteLater()
+
+    def test_export_node_name_font_size_matches_on_screen(self):
+        """"Dels blir texten i fel storlek" — the node-name label was
+        hardcoded to 8pt in the export vs. 11pt in PIDGraphicsView.
+        add_node_overlay's on-screen QFont."""
+        panel = self._make_panel()
+        try:
+            self.db.add_node_with_markup(
+                "Reaktor 101", [[10, 10], [100, 10], [100, 80], [10, 80]], {}, 0)
+            self._export(panel)
+            import fitz
+            out = fitz.open(self.out_path)
+            spans = [s for b in out.load_page(0).get_text("dict")["blocks"]
+                     for l in b.get("lines", []) for s in l["spans"]
+                     if "Reaktor" in s["text"]]
+            out.close()
+            self.assertTrue(spans, "the node name must actually be drawn")
+            self.assertAlmostEqual(spans[0]["size"], 11, delta=0.5)
+        finally:
+            panel.deleteLater()
+
+    def test_export_text_markup_has_no_background_fill(self):
+        """"Dels får text en bakrungsfärg som inte syns annars" — a plain
+        'text'-type node markup (as opposed to 'comment') has no
+        background on screen (_add_markup_text_item's own
+        `if type_ == 'comment':` guard) but the export filled every
+        text-type annotation with a tinted background regardless."""
+        panel = self._make_panel()
+        try:
+            node_id = self.db.add_node()
+            self.db.add_node_markup(
+                node_id, 'text', [[20, 20]], 'Etikett', '#1565C0', 0.45, 12, 0)
+            self._export(panel)
+            import fitz
+            out = fitz.open(self.out_path)
+            annots = list(out.load_page(0).annots())
+            self.assertTrue(annots, "the text markup must actually be drawn")
+            # For a FreeText annotation specifically, PyMuPDF exposes the
+            # PDF's own /C entry (the actual background colour for this
+            # subtype) under colors['stroke'], not colors['fill'] —
+            # confirmed empirically by inspecting the raw annotation
+            # dict and rendering the page (a 'comment' shows its yellow
+            # box; 'text' shows none). Must read .colors BEFORE closing
+            # `out` — an Annot is a live handle into the document; once
+            # closed it silently reports empty colors instead of raising,
+            # which would make this assertion pass for the wrong reason.
+            stroke = annots[0].colors.get('stroke')
+            out.close()
+            self.assertEqual(stroke, [],
+                "a plain 'text' node-name label must have no background, matching the live view")
+        finally:
+            panel.deleteLater()
+
+    def test_export_comment_markup_keeps_its_highlight_background(self):
+        """The fix for the bug above must not remove 'comment's own
+        intentional highlight background — only 'text' loses it."""
+        panel = self._make_panel()
+        try:
+            node_id = self.db.add_node()
+            self.db.add_node_markup(
+                node_id, 'comment', [[20, 20]], 'En kommentar', '#1565C0', 0.45, 12, 0)
+            self._export(panel)
+            import fitz
+            out = fitz.open(self.out_path)
+            annots = list(out.load_page(0).annots())
+            self.assertTrue(annots)
+            stroke = annots[0].colors.get('stroke')   # read before closing, see note above
+            out.close()
+            self.assertTrue(stroke,
+                "'comment' must still show its highlight background")
+        finally:
+            panel.deleteLater()
+
+    def test_export_includes_equipment_markers(self):
+        """"Och dels kommer inte övriga objekt jag satt ut på P&ID med,
+        dvs objekt. varken dom röda eller gröna" — _export_pdf never
+        looped over equipment_markers_for_page() at all; only cause/
+        consequence/safeguard markers were drawn."""
+        panel = self._make_panel()
+        try:
+            eq_id = self.db.add_equipment_item('V-101', 'V-101', 'V', 0, 'Ventil', '', 0)
+            self.db.add_equipment_marker(eq_id, 'V-101', 0, 50.0, 60.0, 'Ventil')
+            self._export(panel)
+            import fitz
+            out = fitz.open(self.out_path)
+            text = out.load_page(0).get_text()
+            out.close()
+            self.assertIn('V-101', text)
         finally:
             panel.deleteLater()
 

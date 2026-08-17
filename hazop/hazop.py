@@ -6105,7 +6105,7 @@ class PropertiesRibbon(QWidget):
 
     def _zoom_to_node(self, btn):
         if not self._mw or not self._id: return
-        self._mw._switch_view(0)
+        self._mw._switch_view(1)
         from PyQt6.QtCore import QTimer
         QTimer.singleShot(CONFIG['TIMER_NAV_QUICK_MS'],
                          partial(self._mw.zoom_to_node, self._id))
@@ -6201,7 +6201,7 @@ class PropertiesRibbon(QWidget):
 
     def _zoom_to_cause(self, btn):
         if not self._id or not self._mw: return
-        self._mw._switch_view(0)
+        self._mw._switch_view(1)
         markers = self.db.cause_markers_for_cause(self._id)
         if markers:
             m = markers[0]
@@ -6223,7 +6223,7 @@ class PropertiesRibbon(QWidget):
 
     def _zoom_to_cons(self, btn):
         if not self._id or not self._mw: return
-        self._mw._switch_view(0)
+        self._mw._switch_view(1)
         rows = self.db.conn.execute(
             "SELECT pid_page,x,y FROM consequence_markers WHERE consequence_id=? LIMIT 1",
             (self._id,)).fetchone()
@@ -6259,7 +6259,7 @@ class PropertiesRibbon(QWidget):
 
     def _zoom_to_sg(self, btn):
         if not self._id or not self._mw: return
-        self._mw._switch_view(0)
+        self._mw._switch_view(1)
         rows = self.db.conn.execute(
             "SELECT pid_page,x,y FROM safeguard_markers WHERE safeguard_id=? LIMIT 1",
             (self._id,)).fetchone()
@@ -16907,7 +16907,34 @@ class ParticipantMatrixPanel(QWidget):
         self.refresh()
 
 
-class SettingsPanel(QWidget):
+class HAZOPPreparationPanel(QWidget):
+    """Administrative HAZOP-prep material, collected under its own top-level
+    nav entry (2026-08-17, user request: "flytta om flikarna... Skapa en ny
+    huvudflik i Claude med namnet HAZOP preperation. Fliken ska samla
+    följande administrativa underlag: Projekt, Deltagare, Riskmatris,
+    Standardorsaker... Denna fliken ska ligga ute i det svarta fältet till
+    vänster högst upp") — these four used to live buried several clicks deep
+    as tabs inside Inställningar; extracted here into their own page since
+    Anton wanted them front-and-center. Placed at MainWindow.view_stack
+    index 0 (see NOTES.md for why: not just visually first in the nav rail,
+    Anton explicitly wants it structurally first, so every OTHER page's
+    index shifts +1 — see the "_switch_view" renumbering that accompanies
+    this class).
+
+    "Riskmatris & Kategorier" brings essentially all of the OLD
+    SettingsPanel's own methods along with it (17 of them) — before this
+    split, that risk-matrix/palette/category editing WAS almost the entire
+    class; SettingsPanel keeps only the tabs that were already their own
+    standalone panel classes or simple inline forms unrelated to the matrix.
+
+    Keeps its OWN `matrix_changed` signal (rather than somehow reaching
+    across to SettingsPanel's) — SettingsPanel's TagDatabasePanel forwards
+    its own settings_changed into a `matrix_changed` of its own for the same
+    "please refresh" purpose (MainWindow._on_matrix_changed refreshes tree/
+    scenario views generically, not just for matrix edits) — cleanest to let
+    each panel own the exact signal for whatever changes it makes, and have
+    MainWindow.__init__ connect both to the same handler."""
+
     matrix_changed = pyqtSignal()
 
     def __init__(self, db: Database):
@@ -16923,6 +16950,79 @@ class SettingsPanel(QWidget):
         self._tabs = tabs   # kept as an attribute for testability (tabText() lookups)
         main = QVBoxLayout(self)
         main.addWidget(tabs)
+
+        # ── Tab: Projekt ──────────────────────────────────────────────────────
+        proj_tab = QWidget()
+        pl = QFormLayout(proj_tab)
+        pl.setSpacing(10)
+        pl.setContentsMargins(16, 16, 16, 16)
+
+        self._proj_name = QLineEdit()
+        self._proj_name.editingFinished.connect(
+            lambda: self.db.set_config('project_name', self._proj_name.text()))
+        pl.addRow("Projektnamn:", self._proj_name)
+
+        self._proj_facility = QLineEdit()
+        self._proj_facility.editingFinished.connect(
+            lambda: self.db.set_config('project_facility', self._proj_facility.text()))
+        pl.addRow("Anläggning:", self._proj_facility)
+
+        self._proj_leader = QLineEdit()
+        self._proj_leader.editingFinished.connect(
+            lambda: self.db.set_config('project_hazop_leader', self._proj_leader.text()))
+        pl.addRow("HAZOP-ledare:", self._proj_leader)
+
+        date_row_w = QWidget()
+        date_row_w.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        date_row_l = QHBoxLayout(date_row_w)
+        date_row_l.setContentsMargins(0, 0, 0, 0)
+        date_row_l.setSpacing(6)
+        self._proj_date_start = QDateEdit()
+        self._proj_date_start.setCalendarPopup(True)
+        self._proj_date_start.setDisplayFormat("yyyy-MM-dd")
+        self._proj_date_end = QDateEdit()
+        self._proj_date_end.setCalendarPopup(True)
+        self._proj_date_end.setDisplayFormat("yyyy-MM-dd")
+        _date_edit_w = QFontMetrics(self._proj_date_start.font()).horizontalAdvance(
+            "9999-99-99") + 40
+        self._proj_date_start.setMaximumWidth(_date_edit_w)
+        self._proj_date_end.setMaximumWidth(_date_edit_w)
+        self._proj_date_start.dateChanged.connect(
+            lambda d: self.db.set_config('project_date_start', d.toString('yyyy-MM-dd')))
+        self._proj_date_end.dateChanged.connect(
+            lambda d: self.db.set_config('project_date_end', d.toString('yyyy-MM-dd')))
+        self._proj_date_start_today_btn = QPushButton("Idag")
+        self._proj_date_start_today_btn.setToolTip("Sätt startdatum till dagens datum")
+        self._proj_date_start_today_btn.clicked.connect(
+            lambda: self._proj_date_start.setDate(QDate.currentDate()))
+        self._proj_date_end_today_btn = QPushButton("Idag")
+        self._proj_date_end_today_btn.setToolTip("Sätt slutdatum till dagens datum")
+        self._proj_date_end_today_btn.clicked.connect(
+            lambda: self._proj_date_end.setDate(QDate.currentDate()))
+        date_row_l.addWidget(self._proj_date_start)
+        date_row_l.addWidget(self._proj_date_start_today_btn)
+        date_row_l.addWidget(QLabel("  –  "))
+        date_row_l.addWidget(self._proj_date_end)
+        date_row_l.addWidget(self._proj_date_end_today_btn)
+        pl.addRow("Datum (från–till):", date_row_w)
+
+        self._proj_rev = QLineEdit()
+        self._proj_rev.editingFinished.connect(
+            lambda: self.db.set_config('project_revision', self._proj_rev.text()))
+        pl.addRow("Revision:", self._proj_rev)
+
+        tabs.addTab(proj_tab, "Projekt")
+
+        # ── Tab: Deltagare ────────────────────────────────────────────────────
+        # Replaces the old free-text "Deltagare" field (2026-08-11, user
+        # request: "skulle även gilla ... en till flik med deltagare
+        # istället där man definerar förnamn, efternamn, roll på y axel och
+        # analystillfälen på x axeln så det blir en matris" — "istället"
+        # means this REPLACES the free-text field, not adds to it). See
+        # ParticipantMatrixPanel below and NOTES.md for the schema/UI
+        # design rationale.
+        self._participant_matrix_panel = ParticipantMatrixPanel(self.db)
+        tabs.addTab(self._participant_matrix_panel, "Deltagare")
 
         # ── Tab: Riskmatris ───────────────────────────────────────────────────
         matrix_tab = QWidget()
@@ -17103,224 +17203,9 @@ class SettingsPanel(QWidget):
         combined_l.addWidget(splitter)
         tabs.addTab(combined_tab, "Riskmatris & Kategorier")
 
-        # ── Tab: Projekt ──────────────────────────────────────────────────────
-        proj_tab = QWidget()
-        pl = QFormLayout(proj_tab)
-        pl.setSpacing(10)
-        pl.setContentsMargins(16, 16, 16, 16)
-
-        self._proj_name = QLineEdit()
-        self._proj_name.editingFinished.connect(
-            lambda: self.db.set_config('project_name', self._proj_name.text()))
-        pl.addRow("Projektnamn:", self._proj_name)
-
-        self._proj_facility = QLineEdit()
-        self._proj_facility.editingFinished.connect(
-            lambda: self.db.set_config('project_facility', self._proj_facility.text()))
-        pl.addRow("Anläggning:", self._proj_facility)
-
-        self._proj_leader = QLineEdit()
-        self._proj_leader.editingFinished.connect(
-            lambda: self.db.set_config('project_hazop_leader', self._proj_leader.text()))
-        pl.addRow("HAZOP-ledare:", self._proj_leader)
-
-        # Datum: date RANGE (workshop start/end) instead of a single
-        # free-text field (2026-08-11, user request: "Gör så att datum kan
-        # väljas inom ett intervall"). Replaces the old single-value
-        # 'project_date' config key with 'project_date_start' /
-        # 'project_date_end' — see NOTES.md for the migration note and the
-        # project-reset cleanup list update.
-        #
-        # 2026-08-11 follow-up ("Inställningarna under projekt ser konstig
-        # ut. Datumväljren tar upp jättemycket plats. skulle även gilla om
-        # knappen today fanns"): confirmed by rendering the panel
-        # (QFormLayout's default field-growth policy stretches whatever
-        # widget occupies the "field" column — here date_row_w — to the
-        # full remaining tab width) that the container widget was ~1140px
-        # wide while the two QDateEdit widgets inside it were only ~164px
-        # each, leaving a large dead strip of empty space after them. Fix:
-        # (1) cap date_row_w's own horizontal size policy to Maximum so
-        # QFormLayout no longer stretches the row, (2) cap each QDateEdit
-        # to just enough width for "yyyy-MM-dd" plus the calendar-popup
-        # arrow/spin-box chrome, (3) add an explicit "Idag" button per
-        # field per the user's request.
-        date_row_w = QWidget()
-        date_row_w.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-        date_row_l = QHBoxLayout(date_row_w)
-        date_row_l.setContentsMargins(0, 0, 0, 0)
-        date_row_l.setSpacing(6)
-        self._proj_date_start = QDateEdit()
-        self._proj_date_start.setCalendarPopup(True)
-        self._proj_date_start.setDisplayFormat("yyyy-MM-dd")
-        self._proj_date_end = QDateEdit()
-        self._proj_date_end.setCalendarPopup(True)
-        self._proj_date_end.setDisplayFormat("yyyy-MM-dd")
-        _date_edit_w = QFontMetrics(self._proj_date_start.font()).horizontalAdvance(
-            "9999-99-99") + 40
-        self._proj_date_start.setMaximumWidth(_date_edit_w)
-        self._proj_date_end.setMaximumWidth(_date_edit_w)
-        self._proj_date_start.dateChanged.connect(
-            lambda d: self.db.set_config('project_date_start', d.toString('yyyy-MM-dd')))
-        self._proj_date_end.dateChanged.connect(
-            lambda d: self.db.set_config('project_date_end', d.toString('yyyy-MM-dd')))
-        self._proj_date_start_today_btn = QPushButton("Idag")
-        self._proj_date_start_today_btn.setToolTip("Sätt startdatum till dagens datum")
-        self._proj_date_start_today_btn.clicked.connect(
-            lambda: self._proj_date_start.setDate(QDate.currentDate()))
-        self._proj_date_end_today_btn = QPushButton("Idag")
-        self._proj_date_end_today_btn.setToolTip("Sätt slutdatum till dagens datum")
-        self._proj_date_end_today_btn.clicked.connect(
-            lambda: self._proj_date_end.setDate(QDate.currentDate()))
-        date_row_l.addWidget(self._proj_date_start)
-        date_row_l.addWidget(self._proj_date_start_today_btn)
-        date_row_l.addWidget(QLabel("  –  "))
-        date_row_l.addWidget(self._proj_date_end)
-        date_row_l.addWidget(self._proj_date_end_today_btn)
-        pl.addRow("Datum (från–till):", date_row_w)
-
-        self._proj_rev = QLineEdit()
-        self._proj_rev.editingFinished.connect(
-            lambda: self.db.set_config('project_revision', self._proj_rev.text()))
-        pl.addRow("Revision:", self._proj_rev)
-
-        tabs.addTab(proj_tab, "Projekt")
-
-        # ── Tab: Deltagare ────────────────────────────────────────────────────
-        # Replaces the old free-text "Deltagare" field above (2026-08-11,
-        # user request: "skulle även gilla ... en till flik med deltagare
-        # istället där man definerar förnamn, efternamn, roll på y axel och
-        # analystillfälen på x axeln så det blir en matris" — "istället"
-        # means this REPLACES the free-text field, not adds to it). See
-        # ParticipantMatrixPanel below and NOTES.md for the schema/UI
-        # design rationale.
-        self._participant_matrix_panel = ParticipantMatrixPanel(self.db)
-        tabs.addTab(self._participant_matrix_panel, "Deltagare")
-
-        # ── Tab: P&ID-inställningar ───────────────────────────────────────────
-        # Renamed from "P&ID" (2026-08-11, user request: "Fliken PID borde
-        # kunna ändras till något mer generiskt för inställning" / "Byt namn
-        # + lägg till OCR/sid-inställningar"). "P&ID-inställningar" was
-        # chosen over a fully generic name like "Analys" or "Inställningar"
-        # because this tab already lives inside a settings screen next to
-        # "Tagdatabas" and "Identifierade objekt" (both P&ID-specific DATA
-        # views) — a bare "Analys" would read as ambiguous next to those,
-        # while "P&ID-inställningar" keeps the P&ID scope clear but no
-        # longer implies (like the old "P&ID" name did) that tag-stripping
-        # is the only setting that belongs here.
-        pid_tab = QWidget()
-        pid_l = QVBoxLayout(pid_tab)
-        pid_l.setContentsMargins(16, 16, 16, 16)
-        pid_l.setSpacing(12)
-
-        tag_grp = QGroupBox("Tagg-identifiering")
-        tag_gl = QVBoxLayout(tag_grp)
-        tag_gl.setSpacing(6)
-
-        self._strip_spaces_chk = QCheckBox(
-            "Ta bort mellanslag i tagg-nummer  (t.ex. \"P 101\" → \"P101\")")
-        self._strip_spaces_chk.setToolTip(
-            "När ett tagg-nummer identifieras via klick eller gummiband på P&ID\n"
-            "tas alla mellanslag bort automatiskt innan det fylls i tag-fältet.")
-        self._strip_spaces_chk.toggled.connect(
-            lambda on: self.db.set_config('tag_strip_spaces', '1' if on else '0'))
-        tag_gl.addWidget(self._strip_spaces_chk)
-
-        pid_l.addWidget(tag_grp)
-
-        # ── OCR-standardval ───────────────────────────────────────────────
-        # Lets the user skip the per-scan "Använd OCR?" Yes/No prompt shown
-        # by "🔍 Skanna P&ID" (EquipmentPanel._scan, hazop.py) and "📋
-        # Analysera P&ID" (PIDPanel._analyze_pid, pid_viewer.py) by picking
-        # a fixed default engine ahead of time. Wired into both scan entry
-        # points via pid_viewer.resolve_ocr_scan_choice() — this is NOT a
-        # dead setting, it actually changes scan behaviour.
-        ocr_grp = QGroupBox("OCR-standardval")
-        ocr_gl = QVBoxLayout(ocr_grp)
-        ocr_gl.setSpacing(6)
-        ocr_lbl = QLabel(
-            "Motor att använda automatiskt vid P&ID-skanning\n"
-            "(🔍 Skanna P&ID / 📋 Analysera P&ID), utan att fråga varje gång:")
-        ocr_gl.addWidget(ocr_lbl)
-        self._ocr_default_combo = QComboBox()
-        self._ocr_default_combo.addItem("Fråga varje gång (standard)", 'ask')
-        self._ocr_default_combo.addItem("Automatiskt — bästa tillgängliga motor", 'auto')
-        _ocr_st = ocr_status()
-        if _ocr_st.get('rapidocr'):
-            self._ocr_default_combo.addItem("RapidOCR", 'rapidocr')
-        if _ocr_st.get('tesseract'):
-            self._ocr_default_combo.addItem("Tesseract", 'tesseract')
-        if _ocr_st.get('easyocr'):
-            self._ocr_default_combo.addItem("EasyOCR", 'easyocr')
-        self._ocr_default_combo.setToolTip(
-            "Styr om/vilken OCR-motor som används automatiskt vid P&ID-skanning —\n"
-            "hoppar då över Ja/Nej-frågan om OCR för den körningen.\n"
-            "\"Fråga varje gång\" behåller nuvarande beteende.")
-        self._ocr_default_combo.currentIndexChanged.connect(
-            lambda: self.db.set_config(
-                'ocr_default_engine', self._ocr_default_combo.currentData()))
-        ocr_gl.addWidget(self._ocr_default_combo)
-        pid_l.addWidget(ocr_grp)
-
-        # ── Sid-orientering ───────────────────────────────────────────────
-        # Investigated first (per process convention) whether an
-        # auto-detection system already exists: it does not — the app
-        # always just follows the PDF's own /Rotate page attribute
-        # (fitz_page.rotation_matrix, see PIDPanel._highlight_tags in
-        # pid_viewer.py), there is no heuristic "guess the orientation"
-        # layer to conflict with. This setting is therefore stored as a
-        # forward-looking override/hint only; it is NOT yet read by the
-        # rendering/scanning pipeline (that would mean threading an
-        # override through PDF rendering, OCR preprocessing, and the
-        # multi-process scan workers — out of scope for this change; see
-        # NOTES.md "Kända begränsningar" for this known limitation).
-        orient_grp = QGroupBox("Sid-orientering")
-        orient_gl = QVBoxLayout(orient_grp)
-        orient_gl.setSpacing(6)
-        orient_lbl = QLabel(
-            "Förvalt antagande om sidans orientering vid rendering/analys\n"
-            "av P&ID-sidor. OBS: sparas som inställning men styr ännu inte\n"
-            "den faktiska renderingen/analysen (appen använder idag alltid\n"
-            "PDF-filens egen rotationsflagga automatiskt) — känd begränsning,\n"
-            "se NOTES.md.")
-        orient_lbl.setWordWrap(True)
-        orient_gl.addWidget(orient_lbl)
-        self._page_orientation_combo = QComboBox()
-        self._page_orientation_combo.addItem(
-            "Använd PDF:ens egen rotation (standard)", 'auto')
-        self._page_orientation_combo.addItem("Tvinga liggande", 'landscape')
-        self._page_orientation_combo.addItem("Tvinga stående", 'portrait')
-        self._page_orientation_combo.currentIndexChanged.connect(
-            lambda: self.db.set_config(
-                'pid_page_orientation_hint', self._page_orientation_combo.currentData()))
-        orient_gl.addWidget(self._page_orientation_combo)
-        pid_l.addWidget(orient_grp)
-
-        pid_l.addStretch()
-        tabs.addTab(pid_tab, "P&ID-inställningar")
-
-        # ── Tab: Tagdatabas ───────────────────────────────────────────────────
-        self._tag_db_panel = TagDatabasePanel(self.db)
-        self._tag_db_panel.settings_changed.connect(self.matrix_changed.emit)
-        tabs.addTab(self._tag_db_panel, "Tagdatabas")
-
-        # ── Tab: Identifierade objekt ─────────────────────────────────────────
-        self.analysis_panel = PIDAnalysisPanel(self.db)
-        tabs.addTab(self.analysis_panel, "Identifierade objekt")
-
-        # ── Tab: Standardavvikelser & Orsaker ─────────────────────────────────
+        # ── Tab: Standardorsaker ─────────────────────────────────────────────
         self._std_causes_panel = StandardCausesSettingsPanel(self.db)
         tabs.addTab(self._std_causes_panel, "Standardorsaker")
-
-        # ── Tab: Standardobjekt ───────────────────────────────────────────────
-        self._std_objects_panel = StandardObjectsSettingsPanel(self.db)
-        tabs.addTab(self._std_objects_panel, "Standardobjekt")
-
-        # ── Tab: Smart igenkänning ────────────────────────────────────────────
-        self._tag_memory_panel = TagMemoryPanel(self.db)
-        tabs.addTab(self._tag_memory_panel, _icon('brain'), "Smart igenkänning")
-        tabs.currentChanged.connect(
-            lambda i: self._tag_memory_panel.refresh()
-            if tabs.widget(i) is self._tag_memory_panel else None)
 
         self._load_all()
 
@@ -17340,17 +17225,6 @@ class SettingsPanel(QWidget):
         end_d   = QDate.fromString(end_str, 'yyyy-MM-dd') if end_str else QDate()
         self._proj_date_start.setDate(start_d if start_d.isValid() else today)
         self._proj_date_end.setDate(end_d if end_d.isValid() else today)
-
-        self._strip_spaces_chk.setChecked(
-            self.db.get_config('tag_strip_spaces', '1') == '1')
-
-        idx = self._ocr_default_combo.findData(self.db.get_config('ocr_default_engine', 'ask'))
-        if idx >= 0:
-            self._ocr_default_combo.setCurrentIndex(idx)
-        idx = self._page_orientation_combo.findData(
-            self.db.get_config('pid_page_orientation_hint', 'auto'))
-        if idx >= 0:
-            self._page_orientation_combo.setCurrentIndex(idx)
 
     # ── Palette ───────────────────────────────────────────────────────────────
 
@@ -18029,6 +17903,164 @@ class SettingsPanel(QWidget):
 # ══════════════════════════════════════════════════════════════════════════════
 # ADMIN PANEL
 # ══════════════════════════════════════════════════════════════════════════════
+
+class SettingsPanel(QWidget):
+    """P&ID-scoped and tag-recognition settings. Used to also host Projekt/
+    Deltagare/Riskmatris & Kategorier/Standardorsaker — those four moved out
+    into their own top-level HAZOPPreparationPanel (2026-08-17, see NOTES.md)
+    since Anton wanted them front-and-center in the nav rail rather than
+    buried as tabs here. Keeps its own `matrix_changed` (TagDatabasePanel's
+    settings_changed still forwards into it, unrelated to the risk matrix
+    itself) — see HAZOPPreparationPanel's own docstring for why this signal
+    is duplicated across both panels rather than shared."""
+
+    matrix_changed = pyqtSignal()
+
+    def __init__(self, db: Database):
+        super().__init__()
+        self.db = db
+
+        tabs = QTabWidget()
+        self._tabs = tabs   # kept as an attribute for testability (tabText() lookups)
+        main = QVBoxLayout(self)
+        main.addWidget(tabs)
+
+        # ── Tab: P&ID-inställningar ───────────────────────────────────────────
+        # Renamed from "P&ID" (2026-08-11, user request: "Fliken PID borde
+        # kunna ändras till något mer generiskt för inställning" / "Byt namn
+        # + lägg till OCR/sid-inställningar"). "P&ID-inställningar" was
+        # chosen over a fully generic name like "Analys" or "Inställningar"
+        # because this tab already lives inside a settings screen next to
+        # "Tagdatabas" and "Identifierade objekt" (both P&ID-specific DATA
+        # views) — a bare "Analys" would read as ambiguous next to those,
+        # while "P&ID-inställningar" keeps the P&ID scope clear but no
+        # longer implies (like the old "P&ID" name did) that tag-stripping
+        # is the only setting that belongs here.
+        pid_tab = QWidget()
+        pid_l = QVBoxLayout(pid_tab)
+        pid_l.setContentsMargins(16, 16, 16, 16)
+        pid_l.setSpacing(12)
+
+        tag_grp = QGroupBox("Tagg-identifiering")
+        tag_gl = QVBoxLayout(tag_grp)
+        tag_gl.setSpacing(6)
+
+        self._strip_spaces_chk = QCheckBox(
+            "Ta bort mellanslag i tagg-nummer  (t.ex. \"P 101\" → \"P101\")")
+        self._strip_spaces_chk.setToolTip(
+            "När ett tagg-nummer identifieras via klick eller gummiband på P&ID\n"
+            "tas alla mellanslag bort automatiskt innan det fylls i tag-fältet.")
+        self._strip_spaces_chk.toggled.connect(
+            lambda on: self.db.set_config('tag_strip_spaces', '1' if on else '0'))
+        tag_gl.addWidget(self._strip_spaces_chk)
+
+        pid_l.addWidget(tag_grp)
+
+        # ── OCR-standardval ───────────────────────────────────────────────
+        # Lets the user skip the per-scan "Använd OCR?" Yes/No prompt shown
+        # by "🔍 Skanna P&ID" (EquipmentPanel._scan, hazop.py) and "📋
+        # Analysera P&ID" (PIDPanel._analyze_pid, pid_viewer.py) by picking
+        # a fixed default engine ahead of time. Wired into both scan entry
+        # points via pid_viewer.resolve_ocr_scan_choice() — this is NOT a
+        # dead setting, it actually changes scan behaviour.
+        ocr_grp = QGroupBox("OCR-standardval")
+        ocr_gl = QVBoxLayout(ocr_grp)
+        ocr_gl.setSpacing(6)
+        ocr_lbl = QLabel(
+            "Motor att använda automatiskt vid P&ID-skanning\n"
+            "(🔍 Skanna P&ID / 📋 Analysera P&ID), utan att fråga varje gång:")
+        ocr_gl.addWidget(ocr_lbl)
+        self._ocr_default_combo = QComboBox()
+        self._ocr_default_combo.addItem("Fråga varje gång (standard)", 'ask')
+        self._ocr_default_combo.addItem("Automatiskt — bästa tillgängliga motor", 'auto')
+        _ocr_st = ocr_status()
+        if _ocr_st.get('rapidocr'):
+            self._ocr_default_combo.addItem("RapidOCR", 'rapidocr')
+        if _ocr_st.get('tesseract'):
+            self._ocr_default_combo.addItem("Tesseract", 'tesseract')
+        if _ocr_st.get('easyocr'):
+            self._ocr_default_combo.addItem("EasyOCR", 'easyocr')
+        self._ocr_default_combo.setToolTip(
+            "Styr om/vilken OCR-motor som används automatiskt vid P&ID-skanning —\n"
+            "hoppar då över Ja/Nej-frågan om OCR för den körningen.\n"
+            "\"Fråga varje gång\" behåller nuvarande beteende.")
+        self._ocr_default_combo.currentIndexChanged.connect(
+            lambda: self.db.set_config(
+                'ocr_default_engine', self._ocr_default_combo.currentData()))
+        ocr_gl.addWidget(self._ocr_default_combo)
+        pid_l.addWidget(ocr_grp)
+
+        # ── Sid-orientering ───────────────────────────────────────────────
+        # Investigated first (per process convention) whether an
+        # auto-detection system already exists: it does not — the app
+        # always just follows the PDF's own /Rotate page attribute
+        # (fitz_page.rotation_matrix, see PIDPanel._highlight_tags in
+        # pid_viewer.py), there is no heuristic "guess the orientation"
+        # layer to conflict with. This setting is therefore stored as a
+        # forward-looking override/hint only; it is NOT yet read by the
+        # rendering/scanning pipeline (that would mean threading an
+        # override through PDF rendering, OCR preprocessing, and the
+        # multi-process scan workers — out of scope for this change; see
+        # NOTES.md "Kända begränsningar" for this known limitation).
+        orient_grp = QGroupBox("Sid-orientering")
+        orient_gl = QVBoxLayout(orient_grp)
+        orient_gl.setSpacing(6)
+        orient_lbl = QLabel(
+            "Förvalt antagande om sidans orientering vid rendering/analys\n"
+            "av P&ID-sidor. OBS: sparas som inställning men styr ännu inte\n"
+            "den faktiska renderingen/analysen (appen använder idag alltid\n"
+            "PDF-filens egen rotationsflagga automatiskt) — känd begränsning,\n"
+            "se NOTES.md.")
+        orient_lbl.setWordWrap(True)
+        orient_gl.addWidget(orient_lbl)
+        self._page_orientation_combo = QComboBox()
+        self._page_orientation_combo.addItem(
+            "Använd PDF:ens egen rotation (standard)", 'auto')
+        self._page_orientation_combo.addItem("Tvinga liggande", 'landscape')
+        self._page_orientation_combo.addItem("Tvinga stående", 'portrait')
+        self._page_orientation_combo.currentIndexChanged.connect(
+            lambda: self.db.set_config(
+                'pid_page_orientation_hint', self._page_orientation_combo.currentData()))
+        orient_gl.addWidget(self._page_orientation_combo)
+        pid_l.addWidget(orient_grp)
+
+        pid_l.addStretch()
+        tabs.addTab(pid_tab, "P&ID-inställningar")
+
+        # ── Tab: Tagdatabas ───────────────────────────────────────────────────
+        self._tag_db_panel = TagDatabasePanel(self.db)
+        self._tag_db_panel.settings_changed.connect(self.matrix_changed.emit)
+        tabs.addTab(self._tag_db_panel, "Tagdatabas")
+
+        # ── Tab: Identifierade objekt ─────────────────────────────────────────
+        self.analysis_panel = PIDAnalysisPanel(self.db)
+        tabs.addTab(self.analysis_panel, "Identifierade objekt")
+
+        # ── Tab: Standardobjekt ───────────────────────────────────────────────
+        self._std_objects_panel = StandardObjectsSettingsPanel(self.db)
+        tabs.addTab(self._std_objects_panel, "Standardobjekt")
+
+        # ── Tab: Smart igenkänning ────────────────────────────────────────────
+        self._tag_memory_panel = TagMemoryPanel(self.db)
+        tabs.addTab(self._tag_memory_panel, _icon('brain'), "Smart igenkänning")
+        tabs.currentChanged.connect(
+            lambda i: self._tag_memory_panel.refresh()
+            if tabs.widget(i) is self._tag_memory_panel else None)
+
+        self._load_all()
+
+    def _load_all(self):
+        self._strip_spaces_chk.setChecked(
+            self.db.get_config('tag_strip_spaces', '1') == '1')
+
+        idx = self._ocr_default_combo.findData(self.db.get_config('ocr_default_engine', 'ask'))
+        if idx >= 0:
+            self._ocr_default_combo.setCurrentIndex(idx)
+        idx = self._page_orientation_combo.findData(
+            self.db.get_config('pid_page_orientation_hint', 'auto'))
+        if idx >= 0:
+            self._page_orientation_combo.setCurrentIndex(idx)
+
 
 class PIDManagementPanel(QWidget):
     """PID revision history and sheet reordering panel."""
@@ -19637,6 +19669,15 @@ class MainWindow(QMainWindow):
             ic.addPixmap(_mk_pm(name, 18, QColor('#17191C')), QIcon.Mode.Normal, QIcon.State.On)
             return ic
 
+        # "HAZOP preparation" (2026-08-17, see NOTES.md) — Projekt/Deltagare/
+        # Riskmatris & Kategorier/Standardorsaker, extracted out of
+        # Inställningar into their own top-level page. Deliberately FIRST in
+        # both the nav rail (visual order) AND view_stack (structural index
+        # 0, per Anton's explicit request) — every other page's index shifts
+        # +1 accordingly; see _switch_view and every other hardcoded
+        # _switch_view(N) call elsewhere in this file, all renumbered
+        # together with this change.
+        self.btn_prep      = QPushButton()
         self.btn_pid       = QPushButton()
         self.btn_sheet     = QPushButton()
         self.btn_equip     = QPushButton()
@@ -19644,6 +19685,7 @@ class MainWindow(QMainWindow):
         self.btn_settings  = QPushButton()
 
         _nav_labels = {
+            self.btn_prep:     "HAZOP preparation",
             self.btn_pid:      "P&ID-vy",
             self.btn_sheet:    "Worksheet",
             self.btn_equip:    "Utrustning",
@@ -19651,6 +19693,7 @@ class MainWindow(QMainWindow):
             self.btn_settings: "Inställningar",
         }
         _nav_icons = {
+            self.btn_prep:     'check',
             self.btn_pid:      'map',
             self.btn_sheet:    'clipboard',
             self.btn_equip:    'bolt-nut',
@@ -19658,7 +19701,7 @@ class MainWindow(QMainWindow):
             self.btn_settings: 'settings',
         }
 
-        for btn in (self.btn_pid, self.btn_sheet, self.btn_equip,
+        for btn in (self.btn_prep, self.btn_pid, self.btn_sheet, self.btn_equip,
                     self.btn_admin, self.btn_settings):
             btn.setCheckable(True)
             btn.setFixedSize(40, 40)
@@ -19682,13 +19725,21 @@ class MainWindow(QMainWindow):
         self._outer_splitter.addWidget(top_widget)
 
         self.btn_pid.setChecked(True)
-        self.btn_pid.clicked.connect(lambda: self._switch_view(0))
-        self.btn_sheet.clicked.connect(lambda: self._switch_view(1))
-        self.btn_equip.clicked.connect(lambda: self._switch_view(2))
-        self.btn_admin.clicked.connect(lambda: self._switch_view(3))
-        self.btn_settings.clicked.connect(lambda: self._switch_view(4))
+        self.btn_prep.clicked.connect(lambda: self._switch_view(0))
+        self.btn_pid.clicked.connect(lambda: self._switch_view(1))
+        self.btn_sheet.clicked.connect(lambda: self._switch_view(2))
+        self.btn_equip.clicked.connect(lambda: self._switch_view(3))
+        self.btn_admin.clicked.connect(lambda: self._switch_view(4))
+        self.btn_settings.clicked.connect(lambda: self._switch_view(5))
 
-        # ── Page 0: P&ID view ─────────────────────────────────────────────────
+        # ── Page 0: HAZOP preparation ────────────────────────────────────────
+        # Added FIRST so it becomes view_stack index 0 (QStackedWidget numbers
+        # pages in addWidget() call order) — must precede every other
+        # addWidget() call below, not just visually lead the nav rail.
+        self.hazop_prep_panel = HAZOPPreparationPanel(self.db)
+        self.view_stack.addWidget(self.hazop_prep_panel)
+
+        # ── Page 1: P&ID view ─────────────────────────────────────────────────
         # No wrapper widget here — the view_stack page IS _h_splitter directly.
         # The scenario/markup tables that used to share a vertical splitter
         # with _h_splitter now live in self._v_splitter, added as the outer
@@ -19760,22 +19811,23 @@ class MainWindow(QMainWindow):
         self._outer_splitter.addWidget(self._v_splitter)
         self._outer_splitter.setSizes([640, 220])
 
-        # ── Page 1: Worksheet ─────────────────────────────────────────────────
+        # ── Page 2: Worksheet ─────────────────────────────────────────────────
         self.worksheet = HAZOPWorksheet(self.db)
         self.view_stack.addWidget(self.worksheet)
 
-        # ── Page 2: Equipment ─────────────────────────────────────────────────
+        # ── Page 3: Equipment ─────────────────────────────────────────────────
         self.equipment_panel = EquipmentPanel(self.db)
         self.equipment_panel.markers_saved.connect(self.pid_panel.reload_overlays)
         self.view_stack.addWidget(self.equipment_panel)
 
-        # ── Page 3: Study management ──────────────────────────────────────────
+        # ── Page 4: Study management ──────────────────────────────────────────
         self.admin_panel = StudyManagementPanel(self.db)
         self.view_stack.addWidget(self.admin_panel)
 
-        # ── Page 4: Settings ──────────────────────────────────────────────────
+        # ── Page 5: Settings ──────────────────────────────────────────────────
         self.settings_panel = SettingsPanel(self.db)
         self.settings_panel.matrix_changed.connect(self._on_matrix_changed)
+        self.hazop_prep_panel.matrix_changed.connect(self._on_matrix_changed)
         self.view_stack.addWidget(self.settings_panel)
 
         # ── Undo shortcut (Ctrl+Z) — only active during markup editing ────────
@@ -19989,20 +20041,23 @@ class MainWindow(QMainWindow):
         # Bottom pane (scenario/markup tables) only makes sense on the P&ID
         # page — hidden elsewhere so those pages use the full window height
         # instead of leaving an empty strip below the nav rail's height.
-        self._v_splitter.setVisible(page == 0)
-        self.btn_pid.setChecked(page == 0)
-        self.btn_sheet.setChecked(page == 1)
-        self.btn_equip.setChecked(page == 2)
-        self.btn_admin.setChecked(page == 3)
-        self.btn_settings.setChecked(page == 4)
-        if page == 0 and prev != 0:
+        # Index 1, not 0, since HAZOP preparation (2026-08-17, see NOTES.md)
+        # is now index 0 — every branch below shifted +1 accordingly.
+        self._v_splitter.setVisible(page == 1)
+        self.btn_prep.setChecked(page == 0)
+        self.btn_pid.setChecked(page == 1)
+        self.btn_sheet.setChecked(page == 2)
+        self.btn_equip.setChecked(page == 3)
+        self.btn_admin.setChecked(page == 4)
+        self.btn_settings.setChecked(page == 5)
+        if page == 1 and prev != 1:
             self.pid_panel.reload_overlays()
-        if page == 1: self.worksheet.refresh()
-        if page == 2: self.equipment_panel.refresh()
-        if page == 3:
+        if page == 2: self.worksheet.refresh()
+        if page == 3: self.equipment_panel.refresh()
+        if page == 4:
             self.admin_panel.refresh()
             self.admin_panel.refresh_pid()
-        if page == 4:
+        if page == 5:
             # Guard against settings_panel or _tag_memory_panel not being initialized
             if (hasattr(self, 'settings_panel') and self.settings_panel and
                 hasattr(self.settings_panel, '_tag_memory_panel') and
@@ -20124,7 +20179,7 @@ class MainWindow(QMainWindow):
         P&ID" knappen köras.' The 'Analys klar' popup itself is unchanged
         (shown earlier, in PIDPanel._analyze_pid, before this signal fires);
         this only adds the follow-up confirm + chained run."""
-        self._switch_view(4)   # Settings page
+        self._switch_view(5)   # Settings page
         self.settings_panel.analysis_panel.refresh()
         # Switch to the "Identifierade objekt" tab inside settings
         tabs = self.settings_panel.findChild(QTabWidget)
@@ -20157,7 +20212,7 @@ class MainWindow(QMainWindow):
             # From EquipmentDeviationBar's "Visa i register" link — item_id
             # here IS already equipment_catalog.id (the bar knows it
             # directly, no marker lookup needed).
-            self._switch_view(2)
+            self._switch_view(3)
             self.equipment_panel.select_row_by_equipment_id(item_id)
             return
         type_map = {'cause': CAUSE_T, 'consequence': CONS_T, 'safeguard': SG_T}
@@ -20390,7 +20445,7 @@ class MainWindow(QMainWindow):
 
     def _on_edit_node_markup(self, node_id):
         """Tree right-click NODE → 'Editera nodmarkup'."""
-        self._switch_view(0)
+        self._switch_view(1)
         self.node_markup_panel.load(node_id)
         self.markup_table_panel.load(node_id)
         self.tree_panel.setVisible(False)
@@ -20423,7 +20478,7 @@ class MainWindow(QMainWindow):
 
     def _on_edit_red_markup(self, node_id):
         """Tree right-click NODE → 'Editera redmarkup'."""
-        self._switch_view(0)
+        self._switch_view(1)
         self.red_markup_panel.load(node_id)
         self.red_markup_table_panel.load(node_id)
         self.tree_panel.setVisible(False)
@@ -20910,7 +20965,7 @@ class MainWindow(QMainWindow):
 
     def _on_search_navigate(self, type_, id_):
         self._on_selected(type_, id_)
-        self._switch_view(0)
+        self._switch_view(1)
         if type_ == CAUSE_T:
             c = self.db.get_cause(id_)
             if c:
@@ -21169,7 +21224,7 @@ class MainWindow(QMainWindow):
         for panel in [self.tree_panel, self.node_panel,
                       self.cons_panel, self.sg_panel,
                       self.scenario_panel, self.equipment_panel,
-                      self.admin_panel, self.settings_panel,
+                      self.admin_panel, self.settings_panel, self.hazop_prep_panel,
                       self.node_markup_panel, self.markup_table_panel,
                       self.red_markup_panel, self.red_markup_table_panel,
                       self.worksheet, self.props_ribbon]:
@@ -21191,10 +21246,22 @@ class MainWindow(QMainWindow):
 
         # Also update db on settings sub-panels (they have their own db reference)
         sp = self.settings_panel
-        for attr in ('_std_causes_panel', '_std_objects_panel', '_tag_memory_panel',
-                     '_tag_db_panel', 'analysis_panel', '_participant_matrix_panel'):
+        for attr in ('_std_objects_panel', '_tag_memory_panel', '_tag_db_panel',
+                     'analysis_panel'):
             try:
                 sub = getattr(sp, attr, None)
+                if sub is not None:
+                    sub.db = db
+            except Exception:
+                pass
+
+        # Same nested-sub-panel-with-its-own-db-reference pattern, for the
+        # sub-panels that moved from SettingsPanel to HAZOPPreparationPanel
+        # (2026-08-17, see NOTES.md) — same fix, new host object.
+        hp = self.hazop_prep_panel
+        for attr in ('_std_causes_panel', '_participant_matrix_panel'):
+            try:
+                sub = getattr(hp, attr, None)
                 if sub is not None:
                     sub.db = db
             except Exception:
