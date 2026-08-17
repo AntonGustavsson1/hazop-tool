@@ -9702,7 +9702,7 @@ class EquipmentTagDragToConsequenceTests(unittest.TestCase):
         move_event.modifiers.return_value = Qt.KeyboardModifier.ShiftModifier
         move_event.position.return_value = QPointF(90, 50)   # 40px — past any startDragDistance
 
-        with unittest.mock.patch('pid_viewer.QDrag') as MockDrag:
+        with unittest.mock.patch('pid_graphics_view.QDrag') as MockDrag:
             mock_drag = MockDrag.return_value
             view.mouseMoveEvent(move_event)
 
@@ -9727,7 +9727,7 @@ class EquipmentTagDragToConsequenceTests(unittest.TestCase):
         move_event.modifiers.return_value = Qt.KeyboardModifier.ShiftModifier
         move_event.position.return_value = QPointF(51, 50)   # 1px — below threshold
 
-        with unittest.mock.patch('pid_viewer.QDrag') as MockDrag:
+        with unittest.mock.patch('pid_graphics_view.QDrag') as MockDrag:
             self._move(view, move_event)
 
         MockDrag.assert_not_called()
@@ -9748,7 +9748,7 @@ class EquipmentTagDragToConsequenceTests(unittest.TestCase):
         move_event.modifiers.return_value = Qt.KeyboardModifier.NoModifier  # Shift let go
         move_event.position.return_value = QPointF(90, 50)
 
-        with unittest.mock.patch('pid_viewer.QDrag') as MockDrag:
+        with unittest.mock.patch('pid_graphics_view.QDrag') as MockDrag:
             self._move(view, move_event)
 
         MockDrag.assert_not_called()
@@ -10063,7 +10063,7 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
         with unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
                                  return_value=None), \
              unittest.mock.patch.object(QMessageBox, 'information') as mock_info, \
-             unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg:
+             unittest.mock.patch('pid_panel_mod.SimilarSymbolSearchDialog') as mock_params_dlg:
             mock_params_dlg.return_value.exec.return_value = QDialog.DialogCode.Rejected
             self.panel._on_context_action('find_similar', QPointF(5, 5), 0)
         mock_info.assert_not_called()
@@ -10080,7 +10080,7 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
         self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
         with unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
                                  return_value=([], [], {'bbox': (0, 0, 10, 10)})), \
-             unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg:
+             unittest.mock.patch('pid_panel_mod.SimilarSymbolSearchDialog') as mock_params_dlg:
             mock_params_dlg.return_value.exec.return_value = QDialog.DialogCode.Rejected
             self.panel._on_context_action('find_similar', QPointF(5, 5), 0)
         mock_params_dlg.return_value.final_results.assert_not_called()
@@ -10091,7 +10091,7 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
         self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
         with unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
                                  return_value=([], [], {'bbox': (0, 0, 10, 10)})), \
-             unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg, \
+             unittest.mock.patch('pid_panel_mod.SimilarSymbolSearchDialog') as mock_params_dlg, \
              unittest.mock.patch.object(QMessageBox, 'information') as mock_info:
             self._mock_accepted_search_params_dialog(mock_params_dlg, final_results=[])
             self.panel._on_context_action('find_similar', QPointF(5, 5), 0)
@@ -10105,8 +10105,8 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
         self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
         with unittest.mock.patch('pid_viewer.equipment_detection.resolve_reference_cluster',
                                  return_value=([], [], {'bbox': (0, 0, 10, 10)})), \
-             unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg, \
-             unittest.mock.patch('pid_viewer.EquipmentMarkerReviewDialog') as mock_dlg_cls, \
+             unittest.mock.patch('pid_panel_mod.SimilarSymbolSearchDialog') as mock_params_dlg, \
+             unittest.mock.patch('pid_panel_mod.EquipmentMarkerReviewDialog') as mock_dlg_cls, \
              unittest.mock.patch.object(self.panel, 'reload_overlays') as mock_reload:
             self._mock_accepted_search_params_dialog(mock_params_dlg, final_results=fake_results)
             mock_dlg_cls.return_value.exec.return_value = 1   # QDialog.Accepted
@@ -10131,7 +10131,7 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
                                  return_value=12.5), \
              unittest.mock.patch('pid_viewer.symbol_geometry.primitives_near_point',
                                  return_value=[]), \
-             unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg:
+             unittest.mock.patch('pid_panel_mod.SimilarSymbolSearchDialog') as mock_params_dlg:
             self._mock_accepted_search_params_dialog(mock_params_dlg, final_results=[])
             with unittest.mock.patch.object(QMessageBox, 'information'):
                 self.panel._on_context_action('find_similar', QPointF(5, 5), 3)
@@ -10177,7 +10177,7 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
                                  return_value=[1]), \
              unittest.mock.patch('pid_viewer.symbol_geometry.widen_by_connectivity',
                                  return_value={0, 1}), \
-             unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg:
+             unittest.mock.patch('pid_panel_mod.SimilarSymbolSearchDialog') as mock_params_dlg:
             self._mock_accepted_search_params_dialog(mock_params_dlg, final_results=[])
             with unittest.mock.patch.object(QMessageBox, 'information'):
                 self.panel._on_context_action('find_similar', QPointF(5, 5), 3)
@@ -10197,7 +10197,7 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
     def test_find_similar_symbol_from_template_shows_info_with_no_saved_templates(self):
         self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
         with unittest.mock.patch.object(QMessageBox, 'information') as mock_info, \
-             unittest.mock.patch('pid_viewer.SymbolTemplatePickerDialog') as mock_picker:
+             unittest.mock.patch('pid_panel_mod.SymbolTemplatePickerDialog') as mock_picker:
             self.panel._find_similar_symbol_from_template()
         mock_info.assert_called_once()
         mock_picker.assert_not_called()
@@ -10206,8 +10206,8 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
         from PyQt6.QtWidgets import QDialog
         self.panel.viewer.pdf_doc = unittest.mock.MagicMock()
         self.db.add_symbol_template("Test-mall", '{"aspect": 1.0}')
-        with unittest.mock.patch('pid_viewer.SymbolTemplatePickerDialog') as mock_picker, \
-             unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg:
+        with unittest.mock.patch('pid_panel_mod.SymbolTemplatePickerDialog') as mock_picker, \
+             unittest.mock.patch('pid_panel_mod.SimilarSymbolSearchDialog') as mock_params_dlg:
             mock_picker.return_value.exec.return_value = QDialog.DialogCode.Rejected
             self.panel._find_similar_symbol_from_template()
         mock_params_dlg.assert_not_called()
@@ -10219,8 +10219,8 @@ class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
         self.panel.viewer.current_page = 4
         self.db.add_symbol_template("Metso-ventil", '{"aspect": 2.0}', comp_type='Ventil')
         template_row = self.db.symbol_templates()[0]
-        with unittest.mock.patch('pid_viewer.SymbolTemplatePickerDialog') as mock_picker, \
-             unittest.mock.patch('pid_viewer.SimilarSymbolSearchDialog') as mock_params_dlg:
+        with unittest.mock.patch('pid_panel_mod.SymbolTemplatePickerDialog') as mock_picker, \
+             unittest.mock.patch('pid_panel_mod.SimilarSymbolSearchDialog') as mock_params_dlg:
             mock_picker.return_value.exec.return_value = QDialog.DialogCode.Accepted
             mock_picker.return_value.selected_template = template_row
             self._mock_accepted_search_params_dialog(mock_params_dlg, final_results=[])
@@ -12234,7 +12234,7 @@ class EquipmentMultiSelectTests(unittest.TestCase):
         move_event.modifiers.return_value = Qt.KeyboardModifier.ShiftModifier
         move_event.position.return_value = QPointF(90, 50)
 
-        with unittest.mock.patch('pid_viewer.QDrag') as MockDrag:
+        with unittest.mock.patch('pid_graphics_view.QDrag') as MockDrag:
             mock_drag = MockDrag.return_value
             view.mouseMoveEvent(move_event)
 
@@ -12262,7 +12262,7 @@ class EquipmentMultiSelectTests(unittest.TestCase):
         move_event.modifiers.return_value = Qt.KeyboardModifier.ShiftModifier
         move_event.position.return_value = QPointF(90, 50)
 
-        with unittest.mock.patch('pid_viewer.QDrag') as MockDrag:
+        with unittest.mock.patch('pid_graphics_view.QDrag') as MockDrag:
             mock_drag = MockDrag.return_value
             view.mouseMoveEvent(move_event)
 
@@ -15830,7 +15830,7 @@ class EquipmentDragNavButtonResetTests(unittest.TestCase):
         received = []
         self.panel.viewer.equipment_drag_finished.connect(lambda: received.append(True))
 
-        with unittest.mock.patch('pid_viewer.QDrag') as mock_drag_cls:
+        with unittest.mock.patch('pid_graphics_view.QDrag') as mock_drag_cls:
             mock_drag = mock_drag_cls.return_value
             start = QPointF(0, 0)
             self.panel.viewer._equip_drag_candidate = (999, start)
@@ -15870,7 +15870,7 @@ class EquipmentDragNavButtonResetTests(unittest.TestCase):
         # the gesture into a native drag.
         self.panel.viewer.setCursor(Qt.CursorShape.ClosedHandCursor)
 
-        with unittest.mock.patch('pid_viewer.QDrag'):
+        with unittest.mock.patch('pid_graphics_view.QDrag'):
             start = QPointF(0, 0)
             self.panel.viewer._equip_drag_candidate = (999, start)
             event = unittest.mock.MagicMock()
