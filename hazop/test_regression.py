@@ -13827,11 +13827,17 @@ class SettingsPanelProjektExpansionTests(unittest.TestCase):
         try:
             panel._proj_facility.setText("Gävle Depå")
             panel._proj_facility.editingFinished.emit()
-            panel._proj_leader.setText("Anna Andersson")
-            panel._proj_leader.editingFinished.emit()
+            panel._proj_number.setText("P-2026-042")
+            panel._proj_number.editingFinished.emit()
+            panel._proj_client.setText("Hybrit AB")
+            panel._proj_client.editingFinished.emit()
 
             self.assertEqual(self.db.get_config('project_facility'), "Gävle Depå")
-            self.assertEqual(self.db.get_config('project_hazop_leader'), "Anna Andersson")
+            self.assertEqual(self.db.get_config('project_number'), "P-2026-042")
+            self.assertEqual(self.db.get_config('project_client'), "Hybrit AB")
+            # HAZOP-ledare removed (2026-08-17) — the role now lives as a free
+            # Deltagare column instead, see NOTES.md.
+            self.assertFalse(hasattr(panel, '_proj_leader'))
         finally:
             panel.deleteLater()
 
@@ -13932,7 +13938,10 @@ class SettingsPanelDateWidgetsAndTodayButtonTests(unittest.TestCase):
             tabs.setCurrentIndex(proj_idx)
             self.app.processEvents()
             proj_tab = tabs.widget(proj_idx)
-            fl = proj_tab.layout()
+            # proj_tab's own layout is an outer QVBoxLayout (2026-08-17,
+            # holds the form PLUS the revision table and custom-fields box
+            # below it) — the QFormLayout lives on the first child widget.
+            fl = proj_tab.layout().itemAt(0).widget().layout()
             self.assertIsInstance(fl, QFormLayout)
 
             name_field_w = panel._proj_name.width()
@@ -13940,8 +13949,8 @@ class SettingsPanelDateWidgetsAndTodayButtonTests(unittest.TestCase):
             for r in range(fl.rowCount()):
                 item = fl.itemAt(r, QFormLayout.ItemRole.FieldRole)
                 if item and item.widget() is not None and item.widget() not in (
-                        panel._proj_name, panel._proj_facility,
-                        panel._proj_leader, panel._proj_rev):
+                        panel._proj_name, panel._proj_number, panel._proj_client,
+                        panel._proj_facility):
                     date_row_w = item.widget()
                     break
             self.assertIsNotNone(date_row_w, "Could not find the date row's container widget")
@@ -14223,7 +14232,10 @@ class ParticipantMatrixTests(unittest.TestCase):
             proj_idx = titles.index("Projekt")
             proj_tab = panel._tabs.widget(proj_idx)
             from PyQt6.QtWidgets import QFormLayout, QPlainTextEdit
-            fl = proj_tab.layout()
+            # proj_tab's own layout is an outer QVBoxLayout (2026-08-17,
+            # holds the form PLUS the revision table and custom-fields box
+            # below it) — the QFormLayout lives on the first child widget.
+            fl = proj_tab.layout().itemAt(0).widget().layout()
             self.assertIsInstance(fl, QFormLayout)
             for r in range(fl.rowCount()):
                 item = fl.itemAt(r, QFormLayout.ItemRole.FieldRole)

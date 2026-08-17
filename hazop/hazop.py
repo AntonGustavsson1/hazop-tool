@@ -2368,6 +2368,35 @@ class Database:
                 attended       INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (participant_id, session_id)
             );
+            CREATE TABLE IF NOT EXISTS participant_columns (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT NOT NULL DEFAULT '',
+                sort_order INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS participant_column_values (
+                participant_id INTEGER NOT NULL REFERENCES participants(id) ON DELETE CASCADE,
+                column_id      INTEGER NOT NULL REFERENCES participant_columns(id) ON DELETE CASCADE,
+                value          TEXT DEFAULT '',
+                PRIMARY KEY (participant_id, column_id)
+            );
+            CREATE TABLE IF NOT EXISTS project_revisions (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                label       TEXT NOT NULL DEFAULT '',
+                date        TEXT DEFAULT '',
+                description TEXT DEFAULT '',
+                sort_order  INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS project_custom_fields (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT NOT NULL DEFAULT '',
+                value      TEXT DEFAULT '',
+                sort_order INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS node_types (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT NOT NULL DEFAULT '',
+                sort_order INTEGER DEFAULT 0
+            );
             -- Manuell sidrotation (2026-08-12, see NOTES.md) — a user-chosen
             -- extra rotation (0/90/180/270, clockwise) for one physical P&ID
             -- page, composed on top of (not replacing) the PDF's own /Rotate
@@ -3441,6 +3470,64 @@ class Database:
     def get_revisions(self):
         return self.conn.execute(
             "SELECT * FROM pid_revisions ORDER BY id DESC").fetchall()
+
+    def project_revisions(self):
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM project_revisions ORDER BY sort_order, id")]
+
+    def add_project_revision(self, label, date='', description=''):
+        max_ord = (self.conn.execute(
+            "SELECT COALESCE(MAX(sort_order),-1) FROM project_revisions").fetchone()[0])
+        cur = self.conn.execute(
+            "INSERT INTO project_revisions (label, date, description, sort_order) "
+            "VALUES (?,?,?,?)", (label, date, description, max_ord + 1))
+        self.commit()
+        return cur.lastrowid
+
+    def update_project_revision(self, id_, label=None, date=None, description=None):
+        row = self.conn.execute(
+            "SELECT * FROM project_revisions WHERE id=?", (id_,)).fetchone()
+        if not row:
+            return
+        label = row['label'] if label is None else label
+        date = row['date'] if date is None else date
+        description = row['description'] if description is None else description
+        self.conn.execute(
+            "UPDATE project_revisions SET label=?, date=?, description=? WHERE id=?",
+            (label, date, description, id_))
+        self.commit()
+
+    def delete_project_revision(self, id_):
+        self.conn.execute("DELETE FROM project_revisions WHERE id=?", (id_,))
+        self.commit()
+
+    def project_custom_fields(self):
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM project_custom_fields ORDER BY sort_order, id")]
+
+    def add_project_custom_field(self, name='', value=''):
+        max_ord = (self.conn.execute(
+            "SELECT COALESCE(MAX(sort_order),-1) FROM project_custom_fields").fetchone()[0])
+        cur = self.conn.execute(
+            "INSERT INTO project_custom_fields (name, value, sort_order) VALUES (?,?,?)",
+            (name, value, max_ord + 1))
+        self.commit()
+        return cur.lastrowid
+
+    def update_project_custom_field(self, id_, name=None, value=None):
+        row = self.conn.execute(
+            "SELECT * FROM project_custom_fields WHERE id=?", (id_,)).fetchone()
+        if not row:
+            return
+        name = row['name'] if name is None else name
+        value = row['value'] if value is None else value
+        self.conn.execute(
+            "UPDATE project_custom_fields SET name=?, value=? WHERE id=?", (name, value, id_))
+        self.commit()
+
+    def delete_project_custom_field(self, id_):
+        self.conn.execute("DELETE FROM project_custom_fields WHERE id=?", (id_,))
+        self.commit()
 
     def ensure_sheets_initialized(self, page_count):
         existing = self.conn.execute("SELECT COUNT(*) FROM pid_sheets").fetchone()[0]
@@ -16953,24 +17040,33 @@ class HAZOPPreparationPanel(QWidget):
 
         # ── Tab: Projekt ──────────────────────────────────────────────────────
         proj_tab = QWidget()
-        pl = QFormLayout(proj_tab)
+        proj_outer = QVBoxLayout(proj_tab)
+        proj_outer.setContentsMargins(0, 0, 0, 0)
+        proj_form_w = QWidget()
+        pl = QFormLayout(proj_form_w)
         pl.setSpacing(10)
         pl.setContentsMargins(16, 16, 16, 16)
+        proj_outer.addWidget(proj_form_w)
 
         self._proj_name = QLineEdit()
         self._proj_name.editingFinished.connect(
             lambda: self.db.set_config('project_name', self._proj_name.text()))
         pl.addRow("Projektnamn:", self._proj_name)
 
+        self._proj_number = QLineEdit()
+        self._proj_number.editingFinished.connect(
+            lambda: self.db.set_config('project_number', self._proj_number.text()))
+        pl.addRow("Projektnummer:", self._proj_number)
+
+        self._proj_client = QLineEdit()
+        self._proj_client.editingFinished.connect(
+            lambda: self.db.set_config('project_client', self._proj_client.text()))
+        pl.addRow("Kund/Företag:", self._proj_client)
+
         self._proj_facility = QLineEdit()
         self._proj_facility.editingFinished.connect(
             lambda: self.db.set_config('project_facility', self._proj_facility.text()))
         pl.addRow("Anläggning:", self._proj_facility)
-
-        self._proj_leader = QLineEdit()
-        self._proj_leader.editingFinished.connect(
-            lambda: self.db.set_config('project_hazop_leader', self._proj_leader.text()))
-        pl.addRow("HAZOP-ledare:", self._proj_leader)
 
         date_row_w = QWidget()
         date_row_w.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
@@ -17006,10 +17102,38 @@ class HAZOPPreparationPanel(QWidget):
         date_row_l.addWidget(self._proj_date_end_today_btn)
         pl.addRow("Datum (från–till):", date_row_w)
 
-        self._proj_rev = QLineEdit()
-        self._proj_rev.editingFinished.connect(
-            lambda: self.db.set_config('project_revision', self._proj_rev.text()))
-        pl.addRow("Revision:", self._proj_rev)
+        # ── Revision: flera rader (Rev/Datum/Beskrivning) ────────────────────
+        rev_box = QGroupBox("Revision")
+        rev_lay = QVBoxLayout(rev_box)
+        self._proj_rev_table = QTableWidget(0, 3)
+        self._proj_rev_table.setHorizontalHeaderLabels(["Rev", "Datum", "Beskrivning"])
+        self._proj_rev_table.horizontalHeader().setStretchLastSection(True)
+        self._proj_rev_table.setColumnWidth(0, 60)
+        self._proj_rev_table.setColumnWidth(1, 120)
+        self._proj_rev_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._proj_rev_table.customContextMenuRequested.connect(self._proj_rev_context_menu)
+        self._proj_rev_table.itemChanged.connect(self._on_proj_rev_item_changed)
+        rev_lay.addWidget(self._proj_rev_table)
+        rev_btn_row = QHBoxLayout()
+        rev_add_btn = QPushButton("+ Lägg till rad")
+        rev_add_btn.clicked.connect(self._add_project_revision_row)
+        rev_btn_row.addWidget(rev_add_btn)
+        rev_btn_row.addStretch()
+        rev_lay.addLayout(rev_btn_row)
+        proj_outer.addWidget(rev_box)
+
+        # ── Egna fria fält ────────────────────────────────────────────────
+        fields_box = QGroupBox("Egna fält")
+        self._proj_fields_lay = QVBoxLayout(fields_box)
+        self._proj_field_rows = {}   # field id -> (name_edit, value_edit)
+        fields_add_btn = QPushButton("+ Lägg till fält")
+        fields_add_btn.clicked.connect(self._add_project_custom_field_row)
+        fields_btn_row = QHBoxLayout()
+        fields_btn_row.addWidget(fields_add_btn)
+        fields_btn_row.addStretch()
+        self._proj_fields_lay.addLayout(fields_btn_row)
+        proj_outer.addWidget(fields_box)
+        proj_outer.addStretch()
 
         tabs.addTab(proj_tab, "Projekt")
 
@@ -17214,9 +17338,9 @@ class HAZOPPreparationPanel(QWidget):
         self._load_palette_ui()
         self._load_categories()
         self._proj_name.setText(self.db.get_config('project_name', ''))
+        self._proj_number.setText(self.db.get_config('project_number', ''))
+        self._proj_client.setText(self.db.get_config('project_client', ''))
         self._proj_facility.setText(self.db.get_config('project_facility', ''))
-        self._proj_leader.setText(self.db.get_config('project_hazop_leader', ''))
-        self._proj_rev.setText(self.db.get_config('project_revision', ''))
 
         today = QDate.currentDate()
         start_str = self.db.get_config('project_date_start', '')
@@ -17225,6 +17349,107 @@ class HAZOPPreparationPanel(QWidget):
         end_d   = QDate.fromString(end_str, 'yyyy-MM-dd') if end_str else QDate()
         self._proj_date_start.setDate(start_d if start_d.isValid() else today)
         self._proj_date_end.setDate(end_d if end_d.isValid() else today)
+
+        self._load_project_revisions()
+        self._load_project_custom_fields()
+
+    def _next_revision_letter(self):
+        n = len(self.db.project_revisions())
+        letters = ''
+        n1 = n
+        while True:
+            letters = chr(65 + n1 % 26) + letters
+            n1 = n1 // 26 - 1
+            if n1 < 0:
+                break
+        return letters
+
+    def _load_project_revisions(self):
+        self._proj_rev_table.blockSignals(True)
+        rows = self.db.project_revisions()
+        self._proj_rev_table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            item_label = QTableWidgetItem(row['label'])
+            item_label.setData(Qt.ItemDataRole.UserRole, row['id'])
+            self._proj_rev_table.setItem(r, 0, item_label)
+            date_edit = QDateEdit()
+            date_edit.setCalendarPopup(True)
+            date_edit.setDisplayFormat("yyyy-MM-dd")
+            d = QDate.fromString(row['date'], 'yyyy-MM-dd')
+            date_edit.setDate(d if d.isValid() else QDate.currentDate())
+            date_edit.dateChanged.connect(
+                lambda d, id_=row['id']: self.db.update_project_revision(
+                    id_, date=d.toString('yyyy-MM-dd')))
+            self._proj_rev_table.setCellWidget(r, 1, date_edit)
+            item_desc = QTableWidgetItem(row['description'])
+            item_desc.setData(Qt.ItemDataRole.UserRole, row['id'])
+            self._proj_rev_table.setItem(r, 2, item_desc)
+        self._proj_rev_table.blockSignals(False)
+
+    def _add_project_revision_row(self):
+        label = self._next_revision_letter()
+        self.db.add_project_revision(label, QDate.currentDate().toString('yyyy-MM-dd'), '')
+        self._load_project_revisions()
+
+    def _on_proj_rev_item_changed(self, item):
+        id_ = item.data(Qt.ItemDataRole.UserRole)
+        if id_ is None:
+            return
+        if item.column() == 0:
+            self.db.update_project_revision(id_, label=item.text())
+        elif item.column() == 2:
+            self.db.update_project_revision(id_, description=item.text())
+
+    def _proj_rev_context_menu(self, pos):
+        item = self._proj_rev_table.itemAt(pos)
+        if item is None:
+            return
+        id_ = item.data(Qt.ItemDataRole.UserRole)
+        menu = QMenu(self)
+        del_action = menu.addAction("Ta bort rad")
+        action = menu.exec(self._proj_rev_table.viewport().mapToGlobal(pos))
+        if action == del_action and id_ is not None:
+            self.db.delete_project_revision(id_)
+            self._load_project_revisions()
+
+    def _load_project_custom_fields(self):
+        for name_edit, value_edit, row_w in self._proj_field_rows.values():
+            self._proj_fields_lay.removeWidget(row_w)
+            row_w.deleteLater()
+        self._proj_field_rows = {}
+        for field in self.db.project_custom_fields():
+            self._add_project_custom_field_widget(field['id'], field['name'], field['value'])
+
+    def _add_project_custom_field_widget(self, id_, name, value):
+        row_w = QWidget()
+        row_l = QHBoxLayout(row_w)
+        row_l.setContentsMargins(0, 0, 0, 0)
+        name_edit = QLineEdit(name)
+        name_edit.setPlaceholderText("Fältnamn")
+        value_edit = QLineEdit(value)
+        value_edit.setPlaceholderText("Värde")
+        del_btn = QPushButton("✕")
+        del_btn.setFixedWidth(28)
+        name_edit.editingFinished.connect(
+            lambda: self.db.update_project_custom_field(id_, name=name_edit.text()))
+        value_edit.editingFinished.connect(
+            lambda: self.db.update_project_custom_field(id_, value=value_edit.text()))
+        del_btn.clicked.connect(lambda: self._delete_project_custom_field(id_))
+        row_l.addWidget(name_edit)
+        row_l.addWidget(value_edit)
+        row_l.addWidget(del_btn)
+        self._proj_fields_lay.insertWidget(self._proj_fields_lay.count() - 1, row_w)
+        self._proj_field_rows[id_] = (name_edit, value_edit, row_w)
+
+    def _add_project_custom_field_row(self):
+        id_ = self.db.add_project_custom_field('', '')
+        self._add_project_custom_field_widget(id_, '', '')
+
+    def _delete_project_custom_field(self, id_):
+        self.db.delete_project_custom_field(id_)
+        name_edit, value_edit, row_w = self._proj_field_rows.pop(id_)
+        self._proj_fields_lay.removeWidget(row_w)
+        row_w.deleteLater()
 
     # ── Palette ───────────────────────────────────────────────────────────────
 
@@ -21003,8 +21228,11 @@ class MainWindow(QMainWindow):
             # Deltagarmatris (2026-08-11) — replaces the old
             # 'project_participants' app_config field, see NOTES.md.
             'participants', 'analysis_sessions', 'participant_attendance',
+            'participant_columns', 'participant_column_values',
             # Manuell sidrotation (2026-08-12), see NOTES.md.
             'pid_page_rotation',
+            # Projekt-flikens revisionstabell + fria fält (2026-08-17), se NOTES.md.
+            'project_revisions', 'project_custom_fields',
         ]
         for tbl in _PROJECT_TABLES:
             try:
@@ -21015,7 +21243,11 @@ class MainWindow(QMainWindow):
                     # 'project_date' kept above for legacy DBs created before
                     # the 2026-08-11 date-range change; it is no longer
                     # written or read by SettingsPanel, only cleaned up here.
-                    'project_date_start', 'project_date_end',
+                    # 'project_hazop_leader' kept above for legacy DBs created
+                    # before the field was removed (2026-08-17) in favor of a
+                    # free Deltagare column, see NOTES.md.
+                    'project_date_start', 'project_date_end', 'project_number',
+                    'project_client',
                     'project_facility', 'project_hazop_leader', 'project_participants',
                     'ocr_default_engine', 'pid_page_orientation_hint',
                     'pid_path', 'pid_layout', 'fill_screen'):
