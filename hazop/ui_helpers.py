@@ -4,6 +4,9 @@ of hazop.py 2026-08-17, see NOTES.md "Förenkla koden + dela upp hazop.py i
 fler filer". Used by both tree_panel.py and hazop.py's remaining panels, so
 this sits below both in the import layer graph."""
 
+import json
+import math
+
 from PyQt6.QtWidgets import QCompleter, QMessageBox, QInputDialog, QLineEdit
 from PyQt6.QtCore import Qt, QPointF
 from PyQt6.QtGui import QFont, QFontMetrics, QTextLayout, QTextOption, QTextCharFormat
@@ -287,4 +290,100 @@ def _draw_text_with_bold_tags(painter, rect, text, tags, base_font, color, word_
 
     painter.setPen(color)
     layout.draw(painter, QPointF(rect.left(), rect.top()))
+
+def effective_f_level(f_level, rrf):
+    """Reduce F-level by floor(log10(rrf)) steps; minimum F=-1."""
+    if rrf <= 1:
+        return f_level
+    reduction = int(math.log10(max(1, rrf)))
+    return max(-1, f_level - reduction)
+
+
+# Keep old names as aliases for backward compatibility
+effective_frequency = effective_f_level
+effective_likelihood = effective_f_level
+
+
+def prob_to_reduction(prob_pct) -> int:
+    """Convert probability % to frequency step reduction.
+
+    10%  → 1 step  (≈ RRF 10)
+    1%   → 2 steps (≈ RRF 100)
+    0.1% → 3 steps (≈ RRF 1000)
+    ≥100% or ≤0% → 0 steps
+    """
+    try:
+        p = float(prob_pct)
+    except (TypeError, ValueError):
+        return 0
+    if p <= 0 or p >= 100:
+        return 0
+    return int(math.floor(-math.log10(p / 100.0)))
+
+
+def total_freq_reduction(base_f_level: int, safeguard_rrf: int,
+                         fa_active: bool, fa_prob,
+                         ignition_active: bool, ignition_prob,
+                         extra_rfactors) -> tuple:
+    """Return (final_f_level, total_equivalent_rrf, total_steps).
+
+    fa_prob / ignition_prob: probability in % (10.0 = 10% = −1 step).
+    extra_rfactors: iterable of dicts with 'rrf' (also treated as %) and 'active'.
+    """
+    # Safeguards reduce by RRF steps
+    sg_steps    = int(math.log10(max(1, safeguard_rrf))) if safeguard_rrf > 1 else 0
+    fa_steps    = prob_to_reduction(fa_prob)    if fa_active    else 0
+    ign_steps   = prob_to_reduction(ignition_prob) if ignition_active else 0
+    extra_steps = sum(
+        prob_to_reduction(rf.get('rrf', 10))
+        for rf in extra_rfactors
+        if rf.get('active')
+    )
+    total_steps = sg_steps + fa_steps + ign_steps + extra_steps
+    total_rrf   = 10 ** total_steps if total_steps > 0 else 1
+    return max(-1, base_f_level - total_steps), total_rrf, total_steps
+
+
+# ── Consequence chain definitions ────────────────────────────────────────────
+# Each entry: (key, display_label, group_header_or_None)
+CHAIN_ITEMS = [
+    # Intermediate event
+    ('loc',           'LOC — Utsläpp / läcka',                    'Intermediär händelse'),
+    # Ignition outcomes
+    ('fire',          'Brand (pool fire / jet fire)',              'Antändning / explosion'),
+    ('flash_fire',    'Flash fire',                                None),
+    ('explosion',     'Explosion (VCE / BLEVE)',                   None),
+    # Toxic / environmental
+    ('toxic',         'Toxisk exponering',                         'Toxisk / miljö'),
+    ('environmental', 'Miljöutsläpp',                              None),
+    # Human / asset
+    ('personnel',     'Personskador',                              'Personell / tillgång'),
+    ('fatality',      'Dödsfall',                                  None),
+    ('equipment',     'Utrustningsskador',                         None),
+    ('production',    'Driftstopp / produktionsbortfall',          None),
+    # User-defined
+    ('custom',        'Övrigt (se text)',                          'Övrigt'),
+]
+CHAIN_KEYS = [k for k, _, _ in CHAIN_ITEMS]
+
+
+def build_consequence_text(base: str, chain: dict) -> str:
+    """Build full consequence description from base event + chain selections."""
+    parts = [base.strip()] if base.strip() else []
+    for key, label, _ in CHAIN_ITEMS:
+        if chain.get(key):
+            # Use short label for the chain (without parenthetical detail)
+            short = label.split('(')[0].strip().split(' — ')[-1].strip()
+            parts.append(short)
+    return ' → '.join(parts)
+
+
+def parse_chain_from_json(raw: str) -> dict:
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {}
+
 
