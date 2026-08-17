@@ -7656,30 +7656,54 @@ def _hex_to_fitz_rgb(hex_color):
 
 
 def _draw_pid_marker(page, x, y, rgb, letter, label):
-    """Draw a filled circle at (x, y) with a centred letter and an outside label.
+    """Draw a rounded card-style marker at (x, y) with a letter + label
+    baked inside it (2026-08-17, replaces the old plain circle+dot style
+    to read closer to the app's own on-screen equipment markers, see
+    NOTES.md "snyggare markörrutor i PDF-exporten").
 
-    Coordinates are in PyMuPDF page space (0,0 = top-left, y down).
+    (x, y) is in the LIVE VIEW's already-rotated display space (what
+    scene_to_pdf() actually stores — see its own docstring) — NOT
+    PyMuPDF's raw content-space, which is what draw/insert calls always
+    address regardless of the page's /Rotate value (that attribute is a
+    pure display hint, never consulted by drawing APIs). Un-rotate via
+    derotation_matrix before drawing, or the marker lands in the wrong
+    physical spot on any page with a non-zero rotation (2026-08-17, see
+    NOTES.md "objektmarkörernas positioner följer inte med rotationen" —
+    this was still broken after the separate fix that made the PAGE
+    itself rotate correctly in the export).
     """
-    R = 7.0
-    # Filled circle
+    pt = fitz.Point(x, y) * page.derotation_matrix
+    x, y = pt.x, pt.y
+
+    label_text = str(label)[:40] if label else ''
+    fontsize = 7
+    text_w = fitz.get_text_length(label_text, fontname='helv', fontsize=fontsize) if label_text else 0
+    pad = 3.0
+    letter_w = 9.0
+    card_h = 14.0
+    card_w = letter_w + (text_w + pad * 2 if label_text else 0) + pad
+    rect = fitz.Rect(x, y - card_h / 2, x + card_w, y + card_h / 2)
+
     shape = page.new_shape()
-    shape.draw_circle(fitz.Point(x, y), R)
     try:
-        shape.finish(color=rgb, fill=rgb, width=0.5, fill_opacity=0.80)
+        shape.draw_rect(rect, radius=0.25)
+    except TypeError:
+        shape.draw_rect(rect)
+    try:
+        shape.finish(color=rgb, fill=rgb, width=0.5, fill_opacity=0.85)
     except TypeError:
         shape.finish(color=rgb, fill=rgb, width=0.5)
     shape.commit()
-    # Centred letter in white (baseline ≈ circle-centre + cap_height/2 ≈ +3.5 pts)
+
     try:
-        page.insert_text(fitz.Point(x - 2.5, y + 3.5), letter,
+        page.insert_text(fitz.Point(x + pad * 0.5, y + 3.0), letter,
                          fontsize=9, color=(1.0, 1.0, 1.0), fontname='helv')
     except Exception:
         pass
-    # Label to the right of the circle
-    if label:
+    if label_text:
         try:
-            page.insert_text(fitz.Point(x + R + 3, y + 3.5),
-                             str(label)[:40], fontsize=7, color=rgb, fontname='helv')
+            page.insert_text(fitz.Point(x + letter_w, y + 2.5),
+                             label_text, fontsize=fontsize, color=(1.0, 1.0, 1.0), fontname='helv')
         except Exception:
             pass
 
@@ -8862,7 +8886,10 @@ class PIDPanel(QWidget):
                 if not raw_pts:
                     continue
                 try:
-                    pts = [fitz.Point(float(p[0]), float(p[1]))
+                    # Stored in the live view's rotated display space, same
+                    # as marker x/y above — un-rotate before drawing (see
+                    # _draw_pid_marker's docstring for why).
+                    pts = [fitz.Point(float(p[0]), float(p[1])) * page.derotation_matrix
                            for p in json.loads(raw_pts)]
                     style = json.loads(nd.get('markup_style', '') or '{}')
                 except Exception:
@@ -8929,7 +8956,9 @@ class PIDPanel(QWidget):
                     # ── Parse geometry & style ─────────────────────────────
                     try:
                         pts_raw = json.loads(m.get('points', '[]') or '[]')
-                        pts = [fitz.Point(float(p[0]), float(p[1]))
+                        # Same rotated-display-space storage as above —
+                        # un-rotate before use in annot geometry.
+                        pts = [fitz.Point(float(p[0]), float(p[1])) * page.derotation_matrix
                                for p in pts_raw]
                     except Exception:
                         pts = []

@@ -16277,6 +16277,123 @@ class ExportPdfMarkupTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def _insert_cause_marker(self, cause_id, page, x, y, comp_type=''):
+        """Database.add_cause_marker was removed 2026-08-13 (see NOTES.md) —
+        insert directly, same as ExportPdfRotationRemapTests' identical helper."""
+        self.db.conn.execute(
+            "INSERT INTO cause_markers (cause_id,pid_page,x,y,component_type) "
+            "VALUES (?,?,?,?,?)", (cause_id, page, x, y, comp_type))
+        self.db.commit()
+
+    def test_marker_position_follows_page_rotation(self):
+        """Fas D (2026-08-17, see NOTES.md): the earlier rotation fix only
+        made the PAGE attribute rotate correctly in the export — marker
+        (x, y) is stored in the LIVE VIEW's already-rotated display space
+        (scene_to_pdf, pure scale+offset, no rotation math), but PyMuPDF's
+        drawing API always addresses the page's raw, UNROTATED content
+        space regardless of /Rotate. A marker drawn with the raw stored
+        x/y therefore lands on the wrong physical spot whenever the page
+        is rotated — this must be un-rotated via page.derotation_matrix
+        first."""
+        import fitz
+        panel = self._make_panel()
+        try:
+            self.db.set_page_rotation(0, 90)
+            node_id = self.db.add_node()
+            dev_id = self.db.deviations(node_id)[0]['id']
+            cause_id = self.db.add_cause(dev_id)
+            # The "real" equipment position in the PDF's own raw content
+            # space (this is what a human would see the marker land on
+            # top of, regardless of rotation).
+            content_pt = fitz.Point(100, 50)
+            # What the live view would actually have stored: content-space
+            # transformed into the rotated DISPLAY space via the same
+            # rotation the export will apply to its own output page.
+            probe_doc = fitz.open(self.pdf_path)
+            probe_page = probe_doc.load_page(0)
+            probe_page.set_rotation(90)
+            stored_pt = content_pt * probe_page.rotation_matrix
+            probe_doc.close()
+
+            self._insert_cause_marker(cause_id, 0, stored_pt.x, stored_pt.y)
+            self._export(panel)
+
+            out = fitz.open(self.out_path)
+            out_page = out.load_page(0)
+            self.assertEqual(out_page.rotation, 90)
+            # _draw_pid_marker fills a small rounded rect anchored near
+            # (x, y) in content space — find the drawn fill rect and
+            # confirm its corner sits near the ORIGINAL content_pt, not
+            # near the raw (unrotated) stored_pt (which would be the
+            # pre-fix, wrong behavior).
+            fills = [d for d in out_page.get_drawings() if d.get('fill')]
+            out.close()
+            self.assertTrue(fills, "the marker must actually draw a filled shape")
+            corners = [pt for d in fills for item in d['items']
+                       for part in item[1:] for pt in self._extract_points(part)]
+            self.assertTrue(corners)
+            nearest = min(corners, key=lambda p: abs(p - content_pt))
+            self.assertLess(abs(nearest - content_pt), 20,
+                "marker must land near the equipment's actual content-space "
+                "position after un-rotating, not near the raw stored (display-space) x/y")
+            # Sanity: the raw un-transformed stored point is nowhere near this
+            # (proves the test would have failed before the fix).
+            self.assertGreater(abs(stored_pt - content_pt), 20)
+        finally:
+            panel.deleteLater()
+
+    @staticmethod
+    def _extract_points(obj):
+        """PyMuPDF's get_drawings() 'items' can hold Point, Quad, or Rect
+        objects depending on how the shape was drawn/simplified — pull out
+        plain Points from whichever it is."""
+        import fitz
+        if hasattr(obj, 'x') and hasattr(obj, 'y') and not hasattr(obj, 'x0'):
+            return [obj]
+        if hasattr(obj, 'ul'):   # Quad
+            return [obj.ul, obj.ur, obj.ll, obj.lr]
+        if hasattr(obj, 'x0'):   # Rect
+            return [fitz.Point(obj.x0, obj.y0), fitz.Point(obj.x1, obj.y1)]
+        return []
+
+    def test_node_markup_polygon_follows_page_rotation(self):
+        """Same rotated-display-space storage bug as marker x/y above,
+        for a node's own markup polygon points (nodes.markup_points)."""
+        import fitz
+        panel = self._make_panel()
+        try:
+            self.db.set_page_rotation(0, 90)
+            content_pts = [fitz.Point(50, 50), fitz.Point(150, 50),
+                           fitz.Point(150, 120), fitz.Point(50, 120)]
+            probe_doc = fitz.open(self.pdf_path)
+            probe_page = probe_doc.load_page(0)
+            probe_page.set_rotation(90)
+            stored_pts = [p * probe_page.rotation_matrix for p in content_pts]
+            probe_doc.close()
+
+            self.db.add_node_with_markup(
+                "Nod A", [[p.x, p.y] for p in stored_pts], {'color': '#ff8c00'}, 0)
+            self._export(panel)
+
+            out = fitz.open(self.out_path)
+            out_page = out.load_page(0)
+            drawings = out_page.get_drawings()
+            out.close()
+            all_pts = [pt for d in drawings for item in d['items']
+                       for part in item[1:] for pt in self._extract_points(part)]
+            self.assertTrue(all_pts, "the node polygon must actually be drawn")
+            # Every one of the four real corners must be reproduced
+            # (within a small tolerance) among the drawn points — proves
+            # the whole polygon landed back at its real content-space
+            # position, not just "somewhere in the right neighborhood".
+            for corner in content_pts:
+                nearest = min(all_pts, key=lambda p: abs(p - corner))
+                self.assertLess(abs(nearest - corner), 2,
+                    f"corner {corner} must be reproduced after un-rotating, "
+                    f"nearest drawn point was {nearest}")
+        finally:
+            panel.deleteLater()
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
