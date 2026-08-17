@@ -3272,19 +3272,123 @@ class EquipmentMarkerReviewDialogTests(unittest.TestCase):
     def test_editing_typ_cell_corrects_the_saved_type(self):
         """"Hitta liknande symbol" — uppföljningsfunktioner (2026-08-15,
         see NOTES.md) — the Typ column used to be read-only and
-        _save() always wrote the frozen res['comp_type']; it's now
-        editable and _save() must respect a correction the same way
-        the Tagg column already does."""
+        _save() always wrote the frozen res['comp_type']; it's now an
+        editable dropdown (2026-08-17: turned into a combobox) and
+        _save() must respect a correction the same way the Tagg column
+        already does."""
         from pid_viewer import EquipmentMarkerReviewDialog
-        from PyQt6.QtCore import Qt as _Qt
         dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db)
         try:
-            self.assertTrue(dlg._tbl.item(0, dlg._C_TYPE).flags() & _Qt.ItemFlag.ItemIsEditable,
-                "Typ cell must be editable")
-            dlg._tbl.item(0, dlg._C_TYPE).setText('Pump')
+            combo = dlg._tbl.cellWidget(0, dlg._C_TYPE)
+            self.assertTrue(combo.isEditable(), "Typ cell must be an editable combobox")
+            combo.setCurrentText('Pump')
             dlg._save()
             rows = [dict(r) for r in self.db.equipment_markers_for_page(0)]
             self.assertEqual(rows[0]['comp_type'], 'Pump')
+        finally:
+            dlg.deleteLater()
+
+    def test_typ_dropdown_includes_standardobjekt_entries(self):
+        """"Typen skall vara en gardinlista enligt vad som finns under
+        standardobjekt" (2026-08-17, see NOTES.md) — the Typ column's
+        options must include every name from Inställningar →
+        Standardobjekt, not just the hard-coded COMPONENT_TYPES set."""
+        from pid_viewer import EquipmentMarkerReviewDialog
+        self.db.add_standard_object('Facklagasanalysator')
+        dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db)
+        try:
+            combo = dlg._tbl.cellWidget(0, dlg._C_TYPE)
+            items = [combo.itemText(i) for i in range(combo.count())]
+            self.assertIn('Facklagasanalysator', items)
+        finally:
+            dlg.deleteLater()
+
+    def test_metod_column_is_narrow(self):
+        """"metod kan vara en mycket mindre kolumn" (2026-08-17, see
+        NOTES.md)."""
+        from pid_viewer import EquipmentMarkerReviewDialog
+        dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db)
+        try:
+            self.assertLess(dlg._tbl.columnWidth(dlg._C_METHOD), 100)
+        finally:
+            dlg.deleteLater()
+
+    def test_dialog_is_larger_than_before(self):
+        """"Du kan göra hela rutan lite större så blir det lättare att
+        se" (2026-08-17, see NOTES.md)."""
+        from pid_viewer import EquipmentMarkerReviewDialog
+        dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db)
+        try:
+            self.assertGreaterEqual(dlg.minimumWidth(), 1000)
+            self.assertGreaterEqual(dlg.minimumHeight(), 640)
+        finally:
+            dlg.deleteLater()
+
+    def test_autodetect_tags_button_disabled_without_pdf_path(self):
+        from pid_viewer import EquipmentMarkerReviewDialog
+        dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db)
+        try:
+            self.assertFalse(dlg._autodetect_btn.isEnabled())
+        finally:
+            dlg.deleteLater()
+
+    def test_autodetect_tags_fills_in_the_nearest_native_text_for_checked_rows(self):
+        """"en knapp som heter autodetektera tagnummer som tar den
+        närmaste... och presenterar rätt tag nummer" (2026-08-17, see
+        NOTES.md) — re-runs find_tag_near_point per checked row and
+        writes whatever it finds into that row's own Tagg cell."""
+        import fitz
+        from pid_viewer import EquipmentMarkerReviewDialog
+        path = os.path.join(self._tmpdir, "auto.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=200, height=200)
+        page.insert_text((95, 100), "V-777")
+        doc.save(path)
+        doc.close()
+        results = [
+            {'tag': '', 'page': 0, 'comp_type': '', 'x': 100.0, 'y': 100.0, 'outline': [],
+             'link_method': 'similar', 'tag_status': 'untagged',
+             'temporary_id': 'SIMILAR-0-0', 'detection_confidence': 0.9},
+        ]
+        dlg = EquipmentMarkerReviewDialog(results, self.db, pdf_path=path)
+        try:
+            self.assertTrue(dlg._autodetect_btn.isEnabled())
+            with unittest.mock.patch.object(QMessageBox, 'information'):
+                dlg._autodetect_tags()
+            self.assertEqual(dlg._tbl.item(0, dlg._C_TAG).text(), 'V-777')
+        finally:
+            dlg.deleteLater()
+
+    def test_autodetect_tags_leaves_tag_untouched_when_nothing_found_nearby(self):
+        import fitz
+        from pid_viewer import EquipmentMarkerReviewDialog
+        path = os.path.join(self._tmpdir, "empty.pdf")
+        doc = fitz.open()
+        doc.new_page(width=200, height=200)
+        doc.save(path)
+        doc.close()
+        results = [
+            {'tag': '', 'page': 0, 'comp_type': '', 'x': 100.0, 'y': 100.0, 'outline': [],
+             'link_method': 'similar', 'tag_status': 'untagged',
+             'temporary_id': 'SIMILAR-0-0', 'detection_confidence': 0.9},
+        ]
+        dlg = EquipmentMarkerReviewDialog(results, self.db, pdf_path=path)
+        try:
+            with unittest.mock.patch.object(QMessageBox, 'information'):
+                dlg._autodetect_tags()
+            self.assertEqual(dlg._tbl.item(0, dlg._C_TAG).text(), 'SIMILAR-0-0')
+        finally:
+            dlg.deleteLater()
+
+    def test_autodetect_tags_with_nothing_checked_shows_info(self):
+        from pid_viewer import EquipmentMarkerReviewDialog
+        dlg = EquipmentMarkerReviewDialog(self._sample_results(), self.db, pdf_path='fake.pdf')
+        try:
+            dlg._tbl.item(0, dlg._C_CHK).setCheckState(Qt.CheckState.Unchecked)
+            dlg._tbl.item(1, dlg._C_CHK).setCheckState(Qt.CheckState.Unchecked)
+            with unittest.mock.patch.object(QMessageBox, 'information') as mock_info:
+                dlg._autodetect_tags()
+            mock_info.assert_called_once()
         finally:
             dlg.deleteLater()
 
@@ -3311,13 +3415,13 @@ class EquipmentMarkerReviewDialogTests(unittest.TestCase):
             dlg._mass_type_cb.setCurrentText('Ventil')
             dlg._mass_tag_edit.setText('V-201')
             dlg._apply_mass_tag()
-            self.assertEqual(dlg._tbl.item(0, dlg._C_TYPE).text(), 'Ventil')
-            self.assertEqual(dlg._tbl.item(1, dlg._C_TYPE).text(), 'Ventil')
+            self.assertEqual(dlg._tbl.cellWidget(0, dlg._C_TYPE).currentText(), 'Ventil')
+            self.assertEqual(dlg._tbl.cellWidget(1, dlg._C_TYPE).currentText(), 'Ventil')
             self.assertEqual(dlg._tbl.item(0, dlg._C_TAG).text(), 'V-201')
             self.assertEqual(dlg._tbl.item(1, dlg._C_TAG).text(), 'V-202')
             # Unchecked row untouched (its Tagg cell pre-fills with the
             # untagged placeholder temporary_id — see _populate())
-            self.assertEqual(dlg._tbl.item(2, dlg._C_TYPE).text(), '')
+            self.assertEqual(dlg._tbl.cellWidget(2, dlg._C_TYPE).currentText(), '')
             self.assertEqual(dlg._tbl.item(2, dlg._C_TAG).text(), 'SIMILAR-0-2')
         finally:
             dlg.deleteLater()

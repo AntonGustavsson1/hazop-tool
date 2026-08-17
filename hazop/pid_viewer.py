@@ -1838,7 +1838,7 @@ class EquipmentMarkerReviewDialog(QDialog):
         self._rejected = rejected or []
         self._pdf_path = pdf_path
         self.setWindowTitle("Granska autodetekterad utrustning")
-        self.setMinimumSize(760, 480)
+        self.setMinimumSize(1000, 640)
 
         outer = QVBoxLayout(self)
 
@@ -1862,8 +1862,8 @@ class EquipmentMarkerReviewDialog(QDialog):
         hh = self._tbl.horizontalHeader()
         hh.setSectionResizeMode(self._C_TAG, QHeaderView.ResizeMode.Stretch)
         for col, w in ((self._C_CHK, 30), (self._C_THUMB, self._THUMB_SIZE + 12),
-                       (self._C_PAGE, 50), (self._C_TYPE, 160), (self._C_CONF, 80),
-                       (self._C_METHOD, 160), (self._C_EDIT, 70)):
+                       (self._C_PAGE, 50), (self._C_TYPE, 170), (self._C_CONF, 80),
+                       (self._C_METHOD, 90), (self._C_EDIT, 70)):
             self._tbl.setColumnWidth(col, w)
         self._tbl.verticalHeader().setVisible(False)
         self._tbl.setAlternatingRowColors(True)
@@ -1882,7 +1882,7 @@ class EquipmentMarkerReviewDialog(QDialog):
         mass_row.addWidget(QLabel("Tillämpa på ikryssade:"))
         self._mass_type_cb = QComboBox()
         self._mass_type_cb.setEditable(True)
-        self._mass_type_cb.addItems(sorted(COMPONENT_TYPES.keys()))
+        self._mass_type_cb.addItems(self._type_options())
         self._mass_type_cb.setCurrentText('')
         mass_row.addWidget(self._mass_type_cb)
         self._mass_tag_edit = QLineEdit()
@@ -1892,6 +1892,26 @@ class EquipmentMarkerReviewDialog(QDialog):
         mass_apply_btn.clicked.connect(self._apply_mass_tag)
         mass_row.addWidget(mass_apply_btn)
         outer.addLayout(mass_row)
+
+        # "Autodetektera tagnummer" (2026-08-17, see NOTES.md) — re-runs
+        # the same nearest-native-text lookup the initial scan itself
+        # uses (equipment_detection.find_tag_near_point) for every
+        # checked row's own detected position, filling in the Tagg cell
+        # wherever it finds something. Most useful for shape-only
+        # ("untagged") rows whose Tagg cell still shows a placeholder
+        # temporary id — a one-click retry instead of hunting the P&ID
+        # by eye for each one. Needs pdf_path (same "older caller, no
+        # PDF, feature simply absent" convention as the ✏ Form column).
+        autodetect_row = QHBoxLayout()
+        self._autodetect_btn = QPushButton("🔍 Autodetektera tagnummer")
+        self._autodetect_btn.setToolTip(
+            "Söker efter närmaste taggtext på PDF-sidan för varje ikryssad "
+            "rad och fyller i Tagg-cellen om något hittas.")
+        self._autodetect_btn.setEnabled(bool(self._pdf_path))
+        self._autodetect_btn.clicked.connect(self._autodetect_tags)
+        autodetect_row.addWidget(self._autodetect_btn)
+        autodetect_row.addStretch()
+        outer.addLayout(autodetect_row)
 
         self._rejected_toggle = QPushButton(f"▸ Visa avvisade kandidater ({len(self._rejected)})")
         self._rejected_toggle.setCheckable(True)
@@ -1932,8 +1952,30 @@ class EquipmentMarkerReviewDialog(QDialog):
         arrow = '▾' if on else '▸'
         self._rejected_toggle.setText(f"{arrow} Visa avvisade kandidater ({len(self._rejected)})")
 
+    def _type_options(self):
+        """Combined Typ dropdown options — COMPONENT_TYPES plus
+        Rörledning/Övrigt / Okänd, any custom equipment_type already used
+        somewhere in the catalog, and every name from Standardobjekt
+        (Database.standard_objects(), the admin-managed catalogue under
+        Inställningar → Standardobjekt) — mirrors hazop.py's own
+        _equipment_type_options exactly (2026-08-17, see NOTES.md "Typen
+        skall vara en gardinlista enligt vad som finns under
+        standardobjekt") so this dialog's Typ column offers the same
+        breadth, not a narrower hard-coded subset."""
+        base_head = [''] + sorted(COMPONENT_TYPES.keys())
+        base_tail = ['Rörledning', 'Övrigt / Okänd']
+        known = set(base_head) | set(base_tail)
+        extra = set()
+        rows = self.db.conn.execute(
+            "SELECT DISTINCT equipment_type FROM equipment_catalog "
+            "WHERE equipment_type IS NOT NULL AND equipment_type != ''").fetchall()
+        extra |= {r[0] for r in rows} - known
+        extra |= {o['name'] for o in self.db.standard_objects()} - known
+        return base_head + sorted(extra) + base_tail
+
     def _populate(self):
         self._tbl.setRowCount(0)
+        type_options = self._type_options()
         # "Dvs så man kan se grafiskt att det är korrekt och inte bara
         # en lista" (2026-08-16, see NOTES.md "zoomad bild per rad i
         # granskningsdialogen") — one fitz.Document opened ONCE for the
@@ -1987,13 +2029,23 @@ class EquipmentMarkerReviewDialog(QDialog):
                 pg_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self._tbl.setItem(r, self._C_PAGE, pg_item)
 
-                # Editable (2026-08-15, see NOTES.md "Hitta liknande symbol"
-                # — uppföljningsfunktioner) — was read-only; _save() below
-                # now reads this cell instead of the frozen res['comp_type'],
-                # so a manual correction here (or a mass-tag apply) actually
-                # takes effect.
-                type_item = QTableWidgetItem(res['comp_type'])
-                self._tbl.setItem(r, self._C_TYPE, type_item)
+                # Editable dropdown (2026-08-15: made editable; 2026-08-17,
+                # see NOTES.md "Typen skall vara en gardinlista enligt vad
+                # som finns under standardobjekt": turned into a combobox
+                # instead of free text) — _save() below reads this cell's
+                # current text, not the frozen res['comp_type'], so a
+                # manual correction here (or a mass-tag apply) actually
+                # takes effect. Still setEditable(True) so an unusual
+                # comp_type value not already in the dropdown (e.g. a
+                # custom type from an older scan) is shown rather than
+                # silently discarded.
+                type_combo = QComboBox()
+                type_combo.setEditable(True)
+                combo_items = type_options if res['comp_type'] in type_options \
+                    else type_options + [res['comp_type']]
+                type_combo.addItems(combo_items)
+                type_combo.setCurrentText(res['comp_type'])
+                self._tbl.setCellWidget(r, self._C_TYPE, type_combo)
 
                 conf = _row_confidence(res)
                 pct = int(round(conf * 100))
@@ -2011,8 +2063,12 @@ class EquipmentMarkerReviewDialog(QDialog):
                     conf_item.setForeground(QBrush(QColor('#8D9299')))
                 self._tbl.setItem(r, self._C_CONF, conf_item)
 
-                method_item = QTableWidgetItem(
-                    self._METHOD_LABELS.get(res['link_method'], res['link_method']))
+                method_label = self._METHOD_LABELS.get(res['link_method'], res['link_method'])
+                method_item = QTableWidgetItem(method_label)
+                # Narrow column (2026-08-17, see NOTES.md) — the full
+                # label routinely gets clipped, so it's always available
+                # on hover instead.
+                method_item.setToolTip(method_label)
                 method_item.setFlags(method_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 if res['link_method'] in ('none', 'not_found'):
                     method_item.setForeground(QBrush(QColor('#aaa')))
@@ -2146,11 +2202,13 @@ class EquipmentMarkerReviewDialog(QDialog):
                 continue
             tag_item = self._tbl.item(r, self._C_TAG)
             tag = tag_item.text().strip() if tag_item and tag_item.text().strip() else res['tag']
-            # Typ is now editable (2026-08-15, see NOTES.md) — read the
-            # cell's current text, not the frozen res['comp_type'], so a
-            # manual correction or a mass-tag apply actually takes effect.
-            type_item = self._tbl.item(r, self._C_TYPE)
-            comp_type = type_item.text().strip() if type_item and type_item.text().strip() \
+            # Typ is now an editable dropdown (2026-08-15: made editable;
+            # 2026-08-17, see NOTES.md: turned into a combobox) — read the
+            # cell widget's current text, not the frozen res['comp_type'],
+            # so a manual correction or a mass-tag apply actually takes
+            # effect.
+            type_widget = self._tbl.cellWidget(r, self._C_TYPE)
+            comp_type = type_widget.currentText().strip() if type_widget and type_widget.currentText().strip() \
                 else res['comp_type']
             equipment_id = res.get('equipment_id')
 
@@ -2208,9 +2266,48 @@ class EquipmentMarkerReviewDialog(QDialog):
             tags = _next_tag_sequence(start_tag, len(rows), existing_tags=existing)
         for i, r in enumerate(rows):
             if comp_type:
-                self._tbl.item(r, self._C_TYPE).setText(comp_type)
+                self._tbl.cellWidget(r, self._C_TYPE).setCurrentText(comp_type)
             if tags:
                 self._tbl.item(r, self._C_TAG).setText(tags[i])
+
+    def _autodetect_tags(self):
+        """"🔍 Autodetektera tagnummer" (2026-08-17, see NOTES.md) — for
+        every checked row, re-searches the PDF's own native text near
+        that row's detected position (equipment_detection.
+        find_tag_near_point, the same nearest-tag lookup the initial
+        scan itself uses) and fills the Tagg cell with whatever it
+        finds. Most useful for shape-only ("untagged") rows whose Tagg
+        cell still shows a placeholder temporary id — a one-click retry
+        instead of hunting the P&ID by eye for each one. Leaves a row's
+        Tagg cell untouched if nothing is found nearby, rather than
+        blanking an already-reasonable tag."""
+        if not self._pdf_path:
+            return
+        rows = [r for r in range(self._tbl.rowCount())
+                if (chk := self._tbl.item(r, self._C_CHK)) and
+                   chk.checkState() == Qt.CheckState.Checked]
+        if not rows:
+            QMessageBox.information(self, "Inga rader ikryssade",
+                "Kryssa i minst en rad att autodetektera tagg för.")
+            return
+        try:
+            doc = fitz.open(self._pdf_path)
+        except Exception as e:
+            QMessageBox.warning(self, "Kunde inte öppna PDF", str(e))
+            return
+        found = 0
+        try:
+            equipment_detection.apply_page_rotations(doc, self.db.get_all_page_rotations())
+            for r in rows:
+                res = self._results[r]
+                tag = equipment_detection.find_tag_near_point(doc, res['page'], res['x'], res['y'])
+                if tag:
+                    self._tbl.item(r, self._C_TAG).setText(tag)
+                    found += 1
+        finally:
+            doc.close()
+        QMessageBox.information(
+            self, "Klart", f"Hittade en taggtext för {found} av {len(rows)} ikryssade rader.")
 
 
 class TargetPickerDialog(QDialog):
