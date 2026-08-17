@@ -15755,6 +15755,17 @@ class StandardCausesSettingsPanel(QWidget):
         self._obj_list = QListWidget()
         self._obj_list.currentRowChanged.connect(self._on_obj_sel)
         c2.addWidget(self._obj_list)
+        # "implementera de funktioner som finns i standardobjekt även i
+        # standard orsaker så man kan lägga till nya objekt under
+        # standardorsaker" (2026-08-17, see NOTES.md) — same add/delete/
+        # reorder/rename CRUD as StandardObjectsSettingsPanel's own
+        # _list, over the exact same standard_objects table, so a new
+        # object type no longer requires switching tabs.
+        c2b = QHBoxLayout()
+        for icon, slot in (('+', self._add_obj), ('−', self._del_obj),
+                           ('↑', lambda: self._move_obj(-1)), ('↓', lambda: self._move_obj(1))):
+            b = QPushButton(icon); b.setFixedWidth(28); b.clicked.connect(slot); c2b.addWidget(b)
+        c2b.addStretch(); c2.addLayout(c2b)
         # Show all objects; objects with causes are highlighted
         self._show_all_obj_chk = QCheckBox("Visa alla objekt")
         self._show_all_obj_chk.setChecked(True)
@@ -15862,9 +15873,15 @@ class StandardCausesSettingsPanel(QWidget):
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, r['id'])
             item.setData(Qt.ItemDataRole.UserRole + 1, r['name'])
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
             if n:
                 item.setForeground(QColor('#17191C'))
             self._obj_list.addItem(item)
+        try:
+            self._obj_list.itemChanged.disconnect(self._on_obj_changed)
+        except TypeError:
+            pass   # wasn't connected yet (first call)
+        self._obj_list.itemChanged.connect(self._on_obj_changed)
         self._loading = False
         self._obj_list.setCurrentRow(max(0, min(cur, self._obj_list.count()-1)))
 
@@ -16006,6 +16023,61 @@ class StandardCausesSettingsPanel(QWidget):
         ids = [self._dev_list.item(i).data(Qt.ItemDataRole.UserRole)
                for i in range(self._dev_list.count())]
         self.db.reorder_standard_deviations(ids)
+
+    # ── Object CRUD (2026-08-17, see NOTES.md — same standard_objects
+    # table/methods as StandardObjectsSettingsPanel's own _list) ─────────────────
+    def _on_obj_changed(self, item):
+        if self._loading:
+            return
+        id_ = item.data(Qt.ItemDataRole.UserRole)
+        if id_ is None:
+            return
+        # Strip the "  (n)" cause-count suffix _load_objects() appends
+        # for display — an edit must only ever change the object's own
+        # name, never bake the count into it.
+        name = re.sub(r'\s*\(\d+\)$', '', item.text()).strip()
+        if name:
+            self.db.update_standard_object(id_, name)
+        self._load_objects()
+
+    def _add_obj(self):
+        new_id = self.db.add_standard_object('Nytt objekt')
+        if not self._show_all_obj_chk.isChecked():
+            # A brand-new object has zero causes yet, so it wouldn't
+            # appear in the "only objects with causes" view at all —
+            # switch to "Visa alla objekt" so it's actually visible to
+            # rename/edit right away. Its own stateChanged already
+            # triggers _load_objects().
+            self._show_all_obj_chk.setChecked(True)
+        else:
+            self._load_objects()
+        for i in range(self._obj_list.count()):
+            if self._obj_list.item(i).data(Qt.ItemDataRole.UserRole) == new_id:
+                self._obj_list.setCurrentRow(i)
+                self._obj_list.editItem(self._obj_list.item(i))
+                break
+
+    def _del_obj(self):
+        item = self._obj_list.currentItem()
+        if not item:
+            return
+        id_ = item.data(Qt.ItemDataRole.UserRole)
+        if id_ is None:
+            return
+        self.db.delete_standard_object(id_)
+        self._load_objects()
+
+    def _move_obj(self, direction):
+        row = self._obj_list.currentRow()
+        new_row = row + direction
+        if not (0 <= new_row < self._obj_list.count()):
+            return
+        a = self._obj_list.takeItem(row)
+        self._obj_list.insertItem(new_row, a)
+        self._obj_list.setCurrentRow(new_row)
+        ids = [self._obj_list.item(i).data(Qt.ItemDataRole.UserRole)
+               for i in range(self._obj_list.count())]
+        self.db.reorder_standard_objects(ids)
 
     # ── Cause CRUD ────────────────────────────────────────────────────────────
     def _add_cause(self):
@@ -21120,7 +21192,7 @@ class MainWindow(QMainWindow):
         # Also update db on settings sub-panels (they have their own db reference)
         sp = self.settings_panel
         for attr in ('_std_causes_panel', '_std_objects_panel', '_tag_memory_panel',
-                     '_tag_db_panel', 'analysis_panel'):
+                     '_tag_db_panel', 'analysis_panel', '_participant_matrix_panel'):
             try:
                 sub = getattr(sp, attr, None)
                 if sub is not None:

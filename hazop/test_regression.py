@@ -1323,6 +1323,112 @@ class KonInlineEditTests(unittest.TestCase):
         self.assertEqual(ScenarioTablePanel._COLS[ScenarioTablePanel._C_LOPA], 'Enablers')
 
 
+class StandardCausesObjectCrudTests(unittest.TestCase):
+    """"implementera de funktioner som finns i standardobjekt även i
+    standard orsaker så man kan lägga till nya objekt under
+    standardorsaker" (2026-08-17, see NOTES.md) — the Objekt column in
+    Inställningar → Standardorsaker gets the same add/delete/reorder/
+    rename CRUD StandardObjectsSettingsPanel's own list already has,
+    over the identical standard_objects table."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_stdcauses_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        self.dev_id = self.db.add_standard_deviation('Test-avvikelse')
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_panel(self):
+        # Database() seeds a real default standard_deviations/standard_objects
+        # library on construction — self.dev_id is NOT necessarily row 0.
+        from hazop import StandardCausesSettingsPanel
+        panel = StandardCausesSettingsPanel(self.db)
+        row = next(i for i in range(panel._dev_list.count())
+                   if panel._dev_list.item(i).data(Qt.ItemDataRole.UserRole) == self.dev_id)
+        panel._dev_list.setCurrentRow(row)   # loads _obj_list for self.dev_id
+        return panel
+
+    def test_add_obj_creates_a_new_standard_object_and_shows_it(self):
+        panel = self._make_panel()
+        try:
+            before = {o['id'] for o in self.db.standard_objects()}
+            panel._add_obj()
+            after = {o['id'] for o in self.db.standard_objects()}
+            new_ids = after - before
+            self.assertEqual(len(new_ids), 1)
+            new_id = new_ids.pop()
+            shown_ids = {panel._obj_list.item(i).data(Qt.ItemDataRole.UserRole)
+                         for i in range(panel._obj_list.count())}
+            self.assertIn(new_id, shown_ids,
+                "a freshly-added object must be visible immediately, even with 0 causes yet")
+        finally:
+            panel.deleteLater()
+
+    def test_renaming_obj_item_persists_and_strips_the_count_suffix(self):
+        panel = self._make_panel()
+        try:
+            obj_id = self.db.add_standard_object('Gammalt namn')
+            self.db.add_standard_cause_with_object(self.dev_id, obj_id, 'En orsak')
+            panel._load_objects()
+            row = next(i for i in range(panel._obj_list.count())
+                       if panel._obj_list.item(i).data(Qt.ItemDataRole.UserRole) == obj_id)
+            item = panel._obj_list.item(row)
+            self.assertIn('(1)', item.text(), "sanity check: cause count suffix must be shown")
+
+            # setText() already fires the connected itemChanged signal for
+            # real (== _on_obj_changed), same as a user committing an
+            # in-place edit — no separate manual call needed or wanted.
+            item.setText('Nytt namn  (1)')
+
+            updated = next(o for o in self.db.standard_objects() if o['id'] == obj_id)
+            self.assertEqual(updated['name'], 'Nytt namn',
+                "the count suffix must never be saved as part of the object's own name")
+        finally:
+            panel.deleteLater()
+
+    def test_del_obj_removes_the_standard_object(self):
+        panel = self._make_panel()
+        try:
+            obj_id = self.db.add_standard_object('Att ta bort')
+            panel._load_objects()
+            row = next(i for i in range(panel._obj_list.count())
+                       if panel._obj_list.item(i).data(Qt.ItemDataRole.UserRole) == obj_id)
+            panel._obj_list.setCurrentRow(row)
+
+            panel._del_obj()
+
+            remaining_ids = {o['id'] for o in self.db.standard_objects()}
+            self.assertNotIn(obj_id, remaining_ids)
+        finally:
+            panel.deleteLater()
+
+    def test_move_obj_persists_new_sort_order(self):
+        panel = self._make_panel()
+        try:
+            id_a = self.db.add_standard_object('A-objekt')
+            id_b = self.db.add_standard_object('B-objekt')
+            panel._load_objects()
+            row_b = next(i for i in range(panel._obj_list.count())
+                         if panel._obj_list.item(i).data(Qt.ItemDataRole.UserRole) == id_b)
+            panel._obj_list.setCurrentRow(row_b)
+
+            panel._move_obj(-1)   # move B up, above A
+
+            ordered_ids = [o['id'] for o in self.db.standard_objects()]
+            self.assertLess(ordered_ids.index(id_b), ordered_ids.index(id_a))
+        finally:
+            panel.deleteLater()
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 4. ConnectorAnalyzer thread-hang regression (bug #5)
 # ══════════════════════════════════════════════════════════════════════════
@@ -3963,6 +4069,41 @@ class ReloadAllPanelsDbSwapTests(unittest.TestCase):
                 win.settings_panel.analysis_panel.refresh()
             except sqlite3.ProgrammingError as e:
                 self.fail(f"analysis_panel.refresh() must not touch the closed old db, raised: {e!r}")
+
+    def test_participant_matrix_panel_gets_new_db(self):
+        """Same bug class again, found via a real crash report
+        (2026-08-17): SettingsPanel embeds its own ParticipantMatrixPanel
+        (self._participant_matrix_panel, the "Deltagare" tab), which kept
+        its own db reference from __init__ time — it was missing from
+        _reload_all_panels()'s settings-sub-panel refresh list entirely
+        (unlike _std_causes_panel/_std_objects_panel/etc., which were
+        already there), so it kept using the old, by-then-closed
+        connection after a project reload."""
+        with _TempDbMainWindow() as win:
+            old_db = win.db
+            old_db.conn.close()
+            win.db = hazop.Database(path=old_db.path)
+            win._reload_all_panels()
+            self.assertIs(
+                win.settings_panel._participant_matrix_panel.db, win.db,
+                "SettingsPanel's nested ParticipantMatrixPanel must also receive the new db reference")
+
+    def test_add_participant_does_not_crash_after_db_swap(self):
+        """End-to-end regression for the exact reported crash: "Programmet
+        kraschar när jag klickar på lägg till deltagare" — clicking
+        "+ Lägg till deltagare" after a project reload used to raise
+        sqlite3.ProgrammingError('Cannot operate on a closed database')
+        from Database.add_participant()."""
+        with _TempDbMainWindow() as win:
+            old_db = win.db
+            old_db.conn.close()
+            win.db = hazop.Database(path=old_db.path)
+            win._reload_all_panels()
+
+            try:
+                win.settings_panel._participant_matrix_panel._add_participant()
+            except sqlite3.ProgrammingError as e:
+                self.fail(f"_add_participant() must not touch the closed old db, raised: {e!r}")
 
     def test_equipment_deviation_bar_gets_new_db(self):
         """Same bug class as worksheet/equipment_panel above, found via a
