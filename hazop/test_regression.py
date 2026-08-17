@@ -13648,8 +13648,10 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         panel = HAZOPPreparationPanel(self.db)
         try:
             titles = self._tab_titles(panel)
-            self.assertIn("Riskmatris & Kategorier", titles)
-            self.assertNotIn("Riskmatris", titles)
+            # Renamed from "Riskmatris & Kategorier" to "Riskmatris" (2026-08-17
+            # user request) — still a single merged tab, not split back apart.
+            self.assertIn("Riskmatris", titles)
+            self.assertNotIn("Riskmatris & Kategorier", titles)
             self.assertNotIn("Kategorier", titles)
         finally:
             panel.deleteLater()
@@ -13711,6 +13713,94 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             cfg = self.db.get_risk_matrix()
             self.assertEqual(cfg['rows'], 4)
             self.assertEqual(cfg['cols'], 5)
+        finally:
+            panel.deleteLater()
+
+    def test_axis_reverse_buttons_are_checkable_toolbuttons(self):
+        """"Ersätt kryssrutorna 'Vänd X'/'Vänd Y' med klickbara pilar"
+        (2026-08-17 user request) — QToolButton in checkable mode replaces
+        QCheckBox, but every downstream call site only ever used
+        isChecked()/setChecked()/toggled, so the matrix-rebuild behavior
+        must be unchanged."""
+        from hazop import HAZOPPreparationPanel
+        from PyQt6.QtWidgets import QToolButton, QCheckBox
+        panel = HAZOPPreparationPanel(self.db)
+        try:
+            self.assertIsInstance(panel._x_rev_chk, QToolButton)
+            self.assertIsInstance(panel._y_rev_chk, QToolButton)
+            self.assertNotIsInstance(panel._x_rev_chk, QCheckBox)
+            self.assertTrue(panel._x_rev_chk.isCheckable())
+            self.assertTrue(panel._y_rev_chk.isCheckable())
+
+            self.assertFalse(panel._x_rev_chk.isChecked())
+            panel._x_rev_chk.setChecked(True)
+            self.assertTrue(panel._x_rev_chk.isChecked())
+            # toggled -> _apply_size() rebuilds the in-memory grid immediately;
+            # persisting to DB only happens on explicit "Spara riskmatris".
+            self.assertTrue(panel._last_built_cfg.get('x_reversed'))
+        finally:
+            panel.deleteLater()
+
+    def test_long_frequency_boundary_label_shows_from_the_start(self):
+        """"Visa '<'-tecknet korrekt i gränsvärden (t.ex. '< 0.1')"
+        (2026-08-17). Root cause: the axis-label QLineEdit is a fixed 80px
+        wide, and QLineEdit.setText() leaves the cursor at the END of the
+        text — a label like "< 0.1/år" is wider than the field at the 8px
+        header font, so the widget auto-scrolled to keep the cursor
+        visible, hiding the leading "<". Fix: setCursorPosition(0) after
+        every setText() on these label edits, both at initial build and
+        whenever _sync_freq_label_from_boundary regenerates one."""
+        from hazop import HAZOPPreparationPanel
+        panel = HAZOPPreparationPanel(self.db)
+        try:
+            # Freshly built grid — every column header must show from the start.
+            for e in panel._x_label_edits:
+                self.assertEqual(e.cursorPosition(), 0)
+
+            # Editing a boundary regenerates the two adjacent labels — must
+            # also reset to the start, even though the new text is longer
+            # than the 80px field.
+            panel._freq_boundary_edits[0].setText("0.1")
+            panel._sync_freq_label_from_boundary(panel._freq_boundary_edits[0], 0)
+            self.assertEqual(panel._x_label_edits[0].cursorPosition(), 0)
+            self.assertTrue(panel._x_label_edits[0].text().startswith("<"))
+        finally:
+            panel.deleteLater()
+
+    def test_category_row_height_matches_tallest_wrapped_text(self):
+        """"Tillåt flera rader text i konsekvenskategorier; radhöjden i hela
+        matrisen ska följa den högsta raden ... bara när Frekvens→X,
+        Konsekvens→Y" (2026-08-17). A category cell with long text should
+        wrap (QTextEdit, not QLineEdit) and grow its whole grid row —
+        row header AND cell buttons — to match, not just itself."""
+        from hazop import HAZOPPreparationPanel, CONFIG
+        panel = HAZOPPreparationPanel(self.db)
+        try:
+            cat_id = self.db.add_category("Miljö")
+            # Frekvens→X, Konsekvens→Y is the default orientation
+            # (self._axis_combo's first entry) — no need to change it.
+            long_text = "En mycket lång konsekvensbeskrivning som med säkerhet " \
+                        "kräver flera rader när den bryts vid 130 pixlars bredd."
+            self.db.set_severity_definition(1, cat_id, long_text)
+            panel._apply_size()
+
+            tallest_row = 0
+            for r in range(len(panel._y_label_edits)):
+                h = panel._y_label_edits[r].height()
+                tallest_row = max(tallest_row, h)
+            self.assertGreater(tallest_row, CONFIG['H_ROW_STD'],
+                                "A row containing the long category text should "
+                                "have grown taller than the standard row height")
+
+            # Whichever row grew, its header and every cell button in that
+            # row must share the exact same height (not just the text cell).
+            grown = [r for r in range(len(panel._y_label_edits))
+                     if panel._y_label_edits[r].height() > CONFIG['H_ROW_STD']]
+            self.assertTrue(grown)
+            r = grown[0]
+            row_h = panel._y_label_edits[r].height()
+            for btn in panel._cell_buttons[r][1]:
+                self.assertEqual(btn.height(), row_h)
         finally:
             panel.deleteLater()
 

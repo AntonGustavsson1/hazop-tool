@@ -42,7 +42,7 @@ from PyQt6.QtWidgets import (
     QSpinBox, QDoubleSpinBox, QSlider, QColorDialog, QFrame, QListWidget, QListWidgetItem,
     QProgressDialog, QAbstractItemView, QToolTip, QInputDialog, QCheckBox,
     QStyledItemDelegate, QStyleOptionViewItem, QStyle, QStyleOptionButton,
-    QButtonGroup, QRadioButton,
+    QButtonGroup, QRadioButton, QToolButton,
 )
 from PyQt6.QtCore import (
     Qt, pyqtSignal, QSize, QPointF, QRectF, QRect, QPoint, QTimer, QMimeData, QEvent,
@@ -17327,10 +17327,35 @@ class HAZOPPreparationPanel(QWidget):
         self._axis_combo.addItem("Konsekvens → X,  Frekvens → Y", 'consequence')
         ax_row.addWidget(self._axis_combo, 1)
         ax_row.addWidget(QLabel("  Riktning:"))
-        self._x_rev_chk = QCheckBox("Vänd X ←")
-        self._x_rev_chk.setToolTip("Vänd X-axeln: hög värde till vänster")
-        self._y_rev_chk = QCheckBox("Vänd Y ↓")
-        self._y_rev_chk.setToolTip("Vänd Y-axeln: lägst upp, högst ner")
+        # Clickable arrows instead of checkboxes (2026-08-17 user request) —
+        # QToolButton in checkable mode is a drop-in for QCheckBox here:
+        # every other call site only ever touches .isChecked()/.setChecked()/
+        # .toggled, which QAbstractButton gives both classes identically, so
+        # nothing downstream (_apply_size, _load_matrix_ui, _build_matrix_grid,
+        # _save_matrix) needed to change.
+        self._x_rev_chk = QToolButton()
+        self._x_rev_chk.setCheckable(True)
+        self._x_rev_chk.setAutoRaise(True)
+        self._y_rev_chk = QToolButton()
+        self._y_rev_chk.setCheckable(True)
+        self._y_rev_chk.setAutoRaise(True)
+
+        def _update_x_arrow(checked):
+            self._x_rev_chk.setText("X ←" if checked else "X →")
+            self._x_rev_chk.setToolTip(
+                "X-axeln vänd: högt värde till vänster" if checked
+                else "X-axeln normal: klicka för att vända (högt värde till vänster)")
+
+        def _update_y_arrow(checked):
+            self._y_rev_chk.setText("Y ↑" if checked else "Y ↓")
+            self._y_rev_chk.setToolTip(
+                "Y-axeln vänd: högst upp" if checked
+                else "Y-axeln normal: klicka för att vända (högst upp)")
+
+        self._x_rev_chk.toggled.connect(_update_x_arrow)
+        self._y_rev_chk.toggled.connect(_update_y_arrow)
+        _update_x_arrow(False)
+        _update_y_arrow(False)
         ax_row.addWidget(self._x_rev_chk)
         ax_row.addWidget(self._y_rev_chk)
         ml.addLayout(ax_row)
@@ -17424,7 +17449,7 @@ class HAZOPPreparationPanel(QWidget):
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([220, 760])
         combined_l.addWidget(splitter)
-        tabs.addTab(combined_tab, "Riskmatris & Kategorier")
+        tabs.addTab(combined_tab, "Riskmatris")
 
         # ── Tab: Standardorsaker ─────────────────────────────────────────────
         self._std_causes_panel = StandardCausesSettingsPanel(self.db)
@@ -17799,6 +17824,13 @@ class HAZOPPreparationPanel(QWidget):
             e.setAlignment(Qt.AlignmentFlag.AlignCenter)
             e.setStyleSheet(_hdr_style)
             e.setToolTip(col_tip + "\nEtiketten uppdateras automatiskt när du ändrar gränsvärdet.")
+            # QLineEdit.setText() leaves the cursor at the END of the text —
+            # for a label wider than the fixed 80px field (e.g. "< 0.1/år"
+            # at 8px font measures ~96px, see NOTES.md "'<'-tecknet syns
+            # inte i gränsvärden"), the widget auto-scrolls to keep the
+            # cursor visible, which scrolls the leading "<"/"≥" out of view.
+            # Reset to show from the start instead (2026-08-17).
+            e.setCursorPosition(0)
             self._matrix_grid.addWidget(e, 0, c + 1)
             self._x_label_edits.append(e)
 
@@ -17816,6 +17848,7 @@ class HAZOPPreparationPanel(QWidget):
             ey.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             ey.setStyleSheet(_hdr_style)
             ey.setToolTip(row_tip)
+            ey.setCursorPosition(0)   # see column-header comment above
             self._matrix_grid.addWidget(ey, r + 1, 0)
             self._y_label_edits.append(ey)   # index 0 = top row
 
@@ -17966,6 +17999,12 @@ class HAZOPPreparationPanel(QWidget):
             # Consequence on Y (rows) → category columns go to the RIGHT
             # n_dcols = n_freq; no boundary column exists (boundary is a row)
             base_col = n_dcols + 1
+            # r -> list of this row's category QTextEdits, used below to size
+            # the row header + cell buttons + category cells all to the
+            # tallest wrapped text in that row (2026-08-17 user request —
+            # only this orientation needed it, the `not freq_on_x` branch
+            # above already had a working fixed row height).
+            row_cat_edits = [[] for _ in range(n_drows)]
 
             for cat_i, cat in enumerate(cats):
                 cat_id  = cat['id']
@@ -17976,21 +18015,41 @@ class HAZOPPreparationPanel(QWidget):
                 cat_hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 cat_hdr.setMinimumHeight(CONFIG['H_ROW_STD'])
                 cat_hdr.setMinimumWidth(130)
+                cat_hdr.setWordWrap(True)
                 self._matrix_grid.addWidget(cat_hdr, 0, cat_col)
 
                 for r in range(n_drows):      # n_drows = n_cons
                     disp_r    = (n_drows - 1 - r) if not y_rev else r
                     sev_level = disp_r + 1
                     text = defs.get(sev_level, {}).get(cat_id, '')
-                    e = QLineEdit(text)
-                    e.setMinimumWidth(130)
+                    e = QTextEdit()
+                    e.setPlainText(text)
+                    e.setFixedWidth(130)
+                    e.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+                    e.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+                    e.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
                     e.setStyleSheet(_def_style)
                     e.setPlaceholderText("—")
-                    e.editingFinished.connect(
+                    e.textChanged.connect(
                         lambda cid=cat_id, sl=sev_level, _e=e:
-                        self.db.set_severity_definition(sl, cid, _e.text().strip()))
+                        self.db.set_severity_definition(sl, cid, _e.toPlainText().strip()))
                     self._matrix_grid.addWidget(e, r + 1, cat_col)
                     self._sev_def_edits[(cat_id, sev_level)] = e
+                    row_cat_edits[r].append(e)
+
+            for r in range(n_drows):
+                if not row_cat_edits[r]:
+                    continue
+                needed = CONFIG['H_ROW_STD']
+                for e in row_cat_edits[r]:
+                    doc = e.document()
+                    doc.setTextWidth(e.width())
+                    needed = max(needed, int(doc.size().height()) + 8)
+                self._y_label_edits[r].setFixedHeight(needed)
+                for btn in self._cell_buttons[r][1]:
+                    btn.setFixedHeight(needed)
+                for e in row_cat_edits[r]:
+                    e.setFixedHeight(needed)
 
     def _sync_freq_label_from_boundary(self, boundary_edit, col_idx: int):
         """Auto-update the frequency axis label(s) adjacent to the changed boundary."""
@@ -18032,6 +18091,7 @@ class HAZOPPreparationPanel(QWidget):
                 new_lbl = _label_for_col(affected_c)
                 if new_lbl:
                     self._x_label_edits[affected_c].setText(new_lbl)
+                    self._x_label_edits[affected_c].setCursorPosition(0)
 
     def _edit_cell(self, btn):
         """Click a cell → choose background color, label, and text color."""
@@ -18146,6 +18206,7 @@ class HAZOPPreparationPanel(QWidget):
                 data_idx = (n - 1 - i) if x_rev else i
                 if 0 <= data_idx < n:
                     e.setText(labels[data_idx])
+                    e.setCursorPosition(0)
             # _freq_boundary_edits: edit[i] maps to bval_idx (n-1-(i+1) if x_rev else i)
             for i, e in enumerate(self._freq_boundary_edits):
                 bi = (n - 2 - i) if x_rev else i
@@ -18158,6 +18219,7 @@ class HAZOPPreparationPanel(QWidget):
                 data_idx = i if y_rev else (n - 1 - i)
                 if 0 <= data_idx < n:
                     e.setText(labels[data_idx])
+                    e.setCursorPosition(0)
             # _freq_boundary_edits for y case: edit[i] → bval_idx (i if y_rev else n-2-i)
             for i, e in enumerate(self._freq_boundary_edits):
                 bi = i if y_rev else (n - 2 - i)
