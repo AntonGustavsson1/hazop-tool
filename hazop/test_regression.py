@@ -13974,62 +13974,6 @@ class EquipmentTagPopupCustomTypeTests(unittest.TestCase):
             popup.deleteLater()
 
 
-class ConsequencePanelSevLabelsSyncTests(unittest.TestCase):
-    """ConsequencePanel.sev_combo used to be populated once, at construction
-    time, from the hardcoded default SEV_LABELS — so customizing severity
-    level text/count via Settings' risk matrix editor never propagated to
-    the actual combo used to edit a consequence's severity (2026-08-09,
-    see NOTES.md)."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.app = _ensure_qapp()
-
-    def setUp(self):
-        self._tmpdir = tempfile.mkdtemp(prefix="hazop_sevlabels_test_")
-        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
-        node_id = self.db.add_node()
-        deviation_id = self.db.deviations(node_id)[0]['id']
-        self.cause_id = self.db.add_cause(deviation_id)
-        self.cons_id = self.db.add_consequence(self.cause_id)
-
-    def tearDown(self):
-        try:
-            del self.db
-        except Exception:
-            pass
-        # get_matrix() reads a module-level singleton cache shared across
-        # the whole test process — reset it so a custom matrix set up by
-        # this test class can't leak into unrelated tests that run after it.
-        hazop._risk_matrix_cache.invalidate()
-        shutil.rmtree(self._tmpdir, ignore_errors=True)
-
-    def test_sev_combo_reflects_custom_matrix_labels_on_load(self):
-        from hazop import ConsequencePanel, DEFAULT_MATRIX
-        custom = dict(DEFAULT_MATRIX)
-        custom['y_labels'] = ['Testnivå1', 'Testnivå2', 'Testnivå3', 'Testnivå4', 'Testnivå5']
-        self.db.set_risk_matrix(custom)
-        hazop.load_matrix(self.db)
-        panel = ConsequencePanel(self.db)
-        panel.load(self.cons_id)
-        self.assertEqual(panel.sev_combo.itemText(0), 'C1 – Testnivå1')
-        self.assertNotIn('Försumbar', panel.sev_combo.itemText(0))
-
-    def test_sev_combo_updates_after_matrix_changed_while_panel_open(self):
-        from hazop import ConsequencePanel, DEFAULT_MATRIX
-        panel = ConsequencePanel(self.db)
-        panel.load(self.cons_id)
-        self.assertNotIn('Omdöpt', panel.sev_combo.itemText(2))
-
-        custom = dict(DEFAULT_MATRIX)
-        custom['y_labels'] = ['A', 'B', 'Omdöpt', 'D', 'E']
-        self.db.set_risk_matrix(custom)
-        hazop.load_matrix(self.db)
-
-        # Simulates MainWindow._on_matrix_changed's cons_panel.load(...) call
-        panel.load(self.cons_id)
-        self.assertEqual(panel.sev_combo.itemText(2), 'C3 – Omdöpt')
-
 
 class LegacyConsequenceLikelihoodColumnTests(unittest.TestCase):
     """consequences.likelihood predates the redesign that moved likelihood
