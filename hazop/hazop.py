@@ -11549,6 +11549,7 @@ class ScenarioTablePanel(QWidget):
     new_item_created           = pyqtSignal(int, int)   # (type_, id_) — after quick-add via Enter menu
     item_edited                = pyqtSignal(int, int)   # (type_, id_) — cell edit committed → sync right panel
     structure_changed          = pyqtSignal()           # item moved/deleted/duplicated → refresh tree
+    equipment_renamed          = pyqtSignal()           # an ORS tag edit renamed the linked equipment_catalog row
 
     # Column indices
     _C_NOD, _C_UTR, _C_DEV, _C_ORS, _C_KON, _C_RFORE = 0, 1, 2, 3, 4, 5
@@ -11588,13 +11589,6 @@ class ScenarioTablePanel(QWidget):
         # its existing placeholder row instead (unchanged) — no badge
         # needed there since that row's own cell is already the target.
         self._row_plus_cols = {}
-        # Set by MainWindow to PIDPanel.reload_overlays (2026-08-13, see
-        # NOTES.md) — called after _apply_cause_obj renames an
-        # equipment_catalog row via the ORS tag strip, so P&ID markers
-        # reflect the new name immediately instead of on their next
-        # unrelated redraw. None (a no-op) when ScenarioTablePanel is
-        # used standalone, e.g. in tests.
-        self._on_equipment_renamed_fn = None
         self._cons_id  = None  # if set, show only this consequence (set by load_consequence)
         self._enter_row = -1
         self._enter_col = -1
@@ -11926,6 +11920,22 @@ class ScenarioTablePanel(QWidget):
         self._rebuild()
 
     # ── Build ─────────────────────────────────────────────────────────────────
+
+    def rebuild(self):
+        """Public entry point for a full, immediate table rebuild."""
+        self._rebuild()
+
+    def schedule_rebuild(self):
+        """Public entry point for a deferred rebuild — see _schedule_rebuild."""
+        self._schedule_rebuild()
+
+    def get_equipment_filter(self):
+        """The equipment_catalog id the table is currently filtered to, or None."""
+        return self._equipment_filter_id
+
+    def position_near_row(self, cons_id: int, popup_size):
+        """Public wrapper — see _pos_near_cons_row."""
+        return self._pos_near_cons_row(cons_id, popup_size)
 
     def _schedule_rebuild(self):
         """
@@ -13603,8 +13613,7 @@ class ScenarioTablePanel(QWidget):
                 self.db.update_equipment_item(
                     old_equipment_id, new_tag, old_eq.get('prefix') or '',
                     old_eq.get('equipment_type') or comp_type, old_eq.get('description') or '')
-                if self._on_equipment_renamed_fn is not None:
-                    self._on_equipment_renamed_fn()
+                self.equipment_renamed.emit()
                 renamed = True
         elif new_tag:
             match = self.db.get_equipment_by_tag(new_tag)
@@ -18395,6 +18404,10 @@ class SettingsPanel(QWidget):
         if idx >= 0:
             self._page_orientation_combo.setCurrentIndex(idx)
 
+    def refresh_tag_memory(self):
+        """Refresh the Smart igenkänning tab so newly learned tags show up."""
+        self._tag_memory_panel.refresh()
+
 
 class PIDManagementPanel(QWidget):
     """PID revision history and sheet reordering panel."""
@@ -19589,6 +19602,17 @@ class EquipmentPanel(QWidget):
         worker.start()
         dlg.exec()
 
+    def set_db(self, db):
+        """Swap the database, including the table model's own separate
+        db reference (needed for setData()/delete_row() to write through
+        directly — see MainWindow._reload_all_panels)."""
+        self.db = db
+        self._model.db = db
+
+    def autodetect(self):
+        """Public entry point for 🎯 Hitta objekt på P&ID — see _autodetect."""
+        self._autodetect()
+
     def _autodetect(self):
         """🎯 Hitta objekt på P&ID — full analysis: weighted tag<->symbol
         association for every known tag in the register (any equipment
@@ -20178,7 +20202,7 @@ class MainWindow(QMainWindow):
                 # cause), so an unconditional load_node() here would
                 # silently widen the just-filtered worksheet back out on
                 # every single checkbox toggle.
-                if self.scenario_panel._equipment_filter_id is not None:
+                if self.scenario_panel.get_equipment_filter() is not None:
                     self.scenario_panel.refresh()
                 else:
                     self.scenario_panel.load_node(node_id)
@@ -20190,7 +20214,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, lambda c=cid: self.scenario_panel.select_cause(c))
             # Refresh Smart Recognition panel so new learning is immediately visible
             try:
-                self.settings_panel._tag_memory_panel.refresh()
+                self.settings_panel.refresh_tag_memory()
             except Exception:
                 pass
         self.pid_panel.cause_template_created.connect(_on_cause_template_created)
@@ -20205,7 +20229,7 @@ class MainWindow(QMainWindow):
         # NOTES.md) reaches into equipment_catalog directly from
         # ScenarioTablePanel — keep the P&ID markers' own overlay text
         # in sync right away too, not just on their next unrelated redraw.
-        self.scenario_panel._on_equipment_renamed_fn = self.pid_panel.reload_overlays
+        self.scenario_panel.equipment_renamed.connect(self.pid_panel.reload_overlays)
         self.pid_panel.equipment_deviation_created.connect(self._on_equipment_deviation_created)
         self.pid_panel.pid_analysis_done.connect(self._on_pid_analysis_done)
         self.admin_panel._pid_mgmt.sheets_changed.connect(self._on_sheets_changed)
@@ -20246,11 +20270,9 @@ class MainWindow(QMainWindow):
             self.admin_panel.refresh()
             self.admin_panel.refresh_pid()
         if page == 5:
-            # Guard against settings_panel or _tag_memory_panel not being initialized
-            if (hasattr(self, 'settings_panel') and self.settings_panel and
-                hasattr(self.settings_panel, '_tag_memory_panel') and
-                self.settings_panel._tag_memory_panel):
-                self.settings_panel._tag_memory_panel.refresh()
+            # Guard against settings_panel not being initialized yet
+            if hasattr(self, 'settings_panel') and self.settings_panel:
+                self.settings_panel.refresh_tag_memory()
 
     def _on_props_changed(self):
         """PropertiesRibbon saved a field — refresh tree + scenario."""
@@ -20272,7 +20294,7 @@ class MainWindow(QMainWindow):
             # trigger reload_overlays().
             if self._cur_type == NODE_T:
                 self.pid_panel.refresh_markup_overlays()
-        self.scenario_panel._rebuild()
+        self.scenario_panel.rebuild()
 
     def _on_scenario_item_selected(self, type_, id_):
         """Scenario table cell click — update ribbon only; do NOT change scenario filter."""
@@ -20393,7 +20415,7 @@ class MainWindow(QMainWindow):
             # Same run as clicking the button itself — refresh the register
             # model first so it reflects the tags the analysis just wrote.
             self.equipment_panel.refresh()
-            self.equipment_panel._autodetect()
+            self.equipment_panel.autodetect()
 
     def _on_marker_navigate(self, item_type: str, item_id: int):
         """Navigate tree and detail panel when a P&ID marker is clicked."""
@@ -20520,7 +20542,7 @@ class MainWindow(QMainWindow):
             # strip linked to this equipment resolves its display live
             # via causes.equipment_id, so a rebuild here shows the new
             # name immediately instead of on the next unrelated redraw.
-            self.scenario_panel._schedule_rebuild()
+            self.scenario_panel.schedule_rebuild()
 
         popup.committed.connect(_on_picked)
         popup.exec()
@@ -20605,16 +20627,16 @@ class MainWindow(QMainWindow):
             # (falls back to the current cursor position if the row isn't
             # visible in the table's current node/deviation/cause scope)
             # instead of the OS's default centered placement.
-            dlg.move(self.scenario_panel._pos_near_cons_row(cons_id, dlg.sizeHint()))
+            dlg.move(self.scenario_panel.position_near_row(cons_id, dlg.sizeHint()))
             self._active_step_picker = dlg
             logging.info('_open_consequence_step_picker: calling dlg.exec()')
             result = dlg.exec()
             logging.info('_open_consequence_step_picker: dlg.exec() returned %s', result)
             if result == QDialog.DialogCode.Accepted:
                 self._active_step_picker = None
-                logging.info('_open_consequence_step_picker: accepted — calling scenario_panel._rebuild()')
+                logging.info('_open_consequence_step_picker: accepted — calling scenario_panel.rebuild()')
                 try:
-                    self.scenario_panel._rebuild()
+                    self.scenario_panel.rebuild()
                     logging.info('_open_consequence_step_picker: _rebuild() done')
                 except Exception:
                     logging.exception('_open_consequence_step_picker: CRASH in _rebuild()')
@@ -21484,7 +21506,7 @@ class MainWindow(QMainWindow):
         # switching to the Utrustning page after a project reload, because
         # the model was still holding the OLD (by-then-closed) connection.
         try:
-            self.equipment_panel._model.db = db
+            self.equipment_panel.set_db(db)
         except Exception:
             pass
 

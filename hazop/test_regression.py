@@ -12691,7 +12691,7 @@ class CauseTagLiveLinkTests(unittest.TestCase):
             self.db, self.dev_id, "Ventil", "PV-101", equipment_id=self.eq_id)
         _, row = self._ors_tag(cause_id)
         called = []
-        self.panel._on_equipment_renamed_fn = lambda: called.append(True)
+        self.panel.equipment_renamed.connect(lambda: called.append(True))
 
         self.panel._apply_cause_obj(row, cause_id, "Ventil", "PV-103", "", None)
 
