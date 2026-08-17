@@ -2961,7 +2961,7 @@ class EditExtraDeferredRebuildTests(unittest.TestCase):
             fake_dlg = unittest.mock.Mock()
             fake_dlg.exec = unittest.mock.Mock(return_value=0)
             with unittest.mock.patch(
-                    'hazop.ReductionFactorsDialog', return_value=fake_dlg):
+                    'scenario_panel.ReductionFactorsDialog', return_value=fake_dlg):
                 rebuild_spy = unittest.mock.Mock()
                 schedule_spy = unittest.mock.Mock()
                 panel._rebuild = rebuild_spy
@@ -3016,7 +3016,7 @@ class EditExtraDeferredRebuildTests(unittest.TestCase):
             fake_dlg = unittest.mock.Mock()
             fake_dlg.exec = unittest.mock.Mock(side_effect=_fake_exec)
             with unittest.mock.patch(
-                    'hazop.ReductionFactorsDialog', return_value=fake_dlg):
+                    'scenario_panel.ReductionFactorsDialog', return_value=fake_dlg):
                 panel._rebuild_pending = True  # a rebuild was already queued
                 panel._edit_extra(ids['cons_id'])
 
@@ -12797,7 +12797,7 @@ class TagDetachContextMenuTests(unittest.TestCase):
         from PyQt6.QtCore import QPoint
         with unittest.mock.patch.object(panel._table, 'rowAt', return_value=row), \
              unittest.mock.patch.object(panel._table, 'columnAt', return_value=col), \
-             unittest.mock.patch('hazop.QMenu') as mock_menu_cls:
+             unittest.mock.patch('scenario_panel.QMenu') as mock_menu_cls:
             panel._on_context_menu(QPoint(0, 0))
         mock_menu = mock_menu_cls.return_value
         return _menu_action_labels(mock_menu)
@@ -15428,8 +15428,8 @@ class OrsTagZoneOpensMinimalPopupTests(unittest.TestCase):
         from PyQt6.QtCore import QSize
         fake_popup = unittest.mock.Mock()
         fake_popup.sizeHint.return_value = QSize(200, 100)
-        with unittest.mock.patch('hazop.CauseTagPopup', return_value=fake_popup) as MockPopup, \
-             unittest.mock.patch('hazop.CauseObjectPopup') as MockBigPopup:
+        with unittest.mock.patch('scenario_panel.CauseTagPopup', return_value=fake_popup) as MockPopup, \
+             unittest.mock.patch('scenario_panel.CauseObjectPopup') as MockBigPopup:
             self.panel._show_cause_obj_popup(self.row, self.cause_id, QPoint(100, 100))
             MockPopup.assert_called_once()
             MockBigPopup.assert_not_called()
@@ -15446,7 +15446,7 @@ class OrsTagZoneOpensMinimalPopupTests(unittest.TestCase):
         fake_popup.sizeHint.return_value = QSize(200, 100)
         captured = {}
         fake_popup.committed.connect = lambda slot: captured.__setitem__('slot', slot)
-        with unittest.mock.patch('hazop.CauseTagPopup', return_value=fake_popup):
+        with unittest.mock.patch('scenario_panel.CauseTagPopup', return_value=fake_popup):
             self.panel._show_cause_obj_popup(self.row, self.cause_id, QPoint(100, 100))
         captured['slot']('Ventil', 'PV-999')
         apply_spy.assert_called_once_with(self.row, self.cause_id, 'Ventil', 'PV-999', '', None)
