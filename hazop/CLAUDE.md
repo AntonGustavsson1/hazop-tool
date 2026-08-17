@@ -21,9 +21,9 @@ pip install pytesseract   # also requires Tesseract binary from https://github.c
 pip install easyocr       # pure pip, downloads ~1 GB models on first use
 ```
 
-Syntax check without running the GUI:
+Syntax check without running the GUI (all modules):
 ```
-python -m py_compile hazop.py && python -m py_compile pid_viewer.py && python -m py_compile equipment_detection.py && python -m py_compile symbol_geometry.py && python -m py_compile image_symbol_matching.py
+python -m py_compile constants.py database.py ui_helpers.py tree_panel.py node_markup.py worksheet.py scenario_panel.py equipment_panel.py settings_panels.py hazop.py pid_viewer.py pid_graphics_view.py pid_panel_mod.py equipment_detection.py symbol_geometry.py image_symbol_matching.py
 ```
 
 ## Session context
@@ -51,7 +51,7 @@ At the start of EVERY session, Claude automatically checks for new crash reports
 After every meaningful change, commit and push so no work is ever lost:
 
 ```
-git add hazop.py pid_viewer.py equipment_detection.py symbol_geometry.py image_symbol_matching.py CLAUDE.md   # stage only source files, not .db/.pdf/.pyc
+git add <changed .py files> CLAUDE.md   # stage only source files, not .db/.pdf/.pyc
 git commit -m "short descriptive message"
 git push
 ```
@@ -73,7 +73,33 @@ __pycache__/
 
 ## Architecture
 
-The application is split into five modules:
+The application was originally two files (`hazop.py`, `pid_viewer.py`) that grew into ~22,000 and ~11,000 line "god files". Both were split into layered modules 2026-08-17/18 (see NOTES.md "Förenkla koden + dela upp hazop.py i fler filer") using a **layer + re-export** pattern throughout: every module only imports from layers *below* it, and each layer re-exports the names its callers already relied on, so `from hazop import X` / `from pid_viewer import Y` keep working unchanged regardless of which file `X`/`Y` now actually lives in. `test_regression.py` needed essentially zero changes as a result — it still imports everything the same way it always did.
+
+Import layers, lowest first (each layer imports only from layers above it in this list):
+
+1. **`constants.py`** — pure Python, zero imports. `CONFIG` (magic-number dict), `NODE_T`/`CAUSE_T`/`CONS_T`/`SG_T`/`DEV_T`/`EQUIP_T`/`LEDORD_T` (tree-item type tags), `DEVIATION_TYPES`, `MARKUP_COLORS`, `RISK_ICON`, `SG_TYPES`, `RRF_VALUES`/`RRF_LABELS`, `SEV_LABELS`.
+2. **`symbol_geometry.py`**, **`image_symbol_matching.py`**, **`equipment_detection.py`** — the pre-existing no-Qt PDF/vector analysis layer (unchanged by this split; see their own entries below).
+3. **`database.py`** — the `Database` class (SQLite wrapper, ~4000 lines, still 100% Qt-free) plus `SCHEMA`, the risk-matrix cache (`load_matrix`/`get_matrix`/`risk_info`/`_normalise_matrix`/`DEFAULT_MATRIX`), `freq_to_f_level`, seed/migrate helpers, and a few small tag-text helpers (`append_tag_to_text`/`parse_tag_refs`/`add_tag_ref`) that the `Database` class itself calls.
+4. **`pid_viewer.py`** (base layer, ~5100 lines after the split) — P&ID-related dialogs, `QThread` workers, small canvas-item classes, and shared module-level constants/helpers (`MODE_*` draw-mode constants, `Z_*` z-order constants, `CONFIG`, `_icon`/`_mk_icon`/`_mk_pm`, `_get_red_symbol_svg`, OCR helpers, etc.). Re-exports `equipment_detection.py` names so old `from pid_viewer import scan_pdf_for_equipment` calls keep working.
+5. **`pid_graphics_view.py`** — `PIDGraphicsView`, moved out **whole** (not split internally — its ~3000 lines are already organized into clearly named method groups; breaking a single class's methods across files would need mixin inheritance, a materially bigger and riskier change). Imports shared constants back from `pid_viewer.py`.
+6. **`pid_panel_mod.py`** — `PIDPanel` + `EquipmentDeviationBar`, also moved whole. Imports `PIDGraphicsView` from `pid_graphics_view.py` and shared constants/dialogs from `pid_viewer.py`.
+   - `pid_viewer.py` imports `PIDGraphicsView`/`PIDPanel`/`EquipmentDeviationBar` back from these two files, but only at the **bottom** of the file (after every name they depend on is already defined) — putting it at the top would be a circular import.
+7. **`ui_helpers.py`** — small Qt-dependent (but widget-independent) functions shared across panels: `freq_axis_label`/`freq_axis_label_full`/`cons_axis_label`, `_equipment_type_options`/`_EQ_TYPE_ITEMS`, `_lookup_comp_type_for_tag`/`_make_tag_completer`/`_resolve_std_deviation_id`/`_create_cause_from_pick`/`_maybe_save_as_standard_cause`, `find_tag_bold_ranges`/`_draw_text_with_bold_tags`, `total_freq_reduction`/`CHAIN_ITEMS`/`build_consequence_text`/`parse_chain_from_json`.
+8. **`tree_panel.py`** — `TreePanel` (the HAZOP hierarchy tree) plus its cause/deviation picker dialogs (`StandardCausesPickerPopup`, `CauseObjectPopup`, `CauseTagPopup`, `RRFPopup`, `FrequencyPickerPopup`, `DeviationPickerPopup`).
+9. **`node_markup.py`** — `PropertiesRibbon`, `NodeMarkupPanel`, `MarkupTablePanel`, `RedMarkupPanel`, `RedMarkupTablePanel` and their style/symbol-picker dialogs.
+10. **`worksheet.py`** — `HAZOPWorksheet` (the "Blad" worksheet page). Its `__init__` does a deferred `from hazop import ScenarioTablePanel` (not a module-level import) since `ScenarioTablePanel` itself is defined further up the layer graph, in a module that in turn imports `HAZOPWorksheet` from here — the same circular-import-avoidance pattern as `pid_viewer.py`'s bottom-of-file re-export.
+11. **`scenario_panel.py`** — `ScenarioTablePanel` (the HAZOP scenario table — the single biggest extracted class, ~5000 lines) plus its cluster of delegates/popups (`RiskMatrixPopup`, `ConsequenceChainDialog`, `ConsequenceStepPickerDialog`, `ReductionFactorsDialog`, `_ScenarioDelegate`, `_PidDelegate`, `SgRRFCategoryPopup`, `CatSGSelectionPopup`, `ConsCategoryMatrixPopup`, `_LopaWidget`). Its `_open_recommendation_editor` does a deferred `from hazop import RecommendationEditorDialog` for the same reason as `worksheet.py` above.
+12. **`equipment_panel.py`** — `EquipmentPanel` (the equipment register), `_EquipmentTableModel`/`_EquipmentFilterProxy`, `ComponentEditorPanel`, `ObjectPickerPopup`, `EquipmentTagPopup`, `PIDAnalysisPanel`, `TagDatabasePanel`, `_IdentifiedTagsModel`.
+13. **`settings_panels.py`** — `HAZOPPreparationPanel` (Projekt/Deltagare/Riskmatris & Kategorier/Avvikelser & Orsaker tabs), `SettingsPanel`, `StandardCausesSettingsPanel`, `StandardObjectsSettingsPanel`, `SeverityDefinitionsPanel`, `TagMemoryPanel`, `ParticipantMatrixPanel`, `PIDManagementPanel`, `StudyManagementPanel`.
+14. **`hazop.py`** (~3050 lines, down from ~22,000) — `MainWindow`, `SplashScreen`, `CrashReporter`, `GlobalSearchDialog`, `ActionEditor`/`RecommendationEditorDialog`, and a handful of small helpers not yet worth their own module. Imports and re-exports everything from layers 1–13 above, so all pre-existing `from hazop import X` call sites (including throughout `test_regression.py`) continue to work unchanged.
+
+**A recurring gotcha worth knowing if you move code between these files again:** tests that do `unittest.mock.patch('hazop.SomeClass', ...)` or `patch('pid_viewer.SomeClass', ...)` to intercept a constructor call only work if the code doing the constructing is *in that same module*. Moving a class to a new file without updating the string in a matching `patch(...)` call doesn't raise an error — the patch just silently stops intercepting anything, and a real (often modal, `.exec()`-blocking) dialog gets constructed instead, which can hang the test suite rather than fail it cleanly. `patch.object(hazop.SomeClass, 'method', ...)` and `patch('hazop.SomeClass.method', ...)` are **not** affected by this, since they mutate the shared class object itself rather than a per-module name binding — safe to leave pointed at any module that re-exports the class.
+
+- `Database` — SQLite wrapper around `hazop_project.db`, in `database.py` (see layer 3 above). Schema is defined in `SCHEMA` string + idempotent `_migrate()`. All DB access goes through this class.
+- `MainWindow` — six-page main-content stack: HAZOP-förberedelse (0), P&ID view (1), Worksheet (2), Equipment (3), Administration (4), Settings (5). Nav-rail buttons select pages.
+- Risk matrix is stored as JSON in `app_config` table (key `'risk_matrix'`). Module-level `_risk_matrix_cache` (in `database.py`) is loaded at startup via `load_matrix(db)` and consumed by `risk_info(severity, likelihood)`.
+- `effective_f_level(f_level, rrf)` (in `ui_helpers.py`; aliased as `effective_frequency`/`effective_likelihood`) — reduces F-level by `floor(log10(rrf))` steps.
+- Tree types (in `constants.py`): `NODE_T=1`, `CAUSE_T=2`, `CONS_T=3`, `SG_T=4`, `DEV_T=5` (Avvikelse — between Node and Cause), `EQUIP_T=6`, `LEDORD_T=7` (guide-word grouping level, no DB row of its own).
 
 **`image_symbol_matching.py`** — pixel/image-based "hitta liknande symbol" (no Qt, 2026-08-15, see NOTES.md "Bildbaserad 'hitta liknande symbol' — vid sidan av vektorlogiken") — renders a reference region and each candidate page to grayscale bitmaps and matches with OpenCV normalized cross-correlation (`find_similar_shapes_visual`), instead of vector geometry. Lives alongside `equipment_detection.py`'s vector-based matching, not instead of it — for CAD exports where a symbol's own strokes are too fragmented for vector clustering to group back together.
 
@@ -85,19 +111,6 @@ The application is split into five modules:
 - Importable standalone (`import equipment_detection`) without pulling in PyQt6 — same rationale as `symbol_geometry.py`.
 
 **`symbol_geometry.py`** — pure vector-drawing geometry (no Qt): `extract_primitives`, `cluster_primitives`, `bowtie_score`, `find_symbol_clusters`, tag↔symbol leader-line resolution. The lower layer `equipment_detection.py` builds on.
-
-**`pid_viewer.py`** — P&ID canvas and dialogs (Qt)
-- `PIDGraphicsView` — QGraphicsView subclass handling pan/zoom, draw modes, and right-click context menu. Emits `context_action(str, QPointF, int)` for menu selections.
-- `PIDPanel` — wrapper widget with toolbar. Holds the active node/cause/consequence IDs and orchestrates marker placement. Signals: `node_created`, `cause_created`, `consequence_created`, `safeguard_created`, `risk_scenario_requested`.
-- `EquipmentMarkerReviewDialog` — dialog built on top of `equipment_detection.py`'s functions.
-- Re-exports several `equipment_detection.py` names (`scan_pdf_for_equipment`, `KNOWN_PREFIXES`, `COMPONENT_TYPES`, etc.) so `hazop.py`'s existing `from pid_viewer import ...` calls keep working unchanged.
-
-**`hazop.py`** — main window, database, all panels
-- `Database` — SQLite wrapper around `hazop_project.db`. Schema is defined in `SCHEMA` string + idempotent `_migrate()`. All DB access goes through this class.
-- `MainWindow` — five-page `QStackedWidget`: P&ID view (0), Worksheet (1), Equipment (2), Administration (3), Settings (4). Toggle bar buttons select pages.
-- Risk matrix is stored as JSON in `app_config` table (key `'risk_matrix'`). Module-level `_current_matrix` is loaded at startup via `load_matrix(db)` and consumed by `risk_info(severity, likelihood)`.
-- `effective_likelihood(base, rrf)` — reduces likelihood by `floor(log10(rrf))` steps.
-- Tree types: `NODE_T=1`, `CAUSE_T=2`, `CONS_T=3`, `SG_T=4`, `DEV_T=5` (Avvikelse — between Node and Cause).
 
 ## Database schema summary
 
