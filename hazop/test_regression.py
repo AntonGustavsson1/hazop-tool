@@ -1270,6 +1270,58 @@ class KonInlineEditTests(unittest.TestCase):
             mock_wizard.assert_not_called()
             mock_edit.assert_called_once()
 
+    def test_double_click_on_empty_safeguard_cell_quick_adds_one(self):
+        """"Gör även så jag kan dubbelklicka på safeguards för att
+        redigera den direkt även om inget ligger tillagt. (precis som
+        konsekvens i hazopscenario)" (2026-08-17, see NOTES.md) — an SG
+        cell with no safeguard yet is non-editable (unlike KON, which
+        always has a real backing row), so double-click used to just
+        return early and do nothing. Must now quick-add a safeguard for
+        that consequence instead, same no-popup path Enter/the "+" row
+        already use."""
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            _node_id, _dev_id, cause_id, cons_id = self._make_full_chain(win.db)
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+            item = panel._table.item(row, panel._C_SG)
+            self.assertFalse(bool(item.flags() & Qt.ItemFlag.ItemIsEditable),
+                "sanity check: an empty SG cell must start non-editable")
+
+            before = {s['id'] for s in win.db.safeguards(cons_id)}
+            panel._on_cell_double_clicked(item)
+            after = {s['id'] for s in win.db.safeguards(cons_id)}
+
+            self.assertEqual(len(after - before), 1,
+                "double-clicking an empty safeguard cell must create exactly one safeguard")
+
+    def test_double_click_on_existing_safeguard_cell_still_edits_in_place(self):
+        """The fix above must not disturb the already-working case — a
+        cell that already has a safeguard is editable and double-click
+        must still just start inline edit, not create a second one."""
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            _node_id, _dev_id, cause_id, cons_id = self._make_full_chain(win.db)
+            win.db.add_safeguard(cons_id)
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+            item = panel._table.item(row, panel._C_SG)
+            self.assertTrue(bool(item.flags() & Qt.ItemFlag.ItemIsEditable))
+
+            before = {s['id'] for s in win.db.safeguards(cons_id)}
+            with unittest.mock.patch.object(panel._table, 'edit') as mock_edit:
+                panel._on_cell_double_clicked(item)
+            after = {s['id'] for s in win.db.safeguards(cons_id)}
+
+            mock_edit.assert_called_once()
+            self.assertEqual(before, after)
+
+    def test_lopa_column_header_renamed_to_enablers(self):
+        """"Döp om kolumnen FA / ANt. Övriga till Enablers i hazop
+        scenario" (2026-08-17, see NOTES.md)."""
+        from hazop import ScenarioTablePanel
+        self.assertEqual(ScenarioTablePanel._COLS[ScenarioTablePanel._C_LOPA], 'Enablers')
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # 4. ConnectorAnalyzer thread-hang regression (bug #5)
@@ -3322,6 +3374,78 @@ class EquipmentMarkerReviewDialogTests(unittest.TestCase):
             dlg._save()
             rows = [dict(r) for r in self.db.equipment_markers_for_page(0)]
             self.assertEqual(rows[0]['comp_type'], 'Pump')
+        finally:
+            dlg.deleteLater()
+
+    def test_save_assigns_active_node_to_newly_created_equipment(self):
+        """"Om jag har lagt till ett objekt manuellt och lägger till
+        orsaker får jag upp detta i hazop scenario men om jag har lagt
+        till objekt via hitta liknande får jag inte upp det" (2026-08-17,
+        see NOTES.md) — manual single placement (place_equipment_marker)
+        immediately opens EquipmentDeviationBar with the active node,
+        which assigns node_id there; this batch dialog never does, so a
+        brand-new equipment row stayed node_id=NULL forever, and
+        EquipmentDeviationBar._activate_deviation() silently drops any
+        deviation/cause checked for a node_id=NULL object — exactly
+        "lägger till orsaker... får inte upp det". A row with no
+        equipment_id yet must get the dialog's active_node_id."""
+        from pid_viewer import EquipmentMarkerReviewDialog
+        node_id = self.db.add_node()
+        results = [
+            {'tag': 'V-999-NEW', 'page': 0, 'comp_type': 'Ventil', 'x': 5.0, 'y': 5.0,
+             'confidence': 0.9, 'link_method': 'similar', 'outline': [], 'equipment_id': None},
+        ]
+        dlg = EquipmentMarkerReviewDialog(results, self.db, active_node_id=node_id)
+        try:
+            dlg._save()
+            eq = self.db.get_equipment_by_tag('V-999-NEW')
+            self.assertIsNotNone(eq)
+            self.assertEqual(eq['node_id'], node_id)
+        finally:
+            dlg.deleteLater()
+
+    def test_save_without_active_node_leaves_new_equipment_unassigned(self):
+        """No active node (e.g. the plain document-wide scan, or a
+        similarity search run with no node selected) must not fabricate
+        a node_id out of nothing — same as before this fix."""
+        from pid_viewer import EquipmentMarkerReviewDialog
+        results = [
+            {'tag': 'V-999-NEW2', 'page': 0, 'comp_type': 'Ventil', 'x': 5.0, 'y': 5.0,
+             'confidence': 0.9, 'link_method': 'similar', 'outline': [], 'equipment_id': None},
+        ]
+        dlg = EquipmentMarkerReviewDialog(results, self.db)
+        try:
+            dlg._save()
+            eq = self.db.get_equipment_by_tag('V-999-NEW2')
+            self.assertIsNotNone(eq)
+            self.assertIsNone(eq['node_id'])
+        finally:
+            dlg.deleteLater()
+
+    def test_save_reuses_existing_equipment_by_tag_instead_of_duplicating(self):
+        """A second "find similar" hit resolving to the same tag as an
+        already-registered object must reuse it (matching place_
+        equipment_marker's own dedup check), not spawn a duplicate,
+        node_id=NULL row alongside the original — the duplicate would
+        itself reproduce the exact "doesn't show up" symptom above."""
+        from pid_viewer import EquipmentMarkerReviewDialog
+        existing_node_id = self.db.add_node()
+        existing_id = self.db.add_equipment_item('V-777', 'V-777', 'V', 0, 'Ventil', '', 0)
+        self.db.set_equipment_node(existing_id, existing_node_id)
+
+        other_node_id = self.db.add_node()
+        results = [
+            {'tag': 'V-777', 'page': 0, 'comp_type': 'Ventil', 'x': 9.0, 'y': 9.0,
+             'confidence': 0.9, 'link_method': 'similar', 'outline': [], 'equipment_id': None},
+        ]
+        dlg = EquipmentMarkerReviewDialog(results, self.db, active_node_id=other_node_id)
+        try:
+            dlg._save()
+            matches = [e for e in self.db.equipment_items() if e['tag'] == 'V-777']
+            self.assertEqual(len(matches), 1, "must reuse the existing row, not duplicate it")
+            self.assertEqual(matches[0]['id'], existing_id)
+            self.assertEqual(matches[0]['node_id'], existing_node_id,
+                "reusing an existing object must not steal it onto a different node")
         finally:
             dlg.deleteLater()
 

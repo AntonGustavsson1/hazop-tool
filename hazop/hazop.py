@@ -11813,7 +11813,7 @@ class ScenarioTablePanel(QWidget):
         'Konsekvens',
         'Risk före barriär',
         'Barriärer (RRF)',
-        'FA / Ant. / Övriga',
+        'Enablers',
         'Slutkonsekvens',
         'Rekommendation',
     ]
@@ -13688,6 +13688,19 @@ class ScenarioTablePanel(QWidget):
         # right-click context menu (_open_chain_editor, unchanged there).
         if col in (self._C_ORS, self._C_KON, self._C_SG):
             if not bool(item.flags() & Qt.ItemFlag.ItemIsEditable):
+                # A KON cell is always backed by a real (if blank)
+                # consequence row — every cause gets one auto-created —
+                # so it's never left non-editable. An SG cell IS, since
+                # safeguards aren't auto-created (2026-08-17, see
+                # NOTES.md "dubbelklicka på safeguards"): double-click on
+                # an empty one used to just do nothing, unlike KON's
+                # "double-click to add" feel. Quick-add one here instead,
+                # same no-popup straight-to-inline-edit path Enter/the
+                # "+" row already use.
+                if col == self._C_SG:
+                    cons_id = self._row_meta[row][2] if row < len(self._row_meta) else None
+                    if cons_id is not None:
+                        self._quick_add_safeguard(cons_id)
                 return
             self._table.setFocus()
             self._table.edit(self._table.model().index(row, col))

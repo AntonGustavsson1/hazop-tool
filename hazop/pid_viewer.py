@@ -1831,12 +1831,30 @@ class EquipmentMarkerReviewDialog(QDialog):
         'not_found': '⚠ Tagg ej hittad på sidan',
     }
 
-    def __init__(self, results: list, db, parent=None, rejected: list = None, pdf_path=None):
+    def __init__(self, results: list, db, parent=None, rejected: list = None, pdf_path=None,
+                 active_node_id=None):
         super().__init__(parent)
         self.db = db
         self._results = results   # dicts: tag,page,comp_type,x,y,confidence(_es),link_method,outline,equipment_id
         self._rejected = rejected or []
         self._pdf_path = pdf_path
+        # A brand-new equipment_catalog row saved here otherwise starts
+        # with node_id=NULL, same as any other creation path — but manual
+        # single-object placement (place_equipment_marker) immediately
+        # opens EquipmentDeviationBar with the active node, which
+        # auto-assigns it there. This batch dialog never opens that bar
+        # for any row, so without this, EquipmentDeviationBar._activate_
+        # deviation() (pid_viewer.py) later silently discards every
+        # deviation/cause the user checks for it — node_id stays NULL
+        # forever unless the marker is manually dragged onto a deviation
+        # in the tree (2026-08-17, see NOTES.md "identifierade objekt
+        # via 'hitta liknande' dyker inte upp i scenariot": confirmed
+        # this is the exact mechanism behind "jag har lagt till orsaker
+        # och klickar på dem" producing nothing visible). Only given by
+        # the two "Hitta liknande symbol" callers, which run from a live
+        # P&ID view where a node may genuinely be active; the plain
+        # document-wide "Hitta objekt på P&ID" scan has no such context.
+        self._active_node_id = active_node_id
         self.setWindowTitle("Granska autodetekterad utrustning")
         self.setMinimumSize(1000, 640)
 
@@ -2226,9 +2244,22 @@ class EquipmentMarkerReviewDialog(QDialog):
             # equipment_catalog entry now, so it shows up in
             # Utrustningsregistret/nodskapande like any other scanned tag.
             if equipment_id is None and tag:
-                prefix = _equip_prefix_from_tag(tag) or ''
-                equipment_id = self.db.add_equipment_item(
-                    tag, tag, prefix, res['page'], comp_type, '', 0)
+                # Reuse an already-registered object under the same tag
+                # instead of creating a duplicate (2026-08-17, see NOTES.md)
+                # — matches place_equipment_marker's own dedup check,
+                # which this batch path was missing. Otherwise the same
+                # physical object found again by a similarity search
+                # spawns a second, node_id=NULL row alongside the
+                # original (already node-linked) one.
+                existing = self.db.get_equipment_by_tag(tag)
+                if existing:
+                    equipment_id = existing['id']
+                else:
+                    prefix = _equip_prefix_from_tag(tag) or ''
+                    equipment_id = self.db.add_equipment_item(
+                        tag, tag, prefix, res['page'], comp_type, '', 0)
+                    if self._active_node_id is not None:
+                        self.db.set_equipment_node(equipment_id, self._active_node_id)
 
             outline_json = json.dumps(res['outline']) if res.get('outline') else ''
             self.db.add_equipment_marker(
@@ -9953,7 +9984,8 @@ class PIDPanel(QWidget):
                 "sökinställningarna.")
             return
         review_dlg = EquipmentMarkerReviewDialog(
-            results, self.db, parent=self, rejected=[], pdf_path=self.viewer._pdf_path)
+            results, self.db, parent=self, rejected=[], pdf_path=self.viewer._pdf_path,
+            active_node_id=self._active_node_id)
         if review_dlg.exec():
             self.reload_overlays()
 
@@ -10000,7 +10032,8 @@ class PIDPanel(QWidget):
                 "sökinställningarna.")
             return
         review_dlg = EquipmentMarkerReviewDialog(
-            results, self.db, parent=self, rejected=[], pdf_path=self.viewer._pdf_path)
+            results, self.db, parent=self, rejected=[], pdf_path=self.viewer._pdf_path,
+            active_node_id=self._active_node_id)
         if review_dlg.exec():
             self.reload_overlays()
 
