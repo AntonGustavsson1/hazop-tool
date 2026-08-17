@@ -14116,16 +14116,19 @@ class ParticipantMatrixTests(unittest.TestCase):
             panel.deleteLater()
 
     def test_panel_add_session_creates_column(self):
-        from hazop import ParticipantMatrixPanel
+        from hazop import ParticipantMatrixPanel, _AnalysisSessionDateDialog
         panel = ParticipantMatrixPanel(self.db)
         try:
             with unittest.mock.patch.object(
-                    QInputDialog, 'getText', return_value=("Session 1", True)):
+                    _AnalysisSessionDateDialog, 'exec', return_value=True), \
+                 unittest.mock.patch.object(
+                    _AnalysisSessionDateDialog, 'selected_date_label',
+                    return_value="2026-09-01"):
                 panel._add_session()
             self.assertEqual(panel._table.columnCount(), len(panel._FIXED_COLS) + 1)
             self.assertEqual(len(self.db.list_analysis_sessions()), 1)
             self.assertEqual(
-                panel._table.horizontalHeaderItem(len(panel._FIXED_COLS)).text(), "Session 1")
+                panel._table.horizontalHeaderItem(len(panel._FIXED_COLS)).text(), "2026-09-01")
         finally:
             panel.deleteLater()
 
@@ -14136,21 +14139,41 @@ class ParticipantMatrixTests(unittest.TestCase):
             panel._add_participant()
             panel._table.item(0, 0).setText("Anna")
             panel._table.item(0, 1).setText("Andersson")
-            panel._table.item(0, 2).setText("Processägare")
             rows = self.db.list_participants()
             self.assertEqual(rows[0]['first_name'], "Anna")
             self.assertEqual(rows[0]['last_name'], "Andersson")
-            self.assertEqual(rows[0]['role'], "Processägare")
         finally:
             panel.deleteLater()
 
-    def test_panel_toggling_attendance_checkbox_persists_to_db(self):
+    def test_panel_editing_custom_column_cell_persists_to_db(self):
+        """Roll is no longer a hardcoded column (2026-08-17) — a free,
+        user-named column (e.g. "Roll") between Efternamn and the session
+        columns takes its place, see NOTES.md."""
         from hazop import ParticipantMatrixPanel
         panel = ParticipantMatrixPanel(self.db)
         try:
             panel._add_participant()
+            self.db.add_participant_column("Roll")
+            panel.refresh()
+            col = len(panel._FIXED_COLS)
+            panel._table.item(0, col).setText("Processägare")
+            pid = self.db.list_participants()[0]['id']
+            col_id = panel._column_ids[0]
+            values = self.db.get_participant_column_values()
+            self.assertEqual(values[(pid, col_id)], "Processägare")
+        finally:
+            panel.deleteLater()
+
+    def test_panel_toggling_attendance_checkbox_persists_to_db(self):
+        from hazop import ParticipantMatrixPanel, _AnalysisSessionDateDialog
+        panel = ParticipantMatrixPanel(self.db)
+        try:
+            panel._add_participant()
             with unittest.mock.patch.object(
-                    QInputDialog, 'getText', return_value=("Session 1", True)):
+                    _AnalysisSessionDateDialog, 'exec', return_value=True), \
+                 unittest.mock.patch.object(
+                    _AnalysisSessionDateDialog, 'selected_date_label',
+                    return_value="2026-09-01"):
                 panel._add_session()
             pid = self.db.list_participants()[0]['id']
             sid = self.db.list_analysis_sessions()[0]['id']
@@ -14178,12 +14201,15 @@ class ParticipantMatrixTests(unittest.TestCase):
             panel.deleteLater()
 
     def test_panel_delete_session_removes_column_and_db_record(self):
-        from hazop import ParticipantMatrixPanel
+        from hazop import ParticipantMatrixPanel, _AnalysisSessionDateDialog
         panel = ParticipantMatrixPanel(self.db)
         try:
             panel._add_participant()   # ensures there's a row to select a cell in
             with unittest.mock.patch.object(
-                    QInputDialog, 'getText', return_value=("Session 1", True)):
+                    _AnalysisSessionDateDialog, 'exec', return_value=True), \
+                 unittest.mock.patch.object(
+                    _AnalysisSessionDateDialog, 'selected_date_label',
+                    return_value="2026-09-01"):
                 panel._add_session()
             panel._table.setCurrentCell(0, len(panel._FIXED_COLS))
             panel._delete_session()
@@ -14192,20 +14218,88 @@ class ParticipantMatrixTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_add_column_button_creates_column(self):
+        from hazop import ParticipantMatrixPanel
+        panel = ParticipantMatrixPanel(self.db)
+        try:
+            with unittest.mock.patch.object(
+                    QInputDialog, 'getText', return_value=("E-post", True)):
+                panel._add_column()
+            self.assertEqual(panel._table.columnCount(), len(panel._FIXED_COLS) + 1)
+            self.assertEqual(len(self.db.list_participant_columns()), 1)
+            self.assertEqual(
+                panel._table.horizontalHeaderItem(len(panel._FIXED_COLS)).text(), "E-post")
+        finally:
+            panel.deleteLater()
+
+    def test_delete_column_removes_column_and_db_record(self):
+        from hazop import ParticipantMatrixPanel
+        panel = ParticipantMatrixPanel(self.db)
+        try:
+            panel._add_participant()
+            with unittest.mock.patch.object(
+                    QInputDialog, 'getText', return_value=("E-post", True)):
+                panel._add_column()
+            panel._table.setCurrentCell(0, len(panel._FIXED_COLS))
+            panel._delete_column()
+            self.assertEqual(panel._table.columnCount(), len(panel._FIXED_COLS))
+            self.assertEqual(self.db.list_participant_columns(), [])
+        finally:
+            panel.deleteLater()
+
+    def test_custom_column_sits_before_session_columns(self):
+        """Egna kolumner ska ligga mellan Efternamn och analystillfällena,
+        inte efter dem (2026-08-17 user request)."""
+        from hazop import ParticipantMatrixPanel, _AnalysisSessionDateDialog
+        panel = ParticipantMatrixPanel(self.db)
+        try:
+            with unittest.mock.patch.object(
+                    _AnalysisSessionDateDialog, 'exec', return_value=True), \
+                 unittest.mock.patch.object(
+                    _AnalysisSessionDateDialog, 'selected_date_label',
+                    return_value="2026-09-01"):
+                panel._add_session()
+            with unittest.mock.patch.object(
+                    QInputDialog, 'getText', return_value=("E-post", True)):
+                panel._add_column()
+            headers = [panel._table.horizontalHeaderItem(c).text()
+                       for c in range(panel._table.columnCount())]
+            self.assertEqual(headers, ["Förnamn", "Efternamn", "E-post", "2026-09-01"])
+        finally:
+            panel.deleteLater()
+
+    def test_enter_key_on_selected_cell_adds_participant(self):
+        """Enter på en enkelklickad (icke-redigerande) rad ska lägga till en
+        ny deltagare, precis som "+"-knappen (2026-08-17 user request)."""
+        from PyQt6.QtCore import QEvent
+        from PyQt6.QtGui import QKeyEvent
+        from hazop import ParticipantMatrixPanel
+        panel = ParticipantMatrixPanel(self.db)
+        try:
+            panel._add_participant()
+            panel._table.setCurrentCell(0, 0)
+            ev = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier)
+            panel._table.keyPressEvent(ev)
+            self.assertEqual(len(self.db.list_participants()), 2)
+        finally:
+            panel.deleteLater()
+
     def test_panel_loads_existing_data_on_construction(self):
         from hazop import ParticipantMatrixPanel
         pid = self.db.add_participant("Anna", "Andersson", "Processägare")
         sid = self.db.add_analysis_session("Session 1")
         self.db.set_attendance(pid, sid, True)
+        col_id = self.db.add_participant_column("Roll")
+        self.db.set_participant_column_value(pid, col_id, "Processägare")
 
         panel = ParticipantMatrixPanel(self.db)
         try:
             self.assertEqual(panel._table.rowCount(), 1)
             self.assertEqual(panel._table.item(0, 0).text(), "Anna")
             self.assertEqual(panel._table.item(0, 1).text(), "Andersson")
-            self.assertEqual(panel._table.item(0, 2).text(), "Processägare")
+            self.assertEqual(panel._table.item(0, len(panel._FIXED_COLS)).text(), "Processägare")
             self.assertEqual(
-                panel._table.item(0, len(panel._FIXED_COLS)).checkState(),
+                panel._table.item(0, len(panel._FIXED_COLS) + 1).checkState(),
                 Qt.CheckState.Checked)
         finally:
             panel.deleteLater()

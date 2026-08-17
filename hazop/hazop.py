@@ -3289,6 +3289,37 @@ class Database:
             "SELECT participant_id, session_id, attended FROM participant_attendance").fetchall()
         return {(r['participant_id'], r['session_id']): bool(r['attended']) for r in rows}
 
+    def list_participant_columns(self):
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM participant_columns ORDER BY sort_order, id")]
+
+    def add_participant_column(self, name):
+        max_ord = (self.conn.execute(
+            "SELECT COALESCE(MAX(sort_order),-1) FROM participant_columns").fetchone()[0])
+        cur = self.conn.execute(
+            "INSERT INTO participant_columns (name, sort_order) VALUES (?,?)",
+            (name, max_ord + 1))
+        self.commit()
+        return cur.lastrowid
+
+    def delete_participant_column(self, id_):
+        self.conn.execute("DELETE FROM participant_columns WHERE id=?", (id_,))
+        self.commit()
+
+    def get_participant_column_values(self):
+        """Return dict {(participant_id, column_id): value} for all recorded values."""
+        rows = self.conn.execute(
+            "SELECT participant_id, column_id, value FROM participant_column_values").fetchall()
+        return {(r['participant_id'], r['column_id']): r['value'] for r in rows}
+
+    def set_participant_column_value(self, participant_id, column_id, value):
+        self.conn.execute(
+            "INSERT INTO participant_column_values (participant_id, column_id, value) "
+            "VALUES (?,?,?) ON CONFLICT(participant_id, column_id) "
+            "DO UPDATE SET value=excluded.value",
+            (participant_id, column_id, value))
+        self.commit()
+
     def get_severity_definitions(self):
         """Return dict: severity_level (1-based int) -> {category_id -> description}."""
         rows = self.conn.execute(
@@ -16869,7 +16900,7 @@ class ParticipantMatrixPanel(QWidget):
     analystillfälen på x axeln så det blir en matris" — see NOTES.md for
     the full design rationale)."""
 
-    _FIXED_COLS = ['Förnamn', 'Efternamn', 'Roll']
+    _FIXED_COLS = ['Förnamn', 'Efternamn']
 
     def __init__(self, db, parent=None):
         super().__init__(parent)
@@ -16877,6 +16908,7 @@ class ParticipantMatrixPanel(QWidget):
         self._loading = False
         self._participant_ids = []
         self._session_ids = []
+        self._column_ids = []   # custom participant_columns, between Efternamn and sessions
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -16893,6 +16925,16 @@ class ParticipantMatrixPanel(QWidget):
         self._table.setHorizontalHeaderLabels(self._FIXED_COLS)
         self._table.verticalHeader().setVisible(False)
         self._table.itemChanged.connect(self._on_item_changed)
+        # Enter on a selected (non-editing) cell adds a new participant row,
+        # matching the same "+"-button action (2026-08-17 user request).
+        _base_kp = self._table.keyPressEvent
+        def _table_key_press(event, _base=_base_kp):
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and \
+                    self._table.state() != QTableWidget.State.EditingState:
+                self._add_participant()
+            else:
+                _base(event)
+        self._table.keyPressEvent = _table_key_press
         layout.addWidget(self._table)
 
         btn_row = QHBoxLayout()
@@ -16901,12 +16943,18 @@ class ParticipantMatrixPanel(QWidget):
         btn_del_p = QPushButton("Ta bort deltagare")
         btn_del_p.setToolTip("Tar bort den markerade raden (deltagaren)")
         btn_del_p.clicked.connect(self._delete_participant)
+        btn_add_col = QPushButton("+ Lägg till kolumn")
+        btn_add_col.setToolTip("Lägg till en egen namngiven kolumn (t.ex. E-post, Företag, Roll)")
+        btn_add_col.clicked.connect(self._add_column)
+        btn_del_col = QPushButton("Ta bort kolumn")
+        btn_del_col.setToolTip("Tar bort den egna kolumn en markerad cell tillhör")
+        btn_del_col.clicked.connect(self._delete_column)
         btn_add_s = QPushButton("+ Lägg till analystillfälle")
         btn_add_s.clicked.connect(self._add_session)
         btn_del_s = QPushButton("Ta bort analystillfälle")
         btn_del_s.setToolTip("Tar bort kolumnen för det tillfälle en markerad cell tillhör")
         btn_del_s.clicked.connect(self._delete_session)
-        for b in (btn_add_p, btn_del_p, btn_add_s, btn_del_s):
+        for b in (btn_add_p, btn_del_p, btn_add_col, btn_del_col, btn_add_s, btn_del_s):
             btn_row.addWidget(b)
         btn_row.addStretch()
         layout.addLayout(btn_row)
@@ -16916,24 +16964,30 @@ class ParticipantMatrixPanel(QWidget):
     def refresh(self):
         self._loading = True
         try:
+            columns = self.db.list_participant_columns()
             sessions = self.db.list_analysis_sessions()
             participants = self.db.list_participants()
             attendance = self.db.get_attendance_matrix()
+            col_values = self.db.get_participant_column_values()
 
+            self._column_ids = [c['id'] for c in columns]
             self._session_ids = [s['id'] for s in sessions]
             self._participant_ids = [p['id'] for p in participants]
 
-            headers = list(self._FIXED_COLS) + [
-                (s['label'] or f"Tillfälle {s['id']}") for s in sessions]
+            headers = (list(self._FIXED_COLS) + [c['name'] for c in columns] +
+                       [(s['label'] or f"Tillfälle {s['id']}") for s in sessions])
             self._table.setColumnCount(len(headers))
             self._table.setHorizontalHeaderLabels(headers)
             self._table.setRowCount(len(participants))
 
-            n_fixed = len(self._FIXED_COLS)
+            n_custom = len(columns)
+            n_fixed = len(self._FIXED_COLS) + n_custom
             for row, p in enumerate(participants):
                 self._table.setItem(row, 0, QTableWidgetItem(p['first_name'] or ''))
                 self._table.setItem(row, 1, QTableWidgetItem(p['last_name'] or ''))
-                self._table.setItem(row, 2, QTableWidgetItem(p['role'] or ''))
+                for ci, col_def in enumerate(columns):
+                    val = col_values.get((p['id'], col_def['id']), '')
+                    self._table.setItem(row, len(self._FIXED_COLS) + ci, QTableWidgetItem(val))
                 for col, sess in enumerate(sessions):
                     item = QTableWidgetItem()
                     item.setFlags(
@@ -16953,14 +17007,16 @@ class ParticipantMatrixPanel(QWidget):
         if row < 0 or row >= len(self._participant_ids):
             return
         pid = self._participant_ids[row]
+        n_base = len(self._FIXED_COLS)
         if col == 0:
             self.db.update_participant(pid, first_name=item.text())
         elif col == 1:
             self.db.update_participant(pid, last_name=item.text())
-        elif col == 2:
-            self.db.update_participant(pid, role=item.text())
+        elif col < n_base + len(self._column_ids):
+            col_id = self._column_ids[col - n_base]
+            self.db.set_participant_column_value(pid, col_id, item.text())
         else:
-            sess_idx = col - len(self._FIXED_COLS)
+            sess_idx = col - n_base - len(self._column_ids)
             if 0 <= sess_idx < len(self._session_ids):
                 sess_id = self._session_ids[sess_idx]
                 attended = item.checkState() == Qt.CheckState.Checked
@@ -16977,21 +17033,64 @@ class ParticipantMatrixPanel(QWidget):
         self.db.delete_participant(self._participant_ids[row])
         self.refresh()
 
+    def _add_column(self):
+        name, ok = QInputDialog.getText(
+            self, "Ny kolumn", "Kolumnnamn (t.ex. E-post, Företag, Roll):")
+        if ok and name.strip():
+            self.db.add_participant_column(name.strip())
+            self.refresh()
+
+    def _delete_column(self):
+        col = self._table.currentColumn()
+        col_idx = col - len(self._FIXED_COLS)
+        if col < 0 or col_idx < 0 or col_idx >= len(self._column_ids):
+            return
+        self.db.delete_participant_column(self._column_ids[col_idx])
+        self.refresh()
+
     def _add_session(self):
-        label, ok = QInputDialog.getText(
-            self, "Nytt analystillfälle",
-            "Etikett (t.ex. ett datum eller \"Session 1\"):")
-        if ok and label.strip():
-            self.db.add_analysis_session(label.strip())
+        dlg = _AnalysisSessionDateDialog(self)
+        if dlg.exec():
+            self.db.add_analysis_session(dlg.selected_date_label())
             self.refresh()
 
     def _delete_session(self):
         col = self._table.currentColumn()
-        sess_idx = col - len(self._FIXED_COLS)
+        sess_idx = col - len(self._FIXED_COLS) - len(self._column_ids)
         if col < 0 or sess_idx < 0 or sess_idx >= len(self._session_ids):
             return
         self.db.delete_analysis_session(self._session_ids[sess_idx])
         self.refresh()
+
+
+class _AnalysisSessionDateDialog(QDialog):
+    """Date-picker replacement for the old free-text QInputDialog when adding
+    an analystillfälle (2026-08-17 user request) — a QDateEdit + "Idag"
+    button, same widgets/pattern as the Projekt tab's date-range row."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Nytt analystillfälle")
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel("Datum för analystillfället:"))
+        row = QHBoxLayout()
+        self._date_edit = QDateEdit()
+        self._date_edit.setCalendarPopup(True)
+        self._date_edit.setDisplayFormat("yyyy-MM-dd")
+        self._date_edit.setDate(QDate.currentDate())
+        today_btn = QPushButton("Idag")
+        today_btn.clicked.connect(lambda: self._date_edit.setDate(QDate.currentDate()))
+        row.addWidget(self._date_edit)
+        row.addWidget(today_btn)
+        lay.addLayout(row)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+
+    def selected_date_label(self):
+        return self._date_edit.date().toString('yyyy-MM-dd')
 
 
 class HAZOPPreparationPanel(QWidget):
