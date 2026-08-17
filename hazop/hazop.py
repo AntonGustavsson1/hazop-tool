@@ -6411,6 +6411,7 @@ class NodeMarkupPanel(QWidget):
     style_changed   = pyqtSignal(str, float, int)   # color, opacity, line_width
     snap_changed    = pyqtSignal(bool)
     navigate_node_requested = pyqtSignal(int)  # node_id
+    bottom_panel_toggled = pyqtSignal(bool)   # True = show HAZOP scenario, False = Nodmarkeringar
 
     _TOOLS = [
         ('select',   'select',   'Välj/flytta'),
@@ -6540,6 +6541,24 @@ class NodeMarkupPanel(QWidget):
         self._all_vis_btn.clicked.connect(self._on_all_vis)
         outer.addWidget(self._all_vis_btn)
 
+        sep4 = QFrame(); sep4.setFrameShape(QFrame.Shape.HLine)
+        sep4.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
+        outer.addWidget(sep4)
+
+        # ── Bottom-panel switch: Nodmarkeringar <-> HAZOP scenario ─────────────
+        # (2026-08-17, see NOTES.md "nodmarkup dockas till höger") — while
+        # editing markup, the bottom strip defaults to the Nodmarkeringar
+        # table; this lets the user peek at HAZOP scenario without leaving
+        # markup-edit mode.
+        self._bottom_toggle_btn = QPushButton("⇄")
+        self._bottom_toggle_btn.setFixedSize(SZ, SZ)
+        self._bottom_toggle_btn.setCheckable(True)
+        self._bottom_toggle_btn.setToolTip(
+            "Växla nedre fältet: Nodmarkeringar / HAZOP scenario")
+        self._bottom_toggle_btn.setStyleSheet(_btn_ss)
+        self._bottom_toggle_btn.toggled.connect(self.bottom_panel_toggled.emit)
+        outer.addWidget(self._bottom_toggle_btn)
+
         outer.addStretch()
         self._on_tool('select')
 
@@ -6549,6 +6568,14 @@ class NodeMarkupPanel(QWidget):
         self.node_id = node_id
         self._all_vis_btn.setChecked(True)
         self._on_tool('select')
+
+    def set_bottom_toggle_checked(self, checked):
+        """Programmatic set (e.g. on entering markup-edit mode) that must
+        not re-emit bottom_panel_toggled — MainWindow already applies the
+        resulting visibility directly wherever it calls this."""
+        self._bottom_toggle_btn.blockSignals(True)
+        self._bottom_toggle_btn.setChecked(checked)
+        self._bottom_toggle_btn.blockSignals(False)
 
     def refresh(self):
         pass
@@ -20635,6 +20662,7 @@ class MainWindow(QMainWindow):
         self.node_markup_panel.snap_changed.connect(
             self.pid_panel.viewer.set_snap)
         self.node_markup_panel.navigate_node_requested.connect(self._on_edit_node_markup)
+        self.node_markup_panel.bottom_panel_toggled.connect(self._on_toggle_bottom_panel)
         # Red markup ribbon signals
         self.red_markup_panel.closed.connect(self._on_close_red_markup)
         self.red_markup_panel.tool_changed.connect(
@@ -21186,28 +21214,46 @@ class MainWindow(QMainWindow):
         dlg.activateWindow()
 
     def _on_edit_node_markup(self, node_id):
-        """Tree right-click NODE → 'Editera nodmarkup'."""
+        """Tree right-click NODE → 'Editera nodmarkup'.
+
+        2026-08-17 (see NOTES.md "nodmarkup dockas till höger"): this used
+        to hide tree_panel/props_ribbon/scenario_panel entirely, replacing
+        almost the whole window with just the P&ID canvas + a narrow
+        ribbon — Anton wanted the panel to feel docked alongside the rest
+        of the app instead. tree_panel and props_ribbon now stay visible
+        (node_markup_panel already sits to their right in _h_splitter's
+        add-order, so nothing needed to move); only the BOTTOM strip still
+        swaps scenario_panel out for markup_table_panel by default, since
+        showing a tag-picker table meant for editing HAZOP causes at the
+        same time as drawing node markup would be confusing — the new
+        toggle button lets the user bring scenario_panel back without
+        leaving markup-edit mode."""
         self._switch_view(1)
         self.node_markup_panel.load(node_id)
         self.markup_table_panel.load(node_id)
-        self.tree_panel.setVisible(False)
-        self.props_ribbon.setVisible(False)
         self.node_markup_panel.setVisible(True)
         self.scenario_panel.setVisible(False)
         self.markup_table_panel.setVisible(True)
-        self._h_splitter.setSizes([0, 800, 0, 64, 0])
+        self.node_markup_panel.set_bottom_toggle_checked(False)
+        self._h_splitter.setSizes([260, 600, 62, 220, 0])
         self._v_splitter.setSizes([0, 200, 0])
         self._outer_splitter.setSizes([560, 200])
         self.pid_panel.enter_markup_edit(node_id)
         self._markup_undo_stack.clear()
         self._undo_shortcut.setEnabled(True)
 
+    def _on_toggle_bottom_panel(self, checked):
+        """New switch next to node_markup_panel (2026-08-17) — flips the
+        bottom strip between Nodmarkeringar (default while editing) and
+        HAZOP scenario, without leaving markup-edit mode."""
+        self.markup_table_panel.setVisible(not checked)
+        self.scenario_panel.setVisible(checked)
+        self._v_splitter.setSizes([220, 0, 0] if checked else [0, 200, 0])
+
     def _on_close_node_markup(self):
         """Ribbon close button clicked — leave markup edit mode."""
         self.pid_panel.exit_markup_mode()
         self.pid_panel.reload_overlays()
-        self.tree_panel.setVisible(True)
-        self.props_ribbon.setVisible(True)
         self.node_markup_panel.setVisible(False)
         self.scenario_panel.setVisible(True)
         self.markup_table_panel.setVisible(False)

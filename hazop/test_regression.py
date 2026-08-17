@@ -15991,6 +15991,29 @@ class NodeMarkupPanelNavigateTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_bottom_toggle_button_emits_signal(self):
+        panel = self._make_panel(self.db.add_node())
+        try:
+            seen = []
+            panel.bottom_panel_toggled.connect(seen.append)
+            panel._bottom_toggle_btn.setChecked(True)
+            self.assertEqual(seen, [True])
+        finally:
+            panel.deleteLater()
+
+    def test_set_bottom_toggle_checked_does_not_emit(self):
+        """Programmatic reset (entering markup-edit mode) must not
+        re-trigger MainWindow's own visibility-swap handler."""
+        panel = self._make_panel(self.db.add_node())
+        try:
+            seen = []
+            panel.bottom_panel_toggled.connect(seen.append)
+            panel.set_bottom_toggle_checked(True)
+            self.assertEqual(seen, [])
+            self.assertTrue(panel._bottom_toggle_btn.isChecked())
+        finally:
+            panel.deleteLater()
+
     def test_navigate_next_emits_next_node_id(self):
         node_a = self.db.add_node()
         node_b = self.db.add_node()
@@ -16014,6 +16037,77 @@ class NodeMarkupPanelNavigateTests(unittest.TestCase):
             self.assertEqual(seen, [])
         finally:
             panel.deleteLater()
+
+
+class NodeMarkupDockingTests(unittest.TestCase):
+    """Fas F (2026-08-17, see NOTES.md "nodmarkup dockas till höger") —
+    editing node markup used to hide tree_panel/props_ribbon/scenario_panel
+    entirely, replacing almost the whole window with just the P&ID canvas.
+    tree_panel and props_ribbon must now stay visible; only the bottom
+    strip still defaults to Nodmarkeringar, with a toggle to bring back
+    HAZOP scenario without leaving markup-edit mode."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    # NOTE: isVisible() reflects actual on-screen visibility, which requires
+    # the whole ancestor chain (including the never-shown MainWindow) to be
+    # visible too — always False in a headless test regardless of
+    # setVisible(True). isHidden() reflects only this widget's OWN explicit
+    # show/hide state, which is what these tests actually need to check
+    # (same convention already used elsewhere in this file, e.g.
+    # ConsequenceStepPickerColumnsTests).
+
+    def test_editing_node_markup_keeps_tree_and_props_ribbon_visible(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            win._on_edit_node_markup(node_id)
+            try:
+                self.assertFalse(win.tree_panel.isHidden())
+                self.assertFalse(win.props_ribbon.isHidden())
+                self.assertFalse(win.node_markup_panel.isHidden())
+            finally:
+                win._on_close_node_markup()
+
+    def test_editing_node_markup_defaults_bottom_strip_to_markup_table(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            win._on_edit_node_markup(node_id)
+            try:
+                self.assertFalse(win.markup_table_panel.isHidden())
+                self.assertTrue(win.scenario_panel.isHidden())
+                self.assertFalse(win.node_markup_panel._bottom_toggle_btn.isChecked())
+            finally:
+                win._on_close_node_markup()
+
+    def test_toggling_bottom_panel_swaps_to_scenario(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            win._on_edit_node_markup(node_id)
+            try:
+                win.node_markup_panel._bottom_toggle_btn.setChecked(True)
+                self.assertFalse(win.scenario_panel.isHidden())
+                self.assertTrue(win.markup_table_panel.isHidden())
+
+                win.node_markup_panel._bottom_toggle_btn.setChecked(False)
+                self.assertTrue(win.scenario_panel.isHidden())
+                self.assertFalse(win.markup_table_panel.isHidden())
+            finally:
+                win._on_close_node_markup()
+
+    def test_closing_node_markup_restores_scenario_and_hides_markup_ui(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            win._on_edit_node_markup(node_id)
+            win.node_markup_panel._bottom_toggle_btn.setChecked(True)
+            win._on_close_node_markup()
+
+            self.assertFalse(win.scenario_panel.isHidden())
+            self.assertTrue(win.markup_table_panel.isHidden())
+            self.assertTrue(win.node_markup_panel.isHidden())
+            self.assertFalse(win.tree_panel.isHidden())
+            self.assertFalse(win.props_ribbon.isHidden())
 
 
 # ══════════════════════════════════════════════════════════════════════════
