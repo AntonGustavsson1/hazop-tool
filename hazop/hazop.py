@@ -42,6 +42,7 @@ from ui_helpers import (
     freq_axis_label, freq_axis_label_full, cons_axis_label,
     _equipment_type_options, _lookup_comp_type_for_tag, _make_tag_completer,
     _resolve_std_deviation_id, _create_cause_from_pick, _EQ_TYPE_ITEMS,
+    find_tag_bold_ranges, _draw_text_with_bold_tags,
 )
 from tree_panel import (
     TreePanel, StandardCausesPickerPopup, CauseObjectPopup, CauseTagPopup,
@@ -682,39 +683,6 @@ def build_consequence_text(base: str, chain: dict) -> str:
             short = label.split('(')[0].strip().split(' — ')[-1].strip()
             parts.append(short)
     return ' → '.join(parts)
-
-
-
-def find_tag_bold_ranges(text: str, tags: list) -> list:
-    """Return sorted, non-overlapping (start, end) character ranges in
-    `text` where a member of `tags` occurs as a whole word — not as a
-    substring of a larger word/tag (e.g. tag "TA-1" must not match inside
-    "TA-10") — used to bold drag-and-dropped equipment references within
-    a free-text description (2026-08-09, see NOTES.md)."""
-    ranges = []
-    for tag in tags:
-        tag = (tag or '').strip()
-        if not tag:
-            continue
-        start = 0
-        while True:
-            idx = text.find(tag, start)
-            if idx < 0:
-                break
-            end = idx + len(tag)
-            before_ok = idx == 0 or not text[idx - 1].isalnum()
-            after_ok = end == len(text) or not text[end].isalnum()
-            if before_ok and after_ok:
-                ranges.append((idx, end))
-            start = idx + 1
-    ranges.sort()
-    merged = []
-    for s, e in ranges:
-        if merged and s <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
-        else:
-            merged.append((s, e))
-    return merged
 
 
 def parse_chain_from_json(raw: str) -> dict:
@@ -2133,69 +2101,6 @@ class ReductionFactorsDialog(QDialog):
         try: rrf = int(self._tbl.item(row, 1).text()) if self._tbl.item(row, 1) else 10
         except ValueError: rrf = 10
         self.db.update_reduction_factor(rf_id, desc, rrf, 1)
-
-
-def _draw_text_with_bold_tags(painter, rect, text, tags, base_font, color, word_wrap):
-    """Draw `text` inside `rect`, rendering any whole-word occurrence of a
-    member of `tags` in bold (2026-08-09, see NOTES.md "fetmarkera
-    objekttexten i konsekvensen så man ser att det är som ett objekt").
-    Falls back to a single plain drawText call when there's nothing to
-    bold — the common case for untouched free text — so this stays as
-    cheap as the original code for every row that was never drag-tagged.
-    `word_wrap=True` mirrors the KON column's multi-line wrapping;
-    `word_wrap=False` mirrors the SG column's single-line elided text."""
-    flags = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
-    if word_wrap:
-        flags |= Qt.TextFlag.TextWordWrap
-    ranges = find_tag_bold_ranges(text, tags) if tags else []
-    if not ranges:
-        painter.setFont(base_font)
-        painter.setPen(color)
-        painter.drawText(rect, flags, text)
-        return
-
-    if not word_wrap:
-        # Single-line elided mode (SG cell) — elide first; a bold range
-        # that falls in the elided tail is simply lost, same information
-        # loss the plain-text path already accepted for long descriptions.
-        fm = QFontMetrics(base_font)
-        text = fm.elidedText(text, Qt.TextElideMode.ElideRight, rect.width())
-        ranges = find_tag_bold_ranges(text, tags)
-
-    layout = QTextLayout(text, base_font)
-    opt = QTextOption()
-    opt.setWrapMode(QTextOption.WrapMode.WordWrap if word_wrap
-                     else QTextOption.WrapMode.NoWrap)
-    layout.setTextOption(opt)
-
-    bold_font = QFont(base_font)
-    bold_font.setBold(True)
-    bold_fmt = QTextCharFormat()
-    bold_fmt.setFont(bold_font)
-    formats = []
-    for s, e in ranges:
-        fr = QTextLayout.FormatRange()
-        fr.start = s
-        fr.length = e - s
-        fr.format = bold_fmt
-        formats.append(fr)
-    layout.setFormats(formats)
-
-    layout.beginLayout()
-    y = 0.0
-    while True:
-        line = layout.createLine()
-        if not line.isValid():
-            break
-        line.setLineWidth(rect.width())
-        line.setPosition(QPointF(0, y))
-        y += line.height()
-        if not word_wrap:
-            break
-    layout.endLayout()
-
-    painter.setPen(color)
-    layout.draw(painter, QPointF(rect.left(), rect.top()))
 
 
 class _ScenarioDelegate(QStyledItemDelegate):
