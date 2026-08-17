@@ -1550,6 +1550,43 @@ class SafeguardCreatedDoubleRebuildTests(unittest.TestCase):
                 "_on_selected, once via the explicit scenario_panel._rebuild() "
                 "call right after)")
 
+    def test_on_props_changed_refreshes_pid_overlays_for_a_node(self):
+        """"När jag sedan uppdaterar namnet på noden vill jag att detta
+        uppdateras även på P&ID" (2026-08-17, see NOTES.md) — renaming a
+        node via PropertiesRibbon's Namn-popup (_edit_node_name) already
+        syncs node_markups.label via Database.update_node(), but nothing
+        on that path redrew the P&ID until this fix — the on-canvas
+        "Lägg ut nodnamn" label stayed visibly stale. _on_props_changed
+        must refresh the P&ID's markup overlays when the changed item is
+        a node."""
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            win._cur_type = NODE_T
+            win._cur_id = node_id
+
+            refresh_spy = unittest.mock.Mock(wraps=win.pid_panel.refresh_markup_overlays)
+            win.pid_panel.refresh_markup_overlays = refresh_spy
+
+            win._on_props_changed()
+
+            refresh_spy.assert_called_once()
+
+    def test_on_props_changed_does_not_touch_pid_overlays_for_non_node_items(self):
+        """The same handler fires for every properties save (causes,
+        consequences, safeguards too) — must not refresh P&ID overlays
+        for those, only for an actual node rename."""
+        with _TempDbMainWindow() as win:
+            ids = self._make_full_chain(win.db)
+            win._cur_type = CAUSE_T
+            win._cur_id = ids['cause_id']
+
+            refresh_spy = unittest.mock.Mock(wraps=win.pid_panel.refresh_markup_overlays)
+            win.pid_panel.refresh_markup_overlays = refresh_spy
+
+            win._on_props_changed()
+
+            refresh_spy.assert_not_called()
+
     def test_node_created_calls_on_selected_exactly_once(self):
         """Creating a new node via the P&ID (PIDPanel.node_created) must
         drive MainWindow._on_selected() exactly once, mirroring the original
@@ -7959,6 +7996,25 @@ class TreeNodeRenameTests(unittest.TestCase):
         self.assertEqual(updated['description'], "Beskrivning")
         self.assertEqual(updated['pid_ref'], "P&ID-1")
         self.assertEqual(updated['media'], "Media")
+
+    def test_rename_updates_node_name_markup_on_pid(self):
+        """"När jag sedan uppdaterar namnet på noden vill jag att detta
+        uppdateras även på P&ID" (2026-08-17, see NOTES.md) —
+        Database.update_node() must keep any "Lägg ut nodnamn" markup
+        (node_markups.type='text') in sync with the node's current name,
+        not leave it frozen at whatever it said when first placed. Goes
+        through the actual "Döp om" tree action, not update_node()
+        directly, since that's the path that was missing the sync."""
+        node_id = self.db.add_node()
+        self.db.update_node(node_id, "Original", "", "", "", "", "")
+        mu_id = self.db.add_node_markup(
+            node_id, 'text', [[10, 10]], "Original", '#1565C0', 1.0, 2, 0)
+
+        with unittest.mock.patch('hazop.QInputDialog.getText',
+                                  return_value=("Nytt namn", True)):
+            self.panel._rename_node(node_id)
+
+        self.assertEqual(dict(self.db.get_node_markup(mu_id))['label'], "Nytt namn")
 
     def test_rename_cancelled_leaves_name_unchanged(self):
         node_id = self.db.add_node()

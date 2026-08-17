@@ -4349,6 +4349,17 @@ class Database:
             "UPDATE nodes SET name=?,description=?,pid_ref=?,"
             "media=?,pressure=?,temperature=? WHERE id=?",
             (name, description, pid_ref, media, pressure, temperature, id_))
+        # "Lägg ut nodnamn" markups (node_markups.type='text') store a
+        # one-time snapshot of the node's name, not a live reference —
+        # keep them in sync here, in the single shared write path every
+        # rename UI (TreePanel "Döp om", PropertiesRibbon's Namn-popup,
+        # NodePanel's save) already goes through, instead of requiring
+        # each caller to remember its own follow-up call (2026-08-17,
+        # see NOTES.md "nodnamn på P&ID uppdateras inte vid namnbyte" —
+        # NodePanel already did this via an external signal connection,
+        # but the other two rename paths didn't, so a rename via "Döp
+        # om" silently left the on-canvas label stale).
+        self.sync_node_text_markups(id_, name)
         self.commit()
         self.touch_node(id_)
 
@@ -19701,7 +19712,10 @@ class MainWindow(QMainWindow):
         self.node_panel.saved.connect(
             lambda id_, name: (
                 self.tree_panel.refresh(NODE_T, id_),
-                self.db.sync_node_text_markups(id_, name),
+                # Database.update_node() (called by NodePanel._save) now
+                # syncs node_markups itself (2026-08-17, see NOTES.md) —
+                # this connection just needs to refresh the P&ID overlays
+                # to actually show the result.
                 self.pid_panel.refresh_markup_overlays(),
             ))
         self.cons_panel.saved.connect(
@@ -19922,6 +19936,14 @@ class MainWindow(QMainWindow):
             # _on_marker_navigate, commit 84c8b7c). This handler fires on
             # every properties-field save, so it is a frequent path.
             self.tree_panel.refresh(self._cur_type, self._cur_id, emit_selection=False)
+            # A node rename here (PropertiesRibbon's Namn-popup) already
+            # updated node_markups via Database.update_node() (2026-08-17,
+            # see NOTES.md), but nothing else on this path re-draws the
+            # P&ID — without this the on-canvas "Lägg ut nodnamn" label
+            # stays visibly stale until some unrelated action happens to
+            # trigger reload_overlays().
+            if self._cur_type == NODE_T:
+                self.pid_panel.refresh_markup_overlays()
         self.scenario_panel._rebuild()
 
     def _on_scenario_item_selected(self, type_, id_):

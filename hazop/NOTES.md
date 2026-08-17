@@ -2140,6 +2140,16 @@ Anton, direkt efter fixen ovan: "Om du Går igenom PFD 1500 och hittar de gemens
 
 **Test:** `test_thumbnail_crop_is_wider_than_before_for_a_point_only_row` (ny, spionerar på `image_symbol_matching.render_gray`s bbox-argument, röd→grön verifierad). Full svit (812 tester) grön (körningen tog ovanligt lång tid denna gång, ~460s mot normalt ~120s — sannolikt tillfällig systembelastning, ingen ny hängning: alla test passerade).
 
+## Nodnamn på P&ID uppdaterades inte vid namnbyte (2026-08-17)
+
+**Rapport:** Anton: "Det finns en funktion som sätter ut nodnamnen på P&ID under editera nodmarkup. När jag sedan uppdaterar namnet på noden vill jag att detta uppdateras även på P&ID."
+
+**Root cause:** "Lägg ut nodnamn"-verktyget i Editera nodmarkup (`NodeMarkupPanel`s text-verktyg) fryser noddens namn som en egen sträng i `node_markups.label` i samma ögonblick användaren klickar ut den (`PIDPanel._on_viewer_markup_drawn`, pid_viewer.py) — ingen levande referens till `nodes.name`. En redan existerande metod `Database.sync_node_text_markups(node_id, new_name)` fanns för att synka detta, men var bara kopplad till EN av tre namnbytesvägar (NodePanels egen spara-knapp, via en extern signalkoppling i `MainWindow.__init__`). De andra två — `TreePanel._rename_node` ("Döp om" i trädet) och `PropertiesRibbon._edit_node_name` (Namn/P&ID-ref-popupen) — anropar `Database.update_node()` direkt utan att någonsin synka `node_markups`.
+
+**Fix:** flyttade synken IN i `Database.update_node()` självt — den enda delade skrivvägen alla tre namnbytesflöden redan går igenom — istället för att varje anropsställe ska komma ihåg sitt eget uppföljningsanrop (exakt den sortens inkonsekvens som orsakade buggen). Tog samtidigt bort den nu överflödiga externa `sync_node_text_markups`-anropet i `MainWindow.__init__` (databasen sköter det nu själv). `PropertiesRibbon`s namnbytesväg saknade dessutom en P&ID-omritning helt (`_on_props_changed` uppdaterade bara träd + scenariopanel) — lade till ett villkorat `pid_panel.refresh_markup_overlays()`-anrop när det ändrade objektet är en nod, så etiketten faktiskt syns direkt istället för att vara korrekt i databasen men visuellt inaktuell tills något annat råkar trigga en omritning.
+
+**Test:** `test_rename_updates_node_name_markup_on_pid` (TreeNodeRenameTests, via "Döp om"), `test_on_props_changed_refreshes_pid_overlays_for_a_node`/`test_on_props_changed_does_not_touch_pid_overlays_for_non_node_items` (SafeguardCreatedDoubleRebuildTests, alla nya). Röd→grön verifierat för båda fixarna. Full svit (815 tester) grön.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.
