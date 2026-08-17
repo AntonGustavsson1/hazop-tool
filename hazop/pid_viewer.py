@@ -10296,48 +10296,101 @@ class PIDPanel(QWidget):
         """Public helper to refresh all P&ID markers and connection lines."""
         self._load_overlays()
 
-    # ── Node markup editing API ───────────────────────────────────────────────
+    # ── Markup editing API (shared node/red markup implementation) ────────────
 
-    def enter_markup_edit(self, node_id):
-        """Enter markup editing mode for a node: show existing markup + enable tools."""
-        self._active_markup_class = 'node'
+    def _enter_markup_mode(self, node_id, markup_class):
+        self._active_markup_class = markup_class
+        if markup_class == 'red':
+            self._active_symbol_id = None
         self.set_active_node(node_id)
         self._set_mode(MODE_MARKUP_SELECT)
         self.viewer.markup_draw_finished.connect(self._on_viewer_markup_drawn)
         self.viewer.markup_item_clicked.connect(self._on_viewer_markup_clicked)
 
-    def exit_markup_mode(self):
-        """Return to normal navigation mode."""
+    def enter_markup_edit(self, node_id):
+        """Enter markup editing mode for a node: show existing markup + enable tools."""
+        self._enter_markup_mode(node_id, 'node')
+
+    def enter_red_markup_edit(self, node_id):
+        """Enter red markup editing mode for a node."""
+        self._enter_markup_mode(node_id, 'red')
+
+    def _exit_markup_mode(self, label):
         try: self.viewer.markup_draw_finished.disconnect(self._on_viewer_markup_drawn)
-        except RuntimeError as e: logging.warning(f"Markup draw finished signal not connected: {e}")
+        except RuntimeError as e: logging.warning(f"{label} draw finished signal not connected: {e}")
         try: self.viewer.markup_item_clicked.disconnect(self._on_viewer_markup_clicked)
-        except RuntimeError as e: logging.warning(f"Markup item clicked signal not connected: {e}")
+        except RuntimeError as e: logging.warning(f"{label} item clicked signal not connected: {e}")
         self._active_markup_class = 'node'
         self._active_symbol_id = None
         self._set_mode(MODE_NAV)
 
-    def set_markup_tool(self, tool, color=None, opacity=None, width=None):
-        """Set drawing tool: 'polygon'|'polyline'|'text'|'comment'|'select'|'smart'."""
-        _map = {'polygon':  MODE_MARKUP_POLYGON,
-                'polyline': MODE_MARKUP_POLYLINE,
-                'text':     MODE_MARKUP_TEXT,
-                'comment':  MODE_MARKUP_COMMENT,
-                'select':   MODE_MARKUP_SELECT,
-                'smart':    MODE_SMART_POLYLINE}
+    def exit_markup_mode(self):
+        """Return to normal navigation mode."""
+        self._exit_markup_mode("Markup")
+
+    def exit_red_markup_mode(self):
+        """Return to normal navigation mode from red markup."""
+        self._exit_markup_mode("Red markup")
+
+    def _set_markup_tool(self, markup_class, tool, color=None, opacity=None, width=None, symbol_id=None):
+        if markup_class == 'red':
+            _map = {'polygon':  MODE_MARKUP_POLYGON,
+                    'polyline': MODE_MARKUP_POLYLINE,
+                    'comment':  MODE_MARKUP_COMMENT,
+                    'select':   MODE_MARKUP_SELECT,
+                    'smart':    MODE_SMART_POLYLINE,
+                    'symbol':   MODE_RED_MARKUP_SYMBOL}
+        else:
+            _map = {'polygon':  MODE_MARKUP_POLYGON,
+                    'polyline': MODE_MARKUP_POLYLINE,
+                    'text':     MODE_MARKUP_TEXT,
+                    'comment':  MODE_MARKUP_COMMENT,
+                    'select':   MODE_MARKUP_SELECT,
+                    'smart':    MODE_SMART_POLYLINE}
         if tool in _map:
             self._set_mode(_map[tool])
+        if markup_class == 'red':
+            if tool == 'symbol' and symbol_id is not None:
+                self._active_symbol_id = symbol_id
+            elif tool != 'symbol':
+                self._active_symbol_id = None
         if color is not None:
-            self.viewer.set_pen_style(color, width or 3, int((opacity or 0.45) * 210))
+            default_width = 4 if markup_class == 'red' else 3
+            default_opacity = 1.0 if markup_class == 'red' else 0.45
+            self.viewer.set_pen_style(color, width or default_width, int((opacity or default_opacity) * 210))
 
-    def refresh_markup_overlays(self):
-        """Reload only the markup overlays (cheap — no cause/cons/sg reload)."""
-        self.viewer.clear_markup_overlays()
+    def set_markup_tool(self, tool, color=None, opacity=None, width=None):
+        """Set drawing tool: 'polygon'|'polyline'|'text'|'comment'|'select'|'smart'."""
+        self._set_markup_tool('node', tool, color=color, opacity=opacity, width=width)
+
+    def set_red_markup_tool(self, tool, color=None, opacity=None, width=None, symbol_id=None):
+        """Set red markup tool: 'polygon'|'polyline'|'comment'|'select'|'smart'|'symbol'."""
+        self._set_markup_tool('red', tool, color=color, opacity=opacity, width=width, symbol_id=symbol_id)
+
+    def _refresh_markup_overlays(self, markup_class):
+        if markup_class == 'red':
+            self.viewer.clear_red_markup_overlays()
+        else:
+            self.viewer.clear_markup_overlays()
         if self.viewer.pdf_doc is None:
             return
         orig_page = self.viewer.current_page
         for page in sorted(self.viewer._all_page_items.keys()):
             self.viewer.current_page = page
-            if hasattr(self.db, 'node_markups_for_page'):
+            if markup_class == 'red':
+                if hasattr(self.db, 'node_red_markups_for_page'):
+                    for mu in self.db.node_red_markups_for_page(page):
+                        m = dict(mu)
+                        try: pts = json.loads(m.get('points', '[]') or '[]')
+                        except ValueError as e: logging.warning(f"Failed to parse markup points JSON: {e}"); pts = []
+                        self.viewer.add_red_markup_overlay(
+                            m['id'], m.get('type', 'polygon'), pts,
+                            m.get('label', ''), m.get('color', '#CC0000'),
+                            float(m.get('opacity', 1.0)), int(m.get('line_width', 4)),
+                            bool(m.get('visible', 1)), int(m.get('font_size', 12)),
+                            float(m.get('symbol_w', 40)), float(m.get('symbol_h', 40)),
+                            float(m.get('symbol_rot', 0)))
+            elif hasattr(self.db, 'node_markups_for_page'):
                 for mu in self.db.node_markups_for_page(page):
                     m = dict(mu)
                     try: pts = json.loads(m.get('points', '[]') or '[]')
@@ -10350,65 +10403,13 @@ class PIDPanel(QWidget):
                         int(m.get('font_size', 12)))
         self.viewer.current_page = orig_page
 
-    # ── Red markup editing API ────────────────────────────────────────────────
-
-    def enter_red_markup_edit(self, node_id):
-        """Enter red markup editing mode for a node."""
-        self._active_markup_class = 'red'
-        self._active_symbol_id = None
-        self.set_active_node(node_id)
-        self._set_mode(MODE_MARKUP_SELECT)
-        self.viewer.markup_draw_finished.connect(self._on_viewer_markup_drawn)
-        self.viewer.markup_item_clicked.connect(self._on_viewer_markup_clicked)
-
-    def exit_red_markup_mode(self):
-        """Return to normal navigation mode from red markup."""
-        try: self.viewer.markup_draw_finished.disconnect(self._on_viewer_markup_drawn)
-        except RuntimeError as e: logging.warning(f"Red markup draw finished signal not connected: {e}")
-        try: self.viewer.markup_item_clicked.disconnect(self._on_viewer_markup_clicked)
-        except RuntimeError as e: logging.warning(f"Red markup item clicked signal not connected: {e}")
-        self._active_markup_class = 'node'
-        self._active_symbol_id = None
-        self._set_mode(MODE_NAV)
-
-    def set_red_markup_tool(self, tool, color=None, opacity=None, width=None, symbol_id=None):
-        """Set red markup tool: 'polygon'|'polyline'|'comment'|'select'|'smart'|'symbol'."""
-        _map = {'polygon':  MODE_MARKUP_POLYGON,
-                'polyline': MODE_MARKUP_POLYLINE,
-                'comment':  MODE_MARKUP_COMMENT,
-                'select':   MODE_MARKUP_SELECT,
-                'smart':    MODE_SMART_POLYLINE,
-                'symbol':   MODE_RED_MARKUP_SYMBOL}
-        if tool in _map:
-            self._set_mode(_map[tool])
-        if tool == 'symbol' and symbol_id is not None:
-            self._active_symbol_id = symbol_id
-        elif tool != 'symbol':
-            self._active_symbol_id = None
-        if color is not None:
-            self.viewer.set_pen_style(color, width or 4, int((opacity or 1.0) * 210))
+    def refresh_markup_overlays(self):
+        """Reload only the markup overlays (cheap — no cause/cons/sg reload)."""
+        self._refresh_markup_overlays('node')
 
     def refresh_red_markup_overlays(self):
         """Reload only the red markup overlays."""
-        self.viewer.clear_red_markup_overlays()
-        if self.viewer.pdf_doc is None:
-            return
-        orig_page = self.viewer.current_page
-        for page in sorted(self.viewer._all_page_items.keys()):
-            self.viewer.current_page = page
-            if hasattr(self.db, 'node_red_markups_for_page'):
-                for mu in self.db.node_red_markups_for_page(page):
-                    m = dict(mu)
-                    try: pts = json.loads(m.get('points', '[]') or '[]')
-                    except ValueError as e: logging.warning(f"Failed to parse markup points JSON: {e}"); pts = []
-                    self.viewer.add_red_markup_overlay(
-                        m['id'], m.get('type', 'polygon'), pts,
-                        m.get('label', ''), m.get('color', '#CC0000'),
-                        float(m.get('opacity', 1.0)), int(m.get('line_width', 4)),
-                        bool(m.get('visible', 1)), int(m.get('font_size', 12)),
-                        float(m.get('symbol_w', 40)), float(m.get('symbol_h', 40)),
-                        float(m.get('symbol_rot', 0)))
-        self.viewer.current_page = orig_page
+        self._refresh_markup_overlays('red')
 
     def _on_viewer_markup_drawn(self, type_, pts, page):
         """Called when user finishes drawing in the viewer; route to appropriate panel."""

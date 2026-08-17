@@ -89,7 +89,7 @@ The application is split into five modules:
 **`pid_viewer.py`** — P&ID canvas and dialogs (Qt)
 - `PIDGraphicsView` — QGraphicsView subclass handling pan/zoom, draw modes, and right-click context menu. Emits `context_action(str, QPointF, int)` for menu selections.
 - `PIDPanel` — wrapper widget with toolbar. Holds the active node/cause/consequence IDs and orchestrates marker placement. Signals: `node_created`, `cause_created`, `consequence_created`, `safeguard_created`, `risk_scenario_requested`.
-- `EquipmentScanDialog` / `EquipmentMarkerReviewDialog` — dialogs built on top of `equipment_detection.py`'s functions.
+- `EquipmentMarkerReviewDialog` — dialog built on top of `equipment_detection.py`'s functions.
 - Re-exports several `equipment_detection.py` names (`scan_pdf_for_equipment`, `KNOWN_PREFIXES`, `COMPONENT_TYPES`, etc.) so `hazop.py`'s existing `from pid_viewer import ...` calls keep working unchanged.
 
 **`hazop.py`** — main window, database, all panels
