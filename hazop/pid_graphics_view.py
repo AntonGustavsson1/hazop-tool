@@ -28,9 +28,8 @@ from PyQt6.QtGui import (
 )
 
 import symbol_geometry
-from equipment_detection import (
-    _get_easyocr_reader, _preprocess_for_ocr, _pick_best_tag, _spatial_combine,
-)
+import equipment_detection
+from equipment_detection import _get_easyocr_reader, _preprocess_for_ocr
 from pid_viewer import (
     fitz, HAS_PYMUPDF, HAS_OPENGL, QOpenGLWidget, HAS_SVG_RENDERER,
     QSvgRenderer, HAS_PIL, HAS_TESSERACT, HAS_EASYOCR, _PILImage, pytesseract,
@@ -2068,66 +2067,17 @@ class PIDGraphicsView(QGraphicsView):
         if tag:
             self._place_label(tag, x_pdf, y_pdf, r, QColor(140, 0, 0), 'equipment')
 
-    def _extract_tag_from_rect(self, pdf_rect: QRectF) -> tuple:
-        """Extract tag text AND classify the P&ID symbol inside the rectangle.
-
-        Returns (tag: str, comp_type: str, symbol_name: str)
-        e.g. ('PSV-101', 'Säkerhetsventil (PSV)', 'Säkerhetsventil (PSV/PRV)')
-        """
-        if not HAS_PYMUPDF or self.pdf_doc is None:
-            return '', '', ''
-        try:
-            page  = self.pdf_doc.load_page(self.current_page)
-            frect = fitz.Rect(pdf_rect.x(), pdf_rect.y(),
-                               pdf_rect.x() + pdf_rect.width(),
-                               pdf_rect.y() + pdf_rect.height())
-
-            # ── 1. Native text extraction with spatial combining ──────────────
-            raw_words = page.get_text("words", clip=frect)
-            # Try spatially-combined strings first (catches 20 - PCV - 101)
-            tag = ''
-            for candidate, *_box in _spatial_combine(raw_words):
-                t = _pick_best_tag(candidate)
-                if t:
-                    tag = t
-                    break
-            # Fallback: all words joined
-            if not tag:
-                native_text = ' '.join(w[4].strip() for w in raw_words if w[4].strip())
-                tag = _pick_best_tag(native_text) or native_text.strip()
-
-            # ── 2. OCR fallback ───────────────────────────────────────────────
-            if not tag and HAS_PIL:
-                min_dim  = max(pdf_rect.width(), pdf_rect.height(), 10.0)
-                scale    = max(4.0, min(16.0, 300.0 / min_dim))
-                mat      = fitz.Matrix(scale, scale)
-                pix      = page.get_pixmap(matrix=mat, clip=frect, alpha=False)
-                pil      = _PILImage.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                pil      = _preprocess_for_ocr(pil)
-                ocr_text = ''
-                if HAS_TESSERACT:
-                    try:
-                        cfg = ('--oem 3 --psm 7 '
-                               '-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.')
-                        ocr_text = pytesseract.image_to_string(pil, config=cfg).strip()
-                    except Exception:
-                        pass
-                if not ocr_text and HAS_EASYOCR:
-                    try:
-                        import numpy as np
-                        reader = _get_easyocr_reader()
-                        if reader:
-                            results = reader.readtext(np.array(pil))
-                            ocr_text = ' '.join(r[1] for r in results if r[2] > 0.3)
-                    except Exception:
-                        pass
-                tag = _pick_best_tag(ocr_text) or ocr_text.strip()
-
-            return tag
-
-        except Exception:
-            pass
-        return ''
+    def _extract_tag_from_rect(self, pdf_rect: QRectF) -> str:
+        """Thin wrapper around equipment_detection.extract_tag_from_rect
+        (2026-08-18, see NOTES.md "kombinerad placeringsmeny") — the
+        actual native-text/OCR logic moved there so
+        EquipmentTagSearchWorker can run the exact same extraction off
+        the UI thread against its OWN fitz.Document, instead of this
+        method's self.pdf_doc (never shared across threads)."""
+        return equipment_detection.extract_tag_from_rect(
+            self.pdf_doc, self.current_page,
+            pdf_rect.x(), pdf_rect.y(),
+            pdf_rect.x() + pdf_rect.width(), pdf_rect.y() + pdf_rect.height())
 
     def _text_in_rect(self, pdf_rect: QRectF) -> str:
         """Return all text inside pdf_rect. Uses native PDF text first, OCR as fallback."""

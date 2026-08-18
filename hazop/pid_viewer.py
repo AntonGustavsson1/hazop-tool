@@ -28,6 +28,7 @@ from equipment_detection import (
     scan_pdf_for_equipment, apply_scan_result_to_equipment_catalog,
     upsert_identified_tags_from_scan, detect_equipment_symbols,
     find_valve_shapes, detect_equipment_and_valves, find_tag_near_point,
+    extract_tag_from_rect,
     _row_confidence, _row_confidence_breakdown,
 )
 # NOTE: HAS_TESSERACT/HAS_EASYOCR/HAS_RAPIDOCR/HAS_PIL are intentionally
@@ -3876,6 +3877,58 @@ class EquipmentAnalysisWorker(QThread):
             import logging
             logging.error(f"EquipmentAnalysisWorker.run() failed: {e}", exc_info=True)
             self.finished_analysis.emit([], [])
+        finally:
+            if doc is not None:
+                try:
+                    doc.close()
+                except Exception:
+                    pass
+
+
+class EquipmentTagSearchWorker(QThread):
+    """Finds a tag for a freshly placed equipment object off the UI
+    thread (2026-08-18, see NOTES.md "kombinerad placeringsmeny") —
+    opens its own fitz.Document, modelled exactly on
+    EquipmentAnalysisWorker above (NEVER shares the live viewer's
+    pdf_doc across threads), and always emits finished_search exactly
+    once, even on failure, so the caller's spinner/timeout logic in
+    EquipmentPlacementPopup can never hang waiting.
+
+    A rubber-band placement passes `rect` — native text + OCR inside it
+    (equipment_detection.extract_tag_from_rect), falling back to a
+    nearby-point search if that comes up empty, exactly like
+    PIDGraphicsView._on_zone_drawn used to do synchronously before this
+    class existed. A plain right-click placement has only a point to
+    search from, so it passes `point` instead."""
+    finished_search = pyqtSignal(str)   # detected tag, '' if none found
+
+    def __init__(self, pdf_path, page, rect=None, point=None, radius=100, parent=None):
+        super().__init__(parent)
+        self._pdf_path = str(pdf_path)
+        self._page     = page
+        self._rect     = rect      # (x0, y0, x1, y1) or None
+        self._point    = point     # (x, y) or None
+        self._radius   = radius
+
+    def run(self):
+        doc = None
+        try:
+            doc = fitz.open(self._pdf_path)
+            tag = ''
+            if self._rect is not None:
+                x0, y0, x1, y1 = self._rect
+                tag = extract_tag_from_rect(doc, self._page, x0, y0, x1, y1)
+                if not tag:
+                    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+                    tag = find_tag_near_point(doc, self._page, cx, cy)
+            elif self._point is not None:
+                x, y = self._point
+                tag = find_tag_near_point(doc, self._page, x, y, radius=self._radius)
+            self.finished_search.emit(tag or '')
+        except Exception as e:
+            import logging
+            logging.error(f"EquipmentTagSearchWorker.run() failed: {e}", exc_info=True)
+            self.finished_search.emit('')
         finally:
             if doc is not None:
                 try:

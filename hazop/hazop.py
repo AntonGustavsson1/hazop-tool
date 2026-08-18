@@ -53,7 +53,7 @@ from scenario_panel import (
     ScenarioTablePanel, RiskMatrixPopup, ConsequenceStepPickerDialog,
     ReductionFactorsDialog, _ScenarioDelegate, _PidDelegate, _LopaWidget,
     _CONSEQ_ENTRY, _CONSEQ_GENERIC_NEXT, _CONSEQ_NODES, _N_STEPS,
-    _ORS_STRIP_H, _PID_ICON_W, _PLUS_BADGE_SIZE,
+    _ORS_STRIP_H, _ORS_HEADER_H, _PID_ICON_W, _PLUS_BADGE_SIZE,
 )
 from equipment_panel import (
     EquipmentPanel, EquipmentTagPopup, ObjectPickerPopup, PIDAnalysisPanel,
@@ -62,7 +62,7 @@ from equipment_panel import (
 from settings_panels import (
     HAZOPPreparationPanel, PIDManagementPanel, ParticipantMatrixPanel,
     SettingsPanel, StandardCausesSettingsPanel, StandardObjectsSettingsPanel,
-    StudyManagementPanel, _AnalysisSessionDateDialog,
+    StudyManagementPanel,
 )
 from node_markup import (
     PropertiesRibbon, NodeMarkupPanel, MarkupTablePanel, RedMarkupPanel,
@@ -1214,6 +1214,14 @@ class MainWindow(QMainWindow):
         # ── Page 3: Equipment ─────────────────────────────────────────────────
         self.equipment_panel = EquipmentPanel(self.db)
         self.equipment_panel.markers_saved.connect(self.pid_panel.reload_overlays)
+        # An inline tag/type edit in the Utrustningsregister also reaches
+        # equipment_catalog directly (2026-08-18, see NOTES.md "Objektets
+        # identitet ...") — the tree's EQUIP_T rows and the scenario
+        # table's ORS tag strip both resolve an object's identity LIVE
+        # from that same table, so both must refresh here too, not just
+        # the P&ID markers.
+        self.equipment_panel.markers_saved.connect(self.scenario_panel.schedule_rebuild)
+        self.equipment_panel.markers_saved.connect(self.tree_panel.refresh)
         self.view_stack.addWidget(self.equipment_panel)
 
         # ── Page 4: Study management ──────────────────────────────────────────
@@ -1412,8 +1420,11 @@ class MainWindow(QMainWindow):
         # Renaming an equipment via the ORS tag strip (2026-08-13, see
         # NOTES.md) reaches into equipment_catalog directly from
         # ScenarioTablePanel — keep the P&ID markers' own overlay text
-        # in sync right away too, not just on their next unrelated redraw.
+        # AND the tree's EQUIP_T rows in sync right away too (2026-08-18,
+        # see NOTES.md "Objektets identitet ..." — the tree used to only
+        # pick this up on its next unrelated rebuild), not just P&ID.
         self.scenario_panel.equipment_renamed.connect(self.pid_panel.reload_overlays)
+        self.scenario_panel.equipment_renamed.connect(self.tree_panel.refresh)
         self.pid_panel.equipment_deviation_created.connect(self._on_equipment_deviation_created)
         self.pid_panel.pid_analysis_done.connect(self._on_pid_analysis_done)
         self.admin_panel._pid_mgmt.sheets_changed.connect(self._on_sheets_changed)
@@ -1698,16 +1709,21 @@ class MainWindow(QMainWindow):
         """P&ID right-click OR right-drag-rubber-band menu -> "🔧 Objekt"
         (2026-08-07/2026-08-09, see NOTES.md). pdf_rect (rubber-band case
         only) is threaded straight through to place_equipment_marker so
-        the new marker gets a real outline shape."""
-        detected_type = self.pid_panel._db_comp_for_tag(suggested_tag)
-        popup = EquipmentTagPopup(self.db, suggested_tag=suggested_tag,
-                                  suggested_type=detected_type, parent=self)
+        the new marker gets a real outline shape.
 
-        def _on_picked(tag, comp_type):
-            self.pid_panel.place_equipment_marker(tag, comp_type, scene_pos, page, pdf_rect=pdf_rect)
-
-        popup.committed.connect(_on_picked)
-        popup.exec()
+        `suggested_tag` is always '' by the time this fires (2026-08-18,
+        see NOTES.md "kombinerad placeringsmeny") — pid_panel_mod.py's
+        _on_zone_drawn/_on_context_action no longer resolve a tag
+        synchronously before emitting. place_equipment_marker() itself
+        now shows the combined tag+typ+avvikelser popup (Equipment
+        PlacementPopup) and starts the background tag search, so this
+        handler just forwards straight through — it used to ALSO show
+        EquipmentTagPopup first, which produced two dialogs in a row for
+        the same placement (2026-08-18 bug report: "dubbla dialogfönster
+        ... först en med objekt och sedan en med utrustning + objekttyp +
+        avvikelser")."""
+        self.pid_panel.place_equipment_marker(
+            suggested_tag, '', scene_pos, page, pdf_rect=pdf_rect)
 
     def _on_equipment_edit_requested(self, marker_id):
         """Right-click "✏️ Redigera objekt" on an existing equipment marker
@@ -1737,6 +1753,10 @@ class MainWindow(QMainWindow):
             # via causes.equipment_id, so a rebuild here shows the new
             # name immediately instead of on the next unrelated redraw.
             self.scenario_panel.schedule_rebuild()
+            # The tree's EQUIP_T rows read equipment_catalog live too
+            # (2026-08-18, see NOTES.md "Objektets identitet ...") — must
+            # refresh here for the same reason, not just scenario/P&ID.
+            self.tree_panel.refresh()
 
         popup.committed.connect(_on_picked)
         popup.exec()

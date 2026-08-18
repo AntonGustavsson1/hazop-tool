@@ -10,7 +10,7 @@ from functools import partial
 
 from PyQt6.QtWidgets import (
     QAbstractItemView, QCheckBox, QColorDialog, QComboBox, QDateEdit,
-    QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QGridLayout,
+    QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout,
     QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton,
     QScrollArea, QSizePolicy, QSpinBox, QSplitter, QTableWidget,
@@ -1305,6 +1305,9 @@ class ParticipantMatrixPanel(QWidget):
             else:
                 _base(event)
         self._table.keyPressEvent = _table_key_press
+        header = self._table.horizontalHeader()
+        header.setSectionsClickable(True)
+        header.sectionDoubleClicked.connect(self._edit_header_label)
         layout.addWidget(self._table)
 
         btn_row = QHBoxLayout()
@@ -1419,10 +1422,15 @@ class ParticipantMatrixPanel(QWidget):
         self.refresh()
 
     def _add_session(self):
-        dlg = _AnalysisSessionDateDialog(self)
-        if dlg.exec():
-            self.db.add_analysis_session(dlg.selected_date_label())
-            self.refresh()
+        """Adds an analystillfälle directly with today's date as the label —
+        no popup — then drops straight into inline header editing so the
+        user can adjust the date/label without leaving the table
+        (2026-08-18 user request, replacing the old _AnalysisSessionDateDialog
+        popup)."""
+        new_id = self.db.add_analysis_session(QDate.currentDate().toString('yyyy-MM-dd'))
+        self.refresh()
+        col = len(self._FIXED_COLS) + len(self._column_ids) + self._session_ids.index(new_id)
+        self._edit_header_label(col)
 
     def _delete_session(self):
         col = self._table.currentColumn()
@@ -1432,35 +1440,75 @@ class ParticipantMatrixPanel(QWidget):
         self.db.delete_analysis_session(self._session_ids[sess_idx])
         self.refresh()
 
+    def _header_kind(self, col):
+        """Returns ('column', id) / ('session', id) for a renamable header,
+        or None for the fixed Förnamn/Efternamn columns."""
+        n_fixed = len(self._FIXED_COLS)
+        n_custom = len(self._column_ids)
+        if col < n_fixed:
+            return None
+        if col < n_fixed + n_custom:
+            return ('column', self._column_ids[col - n_fixed])
+        sess_idx = col - n_fixed - n_custom
+        if 0 <= sess_idx < len(self._session_ids):
+            return ('session', self._session_ids[sess_idx])
+        return None
 
-class _AnalysisSessionDateDialog(QDialog):
-    """Date-picker replacement for the old free-text QInputDialog when adding
-    an analystillfälle (2026-08-17 user request) — a QDateEdit + "Idag"
-    button, same widgets/pattern as the Projekt tab's date-range row."""
+    def _edit_header_label(self, col):
+        """Opens an inline QLineEdit directly over the header section for
+        renaming a custom column or analystillfälle — no popup dialog
+        (2026-08-18 user request)."""
+        kind = self._header_kind(col)
+        if kind is None:
+            return
+        header = self._table.horizontalHeader()
+        item = self._table.horizontalHeaderItem(col)
+        current_text = item.text() if item else ''
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Nytt analystillfälle")
-        lay = QVBoxLayout(self)
-        lay.addWidget(QLabel("Datum för analystillfället:"))
-        row = QHBoxLayout()
-        self._date_edit = QDateEdit()
-        self._date_edit.setCalendarPopup(True)
-        self._date_edit.setDisplayFormat("yyyy-MM-dd")
-        self._date_edit.setDate(QDate.currentDate())
-        today_btn = QPushButton("Idag")
-        today_btn.clicked.connect(lambda: self._date_edit.setDate(QDate.currentDate()))
-        row.addWidget(self._date_edit)
-        row.addWidget(today_btn)
-        lay.addLayout(row)
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        lay.addWidget(buttons)
+        editor = _InlineHeaderEdit(header)
+        editor.setText(current_text)
+        editor.setGeometry(
+            header.sectionViewportPosition(col), 0,
+            header.sectionSize(col), header.height())
 
-    def selected_date_label(self):
-        return self._date_edit.date().toString('yyyy-MM-dd')
+        state = {'done': False}
+
+        def finish(save):
+            if state['done']:
+                return
+            state['done'] = True
+            text = editor.text().strip()
+            editor.deleteLater()
+            if save and text and text != current_text:
+                self._rename_header(kind, text)
+
+        editor.editingFinished.connect(lambda: finish(True))
+        editor.canceled.connect(lambda: finish(False))
+        editor.show()
+        editor.setFocus()
+        editor.selectAll()
+
+    def _rename_header(self, kind, text):
+        typ, id_ = kind
+        if typ == 'column':
+            self.db.update_participant_column(id_, text)
+        else:
+            self.db.update_analysis_session(id_, text)
+        self.refresh()
+
+
+class _InlineHeaderEdit(QLineEdit):
+    """QLineEdit embedded as a header-section child for inline header
+    renaming — Escape cancels without committing (plain QLineEdit has no
+    such behavior built in outside of an item delegate)."""
+
+    canceled = pyqtSignal()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.canceled.emit()
+            return
+        super().keyPressEvent(event)
 
 
 class HAZOPPreparationPanel(QWidget):
@@ -2958,6 +3006,39 @@ class SettingsPanel(QWidget):
 
         pid_l.addWidget(tag_grp)
 
+        # ── Objektidentifiering ──────────────────────────────────────────
+        # Anton: "Jag vill också implemetera en inställning som gör hur
+        # länge programmet maximalt letar efter en tag." (2026-08-18, see
+        # NOTES.md "kombinerad placeringsmeny") — placing a new object via
+        # högerklick/gummiband now opens EquipmentPlacementPopup instantly
+        # instead of waiting for the native-text/OCR tag search to finish;
+        # this caps how long that background search (PIDPanel.
+        # _start_equipment_tag_search) gets before the popup gives up
+        # waiting and leaves the tag field open for manual entry.
+        search_grp = QGroupBox("Objektidentifiering")
+        search_gl = QVBoxLayout(search_grp)
+        search_gl.setSpacing(6)
+        search_lbl = QLabel(
+            "När ett nytt objekt placeras på P&ID (högerklick eller\n"
+            "gummiband) visas rutan direkt, och letandet efter en tagg\n"
+            "sker i bakgrunden. Hur länge det max får pågå innan fältet\n"
+            "lämnas öppet för manuell inmatning:")
+        search_lbl.setWordWrap(True)
+        search_gl.addWidget(search_lbl)
+        search_row = QHBoxLayout()
+        self._tag_search_timeout_spin = QDoubleSpinBox()
+        self._tag_search_timeout_spin.setRange(0.5, 10.0)
+        self._tag_search_timeout_spin.setSingleStep(0.5)
+        self._tag_search_timeout_spin.setDecimals(1)
+        self._tag_search_timeout_spin.setSuffix(" s")
+        self._tag_search_timeout_spin.valueChanged.connect(
+            lambda v: self.db.set_config(
+                'equipment_tag_search_timeout_ms', str(round(v * 1000))))
+        search_row.addWidget(self._tag_search_timeout_spin)
+        search_row.addStretch()
+        search_gl.addLayout(search_row)
+        pid_l.addWidget(search_grp)
+
         # ── OCR-standardval ───────────────────────────────────────────────
         # Lets the user skip the per-scan "Använd OCR?" Yes/No prompt shown
         # by "🔍 Skanna P&ID" (EquipmentPanel._scan, hazop.py) and "📋
@@ -3054,6 +3135,9 @@ class SettingsPanel(QWidget):
     def _load_all(self):
         self._strip_spaces_chk.setChecked(
             self.db.get_config('tag_strip_spaces', '1') == '1')
+
+        timeout_ms = int(self.db.get_config('equipment_tag_search_timeout_ms', '2000') or '2000')
+        self._tag_search_timeout_spin.setValue(timeout_ms / 1000)
 
         idx = self._ocr_default_combo.findData(self.db.get_config('ocr_default_engine', 'ask'))
         if idx >= 0:

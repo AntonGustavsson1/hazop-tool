@@ -16,7 +16,9 @@ from PyQt6.QtWidgets import (
     QCheckBox, QButtonGroup, QRadioButton, QSplitter,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QRect, QMimeData, QEvent
-from PyQt6.QtGui import QFont, QColor, QBrush, QPen, QPainter, QPixmap, QPolygonF
+from PyQt6.QtGui import (
+    QFont, QFontMetrics, QColor, QBrush, QPen, QPainter, QPixmap, QPolygonF,
+)
 
 from constants import (
     NODE_T, CAUSE_T, CONS_T, SG_T, DEV_T, EQUIP_T, LEDORD_T,
@@ -54,6 +56,23 @@ class _PickDeviationDialog(QDialog):
     def _accept(self):
         self.description = self.combo.currentText().strip() or "Övrigt"
         self.accept()
+
+
+class _InlineTreeEdit(QLineEdit):
+    """QLineEdit overlay used for inline tree-item renaming — floats over
+    just the editable description portion of a row, leaving the item's own
+    numbering/icon prefix untouched underneath (2026-08-18, see NOTES.md
+    "trädet: numrering bryts ut"). Escape cancels without committing —
+    plain QLineEdit has no such behavior built in outside of an item
+    delegate."""
+
+    canceled = pyqtSignal()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.canceled.emit()
+            return
+        super().keyPressEvent(event)
 
 
 class TreePanel(QWidget):
@@ -152,7 +171,6 @@ class TreePanel(QWidget):
         self.tree.customContextMenuRequested.connect(self._context_menu)
         self.tree.currentItemChanged.connect(self._on_select)
         self.tree.itemDoubleClicked.connect(self._on_item_double_click)
-        self.tree.itemChanged.connect(self._on_tree_item_text_edited)
         self._inline_edit_target = None   # (type_, id_) while an inline edit is in progress
         self.tree.installEventFilter(self)   # keyboard navigation (feature 17)
         # Internal drag-and-drop between tree levels (2026-08-17, user
@@ -202,6 +220,27 @@ class TreePanel(QWidget):
 
         layout.addLayout(compact_row)
 
+    def _reveal(self, item):
+        """setCurrentItem() alone never expands anything (verified against
+        PyQt6 directly) — the auto-unfolding came entirely from
+        scrollToItem(), which DOES silently expand every collapsed
+        ancestor so the item becomes visible. That's fine for Nod/Ledord/
+        Utrustning/Avvikelse, but must not force open an Orsak/
+        Konsekvens/Safeguard's own collapsed ancestor chain just because
+        one was added or selected (2026-08-18, see NOTES.md "trädet:
+        öppnar bara till objektet"). Skip the scroll for those types
+        unless every ancestor already happens to be expanded — then
+        nothing would be force-opened anyway, so scrolling there is just
+        a convenience, not new unfolding."""
+        self.tree.setCurrentItem(item)
+        if item.data(0, Qt.ItemDataRole.UserRole + 1) in self._COLLAPSE_BY_DEFAULT_TYPES:
+            p = item.parent()
+            while p is not None:
+                if not p.isExpanded():
+                    return
+                p = p.parent()
+        self.tree.scrollToItem(item)
+
     def refresh(self, select_type=None, select_id=None, emit_selection=True):
         expanded = set()
         it = QTreeWidgetItemIterator(self.tree)
@@ -235,6 +274,7 @@ class TreePanel(QWidget):
                     kitem = QTreeWidgetItem([f"      {risk_icon}  {ki}. {cons['description'][:40]}"])
                     kitem.setData(0, Qt.ItemDataRole.UserRole, cons['id'])
                     kitem.setData(0, Qt.ItemDataRole.UserRole + 1, CONS_T)
+                    kitem.setData(0, self._PREFIX_ROLE, f"      {risk_icon}  {ki}. ")
                     citem.addChild(kitem)
                     if (CONS_T, cons['id']) in expanded: kitem.setExpanded(True)
                     if select_type == CONS_T and select_id == cons['id']: target = kitem
@@ -250,6 +290,7 @@ class TreePanel(QWidget):
                         sgitem = QTreeWidgetItem([f"         {sg_icon}  {si}. {sg['description'][:35]}  [{rrf_str}]"])
                         sgitem.setData(0, Qt.ItemDataRole.UserRole, sg['id'])
                         sgitem.setData(0, Qt.ItemDataRole.UserRole + 1, SG_T)
+                        sgitem.setData(0, self._PREFIX_ROLE, f"         {sg_icon}  {si}. ")
                         kitem.addChild(sgitem)
                         if select_type == SG_T and select_id == sg['id']: target = sgitem
 
@@ -278,6 +319,7 @@ class TreePanel(QWidget):
                     citem = QTreeWidgetItem([f"    ⚙ {ci}. {c_label}"])
                     citem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
                     citem.setData(0, Qt.ItemDataRole.UserRole + 1, CAUSE_T)
+                    citem.setData(0, self._PREFIX_ROLE, f"    ⚙ {ci}. ")
                     ditem.addChild(citem)
                     if (CAUSE_T, cause['id']) in expanded: citem.setExpanded(True)
                     if select_type == CAUSE_T and select_id == cause['id']: target = citem
@@ -288,6 +330,7 @@ class TreePanel(QWidget):
                 ditem = QTreeWidgetItem([f"  ⬡  {di}. {dev['description'][:55]}"])
                 ditem.setData(0, Qt.ItemDataRole.UserRole, dev['id'])
                 ditem.setData(0, Qt.ItemDataRole.UserRole + 1, DEV_T)
+                ditem.setData(0, self._PREFIX_ROLE, f"  ⬡  {di}. ")
                 dev_font = QFont(); dev_font.setItalic(True)
                 ditem.setFont(0, dev_font)
                 parent_item.addChild(ditem)
@@ -302,6 +345,7 @@ class TreePanel(QWidget):
                 nitem.setIcon(0, _icon('factory'))
                 nitem.setData(0, Qt.ItemDataRole.UserRole, node['id'])
                 nitem.setData(0, Qt.ItemDataRole.UserRole + 1, NODE_T)
+                nitem.setData(0, self._PREFIX_ROLE, f"  {ni}. ")
                 nitem.setFont(0, bold_font)
                 nitem.setToolTip(0, node['pid_ref'] or '')
                 self.tree.addTopLevelItem(nitem)
@@ -392,6 +436,7 @@ class TreePanel(QWidget):
                         eq_font.setBold(True)
                         eq_font.setItalic(undefined)
                         eitem.setFont(0, eq_font)
+                        eitem.setData(0, self._EQUIP_TAG_ROLE, eq_id)
                         litem.addChild(eitem)
                         if len(eq_devs) == 1:
                             # Collapse the redundant deviation-description
@@ -485,13 +530,11 @@ class TreePanel(QWidget):
                 # Callers that pass emit_selection=False (e.g. _on_marker_navigate)
                 # already trigger the selection-handling logic explicitly afterward,
                 # so we must not let the tree fire it a second time here.
-                self.tree.setCurrentItem(target)
-                self.tree.scrollToItem(target)
+                self._reveal(target)
         finally:
             self.tree.blockSignals(False)
             if target and emit_selection:
-                self.tree.setCurrentItem(target)
-                self.tree.scrollToItem(target)
+                self._reveal(target)
 
     def _current(self):
         item = self.tree.currentItem()
@@ -692,6 +735,35 @@ class TreePanel(QWidget):
     # are pure grouping views with no DB row of their own — not included.
     _INLINE_EDIT_TYPES = (NODE_T, DEV_T, CAUSE_T, CONS_T, SG_T)
 
+    # Revealing an item deeper than "objektet" (Nod/Ledord/Utrustning/
+    # Avvikelse) must never force those levels open by itself (2026-08-18
+    # user request: "by default inte öppnar upp trädet mer än till
+    # objektet ... skippa orsakstexten, konsekvensen och safeguards" — a
+    # cause/consequence/safeguard added anywhere in the app, not just the
+    # tree, used to silently unfold its whole ancestor chain via
+    # refresh()'s _reveal(), defeating the tree's use as an overview).
+    # Still opens exactly like any other branch on an explicit manual
+    # click — this only stops the AUTOMATIC reveal-on-select.
+    _COLLAPSE_BY_DEFAULT_TYPES = (CAUSE_T, CONS_T, SG_T)
+
+    # Stores each item's numbering/icon prefix (e.g. "  ⬡  1. ") separately
+    # from its DB id/type roles, so inline editing can position an overlay
+    # editor AFTER the prefix instead of reverse-engineering it out of the
+    # (possibly truncated) decorated display text (2026-08-18, see NOTES.md
+    # "trädet: numrering bryts ut").
+    _PREFIX_ROLE = Qt.ItemDataRole.UserRole + 2
+    _PREFIX_ICON_W = 18   # approximate rendered icon width + spacing
+
+    # Set on every equipment-tag header row ("TAG-101, Ventil"), regardless
+    # of whether its own type_/id_ data identifies it as EQUIP_T or (via the
+    # "kaka på kaka" collapse, see refresh()) as the single DEV_T/CAUSE_T it
+    # merged with — double-clicking any row carrying this must always open
+    # the equipment type picker, never inline-edit the deviation/cause text
+    # that row happens to be standing in for (2026-08-18 bug report:
+    # "dubbelklickar jag på ett objekt (taggen) så kommer avvikelsetexten
+    # upp").
+    _EQUIP_TAG_ROLE = Qt.ItemDataRole.UserRole + 3
+
     def _on_item_double_click(self, item, col):
         if item is None:
             return
@@ -701,35 +773,60 @@ class TreePanel(QWidget):
             self.node_jump_to_markup.emit(id_)
             return
         if type_ == EQUIP_T:
-            self._assign_equipment_type(id_)
+            self._open_equipment_tag_popup(item, id_)
+            return
+        equip_tag_id = item.data(0, self._EQUIP_TAG_ROLE)
+        if equip_tag_id is not None:
+            self._open_equipment_tag_popup(item, equip_tag_id)
             return
         if type_ in self._INLINE_EDIT_TYPES:
             self._begin_inline_edit(item, type_, id_)
 
-    def _assign_equipment_type(self, eq_id):
-        """Double-click an "ej definierad"/typed equipment header row ->
-        pick a type from Standardobjekt (2026-08-17, see NOTES.md
-        "'ej definierad'-hantering"). Only reachable when the tree item's
-        own identity is genuinely EQUIP_T — the common case where a
-        single-deviation equipment group collapses onto a DEV_T/CAUSE_T
-        row instead (see add_deviation_subtree's neighboring comments)
-        keeps that row's double-click as a normal inline text edit;
-        assigning a type there already has an existing path via the
-        scenario table's "🏷 Redigera objekttyp och tag-ID" flow."""
+    def _open_equipment_tag_popup(self, item, eq_id):
+        """Double-click an equipment/tag header row -> the same
+        minimalistic Tag+Typ popup already used for a tag click in the
+        HAZOP scenario table (CauseTagPopup, see scenario_panel.py's
+        _show_cause_obj_popup) — 2026-08-18 user request: "samma typ av
+        ruta dyker upp ... på om man dubbelklickar på objekt i trädet så
+        jag kan ändra Tag och typ av objekt på detta sätt." Reached both
+        for a genuinely EQUIP_T row AND for the common "kaka på kaka"
+        case where a single-deviation equipment group collapses onto a
+        DEV_T/CAUSE_T row instead (see refresh()'s _EQUIP_TAG_ROLE) —
+        that row visually still shows the equipment tag, so its
+        double-click must edit the tag, not inline-edit the
+        deviation/cause text it happens to be standing in for
+        (2026-08-18 bug report: double-clicking a tag row showed the
+        deviation's own text instead)."""
         eq = self.db.get_equipment_by_id(eq_id)
         if not eq:
             return
-        types = [o['name'] for o in self.db.standard_objects()]
-        if not types:
+        rect = self.tree.visualItemRect(item)
+        global_pos = self.tree.viewport().mapToGlobal(rect.bottomLeft())
+
+        popup = CauseTagPopup(self.db, eq.get('equipment_type') or '', eq.get('tag') or '',
+                               parent=self)
+        popup.committed.connect(
+            lambda comp_type, tag, eqid=eq_id: self._apply_equipment_tag_edit(eqid, comp_type, tag))
+        popup.adjustSize()
+        scr = QApplication.screenAt(global_pos) or QApplication.primaryScreen()
+        screen = scr.availableGeometry()
+        pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
+        x, y = global_pos.x(), global_pos.y() + 2
+        if y + ph > screen.bottom(): y = global_pos.y() - ph - 2
+        if x + pw > screen.right(): x = screen.right() - pw - 4
+        x = max(screen.left() + 4, x)
+        y = max(screen.top() + 4, y)
+        popup.move(x, y)
+        popup.show()
+
+    def _apply_equipment_tag_edit(self, eq_id, comp_type, tag):
+        eq = self.db.get_equipment_by_id(eq_id)
+        if not eq:
             return
-        current = (eq.get('equipment_type') or '').strip()
-        start_idx = types.index(current) if current in types else 0
-        name, ok = QInputDialog.getItem(
-            self, "Välj typ", f"Typ för {eq['tag']}:", types, start_idx, editable=False)
-        if not ok or not name:
-            return
+        new_tag = tag.strip() or (eq.get('tag') or '')
+        new_type = comp_type.strip() or (eq.get('equipment_type') or '')
         self.db.update_equipment_item(
-            eq_id, eq['tag'], eq.get('prefix') or '', name, eq.get('description') or '')
+            eq_id, new_tag, eq.get('prefix') or '', new_type, eq.get('description') or '')
         self.refresh(EQUIP_T, eq_id, emit_selection=False)
         self.item_edited_inline.emit(EQUIP_T, eq_id)
 
@@ -756,33 +853,45 @@ class TreePanel(QWidget):
         return ''
 
     def _begin_inline_edit(self, item, type_, id_):
+        """Opens a floating QLineEdit over just the description portion of
+        the row, positioned right after the item's stored numbering/icon
+        prefix (_PREFIX_ROLE) — unlike Qt's native "double-click to edit
+        item text" (which replaces the WHOLE cell), the item's own
+        column-0 text is never touched, so the "N. "/emoji numbering stays
+        visible underneath for the entire edit (2026-08-18 user report:
+        "när jag dubbelklickar på trädet så försvinner numreringen")."""
         raw = self._raw_text_for(type_, id_)
         self._inline_edit_target = (type_, id_)
-        # Swap the decorated display text ("    ⚙ 1. Beskrivning...") for
-        # the plain raw description while editing — itemChanged below
-        # writes back exactly what's in the box, and a full refresh()
-        # afterward restores the decoration around whatever was typed.
-        # Known minor limitation: pressing Escape to cancel leaves the
-        # item showing this undecorated raw text until the next refresh()
-        # (nothing is written to the DB) — Qt's own item-editing machinery
-        # closes the editor on Escape without emitting a signal this class
-        # can hook to restore decoration immediately; low-impact enough
-        # (self-heals on the next selection change or edit) not to justify
-        # a full delegate-based editor for this alone.
-        self.tree.blockSignals(True)
-        item.setText(0, raw)
-        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
-        self.tree.blockSignals(False)
-        self.tree.editItem(item, 0)
 
-    def _on_tree_item_text_edited(self, item, col):
-        if col != 0 or self._inline_edit_target is None:
-            return
-        type_, id_ = self._inline_edit_target
-        self._inline_edit_target = None
-        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        text = item.text(0).strip()
+        rect = self.tree.visualItemRect(item)
+        prefix = item.data(0, self._PREFIX_ROLE) or ''
+        icon_w = self._PREFIX_ICON_W if not item.icon(0).isNull() else 0
+        x = rect.x() + icon_w + QFontMetrics(item.font(0)).horizontalAdvance(prefix)
+        width = max(rect.right() - x, 60)
 
+        editor = _InlineTreeEdit(self.tree.viewport())
+        editor.setText(raw)
+        editor.setGeometry(x, rect.y(), width, rect.height())
+
+        state = {'done': False}
+
+        def finish(save):
+            if state['done']:
+                return
+            state['done'] = True
+            text = editor.text().strip()
+            editor.deleteLater()
+            self._inline_edit_target = None
+            if save:
+                self._commit_inline_text(type_, id_, text)
+
+        editor.editingFinished.connect(lambda: finish(True))
+        editor.canceled.connect(lambda: finish(False))
+        editor.show()
+        editor.setFocus()
+        editor.selectAll()
+
+    def _commit_inline_text(self, type_, id_, text):
         if type_ == NODE_T:
             node = self.db.get_node(id_)
             if node:
@@ -2270,20 +2379,31 @@ class CauseObjectPopup(QDialog):
 
 
 class CauseTagPopup(QDialog):
-    """Minimalistic popup for a plain click on the ORS tag zone — just
-    tag + type, nothing else (2026-08-14, see NOTES.md: "klickar man på
+    """Minimalistic popup for editing a tag + type — just those two
+    fields, nothing else (2026-08-14, see NOTES.md: "klickar man på
     tagen justerar man tagen ... gör samtliga minimalistiska").
     CauseObjectPopup (above) still has the full avvikelse-context +
     standard-cause picker, unchanged, for its other two entry points
     (the detail panel and quick-add) — this only replaces what a bare
-    tag click opens. Modelled on EquipmentTagPopup's compact style."""
+    tag click (scenario table) or a tag double-click (tree, see
+    TreePanel._open_equipment_tag_popup) opens. Modelled on
+    EquipmentTagPopup's compact style.
+
+    No OK/Avbryt buttons (2026-08-18, user request: "Du kan ta bort
+    dialogrutorna ok och avbryt och låta mig trycka och tillåta
+    redigering utan bekräftande knapptryck") — each field commits the
+    moment it changes (Enter/focus-out on the tag field, selecting a
+    type), and the popup is a self-dismissing `Qt.WindowType.Popup`
+    (closes on Escape or an outside click, same mechanism as
+    EquipmentDeviationBar) rather than a modal dialog requiring an
+    explicit confirm."""
     committed = pyqtSignal(str, str)  # (comp_type, comp_tag)
 
     def __init__(self, db, comp_type='', comp_tag='', parent=None):
         super().__init__(parent)
         self._db = db
         self.setWindowTitle("Tagg")
-        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setMinimumWidth(220)
 
         _small = "font-size:10px;"
@@ -2322,27 +2442,14 @@ class CauseTagPopup(QDialog):
         form.addRow(typ_lbl, self._type_cb)
         layout.addLayout(form)
 
-        btns = QHBoxLayout()
-        btns.setSpacing(4)
-        ok = QPushButton("OK")
-        ok.setDefault(True)
-        ok.setFixedHeight(CONFIG['H_CTRL_STD'])
-        ok.clicked.connect(self._ok)
-        cancel = QPushButton("Avbryt")
-        cancel.setFixedHeight(CONFIG['H_CTRL_STD'])
-        cancel.clicked.connect(self.reject)
-        btns.addWidget(ok)
-        btns.addStretch()
-        btns.addWidget(cancel)
-        layout.addLayout(btns)
-        self._tag_edit.returnPressed.connect(self._ok)
+        self._tag_edit.editingFinished.connect(self._commit)
+        self._type_cb.activated.connect(lambda _index: self._commit())
         self._tag_edit.setFocus()
 
-    def _ok(self):
+    def _commit(self):
         tag = self._tag_edit.text().strip().upper()
         comp_type = self._type_cb.currentText().strip()
         self.committed.emit(comp_type, tag)
-        self.accept()
 
 
 class RRFPopup(QDialog):

@@ -18,12 +18,12 @@ import symbol_geometry
 import equipment_detection
 
 from PyQt6.QtWidgets import (
-    QAbstractSpinBox, QApplication, QCheckBox, QColorDialog, QDialog,
-    QFileDialog, QFrame, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
-    QMessageBox, QProgressDialog, QPushButton, QScrollArea,
-    QSizePolicy, QSlider, QSpinBox, QVBoxLayout, QWidget,
+    QAbstractSpinBox, QApplication, QCheckBox, QColorDialog, QComboBox,
+    QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog,
+    QLabel, QLineEdit, QMessageBox, QProgressDialog, QPushButton,
+    QScrollArea, QSizePolicy, QSlider, QSpinBox, QVBoxLayout, QWidget,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QPointF, QRectF
+from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QPointF, QRectF, QTimer
 from PyQt6.QtGui import (
     QBrush, QColor, QDrag, QFont, QKeySequence, QPen, QShortcut,
 )
@@ -32,6 +32,7 @@ from pid_graphics_view import PIDGraphicsView
 from equipment_detection import (
     _pick_best_tag, _rotate_words, _spatial_combine, find_tag_near_point,
 )
+from ui_helpers import _equipment_type_options, _make_tag_completer
 from pid_viewer import (
     fitz, CONFIG, HAS_PYMUPDF, Z_TEMP,
     MODE_NAV, MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE,
@@ -44,36 +45,26 @@ from pid_viewer import (
     ConnectorDotItem, ConnectorAnalyzer, PIDImportDialog,
     SimilarSymbolSearchDialog, SymbolTemplatePickerDialog,
     EquipmentMarkerReviewDialog, _ClusterPreviewCanvas,
-    ParallelTagScanWorker, PageProgressDialog,
+    ParallelTagScanWorker, PageProgressDialog, EquipmentTagSearchWorker,
     scan_pdf_for_equipment, apply_scan_result_to_equipment_catalog,
     upsert_identified_tags_from_scan, resolve_ocr_scan_choice, ocr_status,
 )
 
-class EquipmentDeviationBar(QWidget):
-    """Small popup that appears right next to a clicked equipment marker on
-    the P&ID and lets the user check off which of the node's deviations
-    apply to it — "Lågt flöde", "Högt flöde", etc. Auto-dismisses on an
-    outside click (Qt.WindowType.Popup), matching hazop.py's own small
-    popups (RiskMatrixPopup etc.) — replaces the earlier persistent
-    bottom-docked bar + inline cause/frequency-combo editing (2026-08-12,
-    see NOTES.md: "en liten popup på P&ID viewer som kommer upp tillfälligt
-    ... Resten av valen får jag nog göra nere i hazop scenario" — the rest
-    of the editing already happens in the scenario table once a cause
-    exists, so this popup's job is just the deviation checklist).
+class _DeviationChecklist(QWidget):
+    """Embeddable per-node deviation checklist — checking off which of the
+    node's deviations apply to a piece of equipment ("Lågt flöde", "Högt
+    flöde", etc.), auto-creating a first suggested cause on check. Factored
+    out of EquipmentDeviationBar (2026-08-18, see NOTES.md "kombinerad
+    placeringsmeny") so EquipmentPlacementPopup can embed the exact same
+    checklist logic alongside its own tag/typ fields, instead of a second
+    ~200-line copy of the same matching/suggestion code. No window flags —
+    a plain child widget; EquipmentDeviationBar below wraps it in a
+    self-dismissing popup shell, unchanged from the user's perspective.
 
     The checklist is driven by the equipment's NODE's own already-defined
     deviations (2026-08-13, see NOTES.md "alla avvikelser i noden") — a
     generic standard-catalog suggestion list only kicks in as a bootstrap
-    fallback for a brand new node with no deviations of its own yet.
-
-    Retyping the equipment (comp_type) and reassigning it to a different
-    node are handled elsewhere now (right-click "Redigera objekt" /
-    dragging it in the tree) — dropped from here to keep this popup small.
-    An "add a brand-new object" button briefly lived here too (2026-08-12)
-    but was removed the same day it shipped: placing a new object doesn't
-    belong in a popup anchored to an EXISTING one — right-click "🔧 Objekt"
-    and the rubber-band menu already cover that.
-    """
+    fallback for a brand new node with no deviations of its own yet."""
 
     # A deviation was newly created (or already existed) for this equipment —
     # PIDPanel listens to refresh the marker's colour/badge and the tree/worksheet.
@@ -84,31 +75,20 @@ class EquipmentDeviationBar(QWidget):
     deviation_removed = pyqtSignal(int, int)   # (deviation_id, equipment_id)
 
     def __init__(self, db, parent=None):
-        super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        super().__init__(parent)
         self.db = db
         self._equipment_id = None
-        self._marker_id = None
         self._checklist_checkboxes = []   # display order, for number-key shortcuts
-        # Set by PIDPanel right after construction to
-        # PIDPanel._create_cause_for_bar — same auto-suggest-a-cause path
-        # the old inline cause combo used on first check, just without a
-        # dropdown to change it afterward (do that in the scenario table).
+        # Set by the embedding widget (PIDPanel, via EquipmentDeviationBar's
+        # own _create_cause_fn passthrough) to PIDPanel._create_cause_for_bar
+        # — same auto-suggest-a-cause path the old inline cause combo used
+        # on first check, just without a dropdown to change it afterward
+        # (do that in the scenario table).
         self._create_cause_fn = None
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
-        self.setStyleSheet(
-            "EquipmentDeviationBar { background:#FFFFFF; border:1px solid #CFD1CE;"
-            " border-radius:6px; }")
-        self.setMaximumWidth(260)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(10, 8, 10, 8)
+        outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(4)
-
-        self._title_lbl = QLabel()
-        bold = QFont(); bold.setBold(True)
-        self._title_lbl.setFont(bold)
-        outer.addWidget(self._title_lbl)
 
         self._hint_lbl = QLabel("Utrustningen har ingen nod än — välj/skapa\nen nod i trädet först.")
         self._hint_lbl.setStyleSheet("color:#8D9299; font-style:italic; font-size:10px;")
@@ -123,19 +103,19 @@ class EquipmentDeviationBar(QWidget):
         self._checklist_scroll.setWidget(self._checklist_host)
         self._checklist_scroll.setWidgetResizable(True)
         self._checklist_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        # Real height is set per-popup in show_near() from the available
-        # screen space (2026-08-13 feedback: a fixed 220px looked "väldigt
-        # kort" once the list grew to every deviation in the node, which
-        # can be 16+ rows) — this fallback only matters before the first
-        # show_near() call.
+        # Real height is set per-popup by the embedding widget's own
+        # show_near()-equivalent, from available screen space (2026-08-13
+        # feedback: a fixed 220px looked "väldigt kort" once the list grew
+        # to every deviation in the node, which can be 16+ rows) — this
+        # fallback only matters before that first sizing pass.
         self._checklist_scroll.setMaximumHeight(220)
         outer.addWidget(self._checklist_scroll)
 
         # Number-key shortcuts (1-9, see NOTES.md "snabbknappar") — a
         # QShortcut with WidgetWithChildrenShortcut fires as long as focus
-        # is anywhere inside the popup (including its checkboxes), unlike
-        # a plain keyPressEvent override which only fires when the popup
-        # widget itself literally has focus.
+        # is anywhere inside the embedding popup (including these
+        # checkboxes), unlike a plain keyPressEvent override which only
+        # fires when this widget itself literally has focus.
         for i in range(1, 10):
             sc = QShortcut(QKeySequence(str(i)), self)
             sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -148,19 +128,19 @@ class EquipmentDeviationBar(QWidget):
             if cb.isEnabled():
                 cb.setChecked(True)
 
-    @property
-    def equipment_id(self):
-        return self._equipment_id
+    def natural_height(self):
+        """Uncapped natural height of the checklist content — the
+        embedding popup's own sizing pass (e.g. EquipmentDeviationBar.
+        show_near()) uses this to size its scroll area against available
+        screen space."""
+        return self._checklist_host.sizeHint().height()
 
-    @property
-    def marker_id(self):
-        return self._marker_id
+    def set_max_height(self, h):
+        self._checklist_scroll.setMaximumHeight(h)
 
-    def load(self, equipment_id, marker_id, active_node_id=None):
-        """Populate the popup for the equipment behind `marker_id` (an
-        equipment_markers.id — the caller already has this from the
-        marker_clicked signal). Does not show/position the popup itself —
-        call show_near() right after.
+    def load(self, equipment_id, active_node_id=None):
+        """Populate the checklist for equipment_id. Does not show/position
+        anything itself — the embedding widget owns that.
 
         `active_node_id` (PIDPanel._active_node_id — the node the user is
         already working in elsewhere in the app, see NOTES.md) is used to
@@ -174,51 +154,8 @@ class EquipmentDeviationBar(QWidget):
         if eq.get('node_id') is None and active_node_id is not None \
                 and self.db.get_node(active_node_id) is not None:
             self.db.set_equipment_node(equipment_id, active_node_id)
-            eq = self.db.get_equipment_by_id(equipment_id)
         self._equipment_id = equipment_id
-        self._marker_id = marker_id
-        self._title_lbl.setText(
-            f"{eq['tag'] or f'Utrustning #{equipment_id}'} — {eq['equipment_type'] or '?'}")
         self._rebuild_checklist()
-
-    def show_near(self, global_pos):
-        """Show the popup anchored near global_pos (a QPoint), clamped to
-        stay on-screen — same screen-clamped positioning hazop.py's own
-        popups (RiskMatrixPopup etc.) already use. Clicking anywhere else
-        closes it automatically (Qt.WindowType.Popup).
-
-        The checklist's scroll area is sized to whatever room is actually
-        available (opening downward or upward, whichever side of
-        global_pos has more space) instead of a fixed height (2026-08-13
-        feedback: "rulllistan väldigt kort på en liten skärm" — on a small
-        screen the old fixed 220px cap left very little of the popup's
-        already-small screen share usable, on top of now listing every
-        deviation in the node instead of a short suggestion subset)."""
-        scr = (QApplication.screenAt(global_pos) or QApplication.primaryScreen()).availableGeometry()
-
-        # Measure the checklist's true, uncapped height first so the cap
-        # below never reserves blank space for a short list.
-        self._checklist_scroll.setMaximumHeight(16777215)
-        self.adjustSize()
-        natural_total_h = self.sizeHint().height()
-        natural_scroll_h = self._checklist_host.sizeHint().height()
-        chrome_h = natural_total_h - natural_scroll_h   # title + hint + margins
-
-        space_below = scr.bottom() - global_pos.y()
-        space_above = global_pos.y() - scr.top()
-        open_below = space_below >= space_above
-        available = (space_below if open_below else space_above) - chrome_h - 12
-        scroll_h = max(120, min(natural_scroll_h, available))
-        self._checklist_scroll.setMaximumHeight(int(scroll_h))
-        self.adjustSize()
-
-        pw, ph = self.sizeHint().width(), self.sizeHint().height()
-        x = min(global_pos.x(), scr.right() - pw)
-        y = global_pos.y() if open_below else global_pos.y() - ph
-        y = min(max(scr.top(), y), scr.bottom() - ph)
-        self.move(max(scr.left(), x), y)
-        self.show()
-        self.setFocus()   # so number-key shortcuts work immediately
 
     def _rebuild_checklist(self):
         while self._checklist_layout.count():
@@ -289,7 +226,7 @@ class EquipmentDeviationBar(QWidget):
     def _resolve_object_id(self, comp_type):
         """Match equipment_catalog.equipment_type against standard_objects
         (the richer taxonomy StandardCausesPickerPopup already uses) so the
-        bar can offer the same breadth of causes — see NOTES.md."""
+        checklist can offer the same breadth of causes — see NOTES.md."""
         if not comp_type:
             return None
         for o in self.db.standard_objects():
@@ -433,6 +370,421 @@ class EquipmentDeviationBar(QWidget):
         self.deviation_removed.emit(dev_id, self._equipment_id)
 
 
+class EquipmentDeviationBar(QWidget):
+    """Small popup that appears right next to a clicked equipment marker on
+    the P&ID and lets the user check off which of the node's deviations
+    apply to it. Auto-dismisses on an outside click (Qt.WindowType.Popup),
+    matching hazop.py's own small popups (RiskMatrixPopup etc.) — replaces
+    the earlier persistent bottom-docked bar + inline cause/frequency-combo
+    editing (2026-08-12, see NOTES.md: "en liten popup på P&ID viewer som
+    kommer upp tillfälligt ... Resten av valen får jag nog göra nere i
+    hazop scenario" — the rest of the editing already happens in the
+    scenario table once a cause exists, so this popup's job is just the
+    deviation checklist).
+
+    A thin title+hint shell around the shared `_DeviationChecklist`
+    (2026-08-18, see that class's own docstring) — this class's own job is
+    now just the popup chrome/positioning, not the checklist logic itself.
+
+    Retyping the equipment (comp_type) and reassigning it to a different
+    node are handled elsewhere now (right-click "Redigera objekt" /
+    dragging it in the tree) — dropped from here to keep this popup small.
+    An "add a brand-new object" button briefly lived here too (2026-08-12)
+    but was removed the same day it shipped: placing a new object doesn't
+    belong in a popup anchored to an EXISTING one — right-click "🔧 Objekt"
+    and the rubber-band menu already cover that (now via
+    EquipmentPlacementPopup, see NOTES.md "kombinerad placeringsmeny").
+    """
+
+    deviation_added = pyqtSignal(int, int)   # (deviation_id, equipment_id)
+    deviation_removed = pyqtSignal(int, int)   # (deviation_id, equipment_id)
+
+    def __init__(self, db, parent=None):
+        super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self._db = db
+        self._marker_id = None
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        self.setStyleSheet(
+            "EquipmentDeviationBar { background:#FFFFFF; border:1px solid #CFD1CE;"
+            " border-radius:6px; }")
+        self.setMaximumWidth(260)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 8, 10, 8)
+        outer.setSpacing(4)
+
+        self._title_lbl = QLabel()
+        bold = QFont(); bold.setBold(True)
+        self._title_lbl.setFont(bold)
+        outer.addWidget(self._title_lbl)
+
+        self._checklist = _DeviationChecklist(db, self)
+        self._checklist.deviation_added.connect(self.deviation_added)
+        self._checklist.deviation_removed.connect(self.deviation_removed)
+        outer.addWidget(self._checklist)
+
+    @property
+    def db(self):
+        return self._db
+
+    @db.setter
+    def db(self, value):
+        """Reassigning .db (MainWindow._reload_all_panels() after a
+        project swap, see hazop.py) must also update the embedded
+        checklist's own db reference — it keeps a SEPARATE db attribute
+        since the _DeviationChecklist extraction (2026-08-18, see
+        NOTES.md "kombinerad placeringsmeny"). Without this, a project
+        reload left the checklist pointed at the OLD, now-closed
+        database, crashing the next click on an existing equipment
+        marker with sqlite3.ProgrammingError — same bug class
+        test_equipment_deviation_bar_gets_new_db already guards this
+        class against as a whole."""
+        self._db = value
+        self._checklist.db = value
+
+    @property
+    def equipment_id(self):
+        return self._checklist._equipment_id
+
+    @property
+    def _equipment_id(self):
+        """Kept for existing direct-attribute access (see
+        EquipmentObjectPlacementTests) — the embedded checklist is the
+        real owner now."""
+        return self._checklist._equipment_id
+
+    @property
+    def marker_id(self):
+        return self._marker_id
+
+    @property
+    def _create_cause_fn(self):
+        return self._checklist._create_cause_fn
+
+    @_create_cause_fn.setter
+    def _create_cause_fn(self, fn):
+        self._checklist._create_cause_fn = fn
+
+    def load(self, equipment_id, marker_id, active_node_id=None):
+        """Populate the popup for the equipment behind `marker_id` (an
+        equipment_markers.id — the caller already has this from the
+        marker_clicked signal). Does not show/position the popup itself —
+        call show_near() right after. See _DeviationChecklist.load() for
+        the active_node_id auto-assign behavior."""
+        self._marker_id = marker_id
+        self._checklist.load(equipment_id, active_node_id)
+        eq = self.db.get_equipment_by_id(equipment_id)
+        if not eq:
+            return
+        self._title_lbl.setText(
+            f"{eq['tag'] or f'Utrustning #{equipment_id}'} — {eq['equipment_type'] or '?'}")
+
+    def show_near(self, global_pos):
+        """Show the popup anchored near global_pos (a QPoint), clamped to
+        stay on-screen — same screen-clamped positioning hazop.py's own
+        popups (RiskMatrixPopup etc.) already use. Clicking anywhere else
+        closes it automatically (Qt.WindowType.Popup).
+
+        The checklist's scroll area is sized to whatever room is actually
+        available (opening downward or upward, whichever side of
+        global_pos has more space) instead of a fixed height (2026-08-13
+        feedback: "rulllistan väldigt kort på en liten skärm" — on a small
+        screen the old fixed 220px cap left very little of the popup's
+        already-small screen share usable, on top of now listing every
+        deviation in the node instead of a short suggestion subset)."""
+        scr = (QApplication.screenAt(global_pos) or QApplication.primaryScreen()).availableGeometry()
+
+        # Measure the checklist's true, uncapped height first so the cap
+        # below never reserves blank space for a short list.
+        self._checklist.set_max_height(16777215)
+        self.adjustSize()
+        natural_total_h = self.sizeHint().height()
+        natural_scroll_h = self._checklist.natural_height()
+        chrome_h = natural_total_h - natural_scroll_h   # title + margins
+
+        space_below = scr.bottom() - global_pos.y()
+        space_above = global_pos.y() - scr.top()
+        open_below = space_below >= space_above
+        available = (space_below if open_below else space_above) - chrome_h - 12
+        scroll_h = max(120, min(natural_scroll_h, available))
+        self._checklist.set_max_height(int(scroll_h))
+        self.adjustSize()
+
+        pw, ph = self.sizeHint().width(), self.sizeHint().height()
+        x = min(global_pos.x(), scr.right() - pw)
+        y = global_pos.y() if open_below else global_pos.y() - ph
+        y = min(max(scr.top(), y), scr.bottom() - ph)
+        self.move(max(scr.left(), x), y)
+        self.show()
+        self.setFocus()   # so number-key shortcuts work immediately
+
+
+class EquipmentPlacementPopup(QWidget):
+    """Combined tag + typ + avvikelse-checklist popup shown the moment a
+    NEW equipment object is placed on the P&ID — replaces the previous
+    two separate, sequential steps (EquipmentTagPopup's modal tag/typ
+    dialog, THEN EquipmentDeviationBar's checklist right after) with one
+    view (2026-08-18, see NOTES.md "kombinerad placeringsmeny": "Idag
+    sker detta i två steg men jag tror det snabbar upp flödet med bara
+    en meny").
+
+    No OK/Avbryt buttons (same live-commit convention CauseTagPopup
+    already established this session, tree_panel.py) — the tag field
+    commits on Enter/focus-out, the type combo commits the moment a
+    selection is made, and each deviation checkbox commits itself
+    immediately (via the embedded _DeviationChecklist, unchanged).
+    place_equipment_marker() has already created the equipment_catalog
+    row + marker before this popup is constructed, so every field here
+    edits a REAL, already-existing row from the first keystroke.
+
+    Shows a "⏳ Söker tagg…" hint while place_equipment_marker()'s
+    background EquipmentTagSearchWorker is still running (tag was blank
+    at placement time) — set_detected_tag() fills the tag field once the
+    search resolves (or times out), but never overwrites text the user
+    already typed themselves."""
+
+    def __init__(self, db, equipment_id, marker_id, parent=None):
+        super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.db = db
+        self._equipment_id = equipment_id
+        self._marker_id = marker_id
+        self._tag_edited_by_user = False
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        self.setStyleSheet(
+            "EquipmentPlacementPopup { background:#FFFFFF; border:1px solid #CFD1CE;"
+            " border-radius:6px; }")
+        self.setMaximumWidth(260)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+        _small = "font-size:10px;"
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 8, 10, 8)
+        outer.setSpacing(4)
+
+        title = QLabel("<b>Nytt objekt på P&amp;ID</b>")
+        title.setStyleSheet("font-size:11px; color:#8D9299;")
+        outer.addWidget(title)
+
+        form = QFormLayout()
+        form.setSpacing(3)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self._tag_edit = QLineEdit()
+        self._tag_edit.setPlaceholderText("t.ex. P-101 (valfritt)")
+        self._tag_edit.setFixedHeight(CONFIG['H_SMALL_BTN'])
+        self._tag_edit.setStyleSheet(_small)
+        completer = _make_tag_completer(db, self)
+        if completer:
+            self._tag_edit.setCompleter(completer)
+        self._tag_edit.textEdited.connect(self._on_tag_edited_by_user)
+        self._tag_edit.editingFinished.connect(self._commit_tag)
+        tag_lbl = QLabel("Tag:")
+        tag_lbl.setStyleSheet(_small)
+        form.addRow(tag_lbl, self._tag_edit)
+
+        # Same non-editable-dropdown-plus-"+"-button pattern as
+        # EquipmentTagPopup/CauseTagPopup (2026-08-13 follow-up, see
+        # their own docstrings for why an editable combo was rejected).
+        self._type_cb = QComboBox()
+        self._type_cb.setFixedHeight(CONFIG['H_SMALL_BTN'])
+        self._type_cb.setStyleSheet(_small)
+        self._type_cb.addItems(_equipment_type_options(db))
+        typ_row = QHBoxLayout()
+        typ_row.setSpacing(4)
+        typ_row.addWidget(self._type_cb)
+        add_type_btn = QPushButton("+")
+        add_type_btn.setFixedSize(CONFIG['H_SMALL_BTN'], CONFIG['H_SMALL_BTN'])
+        add_type_btn.setToolTip("Lägg till en ny objekttyp")
+        add_type_btn.clicked.connect(self._add_new_type)
+        typ_row.addWidget(add_type_btn)
+        typ_lbl = QLabel("Typ:")
+        typ_lbl.setStyleSheet(_small)
+        form.addRow(typ_lbl, typ_row)
+        outer.addLayout(form)
+        self._type_cb.activated.connect(lambda _index: self._commit_type())
+
+        self._searching_lbl = QLabel("⏳ Söker tagg…")
+        self._searching_lbl.setStyleSheet("font-size:9px; color:#8D9299; font-style:italic;")
+        self._searching_lbl.setVisible(False)
+        outer.addWidget(self._searching_lbl)
+
+        # Duplicate-tag hint (same wording as EquipmentTagPopup) — kept
+        # purely informational when the placeholder already carries real
+        # data (deviations checked) rather than force-merging and risking
+        # orphaning it; see _reassign_to_existing.
+        self._dup_hint = QLabel("")
+        self._dup_hint.setStyleSheet("font-size:9px; color:#b8860b;")
+        self._dup_hint.setWordWrap(True)
+        outer.addWidget(self._dup_hint)
+
+        self._checklist = _DeviationChecklist(db, self)
+        outer.addWidget(self._checklist)
+
+        eq = self.db.get_equipment_by_id(equipment_id)
+        if eq:
+            self._tag_edit.setText(eq.get('tag') or '')
+            comp_type = eq.get('equipment_type') or ''
+            if comp_type:
+                idx = self._type_cb.findText(comp_type)
+                if idx < 0:
+                    self._type_cb.addItem(comp_type)
+                    idx = self._type_cb.count() - 1
+                self._type_cb.setCurrentIndex(idx)
+
+    def load_checklist(self, active_node_id=None):
+        self._checklist.load(self._equipment_id, active_node_id)
+
+    def show_near(self, global_pos):
+        """Same screen-clamped positioning + available-space checklist
+        sizing as EquipmentDeviationBar.show_near() — see that method's
+        own docstring for the reasoning; duplicated rather than shared
+        because the two popups' surrounding chrome (tag/typ form here,
+        just a title there) differs enough that a shared helper would
+        need to take the chrome height as a parameter anyway."""
+        scr = (QApplication.screenAt(global_pos) or QApplication.primaryScreen()).availableGeometry()
+
+        self._checklist.set_max_height(16777215)
+        self.adjustSize()
+        natural_total_h = self.sizeHint().height()
+        natural_scroll_h = self._checklist.natural_height()
+        chrome_h = natural_total_h - natural_scroll_h
+
+        space_below = scr.bottom() - global_pos.y()
+        space_above = global_pos.y() - scr.top()
+        open_below = space_below >= space_above
+        available = (space_below if open_below else space_above) - chrome_h - 12
+        scroll_h = max(120, min(natural_scroll_h, available))
+        self._checklist.set_max_height(int(scroll_h))
+        self.adjustSize()
+
+        pw, ph = self.sizeHint().width(), self.sizeHint().height()
+        x = min(global_pos.x(), scr.right() - pw)
+        y = global_pos.y() if open_below else global_pos.y() - ph
+        y = min(max(scr.top(), y), scr.bottom() - ph)
+        self.move(max(scr.left(), x), y)
+        self.show()
+        self.setFocus()
+        self._tag_edit.setFocus()
+        self._tag_edit.selectAll()
+
+    @property
+    def create_cause_fn(self):
+        return self._checklist._create_cause_fn
+
+    @create_cause_fn.setter
+    def create_cause_fn(self, fn):
+        self._checklist._create_cause_fn = fn
+
+    def set_searching(self, searching):
+        self._searching_lbl.setVisible(searching)
+
+    def set_detected_tag(self, tag):
+        """Fills the tag field with the async search's result — never
+        overwrites text the user already typed themselves while the
+        search was still running."""
+        self.set_searching(False)
+        if self._tag_edited_by_user or not tag:
+            return
+        self._tag_edit.setText(tag)
+        self._commit_tag()
+
+    def _on_tag_edited_by_user(self, _text):
+        self._tag_edited_by_user = True
+
+    def _add_new_type(self):
+        """Same behavior as EquipmentTagPopup._add_new_type — also
+        registers the name as a Standardobjekt right away, see that
+        method's own docstring."""
+        name, ok = QInputDialog.getText(self, "Ny objekttyp", "Namn:")
+        name = (name or '').strip()
+        if not ok or not name:
+            return
+        idx = self._type_cb.findText(name)
+        if idx < 0:
+            self._type_cb.addItem(name)
+            idx = self._type_cb.count() - 1
+        self._type_cb.setCurrentIndex(idx)
+        exists = self.db.conn.execute(
+            "SELECT 1 FROM standard_objects WHERE LOWER(name)=LOWER(?)", (name,)).fetchone()
+        if not exists:
+            self.db.add_standard_object(name)
+        self._commit_type()
+
+    def _commit_tag(self):
+        tag = self._tag_edit.text().strip().upper()
+        if self._tag_edit.text() != tag:
+            self._tag_edit.blockSignals(True)
+            self._tag_edit.setText(tag)
+            self._tag_edit.blockSignals(False)
+        eq = self.db.get_equipment_by_id(self._equipment_id)
+        if not eq:
+            return
+
+        existing = self.db.get_equipment_by_tag(tag) if tag else None
+        if existing and existing['id'] != self._equipment_id:
+            self._dup_hint.setText(
+                f"ℹ️ \"{existing['tag']}\" finns redan i katalogen "
+                f"({existing.get('equipment_type') or '?'}) — kopplas till den befintliga raden.")
+            self._reassign_to_existing(existing['id'])
+            return
+
+        self._dup_hint.setText("")
+        self.db.update_equipment_item(
+            self._equipment_id, tag, _equip_prefix_from_tag(tag) if tag else (eq.get('prefix') or ''),
+            eq.get('equipment_type') or '', eq.get('description') or '')
+
+    def _commit_type(self):
+        eq = self.db.get_equipment_by_id(self._equipment_id)
+        if not eq:
+            return
+        comp_type = self._type_cb.currentText().strip()
+        self.db.update_equipment_item(
+            self._equipment_id, eq.get('tag') or '', eq.get('prefix') or '',
+            comp_type, eq.get('description') or '')
+
+    def _reassign_to_existing(self, existing_id):
+        """A tag typed/detected AFTER placement can turn out to already
+        belong to a different, real catalog row — never leave a
+        duplicate lying around (the same "aldrig dubbletter" guarantee
+        place_equipment_marker's creation-time check already enforces;
+        this is that same check applied retroactively, now that a blank
+        placeholder row exists BEFORE the tag is known).
+
+        Only merges when the placeholder is still safe to discard (no
+        deviations checked against it yet) — if the user already ticked
+        boxes here before a conflicting tag arrived, merging would
+        silently orphan that real data, so this leaves the placeholder
+        as a (rare, informational-only) duplicate instead."""
+        placeholder_id = self._equipment_id
+        if placeholder_id == existing_id:
+            return
+        if self.db.deviations_for_equipment(placeholder_id):
+            return
+        placeholder = self.db.get_equipment_by_id(placeholder_id)
+        existing = self.db.get_equipment_by_id(existing_id)
+        if not existing:
+            return
+        if placeholder and (placeholder.get('equipment_type') or '') and \
+                not (existing.get('equipment_type') or ''):
+            self.db.update_equipment_item(
+                existing_id, existing.get('tag') or '', existing.get('prefix') or '',
+                placeholder['equipment_type'], existing.get('description') or '')
+            existing = self.db.get_equipment_by_id(existing_id)
+        if self._marker_id is not None:
+            self.db.update_equipment_marker_link(
+                self._marker_id, existing_id, existing.get('tag') or '')
+        self.db.delete_equipment_item(placeholder_id)
+        self._equipment_id = existing_id
+        self._checklist.load(existing_id)
+        comp_type = existing.get('equipment_type') or ''
+        if comp_type:
+            idx = self._type_cb.findText(comp_type)
+            if idx >= 0:
+                self._type_cb.setCurrentIndex(idx)
+
+
 class PIDPanel(QWidget):
     node_created            = pyqtSignal(int)
     cause_template_created  = pyqtSignal(int)
@@ -482,6 +834,12 @@ class PIDPanel(QWidget):
         self._smart_layout_prev      = None   # {page: (ox, oy)} for undo
         self._analyzer_thread        = None
         self._analyzer_progress_dlg  = None
+        # In-flight EquipmentTagSearchWorker instances, keyed by nothing —
+        # just a keep-alive list (2026-08-18, see NOTES.md "kombinerad
+        # placeringsmeny") so a QThread with no other living reference
+        # can't be garbage-collected mid-run; several can be in flight at
+        # once if the user places more than one object in quick succession.
+        self._tag_search_workers    = []
         self._sheet_map: dict       = {}
         # Set by MainWindow to ScenarioTablePanel.active_edit_target
         # (2026-08-13, see NOTES.md) — lets a Shift+click on a marker
@@ -673,7 +1031,17 @@ class PIDPanel(QWidget):
         self._equipment_bar.deviation_removed.connect(self._on_equipment_deviation_removed)
         # Plain callback, not a signal, so the popup gets the (created)
         # cause_id back synchronously — see EquipmentDeviationBar._create_cause_fn.
-        self._equipment_bar._create_cause_fn = self._create_cause_for_bar
+        # self._equipment_bar.marker_id is read fresh INSIDE the lambda body
+        # (not captured at wiring time here, when nothing has been loaded
+        # yet) — late-bound, so it always reflects whichever equipment the
+        # shared, reused bar was most recently loaded with (2026-08-18:
+        # marker_id became an explicit _create_cause_for_bar() parameter
+        # instead of that method reaching into self._equipment_bar itself,
+        # so the same method can also serve EquipmentPlacementPopup's own,
+        # unrelated marker_id — see place_equipment_marker()).
+        self._equipment_bar._create_cause_fn = (
+            lambda dev_id, ct, tag, desc, freq=None:
+                self._create_cause_for_bar(self._equipment_bar.marker_id, dev_id, ct, tag, desc, freq))
 
         self._set_mode(MODE_NAV)
         self._update_pen()
@@ -1040,10 +1408,16 @@ class PIDPanel(QWidget):
             for m in self.db.equipment_markers_for_page(phys_page):
                 md = dict(m)
                 x, y = float(md['x']), float(md['y'])
-                dev_count = (self.db.equipment_deviation_count(md['equipment_id'])
-                             if md.get('equipment_id') else 0)
+                eq_id = md.get('equipment_id')
+                dev_count = self.db.equipment_deviation_count(eq_id) if eq_id else 0
                 rgb = (0.0, 0.51, 0.24) if dev_count > 0 else (0.63, 0.0, 0.0)
-                _draw_pid_marker(page, x, y, rgb, 'O', md.get('tag', ''))
+                # Live-resolved tag, same reasoning as _load_overlays()
+                # (2026-08-18, see NOTES.md "Objektets identitet ...") —
+                # otherwise a PDF export could show a renamed object's OLD
+                # tag even though the live viewer shows the new one.
+                eq = self.db.get_equipment_by_id(eq_id) if eq_id else None
+                tag_val = (eq.get('tag') or '') if eq else md.get('tag', '')
+                _draw_pid_marker(page, x, y, rgb, 'O', tag_val)
 
             # ── Connection lines ──────────────────────────────────────────
             shape = page.new_shape()
@@ -1847,26 +2221,17 @@ class PIDPanel(QWidget):
         objekt/orsak/konsekvens/safeguard here; the P&ID canvas is now
         object-placement-only (2026-08-13, see NOTES.md), so the drawn
         zone always becomes a new equipment object directly — no menu
-        needed for a single choice."""
+        needed for a single choice.
+
+        Emits with tag='' immediately (2026-08-18, see NOTES.md
+        "kombinerad placeringsmeny") — the native-text/OCR tag search
+        used to run SYNCHRONOUSLY right here, so the popup couldn't even
+        appear until it finished. place_equipment_marker() now starts
+        that same search in the background (EquipmentTagSearchWorker)
+        AFTER its popup is already showing."""
         rs = self.viewer.render_scale
         center_scene = QPointF(pdf_rect.center().x() * rs, pdf_rect.center().y() * rs)
-
-        tag = ''
-        if HAS_PYMUPDF and self.viewer.pdf_doc:
-            # _extract_tag_from_rect returns a string (the tag found inside the
-            # rectangle).  Do NOT index into it — that yields single characters.
-            try:
-                tag = self.viewer._extract_tag_from_rect(pdf_rect) or ''
-            except Exception:
-                pass
-            # If no tag found inside the rectangle, search the full page from
-            # the rectangle's centre — tag labels often sit outside the symbol.
-            if not tag:
-                cx = pdf_rect.center().x()
-                cy = pdf_rect.center().y()
-                tag = find_tag_near_point(self.viewer.pdf_doc, page, cx, cy)
-
-        self.equipment_placement_requested.emit(tag or '', center_scene, page, pdf_rect)
+        self.equipment_placement_requested.emit('', center_scene, page, pdf_rect)
 
     def _on_annotation_click(self, scene_pos):
         """Feature 8: create a sticky note annotation at scene_pos."""
@@ -1905,11 +2270,10 @@ class PIDPanel(QWidget):
         if action == 'node':
             self._set_mode(MODE_NODE)
         elif action == 'equipment':
-            pdf_x, pdf_y = self.viewer.scene_to_pdf(pos)
-            tag = find_tag_near_point(
-                self.viewer.pdf_doc, page, pdf_x, pdf_y, radius=100) \
-                if self.viewer.pdf_doc else ''
-            self.equipment_placement_requested.emit(tag or '', pos, page, None)
+            # tag='' — the search runs in the background from
+            # place_equipment_marker() instead of synchronously here
+            # (2026-08-18, see NOTES.md "kombinerad placeringsmeny").
+            self.equipment_placement_requested.emit('', pos, page, None)
         elif action == 'find_similar':
             self._find_similar_symbol(pos, page)
         elif action == 'find_similar_template':
@@ -2225,10 +2589,21 @@ class PIDPanel(QWidget):
 
             for m in self.db.equipment_markers_for_page(page):
                 md = dict(m)
-                dev_count = (self.db.equipment_deviation_count(md['equipment_id'])
-                             if md.get('equipment_id') else 0)
-                tag_val = md.get('tag', '')
-                comp_type_val = md.get('comp_type', '')
+                eq_id = md.get('equipment_id')
+                dev_count = self.db.equipment_deviation_count(eq_id) if eq_id else 0
+                # Resolved LIVE from equipment_catalog when linked, same
+                # live-FK pattern as ScenarioTablePanel._cause_tag_display
+                # (2026-08-18, see NOTES.md "Objektets identitet ...") —
+                # equipment_markers.tag/comp_type are just the values at
+                # PLACEMENT time and were never updated afterward, so a
+                # rename/retype made in the tree, the scenario table's tag
+                # popup, or the Utrustningsregister showed correctly
+                # everywhere except back on the P&ID marker itself.
+                # Falls back to the frozen marker columns for a marker
+                # that was never linked to a catalog row.
+                eq = self.db.get_equipment_by_id(eq_id) if eq_id else None
+                tag_val = (eq.get('tag') or '') if eq else md.get('tag', '')
+                comp_type_val = (eq.get('equipment_type') or '') if eq else md.get('comp_type', '')
                 cons_count = (self.db.equipment_consequence_count(tag_val, comp_type_val)
                               if tag_val else 0)
                 sg_count = (self.db.equipment_safeguard_count(tag_val, comp_type_val)
@@ -2547,21 +2922,31 @@ class PIDPanel(QWidget):
             self.db.set_safeguard_tag(id_, tag, comp_type)
 
     def place_equipment_marker(self, tag, comp_type, scene_pos, page, pdf_rect=None):
-        """Callback for EquipmentTagPopup (P&ID right-click -> "🔧 Objekt",
-        2026-08-07, see NOTES.md). Resolves an existing equipment_catalog
-        row by tag if one exists (never creates a duplicate for a tag
-        that's already catalogued) or creates a new one, places a marker
-        at the clicked point, and opens EquipmentDeviationBar immediately —
-        the same bar _on_marker_clicked already opens for an existing
-        marker, so the very next step (tick a deviation) continues the
-        same established flow without an extra click.
+        """Callback for the P&ID right-click "🔧 Objekt" action and the
+        rubber-band menu's own entry (2026-08-07, extended 2026-08-18 —
+        see NOTES.md "kombinerad placeringsmeny"). Resolves an existing
+        equipment_catalog row by tag if one exists (never creates a
+        duplicate for a tag that's already catalogued) or creates a new
+        one, places a marker at the clicked point, and opens
+        EquipmentPlacementPopup immediately — tag+typ fields AND the
+        deviation checklist together in ONE view, replacing the previous
+        two separate, sequential popups (EquipmentTagPopup then
+        EquipmentDeviationBar).
+
+        `tag` is normally '' here — the native-text/OCR search now runs
+        in the BACKGROUND (started below, after the popup is already
+        showing) instead of blocking this whole call until it finishes.
+        A non-blank `tag` (still supported — some callers/tests already
+        know it) skips the search entirely; the popup just opens already
+        filled in.
 
         `pdf_rect` (2026-08-09, see NOTES.md) — optional QRectF in PDF
         units from the right-drag rubber-band menu's "🔧 Objekt" entry.
         When given, its four corners become the marker's shape_outline so
         it renders with a real outline (like a scanned/auto-detected
         symbol) instead of the generic bowtie-icon fallback a bare point
-        gets."""
+        gets; the same rectangle is also where the background tag search
+        looks first."""
         tag = (tag or '').strip().upper()
         existing = self.db.get_equipment_by_tag(tag) if tag else None
         if existing:
@@ -2581,9 +2966,74 @@ class PIDPanel(QWidget):
             confidence=1.0, link_method='manual')
         self.viewer.add_equipment_marker(marker_id, pdf_x, pdf_y, comp_type, tag=tag,
                                          outline_pdf=outline)
-        self._equipment_bar.load(equipment_id, marker_id, active_node_id=self._active_node_id)
+
+        popup = EquipmentPlacementPopup(self.db, equipment_id, marker_id, parent=self.viewer)
+        popup.create_cause_fn = (
+            lambda dev_id, ct, cmp_tag, desc, freq=None:
+                self._create_cause_for_bar(marker_id, dev_id, ct, cmp_tag, desc, freq))
+        popup.load_checklist(active_node_id=self._active_node_id)
         gp = self.viewer.viewport().mapToGlobal(self.viewer.mapFromScene(scene_pos))
-        self._equipment_bar.show_near(gp)
+        popup.show_near(gp)
+
+        if not tag and HAS_PYMUPDF and self.viewer.pdf_doc is not None:
+            self._start_equipment_tag_search(popup, page, pdf_x, pdf_y, pdf_rect)
+
+    def _start_equipment_tag_search(self, popup, page, pdf_x, pdf_y, pdf_rect):
+        """Starts EquipmentTagSearchWorker in the background for a
+        freshly-placed object whose tag wasn't known at placement time
+        (2026-08-18, see NOTES.md "kombinerad placeringsmeny") — the popup
+        is already showing by the time this runs. Whichever finishes
+        first, the worker's real result or the configurable timeout
+        (default 2s, see settings_panels.py's P&ID-inställningar), wins
+        via a `state['done']` flag — same pattern as this session's other
+        no-confirm-button live popups (e.g. tree_panel._InlineTreeEdit).
+        The worker itself keeps running to completion regardless (OCR
+        calls aren't cleanly interruptible mid-call) — a timeout only
+        means the UI stops waiting for it, not that the thread is killed;
+        its late result is simply ignored via the same flag."""
+        working = self._working_pdf_path()
+        if not working.exists():
+            popup.set_searching(False)
+            return
+        popup.set_searching(True)
+
+        rect = None
+        if pdf_rect is not None:
+            rect = (pdf_rect.left(), pdf_rect.top(), pdf_rect.right(), pdf_rect.bottom())
+        point = None if rect is not None else (pdf_x, pdf_y)
+        worker = EquipmentTagSearchWorker(str(working), page, rect=rect, point=point)
+        self._tag_search_workers.append(worker)
+
+        state = {'done': False}
+
+        def cleanup():
+            if worker in self._tag_search_workers:
+                self._tag_search_workers.remove(worker)
+
+        def on_result(found_tag):
+            if not state['done']:
+                state['done'] = True
+                try:
+                    popup.set_detected_tag(found_tag)
+                except RuntimeError:
+                    pass   # popup already closed — nothing left to update
+            cleanup()
+
+        def on_timeout():
+            if not state['done']:
+                state['done'] = True
+                try:
+                    popup.set_searching(False)
+                except RuntimeError:
+                    pass
+            # The worker itself is left running — on_result's own
+            # cleanup() removes it from the keep-alive list once it
+            # genuinely finishes, whether or not the result still matters.
+
+        worker.finished_search.connect(on_result)
+        worker.start()
+        timeout_ms = int(self.db.get_config('equipment_tag_search_timeout_ms', '2000') or '2000')
+        QTimer.singleShot(timeout_ms, on_timeout)
 
     def _on_equipment_deviation_added(self, deviation_id, equipment_id):
         self._refresh_equipment_marker_visual(equipment_id)
@@ -2595,16 +3045,21 @@ class PIDPanel(QWidget):
         self._refresh_equipment_marker_visual(equipment_id)
         self.equipment_deviation_created.emit(deviation_id, equipment_id)
 
-    def _create_cause_for_bar(self, deviation_id, comp_type, comp_tag, description, frequency=None):
-        """Callback wired into EquipmentDeviationBar._create_cause_fn — same
-        creation path as the normal cause-template flow, but returns
-        cause_id synchronously so the bar can enable/set its frequency combo.
-        `frequency` (events/year, from standard_causes.frequency when known)
-        is passed straight through to place_cause_from_template's existing
+    def _create_cause_for_bar(self, marker_id, deviation_id, comp_type, comp_tag, description,
+                               frequency=None):
+        """Callback wired into EquipmentDeviationBar._create_cause_fn AND
+        EquipmentPlacementPopup.create_cause_fn (2026-08-18, see NOTES.md
+        "kombinerad placeringsmeny") — same creation path as the normal
+        cause-template flow, but returns cause_id synchronously so the
+        caller can enable/set its frequency combo. `marker_id` is an
+        explicit parameter (not read off self._equipment_bar) so this one
+        method serves both the reused, persistent bar AND a one-off
+        placement popup's own, unrelated marker_id. `frequency`
+        (events/year, from standard_causes.frequency when known) is passed
+        straight through to place_cause_from_template's existing
         _compute_f_level() conversion — see NOTES.md."""
         marker = self.db.conn.execute(
-            "SELECT 1 FROM equipment_markers WHERE id=?",
-            (self._equipment_bar.marker_id,)).fetchone()
+            "SELECT 1 FROM equipment_markers WHERE id=?", (marker_id,)).fetchone()
         if not marker:
             return None
         return self.place_cause_from_template(

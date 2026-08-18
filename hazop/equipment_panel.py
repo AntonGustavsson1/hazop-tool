@@ -906,6 +906,11 @@ class _EquipmentTableModel(QAbstractTableModel):
     populating 10k+ rows take upwards of a minute (see NOTES.md, 2026-08-06)."""
 
     write_failed = pyqtSignal(str)   # emitted with an error message on a failed DB write
+    # Tag/type of an equipment_catalog row changed here — the tree and
+    # scenario table both resolve an object's identity LIVE from
+    # equipment_catalog (2026-08-18, see NOTES.md "Objektets identitet
+    # ..."), so they must be told to refresh too, not just this table.
+    identity_changed = pyqtSignal()
 
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
@@ -1004,6 +1009,7 @@ class _EquipmentTableModel(QAbstractTableModel):
                 first = self.index(row_i, 0)
                 last  = self.index(row_i, self.columnCount() - 1)
                 self.dataChanged.emit(first, last)
+                self.identity_changed.emit()
                 return True
 
             if col == _EC_TYPE:
@@ -1013,6 +1019,7 @@ class _EquipmentTableModel(QAbstractTableModel):
                     (row['equipment_type'], row['id']))
                 self.db.conn.commit()
                 self.dataChanged.emit(index, index, [role])
+                self.identity_changed.emit()
                 return True
 
             if col == _EC_DESC:
@@ -1104,6 +1111,12 @@ class EquipmentPanel(QWidget):
         self._model = _EquipmentTableModel(db, self)
         self._model.write_failed.connect(
             lambda msg: QMessageBox.critical(self, "Fel vid celländring (utrustning)", msg))
+        # An inline tag/type edit here is exactly the kind of change
+        # markers_saved already exists to announce (2026-08-18, see
+        # NOTES.md "Objektets identitet ...") — reuse it so MainWindow's
+        # existing pid_panel.reload_overlays() wiring picks it up too,
+        # instead of adding a second, parallel signal for the same effect.
+        self._model.identity_changed.connect(self.markers_saved.emit)
         self._proxy = _EquipmentFilterProxy(self)
         self._proxy.setSourceModel(self._model)
 

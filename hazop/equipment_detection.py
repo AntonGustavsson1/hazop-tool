@@ -2936,6 +2936,74 @@ def find_tag_near_point(pdf_doc, page_num, x_pdf, y_pdf, radius=100):
         return ''
 
 
+def extract_tag_from_rect(pdf_doc, page_num, x0, y0, x1, y1):
+    """Extract a tag from native PDF text inside the rectangle, OCR as
+    fallback. Plain floats (not a Qt QRectF) — this module stays Qt-free
+    so it can run inside a QThread's run() with its OWN fitz.Document,
+    never the live viewer's (2026-08-18, see NOTES.md "kombinerad
+    placeringsmeny" — extracted out of PIDGraphicsView._extract_tag_from_
+    rect, which is now a thin wrapper around this, so
+    EquipmentTagSearchWorker can call the exact same logic off the UI
+    thread instead of duplicating it).
+
+    Returns just the tag string (despite what an earlier version of this
+    docstring claimed about a 3-tuple — never actually returned one; see
+    the call site's own "do NOT index into it" warning)."""
+    if not HAS_PYMUPDF or pdf_doc is None:
+        return ''
+    try:
+        page  = pdf_doc.load_page(page_num)
+        frect = fitz.Rect(x0, y0, x1, y1)
+        width, height = x1 - x0, y1 - y0
+
+        # ── 1. Native text extraction with spatial combining ──────────────
+        raw_words = page.get_text("words", clip=frect)
+        # Try spatially-combined strings first (catches 20 - PCV - 101)
+        tag = ''
+        for candidate, *_box in _spatial_combine(raw_words):
+            t = _pick_best_tag(candidate)
+            if t:
+                tag = t
+                break
+        # Fallback: all words joined
+        if not tag:
+            native_text = ' '.join(w[4].strip() for w in raw_words if w[4].strip())
+            tag = _pick_best_tag(native_text) or native_text.strip()
+
+        # ── 2. OCR fallback ───────────────────────────────────────────────
+        if not tag and HAS_PIL:
+            min_dim  = max(width, height, 10.0)
+            scale    = max(4.0, min(16.0, 300.0 / min_dim))
+            mat      = fitz.Matrix(scale, scale)
+            pix      = page.get_pixmap(matrix=mat, clip=frect, alpha=False)
+            pil      = _PILImage.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            pil      = _preprocess_for_ocr(pil)
+            ocr_text = ''
+            if HAS_TESSERACT:
+                try:
+                    cfg = ('--oem 3 --psm 7 '
+                           '-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.')
+                    ocr_text = pytesseract.image_to_string(pil, config=cfg).strip()
+                except Exception:
+                    pass
+            if not ocr_text and HAS_EASYOCR:
+                try:
+                    import numpy as np
+                    reader = _get_easyocr_reader()
+                    if reader:
+                        results = reader.readtext(np.array(pil))
+                        ocr_text = ' '.join(r[1] for r in results if r[2] > 0.3)
+                except Exception:
+                    pass
+            tag = _pick_best_tag(ocr_text) or ocr_text.strip()
+
+        return tag
+
+    except Exception:
+        pass
+    return ''
+
+
 def _row_confidence(res: dict) -> float:
     """Single headline confidence for a result row. Rows from the older
     detect_equipment_symbols()/find_valve_shapes() carry one 'confidence'

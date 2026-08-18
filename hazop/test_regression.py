@@ -3246,13 +3246,16 @@ class OrsStripHeightConsistencyTests(unittest.TestCase):
 
     def _assert_enough_room_for_wrapped_text(self, panel, row):
         from PyQt6.QtGui import QFontMetrics
-        from hazop import _ORS_STRIP_H
+        from hazop import _ORS_HEADER_H
         item = panel._table.item(row, panel._C_ORS)
         fm = QFontMetrics(panel._table.font())
         cell_w = max(40, panel._table.columnWidth(panel._C_ORS) - 6)
         rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, item.text())
         row_height = panel._table.rowHeight(row)
-        available_for_text = row_height - _ORS_STRIP_H
+        # _ORS_HEADER_H (2026-08-18) — the tag strip AND the frequency row
+        # now above the description, see NOTES.md "Frekvensen ... hör
+        # hemma mer här".
+        available_for_text = row_height - _ORS_HEADER_H
         self.assertGreaterEqual(
             available_for_text, rect.height(),
             f"row height {row_height} leaves only {available_for_text}px below the "
@@ -8325,6 +8328,101 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         self.assertEqual(len(cause_rows), 1)
         self.assertEqual(cause_rows[0][2], DEV_T)
 
+    def _find_item(self, type_, id_):
+        it = QTreeWidgetItemIterator(self.panel.tree)
+        while it.value():
+            candidate = it.value()
+            if (candidate.data(0, Qt.ItemDataRole.UserRole + 1) == type_
+                    and candidate.data(0, Qt.ItemDataRole.UserRole) == id_):
+                return candidate
+            it += 1
+        return None
+
+    def test_double_click_dev_merged_equipment_row_opens_tag_popup_not_inline_edit(self):
+        """2026-08-18 bug report: double-clicking a merged equipment-tag
+        row (the common case, a single deviation for this equipment+guide
+        word, see refresh()'s "kaka på kaka" collapse) opened inline text
+        editing of the DEVIATION it happened to be standing in for,
+        showing the guide word text ("avvikelsetexten") instead of
+        anything related to the tag. It must open the Tag+Typ popup
+        instead (CauseTagPopup, 2026-08-18 follow-up — same popup used
+        for a tag click in the scenario table), exactly like a genuine
+        EQUIP_T row."""
+        from hazop import _create_tagged_cause, CauseTagPopup
+        eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
+        node_id = self.db.add_node()
+        dev_id = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        cause_id, _cons_id = _create_tagged_cause(self.db, dev_id, "Ventil", "V-101")
+        self.db.update_cause(cause_id, description="Inget flöde till M1.GPA2")
+        self.panel.refresh()
+
+        item = self._find_item(DEV_T, dev_id)
+        self.assertIsNotNone(item)
+
+        self.panel._on_item_double_click(item, 0)
+        popups = self.panel.findChildren(CauseTagPopup)
+        self.assertEqual(len(popups), 1,
+            "double-clicking the tag row must open the Tag+Typ popup")
+        self.assertEqual(popups[0]._tag_edit.text(), "V-101")
+        self.assertIsNone(self.panel._inline_edit_target)
+        self.assertEqual(len(self.panel.tree.viewport().findChildren(QLineEdit)), 0)
+
+    def test_double_click_cause_merged_equipment_row_opens_tag_popup_not_inline_edit(self):
+        """Same fix, other merge branch — the trivial-cause -> CAUSE_T
+        merge (see refresh())."""
+        from hazop import _create_tagged_cause, CauseTagPopup
+        eq_id = self.db.add_equipment_item("E1.M1.QMA102", "E1.M1.QMA102", "E1", 0, "Ventil", '', 0)
+        node_id = self.db.add_node()
+        dev_id = self.db.get_or_create_deviation(node_id, "Högt flöde", equipment_id=eq_id)
+        cause_id, _cons_id = _create_tagged_cause(self.db, dev_id, "Ventil", "E1.M1.QMA102")
+        self.panel.refresh()
+
+        item = self._find_item(CAUSE_T, cause_id)
+        self.assertIsNotNone(item)
+
+        self.panel._on_item_double_click(item, 0)
+        popups = self.panel.findChildren(CauseTagPopup)
+        self.assertEqual(len(popups), 1)
+        self.assertEqual(popups[0]._tag_edit.text(), "E1.M1.QMA102")
+        self.assertIsNone(self.panel._inline_edit_target)
+        self.assertEqual(len(self.panel.tree.viewport().findChildren(QLineEdit)), 0)
+
+    def test_equipment_tag_popup_edits_tag_and_type_live(self):
+        """The tag popup has no OK/Avbryt button (2026-08-18 user
+        request) — changing the tag (Enter/focus-out) or picking a type
+        commits immediately to the equipment_catalog row."""
+        from hazop import CauseTagPopup
+        eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
+        node_id = self.db.add_node()
+        self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        self.panel.refresh()
+        item = self._find_item(EQUIP_T, eq_id) or self._equip_item_fallback(eq_id)
+        self.assertIsNotNone(item)
+
+        self.panel._on_item_double_click(item, 0)
+        popup = self.panel.findChildren(CauseTagPopup)[0]
+
+        popup._tag_edit.setText("V-102")
+        popup._tag_edit.editingFinished.emit()
+        self.assertEqual(self.db.get_equipment_by_id(eq_id)['tag'], "V-102")
+
+        popup._type_cb.setCurrentIndex(popup._type_cb.findText("Pump"))
+        popup._type_cb.activated.emit(popup._type_cb.currentIndex())
+        self.assertEqual(self.db.get_equipment_by_id(eq_id)['equipment_type'], "Pump")
+
+    def _equip_item_fallback(self, eq_id):
+        """A lone equipment-scoped deviation collapses onto a DEV_T row
+        (see refresh()'s "kaka på kaka") rather than staying EQUIP_T —
+        find it by its _EQUIP_TAG_ROLE instead when a plain EQUIP_T
+        lookup comes up empty."""
+        it = QTreeWidgetItemIterator(self.panel.tree)
+        while it.value():
+            candidate = it.value()
+            if candidate.data(0, self.panel._EQUIP_TAG_ROLE) == eq_id:
+                return candidate
+            it += 1
+        return None
+
     def test_second_trivial_cause_prevents_merge(self):
         """A second cause under the same equipment-scoped deviation means
         there are now two distinct things to show — merging either one
@@ -8613,11 +8711,15 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
     def test_double_click_undefined_equipment_opens_type_picker_and_persists(self):
         """"Dubbelklick på 'ej definierad'/'ventil' -> välj typ från
         Standardobjekt -> uppdaterar överallt taggen förekommer" (2026-08-17).
+        2026-08-18: the QInputDialog type-only picker was replaced by the
+        same Tag+Typ CauseTagPopup used for a tag click in the scenario
+        table, with no OK button — selecting a type commits immediately.
         Forces the genuinely-EQUIP_T (un-merged) code path via two manual
         add_deviation() calls sharing one equipment_id + guide word — the
         idempotent get_or_create_deviation used everywhere else in the app
         never produces this combination "in practice" (see this class's
         own docstring), but the code path exists and must work."""
+        from hazop import CauseTagPopup
         eq_id = self.db.add_equipment_item("TAG-XYZ", "TAG-XYZ", "T", 0, "", "", 0)
         self.db.add_standard_object("Ventil")
         node_id = self.db.add_node()
@@ -8631,15 +8733,19 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
                           "sanity: two deviations sharing one equipment+guide-word "
                           "must produce a real (un-merged) EQUIP_T row")
 
-        with unittest.mock.patch.object(
-                QInputDialog, 'getItem', return_value=("Ventil", True)):
-            self.panel._on_item_double_click(item, 0)
+        self.panel._on_item_double_click(item, 0)
+        popups = self.panel.findChildren(CauseTagPopup)
+        self.assertEqual(len(popups), 1)
+        popup = popups[0]
+        popup._type_cb.setCurrentIndex(popup._type_cb.findText("Ventil"))
+        popup._commit()
 
         self.assertEqual(self.db.get_equipment_by_id(eq_id)['equipment_type'], "Ventil")
         item_after = self._equip_item(eq_id)
         self.assertIn("TAG-XYZ, Ventil", item_after.text(0))
 
     def test_double_click_equipment_type_picker_emits_item_edited_inline(self):
+        from hazop import CauseTagPopup
         eq_id = self.db.add_equipment_item("TAG-XYZ", "TAG-XYZ", "T", 0, "", "", 0)
         # "Pump" is already present in the default seeded standard_objects
         # library (Database() seeds it on construction) — no need to add it.
@@ -8651,9 +8757,10 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
 
         captured = []
         self.panel.item_edited_inline.connect(lambda t, i: captured.append((t, i)))
-        with unittest.mock.patch.object(
-                QInputDialog, 'getItem', return_value=("Pump", True)):
-            self.panel._on_item_double_click(item, 0)
+        self.panel._on_item_double_click(item, 0)
+        popup = self.panel.findChildren(CauseTagPopup)[0]
+        popup._type_cb.setCurrentIndex(popup._type_cb.findText("Pump"))
+        popup._commit()
 
         self.assertEqual(captured, [(EQUIP_T, eq_id)])
 
@@ -8822,7 +8929,7 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         self.bar.load(self.eq_id, self.marker_id, active_node_id=node_id)
         scr = QApplication.primaryScreen().availableGeometry()
         self.bar.show_near(QPoint(scr.center().x(), scr.center().y()))
-        self.assertGreater(self.bar._checklist_scroll.maximumHeight(), 220)
+        self.assertGreater(self.bar._checklist._checklist_scroll.maximumHeight(), 220)
         self.assertGreaterEqual(self.bar.geometry().top(), scr.top())
         self.assertLessEqual(self.bar.geometry().bottom(), scr.bottom())
 
@@ -8844,7 +8951,7 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         self.assertEqual(self.db.equipment_deviation_count(self.eq_id), 0)
         # No node yet (no active_node_id given, equipment has none of its
         # own) — checkboxes must be disabled, nothing to toggle.
-        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        row_widget = self.bar._checklist._checklist_layout.itemAt(0).widget()
         checkbox = row_widget.findChild(QCheckBox)
         self.assertFalse(checkbox.isEnabled())
 
@@ -8853,7 +8960,7 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         self.db.set_equipment_node(self.eq_id, node_id)
         self.bar.load(self.eq_id, self.marker_id)
 
-        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        row_widget = self.bar._checklist._checklist_layout.itemAt(0).widget()
         checkbox = row_widget.findChild(QCheckBox)
         checkbox.setChecked(True)
 
@@ -8868,7 +8975,7 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         node_id = self.db.add_node()
         self.bar.load(self.eq_id, self.marker_id, active_node_id=node_id)
         self.assertEqual(self.db.equipment_node_id(self.eq_id), node_id)
-        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        row_widget = self.bar._checklist._checklist_layout.itemAt(0).widget()
         checkbox = row_widget.findChild(QCheckBox)
         self.assertTrue(checkbox.isEnabled())
 
@@ -8884,10 +8991,10 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         self.db.set_equipment_node(self.eq_id, node_id)
         self.bar.load(self.eq_id, self.marker_id)
 
-        self.assertGreaterEqual(len(self.bar._checklist_checkboxes), 1)
-        self.bar._toggle_checkbox_by_number(1)
+        self.assertGreaterEqual(len(self.bar._checklist._checklist_checkboxes), 1)
+        self.bar._checklist._toggle_checkbox_by_number(1)
 
-        self.assertTrue(self.bar._checklist_checkboxes[0].isChecked())
+        self.assertTrue(self.bar._checklist._checklist_checkboxes[0].isChecked())
         self.assertEqual(self.db.equipment_deviation_count(self.eq_id), 1)
 
     def test_number_key_shortcut_out_of_range_is_a_no_op(self):
@@ -8895,8 +9002,8 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         self.db.set_equipment_node(self.eq_id, node_id)
         self.bar.load(self.eq_id, self.marker_id)
         # One past the last real row — must not raise or toggle anything.
-        out_of_range = len(self.bar._checklist_checkboxes) + 1
-        self.bar._toggle_checkbox_by_number(out_of_range)
+        out_of_range = len(self.bar._checklist._checklist_checkboxes) + 1
+        self.bar._checklist._toggle_checkbox_by_number(out_of_range)
         self.assertEqual(self.db.equipment_deviation_count(self.eq_id), 0)
 
     def _select_node_and_stub_cause_creation(self):
@@ -8944,7 +9051,7 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         scenario table once the cause row exists."""
         created = self._select_node_and_stub_cause_creation()
 
-        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        row_widget = self.bar._checklist._checklist_layout.itemAt(0).widget()
         checkbox = row_widget.findChild(QCheckBox)
         checkbox.setChecked(True)
 
@@ -8961,7 +9068,7 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         of discarding it, per the user's own request: 'får gärna vara
         kopplad till databasen med frekvenser'."""
         created = self._select_node_and_stub_cause_creation()
-        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        row_widget = self.bar._checklist._checklist_layout.itemAt(0).widget()
         checkbox = row_widget.findChild(QCheckBox)
         checkbox.setChecked(True)
         self.assertIsNotNone(created.get('frequency'),
@@ -8981,7 +9088,7 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         self.assertEqual(
             self.db.standard_causes_for_comp_type("Ventil"), [],
             "sanity check: literal comp_type match is empty for this generic label")
-        obj_id = self.bar._resolve_object_id("Ventil")
+        obj_id = self.bar._checklist._resolve_object_id("Ventil")
         self.assertIsNotNone(
             obj_id, "expected a substring match against standard_objects (e.g. 'Manuell ventil')")
 
@@ -8991,7 +9098,7 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         captured = []
         self.bar._create_cause_fn = lambda dev_id, ct, tag, desc, freq=None: (
             captured.append(desc), self.db.add_cause(dev_id))[-1]
-        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        row_widget = self.bar._checklist._checklist_layout.itemAt(0).widget()
         checkbox = row_widget.findChild(QCheckBox)
         checkbox.setChecked(True)
         self.assertTrue(captured, "expected a real cause suggestion once the object-based fallback resolves")
@@ -9005,7 +9112,7 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         self.db.set_equipment_node(self.eq_id, node_id)
         self.bar.load(self.eq_id, self.marker_id)
 
-        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        row_widget = self.bar._checklist._checklist_layout.itemAt(0).widget()
         checkbox = row_widget.findChild(QCheckBox)
         with unittest.mock.patch('pid_viewer.QMessageBox.question') as mock_q:
             checkbox.setChecked(True)
@@ -9021,7 +9128,7 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         deletion — same pattern as ScenarioTablePanel's own 'Ta bort
         orsak'/'Ta bort konsekvens' confirmations."""
         created = self._select_node_and_stub_cause_creation()
-        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        row_widget = self.bar._checklist._checklist_layout.itemAt(0).widget()
         checkbox = row_widget.findChild(QCheckBox)
         checkbox.setChecked(True)   # auto-creates a cause via the stub
         self.assertIn('cause_id', created)
@@ -9046,7 +9153,7 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         self.db.set_equipment_node(self.eq_id, node_id)
         self.bar.load(self.eq_id, self.marker_id)
 
-        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        row_widget = self.bar._checklist._checklist_layout.itemAt(0).widget()
         checkbox = row_widget.findChild(QCheckBox)
 
         received = []
@@ -9066,7 +9173,7 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         self.db.set_equipment_node(self.eq_id, node_id)
         self.bar.load(self.eq_id, self.marker_id)
 
-        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        row_widget = self.bar._checklist._checklist_layout.itemAt(0).widget()
         checkbox = row_widget.findChild(QCheckBox)
         with unittest.mock.patch('pid_viewer.QMessageBox.question'):
             checkbox.setChecked(True)
@@ -9084,7 +9191,7 @@ class EquipmentDeviationBarTests(unittest.TestCase):
         silently understated how much data a checkbox-uncheck would
         actually destroy."""
         created = self._select_node_and_stub_cause_creation()
-        row_widget = self.bar._checklist_layout.itemAt(0).widget()
+        row_widget = self.bar._checklist._checklist_layout.itemAt(0).widget()
         checkbox = row_widget.findChild(QCheckBox)
         checkbox.setChecked(True)   # auto-creates a cause via the stub
         cause_id = created['cause_id']
@@ -9960,8 +10067,11 @@ class EquipmentObjectPlacementTests(unittest.TestCase):
     """P&ID right-click -> "🔧 Objekt" (2026-08-07, see NOTES.md) —
     PIDPanel.place_equipment_marker resolves an existing equipment_catalog
     row by tag (never creates a duplicate) or creates a new one, places a
-    marker at the clicked point, and opens EquipmentDeviationBar
-    immediately so ticking a deviation is the very next step."""
+    marker at the clicked point, and opens EquipmentPlacementPopup
+    immediately (2026-08-18: tag+typ fields AND the deviation checklist
+    together, replacing the old two-step EquipmentTagPopup then
+    EquipmentDeviationBar sequence) so filling in the tag/type and
+    ticking a deviation are all available right away."""
 
     @classmethod
     def setUpClass(cls):
@@ -10003,19 +10113,27 @@ class EquipmentObjectPlacementTests(unittest.TestCase):
         markers = self.db.equipment_markers_for_page(0)
         self.assertEqual(markers[0]['equipment_id'], eq_id)
 
-    def test_placement_opens_equipment_deviation_bar(self):
-        # isVisible() would report False here regardless of load() having
-        # run — the panel itself is never shown in this headless test, and
-        # QWidget.isVisible() reflects the whole ancestor chain, not just
-        # this widget's own setVisible(True) call. Assert on load()'s
-        # actual effect (which equipment/marker it's now bound to) instead.
+    def test_placement_opens_equipment_placement_popup(self):
+        """2026-08-18: opens EquipmentPlacementPopup (tag+typ+avvikelser
+        combined), not the old EquipmentDeviationBar — isVisible() would
+        report False here regardless (the panel itself is never shown in
+        this headless test, and QWidget.isVisible() reflects the whole
+        ancestor chain, not just this widget's own setVisible(True)
+        call), so assert on which equipment/marker it's bound to and that
+        the tag/type fields are pre-filled instead."""
         from PyQt6.QtCore import QPointF
+        from pid_panel_mod import EquipmentPlacementPopup
         self.panel.place_equipment_marker("T-301", "Behållare", QPointF(5, 5), 0)
         equip_row = self.db.get_equipment_by_tag("T-301")
         self.assertIsNotNone(equip_row)
-        self.assertEqual(self.panel._equipment_bar._equipment_id, equip_row['id'])
+        popups = self.panel.viewer.findChildren(EquipmentPlacementPopup)
+        self.assertEqual(len(popups), 1)
+        popup = popups[0]
+        self.assertEqual(popup._equipment_id, equip_row['id'])
         markers = self.db.equipment_markers_for_page(0)
-        self.assertEqual(self.panel._equipment_bar._marker_id, markers[0]['id'])
+        self.assertEqual(popup._marker_id, markers[0]['id'])
+        self.assertEqual(popup._tag_edit.text(), "T-301")
+        self.assertEqual(popup._type_cb.currentText(), "Behållare")
 
     def test_blank_tag_still_creates_marker_from_type_alone(self):
         from PyQt6.QtCore import QPointF
@@ -10024,6 +10142,258 @@ class EquipmentObjectPlacementTests(unittest.TestCase):
         self.assertEqual(len(markers), 1)
         equip = self.db.get_equipment_by_id(markers[0]['equipment_id'])
         self.assertEqual(equip['equipment_type'], "Pump")
+
+
+class EquipmentTagSearchWorkerTests(unittest.TestCase):
+    """EquipmentTagSearchWorker (pid_viewer.py, 2026-08-18, see NOTES.md
+    "kombinerad placeringsmeny") — the QThread behind the background tag
+    search a freshly-placed object's identity popup no longer blocks on.
+    Modelled on EquipmentAnalysisWorkerTests: must always emit
+    finished_search, even when fitz.open() itself raises."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        import fitz
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_tagsearchworker_test_")
+        self.pdf_path = os.path.join(self._tmpdir, "test.pdf")
+        doc = fitz.open()
+        page = doc.new_page(width=400.0, height=300.0)
+        page.insert_text((60, 60), "PV-101")
+        doc.save(self.pdf_path)
+        doc.close()
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _run(self, worker):
+        received = {}
+        worker.finished_search.connect(lambda tag: received.setdefault('tag', tag))
+        worker.start()
+        self.assertTrue(worker.wait(5000), "worker.run() did not finish within 5s")
+        self.app.processEvents()
+        return received.get('tag')
+
+    def test_finds_tag_inside_the_given_rect(self):
+        from pid_viewer import EquipmentTagSearchWorker
+        worker = EquipmentTagSearchWorker(self.pdf_path, 0, rect=(50, 50, 150, 75))
+        self.assertEqual(self._run(worker), "PV-101")
+
+    def test_falls_back_to_point_search_when_rect_is_empty(self):
+        """A rect with no text inside it (the label sits just outside)
+        must fall back to a nearby-point search from the rect's centre —
+        same fallback _on_zone_drawn used to do synchronously. HAS_PIL
+        forced off so an empty rect returns quickly instead of running a
+        real (possibly slow/model-downloading) OCR pass first — that
+        engine-availability behavior is exercised elsewhere, not the
+        point of this test."""
+        from pid_viewer import EquipmentTagSearchWorker
+        with unittest.mock.patch('equipment_detection.HAS_PIL', False):
+            worker = EquipmentTagSearchWorker(self.pdf_path, 0, rect=(200, 200, 220, 220))
+            self.assertEqual(self._run(worker), "PV-101")
+
+    def test_point_only_mode_finds_tag_near_point(self):
+        from pid_viewer import EquipmentTagSearchWorker
+        worker = EquipmentTagSearchWorker(self.pdf_path, 0, point=(65, 65), radius=50)
+        self.assertEqual(self._run(worker), "PV-101")
+
+    def test_finished_search_emitted_even_when_pdf_path_invalid(self):
+        from pid_viewer import EquipmentTagSearchWorker
+        worker = EquipmentTagSearchWorker(
+            "/nonexistent/path/does-not-exist.pdf", 0, point=(0, 0))
+        self.assertEqual(self._run(worker), "")
+
+
+class EquipmentPlacementAsyncSearchTests(unittest.TestCase):
+    """PIDPanel.place_equipment_marker's async tag search (2026-08-18, see
+    NOTES.md "kombinerad placeringsmeny") — EquipmentPlacementPopup shows
+    instantly, a background EquipmentTagSearchWorker fills in the tag
+    field once it resolves (or a configurable timeout gives up first),
+    and never clobbers text the user already typed themselves."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        import fitz
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_asyncsearch_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        db_path = Path(self.db.path)
+        self.pdf_path = str(db_path.with_name(db_path.stem + '_pid.pdf'))
+        doc = fitz.open()
+        page = doc.new_page(width=400.0, height=300.0)
+        page.insert_text((60, 60), "PV-101")
+        doc.save(self.pdf_path)
+        doc.close()
+
+        from pid_viewer import PIDPanel
+        self.panel = PIDPanel(self.db)
+        self.panel.viewer.load_pdf(self.pdf_path)
+
+    def tearDown(self):
+        # A test that starts a real background EquipmentTagSearchWorker
+        # and doesn't itself wait for it (e.g. only checking the spinner
+        # appeared) must not leave it running past the test — PyQt
+        # crashes ("QThread: Destroyed while thread is still running")
+        # if a QThread object is torn down mid-run.
+        for worker in list(self.panel._tag_search_workers):
+            worker.wait(2000)
+        self.panel.deleteLater()
+        # This class creates several real QThreads/QGraphicsView-backed
+        # popups per test (a heavier mix than most fixtures in this file)
+        # — an explicit processEvents()+gc.collect() here actually reclaims
+        # native widget/thread handles between tests instead of letting
+        # them pile up across the whole class, same mitigation
+        # _TempDbMainWindow.__exit__ already uses for the same reason
+        # (see NOTES.md "misstänkt resursuttömning").
+        self.app.processEvents()
+        gc.collect()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _popup(self):
+        from pid_panel_mod import EquipmentPlacementPopup
+        popups = self.panel.viewer.findChildren(EquipmentPlacementPopup)
+        self.assertEqual(len(popups), 1)
+        return popups[0]
+
+    def test_blank_tag_starts_background_search_and_shows_spinner(self):
+        from PyQt6.QtCore import QPointF
+        self.panel.place_equipment_marker("", "Ventil", QPointF(60, 60), 0)
+        popup = self._popup()
+        self.assertTrue(popup._searching_lbl.isVisible())
+        self.assertEqual(len(self.panel._tag_search_workers), 1)
+
+    def test_known_tag_skips_the_search_entirely(self):
+        from PyQt6.QtCore import QPointF
+        self.panel.place_equipment_marker("V-999", "Ventil", QPointF(60, 60), 0)
+        popup = self._popup()
+        self.assertFalse(popup._searching_lbl.isVisible())
+        self.assertEqual(len(self.panel._tag_search_workers), 0)
+
+    def test_worker_result_fills_tag_field_when_user_has_not_typed(self):
+        from PyQt6.QtCore import QPointF
+        self.panel.place_equipment_marker("", "Ventil", QPointF(60, 60), 0)
+        popup = self._popup()
+        worker = self.panel._tag_search_workers[0]
+        self.assertTrue(worker.wait(5000), "worker.run() did not finish within 5s")
+        self.app.processEvents()
+
+        self.assertEqual(popup._tag_edit.text(), "PV-101")
+        self.assertFalse(popup._searching_lbl.isVisible())
+        self.assertEqual(self.db.get_equipment_by_id(popup._equipment_id)['tag'], "PV-101")
+        self.assertEqual(len(self.panel._tag_search_workers), 0,
+            "the worker must remove itself from the keep-alive list once finished")
+
+    def test_user_typed_tag_not_overwritten_by_late_async_result(self):
+        from PyQt6.QtCore import QPointF
+        self.panel.place_equipment_marker("", "Ventil", QPointF(60, 60), 0)
+        popup = self._popup()
+
+        popup._tag_edit.setText("MANUAL-1")
+        popup._on_tag_edited_by_user("MANUAL-1")   # what the real textEdited signal would do
+
+        popup.set_detected_tag("PV-101")   # simulates the late async result arriving
+
+        self.assertEqual(popup._tag_edit.text(), "MANUAL-1")
+        self.assertFalse(popup._searching_lbl.isVisible(),
+            "the spinner must still be hidden once ANY result (used or not) arrives")
+
+    def test_timeout_clears_spinner_and_leaves_tag_blank_for_manual_entry(self):
+        """QTimer.singleShot is mocked so the timeout fires deterministically
+        and instantly instead of requiring a real wait — this also
+        confirms the configured setting value is what gets used."""
+        from PyQt6.QtCore import QPointF
+        self.db.set_config('equipment_tag_search_timeout_ms', '500')
+        with unittest.mock.patch('pid_panel_mod.QTimer.singleShot') as mock_singleshot:
+            self.panel.place_equipment_marker("", "Ventil", QPointF(60, 60), 0)
+            popup = self._popup()
+            self.assertTrue(popup._searching_lbl.isVisible())
+            mock_singleshot.assert_called_once()
+            timeout_ms, on_timeout = mock_singleshot.call_args[0]
+            self.assertEqual(timeout_ms, 500)
+            on_timeout()   # simulate the timeout firing before the worker ever finishes
+
+        self.assertFalse(popup._searching_lbl.isVisible())
+        self.assertEqual(popup._tag_edit.text(), "")
+
+    def test_reassign_to_existing_merges_typed_tag_without_creating_duplicate(self):
+        """A tag typed after placement can turn out to already belong to
+        a different, real catalog row — must reuse it, not leave a
+        duplicate (same "aldrig dubbletter" guarantee
+        place_equipment_marker's own creation-time check already
+        enforces, see NOTES.md)."""
+        from PyQt6.QtCore import QPointF
+        existing_id = self.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", '', 0)
+
+        self.panel.place_equipment_marker("", "Ventil", QPointF(200, 200), 0)
+        popup = self._popup()
+        placeholder_id = popup._equipment_id
+        self.assertNotEqual(placeholder_id, existing_id)
+
+        popup._tag_edit.setText("PV-101")
+        popup._commit_tag()
+
+        self.assertEqual(popup._equipment_id, existing_id)
+        self.assertIsNone(self.db.get_equipment_by_id(placeholder_id),
+            "the empty placeholder row must be deleted after merging")
+        self.assertEqual(len(self.db.equipment_items()), 1)
+        markers = self.db.equipment_markers_for_page(0)
+        self.assertEqual(len(markers), 1)
+        self.assertEqual(markers[0]['equipment_id'], existing_id)
+
+    def test_reassign_does_not_merge_once_a_deviation_was_already_checked(self):
+        """If the user already ticked a deviation box against the
+        placeholder before a conflicting tag arrives, merging would
+        silently orphan that real data — must leave the placeholder as
+        a (rare, informational-only) duplicate instead."""
+        from PyQt6.QtCore import QPointF
+        node_id = self.db.add_node()
+        existing_id = self.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", '', 0)
+
+        self.panel.place_equipment_marker("", "Ventil", QPointF(200, 200), 0)
+        popup = self._popup()
+        placeholder_id = popup._equipment_id
+        self.panel._active_node_id = node_id
+        popup.load_checklist(active_node_id=node_id)
+        popup._checklist._checklist_checkboxes[0].setChecked(True)
+        self.assertTrue(self.db.deviations_for_equipment(placeholder_id))
+
+        popup._tag_edit.setText("PV-101")
+        popup._commit_tag()
+
+        self.assertEqual(popup._equipment_id, placeholder_id,
+            "must not merge away a placeholder that already has real data")
+        self.assertIsNotNone(self.db.get_equipment_by_id(placeholder_id))
+        self.assertIn("finns redan i katalogen", popup._dup_hint.text())
+
+    def test_checking_a_deviation_in_the_new_popup_creates_a_cause(self):
+        """The embedded _DeviationChecklist inside EquipmentPlacementPopup
+        must create causes exactly like EquipmentDeviationBar's own
+        checklist already does (2026-08-18 — same underlying widget,
+        see NOTES.md)."""
+        from PyQt6.QtCore import QPointF
+        node_id = self.db.add_node()
+        self.panel._active_node_id = node_id
+
+        self.panel.place_equipment_marker("V-1", "Ventil", QPointF(60, 60), 0)
+        popup = self._popup()
+        self.assertTrue(popup._checklist._checklist_checkboxes)
+
+        popup._checklist._checklist_checkboxes[0].setChecked(True)
+
+        eq = self.db.get_equipment_by_tag("V-1")
+        devs = self.db.deviations_for_equipment(eq['id'])
+        self.assertEqual(len(devs), 1)
+        causes = self.db.causes_for_deviation(devs[0]['id'])
+        self.assertEqual(len(causes), 1)
+
 
 class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
     """"⚙️ Orsak"/"⚠️ Konsekvens" mode-toggle buttons removed from the P&ID
@@ -11842,10 +12212,13 @@ class TreeInlineEditTests(unittest.TestCase):
         interactive editor widget — same direct-commit convention already
         used for ScenarioTablePanel's _on_cell_changed_inner tests."""
         tree_panel._inline_edit_target = (type_, id_)
-        item.setText(0, new_text)
-        tree_panel._on_tree_item_text_edited(item, 0)
+        tree_panel._commit_inline_text(type_, id_, new_text)
 
     def test_double_click_deviation_starts_inline_edit(self):
+        """The item's own decorated text (numbering/icon prefix included)
+        must stay unchanged — a floating editor opens over just the
+        description portion instead of replacing the whole cell
+        (2026-08-18, see NOTES.md "trädet: numrering bryts ut")."""
         with _TempDbMainWindow() as win:
             node_id = win.db.add_node()
             dev_id = win.db.deviations(node_id)[0]['id']
@@ -11853,12 +12226,57 @@ class TreeInlineEditTests(unittest.TestCase):
             win.tree_panel.tree.expandAll()
             item = _find_tree_item(win.tree_panel.tree, DEV_T, dev_id)
             self.assertIsNotNone(item)
+            decorated_text = item.text(0)
 
             win.tree_panel._on_item_double_click(item, 0)
 
             self.assertEqual(win.tree_panel._inline_edit_target, (DEV_T, dev_id))
-            self.assertTrue(bool(item.flags() & Qt.ItemFlag.ItemIsEditable))
-            self.assertEqual(item.text(0), win.db.get_deviation(dev_id)['description'])
+            self.assertEqual(item.text(0), decorated_text)
+            editors = win.tree_panel.tree.viewport().findChildren(QLineEdit)
+            self.assertEqual(len(editors), 1)
+            self.assertEqual(editors[0].text(), win.db.get_deviation(dev_id)['description'])
+
+    def test_numbering_prefix_survives_inline_edit(self):
+        """Direct regression test for the reported bug: renaming a row
+        must not make its numbering disappear, neither during nor after
+        the edit."""
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            win.tree_panel.refresh()
+            win.tree_panel.tree.expandAll()
+            item = _find_tree_item(win.tree_panel.tree, DEV_T, dev_id)
+
+            win.tree_panel._on_item_double_click(item, 0)
+            self.assertIn("1.", item.text(0), "numbering must still be visible while editing")
+
+            editor = win.tree_panel.tree.viewport().findChildren(QLineEdit)[0]
+            editor.setText("Nytt namn")
+            editor.editingFinished.emit()
+
+            self.assertEqual(win.db.get_deviation(dev_id)['description'], "Nytt namn")
+            item_after = _find_tree_item(win.tree_panel.tree, DEV_T, dev_id)
+            self.assertIn("1.", item_after.text(0))
+            self.assertIn("Nytt namn", item_after.text(0))
+
+    def test_escape_cancels_inline_edit_without_saving(self):
+        from PyQt6.QtCore import QEvent
+        from PyQt6.QtGui import QKeyEvent
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            win.db.update_deviation(dev_id, "Original")
+            win.tree_panel.refresh()
+            item = _find_tree_item(win.tree_panel.tree, DEV_T, dev_id)
+
+            win.tree_panel._on_item_double_click(item, 0)
+            editor = win.tree_panel.tree.viewport().findChildren(QLineEdit)[0]
+            editor.setText("Skulle inte sparas")
+            ev = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
+            editor.keyPressEvent(ev)
+
+            self.assertEqual(win.db.get_deviation(dev_id)['description'], "Original")
+            self.assertIsNone(win.tree_panel._inline_edit_target)
 
     def test_node_with_markup_still_jumps_instead_of_editing(self):
         """Existing behavior (double-click a node that already has P&ID
@@ -11946,12 +12364,18 @@ class TreeInlineEditTests(unittest.TestCase):
             self.assertEqual(sg['description'], "Nytt skydd")
             self.assertEqual(sg['rrf'], 100)
 
-    def test_editable_flag_cleared_after_commit(self):
+    def test_editable_flag_never_set_by_inline_edit(self):
+        """The overlay editor (2026-08-18) never sets ItemIsEditable on the
+        underlying QTreeWidgetItem — unlike Qt's old native item-text
+        editing, nothing here makes the tree item itself editable in
+        place."""
         with _TempDbMainWindow() as win:
             node_id = win.db.add_node()
             dev_id = win.db.deviations(node_id)[0]['id']
             win.tree_panel.refresh()
             item = _find_tree_item(win.tree_panel.tree, DEV_T, dev_id)
+            win.tree_panel._on_item_double_click(item, 0)
+            self.assertFalse(bool(item.flags() & Qt.ItemFlag.ItemIsEditable))
             self._commit(win.tree_panel, item, DEV_T, dev_id, "X")
             # refresh() rebuilds the tree, so re-fetch the (new) item object.
             item_after = _find_tree_item(win.tree_panel.tree, DEV_T, dev_id)
@@ -11975,6 +12399,137 @@ class TreeInlineEditTests(unittest.TestCase):
 
             self.assertTrue(reload_calls, "P&ID overlays must reload after an inline tree edit")
             self.assertTrue(refresh_calls, "scenario table must refresh after an inline tree edit")
+
+
+class TreeAutoExpandCappedAtObjectLevelTests(unittest.TestCase):
+    """"jag vill att du by default inte öppnar upp trädet mer än till
+    objektet. Dvs du kan skippa orsakstexten, konsekvensen och
+    safeguards. Dessa skall ju såklart vara öppna manuellt som idag men
+    inte så fort de läggs till." (2026-08-18) — TreePanel.refresh()'s
+    scrollToItem(target) silently expands every collapsed ancestor of
+    whatever gets selected (verified directly against PyQt6: setCurrentItem
+    alone does NOT expand anything, scrollToItem does) — so adding a
+    cause/consequence/safeguard ANYWHERE in the app (not just the tree)
+    used to progressively unfold the whole tree, defeating its use as an
+    overview. TreePanel._reveal() now skips that forced scroll/expand for
+    Orsak/Konsekvens/Safeguard specifically, unless every ancestor already
+    happens to be expanded."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_treeautoexpand_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        self.panel = TreePanel(self.db)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _chain(self):
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        return node_id, dev_id, cause_id
+
+    def test_adding_a_consequence_does_not_expand_its_cause(self):
+        node_id, dev_id, cause_id = self._chain()
+        self.panel.refresh()
+        cons_id = self.db.add_consequence(cause_id)
+
+        self.panel.refresh(CONS_T, cons_id)
+
+        cause_item = _find_tree_item(self.panel.tree, CAUSE_T, cause_id)
+        self.assertIsNotNone(cause_item)
+        self.assertFalse(cause_item.isExpanded(),
+            "adding a consequence must not auto-open the cause that owns it")
+        self.assertIs(self.panel.tree.currentItem(),
+                      _find_tree_item(self.panel.tree, CONS_T, cons_id),
+            "the new consequence must still become the tree's current item even while hidden")
+
+    def test_adding_a_safeguard_does_not_expand_its_consequence(self):
+        node_id, dev_id, cause_id = self._chain()
+        cons_id = self.db.add_consequence(cause_id)
+        self.panel.refresh()
+        sg_id = self.db.add_safeguard(cons_id)
+
+        self.panel.refresh(SG_T, sg_id)
+
+        cons_item = _find_tree_item(self.panel.tree, CONS_T, cons_id)
+        self.assertIsNotNone(cons_item)
+        self.assertFalse(cons_item.isExpanded(),
+            "adding a safeguard must not auto-open the consequence that owns it")
+
+    def test_selecting_a_cause_still_does_not_force_open_by_itself(self):
+        """A CAUSE_T target is ALSO in the collapse-by-default set (it
+        owns consequences/safeguards one level down) — revealing an
+        existing cause must not force its own ancestor chain open either."""
+        node_id, dev_id, cause_id = self._chain()
+        self.panel.refresh()
+
+        self.panel.refresh(CAUSE_T, cause_id)
+
+        dev_item = _find_tree_item(self.panel.tree, DEV_T, dev_id)
+        self.assertIsNotNone(dev_item)
+        self.assertFalse(dev_item.isExpanded(),
+            "selecting a cause must not auto-open the deviation that owns it")
+
+    def test_selecting_a_deviation_still_reveals_down_to_it(self):
+        """Nod/Ledord/Utrustning/Avvikelse ("objektet") are explicitly
+        NOT in the collapse-by-default set — this must keep working
+        exactly as before. Orsak is deliberately NOT the cutoff here:
+        the user's own wording lists "orsakstexten" alongside konsekvens
+        and safeguards as things to skip, so a cause's OWN row — not
+        just its children — stays collapsed-by-default too (covered by
+        test_selecting_a_cause_still_does_not_force_open_by_itself)."""
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        self.panel.refresh()
+
+        self.panel.refresh(DEV_T, dev_id)
+
+        node_item = _find_tree_item(self.panel.tree, NODE_T, node_id)
+        dev_item = _find_tree_item(self.panel.tree, DEV_T, dev_id)
+        self.assertIsNotNone(node_item)
+        self.assertIsNotNone(dev_item)
+        self.assertTrue(node_item.isExpanded(),
+            "the deviation ('objektet' level) must still auto-open")
+
+    def test_already_manually_expanded_branch_still_scrolls_normally(self):
+        """A branch the user already opened themselves must not be
+        fought — scrolling to a new item inside it is a convenience, not
+        new unfolding, since nothing collapsed gets forced open."""
+        node_id, dev_id, cause_id = self._chain()
+        self.panel.refresh()
+        cause_item = _find_tree_item(self.panel.tree, CAUSE_T, cause_id)
+        cause_item.setExpanded(True)
+
+        cons_id = self.db.add_consequence(cause_id)
+        self.panel.refresh(CONS_T, cons_id)
+
+        cause_item_after = _find_tree_item(self.panel.tree, CAUSE_T, cause_id)
+        self.assertTrue(cause_item_after.isExpanded(),
+            "a branch already open before the add must stay open")
+
+    def test_manual_expand_all_button_still_opens_everything(self):
+        """The existing "expandera allt"/expandAll() escape hatch must be
+        completely unaffected by this change."""
+        node_id, dev_id, cause_id = self._chain()
+        cons_id = self.db.add_consequence(cause_id)
+        self.db.add_safeguard(cons_id)
+        self.panel.refresh()
+
+        self.panel.tree.expandAll()
+
+        for type_, id_ in ((NODE_T, node_id), (DEV_T, dev_id), (CAUSE_T, cause_id), (CONS_T, cons_id)):
+            item = _find_tree_item(self.panel.tree, type_, id_)
+            self.assertTrue(item.isExpanded())
 
 
 class TreeInternalReparentDragDropTests(unittest.TestCase):
@@ -12625,13 +13180,18 @@ class EquipmentEditRequestedHandlerTests(unittest.TestCase):
                 return QDialog.DialogCode.Accepted
 
             with unittest.mock.patch.object(hazop.EquipmentTagPopup, 'exec', new=_fake_exec), \
-                 unittest.mock.patch.object(win.pid_panel, 'reload_overlays') as mock_reload:
+                 unittest.mock.patch.object(win.pid_panel, 'reload_overlays') as mock_reload, \
+                 unittest.mock.patch.object(win.tree_panel, 'refresh') as mock_tree_refresh:
                 win._on_equipment_edit_requested(marker_id)
 
             updated = self.db.get_equipment_by_id(eq_id)
             self.assertEqual(updated['tag'], "PV-102")
             self.assertEqual(updated['equipment_type'], "Pump")
             mock_reload.assert_called_once()
+            # The tree's EQUIP_T rows read equipment_catalog live too
+            # (2026-08-18, see NOTES.md "Objektets identitet ...") — used
+            # to only pick this up on its next unrelated rebuild.
+            mock_tree_refresh.assert_called_once()
 
     def test_untagged_marker_shows_info_instead_of_crashing(self):
         with _TempDbMainWindow() as win:
@@ -12642,6 +13202,179 @@ class EquipmentEditRequestedHandlerTests(unittest.TestCase):
                 win._on_equipment_edit_requested(9999)   # no such marker
             mock_exec.assert_not_called()
             mock_info.assert_called_once()
+
+
+class EquipmentIdentityCrossPanelSyncTests(unittest.TestCase):
+    """"Objektets identitet på P&ID, HAZOP scenario och trädet måste höra
+    ihop. Bind dessa så de lirar och alltid på alla tre ställen oavsett
+    var man editerar." (2026-08-18) — an identity edit (tag/type) made on
+    ANY of the three surfaces (P&ID's "Redigera objekt", the scenario
+    table's ORS tag popup, the Utrustningsregister table) must refresh
+    the OTHER two, not just the surface it was made on. Each of these
+    already refreshed some of the others; this class covers the
+    previously-missing connections, one MainWindow wiring point at a
+    time."""
+
+    @staticmethod
+    def _find_equip_tag_item(tree_panel, eq_id):
+        """An equipment row may render as a genuine EQUIP_T item or, for
+        the common single-deviation case, collapse onto a DEV_T/CAUSE_T
+        row instead (see TreePanel.refresh()'s "kaka på kaka" collapse) —
+        check both via _EQUIP_TAG_ROLE, which every equipment-tag header
+        row carries regardless of which branch it took."""
+        it = QTreeWidgetItemIterator(tree_panel.tree)
+        while it.value():
+            item = it.value()
+            if item.data(0, tree_panel._EQUIP_TAG_ROLE) == eq_id:
+                return item
+            it += 1
+        return None
+
+    def test_scenario_tag_popup_rename_refreshes_tree(self):
+        """scenario_panel.equipment_renamed used to only be wired to
+        pid_panel.reload_overlays — the tree's EQUIP_T rows read
+        equipment_catalog live too and were left showing the old tag/type
+        until some unrelated event rebuilt the tree. Verified functionally
+        (the real tree actually shows the new tag) rather than by mocking
+        tree_panel.refresh — a signal already connected to the ORIGINAL
+        bound method at MainWindow construction time keeps calling that
+        original, not a mock patched onto the instance afterward."""
+        with _TempDbMainWindow() as win:
+            eq_id = win.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", "", 0)
+            node_id = win.db.add_node()
+            # The tree's equipment grouping/_EQUIP_TAG_ROLE keys off
+            # deviations.equipment_id (a separate FK from causes.equipment_id
+            # below, which the scenario table's ORS strip uses) — both must
+            # be set for a real equipment-tag row to appear in the tree.
+            dev_id = win.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+            cause_id = win.db.add_cause(dev_id)
+            win.db.update_cause(cause_id, comp_tag="PV-101", comp_type="Ventil",
+                                 equipment_id=eq_id)
+
+            win.scenario_panel._apply_cause_obj(0, cause_id, "Ventil", "PV-102", '', None)
+
+            self.assertEqual(win.db.get_equipment_by_id(eq_id)['tag'], "PV-102")
+            win.tree_panel.tree.expandAll()
+            item = self._find_equip_tag_item(win.tree_panel, eq_id)
+            self.assertIsNotNone(item, "tree must have refreshed and show a row for this equipment")
+            self.assertIn("PV-102", item.text(0))
+
+    def test_equipment_register_inline_edit_refreshes_scenario_and_pid_and_tree(self):
+        """Editing a tag/type directly in the Utrustningsregister
+        (_EquipmentTableModel.setData) used to refresh nothing at all —
+        neither P&ID, the scenario table, nor the tree ever heard about
+        it. Verified functionally (see the class docstring above for
+        why mocking the connected slots doesn't work here)."""
+        from equipment_panel import _EC_TAG
+        with _TempDbMainWindow() as win:
+            eq_id = win.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", "", 0)
+            node_id = win.db.add_node()
+            dev_id = win.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+            cause_id = win.db.add_cause(dev_id)
+            win.db.update_cause(cause_id, comp_tag="PV-101", comp_type="Ventil",
+                                 equipment_id=eq_id)
+            win.db.add_equipment_marker(eq_id, "PV-101", 0, 10.0, 10.0, "Ventil")
+            _fake_pdf_loaded(win.pid_panel)
+            # scenario_panel.schedule_rebuild() defers via QTimer.singleShot
+            # (see _schedule_rebuild) — load_node() first so there's a
+            # current view for _on_rebuild_scheduled() to re-render below,
+            # same "invoke the deferred handler directly" convention used
+            # elsewhere in this file for testing scheduled rebuilds.
+            win.scenario_panel.load_node(node_id)
+
+            win.equipment_panel._model.load()
+            row = next(i for i, r in enumerate(win.equipment_panel._model.rows())
+                       if r['id'] == eq_id)
+            with unittest.mock.patch.object(win.pid_panel.viewer, 'add_equipment_marker') as mock_add:
+                index = win.equipment_panel._model.index(row, _EC_TAG)
+                win.equipment_panel._model.setData(index, "PV-102")
+
+            self.assertEqual(win.db.get_equipment_by_id(eq_id)['tag'], "PV-102")
+            # P&ID: reload_overlays() must have actually run (synchronous)
+            # and redrawn the marker with the new tag.
+            mock_add.assert_called_once()
+            self.assertEqual(mock_add.call_args.args[4], "PV-102")
+            # Scenario table: schedule_rebuild() must have actually been
+            # called — run its deferred handler and check the ORS cell.
+            win.scenario_panel._on_rebuild_scheduled()
+            scn_row = next(r for r, m in enumerate(win.scenario_panel._row_meta)
+                            if m[1] == cause_id)
+            item = win.scenario_panel._table.item(scn_row, win.scenario_panel._C_ORS)
+            self.assertEqual(item.data(Qt.ItemDataRole.UserRole + 2), ("Ventil", "PV-102"))
+            # Tree: refresh() must have actually rebuilt the tree.
+            win.tree_panel.tree.expandAll()
+            item = self._find_equip_tag_item(win.tree_panel, eq_id)
+            self.assertIsNotNone(item, "tree must have refreshed and show a row for this equipment")
+            self.assertIn("PV-102", item.text(0))
+
+
+class EquipmentIdentityLiveResolveTests(unittest.TestCase):
+    """"Objektets identitet på P&ID, HAZOP scenario och trädet måste höra
+    ihop" (2026-08-18) — equipment_markers.tag/comp_type were frozen at
+    placement time; renaming/retyping the linked equipment_catalog row
+    anywhere never updated the marker's own on-canvas label, even after
+    reload_overlays() ran. _load_overlays() now resolves both fields LIVE
+    from equipment_catalog via equipment_id, exactly like
+    ScenarioTablePanel._cause_tag_display already does for the ORS
+    strip."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_equipidentity_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_marker_shows_current_catalog_tag_and_type_after_rename(self):
+        from pid_viewer import PIDPanel
+        panel = PIDPanel(self.db)
+        try:
+            eq_id = self.db.add_equipment_item('V-101', 'V-101', 'V', 0, 'Ventil', '', 0)
+            self.db.add_equipment_marker(eq_id, 'V-101', 0, 10.0, 10.0, 'Ventil')
+            # Rename directly in equipment_catalog, as the tree/scenario/
+            # Utrustningsregister edit paths all do — the marker row
+            # itself is deliberately left untouched (frozen).
+            self.db.update_equipment_item(eq_id, 'V-102', 'V', 'Pump', '')
+
+            _fake_pdf_loaded(panel)
+            with unittest.mock.patch.object(panel.viewer, 'add_equipment_marker') as mock_add:
+                panel.reload_overlays()
+
+            mock_add.assert_called_once()
+            args = mock_add.call_args.args
+            # add_equipment_marker(marker_id, x, y, comp_type, tag, confidence, ...)
+            self.assertEqual(args[3], 'Pump')
+            self.assertEqual(args[4], 'V-102')
+        finally:
+            panel.deleteLater()
+
+    def test_unlinked_marker_still_shows_its_own_frozen_tag(self):
+        """A marker never linked to a catalog row (equipment_id=None) has
+        no live source to resolve from — it must keep showing its own
+        tag/type exactly as before."""
+        from pid_viewer import PIDPanel
+        panel = PIDPanel(self.db)
+        try:
+            self.db.add_equipment_marker(None, 'AUTO-1', 0, 10.0, 10.0, 'Okänd')
+
+            _fake_pdf_loaded(panel)
+            with unittest.mock.patch.object(panel.viewer, 'add_equipment_marker') as mock_add:
+                panel.reload_overlays()
+
+            mock_add.assert_called_once()
+            args = mock_add.call_args.args
+            self.assertEqual(args[3], 'Okänd')
+            self.assertEqual(args[4], 'AUTO-1')
+        finally:
+            panel.deleteLater()
 
 
 class CauseTagLiveLinkTests(unittest.TestCase):
@@ -13070,7 +13803,7 @@ class AutoConsequenceAndSafeguardOnCauseTemplateTests(unittest.TestCase):
         self.panel._equipment_bar.load(eq_id, marker_id)
 
         cause_id = self.panel._create_cause_for_bar(
-            dev_id, "Pump", "P-101", "Ingen flödesindikering")
+            marker_id, dev_id, "Pump", "P-101", "Ingen flödesindikering")
 
         self.assertIsNotNone(cause_id)
         cons_list = self.db.consequences(cause_id)
@@ -13096,7 +13829,7 @@ class AutoConsequenceAndSafeguardOnCauseTemplateTests(unittest.TestCase):
         self.panel._equipment_bar.load(eq_id, marker_id)
 
         cause_id = self.panel._create_cause_for_bar(
-            dev_id, "Ventil", "V-1", "Ventil stängd")
+            marker_id, dev_id, "Ventil", "V-1", "Ventil stängd")
 
         self.assertIsNotNone(cause_id)
         self.assertEqual(self.db.conn.execute(
@@ -13116,7 +13849,7 @@ class AutoConsequenceAndSafeguardOnCauseTemplateTests(unittest.TestCase):
             win.pid_panel._equipment_bar.load(eq_id, marker_id)
 
             cause_id = win.pid_panel._create_cause_for_bar(
-                dev_id, "Behållare", "T-1", "Övertryck")
+                marker_id, dev_id, "Behållare", "T-1", "Övertryck")
             win.scenario_panel.load_node(node_id)
             row = next(r for r, m in enumerate(win.scenario_panel._row_meta)
                       if m[1] == cause_id)
@@ -13498,13 +14231,19 @@ class OrsStripTagFreqLayoutTests(unittest.TestCase):
     immediately after the tag rather than anchored to the strip's right
     edge — so a wide cell left a stretch of blank space between the
     (short) frequency text and the status dots while the tag itself kept
-    eliding. Fixed by right-anchoring the frequency zone against the dots
-    margin FIRST and letting the tag zone claim whatever is left over
-    (ScenarioTablePanel._ors_tag_zone_geometry), with _cause_obj_w kept as
-    a floor so the user-draggable divider still only ever WIDENS the
-    minimum, never narrows it. The same helper is used by the tag-zone
-    click hit-test in eventFilter() so a click on the newly-visible part
-    of a long tag doesn't hit a stale rectangle."""
+    eliding. Originally fixed by right-anchoring the frequency zone
+    against the dots margin FIRST and letting the tag zone claim whatever
+    was left over; frequency later moved OUT of this strip entirely into
+    its own row in the orsaksfält (2026-08-18, see NOTES.md "Frekvensen
+    ... hör hemma mer här" — see OrsFreqRowInDescriptionAreaTests below
+    for that geometry), so the tag zone
+    (ScenarioTablePanel._ors_tag_zone_width) now simply claims the whole
+    strip minus room for the comment dot, no frequency to share it with
+    at all. _cause_obj_w is still kept as a floor so the user-draggable
+    divider only ever WIDENS the minimum, never narrows it, and the same
+    helper is still used by the tag-zone click hit-test in eventFilter()
+    so a click on the newly-visible part of a long tag doesn't hit a
+    stale rectangle."""
 
     @classmethod
     def setUpClass(cls):
@@ -13546,36 +14285,30 @@ class OrsStripTagFreqLayoutTests(unittest.TestCase):
         resize feature's promise)."""
         panel, row, cause_id = self._make_tagged_cause()
         try:
-            item = panel._table.item(row, panel._C_ORS)
             self.assertEqual(panel._cause_obj_w, 64,
                 "test assumes the documented default divider width")
-            tag_zone_w, freq_zone_x, freq_zone_w, freq_str = \
-                panel._ors_tag_zone_geometry(item, tag_x=22, cell_right=120)
+            tag_zone_w = panel._ors_tag_zone_width(tag_x=22, cell_right=120)
             self.assertGreaterEqual(tag_zone_w, panel._cause_obj_w)
         finally:
             panel.deleteLater()
 
     def test_geometry_expands_tag_zone_into_reclaimed_space_in_a_wide_cell(self):
         """The actual bug: with a wide cell (plenty of room), the OLD code
-        still capped the tag at the fixed 64px divider width and left the
-        reclaimed space as a dead gap between the frequency text and the
-        dots. The fix must let the tag zone grow well past that fixed cap,
-        and must right-anchor the frequency zone against the dots margin
-        rather than gluing it to the tag."""
+        still capped the tag at the fixed 64px divider width. The fix
+        must let the tag zone grow well past that fixed cap — since
+        frequency moved out of this strip entirely (2026-08-18, see class
+        docstring), the tag zone now claims the WHOLE strip minus just
+        the comment-dot margin, no frequency zone to share it with."""
         panel, row, cause_id = self._make_tagged_cause()
         try:
-            item = panel._table.item(row, panel._C_ORS)
             old_cap = panel._cause_obj_w
-            tag_zone_w, freq_zone_x, freq_zone_w, freq_str = \
-                panel._ors_tag_zone_geometry(item, tag_x=22, cell_right=500)
+            tag_zone_w = panel._ors_tag_zone_width(tag_x=22, cell_right=500)
             self.assertGreater(tag_zone_w, old_cap * 2,
                 "tag zone should reclaim the freed-up space in a wide cell, "
                 "not stay capped at the old fixed divider width")
-            self.assertGreater(freq_zone_x, 22 + old_cap,
-                "frequency zone must be right-anchored, not glued to the tag")
-            self.assertEqual(freq_zone_x + freq_zone_w, 500 - panel._ORS_DOTS_MARGIN,
-                "frequency zone must sit flush against the dots margin at "
-                "the strip's right edge")
+            self.assertEqual(tag_zone_w, 500 - panel._ORS_DOTS_MARGIN - 22,
+                "tag zone must claim the whole strip minus the comment-dot "
+                "margin — nothing else competes for room in it anymore")
         finally:
             panel.deleteLater()
 
@@ -13661,10 +14394,8 @@ class OrsStripTagFreqLayoutTests(unittest.TestCase):
             self.app.processEvents()
             col_x = panel._table.columnViewportPosition(panel._C_ORS)
             cell_right = col_x + panel._table.columnWidth(panel._C_ORS) - 1
-            item = panel._table.item(row, panel._C_ORS)
             obj_start = col_x + 22  # _PID_ICON_W
-            tag_zone_w, _fx, _fw, _fs = panel._ors_tag_zone_geometry(
-                item, obj_start, cell_right)
+            tag_zone_w = panel._ors_tag_zone_width(obj_start, cell_right)
 
             # A click position well past the old fixed 64px cap but still
             # inside the newly-expanded tag zone.
@@ -14920,19 +15651,98 @@ class ParticipantMatrixTests(unittest.TestCase):
             panel.deleteLater()
 
     def test_panel_add_session_creates_column(self):
-        from hazop import ParticipantMatrixPanel, _AnalysisSessionDateDialog
+        """No popup (2026-08-18) — adds the column directly with today's
+        date as the default label."""
+        from hazop import ParticipantMatrixPanel
+        panel = ParticipantMatrixPanel(self.db)
+        try:
+            panel._add_session()
+            self.assertEqual(panel._table.columnCount(), len(panel._FIXED_COLS) + 1)
+            self.assertEqual(len(self.db.list_analysis_sessions()), 1)
+            header_text = panel._table.horizontalHeaderItem(len(panel._FIXED_COLS)).text()
+            self.assertRegex(header_text, r'^\d{4}-\d{2}-\d{2}$')
+        finally:
+            panel.deleteLater()
+
+    def test_panel_add_session_starts_inline_header_edit(self):
+        """The new column drops straight into inline header editing so the
+        user can adjust the date/label without a popup (2026-08-18)."""
+        from hazop import ParticipantMatrixPanel
+        panel = ParticipantMatrixPanel(self.db)
+        try:
+            panel._add_session()
+            col = len(panel._FIXED_COLS)
+            header = panel._table.horizontalHeader()
+            editors = [c for c in header.findChildren(QLineEdit)]
+            self.assertEqual(len(editors), 1)
+            self.assertFalse(editors[0].isHidden())
+        finally:
+            panel.deleteLater()
+
+    def test_inline_header_edit_renames_session(self):
+        from hazop import ParticipantMatrixPanel
+        panel = ParticipantMatrixPanel(self.db)
+        try:
+            panel._add_session()
+            col = len(panel._FIXED_COLS)
+            sid = self.db.list_analysis_sessions()[0]['id']
+            panel._edit_header_label(col)
+            header = panel._table.horizontalHeader()
+            editor = header.findChildren(QLineEdit)[0]
+            editor.setText("Kickoff 2026-09-01")
+            editor.editingFinished.emit()
+            self.assertEqual(
+                self.db.list_analysis_sessions()[0]['label'], "Kickoff 2026-09-01")
+            self.assertEqual(
+                panel._table.horizontalHeaderItem(col).text(), "Kickoff 2026-09-01")
+        finally:
+            panel.deleteLater()
+
+    def test_inline_header_edit_renames_custom_column(self):
+        from hazop import ParticipantMatrixPanel
         panel = ParticipantMatrixPanel(self.db)
         try:
             with unittest.mock.patch.object(
-                    _AnalysisSessionDateDialog, 'exec', return_value=True), \
-                 unittest.mock.patch.object(
-                    _AnalysisSessionDateDialog, 'selected_date_label',
-                    return_value="2026-09-01"):
-                panel._add_session()
-            self.assertEqual(panel._table.columnCount(), len(panel._FIXED_COLS) + 1)
-            self.assertEqual(len(self.db.list_analysis_sessions()), 1)
-            self.assertEqual(
-                panel._table.horizontalHeaderItem(len(panel._FIXED_COLS)).text(), "2026-09-01")
+                    QInputDialog, 'getText', return_value=("Roll", True)):
+                panel._add_column()
+            col = len(panel._FIXED_COLS)
+            panel._edit_header_label(col)
+            header = panel._table.horizontalHeader()
+            editor = header.findChildren(QLineEdit)[0]
+            editor.setText("Företag")
+            editor.editingFinished.emit()
+            self.assertEqual(self.db.list_participant_columns()[0]['name'], "Företag")
+            self.assertEqual(panel._table.horizontalHeaderItem(col).text(), "Företag")
+        finally:
+            panel.deleteLater()
+
+    def test_inline_header_edit_escape_cancels_without_saving(self):
+        from hazop import ParticipantMatrixPanel
+        from PyQt6.QtCore import QEvent
+        from PyQt6.QtGui import QKeyEvent
+        panel = ParticipantMatrixPanel(self.db)
+        try:
+            with unittest.mock.patch.object(
+                    QInputDialog, 'getText', return_value=("Roll", True)):
+                panel._add_column()
+            col = len(panel._FIXED_COLS)
+            panel._edit_header_label(col)
+            header = panel._table.horizontalHeader()
+            editor = header.findChildren(QLineEdit)[0]
+            editor.setText("Företag")
+            ev = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
+            editor.keyPressEvent(ev)
+            self.assertEqual(self.db.list_participant_columns()[0]['name'], "Roll")
+        finally:
+            panel.deleteLater()
+
+    def test_header_double_click_on_fixed_column_does_nothing(self):
+        from hazop import ParticipantMatrixPanel
+        panel = ParticipantMatrixPanel(self.db)
+        try:
+            panel._edit_header_label(0)
+            header = panel._table.horizontalHeader()
+            self.assertEqual(len(header.findChildren(QLineEdit)), 0)
         finally:
             panel.deleteLater()
 
@@ -14969,16 +15779,11 @@ class ParticipantMatrixTests(unittest.TestCase):
             panel.deleteLater()
 
     def test_panel_toggling_attendance_checkbox_persists_to_db(self):
-        from hazop import ParticipantMatrixPanel, _AnalysisSessionDateDialog
+        from hazop import ParticipantMatrixPanel
         panel = ParticipantMatrixPanel(self.db)
         try:
             panel._add_participant()
-            with unittest.mock.patch.object(
-                    _AnalysisSessionDateDialog, 'exec', return_value=True), \
-                 unittest.mock.patch.object(
-                    _AnalysisSessionDateDialog, 'selected_date_label',
-                    return_value="2026-09-01"):
-                panel._add_session()
+            panel._add_session()
             pid = self.db.list_participants()[0]['id']
             sid = self.db.list_analysis_sessions()[0]['id']
 
@@ -15005,16 +15810,11 @@ class ParticipantMatrixTests(unittest.TestCase):
             panel.deleteLater()
 
     def test_panel_delete_session_removes_column_and_db_record(self):
-        from hazop import ParticipantMatrixPanel, _AnalysisSessionDateDialog
+        from hazop import ParticipantMatrixPanel
         panel = ParticipantMatrixPanel(self.db)
         try:
             panel._add_participant()   # ensures there's a row to select a cell in
-            with unittest.mock.patch.object(
-                    _AnalysisSessionDateDialog, 'exec', return_value=True), \
-                 unittest.mock.patch.object(
-                    _AnalysisSessionDateDialog, 'selected_date_label',
-                    return_value="2026-09-01"):
-                panel._add_session()
+            panel._add_session()
             panel._table.setCurrentCell(0, len(panel._FIXED_COLS))
             panel._delete_session()
             self.assertEqual(panel._table.columnCount(), len(panel._FIXED_COLS))
@@ -15054,18 +15854,16 @@ class ParticipantMatrixTests(unittest.TestCase):
     def test_custom_column_sits_before_session_columns(self):
         """Egna kolumner ska ligga mellan Efternamn och analystillfällena,
         inte efter dem (2026-08-17 user request)."""
-        from hazop import ParticipantMatrixPanel, _AnalysisSessionDateDialog
+        from hazop import ParticipantMatrixPanel
         panel = ParticipantMatrixPanel(self.db)
         try:
-            with unittest.mock.patch.object(
-                    _AnalysisSessionDateDialog, 'exec', return_value=True), \
-                 unittest.mock.patch.object(
-                    _AnalysisSessionDateDialog, 'selected_date_label',
-                    return_value="2026-09-01"):
-                panel._add_session()
+            panel._add_session()
+            sid = self.db.list_analysis_sessions()[0]['id']
+            self.db.update_analysis_session(sid, "2026-09-01")
             with unittest.mock.patch.object(
                     QInputDialog, 'getText', return_value=("E-post", True)):
                 panel._add_column()
+            panel.refresh()
             headers = [panel._table.horizontalHeaderItem(c).text()
                        for c in range(panel._table.columnCount())]
             self.assertEqual(headers, ["Förnamn", "Efternamn", "E-post", "2026-09-01"])
@@ -15221,6 +16019,32 @@ class SettingsPanelPidTabRenameAndNewSettingsTests(unittest.TestCase):
             self.assertEqual(self.db.get_config('pid_page_orientation_hint'), 'landscape')
         finally:
             panel.deleteLater()
+
+    def test_tag_search_timeout_default_is_two_seconds(self):
+        """"Standard ska vara 2 sekunder" (2026-08-18, see NOTES.md
+        "kombinerad placeringsmeny")."""
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            self.assertAlmostEqual(panel._tag_search_timeout_spin.value(), 2.0)
+            self.assertEqual(self.db.get_config('equipment_tag_search_timeout_ms', '2000'), '2000')
+        finally:
+            panel.deleteLater()
+
+    def test_tag_search_timeout_setting_persists_and_reloads(self):
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            panel._tag_search_timeout_spin.setValue(3.5)
+            self.assertEqual(self.db.get_config('equipment_tag_search_timeout_ms'), '3500')
+        finally:
+            panel.deleteLater()
+
+        panel2 = SettingsPanel(self.db)
+        try:
+            self.assertAlmostEqual(panel2._tag_search_timeout_spin.value(), 3.5)
+        finally:
+            panel2.deleteLater()
 
     def test_ocr_default_engine_skips_prompt_when_configured(self):
         """resolve_ocr_scan_choice() (pid_viewer.py) is the actual wiring
@@ -15474,6 +16298,8 @@ class OrsTagZoneOpensMinimalPopupTests(unittest.TestCase):
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
     def test_tag_zone_click_opens_cause_tag_popup_not_cause_object_popup(self):
+        """CauseTagPopup has no OK button (2026-08-18) — it's a
+        self-dismissing Popup shown non-modally, not exec()'d."""
         from PyQt6.QtCore import QSize
         fake_popup = unittest.mock.Mock()
         fake_popup.sizeHint.return_value = QSize(200, 100)
@@ -15482,7 +16308,7 @@ class OrsTagZoneOpensMinimalPopupTests(unittest.TestCase):
             self.panel._show_cause_obj_popup(self.row, self.cause_id, QPoint(100, 100))
             MockPopup.assert_called_once()
             MockBigPopup.assert_not_called()
-            fake_popup.exec.assert_called_once()
+            fake_popup.show.assert_called_once()
 
     def test_committing_the_tag_popup_calls_apply_cause_obj_with_empty_description(self):
         """The commit path must reuse _apply_cause_obj's existing "only
@@ -15510,7 +16336,17 @@ class OrsFrequencyZoneClickTests(unittest.TestCase):
     the invisible clone-icon zone" mismatch found while implementing
     this: the frequency check now runs BEFORE the clone/comment check,
     so a click anywhere on the actual rendered frequency text always
-    opens the frequency popup regardless of that overlap."""
+    opens the frequency popup regardless of that overlap.
+
+    2026-08-18: frequency moved out of the tag strip, floating over the
+    top of the orsaksfält's own description text instead (see NOTES.md
+    "Frekvensen ... hör hemma mer här") — the click zone moved with it,
+    still governed by the same _ors_freq_zone_geometry() helper paint()
+    draws the text with. Follow-up the same day ("hamnar nu på olika
+    rader vilket tar onödigt mycket plats") dropped the separate reserved
+    row it briefly had in favor of overlaying it on the description's own
+    first line — the click zone is confined to that first line's height,
+    not a dedicated row anymore."""
 
     @classmethod
     def setUpClass(cls):
@@ -15545,7 +16381,7 @@ class OrsFrequencyZoneClickTests(unittest.TestCase):
         col_x = panel._table.columnViewportPosition(panel._C_ORS)
         cell_right = col_x + panel._table.columnWidth(panel._C_ORS) - 1
         item = panel._table.item(self.row, panel._C_ORS)
-        return panel._ors_tag_zone_geometry(item, col_x, cell_right)
+        return panel._ors_freq_zone_geometry(item, col_x + 2, cell_right - 2)
 
     def _click(self, x, y):
         from PyQt6.QtGui import QMouseEvent
@@ -15557,9 +16393,13 @@ class OrsFrequencyZoneClickTests(unittest.TestCase):
         return self.panel.eventFilter(self.panel._table.viewport(), ev)
 
     def test_clicking_frequency_zone_opens_frequency_picker_popup(self):
-        _tw, freq_zone_x, freq_zone_w, freq_str = self._freq_zone_geometry()
+        from hazop import _ORS_HEADER_H
+        freq_zone_x, freq_zone_w, freq_str = self._freq_zone_geometry()
         self.assertTrue(freq_str, "test setup issue: cause has no frequency label to click on")
-        row_y = self.panel._table.rowViewportPosition(self.row) + 3
+        # The frequency zone floats over the description's own first
+        # line, just below the tag strip (2026-08-18, see class
+        # docstring) — not inside the strip itself anymore.
+        row_y = self.panel._table.rowViewportPosition(self.row) + _ORS_HEADER_H + 3
         fake_popup = unittest.mock.Mock()
         with unittest.mock.patch('hazop.FrequencyPickerPopup.create_positioned',
                                   return_value=fake_popup) as mock_create:
@@ -15568,22 +16408,37 @@ class OrsFrequencyZoneClickTests(unittest.TestCase):
         mock_create.assert_called_once()
         fake_popup.exec.assert_called_once()
 
-    def test_clicking_below_the_strip_does_not_open_the_frequency_popup(self):
-        """The frequency zone must be confined to the strip's own
-        height, so a click on the wrapped description text below it
-        (same x range) doesn't also open the popup. A click there can
-        legitimately fall through to the pre-existing (unrelated, out
-        of scope here) clone/comment/plus-badge zones instead — those
-        are stubbed out so this test only asserts on the one thing it
-        owns: the frequency popup must not fire."""
-        from hazop import _ORS_STRIP_H
-        _tw, freq_zone_x, freq_zone_w, freq_str = self._freq_zone_geometry()
+    def test_clicking_the_tag_strip_does_not_open_the_frequency_popup(self):
+        """The frequency zone must be confined to its own row's height,
+        so a click on the tag strip ABOVE it (same x range, now that the
+        tag zone spans nearly the whole strip width too) doesn't also
+        open the frequency popup."""
+        freq_zone_x, freq_zone_w, freq_str = self._freq_zone_geometry()
+        self.panel._row_plus_cols = {}
+        self.panel._clone_scenario = unittest.mock.Mock()
+        self.panel._open_comment_popup = unittest.mock.Mock()
+        row_y = self.panel._table.rowViewportPosition(self.row) + 3   # inside the tag strip
+        with unittest.mock.patch('hazop.FrequencyPickerPopup.create_positioned') as mock_create:
+            self._click(freq_zone_x + freq_zone_w // 2, row_y)
+            mock_create.assert_not_called()
+
+    def test_clicking_below_the_frequency_row_does_not_open_the_frequency_popup(self):
+        """A click on a LATER wrapped description line, below the
+        frequency zone that floats over the first one (same x range),
+        must not also open the popup. A click there can legitimately
+        fall through to the pre-existing (unrelated, out of scope here)
+        clone/comment/plus-badge zones instead — those are stubbed out
+        so this test only asserts on the one thing it owns: the
+        frequency popup must not fire."""
+        from hazop import _ORS_HEADER_H, _ORS_STRIP_H
+        freq_zone_x, freq_zone_w, freq_str = self._freq_zone_geometry()
         self.panel._row_plus_cols = {}
         self.panel._clone_scenario = unittest.mock.Mock()
         self.panel._open_comment_popup = unittest.mock.Mock()
         row_y = self.panel._table.rowViewportPosition(self.row)
         with unittest.mock.patch('hazop.FrequencyPickerPopup.create_positioned') as mock_create:
-            self._click(freq_zone_x + freq_zone_w // 2, row_y + _ORS_STRIP_H + 5)
+            self._click(freq_zone_x + freq_zone_w // 2,
+                        row_y + _ORS_HEADER_H + _ORS_STRIP_H + 5)
             mock_create.assert_not_called()
 
     def test_picking_a_preset_frequency_sets_likelihood_and_clears_base_frequency(self):
@@ -15607,6 +16462,160 @@ class OrsFrequencyZoneClickTests(unittest.TestCase):
         cause = self.db.get_cause(self.cause_id)
         self.assertEqual(cause['base_frequency'], 0.5)
         rebuild_spy.assert_called_once()
+
+
+class OrsStripReworkTests(unittest.TestCase):
+    """Anton, print screen `Screenshot 2026-08-18 134727.png`: "Frekvensen
+    som står i hazop scenario skall stå längst ut till höger men flyttas
+    från objektbannern till orsaksfältet då det hör hemma mer här. Varje
+    orsak skall ha en frekvens. Detta gör också att när man står på ett
+    objekt i hazop trädet behöver inte dubbla objektbanners visas som
+    idag. Du kan även skrota pluppen som syns som grön och orange baserat
+    på vad som är ifyllt." (2026-08-18) — three changes to the ORS cell's
+    _PidDelegate.paint(): the green/yellow/orange/red fill-status dot is
+    gone entirely, the frequency label moved from the tag strip down into
+    its own row at the top of the orsaksfält (right-aligned), and the tag
+    itself is no longer drawn there when the Utrustning column (_C_UTR)
+    already shows the same object identity for the row."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_orsrework_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    _TEXT_DARK = (0x17, 0x19, 0x1C)
+
+    def _is_dark(self, px, tol=40):
+        return (abs(px.red()   - self._TEXT_DARK[0]) <= tol and
+                abs(px.green() - self._TEXT_DARK[1]) <= tol and
+                abs(px.blue()  - self._TEXT_DARK[2]) <= tol)
+
+    def _has_pixel_matching(self, image, rgb, tol=30):
+        for y in range(image.height()):
+            for x in range(image.width()):
+                px = image.pixelColor(x, y)
+                if (abs(px.red() - rgb[0]) <= tol and abs(px.green() - rgb[1]) <= tol
+                        and abs(px.blue() - rgb[2]) <= tol):
+                    return True
+        return False
+
+    def _render_ors_cell(self, panel, row):
+        panel._table.setColumnWidth(panel._C_ORS, 300)
+        panel.resize(900, 400)
+        panel.show()
+        self.app.processEvents()
+        panel._resize_rows_manual()
+        self.app.processEvents()
+        index = panel._table.model().index(row, panel._C_ORS)
+        cell_rect = panel._table.visualRect(index)
+        pixmap = panel._table.viewport().grab(cell_rect)
+        panel.hide()
+        return pixmap.toImage()
+
+    def test_status_dot_is_never_drawn(self):
+        """A cause with NO consequence at all used to draw a red
+        (#dc2626) fill-status dot, and one with every field filled in
+        drew green (#16a34a) — neither should appear anywhere in the
+        rendered cell anymore."""
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)   # no consequence -> old code drew red
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+            image = self._render_ors_cell(panel, row)
+            self.assertFalse(self._has_pixel_matching(image, (0xdc, 0x26, 0x26)),
+                "no red fill-status dot should be drawn")
+            self.assertFalse(self._has_pixel_matching(image, (0x16, 0xa3, 0x4a)),
+                "no green fill-status dot should be drawn")
+        finally:
+            panel.deleteLater()
+
+    def test_tag_hidden_when_utrustning_column_visible_shown_when_hidden(self):
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
+        dev_id = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(cause_id, comp_type="Ventil", comp_tag="V-101", equipment_id=eq_id)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            # Utrustning is hidden by default in the normal single-node
+            # view (a PRE-EXISTING decision, see _set_all_nodes_columns_
+            # visible's own docstring: it was hidden years ago for this
+            # exact reason — "det duplicerade taggen redan visad högst
+            # upp i varje Orsak-cell"). It only becomes visible in
+            # load_all()'s "all nodes" mode, where the ORS-strip's own
+            # copy is now the redundant one instead.
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+            self.assertTrue(panel._table.isColumnHidden(panel._C_UTR),
+                "test assumes load_node() hides the Utrustning column by default")
+            image_hidden = self._render_ors_cell(panel, row)
+            strip_has_tag_hidden = any(
+                self._is_dark(image_hidden.pixelColor(x, y))
+                for x in range(0, 90) for y in range(0, 17))
+            self.assertTrue(strip_has_tag_hidden,
+                "the tag text must still be drawn when Utrustning is hidden")
+
+            panel.load_all()
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+            self.assertFalse(panel._table.isColumnHidden(panel._C_UTR),
+                "test assumes load_all() shows the Utrustning column")
+            image_visible = self._render_ors_cell(panel, row)
+            strip_has_tag_visible = any(
+                self._is_dark(image_visible.pixelColor(x, y))
+                for x in range(0, 90) for y in range(0, 17))
+            self.assertFalse(strip_has_tag_visible,
+                "the tag text must not be drawn when Utrustning already shows the same identity")
+        finally:
+            panel.deleteLater()
+
+    def test_frequency_renders_right_aligned_over_the_descriptions_first_line(self):
+        """2026-08-18 follow-up ("hamnar nu på olika rader vilket tar
+        onödigt mycket plats"): the frequency no longer gets a fully
+        separate reserved row below the strip — it floats right-aligned
+        over the description's own first line instead, so ORS cells don't
+        pay for an extra line of height just to show it."""
+        from hazop import ScenarioTablePanel, _ORS_STRIP_H, _ORS_HEADER_H
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(cause_id, base_frequency=0.5)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+            image = self._render_ors_cell(panel, row)
+
+            right_x_range = range(image.width() - 60, image.width() - 5)
+            strip_right_has_text = any(
+                self._is_dark(image.pixelColor(x, y))
+                for x in right_x_range for y in range(0, _ORS_STRIP_H))
+            self.assertFalse(strip_right_has_text,
+                "frequency text must no longer be drawn inside the tag strip")
+
+            freq_zone_has_text = any(
+                self._is_dark(image.pixelColor(x, y))
+                for x in right_x_range
+                for y in range(_ORS_HEADER_H, _ORS_HEADER_H + _ORS_STRIP_H + 5))
+            self.assertTrue(freq_zone_has_text,
+                "frequency text must be drawn right-aligned over the "
+                "description's own first line, just below the strip")
+        finally:
+            panel.deleteLater()
 
 
 class DeviationDefaultFrequencyTests(unittest.TestCase):

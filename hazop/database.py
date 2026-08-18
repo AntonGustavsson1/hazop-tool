@@ -2275,6 +2275,10 @@ class Database:
         self.commit()
         return cur.lastrowid
 
+    def update_participant_column(self, id_, name):
+        self.conn.execute("UPDATE participant_columns SET name=? WHERE id=?", (name, id_))
+        self.commit()
+
     def delete_participant_column(self, id_):
         self.conn.execute("DELETE FROM participant_columns WHERE id=?", (id_,))
         self.commit()
@@ -2814,6 +2818,18 @@ class Database:
     def equipment_markers_for_page(self, page):
         return self.conn.execute(
             "SELECT * FROM equipment_markers WHERE pid_page=?", (page,)).fetchall()
+
+    def update_equipment_marker_link(self, marker_id, equipment_id, tag):
+        """Re-point a marker to a different equipment_catalog row —
+        used by EquipmentPlacementPopup (2026-08-18, see NOTES.md
+        "kombinerad placeringsmeny") when a tag typed/detected AFTER
+        placement turns out to already belong to an existing catalog
+        row: the marker created against the blank placeholder row is
+        re-linked to the existing one instead of leaving a duplicate."""
+        self.conn.execute(
+            "UPDATE equipment_markers SET equipment_id=?, tag=? WHERE id=?",
+            (equipment_id, tag, marker_id))
+        self.commit()
 
     def delete_equipment_marker(self, id_):
         self.conn.execute("DELETE FROM equipment_markers WHERE id=?", (id_,))
