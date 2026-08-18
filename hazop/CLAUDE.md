@@ -26,6 +26,45 @@ Syntax check without running the GUI (all modules):
 python -m py_compile constants.py database.py ui_helpers.py tree_panel.py node_markup.py worksheet.py scenario_panel.py equipment_panel.py settings_panels.py hazop.py pid_viewer.py pid_graphics_view.py pid_panel_mod.py equipment_detection.py symbol_geometry.py image_symbol_matching.py
 ```
 
+## Testing during iterative development (2026-08-18)
+
+`test_regression.py` has 750+ tests and takes ~4-5 minutes — too slow to
+run after every single edit. Use a tiered approach instead:
+
+1. **After every code change** (the default — do this, not the full suite):
+   ```
+   python -m unittest test_smoke -v
+   ```
+   ~11 tests, runs in well under a second. Seeds a small but REALISTIC
+   dataset (a node/deviation/cause/consequence/safeguard, a revision with
+   `pdf_path` set, an equipment item) and constructs every major panel
+   against it — including clicking every node-markup/red-markup tool
+   button for real. This is deliberate, not arbitrary: every real crash
+   found during the 2026-08-17/18 module-split session (`_StylePopup`,
+   `ConsCategoryMatrixPopup`, missing `equipment_detection` OCR helpers,
+   `pathlib.Path` in `PIDManagementPanel.refresh()`) only triggered
+   against real data or a real button click — an empty-DB construction-only
+   smoke test would have missed every one of them. If you add a new panel
+   or a new "only crashes with real data" code path, add a case here too.
+   **Gap to be aware of:** this does NOT exercise deep interaction paths
+   like OCR/tag-scanning — those still need the full suite.
+2. **Before committing, after a large/risky change, or whenever asked for
+   real confidence** — run the full suite:
+   ```
+   python -m unittest test_regression
+   ```
+3. **Keep writing full regression tests as before** whenever you fix a bug
+   or add a feature — `test_smoke.py` is a fast pre-check, not a
+   replacement for `test_regression.py`'s thoroughness.
+
+Note on PyQt6 exceptions raised inside a signal/slot call (e.g.
+`button.click()`, not a direct method call): by default PyQt6 prints them
+via `sys.excepthook` and then **aborts the whole process** instead of
+letting the caller catch them — a bug there can silently kill an entire
+test run rather than failing one test. Swap in a capturing `sys.excepthook`
+for the duration of the click (see `test_smoke.py`'s
+`_click_every_tool_button`) if you write a test that clicks a button.
+
 ## Session context
 
 **Always read `NOTES.md` at the start of every session.** It contains decisions, deferred features, known limitations and user preferences that are not derivable from the code alone.
