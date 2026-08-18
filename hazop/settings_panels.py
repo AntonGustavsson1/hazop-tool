@@ -5,6 +5,7 @@ filer"."""
 
 import re
 import json
+from pathlib import Path
 from functools import partial
 
 from PyQt6.QtWidgets import (

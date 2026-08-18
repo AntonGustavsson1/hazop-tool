@@ -1746,6 +1746,55 @@ class HAZOPPreparationBladNoderTests(unittest.TestCase):
             self.assertIn("Från trädet", names)
 
 
+class PIDManagementPanelRevisionRefreshTests(unittest.TestCase):
+    """Real crash found via the actual app (2026-08-18, not caught by the
+    settings_panels.py extraction's own test run since every existing test
+    constructed PIDManagementPanel against a fresh, revision-less DB):
+    PIDManagementPanel.refresh() calls Path(rev['pdf_path']) for every
+    revision row that has one set, but the settings_panels.py module split
+    (see NOTES.md "Förenkla koden + dela upp hazop.py i fler filer") missed
+    importing pathlib.Path into that file — NameError the moment a project
+    with real revision history (a revision row whose pdf_path is set) was
+    opened."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_pidmgmt_revision_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_refresh_does_not_crash_with_a_revision_that_has_a_pdf_path(self):
+        from hazop import PIDManagementPanel
+        self.db.add_revision('A', '', pdf_path='C:/some/real/path.pdf')
+        panel = PIDManagementPanel(self.db)
+        try:
+            panel.refresh()
+        except NameError as e:
+            self.fail(f"PIDManagementPanel.refresh() raised {e!r}")
+        finally:
+            panel.deleteLater()
+
+    def test_revision_row_shows_filename_not_full_path(self):
+        from hazop import PIDManagementPanel
+        self.db.add_revision('A', '', pdf_path='C:/some/real/path.pdf')
+        panel = PIDManagementPanel(self.db)
+        try:
+            panel.refresh()
+            # Column 3 ("PDF-fil") holds Path(rev['pdf_path']).name, not the full path.
+            self.assertEqual(panel._rev_table.item(0, 3).text(), 'path.pdf')
+        finally:
+            panel.deleteLater()
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 4. ConnectorAnalyzer thread-hang regression (bug #5)
 # ══════════════════════════════════════════════════════════════════════════
