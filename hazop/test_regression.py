@@ -10394,6 +10394,66 @@ class EquipmentPlacementAsyncSearchTests(unittest.TestCase):
         causes = self.db.causes_for_deviation(devs[0]['id'])
         self.assertEqual(len(causes), 1)
 
+    def test_checking_a_deviation_creates_a_cause_when_type_is_picked_after_placement(self):
+        """The real rubber-band/right-click flow always places equipment
+        with comp_type='' (see hazop.py _on_equipment_placement_requested,
+        2026-08-18) — the type is picked in THIS popup afterward, not
+        known up front like the test above assumes. _commit_type() must
+        rebuild the checklist so its per-row standard-cause lookup (keyed
+        on comp_type) sees the type just picked; without that rebuild, a
+        box ticked after choosing a type created the deviation but never
+        the auto-suggested cause that goes with it (2026-08-18 follow-up:
+        "läggs det inte till någon standardorsak när jag definerat
+        objekttyp + avikelse som innan")."""
+        from PyQt6.QtCore import QPointF
+        node_id = self.db.add_node()
+        self.panel._active_node_id = node_id
+
+        self.panel.place_equipment_marker("", "", QPointF(60, 60), 0)
+        popup = self._popup()
+
+        idx = popup._type_cb.findText("Ventil")
+        if idx < 0:
+            popup._type_cb.addItem("Ventil")
+            idx = popup._type_cb.count() - 1
+        popup._type_cb.setCurrentIndex(idx)
+        popup._commit_type()
+
+        self.assertTrue(popup._checklist._checklist_checkboxes)
+        popup._checklist._checklist_checkboxes[0].setChecked(True)
+
+        eq = self.db.get_equipment_by_id(popup._equipment_id)
+        devs = self.db.deviations_for_equipment(eq['id'])
+        self.assertEqual(len(devs), 1)
+        causes = self.db.causes_for_deviation(devs[0]['id'])
+        self.assertEqual(len(causes), 1,
+            "checking a box after picking a type must still auto-create "
+            "the type's suggested standard cause")
+
+    def test_checking_a_deviation_refreshes_tree_and_scenario(self):
+        """A checked deviation box must tell the rest of the app to
+        redraw, exactly like EquipmentDeviationBar's existing-marker popup
+        already does — otherwise the new cause exists in the database but
+        nothing on screen shows it (2026-08-18 follow-up: "Jag ser
+        dessutom inget i hazop scenario när jag klickar"). Regression
+        test for a missing signal connection: EquipmentPlacementPopup's
+        embedded checklist emitted deviation_added just fine, but nothing
+        forwarded it out of the popup to PIDPanel."""
+        from PyQt6.QtCore import QPointF
+        node_id = self.db.add_node()
+        self.panel._active_node_id = node_id
+        fired = []
+        self.panel.equipment_deviation_created.connect(
+            lambda dev_id, eq_id: fired.append((dev_id, eq_id)))
+
+        self.panel.place_equipment_marker("V-2", "Ventil", QPointF(60, 60), 0)
+        popup = self._popup()
+        popup._checklist._checklist_checkboxes[0].setChecked(True)
+
+        eq = self.db.get_equipment_by_tag("V-2")
+        self.assertEqual(len(fired), 1)
+        self.assertEqual(fired[0][1], eq['id'])
+
 
 class ObjectMenuAndToolbarButtonsTests(unittest.TestCase):
     """"⚙️ Orsak"/"⚠️ Konsekvens" mode-toggle buttons removed from the P&ID

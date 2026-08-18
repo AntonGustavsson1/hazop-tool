@@ -1474,26 +1474,24 @@ class _PidDelegate(_ScenarioDelegate):
 
                 # Description text (elided to one line), drag-appended tags
                 # in bold (2026-08-09, see NOTES.md "fetmarkera objekttexten").
-                # Uses the same compact font the row's own height is sized
-                # for (self._panel._sg_row_height) — several safeguards
-                # stack one physical row each, so a smaller font here is
-                # what makes the shrunk row height actually legible instead
-                # of clipping normal-size text (2026-08-18 follow-up).
-                sg_font = self._panel._sg_compact_font(option.font)
+                # Same font size as every other cell — only the row's own
+                # padding shrank (self._panel._sg_row_height), not the
+                # text (2026-08-18 follow-up: Anton clarified it's the
+                # CELL height that should shrink, not the text itself).
                 desc = index.data(Qt.ItemDataRole.DisplayRole) or ''
                 tc = (option.palette.highlightedText().color() if sel
                       else option.palette.text().color())
                 tagged_refs = index.data(Qt.ItemDataRole.UserRole + 7) or []
                 _draw_text_with_bold_tags(
                     painter, desc_rect.adjusted(2, 1, -2, -1), desc,
-                    tagged_refs, sg_font, tc, word_wrap=False)
+                    tagged_refs, option.font, tc, word_wrap=False)
 
                 # RRF badge (right column)
                 badge_bg = QColor('#2F5FD0') if sel else QColor('#F5F5F3')
                 painter.fillRect(rrf_rect, badge_bg)
                 badge_tc = QColor('#ffffff') if sel else QColor('#17191C')
                 painter.setPen(badge_tc)
-                badge_font = QFont(sg_font)
+                badge_font = QFont(option.font)
                 badge_font.setBold(True)
                 painter.setFont(badge_font)
                 # Just the number — "RRF" now lives in the column header
@@ -4243,27 +4241,25 @@ class ScenarioTablePanel(QWidget):
         freq_zone_x = row_right - self._ORS_FREQ_MARGIN - freq_zone_w
         return freq_zone_x, freq_zone_w, freq_str
 
-    def _sg_compact_font(self, base_font):
-        """Smaller font used for safeguard rows only — a consequence with
-        several safeguards stacks one physical table row per safeguard
-        (see _apply_spans/_add_row), so the per-row height directly
-        multiplies out across however many are added. 2026-08-18 follow-up
-        ("krymper höjden på safeguards ... för att spara plats när man
-        lägger till flera safeguards"): shrunk as far as still legible —
-        going all the way to a literal third of the previous height isn't
-        possible without the text becoming unreadable, since a line of
-        text needs at least its own glyph height to render at all."""
-        f = QFont(base_font)
-        f.setPointSize(max(6, base_font.pointSize() - 2))
-        return f
-
     def _sg_row_height(self, base_font):
         """Single source of truth for a safeguard row's height — used by
         _ScenarioDelegate._size_hint_impl, _compute_row_height AND
         _PidDelegate.paint()'s SG branch, so all three can never disagree
         about how tall a safeguard row is (same rule as _ORS_STRIP_H's own
-        docstring elsewhere in this file)."""
-        return QFontMetrics(self._sg_compact_font(base_font)).height() + 2
+        docstring elsewhere in this file).
+
+        A consequence with several safeguards stacks one physical table
+        row per safeguard (see _apply_spans/_add_row), so the per-row
+        height directly multiplies out across however many are added —
+        2026-08-18 follow-up ("krymper höjden på safeguards ... för att
+        spara plats när man lägger till flera safeguards"). Text stays
+        the SAME size as every other cell (a first attempt also shrank
+        the font, but Anton clarified it's the CELL height that should
+        shrink, not the text) — only the padding around it is trimmed to
+        the bare minimum a line of text needs to avoid clipping, which is
+        a much smaller saving than font-shrinking would give but keeps
+        safeguard text exactly as readable as everywhere else."""
+        return QFontMetrics(base_font).height() + 2
 
     def _show_cause_obj_popup(self, row, cause_id, global_pos):
         """A plain click on the ORS tag zone opens just a tag+type

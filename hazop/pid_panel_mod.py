@@ -542,7 +542,20 @@ class EquipmentPlacementPopup(QWidget):
     background EquipmentTagSearchWorker is still running (tag was blank
     at placement time) — set_detected_tag() fills the tag field once the
     search resolves (or times out), but never overwrites text the user
-    already typed themselves."""
+    already typed themselves.
+
+    deviation_added/deviation_removed (forwarded straight from the
+    embedded _DeviationChecklist, same as EquipmentDeviationBar already
+    does) — PIDPanel.place_equipment_marker() connects these to
+    _on_equipment_deviation_added/_removed so a checkbox ticked here
+    refreshes the tree and HAZOP scenario table exactly like the
+    existing-marker popup already does. Missing this connection was a
+    real bug (2026-08-18 follow-up: "Jag ser dessutom inget i hazop
+    scenario när jag klickar") — the deviation/cause got created in the
+    database just fine, nothing ever told the rest of the app to redraw."""
+
+    deviation_added   = pyqtSignal(int, int)   # (deviation_id, equipment_id)
+    deviation_removed = pyqtSignal(int, int)   # (deviation_id, equipment_id)
 
     def __init__(self, db, equipment_id, marker_id, parent=None):
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
@@ -620,6 +633,8 @@ class EquipmentPlacementPopup(QWidget):
         outer.addWidget(self._dup_hint)
 
         self._checklist = _DeviationChecklist(db, self)
+        self._checklist.deviation_added.connect(self.deviation_added)
+        self._checklist.deviation_removed.connect(self.deviation_removed)
         outer.addWidget(self._checklist)
 
         eq = self.db.get_equipment_by_id(equipment_id)
@@ -743,6 +758,16 @@ class EquipmentPlacementPopup(QWidget):
         self.db.update_equipment_item(
             self._equipment_id, eq.get('tag') or '', eq.get('prefix') or '',
             comp_type, eq.get('description') or '')
+        # Rebuild the checklist so its per-row standard-cause suggestions
+        # (_build_deviation_row's `causes` lookup, keyed on comp_type) use
+        # the type just picked, not whatever it was — usually blank — when
+        # the checklist was first built at placement time. Without this,
+        # ticking a deviation box after choosing a type here silently
+        # created the deviation but never the auto-suggested standard
+        # cause that goes with it (2026-08-18 follow-up: "läggs det inte
+        # till någon standardorsak när jag definerat objekttyp + avikelse
+        # som innan").
+        self._checklist._rebuild_checklist()
 
     def _reassign_to_existing(self, existing_id):
         """A tag typed/detected AFTER placement can turn out to already
@@ -2971,6 +2996,14 @@ class PIDPanel(QWidget):
         popup.create_cause_fn = (
             lambda dev_id, ct, cmp_tag, desc, freq=None:
                 self._create_cause_for_bar(marker_id, dev_id, ct, cmp_tag, desc, freq))
+        # Same tree/scenario-refresh wiring the existing-marker popup
+        # (_equipment_bar) already gets in __init__ — missing here was a
+        # real bug (2026-08-18 follow-up: "Jag ser dessutom inget i hazop
+        # scenario när jag klickar"): the deviation/cause got created in
+        # the database just fine, nothing ever told the tree or scenario
+        # table to redraw.
+        popup.deviation_added.connect(self._on_equipment_deviation_added)
+        popup.deviation_removed.connect(self._on_equipment_deviation_removed)
         popup.load_checklist(active_node_id=self._active_node_id)
         gp = self.viewer.viewport().mapToGlobal(self.viewer.mapFromScene(scene_pos))
         popup.show_near(gp)
