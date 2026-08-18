@@ -28,6 +28,9 @@ from PyQt6.QtGui import (
 )
 
 import symbol_geometry
+from equipment_detection import (
+    _get_easyocr_reader, _preprocess_for_ocr, _pick_best_tag, _spatial_combine,
+)
 from pid_viewer import (
     fitz, HAS_PYMUPDF, HAS_OPENGL, QOpenGLWidget, HAS_SVG_RENDERER,
     QSvgRenderer, HAS_PIL, HAS_TESSERACT, HAS_EASYOCR, _PILImage, pytesseract,

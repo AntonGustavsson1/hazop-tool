@@ -29,6 +29,9 @@ from PyQt6.QtGui import (
 )
 
 from pid_graphics_view import PIDGraphicsView
+from equipment_detection import (
+    _pick_best_tag, _rotate_words, _spatial_combine, find_tag_near_point,
+)
 from pid_viewer import (
     fitz, CONFIG, HAS_PYMUPDF, Z_TEMP,
     MODE_NAV, MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE,
