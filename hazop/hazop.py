@@ -1291,6 +1291,7 @@ class MainWindow(QMainWindow):
         self.node_markup_panel.tool_changed.connect(
             lambda t: self.pid_panel.set_markup_tool(
                 t, *self.node_markup_panel.get_current_style()[:3]))
+        self.node_markup_panel.tool_changed.connect(self._on_node_markup_tool_activated)
         self.node_markup_panel.all_vis_toggled.connect(
             lambda _: self.pid_panel.refresh_markup_overlays())
         self.node_markup_panel.style_changed.connect(
@@ -1493,7 +1494,13 @@ class MainWindow(QMainWindow):
         self._cur_type = type_
         self._cur_id   = id_
         self.props_ribbon.set_item(type_, id_)
+        # Nodmarkup-panelen ska bara vara aktiv när man står på Nod-nivån i
+        # trädet (2026-08-18, se NOTES.md) — auto-öppnas och binds om till
+        # den valda noden här; stängs längst ned i denna metod så fort
+        # valet lämnar Nod-nivån (Avvikelse, Orsak, Konsekvens, Safeguard,
+        # eller något oväntat läge).
         if type_ == NODE_T:
+            self._on_edit_node_markup(id_)
             self.pid_panel.set_active_node(id_)
             self.scenario_panel.load_node(id_)
             if self.view_stack.currentIndex() == 0:
@@ -1533,6 +1540,8 @@ class MainWindow(QMainWindow):
                         self.scenario_panel.load_deviation(cause['deviation_id'])
                     else:
                         self.scenario_panel.load_consequence(cons['id'])
+        if type_ != NODE_T and not self.node_markup_panel.isHidden():
+            self._on_close_node_markup()
 
     def _on_scenario_item_edited(self, type_, id_):
         """Scenario table committed an edit — sync tree and P&ID labels.
@@ -1557,6 +1566,8 @@ class MainWindow(QMainWindow):
         self.scenario_panel.clear()
         self.pid_panel.clear_active_selection()
         self.pid_panel.reload_overlays()
+        if not self.node_markup_panel.isHidden():
+            self._on_close_node_markup()
 
     def _on_sheets_changed(self):
         """Reload the study board after sheets are added or deleted."""
@@ -1843,7 +1854,14 @@ class MainWindow(QMainWindow):
         dlg.activateWindow()
 
     def _on_edit_node_markup(self, node_id):
-        """Tree right-click NODE → 'Editera nodmarkup'.
+        """Entered either automatically (selecting a Node in the tree, see
+        _on_selected) or explicitly (tree right-click → 'Editera
+        nodmarkup', or returning from a red-markup symbol-placement
+        detour). Rebinding is idempotent — calling this again for a
+        different node while already editing just re-targets everything
+        at the new node, matching "ritar jag in något i noden skall detta
+        vara kopplat till den noden jag står på" (2026-08-18, see
+        NOTES.md).
 
         2026-08-17 (see NOTES.md "nodmarkup dockas till höger"): this used
         to hide tree_panel/props_ribbon/scenario_panel entirely, replacing
@@ -1851,25 +1869,41 @@ class MainWindow(QMainWindow):
         ribbon — Anton wanted the panel to feel docked alongside the rest
         of the app instead. tree_panel and props_ribbon now stay visible
         (node_markup_panel already sits to their right in _h_splitter's
-        add-order, so nothing needed to move); only the BOTTOM strip still
-        swaps scenario_panel out for markup_table_panel by default, since
-        showing a tag-picker table meant for editing HAZOP causes at the
-        same time as drawing node markup would be confusing — the new
-        toggle button lets the user bring scenario_panel back without
-        leaving markup-edit mode."""
+        add-order, so nothing needed to move).
+
+        2026-08-18 (see NOTES.md): now also reachable just by SELECTING a
+        node in the tree (no explicit "Editera nodmarkup" needed) — since
+        that happens on every single node click, the bottom strip no
+        longer force-swaps to markup_table_panel here; HAZOP scenario
+        stays visible until the user actually starts drawing
+        (_on_node_markup_tool_activated), matching "HAZOP scenario
+        fönstret ska fortsatt vara öppet om jag inte börjar använda någon
+        av ritverktygen". The toggle button still lets the user flip
+        between the two manually at any time."""
         self._switch_view(1)
         self.node_markup_panel.load(node_id)
         self.markup_table_panel.load(node_id)
         self.node_markup_panel.setVisible(True)
-        self.scenario_panel.setVisible(False)
-        self.markup_table_panel.setVisible(True)
-        self.node_markup_panel.set_bottom_toggle_checked(False)
         self._h_splitter.setSizes([260, 600, 62, 220, 0])
-        self._v_splitter.setSizes([0, 200, 0])
-        self._outer_splitter.setSizes([560, 200])
         self.pid_panel.enter_markup_edit(node_id)
         self._markup_undo_stack.clear()
         self._undo_shortcut.setEnabled(True)
+
+    def _on_node_markup_tool_activated(self, tool):
+        """A real drawing tool (not the neutral 'select' tool, which also
+        fires this signal on load/init) was picked in the node markup
+        ribbon (2026-08-18, see NOTES.md) — swap the bottom strip to the
+        Nodmarkeringar list so the user sees what they're drawing/have
+        already drawn, matching "om jag klickar på exempelvis polygon, då
+        ska jag istället se listan med nod markups". The ⇄ toggle can
+        still bring HAZOP scenario back without leaving markup-edit mode."""
+        if tool == 'select':
+            return
+        self.markup_table_panel.setVisible(True)
+        self.scenario_panel.setVisible(False)
+        self.node_markup_panel.set_bottom_toggle_checked(False)
+        self._v_splitter.setSizes([0, 200, 0])
+        self._outer_splitter.setSizes([560, 200])
 
     def _on_toggle_bottom_panel(self, checked):
         """New switch next to node_markup_panel (2026-08-17) — flips the
@@ -1880,7 +1914,8 @@ class MainWindow(QMainWindow):
         self._v_splitter.setSizes([220, 0, 0] if checked else [0, 200, 0])
 
     def _on_close_node_markup(self):
-        """Ribbon close button clicked — leave markup edit mode."""
+        """Ribbon close button clicked, or the tree selection moved off
+        the Node level (see _on_selected) — leave markup edit mode."""
         self.pid_panel.exit_markup_mode()
         self.pid_panel.reload_overlays()
         self.node_markup_panel.setVisible(False)
@@ -1942,6 +1977,10 @@ class MainWindow(QMainWindow):
         self._return_to_node_markup_node_id = None
         if return_node_id is not None:
             self._on_edit_node_markup(return_node_id)
+            # Placing a symbol is itself a drawing action — show the
+            # Nodmarkeringar list with the new symbol on return, same as
+            # picking any other drawing tool would (2026-08-18).
+            self._on_node_markup_tool_activated('symbol')
             return
         self.tree_panel.setVisible(True)
         self.props_ribbon.setVisible(True)

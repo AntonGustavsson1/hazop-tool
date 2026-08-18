@@ -16234,14 +16234,19 @@ class NodeMarkupDockingTests(unittest.TestCase):
             finally:
                 win._on_close_node_markup()
 
-    def test_editing_node_markup_defaults_bottom_strip_to_markup_table(self):
+    def test_editing_node_markup_defaults_bottom_strip_to_scenario(self):
+        """2026-08-18 (see NOTES.md): reversed from the original Fas F
+        default — entering node markup edit (whether via the explicit
+        'Editera nodmarkup' action or automatically via tree selection,
+        see NodeMarkupAutoOpenTests below) now leaves HAZOP scenario
+        visible until the user actually starts drawing
+        (_on_node_markup_tool_activated swaps it then)."""
         with _TempDbMainWindow() as win:
             node_id = win.db.add_node()
             win._on_edit_node_markup(node_id)
             try:
-                self.assertFalse(win.markup_table_panel.isHidden())
-                self.assertTrue(win.scenario_panel.isHidden())
-                self.assertFalse(win.node_markup_panel._bottom_toggle_btn.isChecked())
+                self.assertFalse(win.scenario_panel.isHidden())
+                self.assertTrue(win.markup_table_panel.isHidden())
             finally:
                 win._on_close_node_markup()
 
@@ -16272,6 +16277,118 @@ class NodeMarkupDockingTests(unittest.TestCase):
             self.assertTrue(win.node_markup_panel.isHidden())
             self.assertFalse(win.tree_panel.isHidden())
             self.assertFalse(win.props_ribbon.isHidden())
+
+
+class NodeMarkupAutoOpenTests(unittest.TestCase):
+    """2026-08-18 (see NOTES.md): "nodmarkupdialogen enbart ska synas om
+    jag står på nivån nod i trädet. Den ska släckas om jag står på en
+    avvikelse. Ritar jag in något i noden skall detta vara kopplat till
+    den noden jag står på." — node_markup_panel now opens automatically
+    when the tree selection is a Node (no explicit 'Editera nodmarkup'
+    needed), closes automatically the moment selection leaves the Node
+    level, and rebinds to whichever Node is currently selected rather
+    than staying stuck on the node it was first opened for."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def _stub_scenario_loaders(self, win):
+        """See DatabaseLayerTests' orphaned-selection tests for why:
+        load_node/load_deviation/etc. ultimately call
+        QTableWidget.resizeRowsToContents(), which reproducibly hits a
+        native access violation under this machine's headless Qt platform
+        plugin — unrelated to the node-markup auto-open/close logic these
+        tests actually target."""
+        win.scenario_panel.load_node = lambda *a, **k: None
+        win.scenario_panel.load_deviation = lambda *a, **k: None
+        win.scenario_panel.load_cause = lambda *a, **k: None
+        win.scenario_panel.load_consequence = lambda *a, **k: None
+
+    def test_selecting_a_node_opens_node_markup_panel_bound_to_it(self):
+        with _TempDbMainWindow() as win:
+            self._stub_scenario_loaders(win)
+            node_id = win.db.add_node()
+            win._on_selected(NODE_T, node_id)
+            try:
+                self.assertFalse(win.node_markup_panel.isHidden())
+                self.assertEqual(win.node_markup_panel.node_id, node_id)
+            finally:
+                win._on_close_node_markup()
+
+    def test_selecting_a_node_leaves_hazop_scenario_visible_by_default(self):
+        with _TempDbMainWindow() as win:
+            self._stub_scenario_loaders(win)
+            node_id = win.db.add_node()
+            win._on_selected(NODE_T, node_id)
+            try:
+                self.assertFalse(win.scenario_panel.isHidden())
+                self.assertTrue(win.markup_table_panel.isHidden())
+            finally:
+                win._on_close_node_markup()
+
+    def test_selecting_a_deviation_closes_node_markup_panel(self):
+        with _TempDbMainWindow() as win:
+            self._stub_scenario_loaders(win)
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            win._on_selected(NODE_T, node_id)
+            self.assertFalse(win.node_markup_panel.isHidden())
+
+            win._on_selected(DEV_T, dev_id)
+            self.assertTrue(win.node_markup_panel.isHidden())
+
+    def test_selecting_a_different_node_rebinds_instead_of_staying_stuck(self):
+        with _TempDbMainWindow() as win:
+            self._stub_scenario_loaders(win)
+            node_a = win.db.add_node()
+            node_b = win.db.add_node()
+            win._on_selected(NODE_T, node_a)
+            self.assertEqual(win.node_markup_panel.node_id, node_a)
+
+            win._on_selected(NODE_T, node_b)
+            try:
+                self.assertFalse(win.node_markup_panel.isHidden())
+                self.assertEqual(win.node_markup_panel.node_id, node_b)
+            finally:
+                win._on_close_node_markup()
+
+    def test_selecting_a_cause_closes_node_markup_panel(self):
+        with _TempDbMainWindow() as win:
+            self._stub_scenario_loaders(win)
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            win._on_selected(NODE_T, node_id)
+            self.assertFalse(win.node_markup_panel.isHidden())
+
+            win._on_selected(CAUSE_T, cause_id)
+            self.assertTrue(win.node_markup_panel.isHidden())
+
+    def test_activating_a_drawing_tool_switches_bottom_strip_to_markup_table(self):
+        with _TempDbMainWindow() as win:
+            self._stub_scenario_loaders(win)
+            node_id = win.db.add_node()
+            win._on_selected(NODE_T, node_id)
+            try:
+                self.assertFalse(win.scenario_panel.isHidden())
+                win._on_node_markup_tool_activated('polygon')
+                self.assertTrue(win.scenario_panel.isHidden())
+                self.assertFalse(win.markup_table_panel.isHidden())
+            finally:
+                win._on_close_node_markup()
+
+    def test_activating_the_neutral_select_tool_does_not_switch_bottom_strip(self):
+        with _TempDbMainWindow() as win:
+            self._stub_scenario_loaders(win)
+            node_id = win.db.add_node()
+            win._on_selected(NODE_T, node_id)
+            try:
+                win._on_node_markup_tool_activated('select')
+                self.assertFalse(win.scenario_panel.isHidden())
+                self.assertTrue(win.markup_table_panel.isHidden())
+            finally:
+                win._on_close_node_markup()
 
 
 class RedMarkupConsolidationTests(unittest.TestCase):
