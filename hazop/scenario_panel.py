@@ -1529,12 +1529,24 @@ class _PidDelegate(_ScenarioDelegate):
             obj_data = index.data(Qt.ItemDataRole.UserRole + 2)
             if obj_data is not None:
                 comp_type, comp_tag = obj_data
-                # The tag is also shown one column to the left (Utrustning,
-                # _C_UTR) whenever that column is visible — showing it AGAIN
-                # here would just be the same object identity twice on one
-                # row (2026-08-18, see NOTES.md "dubbla objektbanners").
-                utr_visible = not self._panel._table.isColumnHidden(self._panel._C_UTR)
-                has_tag = bool(comp_tag or comp_type) and not utr_visible
+                # Hidden when this row's object is the SAME one as the
+                # immediately preceding cause row's (UserRole+8, set in
+                # _build_rows — see its own comment) — repeating the same
+                # tag banner down a run of consecutive deviations for one
+                # object wastes space (2026-08-18 follow-up: "om det visas
+                # flera avikelser efter varandra som tillhör samma
+                # objekttagg behöver denna inte repeteras"). This replaced
+                # an earlier, too-broad rule that hid the tag whenever the
+                # Utrustning column was merely VISIBLE — that hid it even
+                # on views (e.g. "click an object's marker on P&ID") where
+                # EVERY row shares one tag, so it never showed at all
+                # ("Orsaken har tidigare visat objekt-tagen i bannern men
+                # denna är nu borttagen"). Consecutive-repeat dedup still
+                # covers the original same-row-as-Utrustning-column case,
+                # since a group sharing one Utrustning value is by
+                # definition a run of consecutive same-tag rows.
+                repeats_previous = bool(index.data(Qt.ItemDataRole.UserRole + 8))
+                has_tag = bool(comp_tag or comp_type) and not repeats_previous
 
                 meta_      = self._panel._row_meta
                 _cause_id  = meta_[row][1] if row < len(meta_) else None
@@ -2809,6 +2821,16 @@ class ScenarioTablePanel(QWidget):
         self.refresh_placed()
         logging.info('_build_rows: G1 — refresh_placed done, entering cause loop (n=%d)',
                      len(causes_to_show))
+        # Tracks the previous REAL cause's (comp_type, comp_tag) so the ORS
+        # tag banner can be hidden on a run of consecutive deviations that
+        # all belong to the same object (2026-08-18 follow-up: "om det
+        # visas flera avikelser efter varandra som tillhör samma
+        # objekttagg behöver denna inte repeteras ... tagbannern [kan]
+        # försvinna på nummer två i listan och nedåt"). A sentinel
+        # "empty deviation" row (cause_d is None) never carries a tag of
+        # its own and doesn't break the run — left untouched here so a
+        # real cause immediately after one still dedups correctly.
+        _prev_tag_display = None
         for _cause_idx, (cause_d, dev_d) in enumerate(causes_to_show):
             if cause_d is None:
                 # Sentinel from _causes_for_node(): this deviation has zero causes,
@@ -2821,6 +2843,10 @@ class ScenarioTablePanel(QWidget):
                 node_name = node['name'] if node else '?'
                 self._add_placeholder_row(node_name, dev_d)
                 continue
+            _tag_display = self._cause_tag_display(cause_d)
+            _repeats_previous_tag = (bool(_tag_display[0] or _tag_display[1])
+                                     and _tag_display == _prev_tag_display)
+            _prev_tag_display = _tag_display
             if _cause_idx % 10 == 0 or _cause_idx == len(causes_to_show) - 1:
                 logging.info('_build_rows: G2 — cause loop iter %d/%d (cause_id=%s)',
                              _cause_idx, len(causes_to_show), cause_d.get('id'))
@@ -2899,7 +2925,8 @@ class ScenarioTablePanel(QWidget):
                                   sev_cat_list=sev_cat_list,
                                   all_cat_infos=all_cat_infos,
                                   cause_popup_list=cause_popup_list,
-                                  n_cats=n_cats)
+                                  n_cats=n_cats,
+                                  repeats_previous_tag=_repeats_previous_tag)
                     logging.info('_build_rows: H3 — _add_row cons_id=%s row_i=%d done',
                                  cons_d.get('id'), i)
                 # "+" badge on the SG cell — only when this consequence
@@ -2911,7 +2938,8 @@ class ScenarioTablePanel(QWidget):
             if self._table.rowCount() == first_row_for_cause:
                 logging.info('_build_rows: G3 — cause %s had no rows, adding empty row',
                              cause_d.get('id'))
-                self._add_empty_row(node_name, dev_d, cause_d, freq, freq_lbl)
+                self._add_empty_row(node_name, dev_d, cause_d, freq, freq_lbl,
+                                    repeats_previous_tag=_repeats_previous_tag)
             elif all_cons:
                 # "+" badge on the KON cell — only when this cause already
                 # has at least one real consequence (mirrors the safeguard
@@ -3040,35 +3068,58 @@ class ScenarioTablePanel(QWidget):
         sg_row_h = self._sg_row_height(table.font())
         wrap_cols = (self._C_ORS, self._C_KON, self._C_REK)
 
-        # Floor: NOD/UTR/DEV/ORS/KON/LOPA/REK/RFORE/SLUT are all spanned
-        # across a consequence's safeguard rows (_apply_spans) — a second,
-        # third, ... safeguard row therefore has no independent content of
-        # its OWN in any column but SG (table.item()/cellWidget() return
-        # None for the non-anchor rows of a span). Such a row only needs
-        # the compact SG height, not a full text line's worth of space —
-        # multiplying that saving across several safeguards is the whole
-        # point (2026-08-18 follow-up: "krymper höjden på safeguards ...
-        # för att spara plats när man lägger till flera safeguards"). Any
-        # row that DOES have its own content in another column (the
-        # anchor row of a span, or an unspanned single-safeguard row)
-        # still gets the normal one-line floor from that column's own
-        # branch below.
-        has_other_own_content = any(
-            table.item(row, c) is not None or table.cellWidget(row, c) is not None
-            for c in range(table.columnCount())
-            if c != self._C_SG and not table.isColumnHidden(c))
-        max_h = one_line_h if has_other_own_content else sg_row_h
+        # NOD/UTR/DEV/ORS/KON/LOPA/REK/RFORE/SLUT are all spanned across a
+        # consequence's safeguard rows (_apply_spans), but every physical
+        # row still gets its OWN freshly-built item/widget from _add_row()
+        # regardless (setSpan/setCellWidget only change how Qt PAINTS
+        # covered cells, they don't clear or skip creating content there)
+        # — table.item(row, c) is not None and table.cellWidget(row, c) is
+        # not None are therefore both ALWAYS true and useless for
+        # detecting "does this row have content of its own", a mistake an
+        # earlier version of this fix made throughout. The only reliable
+        # signal is comparing each column's own span key (from
+        # _apply_spans) against the previous row: unchanged means this
+        # row is a covered continuation for that column, not its anchor,
+        # so that column's (duplicate) content must not count toward this
+        # row's height.
+        def _cause_id(r):
+            return self._row_meta[r][1] if 0 <= r < len(self._row_meta) else None
+        def _cons_id(r):
+            return self._row_meta[r][2] if 0 <= r < len(self._row_meta) else None
+        def _cat_info(r):
+            return self._row_cat_info[r] if 0 <= r < len(self._row_cat_info) else None
+
+        is_ors_anchor  = row == 0 or _cause_id(row) != _cause_id(row - 1)
+        is_cons_anchor = row == 0 or _cons_id(row)  != _cons_id(row - 1)
+
+        # A second, third, ... safeguard row has no independent content of
+        # its own in any column but SG only when it's a continuation for
+        # BOTH the cons_id-keyed columns (KON/LOPA/REK) AND the finer
+        # (cons_id, cat_info)-keyed ones (RFORE/SLUT) — a cat_info change
+        # within the SAME consequence still means RFORE/SLUT has fresh
+        # content this row. Such a row only needs the compact SG height,
+        # not a full text line's worth of space — multiplying that saving
+        # across several safeguards is the whole point (2026-08-18
+        # follow-up: "krymper höjden på safeguards ... för att spara
+        # plats när man lägger till flera safeguards").
+        is_pure_sg_continuation = (
+            not is_cons_anchor and _cons_id(row) is not None
+            and _cat_info(row) == _cat_info(row - 1))
+        max_h = sg_row_h if is_pure_sg_continuation else one_line_h
 
         for col in range(table.columnCount()):
             if table.isColumnHidden(col):
                 continue
 
             if col == self._C_LOPA:
-                widget = table.cellWidget(row, col)
-                if widget is not None:
-                    h = widget.sizeHint().height()
-                    if h > max_h:
-                        max_h = h
+                # LOPA spans by cons_id alone — see the module-level note
+                # above this function.
+                if is_cons_anchor:
+                    widget = table.cellWidget(row, col)
+                    if widget is not None:
+                        h = widget.sizeHint().height()
+                        if h > max_h:
+                            max_h = h
                 continue
 
             if col == self._C_SG:
@@ -3081,6 +3132,14 @@ class ScenarioTablePanel(QWidget):
             if col not in wrap_cols:
                 # Fixed one-line columns (matches _ScenarioDelegate's
                 # non-wrap branch) — no font-metric work needed.
+                continue
+
+            # ORS spans by cause_id, KON/REK by cons_id — a non-anchor row
+            # for either must not have its (duplicate) text measured, same
+            # reasoning as the LOPA branch above.
+            if col == self._C_ORS and not is_ors_anchor:
+                continue
+            if col in (self._C_KON, self._C_REK) and not is_cons_anchor:
                 continue
 
             item = table.item(row, col)
@@ -3107,11 +3166,12 @@ class ScenarioTablePanel(QWidget):
             if h > max_h:
                 max_h = h
 
-        ors_item = table.item(row, self._C_ORS)
-        if ors_item and ors_item.text():
-            min_ors = fm.height() * 2 + 20  # floor for ORS rows: ~2 lines + strip
-            if max_h < min_ors:
-                max_h = min_ors
+        if is_ors_anchor:
+            ors_item = table.item(row, self._C_ORS)
+            if ors_item and ors_item.text():
+                min_ors = fm.height() * 2 + 20  # floor for ORS rows: ~2 lines + strip
+                if max_h < min_ors:
+                    max_h = min_ors
         return max_h
 
     def _resize_rows_manual(self):
@@ -3182,7 +3242,21 @@ class ScenarioTablePanel(QWidget):
         _min_ors = _fm.height() * 2 + 20  # floor for ORS rows: ~2 lines + strip
         for _r in range(self._table.rowCount()):
             h = self._table.rowHeight(_r)
-            # ORS cell in this row has content → enforce minimum readable height.
+            # ORS cell in this row is a real, VISIBLE cell (the anchor of
+            # its cause's span, not one of the extra physical rows a
+            # multi-safeguard consequence adds below it) → enforce minimum
+            # readable height. Checking ors_item.text() alone used to
+            # wrongly match every row in the span: _add_row() gives EVERY
+            # physical row its own freshly-built ORS item with the same
+            # cause text (setSpan only changes how Qt paints covered
+            # cells, it doesn't clear their items), so this floor was
+            # silently re-inflating the compact safeguard-continuation
+            # rows _compute_row_height() had just shrunk (2026-08-18
+            # follow-up: "krymper höjden på safeguards ... för att spara
+            # plats" — same underlying bug as that fix's own, now
+            # corrected, table.item()-based check). cause_id (row_meta[1])
+            # differing from the previous row is what actually marks the
+            # anchor — same span key ORS itself groups by (_apply_spans).
             # There used to also be an upper CAP here (~4 text lines) that
             # silently shrank any row whose wrapped description needed more
             # room than that, clipping the rest of the text with no visual
@@ -3194,7 +3268,10 @@ class ScenarioTablePanel(QWidget):
             # is gone — rows now grow to fit however much text is actually
             # there, exactly what "flerradig, auto-höjd" is supposed to mean.
             ors_item = self._table.item(_r, self._C_ORS)
-            if ors_item and ors_item.text() and h < _min_ors:
+            _cause_id = self._row_meta[_r][1] if _r < len(self._row_meta) else None
+            _is_ors_anchor = (_cause_id is not None and (
+                _r == 0 or self._row_meta[_r - 1][1] != _cause_id))
+            if ors_item and ors_item.text() and _is_ors_anchor and h < _min_ors:
                 self._table.setRowHeight(_r, _min_ors)
         logging.info('_resize_rows: K2 — row-height pass done, restoring scroll position')
         self._table.verticalScrollBar().setValue(vscroll_value)
@@ -3236,7 +3313,8 @@ class ScenarioTablePanel(QWidget):
             self._table.setItem(r, col, _ro())
         pass  # row height set by resizeRowsToContents at end of _rebuild
 
-    def _add_empty_row(self, node_name, dev_d, cause_d, freq, freq_lbl):
+    def _add_empty_row(self, node_name, dev_d, cause_d, freq, freq_lbl,
+                        repeats_previous_tag=False):
         """Placeholder row when a cause has no consequences yet."""
         r = self._table.rowCount()
         self._table.insertRow(r)
@@ -3266,6 +3344,7 @@ class ScenarioTablePanel(QWidget):
         ors.setData(Qt.ItemDataRole.UserRole,     ('cause', cause_d['id']))
         ors.setData(Qt.ItemDataRole.UserRole + 2, self._cause_tag_display(cause_d))
         ors.setData(Qt.ItemDataRole.UserRole + 3, freq)
+        ors.setData(Qt.ItemDataRole.UserRole + 8, repeats_previous_tag)
         self._table.setItem(r, self._C_ORS, ors)
 
         kon = _ro()
@@ -3305,7 +3384,7 @@ class ScenarioTablePanel(QWidget):
     def _add_row(self, node_name, dev_d, cause_d, freq, freq_lbl, cons_d, all_sgs, sg,
                  cat_info=None, excl_cat_names=None, excl_for_cat=None,
                  cause_excl_sgs=None, sev_cat_list=None, all_cat_infos=None,
-                 cause_popup_list=None, n_cats=0):
+                 cause_popup_list=None, n_cats=0, repeats_previous_tag=False):
         """One row in the scenario table.
 
         sg            – the safeguard for this row (None = no safeguard on this row).
@@ -3412,6 +3491,7 @@ class ScenarioTablePanel(QWidget):
         ors.setData(Qt.ItemDataRole.UserRole + 2, self._cause_tag_display(cause_d))
         ors.setData(Qt.ItemDataRole.UserRole + 3, freq)
         ors.setData(Qt.ItemDataRole.UserRole + 5, cause_d.get('base_frequency'))
+        ors.setData(Qt.ItemDataRole.UserRole + 8, repeats_previous_tag)
         # _status_icon is no longer stored on the item (2026-08-18, see
         # NOTES.md "skrota pluppen") — the green/yellow/orange/red fill-
         # status dot it drove is gone from paint(); the underlying
@@ -4258,8 +4338,15 @@ class ScenarioTablePanel(QWidget):
         shrink, not the text) — only the padding around it is trimmed to
         the bare minimum a line of text needs to avoid clipping, which is
         a much smaller saving than font-shrinking would give but keeps
-        safeguard text exactly as readable as everywhere else."""
-        return QFontMetrics(base_font).height() + 2
+        safeguard text exactly as readable as everywhere else.
+
+        `+ 4`, not `+ 2`: `_on_font_size_changed` sets the table's own
+        `verticalHeader().setMinimumSectionSize(fm.height() + 4)`, a hard
+        floor `setRowHeight()` can't go below regardless of what this
+        function returns — returning anything smaller just meant the
+        real, Qt-enforced height silently differed from what this
+        "single source of truth" claimed."""
+        return QFontMetrics(base_font).height() + 4
 
     def _show_cause_obj_popup(self, row, cause_id, global_pos):
         """A plain click on the ORS tag zone opens just a tag+type

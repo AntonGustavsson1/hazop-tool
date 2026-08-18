@@ -3333,6 +3333,106 @@ class OrsStripHeightConsistencyTests(unittest.TestCase):
             panel.deleteLater()
 
 
+class SafeguardRowHeightCompactionTests(unittest.TestCase):
+    """'krymper höjden på safeguards ... för att spara plats när man
+    lägger till flera safeguards' (2026-08-18). Every safeguard under one
+    consequence gets its own physical table row (_apply_spans spans
+    NOD/UTR/DEV/ORS/KON/LOPA/REK/RFORE/SLUT across them all, only SG has
+    real per-row content) — a first version of this feature computed
+    "does this row have content of its own in another column" via
+    table.item(row, c) is None, which is ALWAYS False: _add_row() gives
+    every physical row its own freshly-built item/widget regardless of
+    spanning (setSpan/setCellWidget only change how Qt paints covered
+    cells). That made the whole feature a silent no-op — every safeguard
+    row stayed at full height. Fixed by comparing each column's own span
+    key (from _apply_spans) against the previous row instead."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_sgheight_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_second_and_third_safeguard_rows_are_shorter_than_the_first(self):
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        self.db.add_safeguard(cons_id)
+        self.db.add_safeguard(cons_id)
+        self.db.add_safeguard(cons_id)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            rows = [r for r, m in enumerate(panel._row_meta) if m[2] == cons_id]
+            self.assertEqual(len(rows), 3)
+            heights = [panel._table.rowHeight(r) for r in rows]
+            self.assertGreater(heights[0], heights[1],
+                "the anchor row (carrying ORS/KON/LOPA's real content) must stay tall")
+            self.assertEqual(heights[1], heights[2],
+                "every safeguard-only continuation row must compact to the same height")
+            self.assertLess(heights[1], heights[0],
+                "a pure safeguard continuation row must actually shrink, not silently "
+                "stay at full height (the original no-op bug)")
+        finally:
+            panel.deleteLater()
+
+    def test_a_single_safeguard_is_not_compacted(self):
+        """A cause with exactly one safeguard has no continuation rows at
+        all — its one physical row IS the anchor and must keep full
+        height, not be mistaken for a compactable continuation."""
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        self.db.add_safeguard(cons_id)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+            fm_h_plus_4 = panel._sg_row_height(panel._table.font())
+            self.assertGreater(panel._table.rowHeight(row), fm_h_plus_4,
+                "a lone safeguard row must not be compacted down to the SG-only floor")
+        finally:
+            panel.deleteLater()
+
+    def test_a_new_cause_right_after_a_multi_safeguard_block_is_not_compacted(self):
+        """A fresh cause/deviation immediately following a multi-safeguard
+        block must get its own full-height anchor row — no leftover state
+        from the previous block's continuation rows should leak forward."""
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        devs = self.db.deviations(node_id)
+        cause1 = self.db.add_cause(devs[0]['id'])
+        cons1 = self.db.add_consequence(cause1)
+        self.db.add_safeguard(cons1)
+        self.db.add_safeguard(cons1)
+        cause2 = self.db.add_cause(devs[1]['id'])
+        cons2 = self.db.add_consequence(cause2)
+        self.db.add_safeguard(cons2)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row2 = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons2)
+            fm_h_plus_4 = panel._sg_row_height(panel._table.font())
+            self.assertGreater(panel._table.rowHeight(row2), fm_h_plus_4,
+                "the new cause's own safeguard row must not inherit compaction from "
+                "the previous, unrelated cause's continuation rows")
+        finally:
+            panel.deleteLater()
+
+
 class ConsequenceStepPickerColumnsTests(unittest.TestCase):
     """Regression tests for ConsequenceStepPickerDialog's multi-column
     layout (all _N_STEPS 'Del N' columns shown side by side, replacing an
@@ -16533,10 +16633,11 @@ class OrsStripReworkTests(unittest.TestCase):
     idag. Du kan även skrota pluppen som syns som grön och orange baserat
     på vad som är ifyllt." (2026-08-18) — three changes to the ORS cell's
     _PidDelegate.paint(): the green/yellow/orange/red fill-status dot is
-    gone entirely, the frequency label moved from the tag strip down into
-    its own row at the top of the orsaksfält (right-aligned), and the tag
-    itself is no longer drawn there when the Utrustning column (_C_UTR)
-    already shows the same object identity for the row."""
+    gone entirely, the frequency label moved from the tag strip into the
+    orsaksfält, and the tag itself is hidden on a row whose object is the
+    same as the immediately preceding cause row's — a same-day follow-up
+    replaced an initial, too-broad "hide whenever Utrustning is visible"
+    rule with this consecutive-repeat one (see the tests below)."""
 
     @classmethod
     def setUpClass(cls):
@@ -16603,7 +16704,16 @@ class OrsStripReworkTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_tag_hidden_when_utrustning_column_visible_shown_when_hidden(self):
+    def test_tag_shown_regardless_of_utrustning_visibility_when_it_is_the_only_occurrence(self):
+        """2026-08-18 follow-up ("Orsaken har tidigare visat objekt-tagen
+        i bannern men denna är nu borttagen. Jag vill att denna syns."):
+        an earlier version of this fix hid the ORS tag banner whenever
+        the Utrustning column was merely VISIBLE — that hid it even in
+        views (e.g. clicking an object's own P&ID marker, load_all()'s
+        "all nodes" mode with no repeat) where it never had anything
+        redundant to hide from, so it never showed at all. Column
+        visibility is no longer a factor — see the consecutive-repeat
+        tests below for the rule that replaced it."""
         from hazop import ScenarioTablePanel
         node_id = self.db.add_node()
         eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
@@ -16612,13 +16722,6 @@ class OrsStripReworkTests(unittest.TestCase):
         self.db.update_cause(cause_id, comp_type="Ventil", comp_tag="V-101", equipment_id=eq_id)
         panel = ScenarioTablePanel(self.db)
         try:
-            # Utrustning is hidden by default in the normal single-node
-            # view (a PRE-EXISTING decision, see _set_all_nodes_columns_
-            # visible's own docstring: it was hidden years ago for this
-            # exact reason — "det duplicerade taggen redan visad högst
-            # upp i varje Orsak-cell"). It only becomes visible in
-            # load_all()'s "all nodes" mode, where the ORS-strip's own
-            # copy is now the redundant one instead.
             panel.load_node(node_id)
             row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
             self.assertTrue(panel._table.isColumnHidden(panel._C_UTR),
@@ -16628,7 +16731,7 @@ class OrsStripReworkTests(unittest.TestCase):
                 self._is_dark(image_hidden.pixelColor(x, y))
                 for x in range(0, 90) for y in range(0, 17))
             self.assertTrue(strip_has_tag_hidden,
-                "the tag text must still be drawn when Utrustning is hidden")
+                "the tag text must be drawn when Utrustning is hidden")
 
             panel.load_all()
             row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
@@ -16638,8 +16741,46 @@ class OrsStripReworkTests(unittest.TestCase):
             strip_has_tag_visible = any(
                 self._is_dark(image_visible.pixelColor(x, y))
                 for x in range(0, 90) for y in range(0, 17))
-            self.assertFalse(strip_has_tag_visible,
-                "the tag text must not be drawn when Utrustning already shows the same identity")
+            self.assertTrue(strip_has_tag_visible,
+                "the tag text must ALSO be drawn when Utrustning is visible, as long as "
+                "it isn't a repeat of the immediately preceding row")
+        finally:
+            panel.deleteLater()
+
+    def test_tag_hidden_only_on_a_consecutive_repeat_of_the_same_object(self):
+        """2026-08-18 follow-up ("om det visas flera avikelser efter
+        varandra som tillhör samma objekttagg behöver denna inte
+        repeteras ... tagbannern [kan] försvinna på nummer två i listan
+        och nedåt"): the tag banner is hidden only when this row's object
+        is the SAME as the immediately preceding cause row's — not tied
+        to Utrustning-column visibility at all anymore."""
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        devs = self.db.deviations(node_id)
+        c1 = self.db.add_cause(devs[0]['id'])
+        self.db.update_cause(c1, comp_type="Ventil", comp_tag="V-1")
+        c2 = self.db.add_cause(devs[1]['id'])
+        self.db.update_cause(c2, comp_type="Ventil", comp_tag="V-1")   # same tag, consecutive
+        c3 = self.db.add_cause(devs[2]['id'])
+        self.db.update_cause(c3, comp_type="Pump", comp_tag="P-1")     # different tag
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row1 = next(r for r, m in enumerate(panel._row_meta) if m[1] == c1)
+            row2 = next(r for r, m in enumerate(panel._row_meta) if m[1] == c2)
+            row3 = next(r for r, m in enumerate(panel._row_meta) if m[1] == c3)
+
+            def _tag_visible(row):
+                image = self._render_ors_cell(panel, row)
+                return any(self._is_dark(image.pixelColor(x, y))
+                           for x in range(0, 90) for y in range(0, 17))
+
+            self.assertTrue(_tag_visible(row1),
+                "first occurrence of V-1 must show its tag banner")
+            self.assertFalse(_tag_visible(row2),
+                "an immediate repeat of the same object (V-1) must not repeat the banner")
+            self.assertTrue(_tag_visible(row3),
+                "a different object (P-1) right after must show its own tag banner")
         finally:
             panel.deleteLater()
 
