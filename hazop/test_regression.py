@@ -17326,11 +17326,14 @@ class ShiftClickInsertsTagIntoActiveEditorTests(unittest.TestCase):
 
 
 class NodeMarkupPanelNavigateTests(unittest.TestCase):
-    """NodeMarkupPanel's prev/next node buttons (⬆/⬇) crashed with
+    """The node-markup toolbar's prev/next node buttons (⬆/⬇) crashed with
     TypeError: 'method' object is not iterable — _navigate_prev/
     _navigate_next read `self.db.nodes` (the bound method itself) instead
     of calling `self.db.nodes()` (2026-08-11 crash reports,
-    crash_20260811_162420/162424_TypeError.json)."""
+    crash_20260811_162420/162424_TypeError.json). The toolbar itself was
+    a separate NodeMarkupPanel widget at the time; merged into
+    PropertiesRibbon 2026-08-19 (see NOTES.md "Slå ihop nodmarkup i
+    nodinställningar") — same methods, now on the merged ribbon."""
 
     @classmethod
     def setUpClass(cls):
@@ -17348,9 +17351,10 @@ class NodeMarkupPanelNavigateTests(unittest.TestCase):
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
     def _make_panel(self, node_id):
-        from hazop import NodeMarkupPanel
-        panel = NodeMarkupPanel(self.db)
-        panel.node_id = node_id
+        from hazop import PropertiesRibbon
+        panel = PropertiesRibbon(self.db)
+        panel.set_item(NODE_T, node_id)
+        panel.enter_markup_mode(node_id)
         return panel
 
     def test_navigate_prev_emits_previous_node_id(self):
@@ -17440,7 +17444,7 @@ class NodeMarkupDockingTests(unittest.TestCase):
             try:
                 self.assertFalse(win.tree_panel.isHidden())
                 self.assertFalse(win.props_ribbon.isHidden())
-                self.assertFalse(win.node_markup_panel.isHidden())
+                self.assertTrue(win.props_ribbon._markup_active)
             finally:
                 win._on_close_node_markup()
 
@@ -17465,11 +17469,11 @@ class NodeMarkupDockingTests(unittest.TestCase):
             node_id = win.db.add_node()
             win._on_edit_node_markup(node_id)
             try:
-                win.node_markup_panel._bottom_toggle_btn.setChecked(True)
+                win.props_ribbon._bottom_toggle_btn.setChecked(True)
                 self.assertFalse(win.scenario_panel.isHidden())
                 self.assertTrue(win.markup_table_panel.isHidden())
 
-                win.node_markup_panel._bottom_toggle_btn.setChecked(False)
+                win.props_ribbon._bottom_toggle_btn.setChecked(False)
                 self.assertTrue(win.scenario_panel.isHidden())
                 self.assertFalse(win.markup_table_panel.isHidden())
             finally:
@@ -17479,12 +17483,12 @@ class NodeMarkupDockingTests(unittest.TestCase):
         with _TempDbMainWindow() as win:
             node_id = win.db.add_node()
             win._on_edit_node_markup(node_id)
-            win.node_markup_panel._bottom_toggle_btn.setChecked(True)
+            win.props_ribbon._bottom_toggle_btn.setChecked(True)
             win._on_close_node_markup()
 
             self.assertFalse(win.scenario_panel.isHidden())
             self.assertTrue(win.markup_table_panel.isHidden())
-            self.assertTrue(win.node_markup_panel.isHidden())
+            self.assertFalse(win.props_ribbon._markup_active)
             self.assertFalse(win.tree_panel.isHidden())
             self.assertFalse(win.props_ribbon.isHidden())
 
@@ -17521,8 +17525,8 @@ class NodeMarkupAutoOpenTests(unittest.TestCase):
             node_id = win.db.add_node()
             win._on_selected(NODE_T, node_id)
             try:
-                self.assertFalse(win.node_markup_panel.isHidden())
-                self.assertEqual(win.node_markup_panel.node_id, node_id)
+                self.assertTrue(win.props_ribbon._markup_active)
+                self.assertEqual(win.props_ribbon.node_id, node_id)
             finally:
                 win._on_close_node_markup()
 
@@ -17543,10 +17547,10 @@ class NodeMarkupAutoOpenTests(unittest.TestCase):
             node_id = win.db.add_node()
             dev_id = win.db.deviations(node_id)[0]['id']
             win._on_selected(NODE_T, node_id)
-            self.assertFalse(win.node_markup_panel.isHidden())
+            self.assertTrue(win.props_ribbon._markup_active)
 
             win._on_selected(DEV_T, dev_id)
-            self.assertTrue(win.node_markup_panel.isHidden())
+            self.assertFalse(win.props_ribbon._markup_active)
 
     def test_selecting_a_different_node_rebinds_instead_of_staying_stuck(self):
         with _TempDbMainWindow() as win:
@@ -17554,12 +17558,12 @@ class NodeMarkupAutoOpenTests(unittest.TestCase):
             node_a = win.db.add_node()
             node_b = win.db.add_node()
             win._on_selected(NODE_T, node_a)
-            self.assertEqual(win.node_markup_panel.node_id, node_a)
+            self.assertEqual(win.props_ribbon.node_id, node_a)
 
             win._on_selected(NODE_T, node_b)
             try:
-                self.assertFalse(win.node_markup_panel.isHidden())
-                self.assertEqual(win.node_markup_panel.node_id, node_b)
+                self.assertTrue(win.props_ribbon._markup_active)
+                self.assertEqual(win.props_ribbon.node_id, node_b)
             finally:
                 win._on_close_node_markup()
 
@@ -17570,10 +17574,10 @@ class NodeMarkupAutoOpenTests(unittest.TestCase):
             dev_id = win.db.deviations(node_id)[0]['id']
             cause_id = win.db.add_cause(dev_id)
             win._on_selected(NODE_T, node_id)
-            self.assertFalse(win.node_markup_panel.isHidden())
+            self.assertTrue(win.props_ribbon._markup_active)
 
             win._on_selected(CAUSE_T, cause_id)
-            self.assertTrue(win.node_markup_panel.isHidden())
+            self.assertFalse(win.props_ribbon._markup_active)
 
     def test_activating_a_drawing_tool_switches_bottom_strip_to_markup_table(self):
         with _TempDbMainWindow() as win:
@@ -17659,9 +17663,12 @@ class RedMarkupConsolidationTests(unittest.TestCase):
             panel.deleteLater()
 
     def test_node_markup_panel_has_place_symbol_button(self):
-        from hazop import NodeMarkupPanel
-        panel = NodeMarkupPanel(self.db)
+        from hazop import PropertiesRibbon
+        panel = PropertiesRibbon(self.db)
         try:
+            node_id = self.db.add_node()
+            panel.set_item(NODE_T, node_id)
+            panel.enter_markup_mode(node_id)
             seen = []
             panel.place_symbol_requested.connect(lambda: seen.append(True))
             panel._place_symbol_btn.click()
@@ -17679,7 +17686,7 @@ class RedMarkupConsolidationTests(unittest.TestCase):
                     win._on_place_symbol_requested()
                     mock_open.assert_called_once()
                 self.assertFalse(win.red_markup_panel.isHidden())
-                self.assertTrue(win.node_markup_panel.isHidden())
+                self.assertFalse(win.props_ribbon._markup_active)
                 self.assertEqual(win._return_to_node_markup_node_id, node_id)
             finally:
                 win._on_close_red_markup()
@@ -17693,9 +17700,9 @@ class RedMarkupConsolidationTests(unittest.TestCase):
             win._on_close_red_markup()
 
             self.assertIsNone(win._return_to_node_markup_node_id)
-            self.assertFalse(win.node_markup_panel.isHidden())
+            self.assertTrue(win.props_ribbon._markup_active)
             self.assertTrue(win.red_markup_panel.isHidden())
-            self.assertEqual(win.node_markup_panel.node_id, node_id)
+            self.assertEqual(win.props_ribbon.node_id, node_id)
             win._on_close_node_markup()
 
     def test_closing_red_markup_without_place_symbol_flow_goes_to_welcome(self):

@@ -190,9 +190,36 @@ class PropertiesRibbon(QWidget):
 
     Shows icon buttons for each editable field of the selected item.
     Each button opens a small floating popup for editing that field.
-    Style mirrors NodeMarkupPanel.
+
+    2026-08-19: the P&ID node-markup toolbar (drawing tools, "Lägg ut
+    P&ID-symbol", color, visibility, bottom-panel switch — formerly the
+    separate NodeMarkupPanel widget docked right next to this one) is
+    merged straight into this ribbon's own NODE_T button set (see
+    NOTES.md "Slå ihop nodmarkup i nodinställningar" — Anton: "jag vill
+    att den för nodmarkup integreras i den med nodinställningar så det
+    bara blir en"). It only appears while self._markup_active (toggled
+    by the ✏️ button _build_markup_toggle() adds) — see
+    _build_markup_tools() for the ported widgets/state and
+    enter_markup_mode()/exit_markup_mode() for the public API MainWindow
+    drives it with, mirroring NodeMarkupPanel's old load()/setVisible().
     """
     item_changed = pyqtSignal()   # emitted after any field is saved
+
+    # ── Node markup toolbar signals (2026-08-19, merged in from the old
+    # NodeMarkupPanel — same names/payloads, so MainWindow's existing
+    # slots just get reconnected to this class instead) ────────────────
+    tool_changed             = pyqtSignal(str)
+    all_vis_toggled          = pyqtSignal(bool)
+    style_changed            = pyqtSignal(str, float, int)   # color, opacity, line_width
+    snap_changed             = pyqtSignal(bool)
+    navigate_node_requested  = pyqtSignal(int)   # node_id
+    bottom_panel_toggled     = pyqtSignal(bool)  # True = show HAZOP scenario, False = Nodmarkeringar
+    place_symbol_requested   = pyqtSignal()
+    # Replaces NodeMarkupPanel's one-shot `closed` signal — the toggle
+    # button can flip markup-edit mode back on for the SAME node without
+    # needing to leave/reselect it in the tree (a small improvement over
+    # the old close-only button, which had no way back in).
+    markup_mode_toggled      = pyqtSignal(bool)
 
     _BTN_SZ  = 50
     _WIDTH   = 62
@@ -206,6 +233,22 @@ class PropertiesRibbon(QWidget):
     # Shared style for the OK button inside floating popups
     _OK_BTN_SS = ("background:#2F5FD0;color:white;border:none;"
                   "border-radius:4px;padding:4px 16px;")
+    # Checkable-button style for the markup toggle + tool buttons —
+    # ported from NodeMarkupPanel._btn_ss (2026-08-19).
+    _TOOL_BTN_SS = (
+        "QPushButton{border:1px solid #E2E3E1;border-radius:5px;"
+        "background:#FFFFFF;padding:0px;}"
+        "QPushButton:checked{background:#2F5FD0;border-color:#2F5FD0;}"
+        "QPushButton:hover:!checked{background:#F5F5F3;border-color:#CFD1CE;}")
+
+    _MARKUP_TOOLS = [
+        ('select',   'select',   'Välj/flytta'),
+        ('polygon',  'polygon',  'Rita polygon'),
+        ('polyline', 'polyline', 'Rita polylinje'),
+        ('smart',    'smart',    'Smart polylinje'),
+        ('text',     'text',     'Lägg ut nodnamn'),
+        ('comment',  'comment',  'Lägg till kommentar'),
+    ]
 
     def __init__(self, db, main_window=None, parent=None):
         super().__init__(parent)
@@ -215,12 +258,32 @@ class PropertiesRibbon(QWidget):
         self._id         = None
         self._btns       = []
 
+        # ── Node markup toolbar state (2026-08-19, merged in from the
+        # old NodeMarkupPanel — see class docstring) ────────────────────
+        self._markup_active = False
+        self._current_tool  = 'select'
+        self._color         = MARKUP_COLORS[5]
+        self._opacity       = 0.45
+        self._width         = 12
+        self._font_size     = 24
+        self._snap          = True
+        self._tool_btns     = {}
+        self._style_popup   = None
+
         self.setFixedWidth(self._WIDTH)
         self.setStyleSheet("background:#FBFBFA;")
         self._outer = QVBoxLayout(self)
         self._outer.setContentsMargins(6, 8, 6, 8)
         self._outer.setSpacing(3)
         self._outer.addStretch()
+
+    @property
+    def node_id(self):
+        """Convenience alias for MainWindow call sites that used to read
+        NodeMarkupPanel.node_id — self._id already IS the node id whenever
+        self._type == NODE_T (the generic "currently shown item" field
+        every type uses)."""
+        return self._id if self._type == NODE_T else None
 
     # ── Public API ────────────────────────────────────────────────────────────
     def set_item(self, type_: int, id_: int):
@@ -235,15 +298,58 @@ class PropertiesRibbon(QWidget):
         self._id   = None
         self._rebuild()
 
+    def enter_markup_mode(self, node_id):
+        """Bind and show the P&ID markup toolbar for node_id — mirrors
+        the old, separate NodeMarkupPanel.load() + setVisible(True)
+        (2026-08-19, see NOTES.md "Slå ihop nodmarkup i
+        nodinställningar"). Idempotent: safe to call again for the same
+        or a different node while already active (matches
+        MainWindow._on_edit_node_markup's own "rebinding is idempotent"
+        note) — callers are expected to have already called
+        set_item(NODE_T, node_id) so self._id/self._type are current."""
+        self._markup_active = True
+        if self._type == NODE_T:
+            self._rebuild()
+            self._on_tool(self._current_tool)
+
+    def exit_markup_mode(self):
+        """Mirrors the old NodeMarkupPanel.setVisible(False) — hides the
+        markup toolbar section but leaves the rest of this ribbon (the
+        plain node-settings buttons) untouched."""
+        if not self._markup_active:
+            return
+        self._markup_active = False
+        if self._type == NODE_T:
+            self._rebuild()
+
+    def set_bottom_toggle_checked(self, checked):
+        """Programmatic set (e.g. on entering markup-edit mode) that must
+        not re-emit bottom_panel_toggled — MainWindow already applies the
+        resulting visibility directly wherever it calls this."""
+        if getattr(self, '_bottom_toggle_btn', None) is None:
+            return
+        self._bottom_toggle_btn.blockSignals(True)
+        self._bottom_toggle_btn.setChecked(checked)
+        self._bottom_toggle_btn.blockSignals(False)
+
+    def get_current_style(self):
+        return self._color, self._opacity, self._width, self._font_size
+
     # ── Internal ──────────────────────────────────────────────────────────────
     def _rebuild(self):
-        # Single-pass teardown: drain the layout, deleting widgets only
+        # Single-pass teardown: drain the layout, deleting widgets only.
+        # Every markup-toolbar widget below is added as a real QWidget
+        # (never a bare nested QLayout) specifically so this loop's
+        # `item.widget().deleteLater()` can find and clean it up on the
+        # next rebuild — a raw layout item has no widget for this to
+        # find, which would leak its child buttons every time.
         while self._outer.count():
             item = self._outer.takeAt(0)
             w = item.widget()
             if w:
                 w.deleteLater()
         self._btns.clear()
+        self._tool_btns = {}
 
         buttons = self._buttons_for_type()
         for spec in buttons:
@@ -271,7 +377,238 @@ class PropertiesRibbon(QWidget):
                 btn.clicked.connect(lambda _, s=slot, b=btn: s(b))
                 self._outer.addWidget(btn)
                 self._btns.append(btn)
+
+        if self._type == NODE_T:
+            self._build_markup_toggle()
+            if self._markup_active:
+                self._build_markup_tools()
+
         self._outer.addStretch()
+
+    def _build_markup_toggle(self):
+        """✏️ checkable toggle — replaces NodeMarkupPanel's old one-shot
+        "✕ Avsluta" button. See markup_mode_toggled's own docstring for
+        why this needs to be a toggle rather than a close button."""
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
+        sep.setFixedHeight(CONFIG['H_SEP_LINE'])
+        self._outer.addWidget(sep)
+        self._btns.append(sep)
+
+        emoji = '✏️'
+        icon_name = _EMOJI_ICON.get(emoji)
+        btn = QPushButton() if icon_name else QPushButton(emoji)
+        if icon_name:
+            btn.setIcon(_icon(icon_name, 18))
+            btn.setIconSize(QSize(18, 18))
+        btn.setFixedSize(self._BTN_SZ, self._BTN_SZ)
+        btn.setCheckable(True)
+        btn.setChecked(self._markup_active)
+        btn.setToolTip(
+            "Sluta redigera markup (P&ID-objekt klickbara igen)"
+            if self._markup_active else "Redigera markup på P&ID")
+        btn.setStyleSheet(self._TOOL_BTN_SS)
+        btn.toggled.connect(self._on_markup_toggle_clicked)
+        self._outer.addWidget(btn)
+        self._btns.append(btn)
+        self._markup_toggle_btn = btn
+
+    def _on_markup_toggle_clicked(self, checked):
+        self.markup_mode_toggled.emit(checked)
+
+    def _build_markup_tools(self):
+        """P&ID node-markup toolbar — merged in from the old, separate
+        NodeMarkupPanel widget (2026-08-19, see NOTES.md "Slå ihop
+        nodmarkup i nodinställningar"). Only built while
+        self._markup_active (the toggle button above is checked); torn
+        down and rebuilt fresh by _rebuild()'s own teardown loop like
+        every other button here."""
+        ISZ = 28
+
+        # ── Navigation row — a single container QWidget (not a bare
+        # QHBoxLayout added straight to self._outer), so _rebuild()'s
+        # teardown loop has a widget to find and delete on the next pass.
+        nav_widget = QWidget()
+        nav_lay = QHBoxLayout(nav_widget)
+        nav_lay.setContentsMargins(0, 0, 0, 0)
+        nav_lay.setSpacing(2)
+        self._prev_btn = QPushButton()
+        self._prev_btn.setFixedSize(24, self._BTN_SZ)
+        self._prev_btn.setToolTip("Föregående nod (⬆)")
+        self._prev_btn.setIcon(_mk_icon('arrow_up', 16))
+        self._prev_btn.setIconSize(QSize(16, 16))
+        self._prev_btn.setStyleSheet(self._TOOL_BTN_SS)
+        self._prev_btn.clicked.connect(self._navigate_prev)
+        nav_lay.addWidget(self._prev_btn)
+
+        self._next_btn = QPushButton()
+        self._next_btn.setFixedSize(24, self._BTN_SZ)
+        self._next_btn.setToolTip("Nästa nod (⬇)")
+        self._next_btn.setIcon(_mk_icon('arrow_down', 16))
+        self._next_btn.setIconSize(QSize(16, 16))
+        self._next_btn.setStyleSheet(self._TOOL_BTN_SS)
+        self._next_btn.clicked.connect(self._navigate_next)
+        nav_lay.addWidget(self._next_btn)
+        self._outer.addWidget(nav_widget)
+        self._btns.append(nav_widget)
+
+        sep0 = QFrame(); sep0.setFrameShape(QFrame.Shape.HLine)
+        sep0.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
+        self._outer.addWidget(sep0)
+        self._btns.append(sep0)
+
+        # ── Tool buttons — each click selects tool AND opens per-tool popup ──
+        self._tool_btns = {}
+        for tool, icon_name, tip in self._MARKUP_TOOLS:
+            btn = QPushButton()
+            btn.setFixedSize(self._BTN_SZ, self._BTN_SZ)
+            btn.setCheckable(True)
+            btn.setToolTip(tip)
+            btn.setIcon(_mk_icon(icon_name, ISZ))
+            btn.setIconSize(QSize(ISZ, ISZ))
+            btn.setStyleSheet(self._TOOL_BTN_SS)
+            btn.clicked.connect(lambda _, t=tool, b=btn: self._on_tool(t, b))
+            self._outer.addWidget(btn)
+            self._btns.append(btn)
+            self._tool_btns[tool] = btn
+
+        # ── Lägg ut P&ID-symbol (moved in from Red markup, 2026-08-17) ────
+        symbol_pm = QPixmap(ISZ, ISZ)
+        symbol_pm.fill(Qt.GlobalColor.transparent)
+        _p = QPainter(symbol_pm)
+        _p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        _p.setPen(QPen(QColor("#CC0000"), 3))
+        _p.drawText(QRect(0, 0, ISZ, ISZ), Qt.AlignmentFlag.AlignCenter, "⚙")
+        _p.end()
+        symbol_icon = QIcon()
+        symbol_icon.addPixmap(symbol_pm, QIcon.Mode.Normal)
+        self._place_symbol_btn = QPushButton()
+        self._place_symbol_btn.setFixedSize(self._BTN_SZ, self._BTN_SZ)
+        self._place_symbol_btn.setToolTip("Lägg ut P&ID-symbol")
+        self._place_symbol_btn.setIcon(symbol_icon)
+        self._place_symbol_btn.setIconSize(QSize(ISZ, ISZ))
+        self._place_symbol_btn.setStyleSheet(self._TOOL_BTN_SS)
+        self._place_symbol_btn.clicked.connect(self.place_symbol_requested.emit)
+        self._outer.addWidget(self._place_symbol_btn)
+        self._btns.append(self._place_symbol_btn)
+
+        sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
+        self._outer.addWidget(sep2)
+        self._btns.append(sep2)
+
+        # ── Color strip ────────────────────────────────────────────────
+        self._color_strip = QLabel()
+        self._color_strip.setFixedHeight(CONFIG['H_COLOR_STRIP'])
+        self._color_strip.setStyleSheet(
+            f"background:{self._color};border-radius:3px;border:none;")
+        self._outer.addWidget(self._color_strip)
+        self._btns.append(self._color_strip)
+
+        sep3 = QFrame(); sep3.setFrameShape(QFrame.Shape.HLine)
+        sep3.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
+        self._outer.addWidget(sep3)
+        self._btns.append(sep3)
+
+        # ── Visibility toggle ──────────────────────────────────────────
+        self._all_vis_btn = QPushButton()
+        self._all_vis_btn.setFixedSize(self._BTN_SZ, self._BTN_SZ)
+        self._all_vis_btn.setCheckable(True)
+        self._all_vis_btn.setChecked(True)
+        self._all_vis_btn.setToolTip("Dölj/visa alla markeringar")
+        eye_icon = QIcon()
+        eye_icon.addPixmap(_mk_pm('eye', ISZ, QColor("#ffffff")),
+                           QIcon.Mode.Normal, QIcon.State.Off)
+        eye_icon.addPixmap(_mk_pm('eye', ISZ, QColor("#ffffff")),
+                           QIcon.Mode.Normal, QIcon.State.On)
+        self._all_vis_btn.setIcon(eye_icon)
+        self._all_vis_btn.setIconSize(QSize(ISZ, ISZ))
+        self._all_vis_btn.setStyleSheet(
+            "QPushButton{border:none;border-radius:5px;padding:0px;"
+            "background:#27AE60;}"
+            "QPushButton:!checked{background:#E74C3C;}")
+        self._all_vis_btn.clicked.connect(self._on_all_vis)
+        self._outer.addWidget(self._all_vis_btn)
+        self._btns.append(self._all_vis_btn)
+
+        sep4 = QFrame(); sep4.setFrameShape(QFrame.Shape.HLine)
+        sep4.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
+        self._outer.addWidget(sep4)
+        self._btns.append(sep4)
+
+        # ── Bottom-panel switch: Nodmarkeringar <-> HAZOP scenario ──────
+        self._bottom_toggle_btn = QPushButton("⇄")
+        self._bottom_toggle_btn.setFixedSize(self._BTN_SZ, self._BTN_SZ)
+        self._bottom_toggle_btn.setCheckable(True)
+        self._bottom_toggle_btn.setToolTip(
+            "Växla nedre fältet: Nodmarkeringar / HAZOP scenario")
+        self._bottom_toggle_btn.setStyleSheet(self._TOOL_BTN_SS)
+        self._bottom_toggle_btn.toggled.connect(self.bottom_panel_toggled.emit)
+        self._outer.addWidget(self._bottom_toggle_btn)
+        self._btns.append(self._bottom_toggle_btn)
+
+    def _on_tool(self, tool, btn=None):
+        self._current_tool = tool
+        for t, b in self._tool_btns.items():
+            b.setChecked(t == tool)
+        self.tool_changed.emit(tool)
+        # Open per-tool popup for all drawing tools
+        if tool != 'select' and btn is not None:
+            self._show_tool_popup(tool, btn)
+
+    def _show_tool_popup(self, tool, btn):
+        if self._style_popup is None:
+            self._style_popup = _StylePopup(self)
+        self._style_popup.show_for(tool, btn)
+
+    def _on_all_vis(self, checked):
+        if self._type != NODE_T or self._id is None:
+            return
+        self.db.set_all_node_markups_visible(self._id, checked)
+        self.all_vis_toggled.emit(checked)
+
+    def _apply_color(self, hex_c):
+        self._color = hex_c
+        if getattr(self, '_color_strip', None) is not None:
+            self._color_strip.setStyleSheet(f"background:{hex_c};border-radius:3px;")
+        self.style_changed.emit(self._color, self._opacity, self._width)
+
+    def _apply_opacity(self, val):
+        self._opacity = val / 100.0
+        self.style_changed.emit(self._color, self._opacity, self._width)
+
+    def _apply_width(self, val):
+        self._width = val
+        self.style_changed.emit(self._color, self._opacity, self._width)
+
+    def _apply_font(self, val):
+        self._font_size = val
+
+    def _apply_snap(self, enabled):
+        self._snap = enabled
+        self.snap_changed.emit(enabled)
+
+    def _navigate_prev(self):
+        if self._type != NODE_T or self._id is None:
+            return
+        all_nodes = [r[0] for r in self.db.nodes()]
+        try:
+            current_idx = all_nodes.index(self._id)
+            if current_idx > 0:
+                self.navigate_node_requested.emit(all_nodes[current_idx - 1])
+        except (ValueError, IndexError):
+            pass
+
+    def _navigate_next(self):
+        if self._type != NODE_T or self._id is None:
+            return
+        all_nodes = [r[0] for r in self.db.nodes()]
+        try:
+            current_idx = all_nodes.index(self._id)
+            if current_idx < len(all_nodes) - 1:
+                self.navigate_node_requested.emit(all_nodes[current_idx + 1])
+        except (ValueError, IndexError):
+            pass
 
     def _buttons_for_type(self) -> list:
         # Returns bound-method references (self.method) so the lambda in
@@ -617,285 +954,6 @@ class PropertiesRibbon(QWidget):
             QTimer.singleShot(CONFIG['TIMER_NAV_QUICK_MS'],
                              partial(self._mw.pid_panel.navigate_to_marker,
                                     rows[0], rows[1], rows[2]))
-
-
-class NodeMarkupPanel(QWidget):
-    """Narrow vertical ribbon for node markup tool selection."""
-    closed          = pyqtSignal()
-    tool_changed    = pyqtSignal(str)
-    all_vis_toggled = pyqtSignal(bool)
-    style_changed   = pyqtSignal(str, float, int)   # color, opacity, line_width
-    snap_changed    = pyqtSignal(bool)
-    navigate_node_requested = pyqtSignal(int)  # node_id
-    bottom_panel_toggled = pyqtSignal(bool)   # True = show HAZOP scenario, False = Nodmarkeringar
-    # "Lägg ut P&ID-symbol" moved in from Red markup (2026-08-17, see
-    # NOTES.md "Red markup konsolideras") — MainWindow briefly switches
-    # into the (separate, trimmed-down) red-markup edit mode to place the
-    # symbol, then returns here automatically.
-    place_symbol_requested = pyqtSignal()
-
-    _TOOLS = [
-        ('select',   'select',   'Välj/flytta'),
-        ('polygon',  'polygon',  'Rita polygon'),
-        ('polyline', 'polyline', 'Rita polylinje'),
-        ('smart',    'smart',    'Smart polylinje'),
-        ('text',     'text',     'Lägg ut nodnamn'),
-        ('comment',  'comment',  'Lägg till kommentar'),
-    ]
-
-    def __init__(self, db: Database, parent=None):
-        super().__init__(parent)
-        self.db            = db
-        self.node_id       = None
-        self._color        = MARKUP_COLORS[5]
-        self._opacity      = 0.45
-        self._width        = 12
-        self._font_size    = 24
-        self._snap         = True
-        self._current_tool = 'select'
-        self._popup        = None
-
-        SZ = 48
-        ISZ = 28   # icon size within button
-        self.setFixedWidth(CONFIG['W_SPINNER'])
-        self.setStyleSheet("background:#FFFFFF; border-right: 1px solid #E2E3E1;")
-
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(5, 6, 5, 6)
-        outer.setSpacing(3)
-
-        _btn_ss = (
-            "QPushButton{border:1px solid #E2E3E1;border-radius:5px;"
-            "background:#FFFFFF;padding:0px;}"
-            "QPushButton:checked{background:#2F5FD0;border-color:#2F5FD0;}"
-            "QPushButton:hover:!checked{background:#F5F5F3;border-color:#CFD1CE;}")
-
-        # ── Navigation row ────────────────────────────────────────────────────
-        nav_lay = QHBoxLayout()
-        nav_lay.setContentsMargins(0, 0, 0, 0)
-        nav_lay.setSpacing(2)
-
-        self._prev_btn = QPushButton()
-        self._prev_btn.setFixedSize(24, SZ)
-        self._prev_btn.setToolTip("Föregående nod (⬆)")
-        self._prev_btn.setIcon(_mk_icon('arrow_up', 16))
-        self._prev_btn.setIconSize(QSize(16, 16))
-        self._prev_btn.setStyleSheet(_btn_ss)
-        self._prev_btn.clicked.connect(self._navigate_prev)
-        nav_lay.addWidget(self._prev_btn)
-
-        self._next_btn = QPushButton()
-        self._next_btn.setFixedSize(24, SZ)
-        self._next_btn.setToolTip("Nästa nod (⬇)")
-        self._next_btn.setIcon(_mk_icon('arrow_down', 16))
-        self._next_btn.setIconSize(QSize(16, 16))
-        self._next_btn.setStyleSheet(_btn_ss)
-        self._next_btn.clicked.connect(self._navigate_next)
-        nav_lay.addWidget(self._next_btn)
-
-        outer.addLayout(nav_lay)
-
-        # ── Close button ──────────────────────────────────────────────────────
-        close_btn = QPushButton()
-        close_btn.setFixedSize(SZ, SZ)
-        close_btn.setToolTip("Avsluta redigering")
-        close_icon = QIcon()
-        close_icon.addPixmap(_mk_pm('close', ISZ, QColor("#ffffff")))
-        close_btn.setIcon(close_icon)
-        close_btn.setIconSize(QSize(ISZ, ISZ))
-        close_btn.setStyleSheet(
-            "QPushButton{background:#546E7A;border:none;border-radius:5px;padding:0px;}"
-            "QPushButton:hover{background:#37474F;}")
-        close_btn.clicked.connect(self.closed.emit)
-        outer.addWidget(close_btn)
-
-        sep1 = QFrame(); sep1.setFrameShape(QFrame.Shape.HLine)
-        sep1.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
-        outer.addWidget(sep1)
-
-        # ── Tool buttons — each click selects tool AND opens per-tool popup ───
-        self._tool_btns = {}
-        for tool, icon_name, tip in self._TOOLS:
-            btn = QPushButton()
-            btn.setFixedSize(SZ, SZ)
-            btn.setCheckable(True)
-            btn.setToolTip(tip)
-            btn.setIcon(_mk_icon(icon_name, ISZ))
-            btn.setIconSize(QSize(ISZ, ISZ))
-            btn.setStyleSheet(_btn_ss)
-            btn.clicked.connect(lambda _, t=tool, b=btn: self._on_tool(t, b))
-            outer.addWidget(btn)
-            self._tool_btns[tool] = btn
-
-        # ── Lägg ut P&ID-symbol (moved in from Red markup, 2026-08-17) ─────────
-        symbol_pm = QPixmap(ISZ, ISZ)
-        symbol_pm.fill(Qt.GlobalColor.transparent)
-        _p = QPainter(symbol_pm)
-        _p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        _p.setPen(QPen(QColor("#CC0000"), 3))
-        _p.drawText(QRect(0, 0, ISZ, ISZ), Qt.AlignmentFlag.AlignCenter, "⚙")
-        _p.end()
-        symbol_icon = QIcon()
-        symbol_icon.addPixmap(symbol_pm, QIcon.Mode.Normal)
-        self._place_symbol_btn = QPushButton()
-        self._place_symbol_btn.setFixedSize(SZ, SZ)
-        self._place_symbol_btn.setToolTip("Lägg ut P&ID-symbol")
-        self._place_symbol_btn.setIcon(symbol_icon)
-        self._place_symbol_btn.setIconSize(QSize(ISZ, ISZ))
-        self._place_symbol_btn.setStyleSheet(_btn_ss)
-        self._place_symbol_btn.clicked.connect(self.place_symbol_requested.emit)
-        outer.addWidget(self._place_symbol_btn)
-
-        sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
-        sep2.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
-        outer.addWidget(sep2)
-
-        # ── Color strip ───────────────────────────────────────────────────────
-        self._color_strip = QLabel()
-        self._color_strip.setFixedHeight(CONFIG['H_COLOR_STRIP'])
-        self._color_strip.setStyleSheet(
-            f"background:{self._color};border-radius:3px;border:none;")
-        outer.addWidget(self._color_strip)
-
-        sep3 = QFrame(); sep3.setFrameShape(QFrame.Shape.HLine)
-        sep3.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
-        outer.addWidget(sep3)
-
-        # ── Visibility toggle ─────────────────────────────────────────────────
-        self._all_vis_btn = QPushButton()
-        self._all_vis_btn.setFixedSize(SZ, SZ)
-        self._all_vis_btn.setCheckable(True)
-        self._all_vis_btn.setChecked(True)
-        self._all_vis_btn.setToolTip("Dölj/visa alla markeringar")
-        eye_icon = QIcon()
-        eye_icon.addPixmap(_mk_pm('eye', ISZ, QColor("#ffffff")),
-                           QIcon.Mode.Normal, QIcon.State.Off)
-        eye_icon.addPixmap(_mk_pm('eye', ISZ, QColor("#ffffff")),
-                           QIcon.Mode.Normal, QIcon.State.On)
-        self._all_vis_btn.setIcon(eye_icon)
-        self._all_vis_btn.setIconSize(QSize(ISZ, ISZ))
-        self._all_vis_btn.setStyleSheet(
-            "QPushButton{border:none;border-radius:5px;padding:0px;"
-            "background:#27AE60;}"
-            "QPushButton:!checked{background:#E74C3C;}")
-        self._all_vis_btn.clicked.connect(self._on_all_vis)
-        outer.addWidget(self._all_vis_btn)
-
-        sep4 = QFrame(); sep4.setFrameShape(QFrame.Shape.HLine)
-        sep4.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
-        outer.addWidget(sep4)
-
-        # ── Bottom-panel switch: Nodmarkeringar <-> HAZOP scenario ─────────────
-        # (2026-08-17, see NOTES.md "nodmarkup dockas till höger") — while
-        # editing markup, the bottom strip defaults to the Nodmarkeringar
-        # table; this lets the user peek at HAZOP scenario without leaving
-        # markup-edit mode.
-        self._bottom_toggle_btn = QPushButton("⇄")
-        self._bottom_toggle_btn.setFixedSize(SZ, SZ)
-        self._bottom_toggle_btn.setCheckable(True)
-        self._bottom_toggle_btn.setToolTip(
-            "Växla nedre fältet: Nodmarkeringar / HAZOP scenario")
-        self._bottom_toggle_btn.setStyleSheet(_btn_ss)
-        self._bottom_toggle_btn.toggled.connect(self.bottom_panel_toggled.emit)
-        outer.addWidget(self._bottom_toggle_btn)
-
-        outer.addStretch()
-        self._on_tool('select')
-
-    # ── Public API ────────────────────────────────────────────────────────────
-
-    def load(self, node_id):
-        self.node_id = node_id
-        self._all_vis_btn.setChecked(True)
-        self._on_tool('select')
-
-    def set_bottom_toggle_checked(self, checked):
-        """Programmatic set (e.g. on entering markup-edit mode) that must
-        not re-emit bottom_panel_toggled — MainWindow already applies the
-        resulting visibility directly wherever it calls this."""
-        self._bottom_toggle_btn.blockSignals(True)
-        self._bottom_toggle_btn.setChecked(checked)
-        self._bottom_toggle_btn.blockSignals(False)
-
-    def refresh(self):
-        pass
-
-    def on_markup_saved(self, mu_id):
-        pass
-
-    def select_markup(self, mu_id):
-        pass
-
-    def get_current_style(self):
-        return self._color, self._opacity, self._width, self._font_size
-
-    # ── Internal ──────────────────────────────────────────────────────────────
-
-    def _on_tool(self, tool, btn=None):
-        self._current_tool = tool
-        for t, b in self._tool_btns.items():
-            b.setChecked(t == tool)
-        self.tool_changed.emit(tool)
-        # Open per-tool popup for all drawing tools
-        if tool != 'select' and btn is not None:
-            self._show_tool_popup(tool, btn)
-
-    def _show_tool_popup(self, tool, btn):
-        if self._popup is None:
-            self._popup = _StylePopup(self)
-        self._popup.show_for(tool, btn)
-
-    def _on_all_vis(self, checked):
-        if self.node_id is None:
-            return
-        self.db.set_all_node_markups_visible(self.node_id, checked)
-        self.all_vis_toggled.emit(checked)
-
-    def _apply_color(self, hex_c):
-        self._color = hex_c
-        self._color_strip.setStyleSheet(f"background:{hex_c};border-radius:3px;")
-        self.style_changed.emit(self._color, self._opacity, self._width)
-
-    def _apply_opacity(self, val):
-        self._opacity = val / 100.0
-        self.style_changed.emit(self._color, self._opacity, self._width)
-
-    def _apply_width(self, val):
-        self._width = val
-        self.style_changed.emit(self._color, self._opacity, self._width)
-
-    def _apply_font(self, val):
-        self._font_size = val
-
-    def _apply_snap(self, enabled):
-        self._snap = enabled
-        self.snap_changed.emit(enabled)
-
-    def _navigate_prev(self):
-        """Jump to previous node."""
-        if self.node_id is None:
-            return
-        all_nodes = [r[0] for r in self.db.nodes()]
-        try:
-            current_idx = all_nodes.index(self.node_id)
-            if current_idx > 0:
-                next_node_id = all_nodes[current_idx - 1]
-                self.navigate_node_requested.emit(next_node_id)
-        except (ValueError, IndexError):
-            pass
-
-    def _navigate_next(self):
-        """Jump to next node."""
-        if self.node_id is None:
-            return
-        all_nodes = [r[0] for r in self.db.nodes()]
-        try:
-            current_idx = all_nodes.index(self.node_id)
-            if current_idx < len(all_nodes) - 1:
-                next_node_id = all_nodes[current_idx + 1]
-                self.navigate_node_requested.emit(next_node_id)
-        except (ValueError, IndexError):
-            pass
 
 
 class _MarkupStyleDialog(QDialog):

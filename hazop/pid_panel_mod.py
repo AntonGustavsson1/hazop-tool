@@ -2664,8 +2664,31 @@ class PIDPanel(QWidget):
             self._active_symbol_id = None
         self.set_active_node(node_id)
         self._set_mode(MODE_MARKUP_SELECT)
-        self.viewer.markup_draw_finished.connect(self._on_viewer_markup_drawn)
-        self.viewer.markup_item_clicked.connect(self._on_viewer_markup_clicked)
+        # UniqueConnection (PyQt6 raises TypeError on a duplicate attempt
+        # rather than silently ignoring it, hence the try/except — same
+        # defensive style already used for the disconnects below):
+        # enter_markup_edit()/enter_red_markup_edit() are documented as
+        # idempotent — re-entering (rebinding to the same or a different
+        # node) while already active is expected and, since the
+        # 2026-08-19 ribbon merge (see NOTES.md "Slå ihop nodmarkup i
+        # nodinställningar"), more frequent — the ✏️ toggle button lets a
+        # user flip in/out of markup mode repeatedly for one node without
+        # ever calling exit_markup_mode() first. Without this guard, each
+        # re-entry stacked another connection, so a single draw fired
+        # _on_viewer_markup_drawn/_on_viewer_markup_clicked once per
+        # (re-)entry instead of once — a real latent bug found while
+        # verifying that merge, not previously exercised because entering
+        # only ever happened once per node before.
+        try:
+            self.viewer.markup_draw_finished.connect(
+                self._on_viewer_markup_drawn, Qt.ConnectionType.UniqueConnection)
+        except TypeError:
+            pass
+        try:
+            self.viewer.markup_item_clicked.connect(
+                self._on_viewer_markup_clicked, Qt.ConnectionType.UniqueConnection)
+        except TypeError:
+            pass
 
     def enter_markup_edit(self, node_id):
         """Enter markup editing mode for a node: show existing markup + enable tools."""

@@ -65,7 +65,7 @@ from settings_panels import (
     StudyManagementPanel,
 )
 from node_markup import (
-    PropertiesRibbon, NodeMarkupPanel, MarkupTablePanel, RedMarkupPanel,
+    PropertiesRibbon, MarkupTablePanel, RedMarkupPanel,
     RedMarkupTablePanel,
 )
 from worksheet import HAZOPWorksheet
@@ -1166,20 +1166,21 @@ class MainWindow(QMainWindow):
         self.pid_panel.setMinimumWidth(400)
         self._h_splitter.addWidget(self.pid_panel)
 
-        # Narrow properties ribbon
+        # Narrow properties ribbon — also carries the P&ID node-markup
+        # toolbar now (2026-08-19, see NOTES.md "Slå ihop nodmarkup i
+        # nodinställningar"): the old, separate NodeMarkupPanel widget
+        # that used to occupy its own _h_splitter slot right here is
+        # gone — its buttons live inside props_ribbon's own NODE_T button
+        # set, shown only while props_ribbon._markup_active.
         self.props_ribbon = PropertiesRibbon(self.db, main_window=self)
         self.props_ribbon.item_changed.connect(self._on_props_changed)
         self._h_splitter.addWidget(self.props_ribbon)
-
-        self.node_markup_panel = NodeMarkupPanel(self.db)
-        self.node_markup_panel.setVisible(False)
-        self._h_splitter.addWidget(self.node_markup_panel)
 
         self.red_markup_panel = RedMarkupPanel(self.db)
         self.red_markup_panel.setVisible(False)
         self._h_splitter.addWidget(self.red_markup_panel)
 
-        self._h_splitter.setSizes([260, 650, 62, 0, 0])
+        self._h_splitter.setSizes([260, 650, 62, 0])
         self.view_stack.addWidget(self._h_splitter)
 
         # Bottom pane of the OUTER splitter (full window width, below the
@@ -1294,22 +1295,25 @@ class MainWindow(QMainWindow):
         self.tree_panel.node_markup_vis_requested.connect(self._on_node_markup_vis)
         self.tree_panel.node_jump_to_markup.connect(self._on_jump_to_node_markup)
 
-        # Node markup ribbon signals
-        self.node_markup_panel.closed.connect(self._on_close_node_markup)
-        self.node_markup_panel.tool_changed.connect(
+        # Node markup toolbar signals (2026-08-19: merged into
+        # PropertiesRibbon — see NOTES.md "Slå ihop nodmarkup i
+        # nodinställningar"; same signal names/payloads as the old,
+        # separate NodeMarkupPanel, just a different sender)
+        self.props_ribbon.markup_mode_toggled.connect(self._on_markup_mode_toggled)
+        self.props_ribbon.tool_changed.connect(
             lambda t: self.pid_panel.set_markup_tool(
-                t, *self.node_markup_panel.get_current_style()[:3]))
-        self.node_markup_panel.tool_changed.connect(self._on_node_markup_tool_activated)
-        self.node_markup_panel.all_vis_toggled.connect(
+                t, *self.props_ribbon.get_current_style()[:3]))
+        self.props_ribbon.tool_changed.connect(self._on_node_markup_tool_activated)
+        self.props_ribbon.all_vis_toggled.connect(
             lambda _: self.pid_panel.refresh_markup_overlays())
-        self.node_markup_panel.style_changed.connect(
+        self.props_ribbon.style_changed.connect(
             lambda color, opacity, width: self.pid_panel.viewer.set_pen_style(
                 color, width, int(opacity * 210)))
-        self.node_markup_panel.snap_changed.connect(
+        self.props_ribbon.snap_changed.connect(
             self.pid_panel.viewer.set_snap)
-        self.node_markup_panel.navigate_node_requested.connect(self._on_edit_node_markup)
-        self.node_markup_panel.bottom_panel_toggled.connect(self._on_toggle_bottom_panel)
-        self.node_markup_panel.place_symbol_requested.connect(self._on_place_symbol_requested)
+        self.props_ribbon.navigate_node_requested.connect(self._on_markup_navigate_node_requested)
+        self.props_ribbon.bottom_panel_toggled.connect(self._on_toggle_bottom_panel)
+        self.props_ribbon.place_symbol_requested.connect(self._on_place_symbol_requested)
         self._return_to_node_markup_node_id = None
         # Red markup ribbon signals
         self.red_markup_panel.closed.connect(self._on_close_red_markup)
@@ -1551,7 +1555,7 @@ class MainWindow(QMainWindow):
                         self.scenario_panel.load_deviation(cause['deviation_id'])
                     else:
                         self.scenario_panel.load_consequence(cons['id'])
-        if type_ != NODE_T and not self.node_markup_panel.isHidden():
+        if type_ != NODE_T and self.props_ribbon._markup_active:
             self._on_close_node_markup()
 
     def _on_scenario_item_edited(self, type_, id_):
@@ -1577,7 +1581,7 @@ class MainWindow(QMainWindow):
         self.scenario_panel.clear()
         self.pid_panel.clear_active_selection()
         self.pid_panel.reload_overlays()
-        if not self.node_markup_panel.isHidden():
+        if self.props_ribbon._markup_active:
             self._on_close_node_markup()
 
     def _on_sheets_changed(self):
@@ -1876,7 +1880,8 @@ class MainWindow(QMainWindow):
     def _on_edit_node_markup(self, node_id):
         """Entered either automatically (selecting a Node in the tree, see
         _on_selected) or explicitly (tree right-click → 'Editera
-        nodmarkup', or returning from a red-markup symbol-placement
+        nodmarkup', the ✏️ toggle in props_ribbon, prev/next-node
+        navigation, or returning from a red-markup symbol-placement
         detour). Rebinding is idempotent — calling this again for a
         different node while already editing just re-targets everything
         at the new node, matching "ritar jag in något i noden skall detta
@@ -1887,9 +1892,7 @@ class MainWindow(QMainWindow):
         to hide tree_panel/props_ribbon/scenario_panel entirely, replacing
         almost the whole window with just the P&ID canvas + a narrow
         ribbon — Anton wanted the panel to feel docked alongside the rest
-        of the app instead. tree_panel and props_ribbon now stay visible
-        (node_markup_panel already sits to their right in _h_splitter's
-        add-order, so nothing needed to move).
+        of the app instead. tree_panel and props_ribbon now stay visible.
 
         2026-08-18 (see NOTES.md): now also reachable just by SELECTING a
         node in the tree (no explicit "Editera nodmarkup" needed) — since
@@ -1899,20 +1902,57 @@ class MainWindow(QMainWindow):
         (_on_node_markup_tool_activated), matching "HAZOP scenario
         fönstret ska fortsatt vara öppet om jag inte börjar använda någon
         av ritverktygen". The toggle button still lets the user flip
-        between the two manually at any time."""
+        between the two manually at any time.
+
+        2026-08-19 (see NOTES.md "Slå ihop nodmarkup i nodinställningar"):
+        the separate NodeMarkupPanel widget is gone — its toolbar now
+        lives inside props_ribbon's own NODE_T button set. This method
+        now also syncs props_ribbon's displayed item to node_id
+        (set_item) — needed so the prev/next-node navigation buttons
+        (which call straight into this method, bypassing _on_selected)
+        keep the ribbon's plain node-settings fields pointed at the
+        RIGHT node too, not just the markup toolbar; a real, pre-existing
+        gap the old two-panel split had, invisible before since the two
+        panels didn't share a container.
+
+        Deliberately does NOT also sync tree_panel's own highlighted item
+        here (a first attempt did, via tree_panel.refresh(...)) — this
+        method can run REENTRANTLY from inside an in-progress
+        tree_panel.refresh() call (e.g. _rename_node() refreshing →
+        emitting item_selected → _on_selected → here), and a nested
+        refresh() call while the outer one is still mid-rebuild deletes
+        the very QTreeWidgetItem the outer call is still holding a
+        reference to (RuntimeError: wrapped C/C++ object ... has been
+        deleted — a real crash caught by test_regression.py's existing
+        HAZOPPreparationBladNoderTests). See
+        _on_markup_navigate_node_requested for where prev/next
+        navigation's OWN tree-sync happens instead — safely, since a
+        plain button click is never nested inside a refresh() call."""
         self._switch_view(1)
-        self.node_markup_panel.load(node_id)
+        self._cur_type = NODE_T
+        self._cur_id   = node_id
+        self.props_ribbon.set_item(NODE_T, node_id)
         self.markup_table_panel.load(node_id)
-        self.node_markup_panel.setVisible(True)
-        self._h_splitter.setSizes([260, 600, 62, 220, 0])
+        self.props_ribbon.enter_markup_mode(node_id)
+        self._h_splitter.setSizes([260, 650, 62, 0])
         self.pid_panel.enter_markup_edit(node_id)
         self._markup_undo_stack.clear()
         self._undo_shortcut.setEnabled(True)
 
+    def _on_markup_navigate_node_requested(self, node_id):
+        """props_ribbon's prev/next-node (⬆/⬇) buttons — syncs the tree's
+        own highlighted item to node_id (safe here: always reached from a
+        plain button click, never nested inside an in-progress
+        tree_panel.refresh() call — see _on_edit_node_markup's own
+        docstring for why that distinction matters) before rebinding the
+        ribbon/markup toolbar to it."""
+        self.tree_panel.refresh(NODE_T, node_id, emit_selection=False)
+        self._on_edit_node_markup(node_id)
+
     def _on_node_markup_tool_activated(self, tool):
         """A real drawing tool (not the neutral 'select' tool, which also
         fires this signal on load/init) was picked in the node markup
-        ribbon (2026-08-18, see NOTES.md) — swap the bottom strip to the
+        toolbar (2026-08-18, see NOTES.md) — swap the bottom strip to the
         Nodmarkeringar list so the user sees what they're drawing/have
         already drawn, matching "om jag klickar på exempelvis polygon, då
         ska jag istället se listan med nod markups". The ⇄ toggle can
@@ -1921,27 +1961,44 @@ class MainWindow(QMainWindow):
             return
         self.markup_table_panel.setVisible(True)
         self.scenario_panel.setVisible(False)
-        self.node_markup_panel.set_bottom_toggle_checked(False)
+        self.props_ribbon.set_bottom_toggle_checked(False)
         self._v_splitter.setSizes([0, 200, 0])
         self._outer_splitter.setSizes([560, 200])
 
     def _on_toggle_bottom_panel(self, checked):
-        """New switch next to node_markup_panel (2026-08-17) — flips the
-        bottom strip between Nodmarkeringar (default while editing) and
-        HAZOP scenario, without leaving markup-edit mode."""
+        """Switch inside props_ribbon's markup toolbar (2026-08-17) —
+        flips the bottom strip between Nodmarkeringar (default while
+        editing) and HAZOP scenario, without leaving markup-edit mode."""
         self.markup_table_panel.setVisible(not checked)
         self.scenario_panel.setVisible(checked)
         self._v_splitter.setSizes([220, 0, 0] if checked else [0, 200, 0])
 
+    def _on_markup_mode_toggled(self, checked):
+        """props_ribbon's ✏️ toggle button (2026-08-19, replaces the old
+        NodeMarkupPanel's one-shot "✕ Avsluta" button — see NOTES.md "Slå
+        ihop nodmarkup i nodinställningar"): lets the user temporarily
+        leave markup-edit mode — so P&ID marker clicks and the rubber-
+        band placement gesture work again (both are disabled while markup
+        mode has the canvas, see PIDPanel.enter_markup_edit) — without
+        deselecting the node in the tree, and flip back into it again for
+        the SAME node. The old close button had no way back in for the
+        same node short of reselecting it."""
+        if checked:
+            node_id = self.props_ribbon.node_id
+            if node_id is not None:
+                self._on_edit_node_markup(node_id)
+        else:
+            self._on_close_node_markup()
+
     def _on_close_node_markup(self):
-        """Ribbon close button clicked, or the tree selection moved off
+        """Markup-toggle switched off, or the tree selection moved off
         the Node level (see _on_selected) — leave markup edit mode."""
         self.pid_panel.exit_markup_mode()
         self.pid_panel.reload_overlays()
-        self.node_markup_panel.setVisible(False)
+        self.props_ribbon.exit_markup_mode()
         self.scenario_panel.setVisible(True)
         self.markup_table_panel.setVisible(False)
-        self._h_splitter.setSizes([260, 650, 370, 0, 0])
+        self._h_splitter.setSizes([260, 650, 62, 0])
         self._v_splitter.setSizes([220, 0, 0])
         self._outer_splitter.setSizes([640, 220])
         self._markup_undo_stack.clear()
@@ -1955,7 +2012,7 @@ class MainWindow(QMainWindow):
         machines), but the user experience is a single, continuous flow:
         briefly switch into red-markup mode to place the symbol, then
         _on_close_red_markup returns to node markup editing automatically."""
-        node_id = self.node_markup_panel.node_id
+        node_id = self.props_ribbon.node_id
         if node_id is None:
             return
         self._return_to_node_markup_node_id = node_id
@@ -1969,16 +2026,19 @@ class MainWindow(QMainWindow):
         konsolideras"). tree_panel/props_ribbon stay visible, matching
         node markup's own docking fix — this mode is always a brief detour
         FROM node markup editing now, so hiding and reshowing them across
-        the transition would just be visual noise."""
+        the transition would just be visual noise. props_ribbon.
+        exit_markup_mode() (2026-08-19) only hides its markup-toolbar
+        SECTION, not the whole ribbon — the plain node-settings buttons
+        stay visible/usable throughout the detour."""
         self._switch_view(1)
         self.red_markup_panel.load(node_id)
         self.red_markup_table_panel.load(node_id)
-        self.node_markup_panel.setVisible(False)
+        self.props_ribbon.exit_markup_mode()
         self.red_markup_panel.setVisible(True)
         self.markup_table_panel.setVisible(False)
         self.scenario_panel.setVisible(False)
         self.red_markup_table_panel.setVisible(True)
-        self._h_splitter.setSizes([260, 600, 62, 0, 220])
+        self._h_splitter.setSizes([260, 600, 62, 220])
         self._v_splitter.setSizes([0, 0, 200])
         self._outer_splitter.setSizes([560, 200])
         self.pid_panel.enter_red_markup_edit(node_id)
@@ -2005,7 +2065,7 @@ class MainWindow(QMainWindow):
         self.tree_panel.setVisible(True)
         self.props_ribbon.setVisible(True)
         self.scenario_panel.setVisible(True)
-        self._h_splitter.setSizes([260, 650, 370, 0, 0])
+        self._h_splitter.setSizes([260, 650, 62, 0])
         self._v_splitter.setSizes([220, 0, 0])
         self._outer_splitter.setSizes([640, 220])
 
@@ -2048,7 +2108,7 @@ class MainWindow(QMainWindow):
 
     def _on_markup_draw_finished(self, type_, node_id, pts, page, label):
         """New markup drawn on P&ID — save to DB and refresh."""
-        color, opacity, line_width, font_size = self.node_markup_panel.get_current_style()
+        color, opacity, line_width, font_size = self.props_ribbon.get_current_style()
         mu_id = self.db.add_node_markup(
             node_id, type_, pts, label, color, opacity, line_width, page, font_size)
         self._markup_undo_stack.append({'op': 'draw', 'mu_id': mu_id})
@@ -2733,7 +2793,7 @@ class MainWindow(QMainWindow):
         for panel in [self.tree_panel,
                       self.scenario_panel, self.equipment_panel,
                       self.admin_panel, self.settings_panel, self.hazop_prep_panel,
-                      self.node_markup_panel, self.markup_table_panel,
+                      self.markup_table_panel,
                       self.red_markup_panel, self.red_markup_table_panel,
                       self.worksheet, self.props_ribbon]:
             try:
