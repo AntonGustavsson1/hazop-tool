@@ -3060,7 +3060,29 @@ class ScenarioTablePanel(QWidget):
         SEPARATE pass reachable only from a full rebuild — the fast path
         never went through that pass at all, so a short ORS text edited via
         the fast path could previously end up below the floor too.
-        """
+
+        NOD/UTR/DEV/ORS/KON/LOPA/REK/RFORE/SLUT are all spanned across a
+        consequence's safeguard rows (_apply_spans), but every physical
+        row still gets its OWN freshly-built item/widget from _add_row()
+        regardless (setSpan/setCellWidget only change how Qt PAINTS
+        covered cells, they don't clear or skip creating content there).
+        The PAINTED area for a spanned cell is the union of every row in
+        its group, so a shared requirement — the LOPA widget's fixed
+        height, ORS/KON's wrapped-text height, the ORS readability floor —
+        only needs to fit somewhere within that union; it does NOT need
+        to fit inside any ONE row alone. This function therefore computes
+        each shared requirement once, divides it evenly (ceiling) across
+        however many physical rows its own span covers, and applies that
+        SHARE identically to every row in the group (every row already
+        carries the same duplicate item/widget, so each row can compute
+        its own share independently without needing to special-case the
+        anchor). 2026-08-19 follow-up ("Översta safeguarden blir 3 rader
+        lång ... kopplad till FA, ant+övriga"): an earlier version instead
+        measured each shared requirement ONLY on the anchor row and
+        dumped its FULL height there — safeguard compaction then made the
+        other rows in the group compact while the anchor alone absorbed
+        the entire LOPA/ORS-floor requirement, looking disproportionately
+        (~3 lines) tall next to its own now-compact siblings."""
         table = self._table
         if fm is None:
             fm = QFontMetrics(table.font())
@@ -3068,20 +3090,6 @@ class ScenarioTablePanel(QWidget):
         sg_row_h = self._sg_row_height(table.font())
         wrap_cols = (self._C_ORS, self._C_KON, self._C_REK)
 
-        # NOD/UTR/DEV/ORS/KON/LOPA/REK/RFORE/SLUT are all spanned across a
-        # consequence's safeguard rows (_apply_spans), but every physical
-        # row still gets its OWN freshly-built item/widget from _add_row()
-        # regardless (setSpan/setCellWidget only change how Qt PAINTS
-        # covered cells, they don't clear or skip creating content there)
-        # — table.item(row, c) is not None and table.cellWidget(row, c) is
-        # not None are therefore both ALWAYS true and useless for
-        # detecting "does this row have content of its own", a mistake an
-        # earlier version of this fix made throughout. The only reliable
-        # signal is comparing each column's own span key (from
-        # _apply_spans) against the previous row: unchanged means this
-        # row is a covered continuation for that column, not its anchor,
-        # so that column's (duplicate) content must not count toward this
-        # row's height.
         def _cause_id(r):
             return self._row_meta[r][1] if 0 <= r < len(self._row_meta) else None
         def _cons_id(r):
@@ -3089,19 +3097,39 @@ class ScenarioTablePanel(QWidget):
         def _cat_info(r):
             return self._row_cat_info[r] if 0 <= r < len(self._row_cat_info) else None
 
-        is_ors_anchor  = row == 0 or _cause_id(row) != _cause_id(row - 1)
-        is_cons_anchor = row == 0 or _cons_id(row)  != _cons_id(row - 1)
+        def _span_group_size(r, key_fn):
+            """How many CONSECUTIVE physical rows share key_fn(r) — the
+            same grouping _apply_spans' own _span_col walks forward to
+            find, used here to divide a shared requirement evenly across
+            that many rows instead of piling it onto just one."""
+            key = key_fn(r)
+            if key is None:
+                return 1
+            n = len(self._row_meta)
+            start = r
+            while start > 0 and key_fn(start - 1) == key:
+                start -= 1
+            end = r
+            while end + 1 < n and key_fn(end + 1) == key:
+                end += 1
+            return end - start + 1
+
+        def _share(total, group_n):
+            return -(-total // group_n)   # ceiling division
+
+        is_cons_anchor = row == 0 or _cons_id(row) != _cons_id(row - 1)
 
         # A second, third, ... safeguard row has no independent content of
         # its own in any column but SG only when it's a continuation for
         # BOTH the cons_id-keyed columns (KON/LOPA/REK) AND the finer
         # (cons_id, cat_info)-keyed ones (RFORE/SLUT) — a cat_info change
         # within the SAME consequence still means RFORE/SLUT has fresh
-        # content this row. Such a row only needs the compact SG height,
-        # not a full text line's worth of space — multiplying that saving
-        # across several safeguards is the whole point (2026-08-18
-        # follow-up: "krymper höjden på safeguards ... för att spara
-        # plats när man lägger till flera safeguards").
+        # content this row. Such a row only needs the compact SG height
+        # as its OWN baseline (shared requirements below can still lift
+        # it further) — multiplying that saving across several
+        # safeguards is the whole point (2026-08-18 follow-up: "krymper
+        # höjden på safeguards ... för att spara plats när man lägger
+        # till flera safeguards").
         is_pure_sg_continuation = (
             not is_cons_anchor and _cons_id(row) is not None
             and _cat_info(row) == _cat_info(row - 1))
@@ -3112,19 +3140,20 @@ class ScenarioTablePanel(QWidget):
                 continue
 
             if col == self._C_LOPA:
-                # LOPA spans by cons_id alone — see the module-level note
-                # above this function.
-                if is_cons_anchor:
-                    widget = table.cellWidget(row, col)
-                    if widget is not None:
-                        h = widget.sizeHint().height()
-                        if h > max_h:
-                            max_h = h
+                # LOPA spans by cons_id — divide its fixed height across
+                # every row of that span instead of the whole thing
+                # landing on one row (see this method's own docstring).
+                widget = table.cellWidget(row, col)
+                if widget is not None:
+                    share = _share(widget.sizeHint().height(),
+                                   _span_group_size(row, _cons_id))
+                    if share > max_h:
+                        max_h = share
                 continue
 
             if col == self._C_SG:
-                # SG's description never word-wraps — a single
-                # compact line is always enough.
+                # SG's description never word-wraps, and never spans — a
+                # single compact line is always enough.
                 if sg_row_h > max_h:
                     max_h = sg_row_h
                 continue
@@ -3134,20 +3163,15 @@ class ScenarioTablePanel(QWidget):
                 # non-wrap branch) — no font-metric work needed.
                 continue
 
-            # ORS spans by cause_id, KON/REK by cons_id — a non-anchor row
-            # for either must not have its (duplicate) text measured, same
-            # reasoning as the LOPA branch above.
-            if col == self._C_ORS and not is_ors_anchor:
-                continue
-            if col in (self._C_KON, self._C_REK) and not is_cons_anchor:
-                continue
-
             item = table.item(row, col)
             text = item.text() if item is not None else ''
             if not text:
                 continue
 
             w = table.columnWidth(col)
+            # ORS spans by cause_id (broader — a cause can have several
+            # consequences); KON/REK span by cons_id.
+            group_key_fn = _cause_id if col == self._C_ORS else _cons_id
             if col == self._C_ORS:
                 cell_w = max(40, w - 6)
                 rect = fm.boundingRect(0, 0, cell_w, 10000,
@@ -3163,15 +3187,16 @@ class ScenarioTablePanel(QWidget):
                 rect = fm.boundingRect(0, 0, cell_w, 10000,
                                       Qt.TextFlag.TextWordWrap, text)
                 h = max(one_line_h, rect.height() + 4)
-            if h > max_h:
-                max_h = h
+            share = _share(h, _span_group_size(row, group_key_fn))
+            if share > max_h:
+                max_h = share
 
-        if is_ors_anchor:
-            ors_item = table.item(row, self._C_ORS)
-            if ors_item and ors_item.text():
-                min_ors = fm.height() * 2 + 20  # floor for ORS rows: ~2 lines + strip
-                if max_h < min_ors:
-                    max_h = min_ors
+        ors_item = table.item(row, self._C_ORS)
+        if ors_item and ors_item.text():
+            min_ors = fm.height() * 2 + 20  # floor for ORS rows: ~2 lines + strip
+            share = _share(min_ors, _span_group_size(row, _cause_id))
+            if max_h < share:
+                max_h = share
         return max_h
 
     def _resize_rows_manual(self):
@@ -3238,41 +3263,16 @@ class ScenarioTablePanel(QWidget):
                      self._table.rowCount())
         self._resize_rows_manual()
         logging.info('_resize_rows: K1 — manual row-height loop done')
-        _fm  = QFontMetrics(self._table.font())
-        _min_ors = _fm.height() * 2 + 20  # floor for ORS rows: ~2 lines + strip
-        for _r in range(self._table.rowCount()):
-            h = self._table.rowHeight(_r)
-            # ORS cell in this row is a real, VISIBLE cell (the anchor of
-            # its cause's span, not one of the extra physical rows a
-            # multi-safeguard consequence adds below it) → enforce minimum
-            # readable height. Checking ors_item.text() alone used to
-            # wrongly match every row in the span: _add_row() gives EVERY
-            # physical row its own freshly-built ORS item with the same
-            # cause text (setSpan only changes how Qt paints covered
-            # cells, it doesn't clear their items), so this floor was
-            # silently re-inflating the compact safeguard-continuation
-            # rows _compute_row_height() had just shrunk (2026-08-18
-            # follow-up: "krymper höjden på safeguards ... för att spara
-            # plats" — same underlying bug as that fix's own, now
-            # corrected, table.item()-based check). cause_id (row_meta[1])
-            # differing from the previous row is what actually marks the
-            # anchor — same span key ORS itself groups by (_apply_spans).
-            # There used to also be an upper CAP here (~4 text lines) that
-            # silently shrank any row whose wrapped description needed more
-            # room than that, clipping the rest of the text with no visual
-            # indication anything was cut off — exactly the "text göms på
-            # raderna ... särskilt de som står under orsaker" bug report
-            # (2026-08-11, see NOTES.md). In a safety-documentation tool,
-            # a tall row is a far smaller problem than a hazard/cause
-            # description silently missing its last few lines, so the cap
-            # is gone — rows now grow to fit however much text is actually
-            # there, exactly what "flerradig, auto-höjd" is supposed to mean.
-            ors_item = self._table.item(_r, self._C_ORS)
-            _cause_id = self._row_meta[_r][1] if _r < len(self._row_meta) else None
-            _is_ors_anchor = (_cause_id is not None and (
-                _r == 0 or self._row_meta[_r - 1][1] != _cause_id))
-            if ors_item and ors_item.text() and _is_ors_anchor and h < _min_ors:
-                self._table.setRowHeight(_r, _min_ors)
+        # The ORS minimum-readable-height floor (~2 lines) used to be
+        # re-applied here in a SEPARATE pass after _resize_rows_manual()
+        # — that's gone now (2026-08-19, see _compute_row_height's own
+        # docstring): _compute_row_height already divides that floor
+        # (and every other shared/spanned requirement — LOPA's fixed
+        # height, ORS/KON's wrapped-text height) evenly across each
+        # requirement's own row-span and applies the resulting SHARE to
+        # every row in the group. A separate pass re-applying the FULL,
+        # undivided floor here would have re-inflated the anchor row
+        # right back up, undoing that distribution.
         logging.info('_resize_rows: K2 — row-height pass done, restoring scroll position')
         self._table.verticalScrollBar().setValue(vscroll_value)
         self._table.horizontalScrollBar().setValue(hscroll_value)

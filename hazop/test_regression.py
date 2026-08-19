@@ -3345,7 +3345,18 @@ class SafeguardRowHeightCompactionTests(unittest.TestCase):
     spanning (setSpan/setCellWidget only change how Qt paints covered
     cells). That made the whole feature a silent no-op — every safeguard
     row stayed at full height. Fixed by comparing each column's own span
-    key (from _apply_spans) against the previous row instead."""
+    key (from _apply_spans) against the previous row instead.
+
+    2026-08-19 follow-up ("Översta safeguarden blir 3 rader lång ...
+    kopplad till FA, ant+övriga"): that first fix only stopped counting
+    a shared requirement (LOPA's fixed height, the ORS readability
+    floor) on non-anchor rows — it still dumped the FULL, undivided
+    requirement onto the anchor row alone, so the anchor ended up
+    disproportionately tall next to its now-compact siblings instead of
+    genuinely evenly sized. Fixed by dividing each shared requirement by
+    however many rows its own span covers and applying that share to
+    every row in the group — see the tests below and
+    _compute_row_height's own docstring."""
 
     @classmethod
     def setUpClass(cls):
@@ -3429,6 +3440,70 @@ class SafeguardRowHeightCompactionTests(unittest.TestCase):
             self.assertGreater(panel._table.rowHeight(row2), fm_h_plus_4,
                 "the new cause's own safeguard row must not inherit compaction from "
                 "the previous, unrelated cause's continuation rows")
+        finally:
+            panel.deleteLater()
+
+    def test_first_safeguard_row_is_not_disproportionately_tall(self):
+        """2026-08-19 follow-up: with a short cause description, the
+        anchor row's ORS/LOPA requirements are small enough that once
+        divided across the group they should settle close to the
+        compact continuation rows' own height — not the old ~2.5x
+        (52px vs 20px) mismatch that looked like "3 rows" next to "1
+        row"."""
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        self.db.add_safeguard(cons_id)
+        self.db.add_safeguard(cons_id)
+        self.db.add_safeguard(cons_id)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            rows = [r for r, m in enumerate(panel._row_meta) if m[2] == cons_id]
+            heights = [panel._table.rowHeight(r) for r in rows]
+            self.assertLessEqual(heights[0], heights[1] + 4,
+                "the anchor row must not be dramatically taller than its compact "
+                "siblings just because LOPA/the ORS floor happened to land there")
+        finally:
+            panel.deleteLater()
+
+    def test_long_description_total_height_preserved_across_safeguard_group(self):
+        """The shared-requirement distribution must never UNDER-provision
+        space — dividing a long description's wrapped-text height across
+        several safeguard rows must still sum to at least what a single
+        safeguard with the SAME text would need, or the description's
+        later lines would silently clip (exactly the 2026-08-11 bug this
+        session's other fixes were careful not to reintroduce)."""
+        from hazop import ScenarioTablePanel
+        long_text = ("Detta är en mycket lång orsaksbeskrivning som ska "
+                     "wrappa över flera rader i cellen. " * 8).strip()
+        node_id = self.db.add_node()
+        devs = self.db.deviations(node_id)
+
+        cause_multi = self.db.add_cause(devs[0]['id'])
+        self.db.update_cause(cause_multi, description=long_text)
+        cons_multi = self.db.add_consequence(cause_multi)
+        self.db.add_safeguard(cons_multi)
+        self.db.add_safeguard(cons_multi)
+        self.db.add_safeguard(cons_multi)
+
+        cause_single = self.db.add_cause(devs[1]['id'])
+        self.db.update_cause(cause_single, description=long_text)
+        cons_single = self.db.add_consequence(cause_single)
+        self.db.add_safeguard(cons_single)
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            multi_total = sum(panel._table.rowHeight(r)
+                              for r, m in enumerate(panel._row_meta) if m[2] == cons_multi)
+            single_total = sum(panel._table.rowHeight(r)
+                               for r, m in enumerate(panel._row_meta) if m[2] == cons_single)
+            self.assertGreaterEqual(multi_total, single_total,
+                "the 3-safeguard group's TOTAL spanned height must still fit the same "
+                "long description a single safeguard with identical text gets")
         finally:
             panel.deleteLater()
 
