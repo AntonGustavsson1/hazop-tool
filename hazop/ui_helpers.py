@@ -116,6 +116,44 @@ def _make_tag_completer(db, parent):
         return None
 
 
+def _equipment_tags_for_types(db, types=None):
+    """Distinct equipment_catalog tags, optionally restricted to a set of
+    equipment_type values (2026-08-19, safeguard object-picker dropdown,
+    see NOTES.md "Objekt-väljare för safeguards" — the gear-button type
+    filter there). `types` falsy (None or empty) means unfiltered, same
+    backward-compatible default convention _equipment_type_options
+    already follows."""
+    try:
+        if types:
+            placeholders = ','.join('?' for _ in types)
+            rows = db.conn.execute(
+                f"SELECT DISTINCT tag FROM equipment_catalog "
+                f"WHERE equipment_type IN ({placeholders}) ORDER BY tag",
+                list(types)).fetchall()
+        else:
+            rows = db.conn.execute(
+                "SELECT DISTINCT tag FROM equipment_catalog ORDER BY tag").fetchall()
+        return [r[0] for r in rows]
+    except Exception:
+        return []
+
+
+def _resolve_comp_type_for_tag(db, tag):
+    """Exact (case-insensitive) equipment_catalog lookup: what type is
+    THIS tag actually catalogued as? Used to auto-fill comp_type when a
+    safeguard's object is picked/typed via the object-picker dropdown —
+    free text with no catalog match returns ''."""
+    if not tag:
+        return ''
+    try:
+        row = db.conn.execute(
+            "SELECT equipment_type FROM equipment_catalog WHERE tag=? COLLATE NOCASE LIMIT 1",
+            (tag,)).fetchone()
+        return (row[0] or '') if row else ''
+    except Exception:
+        return ''
+
+
 def _resolve_std_deviation_id(db, deviation_description):
     """Look up the standard_deviations.id matching a node deviation's
     description text, or None if it doesn't match a standard deviation

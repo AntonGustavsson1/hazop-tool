@@ -16498,6 +16498,203 @@ class SafeguardRRFBadgeHeaderTests(unittest.TestCase):
             "since the cell badge no longer spells out 'RRF', the column header must")
 
 
+class SafeguardObjectPickerTests(unittest.TestCase):
+    """"när jag väljer safeguards i hazop scenario får jag upp en
+    rullista med objekt (dvs de som definerats på P&ID) jag måste också
+    kunna välja fritt själv. Du kan även inkludera en inställningsknapp
+    i rulllistan där jag kan klicka på och välja vilka typer av objekt."
+    (2026-08-19). A new 🏷 icon at the left of the SG cell (mirrored
+    click-zone geometry against the existing RRF badge zone on the
+    right) opens SafeguardObjectPopup — an editable QComboBox of
+    equipment_catalog tags (free text still allowed) plus a gear button
+    that restricts the list to chosen equipment_type values, persisted
+    project-wide via db.get_config/set_config."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_sgobjpicker_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from hazop import ScenarioTablePanel
+        self.panel = ScenarioTablePanel(self.db)
+        self.node_id = self.db.add_node()
+        dev_id = self.db.deviations(self.node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        self.sg_id = self.db.add_safeguard(cons_id)
+        self.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", '', 0)
+        self.db.add_equipment_item("LT-101", "LT-101", "LT", 0, "Instrument", '', 0)
+        self.panel.load_node(self.node_id)
+        self.row = next(r for r, m in enumerate(self.panel._row_meta) if m[3] == self.sg_id)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _click(self, x, y):
+        from PyQt6.QtGui import QMouseEvent
+        pos = QPoint(x, y)
+        ev = QMouseEvent(QEvent.Type.MouseButtonPress, pos.toPointF(),
+                          Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                          Qt.KeyboardModifier.NoModifier)
+        return self.panel.eventFilter(self.panel._table.viewport(), ev)
+
+    def _cell_rect(self):
+        idx = self.panel._table.model().index(self.row, self.panel._C_SG)
+        return self.panel._table.visualRect(idx)
+
+    def test_clicking_icon_zone_opens_object_popup_not_rrf_popup(self):
+        from scenario_panel import SafeguardObjectPopup
+        cr = self._cell_rect()
+        with unittest.mock.patch.object(self.panel, '_show_rrf_popup_at') as mock_rrf, \
+             unittest.mock.patch.object(self.panel, '_show_sg_object_popup_at') as mock_obj:
+            self._click(cr.left() + 2, cr.center().y())
+            mock_obj.assert_called_once()
+            mock_rrf.assert_not_called()
+
+    def test_clicking_rrf_zone_still_opens_rrf_popup_not_object_popup(self):
+        """Regression guard: the new icon zone must not swallow clicks
+        that belong to the pre-existing RRF badge zone."""
+        cr = self._cell_rect()
+        with unittest.mock.patch.object(self.panel, '_show_rrf_popup_at') as mock_rrf, \
+             unittest.mock.patch.object(self.panel, '_show_sg_object_popup_at') as mock_obj:
+            self._click(cr.right() - 2, cr.center().y())
+            mock_rrf.assert_called_once()
+            mock_obj.assert_not_called()
+
+    def test_picking_a_known_tag_resolves_its_catalog_type(self):
+        from scenario_panel import SafeguardObjectPopup
+        popup = SafeguardObjectPopup(self.db, self.sg_id, '', parent=self.panel)
+        try:
+            popup._combo.setCurrentText("PV-101")
+            popup._commit()
+            sg = dict(self.db.get_safeguard(self.sg_id))
+            self.assertEqual(sg['comp_tag'], 'PV-101')
+            self.assertEqual(sg['comp_type'], 'Ventil')
+        finally:
+            popup.deleteLater()
+
+    def test_free_text_with_no_catalog_match_leaves_type_blank(self):
+        from scenario_panel import SafeguardObjectPopup
+        popup = SafeguardObjectPopup(self.db, self.sg_id, '', parent=self.panel)
+        try:
+            popup._combo.setCurrentText("Ett eget objekt")
+            popup._commit()
+            sg = dict(self.db.get_safeguard(self.sg_id))
+            self.assertEqual(sg['comp_tag'], 'Ett eget objekt')
+            self.assertEqual(sg['comp_type'], '')
+        finally:
+            popup.deleteLater()
+
+    def test_picking_none_option_clears_the_tag(self):
+        from scenario_panel import SafeguardObjectPopup
+        self.db.set_safeguard_tag(self.sg_id, 'PV-101', 'Ventil')
+        popup = SafeguardObjectPopup(self.db, self.sg_id, 'PV-101', parent=self.panel)
+        try:
+            popup._combo.setCurrentIndex(0)   # "— Inget objekt —"
+            popup._commit()
+            sg = dict(self.db.get_safeguard(self.sg_id))
+            self.assertEqual(sg['comp_tag'], '')
+            self.assertEqual(sg['comp_type'], '')
+        finally:
+            popup.deleteLater()
+
+    def test_picking_an_object_does_not_touch_the_free_text_description(self):
+        """Deliberately uses set_safeguard_tag, not append_tag_to_safeguard
+        — re-picking a different object must not leave old tag
+        fragments behind in the description (unlike the drag-and-drop
+        gesture, which intentionally DOES build a running sentence)."""
+        from scenario_panel import SafeguardObjectPopup
+        self.db.update_safeguard(self.sg_id, description="Min egen text")
+        popup = SafeguardObjectPopup(self.db, self.sg_id, '', parent=self.panel)
+        try:
+            popup._combo.setCurrentText("PV-101")
+            popup._commit()
+            sg = dict(self.db.get_safeguard(self.sg_id))
+            self.assertEqual(sg['description'], "Min egen text")
+        finally:
+            popup.deleteLater()
+
+    def test_type_filter_restricts_dropdown_to_chosen_types(self):
+        import json
+        from scenario_panel import SafeguardObjectPopup
+        self.db.set_config('sg_object_type_filter', json.dumps(['Instrument']))
+        popup = SafeguardObjectPopup(self.db, self.sg_id, '', parent=self.panel)
+        try:
+            items = [popup._combo.itemData(i) for i in range(popup._combo.count())]
+            self.assertIn('LT-101', items)
+            self.assertNotIn('PV-101', items,
+                "PV-101 is type Ventil, must be excluded by an Instrument-only filter")
+        finally:
+            popup.deleteLater()
+
+    def test_no_types_selected_means_unfiltered(self):
+        import json
+        from scenario_panel import SafeguardObjectPopup
+        self.db.set_config('sg_object_type_filter', json.dumps([]))
+        popup = SafeguardObjectPopup(self.db, self.sg_id, '', parent=self.panel)
+        try:
+            items = [popup._combo.itemData(i) for i in range(popup._combo.count())]
+            self.assertIn('LT-101', items)
+            self.assertIn('PV-101', items)
+        finally:
+            popup.deleteLater()
+
+    def test_type_filter_dialog_persists_selection(self):
+        from scenario_panel import _SgObjectTypeFilterDialog
+        dlg = _SgObjectTypeFilterDialog(self.db, parent=None)
+        try:
+            for cb in dlg._checks:
+                if cb.text() == 'Instrument':
+                    cb.setChecked(True)
+            self.assertEqual(dlg.selected_types(), ['Instrument'])
+        finally:
+            dlg.deleteLater()
+
+    def test_current_tag_always_shown_even_if_filtered_out(self):
+        """If a safeguard is already tagged to an object whose type has
+        since been filtered out via the gear button, the popup must
+        still show its current tag rather than silently blanking it."""
+        import json
+        from scenario_panel import SafeguardObjectPopup
+        self.db.set_safeguard_tag(self.sg_id, 'PV-101', 'Ventil')
+        self.db.set_config('sg_object_type_filter', json.dumps(['Instrument']))
+        popup = SafeguardObjectPopup(self.db, self.sg_id, 'PV-101', parent=self.panel)
+        try:
+            self.assertEqual(popup._combo.currentText(), 'PV-101')
+        finally:
+            popup.deleteLater()
+
+    def test_sg_cell_paint_does_not_crash_with_no_equipment_catalog(self):
+        """Rendering the icon must not assume equipment_catalog has any
+        rows — a brand new project with no P&ID objects yet must still
+        paint the cell fine."""
+        db2_dir = tempfile.mkdtemp(prefix="hazop_sgobjpicker_empty_test_")
+        try:
+            db2 = Database(path=os.path.join(db2_dir, "empty.db"))
+            from hazop import ScenarioTablePanel
+            panel2 = ScenarioTablePanel(db2)
+            node_id = db2.add_node()
+            dev_id = db2.deviations(node_id)[0]['id']
+            cause_id = db2.add_cause(dev_id)
+            cons_id = db2.add_consequence(cause_id)
+            db2.add_safeguard(cons_id)
+            panel2.load_node(node_id)
+            panel2.resize(900, 400)
+            panel2.show()
+            self.app.processEvents()
+            panel2.hide()
+            panel2.deleteLater()
+        finally:
+            shutil.rmtree(db2_dir, ignore_errors=True)
+
+
 class OrsTagZoneOpensMinimalPopupTests(unittest.TestCase):
     """"klickarna man på tagen justerar man tagen ... gör samtliga
     minimalistiska" (2026-08-14) — a plain click on the ORS tag zone
