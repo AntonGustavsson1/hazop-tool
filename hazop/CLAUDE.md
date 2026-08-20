@@ -26,10 +26,23 @@ Syntax check without running the GUI (all modules):
 python -m py_compile constants.py database.py ui_helpers.py tree_panel.py node_markup.py worksheet.py scenario_panel.py equipment_panel.py settings_panels.py hazop.py pid_viewer.py pid_graphics_view.py pid_panel_mod.py equipment_detection.py symbol_geometry.py image_symbol_matching.py
 ```
 
-## Testing during iterative development (2026-08-18)
+## Testing during iterative development (2026-08-18, files split 2026-08-20)
 
-`test_regression.py` has 750+ tests and takes ~4-5 minutes — too slow to
-run after every single edit. Use a tiered approach instead:
+The regression suite (818 tests) is split into 14 per-module files —
+`test_database.py`, `test_scenario_panel.py`, `test_pid_viewer.py`,
+`test_pid_panel_mod.py`, `test_pid_graphics_view.py`, `test_tree_panel.py`,
+`test_equipment_panel.py`, `test_equipment_detection.py`,
+`test_settings_panels.py`, `test_worksheet.py`, `test_node_markup.py`,
+`test_hazop.py`, `test_ui_helpers.py`, and `test_integration.py` (MainWindow/
+cross-panel glue tests that genuinely span multiple modules — don't try to
+force one of these into a single-module file) — plus `test_helpers.py` for
+shared fixtures (`_ensure_qapp`, `_TempDbMainWindow`, `_find_tree_item`,
+`_menu_action_labels`, `_fake_pdf_loaded`). The old monolithic
+`test_regression.py` (18,611 lines, 136 `TestCase` classes) was mechanically
+split by class boundary — see NOTES.md "Dela upp test_regression.py i
+per-modul testfiler" for how the class→file mapping was chosen. Running the
+full set still takes ~4-5 minutes total — too slow after every single edit.
+Use a tiered approach instead:
 
 1. **After every code change** (the default — do this, not the full suite):
    ```
@@ -48,27 +61,40 @@ run after every single edit. Use a tiered approach instead:
    or a new "only crashes with real data" code path, add a case here too.
    **Gap to be aware of:** this does NOT exercise deep interaction paths
    like OCR/tag-scanning — those still need the full suite.
-2. **Run the full suite when the change is actually large/risky, or
+2. **When a change is confined to one module, run just that module's test
+   file** (seconds, not minutes) instead of the full 14-file suite — e.g.
+   a `scenario_panel.py` tweak only needs:
+   ```
+   python -m unittest test_scenario_panel
+   ```
+   This is the main payoff of the 2026-08-20 split — previously "targeted
+   testing" still meant loading/grepping one 18,611-line file to find the
+   right class; now it's a small, purpose-scoped file.
+3. **Run the full suite when the change is actually large/risky, or
    whenever asked for real confidence** — NOT automatically just because
    you're about to commit (2026-08-20 follow-up: a one-line non-bold-font
    tweak still triggered a full ~5.5-minute/818-test run before commit;
    "Att du kör full regression test är bra i vissa fall men här gör du en
    väldigt liten ändring... begränsa full regression test"):
    ```
-   python -m unittest test_regression
+   python -m unittest test_database test_scenario_panel test_pid_viewer test_pid_panel_mod test_pid_graphics_view test_tree_panel test_equipment_panel test_equipment_detection test_settings_panels test_worksheet test_node_markup test_hazop test_ui_helpers test_integration
    ```
-   A small, well-isolated change (a single-line tweak, a cosmetic/styling
-   fix, a config value change, anything confined to one obviously-isolated
-   code path with no fan-out) should commit after `test_smoke` + the
-   specific test class(es) covering the change — skip the full suite.
-   Reserve it for new features, multi-file refactors, changes touching
-   shared/widely-reused code paths, or anything whose blast radius isn't
-   obvious. When unsure which bucket a change falls in, default to
-   targeted + smoke and say so in the summary, rather than silently
-   upgrading to a full run "just in case."
-3. **Keep writing full regression tests as before** whenever you fix a bug
-   or add a feature — `test_smoke.py` is a fast pre-check, not a
-   replacement for `test_regression.py`'s thoroughness.
+   (Explicit file list, not `unittest discover` — discover would also sweep
+   in `test_smoke.py`/`test_symbol_geometry.py`/`test_image_symbol_matching.py`,
+   which are run separately.) A small, well-isolated change (a single-line
+   tweak, a cosmetic/styling fix, a config value change, anything confined
+   to one obviously-isolated code path with no fan-out) should commit after
+   `test_smoke` + the specific module test file covering the change — skip
+   the full suite. Reserve it for new features, multi-file refactors,
+   changes touching shared/widely-reused code paths, or anything whose
+   blast radius isn't obvious. When unsure which bucket a change falls in,
+   default to targeted + smoke and say so in the summary, rather than
+   silently upgrading to a full run "just in case."
+4. **Keep writing full regression tests as before** whenever you fix a bug
+   or add a feature, in whichever of the 14 files matches the module you
+   changed (or `test_integration.py` for cross-panel behavior) —
+   `test_smoke.py` is a fast pre-check, not a replacement for their
+   thoroughness.
 
 Note on PyQt6 exceptions raised inside a signal/slot call (e.g.
 `button.click()`, not a direct method call): by default PyQt6 prints them
@@ -125,7 +151,7 @@ __pycache__/
 
 ## Architecture
 
-The application was originally two files (`hazop.py`, `pid_viewer.py`) that grew into ~22,000 and ~11,000 line "god files". Both were split into layered modules 2026-08-17/18 (see NOTES.md "Förenkla koden + dela upp hazop.py i fler filer") using a **layer + re-export** pattern throughout: every module only imports from layers *below* it, and each layer re-exports the names its callers already relied on, so `from hazop import X` / `from pid_viewer import Y` keep working unchanged regardless of which file `X`/`Y` now actually lives in. `test_regression.py` needed essentially zero changes as a result — it still imports everything the same way it always did.
+The application was originally two files (`hazop.py`, `pid_viewer.py`) that grew into ~22,000 and ~11,000 line "god files". Both were split into layered modules 2026-08-17/18 (see NOTES.md "Förenkla koden + dela upp hazop.py i fler filer") using a **layer + re-export** pattern throughout: every module only imports from layers *below* it, and each layer re-exports the names its callers already relied on, so `from hazop import X` / `from pid_viewer import Y` keep working unchanged regardless of which file `X`/`Y` now actually lives in. The test suite (then still one monolithic `test_regression.py`) needed essentially zero changes as a result — it still imported everything the same way it always did. (That file was itself later split into 14 per-module files 2026-08-20 — see the Testing section above.)
 
 Import layers, lowest first (each layer imports only from layers above it in this list):
 
@@ -143,7 +169,7 @@ Import layers, lowest first (each layer imports only from layers above it in thi
 11. **`scenario_panel.py`** — `ScenarioTablePanel` (the HAZOP scenario table — the single biggest extracted class, ~5000 lines) plus its cluster of delegates/popups (`RiskMatrixPopup`, `ConsequenceChainDialog`, `ConsequenceStepPickerDialog`, `ReductionFactorsDialog`, `_ScenarioDelegate`, `_PidDelegate`, `SgRRFCategoryPopup`, `CatSGSelectionPopup`, `ConsCategoryMatrixPopup`, `_LopaWidget`). Its `_open_recommendation_editor` does a deferred `from hazop import RecommendationEditorDialog` for the same reason as `worksheet.py` above.
 12. **`equipment_panel.py`** — `EquipmentPanel` (the equipment register), `_EquipmentTableModel`/`_EquipmentFilterProxy`, `ComponentEditorPanel`, `ObjectPickerPopup`, `EquipmentTagPopup`, `PIDAnalysisPanel`, `TagDatabasePanel`, `_IdentifiedTagsModel`.
 13. **`settings_panels.py`** — `HAZOPPreparationPanel` (Projekt/Deltagare/Riskmatris & Kategorier/Avvikelser & Orsaker tabs), `SettingsPanel`, `StandardCausesSettingsPanel`, `StandardObjectsSettingsPanel`, `SeverityDefinitionsPanel`, `TagMemoryPanel`, `ParticipantMatrixPanel`, `PIDManagementPanel`, `StudyManagementPanel`.
-14. **`hazop.py`** (~3050 lines, down from ~22,000) — `MainWindow`, `SplashScreen`, `CrashReporter`, `GlobalSearchDialog`, `ActionEditor`/`RecommendationEditorDialog`, and a handful of small helpers not yet worth their own module. Imports and re-exports everything from layers 1–13 above, so all pre-existing `from hazop import X` call sites (including throughout `test_regression.py`) continue to work unchanged.
+14. **`hazop.py`** (~3050 lines, down from ~22,000) — `MainWindow`, `SplashScreen`, `CrashReporter`, `GlobalSearchDialog`, `ActionEditor`/`RecommendationEditorDialog`, and a handful of small helpers not yet worth their own module. Imports and re-exports everything from layers 1–13 above, so all pre-existing `from hazop import X` call sites (including throughout the `test_*.py` suite) continue to work unchanged.
 
 **A recurring gotcha worth knowing if you move code between these files again:** tests that do `unittest.mock.patch('hazop.SomeClass', ...)` or `patch('pid_viewer.SomeClass', ...)` to intercept a constructor call only work if the code doing the constructing is *in that same module*. Moving a class to a new file without updating the string in a matching `patch(...)` call doesn't raise an error — the patch just silently stops intercepting anything, and a real (often modal, `.exec()`-blocking) dialog gets constructed instead, which can hang the test suite rather than fail it cleanly. `patch.object(hazop.SomeClass, 'method', ...)` and `patch('hazop.SomeClass.method', ...)` are **not** affected by this, since they mutate the shared class object itself rather than a per-module name binding — safe to leave pointed at any module that re-exports the class.
 

@@ -2438,6 +2438,23 @@ Uppföljning på "hitta liknande"-buggen ovan: Anton bekräftade root cause ("Om
 
 Anton: "Objekt behöver inte vara fetstilta i hazopträdet. justera till normaltext." `TreePanel`s utrustnings-/objekt-banner-rader (grupperade under varje ledord, `tree_panel.py`s `for eq_id, eq_devs in equipment_groups.items():`-loop) körde `eq_font.setBold(True)` — borttaget. Den kursiva "ej definierad"-markeringen (`eq_font.setItalic(undefined)`) är oförändrad. Enda träffen i hela filen — nod-radernas egen fetstil (NODE_T, ett helt annat koncept) rörd inte. 818 tester gröna.
 
+## Dela upp test_regression.py i per-modul testfiler (2026-08-20)
+
+**Bakgrund:** Anton bad om förslag på hur programmet kunde göras lättare för mig att arbeta i utan att funktionerna blir lidande. Två punkter valdes ut att göra först (av fem + en större, medvetet uppskjuten idé — se svaret i sessionen för hela listan): (1) dokumentera "duplicerat item per fysisk rad i spannade celler"-fällan i CLAUDE.md istället för bara NOTES.md (klart, se `CLAUDE.md`s nya "Known traps"-avsnitt), och (2) den här: dela `test_regression.py` (18 611 rader, 136 `TestCase`-klasser) i mindre per-modul-filer, eftersom hela filen annars måste läsas/grep:as i sin helhet även för en enda riktad testklass.
+
+**Genomförande:** en engångs Python-migreringsskript (körd via Bash, ingen manuell omskrivning av testkroppar — exakt radbaserad klyvning på riktiga `^class`-gränser i den verkliga filen, för att undvika avskrivningsfel över 18 000+ rader) delade upp filen i:
+- `test_helpers.py` — delad infrastruktur (`_ensure_qapp`, `_menu_action_labels`, `_fake_pdf_loaded`, `_TempDbMainWindow`, `_find_tree_item`).
+- 13 per-modul-filer (`test_database.py`, `test_scenario_panel.py`, `test_pid_viewer.py`, `test_pid_panel_mod.py`, `test_pid_graphics_view.py`, `test_tree_panel.py`, `test_equipment_panel.py`, `test_equipment_detection.py`, `test_settings_panels.py`, `test_worksheet.py`, `test_node_markup.py`, `test_hazop.py`, `test_ui_helpers.py`).
+- `test_integration.py` — 37 klasser (~5 360 rader) som medvetet spänner över flera moduler (MainWindow-drivna cross-panel-tester, t.ex. `_TempDbMainWindow`-baserade synk-tester) och inte tvingades in i en enda modulfil.
+
+**Två fällor hittade under verifieringen (fixade innan commit):**
+1. Sektionsbanner-kommentarer (`# ═══...`) som står direkt ovanför en klass för att förklara VARFÖR den finns hamnade fel — en naiv "klass N:s block slutar där klass N+1 börjar"-gräns lämnar en sådan banner kvar sist i klass N:s FIL istället för att följa med klass N+1 in i dess nya fil, om de två klasserna hamnade i olika bucket-filer (14 av 17 sådana fall i denna fil). Fixat genom att låta varje klass "äga" sin egen direkt föregående kommentarblock (gå bakåt förbi tomrader + hela det sammanhängande kommentarblocket) istället för att anta att gränsen alltid ligger exakt vid `class`-raden.
+2. `_find_tree_item()` (en fristående funktion, inte en klass) låg mitt i filen mellan två klasser som hamnade i OLIKA bucket-filer — extraherad separat till `test_helpers.py` istället för att av misstag hamna kvar i endera klassens nya fil.
+
+**Verifiering:** 818 `def test_`-metoder i originalfilen, 818 i de nya filerna sammanlagt (exakt matchning). Varje klass' "fingeravtryck" (klassrad + sista icke-tomma kroppsrad) återfanns ordagrant i exakt en ny fil. Full körning av alla 14 nya filer + `test_smoke` gav samma 818 gröna tester som originalfilen gjorde precis innan borttagningen — ingen regression, inget tyst borttappat test.
+
+**Uppdaterat:** CLAUDE.md:s testavsnitt (nya körkommandon, ny "kör bara den modulens fil"-nivå mellan smoke och full svit) och arkitektur-avsnittets text om modul-uppdelningen; `test_smoke.py`s docstring.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

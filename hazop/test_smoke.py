@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Fast smoke-test suite — NOT a replacement for test_regression.py's full
-suite (750+ tests, ~4-5 minutes). Meant to run after every code change
-during iterative development (2026-08-18, see NOTES.md "Snabbare
-testcykel" — Anton: "Jag skulle vilja begränsa regression test till
-kanske 10 test efter varje build. Med möjlighet att full regression test
-på begäran.").
+"""Fast smoke-test suite — NOT a replacement for the full regression suite
+(818 tests, ~4-5 minutes, split across 14 per-module test_*.py files since
+2026-08-20 — see CLAUDE.md's Testing section). Meant to run after every
+code change during iterative development (2026-08-18, see NOTES.md
+"Snabbare testcykel" — Anton: "Jag skulle vilja begränsa regression test
+till kanske 10 test efter varje build. Med möjlighet att full regression
+test på begäran.").
 
 Every real crash found during the 2026-08-17/18 module-split session
 (_StylePopup, ConsCategoryMatrixPopup, missing equipment_detection OCR
@@ -18,9 +19,13 @@ actual buttons rather than just constructing widgets.
 Run this constantly during development:
     python -m unittest test_smoke -v
 
-Run the full, slow suite before committing, or whenever you want real
-confidence rather than a quick sanity check:
-    python -m unittest test_regression
+Run one module's tests when a change is confined to it (seconds, not
+minutes), e.g.:
+    python -m unittest test_scenario_panel
+
+Run the full, slow suite for large/risky changes, or whenever you want
+real confidence rather than a quick sanity check:
+    python -m unittest test_database test_scenario_panel test_pid_viewer test_pid_panel_mod test_pid_graphics_view test_tree_panel test_equipment_panel test_equipment_detection test_settings_panels test_worksheet test_node_markup test_hazop test_ui_helpers test_integration
 """
 import os
 import sys
