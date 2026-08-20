@@ -48,11 +48,24 @@ run after every single edit. Use a tiered approach instead:
    or a new "only crashes with real data" code path, add a case here too.
    **Gap to be aware of:** this does NOT exercise deep interaction paths
    like OCR/tag-scanning — those still need the full suite.
-2. **Before committing, after a large/risky change, or whenever asked for
-   real confidence** — run the full suite:
+2. **Run the full suite when the change is actually large/risky, or
+   whenever asked for real confidence** — NOT automatically just because
+   you're about to commit (2026-08-20 follow-up: a one-line non-bold-font
+   tweak still triggered a full ~5.5-minute/818-test run before commit;
+   "Att du kör full regression test är bra i vissa fall men här gör du en
+   väldigt liten ändring... begränsa full regression test"):
    ```
    python -m unittest test_regression
    ```
+   A small, well-isolated change (a single-line tweak, a cosmetic/styling
+   fix, a config value change, anything confined to one obviously-isolated
+   code path with no fan-out) should commit after `test_smoke` + the
+   specific test class(es) covering the change — skip the full suite.
+   Reserve it for new features, multi-file refactors, changes touching
+   shared/widely-reused code paths, or anything whose blast radius isn't
+   obvious. When unsure which bucket a change falls in, default to
+   targeted + smoke and say so in the summary, rather than silently
+   upgrading to a full run "just in case."
 3. **Keep writing full regression tests as before** whenever you fix a bug
    or add a feature — `test_smoke.py` is a fast pre-check, not a
    replacement for `test_regression.py`'s thoroughness.
