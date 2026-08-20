@@ -2434,6 +2434,10 @@ Uppföljning på "hitta liknande"-buggen ovan: Anton bekräftade root cause ("Om
 
 **Test:** Ny `SafeguardObjectPickerTests` (11 tester) — klick-zonerna är ömsesidigt uteslutande (ikon vs RRF), känd tagg slår upp rätt typ, fritext utan träff ger tom typ, "— Inget objekt —" nollställer, beskrivningstexten rörs aldrig, typfiltret begränsar/vidgar listan korrekt och persisteras, en redan satt tagg visas även om dess typ senare filtrerats bort, cellen kraschar inte i ett helt tomt projekt utan `equipment_catalog`-rader. 818 tester gröna totalt.
 
+## Objekt inte längre fetstilta i HAZOP-trädet (2026-08-20)
+
+Anton: "Objekt behöver inte vara fetstilta i hazopträdet. justera till normaltext." `TreePanel`s utrustnings-/objekt-banner-rader (grupperade under varje ledord, `tree_panel.py`s `for eq_id, eq_devs in equipment_groups.items():`-loop) körde `eq_font.setBold(True)` — borttaget. Den kursiva "ej definierad"-markeringen (`eq_font.setItalic(undefined)`) är oförändrad. Enda träffen i hela filen — nod-radernas egen fetstil (NODE_T, ett helt annat koncept) rörd inte. 818 tester gröna.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

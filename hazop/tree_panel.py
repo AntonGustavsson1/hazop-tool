@@ -432,8 +432,11 @@ class TreePanel(QWidget):
                                     else f"Utrustning #{eq_id}")
                         eitem = QTreeWidgetItem([f"    {eq_label}"])
                         eitem.setIcon(0, _icon('settings'))
+                        # 2026-08-20: objects no longer bold in the tree
+                        # (Anton — "Objekt behöver inte vara fetstilta i
+                        # hazopträdet"), just the "ej definierad" italic
+                        # call-to-action stays.
                         eq_font = QFont()
-                        eq_font.setBold(True)
                         eq_font.setItalic(undefined)
                         eitem.setFont(0, eq_font)
                         eitem.setData(0, self._EQUIP_TAG_ROLE, eq_id)
