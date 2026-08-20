@@ -515,6 +515,19 @@ Anton: "Objekt behöver inte vara fetstilta i hazopträdet. justera till normalt
 
 **Uppdaterat:** ingen kodändring — bara NOTES.md/NOTES_ARCHIVE.md. CLAUDE.md:s "Session context"-avsnitt bör nämnas läsas tillsammans med denna post om framtida sessioner behöver historisk kontext.
 
+## Städat arbetskatalogen: .gitignore utökad, en-off-skript/rapporter flyttade till egna mappar (2026-08-20)
+
+**Bakgrund:** Punkt 5 av samma förbättringslista — `git status` visade konstant 50+ ospårade filer i projektroten (loggar, krasch-rapporter, skärmdumpar, en 93 MB referens-PDF-mapp, en 2026-08-02-revisionsgranskning av konsekvenskedjor, fyra engångs-analysskript, tre inaktuella planerings-md:er), vilket gjorde det svårare att se på en blick vad som faktiskt var relevant att arbeta med i katalogen.
+
+**Genomförande:**
+1. **`.gitignore` utökad** med `*.log`, `*.hzp`, `crashes/`, skärmdumpsmönster (`Screenshot *.png`, `connector_demo.png`) samt de stora lokala referensmapparna `P&ID ref/` (93 MB — se NOTES_ARCHIVE.md 2026-08-05: "riktiga P&ID ref/-filer används bara för lokal manuell körning, aldrig som testfixturer"), `HAZOP ref/`, `Old screenshot/`, `icon_requests/`, `2026-08-12 Design/`.
+2. **Fyra engångs-analysskript** (`extract_tags.py`, `extract_tags2.py`, `generate_html_report.py`, `replace_causes.py` — RDS-PP-taggmönsteranalys resp. standardorsaks-migrering, inga anropsställen i produktionskoden) flyttade till ny mapp `dev_scripts/`.
+3. **2026-08-02-konsekvenskedjegranskningen** (11 filer — `AUDIT_*.txt`, `HAZOP_AUDIT*.txt`, `HAZOP_CONSEQUENCE_AUDIT*.txt`, `README_AUDIT.txt`, `audit_report.{html,json}`, `consequence_chains_audit.json`) flyttade till ny mapp `audit_2026-08-02/` — genererade rapporter från en databasgranskning, inte källkod, men behöll dem (inte gitignorade) eftersom de är en verklig historisk revisionsrekord.
+4. **Tre inaktuella planeringsdokument** (`MUTABLE_GLOBAL_STATE_PLAN.md`, `SEKUNDAR_VERKAN_EXTRACTED.md` — "Sekundär verkan"-funktionen redan implementerad, se "Funktioner implementerade"-tabellen ovan, `hazop_style_patch.md` — stilen redan applicerad, se tidigare NOTES_ARCHIVE.md-poster om blå accentfärg) flyttade till ny mapp `docs_archive/`.
+5. **Tre tomma/värdelösa skräpfiler raderade** (grepp:at igenom koden först för att bekräfta inga anropsställen): `orsaker.txt` (414 bytes, en kategorilista redan seedad i DB:n — bara nämnd i en docstring-kommentar i `settings_panels.py`, inte inläst vid körning), `utr_out2.txt` (gammal `test_regression`-testkörningsutskrift — den filen finns inte längre, se 2026-08-20-uppdelningen ovan), en 0-bytes fil med ett trasigt filnamn (`C:Temphazop_out.txt`, egentligen ett Unicode-privatbruksomrode-tecken — rest av en missad omdirigering).
+
+**Resultat:** `git status` i hazop/ visar nu bara faktiskt relevanta, avsiktliga ändringar istället för 50+ konstanta ospårade filer varje gång.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

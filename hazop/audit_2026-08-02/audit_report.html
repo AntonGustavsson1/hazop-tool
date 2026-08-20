@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HAZOP Consequence Chain Audit Report</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background-color: #f5f5f5;
+            margin: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #2c3e50;
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #34495e;
+            margin-top: 30px;
+            border-left: 4px solid #3498db;
+            padding-left: 10px;
+        }
+        h3 {
+            color: #7f8c8d;
+        }
+
+        .summary-box {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .stat-card.critical {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        }
+        .stat-card.high {
+            background: linear-gradient(135deg, #ffa751 0%, #ffe259 100%);
+        }
+        .stat-card.medium {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+        }
+        .stat-number {
+            font-size: 2.5em;
+            font-weight: bold;
+        }
+        .stat-label {
+            font-size: 0.9em;
+            opacity: 0.9;
+            margin-top: 5px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        th {
+            background-color: #34495e;
+            color: white;
+            padding: 12px;
+            text-align: left;
+        }
+        td {
+            padding: 12px;
+            border-bottom: 1px solid #ecf0f1;
+        }
+        tr:hover {
+            background-color: #f8f9fa;
+        }
+
+        .issue-card {
+            background: #fff;
+            border-left: 5px solid #e74c3c;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 4px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .issue-card.high {
+            border-left-color: #e67e22;
+        }
+        .issue-card.medium {
+            border-left-color: #f39c12;
+        }
+
+        .issue-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .severity-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: bold;
+            color: white;
+        }
+        .severity-badge.CRITICAL {
+            background-color: #e74c3c;
+        }
+        .severity-badge.HIGH {
+            background-color: #e67e22;
+        }
+        .severity-badge.MEDIUM {
+            background-color: #f39c12;
+        }
+
+        .issue-details {
+            font-size: 0.95em;
+            line-height: 1.8;
+        }
+        .issue-details p {
+            margin: 8px 0;
+        }
+        .issue-label {
+            color: #7f8c8d;
+            font-weight: bold;
+        }
+        .chain-visual {
+            background: #ecf0f1;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 10px 0;
+            font-family: monospace;
+            font-size: 0.9em;
+        }
+
+        .pattern {
+            background: #e8f4f8;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 10px 0;
+            border-left: 4px solid #3498db;
+        }
+
+        .footer {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #ecf0f1;
+            text-align: center;
+            color: #7f8c8d;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>HAZOP Consequence Chain Database Audit Report</h1>
+        <p><strong>Datum:</strong> 2026-08-02</p>
+
+        <h2>Executive Summary</h2>
+        <div class="summary-box">
+            <div class="stat-card">
+                <div class="stat-number">4</div>
+                <div class="stat-label">Total Records Audited</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number">3</div>
+                <div class="stat-label">Consequence Steps Found</div>
+            </div>
+            <div class="stat-card critical">
+                <div class="stat-number">3</div>
+                <div class="stat-label">CRITICAL Issues</div>
+            </div>
+            <div class="stat-card high">
+                <div class="stat-number">0</div>
+                <div class="stat-label">HIGH Issues</div>
+            </div>
+            <div class="stat-card medium">
+                <div class="stat-number">0</div>
+                <div class="stat-label">MEDIUM Issues</div>
+            </div>
+        </div>
+
+        <h2>Key Findings</h2>
+        <div class="pattern">
+            <h3>Pattern 1: Empty Consequence Chains (75% of records)</h3>
+            <p>3 out of 4 consequence records have NO chain steps defined (Del 1-5 empty).</p>
+            <p><strong>Impact:</strong> These consequences are incomplete and provide no logical flow from cause to effect.</p>
+            <p><strong>Recommendation:</strong> Populate all consequence records with at least 3-step chains (Del 1-3 minimum).</p>
+        </div>
+
+        <div class="pattern">
+            <h3>Pattern 2: Underutilization of Chain Steps</h3>
+            <p>Only 1 consequence record (ID 1) uses the step structure. It defines 3 steps (Del 1-3) but lacks Del 4-5.</p>
+            <p><strong>Current usage:</strong> 3 steps across 4 records = average 0.75 steps/record</p>
+            <p><strong>Recommendation:</strong> Consistently define 5-step chains to capture full consequence progression.</p>
+        </div>
+
+        <h2>Issues by Severity</h2>
+
+        <h3>CRITICAL Issues (3 total)</h3>
+        <p>These represent incomplete consequence chains that lack essential logical flow:</p>
+
+        <div class="issue-card">
+            <div class="issue-header">
+                <span><strong>Consequence ID 2</strong></span>
+                <span class="severity-badge CRITICAL">CRITICAL</span>
+            </div>
+            <div class="issue-details">
+                <p><span class="issue-label">Cause:</span> Reglerventil felar stängd</p>
+                <p><span class="issue-label">Initial Consequence:</span> O/CO/C</p>
+                <p><span class="issue-label">Issue:</span> No consequence chain steps defined (Del 1-5 missing)</p>
+                <p><span class="issue-label">Steps Defined:</span> 0 (should be 5)</p>
+
+                <p><span class="issue-label">Recommendation:</span> Define at least Del 1-3 (ideally Del 1-5) for consequence ID 2</p>
+            </div>
+        </div>
+
+        <div class="issue-card">
+            <div class="issue-header">
+                <span><strong>Consequence ID 3</strong></span>
+                <span class="severity-badge CRITICAL">CRITICAL</span>
+            </div>
+            <div class="issue-details">
+                <p><span class="issue-label">Cause:</span> Reglerventil felar stängd</p>
+                <p><span class="issue-label">Initial Consequence:</span> 11VI:4304</p>
+                <p><span class="issue-label">Issue:</span> No consequence chain steps defined (Del 1-5 missing)</p>
+                <p><span class="issue-label">Steps Defined:</span> 0 (should be 5)</p>
+
+                <p><span class="issue-label">Recommendation:</span> Define at least Del 1-3 (ideally Del 1-5) for consequence ID 3</p>
+            </div>
+        </div>
+
+        <div class="issue-card">
+            <div class="issue-header">
+                <span><strong>Consequence ID 4</strong></span>
+                <span class="severity-badge CRITICAL">CRITICAL</span>
+            </div>
+            <div class="issue-details">
+                <p><span class="issue-label">Cause:</span> Reglerventil felar stängd</p>
+                <p><span class="issue-label">Initial Consequence:</span> 11VI:4304</p>
+                <p><span class="issue-label">Issue:</span> No consequence chain steps defined (Del 1-5 missing)</p>
+                <p><span class="issue-label">Steps Defined:</span> 0 (should be 5)</p>
+
+                <p><span class="issue-label">Recommendation:</span> Define at least Del 1-3 (ideally Del 1-5) for consequence ID 4</p>
+            </div>
+        </div>
+
+        <h3>HIGH Issues</h3>
+        <p>No HIGH severity issues found in this audit.</p>
+
+        <h3>MEDIUM Issues</h3>
+        <p>No MEDIUM severity issues found in this audit.</p>
+
+        <h2>All Consequence Records - Detailed View</h2>
+        <table>
+            <tr>
+                <th>Consequence ID</th>
+                <th>Cause</th>
+                <th>Steps Defined</th>
+                <th>Chain Status</th>
+            </tr>
+
+            <tr>
+                <td>1</td>
+                <td>Ventil stängd / delvis stängd</td>
+                <td>3/5</td>
+                <td>
+                    <span class="severity-badge MEDIUM">INCOMPLETE</span>
+                </td>
+            </tr>
+
+            <tr>
+                <td>2</td>
+                <td>Reglerventil felar stängd</td>
+                <td>0/5</td>
+                <td>
+                    <span class="severity-badge CRITICAL">EMPTY</span>
+                </td>
+            </tr>
+
+            <tr>
+                <td>3</td>
+                <td>Reglerventil felar stängd</td>
+                <td>0/5</td>
+                <td>
+                    <span class="severity-badge CRITICAL">EMPTY</span>
+                </td>
+            </tr>
+
+            <tr>
+                <td>4</td>
+                <td>Reglerventil felar stängd</td>
+                <td>0/5</td>
+                <td>
+                    <span class="severity-badge CRITICAL">EMPTY</span>
+                </td>
+            </tr>
+
+        </table>
+
+        <h2>Complete Chain Details</h2>
+
+        <div class="issue-card" style="border-left-color: #3498db;">
+            <h3>Consequence ID 1</h3>
+            <p><strong>Cause:</strong> Ventil stängd / delvis stängd</p>
+            <p><strong>Initial Description:</strong> Reducerat flöde till TK_11338 → Låg nivå → Processtörning</p>
+            <p><strong>Severity Level:</strong> 1</p>
+            <p><strong>Steps:</strong> 3/5</p>
+            <div class="chain-visual">
+                Del 1: Reducerat flöde till TK_11338
+                Del 2: Låg nivå
+                Del 3: Processtörning
+            </div>
+        </div>
+
+        <div class="issue-card" style="border-left-color: #3498db;">
+            <h3>Consequence ID 2</h3>
+            <p><strong>Cause:</strong> Reglerventil felar stängd</p>
+            <p><strong>Initial Description:</strong> O/CO/C</p>
+            <p><strong>Severity Level:</strong> 1</p>
+            <p><strong>Steps:</strong> 0/5</p>
+            <p><em>No steps defined</em></p>
+        </div>
+
+        <div class="issue-card" style="border-left-color: #3498db;">
+            <h3>Consequence ID 3</h3>
+            <p><strong>Cause:</strong> Reglerventil felar stängd</p>
+            <p><strong>Initial Description:</strong> 11VI:4304</p>
+            <p><strong>Severity Level:</strong> 1</p>
+            <p><strong>Steps:</strong> 0/5</p>
+            <p><em>No steps defined</em></p>
+        </div>
+
+        <div class="issue-card" style="border-left-color: #3498db;">
+            <h3>Consequence ID 4</h3>
+            <p><strong>Cause:</strong> Reglerventil felar stängd</p>
+            <p><strong>Initial Description:</strong> 11VI:4304</p>
+            <p><strong>Severity Level:</strong> 1</p>
+            <p><strong>Steps:</strong> 0/5</p>
+            <p><em>No steps defined</em></p>
+        </div>
+
+        <h2>Recommendations & Next Steps</h2>
+        <ol>
+            <li><strong>Immediate (Critical):</strong> Add Del 1-3 steps to Consequence IDs 2, 3, and 4. These records currently have only a brief description with no logical chain.
+            <li><strong>Short-term (High):</strong> Extend existing chains to include Del 4-5. Currently only Consequence ID 1 has any steps (3/5), leaving no final consequences.
+            <li><strong>Ongoing:</strong> Establish a data entry standard requiring all consequences to have at least a 3-step chain before being marked complete.
+            <li><strong>Quality Check:</strong> Review the initial consequence descriptions to ensure they clearly describe the first step (Del 1) of the chain.
+        </ol>
+
+        <h2>Technical Notes</h2>
+        <ul>
+            <li>Database: <code>hazop_project.db</code></li>
+            <li>Total consequence records in database: 4</li>
+            <li>Total consequence_steps records: 3</li>
+            <li>Expected maximum per record: 5 (Del 1, Del 2, Del 3, Del 4, Del 5)</li>
+            <li>Audit performed using SQL queries on <code>consequence_steps</code> table</li>
+        </ul>
+
+        <div class="footer">
+            <p>Generated: 2026-08-02</p>
+            <p>Report Type: HAZOP Consequence Chain Audit</p>
+            <p>Database: hazop_project.db</p>
+        </div>
+    </div>
+</body>
+</html>

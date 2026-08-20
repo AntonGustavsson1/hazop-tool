@@ -1,0 +1,134 @@
+HAZOP DATABASE AUDIT REPORT - CONSEQUENCE CHAIN QUALITY
+Swedish Language & Logical Consistency Review
+====================================================================================================
+
+Audit Date: 2026-08-02
+Database: hazop/hazop_project.db
+Auditor: Claude Code
+
+----------------------------------------------------------------------------------------------------
+EXECUTIVE SUMMARY
+----------------------------------------------------------------------------------------------------
+
+Total consequences in database: 4
+Total consequence steps recorded: 3/20 possible
+  - Complete chains (5 steps): 0 (0%)
+  - Partial chains (1-4 steps): 1 (25%)
+  - No chain data: 3 (75%)
+
+----------------------------------------------------------------------------------------------------
+DETAILED CONSEQUENCE ANALYSIS
+----------------------------------------------------------------------------------------------------
+
+====================================================================================================
+CONSEQUENCE ID: 1
+====================================================================================================
+
+ROOT CAUSE INFORMATION:
+  Deviation: Lågt flöde
+  Root Cause: Ventil stängd / delvis stängd
+  Main Description: Reducerat flöde till TK_11338 → Låg nivå → Processtörning
+
+CONSEQUENCE CHAIN STEPS (Del 1-5):
+  Del 1: Reducerat flöde till TK_11338
+           [ref_tag: TK_11338]
+  Del 2: Låg nivå
+  Del 3: Processtörning
+  Del 4: [MISSING]
+  Del 5: [MISSING]
+
+QUALITY ASSESSMENT:
+  Status: HIGH PRIORITY ISSUES
+
+====================================================================================================
+CONSEQUENCE ID: 2
+====================================================================================================
+
+ROOT CAUSE INFORMATION:
+  Deviation: Lågt flöde
+  Root Cause: Reglerventil felar stängd
+  Main Description: O/CO/C
+
+  [CRITICAL] Main description appears to be a tag code, not actual consequence
+
+CONSEQUENCE CHAIN STEPS (Del 1-5):
+  [NO STEPS RECORDED]
+
+QUALITY ASSESSMENT:
+  Status: CRITICAL ISSUES
+
+====================================================================================================
+CONSEQUENCE ID: 3
+====================================================================================================
+
+ROOT CAUSE INFORMATION:
+  Deviation: Lågt flöde
+  Root Cause: Reglerventil felar stängd
+  Main Description: 11VI:4304
+
+  [CRITICAL] Main description appears to be a tag code, not actual consequence
+
+CONSEQUENCE CHAIN STEPS (Del 1-5):
+  [NO STEPS RECORDED]
+
+QUALITY ASSESSMENT:
+  Status: CRITICAL ISSUES
+
+====================================================================================================
+CONSEQUENCE ID: 4
+====================================================================================================
+
+ROOT CAUSE INFORMATION:
+  Deviation: Lågt flöde
+  Root Cause: Reglerventil felar stängd
+  Main Description: 11VI:4304
+
+  [CRITICAL] Main description appears to be a tag code, not actual consequence
+
+CONSEQUENCE CHAIN STEPS (Del 1-5):
+  [NO STEPS RECORDED]
+
+QUALITY ASSESSMENT:
+  Status: CRITICAL ISSUES
+
+----------------------------------------------------------------------------------------------------
+ISSUE CATEGORIZATION
+----------------------------------------------------------------------------------------------------
+
+CRITICAL (6): Missing steps, nonsensical chains, major language errors
+  - ID 2: Main description is a tag/code, not a consequence
+  - ID 2: No consequence chain steps defined
+  - ID 3: Main description is a tag/code, not a consequence
+  - ID 3: No consequence chain steps defined
+  - ID 4: Main description is a tag/code, not a consequence
+  - ID 4: No consequence chain steps defined
+
+HIGH (3): Logical gaps, incomplete chains, Swedish quality issues
+  - ID 1: Incomplete consequence chain (3/5 steps)
+  - ID 1: Missing Del 4
+  - ID 1: Missing Del 5
+
+MEDIUM (0): Minor language polish, clarification needed
+
+LOW (0): Formatting, minor wording improvements
+
+----------------------------------------------------------------------------------------------------
+RECOMMENDATIONS
+----------------------------------------------------------------------------------------------------
+
+1. IMMEDIATE ACTIONS (CRITICAL):
+   - Replace tag-code main descriptions (IDs 2, 3, 4) with actual consequences
+   - Add consequence chain steps for consequences 2, 3, 4
+   - Ensure all 5 steps are completed for each consequence
+
+2. SHORT TERM (HIGH):
+   - Complete consequence chain for ID 1 (currently 3/5 steps)
+   - Define Del 4 & Del 5 for ID 1:
+     * Del 4: Process impact or system state
+     * Del 5: Final outcome or risk scenario
+
+3. PROCESS IMPROVEMENTS:
+   - Establish templates for consequence chains with Swedish examples
+   - Add validation to prevent tag-codes as descriptions
+   - Create mandatory field enforcement for all 5 steps
+   - Add Swedish spell-check integration

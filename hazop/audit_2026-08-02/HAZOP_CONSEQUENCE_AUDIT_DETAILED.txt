@@ -1,0 +1,462 @@
+================================================================================
+HAZOP CONSEQUENCE CHAIN DETAILED ANALYSIS & CORRECTIONS
+Swedish Language Quality & Logical Consistency Review
+================================================================================
+
+Audit Date: 2026-08-02
+Database: hazop/hazop_project.db
+
+
+=================================================================================
+CONSEQUENCE ID: 1 - "Reducerat flöde till TK_11338"
+=================================================================================
+
+ROOT CAUSE CHAIN:
+  Deviation: Lågt flöde
+  Root Cause: Ventil stängd / delvis stängd (Valve closed / partially closed)
+  Component: TK_11338 (tank)
+
+CURRENT CHAIN (3/5 steps):
+  Del 1: Reducerat flöde till TK_11338
+  Del 2: Låg nivå
+  Del 3: Processtörning
+
+SWEDISH LANGUAGE QUALITY ASSESSMENT:
+
+  Del 1: "Reducerat flöde till TK_11338"
+    - Grammar: CORRECT
+    - Technical: CORRECT — Uses process safety terminology
+    - Status: OK
+
+  Del 2: "Låg nivå"
+    - Grammar: CORRECT
+    - Technical: CORRECT — Standard HAZOP term
+    - Status: ACCEPTABLE (could be more specific)
+
+  Del 3: "Processtörning"
+    - Grammar: CORRECT
+    - Technical: TOO VAGUE — Should specify what process is disrupted
+    - Status: NEEDS IMPROVEMENT
+
+LOGICAL FLOW ASSESSMENT:
+
+  Del 1 -> Del 2 Logic: GOOD
+    "Reduced flow to TK_11338" logically leads to "Low level"
+    Less inflow = tank level drops. Coherent.
+
+  Del 2 -> Del 3 Logic: ACCEPTABLE BUT VAGUE
+    "Low level" -> "Process disruption"
+    Connection exists but could be more specific about WHAT process fails
+
+MISSING STEPS (Del 4 & Del 5):
+
+  Del 4 SHOULD DESCRIBE: Specific process consequence
+    Current gap: No detail on intermediate consequences
+    Example: "Produktionen kan inte fortgå med normal kapacitet"
+             (Production cannot continue at normal capacity)
+
+  Del 5 SHOULD DESCRIBE: Final safety/business consequence
+    Current gap: No final risk outcome stated
+    Example: "Risker för personskador om manuell påfyllning försöks"
+             (Risk of personal injury if manual filling is attempted)
+
+RECOMMENDED CORRECTIONS FOR ID 1:
+
+Current:
+  Del 1: Reducerat flöde till TK_11338
+  Del 2: Låg nivå
+  Del 3: Processtörning
+  Del 4: [MISSING]
+  Del 5: [MISSING]
+
+Suggested:
+  Del 1: Reducerat flöde till lagertanken TK_11338
+  Del 2: Vätskenivån sjunker under miniminivå
+  Del 3: Dosering av processvätskan kan inte genomföras
+  Del 4: Reaktanten blir starkt upphettad utan tillräcklig vätsketillförsel
+  Del 5: Risk för överstigning av kritisk temperatur och säkerhetsventil utlöst
+
+Rationale:
+  - Del 1: Added "lagertanken" for clarity (which tank?)
+  - Del 2: More specific "under miniminivå" (below minimum level) instead of vague "låg"
+  - Del 3: Specific consequence "dosering...kan inte genomföras" instead of vague "störning"
+  - Del 4: Root cause consequence - what happens without the fluid
+  - Del 5: Clear safety risk - temperature exceedance and relief activation
+
+
+=================================================================================
+CONSEQUENCE ID: 2 - "O/CO/C" [CRITICAL ISSUE]
+=================================================================================
+
+ROOT CAUSE CHAIN:
+  Deviation: Lågt flöde
+  Root Cause: Reglerventil felar stängd (Control valve fails to close)
+
+CURRENT STATE:
+  Main Description: "O/CO/C"
+  Steps: NONE RECORDED
+
+PROBLEM ANALYSIS:
+
+The main description "O/CO/C" is a TAG CODE, not a consequence description.
+This appears to be an automation or system reference code that was entered
+instead of the actual consequence.
+
+CRITICAL ISSUES IDENTIFIED:
+  1. Main description is not human-readable (tag code instead of consequence)
+  2. No consequence chain steps (Del 1-5) defined
+  3. Database contains machine code instead of process description
+  4. Impossible to understand process safety impact from "O/CO/C"
+
+CORRECTION REQUIRED:
+
+Step 1: Clarify what "O/CO/C" represents
+  - Possible meanings: Outlet/Control/Check code?
+  - Or: Reference to specific P&ID location?
+  - Consult with process engineer who created this entry
+
+Step 2: Create proper Swedish consequence description
+  - Replace "O/CO/C" with actual consequence name
+  - Example: "Reglerventil låst stängd - ingen utloppsreglering"
+             (Control valve locked closed - no outlet regulation)
+
+Step 3: Define all 5 consequence steps
+
+TEMPLATE FOR THIS CONSEQUENCE (if valve fails to close):
+
+  Del 1: Reglerventilen förblir helt stängd
+         (Control valve remains completely closed)
+  Del 2: Trycket ökar i systemet eftersom flöde är blockerat
+         (System pressure increases due to blocked flow)
+  Del 3: Säkerhetsprovningen löser ut när trycket nås
+         (Safety relief activates when pressure reached)
+  Del 4: Vätskan stöts ut från systemet med högt tryck
+         (Fluid expelled from system under high pressure)
+  Del 5: Risk för personskador, miljökontaminering och systemskador
+         (Risk of injury, environmental damage, and system damage)
+
+
+=================================================================================
+CONSEQUENCE ID: 3 - "11VI:4304" [CRITICAL ISSUE]
+=================================================================================
+
+ROOT CAUSE CHAIN:
+  Deviation: Lågt flöde
+  Root Cause: Reglerventil felar stängd (Control valve fails to close)
+
+CURRENT STATE:
+  Main Description: "11VI:4304"
+  Steps: NONE RECORDED
+
+PROBLEM ANALYSIS:
+
+The main description "11VI:4304" is an INSTRUMENT TAG or PART NUMBER,
+not a consequence description. Same issue as ID 2.
+
+The format "11VI:4304" suggests:
+  - 11: Location or system code
+  - VI: Component type (possibly Ventil In / Ventil Instrument?)
+  - 4304: Instrument number or part code
+
+CRITICAL ISSUES:
+  1. Instrument tag used instead of consequence description
+  2. Duplicate root cause with ID 2 (same valve failure)
+  3. No consequence chain steps (0/5)
+  4. Cannot understand process impact from tag alone
+
+DATA QUALITY ISSUE:
+  Compare with ID 2: Both use tags instead of descriptions.
+  Are ID 2, ID 3, and ID 4 supposed to be different consequences
+  from the SAME root cause? Or are they duplicates/errors?
+
+INVESTIGATION NEEDED:
+
+  Question 1: Is "11VI:4304" a specific valve tag that failed?
+  Question 2: Should this consequence describe that specific valve's failure?
+  Question 3: What process consequence results from THIS valve failing?
+
+SUGGESTED CORRECTION (assuming inlet pressure control valve):
+
+  Del 1: Inloppsregleringen försvinner på kontrollventilen 11VI:4304
+         (Inlet regulation lost on control valve 11VI:4304)
+  Del 2: Systemtrycket sjunker kraftigt utan tryckstabilisering
+         (System pressure drops significantly without pressure stabilization)
+  Del 3: Flödet in i reaktorn blir ojämnt och opredikterbart
+         (Flow into reactor becomes uneven and unpredictable)
+  Del 4: Reaktionen kan inte styras till rätt temperatur
+         (Reaction cannot be controlled to correct temperature)
+  Del 5: Risk för runaway-reaktion eller kallstart med begränsad produktion
+         (Risk of runaway reaction or cold start with limited production)
+
+
+=================================================================================
+CONSEQUENCE ID: 4 - "11VI:4304" [CRITICAL ISSUE - DUPLICATE]
+=================================================================================
+
+ROOT CAUSE CHAIN:
+  Deviation: Lågt flöde
+  Root Cause: Reglerventil felar stängd (Control valve fails to close)
+
+CURRENT STATE:
+  Main Description: "11VI:4304"
+  Steps: NONE RECORDED
+
+PROBLEM ANALYSIS:
+
+THIS IS IDENTICAL TO ID 3:
+  - Same tag code: "11VI:4304"
+  - Same root cause: "Reglerventil felar stängd"
+  - Same deviation: "Lågt flöde"
+  - Same state: No steps recorded
+
+DATA QUALITY ISSUE - LIKELY DUPLICATE RECORD:
+  This record appears to be a DUPLICATE of ID 3 in the database.
+
+ACTION REQUIRED:
+
+  Option A: If duplicate (most likely)
+    - VERIFY that ID 3 and ID 4 are indeed identical
+    - DELETE record ID 4 from consequences table
+    - Keep ID 3 and complete it properly
+
+  Option B: If NOT duplicate
+    - CLARIFY what distinguishes ID 3 from ID 4
+    - Give ID 4 a different main description
+    - Define different consequence chain for ID 4
+
+SQL to check for duplicates:
+  SELECT id, cause_id, description FROM consequences
+  WHERE cause_id = 8
+  ORDER BY id;
+
+This will show all consequences linked to cause 8 (reglerventil felar stängd).
+
+
+=================================================================================
+SWEDISH LANGUAGE QUALITY GUIDELINES FOR HAZOP CONSEQUENCE CHAINS
+=================================================================================
+
+CRITICAL TERMINOLOGY (Process Safety Swedish):
+
+Flow/Pressure Terms:
+  - Reducerat flöde = Reduced flow
+  - Låg nivå / Låga nivåer = Low level
+  - Högt tryck / Övertryck = High pressure / Overpressure
+  - Lågt tryck / Undertryck = Low pressure / Vacuum
+  - Plötslig stoppning = Sudden stoppage
+  - Okontrollerat flöde = Uncontrolled flow
+  - Flödesomkastning = Flow reversal
+
+Equipment Failures:
+  - Ventil stängd / felar stängd = Valve closed / fails to close
+  - Ventil öppen / felar öppen = Valve open / fails to open
+  - Ventil läcker = Valve leaking
+  - Pumpe stannar / felar = Pump stops / fails
+  - Sensor faller bort = Sensor fails/drops out
+  - Instrument felar = Instrument malfunctions
+
+Safety Consequences:
+  - Överstigning av kritisk temperatur = Exceeding critical temperature
+  - Exoterm reaktion / runaway = Exothermic reaction / runaway
+  - Personskador = Personal injury
+  - Miljökontaminering = Environmental contamination
+  - Explosionsrisik = Explosion risk
+  - Brandrisik = Fire risk
+  - Trycksprängning = Pressure rupture
+
+GRAMMAR & STYLE RULES:
+
+✓ DO:
+  - Start each step with CAPITAL LETTER: "Reducerat flöde" NOT "reducerat flöde"
+  - Use active voice: "Ventilen stänger" BETTER THAN "ventilen är stängd"
+  - Be SPECIFIC: "Vattentrycket i kölanläggningen sjunker till 5 bar"
+    NOT just "tryck sjunker"
+  - Use CONSISTENT Swedish throughout chain: Never mix "flow" + "flöde"
+  - Include UNITS when numeric: "Temperaturen stiger till 150°C"
+    NOT just "temperatur stiger"
+  - Use present tense for process flow: "Vätskan läcker ut"
+    INSTEAD OF past: "vätskan har läckt ut"
+
+✗ DON'T:
+  - Mix languages: "Flöde decreases" is WRONG
+  - Use tag codes as descriptions: "11VI:4304" is NOT a consequence
+  - Make VAGUE statements: "Något dåligt händer" (Something bad happens)
+  - Use placeholder text: "Etc." or "..." shows incomplete work
+  - Abbreviate terms: Use "Tryckpåkänning" NOT "P_k" or "pres"
+  - Passive voice when active is clearer: NOT "vätskan är blockerad"
+    BETTER: "vätskan blockeras av..." or "blockering av vätskan"
+  - Leave steps incomplete: 3/5 steps means 40% of data missing
+
+CONSISTENCY RULES:
+
+  Same root cause = Similar consequence chain pattern
+    Example: If two valves fail the SAME WAY (both felar stängd),
+    their consequence chains should follow similar logic:
+      Del 1: [Component] stays [position]
+      Del 2: [System response] to that state
+      Del 3: [Process impact]
+      Del 4: [Equipment stress]
+      Del 5: [Final safety/business consequence]
+
+  Consequence severity should progress:
+    Del 1: Local immediate effect
+    Del 2: Propagation through system
+    Del 3: Process-level impact
+    Del 4: Equipment or secondary effects
+    Del 5: Final risk (safety, environmental, business)
+
+
+=================================================================================
+CAUSE-TO-CONSEQUENCE LOGICAL FLOW EXAMPLES
+=================================================================================
+
+Example 1 - Pressure relief valve blockage (Säkerhetsprovning blockerad):
+
+  Root Cause: Blockage in safety relief valve
+
+  Del 1: Säkerhetsprovningen är blockerad och kan inte öppnas
+         (Safety relief is blocked and cannot open)
+  Del 2: Systemtryck kan inte minskas när trycket ökar
+         (System pressure cannot be reduced as it increases)
+  Del 3: Trycket ökar stadigt under drift högre än normal
+         (Pressure increases continuously during operation above normal)
+  Del 4: Vid högre tryck än designgränsen påkänns rör och ventiler
+         (Above design pressure, pipes and fittings experience stress)
+  Del 5: Risk för trycksprängning av system och vätskoläckage med personskador
+         (Risk of system rupture and fluid leak with personal injury)
+
+
+Example 2 - Pump starts unexpectedly (Pumpe startar oplanerat):
+
+  Root Cause: Unexpected pump start
+
+  Del 1: Pumpen startar utan planering eller kommando
+         (Pump starts without planning or command)
+  Del 2: Höga flödeshastigheter genom systemet plötsligt
+         (High flow rates through system suddenly)
+  Del 3: Trycket skjuter upp snabbt i hela systemet
+         (Pressure spikes rapidly throughout system)
+  Del 4: Rördelar och ventiler påkänns kraftigt av tryckstöten
+         (Pipe sections and valves experience pressure surge stress)
+  Del 5: Vätskoläckage på arbetsplats, eldningsfara och möjlig explosion
+         (Fluid leak at workplace, fire hazard, and possible explosion)
+
+
+Example 3 - Temperature sensor fails (Temperatursensor felar):
+
+  Root Cause: Temperature sensor failure
+
+  Del 1: Temperaturen kan inte övervakas längre i reaktorn
+         (Temperature cannot be monitored in reactor anymore)
+  Del 2: Systemet får ingen återkoppling om faktisk temperatur
+         (System receives no feedback on actual temperature)
+  Del 3: Uppvärmningen eller kylningen kan bli överdriven
+         (Heating or cooling can become excessive)
+  Del 4: Reaktionen kan bli för varm eller för kall för optimal kontroll
+         (Reaction can become too hot or too cold for proper control)
+  Del 5: Risk för utbytta produkter, säkerhetshalt eller runaway-reaktion
+         (Risk of off-spec products, safety violation, or runaway reaction)
+
+
+=================================================================================
+SUMMARY OF REQUIRED ACTIONS - PRIORITY CHECKLIST
+=================================================================================
+
+PRIORITY 1 - CRITICAL (Fixes data integrity issues):
+
+  [ ] ID 1: Complete consequence chain
+      - Add Del 4 step describing intermediate process consequence
+      - Add Del 5 step describing final safety/business consequence
+      - Status: 3/5 complete, 2/5 missing
+
+  [ ] ID 2: Replace main description
+      - Current: "O/CO/C" (tag code)
+      - Action: Clarify what O/CO/C represents
+      - Action: Replace with proper Swedish consequence description
+      - Action: Define all 5 Del steps (currently 0/5)
+
+  [ ] ID 3: Replace main description
+      - Current: "11VI:4304" (tag code)
+      - Action: Clarify valve function
+      - Action: Replace with proper Swedish consequence description
+      - Action: Define all 5 Del steps (currently 0/5)
+
+  [ ] ID 4: Resolve duplicate
+      - Compare ID 3 and ID 4 for identical data
+      - If duplicate: DELETE ID 4
+      - If different: CLARIFY distinction and complete record
+
+PRIORITY 2 - HIGH (Quality improvements):
+
+  [ ] Standardize capitalization
+      - First letter of each Del step should be CAPITAL
+
+  [ ] Enhance specificity
+      - Replace vague terms with specific process details
+      - Example: "störning" → "dosering kan inte genomföras"
+
+  [ ] Add units where applicable
+      - "temperatur stiger till 150°C" not just "temperatur stiger"
+
+  [ ] Ensure logical progression
+      - Each Del should follow logically from previous step
+      - Final Del 5 should clearly state SAFETY consequence
+
+PRIORITY 3 - PROCESS IMPROVEMENTS (Prevent recurrence):
+
+  [ ] Add database validation
+      - Prevent tag codes (like "11VI:4304") as main descriptions
+      - Require min length for consequence descriptions (e.g., > 10 characters)
+
+  [ ] Create templates
+      - Build Swedish language templates for common consequence scenarios
+      - Share examples showing good 5-step chains
+
+  [ ] Establish peer review
+      - Require second person to verify consequence chains before marking complete
+      - Use checklist: All 5 steps filled? Swedish quality OK? Logic flows?
+
+  [ ] Add spell-check
+      - Integrate Swedish spell-checker into database
+      - Flag potential encoding or language issues
+
+  [ ] Document standards
+      - Create style guide for HAZOP consequence descriptions
+      - Include terminology glossary for process safety Swedish
+
+
+=================================================================================
+DATABASE QUERY - FIND DUPLICATE RECORDS
+=================================================================================
+
+Run this SQL to identify any other duplicate consequences:
+
+  SELECT cause_id, description, COUNT(*) as cnt
+  FROM consequences
+  GROUP BY cause_id, description
+  HAVING COUNT(*) > 1
+  ORDER BY cnt DESC;
+
+This will show any consequences that share both the same cause_id AND
+the same description text. If records appear with COUNT > 1, they are
+duplicates that should be consolidated.
+
+Run this to show all consequences for cause 8 (reglerventil felar stängd):
+
+  SELECT
+    c.id,
+    c.cause_id,
+    c.description as cons_desc,
+    (SELECT COUNT(*) FROM consequence_steps WHERE consequence_id = c.id) as step_count
+  FROM consequences c
+  WHERE c.cause_id = 8;
+
+This will show:
+  ID 2: "O/CO/C" with 0 steps
+  ID 3: "11VI:4304" with 0 steps
+  ID 4: "11VI:4304" with 0 steps (likely duplicate of 3)
+
+
+=================================================================================
+End of Detailed Analysis Report
+=================================================================================

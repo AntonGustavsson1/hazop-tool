@@ -1,0 +1,51 @@
+[
+  {
+    "consequence_id": 1,
+    "cause_id": 1,
+    "cause_text": "Ventil stängd / delvis stängd",
+    "consequence_initial": "Reducerat flöde till TK_11338 → Låg nivå → Processtörning",
+    "severity": 1,
+    "category": "",
+    "steps": {
+      "Del 1": {
+        "text": "Reducerat flöde till TK_11338",
+        "ref_tag": "TK_11338"
+      },
+      "Del 2": {
+        "text": "Låg nivå",
+        "ref_tag": ""
+      },
+      "Del 3": {
+        "text": "Processtörning",
+        "ref_tag": ""
+      }
+    }
+  },
+  {
+    "consequence_id": 2,
+    "cause_id": 8,
+    "cause_text": "Reglerventil felar stängd",
+    "consequence_initial": "O/CO/C",
+    "severity": 1,
+    "category": "",
+    "steps": {}
+  },
+  {
+    "consequence_id": 3,
+    "cause_id": 8,
+    "cause_text": "Reglerventil felar stängd",
+    "consequence_initial": "11VI:4304",
+    "severity": 1,
+    "category": "",
+    "steps": {}
+  },
+  {
+    "consequence_id": 4,
+    "cause_id": 8,
+    "cause_text": "Reglerventil felar stängd",
+    "consequence_initial": "11VI:4304",
+    "severity": 1,
+    "category": "",
+    "steps": {}
+  }
+]

@@ -3,3 +3,27 @@ __pycache__/
 *.db
 *.pdf
 *.xlsx
+
+# Logs from local runs (hazop_crash.log, hazop_debug.log, test_run.log, ...)
+*.log
+
+# Local save files used for manual/exploratory testing
+*.hzp
+
+# Crash reports (see CLAUDE.md "Crash Reporting") — local diagnostic
+# artifacts, not source
+crashes/
+
+# Ad-hoc debug screenshots
+Screenshot *.png
+connector_demo.png
+
+# Large local-only reference material — never meant to be committed, only
+# used for manual dev-testing (see NOTES.md "Autodetektera utrustning..."
+# 2026-08-05: "riktiga P&ID ref/-filer används bara för lokal manuell
+# körning, aldrig som testfixturer")
+P&ID ref/
+HAZOP ref/
+Old screenshot/
+icon_requests/
+2026-08-12 Design/
