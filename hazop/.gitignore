@@ -14,16 +14,9 @@ __pycache__/
 # artifacts, not source
 crashes/
 
-# Ad-hoc debug screenshots
-Screenshot *.png
-connector_demo.png
-
-# Large local-only reference material — never meant to be committed, only
-# used for manual dev-testing (see NOTES.md "Autodetektera utrustning..."
-# 2026-08-05: "riktiga P&ID ref/-filer används bara för lokal manuell
-# körning, aldrig som testfixturer")
-P&ID ref/
-HAZOP ref/
-Old screenshot/
-icon_requests/
-2026-08-12 Design/
+# Everything that isn't part of the program itself — screenshots, logs,
+# large local-only P&ID/reference material (see NOTES.md "Autodetektera
+# utrustning..." 2026-08-05: "riktiga P&ID ref/-filer används bara för
+# lokal manuell körning, aldrig som testfixturer"), and stale project
+# files superseded by the live hazop_project.db (2026-08-20 cleanup)
+ej_programfiler/

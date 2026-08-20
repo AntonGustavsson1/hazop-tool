@@ -528,6 +528,26 @@ Anton: "Objekt behöver inte vara fetstilta i hazopträdet. justera till normalt
 
 **Resultat:** `git status` i hazop/ visar nu bara faktiskt relevanta, avsiktliga ändringar istället för 50+ konstanta ospårade filer varje gång.
 
+## Uppföljning: allt som inte hör till programmet flyttat till ej_programfiler/ (2026-08-20)
+
+**Rapport:** Anton, uppföljning på städningen ovan: "Skulle du kunna städa upp lite i hazop programmet mappar och lägga allt som inte hör till programmet i en separat mapp, dvs print screens etc." — förra rundan bara gitignorade skräpet, flyttade inte det fysiskt ur mapp-strukturen.
+
+**Verifierat INNAN något flyttades (för att inte råka förstöra det körande programmets tillstånd):** `database.py`s `DB_PATH = Path(__file__).parent / "hazop_project.db"` är default-databasen appen öppnar — och dess `pid_revisions`-tabell pekar faktiskt på `hazop_project_pid.pdf` i samma mapp (verifierat med en riktig SQL-fråga mot den levande databasen, inte antaget). Dessa två filer rördes INTE — att flytta dem hade gjort att appen antingen tappat bort P&ID-filen eller (om DB-filen flyttats) tyst skapat en NY, tom databas vid nästa start. `crashes/` och `hazop_backups/` är likaså hårdkodade sökvägar i `hazop.py`/`database.py` (`CRASH_DIR`, backup-katalogen) — riktig programinfrastruktur, inte skräp, lämnade orörda.
+
+**Vad som verifierades vara säkert att flytta (grep + en SQL-dump av hela den levande databasen för att bekräfta att inget refererar dem):** `hazop_project_pid2/3/4.pdf`, `nytt_projekt(2).hzp`, `hazop_project_backup_2026-06-15.db`, `hazop_rapport.xlsx`, `HAZOP_stoddatabas_v2_unika_orsaker.xlsx` — noll träffar i databasdumpen, `nytt_projekt`-strängen i `hazop.py` är bara ett default-filnamnsförslag i en Spara-som-dialog (läses aldrig tillbaka), `hazop_rapport.xlsx` samma sak för Excel-export. `hazop_crash.log` (18,7 MB) är skriv-bara "legacy"-loggning (kommentar i koden säger uttryckligen "for backward compatibility") — läses aldrig tillbaka, säker att flytta.
+
+**Genomförande:** ny mapp `ej_programfiler/` med fyra undermappar:
+- `screenshots/` — 17 skärmdumpar (`Screenshot *.png`, `connector_demo.png`).
+- `logs/` — `hazop_crash.log`, `hazop_debug.log`, `hazop_launch.log`, `hazop_output.log`, `test_run.log`.
+- `reference_material/` — `P&ID ref/` (93 MB), `HAZOP ref/`, `Old screenshot/`, `icon_requests/`, `2026-08-12 Design/`, `Red markup/` (samma mappar `.gitignore` redan uteslöt förra rundan, nu faktiskt flyttade ut ur rotkatalogen också).
+- `old_project_files/` — de sex verifierat-orefererade filerna ovan.
+
+Två ytterligare engångsskript (`analyze_refs.py`, `render_layout.py` — kopplingsstatistik/PNG-förhandsvisning mot `P&ID ref/`-biblioteken, se NOTES_ARCHIVE.md) hade missats i förra rundans `dev_scripts/`-flytt — flyttade dit nu (`git mv`-mönster, registrerades som ren rename i git).
+
+**`.gitignore` förenklad:** ersatte fem separata katalogmönster med en enda `ej_programfiler/`-rad, eftersom allt som behövde gitignoras nu bor under den ena mappen.
+
+**Verifiering:** `Database(path=DB_PATH)` konstruerad direkt mot den orörda `hazop_project.db` efter flytten — ingen krasch, samma `pid_revisions`-rad som innan. Full `test_smoke`-svit grön.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.
