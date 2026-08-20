@@ -1263,8 +1263,6 @@ class _ScenarioDelegate(QStyledItemDelegate):
 
 _PID_ICON_W  = 22          # pixels reserved on the left for the pin icon
 _KON_CAT_W   = 26          # pixels for the category badge zone in KON cells
-_ORS_COMMENT_W = 22        # 💬 comment icon zone (rightmost of ORS)
-_ORS_CLONE_W   = 22        # 📋 clone-scenario icon zone
 # Height of the ORS cell's top strip ([tag|comment dot], see _PidDelegate.
 # paint()'s "Cause cells" branch). MUST match everywhere a row's needed
 # height is computed (sizeHint/_resize_rows_manual/_wrap_col_row_height)
@@ -1484,7 +1482,7 @@ class _PidDelegate(_ScenarioDelegate):
                 # safeguards already have one is visible at a glance.
                 comp_type_tag = index.data(Qt.ItemDataRole.UserRole + 6) or ('', '')
                 _sg_comp_tag = comp_type_tag[1] if len(comp_type_tag) > 1 else ''
-                icon_rect = QRect(r.left(), body_top, _SG_TAG_ICON_ZONE_W, body_h)
+                icon_rect = self._panel._sg_icon_zone_geometry(r)
                 icon_tc = (option.palette.highlightedText().color() if sel
                           else (QColor('#17191C') if _sg_comp_tag else QColor('#C2C4C8')))
                 painter.setPen(icon_tc)
@@ -1493,7 +1491,7 @@ class _PidDelegate(_ScenarioDelegate):
                 # Layout: [icon][description ...][RRF badge 54px]
                 desc_w    = r.width() - _RRF_W - _SG_TAG_ICON_ZONE_W
                 desc_rect = QRect(r.left() + _SG_TAG_ICON_ZONE_W, body_top, desc_w, body_h)
-                rrf_rect  = QRect(r.right() - _RRF_W, body_top, _RRF_W, body_h)
+                rrf_rect  = self._panel._sg_rrf_zone_geometry(r)
 
                 # Description text (elided to one line), drag-appended tags
                 # in bold (2026-08-09, see NOTES.md "fetmarkera objekttexten").
@@ -1643,14 +1641,14 @@ class _PidDelegate(_ScenarioDelegate):
                 # ── Comment dot (right of strip) — the green/yellow/orange/
                 # red fill-status dot that used to sit next to it is gone
                 # entirely (2026-08-18, see NOTES.md "skrota pluppen").
-                dot_r = 4
-                dot_y = r.top() + _SH // 2
-                dot_x = r.right() - 5
+                # Geometry shared with eventFilter()'s click zone via
+                # _ors_comment_dot_geometry — see that method's own
+                # docstring for the real bug this fixed (the comment
+                # popup was completely unreachable via the UI before).
                 if _has_comment:
                     painter.setBrush(QBrush(QColor('#17191C')))
                     painter.setPen(Qt.PenStyle.NoPen)
-                    painter.drawEllipse(QRect(dot_x - dot_r, dot_y - dot_r,
-                                              dot_r * 2, dot_r * 2))
+                    painter.drawEllipse(self._panel._ors_comment_dot_geometry(r))
                     painter.setBrush(Qt.BrushStyle.NoBrush)
 
                 # ── Description text (full cell width — frequency floats
@@ -1716,7 +1714,7 @@ class _PidDelegate(_ScenarioDelegate):
                 body_top = r.top()
                 body_h   = r.height()
 
-                cat_rect   = QRect(r.left(), body_top, _KON_CAT_W, body_h)
+                cat_rect   = self._panel._kon_cat_zone_geometry(r)
                 txt_rect   = QRect(r.left() + _KON_CAT_W, body_top,
                                    r.width() - _KON_CAT_W, body_h)
 
@@ -1781,14 +1779,13 @@ class _PidDelegate(_ScenarioDelegate):
         hela rader med blankt" (takes up way too much space with whole
         blank rows); this only ever marks the LAST real row of a group,
         drawn on top of that row's own real content instead of a
-        separate row. Hit-tested by eventFilter()'s _PLUS_BADGE_SIZE
-        zone, not by this delegate — painting and hit-testing share
-        nothing but the corner geometry, matching every other in-cell
-        zone in this class (tag zone, category badge, RRF badge, …)."""
+        separate row. Hit-tested by eventFilter(), which now calls the
+        same _plus_badge_geometry() this does (2026-08-20 follow-up —
+        previously each side computed the corner rect independently;
+        still agreed by construction, but no longer just by luck)."""
         if self._panel._row_plus_cols.get(row, {}).get(col) is None:
             return
-        sz = _PLUS_BADGE_SIZE
-        badge = QRect(rect.right() - sz - 2, rect.bottom() - sz - 2, sz, sz)
+        badge = self._panel._plus_badge_geometry(rect)
         painter.setPen(QColor('#8D9299'))
         f = QFont(painter.font())
         f.setBold(True)
@@ -4224,50 +4221,6 @@ class ScenarioTablePanel(QWidget):
                 return self._table.viewport().mapToGlobal(rect.topRight())
         return None
 
-    def _cell_has_item(self, row, col):
-        """Returns True only when the cell actually has a placeable item ID."""
-        if row >= len(self._row_meta):
-            return False
-        _dev_id, cause_id, cons_id, sg_id = self._row_meta[row]
-        if col == self._C_ORS:
-            return cause_id is not None
-        if col == self._C_KON:
-            return cons_id is not None
-        if col == self._C_SG:
-            return sg_id is not None
-        return False
-
-    def _on_table_context_menu(self, pos):
-        col = self._table.columnAt(pos.x())
-        row = self._table.rowAt(pos.y())
-        if row < 0 or row >= len(self._row_meta):
-            return
-        if col not in (self._C_ORS, self._C_KON, self._C_SG):
-            return
-        if not self._cell_has_item(row, col):
-            return  # no item here at all — e.g. safeguard row with no safeguard yet
-        menu = QMenu(self)
-        if col == self._C_KON and row < len(self._row_meta):
-            cons_id = self._row_meta[row][2]
-            if cons_id is not None:
-                menu.addSeparator()
-                a_chain = menu.addAction(_icon('clipboard'), "Redigera konsekvenskedja (Del1–Del5)…")
-                a_chain.triggered.connect(lambda: self._open_chain_editor(cons_id))
-        if col == self._C_SG and row < len(self._row_meta):
-            sg_id = self._row_meta[row][3]
-            if sg_id is not None:
-                menu.addSeparator()
-                a_rrf = menu.addAction(_icon('settings'), "Ändra RRF...")
-                a_rrf.triggered.connect(lambda: self._show_rrf_popup(row, sg_id))
-        # Feature 4: clone scenario to another deviation
-        if col == self._C_ORS and row < len(self._row_meta):
-            cause_id = self._row_meta[row][1]
-            if cause_id is not None:
-                menu.addSeparator()
-                a_clone = menu.addAction(_icon('clipboard'), "Duplicera scenario till annan avvikelse…")
-                a_clone.triggered.connect(lambda: self._clone_scenario(cause_id))
-        menu.exec(self._table.viewport().mapToGlobal(pos))
-
     def _on_cell_clicked(self, row, col):
         if col == self._C_ORS and row < len(self._row_meta):
             dev_id, cause_id = self._row_meta[row][0], self._row_meta[row][1]
@@ -4538,6 +4491,61 @@ class ScenarioTablePanel(QWidget):
                               self._ORS_FREQ_MAX_W)
         freq_zone_x = row_right - self._ORS_FREQ_MARGIN - freq_zone_w
         return freq_zone_x, freq_zone_w, freq_str
+
+    def _ors_comment_dot_geometry(self, cell_rect):
+        """The small comment-indicator dot at the right edge of the ORS
+        tag strip — the ONLY icon there since the 2026-08-18 fill-status
+        "plupp" removal (see _PidDelegate.paint()'s own "Comment dot"
+        comment). Shared by paint() (which only draws it when
+        _has_comment) and eventFilter()'s click zone so the two can
+        never disagree about where it is — they used to (2026-08-20
+        follow-up, found while centralizing zone geometry more broadly):
+        eventFilter() still hit-tested a defunct 18/20px "clone"+
+        "comment" icon PAIR left over from an older three-icon design
+        that no longer exists. Two real, live bugs from that: (1) the
+        comment zone's own bounds were written as `pos.x() >= X and
+        pos.x() < X` (`cmt_right` used as both ends) — mathematically
+        always False, so `_open_comment_popup()` was completely
+        unreachable via the UI, and (2) the "clone" zone covered blank
+        space nowhere near the actual dot, so clicking near the visible
+        dot silently fired "Duplicera scenario" instead of doing
+        nothing — a moderately destructive-adjacent action triggered by
+        an unlabelled, invisible click target. Clone itself needed no
+        fix; it's already available, clearly labelled, from the
+        right-click context menu (see the other `_clone_scenario` call
+        site) — only the comment dot needed a real, working zone here,
+        so that's the only icon this geometry describes now."""
+        dot_r = 4
+        dot_y = cell_rect.top() + _ORS_STRIP_H // 2
+        dot_x = cell_rect.right() - 5
+        return QRect(dot_x - dot_r, dot_y - dot_r, dot_r * 2, dot_r * 2)
+
+    def _sg_icon_zone_geometry(self, cell_rect):
+        """The 🏷 object-picker icon zone at the left of a safeguard cell
+        (2026-08-19, see NOTES.md "Objekt-väljare för safeguards") —
+        shared between paint() and eventFilter() so they can't drift
+        apart, same rule as every other zone in this class."""
+        return QRect(cell_rect.left(), cell_rect.top(),
+                     _SG_TAG_ICON_ZONE_W, cell_rect.height())
+
+    def _sg_rrf_zone_geometry(self, cell_rect):
+        """The RRF badge zone at the right of a safeguard cell — shared
+        between paint() and eventFilter()."""
+        return QRect(cell_rect.right() - _RRF_W, cell_rect.top(),
+                     _RRF_W, cell_rect.height())
+
+    def _kon_cat_zone_geometry(self, cell_rect):
+        """The 📊 category-badge zone at the left of a consequence (KON)
+        cell — shared between paint() and eventFilter()."""
+        return QRect(cell_rect.left(), cell_rect.top(),
+                     _KON_CAT_W, cell_rect.height())
+
+    def _plus_badge_geometry(self, cell_rect):
+        """The in-cell "+" quick-add badge, bottom-right corner — shared
+        by _draw_plus_badge() (paint side) and eventFilter()'s click
+        zone for it. `_PLUS_BADGE_SIZE` is the badge's own edge length."""
+        sz = _PLUS_BADGE_SIZE
+        return QRect(cell_rect.right() - sz - 2, cell_rect.bottom() - sz - 2, sz, sz)
 
     def _sg_row_height(self, base_font):
         """Single source of truth for a safeguard row's height — used by
@@ -4849,8 +4857,7 @@ class ScenarioTablePanel(QWidget):
                 if plus is not None:
                     idx = self._table.model().index(row, col)
                     cr  = self._table.visualRect(idx)
-                    sz  = _PLUS_BADGE_SIZE
-                    badge = QRect(cr.right() - sz - 2, cr.bottom() - sz - 2, sz, sz)
+                    badge = self._plus_badge_geometry(cr)
                     if badge.contains(pos):
                         kind, group_id = plus
                         if group_id is not None:
@@ -4938,31 +4945,39 @@ class ScenarioTablePanel(QWidget):
                         popup.exec()
                         return True
 
-            # 💬 Comment + 📋 Clone icon clicks in ORS cell (inline, replaces context menu)
+            # 💬 Comment dot click in ORS cell — the only icon here since the
+            # 2026-08-18 fill-status "plupp" removal. Hit-tests the exact
+            # same geometry paint() draws it at (_ors_comment_dot_geometry,
+            # padded a few px for an easier click target), so the two can't
+            # drift apart again. Only live when a comment already exists —
+            # matches paint()'s own _has_comment gate, since the dot isn't
+            # drawn otherwise; adding the FIRST comment goes through the
+            # "Kommentar…" context-menu action instead. The old inline
+            # "clone" zone here hit-tested blank space next to the dot, not
+            # anything visible, and has been removed — cloning already has
+            # a real, working, always-visible entry in the right-click
+            # context menu ("Duplicera scenario till annan avvikelse…").
             if row >= 0 and col == self._C_ORS and row < len(self._row_meta):
                 cause_id = self._row_meta[row][1]
                 if cause_id is not None:
-                    ci = self._table.model().index(row, col)
-                    cr = self._table.visualRect(ci)
-                    # rightmost zones: [📋clone:18][💬comment:20][🟢status:18]
-                    clone_right  = cr.right() - 18 - 20        # start of 📋 zone
-                    cmt_right    = cr.right() - 18              # start of 💬 zone
-                    if pos.x() >= clone_right and pos.x() < cmt_right:
-                        # 📋 Clone scenario
-                        self._clone_scenario(cause_id)
-                        return True
-                    if pos.x() >= cmt_right and pos.x() < cr.right() - 18:
-                        # 💬 Comment popup
-                        self._open_comment_popup(row, cause_id,
-                                                  self._table.viewport().mapToGlobal(pos))
-                        return True
+                    try:
+                        has_comment = bool((self.db.get_cause_comment(cause_id) or '').strip())
+                    except Exception:
+                        has_comment = False
+                    if has_comment:
+                        ci = self._table.model().index(row, col)
+                        cr = self._table.visualRect(ci)
+                        dot = self._ors_comment_dot_geometry(cr).adjusted(-4, -4, 4, 4)
+                        if dot.contains(pos):
+                            self._open_comment_popup(row, cause_id,
+                                                      self._table.viewport().mapToGlobal(pos))
+                            return True
 
             # 📊 Category badge click in KON cell
             if row >= 0 and col == self._C_KON and row < len(self._row_meta):
-                col_x     = self._table.columnViewportPosition(col)
-                cat_start = col_x
-                cat_end   = cat_start + _KON_CAT_W
-                if cat_start <= pos.x() < cat_end:
+                cell_idx = self._table.model().index(row, col)
+                cat_zone = self._kon_cat_zone_geometry(self._table.visualRect(cell_idx))
+                if cat_zone.left() <= pos.x() < cat_zone.left() + cat_zone.width():
                     cons_id = self._row_meta[row][2]
                     if cons_id is not None:
                         gp = self._table.viewport().mapToGlobal(pos)
@@ -4986,7 +5001,8 @@ class ScenarioTablePanel(QWidget):
                 if sg_id is not None:
                     cell_idx = self._table.model().index(row, col)
                     cr = self._table.visualRect(cell_idx)
-                    if pos.x() < cr.left() + _SG_TAG_ICON_ZONE_W:
+                    zone = self._sg_icon_zone_geometry(cr)
+                    if pos.x() < zone.left() + zone.width():
                         gp = self._table.viewport().mapToGlobal(pos)
                         self._show_sg_object_popup_at(row, sg_id, gp)
                         return True
@@ -4997,7 +5013,8 @@ class ScenarioTablePanel(QWidget):
                 if sg_id is not None:
                     cell_idx = self._table.model().index(row, col)
                     cr = self._table.visualRect(cell_idx)
-                    if pos.x() >= cr.right() - _RRF_W:
+                    zone = self._sg_rrf_zone_geometry(cr)
+                    if pos.x() >= zone.left():
                         gp = self._table.viewport().mapToGlobal(pos)
                         self._show_rrf_popup_at(row, sg_id, gp)
                         return True
@@ -5492,6 +5509,12 @@ class ScenarioTablePanel(QWidget):
             a_move = menu.addAction("↕  Flytta till annan avvikelse…")
             a_move.triggered.connect(
                 lambda: self._move_cause_dialog(cause_id))
+            a_comment = menu.addAction(_icon('comment'), "Kommentar…")
+            a_comment.triggered.connect(
+                lambda: self._open_comment_popup(
+                    row, cause_id, self._table.viewport().mapToGlobal(pos)))
+            a_clone = menu.addAction(_icon('clipboard'), "Duplicera scenario till annan avvikelse…")
+            a_clone.triggered.connect(lambda: self._clone_scenario(cause_id))
             menu.addSeparator()
             a_del = menu.addAction(_icon('delete'), "Ta bort orsak")
             a_del.triggered.connect(lambda cid=cause_id: self._confirm_delete('cause', cid))
@@ -5501,6 +5524,8 @@ class ScenarioTablePanel(QWidget):
             k = self.db.get_consequence(cons_id)
             k_desc = dict(k).get('description', '?')[:40] if k else '?'
             menu.addSection(_icon('warning'), f"Konsekvens: {k_desc}")
+            a_chain = menu.addAction(_icon('clipboard'), "Redigera konsekvenskedja (Del1–Del5)…")
+            a_chain.triggered.connect(lambda: self._open_chain_editor(cons_id))
             a_dup = menu.addAction(_icon('document'), "Duplicera konsekvens (med barriärer)")
             a_dup.triggered.connect(
                 lambda: self._duplicate_consequence(cons_id, cause_id))
@@ -5521,6 +5546,8 @@ class ScenarioTablePanel(QWidget):
             menu.addSection(_icon('shield'), f"Barriär: {sg_desc}")
             menu.addAction(_icon('edit'), "Redigera",
                 lambda: self._try_start_edit(row, self._C_SG))
+            a_rrf = menu.addAction(_icon('settings'), "Ändra RRF...")
+            a_rrf.triggered.connect(lambda: self._show_rrf_popup(row, sg_id))
             a_copy = menu.addAction(_icon('clipboard'), "Kopiera till annan konsekvens…")
             a_copy.triggered.connect(
                 lambda: self._copy_safeguard_dialog(sg_id))

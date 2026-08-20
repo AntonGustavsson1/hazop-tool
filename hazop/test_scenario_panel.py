@@ -2319,6 +2319,168 @@ class OrsStripTagFreqLayoutTests(unittest.TestCase):
             panel.deleteLater()
 
 
+class OrsCommentClickZoneTests(unittest.TestCase):
+    """2026-08-20: eventFilter()'s ORS comment/clone click handling had
+    drifted from what paint() actually draws (see
+    ScenarioTablePanel._ors_comment_dot_geometry's own docstring for the
+    full history). Two real bugs, now fixed: (1) the comment zone's own
+    bounds were written with the same variable as both ends
+    (`cmt_right <= x < cmt_right`), so `_open_comment_popup()` was
+    unreachable from the UI no matter where you clicked, and (2) a
+    "clone" zone covered blank space next to the dot, so a click there
+    silently fired `_clone_scenario()` instead of doing nothing. Both
+    zones now share `_ors_comment_dot_geometry()` with paint(), and the
+    dead clone zone is gone (cloning has its own working context-menu
+    entry, unaffected by this)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_orscomment_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_commented_cause(self, comment="Beslut: se referens X"):
+        from hazop import ScenarioTablePanel
+        panel = ScenarioTablePanel(self.db)
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.db.set_cause_comment(cause_id, comment)
+        panel.load_node(node_id)
+        row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+        return panel, row, cause_id
+
+    def _click(self, panel, pos):
+        from PyQt6.QtCore import QEvent
+        from PyQt6.QtGui import QMouseEvent
+        from PyQt6.QtCore import Qt as _Qt
+        ev = QMouseEvent(QEvent.Type.MouseButtonPress, pos.toPointF(),
+                          _Qt.MouseButton.LeftButton, _Qt.MouseButton.LeftButton,
+                          _Qt.KeyboardModifier.NoModifier)
+        return panel.eventFilter(panel._table.viewport(), ev)
+
+    def test_clicking_the_comment_dot_opens_the_comment_popup(self):
+        """The core fix: a click squarely on the dot paint() actually
+        draws (per _ors_comment_dot_geometry) must reach
+        _open_comment_popup — this used to be mathematically impossible."""
+        panel, row, cause_id = self._make_commented_cause()
+        try:
+            panel.resize(900, 400)
+            panel.show()
+            self.app.processEvents()
+            idx = panel._table.model().index(row, panel._C_ORS)
+            cr = panel._table.visualRect(idx)
+            dot = panel._ors_comment_dot_geometry(cr)
+
+            with unittest.mock.patch.object(panel, '_open_comment_popup') as mock_open:
+                handled = self._click(panel, dot.center())
+
+            self.assertTrue(handled)
+            mock_open.assert_called_once()
+            self.assertEqual(mock_open.call_args.args[0], row)
+            self.assertEqual(mock_open.call_args.args[1], cause_id)
+        finally:
+            panel.deleteLater()
+
+    def test_no_comment_dot_click_zone_is_inert_when_there_is_no_comment(self):
+        """When a cause has no comment, paint() never draws the dot at
+        all (_has_comment gate) — the click zone must agree and stay
+        inert there, since a first comment is added via the context
+        menu's "Kommentar…" action instead."""
+        from hazop import ScenarioTablePanel
+        panel = ScenarioTablePanel(self.db)
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        try:
+            panel.load_node(node_id)
+            panel.resize(900, 400)
+            panel.show()
+            self.app.processEvents()
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+            idx = panel._table.model().index(row, panel._C_ORS)
+            cr = panel._table.visualRect(idx)
+            dot = panel._ors_comment_dot_geometry(cr)
+
+            with unittest.mock.patch.object(panel, '_open_comment_popup') as mock_open:
+                self._click(panel, dot.center())
+
+            mock_open.assert_not_called()
+        finally:
+            panel.deleteLater()
+
+    def test_clicking_near_the_dot_no_longer_fires_the_removed_clone_zone(self):
+        """Regression for the second bug: a click in what used to be the
+        defunct "clone" zone (left of the comment dot, still inside the
+        ORS strip) must NOT trigger _clone_scenario — that zone covered
+        blank space with no visible affordance and has been removed."""
+        panel, row, cause_id = self._make_commented_cause()
+        try:
+            panel.resize(900, 400)
+            panel.show()
+            self.app.processEvents()
+            idx = panel._table.model().index(row, panel._C_ORS)
+            cr = panel._table.visualRect(idx)
+            dot = panel._ors_comment_dot_geometry(cr)
+            from PyQt6.QtCore import QPoint
+            probe = QPoint(dot.left() - 20, dot.center().y())
+            self.assertGreater(probe.x(), cr.left(),
+                "test setup issue: probe point must still be inside the cell")
+
+            with unittest.mock.patch.object(panel, '_clone_scenario') as mock_clone:
+                self._click(panel, probe)
+
+            mock_clone.assert_not_called()
+        finally:
+            panel.deleteLater()
+
+    def test_context_menu_offers_kommentar_and_duplicera_scenario_actions(self):
+        """The context-menu entries this fix relies on ("Kommentar…" is
+        now the only reliable way to add the FIRST comment, since the
+        inline dot isn't drawn — or its click zone live — until one
+        already exists) must actually be reachable. They used to live in
+        ScenarioTablePanel._on_table_context_menu, a method never
+        connected to any signal (customContextMenuRequested wires only
+        _on_context_menu) — completely dead code. Both actions, plus
+        "Redigera konsekvenskedja…" and "Ändra RRF..." from the same dead
+        method, were merged into the real, connected _on_context_menu."""
+        from hazop import ScenarioTablePanel
+        panel = ScenarioTablePanel(self.db)
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+            from PyQt6.QtCore import QPoint
+            with unittest.mock.patch.object(panel._table, 'rowAt', return_value=row), \
+                 unittest.mock.patch.object(panel._table, 'columnAt', return_value=panel._C_ORS), \
+                 unittest.mock.patch('scenario_panel.QMenu') as mock_menu_cls:
+                panel._on_context_menu(QPoint(0, 0))
+            labels = _menu_action_labels(mock_menu_cls.return_value)
+            self.assertTrue(any("Kommentar" in lbl for lbl in labels))
+            self.assertTrue(any("Duplicera scenario till annan avvikelse" in lbl for lbl in labels))
+        finally:
+            panel.deleteLater()
+
+    def test_on_table_context_menu_no_longer_exists(self):
+        """Regression guard: _on_table_context_menu was dead code (never
+        connected to customContextMenuRequested), fully superseded by
+        merging its actions into _on_context_menu. Guards against it, or
+        an equivalent orphaned duplicate, silently reappearing."""
+        from hazop import ScenarioTablePanel
+        self.assertFalse(hasattr(ScenarioTablePanel, '_on_table_context_menu'))
+
+
 class ScenarioColumnWidthPersistenceTests(unittest.TestCase):
     """'Fyll skärm' checkbox state and manually-resized column widths are
     now persisted to app_config (2026-08-10, see NOTES.md) — previously
