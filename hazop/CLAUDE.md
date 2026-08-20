@@ -106,7 +106,7 @@ for the duration of the click (see `test_smoke.py`'s
 
 ## Session context
 
-**Always read `NOTES.md` at the start of every session.** It contains decisions, deferred features, known limitations and user preferences that are not derivable from the code alone.
+**Always read `NOTES.md` at the start of every session.** It contains decisions, deferred features, known limitations and user preferences that are not derivable from the code alone. Session logs older than 2026-08-17 live in `NOTES_ARCHIVE.md` (moved there 2026-08-20 to keep NOTES.md short — it's read in full every session) — only open it when you need historical context from before that date.
 
 **Always update `NOTES.md` at the end of every session** (or after each meaningful change) — add new decisions, move completed items into the implemented table, and record anything deferred. Commit it together with the changed source files.
 
