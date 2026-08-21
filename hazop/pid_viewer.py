@@ -16,6 +16,7 @@ import concurrent.futures
 from pathlib import Path
 from functools import partial
 
+from constants import _bundle_dir
 import symbol_geometry
 import equipment_detection
 import image_symbol_matching
@@ -138,7 +139,7 @@ CONFIG = {
 # stdlib; hazop.py re-imports _mk_pm/_mk_icon/_icon/_EMOJI_ICON from here so
 # every existing call site in hazop.py keeps working unchanged.
 
-_ICONS_DIR = Path(__file__).parent / 'icons'
+_ICONS_DIR = _bundle_dir() / 'icons'
 _SVG_ICON_CACHE: dict[str, str] = {}   # name -> raw SVG text (read once, recolored per call)
 # Old procedural-shape names that now have a hand-drawn SVG equivalent under
 # icons/ (2026-08-12) — arrow_up/arrow_down previously matched no branch in

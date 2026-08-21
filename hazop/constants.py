@@ -3,6 +3,46 @@
 2026-08-17, see NOTES.md "Förenkla koden + dela upp hazop.py i fler filer").
 Pure Python only, so this sits at the bottom of the import layer graph."""
 
+import sys
+from pathlib import Path
+
+# ══════════════════════════════════════════════════════════════════════════════
+# APP/BUNDLE DIRECTORY RESOLUTION (2026-08-21, see NOTES.md "Paketera HAZOP-
+# appen som en installationsfil")
+# ══════════════════════════════════════════════════════════════════════════════
+# Several modules used to compute paths as Path(__file__).parent, assuming
+# the running script's own directory is always the right place for both (a)
+# the app's own writable data (database, crash reports, backups, logs) and
+# (b) read-only bundled assets (icons/). That assumption breaks once the app
+# is packaged with PyInstaller: __file__ then points *inside* the frozen
+# bundle, not at the actual installed location, and for a one-file build
+# that's a temporary extraction directory that can be wiped between runs.
+#
+# Two distinct helpers, because the two cases need different answers once
+# frozen:
+#   - _app_dir()    -> where the app's OWN WRITABLE data belongs. Next to
+#                      sys.executable (the real, stable install location)
+#                      when frozen; unchanged (next to this source file)
+#                      otherwise.
+#   - _bundle_dir() -> where READ-ONLY bundled resources shipped with the
+#                      app live. PyInstaller always sets sys._MEIPASS (both
+#                      --onefile and --onedir builds) to the resource root;
+#                      unchanged (next to this source file) otherwise.
+# Both are no-ops (identical to the old Path(__file__).parent behaviour)
+# when the app is run unpackaged, i.e. `python hazop.py` as before.
+
+def _app_dir() -> Path:
+    if getattr(sys, 'frozen', False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def _bundle_dir() -> Path:
+    if getattr(sys, 'frozen', False):
+        return Path(getattr(sys, '_MEIPASS', Path(sys.executable).resolve().parent))
+    return Path(__file__).resolve().parent
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CONFIGURATION & MAGIC NUMBER CONSTANTS
 # ══════════════════════════════════════════════════════════════════════════════

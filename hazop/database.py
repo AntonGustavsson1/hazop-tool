@@ -9,7 +9,7 @@ import sqlite3
 import datetime
 from pathlib import Path
 
-from constants import DEVIATION_TYPES
+from constants import DEVIATION_TYPES, _app_dir
 
 
 def append_tag_to_text(description: str, tag: str) -> str:
@@ -58,7 +58,7 @@ def add_tag_ref(raw: str, tag: str) -> str:
 # DATABASE
 # ══════════════════════════════════════════════════════════════════════════════
 
-DB_PATH = Path(__file__).parent / "hazop_project.db"
+DB_PATH = _app_dir() / "hazop_project.db"
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;

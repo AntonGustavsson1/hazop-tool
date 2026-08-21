@@ -17,7 +17,7 @@ import inspect
 from constants import (
     CONFIG, SEV_LABELS, RRF_VALUES, RRF_LABELS, SG_TYPES, MARKUP_COLORS,
     RISK_ICON, NODE_T, CAUSE_T, CONS_T, SG_T, DEV_T, EQUIP_T, LEDORD_T,
-    DEVIATION_TYPES,
+    DEVIATION_TYPES, _app_dir,
 )
 from database import (
     Database, DB_PATH, DEFAULT_MATRIX, _normalise_matrix, _risk_matrix_cache,
@@ -171,7 +171,7 @@ class SplashScreen(QWidget):
 class CrashReporter:
     """Automatic crash reporting with structured JSON output for easy analysis."""
 
-    CRASH_DIR = Path(__file__).parent / 'crashes'
+    CRASH_DIR = _app_dir() / 'crashes'
 
     @classmethod
     def setup(cls):
@@ -2899,7 +2899,7 @@ if __name__ == '__main__':
     # Structured crash reporting: saves detailed diagnostic info to JSON files
     # in hazop/crashes/ directory for automatic analysis. Also maintains legacy
     # hazop_crash.log for backward compatibility.
-    _LOG = Path(__file__).parent / 'hazop_crash.log'
+    _LOG = _app_dir() / 'hazop_crash.log'
     logging.basicConfig(
         filename=str(_LOG),
         level=logging.DEBUG,

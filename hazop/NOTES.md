@@ -598,6 +598,22 @@ Två ytterligare engångsskript (`analyze_refs.py`, `render_layout.py` — koppl
 
 **Uppdaterat:** CLAUDE.md:s hela "Testing during iterative development"-avsnitt (alla körkommandon fick `tests.`-prefix, ny inledande förklaring av de två stödda körsätten).
 
+## Paketera HAZOP-appen som en installationsfil — del 1: frozen-build-sökvägar (2026-08-21)
+
+**Rapport:** Anton: "Kan du skapa en fungerande exe-fil för att köra programmet? Ger det några fördelar om det är en installationsfil istället för ett program som kör direkt?" Efter en planeringsrunda (se plan-filen från sessionen): målgrupp = kollegor på ProSa (motiverar en riktig installer, inte bara en portabel exe), OCR = bara `rapidocr_onnxruntime` behöver fungera (redan obligatoriskt beroende och förstahandsval i koden, ingen extern binär — Tesseract/EasyOCR lämnas som de valfria reservalternativ de redan är).
+
+**Kritiskt problem hittat under planeringen, löst FÖRST innan något paketeringsarbete:** fyra ställen i produktionskoden antog att appens egen data (databas, kraschrapporter, backuper, loggfil) OCH dess medföljande ikoner låg relativt till skriptets egen fil (`Path(__file__).parent`). Detta bryter helt när PyInstaller paketerar appen — `__file__` pekar då på en plats INUTI paketet, inte på var den installerade exe:n faktiskt ligger (och i onefile-läge är det en TILLFÄLLIG uppackningsmapp Windows kan radera mellan körningar). Utan fix hade appen antingen tappat bort en riktig databas/kraschlogg, eller (värre) tyst skapat en ny tom databas i en försvinnande mapp.
+
+**Fix:** två nya hjälpfunktioner i `constants.py` (lägsta lagret, inga cirkulära importer):
+- `_app_dir()` — för SKRIVBAR användardata (databas, krascher, backuper, logg): `Path(sys.executable).resolve().parent` när `sys.frozen` är satt (PyInstaller sätter detta), annars oförändrat `Path(__file__).resolve().parent`.
+- `_bundle_dir()` — för SKRIVSKYDDADE medföljande resurser (ikoner): `Path(sys._MEIPASS)` när fryst (PyInstaller sätter alltid detta, både onefile och onedir), annars samma fallback.
+
+Uppdaterade: `database.py`s `DB_PATH` → `_app_dir()` (`_backup_dir()` ärver detta automatiskt via `self.path.parent`, ingen separat ändring behövdes där), `hazop.py`s `CrashReporter.CRASH_DIR` och `_LOG` → `_app_dir()`, `pid_viewer.py`s `_ICONS_DIR` → `_bundle_dir()` (ny `from constants import _bundle_dir`, fanns ingen constants-import i den filen tidigare).
+
+**Verifiering:** detta är en no-op när appen INTE är paketerad — bekräftat genom att direkt skriva ut `DB_PATH`/`_ICONS_DIR`/`CRASH_DIR` före/efter och se att de är identiska. Full 14-filssvit (828 tester) + `test_smoke` gröna, ingen regression. Ny fristående testfil `tests/test_constants.py` (5 tester, Qt-fri) mockar `sys.frozen`/`sys.executable`/`sys._MEIPASS` för att låsa fast BÅDA lägena (opaketerat OCH paketerat) — annars finns inget som någonsin skulle träna den fryst-grenen, eftersom ingen vanlig testkörning faktiskt är fryst.
+
+**Nästa steg (samma åtagande, kommande commits):** `.hzp`-kommandoradsargumentet (finns redan som obrukad parameter i `MainWindow.__init__`), själva PyInstaller-bygget, samt Inno Setup-installern. Se plan-filen för fullständig sekvens.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.
