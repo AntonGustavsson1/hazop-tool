@@ -582,6 +582,22 @@ Två ytterligare engångsskript (`analyze_refs.py`, `render_layout.py` — koppl
 
 **Verifiering:** manuell sweep av alla tre funktionerna mot 12 representativa fall (alla plattformskonventioner i modulens egna docstrings, plus de tre avvikelsefallen) före/efter ändringen — bara de tre avsedda skillnaderna ändrades, inget annat. 5 nya tester i `ExtTagConsolidationTests` (test_equipment_detection.py): låser fast båda fixarna samt de två medvetet oförändrade besluten (enbokstavsprefix fortfarande accepterat av parse/pick_best, fortfarande poängsatt 0 av score). 66 tester i `test_equipment_detection.py`, 828 totalt i hela sviten — alla gröna, ingen regression.
 
+## Flytta alla test_*.py till en egen tests/-mapp (2026-08-21)
+
+**Rapport:** Anton: "Kan du lägga alla .py som har med test i en egen testmapp?" — de 18 `test_*.py`-filerna låg blandade rakt in bland de 21 produktionsfilerna i hazop/-roten.
+
+**Den enda verkliga risken, identifierad innan något flyttades:** varje testfil har en `_HAZOP_DIR = Path(__file__).resolve().parent`-rad högst upp vars enda syfte är att lägga hazop-rotens mapp på `sys.path` så att `from hazop import ...`/`from scenario_panel import ...` m.fl. fungerar oavsett varifrån testerna körs (kommentaren i koden säger det uttryckligen). Att flytta filerna en mapp-nivå ner UTAN att justera denna rad hade tyst bytt vad `_HAZOP_DIR` faktiskt pekar på (från hazop-roten till den nya tests/-mappen) — alla produktionsimporter hade slutat fungera, och `test_integration.py`s egen kontroll av att `hazop_project.db` är rätt fil (`_HAZOP_DIR / "hazop_project.db"`) hade tystare pekat på fel plats.
+
+**Genomförande:**
+1. Ny mapp `tests/` + tom `tests/__init__.py`.
+2. `git mv` av alla 18 `test_*.py`-filer (inkl. `test_helpers.py`) till `tests/` — registrerades som rena renames i git.
+3. Mekanisk regex-ersättning (engångsskript, körd och sedan borttagen) av `_HAZOP_DIR`-blocket i 17 av filerna: `_HAZOP_DIR = Path(__file__).resolve().parent` → `_TEST_DIR = Path(__file__).resolve().parent; _HAZOP_DIR = _TEST_DIR.parent`, och lägger nu BÅDA `_HAZOP_DIR` (hazop-roten, för produktionsimporter) OCH `_TEST_DIR` (tests/-mappen själv, för `from test_helpers import ...` mellan testfilerna) på `sys.path`. `test_smoke.py` hade aldrig detta block alls (gjorde bara sena, in-metod-importer och förlitade sig på att `-m unittest` körs direkt från hazop/-roten) — fick blocket tillagt manuellt.
+4. Detta gör testsviten körbar på BÅDA sätt: `python -m unittest tests.test_smoke -v` (från hazop/-roten, punktad modulsökväg) ELLER `cd tests && python -m unittest test_smoke -v` (bart modulnamn) — verifierat att båda faktiskt fungerar, inte bara antaget.
+
+**Verifiering:** `py_compile` på alla 18 filer. Full 14-filssvit (828 tester) grön via `python -m unittest tests.test_database tests.test_scenario_panel ...`. `test_symbol_geometry`/`test_image_symbol_matching` (140 tester) gröna. `test_smoke` verifierad grön i BÅDA körsätten (från hazop/-roten och från tests/-mappen).
+
+**Uppdaterat:** CLAUDE.md:s hela "Testing during iterative development"-avsnitt (alla körkommandon fick `tests.`-prefix, ny inledande förklaring av de två stödda körsätten).
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

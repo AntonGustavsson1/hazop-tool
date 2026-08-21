@@ -51,9 +51,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # import each other via plain `from pid_viewer import ...`, so the hazop/
 # directory must be on sys.path for those imports to resolve regardless of
 # the current working directory the tests are launched from.
-_HAZOP_DIR = Path(__file__).resolve().parent
-if str(_HAZOP_DIR) not in sys.path:
-    sys.path.insert(0, str(_HAZOP_DIR))
+_TEST_DIR = Path(__file__).resolve().parent
+_HAZOP_DIR = _TEST_DIR.parent
+for _p in (_HAZOP_DIR, _TEST_DIR):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 import hazop  # noqa: E402  (import after sys.path setup, by design)
 from hazop import (  # noqa: E402

@@ -16,24 +16,36 @@ against an empty DB would have missed every one of them. So this suite
 seeds a small but realistic dataset and, where it matters, clicks the
 actual buttons rather than just constructing widgets.
 
-Run this constantly during development:
-    python -m unittest test_smoke -v
+Run this constantly during development (from the hazop/ directory):
+    python -m unittest tests.test_smoke -v
 
 Run one module's tests when a change is confined to it (seconds, not
 minutes), e.g.:
-    python -m unittest test_scenario_panel
+    python -m unittest tests.test_scenario_panel
 
 Run the full, slow suite for large/risky changes, or whenever you want
 real confidence rather than a quick sanity check:
-    python -m unittest test_database test_scenario_panel test_pid_viewer test_pid_panel_mod test_pid_graphics_view test_tree_panel test_equipment_panel test_equipment_detection test_settings_panels test_worksheet test_node_markup test_hazop test_ui_helpers test_integration
+    python -m unittest tests.test_database tests.test_scenario_panel tests.test_pid_viewer tests.test_pid_panel_mod tests.test_pid_graphics_view tests.test_tree_panel tests.test_equipment_panel tests.test_equipment_detection tests.test_settings_panels tests.test_worksheet tests.test_node_markup tests.test_hazop tests.test_ui_helpers tests.test_integration
 """
 import os
 import sys
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+
+# All test_*.py files live under hazop/tests/ (2026-08-21, see NOTES.md
+# "Flytta alla test_*.py till en egen tests/-mapp") -- hazop.py/scenario_panel.py/
+# etc. are large standalone scripts (not a package) one directory up, so
+# that directory must be on sys.path for their imports to resolve
+# regardless of the current working directory tests are launched from.
+_TEST_DIR = Path(__file__).resolve().parent
+_HAZOP_DIR = _TEST_DIR.parent
+for _p in (_HAZOP_DIR, _TEST_DIR):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 from PyQt6.QtWidgets import QApplication
 

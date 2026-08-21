@@ -26,7 +26,16 @@ Syntax check without running the GUI (all modules):
 python -m py_compile constants.py database.py ui_helpers.py tree_panel.py node_markup.py worksheet.py scenario_panel.py equipment_panel.py settings_panels.py standard_causes_panel.py standard_objects_panel.py tag_memory_panel.py participant_matrix_panel.py hazop_preparation_panel.py hazop.py pid_viewer.py pid_graphics_view.py pid_panel_mod.py equipment_detection.py symbol_geometry.py image_symbol_matching.py
 ```
 
-## Testing during iterative development (2026-08-18, files split 2026-08-20)
+## Testing during iterative development (2026-08-18, files split 2026-08-20, moved into tests/ 2026-08-21)
+
+All `test_*.py` files live under `tests/` (moved out of the hazop/ root
+2026-08-21, see NOTES.md "Flytta alla test_*.py till en egen tests/-mapp") —
+run them as `tests.<module>` from the **hazop/ directory** (not from inside
+`tests/`), e.g. `python -m unittest tests.test_smoke -v`. Each file adds
+both the hazop/ root and its own `tests/` directory to `sys.path` itself
+(see the `_HAZOP_DIR`/`_TEST_DIR` block near the top of any test file), so
+`cd tests && python -m unittest test_smoke -v` (bare module name) also
+works if that's more convenient — pick whichever style, both are supported.
 
 The regression suite (818 tests) is split into 14 per-module files —
 `test_database.py`, `test_scenario_panel.py`, `test_pid_viewer.py`,
@@ -46,7 +55,7 @@ Use a tiered approach instead:
 
 1. **After every code change** (the default — do this, not the full suite):
    ```
-   python -m unittest test_smoke -v
+   python -m unittest tests.test_smoke -v
    ```
    ~11 tests, runs in well under a second. Seeds a small but REALISTIC
    dataset (a node/deviation/cause/consequence/safeguard, a revision with
@@ -65,7 +74,7 @@ Use a tiered approach instead:
    file** (seconds, not minutes) instead of the full 14-file suite — e.g.
    a `scenario_panel.py` tweak only needs:
    ```
-   python -m unittest test_scenario_panel
+   python -m unittest tests.test_scenario_panel
    ```
    This is the main payoff of the 2026-08-20 split — previously "targeted
    testing" still meant loading/grepping one 18,611-line file to find the
@@ -77,7 +86,7 @@ Use a tiered approach instead:
    "Att du kör full regression test är bra i vissa fall men här gör du en
    väldigt liten ändring... begränsa full regression test"):
    ```
-   python -m unittest test_database test_scenario_panel test_pid_viewer test_pid_panel_mod test_pid_graphics_view test_tree_panel test_equipment_panel test_equipment_detection test_settings_panels test_worksheet test_node_markup test_hazop test_ui_helpers test_integration
+   python -m unittest tests.test_database tests.test_scenario_panel tests.test_pid_viewer tests.test_pid_panel_mod tests.test_pid_graphics_view tests.test_tree_panel tests.test_equipment_panel tests.test_equipment_detection tests.test_settings_panels tests.test_worksheet tests.test_node_markup tests.test_hazop tests.test_ui_helpers tests.test_integration
    ```
    (Explicit file list, not `unittest discover` — discover would also sweep
    in `test_smoke.py`/`test_symbol_geometry.py`/`test_image_symbol_matching.py`,
@@ -101,7 +110,7 @@ Note on PyQt6 exceptions raised inside a signal/slot call (e.g.
 via `sys.excepthook` and then **aborts the whole process** instead of
 letting the caller catch them — a bug there can silently kill an entire
 test run rather than failing one test. Swap in a capturing `sys.excepthook`
-for the duration of the click (see `test_smoke.py`'s
+for the duration of the click (see `tests/test_smoke.py`'s
 `_click_every_tool_button`) if you write a test that clicks a button.
 
 ## Session context

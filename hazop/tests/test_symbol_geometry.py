@@ -17,9 +17,11 @@ import time
 import unittest
 from pathlib import Path
 
-_HAZOP_DIR = Path(__file__).resolve().parent
-if str(_HAZOP_DIR) not in sys.path:
-    sys.path.insert(0, str(_HAZOP_DIR))
+_TEST_DIR = Path(__file__).resolve().parent
+_HAZOP_DIR = _TEST_DIR.parent
+for _p in (_HAZOP_DIR, _TEST_DIR):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 import fitz
 import symbol_geometry as sg
