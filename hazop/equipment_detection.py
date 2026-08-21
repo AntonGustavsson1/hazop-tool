@@ -974,11 +974,13 @@ def _normalize_ext_tag(matched: str) -> str:
     destroyed that real plant notation (2026-08-13 follow-up report:
     "anger inte punkt för lkab taggarna utan anger - istället").
 
-    Shared by both _parse_tag's and _pick_best_tag's EXT_TAG_RE branches
-    so they can never drift apart again the way they did before the
-    2026-08-13 dedup fix (one preserved raw separators, the other
-    dashed everything, producing two different-looking tags for the
-    same instrument).
+    Called only through _match_ext_tag() below, which is what actually
+    keeps _parse_tag/_pick_best_tag/_score_tag_word's EXT_TAG_RE branches
+    from drifting apart — see that function's docstring for the fuller
+    history (this one used to already claim that on its own, before
+    2026-08-21, but only the normalisation was ever actually shared; the
+    *validity check* deciding whether to normalise at all was three
+    separate, silently-diverging copies until then).
     """
     s = matched.lstrip('=')
     m = re.search(r'([A-Z]{1,6})([_\-./]?)(\d{1,5}[A-Z]{0,3})$', s)
@@ -991,6 +993,44 @@ def _normalize_ext_tag(matched: str) -> str:
     return f"{head}-{tail}" if head else tail
 
 
+def _match_ext_tag(candidate: str, min_prefix_len: int = 1):
+    """Validate + normalise a raw _EXT_TAG_RE match (its group(1), '='
+    not yet stripped). Returns (normalised_tag, prefix) if `candidate`
+    resolves to a real, recognisable equipment prefix, else (None, None).
+
+    2026-08-21 consolidation (see NOTES.md "Konsolidera tagg-matchning i
+    equipment_detection.py"): this used to be three separately-maintained
+    copies of the same "did EXT_TAG_RE actually find a real tag" check,
+    inside _parse_tag, _pick_best_tag, and _score_tag_word — with
+    comments in the code already acknowledging they had to be kept in
+    sync by hand ("same as _parse_tag's own EXT_TAG_RE branch", "see
+    _parse_tag's identical guard"). They'd already drifted in three ways:
+    (1) _pick_best_tag's copy had NO validity check at all — any
+    EXT_TAG_RE match short-circuited with `_normalize_ext_tag(m.group(1))`
+    regardless of whether _equip_prefix_from_tag found anything real,
+    so purely coincidental matches (e.g. "DN50-PN16", two pipe-spec codes
+    that _equip_prefix_from_tag's own `skip` set exists specifically to
+    reject) came back as a "tag". (2) _score_tag_word's copy returned the
+    raw, un-normalised `candidate` instead of `_normalize_ext_tag(candidate)`
+    — the same "two different-looking strings for one instrument" bug
+    _normalize_ext_tag itself was written to prevent (2026-08-13, "Dubbla
+    taggar vid skanning"), just reintroduced through a third code path
+    that fix never touched. (3) _score_tag_word additionally required
+    `len(prefix) >= 2`, rejecting single-letter-prefix compound tags
+    (e.g. "20-E-101") that _parse_tag/_pick_best_tag have always accepted
+    — kept here as the `min_prefix_len` parameter (2, from
+    find_tag_near_point's score-2 branch) since it reflects a deliberate
+    "less confident with only a 1-letter code" scoring choice, not a bug,
+    and changing it would alter find_tag_near_point's ranking behaviour
+    for real inputs.
+    """
+    candidate = candidate.lstrip('=')
+    pfx = _equip_prefix_from_tag(candidate)
+    if pfx and len(pfx) >= min_prefix_len:
+        return _normalize_ext_tag(candidate), pfx
+    return None, None
+
+
 def _pick_best_tag(text: str) -> str:
     """Return the best equipment-tag match from arbitrary text, or ''.
 
@@ -1001,20 +1041,19 @@ def _pick_best_tag(text: str) -> str:
     text = text.strip().upper()
 
     for candidate in _tag_candidates(text):
-        # 1. Extended tag with area prefix — normalise via the shared
-        # _normalize_ext_tag(), same as _parse_tag's own EXT_TAG_RE branch
-        # (see its docstring: dash only right before the instrument code,
-        # original separators kept for the area-hierarchy prefix). Used to
-        # return m.group(1) completely raw, which left an un-dashed,
-        # dotted compound tag (e.g. "=E1.M1.QMA081") looking like a
-        # totally different string from its own already-normalised bare
-        # form ("QMA-081") found elsewhere on the same page — both landed
-        # in equipment_catalog as two "duplicate" rows for one instrument,
-        # one with a dash and one without (real LKAB file, 2026-08-13, see
-        # NOTES.md "Dubbla taggar vid skanning").
+        # 1. Extended tag with area prefix — validated + normalised via
+        # the shared _match_ext_tag() (see its docstring). Used to accept
+        # ANY _EXT_TAG_RE match unconditionally, with no check that
+        # _equip_prefix_from_tag actually found a real prefix — e.g.
+        # "DN50-PN16" (two pipe-spec codes, not a tag) came back as a
+        # "tag" verbatim. Falls through to the other branches below for
+        # this same candidate when the match doesn't validate, rather
+        # than giving up on it immediately.
         m = _EXT_TAG_RE.search(candidate)
         if m:
-            return _normalize_ext_tag(m.group(1))
+            norm, _pfx = _match_ext_tag(m.group(1))
+            if norm:
+                return norm
         # 2. Simple tag (letter code + number)
         matches = _FULL_TAG_RE.findall(candidate)
         if matches and len(matches[0]) >= 2:
@@ -1182,12 +1221,15 @@ def _parse_tag(text: str):
         return None, None
 
     # --- Extended compound tags (area prefix + instrument code) ---
+    # Validated + normalised via the shared _match_ext_tag() (see its
+    # docstring) — min_prefix_len=1 (the default) matches this function's
+    # own long-standing behaviour of accepting a single-letter prefix
+    # here (e.g. "20-E-101") when _equip_prefix_from_tag resolves one.
     m = _EXT_TAG_RE.search(text)
     if m:
-        candidate = m.group(1).lstrip('=')
-        pfx = _equip_prefix_from_tag(candidate)
-        if pfx:
-            return _normalize_ext_tag(candidate), pfx
+        norm, pfx = _match_ext_tag(m.group(1))
+        if norm:
+            return norm, pfx
 
     # --- Strip numeric area prefix: 20-PCV-101 → PCV-101 ---
     am = _AREA_TAG_RE.match(text)
@@ -2852,13 +2894,20 @@ def _score_tag_word(raw: str):
     # Simple exact match
     if _TAG_RE.match(text):
         return text, 3
-    # Compound/area-prefix tag
+    # Compound/area-prefix tag — validated + normalised via the shared
+    # _match_ext_tag() (see its docstring). min_prefix_len=2 preserves
+    # this function's own long-standing, more conservative scoring
+    # choice (a single-letter-prefix compound tag only ever scored via
+    # the digit-prefix branch below, never here). Used to return the
+    # raw, un-normalised `candidate` — a real "two different-looking
+    # strings for one instrument" bug identical to the one
+    # _normalize_ext_tag was written to prevent elsewhere (2026-08-13),
+    # just reintroduced through this function's own separate copy.
     m = _EXT_TAG_RE.search(text)
     if m:
-        candidate = m.group(1).lstrip('=')
-        pfx = _equip_prefix_from_tag(candidate)
-        if pfx and len(pfx) >= 2:
-            return candidate, 2
+        norm, pfx = _match_ext_tag(m.group(1), min_prefix_len=2)
+        if norm:
+            return norm, 2
     # Any word with a recognisable 2+ letter prefix — but only if it also
     # has a digit somewhere (a real tag identifies a specific instance,
     # see _parse_tag's identical guard/comment for the real-corpus

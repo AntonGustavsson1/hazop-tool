@@ -1188,6 +1188,75 @@ class TagFallbackDigitGuardTests(unittest.TestCase):
         self.assertEqual(_score_tag_word("ON/OFF"), (None, 0))
 
 
+class ExtTagConsolidationTests(unittest.TestCase):
+    """2026-08-21: _parse_tag/_pick_best_tag/_score_tag_word each had their
+    own hand-copied "did _EXT_TAG_RE actually find a real tag" check —
+    comments in the code already admitted they had to be kept in sync
+    manually ("same as _parse_tag's own EXT_TAG_RE branch"). They'd
+    already drifted: _pick_best_tag had NO validity check at all, and
+    _score_tag_word returned the raw un-normalised match instead of
+    running it through _normalize_ext_tag like the other two. Consolidated
+    into one shared _match_ext_tag() helper; these tests lock in both the
+    fixes and the (deliberately unchanged) existing behaviour."""
+
+    def test_pick_best_tag_rejects_a_coincidental_ext_tag_match_with_no_real_prefix(self):
+        """'DN50-PN16' (two pipe-spec codes _equip_prefix_from_tag's own
+        `skip` set exists to reject) matches the loose _EXT_TAG_RE pattern
+        shape but is not a real tag. Before the fix, _pick_best_tag
+        returned it completely unvalidated, verbatim."""
+        from equipment_detection import _pick_best_tag
+        self.assertNotEqual(_pick_best_tag("DN50-PN16"), "DN50-PN16")
+
+    def test_score_tag_word_normalises_a_dotted_compound_tag_like_the_other_two_functions(self):
+        """Before the fix, _score_tag_word returned the raw, un-normalised
+        match ('E1.M1.GPA4') while _parse_tag/_pick_best_tag both
+        normalised the same input to 'E1.M1-GPA4' — the exact
+        two-different-strings-for-one-instrument bug _normalize_ext_tag
+        was written to prevent (2026-08-13), reintroduced through this
+        function's own separate copy."""
+        from equipment_detection import _parse_tag, _pick_best_tag, _score_tag_word
+        expected = _parse_tag("E1.M1.GPA4")[0]
+        self.assertEqual(_pick_best_tag("E1.M1.GPA4"), expected)
+        tag, score = _score_tag_word("E1.M1.GPA4")
+        self.assertEqual(tag, expected)
+        self.assertEqual(score, 2)
+
+    def test_single_letter_prefix_compound_tag_still_accepted_by_parse_and_pick_best(self):
+        """_parse_tag/_pick_best_tag have always accepted a single-letter
+        recognised prefix in a compound tag (e.g. area-qualified 'E');
+        the consolidation must not raise that bar for them."""
+        from equipment_detection import _parse_tag, _pick_best_tag
+        self.assertEqual(_parse_tag("20-E-101"), ("20-E-101", "E"))
+        self.assertEqual(_pick_best_tag("20-E-101"), "20-E-101")
+
+    def test_single_letter_prefix_compound_tag_still_scores_zero(self):
+        """_score_tag_word has always required a 2+ letter prefix for its
+        compound-tag confidence tier — a deliberate, more conservative
+        scoring choice, not a bug, and must be unaffected by the shared
+        helper's default (min_prefix_len=1, used by the other two)."""
+        from equipment_detection import _score_tag_word
+        self.assertEqual(_score_tag_word("20-E-101"), (None, 0))
+
+    def test_all_three_functions_still_agree_on_ordinary_real_tags(self):
+        """Sweep of representative real plant-convention tags (from the
+        module's own docstrings) — normalised forms must match exactly
+        across all three functions, and scoring must be the high-confidence
+        tier for every one of them."""
+        from equipment_detection import _parse_tag, _pick_best_tag, _score_tag_word
+        cases = [
+            "20-PCV-101", "100-MAS10A", "G45-100-EAS10A",
+            "60-RV-009", "=E1.M1.QMA081",
+        ]
+        for raw in cases:
+            norm, pfx = _parse_tag(raw)
+            with self.subTest(raw=raw):
+                self.assertIsNotNone(norm)
+                self.assertEqual(_pick_best_tag(raw), norm)
+                tag, score = _score_tag_word(raw)
+                self.assertEqual(tag, norm)
+                self.assertEqual(score, 2)
+
+
 class SpatialCombineGlueWordTests(unittest.TestCase):
     """_spatial_combine()'s plain inter-word-gap join (for tag sub-parts
     the PDF exporter split apart, e.g. "20"-"PCV"-"101") also fused
