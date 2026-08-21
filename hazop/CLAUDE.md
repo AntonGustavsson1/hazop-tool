@@ -33,16 +33,22 @@ pip install pyinstaller
 pyinstaller hazop.spec              # -> dist/HazopTool/ (onedir build)
 ```
 Then, with Inno Setup installed (https://jrsoftware.org/isinfo.php — not
-itself installed on every dev machine):
+itself installed on every dev machine; on this dev machine it landed at
+`C:\Program Files\Inno Setup 7\ISCC.exe`, version 7 — check your own
+install path/version, older docs/examples elsewhere may say "Inno Setup 6"
+under `Program Files (x86)`):
 ```
-"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\hazop_installer.iss
+"C:\Program Files\Inno Setup 7\ISCC.exe" packaging\hazop_installer.iss
 ```
 produces `packaging\output\HazopSetup.exe` — installs per-user (no admin
 needed) to `%LOCALAPPDATA%\ProSa\HAZOP Tool\`, with Start Menu/desktop
-shortcuts and a `.hzp` file association. `dist/`, `build/`, and
-`packaging/output/` are gitignored (binary build output); `hazop.spec`,
-`packaging/hazop_installer.iss`, and `packaging/app_icon.ico` are
-committed source/assets.
+shortcuts and a `.hzp` file association. Verified end-to-end 2026-08-21
+(see NOTES.md part 4): silent install/uninstall, file association actually
+opens a `.hzp` and loads it, uninstall removes program files/shortcuts/
+registry while preserving user data (db/crashes/backups) as intended.
+`dist/`, `build/`, and `packaging/output/` are gitignored (binary build
+output); `hazop.spec`, `packaging/hazop_installer.iss`, and
+`packaging/app_icon.ico` are committed source/assets.
 
 Only `rapidocr_onnxruntime` (the app's required, tried-first OCR engine —
 see `equipment_detection.py`) is bundled; `easyocr`/`pytesseract` are
