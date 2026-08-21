@@ -244,6 +244,193 @@ class Utf8ConsoleOutputTests(unittest.TestCase):
         stream2.flush()
 
 
+class MainWindowOpensHzpPassedOnConstructionTests(unittest.TestCase):
+    """2026-08-21 (see NOTES.md "Paketera HAZOP-appen som en
+    installationsfil"): MainWindow.__init__ already accepted an hzp_path
+    parameter, but never actually did anything with it -- self._hzp_path
+    was set to None unconditionally regardless of what was passed in, so a
+    .hzp file double-clicked via a Windows file association (the whole
+    point of adding one) would open the app on an empty default project,
+    silently ignoring the file. Fixed by calling the already-existing
+    self._load_hzp(hzp_path) at the end of __init__ when a path is given.
+
+    Both MainWindow() constructions below must be pointed at throwaway
+    temp databases, never the real hazop_project.db -- _load_hzp() itself
+    copies onto the module-level DB_PATH name and reopens Database(DB_PATH)
+    directly (not through the Database() call MainWindow.__init__ makes),
+    so both hazop.Database (for the initial empty-project construction)
+    AND hazop.DB_PATH (for _load_hzp's own copy/reopen target) need
+    patching -- patching only one leaves the other pointed at production
+    data."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_hzp_launch_test_")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _close_window(self, win):
+        """Mirrors _TempDbMainWindow.__exit__'s careful multi-pass
+        cleanup -- closing a MainWindow only schedules Qt object
+        destruction, and constructing the next one before that finishes
+        (with its now-closed sqlite3 connection still half-alive) segfaults
+        the interpreter rather than raising a catchable exception."""
+        try:
+            win.close()
+            win.deleteLater()
+            for _ in range(5):
+                self.app.processEvents()
+        except Exception:
+            pass
+        gc.collect()
+
+    def test_hzp_path_given_at_construction_is_actually_loaded(self):
+        src_db_path = os.path.join(self._tmpdir, "source.db")
+        dest_db_path = os.path.join(self._tmpdir, "dest.db")
+        hzp_path = os.path.join(self._tmpdir, "kollegans_projekt.hzp")
+
+        class _SourceDatabase(hazop.Database):
+            def __init__(self, path=src_db_path):
+                super().__init__(path=path)
+
+        class _DestDatabase(hazop.Database):
+            def __init__(self, path=dest_db_path):
+                super().__init__(path=path)
+
+        orig_database, orig_db_path = hazop.Database, hazop.DB_PATH
+        distinguishing_node_name = "Kollegans unika nod XKCD-42"
+        win1 = None
+        win2 = None
+        try:
+            # 1. Build a source project with a distinguishing node, save it
+            # as a real .hzp (exercises the real _write_hzp, not a
+            # hand-crafted zip fixture).
+            hazop.Database = _SourceDatabase
+            win1 = MainWindow()
+            node_id = win1.db.add_node()
+            win1.db.update_node(node_id, distinguishing_node_name, '', '')
+            win1.db.conn.commit()
+            win1._write_hzp(hzp_path)
+            self.assertTrue(os.path.isfile(hzp_path))
+            self._close_window(win1)
+            win1 = None
+
+            # 2. Construct a FRESH MainWindow with hzp_path=... and confirm
+            # it actually loaded the source project instead of starting on
+            # a blank default one.
+            hazop.Database = _DestDatabase
+            hazop.DB_PATH = Path(dest_db_path)
+            win2 = MainWindow(hzp_path)
+
+            self.assertEqual(win2._hzp_path, hzp_path)
+            node_names = [dict(n).get('name') for n in win2.db.nodes()]
+            self.assertIn(
+                distinguishing_node_name, node_names,
+                "MainWindow(hzp_path=...) must actually load that project "
+                "-- the window came up without the node from the .hzp "
+                "file, meaning hzp_path was accepted but ignored again.")
+        finally:
+            hazop.Database = orig_database
+            hazop.DB_PATH = orig_db_path
+            if win1 is not None:
+                self._close_window(win1)
+            if win2 is not None:
+                self._close_window(win2)
+
+    def test_opening_a_different_project_mid_session_via_load_hzp_actually_loads_it(self):
+        """A separate, more common real-world trigger for the SAME
+        underlying bug found while writing the test above: 'Öppna
+        (.hzp)...' (_hzp_open, a thin QFileDialog wrapper around
+        _load_hzp) lets a user switch to a different project in an
+        ALREADY-RUNNING window -- not just at startup. _load_hzp used to
+        close its old sqlite3 connection AFTER copying the new project's
+        database over DB_PATH; closing a still-open WAL-mode connection
+        checkpoints ITS OWN (pre-copy) buffered writes back onto whatever
+        file DB_PATH now names, silently clobbering the just-copied
+        project back to the old one's state. Reproduced directly against
+        the real Database class (not just theorised) before fixing the
+        ordering (close-then-copy, with a same-path reopen on a failed
+        copy to preserve the original "don't strand the user with no
+        working db" recovery guarantee)."""
+        other_project_db_path = os.path.join(self._tmpdir, "other_project_source.db")
+        running_window_db_path = os.path.join(self._tmpdir, "the_running_window.db")
+        other_hzp_path = os.path.join(self._tmpdir, "annat_projekt.hzp")
+        other_node_name = "Annat projekts nod QRST-99"
+
+        class _OtherProjectDatabase(hazop.Database):
+            def __init__(self, path=other_project_db_path):
+                super().__init__(path=path)
+
+        class _RunningDatabase(hazop.Database):
+            def __init__(self, path=running_window_db_path):
+                super().__init__(path=path)
+
+        orig_database, orig_db_path = hazop.Database, hazop.DB_PATH
+        win = None
+        other_win = None
+        try:
+            # Build the SEPARATE project to switch to, as a real .hzp --
+            # its OWN db file, distinct from the "already running" window's.
+            hazop.Database = _OtherProjectDatabase
+            other_win = MainWindow()
+            node_id = other_win.db.add_node()
+            other_win.db.update_node(node_id, other_node_name, '', '')
+            other_win.db.conn.commit()
+            other_win._write_hzp(other_hzp_path)
+            self._close_window(other_win)
+            other_win = None
+
+            # A fresh "already running" window on its OWN (different,
+            # empty) project -- _load_hzp copies the other project's
+            # database over hazop.DB_PATH, which must point at THIS
+            # window's db path for the copy-onto-an-open-connection
+            # scenario (the one that exposed the bug) to actually apply.
+            hazop.Database = _RunningDatabase
+            hazop.DB_PATH = Path(running_window_db_path)
+            win = MainWindow()
+            self.assertEqual([dict(n).get('name') for n in win.db.nodes()], [])
+
+            win._load_hzp(other_hzp_path)
+
+            self.assertEqual(win._hzp_path, other_hzp_path)
+            node_names = [dict(n).get('name') for n in win.db.nodes()]
+            self.assertIn(
+                other_node_name, node_names,
+                "_load_hzp() must actually switch to the other project's "
+                "data, not silently keep (or revert to) the previously "
+                "open project.")
+        finally:
+            hazop.Database = orig_database
+            hazop.DB_PATH = orig_db_path
+            if other_win is not None:
+                self._close_window(other_win)
+            if win is not None:
+                self._close_window(win)
+
+    def test_no_hzp_path_starts_on_the_default_empty_project_as_before(self):
+        """Regression guard for the opposite direction: passing nothing
+        (the normal `python hazop.py` launch, no file argument) must not
+        suddenly start trying to load something."""
+        dest_db_path = os.path.join(self._tmpdir, "dest2.db")
+
+        class _DestDatabase(hazop.Database):
+            def __init__(self, path=dest_db_path):
+                super().__init__(path=path)
+
+        orig_database = hazop.Database
+        win = None
+        try:
+            hazop.Database = _DestDatabase
+            win = MainWindow(None)
+            self.assertIsNone(win._hzp_path)
+        finally:
+            hazop.Database = orig_database
+            if win is not None:
+                self._close_window(win)
 
 
 if __name__ == "__main__":

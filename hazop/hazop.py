@@ -1446,6 +1446,15 @@ class MainWindow(QMainWindow):
         self.tree_panel.refresh()
         self.pid_panel.try_reload_pdf()
 
+        # Open a project passed on the command line (e.g. double-clicking a
+        # .hzp file once it's registered as a Windows file association, see
+        # NOTES.md "Paketera HAZOP-appen som en installationsfil") — this
+        # parameter existed before but was never actually used; the window
+        # always started on the default, empty hazop_project.db regardless
+        # of what was passed in.
+        if hzp_path:
+            self._load_hzp(hzp_path)
+
     def _switch_view(self, page):
         prev = self.view_stack.currentIndex()
         self.view_stack.setCurrentIndex(page)
@@ -2746,20 +2755,42 @@ class MainWindow(QMainWindow):
             pass
 
         # Copy extracted DB over the active DB_PATH.
-        # Close the old connection AFTER the copy succeeds so a failed copy
-        # (permissions, disk full) leaves self.db in a working state.
+        #
+        # The old connection is closed FIRST, before the copy — 2026-08-21
+        # fix (see NOTES.md "Paketera HAZOP-appen som en installationsfil"):
+        # closing a still-open WAL-mode SQLite connection performs a
+        # checkpoint (Database.__del__ does this explicitly; a plain
+        # .close() does one implicitly too) that flushes that connection's
+        # OWN buffered WAL frames back onto whatever file DB_PATH now
+        # names. Closing AFTER the copy (the original order here) meant
+        # that checkpoint flushed the OLD project's pre-copy WAL state
+        # onto the newly-copied file, silently clobbering the just-loaded
+        # project back to whatever the old one looked like — reproduced
+        # directly against the real Database class, not just theorised.
+        # Closing first means the checkpoint lands on the OLD file (which
+        # we're about to discard anyway) before the new one ever exists at
+        # that path, so there's nothing left to clobber it with.
+        #
+        # This does give up a little of the original recovery guarantee
+        # ("a failed copy leaves self.db working") since the old
+        # connection is already gone by the time a copy could fail — but
+        # DB_PATH itself is never touched by a FAILED copy (shutil.copy2
+        # either fully succeeds or leaves the destination as it was), so
+        # simply reopening DB_PATH on failure below restores the exact
+        # same working state the old connection pointed at.
         extracted_db = work_dir / "hazop_project.db"
         if not extracted_db.exists():
             QMessageBox.critical(self, "Fel", "Projektet saknar databasfil.")
             return
+
+        self.db.conn.close()
         try:
             shutil.copy2(extracted_db, DB_PATH)
         except Exception as e:
+            self.db = Database(DB_PATH)   # recover: DB_PATH itself is untouched
             QMessageBox.critical(self, "Fel vid inläsning",
                                  f"Kunde inte kopiera databas:\n{e}")
             return
-
-        self.db.conn.close()
 
         # Reopen DB at same path
         new_db = Database(DB_PATH)
@@ -2988,7 +3019,15 @@ if __name__ == '__main__':
 
     try:
         splash.set_status("Laddar databas...")
-        win = MainWindow()
+        # A .hzp file double-clicked once registered as a Windows file
+        # association (see NOTES.md "Paketera HAZOP-appen som en
+        # installationsfil") arrives as argv[1] — only honour it if it
+        # actually looks like a real .hzp project, so a stray/unexpected
+        # argument can't be mistaken for one.
+        hzp_arg = sys.argv[1] if len(sys.argv) > 1 else None
+        if hzp_arg and not (Path(hzp_arg).suffix.lower() == '.hzp' and Path(hzp_arg).is_file()):
+            hzp_arg = None
+        win = MainWindow(hzp_arg)
         splash.set_status("Initialiserar gränssnitt...")
         app.processEvents()
         splash.close_splash()
