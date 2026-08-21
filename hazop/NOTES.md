@@ -548,6 +548,25 @@ Två ytterligare engångsskript (`analyze_refs.py`, `render_layout.py` — koppl
 
 **Verifiering:** `Database(path=DB_PATH)` konstruerad direkt mot den orörda `hazop_project.db` efter flytten — ingen krasch, samma `pid_revisions`-rad som innan. Full `test_smoke`-svit grön.
 
+## Dela upp settings_panels.py (2026-08-21)
+
+**Bakgrund:** Anton bad om en genomgång av om koden kunde struktureras/delas upp bättre. Sju parallella agenter läste igenom varsin klunga av de stora produktionsfilerna (efter att jag själv fastställt att "max 500 rader" inte är en regel jag känner igen, men att sökbarhet/sammanhållning är den verkliga poängen). `settings_panels.py` (3374 rader) var det tydligaste fallet: en samling av 12 i praktiken oberoende klasser, grupperade bara för att de alla är "en inställningsflik" — inte för att de delar logik. Anton: "Genomför 1 och 2" (punkt 1 = denna uppdelning, punkt 2 = konsolidera tagg-matchningen i equipment_detection.py, se separat post nedan).
+
+**Verifierat SJÄLV innan något flyttades** (agentens kartläggning användes som utgångspunkt, inte facit): grep:ade varje klass för korsreferenser till sina syskon. Bekräftat att `DraggableColorSwatch`/`MatrixCellButton` bara instansieras inuti `HAZOPPreparationPanel`, att `SeverityDefinitionsPanel` genuint aldrig instansieras någonstans i hela kodbasen (dödkod — låg kvar orörd, togs INTE bort eftersom det inte var vad som efterfrågades), att `SettingsPanel` instansierar både `StandardObjectsSettingsPanel` och `TagMemoryPanel`, och att `HAZOPPreparationPanel` instansierar både `ParticipantMatrixPanel` och `StandardCausesSettingsPanel` — dessa korsberoenden styrde vilka nya filer som behöver importera från vilka.
+
+**Genomförande:** mekanisk radbaserad klyvning via ett engångsskript (samma metod som testfils-uppdelningen 2026-08-20 — riktiga `^class`-radnummer i den faktiska filen, inget manuellt omskrivet). Fem nya filer:
+- `standard_causes_panel.py` — `StandardCausesSettingsPanel`
+- `standard_objects_panel.py` — `StandardObjectsSettingsPanel`
+- `tag_memory_panel.py` — `TagMemoryPanel`
+- `participant_matrix_panel.py` — `ParticipantMatrixPanel` + dess privata `_InlineHeaderEdit`
+- `hazop_preparation_panel.py` — `HAZOPPreparationPanel` + dess privata `DraggableColorSwatch`/`MatrixCellButton`, importerar `ParticipantMatrixPanel` och `StandardCausesSettingsPanel` från de nya filerna ovan
+
+`settings_panels.py` krymper till paraplyfil (3374 → 565 rader): `SeverityDefinitionsPanel` (dödkoden, kvar oförändrad), `SettingsPanel`, `PIDManagementPanel`, `StudyManagementPanel` (+`AdminPanel`-aliaset) ligger kvar direkt, plus re-export-imports av de fem utflyttade klasserna — samma lager+re-export-mönster som redan används överallt annars i kodbasen (se CLAUDE.md). `hazop.py`s `from settings_panels import (...)`-block behövde **noll ändringar** — verifierat direkt: `python -c "import hazop; print(hazop.HAZOPPreparationPanel, ...)"` löser fortfarande upp alla sju namnen, bara från sina nya moduler.
+
+**Verifiering:** alla 12 klasser återfanns exakt en gång vardera i rätt fil (grep-kontroll). `py_compile` på alla 6 filer. `test_smoke` (11 tester), `test_settings_panels.py` (79 tester), `test_integration.py` (208 tester) och den fulla 14-filssviten (823 tester) — alla gröna, ingen regression.
+
+**Uppdaterat:** CLAUDE.md:s arkitekturlista (nytt 13a–13e under punkt 13) och `py_compile`-kommandot i "Köra programmet"-avsnittet.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.
