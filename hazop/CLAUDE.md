@@ -26,6 +26,40 @@ Syntax check without running the GUI (all modules):
 python -m py_compile constants.py database.py ui_helpers.py tree_panel.py node_markup.py worksheet.py scenario_panel.py equipment_panel.py settings_panels.py standard_causes_panel.py standard_objects_panel.py tag_memory_panel.py participant_matrix_panel.py hazop_preparation_panel.py hazop.py pid_viewer.py pid_graphics_view.py pid_panel_mod.py equipment_detection.py symbol_geometry.py image_symbol_matching.py
 ```
 
+## Packaging as a Windows installer (2026-08-21, see NOTES.md "Paketera HAZOP-appen som en installationsfil")
+
+```
+pip install pyinstaller
+pyinstaller hazop.spec              # -> dist/HazopTool/ (onedir build)
+```
+Then, with Inno Setup installed (https://jrsoftware.org/isinfo.php — not
+itself installed on every dev machine):
+```
+"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\hazop_installer.iss
+```
+produces `packaging\output\HazopSetup.exe` — installs per-user (no admin
+needed) to `%LOCALAPPDATA%\ProSa\HAZOP Tool\`, with Start Menu/desktop
+shortcuts and a `.hzp` file association. `dist/`, `build/`, and
+`packaging/output/` are gitignored (binary build output); `hazop.spec`,
+`packaging/hazop_installer.iss`, and `packaging/app_icon.ico` are
+committed source/assets.
+
+Only `rapidocr_onnxruntime` (the app's required, tried-first OCR engine —
+see `equipment_detection.py`) is bundled; `easyocr`/`pytesseract` are
+explicitly excluded in `hazop.spec` even if installed on the build machine
+— they're optional fallbacks the app already handles being absent, and
+`easyocr` alone drags in `torch`/`torchvision`/`scipy`/`matplotlib`
+(863 MB → 342 MB build size difference). If a future session needs to
+re-enable one of them, remove it from `hazop.spec`'s `EXCLUDE_OPTIONAL_OCR`
+list — don't just delete the whole exclude list, or the bloat comes back.
+
+**Frozen-build path handling:** `constants.py`'s `_app_dir()` (writable
+user data: db/crashes/backups/log) and `_bundle_dir()` (read-only bundled
+assets: icons/) resolve differently once packaged — see their docstrings.
+Any NEW module-level path computed as `Path(__file__).parent` for
+something that needs to survive/matter after packaging should go through
+one of these instead, not be added as a third ad-hoc pattern.
+
 ## Testing during iterative development (2026-08-18, files split 2026-08-20, moved into tests/ 2026-08-21)
 
 All `test_*.py` files live under `tests/` (moved out of the hazop/ root

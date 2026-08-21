@@ -22,3 +22,11 @@ crashes/
 # lokal manuell körning, aldrig som testfixturer"), and stale project
 # files superseded by the live hazop_project.db (2026-08-20 cleanup)
 ej_programfiler/
+
+# PyInstaller/Inno Setup build output (2026-08-21, see NOTES.md "Paketera
+# HAZOP-appen som en installationsfil") — binary build artifacts,
+# regenerated from hazop.spec/packaging/hazop_installer.iss (both
+# committed) via `pyinstaller hazop.spec` + Inno Setup, not source.
+/build/
+/dist/
+packaging/output/
