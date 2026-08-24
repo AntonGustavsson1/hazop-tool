@@ -221,23 +221,41 @@ class TreePanel(QWidget):
 
         layout.addLayout(compact_row)
 
-        # ── Auto-collapse toggle (2026-08-24, see NOTES.md "Åtta UX/logik-
-        # förbättringar") — when on, every node/avvikelse other than the
-        # active one folds away to cut visual noise in large studies. Same
-        # persistence idiom as SettingsPanel's "tag_strip_spaces" checkbox
-        # (app_config key/value table via Database.get_config/set_config —
-        # this codebase has no QSettings usage anywhere), so it's
-        # remembered per-project rather than resetting every session.
-        self._auto_collapse_chk = QCheckBox("Auto-collapse")
-        self._auto_collapse_chk.setToolTip(
-            "Fäll automatiskt ihop alla noder/avvikelser utom den aktiva")
-        self._auto_collapse_chk.setChecked(
-            self.db.get_config('tree_auto_collapse', '0') == '1')
-        self._auto_collapse_chk.toggled.connect(self._on_auto_collapse_toggled)
-        layout.addWidget(self._auto_collapse_chk)
+        # ── Auto-collapse toggles (2026-08-24, see NOTES.md "Åtta UX/logik-
+        # förbättringar", split into two 2026-08-24 samma dag uppföljning
+        # — the single combined checkbox only visibly worked for nodes:
+        # collapsing a NODE_T item hides its ENTIRE subtree (every
+        # deviation under it along with it), but setExpanded(False) on a
+        # DEV_T item only hides ITS OWN children (causes) — the deviation
+        # row itself stayed visible, since QTreeWidget has no notion of
+        # "collapsing" a row to hide the row itself, only to hide its
+        # descendants. Hiding deviations you're not working on needs
+        # setHidden(), not setExpanded() — see _apply_auto_collapse().
+        # Same persistence idiom as SettingsPanel's "tag_strip_spaces"
+        # checkbox (app_config key/value table via Database.get_config/
+        # set_config — this codebase has no QSettings usage anywhere), so
+        # both are remembered per-project rather than resetting every
+        # session.
+        self._auto_collapse_nodes_chk = QCheckBox("Auto-collapse nodes")
+        self._auto_collapse_nodes_chk.setToolTip(
+            "Fäll automatiskt ihop alla noder utom den aktiva")
+        self._auto_collapse_nodes_chk.setChecked(
+            self.db.get_config('tree_auto_collapse_nodes', '0') == '1')
+        self._auto_collapse_nodes_chk.toggled.connect(
+            lambda checked: self._on_auto_collapse_toggled('tree_auto_collapse_nodes', checked))
+        layout.addWidget(self._auto_collapse_nodes_chk)
 
-    def _on_auto_collapse_toggled(self, checked):
-        self.db.set_config('tree_auto_collapse', '1' if checked else '0')
+        self._auto_collapse_deviations_chk = QCheckBox("Auto-collapse avvikelser")
+        self._auto_collapse_deviations_chk.setToolTip(
+            "Dölj automatiskt alla avvikelser utom den man arbetar med")
+        self._auto_collapse_deviations_chk.setChecked(
+            self.db.get_config('tree_auto_collapse_deviations', '0') == '1')
+        self._auto_collapse_deviations_chk.toggled.connect(
+            lambda checked: self._on_auto_collapse_toggled('tree_auto_collapse_deviations', checked))
+        layout.addWidget(self._auto_collapse_deviations_chk)
+
+    def _on_auto_collapse_toggled(self, config_key, checked):
+        self.db.set_config(config_key, '1' if checked else '0')
         self._apply_auto_collapse()
 
     def _active_node_and_deviation(self):
@@ -260,42 +278,79 @@ class TreePanel(QWidget):
         return node_id, dev_id
 
     def _apply_auto_collapse(self):
-        """Collapses every node other than the active one, and every
-        deviation within the active node other than the active one — the
-        active node and active deviation (derived from the current tree
-        selection) always stay expanded and visible (2026-08-24, see
-        NOTES.md). A no-op when the toggle is off, leaving the normal
-        expand/collapse behavior (refresh()'s own `expanded` set,
-        collapseAll/expandAll) untouched. Called after refresh() rebuilds
-        the tree AND from _on_select, so switching the active row without
-        a full data refresh also immediately folds away the previous one."""
-        if self.db.get_config('tree_auto_collapse', '0') != '1':
+        """Applies the two independent Auto-collapse toggles (2026-08-24,
+        see NOTES.md):
+        - "nodes": collapses (setExpanded(False)) every NODE_T item other
+          than the active one — this hides a whole node's subtree,
+          deviations included, since a collapsed item's descendants are
+          never shown.
+        - "avvikelser": HIDES (setHidden(True)) every DEV_T item other
+          than the active one, tree-wide — NOT setExpanded(), which only
+          controls whether a deviation's own children (causes) show, not
+          whether the deviation row itself is visible. Any Ledord/
+          Utrustning grouping item left with zero visible deviation
+          children is hidden too, so an empty group header doesn't linger.
+        The active node/deviation (derived from the current tree
+        selection) always stay expanded and visible regardless of either
+        toggle. A no-op (after clearing any stale hidden rows from a
+        previous toggle) when both are off, leaving the normal expand/
+        collapse behavior (refresh()'s own `expanded` set, collapseAll/
+        expandAll) untouched. Called after refresh() rebuilds the tree
+        AND from _on_select, so switching the active row without a full
+        data refresh immediately re-applies both."""
+        collapse_nodes = self.db.get_config('tree_auto_collapse_nodes', '0') == '1'
+        collapse_devs  = self.db.get_config('tree_auto_collapse_deviations', '0') == '1'
+
+        # Always clear hidden state first — otherwise turning "avvikelser"
+        # back off would leave stale hidden rows behind.
+        it = QTreeWidgetItemIterator(self.tree)
+        while it.value():
+            it.value().setHidden(False)
+            it += 1
+
+        if not collapse_nodes and not collapse_devs:
             return
         active_node_id, active_dev_id = self._active_node_and_deviation()
 
         active_dev_item = None
+        group_items = []   # LEDORD_T/EQUIP_T grouping rows, re-checked below
         it = QTreeWidgetItemIterator(self.tree)
         while it.value():
             item = it.value()
             type_ = item.data(0, Qt.ItemDataRole.UserRole + 1)
             id_ = item.data(0, Qt.ItemDataRole.UserRole)
             if type_ == NODE_T:
-                item.setExpanded(id_ == active_node_id)
+                if collapse_nodes:
+                    item.setExpanded(id_ == active_node_id)
             elif type_ == DEV_T:
-                item.setExpanded(id_ == active_dev_id)
                 if id_ == active_dev_id:
                     active_dev_item = item
+                elif collapse_devs:
+                    item.setHidden(True)
+            elif type_ in (LEDORD_T, EQUIP_T):
+                group_items.append(item)
             it += 1
 
         # Structural grouping levels (Ledord/Utrustning) between the active
-        # node and its active deviation must stay expanded too, or the
-        # deviation would be hidden behind a collapsed ancestor regardless
-        # of its own expanded flag.
+        # node and its active deviation must stay expanded/visible, or the
+        # deviation would be hidden behind a collapsed/hidden ancestor
+        # regardless of its own flags.
         if active_dev_item is not None:
             p = active_dev_item.parent()
             while p is not None:
                 p.setExpanded(True)
+                p.setHidden(False)
                 p = p.parent()
+
+        if collapse_devs:
+            # Deepest groups first (reversed traversal order), so a
+            # Ledord wrapper around an Utrustning wrapper only gets hidden
+            # once its child's own hidden state has already been decided.
+            for g in reversed(group_items):
+                if g.isHidden():
+                    continue
+                if g.childCount() and all(g.child(i).isHidden() for i in range(g.childCount())):
+                    g.setHidden(True)
 
     def _reveal(self, item):
         """setCurrentItem() alone never expands anything (verified against

@@ -1190,12 +1190,18 @@ class TreeInternalReparentDragDropTests(unittest.TestCase):
 
 
 class TreePanelAutoCollapseTests(unittest.TestCase):
-    """"Auto-collapse" toggle below the tree (2026-08-24, see NOTES.md
-    "Åtta UX/logik-förbättringar") — when on, folds away every node/
-    avvikelse other than the one currently active, cutting visual noise in
-    large studies. The active node and its active deviation always stay
-    expanded/visible; off (the default) leaves the existing expand/
-    collapse behavior completely untouched."""
+    """Two independent "Auto-collapse" toggles below the tree (2026-08-24,
+    see NOTES.md "Åtta UX/logik-förbättringar", split into two the same
+    day per follow-up feedback: "Autocollapse funktion funkar bra med att
+    öppna mellan noder ... Men den funkar inte för avikelser"). Root
+    cause of the deviations half not working: collapsing a NODE_T item
+    hides its ENTIRE subtree (every deviation along with it), but
+    setExpanded(False) on a DEV_T item only hides ITS OWN children
+    (causes) — the deviation row itself stays visible, since QTreeWidget
+    has no notion of "collapsing" a row to hide the row itself. Hiding
+    deviations needs setHidden(), which is now what the separate
+    "avvikelser" toggle drives. Both default off and leave the existing
+    expand/collapse behavior untouched."""
 
     @classmethod
     def setUpClass(cls):
@@ -1214,15 +1220,22 @@ class TreePanelAutoCollapseTests(unittest.TestCase):
             pass
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    def test_off_by_default_and_persisted_via_app_config(self):
-        self.assertFalse(self.panel._auto_collapse_chk.isChecked())
-        self.assertEqual(self.db.get_config('tree_auto_collapse', '0'), '0')
+    def test_both_off_by_default_and_persisted_via_app_config(self):
+        self.assertFalse(self.panel._auto_collapse_nodes_chk.isChecked())
+        self.assertFalse(self.panel._auto_collapse_deviations_chk.isChecked())
+        self.assertEqual(self.db.get_config('tree_auto_collapse_nodes', '0'), '0')
+        self.assertEqual(self.db.get_config('tree_auto_collapse_deviations', '0'), '0')
 
-    def test_enabling_persists_to_app_config(self):
-        self.panel._auto_collapse_chk.setChecked(True)
-        self.assertEqual(self.db.get_config('tree_auto_collapse', '0'), '1')
+    def test_enabling_each_persists_to_its_own_app_config_key(self):
+        self.panel._auto_collapse_nodes_chk.setChecked(True)
+        self.assertEqual(self.db.get_config('tree_auto_collapse_nodes', '0'), '1')
+        self.assertEqual(self.db.get_config('tree_auto_collapse_deviations', '0'), '0',
+            "toggling nodes must not also flip the deviations key")
 
-    def test_enabling_collapses_all_nodes_except_the_selected_one(self):
+        self.panel._auto_collapse_deviations_chk.setChecked(True)
+        self.assertEqual(self.db.get_config('tree_auto_collapse_deviations', '0'), '1')
+
+    def test_nodes_toggle_collapses_all_nodes_except_the_selected_one(self):
         node_a = self.db.add_node()
         node_b = self.db.add_node()
         self.panel.refresh()
@@ -1230,12 +1243,17 @@ class TreePanelAutoCollapseTests(unittest.TestCase):
         item_b = _find_tree_item(self.panel.tree, NODE_T, node_b)
         self.panel.tree.setCurrentItem(item_a)
 
-        self.panel._auto_collapse_chk.setChecked(True)
+        self.panel._auto_collapse_nodes_chk.setChecked(True)
 
         self.assertTrue(item_a.isExpanded(), "the active node must stay expanded")
         self.assertFalse(item_b.isExpanded(), "an inactive node must fold away")
 
-    def test_only_active_deviation_stays_expanded_within_active_node(self):
+    def test_nodes_toggle_alone_does_not_hide_deviations_within_active_node(self):
+        """The reported bug: with only ONE combined toggle, deviations
+        within the still-expanded active node never visibly folded away.
+        With the toggles now separate, "nodes" alone must leave every
+        deviation in the active node visible — hiding them is the OTHER
+        toggle's job."""
         node_id = self.db.add_node()
         devs = self.db.deviations(node_id)
         self.panel.refresh()
@@ -1243,33 +1261,79 @@ class TreePanelAutoCollapseTests(unittest.TestCase):
         dev_item_1 = _find_tree_item(self.panel.tree, DEV_T, devs[1]['id'])
         self.panel.tree.setCurrentItem(dev_item_0)
 
-        self.panel._auto_collapse_chk.setChecked(True)
+        self.panel._auto_collapse_nodes_chk.setChecked(True)
 
-        node_item = _find_tree_item(self.panel.tree, NODE_T, node_id)
-        self.assertTrue(node_item.isExpanded(), "the active deviation's own node must stay open")
-        self.assertTrue(dev_item_0.isExpanded())
-        self.assertFalse(dev_item_1.isExpanded())
+        self.assertFalse(dev_item_0.isHidden())
+        self.assertFalse(dev_item_1.isHidden(),
+            "the 'nodes' toggle alone must not hide sibling deviations")
 
-    def test_switching_selection_live_recollapses_previous_node(self):
-        """Re-applied from _on_select too, not just refresh() — clicking a
-        different node must fold the previous one away immediately,
-        without waiting for unrelated data to change."""
-        node_a = self.db.add_node()
-        node_b = self.db.add_node()
+    def test_deviations_toggle_hides_inactive_deviations(self):
+        node_id = self.db.add_node()
+        devs = self.db.deviations(node_id)
         self.panel.refresh()
-        item_a = _find_tree_item(self.panel.tree, NODE_T, node_a)
-        item_b = _find_tree_item(self.panel.tree, NODE_T, node_b)
-        self.panel.tree.setCurrentItem(item_a)
-        self.panel._auto_collapse_chk.setChecked(True)
-        self.assertTrue(item_a.isExpanded())
+        dev_item_0 = _find_tree_item(self.panel.tree, DEV_T, devs[0]['id'])
+        dev_item_1 = _find_tree_item(self.panel.tree, DEV_T, devs[1]['id'])
+        self.panel.tree.setCurrentItem(dev_item_0)
 
-        self.panel.tree.setCurrentItem(item_b)
+        self.panel._auto_collapse_deviations_chk.setChecked(True)
 
-        self.assertFalse(item_a.isExpanded(),
-            "switching the active node must fold the previous one away immediately")
-        self.assertTrue(item_b.isExpanded())
+        self.assertFalse(dev_item_0.isHidden(), "the active deviation must stay visible")
+        self.assertTrue(dev_item_1.isHidden(), "an inactive deviation must be hidden")
 
-    def test_disabled_auto_collapse_leaves_expand_all_alone(self):
+    def test_deviations_toggle_keeps_shared_ledord_group_visible(self):
+        """A deviation merged under a shared guide-word grouping (Ledord)
+        must not drag its own visible group ancestor down with it just
+        because a SIBLING deviation under the same group got hidden."""
+        pump_id = self.db.add_equipment_item("P-101", "P-101", "P", 0, "Pump", '', 0)
+        valve_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
+        node_id = self.db.add_node()
+        pump_dev = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=pump_id)
+        valve_dev = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=valve_id)
+        self.panel.refresh()
+        pump_item = _find_tree_item(self.panel.tree, DEV_T, pump_dev)
+        valve_item = _find_tree_item(self.panel.tree, DEV_T, valve_dev)
+        self.panel.tree.setCurrentItem(pump_item)
+
+        self.panel._auto_collapse_deviations_chk.setChecked(True)
+
+        self.assertFalse(pump_item.isHidden())
+        self.assertTrue(valve_item.isHidden())
+        self.assertFalse(pump_item.parent().isHidden(),
+            "the shared Ledord group must stay visible since it still has a visible deviation")
+
+    def test_switching_selection_live_rehides_previous_deviation(self):
+        """Re-applied from _on_select too, not just refresh() — clicking a
+        different deviation must hide the previous one immediately,
+        without waiting for unrelated data to change."""
+        node_id = self.db.add_node()
+        devs = self.db.deviations(node_id)
+        self.panel.refresh()
+        dev_item_0 = _find_tree_item(self.panel.tree, DEV_T, devs[0]['id'])
+        dev_item_1 = _find_tree_item(self.panel.tree, DEV_T, devs[1]['id'])
+        self.panel.tree.setCurrentItem(dev_item_0)
+        self.panel._auto_collapse_deviations_chk.setChecked(True)
+        self.assertFalse(dev_item_0.isHidden())
+
+        self.panel.tree.setCurrentItem(dev_item_1)
+
+        self.assertTrue(dev_item_0.isHidden())
+        self.assertFalse(dev_item_1.isHidden())
+
+    def test_disabling_deviations_toggle_unhides_everything(self):
+        node_id = self.db.add_node()
+        devs = self.db.deviations(node_id)
+        self.panel.refresh()
+        dev_item_0 = _find_tree_item(self.panel.tree, DEV_T, devs[0]['id'])
+        dev_item_1 = _find_tree_item(self.panel.tree, DEV_T, devs[1]['id'])
+        self.panel.tree.setCurrentItem(dev_item_0)
+        self.panel._auto_collapse_deviations_chk.setChecked(True)
+        self.assertTrue(dev_item_1.isHidden())
+
+        self.panel._auto_collapse_deviations_chk.setChecked(False)
+
+        self.assertFalse(dev_item_1.isHidden())
+
+    def test_both_disabled_leaves_expand_all_alone(self):
         node_a = self.db.add_node()
         node_b = self.db.add_node()
         self.panel.refresh()

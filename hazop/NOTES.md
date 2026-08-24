@@ -715,6 +715,21 @@ Anton installerade Inno Setup själv ("Nu har jag installerat det") — hittades
 
 **Verifiering:** full 14-filssvit grön efter ändringen.
 
+## Auto-collapse: dela upp i två separata kryssrutor — "avvikelser"-halvan gjorde faktiskt ingenting synligt (2026-08-24, samma dag, ytterligare en uppföljning)
+
+**Rapport:** Anton: "Autocollapse funktion funkar bra med att öppna mellan noder, dvs den stänger den andra noden. Men den funkar inte för avikelser. Lägg till ytterligare en kryssruta och kalla den tidigare funktionen auto-collapse nodes och den senare autocollapse avikelse."
+
+**Rotorsak:** den ursprungliga, kombinerade `_apply_auto_collapse()` (se punkt 8 ovan) använde `item.setExpanded(id_ == active_dev_id)` för `DEV_T`-rader — men `setExpanded()`/`isExpanded()` styr bara om ETT ITEMS EGNA BARN visas eller ej, inte om raden SJÄLV är synlig. En nod som kollapsas döljer sitt HELA underträd (alla avvikelser med den), vilket är varför nod-halvan syntes fungera perfekt — men en avvikelse utan egna orsaker (den vanligaste startpunkten, "Ny nod" ger 16 tomma avvikelser) har inget att kollapsa i första taget; `setExpanded(False)` på den gjorde bokstavligen ingenting synligt. Qt har inget koncept för "kollapsa en rad så att RADEN SJÄLV döljs" — bara `setHidden()` gör det.
+
+**Fix:**
+- Två separata `QCheckBox` under trädet: **"Auto-collapse nodes"** (`app_config`-nyckel `tree_auto_collapse_nodes`, samma logik som tidigare — `setExpanded()` på `NODE_T`) och **"Auto-collapse avvikelser"** (ny nyckel `tree_auto_collapse_deviations`) som istället använder `setHidden(True)` på varje `DEV_T`-rad förutom den aktiva, i hela trädet (inte bara inom aktiv nod — ingen avvikelse är "aktiv" i en icke-aktiv nod ändå).
+- En `Ledord`/`Utrustning`-grupperingsrad vars samtliga avvikelse-barn blivit dolda döljs nu också (annars en tom rubrikrad utan poäng kvar) — beräknas i en andra, omvänd (djupast-först) genomgång så en `Ledord`-wrapper runt en `Utrustning`-wrapper hinner se sitt barns redan beslutade dold-status innan sin egen avgörs.
+- Den gamla, enskilda `app_config`-nyckeln `tree_auto_collapse` lämnas oanvänd/övergiven (ingen datamigrering — en enda kryssruteinställning, försumbar kostnad att behöva kryssa i den nya "nodes"-rutan på nytt).
+
+**Testpåverkan:** `tests/test_tree_panel.py::TreePanelAutoCollapseTests` skrevs om helt — separata tester per kryssruta, plus ett explicit regressionstest (`test_nodes_toggle_alone_does_not_hide_deviations_within_active_node`) som bekräftar den rapporterade buggen (nod-rutan ensam rör inte avvikelser) och ett för det delade Ledord-grupp-fallet.
+
+**Verifiering:** full 14-filssvit grön efter ändringen.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.
