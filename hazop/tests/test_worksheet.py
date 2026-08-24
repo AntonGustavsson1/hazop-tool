@@ -95,6 +95,12 @@ class HAZOPWorksheetTests(unittest.TestCase):
         self._tmpdir = tempfile.mkdtemp(prefix="hazop_worksheet_test_")
         self.db_path = os.path.join(self._tmpdir, "test_project.db")
         self.db = Database(path=self.db_path)
+        # 2026-08-24: a fresh Database now auto-seeds one default node (see
+        # Database.__init__'s pre_existing_db check) — these tests build
+        # their own controlled set of nodes and assert exact counts/order
+        # against it, so remove the auto-seeded one to keep that intact.
+        for n in self.db.nodes():
+            self.db.delete_node(n['id'])
 
     def tearDown(self):
         try:

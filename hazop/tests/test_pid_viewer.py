@@ -2267,18 +2267,25 @@ class EquipmentTagSearchWorkerTests(unittest.TestCase):
         worker = EquipmentTagSearchWorker(self.pdf_path, 0, rect=(50, 50, 150, 75))
         self.assertEqual(self._run(worker), "PV-101")
 
-    def test_falls_back_to_point_search_when_rect_is_empty(self):
-        """A rect with no text inside it (the label sits just outside)
-        must fall back to a nearby-point search from the rect's centre —
-        same fallback _on_zone_drawn used to do synchronously. HAS_PIL
-        forced off so an empty rect returns quickly instead of running a
-        real (possibly slow/model-downloading) OCR pass first — that
-        engine-availability behavior is exercised elsewhere, not the
-        point of this test."""
+    def test_does_not_fall_back_to_point_search_when_rect_is_empty(self):
+        """2026-08-24 (see NOTES.md "Åtta UX/logik-förbättringar") — a rect
+        with no text inside it must return an empty tag, NOT fall back to
+        a nearby-point/whole-page search. That fallback used to exist
+        (mirroring what _on_zone_drawn did synchronously before this
+        worker), but on P&IDs where a tag's text is missing or sits far
+        from its symbol it grabbed whatever tag-like text happened to be
+        nearest on the page — producing a wrong object/tag number for a
+        rectangle the user explicitly drew to contain the right one (or
+        nothing). HAS_PIL forced off so an empty rect returns quickly
+        instead of running a real (possibly slow/model-downloading) OCR
+        pass first — that engine-availability behavior is exercised
+        elsewhere, not the point of this test."""
         from pid_viewer import EquipmentTagSearchWorker
         with unittest.mock.patch('equipment_detection.HAS_PIL', False):
             worker = EquipmentTagSearchWorker(self.pdf_path, 0, rect=(200, 200, 220, 220))
-            self.assertEqual(self._run(worker), "PV-101")
+            self.assertEqual(self._run(worker), "",
+                "a rect with no text inside it must not pick up 'PV-101' from "
+                "elsewhere on the page")
 
     def test_point_only_mode_finds_tag_near_point(self):
         from pid_viewer import EquipmentTagSearchWorker

@@ -3038,7 +3038,15 @@ class PlusRowQuickAddTaggingTests(unittest.TestCase):
             with unittest.mock.patch.object(hazop.CauseObjectPopup, 'exec', new=_fake_exec):
                 panel._quick_add_cause(dev_id)
 
-            causes = win.db.causes(dev_id)
+            # NOTE: Database.causes(x) filters by node_id, not deviation_id
+            # (causes_for_deviation() is the deviation-scoped accessor) —
+            # this used to read causes(dev_id) and still pass, only because
+            # a totally fresh, node-less DB made node_id and dev_id both
+            # come out as 1 by coincidence. 2026-08-24: Database now
+            # auto-seeds one default node on a brand new project (see
+            # Database.__init__'s pre_existing_db check), which breaks
+            # that coincidence and exposed the mismatch.
+            causes = win.db.causes_for_deviation(dev_id)
             self.assertEqual(len(causes), 1)
             self.assertEqual(causes[0]['comp_tag'], 'PV-101')
             self.assertEqual(causes[0]['comp_type'], 'Ventil')
@@ -3076,7 +3084,9 @@ class PlusRowQuickAddTaggingTests(unittest.TestCase):
             with unittest.mock.patch.object(hazop.CauseObjectPopup, 'exec', new=_fake_exec):
                 panel._add_cause_via_plus_row(dev_id)
 
-            self.assertEqual(len(win.db.causes(dev_id)), 1)
+            # See test_quick_add_cause_opens_cause_object_popup_and_creates_cause
+            # above for why this is causes_for_deviation(), not causes().
+            self.assertEqual(len(win.db.causes_for_deviation(dev_id)), 1)
 
 
 class EmptyOrsCellClickOpensCausePopupTests(unittest.TestCase):

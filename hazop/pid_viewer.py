@@ -3909,12 +3909,18 @@ class EquipmentTagSearchWorker(QThread):
     once, even on failure, so the caller's spinner/timeout logic in
     EquipmentPlacementPopup can never hang waiting.
 
-    A rubber-band placement passes `rect` — native text + OCR inside it
-    (equipment_detection.extract_tag_from_rect), falling back to a
-    nearby-point search if that comes up empty, exactly like
-    PIDGraphicsView._on_zone_drawn used to do synchronously before this
-    class existed. A plain right-click placement has only a point to
-    search from, so it passes `point` instead."""
+    A rubber-band placement passes `rect` — native text + OCR strictly
+    INSIDE it (equipment_detection.extract_tag_from_rect), with NO
+    fallback to a nearby-point/whole-page search if that comes up empty
+    (2026-08-24, see NOTES.md "Åtta UX/logik-förbättringar" — a
+    find_tag_near_point fallback used to run here, but on P&IDs where a
+    tag's text is missing or sits far from its symbol it grabbed whatever
+    tag-like text happened to be nearest on the page, producing wrong
+    objects/tag numbers for a rectangle the user explicitly drew to
+    contain the right one). A plain right-click placement has only a
+    point to search from, so it passes `point` instead and keeps the
+    point-radius-then-whole-page search — that path was never drawn by
+    the user around a specific area, so there's no boundary to violate."""
     finished_search = pyqtSignal(str)   # detected tag, '' if none found
 
     def __init__(self, pdf_path, page, rect=None, point=None, radius=100, parent=None):
@@ -3933,9 +3939,6 @@ class EquipmentTagSearchWorker(QThread):
             if self._rect is not None:
                 x0, y0, x1, y1 = self._rect
                 tag = extract_tag_from_rect(doc, self._page, x0, y0, x1, y1)
-                if not tag:
-                    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-                    tag = find_tag_near_point(doc, self._page, cx, cy)
             elif self._point is not None:
                 x, y = self._point
                 tag = find_tag_near_point(doc, self._page, x, y, radius=self._radius)

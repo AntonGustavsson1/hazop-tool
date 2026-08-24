@@ -66,7 +66,7 @@ from hazop import (  # noqa: E402
 )
 from PyQt6.QtWidgets import (  # noqa: E402
     QApplication, QGraphicsPixmapItem, QTreeWidgetItemIterator, QCheckBox,
-    QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit,
+    QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit, QLabel,
 )
 from PyQt6.QtGui import QPixmap, QFocusEvent  # noqa: E402
 from PyQt6.QtCore import Qt, QPoint, QDate, QEvent, QThread, pyqtSignal  # noqa: E402
@@ -510,6 +510,87 @@ class EquipmentObjectPlacementTests(unittest.TestCase):
         self.assertEqual(equip['equipment_type'], "Pump")
 
 
+class EquipmentPlacementRubberBandSimplePopupTests(unittest.TestCase):
+    """Rubber-band placements (pdf_rect given) get a simplified popup —
+    Objekt + Objekttyp only, no deviation checklist — positioned beside
+    the drawn rectangle instead of on top of it (2026-08-24, see NOTES.md
+    "Åtta UX/logik-förbättringar"). A plain right-click placement
+    (pdf_rect=None, covered by EquipmentObjectPlacementTests above) keeps
+    the original full popup with its checklist, unchanged."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_rbplacement_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from pid_viewer import PIDPanel
+        self.panel = PIDPanel(self.db)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _place_with_rect(self, tag="PV-101", comp_type="Ventil"):
+        from PyQt6.QtCore import QPointF, QRectF
+        from pid_panel_mod import EquipmentPlacementPopup
+        rect = QRectF(100, 100, 50, 50)
+        center = QPointF(rect.center().x(), rect.center().y())
+        self.panel.place_equipment_marker(tag, comp_type, center, 0, pdf_rect=rect)
+        popups = self.panel.viewer.findChildren(EquipmentPlacementPopup)
+        self.assertEqual(len(popups), 1)
+        return popups[0]
+
+    def test_rubber_band_placement_uses_simple_popup_with_no_checklist(self):
+        popup = self._place_with_rect()
+        self.assertTrue(popup._simple)
+        self.assertIsNone(popup._checklist,
+            "the rubber-band popup must not embed a deviation checklist")
+
+    def test_plain_click_placement_keeps_full_popup_with_checklist(self):
+        from PyQt6.QtCore import QPointF
+        from pid_panel_mod import EquipmentPlacementPopup
+        self.panel.place_equipment_marker("PV-101", "Ventil", QPointF(10, 10), 0)
+        popup = self.panel.viewer.findChildren(EquipmentPlacementPopup)[0]
+        self.assertFalse(popup._simple)
+        self.assertIsNotNone(popup._checklist)
+
+    def test_add_type_button_has_visible_text_not_a_bare_plus(self):
+        popup = self._place_with_rect()
+        add_type_btns = [b for b in popup.findChildren(QPushButton)
+                          if "Lägg till" in b.text()]
+        self.assertEqual(len(add_type_btns), 1,
+            "the add-object-type button must have real, visible text, not a bare '+'")
+
+    def test_object_field_label_says_objekt_not_tag(self):
+        """The simplified popup's field is framed as "Objekt"/"Objekttyp"
+        (per the request), not the full popup's "Tag"/"Typ" wording."""
+        popup = self._place_with_rect()
+        labels = [w.text() for w in popup.findChildren(QLabel)]
+        self.assertIn("Objekt:", labels)
+        self.assertIn("Objekttyp:", labels)
+
+    def test_show_near_rect_positions_beside_not_over_the_rect(self):
+        from pid_panel_mod import EquipmentPlacementPopup
+        from PyQt6.QtCore import QRect
+        eq_id = self.db.add_equipment_item("", "", "", 0, "", "", 0)
+        popup = EquipmentPlacementPopup(self.db, eq_id, None,
+                                        parent=self.panel.viewer, simple=True)
+        try:
+            rect = QRect(100, 100, 40, 40)
+            popup.show_near_rect(rect.left(), rect.top(), rect.right(), rect.bottom())
+            popup_geo = QRect(popup.pos(), popup.frameGeometry().size())
+            self.assertFalse(popup_geo.intersects(rect),
+                f"popup {popup_geo} must not overlap the marked rect {rect}")
+        finally:
+            popup.deleteLater()
+
+
 class EquipmentPlacementAsyncSearchTests(unittest.TestCase):
     """PIDPanel.place_equipment_marker's async tag search (2026-08-18, see
     NOTES.md "kombinerad placeringsmeny") — EquipmentPlacementPopup shows
@@ -545,6 +626,21 @@ class EquipmentPlacementAsyncSearchTests(unittest.TestCase):
         # if a QThread object is torn down mid-run.
         for worker in list(self.panel._tag_search_workers):
             worker.wait(2000)
+        # 2026-08-24: a popup's _tag_edit losing focus as part of the
+        # deleteLater() teardown cascade below can synthesize a real
+        # editingFinished -> _commit_tag() call — deleteLater() is
+        # deferred, so this sometimes only actually fires during a LATER
+        # test's own processEvents() call, calling _commit_tag() with its
+        # default show_warning=True against a duplicate tag on an object
+        # nobody is looking at anymore (found via a real hang once
+        # _commit_tag started raising a blocking QMessageBox on a
+        # duplicate, see NOTES.md). blockSignals is a persistent per-
+        # object flag, so this protects against the callback firing no
+        # matter which test's event loop turn actually processes the
+        # deletion.
+        from pid_panel_mod import EquipmentPlacementPopup
+        for popup in self.panel.viewer.findChildren(EquipmentPlacementPopup):
+            popup._tag_edit.blockSignals(True)
         self.panel.deleteLater()
         # This class creates several real QThreads/QGraphicsView-backed
         # popups per test (a heavier mix than most fixtures in this file)
@@ -642,7 +738,15 @@ class EquipmentPlacementAsyncSearchTests(unittest.TestCase):
         self.assertNotEqual(placeholder_id, existing_id)
 
         popup._tag_edit.setText("PV-101")
-        popup._commit_tag()
+        # 2026-08-24: _commit_tag now also raises a blocking QMessageBox
+        # warning on a duplicate tag (see NOTES.md) — mock it out so the
+        # test doesn't hang waiting for a real dialog to be dismissed.
+        with unittest.mock.patch.object(QMessageBox, 'warning') as mock_warn:
+            popup._commit_tag()
+        mock_warn.assert_called_once()
+        warned_text = mock_warn.call_args[0][2]
+        self.assertIn("PV-101", warned_text,
+            "the warning must clearly name the duplicate tag number")
 
         self.assertEqual(popup._equipment_id, existing_id)
         self.assertIsNone(self.db.get_equipment_by_id(placeholder_id),
@@ -670,7 +774,8 @@ class EquipmentPlacementAsyncSearchTests(unittest.TestCase):
         self.assertTrue(self.db.deviations_for_equipment(placeholder_id))
 
         popup._tag_edit.setText("PV-101")
-        popup._commit_tag()
+        with unittest.mock.patch.object(QMessageBox, 'warning'):
+            popup._commit_tag()
 
         self.assertEqual(popup._equipment_id, placeholder_id,
             "must not merge away a placeholder that already has real data")

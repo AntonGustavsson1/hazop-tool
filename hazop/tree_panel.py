@@ -147,6 +147,7 @@ class TreePanel(QWidget):
         for label, icon_name, tip, slot in (
             ("+ Nod",       None,     "Lägg till ny nod",       self.add_node),
             ("+ Avvikelse", None,     "Lägg till ny avvikelse", self.add_deviation),
+            ("+ Orsak",     None,     "Lägg till ny orsak",     self.add_cause),
             ("Ta bort",     'delete', "Ta bort markerat",       self.delete_selected),
         ):
             btn = QPushButton(label)
@@ -219,6 +220,82 @@ class TreePanel(QWidget):
         compact_row.addWidget(btn_expand)
 
         layout.addLayout(compact_row)
+
+        # ── Auto-collapse toggle (2026-08-24, see NOTES.md "Åtta UX/logik-
+        # förbättringar") — when on, every node/avvikelse other than the
+        # active one folds away to cut visual noise in large studies. Same
+        # persistence idiom as SettingsPanel's "tag_strip_spaces" checkbox
+        # (app_config key/value table via Database.get_config/set_config —
+        # this codebase has no QSettings usage anywhere), so it's
+        # remembered per-project rather than resetting every session.
+        self._auto_collapse_chk = QCheckBox("Auto-collapse")
+        self._auto_collapse_chk.setToolTip(
+            "Fäll automatiskt ihop alla noder/avvikelser utom den aktiva")
+        self._auto_collapse_chk.setChecked(
+            self.db.get_config('tree_auto_collapse', '0') == '1')
+        self._auto_collapse_chk.toggled.connect(self._on_auto_collapse_toggled)
+        layout.addWidget(self._auto_collapse_chk)
+
+    def _on_auto_collapse_toggled(self, checked):
+        self.db.set_config('tree_auto_collapse', '1' if checked else '0')
+        self._apply_auto_collapse()
+
+    def _active_node_and_deviation(self):
+        """Walks up from the current tree selection to find the nearest
+        NODE_T/DEV_T ancestors — used by _apply_auto_collapse to know
+        which node/deviation must stay expanded. Returns (None, None) if
+        nothing is selected."""
+        item = self.tree.currentItem()
+        node_id = None
+        dev_id = None
+        while item is not None:
+            type_ = item.data(0, Qt.ItemDataRole.UserRole + 1)
+            id_ = item.data(0, Qt.ItemDataRole.UserRole)
+            if type_ == DEV_T and dev_id is None:
+                dev_id = id_
+            if type_ == NODE_T:
+                node_id = id_
+                break
+            item = item.parent()
+        return node_id, dev_id
+
+    def _apply_auto_collapse(self):
+        """Collapses every node other than the active one, and every
+        deviation within the active node other than the active one — the
+        active node and active deviation (derived from the current tree
+        selection) always stay expanded and visible (2026-08-24, see
+        NOTES.md). A no-op when the toggle is off, leaving the normal
+        expand/collapse behavior (refresh()'s own `expanded` set,
+        collapseAll/expandAll) untouched. Called after refresh() rebuilds
+        the tree AND from _on_select, so switching the active row without
+        a full data refresh also immediately folds away the previous one."""
+        if self.db.get_config('tree_auto_collapse', '0') != '1':
+            return
+        active_node_id, active_dev_id = self._active_node_and_deviation()
+
+        active_dev_item = None
+        it = QTreeWidgetItemIterator(self.tree)
+        while it.value():
+            item = it.value()
+            type_ = item.data(0, Qt.ItemDataRole.UserRole + 1)
+            id_ = item.data(0, Qt.ItemDataRole.UserRole)
+            if type_ == NODE_T:
+                item.setExpanded(id_ == active_node_id)
+            elif type_ == DEV_T:
+                item.setExpanded(id_ == active_dev_id)
+                if id_ == active_dev_id:
+                    active_dev_item = item
+            it += 1
+
+        # Structural grouping levels (Ledord/Utrustning) between the active
+        # node and its active deviation must stay expanded too, or the
+        # deviation would be hidden behind a collapsed ancestor regardless
+        # of its own expanded flag.
+        if active_dev_item is not None:
+            p = active_dev_item.parent()
+            while p is not None:
+                p.setExpanded(True)
+                p = p.parent()
 
     def _reveal(self, item):
         """setCurrentItem() alone never expands anything (verified against
@@ -538,6 +615,7 @@ class TreePanel(QWidget):
             self.tree.blockSignals(False)
             if target and emit_selection:
                 self._reveal(target)
+            self._apply_auto_collapse()
 
     def _current(self):
         item = self.tree.currentItem()
@@ -732,6 +810,11 @@ class TreePanel(QWidget):
         type_ = current.data(0, Qt.ItemDataRole.UserRole + 1)
         id_   = current.data(0, Qt.ItemDataRole.UserRole)
         self.item_selected.emit(type_, id_)
+        # Auto-collapse (2026-08-24, see NOTES.md) — re-applied on every
+        # plain selection change too, not just a full refresh(), so
+        # clicking a different node/avvikelse immediately folds the
+        # previous one away without waiting for unrelated data to change.
+        self._apply_auto_collapse()
 
     # Types editable directly in the tree via double-click (2026-08-17, see
     # NOTES.md "Dubbelklick -> redigera direkt i trädet"). EQUIP_T/LEDORD_T

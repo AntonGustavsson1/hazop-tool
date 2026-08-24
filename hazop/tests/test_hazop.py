@@ -392,7 +392,10 @@ class MainWindowOpensHzpPassedOnConstructionTests(unittest.TestCase):
             hazop.Database = _RunningDatabase
             hazop.DB_PATH = Path(running_window_db_path)
             win = MainWindow()
-            self.assertEqual([dict(n).get('name') for n in win.db.nodes()], [])
+            # 2026-08-24: a brand-new study now auto-seeds one default node
+            # (see Database.__init__'s `pre_existing_db` check) instead of
+            # starting completely empty.
+            self.assertEqual([dict(n).get('name') for n in win.db.nodes()], ['Ny nod'])
 
             win._load_hzp(other_hzp_path)
 

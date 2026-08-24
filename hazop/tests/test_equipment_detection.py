@@ -1325,6 +1325,104 @@ class NewCorpusPrefixReviewTests(unittest.TestCase):
         self.assertEqual(_equip_prefix_from_tag("PN-30"), '')
 
 
+class ApplyScanResultEquipmentSyncTests(unittest.TestCase):
+    """apply_scan_result_to_equipment_catalog (2026-08-24, see NOTES.md
+    "Åtta UX/logik-förbättringar") — real user bug report: rescanning a
+    P&ID after checking a deviation against a detected tag could silently
+    create a DUPLICATE deviation the next time the same tag was checked.
+    Root cause: the old clear-and-reinsert implementation gave every
+    surviving tag a brand-new equipment_catalog id on every rescan,
+    orphaning (equipment_id=NULL) any deviation/cause already linked to
+    the old one — get_or_create_deviation is itself idempotent, but keyed
+    on an equipment_id that had silently changed underneath it. Now a tag
+    that survives a rescan (matched case-insensitively) is UPDATEd in
+    place — same id — instead of deleted and recreated; only tags
+    genuinely gone from the new scan are deleted."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_scansync_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    @staticmethod
+    def _scan_result(prefix, tag, page=0, is_ocr=False):
+        return {
+            prefix: {
+                'tags': [tag],
+                'pages': {tag: page},
+                'positions': {tag: (10.0, 10.0)},
+                'ocr_pages': {page} if is_ocr else set(),
+                'tag_source': {tag: 'native'},
+            },
+        }
+
+    def test_tag_surviving_rescan_keeps_id_and_deviation_link(self):
+        from equipment_detection import apply_scan_result_to_equipment_catalog
+        apply_scan_result_to_equipment_catalog(self.db, self._scan_result('PV', 'PV-101'))
+        eq_id = self.db.get_equipment_by_tag('PV-101')['id']
+
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        self.db.conn.execute("UPDATE deviations SET equipment_id=? WHERE id=?", (eq_id, dev_id))
+        self.db.commit()
+
+        # Simulate a rescan finding the exact same tag again.
+        apply_scan_result_to_equipment_catalog(self.db, self._scan_result('PV', 'PV-101'))
+
+        eq_after = self.db.get_equipment_by_tag('PV-101')
+        self.assertEqual(eq_after['id'], eq_id,
+            "a tag that survives a rescan must keep its equipment_catalog id")
+        dev = self.db.conn.execute(
+            "SELECT equipment_id FROM deviations WHERE id=?", (dev_id,)).fetchone()
+        self.assertEqual(dev['equipment_id'], eq_id,
+            "the deviation's link must survive the rescan, or re-checking the same "
+            "deviation afterward would create a duplicate")
+
+    def test_tag_removed_from_scan_is_deleted_and_deviation_link_cleared(self):
+        from equipment_detection import apply_scan_result_to_equipment_catalog
+        apply_scan_result_to_equipment_catalog(self.db, self._scan_result('PV', 'PV-101'))
+        eq_id = self.db.get_equipment_by_tag('PV-101')['id']
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        self.db.conn.execute("UPDATE deviations SET equipment_id=? WHERE id=?", (eq_id, dev_id))
+        self.db.commit()
+
+        # Rescan with a completely different tag — PV-101 is genuinely gone.
+        apply_scan_result_to_equipment_catalog(self.db, self._scan_result('PV', 'PV-202'))
+
+        self.assertIsNone(self.db.get_equipment_by_tag('PV-101'))
+        dev = self.db.conn.execute(
+            "SELECT equipment_id FROM deviations WHERE id=?", (dev_id,)).fetchone()
+        self.assertIsNone(dev['equipment_id'],
+            "delete_equipment_item must still detach the FK safely, same as any "
+            "other equipment deletion")
+
+    def test_manual_type_and_description_edits_survive_rescan(self):
+        from equipment_detection import apply_scan_result_to_equipment_catalog
+        apply_scan_result_to_equipment_catalog(self.db, self._scan_result('PV', 'PV-101'))
+        eq_id = self.db.get_equipment_by_tag('PV-101')['id']
+        self.db.update_equipment_item(eq_id, 'PV-101', 'PV', 'Reglerventil', 'Min egna beskrivning')
+
+        apply_scan_result_to_equipment_catalog(self.db, self._scan_result('PV', 'PV-101', page=2))
+
+        eq = self.db.get_equipment_by_id(eq_id)
+        self.assertEqual(eq['equipment_type'], 'Reglerventil',
+            "a manually-set type must not be wiped by a rescan")
+        self.assertEqual(eq['description'], 'Min egna beskrivning')
+        self.assertEqual(eq['pid_page'], 2, "the page must still update from the new scan")
+
+    def test_new_tag_is_added_and_stale_tag_removed(self):
+        from equipment_detection import apply_scan_result_to_equipment_catalog
+        apply_scan_result_to_equipment_catalog(self.db, self._scan_result('PV', 'PV-101'))
+        apply_scan_result_to_equipment_catalog(self.db, self._scan_result('PV', 'PV-202'))
+        self.assertIsNone(self.db.get_equipment_by_tag('PV-101'))
+        self.assertIsNotNone(self.db.get_equipment_by_tag('PV-202'))
 
 
 if __name__ == "__main__":

@@ -818,6 +818,16 @@ class Database:
                 logging.warning("Pre-migration backup failed", exc_info=True)
         self._migrate()
         self._write_backup(startup=True)   # unconditional post-migration snapshot
+        if not pre_existing_db:
+            # A brand-new study (first-ever launch with no DB file yet, or
+            # "Nytt projekt" which deletes the old file before reconstructing
+            # this class) should start with one node already there — the
+            # user shouldn't have to click "+ Nod" before any work is
+            # possible. Does NOT fire for a real _load_hzp() open (DB_PATH
+            # already holds the copied project's data there, or — on a
+            # failed copy — the untouched original), so a study where the
+            # user deliberately deleted their last node is left alone.
+            self.add_node()
 
     def __del__(self):
         """Clean up database connection on object destruction.
@@ -1874,6 +1884,19 @@ class Database:
         self.conn.execute(
             "UPDATE equipment_catalog SET tag=?,prefix=?,equipment_type=?,description=? WHERE id=?",
             (tag, prefix, eq_type, desc, id_))
+        self.commit()
+
+    def update_equipment_scan_fields(self, id_, tag, prefix, page, is_ocr):
+        """Update only the fields a P&ID rescan actually knows about — used
+        by equipment_detection.apply_scan_result_to_equipment_catalog
+        (2026-08-24, see NOTES.md) instead of a full clear+reinsert, so a
+        tag that survives a rescan keeps its id (and therefore its linked
+        deviations/causes) instead of orphaning them. Deliberately leaves
+        equipment_type/description/include untouched — those are the
+        user's own edits and a rescan shouldn't discard them."""
+        self.conn.execute(
+            "UPDATE equipment_catalog SET tag=?,original_tag=?,prefix=?,pid_page=?,is_ocr=? WHERE id=?",
+            (tag, tag, prefix, page, is_ocr, id_))
         self.commit()
 
     def delete_equipment_item(self, id_):

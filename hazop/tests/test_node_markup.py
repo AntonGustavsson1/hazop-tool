@@ -100,6 +100,12 @@ class NodeMarkupPanelNavigateTests(unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.mkdtemp(prefix="hazop_navtest_")
         self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        # 2026-08-24: a fresh Database now auto-seeds one default node (see
+        # Database.__init__'s pre_existing_db check) — these tests assert
+        # exact prev/next behavior against their OWN controlled node
+        # ordering, so remove the auto-seeded one first.
+        for n in self.db.nodes():
+            self.db.delete_node(n['id'])
 
     def tearDown(self):
         try:

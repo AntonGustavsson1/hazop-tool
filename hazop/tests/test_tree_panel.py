@@ -225,18 +225,34 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         it from the plain to the wrapped rendering path) must not change
         that count or leave a gap/duplicate anywhere."""
         import re
+        # 2026-08-24: Database now auto-seeds one default node on a brand
+        # new project (see Database.__init__'s pre_existing_db check), so
+        # self.db already has a first node with its own 1..16 numbering
+        # before this test adds its OWN node — scope the scan to just this
+        # test's node (not the whole tree) so the two don't double up.
         node_id = self.db.add_node()
         n_seeded = len(self.db.deviations(node_id))
         eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
         self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
         self.panel.refresh()
 
+        node_item = _find_tree_item(self.panel.tree, NODE_T, node_id)
+        self.assertIsNotNone(node_item)
+
+        def _is_within(item, ancestor):
+            p = item.parent()
+            while p is not None:
+                if p is ancestor:
+                    return True
+                p = p.parent()
+            return False
+
         numbers = []
         it = QTreeWidgetItemIterator(self.panel.tree)
         while it.value():
             item = it.value()
             t = item.data(0, Qt.ItemDataRole.UserRole + 1)
-            if t in (DEV_T, LEDORD_T):
+            if t in (DEV_T, LEDORD_T) and _is_within(item, node_item):
                 m = re.search(r'(\d+)\.\s', item.text(0))
                 if m:
                     numbers.append(int(m.group(1)))
@@ -1173,6 +1189,157 @@ class TreeInternalReparentDragDropTests(unittest.TestCase):
                           "hovering during drag must not move the cause yet")
 
 
+class TreePanelAutoCollapseTests(unittest.TestCase):
+    """"Auto-collapse" toggle below the tree (2026-08-24, see NOTES.md
+    "Åtta UX/logik-förbättringar") — when on, folds away every node/
+    avvikelse other than the one currently active, cutting visual noise in
+    large studies. The active node and its active deviation always stay
+    expanded/visible; off (the default) leaves the existing expand/
+    collapse behavior completely untouched."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_autocollapse_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        self.panel = TreePanel(self.db)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_off_by_default_and_persisted_via_app_config(self):
+        self.assertFalse(self.panel._auto_collapse_chk.isChecked())
+        self.assertEqual(self.db.get_config('tree_auto_collapse', '0'), '0')
+
+    def test_enabling_persists_to_app_config(self):
+        self.panel._auto_collapse_chk.setChecked(True)
+        self.assertEqual(self.db.get_config('tree_auto_collapse', '0'), '1')
+
+    def test_enabling_collapses_all_nodes_except_the_selected_one(self):
+        node_a = self.db.add_node()
+        node_b = self.db.add_node()
+        self.panel.refresh()
+        item_a = _find_tree_item(self.panel.tree, NODE_T, node_a)
+        item_b = _find_tree_item(self.panel.tree, NODE_T, node_b)
+        self.panel.tree.setCurrentItem(item_a)
+
+        self.panel._auto_collapse_chk.setChecked(True)
+
+        self.assertTrue(item_a.isExpanded(), "the active node must stay expanded")
+        self.assertFalse(item_b.isExpanded(), "an inactive node must fold away")
+
+    def test_only_active_deviation_stays_expanded_within_active_node(self):
+        node_id = self.db.add_node()
+        devs = self.db.deviations(node_id)
+        self.panel.refresh()
+        dev_item_0 = _find_tree_item(self.panel.tree, DEV_T, devs[0]['id'])
+        dev_item_1 = _find_tree_item(self.panel.tree, DEV_T, devs[1]['id'])
+        self.panel.tree.setCurrentItem(dev_item_0)
+
+        self.panel._auto_collapse_chk.setChecked(True)
+
+        node_item = _find_tree_item(self.panel.tree, NODE_T, node_id)
+        self.assertTrue(node_item.isExpanded(), "the active deviation's own node must stay open")
+        self.assertTrue(dev_item_0.isExpanded())
+        self.assertFalse(dev_item_1.isExpanded())
+
+    def test_switching_selection_live_recollapses_previous_node(self):
+        """Re-applied from _on_select too, not just refresh() — clicking a
+        different node must fold the previous one away immediately,
+        without waiting for unrelated data to change."""
+        node_a = self.db.add_node()
+        node_b = self.db.add_node()
+        self.panel.refresh()
+        item_a = _find_tree_item(self.panel.tree, NODE_T, node_a)
+        item_b = _find_tree_item(self.panel.tree, NODE_T, node_b)
+        self.panel.tree.setCurrentItem(item_a)
+        self.panel._auto_collapse_chk.setChecked(True)
+        self.assertTrue(item_a.isExpanded())
+
+        self.panel.tree.setCurrentItem(item_b)
+
+        self.assertFalse(item_a.isExpanded(),
+            "switching the active node must fold the previous one away immediately")
+        self.assertTrue(item_b.isExpanded())
+
+    def test_disabled_auto_collapse_leaves_expand_all_alone(self):
+        node_a = self.db.add_node()
+        node_b = self.db.add_node()
+        self.panel.refresh()
+        self.panel.tree.expandAll()
+        item_a = _find_tree_item(self.panel.tree, NODE_T, node_a)
+        item_b = _find_tree_item(self.panel.tree, NODE_T, node_b)
+        self.assertTrue(item_a.isExpanded())
+        self.assertTrue(item_b.isExpanded())
+
+
+class TreePanelAddCauseButtonTests(unittest.TestCase):
+    """"+ Orsak" button above the tree (2026-08-24, see NOTES.md "Åtta
+    UX/logik-förbättringar") — alongside the existing "+ Nod"/"+
+    Avvikelse" buttons, wired straight to TreePanel's own already-existing
+    add_cause() (previously only reachable via right-click on a DEV_T
+    row)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_addcausebtn_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        self.panel = TreePanel(self.db)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _button(self, label):
+        for btn in self.panel.findChildren(QPushButton):
+            if btn.text() == label:
+                return btn
+        return None
+
+    def test_button_exists_alongside_nod_and_avvikelse(self):
+        self.assertIsNotNone(self._button("+ Nod"))
+        self.assertIsNotNone(self._button("+ Avvikelse"))
+        self.assertIsNotNone(self._button("+ Orsak"))
+
+    def test_clicking_button_with_a_deviation_selected_adds_a_cause(self):
+        from PyQt6.QtWidgets import QDialog
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        self.panel.refresh()
+        dev_item = _find_tree_item(self.panel.tree, DEV_T, dev_id)
+        self.panel.tree.setCurrentItem(dev_item)
+        before = len(self.db.causes_for_deviation(dev_id))
+
+        # add_cause() -> _open_cause_picker_for_deviation() opens a real
+        # StandardCausesPickerPopup — same mock pattern as
+        # test_integration.py's test_tree_add_cause_via_picker_also_creates_empty_consequence.
+        def _fake_exec(self):
+            self.cause_picked.emit("Ny orsak (test)", None)
+            return QDialog.DialogCode.Accepted
+
+        with unittest.mock.patch.object(hazop.StandardCausesPickerPopup, 'exec', new=_fake_exec):
+            self._button("+ Orsak").click()
+
+        self.assertEqual(len(self.db.causes_for_deviation(dev_id)), before + 1)
+
+    def test_clicking_button_with_no_deviation_selected_shows_a_hint_not_a_crash(self):
+        with unittest.mock.patch.object(QMessageBox, 'information') as mock_info:
+            self._button("+ Orsak").click()
+        mock_info.assert_called_once()
 
 
 if __name__ == "__main__":

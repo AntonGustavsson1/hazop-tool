@@ -1596,18 +1596,32 @@ _SCAN_CAT_MAP = {
 
 
 def apply_scan_result_to_equipment_catalog(db, scan_result):
-    """Replace equipment_catalog with a scan_pdf_for_equipment() result.
+    """Sync equipment_catalog to a scan_pdf_for_equipment() result.
 
     Shared by "🔍 Skanna P&ID" (EquipmentPanel._scan, hazop.py) and
     "📋 Analysera P&ID" (PIDPanel._analyze_pid) now that both trigger the
     same underlying scan — whichever button is used, the equipment
-    register ends up with the same rows. Matches EquipmentPanel._scan's
-    pre-existing full-rescan-replaces-catalog behavior: per-tag
-    descriptions typed manually are not preserved across a rescan (this
-    was already true for "Skanna P&ID" before the two scans were merged).
+    register ends up with the same rows.
+
+    2026-08-24 (see NOTES.md "Åtta UX/logik-förbättringar"): used to be a
+    blind clear-and-reinsert (db.clear_equipment_catalog() then
+    add_equipment_item() for every tag), which gave every surviving tag a
+    brand-new equipment_catalog.id on every rescan. clear_equipment_catalog
+    nulls deviations.equipment_id/causes.equipment_id first so the DELETE
+    doesn't hit a foreign-key error, but that also meant any deviation
+    already checked against a tag became silently orphaned — re-checking
+    the same deviation after a rescan created a genuine DUPLICATE (the new
+    equipment_id no longer matched the orphaned row's NULL). Now a tag that
+    already exists (matched case-insensitively) gets UPDATEd in place —
+    same id, so deviations/causes stay linked — and only tags truly gone
+    from this scan are deleted (via delete_equipment_item, which already
+    detaches their FKs safely). Equipment_type/description/include are
+    left untouched on an update, so manual edits also survive a rescan,
+    unlike before.
     """
     real = {k: v for k, v in scan_result.items() if not k.startswith('_')}
-    db.clear_equipment_catalog()
+    existing = {row['tag'].upper(): row for row in db.equipment_items() if row['tag']}
+    seen_ids = set()
     for prefix, data in real.items():
         known      = KNOWN_PREFIXES.get(prefix, ('', ''))
         saved_type = db.get_equipment_type(prefix) if hasattr(db, 'get_equipment_type') else ''
@@ -1616,7 +1630,16 @@ def apply_scan_result_to_equipment_catalog(db, scan_result):
         for tag in data['tags']:
             page   = data['pages'].get(tag, 0)
             is_ocr = int(page in ocr_pages)
-            db.add_equipment_item(tag, tag, prefix, page, eq_type, '', is_ocr)
+            row = existing.get(tag.upper())
+            if row is not None:
+                db.update_equipment_scan_fields(row['id'], tag, prefix, page, is_ocr)
+                seen_ids.add(row['id'])
+            else:
+                new_id = db.add_equipment_item(tag, tag, prefix, page, eq_type, '', is_ocr)
+                seen_ids.add(new_id)
+    for tag_upper, row in existing.items():
+        if row['id'] not in seen_ids:
+            db.delete_equipment_item(row['id'])
 
 
 def upsert_identified_tags_from_scan(db, scan_result):

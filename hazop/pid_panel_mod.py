@@ -557,12 +557,19 @@ class EquipmentPlacementPopup(QWidget):
     deviation_added   = pyqtSignal(int, int)   # (deviation_id, equipment_id)
     deviation_removed = pyqtSignal(int, int)   # (deviation_id, equipment_id)
 
-    def __init__(self, db, equipment_id, marker_id, parent=None):
+    def __init__(self, db, equipment_id, marker_id, parent=None, simple=False):
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.db = db
         self._equipment_id = equipment_id
         self._marker_id = marker_id
         self._tag_edited_by_user = False
+        # `simple` (2026-08-24, see NOTES.md "Åtta UX/logik-förbättringar")
+        # — the rubber-band placement flow (PIDPanel.place_equipment_marker
+        # when pdf_rect is not None) now only creates the object itself:
+        # no embedded deviation checklist. The plain right-click "🔧
+        # Objekt" placement (no drawn rectangle) keeps the full popup with
+        # the checklist, unchanged.
+        self._simple = simple
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
         self.setStyleSheet(
             "EquipmentPlacementPopup { background:#FFFFFF; border:1px solid #CFD1CE;"
@@ -575,7 +582,7 @@ class EquipmentPlacementPopup(QWidget):
         outer.setContentsMargins(10, 8, 10, 8)
         outer.setSpacing(4)
 
-        title = QLabel("<b>Nytt objekt på P&amp;ID</b>")
+        title = QLabel("<b>Nytt objekt</b>" if simple else "<b>Nytt objekt på P&amp;ID</b>")
         title.setStyleSheet("font-size:11px; color:#8D9299;")
         outer.addWidget(title)
 
@@ -593,13 +600,20 @@ class EquipmentPlacementPopup(QWidget):
             self._tag_edit.setCompleter(completer)
         self._tag_edit.textEdited.connect(self._on_tag_edited_by_user)
         self._tag_edit.editingFinished.connect(self._commit_tag)
-        tag_lbl = QLabel("Tag:")
+        # "Objekt:" in simple mode to match the requested Objekt/Objekttyp
+        # wording — same QLineEdit + tag-completer either way, so the user
+        # can still type a new tag or pick a matching existing one live.
+        tag_lbl = QLabel("Objekt:" if simple else "Tag:")
         tag_lbl.setStyleSheet(_small)
         form.addRow(tag_lbl, self._tag_edit)
 
-        # Same non-editable-dropdown-plus-"+"-button pattern as
+        # Same non-editable-dropdown-plus-add-button pattern as
         # EquipmentTagPopup/CauseTagPopup (2026-08-13 follow-up, see
         # their own docstrings for why an editable combo was rejected).
+        # The add-button used to be a bare "+" square icon with no visible
+        # text (2026-08-24 follow-up: unclear what it did) — now a labeled
+        # button, same wording as StandardObjectsSettingsPanel's own
+        # "+ Lägg till" (standard_objects_panel.py) for consistency.
         self._type_cb = QComboBox()
         self._type_cb.setFixedHeight(CONFIG['H_SMALL_BTN'])
         self._type_cb.setStyleSheet(_small)
@@ -607,12 +621,13 @@ class EquipmentPlacementPopup(QWidget):
         typ_row = QHBoxLayout()
         typ_row.setSpacing(4)
         typ_row.addWidget(self._type_cb)
-        add_type_btn = QPushButton("+")
-        add_type_btn.setFixedSize(CONFIG['H_SMALL_BTN'], CONFIG['H_SMALL_BTN'])
+        add_type_btn = QPushButton("+ Lägg till")
+        add_type_btn.setFixedHeight(CONFIG['H_SMALL_BTN'])
+        add_type_btn.setStyleSheet(_small)
         add_type_btn.setToolTip("Lägg till en ny objekttyp")
         add_type_btn.clicked.connect(self._add_new_type)
         typ_row.addWidget(add_type_btn)
-        typ_lbl = QLabel("Typ:")
+        typ_lbl = QLabel("Objekttyp:" if simple else "Typ:")
         typ_lbl.setStyleSheet(_small)
         form.addRow(typ_lbl, typ_row)
         outer.addLayout(form)
@@ -626,16 +641,25 @@ class EquipmentPlacementPopup(QWidget):
         # Duplicate-tag hint (same wording as EquipmentTagPopup) — kept
         # purely informational when the placeholder already carries real
         # data (deviations checked) rather than force-merging and risking
-        # orphaning it; see _reassign_to_existing.
+        # orphaning it; see _reassign_to_existing. A blocking QMessageBox
+        # warning (2026-08-24, see NOTES.md) fires alongside this the
+        # moment a real duplicate is found — see _commit_tag.
         self._dup_hint = QLabel("")
         self._dup_hint.setStyleSheet("font-size:9px; color:#b8860b;")
         self._dup_hint.setWordWrap(True)
         outer.addWidget(self._dup_hint)
 
-        self._checklist = _DeviationChecklist(db, self)
-        self._checklist.deviation_added.connect(self.deviation_added)
-        self._checklist.deviation_removed.connect(self.deviation_removed)
-        outer.addWidget(self._checklist)
+        # Simple mode (rubber-band placement, 2026-08-24) drops the
+        # embedded deviation checklist entirely — this popup now only
+        # creates the object itself. Adding deviations happens afterward
+        # by clicking the placed marker, which opens EquipmentDeviationBar
+        # exactly like it does for any other existing object.
+        self._checklist = None
+        if not simple:
+            self._checklist = _DeviationChecklist(db, self)
+            self._checklist.deviation_added.connect(self.deviation_added)
+            self._checklist.deviation_removed.connect(self.deviation_removed)
+            outer.addWidget(self._checklist)
 
         eq = self.db.get_equipment_by_id(equipment_id)
         if eq:
@@ -649,7 +673,8 @@ class EquipmentPlacementPopup(QWidget):
                 self._type_cb.setCurrentIndex(idx)
 
     def load_checklist(self, active_node_id=None):
-        self._checklist.load(self._equipment_id, active_node_id)
+        if self._checklist is not None:
+            self._checklist.load(self._equipment_id, active_node_id)
 
     def show_near(self, global_pos):
         """Same screen-clamped positioning + available-space checklist
@@ -657,13 +682,18 @@ class EquipmentPlacementPopup(QWidget):
         own docstring for the reasoning; duplicated rather than shared
         because the two popups' surrounding chrome (tag/typ form here,
         just a title there) differs enough that a shared helper would
-        need to take the chrome height as a parameter anyway."""
+        need to take the chrome height as a parameter anyway.
+
+        Used for the plain right-click "🔧 Objekt" placement, which only
+        has a single click point (no drawn area to avoid overlapping) —
+        see show_near_rect() for the rubber-band case."""
         scr = (QApplication.screenAt(global_pos) or QApplication.primaryScreen()).availableGeometry()
 
-        self._checklist.set_max_height(16777215)
+        if self._checklist is not None:
+            self._checklist.set_max_height(16777215)
         self.adjustSize()
         natural_total_h = self.sizeHint().height()
-        natural_scroll_h = self._checklist.natural_height()
+        natural_scroll_h = self._checklist.natural_height() if self._checklist is not None else 0
         chrome_h = natural_total_h - natural_scroll_h
 
         space_below = scr.bottom() - global_pos.y()
@@ -671,7 +701,8 @@ class EquipmentPlacementPopup(QWidget):
         open_below = space_below >= space_above
         available = (space_below if open_below else space_above) - chrome_h - 12
         scroll_h = max(120, min(natural_scroll_h, available))
-        self._checklist.set_max_height(int(scroll_h))
+        if self._checklist is not None:
+            self._checklist.set_max_height(int(scroll_h))
         self.adjustSize()
 
         pw, ph = self.sizeHint().width(), self.sizeHint().height()
@@ -684,13 +715,66 @@ class EquipmentPlacementPopup(QWidget):
         self._tag_edit.setFocus()
         self._tag_edit.selectAll()
 
+    def show_near_rect(self, left, top, right, bottom):
+        """Positions the popup beside a drawn rubber-band rectangle
+        (global screen coordinates) instead of anchored to a single point
+        — show_near() alone could land the popup directly on top of the
+        marked area, hiding the very selection the user just made
+        (2026-08-24, see NOTES.md). Tries, in order, the side with room:
+        right of the rect, left of it, below it, above it — falling back
+        to whichever of those has the most available space if none fits
+        fully, then clamps to the screen like show_near()."""
+        center = QPoint(int((left + right) / 2), int((top + bottom) / 2))
+        scr = (QApplication.screenAt(center) or QApplication.primaryScreen()).availableGeometry()
+
+        self.adjustSize()
+        pw, ph = self.sizeHint().width(), self.sizeHint().height()
+
+        space_right  = scr.right() - right
+        space_left   = left - scr.left()
+        space_below  = scr.bottom() - bottom
+        space_above  = top - scr.top()
+        sides = [
+            ('right', space_right),
+            ('left',  space_left),
+            ('below', space_below),
+            ('above', space_above),
+        ]
+        best_side = max(sides, key=lambda s: s[1])[0]
+        if space_right >= pw:
+            best_side = 'right'
+        elif space_left >= pw:
+            best_side = 'left'
+        elif space_below >= ph:
+            best_side = 'below'
+        elif space_above >= ph:
+            best_side = 'above'
+
+        if best_side == 'right':
+            x, y = right + 8, top
+        elif best_side == 'left':
+            x, y = left - pw - 8, top
+        elif best_side == 'below':
+            x, y = left, bottom + 8
+        else:
+            x, y = left, top - ph - 8
+
+        x = min(max(scr.left(), x), scr.right() - pw)
+        y = min(max(scr.top(), y), scr.bottom() - ph)
+        self.move(int(x), int(y))
+        self.show()
+        self.setFocus()
+        self._tag_edit.setFocus()
+        self._tag_edit.selectAll()
+
     @property
     def create_cause_fn(self):
-        return self._checklist._create_cause_fn
+        return self._checklist._create_cause_fn if self._checklist is not None else None
 
     @create_cause_fn.setter
     def create_cause_fn(self, fn):
-        self._checklist._create_cause_fn = fn
+        if self._checklist is not None:
+            self._checklist._create_cause_fn = fn
 
     def set_searching(self, searching):
         self._searching_lbl.setVisible(searching)
@@ -698,12 +782,22 @@ class EquipmentPlacementPopup(QWidget):
     def set_detected_tag(self, tag):
         """Fills the tag field with the async search's result — never
         overwrites text the user already typed themselves while the
-        search was still running."""
+        search was still running.
+
+        Passes show_warning=False to _commit_tag: this fill is a passive
+        background event the user did nothing to trigger, so silently
+        auto-linking to an existing catalog row (still fully logged via
+        the inline _dup_hint, just not a blocking dialog) is the right
+        call — a modal QMessageBox popping up on its own, with no typing
+        or click behind it, would be startling rather than helpful
+        (2026-08-24, found while adding the duplicate-tag warning: this
+        exact path could pop a real dialog during a test's tearDown()
+        once the background worker's queued result was delivered)."""
         self.set_searching(False)
         if self._tag_edited_by_user or not tag:
             return
         self._tag_edit.setText(tag)
-        self._commit_tag()
+        self._commit_tag(show_warning=False)
 
     def _on_tag_edited_by_user(self, _text):
         self._tag_edited_by_user = True
@@ -727,7 +821,7 @@ class EquipmentPlacementPopup(QWidget):
             self.db.add_standard_object(name)
         self._commit_type()
 
-    def _commit_tag(self):
+    def _commit_tag(self, show_warning=True):
         tag = self._tag_edit.text().strip().upper()
         if self._tag_edit.text() != tag:
             self._tag_edit.blockSignals(True)
@@ -742,6 +836,19 @@ class EquipmentPlacementPopup(QWidget):
             self._dup_hint.setText(
                 f"ℹ️ \"{existing['tag']}\" finns redan i katalogen "
                 f"({existing.get('equipment_type') or '?'}) — kopplas till den befintliga raden.")
+            # 2026-08-24 (see NOTES.md): the hint label above was too easy
+            # to miss — a real, blocking dialog makes the duplicate
+            # unmissable. The merge itself (_reassign_to_existing, with
+            # its own "don't orphan real data" guard) still happens right
+            # after, unchanged — only the notification is upgraded.
+            # show_warning=False from set_detected_tag's passive auto-fill
+            # (the user didn't type anything, so a modal popping up on its
+            # own would be startling, not helpful — the inline hint above
+            # still shows either way).
+            if show_warning:
+                QMessageBox.warning(
+                    self, "Objekt finns redan",
+                    f"Ett objekt med taggnummer {tag} finns redan på denna P&ID.")
             self._reassign_to_existing(existing['id'])
             return
 
@@ -767,7 +874,8 @@ class EquipmentPlacementPopup(QWidget):
         # cause that goes with it (2026-08-18 follow-up: "läggs det inte
         # till någon standardorsak när jag definerat objekttyp + avikelse
         # som innan").
-        self._checklist._rebuild_checklist()
+        if self._checklist is not None:
+            self._checklist._rebuild_checklist()
 
     def _reassign_to_existing(self, existing_id):
         """A tag typed/detected AFTER placement can turn out to already
@@ -802,7 +910,8 @@ class EquipmentPlacementPopup(QWidget):
                 self._marker_id, existing_id, existing.get('tag') or '')
         self.db.delete_equipment_item(placeholder_id)
         self._equipment_id = existing_id
-        self._checklist.load(existing_id)
+        if self._checklist is not None:
+            self._checklist.load(existing_id)
         comp_type = existing.get('equipment_type') or ''
         if comp_type:
             idx = self._type_cb.findText(comp_type)
@@ -3015,21 +3124,39 @@ class PIDPanel(QWidget):
         self.viewer.add_equipment_marker(marker_id, pdf_x, pdf_y, comp_type, tag=tag,
                                          outline_pdf=outline)
 
-        popup = EquipmentPlacementPopup(self.db, equipment_id, marker_id, parent=self.viewer)
-        popup.create_cause_fn = (
-            lambda dev_id, ct, cmp_tag, desc, freq=None:
-                self._create_cause_for_bar(marker_id, dev_id, ct, cmp_tag, desc, freq))
-        # Same tree/scenario-refresh wiring the existing-marker popup
-        # (_equipment_bar) already gets in __init__ — missing here was a
-        # real bug (2026-08-18 follow-up: "Jag ser dessutom inget i hazop
-        # scenario när jag klickar"): the deviation/cause got created in
-        # the database just fine, nothing ever told the tree or scenario
-        # table to redraw.
-        popup.deviation_added.connect(self._on_equipment_deviation_added)
-        popup.deviation_removed.connect(self._on_equipment_deviation_removed)
-        popup.load_checklist(active_node_id=self._active_node_id)
-        gp = self.viewer.viewport().mapToGlobal(self.viewer.mapFromScene(scene_pos))
-        popup.show_near(gp)
+        # Rubber-band placements (pdf_rect given) get the simplified
+        # Objekt/Objekttyp-only popup with no deviation checklist
+        # (2026-08-24, see NOTES.md) — a plain right-click "🔧 Objekt"
+        # placement (pdf_rect=None) keeps the full popup, unchanged.
+        simple = pdf_rect is not None
+        popup = EquipmentPlacementPopup(self.db, equipment_id, marker_id,
+                                        parent=self.viewer, simple=simple)
+        if not simple:
+            popup.create_cause_fn = (
+                lambda dev_id, ct, cmp_tag, desc, freq=None:
+                    self._create_cause_for_bar(marker_id, dev_id, ct, cmp_tag, desc, freq))
+            # Same tree/scenario-refresh wiring the existing-marker popup
+            # (_equipment_bar) already gets in __init__ — missing here was a
+            # real bug (2026-08-18 follow-up: "Jag ser dessutom inget i hazop
+            # scenario när jag klickar"): the deviation/cause got created in
+            # the database just fine, nothing ever told the tree or scenario
+            # table to redraw.
+            popup.deviation_added.connect(self._on_equipment_deviation_added)
+            popup.deviation_removed.connect(self._on_equipment_deviation_removed)
+            popup.load_checklist(active_node_id=self._active_node_id)
+
+        if pdf_rect is not None:
+            # Position beside the drawn rectangle, not on top of it
+            # (2026-08-24, see NOTES.md) — show_near_rect picks whichever
+            # side (right/left/below/above) actually has room.
+            tl = self.viewer.pdf_to_scene(pdf_rect.left(), pdf_rect.top(), page)
+            br = self.viewer.pdf_to_scene(pdf_rect.right(), pdf_rect.bottom(), page)
+            gtl = self.viewer.viewport().mapToGlobal(self.viewer.mapFromScene(tl))
+            gbr = self.viewer.viewport().mapToGlobal(self.viewer.mapFromScene(br))
+            popup.show_near_rect(gtl.x(), gtl.y(), gbr.x(), gbr.y())
+        else:
+            gp = self.viewer.viewport().mapToGlobal(self.viewer.mapFromScene(scene_pos))
+            popup.show_near(gp)
 
         if not tag and HAS_PYMUPDF and self.viewer.pdf_doc is not None:
             self._start_equipment_tag_search(popup, page, pdf_x, pdf_y, pdf_rect)
