@@ -29,7 +29,7 @@ from pid_viewer import (
     ParallelTagScanWorker, resolve_ocr_scan_choice, upsert_identified_tags_from_scan,
 )
 from ui_helpers import _EQ_TYPE_ITEMS, _equipment_type_options, _make_tag_completer
-from tree_panel import CauseObjectPopup, StandardCausesPickerPopup
+from tree_panel import CauseObjectPopup
 
 class ComponentEditorPanel(QWidget):
     """Settings panel for managing component types and failure modes."""
@@ -748,9 +748,9 @@ class ObjectPickerPopup(QDialog):
 class EquipmentTagPopup(QDialog):
     """Small popup for the P&ID right-click menu's "🔧 Objekt" action —
     pick an object type and optionally set/edit its tag, independent of
-    any cause (2026-08-07, see NOTES.md). Deliberately not CauseObjectPopup
-    or StandardCausesPickerPopup: this has no standard-cause list to show,
-    it only resolves (tag, comp_type) for PIDPanel.place_equipment_marker."""
+    any cause (2026-08-07, see NOTES.md). Deliberately not CauseObjectPopup:
+    this has no standard-cause list to show, it only resolves
+    (tag, comp_type) for PIDPanel.place_equipment_marker."""
     committed = pyqtSignal(str, str)  # (comp_tag, comp_type)
 
     def __init__(self, db, suggested_tag='', suggested_type='', parent=None):

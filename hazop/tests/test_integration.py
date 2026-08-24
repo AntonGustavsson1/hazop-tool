@@ -2949,23 +2949,21 @@ class AutoConsequenceOnCauseAddTests(unittest.TestCase):
             self.assertEqual(type_, CONS_T)
             self.assertIsNotNone(win.db.get_consequence(cons_id))
 
-    def test_tree_add_cause_via_picker_also_creates_empty_consequence(self):
-        """TreePanel._open_cause_picker_for_deviation is the other
-        _create_cause_from_pick caller (tree's "+ Lägg till orsak" / Enter
-        on an avvikelse) — must not crash on the new tuple return, and the
-        consequence must actually exist in DB afterwards."""
-        from PyQt6.QtWidgets import QDialog
+    def test_tree_add_cause_via_deviation_also_creates_empty_consequence(self):
+        """TreePanel._add_cause_for_deviation is the other
+        _create_cause_from_pick caller (tree's "+ Orsak" button,
+        right-click 'Lägg till orsak', and Enter on an avvikelse) — must
+        not crash on the tuple return, and the consequence must actually
+        exist in DB afterwards. 2026-08-24 (see NOTES.md): this used to
+        go through a StandardCausesPickerPopup dialog ("Lägg till orsak
+        på P&ID") — removed at Anton's request, now creates directly with
+        no popup at all, same as add_consequence()/add_safeguard()."""
         with _TempDbMainWindow() as win:
             tree = win.tree_panel
             node_id = win.db.add_node()
             dev_id = win.db.deviations(node_id)[0]['id']
 
-            def _fake_exec(self):
-                self.cause_picked.emit("Ny orsak (test)", None)
-                return QDialog.DialogCode.Accepted
-
-            with unittest.mock.patch.object(hazop.StandardCausesPickerPopup, 'exec', new=_fake_exec):
-                tree._open_cause_picker_for_deviation(dev_id, node_id)
+            tree._add_cause_for_deviation(dev_id)
 
             causes = win.db.causes(node_id)
             self.assertEqual(len(causes), 1)

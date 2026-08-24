@@ -168,10 +168,14 @@ def _resolve_std_deviation_id(db, deviation_description):
 
 
 def _create_cause_from_pick(db, deviation_id, description, frequency):
-    """Create a new cause under deviation_id from a StandardCausesPickerPopup
-    pick, applying the description/likelihood/frequency consistently —
-    shared by every quick-add entry point so a freshly created cause always
-    starts with real content instead of a blank placeholder.
+    """Create a new cause under deviation_id, applying the
+    description/likelihood/frequency consistently — shared by every
+    quick-add entry point so a freshly created cause always starts with
+    real content instead of a blank placeholder. description/frequency
+    may both be None for a genuinely blank cause (TreePanel's
+    "+ Orsak"/right-click/Enter entry points, 2026-08-24 — used to open a
+    StandardCausesPickerPopup dialog here, removed at Anton's request in
+    favor of creating directly, same as add_consequence()/add_safeguard()).
 
     Also creates one empty consequence for the new cause (2026-08-07, see
     NOTES.md "direkt konsekvensinmatning") — the same no-popup

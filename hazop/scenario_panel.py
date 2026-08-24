@@ -34,7 +34,7 @@ from ui_helpers import (
     _equipment_type_options, _equipment_tags_for_types, _resolve_comp_type_for_tag,
 )
 from tree_panel import (
-    StandardCausesPickerPopup, CauseObjectPopup, CauseTagPopup, RRFPopup,
+    CauseObjectPopup, CauseTagPopup, RRFPopup,
     FrequencyPickerPopup, DeviationPickerPopup,
 )
 
@@ -1376,9 +1376,9 @@ class _PidDelegate(_ScenarioDelegate):
 
     def _attach_cause_completer(self, editor, index):
         """Suggest standard-cause descriptions while inline-editing an Orsak
-        cell — the same library StandardCausesPickerPopup/CauseObjectPopup
-        draw from, so quick text edits get the same suggestions as the
-        popups instead of a bare, unassisted QLineEdit.
+        cell — the same library CauseObjectPopup draws from, so quick text
+        edits get the same suggestions as the popup instead of a bare,
+        unassisted QLineEdit.
         """
         db = getattr(self._panel, 'db', None)
         if db is None:
@@ -5107,12 +5107,13 @@ class ScenarioTablePanel(QWidget):
     def _quick_add_cause(self, deviation_id, global_pos=None):
         """Reported feedback (2026-08-12, see NOTES.md): a new/empty cause
         in HAZOP scenario should open the same compact CauseObjectPopup
-        ("Orsak på P&ID" — Tag + Typ + Standardorsaker) already used
-        everywhere a cause's tag/type/description is edited, instead of
-        the larger StandardCausesPickerPopup this used to open. Reused by
-        both the "+ Ny orsak" affordance and clicking an empty ORS
-        placeholder cell (_on_cell_clicked), so both entry points behave
-        identically."""
+        (Tag + Typ + Standardorsaker) already used everywhere a cause's
+        tag/type/description is edited, instead of the larger
+        StandardCausesPickerPopup this used to open (that dialog — the
+        tree's separate "Lägg till orsak på P&ID" — was removed entirely
+        2026-08-24, see NOTES.md; unrelated to this one). Reused by both
+        the "+ Ny orsak" affordance and clicking an empty ORS placeholder
+        cell (_on_cell_clicked), so both entry points behave identically."""
         dev = self.db.get_deviation(deviation_id)
         dev_desc = dev['description'] if dev else ''
 

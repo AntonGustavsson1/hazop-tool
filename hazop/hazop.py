@@ -46,7 +46,7 @@ from ui_helpers import (
     total_freq_reduction, CHAIN_ITEMS, build_consequence_text, parse_chain_from_json,
 )
 from tree_panel import (
-    TreePanel, StandardCausesPickerPopup, CauseObjectPopup, CauseTagPopup,
+    TreePanel, CauseObjectPopup, CauseTagPopup,
     RRFPopup, FrequencyPickerPopup, DeviationPickerPopup,
 )
 from scenario_panel import (

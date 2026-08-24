@@ -1316,7 +1316,10 @@ class TreePanelAddCauseButtonTests(unittest.TestCase):
         self.assertIsNotNone(self._button("+ Orsak"))
 
     def test_clicking_button_with_a_deviation_selected_adds_a_cause(self):
-        from PyQt6.QtWidgets import QDialog
+        """2026-08-24 (see NOTES.md): add_cause() used to open a
+        StandardCausesPickerPopup dialog ("Lägg till orsak på P&ID") —
+        removed at Anton's request, now creates a blank cause directly,
+        no dialog, same as the "+ Avvikelse"/"+ Nod" buttons."""
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
         self.panel.refresh()
@@ -1324,17 +1327,12 @@ class TreePanelAddCauseButtonTests(unittest.TestCase):
         self.panel.tree.setCurrentItem(dev_item)
         before = len(self.db.causes_for_deviation(dev_id))
 
-        # add_cause() -> _open_cause_picker_for_deviation() opens a real
-        # StandardCausesPickerPopup — same mock pattern as
-        # test_integration.py's test_tree_add_cause_via_picker_also_creates_empty_consequence.
-        def _fake_exec(self):
-            self.cause_picked.emit("Ny orsak (test)", None)
-            return QDialog.DialogCode.Accepted
+        self._button("+ Orsak").click()
 
-        with unittest.mock.patch.object(hazop.StandardCausesPickerPopup, 'exec', new=_fake_exec):
-            self._button("+ Orsak").click()
-
-        self.assertEqual(len(self.db.causes_for_deviation(dev_id)), before + 1)
+        causes = self.db.causes_for_deviation(dev_id)
+        self.assertEqual(len(causes), before + 1)
+        self.assertEqual(len(self.db.consequences(causes[-1]['id'])), 1,
+            "must also auto-create an empty consequence, same as the picker used to")
 
     def test_clicking_button_with_no_deviation_selected_shows_a_hint_not_a_crash(self):
         with unittest.mock.patch.object(QMessageBox, 'information') as mock_info:
