@@ -21,7 +21,7 @@ from PyQt6.QtGui import (
 )
 
 from constants import (
-    NODE_T, CAUSE_T, CONS_T, SG_T, DEV_T, EQUIP_T, LEDORD_T,
+    NODE_T, CAUSE_T, CONS_T, SG_T, DEV_T, EQUIP_T, LEDORD_T, SYSTEM_T,
     DEVIATION_TYPES, CONFIG, MARKUP_COLORS, RISK_ICON, SG_TYPES,
 )
 from database import Database, get_matrix, risk_info, freq_to_f_level
@@ -145,6 +145,7 @@ class TreePanel(QWidget):
         action_row = QHBoxLayout()
         action_row.setSpacing(4)
         for label, icon_name, tip, slot in (
+            ("+ System",    None,     "Lägg till nytt system",  self.add_system),
             ("+ Nod",       None,     "Lägg till ny nod",       self.add_node),
             ("+ Avvikelse", None,     "Lägg till ny avvikelse", self.add_deviation),
             ("+ Orsak",     None,     "Lägg till ny orsak",     self.add_cause),
@@ -258,12 +259,16 @@ class TreePanel(QWidget):
         self.db.set_config(config_key, '1' if checked else '0')
         self._apply_auto_collapse()
 
-    def _active_node_and_deviation(self):
+    def _active_system_node_and_deviation(self):
         """Walks up from the current tree selection to find the nearest
-        NODE_T/DEV_T ancestors — used by _apply_auto_collapse to know
-        which node/deviation must stay expanded. Returns (None, None) if
-        nothing is selected."""
+        SYSTEM_T/NODE_T/DEV_T ancestors — used by _apply_auto_collapse to
+        know which System/node/deviation must stay expanded (2026-08-24,
+        see NOTES.md "Ny toppnivå System" — renamed/extended from the
+        original _active_node_and_deviation to also track System, since
+        it now sits above Node). Returns None for any level not found
+        (nothing selected, or the node sits outside any System)."""
         item = self.tree.currentItem()
+        system_id = None
         node_id = None
         dev_id = None
         while item is not None:
@@ -271,26 +276,29 @@ class TreePanel(QWidget):
             id_ = item.data(0, Qt.ItemDataRole.UserRole)
             if type_ == DEV_T and dev_id is None:
                 dev_id = id_
-            if type_ == NODE_T:
+            if type_ == NODE_T and node_id is None:
                 node_id = id_
+            if type_ == SYSTEM_T:
+                system_id = id_
                 break
             item = item.parent()
-        return node_id, dev_id
+        return system_id, node_id, dev_id
 
     def _apply_auto_collapse(self):
         """Applies the two independent Auto-collapse toggles (2026-08-24,
-        see NOTES.md):
-        - "nodes": collapses (setExpanded(False)) every NODE_T item other
-          than the active one — this hides a whole node's subtree,
-          deviations included, since a collapsed item's descendants are
-          never shown.
+        see NOTES.md; extended same day to also cover the new SYSTEM_T
+        top level, "Ny toppnivå System"):
+        - "nodes": collapses (setExpanded(False)) every SYSTEM_T/NODE_T
+          item other than the active one — this hides a whole
+          system's/node's subtree, deviations included, since a
+          collapsed item's descendants are never shown.
         - "avvikelser": HIDES (setHidden(True)) every DEV_T item other
           than the active one, tree-wide — NOT setExpanded(), which only
           controls whether a deviation's own children (causes) show, not
           whether the deviation row itself is visible. Any Ledord/
           Utrustning grouping item left with zero visible deviation
           children is hidden too, so an empty group header doesn't linger.
-        The active node/deviation (derived from the current tree
+        The active system/node/deviation (derived from the current tree
         selection) always stay expanded and visible regardless of either
         toggle. A no-op (after clearing any stale hidden rows from a
         previous toggle) when both are off, leaving the normal expand/
@@ -310,8 +318,10 @@ class TreePanel(QWidget):
 
         if not collapse_nodes and not collapse_devs:
             return
-        active_node_id, active_dev_id = self._active_node_and_deviation()
+        active_system_id, active_node_id, active_dev_id = \
+            self._active_system_node_and_deviation()
 
+        active_node_item = None
         active_dev_item = None
         group_items = []   # LEDORD_T/EQUIP_T grouping rows, re-checked below
         it = QTreeWidgetItemIterator(self.tree)
@@ -319,9 +329,14 @@ class TreePanel(QWidget):
             item = it.value()
             type_ = item.data(0, Qt.ItemDataRole.UserRole + 1)
             id_ = item.data(0, Qt.ItemDataRole.UserRole)
-            if type_ == NODE_T:
+            if type_ == SYSTEM_T:
+                if collapse_nodes:
+                    item.setExpanded(id_ == active_system_id)
+            elif type_ == NODE_T:
                 if collapse_nodes:
                     item.setExpanded(id_ == active_node_id)
+                if id_ == active_node_id:
+                    active_node_item = item
             elif type_ == DEV_T:
                 if id_ == active_dev_id:
                     active_dev_item = item
@@ -331,12 +346,16 @@ class TreePanel(QWidget):
                 group_items.append(item)
             it += 1
 
-        # Structural grouping levels (Ledord/Utrustning) between the active
-        # node and its active deviation must stay expanded/visible, or the
-        # deviation would be hidden behind a collapsed/hidden ancestor
-        # regardless of its own flags.
-        if active_dev_item is not None:
-            p = active_dev_item.parent()
+        # Every ancestor level (System/Ledord/Utrustning) above whichever
+        # of these is deepest-active must stay expanded/visible, or the
+        # active row would be hidden behind a collapsed/hidden ancestor
+        # regardless of its own flags. Walking from both anchors (rather
+        # than just the deepest one) means this still works even when
+        # only a node — no deviation — is active.
+        for anchor in (active_dev_item, active_node_item):
+            if anchor is None:
+                continue
+            p = anchor.parent()
             while p is not None:
                 p.setExpanded(True)
                 p.setHidden(False)
@@ -470,7 +489,18 @@ class TreePanel(QWidget):
                 if select_type == DEV_T and select_id == dev['id']: target = ditem
                 add_causes_to_item(ditem, dev['id'])
 
-            for ni, node in enumerate(self.db.nodes(), 1):
+            def _add_node_item(node, ni, parent_item):
+                """Builds one node's whole subtree (Ledord → Utrustning →
+                Avvikelse → Orsak → Konsekvens → Safeguard) — factored out
+                of what used to be the top-level `for` loop body so it can
+                be called once per system's nodes AND once for ungrouped
+                nodes (system_id IS NULL — any project saved before
+                2026-08-24's System hierarchy, see NOTES.md "Ny toppnivå
+                System") without duplicating this logic. `parent_item` is
+                the owning SYSTEM_T item, or None for an ungrouped node
+                (added as its own top-level item, exactly as every node
+                rendered before Systems existed)."""
+                nonlocal target
                 node_on_pid = bool(node['markup_points'])
                 pid_pin = " 📍" if node_on_pid else ""
                 nitem = QTreeWidgetItem([f"  {ni}. {node['name']}{pid_pin}"])
@@ -480,7 +510,10 @@ class TreePanel(QWidget):
                 nitem.setData(0, self._PREFIX_ROLE, f"  {ni}. ")
                 nitem.setFont(0, bold_font)
                 nitem.setToolTip(0, node['pid_ref'] or '')
-                self.tree.addTopLevelItem(nitem)
+                if parent_item is not None:
+                    parent_item.addChild(nitem)
+                else:
+                    self.tree.addTopLevelItem(nitem)
                 if (NODE_T, node['id']) in expanded: nitem.setExpanded(True)
                 if select_type == NODE_T and select_id == node['id']: target = nitem
 
@@ -658,6 +691,38 @@ class TreePanel(QWidget):
                         di += 1
                         add_deviation_subtree(litem, dev, di)
 
+            # System → Nod (2026-08-24, see NOTES.md "Ny toppnivå System")
+            # — Systems render as top-level items with their nodes nested
+            # as children via _add_node_item above; a node with no system
+            # (system_id IS NULL — any project saved before this feature
+            # existed, or a node created from a UI path that doesn't set
+            # system_id yet) still renders as its own top-level item,
+            # exactly as every node did before Systems existed.
+            systems = self.db.systems()
+            system_ids = {s['id'] for s in systems}
+            nodes_by_system = {}
+            ungrouped_nodes = []
+            for node in self.db.nodes():
+                sid = node['system_id']
+                if sid in system_ids:
+                    nodes_by_system.setdefault(sid, []).append(node)
+                else:
+                    ungrouped_nodes.append(node)
+
+            for system in systems:
+                sitem = QTreeWidgetItem([f"🗂 {system['name']}"])
+                sitem.setData(0, Qt.ItemDataRole.UserRole, system['id'])
+                sitem.setData(0, Qt.ItemDataRole.UserRole + 1, SYSTEM_T)
+                sitem.setFont(0, bold_font)
+                self.tree.addTopLevelItem(sitem)
+                if (SYSTEM_T, system['id']) in expanded: sitem.setExpanded(True)
+                if select_type == SYSTEM_T and select_id == system['id']: target = sitem
+                for ni, node in enumerate(nodes_by_system.get(system['id'], []), 1):
+                    _add_node_item(node, ni, sitem)
+
+            for ni, node in enumerate(ungrouped_nodes, 1):
+                _add_node_item(node, ni, None)
+
             if target and not emit_selection:
                 # Update the tree's visual highlight while signals are still
                 # blocked, so setCurrentItem does NOT cascade into
@@ -705,6 +770,21 @@ class TreePanel(QWidget):
                     ca = self.db.get_cause(c['cause_id']); return ca['node_id'] if ca else None
         return None
 
+    def _resolve_system_id(self, type_, id_):
+        """Walk any tree item up to its owning System, or None if it's
+        ungrouped (or is itself a System-less type/row) — 2026-08-24, see
+        NOTES.md "Ny toppnivå System". Same DB-fk-walk convention as
+        _resolve_node_id/_resolve_deviation_id (never touches the Qt
+        item's .parent() chain, always resolves through DB foreign keys)."""
+        if type_ == SYSTEM_T: return id_
+        if type_ == NODE_T:
+            node = self.db.get_node(id_); return node['system_id'] if node else None
+        node_id = self._resolve_node_id(type_, id_)
+        if node_id is None:
+            return None
+        node = self.db.get_node(node_id)
+        return node['system_id'] if node else None
+
     def _resolve_equipment_id(self, type_, id_):
         """Walk any tree item back to the equipment it's grouped under, or
         None if it sits directly under a node (no equipment_id set on its
@@ -750,8 +830,34 @@ class TreePanel(QWidget):
             r = self.db.get_safeguard(id_); return r['consequence_id'] if r else None
         return None
 
+    def add_system(self):
+        new_id = self.db.add_system()
+        self.refresh(SYSTEM_T, new_id)
+        self.structure_changed.emit()
+
+    def _rename_system(self, system_id):
+        systems = {s['id']: dict(s) for s in self.db.systems()}
+        system = systems.get(system_id)
+        if not system:
+            return
+        name, ok = QInputDialog.getText(self, "Döp om system", "Nytt namn:",
+                                         text=system.get('name') or '')
+        if not ok or not name.strip():
+            return
+        self.db.rename_system(system_id, name.strip())
+        self.refresh(SYSTEM_T, system_id)
+        self.structure_changed.emit()
+
     def add_node(self):
-        new_id = self.db.add_node()
+        # Placed under whichever System the current tree selection
+        # belongs to (2026-08-24, see NOTES.md "Ny toppnivå System") —
+        # same "derive from where you're standing in the tree" convention
+        # add_cause()/add_consequence() already use for node/avvikelse.
+        # None (ungrouped) if nothing is selected, or the selection isn't
+        # inside any System yet.
+        type_, id_ = self._current()
+        system_id = self._resolve_system_id(type_, id_) if type_ else None
+        new_id = self.db.add_node(system_id=system_id)
         self.refresh(NODE_T, new_id)
         self.structure_changed.emit()
 
@@ -838,13 +944,17 @@ class TreePanel(QWidget):
     def delete_selected(self):
         type_, id_ = self._current()
         if type_ is None: return
-        names = {NODE_T: 'noden', DEV_T: 'avvikelsen', CAUSE_T: 'orsaken',
+        names = {SYSTEM_T: 'systemet', NODE_T: 'noden', DEV_T: 'avvikelsen', CAUSE_T: 'orsaken',
                  CONS_T: 'konsekvensen', SG_T: 'safeguarden'}
-        reply = QMessageBox.question(self, "Ta bort",
-            f"Ta bort {names.get(type_, 'objektet')} och allt under den?",
+        confirm_text = (f"Ta bort {names.get(type_, 'objektet')}? "
+                         "Noderna i det flyttas till ogrupperade, tas inte bort."
+                         if type_ == SYSTEM_T else
+                         f"Ta bort {names.get(type_, 'objektet')} och allt under den?")
+        reply = QMessageBox.question(self, "Ta bort", confirm_text,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply != QMessageBox.StandardButton.Yes: return
-        deletors = {NODE_T: self.db.delete_node, DEV_T: self.db.delete_deviation,
+        deletors = {SYSTEM_T: self.db.delete_system,
+                    NODE_T: self.db.delete_node, DEV_T: self.db.delete_deviation,
                     CAUSE_T: self.db.delete_cause, CONS_T: self.db.delete_consequence,
                     SG_T: self.db.delete_safeguard}
         if type_ in deletors:
@@ -1059,7 +1169,10 @@ class TreePanel(QWidget):
             return
         menu  = QMenu(self)
 
-        if type_ == NODE_T:
+        if type_ == SYSTEM_T:
+            menu.addAction(_icon('edit'), "Döp om", lambda i=id_: self._rename_system(i))
+            menu.addAction("+ Lägg till nod", self.add_node)
+        elif type_ == NODE_T:
             menu.addAction(_icon('edit'), "Döp om", lambda i=id_: self._rename_node(i))
             menu.addAction("+ Lägg till avvikelse", self.add_deviation)
             menu.addAction(_icon('edit'), "Editera nodmarkup",
@@ -1417,7 +1530,8 @@ class TreePanel(QWidget):
             event.ignore()
 
     def _delete_item(self, type_, id_):
-        if type_ == NODE_T:      self.db.delete_node(id_)
+        if type_ == SYSTEM_T:    self.db.delete_system(id_)
+        elif type_ == NODE_T:    self.db.delete_node(id_)
         elif type_ == DEV_T:     self.db.delete_deviation(id_)
         elif type_ == CAUSE_T:   self.db.delete_cause(id_)
         elif type_ == CONS_T:    self.db.delete_consequence(id_)

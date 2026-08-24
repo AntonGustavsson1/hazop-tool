@@ -730,6 +730,107 @@ Anton installerade Inno Setup själv ("Nu har jag installerat det") — hittades
 
 **Verifiering:** full 14-filssvit grön efter ändringen.
 
+## Ny toppnivå "System" ovanför Nod + grå (istället för röd) markörfärg för objekt utan avvikelse (2026-08-24, samma dag, ytterligare en uppföljning)
+
+**Beställning:** Anton: "jag vill att du inkluderar en kategori som står
+över alla andra som heter system så hierarkin består av system, nod
+avvikelse, osv." samt (mindre begäran i samma meddelande, förtydligad
+efter en fråga: "alltså om ingen avvikelse är kopplad. du vet") "jag vill
+även att du ändrar färgen på objekt som ej är tillagda på p&id från röda
+till grå" — dvs. en P&ID-objektmarkör utan någon kopplad avvikelse.
+
+**Del 1 — grå markörfärg (liten, gjord direkt utan plan):**
+`PIDGraphicsView.add_equipment_marker()` (`pid_graphics_view.py:1992-1994`)
+avgör markörfärg via `has_deviations = deviation_count > 0` — röd
+(`QColor(160,0,0)`/`QColor(220,20,20,90)`) bytt till neutral grå
+(`QColor(120,120,120)`/`QColor(150,150,150,90)`); grönt (avvikelse finns)
+oförändrat. Ingen annan plats i kodbasen hade denna logik aktiv — en
+tidigare röd/grön "placerad på P&ID"-funktion i `scenario_panel.py`
+(`_draw_pid_pin`/`_make_pin_icon`) visade sig vara död kod sedan
+2026-08-13 (P&ID-canvasen är nu enbart objektplacering, se den sessionens
+NOTES.md-post), rörd inte vidare.
+
+**Del 2 — System-hierarkin (kodgenomgång: 3 parallella Explore-agenter
+över databasschema/nod-CRUD, `tree_panel.py`s trädrendering, samt alla
+ANDRA ställen som listar noder):** `nodes`-tabellen var helt platt (inget
+`sort_order`, ingen förälder-koppling), och trädet var det ENDA stället
+som faktiskt renderade noder hierarkiskt (`addTopLevelItem` förekom exakt
+en gång i hela `tree_panel.py`). **Medveten avgränsning:** System
+implementerades som en riktig nivå i TRÄDET plus fullständig CRUD; andra
+ytor (Worksheet-nodväljaren, "Visa samtliga noder", export, global
+sökning, `hazop_preparation_panel.py`s Noder-flik, föregående/nästa-nod)
+fortsätter läsa `self.db.nodes()` platt, oförändrat — att bygga om t.ex.
+scenariotabellens 10 hårdkodade kolumnkonstanter för att också gruppera
+på System hade mångdubblat omfattningen utan att vara vad som
+efterfrågades.
+
+**Databasändringar (`database.py`):** ny `systems`-tabell
+(`id/name/sort_order`, samma form som `node_types`), ny nullbar
+`nodes.system_id`-kolumn (nullbar med flit — befintliga projekt får NULL
+på alla sina noder, ingen tvingad migrering, renderas ogrupperat). Ny CRUD
+modellerad rakt av på `node_types`s redan existerande mönster:
+`systems()`, `add_system(name='Nytt system')`, `rename_system`,
+`delete_system` (**omfördelar** noder till NULL, kaskaderar INTE —
+samma säkra "reassign, don't cascade"-princip som `delete_node_type`),
+`reorder_systems`, `set_node_system`. `add_node(system_id=None)` fick en
+ny valfri parameter. Standardnods-seedningen (`pre_existing_db`-flaggan,
+se tidigare sessions post om detta) utökad: en helt ny studie seedar nu
+ETT system OCH en nod under det, inte bara en ensam ogrupperad nod.
+
+**`tree_panel.py`:** ny `SYSTEM_T=8` i `constants.py`. `refresh()`s
+toppnivåloop (den enda `addTopLevelItem`-anropspunkten) byggdes om utan
+att röra den befintliga per-nod-renderingslogiken alls — hela den gamla
+`for`-loopkroppen (Ledord→Utrustning→Avvikelse→Orsak→Konsekvens→
+Safeguard-uppbyggnaden, ~185 rader) gjordes om till en lokal closure
+`_add_node_item(node, ni, parent_item)` genom att BARA byta ut
+loop-headern (`for ni, node in ...:` → `def _add_node_item(...):` +
+`nonlocal target`) och den enda `self.tree.addTopLevelItem(nitem)`-raden
+(→ villkorlig `parent_item.addChild(nitem)` om satt) — noll omindentering
+av kroppen, minimerar risken för att råka ändra beteendet. Ny yttre logik
+delar upp `self.db.nodes()` i `nodes_by_system`/`ungrouped_nodes` och
+anropar `_add_node_item` en gång per nod, antingen under sitt system-item
+eller direkt som toppnivå (ogrupperade noder, bakåtkompatibelt utseende).
+
+Ny **"+ System"**-knapp i action-raden (före "+ Nod"). `add_system()`/
+`_rename_system()`/ny `_resolve_system_id(type_, id_)`-helper (samma
+DB-fk-vandringsmönster som `_resolve_node_id` m.fl. — `SYSTEM_T` faller
+redan korrekt igenom de BEFINTLIGA resolvernas sista `return None` utan
+någon ändring där). **`add_node()` härleder nu vilket system den nya
+noden hamnar i** från var man står i trädet (samma mönster
+`add_cause()`/`add_consequence()` redan använder) — klickar man "+ Nod"
+med ett system (eller en nod/avvikelse/etc. under det) markerat hamnar
+den nya noden i samma system; annars ogrupperad. Högerklicksmeny:
+"Döp om"/"+ Lägg till nod" för `SYSTEM_T`; "Ta bort" (redan generisk för
+alla typer) utökad med en tydligare bekräftelsetext för system
+("Noderna i det flyttas till ogrupperade, tas inte bort").
+
+**Auto-collapse (förra sessionens tillägg) utökad till System** — INGEN
+ny tredje kryssruta; den befintliga "Auto-collapse nodes" täcker nu även
+System (samma strukturella "var jobbar jag just nu"-nivå konceptuellt).
+`_active_node_and_deviation()` döpt om/utökad till
+`_active_system_node_and_deviation()` (3-tuppel). Ancestor-tvingad-
+expanderad-loopen kördes tidigare bara om en avvikelse var aktiv — utökad
+till att köras från BÅDE den aktiva noden OCH den aktiva avvikelsen (om
+någon), annars skulle en aktiv NOD utan någon vald avvikelse inte hålla
+sitt eget System-förfäder expanderat.
+
+**En riktig bugg hittad under testskrivning:** `_rename_system` anropade
+`system.get('name')` på en rå `sqlite3.Row` (stödjer indexering men inte
+`.get()`) — kraschade direkt. Fixad genom att konvertera till `dict()`
+innan uppslag, samma mönster `get_node()` redan använder.
+
+**Testpåverkan:** 7 nya tester i `tests/test_database.py`
+(`SystemsHierarchyTests`) och 10 nya i `tests/test_tree_panel.py`
+(`TreePanelSystemHierarchyTests`) — bland annat att en tom `Database()`
+seedar exakt ett system+en nod, att `delete_system` omfördelar (inte
+kaskaderar), att "+ Nod" härleder rätt system, och att "Auto-collapse
+nodes" fäller ihop icke-aktiva system. `hazop.py`s re-export av
+`constants`-tupeln utökad med `SYSTEM_T` (samma "lager + re-export"-
+mönster som resten av kodbasen). Full 14-filssvit (873 tester, upp från
+856) grön direkt vid första körningen — ingen av de befintliga testerna
+antog nod som absolut toppnivå (bekräftat redan under kodgenomgången: inga
+`item.parent() is None`-baserade `NODE_T`-antaganden hittades någonstans).
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

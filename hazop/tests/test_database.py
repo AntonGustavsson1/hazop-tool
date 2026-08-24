@@ -1137,6 +1137,92 @@ class DatabaseBusyTimeoutTests(unittest.TestCase):
             del db
 
 
+class SystemsHierarchyTests(unittest.TestCase):
+    """New top-level "System" hierarchy above Nod (2026-08-24, see
+    NOTES.md "Ny toppnivå System") — System → Nod → Avvikelse → ...
+    A node's system_id is nullable so pre-existing projects (and any UI
+    path that doesn't set it) keep working as ungrouped nodes."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_systems_test_")
+        self.db_path = os.path.join(self._tmpdir, "test_project.db")
+        self.db = Database(path=self.db_path)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_fresh_database_seeds_one_system_and_one_node_under_it(self):
+        systems = self.db.systems()
+        nodes = self.db.nodes()
+        self.assertEqual(len(systems), 1)
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(nodes[0]['system_id'], systems[0]['id'])
+
+    def test_add_system_and_add_node_with_system_id(self):
+        sid = self.db.add_system("Reaktorsystem")
+        systems = {s['id']: s for s in self.db.systems()}
+        self.assertIn(sid, systems)
+        self.assertEqual(systems[sid]['name'], "Reaktorsystem")
+
+        node_id = self.db.add_node(system_id=sid)
+        self.assertEqual(self.db.get_node(node_id)['system_id'], sid)
+
+    def test_add_node_without_system_id_is_ungrouped(self):
+        node_id = self.db.add_node()
+        self.assertIsNone(self.db.get_node(node_id)['system_id'])
+
+    def test_rename_system(self):
+        sid = self.db.add_system("Original")
+        self.db.rename_system(sid, "Nytt namn")
+        systems = {s['id']: s for s in self.db.systems()}
+        self.assertEqual(systems[sid]['name'], "Nytt namn")
+
+    def test_delete_system_reassigns_nodes_to_ungrouped_not_cascade(self):
+        """Deleting a system must NOT delete its nodes (or anything under
+        them) — only lift the nodes out to ungrouped, same "reassign, don't
+        cascade" convention as delete_node_type()."""
+        sid = self.db.add_system("Temporärt system")
+        node_id = self.db.add_node(system_id=sid)
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+
+        self.db.delete_system(sid)
+
+        self.assertIsNone(self.db.get_node(node_id)['system_id'])
+        self.assertIsNotNone(self.db.get_node(node_id), "the node itself must survive")
+        self.assertIsNotNone(self.db.get_cause(cause_id),
+            "everything under the node must survive the system's deletion")
+        remaining_ids = {s['id'] for s in self.db.systems()}
+        self.assertNotIn(sid, remaining_ids)
+
+    def test_reorder_systems(self):
+        # A fresh Database auto-seeds one default system (see
+        # test_fresh_database_seeds_one_system_and_one_node_under_it) —
+        # remove it first so this test's own controlled set is exhaustive.
+        for n in self.db.nodes():
+            self.db.delete_node(n['id'])
+        for s in self.db.systems():
+            self.db.delete_system(s['id'])
+
+        s1 = self.db.add_system("A")
+        s2 = self.db.add_system("B")
+        s3 = self.db.add_system("C")
+        self.db.reorder_systems([s3, s1, s2])
+        ordered_ids = [s['id'] for s in self.db.systems()]
+        self.assertEqual(ordered_ids, [s3, s1, s2])
+
+    def test_set_node_system_reparents(self):
+        s1 = self.db.add_system("A")
+        s2 = self.db.add_system("B")
+        node_id = self.db.add_node(system_id=s1)
+
+        self.db.set_node_system(node_id, s2)
+
+        self.assertEqual(self.db.get_node(node_id)['system_id'], s2)
 
 
 if __name__ == "__main__":

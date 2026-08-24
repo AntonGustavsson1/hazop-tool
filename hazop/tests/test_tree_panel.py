@@ -61,7 +61,7 @@ for _p in (_HAZOP_DIR, _TEST_DIR):
 import hazop  # noqa: E402  (import after sys.path setup, by design)
 from hazop import (  # noqa: E402
     Database, TreePanel, MainWindow,
-    NODE_T, DEV_T, CAUSE_T, CONS_T, SG_T, EQUIP_T, LEDORD_T,
+    NODE_T, DEV_T, CAUSE_T, CONS_T, SG_T, EQUIP_T, LEDORD_T, SYSTEM_T,
     freq_to_idx,
 )
 from PyQt6.QtWidgets import (  # noqa: E402
@@ -1402,6 +1402,151 @@ class TreePanelAddCauseButtonTests(unittest.TestCase):
         with unittest.mock.patch.object(QMessageBox, 'information') as mock_info:
             self._button("+ Orsak").click()
         mock_info.assert_called_once()
+
+
+class TreePanelSystemHierarchyTests(unittest.TestCase):
+    """New top-level "System" category above Nod (2026-08-24, see
+    NOTES.md "Ny toppnivå System") — System → Nod → Avvikelse → ...
+    Ungrouped nodes (system_id IS NULL, e.g. any project saved before
+    this feature) still render as their own top-level items, exactly as
+    every node did before Systems existed."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_systemtree_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        self.panel = TreePanel(self.db)
+        # A fresh Database auto-seeds one default system+node — strip it
+        # so each test builds its own controlled, exhaustive hierarchy.
+        for n in self.db.nodes():
+            self.db.delete_node(n['id'])
+        for s in self.db.systems():
+            self.db.delete_system(s['id'])
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _button(self, label):
+        for btn in self.panel.findChildren(QPushButton):
+            if btn.text() == label:
+                return btn
+        return None
+
+    def test_system_button_exists(self):
+        self.assertIsNotNone(self._button("+ System"))
+
+    def test_system_renders_as_top_level_item_with_node_nested(self):
+        sid = self.db.add_system("Reaktorsystem")
+        node_id = self.db.add_node(system_id=sid)
+        self.panel.refresh()
+
+        sitem = _find_tree_item(self.panel.tree, SYSTEM_T, sid)
+        self.assertIsNotNone(sitem)
+        self.assertIsNone(sitem.parent(), "a System must be a top-level tree item")
+        self.assertIn("Reaktorsystem", sitem.text(0))
+
+        nitem = _find_tree_item(self.panel.tree, NODE_T, node_id)
+        self.assertIsNotNone(nitem)
+        self.assertIs(nitem.parent(), sitem, "the node must nest under its System")
+
+    def test_ungrouped_node_still_renders_top_level(self):
+        node_id = self.db.add_node()  # no system_id
+        self.panel.refresh()
+
+        nitem = _find_tree_item(self.panel.tree, NODE_T, node_id)
+        self.assertIsNotNone(nitem)
+        self.assertIsNone(nitem.parent(),
+            "a node with no system must render exactly as it did before Systems existed")
+
+    def test_add_system_button_creates_and_selects_a_new_system(self):
+        self._button("+ System").click()
+        systems = self.db.systems()
+        self.assertEqual(len(systems), 1)
+        current_type = self.panel.tree.currentItem().data(0, Qt.ItemDataRole.UserRole + 1)
+        current_id = self.panel.tree.currentItem().data(0, Qt.ItemDataRole.UserRole)
+        self.assertEqual(current_type, SYSTEM_T)
+        self.assertEqual(current_id, systems[0]['id'])
+
+    def test_add_node_button_with_a_system_selected_places_node_under_it(self):
+        sid = self.db.add_system("Reaktorsystem")
+        self.panel.refresh()
+        sitem = _find_tree_item(self.panel.tree, SYSTEM_T, sid)
+        self.panel.tree.setCurrentItem(sitem)
+
+        self._button("+ Nod").click()
+
+        nodes = self.db.nodes()
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(nodes[0]['system_id'], sid)
+
+    def test_add_node_button_with_a_node_selected_keeps_the_same_system(self):
+        """Clicking "+ Nod" while a node (not the System row itself) is
+        selected must still resolve the owning System, same "derive from
+        where you're standing" convention add_cause()/add_consequence()
+        already use for node/avvikelse."""
+        sid = self.db.add_system("Reaktorsystem")
+        first_node_id = self.db.add_node(system_id=sid)
+        self.panel.refresh()
+        nitem = _find_tree_item(self.panel.tree, NODE_T, first_node_id)
+        self.panel.tree.setCurrentItem(nitem)
+
+        self._button("+ Nod").click()
+
+        nodes = self.db.nodes()
+        self.assertEqual(len(nodes), 2)
+        self.assertTrue(all(n['system_id'] == sid for n in nodes))
+
+    def test_add_node_button_with_nothing_relevant_selected_is_ungrouped(self):
+        self._button("+ Nod").click()
+        nodes = self.db.nodes()
+        self.assertEqual(len(nodes), 1)
+        self.assertIsNone(nodes[0]['system_id'])
+
+    def test_rename_system_via_context_menu(self):
+        sid = self.db.add_system("Original")
+        with unittest.mock.patch('tree_panel.QInputDialog.getText',
+                                  return_value=("Nytt namn", True)):
+            self.panel._rename_system(sid)
+        systems = {s['id']: s for s in self.db.systems()}
+        self.assertEqual(systems[sid]['name'], "Nytt namn")
+
+    def test_delete_system_via_delete_selected_keeps_its_nodes(self):
+        sid = self.db.add_system("Temporärt")
+        node_id = self.db.add_node(system_id=sid)
+        self.panel.refresh()
+        sitem = _find_tree_item(self.panel.tree, SYSTEM_T, sid)
+        self.panel.tree.setCurrentItem(sitem)
+
+        with unittest.mock.patch.object(QMessageBox, 'question',
+                                         return_value=QMessageBox.StandardButton.Yes):
+            self.panel.delete_selected()
+
+        self.assertEqual(len(self.db.systems()), 0)
+        self.assertIsNone(self.db.get_node(node_id)['system_id'])
+        self.assertIsNotNone(self.db.get_node(node_id))
+
+    def test_auto_collapse_nodes_toggle_also_collapses_systems(self):
+        sid_a = self.db.add_system("A")
+        sid_b = self.db.add_system("B")
+        self.db.add_node(system_id=sid_a)
+        self.db.add_node(system_id=sid_b)
+        self.panel.refresh()
+        item_a = _find_tree_item(self.panel.tree, SYSTEM_T, sid_a)
+        item_b = _find_tree_item(self.panel.tree, SYSTEM_T, sid_b)
+        self.panel.tree.setCurrentItem(item_a)
+
+        self.panel._auto_collapse_nodes_chk.setChecked(True)
+
+        self.assertTrue(item_a.isExpanded(), "the active system must stay expanded")
+        self.assertFalse(item_b.isExpanded(), "an inactive system must fold away")
 
 
 if __name__ == "__main__":

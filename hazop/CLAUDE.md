@@ -236,7 +236,7 @@ Import layers, lowest first (each layer imports only from layers above it in thi
 - `MainWindow` — six-page main-content stack: HAZOP-förberedelse (0), P&ID view (1), Worksheet (2), Equipment (3), Administration (4), Settings (5). Nav-rail buttons select pages.
 - Risk matrix is stored as JSON in `app_config` table (key `'risk_matrix'`). Module-level `_risk_matrix_cache` (in `database.py`) is loaded at startup via `load_matrix(db)` and consumed by `risk_info(severity, likelihood)`.
 - `effective_f_level(f_level, rrf)` (in `ui_helpers.py`; aliased as `effective_frequency`/`effective_likelihood`) — reduces F-level by `floor(log10(rrf))` steps.
-- Tree types (in `constants.py`): `NODE_T=1`, `CAUSE_T=2`, `CONS_T=3`, `SG_T=4`, `DEV_T=5` (Avvikelse — between Node and Cause), `EQUIP_T=6`, `LEDORD_T=7` (guide-word grouping level, no DB row of its own).
+- Tree types (in `constants.py`): `NODE_T=1`, `CAUSE_T=2`, `CONS_T=3`, `SG_T=4`, `DEV_T=5` (Avvikelse — between Node and Cause), `EQUIP_T=6`, `LEDORD_T=7` (guide-word grouping level, no DB row of its own), `SYSTEM_T=8` (top-level grouping above Node, 2026-08-24 — a real `systems` DB row, unlike `LEDORD_T`).
 
 **`image_symbol_matching.py`** — pixel/image-based "hitta liknande symbol" (no Qt, 2026-08-15, see NOTES.md "Bildbaserad 'hitta liknande symbol' — vid sidan av vektorlogiken") — renders a reference region and each candidate page to grayscale bitmaps and matches with OpenCV normalized cross-correlation (`find_similar_shapes_visual`), instead of vector geometry. Lives alongside `equipment_detection.py`'s vector-based matching, not instead of it — for CAD exports where a symbol's own strokes are too fragmented for vector clustering to group back together.
 
@@ -253,7 +253,8 @@ Import layers, lowest first (each layer imports only from layers above it in thi
 
 | Table | Key columns |
 |---|---|
-| `nodes` | `id`, `name`, `markup_points` (JSON), `markup_style` (JSON), `pid_page` |
+| `systems` | `id`, `name`, `sort_order` — top-level hierarchy grouping above `nodes` (2026-08-24) |
+| `nodes` | `id`, `name`, `system_id` (nullable — NULL renders as an ungrouped top-level tree item), `markup_points` (JSON), `markup_style` (JSON), `pid_page` |
 | `deviations` | `id`, `node_id`, `description` — one per HAZOP deviation under a node |
 | `causes` | `id`, `node_id`, `deviation_id`, `description`, `likelihood` |
 | `consequences` | `id`, `cause_id`, `description`, `severity`, `category` |

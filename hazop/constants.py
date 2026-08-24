@@ -133,6 +133,10 @@ EQUIP_T = 6
 LEDORD_T = 7   # pure grouping level (guide word / "ledord") — no DB row of
                # its own, several deviation rows across different equipment
                # can share one. See NOTES.md "Nod → Ledord → Utrustning".
+SYSTEM_T = 8   # top-level hierarchy grouping above NODE_T (2026-08-24, see
+               # NOTES.md "Ny toppnivå System") — a real DB row (`systems`
+               # table), unlike LEDORD_T. A node's system_id may be NULL,
+               # in which case it renders as an ungrouped top-level item.
 
 DEVIATION_TYPES = [
     "Lågt flöde",

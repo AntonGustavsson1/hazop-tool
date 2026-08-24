@@ -1973,10 +1973,11 @@ class PIDGraphicsView(QGraphicsView):
         and the "🎯 Hitta på P&ID" flow in EquipmentPanel.
 
         `deviation_count` (see NOTES.md "Nod → Utrustning → Avvikelse") —
-        0 keeps the original red "not analysed yet" colour; >0 switches to
-        green and adds a small numbered badge in the marker's top-right
-        corner, so a glance at the P&ID shows which equipment already has
-        HAZOP deviations recorded against it.
+        0 keeps a neutral grey "no deviation linked yet" colour (was red
+        until 2026-08-24, see NOTES.md — changed at Anton's request); >0
+        switches to green and adds a small numbered badge in the marker's
+        top-right corner, so a glance at the P&ID shows which equipment
+        already has HAZOP deviations recorded against it.
 
         `consequence_count`/`safeguard_count` (2026-08-11, see NOTES.md
         "Tre räknare på P&ID") — two further badges (bottom-right/
@@ -1985,13 +1986,13 @@ class PIDGraphicsView(QGraphicsView):
         (Database.equipment_consequence_count/equipment_safeguard_count —
         tag+type match, since those tables have no equipment_id FK to
         join on the way deviations does). Deliberately does NOT change
-        the red/green "analysed" colouring above, which stays tied to
+        the grey/green "analysed" colouring above, which stays tied to
         deviation_count alone, unchanged from before this feature."""
         center = self.pdf_to_scene(x_pdf, y_pdf)
         r = 12.0
         has_deviations = deviation_count > 0
-        pen = QPen(QColor(0, 130, 60) if has_deviations else QColor(160, 0, 0), 1.5)
-        brush = QBrush(QColor(40, 180, 90, 100) if has_deviations else QColor(220, 20, 20, 90))
+        pen = QPen(QColor(0, 130, 60) if has_deviations else QColor(120, 120, 120), 1.5)
+        brush = QBrush(QColor(40, 180, 90, 100) if has_deviations else QColor(150, 150, 150, 90))
 
         points = None
         if outline_pdf:

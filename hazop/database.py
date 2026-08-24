@@ -63,6 +63,12 @@ DB_PATH = _app_dir() / "hazop_project.db"
 SCHEMA = """
 PRAGMA foreign_keys = ON;
 
+CREATE TABLE IF NOT EXISTS systems (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL DEFAULT 'Nytt system',
+    sort_order INTEGER DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS nodes (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     name        TEXT NOT NULL DEFAULT 'Ny nod',
@@ -827,7 +833,12 @@ class Database:
             # already holds the copied project's data there, or — on a
             # failed copy — the untouched original), so a study where the
             # user deliberately deleted their last node is left alone.
-            self.add_node()
+            # 2026-08-24 (see NOTES.md "Ny toppnivå System"): also seed one
+            # System containing that default node, since System is now the
+            # top of the intended hierarchy — a brand new study shouldn't
+            # start with a lone, ungrouped node.
+            system_id = self.add_system()
+            self.add_node(system_id=system_id)
 
     def __del__(self):
         """Clean up database connection on object destruction.
@@ -892,6 +903,7 @@ class Database:
             "ALTER TABLE nodes ADD COLUMN temperature TEXT DEFAULT ''",
             "ALTER TABLE nodes ADD COLUMN updated_at TEXT DEFAULT ''",
             "ALTER TABLE nodes ADD COLUMN updated_by TEXT DEFAULT ''",
+            "ALTER TABLE nodes ADD COLUMN system_id INTEGER REFERENCES systems(id)",
             "ALTER TABLE causes ADD COLUMN likelihood INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE causes ADD COLUMN source_id INTEGER DEFAULT NULL",
             "ALTER TABLE causes ADD COLUMN base_frequency REAL DEFAULT NULL",
@@ -2873,6 +2885,15 @@ class Database:
     def nodes(self):
         return self.conn.execute("SELECT * FROM nodes ORDER BY id").fetchall()
 
+    def systems(self):
+        """Top-level hierarchy grouping above Nod (2026-08-24, see NOTES.md
+        "Ny toppnivå System"). A node's system_id may be NULL — such nodes
+        render as ungrouped top-level items in the tree, same as before
+        this feature existed (e.g. any project saved before this feature,
+        or a node created from a UI path that doesn't set system_id)."""
+        return self.conn.execute(
+            "SELECT * FROM systems ORDER BY sort_order, id").fetchall()
+
     def causes(self, node_id):
         return self.conn.execute(
             "SELECT * FROM causes WHERE node_id=? ORDER BY id", (node_id,)).fetchall()
@@ -2940,8 +2961,39 @@ class Database:
     cause_frequency_level = cause_f_level
 
     # ── Add ───────────────────────────────────────────────────────────────────
-    def add_node(self):
-        cur = self.conn.execute("INSERT INTO nodes (name) VALUES ('Ny nod')")
+    def add_system(self, name='Nytt system'):
+        max_ord = (self.conn.execute(
+            "SELECT COALESCE(MAX(sort_order),-1) FROM systems").fetchone()[0])
+        cur = self.conn.execute(
+            "INSERT INTO systems (name, sort_order) VALUES (?,?)", (name, max_ord + 1))
+        self.commit()
+        return cur.lastrowid
+
+    def rename_system(self, id_, name):
+        self.conn.execute("UPDATE systems SET name=? WHERE id=?", (name, id_))
+        self.commit()
+
+    def delete_system(self, id_):
+        # Same "reassign, don't cascade" convention as delete_node_type():
+        # a system is a pure organizational grouping — deleting it must
+        # never take its nodes (and everything under them) down with it.
+        self.conn.execute("UPDATE nodes SET system_id=NULL WHERE system_id=?", (id_,))
+        self.conn.execute("DELETE FROM systems WHERE id=?", (id_,))
+        self.commit()
+
+    def reorder_systems(self, ordered_ids):
+        for i, id_ in enumerate(ordered_ids):
+            self.conn.execute("UPDATE systems SET sort_order=? WHERE id=?", (i, id_))
+        self.commit()
+
+    def set_node_system(self, node_id, system_id):
+        self.conn.execute(
+            "UPDATE nodes SET system_id=? WHERE id=?", (system_id, node_id))
+        self.commit()
+
+    def add_node(self, system_id=None):
+        cur = self.conn.execute(
+            "INSERT INTO nodes (name, system_id) VALUES ('Ny nod', ?)", (system_id,))
         node_id = cur.lastrowid
         std = [r[0] for r in self.conn.execute(
             "SELECT description FROM standard_deviations ORDER BY sort_order").fetchall()]

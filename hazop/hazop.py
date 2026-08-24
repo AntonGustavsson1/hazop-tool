@@ -16,7 +16,7 @@ import inspect
 
 from constants import (
     CONFIG, SEV_LABELS, RRF_VALUES, RRF_LABELS, SG_TYPES, MARKUP_COLORS,
-    RISK_ICON, NODE_T, CAUSE_T, CONS_T, SG_T, DEV_T, EQUIP_T, LEDORD_T,
+    RISK_ICON, NODE_T, CAUSE_T, CONS_T, SG_T, DEV_T, EQUIP_T, LEDORD_T, SYSTEM_T,
     DEVIATION_TYPES, _app_dir,
 )
 from database import (
