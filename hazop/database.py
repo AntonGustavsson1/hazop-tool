@@ -1878,13 +1878,23 @@ class Database:
 
     def delete_equipment_item(self, id_):
         # deviations.equipment_id (added 2026-08-07 for "Nod → Utrustning →
-        # Avvikelse", see NOTES.md) has NO ON DELETE clause — clear the
-        # reference first (keeps the deviation + its causes/consequences,
-        # just detaches it from the deleted equipment row) instead of
-        # hitting sqlite3.IntegrityError: FOREIGN KEY constraint failed,
-        # the same root cause already found and fixed for
-        # equipment_catalog.node_id in delete_node().
+        # Avvikelse", see NOTES.md) and causes.equipment_id (added 2026-08-13
+        # for the "Live tag-länk mellan Orsak-cellens taggremsa och objektet
+        # på P&ID", see NOTES.md) both have NO ON DELETE clause — clear
+        # both references first (keeps the deviation/cause and its own
+        # children, just detaches them from the deleted equipment row)
+        # instead of hitting sqlite3.IntegrityError: FOREIGN KEY constraint
+        # failed, the same root cause already found and fixed for
+        # equipment_catalog.node_id in delete_node(). 2026-08-24: causes.
+        # equipment_id was missing here entirely (only deviations.equipment_id
+        # was ever cleared) — a real crash report
+        # (crash_20260824_143009_IntegrityError.json) traced this exact
+        # DELETE failing once a real P&ID's causes had tags linked via that
+        # column. equipment_markers.equipment_id is the only one of the
+        # three FKs into equipment_catalog with ON DELETE CASCADE already,
+        # so it needs no manual handling here.
         self.conn.execute("UPDATE deviations SET equipment_id=NULL WHERE equipment_id=?", (id_,))
+        self.conn.execute("UPDATE causes SET equipment_id=NULL WHERE equipment_id=?", (id_,))
         self.conn.execute("DELETE FROM equipment_catalog WHERE id=?", (id_,))
         self.commit()
 
@@ -1892,6 +1902,7 @@ class Database:
         # Same fix as delete_equipment_item() above, but for the full-
         # rescan-replaces-catalog path ("🔍 Skanna P&ID"/"📋 Analysera P&ID").
         self.conn.execute("UPDATE deviations SET equipment_id=NULL WHERE equipment_id IS NOT NULL")
+        self.conn.execute("UPDATE causes SET equipment_id=NULL WHERE equipment_id IS NOT NULL")
         self.conn.execute("DELETE FROM equipment_catalog")
         self.commit()
 

@@ -820,18 +820,24 @@ class CausesForEquipmentTests(unittest.TestCase):
 
 
 class EquipmentForeignKeyCleanupTests(unittest.TestCase):
-    """Regression tests for two real crash reports (2026-08-07,
-    crash_20260807_154530_IntegrityError.json / _161554_...): deleting a
+    """Regression tests for three real crash reports: two from 2026-08-07
+    (crash_20260807_154530_IntegrityError.json / _161554_...) — deleting a
     node with equipment assigned to it (equipment_catalog.node_id) raised
-    sqlite3.IntegrityError: FOREIGN KEY constraint failed. Root cause:
-    equipment_catalog.node_id and deviations.equipment_id (both added
-    2026-08-07 for "Nod → Utrustning → Avvikelse", see NOTES.md) were
-    added via ALTER TABLE with NO ON DELETE clause, unlike every other
-    node_id/equipment_id-shaped FK in this schema (which use ON DELETE
-    CASCADE). delete_node()/delete_equipment_item()/clear_equipment_catalog()
-    now explicitly clear these soft references before deleting, instead
-    of cascading (equipment/deviations are real HAZOP data that must
-    survive their assigned node or equipment row being removed)."""
+    sqlite3.IntegrityError: FOREIGN KEY constraint failed — and one from
+    2026-08-24 (crash_20260824_132650_.../crash_20260824_143009_..., both
+    "Analysera P&ID" on a real multi-tag document). Root cause each time:
+    a *_id column pointing at equipment_catalog(id) added via ALTER TABLE
+    with NO ON DELETE clause, unlike every other node_id/equipment_id-shaped
+    FK in this schema (which use ON DELETE CASCADE) — equipment_catalog.
+    node_id and deviations.equipment_id (2026-08-07), then causes.
+    equipment_id (added 2026-08-13 for the "Live tag-länk" feature, see
+    NOTES.md, but never added to delete_equipment_item()/
+    clear_equipment_catalog()'s cleanup list until the 2026-08-24 crash
+    traced it there). delete_node()/delete_equipment_item()/
+    clear_equipment_catalog() now explicitly clear every one of these soft
+    references before deleting, instead of cascading (equipment/deviations/
+    causes are real HAZOP data that must survive their assigned node or
+    equipment row being removed)."""
 
     def setUp(self):
         self._tmpdir = tempfile.mkdtemp(prefix="hazop_fk_cleanup_test_")
@@ -888,6 +894,44 @@ class EquipmentForeignKeyCleanupTests(unittest.TestCase):
         dev = self.db.get_deviation(dev_id)
         self.assertIsNotNone(dev)
         self.assertIsNone(dev['equipment_id'])
+
+    def test_deleting_equipment_item_with_a_cause_linked_via_equipment_id_does_not_raise(self):
+        """2026-08-24 regression: causes.equipment_id (the "Live tag-länk"
+        feature, 2026-08-13) was never included in delete_equipment_item()'s
+        cleanup — only deviations.equipment_id was. Real crash report:
+        crash_20260824_143009_IntegrityError.json."""
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        eq_id = self.db.add_equipment_item("HSP-01", "HSP-01", "HSP", 0, "Instrument", '', 0)
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(cause_id, equipment_id=eq_id)
+        self.assertEqual(dict(self.db.get_cause(cause_id))['equipment_id'], eq_id)
+
+        self.db.delete_equipment_item(eq_id)   # must not raise IntegrityError
+
+        self.assertIsNone(self.db.get_equipment_by_id(eq_id))
+        # The cause survives, just loses the equipment link.
+        cause = self.db.get_cause(cause_id)
+        self.assertIsNotNone(cause)
+        self.assertIsNone(dict(cause)['equipment_id'])
+
+    def test_clear_equipment_catalog_with_a_cause_linked_via_equipment_id_does_not_raise(self):
+        """The exact real-world trigger for both 2026-08-24 crash reports:
+        'Analysera P&ID' on a document whose causes already had tags
+        live-linked via causes.equipment_id — clear_equipment_catalog()
+        must not fail just because that link exists."""
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        eq_id = self.db.add_equipment_item("HSP-01", "HSP-01", "HSP", 0, "Instrument", '', 0)
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(cause_id, equipment_id=eq_id)
+
+        self.db.clear_equipment_catalog()   # must not raise IntegrityError
+
+        self.assertEqual(self.db.equipment_items(), [])
+        cause = self.db.get_cause(cause_id)
+        self.assertIsNotNone(cause)
+        self.assertIsNone(dict(cause)['equipment_id'])
 
 
 class SafeguardTagDbTests(unittest.TestCase):
