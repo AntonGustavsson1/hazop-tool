@@ -69,11 +69,25 @@ from PyQt6.QtGui import (
     QPainter, QPicture, QCursor, QShortcut, QKeySequence, QDrag, QIcon,
 )
 
-# Optional OpenGL for GPU-accelerated rendering
+# Optional OpenGL for GPU-accelerated rendering. Must define QOpenGLWidget
+# as a fallback in the except branch (2026-08-24, see NOTES.md "Analysera
+# P&ID kraschar och startar om appen vid flera sidor") -- matching the
+# QSvgRenderer pattern right below. Without it, if PyQt6.QtOpenGLWidgets
+# fails to import in some environment (seen in a PyInstaller-frozen build,
+# non-deterministically across otherwise-identical rebuilds -- likely a Qt
+# plugin/DLL bundling gap for this optional module), QOpenGLWidget simply
+# never exists as a name here at all. pid_graphics_view.py's own
+# `from pid_viewer import (..., QOpenGLWidget, ...)` then fails with
+# "cannot import name 'QOpenGLWidget' from partially initialized module
+# 'pid_viewer' (most likely due to a circular import)" -- a genuinely
+# misleading message: Python guesses "circular import" as the likely
+# cause of ANY failed from-import of a missing name, even when the real
+# cause (as here) is that the name was never defined in the first place.
 try:
     from PyQt6.QtOpenGLWidgets import QOpenGLWidget
     HAS_OPENGL = True
 except ImportError:
+    QOpenGLWidget = None
     HAS_OPENGL = False
 
 # Optional SVG vector rendering (preferred — stays sharp at any zoom)

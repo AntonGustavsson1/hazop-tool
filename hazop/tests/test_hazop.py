@@ -433,5 +433,58 @@ class MainWindowOpensHzpPassedOnConstructionTests(unittest.TestCase):
                 self._close_window(win)
 
 
+class MultiprocessingFreezeSupportTests(unittest.TestCase):
+    """2026-08-24 (see NOTES.md "Analysera P&ID kraschar och startar om
+    appen vid flera sidor"): "Analysera P&ID" (and equipment/similar-symbol
+    analysis) hand off to concurrent.futures.ProcessPoolExecutor for
+    documents with 4+ pages (see pid_viewer.py's _should_parallelize).
+    On Windows, spawning a process re-executes a PyInstaller-frozen .exe
+    from scratch UNLESS multiprocessing.freeze_support() has already run
+    -- without it, every worker process re-entered __main__ as if freshly
+    launched, opening another full MainWindow. That read as "the app
+    crashes and restarts" from the outside, and only reproduces in an
+    actual frozen build with a real 4+ page PDF (freeze_support() is a
+    documented no-op when unpackaged/non-Windows, so there is no way to
+    exercise the real failure mode from a normal `python -m unittest`
+    run) -- this is a source-level regression guard, not a behavioural
+    test, and deliberately says so.
+
+    What it actually checks: multiprocessing.freeze_support() is called,
+    and is the FIRST statement inside `if __name__ == '__main__':`, before
+    anything else (logging setup, QApplication, etc.) -- per Python's own
+    documentation, it must run before any Process/Pool/ProcessPoolExecutor
+    could conceivably be created, and moving other setup ahead of it would
+    silently reintroduce the exact bug this guards against."""
+
+    def test_freeze_support_is_the_first_statement_in_main_block(self):
+        src = Path(hazop.__file__).read_text(encoding='utf-8')
+        main_idx = src.index("if __name__ == '__main__':")
+        after_main = src[main_idx:]
+        # First non-comment, non-blank line after the guard.
+        body_lines = after_main.splitlines()[1:]
+        first_code_line = next(
+            (ln.strip() for ln in body_lines
+             if ln.strip() and not ln.strip().startswith('#')),
+            None)
+        self.assertEqual(
+            first_code_line, 'import multiprocessing',
+            "the first statement in __main__ must import multiprocessing "
+            "immediately before calling freeze_support() -- found "
+            f"{first_code_line!r} instead; something got inserted ahead "
+            "of the fix")
+
+    def test_freeze_support_is_called_before_qapplication_is_constructed(self):
+        src = Path(hazop.__file__).read_text(encoding='utf-8')
+        main_idx = src.index("if __name__ == '__main__':")
+        freeze_idx = src.index('multiprocessing.freeze_support()', main_idx)
+        qapp_idx = src.index('QApplication(sys.argv)', main_idx)
+        self.assertLess(
+            freeze_idx, qapp_idx,
+            "multiprocessing.freeze_support() must run before QApplication "
+            "is constructed (and before any ProcessPoolExecutor could be "
+            "created later during a scan) -- found it AFTER QApplication "
+            "construction instead")
+
+
 if __name__ == "__main__":
     unittest.main()

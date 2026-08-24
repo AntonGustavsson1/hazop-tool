@@ -2922,6 +2922,24 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == '__main__':
+    # MUST be the very first thing that runs in __main__, before any other
+    # setup (2026-08-24, see NOTES.md "Analysera P&ID kraschar och startar
+    # om appen vid flera sidor"). ParallelTagScanWorker/
+    # ParallelEquipmentAnalysisWorker/ImageSymbolSearchWorker (pid_viewer.py)
+    # use concurrent.futures.ProcessPoolExecutor for documents with 4+ pages
+    # (see _should_parallelize) -- on Windows, spawning a new process
+    # re-executes THIS SAME frozen .exe from scratch when packaged with
+    # PyInstaller, unless multiprocessing.freeze_support() has already run.
+    # Without it, every worker process re-entered this __main__ block as if
+    # freshly launched, opening ANOTHER full MainWindow -- which is exactly
+    # what "crashes and restarts" looked like from the outside: not a crash
+    # at all, but the app relaunching itself once per worker process. Never
+    # triggered unpackaged (`python hazop.py`), or on documents under 4
+    # pages, which is why it went unnoticed until the app was actually
+    # packaged and tested on a real multi-page P&ID.
+    import multiprocessing
+    multiprocessing.freeze_support()
+
     import logging
 
     _configure_utf8_console_output()

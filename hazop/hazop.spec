@@ -58,7 +58,14 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    # See packaging/rthook_qt_dll_dir.py's own docstring: without this,
+    # Qt's qwindows.dll platform plugin (bundled under
+    # PyQt6/Qt6/plugins/platforms/) can't find its own Qt6Core.dll/
+    # Qt6Gui.dll dependencies (bundled in the sibling PyQt6/Qt6/bin/
+    # directory) via Windows' default DLL search order, and the app fails
+    # to start at all with "Could not load the Qt platform plugin
+    # 'windows' ... even though it was found" (2026-08-24).
+    runtime_hooks=['packaging/rthook_qt_dll_dir.py'],
     excludes=EXCLUDE_OPTIONAL_OCR,
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
