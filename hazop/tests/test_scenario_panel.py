@@ -80,7 +80,7 @@ from equipment_detection import COMPONENT_TYPES  # noqa: E402
 
 from test_helpers import (
     _ensure_qapp, _menu_action_labels, _fake_pdf_loaded,
-    _TempDbMainWindow, _find_tree_item,
+    _TempDbMainWindow, _find_tree_item, count_selects,
 )
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -3046,6 +3046,61 @@ class OrsStripReworkTests(unittest.TestCase):
             panel.deleteLater()
 
 
+class ScenarioTablePanelBuildRowsQueryBatchingTests(unittest.TestCase):
+    """ScenarioTablePanel._build_rows() used to issue a query per cause
+    (get_node, consequences), per consequence (safeguards,
+    get_consequence_severities, and — inside _add_row(), once per
+    RENDERED ROW rather than once per consequence — reduction_factors),
+    per category row (get_severity_excluded_sgs), and per safeguard
+    (get_safeguard_excluded_causes, and the ORS status icon's
+    consequences()/safeguards_for_cause() re-fetch). Batched into a
+    handful of bulk queries total (2026-08-24, see NOTES.md,
+    Database._fetch_grouped) — this locks in that "Visa samtliga noder"
+    mode's query count stays bounded as the study grows."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_buildrowsbatch_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from hazop import ScenarioTablePanel
+        self.panel = ScenarioTablePanel(self.db)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _add_full_chains(self, n_nodes, causes_per_node=2):
+        cat_id = self.db.add_category('Person')
+        for _ in range(n_nodes):
+            node_id = self.db.add_node()
+            dev_id = self.db.deviations(node_id)[0]['id']
+            for _ in range(causes_per_node):
+                cause_id = self.db.add_cause(dev_id)
+                cons_id = self.db.add_consequence(cause_id)
+                self.db.set_consequence_severity(cons_id, cat_id, 3)
+                sg_id = self.db.add_safeguard(cons_id)
+                self.db.add_reduction_factor(cons_id, 'test', 10)
+                self.db.set_severity_excluded_sgs(
+                    self.db.get_consequence_severities(cons_id)[0]['id'], [])
+                self.db.set_safeguard_excluded_causes(sg_id, [])
+
+    def test_load_all_query_count_does_not_scale_with_study_size(self):
+        self._add_full_chains(n_nodes=2, causes_per_node=2)
+        small_count = count_selects(self.db, self.panel.load_all)
+
+        self._add_full_chains(n_nodes=15, causes_per_node=2)
+        large_count = count_selects(self.db, self.panel.load_all)
+
+        self.assertLess(large_count, small_count + 20,
+            f"_build_rows() SELECT count grew with study size ({small_count} "
+            f"-> {large_count}) — the N+1 query pattern may have regressed")
 
 
 if __name__ == "__main__":

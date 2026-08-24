@@ -195,94 +195,6 @@ class RiskMatrixPopup(QDialog):
             super().keyPressEvent(event)
 
 
-class ConsequenceChainDialog(QDialog):
-    """Popup chain editor with QCheckBoxes — kept for legacy compatibility."""
-
-    def __init__(self, db: Database, cons_id: int, parent=None):
-        super().__init__(parent)
-        self.db      = db
-        self.cons_id = cons_id
-        self.setWindowTitle("Konsekvenskedja")
-        self.setMinimumWidth(CONFIG['W_PANEL_MIN_MD'])
-
-        row = db.get_consequence(cons_id)
-        self._chain = parse_chain_from_json(
-            row['consequence_chain'] if row and 'consequence_chain' in row.keys() else '')
-        raw_desc = row['description'] if row else ''
-
-        layout = QVBoxLayout(self)
-
-        form = QFormLayout(); form.setSpacing(8)
-        self._base_edit = QLineEdit(raw_desc)
-        self._base_edit.setPlaceholderText("Händelse / direkt konsekvens")
-        self._base_edit.textChanged.connect(self._update_preview)
-        form.addRow("Händelse:", self._base_edit)
-        layout.addLayout(form)
-
-        chain_box = QGroupBox("Konsekvenskedja — välj eskalering")
-        chain_lay = QGridLayout(chain_box)
-        chain_lay.setSpacing(4)
-        self._checks: dict = {}
-        row_idx, col_idx, last_group = 0, 0, None
-
-        for key, label, group in CHAIN_ITEMS:
-            if group and group != last_group:
-                if col_idx > 0:
-                    row_idx += 1; col_idx = 0
-                hdr = QLabel(group)
-                hdr.setStyleSheet(
-                    "color:#8D9299; font-weight:bold; font-size:10px; margin-top:4px;")
-                chain_lay.addWidget(hdr, row_idx, 0, 1, 2)
-                row_idx += 1; col_idx = 0
-                last_group = group
-            chk = QCheckBox(label)
-            chk.setChecked(bool(self._chain.get(key, False)))
-            chk.stateChanged.connect(self._update_preview)
-            self._checks[key] = chk
-            chain_lay.addWidget(chk, row_idx, col_idx)
-            col_idx += 1
-            if col_idx >= 2:
-                col_idx = 0; row_idx += 1
-
-        layout.addWidget(chain_box)
-
-        preview_lbl = QLabel("Genererad text:")
-        preview_lbl.setStyleSheet("color:#555; font-size:10px;")
-        layout.addWidget(preview_lbl)
-        self._preview = QLabel("—")
-        self._preview.setWordWrap(True)
-        self._preview.setStyleSheet(
-            "color:#17191C; font-weight:bold; font-size:11px;"
-            "background:#F5F5F3; border:1px solid #E2E3E1;"
-            "border-radius:3px; padding:4px 8px;")
-        layout.addWidget(self._preview)
-
-        btns = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        btns.accepted.connect(self._save_and_accept)
-        btns.rejected.connect(self.reject)
-        layout.addWidget(btns)
-        self._update_preview()
-
-    def _update_preview(self):
-        chain = {k: chk.isChecked() for k, chk in self._checks.items()}
-        text  = build_consequence_text(self._base_edit.text().strip(), chain)
-        self._preview.setText(text or "—")
-
-    def _save_and_accept(self):
-        chain    = {k: chk.isChecked() for k, chk in self._checks.items()}
-        base     = self._base_edit.text().strip()
-        full     = build_consequence_text(base, chain) or base or 'Ny konsekvens'
-        cons     = self.db.get_consequence(self.cons_id)
-        if cons:
-            self.db.update_consequence(
-                self.cons_id, full,
-                cons['severity'] or 1,
-                cons['category'] or '',
-                json.dumps(chain))
-        self.accept()
-
-
 # ── NEW: column-based step picker ─────────────────────────────────────────────
 _N_STEPS = 5
 
@@ -2885,9 +2797,11 @@ class ScenarioTablePanel(QWidget):
 
     def _causes_for_node(self, node_id):
         """Return [(cause_dict, deviation_dict), ...] for every cause under
-        every deviation of node_id, in deviation/cause order. Shared by the
-        single-node branch of _build_rows() and the "all nodes" mode (used
-        once per node, in node order) so both walk the exact same hierarchy."""
+        every deviation of node_id, in deviation/cause order. Used by the
+        single-node branch of _build_rows() — see _causes_for_all_nodes()
+        for the "all nodes" mode's bulk equivalent (2026-08-24, NOTES.md:
+        calling this once per node there used to mean one query per node
+        PLUS one query per deviation, on every "Visa samtliga noder")."""
         result = []
         for dev in self.db.deviations(node_id):
             dev_d = dict(dev)
@@ -2898,6 +2812,31 @@ class ScenarioTablePanel(QWidget):
                 continue
             for c in causes:
                 result.append((dict(c), dev_d))
+        return result
+
+    def _causes_for_all_nodes(self):
+        """Bulk equivalent of calling _causes_for_node() once per node —
+        identical (cause_dict, deviation_dict) list shape and node/
+        deviation/cause ordering, but built from 2 batched queries
+        (Database.deviations_for_nodes/causes_for_deviations, the same
+        bulk helpers TreePanel.refresh() uses — see NOTES.md "Ny toppnivå
+        System"/2026-08-24 follow-up) instead of one query PER NODE and
+        one PER DEVIATION. Used by _build_rows()'s "all nodes" branch."""
+        result = []
+        nodes = list(self.db.nodes())
+        devs_by_node = self.db.deviations_for_nodes(n['id'] for n in nodes)
+        all_dev_ids = [d['id'] for devs in devs_by_node.values() for d in devs]
+        causes_by_dev = self.db.causes_for_deviations(all_dev_ids)
+        for node in nodes:
+            for dev in devs_by_node.get(node['id'], []):
+                dev_d = dict(dev)
+                causes = list(causes_by_dev.get(dev['id'], []))
+                if not causes:
+                    if self._show_empty_deviations:
+                        result.append((None, dev_d))
+                    continue
+                for c in causes:
+                    result.append((dict(c), dev_d))
         return result
 
     def _causes_for_equipment(self, equipment_id):
@@ -2926,8 +2865,7 @@ class ScenarioTablePanel(QWidget):
         # Build list of (cause_dict, deviation_dict) to display
         causes_to_show = []
         if self._all_nodes:
-            for node_row in self.db.nodes():
-                causes_to_show.extend(self._causes_for_node(node_row['id']))
+            causes_to_show.extend(self._causes_for_all_nodes())
         elif self._equipment_filter_id is not None:
             causes_to_show.extend(self._causes_for_equipment(self._equipment_filter_id))
         elif self.cause_id is not None:
@@ -3014,6 +2952,37 @@ class ScenarioTablePanel(QWidget):
         self.refresh_placed()
         logging.info('_build_rows: G1 — refresh_placed done, entering cause loop (n=%d)',
                      len(causes_to_show))
+
+        # Prefetch the whole cause → consequence → (severities, safeguards)
+        # → exclusions chain for every cause in causes_to_show, in a
+        # handful of batched queries instead of one query PER cause, PER
+        # consequence, PER category row, and PER safeguard (2026-08-24,
+        # see NOTES.md) — this loop runs on nearly every scenario-table
+        # refresh, so a study with many causes/consequences used to issue
+        # a query storm here. Behavior-identical to the old per-id calls
+        # (same row shape/order) — only the data SOURCE changed, none of
+        # the row-building logic below.
+        nodes_by_id = {n['id']: dict(n) for n in self.db.nodes()}
+        _real_cause_ids = [cd['id'] for cd, _ in causes_to_show if cd is not None]
+        cons_by_cause = self.db.consequences_for_causes(_real_cause_ids)
+        _all_cons_ids = [dict(c)['id'] for conss in cons_by_cause.values() for c in conss]
+        sgs_by_cons = self.db.safeguards_for_consequences(_all_cons_ids)
+        cat_rows_by_cons = self.db.get_consequence_severities_for_consequences(_all_cons_ids)
+        _all_severity_ids = [dict(r)['id'] for rows in cat_rows_by_cons.values() for r in rows]
+        excl_sgs_by_severity = self.db.get_severity_excluded_sgs_for_severities(_all_severity_ids)
+        _all_sg_ids = [dict(s)['id'] for sgs in sgs_by_cons.values() for s in sgs]
+        excl_causes_by_sg = self.db.get_safeguard_excluded_causes_for_safeguards(_all_sg_ids)
+        # _add_row() used to re-fetch reduction_factors(cons_d['id']) once
+        # per RENDERED ROW — several rows share the same consequence
+        # (n_rows = max(n_cats, n_sgs, 1)) and therefore the same
+        # reduction factors, so this was pure repeated work.
+        rfs_by_cons = self.db.reduction_factors_for_consequences(_all_cons_ids)
+        # _add_row() also used to re-fetch actions(cid) once per RENDERED
+        # ROW (same reasoning as reduction_factors above) and
+        # get_safeguard_excluded_causes(sg['id']) once per row even
+        # though excl_causes_by_sg (above) already has it precomputed.
+        acts_by_cons = self.db.actions_for_consequences(_all_cons_ids)
+
         # Tracks the previous REAL cause's (comp_type, comp_tag) so the ORS
         # tag banner can be hidden on a run of consecutive deviations that
         # all belong to the same object (2026-08-18 follow-up: "om det
@@ -3043,22 +3012,33 @@ class ScenarioTablePanel(QWidget):
             if _cause_idx % 10 == 0 or _cause_idx == len(causes_to_show) - 1:
                 logging.info('_build_rows: G2 — cause loop iter %d/%d (cause_id=%s)',
                              _cause_idx, len(causes_to_show), cause_d.get('id'))
-            node = self.db.get_node(cause_d['node_id'])
+            node = nodes_by_id.get(cause_d['node_id'])
             node_name = node['name'] if node else '?'
             freq = self.db.cause_frequency_level(cause_d)
             _fi = freq_to_idx(freq)
             freq_lbl = FREQ_LABELS[_fi] if _fi < len(FREQ_LABELS) else f'F{freq}'
             first_row_for_cause = self._table.rowCount()
-            all_cons = list(self.db.consequences(cause_d['id']))
+            all_cons = list(cons_by_cause.get(cause_d['id'], []))
+            # Status icon inputs (feature 5, ORS column) depend on ALL of
+            # the cause's consequences, not the possibly cons_id-filtered
+            # subset used for row-building below — computed once per
+            # cause here instead of once per RENDERED ROW inside
+            # _add_row (2026-08-24, see NOTES.md).
+            _status_cons = [dict(c) for c in cons_by_cause.get(cause_d['id'], [])]
+            cause_status = (
+                len(_status_cons) > 0,
+                any((c.get('severity') or 0) > 0 for c in _status_cons),
+                any(sgs_by_cons.get(c['id']) for c in _status_cons),
+            )
             if self._cons_id is not None:
                 all_cons = [c for c in all_cons if dict(c)['id'] == self._cons_id]
             for _cons_idx, cons in enumerate(all_cons):
                 cons_d = dict(cons)
                 logging.info('_build_rows: H0 — cause %s cons_idx %d/%d cons_id=%s',
                              cause_d.get('id'), _cons_idx, len(all_cons), cons_d.get('id'))
-                sgs    = [dict(s) for s in self.db.safeguards(cons_d['id'])]
+                sgs    = [dict(s) for s in sgs_by_cons.get(cons_d['id'], [])]
                 cat_rows = [dict(r) for r in
-                            self.db.get_consequence_severities(cons_d['id'])]
+                            cat_rows_by_cons.get(cons_d['id'], [])]
                 n_cats = len(cat_rows)
                 n_sgs  = len(sgs)
                 n_rows = max(n_cats, n_sgs, 1)
@@ -3066,7 +3046,7 @@ class ScenarioTablePanel(QWidget):
                 # Precompute exclusions per severity assessment
                 cat_excl_map = {}           # sev_id → set of excluded sg_ids
                 for _cr in cat_rows:
-                    cat_excl_map[_cr['id']] = self.db.get_severity_excluded_sgs(_cr['id'])
+                    cat_excl_map[_cr['id']] = excl_sgs_by_severity.get(_cr['id'], set())
 
                 # Which safeguards are excluded from at least one category?
                 any_excl_map = {}           # sg_id → list of category names
@@ -3078,7 +3058,7 @@ class ScenarioTablePanel(QWidget):
                 # Which safeguards are excluded from this specific cause?
                 cause_excl_sgs = set()
                 for _sg in sgs:
-                    excl_causes = self.db.get_safeguard_excluded_causes(_sg['id'])
+                    excl_causes = excl_causes_by_sg.get(_sg['id'], set())
                     if cause_d['id'] in excl_causes:
                         cause_excl_sgs.add(_sg['id'])
 
@@ -3087,8 +3067,13 @@ class ScenarioTablePanel(QWidget):
                 # Full category info for stacked badges in KON cell
                 all_cat_infos = [(cr['category_id'], cr['id'],
                                   cr['name'], cr['severity']) for cr in cat_rows]
-                # Cause list for the RRF popup
-                _direct_cause = self.db.get_cause(cons_d.get('cause_id')) if cons_d.get('cause_id') else None
+                # Cause list for the RRF popup — cons_d['cause_id'] is
+                # always cause_d['id'] here (cons_d came from
+                # cons_by_cause[cause_d['id']]), so this is the same row
+                # already in scope; re-fetching it via get_cause() per
+                # consequence was a pure redundant query (2026-08-24, see
+                # NOTES.md).
+                _direct_cause = dict(cause_d) if cons_d.get('cause_id') else None
                 cause_popup_list = []
                 if _direct_cause:
                     cause_popup_list.append((dict(_direct_cause)['id'],
@@ -3119,7 +3104,11 @@ class ScenarioTablePanel(QWidget):
                                   all_cat_infos=all_cat_infos,
                                   cause_popup_list=cause_popup_list,
                                   n_cats=n_cats,
-                                  repeats_previous_tag=_repeats_previous_tag)
+                                  repeats_previous_tag=_repeats_previous_tag,
+                                  cause_status=cause_status,
+                                  rfs=rfs_by_cons.get(cons_d['id'], []),
+                                  acts=acts_by_cons.get(cons_d['id'], []),
+                                  excl_causes_by_sg=excl_causes_by_sg)
                     logging.info('_build_rows: H3 — _add_row cons_id=%s row_i=%d done',
                                  cons_d.get('id'), i)
                 # "+" badge on the SG cell — only when this consequence
@@ -3577,7 +3566,8 @@ class ScenarioTablePanel(QWidget):
     def _add_row(self, node_name, dev_d, cause_d, freq, freq_lbl, cons_d, all_sgs, sg,
                  cat_info=None, excl_cat_names=None, excl_for_cat=None,
                  cause_excl_sgs=None, sev_cat_list=None, all_cat_infos=None,
-                 cause_popup_list=None, n_cats=0, repeats_previous_tag=False):
+                 cause_popup_list=None, n_cats=0, repeats_previous_tag=False,
+                 cause_status=None, rfs=None, acts=None, excl_causes_by_sg=None):
         """One row in the scenario table.
 
         sg            – the safeguard for this row (None = no safeguard on this row).
@@ -3589,6 +3579,21 @@ class ScenarioTablePanel(QWidget):
         sev_cat_list  – [(sev_id, cat_name), ...] all category assessments for this
                         consequence (stored in SG cell for the extended RRF popup).
         n_cats        – total number of category assessments.
+        cause_status  – (has_cons, has_severity, has_safeguard) precomputed by the
+                        caller (2026-08-24, see NOTES.md) for the ORS status icon —
+                        several rows share the same cause, so _build_rows() computes
+                        this once per cause instead of once per row. None re-derives
+                        it here via a direct query, for any caller that doesn't pass it.
+        rfs           – this row's consequence's reduction_factors, precomputed by
+                        the caller (2026-08-24) — several rows can share the same
+                        consequence. None re-fetches via a direct query.
+        acts          – this row's consequence's actions/recommendations,
+                        precomputed by the caller (2026-08-24), same reasoning as
+                        rfs. None re-fetches via a direct query.
+        excl_causes_by_sg – {sg_id: set(excluded cause_ids)} for every safeguard in
+                        this cause, precomputed by the caller (2026-08-24) — avoids
+                        re-fetching sg's own exclusion set here when it was already
+                        computed in _build_rows(). None re-fetches via a direct query.
         """
         if excl_cat_names is None:
             excl_cat_names = []
@@ -3626,7 +3631,9 @@ class ScenarioTablePanel(QWidget):
                 if s['id'] not in cause_excl_sgs:
                     sg_rrf *= (s.get('rrf') or 1)
 
-        rfs        = [dict(rf) for rf in self.db.reduction_factors(cid)]
+        if rfs is None:
+            rfs = self.db.reduction_factors(cid)
+        rfs        = [dict(rf) for rf in rfs]
         fa_active  = bool(cons_d.get('fa_active', 0))
         fa_rrf     = cons_d.get('fa_rrf', 10) or 10
         ign_active = bool(cons_d.get('ignition_active', 0))
@@ -3661,11 +3668,14 @@ class ScenarioTablePanel(QWidget):
 
         # ── Col 2: Orsak ─────────────────────────────────────────────────────
         # Status icon (feature 5): green=complete, orange=partial, red=empty
-        _cons_list   = self.db.consequences(cause_d['id'])
-        _has_cons    = len(_cons_list) > 0
-        _has_sev     = any(c.get('severity', 0) and c.get('severity', 0) > 0
-                           for c in [dict(x) for x in _cons_list])
-        _has_sg      = bool(self.db.safeguards_for_cause(cause_d['id']))
+        if cause_status is not None:
+            _has_cons, _has_sev, _has_sg = cause_status
+        else:
+            _cons_list = self.db.consequences(cause_d['id'])
+            _has_cons  = len(_cons_list) > 0
+            _has_sev   = any(c.get('severity', 0) and c.get('severity', 0) > 0
+                             for c in [dict(x) for x in _cons_list])
+            _has_sg    = bool(self.db.safeguards_for_cause(cause_d['id']))
         if _has_cons and _has_sev and _has_sg:
             _status_icon = '🟢'
             _status_tip  = 'Komplett: konsekvens + allvarlighet + barriär'
@@ -3775,7 +3785,10 @@ class ScenarioTablePanel(QWidget):
             sg_item.setData(Qt.ItemDataRole.UserRole + 3, (cid, sev_cat_list) if sev_cat_list else None)
             # Cause list for RRF popup cause-exclusion section
             sg_item.setData(Qt.ItemDataRole.UserRole + 4, cause_popup_list)
-            excl_cause_ids = self.db.get_safeguard_excluded_causes(sg['id'])
+            if excl_causes_by_sg is not None:
+                excl_cause_ids = excl_causes_by_sg.get(sg['id'], set())
+            else:
+                excl_cause_ids = self.db.get_safeguard_excluded_causes(sg['id'])
             excl_cause_names = [desc for cid2, desc, _ in cause_popup_list
                                 if cid2 in excl_cause_ids]
             sg_item.setData(Qt.ItemDataRole.UserRole + 5, excl_cause_names)
@@ -3821,7 +3834,8 @@ class ScenarioTablePanel(QWidget):
         # unreachable in the UI) rather than a new free-text field — a
         # scenario can have several recommendations (responsible/due date/
         # status each), not just one line of text.
-        acts = self.db.actions(cid)
+        if acts is None:
+            acts = self.db.actions(cid)
         rek_item = QTableWidgetItem(self._recommendation_summary(acts))
         rek_item.setFlags(rek_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         rek_item.setData(Qt.ItemDataRole.UserRole, ('recommendation', cid))

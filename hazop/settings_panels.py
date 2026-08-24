@@ -8,28 +8,17 @@ needed zero changes (same layer + re-export pattern used throughout
 this codebase)."""
 
 import re
-import json
 from pathlib import Path
-from functools import partial
 
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QColorDialog, QComboBox, QDateEdit,
-    QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout,
-    QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton,
-    QScrollArea, QSizePolicy, QSpinBox, QSplitter, QTableWidget,
-    QTableWidgetItem, QTabWidget, QTextEdit, QToolButton, QVBoxLayout,
-    QWidget,
+    QCheckBox, QComboBox, QDoubleSpinBox, QGroupBox, QHBoxLayout,
+    QHeaderView, QLabel, QMessageBox, QPushButton, QTableWidget,
+    QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QDate, QEvent, QMimeData
-from PyQt6.QtGui import QBrush, QColor, QDrag, QFont, QFontMetrics
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QBrush, QColor, QFont
 
-from constants import CONFIG, SEV_LABELS
-from database import (
-    Database, DEFAULT_MATRIX, DEFAULT_FREQ_BOUNDARIES, _STD_OBJECTS,
-    _normalise_matrix, _risk_matrix_cache, get_matrix, freq_to_f_level,
-    risk_info,
-)
+from database import Database, risk_info
 from pid_viewer import _icon, FREQ_LABELS, ocr_status
 from ui_helpers import freq_axis_label
 from equipment_panel import TagDatabasePanel, PIDAnalysisPanel
@@ -39,106 +28,6 @@ from participant_matrix_panel import ParticipantMatrixPanel
 from standard_causes_panel import StandardCausesSettingsPanel
 from standard_objects_panel import StandardObjectsSettingsPanel
 from tag_memory_panel import TagMemoryPanel
-
-
-class SeverityDefinitionsPanel(QWidget):
-    """Grid panel: consequence categories (rows) × severity levels (cols).
-    Each cell holds a short description of what that level means for that category."""
-
-    def __init__(self, db, parent=None):
-        super().__init__(parent)
-        self.db = db
-        self._edits = {}   # (severity_level, category_id) → QLineEdit
-
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(8, 8, 8, 8)
-        outer.setSpacing(6)
-
-        lbl = QLabel(
-            "Definiera vad varje konsekvensgrad (C1–CN) innebär per kategori. "
-            "Värdena visas som referens vid bedömning av konsekvenser.")
-        lbl.setWordWrap(True)
-        lbl.setStyleSheet("color:#555; font-size:11px;")
-        outer.addWidget(lbl)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        self._scroll_widget = QWidget()
-        self._grid_layout = QGridLayout(self._scroll_widget)
-        self._grid_layout.setSpacing(4)
-        scroll.setWidget(self._scroll_widget)
-        outer.addWidget(scroll)
-
-        self.refresh()
-
-    def refresh(self):
-        """Rebuild grid from current matrix config + categories."""
-        # Save pending edits before rebuild
-        self._flush_pending()
-
-        cfg  = get_matrix()
-        y    = cfg.get('y_labels', [])
-        n    = cfg.get('rows', 5)
-        cats = self.db.consequence_categories()
-        defs = self.db.get_severity_definitions()
-
-        # Clear grid
-        while self._grid_layout.count():
-            item = self._grid_layout.takeAt(0)
-            if item and item.widget():
-                item.widget().deleteLater()
-        self._edits.clear()
-
-        if not cats:
-            self._grid_layout.addWidget(
-                QLabel("Lägg till konsekvenskategorier i fliken Kategorier först."), 0, 0)
-            return
-
-        # Header row: severity level labels
-        self._grid_layout.addWidget(QLabel(""), 0, 0)  # top-left corner
-        for col_idx in range(n):
-            label = y[col_idx] if col_idx < len(y) else f"C{col_idx+1}"
-            hdr = QLabel(f"<b>C{col_idx+1}</b><br><small>{label}</small>")
-            hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            hdr.setStyleSheet(
-                "background:#F5F5F3; color:#17191C; border-radius:3px; padding:4px 6px;")
-            hdr.setMinimumWidth(120)
-            self._grid_layout.addWidget(hdr, 0, col_idx + 1)
-
-        # Data rows: one per category
-        for row_idx, cat in enumerate(cats):
-            cat_id = cat['id']
-            cat_name = cat['name']
-
-            cat_lbl = QLabel(f"<b>{cat_name}</b>")
-            cat_lbl.setStyleSheet("padding:2px 4px;")
-            cat_lbl.setMinimumWidth(90)
-            self._grid_layout.addWidget(cat_lbl, row_idx + 1, 0)
-
-            for col_idx in range(n):
-                sev_lvl = col_idx + 1  # 1-based
-                desc = defs.get(sev_lvl, {}).get(cat_id, '')
-                edit = QLineEdit(desc)
-                edit.setPlaceholderText(f"C{sev_lvl}, {cat_name}…")
-                edit.setMinimumWidth(120)
-                # Save on focus-out
-                _lvl, _cid = sev_lvl, cat_id
-                edit.editingFinished.connect(
-                    lambda _e=edit, _l=_lvl, _c=_cid:
-                        self.db.set_severity_definition(_l, _c, _e.text().strip()))
-                self._edits[(_lvl, _cid)] = edit
-                self._grid_layout.addWidget(edit, row_idx + 1, col_idx + 1)
-
-        self._grid_layout.setColumnStretch(0, 0)
-        for c in range(1, n + 1):
-            self._grid_layout.setColumnStretch(c, 1)
-
-    def _flush_pending(self):
-        """Save all currently displayed edits to DB."""
-        for (lvl, cid), edit in self._edits.items():
-            self.db.set_severity_definition(lvl, cid, edit.text().strip())
-
-
 
 
 # ══════════════════════════════════════════════════════════════════════════════

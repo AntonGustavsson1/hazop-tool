@@ -831,6 +831,100 @@ mönster som resten av kodbasen). Full 14-filssvit (873 tester, upp från
 antog nod som absolut toppnivå (bekräftat redan under kodgenomgången: inga
 `item.parent() is None`-baserade `NODE_T`-antaganden hittades någonstans).
 
+## Kodoptimering: döda klasser borttagna + N+1-frågemönster i trädet och HAZOP-scenariot batchade (2026-08-24, samma dag, ytterligare en uppföljning)
+
+**Beställning:** Anton: "kan du optimera/förbättra koden lite?" — ett öppet,
+ospecificerat önskemål. Kartlade konkreta kandidater innan något
+genomfördes (se AskUserQuestion-svaret): Anton valde tre av fyra
+föreslagna spår — död kod, `TreePanel.refresh()`s N+1-mönster, och
+`ScenarioTablePanel._build_rows()`s N+1-mönster (det fjärde, ett
+specifikt känt NOTES.md-problem, valdes bort).
+
+**1. Död kod borttagen** — tre klasser med noll användningsställen
+någonstans i kodbasen (bekräftat via grep före borttagning):
+`SeverityDefinitionsPanel` (`settings_panels.py`, 96 rader),
+`TemplateCausePickerDialog` (`pid_viewer.py`, 256 rader — kvarglömd rest
+sedan gårdagens borttagning av den gamla orsaksväljar-popupen),
+`ConsequenceChainDialog` (`scenario_panel.py`, 86 rader, dess egen
+docstring sa redan "kept for legacy compatibility"). Städade samtidigt
+bort ett helt gäng nu-oanvända importer i `settings_panels.py` som blev
+uppenbara efter borttagningen (`CONFIG`, `SEV_LABELS`, `DEFAULT_MATRIX`,
+`DEFAULT_FREQ_BOUNDARIES`, `_STD_OBJECTS`, `_normalise_matrix`,
+`_risk_matrix_cache`, `get_matrix`→borta, `freq_to_f_level`, samt en rad
+Qt-widgetimporter och `json`/`functools.partial`/`QDate`/`QEvent`/
+`QMimeData`/`QDrag`/`QFontMetrics`) — kvarlämningar från en ÄNNU TIDIGARE
+uppdelning (2026-08-21, `settings_panels.py` splittrades i flera
+underfiler), inte bara från dagens borttagning.
+
+**2. `TreePanel.refresh()`s N+1-mönster batchat.** Trädet gjorde tidigare
+en separat SQL-fråga per nod (`deviations`), per avvikelse
+(`causes_for_deviation`), per orsak (`consequences`) och per konsekvens
+(`safeguards`) — kördes vid nästan varje redigering. Ny generisk
+`Database._fetch_grouped(table, fk_column, ids)`-hjälpare (chunkad
+`WHERE ... IN (...)`, grupperar resultatet i en `{fk_value: [rader]}`-
+dict, samma radform/ordning som motsvarande enstaka-id-metod) plus fyra
+tunna wrappers (`deviations_for_nodes`, `causes_for_deviations`,
+`consequences_for_causes`, `safeguards_for_consequences`). `refresh()`
+hämtar nu allt i EN batch-omgång (4 frågor totalt, oavsett trädstorlek)
+innan de befintliga closures (`add_cause_children` m.fl.) körs oförändrat
+— bara datakällan bytt (DB-fråga → dict-uppslag), ingen
+grupperings-/etikettlogik rörd. En redundant `cause_frequency_level`-
+beräkning (kördes en gång PER KONSEKVENS istället för en gång per orsak,
+trots att den bara beror på orsaken) lyftes samtidigt ut ur den inre
+loopen.
+
+**3. `ScenarioTablePanel._build_rows()`s N+1-mönster batchat — betydligt
+djupare (upptäcktes iterativt, inte i ett svep).** Utöver samma fyra
+grundfrågor (nu återanvända direkt från punkt 2) hittades och batchades
+ytterligare, i tur och ordning när ett regressionstest fortsatte visa
+skalning trots gjorda fixar:
+- `get_node` per orsak → en `nodes_by_id`-dict.
+- `get_consequence_severities`/`get_severity_excluded_sgs`/
+  `get_safeguard_excluded_causes` per konsekvens/kategori/safeguard → tre
+  nya bulk-metoder (`get_consequence_severities_for_consequences` m.fl.).
+- **`_causes_for_node()` anropad en gång PER NOD** i "Visa samtliga
+  noder"-läget — ett HELT EGET, tidigare oupptäckt N+1-lager (en fråga
+  per nod för avvikelser, sedan en fråga per avvikelse för orsaker) som
+  kördes INNAN resten av batchningen ens hann starta. Ny
+  `_causes_for_all_nodes()` bygger samma `[(orsak, avvikelse), ...]`-lista
+  för HELA studien med samma två redan-byggda bulk-metoder som `TreePanel`
+  använder.
+- `reduction_factors(cid)` och `actions(cid)` anropade en gång PER
+  RENDERAD RAD i `_add_row()` — trots att flera rader ofta delar samma
+  konsekvens (`n_rows = max(n_cats, n_sgs, 1)`). Två nya bulk-metoder,
+  förhämtade en gång och skickade in som parametrar till `_add_row()`.
+- `get_safeguard_excluded_causes(sg['id'])` anropades EN GÅNG TILL inne i
+  `_add_row()`, trots att `_build_rows()` redan räknat ut samma sak
+  (`excl_causes_by_sg`) en nivå upp — bara aldrig skickades vidare.
+- En redundant `get_cause(cons_d['cause_id'])`-fråga i huvudloopen visade
+  sig hämta EXAKT samma rad som redan låg i `cause_d` (strukturellt
+  garanterat, eftersom `cons_d` kom från `cons_by_cause[cause_d['id']]`)
+  — ersatt med `dict(cause_d)` direkt, ingen fråga alls.
+- ORS-statusikonens egen `consequences()`/`safeguards_for_cause()`-
+  omfrågning per rad (borde vara per orsak) ersattes med ett
+  `cause_status`-tripel förhämtat en gång per orsak från redan
+  batchad data.
+
+Alla nya `_add_row()`-parametrar (`cause_status`, `rfs`, `acts`,
+`excl_causes_by_sg`) defaultar till `None` och faller då tillbaka till
+EXAKT samma direkta DB-fråga som tidigare — ingen möjlig anropare
+(inklusive framtida) kan gå sönder av att inte skicka in dem.
+
+**Verifieringsmetod:** en delad `_CountingConnProxy`/`count_selects()`-
+hjälpare (`tests/test_helpers.py`, ny) sveper in `Database.conn` (går
+inte att patcha `sqlite3.Connection`s egna metoder direkt — "attribute is
+read-only", C-extensionstyp) och räknar `SELECT`-satser. Två nya
+regressionstester (`tests/test_tree_panel.py::TreePanelRefreshQueryBatchingTests`,
+`tests/test_scenario_panel.py::ScenarioTablePanelBuildRowsQueryBatchingTests`)
+bygger en liten och en stor studie och jämför frågeantalet — **bekräftat
+genom kontrollkörning mot koden innan varje fix** (via tillfällig
+`git stash`) att dessa tester verkligen slår av på den gamla koden:
+`TreePanel.refresh()` gick från 63→483 frågor (2 vs. 20 noder);
+`ScenarioTablePanel._build_rows()` gick från 104→716 frågor (2 vs. 15
+noder) innan fixarna, mot en helt platt frågeräkning (15→15) efteråt.
+
+**Verifiering:** full 14-filssvit grön.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

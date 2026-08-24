@@ -408,6 +408,23 @@ class TreePanel(QWidget):
             target = None
             bold_font = QFont(); bold_font.setBold(True)
 
+            # Prefetch the whole Nod → Avvikelse → Orsak → Konsekvens →
+            # Safeguard chain in 4 batched queries instead of one query
+            # PER row at every level (2026-08-24, see NOTES.md) — refresh()
+            # runs after nearly every edit, so a study with many nodes
+            # used to issue hundreds of small round-trips per rebuild.
+            # Behavior-identical to the old per-id calls (same row
+            # shape/order — see Database._fetch_grouped): only the data
+            # SOURCE changed, none of the grouping/labeling logic below.
+            all_nodes = self.db.nodes()
+            devs_by_node = self.db.deviations_for_nodes(n['id'] for n in all_nodes)
+            all_dev_ids = [d['id'] for devs in devs_by_node.values() for d in devs]
+            causes_by_dev = self.db.causes_for_deviations(all_dev_ids)
+            all_cause_ids = [c['id'] for causes in causes_by_dev.values() for c in causes]
+            cons_by_cause = self.db.consequences_for_causes(all_cause_ids)
+            all_cons_ids = [c['id'] for conss in cons_by_cause.values() for c in conss]
+            sgs_by_cons = self.db.safeguards_for_consequences(all_cons_ids)
+
             def add_cause_children(citem, cause):
                 """Append the consequence/safeguard subtree for a single
                 cause as children of citem — factored out of
@@ -418,8 +435,14 @@ class TreePanel(QWidget):
                 redundant cause item (2026-08-10, see NOTES.md "objektet
                 redovisas två gånger")."""
                 nonlocal target
-                for ki, cons in enumerate(self.db.consequences(cause['id']), 1):
-                    cause_freq = self.db.cause_frequency_level(cause)
+                # Depends only on `cause`, not on the individual
+                # consequence being iterated — hoisted out of the loop
+                # below (2026-08-24) so a cause with several consequences
+                # doesn't repeat the same standard-cause frequency lookup
+                # (a real DB query when cause['standard_cause_id'] is set)
+                # once per consequence.
+                cause_freq = self.db.cause_frequency_level(cause)
+                for ki, cons in enumerate(cons_by_cause.get(cause['id'], []), 1):
                     level, _, _ = risk_info(cause_freq, cons['severity'])
                     risk_icon = RISK_ICON.get(level, '⚪')
                     kitem = QTreeWidgetItem([f"      {risk_icon}  {ki}. {cons['description'][:40]}"])
@@ -430,7 +453,7 @@ class TreePanel(QWidget):
                     if (CONS_T, cons['id']) in expanded: kitem.setExpanded(True)
                     if select_type == CONS_T and select_id == cons['id']: target = kitem
 
-                    for si, sg in enumerate(self.db.safeguards(cons['id']), 1):
+                    for si, sg in enumerate(sgs_by_cons.get(cons['id'], []), 1):
                         rrf = (sg['rrf'] or 1) if sg['rrf'] is not None else 1
                         rrf_str = f"RRF{rrf}" if rrf > 1 else "—"
                         try:
@@ -453,7 +476,7 @@ class TreePanel(QWidget):
                 equipment item instead of a separate, redundant deviation
                 item (2026-08-09, see NOTES.md "kaka på kaka")."""
                 nonlocal target
-                for ci, cause in enumerate(self.db.causes_for_deviation(dev_id), 1):
+                for ci, cause in enumerate(causes_by_dev.get(dev_id, []), 1):
                     tag    = (cause['comp_tag'] or '').strip() if cause['comp_tag'] else ''
                     desc   = (cause['description'] or '').strip()
                     # A REAL description is always more useful in the tree
@@ -528,7 +551,7 @@ class TreePanel(QWidget):
                 # existed before this feature, unaffected in substance,
                 # just one extra grouping level to expand).
                 ledord_groups = {}
-                for dev in self.db.deviations(node['id']):
+                for dev in devs_by_node.get(node['id'], []):
                     ledord_groups.setdefault(dev['description'], []).append(dev)
 
                 di = 0
@@ -633,7 +656,7 @@ class TreePanel(QWidget):
                             # have shown, making every later number one
                             # (or more) higher than it should be as soon
                             # as any object got added to a node.
-                            dev_causes = self.db.causes_for_deviation(dev['id'])
+                            dev_causes = causes_by_dev.get(dev['id'], [])
                             merge_tag = ((eq['tag'] or '').strip() if eq else '')
                             trivial_desc = (dev_causes[0]['description'] or '').strip() in ('', 'Ny orsak') \
                                 if dev_causes else False
@@ -686,7 +709,7 @@ class TreePanel(QWidget):
                         # reads as "Lågt flöde" appearing twice. Hide it
                         # (not delete — reappears the moment it gets a real
                         # cause, and non-empty generic entries always show).
-                        if equipment_groups and not self.db.causes_for_deviation(dev['id']):
+                        if equipment_groups and not causes_by_dev.get(dev['id'], []):
                             continue
                         di += 1
                         add_deviation_subtree(litem, dev, di)
@@ -702,7 +725,7 @@ class TreePanel(QWidget):
             system_ids = {s['id'] for s in systems}
             nodes_by_system = {}
             ungrouped_nodes = []
-            for node in self.db.nodes():
+            for node in all_nodes:
                 sid = node['system_id']
                 if sid in system_ids:
                     nodes_by_system.setdefault(sid, []).append(node)

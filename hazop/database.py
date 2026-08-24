@@ -2169,6 +2169,31 @@ class Database:
             "WHERE cs.consequence_id=? ORDER BY cc.sort_order, cc.name",
             (consequence_id,)).fetchall()
 
+    def get_consequence_severities_for_consequences(self, consequence_ids):
+        """Bulk version of get_consequence_severities() — same row shape
+        (each row also carries consequence_id, harmless extra key for
+        existing dict(row) callers) grouped by consequence_id, same
+        per-group ordering (category sort_order, then name). 2026-08-24,
+        see NOTES.md — fixes part of ScenarioTablePanel._build_rows()'s
+        O(causes × consequences × categories) query pattern."""
+        consequence_ids = list(consequence_ids)
+        result = {cid: [] for cid in consequence_ids}
+        if not consequence_ids:
+            return result
+        CHUNK = 500
+        for start in range(0, len(consequence_ids), CHUNK):
+            chunk = consequence_ids[start:start + CHUNK]
+            placeholders = ','.join('?' * len(chunk))
+            rows = self.conn.execute(
+                "SELECT cs.id, cs.category_id, cc.name, cs.severity, cs.consequence_id "
+                "FROM consequence_severities cs "
+                "JOIN consequence_categories cc ON cc.id=cs.category_id "
+                f"WHERE cs.consequence_id IN ({placeholders}) "
+                "ORDER BY cs.consequence_id, cc.sort_order, cc.name", chunk).fetchall()
+            for row in rows:
+                result[row['consequence_id']].append(row)
+        return result
+
     def set_consequence_severity(self, consequence_id, category_id, severity):
         """Set (or clear when severity=0) a per-category severity for a consequence."""
         if not severity:
@@ -2190,6 +2215,28 @@ class Database:
             (severity_id,)).fetchall()
         return {r[0] for r in rows}
 
+    def get_severity_excluded_sgs_for_severities(self, severity_ids):
+        """Bulk version of get_severity_excluded_sgs() — one/few queries
+        for many severity_ids instead of one per id (2026-08-24, see
+        NOTES.md — fixes part of ScenarioTablePanel._build_rows()'s
+        O(causes × consequences × categories) query pattern). Returns
+        {severity_id: set(safeguard_ids)}, every requested id present
+        (possibly with an empty set)."""
+        severity_ids = list(severity_ids)
+        result = {sid: set() for sid in severity_ids}
+        if not severity_ids:
+            return result
+        CHUNK = 500
+        for start in range(0, len(severity_ids), CHUNK):
+            chunk = severity_ids[start:start + CHUNK]
+            placeholders = ','.join('?' * len(chunk))
+            rows = self.conn.execute(
+                "SELECT severity_id, safeguard_id FROM consequence_severity_exclusions "
+                f"WHERE severity_id IN ({placeholders})", chunk).fetchall()
+            for row in rows:
+                result[row[0]].add(row[1])
+        return result
+
     def set_severity_excluded_sgs(self, severity_id, excluded_sg_ids):
         self.conn.execute(
             "DELETE FROM consequence_severity_exclusions WHERE severity_id=?",
@@ -2206,6 +2253,25 @@ class Database:
             "SELECT cause_id FROM safeguard_cause_exclusions WHERE safeguard_id=?",
             (sg_id,)).fetchall()
         return {r[0] for r in rows}
+
+    def get_safeguard_excluded_causes_for_safeguards(self, sg_ids):
+        """Bulk version of get_safeguard_excluded_causes() — see
+        get_severity_excluded_sgs_for_severities's docstring (2026-08-24,
+        NOTES.md). Returns {sg_id: set(cause_ids)}."""
+        sg_ids = list(sg_ids)
+        result = {sid: set() for sid in sg_ids}
+        if not sg_ids:
+            return result
+        CHUNK = 500
+        for start in range(0, len(sg_ids), CHUNK):
+            chunk = sg_ids[start:start + CHUNK]
+            placeholders = ','.join('?' * len(chunk))
+            rows = self.conn.execute(
+                "SELECT safeguard_id, cause_id FROM safeguard_cause_exclusions "
+                f"WHERE safeguard_id IN ({placeholders})", chunk).fetchall()
+            for row in rows:
+                result[row[0]].add(row[1])
+        return result
 
     def set_safeguard_excluded_causes(self, sg_id, cause_id_set):
         self.conn.execute(
@@ -2917,6 +2983,14 @@ class Database:
         return self.conn.execute(
             "SELECT * FROM actions WHERE consequence_id=? ORDER BY id", (consequence_id,)).fetchall()
 
+    def actions_for_consequences(self, consequence_ids):
+        """Bulk version of actions() — see _fetch_grouped (2026-08-24,
+        NOTES.md). ScenarioTablePanel._add_row() used to call the
+        single-id version once per RENDERED ROW, even though a
+        consequence with several categories/safeguards produces several
+        rows that all share the same consequence_id."""
+        return self._fetch_grouped('actions', 'consequence_id', consequence_ids)
+
     def get_node(self, id_):
         row = self.conn.execute("SELECT * FROM nodes WHERE id=?", (id_,)).fetchone()
         return dict(row) if row else None
@@ -3065,6 +3139,50 @@ class Database:
     def causes_for_deviation(self, deviation_id):
         return self.conn.execute(
             "SELECT * FROM causes WHERE deviation_id=? ORDER BY id", (deviation_id,)).fetchall()
+
+    def _fetch_grouped(self, table, fk_column, ids):
+        """Bulk-fetch every row from `table` whose `fk_column` is in `ids`
+        in a small number of batched queries (chunked to stay under
+        SQLite's per-statement variable limit), grouped into a
+        {fk_value: [rows]} dict — same row shape/order as calling the
+        single-id equivalent once per id (e.g. causes_for_deviation),
+        without the per-id query cost. Every id in `ids` is present in
+        the result, with an empty list if it has no matching rows.
+        `table`/`fk_column` are always fixed literals from this class's
+        own wrapper methods below, never external input — safe to
+        interpolate directly. Added 2026-08-24 (see NOTES.md) to fix
+        TreePanel.refresh()'s N+1 query pattern (one query per node, then
+        per deviation, per cause, per consequence, on every tree rebuild)."""
+        ids = list(ids)
+        result = {i: [] for i in ids}
+        if not ids:
+            return result
+        CHUNK = 500
+        for start in range(0, len(ids), CHUNK):
+            chunk = ids[start:start + CHUNK]
+            placeholders = ','.join('?' * len(chunk))
+            rows = self.conn.execute(
+                f"SELECT * FROM {table} WHERE {fk_column} IN ({placeholders}) "
+                f"ORDER BY {fk_column}, id", chunk).fetchall()
+            for row in rows:
+                result[row[fk_column]].append(row)
+        return result
+
+    def deviations_for_nodes(self, node_ids):
+        """Bulk version of deviations() — see _fetch_grouped."""
+        return self._fetch_grouped('deviations', 'node_id', node_ids)
+
+    def causes_for_deviations(self, deviation_ids):
+        """Bulk version of causes_for_deviation() — see _fetch_grouped."""
+        return self._fetch_grouped('causes', 'deviation_id', deviation_ids)
+
+    def consequences_for_causes(self, cause_ids):
+        """Bulk version of consequences() — see _fetch_grouped."""
+        return self._fetch_grouped('consequences', 'cause_id', cause_ids)
+
+    def safeguards_for_consequences(self, consequence_ids):
+        """Bulk version of safeguards() — see _fetch_grouped."""
+        return self._fetch_grouped('safeguards', 'consequence_id', consequence_ids)
 
     def causes_for_node_excluding_deviation(self, node_id, deviation_id):
         """Return causes for the node that belong to OTHER deviations (for reuse dialog)."""
@@ -4056,6 +4174,15 @@ class Database:
         return self.conn.execute(
             "SELECT * FROM reduction_factors WHERE consequence_id=? ORDER BY id",
             (consequence_id,)).fetchall()
+
+    def reduction_factors_for_consequences(self, consequence_ids):
+        """Bulk version of reduction_factors() — see _fetch_grouped
+        (2026-08-24, NOTES.md). ScenarioTablePanel._add_row() used to call
+        the single-id version once per RENDERED ROW, even though a
+        consequence with several categories/safeguards produces several
+        rows that all share the same consequence_id — re-fetching
+        identical data every time."""
+        return self._fetch_grouped('reduction_factors', 'consequence_id', consequence_ids)
 
     def add_reduction_factor(self, consequence_id, description='', rrf=10):
         cur = self.conn.execute(

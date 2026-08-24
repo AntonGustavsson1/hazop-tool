@@ -80,7 +80,7 @@ from equipment_detection import COMPONENT_TYPES  # noqa: E402
 
 from test_helpers import (
     _ensure_qapp, _menu_action_labels, _fake_pdf_loaded,
-    _TempDbMainWindow, _find_tree_item,
+    _TempDbMainWindow, _find_tree_item, count_selects,
 )
 
 class TreePanelEquipmentGroupingTests(unittest.TestCase):
@@ -1547,6 +1547,52 @@ class TreePanelSystemHierarchyTests(unittest.TestCase):
 
         self.assertTrue(item_a.isExpanded(), "the active system must stay expanded")
         self.assertFalse(item_b.isExpanded(), "an inactive system must fold away")
+
+
+class TreePanelRefreshQueryBatchingTests(unittest.TestCase):
+    """TreePanel.refresh() used to issue one SELECT per node (deviations),
+    per deviation (causes), per cause (consequences), and per consequence
+    (safeguards) — an N+1 pattern that ran on nearly every tree rebuild.
+    Batched into 4 bulk queries total (2026-08-24, see NOTES.md,
+    Database._fetch_grouped) — this locks in that the query count stays
+    bounded as the tree grows, instead of scaling with row count."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_refreshbatch_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        self.panel = TreePanel(self.db)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _add_full_chains(self, n_nodes, causes_per_node=2):
+        for _ in range(n_nodes):
+            node_id = self.db.add_node()
+            dev_id = self.db.deviations(node_id)[0]['id']
+            for _ in range(causes_per_node):
+                cause_id = self.db.add_cause(dev_id)
+                cons_id = self.db.add_consequence(cause_id)
+                self.db.add_safeguard(cons_id)
+
+    def test_query_count_does_not_scale_with_tree_size(self):
+        self._add_full_chains(n_nodes=2, causes_per_node=2)
+        small_tree_count = count_selects(self.db, self.panel.refresh)
+
+        self._add_full_chains(n_nodes=20, causes_per_node=2)
+        large_tree_count = count_selects(self.db, self.panel.refresh)
+
+        self.assertLess(large_tree_count, small_tree_count + 15,
+            f"refresh() SELECT count grew with tree size ({small_tree_count} "
+            f"-> {large_tree_count}) — the N+1 query pattern may have regressed")
 
 
 if __name__ == "__main__":

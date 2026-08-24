@@ -130,6 +130,43 @@ def _find_tree_item(tree, type_, id_=None):
         it += 1
     return None
 
+
+class _CountingConnProxy:
+    """Forwards everything to a real sqlite3.Connection except execute(),
+    which it also counts — used to verify a code path issues a bounded
+    number of SELECTs regardless of data size (N+1 query regression
+    guards, 2026-08-24, see NOTES.md). sqlite3.Connection itself can't
+    have its methods monkeypatched directly (it's a C extension type —
+    "attribute is read-only"), so Database.conn is swapped for this proxy
+    instead — see count_selects() below for the usual way to use it."""
+
+    def __init__(self, real_conn):
+        self._real = real_conn
+        self.select_count = 0
+
+    def execute(self, sql, *args, **kwargs):
+        if sql.strip().upper().startswith('SELECT'):
+            self.select_count += 1
+        return self._real.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def count_selects(db, fn):
+    """Runs fn() with db.conn swapped for a _CountingConnProxy, restores
+    the real connection afterward (even on exception), and returns how
+    many SELECT statements fn() issued against db."""
+    real_conn = db.conn
+    proxy = _CountingConnProxy(real_conn)
+    db.conn = proxy
+    try:
+        fn()
+    finally:
+        db.conn = real_conn
+    return proxy.select_count
+
+
 class _TempDbMainWindow:
     """Context manager that constructs a MainWindow against a scratch,
     temp-file SQLite database instead of the real hazop_project.db.
