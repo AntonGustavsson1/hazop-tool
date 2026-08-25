@@ -963,6 +963,33 @@ class TreePanelAutoCollapseTests(unittest.TestCase):
         self.assertFalse(avvikelse_item.isExpanded(),
             "an inactive avvikelse's causes (from ALL contributing objects) must collapse together")
 
+    def test_deviations_toggle_behaves_like_nodes_toggle_between_sibling_avvikelser(self):
+        """2026-08-25 follow-up, see NOTES.md: Anton — "När jag klickar på
+        lågt flöde skall de på lågt flöde öppnas och ligger det
+        exempelvis avvikelser på låg nivå skall dessa stängas" — verified
+        already true (see NOTES.md) using the exact named guide words
+        from the request; locked in here as a real regression test."""
+        node_id = self.db.add_node()
+        devs = {d['description']: d for d in self.db.deviations(node_id)}
+        lagt_flode = devs["Lågt flöde"]
+        lag_niva = devs["Låg nivå"]
+        c1 = self.db.add_cause(lagt_flode['id'])
+        self.db.update_cause(c1, description="Pump stannar")
+        c2 = self.db.add_cause(lag_niva['id'])
+        self.db.update_cause(c2, description="Nivåmätare felar")
+        self.panel.refresh()
+        lagt_item = _find_tree_item(self.panel.tree, DEV_T, lagt_flode['id'])
+        niva_item = _find_tree_item(self.panel.tree, DEV_T, lag_niva['id'])
+        self.panel._auto_collapse_deviations_chk.setChecked(True)
+
+        self.panel.tree.setCurrentItem(lagt_item)
+        self.assertTrue(lagt_item.isExpanded(), "clicking 'Lågt flöde' must open it")
+        self.assertFalse(niva_item.isExpanded(), "'Låg nivå' must fold away")
+
+        self.panel.tree.setCurrentItem(niva_item)
+        self.assertFalse(lagt_item.isExpanded(), "'Lågt flöde' must now fold away")
+        self.assertTrue(niva_item.isExpanded(), "clicking 'Låg nivå' must open it")
+
     def test_switching_selection_live_recollapses_previous_deviation(self):
         """Re-applied from _on_select too, not just refresh() — clicking a
         different deviation must collapse the previous one's causes

@@ -1280,6 +1280,21 @@ direkt (ett manuellt konstruerat `QTreeWidgetItem`) istället.
 Bekräftat att samtliga 10 omskrivna/nya tester slår av mot koden innan
 denna rättelse (`git stash`).
 
+## Auto-collapse "avvikelser" verifierad redan korrekt efter dagens hierarki-rättelse (2026-08-25, samma dag, uppföljning)
+
+Anton bad om att "avvikelser" ska bete sig mer likt "nodes"-kryssrutan:
+klicka på "Lågt flöde" ska fälla ut den och fälla ihop t.ex. "Låg nivå".
+Verifierat (skript mot `tree_panel.py`s aktuella kod, flera scenarier:
+klick på avvikelse-raden direkt, klick på en orsaks-rad, båda
+kryssrutorna på samtidigt, byte till en helt annan nod) — beteendet
+fungerar redan exakt så, sedan den tidigare fixen samma dag ("Rättar
+ihopslagningen"). Anton bekräftade att testet som föranledde önskemålet
+sannolikt gjordes innan den fixen landade. Ingen kodändring behövdes;
+låst fast med en ny regressionstest
+(`test_deviations_toggle_behaves_like_nodes_toggle_between_sibling_avvikelser`,
+`tests/test_tree_panel.py`) som använder exakt de guide-ord Anton själv
+nämnde.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.
