@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QCompleter,
     QDialog, QDialogButtonBox, QFormLayout, QFrame, QGridLayout, QGroupBox,
     QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMenu, QMessageBox, QPushButton, QSizePolicy,
+    QListWidgetItem, QMenu, QMessageBox, QPushButton, QScrollArea, QSizePolicy,
     QSpinBox, QStyle, QStyledItemDelegate, QTableWidget, QTableWidgetItem,
     QTextEdit, QVBoxLayout, QWidget,
 )
@@ -1272,7 +1272,94 @@ class _PidDelegate(_ScenarioDelegate):
             editor.setText(clean)
             if index.column() == self._panel._C_ORS:
                 self._attach_cause_completer(editor, index)
+                # Deferred to the next event-loop iteration — showing the
+                # popup SYNCHRONOUSLY here (still inside Qt's own internal
+                # openEditor() sequence) was found empirically to disrupt
+                # Qt handing keyboard focus to the freshly-created editor
+                # (focus landed on a popup child instead, and in one
+                # observed case the editor was torn down outright when
+                # code tried to reclaim its focus). Qt's own focus
+                # assignment for a brand-new editor happens in steps AFTER
+                # createEditor() returns; showing another top-level window
+                # mid-sequence — even a non-activating one — interfered
+                # with that. See _show_standard_cause_popup's own
+                # docstring.
+                row = index.row()
+                cell_rect = QRect(option.rect)
+                QTimer.singleShot(0, lambda ed=editor, r=row, rect=cell_rect:
+                                  self._show_standard_cause_popup(ed, r, rect))
         return editor
+
+    def _show_standard_cause_popup(self, editor, row, cell_rect):
+        """Auto-open StandardCauseSuggestPopup alongside the ORS editor
+        (2026-08-25, see NOTES.md "Standardorsak-popup vid redigering
+        av Orsak-cellen" — Anton: "När jag vill editera orsakstexten
+        och står i editerarläget vill jag även att det dyker upp en
+        liten popupruta"). Anchored below the ORS cell's own rect
+        (flipped above it if that would run off the bottom of the
+        top-level window) so it never covers the cell being edited.
+
+        Parented to the panel's own top-level window (`panel.window()`),
+        as a plain non-toplevel child — NOT a separate top-level popup
+        window. See StandardCauseSuggestPopup's own docstring for why:
+        a genuinely separate top-level window (even a carefully
+        non-activating one) was found, empirically, to make the
+        platform emit a transient focus-out on the active cell editor
+        the moment it appeared, which Qt's own item-delegate FocusOut
+        handling then read as "user is done editing" and silently
+        committed + closed it. A plain child widget creates no new
+        OS-level window and triggers no such event.
+
+        Positioning therefore works in the top-level window's own
+        local coordinates (mapFromGlobal), clamped to ITS client rect
+        rather than the physical screen — a child widget can't extend
+        past its top-level ancestor's own bounds regardless.
+
+        Called via QTimer.singleShot(0, ...) from createEditor() (see
+        that call site's comment) rather than synchronously, so Qt has
+        fully finished its own internal editor-opening sequence
+        (including giving the new editor focus) before this runs.
+        `row`/`cell_rect` are plain ints/QRect captured synchronously
+        in createEditor(), not the original QModelIndex/
+        QStyleOptionViewItem — those aren't safe to hold onto across an
+        event-loop iteration.
+
+        Skipped for a placeholder row with no real cause yet
+        (row_meta[row][1] is None) — nothing to attach a saved
+        description or frequency to. Wrapped defensively, same
+        reasoning as _size_hint_impl's own try/except: a failure here
+        (including the editor having already been closed/destroyed by
+        the time this runs, e.g. a very fast Enter right after opening
+        it) must never surface as a crash — there's simply no popup to
+        show anymore at that point."""
+        panel = self._panel
+        row_meta = getattr(panel, '_row_meta', [])
+        cause_id = row_meta[row][1] if row < len(row_meta) else None
+        if cause_id is None:
+            return
+        try:
+            _std_dev_id, comp_type, dev_description, rows = \
+                panel._ors_standard_causes_for_row(row)
+            top_level = panel.window()
+            popup = StandardCauseSuggestPopup(
+                panel, row, cause_id, editor, comp_type, dev_description, rows,
+                parent=top_level)
+            anchor_global = panel._table.viewport().mapToGlobal(cell_rect.bottomLeft())
+            anchor = top_level.mapFromGlobal(anchor_global)
+            tl_rect = top_level.rect()
+            pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
+            x = min(anchor.x(), tl_rect.right() - pw)
+            y = anchor.y() + 2
+            if y + ph > tl_rect.bottom():
+                top_global = panel._table.viewport().mapToGlobal(cell_rect.topLeft())
+                top = top_level.mapFromGlobal(top_global)
+                y = top.y() - ph - 2
+            popup.move(max(tl_rect.left(), x), max(tl_rect.top(), y))
+            popup.show()
+            popup.raise_()
+        except Exception:
+            logging.exception('_show_standard_cause_popup: failed to show '
+                              'popup (row=%d)', row)
 
     def _attach_cause_completer(self, editor, index):
         """Suggest standard-cause descriptions while inline-editing an Orsak
@@ -1285,27 +1372,15 @@ class _PidDelegate(_ScenarioDelegate):
             return
         try:
             row = index.row()
-            row_meta = getattr(self._panel, '_row_meta', [])
-            dev_id = row_meta[row][0] if row < len(row_meta) else None
-            item = self._panel._table.item(row, self._panel._C_ORS)
-            obj_data = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
-            comp_type = (obj_data or ('', ''))[0]
-
-            descs = []
-            if dev_id is not None:
-                dev = db.get_deviation(dev_id)
-                std_dev_id = _resolve_std_deviation_id(db, dev['description'] if dev else '')
-                if std_dev_id is not None:
-                    obj_id = None
-                    if comp_type:
-                        for o in db.standard_objects():
-                            if _obj_type_matches(comp_type, o['name']):
-                                obj_id = o['id']
-                                break
-                    if obj_id is not None:
-                        descs = [c['description'] for c in
-                                 db.standard_causes_for_object(std_dev_id, obj_id)]
+            _std_dev_id, _comp_type, _dev_desc, rows = \
+                self._panel._ors_standard_causes_for_row(row)
+            descs = [c['description'] for c in rows]
             if not descs:
+                # Wider than _ors_standard_causes_for_row's own cascade
+                # deliberately goes — fine for a type-to-filter completer
+                # (the user is already narrowing it by typing), unlike
+                # StandardCauseSuggestPopup's button list where showing
+                # every standard cause in the study would be unusable.
                 descs = [r[0] for r in db.conn.execute(
                     "SELECT DISTINCT description FROM standard_causes").fetchall()]
 
@@ -1640,6 +1715,189 @@ class _PidDelegate(_ScenarioDelegate):
         f.setPointSize(max(7, painter.font().pointSize()))
         painter.setFont(f)
         painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, '+')
+
+
+class StandardCauseSuggestPopup(QWidget):
+    """Non-covering helper popup shown automatically whenever an ORS
+    (Orsak) cell enters inline edit mode (2026-08-25, see NOTES.md
+    "Standardorsak-popup vid redigering av Orsak-cellen" — Anton: "det
+    dyker upp en liten popupruta (som inte täcker cellen) ... jag skall
+    kunna välja bland de 'standard'-orsaker som finns för objektypen
+    och avikelsen"). Lists the standard causes applicable to this row's
+    object type + deviation (via ScenarioTablePanel._ors_standard_causes_for_row)
+    as plain buttons, plus one row for the cause's own current
+    frequency that reuses the existing FrequencyPickerPopup.
+
+    Deliberately a plain, non-top-level CHILD widget of the panel's own
+    top-level window — not a QDialog/.exec(), and not a separate
+    top-level window at all (confirmed empirically, the hard way: a
+    genuinely separate top-level window, even one flagged
+    Qt.WindowType.Tool + WA_ShowWithoutActivating + NoFocus on every
+    descendant, still made the underlying platform emit a transient
+    FocusOut on the active cell editor the instant it was shown — with
+    nothing else picking up focus in its place. QAbstractItemDelegate's
+    default FocusOut handling (the exact mechanism that lets a
+    QCompleter's OWN popup coexist with an editor, via
+    completer.setWidget(editor)) treats "focus went to nothing in the
+    editor's own ancestry" as "user is done editing" and auto-commits
+    + closes it — reproduced and confirmed via commitData/closeEditor
+    signal tracing before landing on this fix). A plain child widget
+    never creates a new OS-level window and so never triggers that
+    focus-out at all — the editor's focus is completely undisturbed by
+    this popup existing, appearing, or disappearing. The trade-off is
+    that positioning must stay within the top-level window's own
+    client area (screen-edge clamping doesn't apply to a child
+    widget) — see _show_standard_cause_popup's positioning code."""
+
+    _BTN_STYLE = (
+        "QPushButton{text-align:left; font-size:10px; padding:3px 6px;"
+        "border:none; background:transparent; border-radius:3px;}"
+        "QPushButton:hover{background:#F5F5F3;}")
+    _FREQ_BTN_STYLE = (
+        "QPushButton{color:#17191C; background:#F5F5F3; border-radius:3px;"
+        "padding:2px 8px; font-size:10px; font-weight:bold; border:none;}"
+        "QPushButton:hover{background:#E8E9E6;}")
+
+    def __init__(self, panel, row, cause_id, editor, comp_type, dev_description,
+                 rows, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        # NoFocus on the popup itself and every child (set on each
+        # widget built below) — belt-and-suspenders on top of this
+        # already being a non-toplevel widget: it must never be able to
+        # actively grab keyboard focus via a mouse click either.
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setStyleSheet("StandardCauseSuggestPopup{background:#FFFFFF;"
+                           "border:1px solid #E2E3E1;}")
+        self._panel = panel
+        self._row = row
+        self._cause_id = cause_id
+        self._editor = editor
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(3)
+        layout.setContentsMargins(8, 6, 8, 6)
+
+        header = QLabel()
+        header.setStyleSheet("color:#777; font-size:9px;")
+        header.setWordWrap(True)
+        if rows and dev_description:
+            header.setText(f"Standardorsaker  —  {comp_type}  /  {dev_description}")
+        elif rows:
+            header.setText(f"Standardorsaker  —  {comp_type}")
+        else:
+            header.setText("Ingen standardorsak för denna kombination")
+        layout.addWidget(header)
+
+        if rows:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+            scroll.setMaximumHeight(150)   # same cap CauseObjectPopup uses
+            scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            inner = QWidget()
+            inner.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            vbox = QVBoxLayout(inner)
+            vbox.setSpacing(1)
+            vbox.setContentsMargins(0, 0, 0, 0)
+            for r in rows:
+                btn = QPushButton(r['description'])
+                btn.setStyleSheet(self._BTN_STYLE)
+                btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+                btn.clicked.connect(partial(self._pick, r['description']))
+                vbox.addWidget(btn)
+            vbox.addStretch()
+            scroll.setWidget(inner)
+            layout.addWidget(scroll)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("color:#E2E3E1; margin:2px 0px;")
+        layout.addWidget(sep)
+
+        freq_row = QHBoxLayout()
+        freq_row.addWidget(QLabel("Frekvens:"))
+        self._freq_btn = QPushButton()
+        self._freq_btn.setStyleSheet(self._FREQ_BTN_STYLE)
+        self._freq_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._freq_btn.clicked.connect(self._edit_frequency)
+        self._refresh_freq_button()
+        freq_row.addWidget(self._freq_btn)
+        freq_row.addStretch()
+        layout.addLayout(freq_row)
+
+        self.setMinimumWidth(200)
+        self.setMaximumWidth(320)
+        self.adjustSize()
+
+        # Two redundant close triggers, since neither alone is reliable:
+        # editor.destroyed fires on actual C++ object deletion, which Qt
+        # defers (via deleteLater) by an unpredictable amount after
+        # editing ends — confirmed empirically, an editor closed via
+        # commitData/closeEditor stayed a live, non-deleted QObject for
+        # a noticeable moment. What DOES happen immediately/synchronously
+        # when editing ends, by any means (Enter, Escape, clicking
+        # another cell, or this popup's own _pick/_edit_frequency), is
+        # the editor being hidden — so an event filter catching Hide
+        # closes this popup right away, with the destroyed connection
+        # kept only as a backstop for the rare case the editor is torn
+        # down without ever being explicitly hidden first.
+        editor.installEventFilter(self)
+        editor.destroyed.connect(self.close)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Hide:
+            self.close()
+        return super().eventFilter(obj, event)
+
+    def _current_ors_item(self):
+        return self._panel._table.item(self._row, self._panel._C_ORS)
+
+    def _refresh_freq_button(self):
+        item = self._current_ors_item()
+        f_level = item.data(Qt.ItemDataRole.UserRole + 3) if item else None
+        numeric = item.data(Qt.ItemDataRole.UserRole + 5) if item else None
+        label = self._panel._ors_freq_label(f_level, numeric)
+        self._freq_btn.setText(label or "Ange frekvens…")
+
+    def _pick(self, description):
+        """A chosen standard cause commits the description and closes
+        editing immediately (confirmed with Anton via AskUserQuestion —
+        the fast "pick and you're done" path, not "just fill the field
+        and keep editing"), same commitData/closeEditor emit pattern
+        the Enter key already uses (eventFilter(), scenario_panel.py)."""
+        self._editor.setText(description)
+        self._panel._delegate.commitData.emit(self._editor)
+        self._panel._delegate.closeEditor.emit(
+            self._editor, QStyledItemDelegate.EndEditHint.NoHint)
+        self.close()
+
+    def _edit_frequency(self):
+        """Commit any not-yet-confirmed description text FIRST — clicking
+        here triggers _on_ors_frequency_picked -> _schedule_rebuild(),
+        which tears down the active cell editor as a side effect (see
+        ScenarioTablePanel._rebuild()'s "Proactively clear focus from
+        any active cell editor" comment) — committing first means that
+        teardown can never silently discard typed-but-unconfirmed text."""
+        self._panel._delegate.commitData.emit(self._editor)
+        self._panel._delegate.closeEditor.emit(
+            self._editor, QStyledItemDelegate.EndEditHint.NoHint)
+
+        item = self._current_ors_item()
+        f_level = item.data(Qt.ItemDataRole.UserRole + 3) if item else None
+        numeric = item.data(Qt.ItemDataRole.UserRole + 5) if item else None
+        gp = self._freq_btn.mapToGlobal(self._freq_btn.rect().bottomLeft())
+        popup = FrequencyPickerPopup.create_positioned(
+            gp, current_f_level=f_level, current_numeric_freq=numeric,
+            parent=self._panel)
+        popup.frequency_selected.connect(
+            lambda f, n, cid=self._cause_id:
+                self._panel._on_ors_frequency_picked(cid, f, n))
+        popup.exec()
+        # The frequency change already triggered a rebuild that tore
+        # down the (now-closed) cell editor — close explicitly rather
+        # than relying on the editor.destroyed signal to arrive first.
+        self.close()
 
 
 class SgRRFCategoryPopup(QDialog):
@@ -4452,6 +4710,54 @@ class ScenarioTablePanel(QWidget):
         fm = QFontMetrics(bold_font)
         prefix = tag_label if trivial else f"{tag_label}, "
         return fm.horizontalAdvance(prefix)
+
+    def _ors_standard_causes_for_row(self, row):
+        """(std_dev_id, comp_type, dev_description, rows) of standard
+        causes applicable to this ORS row's deviation + object type
+        (2026-08-25, see NOTES.md "Standardorsak-popup vid redigering av
+        Orsak-cellen"). Shared by _PidDelegate._attach_cause_completer
+        (the existing typing-suggestion dropdown) and
+        StandardCauseSuggestPopup (the new automatic picker) so the
+        dev_id -> std_dev_id -> object_id resolution chain only lives in
+        one place. `rows` follows the same fallback cascade
+        CauseObjectPopup._rebuild_causes (tree_panel.py) already uses:
+        the richer deviation+object hierarchy first, then comp_type
+        matched against this specific deviation's text, then comp_type
+        with no deviation filter at all — `rows` is [] if nothing
+        matches any step (e.g. no comp_type known yet). Deliberately
+        does NOT fall further back to "every standard cause in the
+        database" the way the completer's OWN fallback still does after
+        calling this — that's fine for a type-to-filter completer, but
+        would make this popup's button list unusably long and
+        unrelated to the current row."""
+        row_meta = getattr(self, '_row_meta', [])
+        dev_id = row_meta[row][0] if row < len(row_meta) else None
+        item = self._table.item(row, self._C_ORS)
+        obj_data = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
+        comp_type = (obj_data or ('', ''))[0]
+
+        std_dev_id, dev_description = None, None
+        if dev_id is not None:
+            dev = self.db.get_deviation(dev_id)
+            dev_description = dev['description'] if dev else None
+            if dev_description:
+                std_dev_id = _resolve_std_deviation_id(self.db, dev_description)
+
+        obj_id = None
+        if comp_type:
+            for o in self.db.standard_objects():
+                if _obj_type_matches(comp_type, o['name']):
+                    obj_id = o['id']
+                    break
+
+        rows = []
+        if std_dev_id is not None and obj_id is not None:
+            rows = self.db.standard_causes_for_object(std_dev_id, obj_id)
+        if not rows and comp_type:
+            rows = self.db.standard_causes_for_comp_type(comp_type, dev_description)
+        if not rows and comp_type:
+            rows = self.db.standard_causes_for_comp_type(comp_type)
+        return std_dev_id, comp_type, dev_description, rows
 
     def _ors_freq_label(self, freq_val, base_freq_per_year):
         """The exact frequency text shown in the orsaksfält's frequency

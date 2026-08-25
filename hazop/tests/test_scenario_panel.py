@@ -3049,5 +3049,386 @@ class ScenarioTablePanelBuildRowsQueryBatchingTests(unittest.TestCase):
             f"-> {large_count}) — the N+1 query pattern may have regressed")
 
 
+class OrsStandardCausesForRowTests(unittest.TestCase):
+    """ScenarioTablePanel._ors_standard_causes_for_row (2026-08-25, see
+    NOTES.md "Standardorsak-popup vid redigering av Orsak-cellen") —
+    the shared dev_id -> std_dev_id -> object_id resolution chain both
+    _attach_cause_completer and StandardCauseSuggestPopup draw from.
+    Exercises the same three-step fallback cascade
+    CauseObjectPopup._rebuild_causes (tree_panel.py) already uses, one
+    step at a time."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_ors_std_causes_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from hazop import ScenarioTablePanel
+        self.panel = ScenarioTablePanel(self.db)
+        self.node_id = self.db.add_node()
+        self.dev_id = self.db.deviations(self.node_id)[0]['id']
+        self.dev_description = self.db.get_deviation(self.dev_id)['description']
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_row(self, comp_type=''):
+        cause_id = self.db.add_cause(self.dev_id)
+        if comp_type:
+            self.db.update_cause(cause_id, comp_type=comp_type, comp_tag='V-1')
+        self.panel.load_node(self.node_id)
+        row = next(r for r, m in enumerate(self.panel._row_meta) if m[1] == cause_id)
+        return row, cause_id
+
+    def test_object_hierarchy_match_is_preferred(self):
+        """Best case: a standard_deviations row with the same text AND
+        a standard_causes row scoped to (that deviation, that object)."""
+        std_dev_id = self.db.conn.execute(
+            "INSERT INTO standard_deviations (description) VALUES (?)",
+            (self.dev_description,)).lastrowid
+        self.db.commit()
+        obj_id = self.db.add_standard_object("Xyzzyobjekt")
+        self.db.add_standard_cause_with_object(std_dev_id, obj_id, "Via objekt-hierarki")
+
+        row, _ = self._make_row(comp_type="Xyzzyobjekt")
+        _std_dev_id, comp_type, dev_desc, rows = \
+            self.panel._ors_standard_causes_for_row(row)
+        self.assertEqual(comp_type, "Xyzzyobjekt")
+        self.assertEqual(dev_desc, self.dev_description)
+        self.assertEqual([r['description'] for r in rows], ["Via objekt-hierarki"])
+
+    def test_falls_back_to_comp_type_plus_deviation_text(self):
+        """A standard_deviations row matching this deviation's text
+        exists (so std_dev_id resolves), but no standard_objects row
+        named "Xyzzyobjekt" exists — the object-hierarchy step (step 1)
+        therefore can't resolve an object_id and fails, falling back to
+        a plain comp_type + deviation-text match (step 2) instead."""
+        std_dev_id = self.db.conn.execute(
+            "INSERT INTO standard_deviations (description) VALUES (?)",
+            (self.dev_description,)).lastrowid
+        self.db.conn.execute(
+            "INSERT INTO standard_causes (deviation_id, description, comp_type) "
+            "VALUES (?, 'Via comp_type+avvikelse', 'Xyzzyobjekt')", (std_dev_id,))
+        self.db.commit()
+
+        row, _ = self._make_row(comp_type="Xyzzyobjekt")
+        _std_dev_id, comp_type, dev_desc, rows = \
+            self.panel._ors_standard_causes_for_row(row)
+        self.assertEqual([r['description'] for r in rows], ["Via comp_type+avvikelse"])
+
+    def test_falls_back_to_comp_type_with_no_deviation_filter(self):
+        """Neither the object hierarchy nor a deviation-text match apply
+        — only a bare comp_type match, from a standard_causes row tied
+        to some OTHER deviation entirely."""
+        other_dev_id = self.db.conn.execute(
+            "INSERT INTO standard_deviations (description) VALUES ('Ett helt annat ord')"
+        ).lastrowid
+        self.db.commit()
+        self.db.conn.execute(
+            "INSERT INTO standard_causes (deviation_id, description, comp_type) "
+            "VALUES (?, 'Via bar comp_type', 'Xyzzyobjekt')", (other_dev_id,))
+        self.db.commit()
+
+        row, _ = self._make_row(comp_type="Xyzzyobjekt")
+        _std_dev_id, comp_type, dev_desc, rows = \
+            self.panel._ors_standard_causes_for_row(row)
+        self.assertEqual([r['description'] for r in rows], ["Via bar comp_type"])
+
+    def test_no_comp_type_and_no_match_returns_empty(self):
+        row, _ = self._make_row(comp_type='')
+        _std_dev_id, comp_type, dev_desc, rows = \
+            self.panel._ors_standard_causes_for_row(row)
+        self.assertEqual(comp_type, '')
+        self.assertEqual(rows, [])
+
+    def test_unknown_comp_type_with_no_matching_standard_cause_returns_empty(self):
+        row, _ = self._make_row(comp_type="Okänd typ som inte finns")
+        _std_dev_id, comp_type, dev_desc, rows = \
+            self.panel._ors_standard_causes_for_row(row)
+        self.assertEqual(rows, [])
+
+
+class CauseCompleterFallbackTests(unittest.TestCase):
+    """_attach_cause_completer (scenario_panel.py) rewritten 2026-08-25
+    to call the new shared _ors_standard_causes_for_row instead of
+    duplicating its own copy of the resolution chain — these tests lock
+    in that the completer's own EXTRA, wider fallback ("suggest every
+    standard cause description in the whole database" when nothing more
+    specific matches) survived the refactor unchanged. That extra step
+    is deliberately NOT part of the shared helper itself (it would make
+    StandardCauseSuggestPopup's button list unusably long), so it must
+    still live in this method alone."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_completer_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from hazop import ScenarioTablePanel
+        self.panel = ScenarioTablePanel(self.db)
+        self.node_id = self.db.add_node()
+        self.dev_id = self.db.deviations(self.node_id)[0]['id']
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _start_edit_and_get_editor(self, cause_id):
+        self.panel.load_node(self.node_id)
+        row = next(r for r, m in enumerate(self.panel._row_meta) if m[1] == cause_id)
+        idx = self.panel._table.model().index(row, self.panel._C_ORS)
+        self.panel._table.setCurrentIndex(idx)
+        self.panel._table.edit(idx)
+        self.app.processEvents()
+        from PyQt6.QtWidgets import QLineEdit
+        editors = [w for w in self.panel._table.viewport().findChildren(QLineEdit)
+                   if w.property('editing_row') == row]
+        return editors[0] if editors else None
+
+    def test_completer_falls_back_to_every_standard_cause_when_nothing_matches(self):
+        self.db.conn.execute(
+            "INSERT INTO standard_deviations (description) VALUES ('Helt orelaterat')")
+        self.db.conn.execute(
+            "INSERT INTO standard_causes (deviation_id, description) "
+            "VALUES ((SELECT id FROM standard_deviations WHERE description='Helt orelaterat'), "
+            "'Global standardorsak')")
+        self.db.commit()
+
+        cause_id = self.db.add_cause(self.dev_id)   # no comp_type at all
+        editor = self._start_edit_and_get_editor(cause_id)
+        self.assertIsNotNone(editor)
+        completer = editor.completer()
+        self.assertIsNotNone(completer, "completer must still be attached")
+        model = completer.model()
+        descs = [model.index(i, 0).data() for i in range(model.rowCount())]
+        self.assertIn('Global standardorsak', descs,
+            "completer's own wider fallback must still fire when the shared "
+            "helper's narrower cascade finds nothing")
+
+    def test_completer_uses_narrow_cascade_result_when_available(self):
+        std_dev_id = self.db.conn.execute(
+            "INSERT INTO standard_deviations (description) VALUES (?)",
+            (self.db.get_deviation(self.dev_id)['description'],)).lastrowid
+        self.db.commit()
+        obj_id = self.db.add_standard_object("Xyzzyobjekt")
+        self.db.add_standard_cause_with_object(std_dev_id, obj_id, "Specifik träff")
+        # An unrelated global cause that must NOT appear once a specific match exists
+        self.db.conn.execute(
+            "INSERT INTO standard_deviations (description) VALUES ('Helt orelaterat')")
+        self.db.conn.execute(
+            "INSERT INTO standard_causes (deviation_id, description) "
+            "VALUES ((SELECT id FROM standard_deviations WHERE description='Helt orelaterat'), "
+            "'Bör inte synas')")
+        self.db.commit()
+
+        cause_id = self.db.add_cause(self.dev_id)
+        self.db.update_cause(cause_id, comp_type="Xyzzyobjekt", comp_tag="V-1")
+        editor = self._start_edit_and_get_editor(cause_id)
+        completer = editor.completer()
+        model = completer.model()
+        descs = [model.index(i, 0).data() for i in range(model.rowCount())]
+        self.assertEqual(descs, ["Specifik träff"])
+
+
+class StandardCauseSuggestPopupTests(unittest.TestCase):
+    """The popup itself (2026-08-25, see NOTES.md "Standardorsak-popup
+    vid redigering av Orsak-cellen") — Anton: "När jag vill editera
+    orsakstexten och står i editerarläget vill jag även att det dyker
+    upp en liten popupruta (som inte täcker cellen) ... jag skall kunna
+    välja bland de 'standard'-orsaker som finns för objektypen och
+    avikelsen. Denna popupruta behöver bara innehålla detta samt
+    möjlighet att editera frekvens genom att klicka på frekvensen."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_stdcausepopup_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from hazop import ScenarioTablePanel
+        self.panel = ScenarioTablePanel(self.db)
+        self.panel.resize(900, 500)
+        self.panel.show()
+        self.node_id = self.db.add_node()
+        self.dev_id = self.db.deviations(self.node_id)[0]['id']
+        self.dev_description = self.db.get_deviation(self.dev_id)['description']
+        self.std_dev_id = self.db.conn.execute(
+            "INSERT INTO standard_deviations (description) VALUES (?)",
+            (self.dev_description,)).lastrowid
+        self.db.commit()
+        self.obj_id = self.db.add_standard_object("Xyzzyobjekt")
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_cause(self, comp_type="Xyzzyobjekt", comp_tag="V-101"):
+        cause_id = self.db.add_cause(self.dev_id)
+        if comp_type:
+            self.db.update_cause(cause_id, comp_type=comp_type, comp_tag=comp_tag)
+        return cause_id
+
+    def _start_edit(self, cause_id):
+        self.panel.load_node(self.node_id)
+        row = next(r for r, m in enumerate(self.panel._row_meta) if m[1] == cause_id)
+        idx = self.panel._table.model().index(row, self.panel._C_ORS)
+        self.panel._table.setCurrentIndex(idx)
+        self.panel._table.edit(idx)
+        self.app.processEvents()
+        return row
+
+    def _editor_for_row(self, row):
+        from PyQt6.QtWidgets import QLineEdit
+        editors = [w for w in self.panel._table.viewport().findChildren(QLineEdit)
+                   if w.property('editing_row') == row]
+        return editors[0] if editors else None
+
+    def _popup(self):
+        from scenario_panel import StandardCauseSuggestPopup
+        found = self.panel.window().findChildren(StandardCauseSuggestPopup)
+        return found[0] if found else None
+
+    def test_popup_appears_when_ors_edit_starts(self):
+        self.db.add_standard_cause_with_object(self.std_dev_id, self.obj_id, "Felar stängd")
+        cause_id = self._make_cause()
+        self._start_edit(cause_id)
+        popup = self._popup()
+        self.assertIsNotNone(popup, "popup must appear as soon as ORS editing starts")
+        self.assertTrue(popup.isVisible())
+
+    def test_popup_does_not_appear_for_kon_or_sg_columns(self):
+        """Only the Orsak (ORS) cell triggers this popup — editing a
+        Konsekvens or Safeguard cell must not show it."""
+        cause_id = self._make_cause()
+        cons_id = self.db.add_consequence(cause_id)
+        self.db.add_safeguard(cons_id)
+        self.panel.load_node(self.node_id)
+        row = next(r for r, m in enumerate(self.panel._row_meta) if m[1] == cause_id)
+        for col in (self.panel._C_KON, self.panel._C_SG):
+            idx = self.panel._table.model().index(row, col)
+            self.panel._table.setCurrentIndex(idx)
+            self.panel._table.edit(idx)
+            self.app.processEvents()
+            self.assertIsNone(self._popup(),
+                f"column {col} must never trigger the standard-cause popup")
+
+    def test_popup_does_not_appear_for_placeholder_row_with_no_cause(self):
+        """An empty ORS placeholder row (dev_id set, cause_id None) has
+        nothing to attach a description/frequency to — no popup."""
+        self.panel.load_node(self.node_id)
+        row = next(r for r, m in enumerate(self.panel._row_meta) if m[1] is None)
+        idx = self.panel._table.model().index(row, self.panel._C_ORS)
+        self.panel._table.setCurrentIndex(idx)
+        self.panel._table.edit(idx)
+        self.app.processEvents()
+        self.assertIsNone(self._popup())
+
+    def test_editor_keeps_focus_and_stays_alive_while_popup_is_shown(self):
+        """The core regression this feature could easily introduce:
+        showing ANY new widget/window while an editor is open must not
+        cause Qt's default FocusOut handling to silently commit+close
+        it. Confirmed empirically during development that a naive
+        separate-top-level-window popup DID trigger exactly this."""
+        self.db.add_standard_cause_with_object(self.std_dev_id, self.obj_id, "Felar stängd")
+        cause_id = self._make_cause()
+        row = self._start_edit(cause_id)
+        editor = self._editor_for_row(row)
+        self.assertIsNotNone(editor, "editor must exist right after starting the edit")
+
+        # Give any stray deferred/timer-based teardown a chance to run.
+        for _ in range(5):
+            self.app.processEvents()
+
+        editor_again = self._editor_for_row(row)
+        self.assertIsNotNone(editor_again,
+            "the cell editor must still exist after the popup has shown — "
+            "it must never be silently closed by the popup merely appearing")
+        self.assertTrue(editor_again.hasFocus(),
+            "the cell editor must keep keyboard focus while the popup is shown")
+
+    def test_empty_state_shows_message_and_does_not_crash(self):
+        cause_id = self._make_cause(comp_type='')   # no object -> no matches possible
+        self._start_edit(cause_id)
+        popup = self._popup()
+        self.assertIsNotNone(popup)
+        header = popup.layout().itemAt(0).widget()
+        self.assertIn("Ingen standardorsak", header.text())
+
+    def test_picking_a_standard_cause_saves_it_and_closes_the_editor(self):
+        self.db.add_standard_cause_with_object(self.std_dev_id, self.obj_id, "Felar stängd")
+        cause_id = self._make_cause()
+        row = self._start_edit(cause_id)
+        popup = self._popup()
+        self.assertIsNotNone(popup)
+
+        popup._pick("Felar stängd")
+        # closeEditor's actual widget teardown is a deferred (deleteLater)
+        # Qt event, not synchronous — a real Enter keypress needs the same
+        # settling time (confirmed empirically), so give it a moment
+        # rather than asserting immediately after one processEvents().
+        from PyQt6.QtTest import QTest
+        QTest.qWait(20)
+
+        self.assertIsNone(self._editor_for_row(row),
+            "picking a standard cause must close the cell editor")
+        self.assertEqual(self.db.get_cause(cause_id)['description'], "Felar stängd")
+
+    def test_clicking_frequency_commits_unconfirmed_text_first(self):
+        """Regression guard for the most fragile part of this feature:
+        _on_ors_frequency_picked -> _schedule_rebuild() tears down the
+        active cell editor as a side effect (ScenarioTablePanel._rebuild()'s
+        "Proactively clear focus from any active cell editor" step) — if
+        the in-progress description text weren't committed FIRST, that
+        teardown would silently discard it."""
+        cause_id = self._make_cause()
+        row = self._start_edit(cause_id)
+        editor = self._editor_for_row(row)
+        editor.setText("Ej sparad text")
+
+        popup = self._popup()
+        with unittest.mock.patch('scenario_panel.FrequencyPickerPopup.create_positioned') as mk:
+            fake_freq_popup = unittest.mock.Mock()
+            mk.return_value = fake_freq_popup
+            popup._edit_frequency()
+
+        self.app.processEvents()
+        self.assertEqual(self.db.get_cause(cause_id)['description'], "Ej sparad text",
+            "the description typed before clicking frequency must be saved, not discarded")
+
+    def test_popup_closes_when_editor_is_destroyed(self):
+        from PyQt6.QtWidgets import QStyledItemDelegate
+        cause_id = self._make_cause()
+        row = self._start_edit(cause_id)
+        popup = self._popup()
+        self.assertIsNotNone(popup)
+        editor = self._editor_for_row(row)
+
+        self.panel._delegate.commitData.emit(editor)
+        self.panel._delegate.closeEditor.emit(
+            editor, QStyledItemDelegate.EndEditHint.NoHint)
+        from PyQt6.QtTest import QTest
+        QTest.qWait(20)
+
+        self.assertIsNone(self._popup(), "the popup must close once the editor is destroyed")
+
+
 if __name__ == "__main__":
     unittest.main()

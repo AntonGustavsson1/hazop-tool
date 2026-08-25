@@ -1433,6 +1433,74 @@ samma dict-form som förut (`description`/`responsible`/`due_date`/
 omskrivna tester slog verkligen av mot den gamla `actions`-baserade
 koden innan denna ändring).
 
+## Standardorsak-popup vid redigering av Orsak-cellen (2026-08-25)
+
+Anton: "När jag vill editera orsakstexten och står i editerarläget
+vill jag även att det dyker upp en liten popupruta (som inte täcker
+cellen). I denna popuprutan skall jag kunna välja bland de
+'standard'-orsaker som finns för objektypen och avikelsen. Denna
+popupruta behöver bara innehålla detta samt möjlighet att editera
+frekvens genom att klicka på frekvensen. Anpassa popuprutan efter
+antalet standardorsaker som dyker upp."
+
+**Funktion:** så fort man går in i redigeringsläge på en Orsak-cell
+dyker `StandardCauseSuggestPopup` (`scenario_panel.py`) upp under
+raden — en knapp per matchande standardorsak (klick sparar texten och
+avslutar redigeringen direkt, bekräftat med Anton via
+`AskUserQuestion`) plus en klickbar frekvensrad som återanvänder den
+redan befintliga `FrequencyPickerPopup`/`_on_ors_frequency_picked`.
+Storleken anpassas automatiskt (`adjustSize()`) efter hur många
+standardorsaker som listas. Standardorsakerna hämtas via en ny delad
+hjälpmetod `ScenarioTablePanel._ors_standard_causes_for_row(row)` —
+samma fallback-kedja (objekt-hierarki → comp_type+avvikelsetext →
+comp_type utan avvikelsefilter) som `CauseObjectPopup._rebuild_causes`
+(tree_panel.py) redan använde, nu delad med den befintliga
+tangentbords-completern (`_attach_cause_completer`, omskriven till att
+anropa samma hjälpmetod istället för att duplicera upplösningslogiken).
+
+**Betydande, oväntad felsökningsresa** (värt att komma ihåg om
+liknande "extra hjälpruta bredvid en aktiv celleditor"-behov dyker upp
+igen): en NAIV implementation — en riktig separat top-level-fönster-
+popup (`Qt.WindowType.Tool | FramelessWindowHint`), även kombinerad med
+`WA_ShowWithoutActivating` och `Qt.FocusPolicy.NoFocus` på varje
+underwidget — visade sig, bekräftat empiriskt (inte via minne/gissning),
+tysta stänga den aktiva celleditorn så fort popupen visades. Orsak:
+`QAbstractItemDelegate`s inbyggda FocusOut-hantering (samma mekanism
+som låter en `QCompleter`s egen popup samexistera med en editor, via
+`completer.setWidget(editor)`) tolkar "fokus gick till ingenting i
+editorns egen anfader-kedja" som "användaren är klar med redigeringen"
+och committar+stänger den automatiskt — och att visa ETT NYTT
+OS-fönster alls (oavsett aktiverings-flaggor) räckte för att trigga en
+sådan momentan fokusförlust på plattformen som testades mot. Lösningen
+blev att göra popupen till en VANLIG, icke-top-level barn-widget av
+panelens eget toppfönster (`panel.window()`) istället — då skapas inget
+nytt OS-fönster alls, och den händelsen inträffar aldrig. Positionering
+sker därför i toppfönstrets EGNA lokala koordinater (`mapFromGlobal`),
+klippt mot dess klientyta istället för mot skärmens `availableGeometry`.
+
+**Andra bekräftade detaljer, inte bara antaganden:** `closeEditor`-
+signalen döljer (`hide()`) editorn OMEDELBART/synkront, men FÖRSTÖR
+(`destroyed`) den bara efter en odefinierad fördröjning (`deleteLater`-
+mönster) — popupens auto-stängning lyssnar därför på BÅDA: ett
+`eventFilter` som fångar `QEvent.Type.Hide` på editorn (omedelbart,
+pålitligt) plus `editor.destroyed` som extra skyddsnät. Att manuellt
+`emit`a `commitData`/`closeEditor` på fel delegate-instans
+(`self._pid_delegate` istället för `self._delegate`) ger en tyst Qt-
+runtime-varning ("editor that does not belong to this view") utan att
+krascha — `_pick`/`_edit_frequency` använder `self._panel._delegate`,
+samma instans den redan existerande Enter-tangent-hanteringen i
+`eventFilter()` använder, verifierat att den faktiskt fungerar.
+Klick på frekvensraden committar eventuell oskriven text FÖRST (samma
+`commitData`/`closeEditor`-mönster) innan frekvensen ändras — annars
+hade `_on_ors_frequency_picked`s `_schedule_rebuild()` (som proaktivt
+rensar fokus från en aktiv celleditor innan raderna byggs om) kunnat
+tyst tappa obekräftad text.
+
+**Verifiering:** `test_smoke`, hela `test_scenario_panel`-filen (140
+tester), samt kontrollgrupp (`git stash` på `scenario_panel.py` — 14
+av 15 nya tester slog verkligen av mot koden innan denna ändring, den
+15:e gav en hård `ImportError` eftersom hela popup-klassen inte fanns).
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.
