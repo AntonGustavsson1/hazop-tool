@@ -1106,9 +1106,10 @@ class _ScenarioDelegate(QStyledItemDelegate):
         w = option.rect.width() if option.rect.width() > 0 else 200
         if col == panel._C_ORS:
             w = max(40, option.rect.width() - 6)
-            rect = fm.boundingRect(0, 0, w, 10000, Qt.TextFlag.TextWordWrap, text)
-            return QSize(option.rect.width(),
-                         _ORS_HEADER_H + max(one_line_h, rect.height() + 4))
+            item = panel._table.item(index.row(), col)
+            combined = panel._ors_combined_text(item, text)
+            rect = fm.boundingRect(0, 0, w, 10000, Qt.TextFlag.TextWordWrap, combined)
+            return QSize(option.rect.width(), max(one_line_h, rect.height() + 4))
         elif col == panel._C_KON:
             w -= _KON_CAT_W
             w = max(40, w)
@@ -1175,33 +1176,20 @@ class _ScenarioDelegate(QStyledItemDelegate):
 
 _PID_ICON_W  = 22          # pixels reserved on the left for the pin icon
 _KON_CAT_W   = 26          # pixels for the category badge zone in KON cells
-# Height of the ORS cell's top strip ([tag|comment dot], see _PidDelegate.
-# paint()'s "Cause cells" branch). MUST match everywhere a row's needed
-# height is computed (sizeHint/_resize_rows_manual/_wrap_col_row_height)
-# AND everywhere the strip is actually drawn/the editor is positioned below
-# it (paint()/updateEditorGeometry) — these used to disagree (14 vs 17px),
-# which under-allocated 3px of vertical space for the wrapped description
-# text below the strip on every ORS row, silently clipping its bottom few
-# pixels (2026-08-11, bug report: "text göms på raderna ... spöktext ligger
-# kvar när man redigerar" — the clipped-then-stale pixels from the
-# undersized row explain both symptoms). See NOTES.md.
-_ORS_STRIP_H = 17
-
-# Frequency moved out of the tag strip above and into the orsaksfält
-# itself (the description area) — right-aligned there instead (2026-08-18,
-# see NOTES.md "Frekvensen ... hör hemma mer här" — every orsak has its
-# own frequency, causes.likelihood/base_frequency, so it belongs with the
-# cause's own content, not the shared object-identity strip above it). It
-# is drawn OVERLAID on the description's own first line rather than in a
-# separate reserved row — a dedicated row for it wasted a full extra line
-# of height on every ORS cell for a value that's usually just a few
-# characters (2026-08-18 follow-up: "hamnar nu på olika rader vilket tar
-# onödigt mycket plats"). _ORS_HEADER_H is therefore just the tag strip's
-# own height — kept as its own name (rather than switching call sites
-# back to _ORS_STRIP_H directly) so "where does the description begin"
-# stays a single, separately-named concept from "how tall is the tag
-# strip", even though the two happen to be equal right now.
-_ORS_HEADER_H = _ORS_STRIP_H
+# Height of the ORS cell's FIRST TEXT LINE — where the (now inline, bold)
+# tag prefix, the frequency chip, and the comment dot all live (2026-08-25,
+# see NOTES.md "Slå ihop objektbaren i Orsak-kolumnen": the separate tag
+# strip this constant used to measure is gone — the tag is now painted as
+# a bold prefix ON the description's own first line instead of its own
+# reserved band above it). Kept as an explicit named constant (rather than
+# recomputing a font-metric line height ad hoc at each of its several call
+# sites) for the same reason it always was: this file has a documented
+# history of exactly this kind of value silently drifting between
+# sizeHint/_resize_rows_manual/_wrap_col_row_height and paint()/
+# updateEditorGeometry (2026-08-11, bug report: "text göms på raderna ...
+# spöktext ligger kvar när man redigerar" — a 14-vs-17px mismatch clipped
+# the bottom of wrapped description text). See NOTES.md.
+_ORS_FIRST_LINE_H = 17
 
 _RRF_W       = 54          # pixel width of the RRF badge column on the right of safeguard cells
 _PLUS_BADGE_SIZE = 16      # pixel size of the in-cell "+" quick-add badge (bottom-right corner)
@@ -1338,15 +1326,23 @@ class _PidDelegate(_ScenarioDelegate):
         r = option.rect
         col = index.column()
         if col == self._panel._C_ORS:
-            # Editor sits in the description area, below the tag strip
-            # (the frequency label floats over the description's own
-            # first line rather than reserving space of its own, so it
-            # doesn't need to be excluded here — 2026-08-18, see NOTES.md
-            # "Frekvensen ... hör hemma mer här").
+            # Editor starts right after the bold tag prefix, on the same
+            # first line, leaving "V-101, " visible as context while
+            # editing the description (2026-08-25, see NOTES.md "Slå
+            # ihop objektbaren i Orsak-kolumnen" — same "keep the row's
+            # own prefix visible during inline edit" convention
+            # tree_panel.py's _begin_inline_edit already established for
+            # the HAZOP tree). The frequency label floats over the first
+            # line too but doesn't need excluding here — it always sits
+            # right-aligned, past where description editing matters
+            # (2026-08-18, see NOTES.md "Frekvensen ... hör hemma mer här").
             r = option.rect
-            editor.setGeometry(QRect(r.left() + 2, r.top() + _ORS_HEADER_H,
-                                     max(10, r.width() - 4),
-                                     max(10, r.height() - _ORS_HEADER_H)))
+            item = self._panel._table.item(index.row(), col)
+            desc = item.text() if item is not None else ''
+            prefix_w = self._panel._ors_tag_prefix_pixel_width(item, desc, option.font)
+            editor.setGeometry(QRect(r.left() + 2 + prefix_w, r.top(),
+                                     max(10, r.width() - 4 - prefix_w),
+                                     max(10, r.height())))
             return
         elif col == self._panel._C_KON:
             offset = _KON_CAT_W
@@ -1457,29 +1453,18 @@ class _PidDelegate(_ScenarioDelegate):
                 painter.restore()
                 return
 
-        # ── Cause cells: tag strip + frequency row + description below ────────
+        # ── Cause cells: inline bold tag prefix + description, frequency
+        # chip floating on the first line (2026-08-25, see NOTES.md "Slå
+        # ihop objektbaren i Orsak-kolumnen" — replaces the old separate
+        # tag strip: "V-101, Felar öppen" as ONE flowing, word-wrapped
+        # text block instead of a banner above the description) ──────────
         if col == self._panel._C_ORS:
             obj_data = index.data(Qt.ItemDataRole.UserRole + 2)
             if obj_data is not None:
-                comp_type, comp_tag = obj_data
-                # Hidden when this row's object is the SAME one as the
-                # immediately preceding cause row's (UserRole+8, set in
-                # _build_rows — see its own comment) — repeating the same
-                # tag banner down a run of consecutive deviations for one
-                # object wastes space (2026-08-18 follow-up: "om det visas
-                # flera avikelser efter varandra som tillhör samma
-                # objekttagg behöver denna inte repeteras"). This replaced
-                # an earlier, too-broad rule that hid the tag whenever the
-                # Utrustning column was merely VISIBLE — that hid it even
-                # on views (e.g. "click an object's marker on P&ID") where
-                # EVERY row shares one tag, so it never showed at all
-                # ("Orsaken har tidigare visat objekt-tagen i bannern men
-                # denna är nu borttagen"). Consecutive-repeat dedup still
-                # covers the original same-row-as-Utrustning-column case,
-                # since a group sharing one Utrustning value is by
-                # definition a run of consecutive same-tag rows.
-                repeats_previous = bool(index.data(Qt.ItemDataRole.UserRole + 8))
-                has_tag = bool(comp_tag or comp_type) and not repeats_previous
+                item = self._panel._table.item(row, col)
+                desc = index.data(Qt.ItemDataRole.DisplayRole) or ''
+                tag_label, show_tag = self._panel._ors_tag_prefix(item)
+                combined = self._panel._ors_combined_text(item, desc)
 
                 meta_      = self._panel._row_meta
                 _cause_id  = meta_[row][1] if row < len(meta_) else None
@@ -1502,89 +1487,27 @@ class _PidDelegate(_ScenarioDelegate):
                 else:
                     painter.fillRect(r, option.palette.base())
 
-                # ── Vertical split: tag strip, description (frequency floats
-                # over the description's own first line — see below) ───────
-                _SH = _ORS_STRIP_H
-                strip_rect = QRect(r.left(), r.top(), r.width(), _SH)
-                desc_rect = QRect(r.left() + 2, r.top() + _ORS_HEADER_H,
-                                   r.width() - 4, max(0, r.height() - _ORS_HEADER_H))
+                desc_rect = QRect(r.left() + 2, r.top() + 2,
+                                   r.width() - 4, max(0, r.height() - 4))
 
-                # Strip background — the frequency row below it is
-                # deliberately left unfilled (just the cell's own
-                # background), reading as part of the orsak's own content
-                # rather than the shared object-identity strip above it.
-                if not sel:
-                    painter.fillRect(strip_rect, QColor('#F5F5F3'))
-                else:
-                    painter.fillRect(strip_rect,
-                                     option.palette.highlight().color().darker(110))
-
-                # Separator line between strip and the rest of the cell
-                painter.setPen(QPen(QColor('#bcd'), 1))
-                painter.drawLine(r.left(), r.top() + _SH, r.right(), r.top() + _SH)
-
-                # ── Tag zone geometry (shared with the click hit-test in
-                # eventFilter() via _ors_tag_zone_width — see its docstring).
-                # Spans nearly the full strip now that frequency no longer
-                # shares it (2026-08-18) — only the comment dot still needs
-                # room at the right edge.
-                tag_x = r.left()
-                tag_zone_w = self._panel._ors_tag_zone_width(tag_x, r.right())
-
-                # ── Tag number (bold, left-aligned)
-                tag_label = comp_tag or ''
-                tf = QFont(option.font)
-                tf.setPointSize(max(6, option.font.pointSize() - 1))
-                tf.setBold(True)
-                painter.setFont(tf)
-                tfm = painter.fontMetrics()
-                if has_tag:
-                    tag_w = min(tfm.horizontalAdvance(tag_label) + 6, tag_zone_w)
-                    tag_draw_rect = QRect(tag_x, r.top(), tag_w, _SH)
-                    tag_tc = (option.palette.highlightedText().color() if sel
-                              else QColor('#17191C'))
-                    painter.setPen(tag_tc)
-                    painter.drawText(tag_draw_rect.adjusted(2, 0, -1, 0),
-                                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                                     tfm.elidedText(tag_label,
-                                                    Qt.TextElideMode.ElideRight,
-                                                    tag_draw_rect.width() - 3))
-
-                # ── Comment dot (right of strip) — the green/yellow/orange/
-                # red fill-status dot that used to sit next to it is gone
-                # entirely (2026-08-18, see NOTES.md "skrota pluppen").
-                # Geometry shared with eventFilter()'s click zone via
-                # _ors_comment_dot_geometry — see that method's own
-                # docstring for the real bug this fixed (the comment
-                # popup was completely unreachable via the UI before).
-                if _has_comment:
-                    painter.setBrush(QBrush(QColor('#17191C')))
-                    painter.setPen(Qt.PenStyle.NoPen)
-                    painter.drawEllipse(self._panel._ors_comment_dot_geometry(r))
-                    painter.setBrush(Qt.BrushStyle.NoBrush)
-
-                # ── Description text (full cell width — frequency floats
-                # over its own first line, drawn after so it stays on top) ──
-                desc = index.data(Qt.ItemDataRole.DisplayRole) or ''
-                painter.setFont(option.font)
+                # ── Combined text: bold tag prefix (if any) + plain
+                # description, word-wrapped as ONE block via the same
+                # QTextLayout-based helper already used to bold drag-
+                # dropped tags inside KON/SG descriptions — reused here
+                # instead of a bespoke layout implementation, given this
+                # file's own documented history of paint/geometry bugs.
                 tc = (option.palette.highlightedText().color() if sel
                       else option.palette.text().color())
-                painter.setPen(tc)
-                painter.drawText(desc_rect.adjusted(0, 1, 0, -1),
-                                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop |
-                                 Qt.TextFlag.TextWordWrap, desc)
+                tags = [tag_label] if show_tag else []
+                _draw_text_with_bold_tags(painter, desc_rect.adjusted(0, 1, 0, -1),
+                                          combined, tags, option.font, tc, word_wrap=True)
 
-                # ── Frequency — shares the description's own first line
-                # instead of a separate reserved row ("längst ut till
-                # höger"): a dedicated row wasted a full extra line of
-                # height on every ORS cell for a value that's usually just
-                # a few characters (2026-08-18 follow-up: "hamnar nu på
-                # olika rader vilket tar onödigt mycket plats"). Painted
-                # AFTER the description and backed by an opaque patch
-                # matching the cell's own background, so it reads as a
-                # small floating label — if the description's first line
-                # is long enough to reach under it, that corner is covered
-                # rather than visually colliding with it.
+                # ── Frequency — floats over the first line, right-aligned,
+                # drawn AFTER the text so it stays on top ("längst ut till
+                # höger" — every orsak has its own frequency,
+                # causes.likelihood/base_frequency, 2026-08-18, see
+                # NOTES.md). Unchanged in substance by this rewrite — only
+                # desc_rect's own top moved (no more strip above it).
                 freq_zone_x, freq_zone_w, freq_str = \
                     self._panel._ors_freq_zone_geometry(index, desc_rect.left(), desc_rect.right())
                 if freq_str is not None:
@@ -1605,6 +1528,19 @@ class _PidDelegate(_ScenarioDelegate):
                                      Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                                      ffm.elidedText(freq_str, Qt.TextElideMode.ElideRight,
                                                     freq_zone_w - 3))
+
+                # ── Comment dot — the only icon here since the 2026-08-18
+                # fill-status "plupp" removal. Drawn AFTER the text (like
+                # the frequency chip above) so it stays on top rather than
+                # being painted over — it used to sit safely inside its
+                # own strip band, which is gone now that the tag is
+                # inline. Geometry shared with eventFilter()'s click zone
+                # via _ors_comment_dot_geometry.
+                if _has_comment:
+                    painter.setBrush(QBrush(QColor('#17191C')))
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.drawEllipse(self._panel._ors_comment_dot_geometry(r))
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
 
                 self._draw_plus_badge(painter, r, row, col)
                 painter.restore()
@@ -2347,10 +2283,6 @@ class ScenarioTablePanel(QWidget):
         self._enter_col = -1
         self._last_enter_committed = False
         self._cell_font_size = 9
-        self._cause_obj_w = int(self.db.get_config('cause_obj_w', '64'))
-        self._drag_obj_w_active = False
-        self._drag_obj_w_start_x = 0
-        self._drag_obj_w_start_w = 0
         # Parallel list to _row_meta: None or (cat_id, cat_name, cat_sev)
         self._row_cat_info: list = []
         self.setMinimumHeight(CONFIG['H_TABLE_STD'])
@@ -3356,9 +3288,10 @@ class ScenarioTablePanel(QWidget):
             group_key_fn = _cause_id if col == self._C_ORS else _cons_id
             if col == self._C_ORS:
                 cell_w = max(40, w - 6)
+                combined = self._ors_combined_text(item, text)
                 rect = fm.boundingRect(0, 0, cell_w, 10000,
-                                      Qt.TextFlag.TextWordWrap, text)
-                h = _ORS_HEADER_H + max(one_line_h, rect.height() + 4)
+                                      Qt.TextFlag.TextWordWrap, combined)
+                h = max(one_line_h, rect.height() + 4)
             elif col == self._C_KON:
                 cell_w = max(40, w - _KON_CAT_W)
                 rect = fm.boundingRect(0, 0, cell_w, 10000,
@@ -3700,8 +3633,8 @@ class ScenarioTablePanel(QWidget):
         # status dot it drove is gone from paint(); the underlying
         # completeness computation stays, still used for the tooltip below.
         ors.setToolTip(f"{_status_icon} {_status_tip}\n"
-                       "Dubbelklicka för att redigera\n"
-                       "Klicka på objektzonen (vänster) för att sätta utrustnings-tag\n"
+                       "Dubbelklicka på texten för att redigera orsaksbeskrivningen\n"
+                       "Klicka på taggen (fetstilt) för att redigera objektets tag/typ\n"
                        "Enter för att lägga till ny orsak")
         self._table.setItem(r, self._C_ORS, ors)
 
@@ -4155,8 +4088,9 @@ class ScenarioTablePanel(QWidget):
         w = table.columnWidth(col)
         if col == self._C_ORS:
             cell_w = max(40, w - 6)
-            rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, text)
-            return _ORS_HEADER_H + max(one_line_h, rect.height() + 4)
+            combined = self._ors_combined_text(item, text)
+            rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, combined)
+            return max(one_line_h, rect.height() + 4)
         else:   # self._C_KON
             cell_w = max(40, w - _KON_CAT_W)
             rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, text)
@@ -4441,17 +4375,70 @@ class ScenarioTablePanel(QWidget):
         popup.move(max(scr.left(), x), max(scr.top(), y))
         popup.show()
 
-    # ORS strip/frequency-row layout constants — shared between paint()
-    # (_PidDelegate, below) and the click hit-test in eventFilter() so the
-    # drawn zones and the clickable zones can never drift apart. This file
-    # has a documented history of exactly that kind of desync between
-    # paint code and geometry code computed elsewhere (see NOTES.md's
-    # notes on _wrap_col_row_height/_resize_rows_manual needing to stay in
-    # sync with paint) — keeping each calculation in one place avoids
+    # ORS cell layout constants — shared between paint() (_PidDelegate,
+    # below) and the click hit-test in eventFilter() so the drawn zones
+    # and the clickable zones can never drift apart. This file has a
+    # documented history of exactly that kind of desync between paint
+    # code and geometry code computed elsewhere (see NOTES.md's notes on
+    # _wrap_col_row_height/_resize_rows_manual needing to stay in sync
+    # with paint) — keeping each calculation in one place avoids
     # repeating it.
-    _ORS_DOTS_MARGIN = 22   # room reserved for the comment dot at the strip's right edge
     _ORS_FREQ_MAX_W  = 90   # sane ceiling; real frequency strings are short ("3/år", "1.2e-3/år")
     _ORS_FREQ_MARGIN = 6    # right-edge margin for the frequency row within the orsaksfält
+    _ORS_DOT_RESERVE_W = 12  # room for the comment dot at the cell's right edge (2026-08-25:
+    # the dot moved onto this same first line when the tag strip was removed, so the
+    # frequency zone must always leave this space clear — reserved unconditionally
+    # (not just when a comment exists) so the two geometries never need to agree on
+    # whether a given row currently has one, avoiding yet another desync source
+
+    def _ors_tag_prefix(self, item):
+        """(tag_label, show_tag) for the ORS cell's bold tag prefix
+        (2026-08-25, see NOTES.md "Slå ihop objektbaren i Orsak-kolumnen"
+        — replaces the old separate tag strip with an inline bold prefix
+        ahead of the description, "V-101, Felar öppen"). Single source
+        of truth shared by sizeHint/paint/the click zone/the editor
+        offset, same rule every other ORS zone in this class already
+        follows.
+
+        repeats_previous (UserRole+8, set in _build_rows) is unchanged
+        from the old strip-based design (2026-08-18, see NOTES.md: "om
+        det visas flera avikelser efter varandra som tillhör samma
+        objekttagg behöver denna inte repeteras") — a consecutive run of
+        causes sharing one object still shows the bold tag only once."""
+        obj_data = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
+        comp_type, comp_tag = obj_data if obj_data else ('', '')
+        repeats_previous = bool(item.data(Qt.ItemDataRole.UserRole + 8)) if item else False
+        tag_label = (comp_tag or '').strip()
+        return tag_label, bool(tag_label) and not repeats_previous
+
+    def _ors_combined_text(self, item, desc):
+        """The exact string measured (sizeHint) and painted (paint) for
+        an ORS cell — "TAG, beskrivning", just "TAG" while the
+        description is still an untouched placeholder (same "bare tag
+        until something is filled in" rule the HAZOP tree's own Orsak
+        rows use, 2026-08-25, for consistency across the app), or just
+        the plain description when no tag should show."""
+        tag_label, show_tag = self._ors_tag_prefix(item)
+        if not show_tag:
+            return desc
+        trivial = desc.strip() in ('', 'Ny orsak')
+        return tag_label if trivial else f"{tag_label}, {desc}"
+
+    def _ors_tag_prefix_pixel_width(self, item, desc, font):
+        """Pixel width of the bold portion of _ors_combined_text — shared
+        by the click zone (what counts as "clicked the tag") and
+        updateEditorGeometry (where the description editor should
+        start), so a click always lands exactly where the bold text
+        visually ends."""
+        tag_label, show_tag = self._ors_tag_prefix(item)
+        if not show_tag:
+            return 0
+        trivial = desc.strip() in ('', 'Ny orsak')
+        bold_font = QFont(font)
+        bold_font.setBold(True)
+        fm = QFontMetrics(bold_font)
+        prefix = tag_label if trivial else f"{tag_label}, "
+        return fm.horizontalAdvance(prefix)
 
     def _ors_freq_label(self, freq_val, base_freq_per_year):
         """The exact frequency text shown in the orsaksfält's frequency
@@ -4465,24 +4452,6 @@ class ScenarioTablePanel(QWidget):
             elif bfv >= 0.001: return f"{bfv:.3g}/år"
             else:              return f"{bfv:.1e}".replace('e-0', 'e-') + "/år"
         return freq_axis_label(freq_val)
-
-    def _ors_tag_zone_width(self, tag_x, cell_right):
-        """Width of the ORS tag strip's tag zone.
-
-        2026-08-11: "tag numret klipps av ... högerställ frekvens" — the
-        tag used to be capped at the fixed _cause_obj_w divider width no
-        matter how much space was actually free. _cause_obj_w (the
-        user-draggable divider, still used for the drag handle and its
-        persisted width) stays in play as a FLOOR so dragging it can still
-        only ever make the promised tag zone wider, never narrower than
-        what the user last set.
-
-        2026-08-18: frequency moved out of this strip entirely (see
-        _ors_freq_zone_geometry below), so the tag zone now only needs to
-        leave room for the comment dot at the strip's right edge, not a
-        frequency zone too — simpler than the geometry this used to share
-        a single method with."""
-        return max(self._cause_obj_w, cell_right - self._ORS_DOTS_MARGIN - tag_x)
 
     def _ors_freq_zone_geometry(self, item, row_left, row_right):
         """Return (freq_zone_x, freq_zone_w, freq_str) for the frequency
@@ -4503,14 +4472,19 @@ class ScenarioTablePanel(QWidget):
             ff.setPointSize(max(6, self._table.font().pointSize() - 1))
             freq_zone_w = min(QFontMetrics(ff).horizontalAdvance(freq_str) + 6,
                               self._ORS_FREQ_MAX_W)
-        freq_zone_x = row_right - self._ORS_FREQ_MARGIN - freq_zone_w
+        freq_zone_x = row_right - self._ORS_DOT_RESERVE_W - self._ORS_FREQ_MARGIN - freq_zone_w
         return freq_zone_x, freq_zone_w, freq_str
 
     def _ors_comment_dot_geometry(self, cell_rect):
         """The small comment-indicator dot at the right edge of the ORS
-        tag strip — the ONLY icon there since the 2026-08-18 fill-status
-        "plupp" removal (see _PidDelegate.paint()'s own "Comment dot"
-        comment). Shared by paint() (which only draws it when
+        cell's first line — the ONLY icon there since the 2026-08-18
+        fill-status "plupp" removal (see _PidDelegate.paint()'s own
+        "Comment dot" comment). Sat at the right edge of the old, now-
+        removed tag strip (2026-08-25, see NOTES.md "Slå ihop
+        objektbaren i Orsak-kolumnen") — same "y = first line's own
+        vertical center" concept, now measured from the cell's top
+        directly since there's no more separate strip to anchor to.
+        Shared by paint() (which only draws it when
         _has_comment) and eventFilter()'s click zone so the two can
         never disagree about where it is — they used to (2026-08-20
         follow-up, found while centralizing zone geometry more broadly):
@@ -4530,7 +4504,7 @@ class ScenarioTablePanel(QWidget):
         site) — only the comment dot needed a real, working zone here,
         so that's the only icon this geometry describes now."""
         dot_r = 4
-        dot_y = cell_rect.top() + _ORS_STRIP_H // 2
+        dot_y = cell_rect.top() + _ORS_FIRST_LINE_H // 2
         dot_x = cell_rect.right() - 5
         return QRect(dot_x - dot_r, dot_y - dot_r, dot_r * 2, dot_r * 2)
 
@@ -4565,8 +4539,8 @@ class ScenarioTablePanel(QWidget):
         """Single source of truth for a safeguard row's height — used by
         _ScenarioDelegate._size_hint_impl, _compute_row_height AND
         _PidDelegate.paint()'s SG branch, so all three can never disagree
-        about how tall a safeguard row is (same rule as _ORS_STRIP_H's own
-        docstring elsewhere in this file).
+        about how tall a safeguard row is (same rule as _ORS_FIRST_LINE_H's
+        own docstring elsewhere in this file).
 
         A consequence with several safeguards stacks one physical table
         row per safeguard (see _apply_spans/_add_row), so the per-row
@@ -4761,33 +4735,6 @@ class ScenarioTablePanel(QWidget):
         ctrl = bool(event.type() == QEvent.Type.KeyPress and
                     event.modifiers() & Qt.KeyboardModifier.ControlModifier)
 
-        # Viewport mouse: drag divider between obj-zone and text in ORS column.
-        # This handle intentionally still tracks _cause_obj_w itself (the
-        # user's persisted minimum), NOT the wider tag_zone_w the strip may
-        # actually render at (2026-08-11, see _ors_tag_zone_width) — the
-        # handle is where the user asked the floor to be, and dragging it
-        # only ever raises or lowers that floor, regardless of how much
-        # extra elbow room a given row's tag currently happens to have.
-        if obj is self._table.viewport() and event.type() == QEvent.Type.MouseMove:
-            pos = event.pos()
-            if self._drag_obj_w_active:
-                delta = pos.x() - self._drag_obj_w_start_x
-                self._cause_obj_w = max(30, min(300, self._drag_obj_w_start_w + delta))
-                self._table.viewport().update()
-                return True
-            div_x = self._table.columnViewportPosition(self._C_ORS) + self._cause_obj_w
-            if abs(pos.x() - div_x) <= 4:
-                self._table.viewport().setCursor(Qt.CursorShape.SizeHorCursor)
-            else:
-                self._table.viewport().unsetCursor()
-
-        if obj is self._table.viewport() and event.type() == QEvent.Type.MouseButtonRelease:
-            if self._drag_obj_w_active:
-                self._drag_obj_w_active = False
-                self._table.viewport().unsetCursor()
-                self.db.set_config('cause_obj_w', str(self._cause_obj_w))
-                return True
-
         # ── Drag: record press position for potential drag-start ─────────────────
         if (obj is self._table.viewport() and
                 event.type() == QEvent.Type.MouseButtonPress and
@@ -4848,14 +4795,6 @@ class ScenarioTablePanel(QWidget):
                 event.type() == QEvent.Type.MouseButtonPress and
                 event.button() == Qt.MouseButton.LeftButton):
             pos = event.pos()
-            # Check for divider drag start before any other click handling
-            div_x = self._table.columnViewportPosition(self._C_ORS) + self._cause_obj_w
-            if abs(pos.x() - div_x) <= 4:
-                self._drag_obj_w_active = True
-                self._drag_obj_w_start_x = pos.x()
-                self._drag_obj_w_start_w = self._cause_obj_w
-                self._table.viewport().setCursor(Qt.CursorShape.SizeHorCursor)
-                return True
             col = self._table.columnAt(pos.x())
             row = self._table.rowAt(pos.y())
 
@@ -4902,25 +4841,23 @@ class ScenarioTablePanel(QWidget):
                     popup.exec()
                     return True
 
-            # Object-tag zone click — left (0 .. tag_zone_w) of cause cell,
-            # within the tag strip's own height. tag_zone_w is computed the
-            # same way paint() computes it (via _ors_tag_zone_width) rather
-            # than the raw _cause_obj_w divider width — otherwise, once a
-            # long tag's DRAWN width expands past the old fixed cap
-            # (2026-08-11 fix), clicking on the now-visible-but-previously-
-            # uncounted part of the tag would silently do nothing (stale
-            # hit-test rectangle). Still clickable even when the Utrustning
-            # column is visible and the tag TEXT itself isn't drawn here
-            # (2026-08-18, see NOTES.md "dubbla objektbanners") — only the
-            # duplicate DISPLAY was removed, not the edit affordance.
+            # Object-tag zone click — the bold "TAG, " prefix at the start
+            # of the cause cell's first line, pixel-exact to what paint()
+            # actually rendered bold (2026-08-25, see NOTES.md "Slå ihop
+            # objektbaren i Orsak-kolumnen" — replaces the old fixed-width
+            # tag-strip zone with the real rendered prefix width via the
+            # same _ors_tag_prefix_pixel_width() paint() and
+            # updateEditorGeometry() also use, so all three can never
+            # disagree about where the tag ends). No zone at all (0 width)
+            # when there's no tag to show, or this row repeats the
+            # previous one's tag (2026-08-18 dedup, unchanged).
             if (row >= 0 and col == self._C_ORS and row < len(self._row_meta) and
-                    pos.y() - self._table.rowViewportPosition(row) < _ORS_STRIP_H):
+                    pos.y() - self._table.rowViewportPosition(row) < _ORS_FIRST_LINE_H):
                 col_x      = self._table.columnViewportPosition(col)
-                obj_start  = col_x
-                cell_right = col_x + self._table.columnWidth(col) - 1
-                tag_zone_w = self._ors_tag_zone_width(obj_start, cell_right)
-                obj_end    = obj_start + tag_zone_w
-                if obj_start <= pos.x() < obj_end:
+                item       = self._table.item(row, col)
+                desc       = item.text() if item is not None else ''
+                prefix_w   = self._ors_tag_prefix_pixel_width(item, desc, self._table.font())
+                if prefix_w > 0 and col_x <= pos.x() < col_x + 2 + prefix_w:
                     cause_id = self._row_meta[row][1]
                     if cause_id is not None:
                         gp = self._table.viewport().mapToGlobal(pos)
@@ -4928,17 +4865,20 @@ class ScenarioTablePanel(QWidget):
                     return True
 
             # Frequency zone click — floats over the description's own
-            # first line now, below the tag strip (2026-08-18, see
-            # NOTES.md "Frekvensen ... hör hemma mer här" / follow-up
-            # "hamnar nu på olika rader"), using the exact same
-            # freq_zone_x/freq_zone_w geometry paint() draws the text with
-            # (2026-08-14, see NOTES.md: "klickar man på frekvens skall
-            # man kunna justera frekvens"). Restricted to that first
-            # line's own height so it doesn't also swallow clicks on the
-            # tag strip above it or later description lines below it.
+            # first line (2026-08-18, see NOTES.md "Frekvensen ... hör
+            # hemma mer här" / follow-up "hamnar nu på olika rader"),
+            # using the exact same freq_zone_x/freq_zone_w geometry
+            # paint() draws the text with (2026-08-14, see NOTES.md:
+            # "klickar man på frekvens skall man kunna justera
+            # frekvens"). Restricted to that first line's own height so
+            # it doesn't also swallow clicks on later description lines
+            # below it — shares that Y-band with the tag zone above
+            # (2026-08-25: both now live on the same first line, no more
+            # separate strip/frequency-row split), disambiguated by X
+            # since the tag sits left and frequency sits right-aligned.
             row_top = self._table.rowViewportPosition(row)
             if (row >= 0 and col == self._C_ORS and row < len(self._row_meta) and
-                    _ORS_HEADER_H <= pos.y() - row_top < _ORS_HEADER_H + _ORS_STRIP_H):
+                    pos.y() - row_top < _ORS_FIRST_LINE_H):
                 cause_id = self._row_meta[row][1]
                 if cause_id is not None:
                     col_x      = self._table.columnViewportPosition(col)

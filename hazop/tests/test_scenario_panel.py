@@ -586,7 +586,11 @@ class OrsStripHeightConsistencyTests(unittest.TestCase):
     last line (worse right after an edit, since that's exactly when
     _wrap_col_row_height's wrong number gets freshly (re)applied via
     setRowHeight — the "ghost text" symptom). Fixed by unifying all
-    five call sites onto one shared _ORS_STRIP_H = 17 constant."""
+    five call sites onto one shared constant (now _ORS_FIRST_LINE_H,
+    renamed 2026-08-25 when the separate tag strip these tests describe
+    was removed entirely — see NOTES.md "Slå ihop objektbaren i
+    Orsak-kolumnen"; the sync-across-five-places PRINCIPLE these tests
+    guard is unchanged, only what's being synced)."""
 
     @classmethod
     def setUpClass(cls):
@@ -608,20 +612,22 @@ class OrsStripHeightConsistencyTests(unittest.TestCase):
 
     def _assert_enough_room_for_wrapped_text(self, panel, row):
         from PyQt6.QtGui import QFontMetrics
-        from hazop import _ORS_HEADER_H
         item = panel._table.item(row, panel._C_ORS)
         fm = QFontMetrics(panel._table.font())
         cell_w = max(40, panel._table.columnWidth(panel._C_ORS) - 6)
-        rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, item.text())
+        # 2026-08-25 (see NOTES.md "Slå ihop objektbaren i
+        # Orsak-kolumnen"): no more separate tag strip to subtract — the
+        # tag (if any) is an inline bold prefix on the SAME wrapped text
+        # block now, measured via the same _ors_combined_text() helper
+        # paint()/sizeHint() themselves use, so the whole row height must
+        # cover the combined text directly.
+        combined = panel._ors_combined_text(item, item.text())
+        rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, combined)
         row_height = panel._table.rowHeight(row)
-        # _ORS_HEADER_H (2026-08-18) — the tag strip AND the frequency row
-        # now above the description, see NOTES.md "Frekvensen ... hör
-        # hemma mer här".
-        available_for_text = row_height - _ORS_HEADER_H
         self.assertGreaterEqual(
-            available_for_text, rect.height(),
-            f"row height {row_height} leaves only {available_for_text}px below the "
-            f"strip, but the wrapped description needs {rect.height()}px — the last "
+            row_height, rect.height(),
+            f"row height {row_height} is not enough for the wrapped tag+"
+            f"description text, which needs {rect.height()}px — the last "
             f"line will be clipped")
 
     def test_row_height_leaves_enough_room_after_initial_load(self):
@@ -2116,39 +2122,25 @@ class RiskCellActualRenderColorTests(unittest.TestCase):
             panel.deleteLater()
 
 
-class OrsStripTagFreqLayoutTests(unittest.TestCase):
-    """'Jag vill också kunna läsa ut hela tagnumret i orsaksbaren, nu blir
-    det lätt .... för att det finns för lite plats så flytta 0.1 åt höger
-    (högerställ).' Clarified when asked what "0.1" meant: 'Tag nummret
-    klipps av då frekvensen står för långt till vänster. högerställ
-    frekvens för att det ska rymma mer.' (2026-08-11)
-
-    Root cause: the ORS strip's tag zone was capped at the fixed
-    _cause_obj_w divider width (default 64px) no matter how much space
-    was actually free in the cell, because the frequency label was drawn
-    immediately after the tag rather than anchored to the strip's right
-    edge — so a wide cell left a stretch of blank space between the
-    (short) frequency text and the status dots while the tag itself kept
-    eliding. Originally fixed by right-anchoring the frequency zone
-    against the dots margin FIRST and letting the tag zone claim whatever
-    was left over; frequency later moved OUT of this strip entirely into
-    its own row in the orsaksfält (2026-08-18, see NOTES.md "Frekvensen
-    ... hör hemma mer här" — see OrsFreqRowInDescriptionAreaTests below
-    for that geometry), so the tag zone
-    (ScenarioTablePanel._ors_tag_zone_width) now simply claims the whole
-    strip minus room for the comment dot, no frequency to share it with
-    at all. _cause_obj_w is still kept as a floor so the user-draggable
-    divider only ever WIDENS the minimum, never narrows it, and the same
-    helper is still used by the tag-zone click hit-test in eventFilter()
-    so a click on the newly-visible part of a long tag doesn't hit a
-    stale rectangle."""
+class OrsInlineTagPrefixTests(unittest.TestCase):
+    """2026-08-25 (see NOTES.md "Slå ihop objektbaren i Orsak-kolumnen")
+    — Anton: "jag vill att tag id står utskrivet i fetstilt följt av
+    orsakstexten... exempelvis 'V-101, Felar öpppen'." Replaces the
+    separate tag strip (and its fixed-width, user-resizable
+    _cause_obj_w-capped zone — the whole subject of this class's
+    previous incarnation, OrsStripTagFreqLayoutTests, 2026-08-11) with
+    an inline bold "TAG, beskrivning" prefix on the description's own
+    first line. There is no cap of any kind anymore — the bold portion
+    is always exactly as wide as the tag actually renders, and clicking
+    it opens the same CauseTagPopup-driven tag/type editor the old
+    strip's tag zone already did."""
 
     @classmethod
     def setUpClass(cls):
         cls.app = _ensure_qapp()
 
     def setUp(self):
-        self._tmpdir = tempfile.mkdtemp(prefix="hazop_orsfreq_test_")
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_orsinlinetag_test_")
         self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
 
     def tearDown(self):
@@ -2158,149 +2150,84 @@ class OrsStripTagFreqLayoutTests(unittest.TestCase):
             pass
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    _TEXT_DARK = (0x17, 0x19, 0x1C)
-
-    def _is_dark(self, px, tol=40):
-        return (abs(px.red()   - self._TEXT_DARK[0]) <= tol and
-                abs(px.green() - self._TEXT_DARK[1]) <= tol and
-                abs(px.blue()  - self._TEXT_DARK[2]) <= tol)
-
-    def _make_tagged_cause(self, tag="E1.M1.QMA127"):
+    def _make_tagged_cause(self, tag="E1.M1.QMA127", description=""):
         from hazop import ScenarioTablePanel
         panel = ScenarioTablePanel(self.db)
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
         cause_id = self.db.add_cause(dev_id)
-        self.db.update_cause(cause_id, comp_type='V', comp_tag=tag)
+        self.db.update_cause(cause_id, comp_type='V', comp_tag=tag, description=description)
         panel.load_node(node_id)
         row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
         return panel, row, cause_id
 
-    def test_geometry_never_shrinks_tag_zone_below_the_dragged_divider_width(self):
-        """In a narrow cell there's no leftover space to reclaim — the tag
-        zone must fall back to exactly the user's persisted _cause_obj_w
-        floor, never below it (that would break the existing drag-to-
-        resize feature's promise)."""
-        panel, row, cause_id = self._make_tagged_cause()
+    def test_combined_text_puts_tag_before_description(self):
+        panel, row, cause_id = self._make_tagged_cause(description="Felar stängd")
         try:
-            self.assertEqual(panel._cause_obj_w, 64,
-                "test assumes the documented default divider width")
-            tag_zone_w = panel._ors_tag_zone_width(tag_x=22, cell_right=120)
-            self.assertGreaterEqual(tag_zone_w, panel._cause_obj_w)
-        finally:
-            panel.deleteLater()
-
-    def test_geometry_expands_tag_zone_into_reclaimed_space_in_a_wide_cell(self):
-        """The actual bug: with a wide cell (plenty of room), the OLD code
-        still capped the tag at the fixed 64px divider width. The fix
-        must let the tag zone grow well past that fixed cap — since
-        frequency moved out of this strip entirely (2026-08-18, see class
-        docstring), the tag zone now claims the WHOLE strip minus just
-        the comment-dot margin, no frequency zone to share it with."""
-        panel, row, cause_id = self._make_tagged_cause()
-        try:
-            old_cap = panel._cause_obj_w
-            tag_zone_w = panel._ors_tag_zone_width(tag_x=22, cell_right=500)
-            self.assertGreater(tag_zone_w, old_cap * 2,
-                "tag zone should reclaim the freed-up space in a wide cell, "
-                "not stay capped at the old fixed divider width")
-            self.assertEqual(tag_zone_w, 500 - panel._ORS_DOTS_MARGIN - 22,
-                "tag zone must claim the whole strip minus the comment-dot "
-                "margin — nothing else competes for room in it anymore")
-        finally:
-            panel.deleteLater()
-
-    def test_long_tag_renders_wider_than_old_fixed_cap_in_real_paint(self):
-        """Render a real cell (same path production code uses) and confirm
-        the tag's own text pixels extend past where the OLD flat 64px cap
-        would have already elided it, now that the cell has room to spare.
-        """
-        from PyQt6.QtGui import QFont, QFontMetrics
-        panel, row, cause_id = self._make_tagged_cause()
-        try:
-            # Null out the frequency for this row before rendering. A cause
-            # always carries SOME frequency (default likelihood=3, see
-            # Database.cause_f_level), and it's drawn in the same dark
-            # color as the tag — probing for "any dark pixel" past the old
-            # cap would otherwise just as likely land on the frequency
-            # text (which, under the OLD code, starts drawing immediately
-            # past that same cap) as on the tag, making the probe
-            # ambiguous. Blanking it isolates exactly what this test is
-            # about: whether the TAG itself is still being clipped.
             item = panel._table.item(row, panel._C_ORS)
-            item.setData(Qt.ItemDataRole.UserRole + 3, None)
-            item.setData(Qt.ItemDataRole.UserRole + 5, None)
-
-            panel._table.setColumnWidth(panel._C_ORS, 400)
-            panel.resize(900, 400)
-            panel.show()
-            self.app.processEvents()
-            panel._resize_rows_manual()
-            self.app.processEvents()
-
-            index = panel._table.model().index(row, panel._C_ORS)
-            cell_rect = panel._table.visualRect(index)
-            pixmap = panel._table.viewport().grab(cell_rect)
-            panel.hide()
-            image = pixmap.toImage()
-
-            # Compute where the tag text actually ends using the SAME font
-            # construction paint() uses, so this test isn't a guess tied to
-            # one particular platform's default font metrics.
-            base_font = panel._table.font()
-            tag_font = QFont(base_font)
-            tag_font.setPointSize(max(6, base_font.pointSize() - 1))
-            tag_font.setBold(True)
-            text_w = QFontMetrics(tag_font).horizontalAdvance("E1.M1.QMA127")
-            tag_x = 22   # _PID_ICON_W
-            expected_text_end = tag_x + 2 + text_w
-            old_cap_end = tag_x + panel._cause_obj_w   # 22 + 64 = 86
-
-            self.assertGreater(expected_text_end, old_cap_end + 10,
-                "test setup issue: chosen tag isn't actually longer than "
-                "the old fixed cap — pick a longer tag")
-
-            probe_lo = old_cap_end + 5
-            probe_hi = min(expected_text_end - 2, image.width() - 1)
-            strip_h = 17  # _ORS_STRIP_H
-            found = False
-            for x in range(probe_lo, max(probe_lo + 1, probe_hi)):
-                for y in range(strip_h):
-                    if self._is_dark(image.pixelColor(x, y)):
-                        found = True
-                        break
-                if found:
-                    break
-            self.assertTrue(found,
-                f"expected tag text pixels somewhere in x=[{probe_lo},{probe_hi}] "
-                f"(beyond the old fixed cap at x={old_cap_end}) now that the "
-                "cell has room — the tag is still being clipped")
+            self.assertEqual(panel._ors_combined_text(item, "Felar stängd"),
+                              "E1.M1.QMA127, Felar stängd")
         finally:
             panel.deleteLater()
 
-    def test_tag_zone_click_hit_test_matches_the_expanded_paint_geometry(self):
-        """The tag-zone click (opens the tag-picker popup) used to be
-        hard-bounded by the raw _cause_obj_w divider width. After the fix,
-        clicking on the newly-visible part of a long tag (drawn wider than
-        that old bound) must still land inside the click zone — otherwise
-        the visible tag and its clickable area silently drift apart."""
-        panel, row, cause_id = self._make_tagged_cause()
+    def test_combined_text_is_bare_tag_when_description_still_trivial(self):
+        panel, row, cause_id = self._make_tagged_cause(description="Ny orsak")
+        try:
+            item = panel._table.item(row, panel._C_ORS)
+            self.assertEqual(panel._ors_combined_text(item, "Ny orsak"), "E1.M1.QMA127")
+        finally:
+            panel.deleteLater()
+
+    def test_combined_text_is_plain_description_without_a_tag(self):
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(cause_id, description="Flödesgivare felar")
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+            item = panel._table.item(row, panel._C_ORS)
+            self.assertEqual(panel._ors_combined_text(item, "Flödesgivare felar"),
+                              "Flödesgivare felar")
+        finally:
+            panel.deleteLater()
+
+    def test_no_cap_a_long_tag_renders_at_its_full_natural_width(self):
+        """The old design capped the tag at a fixed _cause_obj_w divider
+        width no matter how much room was free (see class docstring).
+        The new inline design has no cap at all — a long tag's bold
+        prefix is always exactly as wide as QFontMetrics says it is."""
+        from PyQt6.QtGui import QFont, QFontMetrics
+        panel, row, cause_id = self._make_tagged_cause(
+            tag="E1.M1.QMA127-EXTRA-LONG-TAG", description="Felar stängd")
+        try:
+            item = panel._table.item(row, panel._C_ORS)
+            desc = item.text()
+            prefix_w = panel._ors_tag_prefix_pixel_width(item, desc, panel._table.font())
+            bold_font = QFont(panel._table.font())
+            bold_font.setBold(True)
+            expected = QFontMetrics(bold_font).horizontalAdvance(
+                "E1.M1.QMA127-EXTRA-LONG-TAG, ")
+            self.assertEqual(prefix_w, expected)
+        finally:
+            panel.deleteLater()
+
+    def test_tag_click_zone_matches_the_actual_rendered_prefix_width(self):
+        """Clicking anywhere within the bold prefix's real rendered width
+        must open the tag popup; clicking just past it must not — the
+        click zone is computed via the SAME _ors_tag_prefix_pixel_width
+        paint() itself uses, so the two can never drift apart."""
+        panel, row, cause_id = self._make_tagged_cause(description="Felar stängd")
         try:
             panel._table.setColumnWidth(panel._C_ORS, 400)
             panel.resize(900, 400)
             panel.show()
             self.app.processEvents()
             col_x = panel._table.columnViewportPosition(panel._C_ORS)
-            cell_right = col_x + panel._table.columnWidth(panel._C_ORS) - 1
-            obj_start = col_x + 22  # _PID_ICON_W
-            tag_zone_w = panel._ors_tag_zone_width(obj_start, cell_right)
-
-            # A click position well past the old fixed 64px cap but still
-            # inside the newly-expanded tag zone.
-            probe_x = obj_start + panel._cause_obj_w + 20
-            self.assertLess(probe_x, obj_start + tag_zone_w,
-                "test setup issue: probe point isn't actually within the "
-                "expanded tag zone")
+            item = panel._table.item(row, panel._C_ORS)
+            prefix_w = panel._ors_tag_prefix_pixel_width(item, item.text(), panel._table.font())
 
             popup_calls = []
             panel._show_cause_obj_popup = lambda r, cid, gp: popup_calls.append((r, cid))
@@ -2308,15 +2235,23 @@ class OrsStripTagFreqLayoutTests(unittest.TestCase):
             from PyQt6.QtCore import QPoint, QEvent
             from PyQt6.QtGui import QMouseEvent
             from PyQt6.QtCore import Qt as _Qt
-            row_y = panel._table.rowViewportPosition(row) + 3
-            pos = QPoint(probe_x, row_y)
-            ev = QMouseEvent(QEvent.Type.MouseButtonPress, pos.toPointF(),
-                             _Qt.MouseButton.LeftButton, _Qt.MouseButton.LeftButton,
-                             _Qt.KeyboardModifier.NoModifier)
-            panel.eventFilter(panel._table.viewport(), ev)
+
+            def _click(x):
+                row_y = panel._table.rowViewportPosition(row) + 3
+                pos = QPoint(x, row_y)
+                ev = QMouseEvent(QEvent.Type.MouseButtonPress, pos.toPointF(),
+                                 _Qt.MouseButton.LeftButton, _Qt.MouseButton.LeftButton,
+                                 _Qt.KeyboardModifier.NoModifier)
+                panel.eventFilter(panel._table.viewport(), ev)
+
+            _click(col_x + prefix_w - 3)
             self.assertEqual(popup_calls, [(row, cause_id)],
-                "clicking within the expanded (paint-matching) tag zone "
-                "must still open the tag-picker popup")
+                "a click just inside the rendered bold prefix must open the tag popup")
+
+            popup_calls.clear()
+            _click(col_x + prefix_w + 10)
+            self.assertEqual(popup_calls, [],
+                "a click past the rendered bold prefix must NOT open the tag popup")
         finally:
             panel.deleteLater()
 
@@ -2424,7 +2359,17 @@ class OrsCommentClickZoneTests(unittest.TestCase):
         """Regression for the second bug: a click in what used to be the
         defunct "clone" zone (left of the comment dot, still inside the
         ORS strip) must NOT trigger _clone_scenario — that zone covered
-        blank space with no visible affordance and has been removed."""
+        blank space with no visible affordance and has been removed.
+
+        2026-08-25: the dot now sits on the cell's first line (see
+        _ors_comment_dot_geometry's own docstring), the same line the
+        (always-present, likelihood defaults to 1 for every cause)
+        frequency zone floats over — so the space just left of the dot
+        is no longer guaranteed blank, it may legitimately belong to
+        the frequency zone now. FrequencyPickerPopup is patched here
+        too so a probe that lands there opens a mocked popup instead of
+        a real, test-hanging modal .exec() — this test only owns the
+        "_clone_scenario must not fire" assertion."""
         panel, row, cause_id = self._make_commented_cause()
         try:
             panel.resize(900, 400)
@@ -2438,7 +2383,9 @@ class OrsCommentClickZoneTests(unittest.TestCase):
             self.assertGreater(probe.x(), cr.left(),
                 "test setup issue: probe point must still be inside the cell")
 
-            with unittest.mock.patch.object(panel, '_clone_scenario') as mock_clone:
+            with unittest.mock.patch.object(panel, '_clone_scenario') as mock_clone, \
+                 unittest.mock.patch('hazop.FrequencyPickerPopup.create_positioned') as mock_freq:
+                mock_freq.return_value = unittest.mock.Mock()
                 self._click(panel, probe)
 
             mock_clone.assert_not_called()
@@ -2953,24 +2900,22 @@ class OrsStripReworkTests(unittest.TestCase):
             row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
             self.assertTrue(panel._table.isColumnHidden(panel._C_UTR),
                 "test assumes load_node() hides the Utrustning column by default")
-            image_hidden = self._render_ors_cell(panel, row)
-            strip_has_tag_hidden = any(
-                self._is_dark(image_hidden.pixelColor(x, y))
-                for x in range(0, 90) for y in range(0, 17))
-            self.assertTrue(strip_has_tag_hidden,
-                "the tag text must be drawn when Utrustning is hidden")
+            item = panel._table.item(row, panel._C_ORS)
+            tag_label, show_tag = panel._ors_tag_prefix(item)
+            self.assertTrue(show_tag,
+                "the tag prefix must be shown when Utrustning is hidden")
+            self.assertEqual(tag_label, "V-101")
 
             panel.load_all()
             row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
             self.assertFalse(panel._table.isColumnHidden(panel._C_UTR),
                 "test assumes load_all() shows the Utrustning column")
-            image_visible = self._render_ors_cell(panel, row)
-            strip_has_tag_visible = any(
-                self._is_dark(image_visible.pixelColor(x, y))
-                for x in range(0, 90) for y in range(0, 17))
-            self.assertTrue(strip_has_tag_visible,
-                "the tag text must ALSO be drawn when Utrustning is visible, as long as "
-                "it isn't a repeat of the immediately preceding row")
+            item = panel._table.item(row, panel._C_ORS)
+            tag_label, show_tag = panel._ors_tag_prefix(item)
+            self.assertTrue(show_tag,
+                "the tag prefix must ALSO be shown when Utrustning is visible, as long "
+                "as it isn't a repeat of the immediately preceding row")
+            self.assertEqual(tag_label, "V-101")
         finally:
             panel.deleteLater()
 
@@ -2998,26 +2943,28 @@ class OrsStripReworkTests(unittest.TestCase):
             row3 = next(r for r, m in enumerate(panel._row_meta) if m[1] == c3)
 
             def _tag_visible(row):
-                image = self._render_ors_cell(panel, row)
-                return any(self._is_dark(image.pixelColor(x, y))
-                           for x in range(0, 90) for y in range(0, 17))
+                item = panel._table.item(row, panel._C_ORS)
+                _tag_label, show_tag = panel._ors_tag_prefix(item)
+                return show_tag
 
             self.assertTrue(_tag_visible(row1),
-                "first occurrence of V-1 must show its tag banner")
+                "first occurrence of V-1 must show its tag prefix")
             self.assertFalse(_tag_visible(row2),
-                "an immediate repeat of the same object (V-1) must not repeat the banner")
+                "an immediate repeat of the same object (V-1) must not repeat the prefix")
             self.assertTrue(_tag_visible(row3),
-                "a different object (P-1) right after must show its own tag banner")
+                "a different object (P-1) right after must show its own tag prefix")
         finally:
             panel.deleteLater()
 
-    def test_frequency_renders_right_aligned_over_the_descriptions_first_line(self):
+    def test_frequency_renders_right_aligned_on_the_cells_first_line(self):
         """2026-08-18 follow-up ("hamnar nu på olika rader vilket tar
-        onödigt mycket plats"): the frequency no longer gets a fully
-        separate reserved row below the strip — it floats right-aligned
-        over the description's own first line instead, so ORS cells don't
-        pay for an extra line of height just to show it."""
-        from hazop import ScenarioTablePanel, _ORS_STRIP_H, _ORS_HEADER_H
+        onödigt mycket plats"): the frequency doesn't get its own
+        reserved row — it floats right-aligned over the first line,
+        the SAME line the (now inline) tag prefix and description text
+        start on (2026-08-25, see NOTES.md "Slå ihop objektbaren i
+        Orsak-kolumnen" — there's no more separate tag strip for it to
+        sit "below" anymore, both share one first line)."""
+        from hazop import ScenarioTablePanel, _ORS_FIRST_LINE_H
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
         cause_id = self.db.add_cause(dev_id)
@@ -3029,19 +2976,18 @@ class OrsStripReworkTests(unittest.TestCase):
             image = self._render_ors_cell(panel, row)
 
             right_x_range = range(image.width() - 60, image.width() - 5)
-            strip_right_has_text = any(
-                self._is_dark(image.pixelColor(x, y))
-                for x in right_x_range for y in range(0, _ORS_STRIP_H))
-            self.assertFalse(strip_right_has_text,
-                "frequency text must no longer be drawn inside the tag strip")
-
             freq_zone_has_text = any(
                 self._is_dark(image.pixelColor(x, y))
-                for x in right_x_range
-                for y in range(_ORS_HEADER_H, _ORS_HEADER_H + _ORS_STRIP_H + 5))
+                for x in right_x_range for y in range(0, _ORS_FIRST_LINE_H))
             self.assertTrue(freq_zone_has_text,
-                "frequency text must be drawn right-aligned over the "
-                "description's own first line, just below the strip")
+                "frequency text must be drawn right-aligned on the cell's first line")
+
+            below_first_line_has_text = any(
+                self._is_dark(image.pixelColor(x, y))
+                for x in right_x_range
+                for y in range(_ORS_FIRST_LINE_H, _ORS_FIRST_LINE_H + 10))
+            self.assertFalse(below_first_line_has_text,
+                "frequency must not spill onto a second line")
         finally:
             panel.deleteLater()
 

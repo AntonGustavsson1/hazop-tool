@@ -1295,6 +1295,69 @@ låst fast med en ny regressionstest
 `tests/test_tree_panel.py`) som använder exakt de guide-ord Anton själv
 nämnde.
 
+## Slå ihop objektbaren i Orsak-kolumnen (2026-08-25, samma dag, tredje ändringen)
+
+Anton: "I hazop scenario består orsak av en objektbar, orsakstext och
+en frekvens. Jag vill att du slår ihop tar bort objektbaren och
+istället gör så tag id står utskrivet i fetstilt följt av
+orsakstexten exempelvis 'V-101, Felar öpppen'. Objekttaggen ska vara
+i bold och klickar man på denna så editerar man objekt tag alternativ
+objekt typ. klickar man på 'felar öppen' ska man kunna editera
+orsakstexten. Till höger om detta ska frekvens stå."
+
+**Före:** ORS-cellen (`scenario_panel.py`, `_PidDelegate.paint()`) var
+vertikalt uppdelad i en egen objekt-tagg-remsa (`_ORS_STRIP_H = 17px`,
+egen bakgrundsfärg, separerad med en linje) högst upp, med
+orsaksbeskrivningen som egen, ombruten text under den
+(`_ORS_HEADER_H`-offset). En manuellt dragbar delare (`_cause_obj_w`,
+persisterad i `app_config`) lät användaren justera taggzonens bredd.
+
+**Efter:** remsan är helt borttagen. Taggen står nu INLINE, i fetstil,
+direkt följt av orsakstexten på samma textflöde ("**V-101**, Felar
+öppen") via samma `_draw_text_with_bold_tags`/`QTextLayout`-
+infrastruktur som redan fetmarkerar dragna taggar i KON/SG-
+beskrivningar. Tre nya delade hjälpmetoder på `ScenarioTablePanel`
+(`_ors_tag_prefix`, `_ors_combined_text`, `_ors_tag_prefix_pixel_width`)
+är ensam källa till sanning för vad som visas/mäts/klickas — använda
+identiskt av alla tre radhöjdsberäkningarna, `paint()`,
+`updateEditorGeometry()` och `eventFilter()`s klick-zon, enligt filens
+egen etablerade "delad geometri"-regel. Klick på den fetstilta taggen
+öppnar samma `CauseTagPopup` som tidigare (oförändrad); klick/
+dubbelklick på resten startar samma inline-textredigering av
+orsaksbeskrivningen som redan fanns. Frekvensen (redan en högerställd
+"chip" sedan 2026-08-18) flyttades inte i sak — bara att "första
+raden" nu börjar direkt vid cellens topp istället för efter remsan.
+Den dragbara delaren (`_cause_obj_w`/`_drag_obj_w_*`, `app_config`-
+nyckeln `cause_obj_w`, `_ors_tag_zone_width`) togs bort helt — en fast
+zonbredd att justera finns inte längre när den fetstilta zonen alltid
+är exakt så bred som taggen faktiskt renderas.
+
+**Konstant-omdöpning:** `_ORS_STRIP_H` → `_ORS_FIRST_LINE_H` (samma
+värde 17, nytt namn/betydelse: höjden på radens FÖRSTA textrad, där
+tagg/frekvens/kommentar-zonerna bor — inte en fysisk remsa som inte
+längre finns). `_ORS_HEADER_H` togs bort helt.
+
+**Bugg hittad och fixad under omskrivningen, inte i planen:**
+kommentar-pricken (`_ors_comment_dot_geometry`) flyttades avsiktligt
+från "remsans mitt" till "första radens mitt" som en konsekvens av att
+remsan försvann — men det flyttade den in på SAMMA rad/höjdband som
+frekvens-chipen, som redan (sedan 2026-08-18, likelihood defaultar
+till 1 för varje ny orsak) är aktiv på praktiskt taget varje rad. Utan
+fix hade pricken och frekvenstexten kunnat överlappa visuellt, och en
+regressionstest (`OrsCommentClickZoneTests.
+test_clicking_near_the_dot_no_longer_fires_the_removed_clone_zone`)
+hängde faktiskt i en riktig, omockad `FrequencyPickerPopup.exec()` i
+testsviten tills detta upptäcktes. Fixat genom en ny konstant
+`_ORS_DOT_RESERVE_W = 12` som ovillkorligen reserverar utrymme åt
+pricken i `_ors_freq_zone_geometry`s beräkning — oavsett om just den
+raden faktiskt har en kommentar, så att de två geometrierna aldrig
+behöver komma överens dynamiskt om det (samma "en delad källa"-princip
+som allt annat i denna klass).
+
+**Verifiering:** `test_smoke` (11), `test_scenario_panel` (110),
+`test_integration` (214) samt full 14-filssvit — alla gröna. Manuell
+räckvidd inte körd i GUI:t denna session (headless testmiljö).
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

@@ -4881,13 +4881,12 @@ class OrsFrequencyZoneClickTests(unittest.TestCase):
         return self.panel.eventFilter(self.panel._table.viewport(), ev)
 
     def test_clicking_frequency_zone_opens_frequency_picker_popup(self):
-        from hazop import _ORS_HEADER_H
         freq_zone_x, freq_zone_w, freq_str = self._freq_zone_geometry()
         self.assertTrue(freq_str, "test setup issue: cause has no frequency label to click on")
-        # The frequency zone floats over the description's own first
-        # line, just below the tag strip (2026-08-18, see class
-        # docstring) — not inside the strip itself anymore.
-        row_y = self.panel._table.rowViewportPosition(self.row) + _ORS_HEADER_H + 3
+        # The frequency zone floats over the cell's first line, the
+        # same line the (now inline) bold tag prefix shares (2026-08-25,
+        # see class docstring) — there's no separate tag strip anymore.
+        row_y = self.panel._table.rowViewportPosition(self.row) + 3
         fake_popup = unittest.mock.Mock()
         with unittest.mock.patch('hazop.FrequencyPickerPopup.create_positioned',
                                   return_value=fake_popup) as mock_create:
@@ -4896,29 +4895,36 @@ class OrsFrequencyZoneClickTests(unittest.TestCase):
         mock_create.assert_called_once()
         fake_popup.exec.assert_called_once()
 
-    def test_clicking_the_tag_strip_does_not_open_the_frequency_popup(self):
-        """The frequency zone must be confined to its own row's height,
-        so a click on the tag strip ABOVE it (same x range, now that the
-        tag zone spans nearly the whole strip width too) doesn't also
-        open the frequency popup."""
-        freq_zone_x, freq_zone_w, freq_str = self._freq_zone_geometry()
+    def test_clicking_the_tag_prefix_does_not_open_the_frequency_popup(self):
+        """2026-08-25: the bold tag prefix and the frequency zone now
+        share the SAME first-line Y-band (there's no more separate tag
+        strip above it) and are disambiguated by X only — a click within
+        the tag's own rendered width must not also open the frequency
+        popup, even though it sits on the same line as the frequency
+        text."""
+        from hazop import _ORS_FIRST_LINE_H
+        col_x = self.panel._table.columnViewportPosition(self.panel._C_ORS)
+        item = self.panel._table.item(self.row, self.panel._C_ORS)
+        prefix_w = self.panel._ors_tag_prefix_pixel_width(
+            item, item.text(), self.panel._table.font())
+        self.assertGreater(prefix_w, 0, "test setup issue: cause has no tag prefix to click on")
         self.panel._row_plus_cols = {}
         self.panel._clone_scenario = unittest.mock.Mock()
         self.panel._open_comment_popup = unittest.mock.Mock()
-        row_y = self.panel._table.rowViewportPosition(self.row) + 3   # inside the tag strip
+        row_y = self.panel._table.rowViewportPosition(self.row) + _ORS_FIRST_LINE_H // 2
         with unittest.mock.patch('hazop.FrequencyPickerPopup.create_positioned') as mock_create:
-            self._click(freq_zone_x + freq_zone_w // 2, row_y)
+            self._click(col_x + prefix_w - 3, row_y)
             mock_create.assert_not_called()
 
-    def test_clicking_below_the_frequency_row_does_not_open_the_frequency_popup(self):
-        """A click on a LATER wrapped description line, below the
-        frequency zone that floats over the first one (same x range),
-        must not also open the popup. A click there can legitimately
-        fall through to the pre-existing (unrelated, out of scope here)
-        clone/comment/plus-badge zones instead — those are stubbed out
-        so this test only asserts on the one thing it owns: the
-        frequency popup must not fire."""
-        from hazop import _ORS_HEADER_H, _ORS_STRIP_H
+    def test_clicking_below_the_first_line_does_not_open_the_frequency_popup(self):
+        """A click on a LATER wrapped description line, below the first
+        line the frequency zone floats over (same x range), must not
+        also open the popup. A click there can legitimately fall through
+        to the pre-existing (unrelated, out of scope here) clone/comment/
+        plus-badge zones instead — those are stubbed out so this test
+        only asserts on the one thing it owns: the frequency popup must
+        not fire."""
+        from hazop import _ORS_FIRST_LINE_H
         freq_zone_x, freq_zone_w, freq_str = self._freq_zone_geometry()
         self.panel._row_plus_cols = {}
         self.panel._clone_scenario = unittest.mock.Mock()
@@ -4926,7 +4932,7 @@ class OrsFrequencyZoneClickTests(unittest.TestCase):
         row_y = self.panel._table.rowViewportPosition(self.row)
         with unittest.mock.patch('hazop.FrequencyPickerPopup.create_positioned') as mock_create:
             self._click(freq_zone_x + freq_zone_w // 2,
-                        row_y + _ORS_HEADER_H + _ORS_STRIP_H + 5)
+                        row_y + _ORS_FIRST_LINE_H + 5)
             mock_create.assert_not_called()
 
     def test_picking_a_preset_frequency_sets_likelihood_and_clears_base_frequency(self):
