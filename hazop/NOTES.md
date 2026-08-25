@@ -1098,6 +1098,62 @@ m.fl.) — bekräftat att de faktiskt slår av på koden innan denna fix
 
 **Verifiering:** `test_smoke` + `test_tree_panel` (79 tester, grönt).
 
+## Vänsterklick på ett P&ID-objekt kan nu redigera tag/typ och ta bort; högerklicksmenyn fick en "Ta bort" (2026-08-25, samma dag, uppföljning)
+
+**Beställning:** Anton: "Om jag vänsterklickar på ett objekt på pid
+viewer ska man kunna editera objektnamn (tag) och objekttyp. Man ska
+även kunna klicka på deleteknappen för att ta bort. Samt att om man
+högerklickar på objektet så ska också alternativet att ta bort finnas."
+
+**Bakgrund:** vänsterklick på en befintlig utrustningsmarkör visade
+sedan tidigare bara `EquipmentDeviationBar` — en ren avvikelse-checklista
+(2026-08-12, se NOTES.md: "Resten av valen får jag nog göra nere i hazop
+scenario"). Tag/typ-redigering och radering fanns bara via högerklick →
+"Redigera objekt" (`EquipmentTagPopup`, 2026-08-12) — och den menyn hade
+INGEN raderingsfunktion alls, bara redigering.
+
+**1. `EquipmentDeviationBar` (`pid_panel_mod.py`) blev en kombinerad
+tag+typ+avvikelse+ta bort-editor** — samma princip som
+`EquipmentPlacementPopup` redan är för NYA objekt, nu även för
+BEFINTLIGA. Ny Tag-fält (samma taggcompleter-mönster som övriga
+popuper, live-commit på `editingFinished`), Typ-combo + "+"-knapp för
+ny typ (samma som `EquipmentPlacementPopup`/`EquipmentTagPopup`), en
+informativ dublett-varning (live via `textChanged`, ingen blockerande
+sammanslagning eftersom detta är ett REDAN existerande, riktigt objekt —
+inte en tom platshållare som riskerar bli en övergiven dubblett) och en
+"Ta bort"-knapp med bekräftelsedialog. Två nya signaler,
+`equipment_updated`/`equipment_deleted` (equipment_id), bubblas via
+`PIDPanel` (`_on_equipment_bar_updated`/`_on_equipment_bar_deleted` —
+uppdaterar canvasens overlay direkt, sedan vidare) till `MainWindow`
+(`_on_equipment_changed_from_marker`) som gör samma tråd/scenario-
+uppdatering `_on_equipment_edit_requested` redan gjorde för
+högerklicksflödet.
+
+**2. Högerklicksmenyn fick en "Ta bort"** direkt bredvid "Redigera
+objekt" (`pid_graphics_view.py`s `_show_context_menu`), ny signal
+`equipment_delete_requested` (samma payload — `equipment_markers.id` —
+som `equipment_edit_requested`). `PIDPanel._on_equipment_delete_requested`
+slår upp objektet, bekräftar (`QMessageBox.question`, samma
+"Ta bort X?"-mönster som trädets egen `delete_selected()` redan
+använder), anropar `db.delete_equipment_item()` (kaskaderar redan till
+alla markörer på objektet, se dess egen docstring) och återanvänder
+SAMMA `equipment_deleted`-signal/MainWindow-uppdatering som
+vänsterklick-popupens knapp — ingen duplicerad refresh-logik mellan de
+två borttagningsvägarna.
+
+Nya regressionstester: `tests/test_pid_panel_mod.py`
+(`EquipmentDeviationBarTests` — tag/typ-commit, dublett-hint, ta bort
+bekräftad/avbruten; `EquipmentMarkerEditContextMenuTests` — "Ta bort"
+finns/saknas i menyn, klick emitterar rätt signal) och
+`tests/test_integration.py` (nya `EquipmentDeleteRequestedHandlerTests`,
+`EquipmentBarUpdateAndDeleteBubbleTests` — hela vägen PIDPanel→
+MainWindow→tree/scenario-refresh för båda borttagningsvägarna och
+tag-redigering).
+
+**Verifiering:** `test_smoke` + `test_pid_panel_mod` +
+`test_pid_graphics_view` + `test_integration` (331 tester) samt full
+14-filssvit, allt grönt.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

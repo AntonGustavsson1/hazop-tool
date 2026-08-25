@@ -4026,6 +4026,144 @@ class EquipmentEditRequestedHandlerTests(unittest.TestCase):
             mock_info.assert_called_once()
 
 
+class EquipmentDeleteRequestedHandlerTests(unittest.TestCase):
+    """PIDPanel._on_equipment_delete_requested — the confirm+delete side of
+    right-click "Ta bort" on an existing equipment marker (2026-08-25, see
+    NOTES.md — Anton: "om man högerklickar på objektet så ska också
+    alternativet att ta bort finnas"), plus MainWindow's tree/scenario
+    refresh via the bubbled equipment_deleted signal."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_equipdelete_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_confirmed_delete_removes_equipment_and_refreshes_tree_and_scenario(self):
+        eq_id = self.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", "", 0)
+        marker_id = self.db.add_equipment_marker(eq_id, "PV-101", 0, 1.0, 1.0, "Ventil")
+
+        with _TempDbMainWindow() as win:
+            win.db = self.db
+            win.pid_panel.db = self.db
+
+            with unittest.mock.patch.object(
+                    QMessageBox, 'question', return_value=QMessageBox.StandardButton.Yes), \
+                 unittest.mock.patch.object(win.pid_panel, '_load_overlays'), \
+                 unittest.mock.patch.object(win.tree_panel, 'refresh') as mock_tree_refresh, \
+                 unittest.mock.patch.object(win.scenario_panel, 'schedule_rebuild') as mock_rebuild:
+                win.pid_panel._on_equipment_delete_requested(marker_id)
+
+            self.assertIsNone(self.db.get_equipment_by_id(eq_id))
+            mock_tree_refresh.assert_called_once()
+            mock_rebuild.assert_called_once()
+
+    def test_cancelled_delete_keeps_equipment(self):
+        eq_id = self.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", "", 0)
+        marker_id = self.db.add_equipment_marker(eq_id, "PV-101", 0, 1.0, 1.0, "Ventil")
+
+        with _TempDbMainWindow() as win:
+            win.db = self.db
+            win.pid_panel.db = self.db
+
+            with unittest.mock.patch.object(
+                    QMessageBox, 'question', return_value=QMessageBox.StandardButton.No):
+                win.pid_panel._on_equipment_delete_requested(marker_id)
+
+            self.assertIsNotNone(self.db.get_equipment_by_id(eq_id))
+
+    def test_unknown_marker_is_a_no_op(self):
+        with _TempDbMainWindow() as win:
+            win.db = self.db
+            win.pid_panel.db = self.db
+            with unittest.mock.patch.object(QMessageBox, 'question') as mock_q:
+                win.pid_panel._on_equipment_delete_requested(9999)
+            mock_q.assert_not_called()
+
+
+class EquipmentBarUpdateAndDeleteBubbleTests(unittest.TestCase):
+    """End-to-end wiring for EquipmentDeviationBar's tag/typ edit and
+    "Ta bort" button (2026-08-25, see NOTES.md — Anton: "Om jag
+    vänsterklickar på ett objekt på pid viewer ska man kunna editera
+    objektnamn (tag) och objekttyp. Man ska även kunna klicka på
+    deleteknappen för att ta bort.") — PIDPanel.equipment_updated/
+    equipment_deleted must actually reach MainWindow's tree/scenario
+    refresh, not just update the popup's own fields in isolation (already
+    covered by EquipmentDeviationBarTests in test_pid_panel_mod.py)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_equipbarbubble_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_editing_tag_from_the_bar_refreshes_tree_and_scenario(self):
+        eq_id = self.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", "", 0)
+        marker_id = self.db.add_equipment_marker(eq_id, "PV-101", 0, 1.0, 1.0, "Ventil")
+
+        with _TempDbMainWindow() as win:
+            win.db = self.db
+            win.pid_panel.db = self.db
+            # PIDPanel.db has no cascading setter of its own — the bar
+            # keeps a SEPARATE db reference (see EquipmentDeviationBar.db's
+            # own setter docstring), normally kept in sync by
+            # MainWindow._reload_all_panels() on a real project swap.
+            win.pid_panel._equipment_bar.db = self.db
+            win.pid_panel._equipment_bar.load(eq_id, marker_id)
+
+            with unittest.mock.patch.object(win.tree_panel, 'refresh') as mock_tree_refresh, \
+                 unittest.mock.patch.object(win.scenario_panel, 'schedule_rebuild') as mock_rebuild:
+                win.pid_panel._equipment_bar._tag_edit.setText("PV-102")
+                win.pid_panel._equipment_bar._commit_tag()
+
+            self.assertEqual(self.db.get_equipment_by_id(eq_id)['tag'], "PV-102")
+            mock_tree_refresh.assert_called_once()
+            mock_rebuild.assert_called_once()
+
+    def test_deleting_from_the_bar_refreshes_tree_and_scenario(self):
+        eq_id = self.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", "", 0)
+        marker_id = self.db.add_equipment_marker(eq_id, "PV-101", 0, 1.0, 1.0, "Ventil")
+
+        with _TempDbMainWindow() as win:
+            win.db = self.db
+            win.pid_panel.db = self.db
+            # PIDPanel.db has no cascading setter of its own — the bar
+            # keeps a SEPARATE db reference (see EquipmentDeviationBar.db's
+            # own setter docstring), normally kept in sync by
+            # MainWindow._reload_all_panels() on a real project swap.
+            win.pid_panel._equipment_bar.db = self.db
+            win.pid_panel._equipment_bar.load(eq_id, marker_id)
+
+            with unittest.mock.patch.object(
+                    QMessageBox, 'question', return_value=QMessageBox.StandardButton.Yes), \
+                 unittest.mock.patch.object(win.pid_panel, '_load_overlays'), \
+                 unittest.mock.patch.object(win.tree_panel, 'refresh') as mock_tree_refresh, \
+                 unittest.mock.patch.object(win.scenario_panel, 'schedule_rebuild') as mock_rebuild:
+                win.pid_panel._equipment_bar._on_delete_clicked()
+
+            self.assertIsNone(self.db.get_equipment_by_id(eq_id))
+            mock_tree_refresh.assert_called_once()
+            mock_rebuild.assert_called_once()
+
+
 class EquipmentIdentityCrossPanelSyncTests(unittest.TestCase):
     """"Objektets identitet på P&ID, HAZOP scenario och trädet måste höra
     ihop. Bind dessa så de lirar och alltid på alla tre ställen oavsett

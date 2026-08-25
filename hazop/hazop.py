@@ -1416,6 +1416,8 @@ class MainWindow(QMainWindow):
         self.pid_panel.cause_template_created.connect(_on_cause_template_created)
         self.pid_panel.equipment_placement_requested.connect(self._on_equipment_placement_requested)
         self.pid_panel.equipment_edit_requested.connect(self._on_equipment_edit_requested)
+        self.pid_panel.equipment_updated.connect(self._on_equipment_changed_from_marker)
+        self.pid_panel.equipment_deleted.connect(self._on_equipment_changed_from_marker)
         self.pid_panel.marker_navigated.connect(self._on_marker_navigate)
         # Shift+click a marker while an ORS/KON/SG cell is being edited
         # inserts the tag into the open editor instead of navigating
@@ -1781,6 +1783,17 @@ class MainWindow(QMainWindow):
 
         popup.committed.connect(_on_picked)
         popup.exec()
+
+    def _on_equipment_changed_from_marker(self, equipment_id):
+        """EquipmentDeviationBar's own tag/typ edit or "Ta bort" (left-
+        click an equipment marker, 2026-08-25, see NOTES.md) — PIDPanel
+        already redrew its own overlays before emitting either signal
+        (equipment_updated/equipment_deleted), so this only needs to
+        refresh the other two places that resolve an object's identity
+        live from equipment_catalog, same as _on_equipment_edit_requested's
+        own refresh triplet above."""
+        self.scenario_panel.schedule_rebuild()
+        self.tree_panel.refresh()
 
     def _on_equipment_dropped_on_deviation(self, dev_id, marker_ids):
         """One or more equipment markers dragged from the P&ID onto a

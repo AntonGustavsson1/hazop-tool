@@ -386,9 +386,23 @@ class EquipmentDeviationBar(QWidget):
     (2026-08-18, see that class's own docstring) — this class's own job is
     now just the popup chrome/positioning, not the checklist logic itself.
 
-    Retyping the equipment (comp_type) and reassigning it to a different
-    node are handled elsewhere now (right-click "Redigera objekt" /
-    dragging it in the tree) — dropped from here to keep this popup small.
+    2026-08-12 through 2026-08-25 (see NOTES.md): retyping the equipment
+    (comp_type) and reassigning it to a different node used to be handled
+    only via right-click "Redigera objekt" / dragging it in the tree,
+    deliberately dropped from here to keep this popup small. Reinstated
+    2026-08-25 at Anton's explicit request ("Om jag vänsterklickar på ett
+    objekt på pid viewer ska man kunna editera objektnamn (tag) och
+    objekttyp. Man ska även kunna klicka på deleteknappen för att ta
+    bort.") — this is now the combined tag+typ+avvikelse+delete editor for
+    an EXISTING object, mirroring what EquipmentPlacementPopup already is
+    for a brand-new one. Tag/type edits commit live (editingFinished /
+    combo activation), same convention as every other popup in this file;
+    unlike EquipmentPlacementPopup's placeholder-merge dance, editing an
+    EXISTING object's tag to collide with another one just shows the same
+    informational duplicate hint the right-click editor already accepted
+    without blocking — there's no blank placeholder row here that could
+    need merging away.
+
     An "add a brand-new object" button briefly lived here too (2026-08-12)
     but was removed the same day it shipped: placing a new object doesn't
     belong in a popup anchored to an EXISTING one — right-click "🔧 Objekt"
@@ -396,8 +410,10 @@ class EquipmentDeviationBar(QWidget):
     EquipmentPlacementPopup, see NOTES.md "kombinerad placeringsmeny").
     """
 
-    deviation_added = pyqtSignal(int, int)   # (deviation_id, equipment_id)
+    deviation_added   = pyqtSignal(int, int)   # (deviation_id, equipment_id)
     deviation_removed = pyqtSignal(int, int)   # (deviation_id, equipment_id)
+    equipment_updated  = pyqtSignal(int)       # equipment_id — tag/type edited
+    equipment_deleted  = pyqtSignal(int)       # equipment_id — "Ta bort" confirmed
 
     def __init__(self, db, parent=None):
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
@@ -410,19 +426,71 @@ class EquipmentDeviationBar(QWidget):
         self.setMaximumWidth(260)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
+        _small = "font-size:10px;"
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 8, 10, 8)
         outer.setSpacing(4)
 
-        self._title_lbl = QLabel()
-        bold = QFont(); bold.setBold(True)
-        self._title_lbl.setFont(bold)
+        self._title_lbl = QLabel("<b>Objekt</b>")
+        self._title_lbl.setStyleSheet("font-size:11px; color:#8D9299;")
         outer.addWidget(self._title_lbl)
+
+        form = QFormLayout()
+        form.setSpacing(3)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self._tag_edit = QLineEdit()
+        self._tag_edit.setPlaceholderText("t.ex. P-101")
+        self._tag_edit.setFixedHeight(CONFIG['H_SMALL_BTN'])
+        self._tag_edit.setStyleSheet(_small)
+        completer = _make_tag_completer(db, self)
+        if completer:
+            self._tag_edit.setCompleter(completer)
+        self._tag_edit.textChanged.connect(self._update_dup_hint)
+        self._tag_edit.editingFinished.connect(self._commit_tag)
+        tag_lbl = QLabel("Tag:")
+        tag_lbl.setStyleSheet(_small)
+        form.addRow(tag_lbl, self._tag_edit)
+
+        self._type_cb = QComboBox()
+        self._type_cb.setFixedHeight(CONFIG['H_SMALL_BTN'])
+        self._type_cb.setStyleSheet(_small)
+        self._type_cb.addItems(_equipment_type_options(db))
+        self._type_cb.activated.connect(self._commit_type)
+        typ_row = QHBoxLayout()
+        typ_row.setSpacing(4)
+        typ_row.addWidget(self._type_cb)
+        add_type_btn = QPushButton("+")
+        add_type_btn.setFixedSize(CONFIG['H_SMALL_BTN'], CONFIG['H_SMALL_BTN'])
+        add_type_btn.setStyleSheet(_small)
+        add_type_btn.setToolTip("Lägg till en ny objekttyp")
+        add_type_btn.clicked.connect(self._add_new_type)
+        typ_row.addWidget(add_type_btn)
+        typ_lbl = QLabel("Typ:")
+        typ_lbl.setStyleSheet(_small)
+        form.addRow(typ_lbl, typ_row)
+        outer.addLayout(form)
+
+        self._dup_hint = QLabel("")
+        self._dup_hint.setStyleSheet("font-size:9px; color:#b8860b;")
+        self._dup_hint.setWordWrap(True)
+        outer.addWidget(self._dup_hint)
 
         self._checklist = _DeviationChecklist(db, self)
         self._checklist.deviation_added.connect(self.deviation_added)
         self._checklist.deviation_removed.connect(self.deviation_removed)
         outer.addWidget(self._checklist)
+
+        self._delete_btn = QPushButton("Ta bort")
+        self._delete_btn.setIcon(_icon('delete'))
+        self._delete_btn.setStyleSheet(_small)
+        self._delete_btn.setToolTip("Ta bort objektet och dess markörer från P&ID")
+        self._delete_btn.clicked.connect(self._on_delete_clicked)
+        del_row = QHBoxLayout()
+        del_row.addStretch()
+        del_row.addWidget(self._delete_btn)
+        outer.addLayout(del_row)
 
     @property
     def db(self):
@@ -477,8 +545,91 @@ class EquipmentDeviationBar(QWidget):
         eq = self.db.get_equipment_by_id(equipment_id)
         if not eq:
             return
-        self._title_lbl.setText(
-            f"{eq['tag'] or f'Utrustning #{equipment_id}'} — {eq['equipment_type'] or '?'}")
+        self._tag_edit.setText(eq.get('tag') or '')
+        self._dup_hint.setText("")
+        comp_type = eq.get('equipment_type') or ''
+        idx = self._type_cb.findText(comp_type) if comp_type else -1
+        if comp_type and idx < 0:
+            self._type_cb.addItem(comp_type)
+            idx = self._type_cb.count() - 1
+        self._type_cb.setCurrentIndex(idx if idx >= 0 else -1)
+
+    def _update_dup_hint(self, text):
+        """Live (textChanged, not textEdited — 2026-08-25, see NOTES.md
+        "Dublett-taggens varningstext ... uppdateras nu live") duplicate
+        check: informational only, no merge/confirm dance — see class
+        docstring for why that's the right call for an EXISTING object."""
+        tag = text.strip().upper()
+        existing = self.db.get_equipment_by_tag(tag) if tag else None
+        if existing and existing['id'] != self.equipment_id:
+            self._dup_hint.setText(
+                f"ℹ️ \"{existing['tag']}\" finns redan i katalogen "
+                f"({existing.get('equipment_type') or '?'}).")
+        else:
+            self._dup_hint.setText("")
+
+    def _commit_tag(self):
+        eq = self.db.get_equipment_by_id(self.equipment_id)
+        if not eq:
+            return
+        tag = self._tag_edit.text().strip().upper()
+        if self._tag_edit.text() != tag:
+            self._tag_edit.blockSignals(True)
+            self._tag_edit.setText(tag)
+            self._tag_edit.blockSignals(False)
+        pfx = _equip_prefix_from_tag(tag) if tag else (eq.get('prefix') or '')
+        self.db.update_equipment_item(
+            self.equipment_id, tag, pfx, eq.get('equipment_type') or '', eq.get('description') or '')
+        self.equipment_updated.emit(self.equipment_id)
+
+    def _commit_type(self, _index=None):
+        eq = self.db.get_equipment_by_id(self.equipment_id)
+        if not eq:
+            return
+        comp_type = self._type_cb.currentText().strip()
+        self.db.update_equipment_item(
+            self.equipment_id, eq.get('tag') or '', eq.get('prefix') or '', comp_type, eq.get('description') or '')
+        # Rebuild so per-row standard-cause suggestions (keyed on
+        # comp_type) use the type just picked — same reasoning as
+        # EquipmentPlacementPopup._commit_type.
+        self._checklist._rebuild_checklist()
+        self.equipment_updated.emit(self.equipment_id)
+
+    def _add_new_type(self):
+        """Same behavior as EquipmentPlacementPopup._add_new_type — also
+        registers the name as a Standardobjekt right away."""
+        name, ok = QInputDialog.getText(self, "Ny objekttyp", "Namn:")
+        name = (name or '').strip()
+        if not ok or not name:
+            return
+        idx = self._type_cb.findText(name)
+        if idx < 0:
+            self._type_cb.addItem(name)
+            idx = self._type_cb.count() - 1
+        self._type_cb.setCurrentIndex(idx)
+        exists = self.db.conn.execute(
+            "SELECT 1 FROM standard_objects WHERE LOWER(name)=LOWER(?)", (name,)).fetchone()
+        if not exists:
+            self.db.add_standard_object(name)
+        self._commit_type()
+
+    def _on_delete_clicked(self):
+        """2026-08-25, see NOTES.md — "Man ska även kunna klicka på
+        deleteknappen för att ta bort." delete_equipment_item() cascades
+        the deletion to every equipment_markers row pointing at it
+        (ON DELETE CASCADE), so this removes the object from every P&ID
+        page it was placed on, not just the marker that was clicked."""
+        eq = self.db.get_equipment_by_id(self.equipment_id)
+        label = (eq.get('tag') or 'objektet') if eq else 'objektet'
+        reply = QMessageBox.question(
+            self, "Ta bort", f"Ta bort {label}? Objektet och dess markörer på P&ID tas bort.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        equipment_id = self.equipment_id
+        self.db.delete_equipment_item(equipment_id)
+        self.close()
+        self.equipment_deleted.emit(equipment_id)
 
     def show_near(self, global_pos):
         """Show the popup anchored near global_pos (a QPoint), clamped to
@@ -1014,6 +1165,13 @@ class PIDPanel(QWidget):
     equipment_placement_requested = pyqtSignal(str, object, int, object)
     # (suggested_tag, scene_pos, page, pdf_rect_or_None)
     equipment_edit_requested = pyqtSignal(int)   # equipment_markers.id — bubbled from viewer
+    # EquipmentDeviationBar's own tag/typ/delete UI (2026-08-25, see
+    # NOTES.md) — bubbled up so MainWindow can refresh tree/scenario
+    # (equipment_updated) or tear down any UI still pointed at the
+    # now-gone row (equipment_deleted). Both carry equipment_catalog.id,
+    # NOT a marker id — the bar already resolved that.
+    equipment_updated = pyqtSignal(int)   # equipment_id — tag/type edited from the P&ID marker popup
+    equipment_deleted = pyqtSignal(int)   # equipment_id — deleted from the P&ID marker popup
     ref_tag_picked            = pyqtSignal(str)   # forwarded from viewer after MODE_PICK_REF_TAG
     annotation_placed         = pyqtSignal(int)   # annotation id (feature 8)
     # Node markup signals
@@ -1220,6 +1378,7 @@ class PIDPanel(QWidget):
         self.viewer.zone_drawn.connect(self._on_zone_drawn)
         self.viewer.equipment_drag_finished.connect(self._on_equipment_drag_finished)
         self.viewer.equipment_edit_requested.connect(self.equipment_edit_requested.emit)
+        self.viewer.equipment_delete_requested.connect(self._on_equipment_delete_requested)
         self.viewer.ref_tag_picked.connect(self.ref_tag_picked)
         self.viewer.annotation_clicked.connect(self._on_annotation_click)
         self.viewer.marker_clicked.connect(self._on_marker_clicked)
@@ -1241,6 +1400,8 @@ class PIDPanel(QWidget):
         self._equipment_bar = EquipmentDeviationBar(self.db, parent=self.viewer)
         self._equipment_bar.deviation_added.connect(self._on_equipment_deviation_added)
         self._equipment_bar.deviation_removed.connect(self._on_equipment_deviation_removed)
+        self._equipment_bar.equipment_updated.connect(self._on_equipment_bar_updated)
+        self._equipment_bar.equipment_deleted.connect(self._on_equipment_bar_deleted)
         # Plain callback, not a signal, so the popup gets the (created)
         # cause_id back synchronously — see EquipmentDeviationBar._create_cause_fn.
         # self._equipment_bar.marker_id is read fresh INSIDE the lambda body
@@ -3305,6 +3466,52 @@ class PIDPanel(QWidget):
         # count, tree, worksheet) — see NOTES.md "av-/aktivera".
         self._refresh_equipment_marker_visual(equipment_id)
         self.equipment_deviation_created.emit(deviation_id, equipment_id)
+
+    def _on_equipment_bar_updated(self, equipment_id):
+        """EquipmentDeviationBar's tag/typ fields committed a change
+        (2026-08-25, see NOTES.md) — redraw so the marker's own label
+        picks up the new tag/type immediately, then bubble up so
+        MainWindow can refresh the tree (EQUIP_T rows) and scenario table
+        (ORS tag strips), which resolve an object's identity live from
+        equipment_catalog and don't otherwise know anything changed."""
+        self._refresh_equipment_marker_visual(equipment_id)
+        self.equipment_updated.emit(equipment_id)
+
+    def _on_equipment_bar_deleted(self, equipment_id):
+        """EquipmentDeviationBar's "Ta bort" confirmed (2026-08-25, see
+        NOTES.md) — delete_equipment_item() already removed the row and
+        cascaded its markers; reload so the now-gone marker(s) actually
+        disappear from the canvas, then bubble up for the same tree/
+        scenario refresh _on_equipment_bar_updated needs."""
+        self._load_overlays()
+        self.equipment_deleted.emit(equipment_id)
+
+    def _on_equipment_delete_requested(self, marker_id):
+        """Right-click "Ta bort" on an existing equipment marker
+        (2026-08-25, see NOTES.md — Anton: "om man högerklickar på
+        objektet så ska också alternativet att ta bort finnas"). Confirms
+        here (PIDPanel already owns a db connection and can parent a
+        QMessageBox directly) rather than bubbling further up, unlike
+        equipment_edit_requested — there's no popup/dialog to construct
+        that would need MainWindow as its parent, just a yes/no prompt.
+        Reuses the same equipment_deleted signal (and MainWindow's same
+        tree/scenario refresh) as EquipmentDeviationBar's own delete
+        button."""
+        row = self.db.conn.execute(
+            "SELECT equipment_id FROM equipment_markers WHERE id=?", (marker_id,)).fetchone()
+        if not row or row['equipment_id'] is None:
+            return
+        equipment_id = row['equipment_id']
+        eq = self.db.get_equipment_by_id(equipment_id)
+        label = (eq.get('tag') or 'objektet') if eq else 'objektet'
+        reply = QMessageBox.question(
+            self, "Ta bort", f"Ta bort {label}? Objektet och dess markörer på P&ID tas bort.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self.db.delete_equipment_item(equipment_id)
+        self._load_overlays()
+        self.equipment_deleted.emit(equipment_id)
 
     def _create_cause_for_bar(self, marker_id, deviation_id, comp_type, comp_tag, description,
                                frequency=None):

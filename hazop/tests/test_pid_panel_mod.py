@@ -114,10 +114,75 @@ class EquipmentDeviationBarTests(unittest.TestCase):
             pass
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    def test_load_populates_title_with_tag_and_type(self):
+    def test_load_populates_tag_and_type_fields(self):
+        """2026-08-25 (see NOTES.md): tag/type moved from a static title
+        label into editable fields — the whole point of the change."""
         self.bar.load(self.eq_id, self.marker_id)
-        self.assertIn("V-101", self.bar._title_lbl.text())
-        self.assertIn("Ventil", self.bar._title_lbl.text())
+        self.assertEqual(self.bar._tag_edit.text(), "V-101")
+        self.assertEqual(self.bar._type_cb.currentText(), "Ventil")
+
+    def test_editing_tag_commits_and_emits_equipment_updated(self):
+        """2026-08-25 (see NOTES.md): left-clicking an equipment marker
+        must let the tag be edited directly, not just deviations."""
+        self.bar.load(self.eq_id, self.marker_id)
+        updated = []
+        self.bar.equipment_updated.connect(updated.append)
+
+        self.bar._tag_edit.setText("V-102")
+        self.bar._commit_tag()
+
+        self.assertEqual(self.db.get_equipment_by_id(self.eq_id)['tag'], "V-102")
+        self.assertEqual(updated, [self.eq_id])
+
+    def test_editing_type_commits_and_emits_equipment_updated(self):
+        self.bar.load(self.eq_id, self.marker_id)
+        updated = []
+        self.bar.equipment_updated.connect(updated.append)
+
+        self.bar._type_cb.addItem("Pump")
+        self.bar._type_cb.setCurrentText("Pump")
+        self.bar._commit_type()
+
+        self.assertEqual(self.db.get_equipment_by_id(self.eq_id)['equipment_type'], "Pump")
+        self.assertEqual(updated, [self.eq_id])
+
+    def test_dup_hint_shows_for_a_different_objects_tag_not_its_own(self):
+        self.db.add_equipment_item("P-201", "P-201", "P", 0, "Pump", '', 0)
+        self.bar.load(self.eq_id, self.marker_id)
+        self.assertEqual(self.bar._dup_hint.text(), "",
+            "loading must not flag the object's OWN tag as a duplicate of itself")
+
+        self.bar._tag_edit.setText("P-201")
+        self.assertIn("finns redan i katalogen", self.bar._dup_hint.text())
+
+    def test_delete_button_confirmed_removes_equipment_and_emits_equipment_deleted(self):
+        """2026-08-25 (see NOTES.md): "Man ska även kunna klicka på
+        deleteknappen för att ta bort."."""
+        from PyQt6.QtCore import QPoint
+        self.bar.load(self.eq_id, self.marker_id)
+        self.bar.show_near(QPoint(100, 100))
+        deleted = []
+        self.bar.equipment_deleted.connect(deleted.append)
+
+        with unittest.mock.patch.object(
+                QMessageBox, 'question', return_value=QMessageBox.StandardButton.Yes):
+            self.bar._on_delete_clicked()
+
+        self.assertIsNone(self.db.get_equipment_by_id(self.eq_id))
+        self.assertEqual(deleted, [self.eq_id])
+        self.assertFalse(self.bar.isVisible(), "the popup must close itself after deleting")
+
+    def test_delete_button_cancelled_keeps_equipment(self):
+        self.bar.load(self.eq_id, self.marker_id)
+        deleted = []
+        self.bar.equipment_deleted.connect(deleted.append)
+
+        with unittest.mock.patch.object(
+                QMessageBox, 'question', return_value=QMessageBox.StandardButton.No):
+            self.bar._on_delete_clicked()
+
+        self.assertIsNotNone(self.db.get_equipment_by_id(self.eq_id))
+        self.assertEqual(deleted, [])
 
     def test_show_near_makes_the_popup_visible(self):
         from PyQt6.QtCore import QPoint
@@ -1271,6 +1336,58 @@ class EquipmentMarkerEditContextMenuTests(unittest.TestCase):
             view._show_context_menu(QPointF(-500, -500), QPoint(0, 0))
 
         self.assertFalse(any("Redigera objekt" in t for t in texts), texts)
+
+    def test_context_menu_also_offers_ta_bort_when_hovering_equipment_marker(self):
+        """2026-08-25 (see NOTES.md — Anton: "om man högerklickar på
+        objektet så ska också alternativet att ta bort finnas"). Right-
+        click on an existing object previously offered "Redigera objekt"
+        but no way to delete it at all."""
+        from PyQt6.QtCore import QPoint
+        from PyQt6.QtWidgets import QMenu
+        view, scene_pos = self._make_view_with_marker()
+        texts = []
+
+        def _fake_exec(menu_self, _pos=None):
+            texts.extend(a.text() for a in menu_self.actions())
+            return None
+
+        with unittest.mock.patch.object(QMenu, 'exec', new=_fake_exec):
+            view._show_context_menu(scene_pos, QPoint(0, 0))
+
+        self.assertTrue(any("Ta bort" in t for t in texts), texts)
+
+    def test_triggering_ta_bort_action_emits_equipment_delete_requested(self):
+        from PyQt6.QtCore import QPoint
+        from PyQt6.QtWidgets import QMenu
+        view, scene_pos = self._make_view_with_marker(marker_id=42)
+        received = []
+        view.equipment_delete_requested.connect(received.append)
+
+        def _fake_exec(menu_self, _pos=None):
+            for a in menu_self.actions():
+                if "Ta bort" in a.text():
+                    a.trigger()
+            return None
+
+        with unittest.mock.patch.object(QMenu, 'exec', new=_fake_exec):
+            view._show_context_menu(scene_pos, QPoint(0, 0))
+
+        self.assertEqual(received, [42])
+
+    def test_no_ta_bort_action_when_not_hovering_a_marker(self):
+        from PyQt6.QtCore import QPointF, QPoint
+        from PyQt6.QtWidgets import QMenu
+        view, _scene_pos = self._make_view_with_marker()
+        texts = []
+
+        def _fake_exec(menu_self, _pos=None):
+            texts.extend(a.text() for a in menu_self.actions())
+            return None
+
+        with unittest.mock.patch.object(QMenu, 'exec', new=_fake_exec):
+            view._show_context_menu(QPointF(-500, -500), QPoint(0, 0))
+
+        self.assertFalse(any(t == "Ta bort" for t in texts), texts)
 
 
 class EquipmentIdentityLiveResolveTests(unittest.TestCase):

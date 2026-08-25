@@ -62,6 +62,7 @@ class PIDGraphicsView(QGraphicsView):
     zone_drawn    = pyqtSignal(object, int)                # (QRectF pdf_coords, page)
     equipment_drag_finished = pyqtSignal()  # Shift+drag of an equipment marker released (drop accepted or not)
     equipment_edit_requested = pyqtSignal(int)  # equipment_markers.id — right-click "✏️ Redigera objekt"
+    equipment_delete_requested = pyqtSignal(int)  # equipment_markers.id — right-click "Ta bort" (2026-08-25)
 
     # Keys for QGraphicsItem.setData / .data
     _DATA_TYPE      = 0    # 'cause' | 'consequence' | 'safeguard' | 'markup'
@@ -1917,6 +1918,12 @@ class PIDGraphicsView(QGraphicsView):
             act = menu.addAction(_icon('edit'), "Redigera objekt")
             mid = hovered_id
             act.triggered.connect(partial(self.equipment_edit_requested.emit, mid))
+            # "Ta bort" alongside it (2026-08-25, see NOTES.md — Anton:
+            # "om man högerklickar på objektet så ska också alternativet
+            # att ta bort finnas") — this menu previously had no way to
+            # delete an existing object at all, only edit it.
+            del_act = menu.addAction(_icon('delete'), "Ta bort")
+            del_act.triggered.connect(partial(self.equipment_delete_requested.emit, mid))
             menu.addSeparator()
 
         menu.addAction("🔧 Objekt",
