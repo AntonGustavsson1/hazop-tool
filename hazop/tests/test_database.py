@@ -1225,5 +1225,128 @@ class SystemsHierarchyTests(unittest.TestCase):
         self.assertEqual(self.db.get_node(node_id)['system_id'], s2)
 
 
+class RecommendationCatalogTests(unittest.TestCase):
+    """2026-08-25, see NOTES.md "Rekommendationshantering — delad
+    katalog med återanvändning": the old actions table (one row per
+    consequence, no reuse) was replaced by a shared recommendations
+    catalog plus a consequence_recommendations many-to-many link table,
+    so the same recommendation text can be linked to several
+    consequences without duplicating it."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_reccatalog_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.cons_id = self.db.add_consequence(cause_id)
+        cause2 = self.db.add_cause(dev_id)
+        self.cons2 = self.db.add_consequence(cause2)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_add_recommendation_to_consequence_creates_and_links_in_one_call(self):
+        rec_id = self.db.add_recommendation_to_consequence(
+            self.cons_id, description='Verify shutdown function',
+            responsible='Anton', due_date='2026-09-01', status='Öppen')
+        rec = self.db.get_recommendation(rec_id)
+        self.assertEqual(rec['description'], 'Verify shutdown function')
+        self.assertEqual(rec['responsible'], 'Anton')
+        linked = [r['id'] for r in self.db.recommendations_for_consequence(self.cons_id)]
+        self.assertEqual(linked, [rec_id])
+
+    def test_linking_the_same_recommendation_to_two_consequences_does_not_duplicate(self):
+        rec_id = self.db.add_recommendation(description='Reused text')
+        self.db.link_recommendation_to_consequence(rec_id, self.cons_id)
+        self.db.link_recommendation_to_consequence(rec_id, self.cons2)
+
+        self.assertEqual(len(self.db.all_recommendations()), 1)
+        self.assertEqual([r['id'] for r in self.db.recommendations_for_consequence(self.cons_id)],
+                         [rec_id])
+        self.assertEqual([r['id'] for r in self.db.recommendations_for_consequence(self.cons2)],
+                         [rec_id])
+        self.assertEqual(self.db.recommendation_consequence_count(rec_id), 2)
+
+    def test_linking_twice_to_the_same_consequence_is_idempotent(self):
+        rec_id = self.db.add_recommendation(description='X')
+        self.db.link_recommendation_to_consequence(rec_id, self.cons_id)
+        self.db.link_recommendation_to_consequence(rec_id, self.cons_id)
+        self.assertEqual(len(self.db.recommendations_for_consequence(self.cons_id)), 1)
+
+    def test_unlink_removes_only_the_link_not_the_catalog_row(self):
+        rec_id = self.db.add_recommendation_to_consequence(self.cons_id, description='Keep me')
+        self.db.unlink_recommendation_from_consequence(rec_id, self.cons_id)
+        self.assertEqual(self.db.recommendations_for_consequence(self.cons_id), [])
+        self.assertIsNotNone(self.db.get_recommendation(rec_id))
+        self.assertEqual(self.db.recommendation_consequence_count(rec_id), 0)
+
+    def test_update_recommendation_is_a_partial_update(self):
+        rec_id = self.db.add_recommendation(description='Original', responsible='A',
+                                            due_date='2026-01-01', status='Öppen')
+        self.db.update_recommendation(rec_id, description='Changed')
+        rec = self.db.get_recommendation(rec_id)
+        self.assertEqual(rec['description'], 'Changed')
+        self.assertEqual(rec['responsible'], 'A', "fields not passed must stay untouched")
+        self.assertEqual(rec['due_date'], '2026-01-01')
+
+    def test_delete_recommendation_cascades_its_links(self):
+        rec_id = self.db.add_recommendation_to_consequence(self.cons_id, description='Bye')
+        self.db.delete_recommendation(rec_id)
+        self.assertIsNone(self.db.get_recommendation(rec_id))
+        self.assertEqual(self.db.recommendations_for_consequence(self.cons_id), [])
+
+    def test_recommendations_for_consequences_bulk_matches_single_id_version(self):
+        r1 = self.db.add_recommendation_to_consequence(self.cons_id, description='A')
+        r2 = self.db.add_recommendation_to_consequence(self.cons_id, description='B')
+        self.db.link_recommendation_to_consequence(r1, self.cons2)
+
+        bulk = self.db.recommendations_for_consequences([self.cons_id, self.cons2])
+        self.assertEqual([r['id'] for r in bulk[self.cons_id]], [r1, r2])
+        self.assertEqual([r['id'] for r in bulk[self.cons2]], [r1])
+
+    def test_all_recommendations_returns_the_whole_study_wide_catalog(self):
+        self.db.add_recommendation(description='One')
+        self.db.add_recommendation(description='Two')
+        self.assertEqual(len(self.db.all_recommendations()), 2)
+
+    def test_migrating_a_pre_existing_actions_table(self):
+        """Simulate a database file created before the 2026-08-25 rework
+        still physically having the old actions table with real rows —
+        re-running the migration must move that data into the new
+        catalog + link table and drop the old one, exactly once."""
+        self.db.conn.execute("""
+            CREATE TABLE IF NOT EXISTS actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                consequence_id INTEGER NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                responsible TEXT DEFAULT '', due_date TEXT DEFAULT '',
+                status TEXT DEFAULT 'Öppen'
+            )""")
+        self.db.conn.execute(
+            "INSERT INTO actions (consequence_id,description,responsible,due_date,status) "
+            "VALUES (?,?,?,?,?)", (self.cons_id, 'Legacy action', 'Bob', '2026-01-01', 'Klar'))
+        self.db.commit()
+
+        self.db._migrate_actions_to_recommendations()
+
+        linked = self.db.recommendations_for_consequence(self.cons_id)
+        self.assertEqual(len(linked), 1)
+        self.assertEqual(linked[0]['description'], 'Legacy action')
+        self.assertEqual(linked[0]['responsible'], 'Bob')
+        tables = {r['name'] for r in self.db.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertNotIn('actions', tables, "the legacy table must be dropped after migration")
+
+        # Re-running is a no-op now that the table is gone (no crash, no
+        # duplicate rows created).
+        self.db._migrate_actions_to_recommendations()
+        self.assertEqual(len(self.db.recommendations_for_consequence(self.cons_id)), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

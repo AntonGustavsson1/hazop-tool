@@ -414,7 +414,7 @@ class StudyManagementPanel(QWidget):
         self._stats_lbl.setText(
             f"  Noder: <b>{s['nodes']}</b>   |   Orsaker: <b>{s['causes']}</b>   |   "
             f"Konsekvenser: <b>{s['consequences']}</b>   |   Safeguards: <b>{s['safeguards']}</b>   |   "
-            f"Öppna åtgärder: <b>{s['open_actions']}</b>")
+            f"Öppna rekommendationer: <b>{s['open_recommendations']}</b>")
         self._stats_lbl.setTextFormat(Qt.TextFormat.RichText)
 
         self._table.setRowCount(0)

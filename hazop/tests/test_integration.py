@@ -3153,11 +3153,13 @@ class EmptyOrsCellClickOpensCausePopupTests(unittest.TestCase):
 class RecommendationColumnTests(unittest.TestCase):
     """"Längst till höger ... kan du lägga till en rekomendationskolumn
     på varje flik så det går att skapa rekommendationer till varje
-    scenario." (2026-08-13) — backed by the pre-existing actions table/
-    ActionEditor (previously unreachable in the UI after the
-    PropertiesRibbon migration), not a new free-text field, since a
-    scenario can have several recommendations (responsible/due date/
-    status each)."""
+    scenario." (2026-08-13). Rewritten 2026-08-25 for the shared
+    recommendations catalog (see NOTES.md "Rekommendationshantering —
+    delad katalog med återanvändning") — a recommendation is no longer
+    owned by one consequence; it's linked from a study-wide catalog via
+    consequence_recommendations, so the same text can be reused across
+    consequences without duplication, and each cell shows the
+    recommendation's own global, never-reused id as "R-XXX"."""
 
     @classmethod
     def setUpClass(cls):
@@ -3196,19 +3198,20 @@ class RecommendationColumnTests(unittest.TestCase):
         self.assertEqual(item.text(), '—')
 
     def test_single_action_shows_its_description(self):
-        self.db.add_action(self.cons_id)
+        rec_id = self.db.add_recommendation_to_consequence(self.cons_id, description='Ny åtgärd')
         item, _ = self._rek_item()
-        self.assertEqual(item.text(), '1. Ny åtgärd')
+        self.assertEqual(item.text(), f'R-{rec_id:03d}. Ny åtgärd')
 
     def test_multiple_actions_are_all_listed_numbered_by_addition_order(self):
         """"samtliga tillagda rekomendationer. de kan nummereras efter
         tilläggsordning" (2026-08-13) — every recommendation shows, not
-        just a count, numbered 1.. in the order they were added."""
-        self.db.add_action(self.cons_id)
-        act_id = self.db.add_action(self.cons_id)
-        self.db.update_action(act_id, 'Klar sak', '', '', 'Klar')
+        just a count, in the order they were added, numbered by its own
+        global catalog id (2026-08-25 rework) rather than local position."""
+        id1 = self.db.add_recommendation_to_consequence(self.cons_id, description='Ny åtgärd')
+        id2 = self.db.add_recommendation_to_consequence(self.cons_id, description='Klar sak',
+                                                         status='Klar')
         item, _ = self._rek_item()
-        self.assertEqual(item.text(), '1. Ny åtgärd\n2. Klar sak')
+        self.assertEqual(item.text(), f'R-{id1:03d}. Ny åtgärd\nR-{id2:03d}. Klar sak')
 
     def test_row_grows_to_fit_several_recommendations(self):
         """REK joins wrap_cols (_ScenarioDelegate._size_hint_impl,
@@ -3218,7 +3221,7 @@ class RecommendationColumnTests(unittest.TestCase):
         _, row = self._rek_item()
         one_line_h = self.panel._table.rowHeight(row)
         for _ in range(6):
-            self.db.add_action(self.cons_id)
+            self.db.add_recommendation_to_consequence(self.cons_id)
         self.panel.load_node(self.node_id)
         row = next(r for r, m in enumerate(self.panel._row_meta) if m[2] == self.cons_id)
         grown_h = self.panel._table.rowHeight(row)
@@ -3230,10 +3233,12 @@ class RecommendationColumnTests(unittest.TestCase):
         _, row = self._rek_item()
         with unittest.mock.patch.object(
                 RecommendationEditorDialog, 'exec',
-                side_effect=lambda: self.db.add_action(self.cons_id)):
+                side_effect=lambda: self.db.add_recommendation_to_consequence(
+                    self.cons_id, description='Ny åtgärd')):
             self.panel._on_cell_clicked(row, self.panel._C_REK)
         item = self.panel._table.item(row, self.panel._C_REK)
-        self.assertEqual(item.text(), '1. Ny åtgärd')
+        rec_id = self.db.all_recommendations()[0]['id']
+        self.assertEqual(item.text(), f'R-{rec_id:03d}. Ny åtgärd')
 
     def test_recommendation_column_spans_across_safeguard_rows(self):
         """Several safeguards under the same consequence must share ONE
@@ -3241,12 +3246,235 @@ class RecommendationColumnTests(unittest.TestCase):
         LOPA already get."""
         self.db.add_safeguard(self.cons_id)
         self.db.add_safeguard(self.cons_id)
-        self.db.add_action(self.cons_id)
+        self.db.add_recommendation_to_consequence(self.cons_id)
         self.panel.load_node(self.node_id)
         rows = [r for r, m in enumerate(self.panel._row_meta) if m[2] == self.cons_id]
         self.assertGreaterEqual(len(rows), 2)
         self.assertEqual(self.panel._table.rowSpan(rows[0], self.panel._C_REK), len(rows),
             "the consequence's safeguard rows must be merged into one REK span")
+
+    def test_reusing_a_recommendation_on_a_second_consequence_shows_same_number(self):
+        """The core of the 2026-08-25 rework: linking the SAME catalog
+        row to a second consequence must show the identical R-XXX label
+        there too, not a fresh local "1." — proving reuse doesn't
+        duplicate the underlying recommendation."""
+        rec_id = self.db.add_recommendation_to_consequence(self.cons_id, description='Delad')
+        cause2 = self.db.add_cause(self.db.deviations(self.node_id)[0]['id'])
+        cons2 = self.db.add_consequence(cause2)
+        self.db.link_recommendation_to_consequence(rec_id, cons2)
+
+        self.panel.load_node(self.node_id)
+        row1 = next(r for r, m in enumerate(self.panel._row_meta) if m[2] == self.cons_id)
+        row2 = next(r for r, m in enumerate(self.panel._row_meta) if m[2] == cons2)
+        expected = f'R-{rec_id:03d}. Delad'
+        self.assertEqual(self.panel._table.item(row1, self.panel._C_REK).text(), expected)
+        self.assertEqual(self.panel._table.item(row2, self.panel._C_REK).text(), expected)
+        self.assertEqual(len(self.db.all_recommendations()), 1,
+            "reuse must not create a second catalog row")
+
+
+class RecommendationPickerPopupTests(unittest.TestCase):
+    """RecommendationEditorDialog's 2026-08-25 rework (see NOTES.md
+    "Rekommendationshantering — delad katalog med återanvändning"):
+    free-text field doubles as new-recommendation input and live search,
+    checkbox list links/unlinks existing catalog rows to the current
+    consequence directly (no OK button needed — same "persists itself"
+    pattern the old ActionEditor already used)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_recpicker_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.cons_id = self.db.add_consequence(cause_id)
+        self.cause2 = self.db.add_cause(dev_id)
+        self.cons2 = self.db.add_consequence(self.cause2)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _dlg(self, cons_id=None):
+        from hazop import RecommendationEditorDialog
+        return RecommendationEditorDialog(self.db, cons_id or self.cons_id)
+
+    def test_typing_filters_the_list_case_insensitively_by_substring(self):
+        self.db.add_recommendation(description='Verify shutdown function')
+        self.db.add_recommendation(description='Check pressure relief valve')
+        dlg = self._dlg()
+        try:
+            dlg._input.setPlainText('SHUTDOWN')
+            self.assertEqual(dlg._table.rowCount(), 1)
+            self.assertIn('Verify shutdown function', dlg._table.item(0, 1).text())
+        finally:
+            dlg.deleteLater()
+
+    def test_empty_filter_shows_the_whole_catalog(self):
+        self.db.add_recommendation(description='A')
+        self.db.add_recommendation(description='B')
+        dlg = self._dlg()
+        try:
+            dlg._input.setPlainText('something not matching')
+            self.assertEqual(dlg._table.rowCount(), 0)
+            dlg._input.setPlainText('')
+            self.assertEqual(dlg._table.rowCount(), 2)
+        finally:
+            dlg.deleteLater()
+
+    def test_checking_an_existing_recommendation_links_it_without_duplicating(self):
+        rec_id = self.db.add_recommendation(description='Reusable text')
+        dlg = self._dlg()
+        try:
+            dlg._table.item(0, 0).setCheckState(Qt.CheckState.Checked)
+            linked = {r['id'] for r in self.db.recommendations_for_consequence(self.cons_id)}
+            self.assertEqual(linked, {rec_id})
+            self.assertEqual(len(self.db.all_recommendations()), 1)
+        finally:
+            dlg.deleteLater()
+
+    def test_unchecking_unlinks_but_keeps_the_catalog_row(self):
+        rec_id = self.db.add_recommendation_to_consequence(self.cons_id, description='Keep me')
+        dlg = self._dlg()
+        try:
+            dlg._table.item(0, 0).setCheckState(Qt.CheckState.Unchecked)
+            self.assertEqual(self.db.recommendations_for_consequence(self.cons_id), [])
+            self.assertIsNotNone(self.db.get_recommendation(rec_id),
+                "unlinking must not delete the catalog row")
+        finally:
+            dlg.deleteLater()
+
+    def test_creating_new_links_it_to_the_current_consequence_only(self):
+        dlg = self._dlg()
+        try:
+            dlg._input.setPlainText('Brand new recommendation')
+            dlg._create_new()
+            recs = self.db.all_recommendations()
+            self.assertEqual(len(recs), 1)
+            self.assertEqual(recs[0]['description'], 'Brand new recommendation')
+            self.assertEqual({r['id'] for r in self.db.recommendations_for_consequence(self.cons_id)},
+                             {recs[0]['id']})
+            self.assertEqual(self.db.recommendations_for_consequence(self.cons2), [])
+        finally:
+            dlg.deleteLater()
+
+    def test_checking_a_box_emits_links_changed_for_live_refresh(self):
+        self.db.add_recommendation(description='X')
+        dlg = self._dlg()
+        spy = unittest.mock.Mock()
+        dlg.recommendation_links_changed.connect(spy)
+        try:
+            dlg._table.item(0, 0).setCheckState(Qt.CheckState.Checked)
+            spy.assert_called_once()
+        finally:
+            dlg.deleteLater()
+
+
+class RecommendationEditConflictTests(unittest.TestCase):
+    """The second prompt's rule: editing a recommendation used by more
+    than one consequence must ask before saving (Ja/Nej/Avbryt); used by
+    exactly one, it saves directly. Mirrors Anton's own worked example
+    (R-012 "Verify shutdown function" used by three causes)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_recconflict_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        self.cons_ids = []
+        for _ in range(3):
+            cause_id = self.db.add_cause(dev_id)
+            self.cons_ids.append(self.db.add_consequence(cause_id))
+        self.rec_id = self.db.add_recommendation(description='Verify shutdown function')
+        for cid in self.cons_ids:
+            self.db.link_recommendation_to_consequence(self.rec_id, cid)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _dlg(self, cons_id):
+        from hazop import _RecommendationDetailDialog
+        return _RecommendationDetailDialog(self.db, self.rec_id, cons_id)
+
+    def _set_text(self, dlg, text):
+        dlg._desc.setPlainText(text)
+
+    def test_single_consequence_saves_directly_without_prompting(self):
+        solo_rec = self.db.add_recommendation_to_consequence(
+            self.cons_ids[0], description='Only used here')
+        dlg = self._dlg(self.cons_ids[0])
+        dlg.recommendation_id = solo_rec
+        self._set_text(dlg, 'Only used here, edited')
+        with unittest.mock.patch('hazop.QMessageBox') as mock_box:
+            dlg._save()
+            mock_box.assert_not_called()
+        self.assertEqual(self.db.get_recommendation(solo_rec)['description'],
+                         'Only used here, edited')
+
+    def test_yes_updates_the_shared_recommendation_for_all_consequences(self):
+        from hazop import QMessageBox as HQMessageBox
+        dlg = self._dlg(self.cons_ids[0])
+        self._set_text(dlg, 'Verify automatic shutdown function')
+        with unittest.mock.patch.object(HQMessageBox, 'exec',
+                                        return_value=HQMessageBox.StandardButton.Yes):
+            dlg._save()
+        rec = self.db.get_recommendation(self.rec_id)
+        self.assertEqual(rec['description'], 'Verify automatic shutdown function')
+        for cid in self.cons_ids:
+            linked = {r['id'] for r in self.db.recommendations_for_consequence(cid)}
+            self.assertEqual(linked, {self.rec_id})
+
+    def test_no_forks_a_new_recommendation_for_only_the_current_consequence(self):
+        from hazop import QMessageBox as HQMessageBox
+        dlg = self._dlg(self.cons_ids[0])
+        self._set_text(dlg, 'Verify automatic shutdown function')
+        with unittest.mock.patch.object(HQMessageBox, 'exec',
+                                        return_value=HQMessageBox.StandardButton.No):
+            dlg._save()
+
+        original = self.db.get_recommendation(self.rec_id)
+        self.assertEqual(original['description'], 'Verify shutdown function',
+            "the original recommendation must stay unchanged for the other causes")
+
+        cons0_ids = {r['id'] for r in self.db.recommendations_for_consequence(self.cons_ids[0])}
+        self.assertNotIn(self.rec_id, cons0_ids)
+        self.assertEqual(len(cons0_ids), 1)
+        new_id = next(iter(cons0_ids))
+        self.assertEqual(self.db.get_recommendation(new_id)['description'],
+                         'Verify automatic shutdown function')
+
+        for cid in self.cons_ids[1:]:
+            linked = {r['id'] for r in self.db.recommendations_for_consequence(cid)}
+            self.assertEqual(linked, {self.rec_id},
+                "the other consequences must keep pointing at the original recommendation")
+
+    def test_cancel_makes_no_database_change(self):
+        from hazop import QMessageBox as HQMessageBox
+        dlg = self._dlg(self.cons_ids[0])
+        self._set_text(dlg, 'Verify automatic shutdown function')
+        with unittest.mock.patch.object(HQMessageBox, 'exec',
+                                        return_value=HQMessageBox.StandardButton.Cancel):
+            dlg._save()
+        self.assertEqual(self.db.get_recommendation(self.rec_id)['description'],
+                         'Verify shutdown function')
+        for cid in self.cons_ids:
+            linked = {r['id'] for r in self.db.recommendations_for_consequence(cid)}
+            self.assertEqual(linked, {self.rec_id})
 
 
 def _find_tree_item(tree, type_, id_=None):

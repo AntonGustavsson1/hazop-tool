@@ -1358,6 +1358,81 @@ som allt annat i denna klass).
 `test_integration` (214) samt full 14-filssvit — alla gröna. Manuell
 räckvidd inte körd i GUI:t denna session (headless testmiljö).
 
+## Rekommendationshantering — delad katalog med återanvändning (2026-08-25)
+
+Anton ville kunna återanvända tidigare rekommendationer istället för
+att skriva samma text på nytt varje gång, och kunna redigera en delad
+rekommendation utan att det tyst ändrar den för andra scenarion som
+råkar återanvända samma text.
+
+**Beslutat med Anton innan planering (AskUserQuestion):** länkpunkten
+är **konsekvensen**, inte bokstavligen orsaken (`causes`) — matchar
+dagens REK-kolumns spanning/keying (`consequence_id`) exakt, istället
+för att skriva om hela den logiken för en mindre relevant vinst.
+Ansvarig/deadline/status (dagens gamla `actions`-fält) **behålls, på
+katalogposten** — delas alltså av alla konsekvenser som länkar till
+samma rekommendation.
+
+**Datamodell:** `actions`-tabellen (en rad per konsekvens, ingen
+återanvändning) ersattes av en delad katalog `recommendations`
+(`id, description, responsible, due_date, status` — `id` är själv det
+unika, aldrig återanvända löpnumret, visat som `R-XXX` överallt) plus
+en äkta many-to-many-länktabell `consequence_recommendations`. En
+engångsmigrering (`Database._migrate_actions_to_recommendations()`)
+kopierar en eventuell gammal `actions`-tabells rader in i katalogen +
+skapar motsvarande länkar, sedan `DROP TABLE actions` — körs bara en
+gång per databasfil (tabellen finns inte kvar att migrera igen efteråt),
+samma mönster som `_drop_legacy_consequence_likelihood_column`.
+
+**UI:** `RecommendationEditorDialog` (hazop.py, öppnas via REK-cellen,
+oförändrad anropspunkt i `scenario_panel.py`) skrevs om helt — ett
+fritextfält som är BÅDE "skriv en ny rekommendation" och "sök bland
+befintliga" (live-filter, case-insensitive substring), plus en
+kryssrutelista över hela studiens katalog. Att kryssa i/ur en rad
+länkar/avlänkar direkt (`link_recommendation_to_consequence`/
+`unlink_recommendation_from_consequence`) — ingen OK-knapp behövs,
+samma "sparar sig själv"-mönster den gamla `ActionEditor` redan hade
+(som togs bort helt, ingen annan kodplats refererade den). Att avkryssa
+tar INTE bort katalogposten även om det var dess sista länk — texten
+finns kvar för återanvändning senare.
+
+**Redigeringskonflikt (del 2 av önskemålet):** ett ✎-knapp per rad
+öppnar `_RecommendationDetailDialog` (ny, hazop.py) för EN
+rekommendations fyra fält. Vid Spara: om
+`recommendation_consequence_count(rec_id) > 1` visas en
+Ja/Nej/Avbryt-fråga ("Denna rekommendation används av flera
+konsekvenser (N st). Vill du uppdatera rekommendationen för
+samtliga?", svenska knapptexter för att matcha appens övriga
+dialogrutor snarare än Qt:s engelska standardtexter) innan något
+sparas:
+- **Ja:** `update_recommendation(rec_id, ...)` — samma id, syns direkt
+  hos alla konsekvenser som redan länkar till den.
+- **Nej:** en NY katalograd skapas med de redigerade fälten
+  (`add_recommendation`), den aktuella konsekvensen avlänkas från den
+  gamla och länkas till den nya — övriga konsekvenser fortsätter peka
+  på originalet, helt oförändrat.
+- **Avbryt:** ingen databasändring alls.
+Vid `count <= 1` sparas direkt utan att fråga.
+
+**Numrering i REK-cellen** (`ScenarioTablePanel._recommendation_summary`)
+bytte från lokal `enumerate(acts, 1)` (nollställd per cell, "1. 2. 3...")
+till rekommendationens egna globala `id`, formaterat `R-XXX` — detta
+är kärnan i att samma återanvända rekommendation visar SAMMA nummer
+oavsett vilken konsekvens man tittar på, inte bara en kosmetisk ändring.
+
+**Övriga följdändringar:** `stats()`s dict-nyckel `open_actions` →
+`open_recommendations` (+ `settings_panels.py`s label "Öppna åtgärder"
+→ "Öppna rekommendationer"); Excel-/PDF-export och
+Åtgärdsrapport-PDF-exporten (`hazop.py`) pekar om mot
+`recommendations_for_consequence`/`all_data()` men konsumerar exakt
+samma dict-form som förut (`description`/`responsible`/`due_date`/
+`status`) — ingen ändring behövdes i själva exportlogiken.
+
+**Verifiering:** `test_smoke`, hela 14-filssviten, samt kontrollgrupp
+(`git stash` på de fyra ändrade produktionsfilerna — 25 av 27 nya/
+omskrivna tester slog verkligen av mot den gamla `actions`-baserade
+koden innan denna ändring).
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

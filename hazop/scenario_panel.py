@@ -2909,11 +2909,11 @@ class ScenarioTablePanel(QWidget):
         # (n_rows = max(n_cats, n_sgs, 1)) and therefore the same
         # reduction factors, so this was pure repeated work.
         rfs_by_cons = self.db.reduction_factors_for_consequences(_all_cons_ids)
-        # _add_row() also used to re-fetch actions(cid) once per RENDERED
-        # ROW (same reasoning as reduction_factors above) and
+        # _add_row() also used to re-fetch recommendations_for_consequence(cid)
+        # once per RENDERED ROW (same reasoning as reduction_factors above) and
         # get_safeguard_excluded_causes(sg['id']) once per row even
         # though excl_causes_by_sg (above) already has it precomputed.
-        acts_by_cons = self.db.actions_for_consequences(_all_cons_ids)
+        acts_by_cons = self.db.recommendations_for_consequences(_all_cons_ids)
 
         # Tracks the previous REAL cause's (comp_type, comp_tag) so the ORS
         # tag banner can be hidden on a run of consecutive deviations that
@@ -3763,16 +3763,19 @@ class ScenarioTablePanel(QWidget):
         self._table.setItem(r, self._C_SLUT, rs)
 
         # ── Col REK: Rekommendation (2026-08-13, see NOTES.md) ───────────────
-        # Backed by the pre-existing actions table/ActionEditor (previously
-        # unreachable in the UI) rather than a new free-text field — a
-        # scenario can have several recommendations (responsible/due date/
-        # status each), not just one line of text.
+        # Backed by the shared recommendations catalog + consequence_
+        # recommendations link table (2026-08-25 rework, see NOTES.md
+        # "Rekommendationshantering — delad katalog med återanvändning")
+        # rather than a new free-text field — a scenario can have several
+        # recommendations (responsible/due date/status each), not just
+        # one line of text, and the same recommendation can be reused
+        # across several consequences without duplicating it.
         if acts is None:
-            acts = self.db.actions(cid)
+            acts = self.db.recommendations_for_consequence(cid)
         rek_item = QTableWidgetItem(self._recommendation_summary(acts))
         rek_item.setFlags(rek_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         rek_item.setData(Qt.ItemDataRole.UserRole, ('recommendation', cid))
-        rek_item.setToolTip("Klicka för att lägga till/redigera rekommendationer")
+        rek_item.setToolTip("Klicka för att lägga till/återanvända/redigera rekommendationer")
         if not acts:
             rek_item.setForeground(QBrush(QColor('#8D9299')))
         self._table.setItem(r, self._C_REK, rek_item)
@@ -3780,18 +3783,21 @@ class ScenarioTablePanel(QWidget):
         pass  # row height set by resizeRowsToContents at end of _rebuild
 
     def _recommendation_summary(self, acts):
-        """REK-cell text for a consequence's action/recommendation list
+        """REK-cell text for a consequence's linked recommendations
         (2026-08-13, see NOTES.md: "samtliga tillagda rekomendationer
         ... nummereras efter tilläggsordning") — "—" placeholder when
         empty (same convention as KON/SG), otherwise EVERY recommendation
-        listed on its own line, numbered 1.. in the order they were
-        added (db.actions() already returns them ORDER BY id). The
-        column joins wrap_cols so multi-line content gets the row
+        listed on its own line. Numbered by the recommendation's own,
+        globally unique, never-reused catalog id (2026-08-25 rework) —
+        NOT by position in this list — so the SAME "R-XXX" number is
+        shown everywhere a reused recommendation appears, letting Anton
+        recognize "this is the same one" across different consequences.
+        The column joins wrap_cols so multi-line content gets the row
         height it needs, same as ORS/KON."""
         if not acts:
             return '—'
-        return '\n'.join(f"{i}. {a['description'] or 'Ny åtgärd'}"
-                          for i, a in enumerate(acts, 1))
+        return '\n'.join(f"R-{a['id']:03d}. {a['description'] or 'Ny rekommendation'}"
+                          for a in acts)
 
     def _get_cons_context(self, cons_id: int):
         """Return (deviation, comp_type, cause_text) for the consequence."""
@@ -3844,14 +3850,21 @@ class ScenarioTablePanel(QWidget):
 
     def _open_recommendation_editor(self, cons_id):
         """Open the Rekommendation-column popup (2026-08-13, see
-        NOTES.md) — ActionEditor already persists every change itself,
-        so no Accepted/Rejected distinction is needed; just refresh the
-        cell's summary text once the dialog closes either way."""
+        NOTES.md; rewritten 2026-08-25 for the shared recommendations
+        catalog — see "Rekommendationshantering") — the dialog persists
+        every change itself, so no Accepted/Rejected distinction is
+        needed. Connects recommendation_links_changed for a live refresh
+        while the popup is still open (creating/checking/editing a
+        recommendation must update the cell immediately, not just after
+        closing), in addition to the unconditional refresh below once it
+        closes either way."""
         # Deferred import: RecommendationEditorDialog still lives in
         # hazop.py, which imports ScenarioTablePanel from this module — a
         # module-level import here would be circular.
         from hazop import RecommendationEditorDialog
         dlg = RecommendationEditorDialog(self.db, cons_id, self)
+        dlg.recommendation_links_changed.connect(
+            partial(self._refresh_recommendation_cell, cons_id))
         dlg.move(self._pos_near_cons_row(cons_id, dlg.sizeHint()))
         dlg.exec()
         self._refresh_recommendation_cell(cons_id)
@@ -3863,7 +3876,7 @@ class ScenarioTablePanel(QWidget):
         rows that have no real item of their own)."""
         if getattr(self, '_rebuilding', False):
             return
-        acts = self.db.actions(cons_id)
+        acts = self.db.recommendations_for_consequence(cons_id)
         summary = self._recommendation_summary(acts)
         self._table.blockSignals(True)
         try:

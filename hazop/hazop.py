@@ -660,104 +660,143 @@ def _create_tagged_cause(db, deviation_id, comp_type, comp_tag, equipment_id=Non
 # SHARED WIDGETS
 # ══════════════════════════════════════════════════════════════════════════════
 
-class ActionEditor(QWidget):
-    def __init__(self, db: Database):
-        super().__init__()
+class _RecommendationDetailDialog(QDialog):
+    """Small focused editor for ONE recommendation's fields (2026-08-25,
+    see NOTES.md "Rekommendationshantering — delad katalog med
+    återanvändning") — replaces ActionEditor's live-typing table cells,
+    since saving now has to ask "update everywhere, or just here?"
+    before anything is written when the recommendation is shared, which
+    doesn't fit a cell that saves on every keystroke/focus-out."""
+
+    def __init__(self, db, recommendation_id, consequence_id, parent=None):
+        super().__init__(parent)
         self.db = db
-        self.consequence_id = None
+        self.recommendation_id = recommendation_id
+        self.consequence_id = consequence_id
+        rec = db.get_recommendation(recommendation_id) or {}
+        self.setWindowTitle(f"Redigera R-{recommendation_id:03d}")
+        self.setMinimumWidth(380)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.addWidget(QLabel("Rekommendation:"))
+        self._desc = QPlainTextEdit(rec.get('description', ''))
+        self._desc.setFixedHeight(70)
+        layout.addWidget(self._desc)
 
-        btn = QPushButton("+ Lägg till åtgärd")
-        btn.clicked.connect(self._add)
-        layout.addWidget(btn)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Ansvarig:"))
+        self._resp = QLineEdit(rec.get('responsible', '') or '')
+        row.addWidget(self._resp)
+        row.addWidget(QLabel("Datum:"))
+        self._due = QLineEdit(rec.get('due_date', '') or '')
+        row.addWidget(self._due)
+        layout.addLayout(row)
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(['Åtgärd', 'Ansvarig', 'Datum', 'Status', ''])
-        hdr = self.table.horizontalHeader()
-        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for i, w in zip([1, 2, 3, 4], [100, 90, 90, 72]):
-            hdr.setSectionResizeMode(i, QHeaderView.ResizeMode.Fixed)
-            self.table.setColumnWidth(i, w)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setMinimumHeight(CONFIG['H_TABLE_MIN'])
-        layout.addWidget(self.table)
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("Status:"))
+        self._status = QComboBox()
+        self._status.addItems(['Öppen', 'Pågår', 'Klar'])
+        self._status.setCurrentText(rec.get('status', 'Öppen') or 'Öppen')
+        row2.addWidget(self._status)
+        row2.addStretch()
+        layout.addLayout(row2)
 
-    def load(self, consequence_id):
-        self.consequence_id = consequence_id
-        self._refresh()
+        btns = QHBoxLayout()
+        btns.addStretch()
+        cancel_btn = QPushButton("Avbryt")
+        cancel_btn.clicked.connect(self.reject)
+        btns.addWidget(cancel_btn)
+        save_btn = QPushButton("Spara")
+        save_btn.setDefault(True)
+        save_btn.clicked.connect(self._save)
+        btns.addWidget(save_btn)
+        layout.addLayout(btns)
 
-    def _refresh(self):
-        try:
-            self.table.cellChanged.disconnect()
-        except Exception:
-            pass
-        self.table.setRowCount(0)
-        if self.consequence_id is None:
-            return
-        for act in self.db.actions(self.consequence_id):
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            desc = QTableWidgetItem(act['description'])
-            desc.setData(Qt.ItemDataRole.UserRole, act['id'])
-            self.table.setItem(row, 0, desc)
-            self.table.setItem(row, 1, QTableWidgetItem(act['responsible'] or ''))
-            self.table.setItem(row, 2, QTableWidgetItem(act['due_date'] or ''))
-            combo = QComboBox()
-            combo.addItems(['Öppen', 'Pågår', 'Klar'])
-            combo.setCurrentText(act['status'] or 'Öppen')
-            aid = act['id']
-            combo.currentTextChanged.connect(lambda s, a=aid, r=row: self._save_row(r))
-            self.table.setCellWidget(row, 3, combo)
-            del_btn = QPushButton("Ta bort")
-            del_btn.clicked.connect(partial(self._delete, aid))
-            self.table.setCellWidget(row, 4, del_btn)
-        self.table.cellChanged.connect(self._cell_changed)
+    def _save(self):
+        description = self._desc.toPlainText()
+        responsible = self._resp.text()
+        due_date    = self._due.text()
+        status      = self._status.currentText()
 
-    def _add(self):
-        if self.consequence_id is None:
-            return
-        self.db.add_action(self.consequence_id)
-        self._refresh()
+        count = self.db.recommendation_consequence_count(self.recommendation_id)
+        if count > 1:
+            box = QMessageBox(self)
+            box.setWindowTitle("Delad rekommendation")
+            box.setText(
+                f"Denna rekommendation används av flera konsekvenser ({count} st). "
+                "Vill du uppdatera rekommendationen för samtliga?")
+            box.setStandardButtons(
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel)
+            box.button(QMessageBox.StandardButton.Yes).setText("Ja, uppdatera alla")
+            box.button(QMessageBox.StandardButton.No).setText("Nej, bara denna")
+            box.button(QMessageBox.StandardButton.Cancel).setText("Avbryt")
+            box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+            reply = box.exec()
+            if reply == QMessageBox.StandardButton.Cancel:
+                self.reject()
+                return
+            if reply == QMessageBox.StandardButton.No:
+                new_id = self.db.add_recommendation(description, responsible, due_date, status)
+                self.db.unlink_recommendation_from_consequence(
+                    self.recommendation_id, self.consequence_id)
+                self.db.link_recommendation_to_consequence(new_id, self.consequence_id)
+                self.accept()
+                return
+            # Yes falls through to the direct update below.
 
-    def _delete(self, act_id):
-        self.db.delete_action(act_id)
-        self._refresh()
-
-    def _cell_changed(self, row, col):
-        if col <= 2:
-            self._save_row(row)
-
-    def _save_row(self, row):
-        item = self.table.item(row, 0)
-        if not item:
-            return
-        act_id = item.data(Qt.ItemDataRole.UserRole)
-        desc   = item.text()
-        resp   = self.table.item(row, 1).text() if self.table.item(row, 1) else ''
-        due    = self.table.item(row, 2).text() if self.table.item(row, 2) else ''
-        combo  = self.table.cellWidget(row, 3)
-        status = combo.currentText() if combo else 'Öppen'
-        self.db.update_action(act_id, desc, resp, due, status)
+        self.db.update_recommendation(self.recommendation_id, description, responsible,
+                                      due_date, status)
+        self.accept()
 
 
 class RecommendationEditorDialog(QDialog):
     """Popup opened from the Worksheet's "Rekommendation" column
-    (2026-08-13, see NOTES.md) — just ActionEditor (already fully wired
-    to the actions table) wrapped in a small dialog, since it previously
-    had no reachable place in the UI after the PropertiesRibbon
-    migration left ConsequencePanel unshown."""
+    (2026-08-13, see NOTES.md; rewritten 2026-08-25 for the shared
+    recommendations catalog, see "Rekommendationshantering — delad
+    katalog med återanvändning"). Combines a free-text field that
+    doubles as both "type a new recommendation" and "search the
+    catalog for one to reuse" with a checkbox list of every
+    recommendation in the study — checking one links it to this
+    consequence, unchecking unlinks it (the catalog row itself is never
+    deleted just by unlinking, so the text stays available for reuse
+    later)."""
+
+    recommendation_links_changed = pyqtSignal()
 
     def __init__(self, db, consequence_id, parent=None):
         super().__init__(parent)
+        self.db = db
+        self.consequence_id = consequence_id
         self.setWindowTitle("Rekommendationer")
         self.setMinimumWidth(480)
+        self._updating_table = False
+
         layout = QVBoxLayout(self)
-        self._editor = ActionEditor(db)
-        self._editor.load(consequence_id)
-        layout.addWidget(self._editor)
+        layout.addWidget(QLabel("Ny rekommendation (eller sök bland befintliga):"))
+        self._input = QPlainTextEdit()
+        self._input.setFixedHeight(60)
+        self._input.textChanged.connect(self._apply_filter)
+        layout.addWidget(self._input)
+
+        create_btn = QPushButton("Skapa ny rekommendation")
+        create_btn.clicked.connect(self._create_new)
+        layout.addWidget(create_btn)
+
+        layout.addWidget(QLabel("Tidigare rekommendationer i studien:"))
+        self._table = QTableWidget(0, 3)
+        self._table.horizontalHeader().setVisible(False)
+        self._table.verticalHeader().setVisible(False)
+        hdr = self._table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self._table.setColumnWidth(0, 28)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self._table.setColumnWidth(2, 32)
+        self._table.setMinimumHeight(CONFIG['H_TABLE_MIN'])
+        self._table.itemChanged.connect(self._on_item_changed)
+        layout.addWidget(self._table)
+
         btns = QHBoxLayout()
         btns.addStretch()
         close_btn = QPushButton("Stäng")
@@ -765,6 +804,72 @@ class RecommendationEditorDialog(QDialog):
         close_btn.clicked.connect(self.accept)
         btns.addWidget(close_btn)
         layout.addLayout(btns)
+
+        self._refresh_table()
+
+    def _linked_ids(self):
+        return {r['id'] for r in self.db.recommendations_for_consequence(self.consequence_id)}
+
+    def _refresh_table(self):
+        query = self._input.toPlainText().strip().lower()
+        linked = self._linked_ids()
+        self._updating_table = True
+        try:
+            self._table.setRowCount(0)
+            for rec in self.db.all_recommendations():
+                if query and query not in (rec['description'] or '').lower():
+                    continue
+                row = self._table.rowCount()
+                self._table.insertRow(row)
+
+                chk = QTableWidgetItem()
+                chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+                chk.setCheckState(Qt.CheckState.Checked if rec['id'] in linked
+                                  else Qt.CheckState.Unchecked)
+                chk.setData(Qt.ItemDataRole.UserRole, rec['id'])
+                self._table.setItem(row, 0, chk)
+
+                label = f"R-{rec['id']:03d}. {rec['description'] or 'Ny rekommendation'}"
+                text_item = QTableWidgetItem(label)
+                text_item.setFlags(text_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self._table.setItem(row, 1, text_item)
+
+                edit_btn = QPushButton("✎")
+                edit_btn.setFixedWidth(28)
+                edit_btn.clicked.connect(partial(self._edit_recommendation, rec['id']))
+                self._table.setCellWidget(row, 2, edit_btn)
+        finally:
+            self._updating_table = False
+
+    def _apply_filter(self):
+        self._refresh_table()
+
+    def _create_new(self):
+        text = self._input.toPlainText().strip()
+        if not text:
+            return
+        self.db.add_recommendation_to_consequence(self.consequence_id, description=text)
+        self._input.clear()
+        self._refresh_table()
+        self.recommendation_links_changed.emit()
+
+    def _on_item_changed(self, item):
+        if self._updating_table or item.column() != 0:
+            return
+        rec_id = item.data(Qt.ItemDataRole.UserRole)
+        if rec_id is None:
+            return
+        if item.checkState() == Qt.CheckState.Checked:
+            self.db.link_recommendation_to_consequence(rec_id, self.consequence_id)
+        else:
+            self.db.unlink_recommendation_from_consequence(rec_id, self.consequence_id)
+        self.recommendation_links_changed.emit()
+
+    def _edit_recommendation(self, rec_id):
+        dlg = _RecommendationDetailDialog(self.db, rec_id, self.consequence_id, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._refresh_table()
+            self.recommendation_links_changed.emit()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2385,7 +2490,7 @@ class MainWindow(QMainWindow):
             for dev in self.db.deviations(nd['id']):
                 for cause in self.db.causes_for_deviation(dev['id']):
                     for cons in self.db.consequences(cause['id']):
-                        for act in self.db.actions(cons['id']):
+                        for act in self.db.recommendations_for_consequence(cons['id']):
                             ad = dict(act)
                             data.append([
                                 nd['name'][:20],
@@ -2460,7 +2565,7 @@ class MainWindow(QMainWindow):
         n_caus = db.conn.execute("SELECT COUNT(*) FROM causes").fetchone()[0]
         n_cons = db.conn.execute("SELECT COUNT(*) FROM consequences").fetchone()[0]
         n_sg   = db.conn.execute("SELECT COUNT(*) FROM safeguards").fetchone()[0]
-        n_act  = db.conn.execute("SELECT COUNT(*) FROM actions").fetchone()[0]
+        n_act  = db.conn.execute("SELECT COUNT(*) FROM recommendations").fetchone()[0]
         # Completeness: causes with ≥1 consequence with severity
         n_complete = db.conn.execute(
             "SELECT COUNT(DISTINCT c.id) FROM causes c "

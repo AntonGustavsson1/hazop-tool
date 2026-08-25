@@ -111,13 +111,25 @@ CREATE TABLE IF NOT EXISTS reduction_factors (
     active          INTEGER NOT NULL DEFAULT 1
 );
 
-CREATE TABLE IF NOT EXISTS actions (
+-- 2026-08-25: replaces the old actions table (one row per consequence,
+-- no reuse) with a shared catalog + many-to-many link, so the same
+-- recommendation text can be linked to several consequences instead of
+-- being duplicated (see NOTES.md "Rekommendationshantering — delad
+-- katalog med återanvändning"). recommendations.id doubles as the
+-- user-visible, never-reused running number ("R-XXX") since SQLite
+-- AUTOINCREMENT already guarantees that.
+CREATE TABLE IF NOT EXISTS recommendations (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    consequence_id  INTEGER NOT NULL REFERENCES consequences(id) ON DELETE CASCADE,
     description     TEXT NOT NULL DEFAULT '',
     responsible     TEXT DEFAULT '',
     due_date        TEXT DEFAULT '',
     status          TEXT DEFAULT 'Öppen'
+);
+
+CREATE TABLE IF NOT EXISTS consequence_recommendations (
+    consequence_id    INTEGER NOT NULL REFERENCES consequences(id) ON DELETE CASCADE,
+    recommendation_id INTEGER NOT NULL REFERENCES recommendations(id) ON DELETE CASCADE,
+    PRIMARY KEY (consequence_id, recommendation_id)
 );
 
 CREATE TABLE IF NOT EXISTS app_config (
@@ -865,8 +877,38 @@ class Database:
         self._column_migrations()
         self._migrate_tables_and_seed()
         self._drop_legacy_consequence_likelihood_column()
+        self._migrate_actions_to_recommendations()
         logging.info("Database: migration complete")
         self._validate_schema()
+
+    def _migrate_actions_to_recommendations(self):
+        """One-time data migration for the 2026-08-25 recommendations
+        catalog rework (see NOTES.md "Rekommendationshantering — delad
+        katalog med återanvändning"): the old actions table (one row per
+        consequence, no reuse) is gone from SCHEMA for brand-new
+        databases, but a pre-existing database file still physically has
+        it until this runs. Copies every row into the new
+        recommendations catalog plus a matching consequence_recommendations
+        link back to its original consequence_id, then drops the old
+        table — after that, 'actions' not in tables is true forever, so
+        this is a no-op on every later launch. Same idempotent-via-table-
+        existence pattern as _drop_legacy_consequence_likelihood_column."""
+        tables = {r['name'] for r in self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if 'actions' not in tables:
+            return
+        old_rows = self.conn.execute("SELECT * FROM actions ORDER BY id").fetchall()
+        for a in old_rows:
+            cur = self.conn.execute(
+                "INSERT INTO recommendations (description,responsible,due_date,status) "
+                "VALUES (?,?,?,?)",
+                (a['description'], a['responsible'], a['due_date'], a['status']))
+            self.conn.execute(
+                "INSERT INTO consequence_recommendations (consequence_id,recommendation_id) "
+                "VALUES (?,?)", (a['consequence_id'], cur.lastrowid))
+        self.conn.execute("DROP TABLE actions")
+        self.commit()
+        logging.info(f"Migrated {len(old_rows)} actions -> recommendations catalog")
 
     def _drop_legacy_consequence_likelihood_column(self):
         """consequences.likelihood predates the schema redesign that moved
@@ -2979,17 +3021,123 @@ class Database:
         return self.conn.execute(
             "SELECT * FROM safeguards WHERE consequence_id=? ORDER BY id", (consequence_id,)).fetchall()
 
-    def actions(self, consequence_id):
+    def recommendations_for_consequence(self, consequence_id):
+        """Recommendations linked to one consequence, via the
+        consequence_recommendations join table (2026-08-25, see
+        NOTES.md "Rekommendationshantering" — replaces the old
+        actions(consequence_id), same call shape/row shape so
+        _add_row()/_recommendation_summary() didn't need to change
+        beyond the method name)."""
         return self.conn.execute(
-            "SELECT * FROM actions WHERE consequence_id=? ORDER BY id", (consequence_id,)).fetchall()
+            "SELECT r.* FROM recommendations r "
+            "JOIN consequence_recommendations cr ON cr.recommendation_id = r.id "
+            "WHERE cr.consequence_id=? ORDER BY r.id", (consequence_id,)).fetchall()
 
-    def actions_for_consequences(self, consequence_ids):
-        """Bulk version of actions() — see _fetch_grouped (2026-08-24,
-        NOTES.md). ScenarioTablePanel._add_row() used to call the
-        single-id version once per RENDERED ROW, even though a
-        consequence with several categories/safeguards produces several
-        rows that all share the same consequence_id."""
-        return self._fetch_grouped('actions', 'consequence_id', consequence_ids)
+    def recommendations_for_consequences(self, consequence_ids):
+        """Bulk version of recommendations_for_consequence() — same
+        {consequence_id: [rows]} shape _fetch_grouped() returns for a
+        plain FK column, but recommendations are reached through the
+        consequence_recommendations join table instead (a real N:M
+        relation, not a FK on the consumer), so it can't reuse
+        _fetch_grouped() directly. Same chunking to stay under SQLite's
+        per-statement variable limit."""
+        ids = list(consequence_ids)
+        result = {i: [] for i in ids}
+        if not ids:
+            return result
+        CHUNK = 500
+        for start in range(0, len(ids), CHUNK):
+            chunk = ids[start:start + CHUNK]
+            placeholders = ','.join('?' * len(chunk))
+            rows = self.conn.execute(
+                f"SELECT cr.consequence_id AS _cons_id, r.* "
+                f"FROM consequence_recommendations cr "
+                f"JOIN recommendations r ON r.id = cr.recommendation_id "
+                f"WHERE cr.consequence_id IN ({placeholders}) "
+                f"ORDER BY cr.consequence_id, r.id", chunk).fetchall()
+            for row in rows:
+                result[row['_cons_id']].append(row)
+        return result
+
+    def all_recommendations(self):
+        """The whole study-wide recommendation catalog, for the
+        RecommendationEditorDialog's reuse/search list."""
+        return self.conn.execute("SELECT * FROM recommendations ORDER BY id").fetchall()
+
+    def recommendation_consequence_count(self, recommendation_id):
+        """How many consequences currently link to this recommendation —
+        the basis for the "used by multiple causes, update all?" prompt
+        when editing a shared recommendation's text."""
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM consequence_recommendations WHERE recommendation_id=?",
+            (recommendation_id,)).fetchone()[0]
+
+    def add_recommendation(self, description='', responsible='', due_date='', status='Öppen'):
+        """Create a new, unlinked catalog row. Its id doubles as the
+        never-reused running number shown as 'R-XXX' everywhere the
+        recommendation is used."""
+        cur = self.conn.execute(
+            "INSERT INTO recommendations (description,responsible,due_date,status) "
+            "VALUES (?,?,?,?)", (description, responsible, due_date, status))
+        self.commit()
+        return cur.lastrowid
+
+    def add_recommendation_to_consequence(self, consequence_id, description='',
+                                          responsible='', due_date='', status='Öppen'):
+        """Create a new recommendation and link it to consequence_id in
+        one call — same call shape the old add_action(consequence_id)
+        had, and what the picker popup's "Skapa ny rekommendation"
+        button calls."""
+        rec_id = self.add_recommendation(description, responsible, due_date, status)
+        self.link_recommendation_to_consequence(rec_id, consequence_id)
+        return rec_id
+
+    def update_recommendation(self, id_, description=None, responsible=None,
+                              due_date=None, status=None):
+        """Partial update — None means 'don't touch', same convention as
+        update_cause(). This is the "Ja, uppdatera alla" path: same id,
+        new text visible to every consequence already linked to it."""
+        sets, vals = [], []
+        if description is not None:
+            sets.append("description=?"); vals.append(description)
+        if responsible is not None:
+            sets.append("responsible=?"); vals.append(responsible)
+        if due_date is not None:
+            sets.append("due_date=?"); vals.append(due_date)
+        if status is not None:
+            sets.append("status=?"); vals.append(status)
+        if not sets:
+            return
+        vals.append(id_)
+        self.conn.execute(f"UPDATE recommendations SET {','.join(sets)} WHERE id=?", vals)
+        self.commit()
+
+    def delete_recommendation(self, id_):
+        """Hard delete from the catalog (cascades any remaining links).
+        Not called by the picker UI itself — unchecking a recommendation
+        only unlinks it (see unlink_recommendation_from_consequence) so
+        reusable text isn't lost — kept for completeness/tests."""
+        self.conn.execute("DELETE FROM recommendations WHERE id=?", (id_,))
+        self.commit()
+
+    def link_recommendation_to_consequence(self, recommendation_id, consequence_id):
+        """Idempotent — checking an already-linked recommendation again
+        is a no-op, never creates a duplicate link."""
+        self.conn.execute(
+            "INSERT OR IGNORE INTO consequence_recommendations "
+            "(consequence_id,recommendation_id) VALUES (?,?)",
+            (consequence_id, recommendation_id))
+        self.commit()
+
+    def unlink_recommendation_from_consequence(self, recommendation_id, consequence_id):
+        """Unchecking a recommendation in the picker — removes only this
+        link. The catalog row itself is left alone even if this was its
+        last link, so the text stays available for reuse later."""
+        self.conn.execute(
+            "DELETE FROM consequence_recommendations "
+            "WHERE consequence_id=? AND recommendation_id=?",
+            (consequence_id, recommendation_id))
+        self.commit()
 
     def get_node(self, id_):
         row = self.conn.execute("SELECT * FROM nodes WHERE id=?", (id_,)).fetchone()
@@ -3005,6 +3153,10 @@ class Database:
 
     def get_safeguard(self, id_):
         row = self.conn.execute("SELECT * FROM safeguards WHERE id=?", (id_,)).fetchone()
+        return dict(row) if row else None
+
+    def get_recommendation(self, id_):
+        row = self.conn.execute("SELECT * FROM recommendations WHERE id=?", (id_,)).fetchone()
         return dict(row) if row else None
 
     def cause_base_frequency_per_year(self, cause):
@@ -3569,13 +3721,6 @@ class Database:
         self.commit()
         return cur.lastrowid
 
-    def add_action(self, consequence_id):
-        cur = self.conn.execute(
-            "INSERT INTO actions (consequence_id,description,status) VALUES (?,'Ny åtgärd','Öppen')",
-            (consequence_id,))
-        self.commit()
-        return cur.lastrowid
-
     # ── Update ────────────────────────────────────────────────────────────────
     def set_cause_comment(self, cause_id, comment):
         self.conn.execute("UPDATE causes SET comment=? WHERE id=?", (comment, cause_id))
@@ -4051,12 +4196,6 @@ class Database:
         self.conn.execute(f"UPDATE safeguards SET {', '.join(parts)} WHERE id=?", vals)
         self.commit()
 
-    def update_action(self, id_, description, responsible, due_date, status):
-        self.conn.execute(
-            "UPDATE actions SET description=?,responsible=?,due_date=?,status=? WHERE id=?",
-            (description, responsible, due_date, status, id_))
-        self.commit()
-
     # ── Delete ────────────────────────────────────────────────────────────────
     def delete_node(self, id_):
         # Deleting a node cascades through causes -> consequences -> safeguards,
@@ -4165,9 +4304,6 @@ class Database:
         # No FK cascade exists for consequence_severity_exclusions.safeguard_id
         self.conn.execute("DELETE FROM consequence_severity_exclusions WHERE safeguard_id=?", (id_,))
         self.conn.execute("DELETE FROM safeguards WHERE id=?", (id_,)); self.commit()
-
-    def delete_action(self, id_):
-        self.conn.execute("DELETE FROM actions WHERE id=?", (id_,)); self.commit()
 
     # ── Reduction factors ─────────────────────────────────────────────────────
     def reduction_factors(self, consequence_id):
@@ -4286,8 +4422,8 @@ class Database:
             'causes':       self.conn.execute("SELECT COUNT(*) FROM causes").fetchone()[0],
             'consequences': self.conn.execute("SELECT COUNT(*) FROM consequences").fetchone()[0],
             'safeguards':   self.conn.execute("SELECT COUNT(*) FROM safeguards").fetchone()[0],
-            'open_actions': self.conn.execute(
-                "SELECT COUNT(*) FROM actions WHERE status='Öppen'").fetchone()[0],
+            'open_recommendations': self.conn.execute(
+                "SELECT COUNT(*) FROM recommendations WHERE status='Öppen'").fetchone()[0],
         }
 
     def all_data(self):
@@ -4296,7 +4432,7 @@ class Database:
             for cause in self.causes(node['id']):
                 for cons in self.consequences(cause['id']):
                     sgs = [dict(s) for s in self.safeguards(cons['id'])]
-                    acts = [dict(a) for a in self.actions(cons['id'])]
+                    acts = [dict(a) for a in self.recommendations_for_consequence(cons['id'])]
                     rows.append({
                         'node_name':      node['name'],
                         'node_pid':       node['pid_ref'] or '',
