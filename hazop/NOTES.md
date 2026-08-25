@@ -1223,6 +1223,63 @@ omskrivna tester verkligen slår av mot koden innan denna ändring (8 av
 **Verifiering:** `test_smoke` + `test_tree_panel` + `test_integration`
 (293 tester) samt full 14-filssvit, allt grönt.
 
+## Rättar ihopslagningen: Avvikelse ("Lågt flöde") kvar intakt, Orsak = objekt-tag + orsaksbeskrivning (2026-08-25, samma dag, uppföljning)
+
+**Beställning (planerad via Plan Mode):** föregående ändring samma dag
+(commit `7fcc993`, "Slå ihop objekt-tagg + avvikelsetext...") slog ihop
+FEL två nivåer. Anton rättade: "Ventil felar stängd" — exemplet han
+gav ursprungligen — var ORSAKENS egen beskrivning
+(`causes.description`, en specifik felmod), inte AVVIKELSENS guide-ord
+(`deviations.description`, t.ex. "Lågt flöde"). Han förtydligade:
+
+> "Jag vill att avvikelsenivån är kvar intakt, dvs lågt flöde. En nivå
+> under lågt flöde skall Orsak ligga, orsak i trädet består av
+> Objekttaggen + orsaksbeskrivningen (felar öppet, felar stängd etc).
+> Exempel System -> nod -> avikelse -> Objekt-tag + orsaksbrevning."
+
+**Bekräftat via `AskUserQuestion`:** när flera objekt (t.ex. V-101 och
+V-102) delar exakt samma avvikelsetext ("Lågt flöde") delar de EN
+gemensam avvikelse-rad — inte en var — med varsin Orsak-rad som syskon
+under den.
+
+**Konsekvens, långt mer än en etikettändring:** eftersom objekt-
+identiteten nu visas på ORSAKS-nivån (`causes.equipment_id`/`comp_tag`,
+oberoende av vilken specifik `deviations`-rad orsaken råkar hänga på)
+behövs ingen separat "Utrustning"-nivå i trädet längre. Hela "kaka på
+kaka"-mekaniken (2026-08-09/08-10 — objekt-rad som slås ihop med
+avvikelse-raden, som i sin tur kan slås ihop med en trivial orsaks-rad)
+blir överflödig och togs bort. `tree_panel.py`s `_add_node_item`s
+Ledord/Utrustning-block (equipment_groups/ungrouped_devs-uppdelning,
+"skip wrapper"-specialfall, "hide empty generic"-regel) ersattes av en
+enda, enhetlig loop: en `DEV_T`-rad per beskrivning (ankrad på den
+GENERISKA, alltid auto-seedade avvikelsen), med en ny `add_cause_item`
+som samlar orsaker från ALLA `deviations`-rader som delar texten
+(objekt-kopplade eller generiska) som direkta barn, etiketterade
+`"{tag} — {beskrivning}"` (bara tagg om orsaken fortfarande är trivial,
+bara beskrivning om ingen tagg finns).
+
+**Bonusfix, hittad under omskrivningen:** orsaks-radens tagg
+resolveras nu LIVE via `causes.equipment_id` → `equipment_catalog`
+(samma mönster `scenario_panel.py`s egen `_cause_tag_display` redan
+använder för ORS-taggremsan), inte den frusna `comp_tag`-kolumnen —
+detta var faktiskt en redan existerande bugg (bekräftat: den gamla,
+nu borttagna "kaka på kaka"-koden hade samma frusna-taggvisning-problem,
+inte något min omskrivning införde) som gjorde att ett objekt omdöpt
+via P&ID/Utrustningsregistret inte uppdaterade trädets rad förrän
+något annat råkade trigga en fullständig ombyggnad.
+
+**`EQUIP_T` och `LEDORD_T` är nu HELT odåtkomliga** genom `refresh()`
+(tidigare bara sällsynta) — konstanterna och deras resolvers/
+kontextmeny-spärr lämnas medvetet orörda (kostar inget). Två tester i
+`tests/test_tree_panel.py` som tidigare konstruerade sitt `LEDORD_T`-
+scenario via ett riktigt `refresh()`-anrop bygger nu sitt måltillstånd
+direkt (ett manuellt konstruerat `QTreeWidgetItem`) istället.
+
+**Verifiering:** `test_smoke` + `test_tree_panel` + `test_integration`
++ `test_scenario_panel` (391 tester) samt full 14-filssvit, allt grönt.
+Bekräftat att samtliga 10 omskrivna/nya tester slår av mot koden innan
+denna rättelse (`git stash`).
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

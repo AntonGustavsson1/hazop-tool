@@ -65,8 +65,8 @@ from hazop import (  # noqa: E402
     freq_to_idx,
 )
 from PyQt6.QtWidgets import (  # noqa: E402
-    QApplication, QGraphicsPixmapItem, QTreeWidgetItemIterator, QCheckBox,
-    QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit,
+    QApplication, QGraphicsPixmapItem, QTreeWidgetItemIterator, QTreeWidgetItem,
+    QCheckBox, QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit,
 )
 from PyQt6.QtGui import QPixmap, QFocusEvent  # noqa: E402
 from PyQt6.QtCore import Qt, QPoint, QDate, QEvent, QThread, pyqtSignal  # noqa: E402
@@ -84,16 +84,28 @@ from test_helpers import (
 )
 
 class TreePanelEquipmentGroupingTests(unittest.TestCase):
-    """TreePanel.refresh() groups a node's deviations by guide-word text
-    FIRST (LEDORD_T — several deviation rows across different equipment can
-    share one description), then within each guide word, by equipment_id
-    (EQUIP_T) — see NOTES.md 'Nod → Ledord → Utrustning'. The LEDORD_T
-    wrapper is skipped entirely when there's nothing to group — a single,
-    plain (no equipment) deviation for a guide word attaches directly to
-    the node instead, to avoid showing the same guide-word text twice in a
-    row for no reason (see NOTES.md's follow-up 'varför är det dubbelt?').
-    It reappears as soon as a second deviation (equipment-scoped, or
-    another plain one) shares that same guide word."""
+    """TreePanel.refresh() builds Nod → Avvikelse → Orsak → Konsekvens →
+    Safeguard (2026-08-25, see NOTES.md "Rättar ihopslagningen": rättar
+    samma dags tidigare, felriktade ihopslagning som kombinerade
+    objekt-taggen med AVVIKELSENS text ("Lågt flöde") istället för
+    ORSAKENS egen ("Felar stängd" etc)).
+
+    Avvikelsenivån är kvar INTAKT: deviations under a node are grouped by
+    their guide-word text (several deviation rows across different
+    equipment can share one description, e.g. "Lågt flöde" for both a
+    pump and a valve) into exactly ONE tree row per description, always
+    — no separate wrapper level, no per-equipment duplication (confirmed
+    via AskUserQuestion: several objects sharing one avvikelse text
+    share ONE row, not one each). That row anchors on the GENERIC
+    (equipment_id IS NULL) deviation auto-seeded per guide word by
+    add_node(), so "+ Orsak"/drag-and-drop always has somewhere to land.
+
+    Orsak = objekt-tag + orsaksbeskrivning: every cause across ALL
+    deviations sharing that description (equipment-linked or generic)
+    becomes a direct child of the ONE avvikelse row, labeled with its
+    own comp_tag + description combined (falls back to just the tag if
+    the cause is still an untouched placeholder, or just the description
+    if it has no tag at all)."""
 
     @classmethod
     def setUpClass(cls):
@@ -125,228 +137,6 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
             it += 1
         return out
 
-    def test_equipment_scoped_deviation_renders_as_flat_row_under_node(self):
-        """2026-08-25 (see NOTES.md 'Slå ihop objekt-rad + avvikelse-rad'):
-        a single deviation for this equipment+guide-word combo (the
-        overwhelmingly common case — get_or_create_deviation is idempotent
-        per node+description+equipment) is ONE flat row directly under the
-        node — no separate LEDORD_T wrapper, no separate EQUIP_T item.
-        The row's label combines the tag with the deviation text, and it
-        carries the DEVIATION's identity (not EQUIP_T) so 'add cause' and
-        equipment-dropped-on-deviation both work directly on it."""
-        eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
-        node_id = self.db.add_node()
-        dev_id = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
-        self.panel.refresh()
-
-        items = self._tree_items()
-        self.assertEqual(len([x for x in items if x[0] == LEDORD_T
-                              and str(x[1]).endswith("Lågt flöde")]), 0,
-            "an equipment-linked guide word must no longer get a LEDORD_T wrapper")
-        self.assertEqual(len([x for x in items if x[0] == EQUIP_T and x[1] == eq_id]), 0,
-            "a single deviation must not get a separate EQUIP_T row either")
-        dev_rows = [x for x in items if x[0] == DEV_T and x[1] == dev_id]
-        self.assertEqual(len(dev_rows), 1)
-        self.assertEqual(dev_rows[0][2], NODE_T,
-            "the flat equipment+deviation row must sit directly under the node")
-        self.assertEqual(self.panel._resolve_equipment_id(DEV_T, dev_id), eq_id,
-            "the flat row's underlying deviation must still resolve back to its equipment")
-
-    def test_two_equipment_sharing_same_guide_word_render_as_separate_flat_rows(self):
-        """2026-08-25, confirmed via AskUserQuestion (see NOTES.md 'Slå
-        ihop objekt-rad + avvikelse-rad'): a pump AND a valve that both
-        have 'Lågt flöde' under the same node no longer share a grouped
-        guide-word heading — each gets its own independent flat row, even
-        though they read the exact same deviation text. This is a
-        deliberate reversal of the 2026-08-13 grouped-numbering
-        preference for the object-linked case specifically."""
-        pump_id = self.db.add_equipment_item("P-101", "P-101", "P", 0, "Pump", '', 0)
-        valve_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
-        node_id = self.db.add_node()
-        pump_dev = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=pump_id)
-        valve_dev = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=valve_id)
-        self.panel.refresh()
-
-        items = self._tree_items()
-        self.assertEqual(len([x for x in items if x[0] == LEDORD_T
-                              and str(x[1]).endswith("Lågt flöde")]), 0,
-            "no shared guide-word heading must exist anymore for the object-linked case")
-        dev_rows = [x for x in items if x[0] == DEV_T and x[2] == NODE_T
-                    and x[1] in (pump_dev, valve_dev)]
-        self.assertEqual({x[1] for x in dev_rows}, {pump_dev, valve_dev},
-            "both must render as their own flat rows directly under the node")
-        self.assertEqual(self.panel._resolve_equipment_id(DEV_T, pump_dev), pump_id)
-        self.assertEqual(self.panel._resolve_equipment_id(DEV_T, valve_dev), valve_id)
-
-    def test_numbering_stays_sequential_and_visible_after_linking_equipment(self):
-        """Bug report (2026-08-13): 'Nummereringen av lågt flöde, högt
-        flöde osv blir konstig när man lägger till objekt i trädet.'
-        First fix attempt made the merged equipment row simply consume
-        no number at all — which then made a SECOND report surface:
-        'jag vill att den ska kvarstå så att det alltid syns att det är
-        exempelvis 16 avikelser' (the guide word's own number must stay
-        visible even once equipment is linked, not disappear).
-
-        2026-08-25 (see NOTES.md 'Slå ihop objekt-rad + avvikelse-rad'):
-        the flat equipment row now carries this SAME number directly in
-        its own combined label (no more separate wrapper to carry it
-        instead) — 'Lågt flöde' becomes '1. V-101 — Lågt flöde' in place,
-        still first in the sequence; the next plain guide word
-        ('Högt flöde') still continues right after it."""
-        eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
-        node_id = self.db.add_node()
-        self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
-        self.panel.refresh()
-
-        it = QTreeWidgetItemIterator(self.panel.tree)
-        lagt_item = hogt_item = None
-        while it.value():
-            item = it.value()
-            t = item.data(0, Qt.ItemDataRole.UserRole + 1)
-            if (t == DEV_T and item.parent() is not None
-                    and item.parent().data(0, Qt.ItemDataRole.UserRole + 1) == NODE_T):
-                if "Lågt flöde" in item.text(0):
-                    lagt_item = item
-                if "Högt flöde" in item.text(0):
-                    hogt_item = item
-            it += 1
-        self.assertIsNotNone(lagt_item, "'Lågt flöde' must still be a flat row directly under the node")
-        self.assertIn("1. V-101 — Lågt flöde", lagt_item.text(0),
-            f"the guide word's own number must stay visible on the flat row, got: {lagt_item.text(0)!r}")
-        self.assertIsNotNone(hogt_item, "'Högt flöde' must still attach directly to the node")
-        self.assertIn("2. Högt flöde", hogt_item.text(0),
-            f"expected the next sequential number, got: {hogt_item.text(0)!r}")
-
-    def test_all_seeded_guide_words_stay_numbered_one_through_sixteen(self):
-        """Direct check of the user's own framing: 'jag vill att den ska
-        kvarstå så att det alltid syns att det är exempelvis 16
-        avikelser om jag inte lägger till nya avikelser i trädet' — a
-        fresh node's 16 auto-seeded guide words must show as a gapless
-        1..16 sequence, and linking equipment to any ONE of them (moving
-        it from the plain to the wrapped rendering path) must not change
-        that count or leave a gap/duplicate anywhere."""
-        import re
-        # 2026-08-24: Database now auto-seeds one default node on a brand
-        # new project (see Database.__init__'s pre_existing_db check), so
-        # self.db already has a first node with its own 1..16 numbering
-        # before this test adds its OWN node — scope the scan to just this
-        # test's node (not the whole tree) so the two don't double up.
-        node_id = self.db.add_node()
-        n_seeded = len(self.db.deviations(node_id))
-        eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
-        self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
-        self.panel.refresh()
-
-        node_item = _find_tree_item(self.panel.tree, NODE_T, node_id)
-        self.assertIsNotNone(node_item)
-
-        def _is_within(item, ancestor):
-            p = item.parent()
-            while p is not None:
-                if p is ancestor:
-                    return True
-                p = p.parent()
-            return False
-
-        numbers = []
-        it = QTreeWidgetItemIterator(self.panel.tree)
-        while it.value():
-            item = it.value()
-            t = item.data(0, Qt.ItemDataRole.UserRole + 1)
-            if t in (DEV_T, LEDORD_T) and _is_within(item, node_item):
-                m = re.search(r'(\d+)\.\s', item.text(0))
-                if m:
-                    numbers.append(int(m.group(1)))
-            it += 1
-        self.assertEqual(sorted(numbers), list(range(1, n_seeded + 1)),
-            f"expected a gapless 1..{n_seeded} sequence, got: {sorted(numbers)}")
-
-    def test_flat_equipment_deviation_row_combines_tag_and_deviation_text(self):
-        """2026-08-25 (see NOTES.md 'Slå ihop objekt-rad + avvikelse-rad'):
-        with the LEDORD_T wrapper gone, the deviation text ('Lågt flöde')
-        no longer appears anywhere else — the flat row's own label must
-        show BOTH the tag and the deviation text together ('M1.GPA6 —
-        Lågt flöde'), not just the tag alone (the old, now-obsolete
-        'don't repeat the guide-word text' rule from 2026-08-09 applied
-        to a different tree shape that no longer exists)."""
-        eq_id = self.db.add_equipment_item("M1.GPA6", "M1.GPA6", "M1", 0, "Pump", '', 0)
-        node_id = self.db.add_node()
-        dev_id = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
-        self.db.add_cause(dev_id)
-        self.panel.refresh()
-
-        it = QTreeWidgetItemIterator(self.panel.tree)
-        dev_item = None
-        while it.value():
-            item = it.value()
-            if (item.data(0, Qt.ItemDataRole.UserRole + 1) == DEV_T
-                    and item.data(0, Qt.ItemDataRole.UserRole) == dev_id):
-                dev_item = item
-            it += 1
-        self.assertIsNotNone(dev_item)
-        self.assertIn("M1.GPA6 — Lågt flöde", dev_item.text(0))
-        # The cause must be one level directly below the flat row, not two.
-        self.assertEqual(dev_item.childCount(), 1)
-        cause_item = dev_item.child(0)
-        self.assertEqual(cause_item.data(0, Qt.ItemDataRole.UserRole + 1), CAUSE_T)
-
-    def test_trivial_tagged_cause_merges_into_equipment_header_row(self):
-        """'Det känns onödigt att objektet redovisas två gånger i
-        hierarkin i trädet. Detta går att slå ihop till en.' (2026-08-10,
-        screenshot in conversation) — dragging equipment onto a deviation
-        (_create_tagged_cause) creates a cause with no real description
-        yet, whose own tree label therefore falls back to the SAME
-        equipment tag the merged header row above it already shows
-        ('=E1.M1.QMA102 — Ventil' followed by '1. E1.M1.QMA102'). One
-        more 'kaka på kaka' level: the trivial cause's identity (and its
-        consequences) now attaches directly to the header row instead of
-        a separate, redundant child."""
-        from hazop import _create_tagged_cause
-        eq_id = self.db.add_equipment_item("E1.M1.QMA102", "E1.M1.QMA102", "E1", 0, "Ventil", '', 0)
-        node_id = self.db.add_node()
-        dev_id = self.db.get_or_create_deviation(node_id, "Högt flöde", equipment_id=eq_id)
-        cause_id, cons_id = _create_tagged_cause(self.db, dev_id, "Ventil", "E1.M1.QMA102")
-        self.panel.refresh()
-
-        it = QTreeWidgetItemIterator(self.panel.tree)
-        header_item = None
-        while it.value():
-            item = it.value()
-            if (item.data(0, Qt.ItemDataRole.UserRole + 1) == CAUSE_T
-                    and item.data(0, Qt.ItemDataRole.UserRole) == cause_id):
-                header_item = item
-            it += 1
-        self.assertIsNotNone(header_item,
-            "the merged row must carry the CAUSE's identity, not a separate DEV_T row above it")
-        self.assertIn("E1.M1.QMA102", header_item.text(0))
-        self.assertEqual(len([x for x in self._tree_items() if x[0] == DEV_T and x[1] == dev_id]), 0,
-            "no separate DEV_T row should remain once merged into the cause")
-        # The consequence must be one level directly below the merged
-        # row, not nested under yet another redundant cause row.
-        self.assertEqual(header_item.childCount(), 1)
-        self.assertEqual(header_item.child(0).data(0, Qt.ItemDataRole.UserRole + 1), CONS_T)
-
-    def test_cause_with_real_description_does_not_merge_into_equipment_header(self):
-        """The merge only applies to a genuinely trivial, still-unedited
-        placeholder cause — once the user types a real description, the
-        cause has its own distinct content and must show as a normal,
-        separate child row again."""
-        from hazop import _create_tagged_cause
-        eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
-        node_id = self.db.add_node()
-        dev_id = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
-        cause_id, _cons_id = _create_tagged_cause(self.db, dev_id, "Ventil", "V-101")
-        self.db.update_cause(cause_id, description="Inget flöde till M1.GPA2")
-        self.panel.refresh()
-
-        items = self._tree_items()
-        dev_rows = [x for x in items if x[0] == DEV_T and x[1] == dev_id]
-        self.assertEqual(len(dev_rows), 1,
-            "a cause with real content must not collapse its parent DEV_T row")
-        cause_rows = [x for x in items if x[0] == CAUSE_T and x[1] == cause_id]
-        self.assertEqual(len(cause_rows), 1)
-        self.assertEqual(cause_rows[0][2], DEV_T)
-
     def _find_item(self, type_, id_):
         it = QTreeWidgetItemIterator(self.panel.tree)
         while it.value():
@@ -357,116 +147,51 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
             it += 1
         return None
 
-    def test_double_click_dev_merged_equipment_row_opens_tag_popup_not_inline_edit(self):
-        """2026-08-18 bug report: double-clicking a merged equipment-tag
-        row (the common case, a single deviation for this equipment+guide
-        word, see refresh()'s "kaka på kaka" collapse) opened inline text
-        editing of the DEVIATION it happened to be standing in for,
-        showing the guide word text ("avvikelsetexten") instead of
-        anything related to the tag. It must open the Tag+Typ popup
-        instead (CauseTagPopup, 2026-08-18 follow-up — same popup used
-        for a tag click in the scenario table), exactly like a genuine
-        EQUIP_T row."""
-        from hazop import _create_tagged_cause, CauseTagPopup
-        eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
-        node_id = self.db.add_node()
-        dev_id = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
-        cause_id, _cons_id = _create_tagged_cause(self.db, dev_id, "Ventil", "V-101")
-        self.db.update_cause(cause_id, description="Inget flöde till M1.GPA2")
-        self.panel.refresh()
-
-        item = self._find_item(DEV_T, dev_id)
-        self.assertIsNotNone(item)
-
-        self.panel._on_item_double_click(item, 0)
-        popups = self.panel.findChildren(CauseTagPopup)
-        self.assertEqual(len(popups), 1,
-            "double-clicking the tag row must open the Tag+Typ popup")
-        self.assertEqual(popups[0]._tag_edit.text(), "V-101")
-        self.assertIsNone(self.panel._inline_edit_target)
-        self.assertEqual(len(self.panel.tree.viewport().findChildren(QLineEdit)), 0)
-
-    def test_double_click_cause_merged_equipment_row_opens_tag_popup_not_inline_edit(self):
-        """Same fix, other merge branch — the trivial-cause -> CAUSE_T
-        merge (see refresh())."""
-        from hazop import _create_tagged_cause, CauseTagPopup
-        eq_id = self.db.add_equipment_item("E1.M1.QMA102", "E1.M1.QMA102", "E1", 0, "Ventil", '', 0)
-        node_id = self.db.add_node()
-        dev_id = self.db.get_or_create_deviation(node_id, "Högt flöde", equipment_id=eq_id)
-        cause_id, _cons_id = _create_tagged_cause(self.db, dev_id, "Ventil", "E1.M1.QMA102")
-        self.panel.refresh()
-
-        item = self._find_item(CAUSE_T, cause_id)
-        self.assertIsNotNone(item)
-
-        self.panel._on_item_double_click(item, 0)
-        popups = self.panel.findChildren(CauseTagPopup)
-        self.assertEqual(len(popups), 1)
-        self.assertEqual(popups[0]._tag_edit.text(), "E1.M1.QMA102")
-        self.assertIsNone(self.panel._inline_edit_target)
-        self.assertEqual(len(self.panel.tree.viewport().findChildren(QLineEdit)), 0)
-
-    def test_equipment_tag_popup_edits_tag_and_type_live(self):
-        """The tag popup has no OK/Avbryt button (2026-08-18 user
-        request) — changing the tag (Enter/focus-out) or picking a type
-        commits immediately to the equipment_catalog row."""
-        from hazop import CauseTagPopup
+    def test_avvikelse_row_shows_only_the_guide_word_text(self):
+        """The avvikelse row's own label must never carry any object
+        identity — just the guide-word text, unchanged, exactly as
+        before ANY equipment-grouping feature ever existed."""
         eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
         node_id = self.db.add_node()
         self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        # The row anchors on the GENERIC deviation (already auto-seeded
+        # by add_node()), not the equipment-scoped id just created above
+        # — get_or_create_deviation is idempotent, so this just resolves
+        # the same existing generic row.
+        anchor_id = self.db.get_or_create_deviation(node_id, "Lågt flöde")
         self.panel.refresh()
-        item = self._find_item(EQUIP_T, eq_id) or self._equip_item_fallback(eq_id)
+
+        item = self._find_item(DEV_T, anchor_id)
         self.assertIsNotNone(item)
+        self.assertEqual(item.parent().data(0, Qt.ItemDataRole.UserRole + 1), NODE_T,
+            "the avvikelse row must sit directly under the node — no wrapper level")
+        self.assertIn("Lågt flöde", item.text(0))
+        self.assertNotIn("V-101", item.text(0),
+            "the avvikelse row must not carry any object tag")
+        self.assertTrue(item.font(0).italic())
 
-        self.panel._on_item_double_click(item, 0)
-        popup = self.panel.findChildren(CauseTagPopup)[0]
-
-        popup._tag_edit.setText("V-102")
-        popup._tag_edit.editingFinished.emit()
-        self.assertEqual(self.db.get_equipment_by_id(eq_id)['tag'], "V-102")
-
-        popup._type_cb.setCurrentIndex(popup._type_cb.findText("Pump"))
-        popup._type_cb.activated.emit(popup._type_cb.currentIndex())
-        self.assertEqual(self.db.get_equipment_by_id(eq_id)['equipment_type'], "Pump")
-
-    def _equip_item_fallback(self, eq_id):
-        """A lone equipment-scoped deviation collapses onto a DEV_T row
-        (see refresh()'s "kaka på kaka") rather than staying EQUIP_T —
-        find it by its _EQUIP_TAG_ROLE instead when a plain EQUIP_T
-        lookup comes up empty."""
-        it = QTreeWidgetItemIterator(self.panel.tree)
-        while it.value():
-            candidate = it.value()
-            if candidate.data(0, self.panel._EQUIP_TAG_ROLE) == eq_id:
-                return candidate
-            it += 1
-        return None
-
-    def test_second_trivial_cause_prevents_merge(self):
-        """A second cause under the same equipment-scoped deviation means
-        there are now two distinct things to show — merging either one
-        into the header row would hide the other; both must stay normal,
-        separate child rows."""
+    def test_orsak_row_combines_tag_and_description(self):
+        """The whole point of the change: once a cause has both a tag
+        AND a real description, its row shows both together."""
         from hazop import _create_tagged_cause
         eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
         node_id = self.db.add_node()
         dev_id = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
-        cause_id1, _c1 = _create_tagged_cause(self.db, dev_id, "Ventil", "V-101")
-        cause_id2, _c2 = _create_tagged_cause(self.db, dev_id, "Ventil", "V-101")
+        anchor_id = self.db.get_or_create_deviation(node_id, "Lågt flöde")
+        cause_id, _cons_id = _create_tagged_cause(self.db, dev_id, "Ventil", "V-101")
+        self.db.update_cause(cause_id, description="Felar stängd")
         self.panel.refresh()
 
-        items = self._tree_items()
-        dev_rows = [x for x in items if x[0] == DEV_T and x[1] == dev_id]
-        self.assertEqual(len(dev_rows), 1, "two causes must not collapse the parent DEV_T row")
-        cause_rows = {x[1] for x in items if x[0] == CAUSE_T and x[1] in (cause_id1, cause_id2)}
-        self.assertEqual(cause_rows, {cause_id1, cause_id2})
+        dev_item = self._find_item(DEV_T, anchor_id)
+        cause_item = self._find_item(CAUSE_T, cause_id)
+        self.assertIsNotNone(cause_item)
+        self.assertIs(cause_item.parent(), dev_item,
+            "the orsak row must be a direct child of the avvikelse row")
+        self.assertIn("V-101 — Felar stängd", cause_item.text(0))
 
-    def test_merged_cause_header_still_offers_add_cause_in_context_menu(self):
-        """The merged row (carrying the CAUSE's identity, see above) must
-        still let the user add a SECOND, distinct cause to the same
-        deviation — add_cause() already resolves the deviation via the
-        cause's own deviation_id regardless of which row type triggered
-        it, so this is purely a context-menu-visibility check."""
+    def test_orsak_row_shows_just_tag_when_cause_still_trivial(self):
+        """A freshly tagged, not-yet-described cause shows just the tag
+        — "V-101 — Ny orsak" would be noise, not information."""
         from hazop import _create_tagged_cause
         eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
         node_id = self.db.add_node()
@@ -474,181 +199,188 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         cause_id, _cons_id = _create_tagged_cause(self.db, dev_id, "Ventil", "V-101")
         self.panel.refresh()
 
-        it = QTreeWidgetItemIterator(self.panel.tree)
-        header_item = None
-        while it.value():
-            item = it.value()
-            if (item.data(0, Qt.ItemDataRole.UserRole + 1) == CAUSE_T
-                    and item.data(0, Qt.ItemDataRole.UserRole) == cause_id):
-                header_item = item
-            it += 1
-        self.assertIsNotNone(header_item)
+        cause_item = self._find_item(CAUSE_T, cause_id)
+        self.assertIsNotNone(cause_item)
+        self.assertIn("V-101", cause_item.text(0))
+        self.assertNotIn("—", cause_item.text(0),
+            "a still-trivial cause must show the bare tag, no separator/description")
 
-        with unittest.mock.patch.object(self.panel.tree, 'itemAt', return_value=header_item), \
-             unittest.mock.patch('tree_panel.QMenu') as mock_menu_cls:
-            self.panel._context_menu(QPoint(0, 0))
-        mock_menu = mock_menu_cls.return_value
-        labels = _menu_action_labels(mock_menu)
-        self.assertTrue(any("Lägg till orsak" in lbl for lbl in labels))
-        self.assertTrue(any("Lägg till konsekvens" in lbl for lbl in labels))
-
-    def test_cause_row_shows_real_description_not_redundant_tag(self):
+    def test_orsak_row_shows_just_description_when_no_tag(self):
         """'Det räcker om instrumentet E1.M1.QMA127 dyker upp på en rad
-        i trädhierarkin' (2026-08-11) — a cause with a REAL, meaningful
-        description was showing its tag instead (redundant with the
-        equipment header directly above it), because add_causes_to_item's
-        label logic always preferred the tag over the description
-        whenever a tag existed, regardless of whether the description
-        was meaningful. Confirmed on a real project database: a cause
-        reading "Flödesgivare felar -> styrventil stänger" displayed as
-        just "=E1.M1.QMA127", the same tag its own parent row already
-        shows."""
-        from hazop import _create_tagged_cause
-        eq_id = self.db.add_equipment_item("E1.M1.QMA127", "E1.M1.QMA127", "QMA", 0,
-                                           "Instrument / Sensor", '', 0)
+        i trädhierarkin' (2026-08-11) — a plain, untagged cause (no
+        comp_tag) shows just its own description, same as it always
+        has, regardless of anything to do with objects."""
         node_id = self.db.add_node()
-        dev_id = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
-        cause_id, _cons_id = _create_tagged_cause(
-            self.db, dev_id, "Instrument / Sensor", "E1.M1.QMA127")
+        dev_id = next(d for d in self.db.deviations(node_id)
+                       if d['description'] == "Lågt flöde")['id']
+        cause_id = self.db.add_cause(dev_id)
         self.db.update_cause(cause_id, description="Flödesgivare felar -> styrventil stänger")
         self.panel.refresh()
 
-        # A real description means the cause must NOT have merged into
-        # the equipment header (that merge only applies to a still-
-        # trivial cause) — it stays its own, separate CAUSE_T child.
-        cause_rows = [x for x in self._tree_items() if x[0] == CAUSE_T and x[1] == cause_id]
-        self.assertEqual(len(cause_rows), 1)
-
-        it = QTreeWidgetItemIterator(self.panel.tree)
-        cause_item = None
-        while it.value():
-            item = it.value()
-            if (item.data(0, Qt.ItemDataRole.UserRole + 1) == CAUSE_T
-                    and item.data(0, Qt.ItemDataRole.UserRole) == cause_id):
-                cause_item = item
-            it += 1
+        cause_item = self._find_item(CAUSE_T, cause_id)
         self.assertIsNotNone(cause_item)
         self.assertIn("Flödesgivare felar", cause_item.text(0))
-        self.assertNotIn("E1.M1.QMA127", cause_item.text(0),
-            "must show the real description, not repeat the tag its parent row already shows")
+        self.assertNotIn("—", cause_item.text(0))
 
-    def test_merged_equipment_deviation_item_offers_add_cause_context_menu(self):
-        """Right-clicking the equipment row used to be a dead end (EQUIP_T
-        items get no context menu at all) — now that this row IS the
-        deviation for the common single-deviation case, it must offer
-        '+ Lägg till orsak' just like any other DEV_T item."""
-        eq_id = self.db.add_equipment_item("M1.GPA6", "M1.GPA6", "M1", 0, "Pump", '', 0)
+    def test_two_objects_sharing_avvikelse_share_one_row_with_separate_orsak_children(self):
+        """Confirmed via AskUserQuestion: a pump AND a valve that both
+        have 'Lågt flöde' under the same node share ONE avvikelse row —
+        not one each — with a separate, own Orsak row for each."""
+        from hazop import _create_tagged_cause
+        pump_id = self.db.add_equipment_item("P-101", "P-101", "P", 0, "Pump", '', 0)
+        valve_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
         node_id = self.db.add_node()
-        dev_id = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        pump_dev = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=pump_id)
+        valve_dev = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=valve_id)
+        pump_cause, _c1 = _create_tagged_cause(self.db, pump_dev, "Pump", "P-101")
+        self.db.update_cause(pump_cause, description="Felar stängd")
+        valve_cause, _c2 = _create_tagged_cause(self.db, valve_dev, "Ventil", "V-101")
+        self.db.update_cause(valve_cause, description="Läcker")
         self.panel.refresh()
 
-        it = QTreeWidgetItemIterator(self.panel.tree)
-        dev_item = None
-        while it.value():
-            item = it.value()
-            if (item.data(0, Qt.ItemDataRole.UserRole + 1) == DEV_T
-                    and item.data(0, Qt.ItemDataRole.UserRole) == dev_id):
-                dev_item = item
-            it += 1
+        # Both causes' underlying deviations share one description, so
+        # exactly one DEV_T row anchors it (whichever generic/first one
+        # get_or_create_deviation's own bookkeeping picks) — assert via
+        # the causes, not by guessing which dev_id is the anchor.
+        pump_item = self._find_item(CAUSE_T, pump_cause)
+        valve_item = self._find_item(CAUSE_T, valve_cause)
+        self.assertIsNotNone(pump_item)
+        self.assertIsNotNone(valve_item)
+        self.assertIs(pump_item.parent(), valve_item.parent(),
+            "both objects' causes must share the SAME avvikelse row as parent")
+        self.assertIn("P-101 — Felar stängd", pump_item.text(0))
+        self.assertIn("V-101 — Läcker", valve_item.text(0))
+        # Only ONE avvikelse row for "Lågt flöde" under this node.
+        parent = pump_item.parent()
+        self.assertEqual(parent.data(0, Qt.ItemDataRole.UserRole + 1), DEV_T)
+        self.assertIn("Lågt flöde", parent.text(0))
+
+    def test_numbering_stays_sequential_regardless_of_equipment(self):
+        """'jag vill att den ska kvarstå så att det alltid syns att det
+        är exempelvis 16 avikelser' (2026-08-13) — every avvikelse row
+        gets exactly one number, in order, whether or not any equipment
+        happens to be linked to it. A fresh node's 16 auto-seeded guide
+        words show as a gapless 1..16 sequence; linking equipment to one
+        of them must not change that count or leave a gap/duplicate."""
+        import re
+        node_id = self.db.add_node()
+        n_seeded = len(self.db.deviations(node_id))
+        eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
+        self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        self.panel.refresh()
+
+        node_item = _find_tree_item(self.panel.tree, NODE_T, node_id)
+        self.assertIsNotNone(node_item)
+        numbers = []
+        for i in range(node_item.childCount()):
+            child = node_item.child(i)
+            if child.data(0, Qt.ItemDataRole.UserRole + 1) == DEV_T:
+                m = re.search(r'(\d+)\.\s', child.text(0))
+                if m:
+                    numbers.append(int(m.group(1)))
+        self.assertEqual(sorted(numbers), list(range(1, n_seeded + 1)),
+            f"expected a gapless 1..{n_seeded} sequence, got: {sorted(numbers)}")
+
+    def test_brand_new_node_has_only_flat_avvikelse_rows(self):
+        """A freshly created node (all ~16 auto-seeded guide words, no
+        equipment touched yet) shows every guide word as its own flat
+        row directly under the node — zero LEDORD_T/EQUIP_T anywhere."""
+        node_id = self.db.add_node()
+        self.panel.refresh()
+
+        items = self._tree_items()
+        self.assertEqual(len([x for x in items if x[0] in (LEDORD_T, EQUIP_T)]), 0)
+        dev_rows = [x for x in items if x[0] == DEV_T]
+        self.assertTrue(dev_rows)
+        self.assertTrue(all(x[2] == NODE_T for x in dev_rows))
+
+    def test_avvikelse_row_offers_add_cause_context_menu(self):
+        """The avvikelse row is a normal DEV_T item (no special-casing
+        left for the equipment-adjacent case) — right-clicking it must
+        offer '+ Lägg till orsak' exactly like any other DEV_T row."""
+        eq_id = self.db.add_equipment_item("M1.GPA6", "M1.GPA6", "M1", 0, "Pump", '', 0)
+        node_id = self.db.add_node()
+        self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        anchor_id = self.db.get_or_create_deviation(node_id, "Lågt flöde")
+        self.panel.refresh()
+        dev_item = self._find_item(DEV_T, anchor_id)
         self.assertIsNotNone(dev_item)
 
         with unittest.mock.patch.object(self.panel.tree, 'itemAt', return_value=dev_item), \
              unittest.mock.patch('tree_panel.QMenu') as mock_menu_cls:
             self.panel._context_menu(QPoint(0, 0))
         mock_menu_cls.assert_called_once()
-        mock_menu = mock_menu_cls.return_value
-        labels = _menu_action_labels(mock_menu)
+        labels = _menu_action_labels(mock_menu_cls.return_value)
         self.assertTrue(any("Lägg till orsak" in lbl for lbl in labels))
 
-    def test_lone_generic_deviation_skips_ledord_wrapper(self):
-        """Bug report: 'varför är det dubbelt?' — a single, plain
-        (no equipment) deviation for a guide word with no other sibling
-        used to STILL get wrapped in a LEDORD_T item carrying the exact
-        same guide-word text as its own only child, e.g.
-        '⬡ Lågt flöde' -> '1. Lågt flöde' — the same words shown twice in
-        a row for no structural reason. With nothing to group (no
-        equipment, no second deviation sharing the guide word), the
-        deviation now attaches directly to the NODE, exactly like before
-        this feature existed. The wrapper only reappears once there's a
-        second deviation for the same guide word to actually distinguish
-        (see test_two_equipment_sharing_same_guide_word_grouped_under_one_ledord
-        and test_generic_deviation_stays_visible_once_it_has_a_cause)."""
+    def test_double_click_avvikelse_row_does_normal_inline_edit(self):
+        """2026-08-25: the avvikelse row no longer carries any object
+        identity (_EQUIP_TAG_ROLE is gone), so double-clicking it now
+        does normal inline text editing of the guide-word text, same as
+        any other DEV_T row always could — not the Tag+Typ popup the
+        old, now-removed merged row used to redirect to."""
+        from hazop import CauseTagPopup
+        eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
         node_id = self.db.add_node()
-        dev_id = self.db.add_deviation(node_id, "Övrigt-avvikelse")
+        self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        anchor_id = self.db.get_or_create_deviation(node_id, "Lågt flöde")
         self.panel.refresh()
+        item = self._find_item(DEV_T, anchor_id)
 
-        items = self._tree_items()
-        dev_rows = [x for x in items if x[0] == DEV_T and x[1] == dev_id]
-        self.assertEqual(len(dev_rows), 1)
-        self.assertEqual(dev_rows[0][2], NODE_T,
-                          "a lone deviation with nothing to group against must "
-                          "attach directly to the node, no redundant Ledord wrapper")
-        self.assertEqual(len([x for x in items if x[0] == EQUIP_T]), 0)
+        self.panel._on_item_double_click(item, 0)
 
-    def test_brand_new_node_has_no_ledord_wrappers_at_all(self):
-        """The exact real-world screenshot that triggered the fix: a freshly
-        created node (all ~16 auto-seeded guide words, no equipment
-        touched yet) must show every guide word as a single flat row
-        directly under the node — zero LEDORD_T items anywhere, since
-        there is nothing anywhere to group."""
+        self.assertEqual(len(self.panel.findChildren(CauseTagPopup)), 0)
+        self.assertEqual(self.panel._inline_edit_target, (DEV_T, anchor_id))
+        self.assertEqual(len(self.panel.tree.viewport().findChildren(QLineEdit)), 1)
+
+    def test_double_click_orsak_row_does_normal_inline_edit(self):
+        """Same for the Orsak row — it's a real CAUSE_T item now, edited
+        exactly like any other cause; the tag portion is never part of
+        the editable text (_raw_text_for(CAUSE_T, ...) already only
+        ever returns cause['description'])."""
+        from hazop import _create_tagged_cause, CauseTagPopup
+        eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
         node_id = self.db.add_node()
+        dev_id = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        cause_id, _cons_id = _create_tagged_cause(self.db, dev_id, "Ventil", "V-101")
+        self.db.update_cause(cause_id, description="Felar stängd")
         self.panel.refresh()
+        item = self._find_item(CAUSE_T, cause_id)
 
-        items = self._tree_items()
-        self.assertEqual(len([x for x in items if x[0] == LEDORD_T]), 0)
-        dev_rows = [x for x in items if x[0] == DEV_T]
-        self.assertTrue(dev_rows)
-        self.assertTrue(all(x[2] == NODE_T for x in dev_rows))
+        self.panel._on_item_double_click(item, 0)
 
-    def test_empty_generic_deviation_hidden_when_equipment_scoped_sibling_exists(self):
-        """Bug report: 'Lågt flöde dyker upp två gånger i trädet'.
-        add_node() auto-seeds an empty, generic (equipment_id=NULL) 'Lågt
-        flöde' deviation for every node. Once a piece of equipment ALSO
-        gets its own 'Lågt flöde', the still-empty generic one is just
-        unused scaffolding sitting right next to it under the same guide
-        word — hide it (it is not deleted; see the sibling test below)."""
+        self.assertEqual(len(self.panel.findChildren(CauseTagPopup)), 0)
+        self.assertEqual(self.panel._inline_edit_target, (CAUSE_T, cause_id))
+
+    def test_empty_generic_deviation_is_the_avvikelse_rows_own_anchor(self):
+        """add_node() auto-seeds an empty, generic (equipment_id=NULL)
+        'Lågt flöde' deviation for every node — once equipment ALSO gets
+        its own 'Lågt flöde', the (still-empty) generic one is exactly
+        the anchor the ONE shared avvikelse row points to; it never
+        needs separate hiding logic anymore, since it never gets its own
+        row to hide in the first place."""
         eq_id = self.db.add_equipment_item("P-101", "P-101", "P", 0, "Pump", '', 0)
-        node_id = self.db.add_node()   # already auto-seeds a generic "Lågt flöde"
+        node_id = self.db.add_node()
         generic_dev = next(d for d in self.db.deviations(node_id)
                             if d['description'] == "Lågt flöde")
         self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
         self.panel.refresh()
 
-        items = self._tree_items()
-        # The equipment-scoped deviation (single deviation for this
-        # equipment+guide-word combo) now merges directly onto the
-        # equipment's own tree item (2026-08-09, see NOTES.md "kaka på
-        # kaka") — a legitimate DEV_T item directly under the LEDORD_T.
-        # This test only cares whether the separate GENERIC (no-equipment)
-        # deviation is hidden, so it must check that specific id, not
-        # "any DEV_T at all" under the ledord.
-        generic_rows = [x for x in items if x[0] == DEV_T and x[1] == generic_dev['id']]
-        self.assertEqual(
-            len(generic_rows), 0,
-            "the empty auto-seeded generic deviation must be hidden once an "
-            "equipment-scoped sibling exists for the same guide word")
-
-    def test_generic_deviation_stays_visible_once_it_has_a_cause(self):
-        """The hide-when-empty rule must never hide real user data: a
-        generic deviation that already has a cause stays visible even if an
-        equipment-scoped sibling for the same guide word also exists.
-        2026-08-25 (see NOTES.md 'Slå ihop objekt-rad + avvikelse-rad'):
-        it now attaches directly to the node (flat), not to a shared
-        LEDORD_T wrapper — the equipment-linked sibling is its own,
-        separate flat row and no longer shares a parent with this one."""
-        eq_id = self.db.add_equipment_item("P-101", "P-101", "P", 0, "Pump", '', 0)
-        node_id = self.db.add_node()
-        generic_dev = next(d for d in self.db.deviations(node_id)
-                            if d['description'] == "Lågt flöde")
-        self.db.add_cause(generic_dev['id'])
-        self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
-        self.panel.refresh()
-
-        items = self._tree_items()
-        direct_dev_rows = [x for x in items if x[0] == DEV_T and x[2] == NODE_T
-                            and x[1] == generic_dev['id']]
-        self.assertEqual(len(direct_dev_rows), 1,
-                          "a generic deviation with an existing cause must remain visible")
+        # Scoped to THIS test's node — a fresh Database auto-seeds its own
+        # default node (with its own "Lågt flöde"), so scanning the whole
+        # tree would double-count.
+        node_item = _find_tree_item(self.panel.tree, NODE_T, node_id)
+        avvikelse_rows = []
+        for i in range(node_item.childCount()):
+            child = node_item.child(i)
+            if (child.data(0, Qt.ItemDataRole.UserRole + 1) == DEV_T
+                    and (self.db.get_deviation(child.data(0, Qt.ItemDataRole.UserRole)) or {})
+                        .get('description') == "Lågt flöde"):
+                avvikelse_rows.append(child.data(0, Qt.ItemDataRole.UserRole))
+        self.assertEqual(len(avvikelse_rows), 1,
+            "exactly one avvikelse row must exist for 'Lågt flöde', shared by both")
+        self.assertEqual(avvikelse_rows[0], generic_dev['id'],
+            "the generic deviation is the row's anchor")
 
     def test_resolve_node_id_for_equip_t(self):
         eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
@@ -657,36 +389,32 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         self.assertEqual(self.panel._resolve_node_id(EQUIP_T, eq_id), node_id)
 
     def test_resolve_node_id_for_ledord_t(self):
+        """LEDORD_T is now unreachable via refresh() (2026-08-25, see
+        NOTES.md) — every avvikelse row is DEV_T. The resolver code
+        itself is left in place (harmless, zero cost) for the rare case
+        it might be needed again; verified directly against a
+        synthetically constructed item instead of relying on refresh()
+        to produce one."""
         node_id = self.db.add_node()
-        self.db.add_deviation(node_id, "Lågt flöde")
-        self.panel.refresh()
-        items = self._tree_items()
-        ledord_id = next(x[1] for x in items if x[0] == LEDORD_T)
-        self.assertEqual(self.panel._resolve_node_id(LEDORD_T, ledord_id), node_id)
+        ledord_key = f"{node_id}:Lågt flöde"
+        item = QTreeWidgetItem(["synthetic"])
+        item.setData(0, Qt.ItemDataRole.UserRole, ledord_key)
+        item.setData(0, Qt.ItemDataRole.UserRole + 1, LEDORD_T)
+        self.assertEqual(self.panel._resolve_node_id(LEDORD_T, ledord_key), node_id)
 
     def test_context_menu_is_a_no_op_for_ledord_t(self):
         """LEDORD_T is a pure grouping view (like EQUIP_T) — right-clicking
-        it must return before ever building/exec-ing a QMenu (QMenu.exec()
-        is modal and would otherwise hang a headless/offscreen test run
-        indefinitely if the LEDORD_T check were ever bypassed).
-
-        Patches QTreeWidget.itemAt directly rather than relying on
-        visualItemRect()-derived coordinates: self.panel is never shown, so
-        the tree has no real layout geometry, and itemAt() on an arbitrary
-        point can resolve to the wrong item (or None) — which is exactly
-        what silently happened here once already, sending this test
-        through the real menu-building path and hanging on menu.exec()."""
+        it must return before ever building/exec-ing a QMenu. Verified
+        against a synthetically constructed item (2026-08-25: refresh()
+        no longer produces a real LEDORD_T row for any reachable
+        scenario) rather than QMenu.exec() hanging a headless test run
+        if the check were ever bypassed."""
         node_id = self.db.add_node()
-        self.db.add_deviation(node_id, "Lågt flöde")
         self.panel.refresh()
-        it = QTreeWidgetItemIterator(self.panel.tree)
-        ledord_item = None
-        while it.value():
-            if it.value().data(0, Qt.ItemDataRole.UserRole + 1) == LEDORD_T:
-                ledord_item = it.value()
-                break
-            it += 1
-        self.assertIsNotNone(ledord_item)
+        node_item = _find_tree_item(self.panel.tree, NODE_T, node_id)
+        ledord_item = QTreeWidgetItem(node_item, ["synthetic"])
+        ledord_item.setData(0, Qt.ItemDataRole.UserRole, f"{node_id}:Lågt flöde")
+        ledord_item.setData(0, Qt.ItemDataRole.UserRole + 1, LEDORD_T)
 
         with unittest.mock.patch.object(self.panel.tree, 'itemAt', return_value=ledord_item), \
              unittest.mock.patch('tree_panel.QMenu') as mock_menu_cls:
@@ -695,117 +423,6 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
             except Exception as e:
                 self.fail(f"right-clicking a LEDORD_T item must not raise: {e!r}")
             mock_menu_cls.assert_not_called()
-
-    def _equip_item(self, eq_id):
-        # 2026-08-25 (see NOTES.md "Slå ihop objekt-rad + avvikelse-rad"):
-        # the flat row now carries a "⬡ N. " numbering prefix ahead of the
-        # tag, so a plain startswith(tag) check (which worked when the
-        # tag was the very first thing in the label) no longer matches —
-        # find it via _EQUIP_TAG_ROLE instead, same robust lookup
-        # _equip_item_fallback already uses elsewhere in this file.
-        it = QTreeWidgetItemIterator(self.panel.tree)
-        while it.value():
-            item = it.value()
-            if item.data(0, self.panel._EQUIP_TAG_ROLE) == eq_id:
-                return item
-            it += 1
-        return None
-
-    def test_undefined_equipment_type_shows_italic_but_no_type_text(self):
-        """2026-08-25 (see NOTES.md 'Slå ihop objekt-rad + avvikelse-rad'):
-        "I trädet skall enbart Objektag + avikelsetexten stå" — object
-        type is no longer spelled out as text at all (a later, separate
-        change will show it as a clickable icon instead), so the old
-        "TAG-ABC, ej definierad" wording is gone entirely. The italic
-        font is kept as a quiet "type not set" signal in the meantime."""
-        eq_id = self.db.add_equipment_item("TAG-ABC", "TAG-ABC", "T", 0, "", "", 0)
-        node_id = self.db.add_node()
-        self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
-        self.panel.refresh()
-
-        item = self._equip_item(eq_id)
-        self.assertIsNotNone(item)
-        self.assertIn("TAG-ABC — Lågt flöde", item.text(0))
-        self.assertNotIn("ej definierad", item.text(0))
-        self.assertTrue(item.font(0).italic())
-
-    def test_defined_equipment_type_not_italic_and_type_not_shown(self):
-        """Object type ("Ventil") must NOT appear in the label text at all
-        anymore, defined or not — only tag + deviation text."""
-        eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", "", 0)
-        node_id = self.db.add_node()
-        self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
-        self.panel.refresh()
-
-        item = self._equip_item(eq_id)
-        self.assertIsNotNone(item)
-        self.assertIn("V-101 — Lågt flöde", item.text(0))
-        self.assertNotIn("Ventil", item.text(0))
-        self.assertFalse(item.font(0).italic())
-
-    def test_double_click_undefined_equipment_opens_type_picker_and_persists(self):
-        """"Dubbelklick på 'ej definierad'/'ventil' -> välj typ från
-        Standardobjekt -> uppdaterar överallt taggen förekommer" (2026-08-17).
-        2026-08-18: the QInputDialog type-only picker was replaced by the
-        same Tag+Typ CauseTagPopup used for a tag click in the scenario
-        table, with no OK button — selecting a type commits immediately.
-
-        2026-08-25 (see NOTES.md 'Slå ihop objekt-rad + avvikelse-rad'):
-        this now uses the COMMON single-deviation flat-row scenario — the
-        old EQUIP_T-at-rest state this test used to force via two manual
-        add_deviation() calls is no longer reachable at all, since every
-        object-linked deviation is now always a flat DEV_T/CAUSE_T row
-        regardless of count (see
-        test_two_equipment_sharing_same_guide_word_render_as_separate_flat_rows).
-        _EQUIP_TAG_ROLE-based popup routing is unaffected either way."""
-        from hazop import CauseTagPopup
-        eq_id = self.db.add_equipment_item("TAG-XYZ", "TAG-XYZ", "T", 0, "", "", 0)
-        self.db.add_standard_object("Ventil")
-        node_id = self.db.add_node()
-        self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
-        self.panel.refresh()
-
-        item = self._equip_item(eq_id)
-        self.assertIsNotNone(item)
-
-        self.panel._on_item_double_click(item, 0)
-        popups = self.panel.findChildren(CauseTagPopup)
-        self.assertEqual(len(popups), 1)
-        popup = popups[0]
-        popup._type_cb.setCurrentIndex(popup._type_cb.findText("Ventil"))
-        popup._commit()
-
-        self.assertEqual(self.db.get_equipment_by_id(eq_id)['equipment_type'], "Ventil")
-        item_after = self._equip_item(eq_id)
-        self.assertIn("TAG-XYZ — Lågt flöde", item_after.text(0))
-
-    def test_double_click_equipment_type_picker_emits_item_edited_inline(self):
-        """2026-08-25: uses the common single-deviation flat-row scenario
-        — see test_double_click_undefined_equipment_opens_type_picker_and_persists's
-        own docstring for why the old forced-EQUIP_T setup is gone.
-        _apply_equipment_tag_edit always emits (EQUIP_T, eq_id) here
-        regardless of the row's own current type (DEV_T at rest, in this
-        case) — unchanged by this rewrite, since that method itself
-        wasn't touched."""
-        from hazop import CauseTagPopup
-        eq_id = self.db.add_equipment_item("TAG-XYZ", "TAG-XYZ", "T", 0, "", "", 0)
-        # "Pump" is already present in the default seeded standard_objects
-        # library (Database() seeds it on construction) — no need to add it.
-        node_id = self.db.add_node()
-        self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
-        self.panel.refresh()
-        item = self._equip_item(eq_id)
-        self.assertEqual(item.data(0, Qt.ItemDataRole.UserRole + 1), DEV_T,
-            "sanity: a single equipment-linked deviation is a flat DEV_T row now")
-
-        captured = []
-        self.panel.item_edited_inline.connect(lambda t, i: captured.append((t, i)))
-        self.panel._on_item_double_click(item, 0)
-        popup = self.panel.findChildren(CauseTagPopup)[0]
-        popup._type_cb.setCurrentIndex(popup._type_cb.findText("Pump"))
-        popup._commit()
-
-        self.assertEqual(captured, [(EQUIP_T, eq_id)])
 
 
 class TreeNodeRenameTests(unittest.TestCase):
@@ -1318,26 +935,33 @@ class TreePanelAutoCollapseTests(unittest.TestCase):
         self.assertFalse(dev_item_1.isExpanded(),
             "an inactive deviation's causes (and everything below) must collapse")
 
-    def test_deviations_toggle_keeps_shared_ledord_group_and_all_deviations_visible(self):
-        """Deviations merged under a shared guide-word grouping (Ledord)
-        must all stay visible regardless of which one is active — the
-        toggle only ever collapses the cause level, never hides a row."""
+    def test_deviations_toggle_collapses_causes_from_all_objects_sharing_one_avvikelse(self):
+        """2026-08-25 (see NOTES.md 'Rättar ihopslagningen'): objects
+        sharing one avvikelse text now contribute their causes to the
+        SAME avvikelse row (not one row each, see
+        TreePanelEquipmentGroupingTests) — collapsing an inactive
+        avvikelse must hide ALL of those causes together, and the row
+        itself must never be hidden (only setExpanded, never setHidden,
+        same as any other avvikelse)."""
+        from hazop import _create_tagged_cause
         pump_id = self.db.add_equipment_item("P-101", "P-101", "P", 0, "Pump", '', 0)
         valve_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
         node_id = self.db.add_node()
         pump_dev = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=pump_id)
         valve_dev = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=valve_id)
+        pump_cause, _c1 = _create_tagged_cause(self.db, pump_dev, "Pump", "P-101")
+        _valve_cause, _c2 = _create_tagged_cause(self.db, valve_dev, "Ventil", "V-101")
+        other_dev = next(d for d in self.db.deviations(node_id) if d['description'] == "Högt flöde")
         self.panel.refresh()
-        pump_item = _find_tree_item(self.panel.tree, DEV_T, pump_dev)
-        valve_item = _find_tree_item(self.panel.tree, DEV_T, valve_dev)
-        self.panel.tree.setCurrentItem(pump_item)
+        avvikelse_item = _find_tree_item(self.panel.tree, CAUSE_T, pump_cause).parent()
+        other_item = _find_tree_item(self.panel.tree, DEV_T, other_dev['id'])
+        self.panel.tree.setCurrentItem(other_item)   # a DIFFERENT avvikelse is now active
 
         self.panel._auto_collapse_deviations_chk.setChecked(True)
 
-        self.assertFalse(pump_item.isHidden())
-        self.assertFalse(valve_item.isHidden(), "an inactive sibling deviation must stay visible")
-        self.assertFalse(pump_item.parent().isHidden(),
-            "the shared Ledord group must stay visible")
+        self.assertFalse(avvikelse_item.isHidden(), "an inactive avvikelse row must stay visible")
+        self.assertFalse(avvikelse_item.isExpanded(),
+            "an inactive avvikelse's causes (from ALL contributing objects) must collapse together")
 
     def test_switching_selection_live_recollapses_previous_deviation(self):
         """Re-applied from _on_select too, not just refresh() — clicking a

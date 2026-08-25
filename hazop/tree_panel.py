@@ -418,13 +418,8 @@ class TreePanel(QWidget):
 
             def add_cause_children(citem, cause):
                 """Append the consequence/safeguard subtree for a single
-                cause as children of citem — factored out of
-                add_causes_to_item so the equipment-merged trivial-cause
-                case below (an empty, just-tagged cause whose only
-                content duplicates its own equipment header) can attach
-                it directly to that header row instead of a separate,
-                redundant cause item (2026-08-10, see NOTES.md "objektet
-                redovisas två gånger")."""
+                cause as children of citem — called from add_cause_item
+                for every Orsak row (2026-08-25, see NOTES.md)."""
                 nonlocal target
                 # Depends only on `cause`, not on the individual
                 # consequence being iterated — hoisted out of the loop
@@ -459,54 +454,51 @@ class TreePanel(QWidget):
                         kitem.addChild(sgitem)
                         if select_type == SG_T and select_id == sg['id']: target = sgitem
 
-            def add_causes_to_item(ditem, dev_id):
-                """Append the cause/consequence/safeguard subtree for
-                deviation dev_id as children of ditem — factored out of
-                add_deviation_subtree so the equipment-grouped single-
-                deviation case (below) can attach it directly to the
-                equipment item instead of a separate, redundant deviation
-                item (2026-08-09, see NOTES.md "kaka på kaka")."""
+            def add_cause_item(parent_item, cause, ci):
+                """Append one Orsak row as a child of parent_item (an
+                Avvikelse/DEV_T row) — Orsak = objekt-tag + orsaksbeskrivning
+                (2026-08-25, see NOTES.md: rättar samma dags tidigare,
+                felriktade ihopslagning som kombinerade taggen med
+                AVVIKELSENS text istället för ORSAKENS egen). A cause
+                carries its own comp_tag independent of which specific
+                deviation row it hangs off, so this works the same whether
+                the parent Avvikelse is generic or object-linked."""
                 nonlocal target
-                for ci, cause in enumerate(causes_by_dev.get(dev_id, []), 1):
-                    tag    = (cause['comp_tag'] or '').strip() if cause['comp_tag'] else ''
-                    desc   = (cause['description'] or '').strip()
-                    # A REAL description is always more useful in the tree
-                    # than repeating the tag a second row down (the tag is
-                    # already visible one level up, on the equipment/
-                    # deviation header) — only fall back to the tag for a
-                    # still-untouched placeholder cause with nothing else
-                    # to show yet (2026-08-11, bug report: a real cause
-                    # "Flödesgivare felar -> styrventil stänger" was
-                    # showing as just "=E1.M1.QMA127", the same tag its
-                    # own parent row already displays, see NOTES.md).
-                    trivial_desc = desc in ('', 'Ny orsak')
-                    c_label = (tag if tag else desc[:50]) if trivial_desc else desc[:50]
-                    citem = QTreeWidgetItem([f"    ⚙ {ci}. {c_label}"])
-                    citem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
-                    citem.setData(0, Qt.ItemDataRole.UserRole + 1, CAUSE_T)
-                    citem.setData(0, self._PREFIX_ROLE, f"    ⚙ {ci}. ")
-                    ditem.addChild(citem)
-                    if (CAUSE_T, cause['id']) in expanded: citem.setExpanded(True)
-                    if select_type == CAUSE_T and select_id == cause['id']: target = citem
-                    add_cause_children(citem, cause)
-
-            def add_deviation_subtree(parent_item, dev, di):
-                nonlocal target
-                ditem = QTreeWidgetItem([f"  ⬡  {di}. {dev['description'][:55]}"])
-                ditem.setData(0, Qt.ItemDataRole.UserRole, dev['id'])
-                ditem.setData(0, Qt.ItemDataRole.UserRole + 1, DEV_T)
-                ditem.setData(0, self._PREFIX_ROLE, f"  ⬡  {di}. ")
-                dev_font = QFont(); dev_font.setItalic(True)
-                ditem.setFont(0, dev_font)
-                parent_item.addChild(ditem)
-                if (DEV_T, dev['id']) in expanded: ditem.setExpanded(True)
-                if select_type == DEV_T and select_id == dev['id']: target = ditem
-                add_causes_to_item(ditem, dev['id'])
+                # Resolved LIVE from equipment_catalog via causes.equipment_id
+                # when the cause is linked to a real object (2026-08-13 — same
+                # live-FK pattern scenario_panel.py's own _cause_tag_display
+                # already uses for the ORS tag strip) — renaming the object
+                # must show up here on the very next tree refresh, not stay
+                # frozen at whatever comp_tag happened to read at creation
+                # time. Falls back to the frozen comp_tag for a custom/
+                # unmatched tag (equipment_id is None) or a deleted object.
+                eq = self.db.get_equipment_by_id(cause['equipment_id']) if cause['equipment_id'] else None
+                tag = (eq.get('tag') or '').strip() if eq else (cause['comp_tag'] or '').strip()
+                desc = (cause['description'] or '').strip()
+                # A still-untouched placeholder cause (no real content yet)
+                # shows just the tag, if it has one — showing "V-101 — Ny
+                # orsak" would be noise, not information.
+                trivial = desc in ('', 'Ny orsak')
+                if tag and trivial:
+                    c_label = tag
+                elif tag:
+                    c_label = f"{tag} — {desc[:45]}"
+                else:
+                    c_label = desc[:50]
+                citem = QTreeWidgetItem([f"    ⚙ {ci}. {c_label}"])
+                citem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
+                citem.setData(0, Qt.ItemDataRole.UserRole + 1, CAUSE_T)
+                citem.setData(0, self._PREFIX_ROLE, f"    ⚙ {ci}. ")
+                parent_item.addChild(citem)
+                if (CAUSE_T, cause['id']) in expanded: citem.setExpanded(True)
+                if select_type == CAUSE_T and select_id == cause['id']: target = citem
+                add_cause_children(citem, cause)
 
             def _add_node_item(node, ni, parent_item):
-                """Builds one node's whole subtree (Ledord → Utrustning →
-                Avvikelse → Orsak → Konsekvens → Safeguard) — factored out
-                of what used to be the top-level `for` loop body so it can
+                """Builds one node's whole subtree (Avvikelse → Orsak →
+                Konsekvens → Safeguard, 2026-08-25 — see NOTES.md) —
+                factored out of what used to be the top-level `for` loop
+                body so it can
                 be called once per system's nodes AND once for ungrouped
                 nodes (system_id IS NULL — any project saved before
                 2026-08-24's System hierarchy, see NOTES.md "Ny toppnivå
@@ -531,138 +523,53 @@ class TreePanel(QWidget):
                 if (NODE_T, node['id']) in expanded: nitem.setExpanded(True)
                 if select_type == NODE_T and select_id == node['id']: target = nitem
 
-                # Nod → Ledord → Utrustning → Avvikelse (2026-08-07, see
-                # NOTES.md): deviations are grouped by their guide-word text
-                # FIRST (several deviation rows across different equipment
-                # can share the same description, e.g. "Lågt flöde" for both
-                # a pump and a valve under one node), then WITHIN each guide
-                # word, split into equipment_id-tagged rows (grouped under a
-                # "Utrustning" item) and equipment_id=NULL rows (shown
-                # directly under the guide word — every deviation that
-                # existed before this feature, unaffected in substance,
-                # just one extra grouping level to expand).
+                # Nod → Avvikelse → Orsak (2026-08-25, see NOTES.md —
+                # rättar samma dags tidigare, felriktade ihopslagning som
+                # kombinerade objekt-taggen med AVVIKELSENS text ("Lågt
+                # flöde") istället för ORSAKENS egen beskrivning ("Felar
+                # stängd" etc). Avvikelsenivån är kvar INTAKT: en rad per
+                # guide-ordstext, alltid, oavsett hur många objekt som
+                # råkar dela den (bekräftat via AskUserQuestion — flera
+                # objekt med samma avvikelsetext delar EN avvikelse-rad,
+                # inte en var). Orsaks-nivån direkt under den kombinerar
+                # objekt-tag + orsaksbeskrivning (via causes.comp_tag, som
+                # redan finns oberoende av vilken specifik deviations-rad
+                # orsaken råkar hänga på) — ingen separat "Utrustning"-
+                # nivå (EQUIP_T/"kaka på kaka") behövs längre, eftersom
+                # objekt-identiteten nu visas på orsaks-raden istället.
                 ledord_groups = {}
                 for dev in devs_by_node.get(node['id'], []):
                     ledord_groups.setdefault(dev['description'], []).append(dev)
 
                 di = 0
                 for description, dev_list in ledord_groups.items():
-                    equipment_groups = {}
-                    ungrouped_devs = []
+                    di += 1
+                    # Ankaret är den GENERISKA (equipment_id IS NULL)
+                    # avvikelsen — auto-seedad per nod och guide-ord i
+                    # add_node(), så den finns alltid — så "+ Orsak"/
+                    # drag-and-drop av en P&ID-markör mot denna rad landar
+                    # på samma delade bucket oavsett hur många objekt som
+                    # också råkar dela texten.
+                    anchor_dev = next((d for d in dev_list if not d['equipment_id']), dev_list[0])
+                    ditem = QTreeWidgetItem([f"  ⬡  {di}. {description[:55]}"])
+                    ditem.setData(0, Qt.ItemDataRole.UserRole, anchor_dev['id'])
+                    ditem.setData(0, Qt.ItemDataRole.UserRole + 1, DEV_T)
+                    ditem.setData(0, self._PREFIX_ROLE, f"  ⬡  {di}. ")
+                    dev_font = QFont(); dev_font.setItalic(True)
+                    ditem.setFont(0, dev_font)
+                    nitem.addChild(ditem)
+                    if (DEV_T, anchor_dev['id']) in expanded: ditem.setExpanded(True)
+                    if select_type == DEV_T and select_id == anchor_dev['id']: target = ditem
+
+                    # Orsak-rader: samlar causes från ALLA deviations som
+                    # delar denna avvikelsetext (objekt-kopplade eller
+                    # generiska) som direkta syskon under den ENA
+                    # avvikelse-raden ovan.
+                    ci = 0
                     for dev in dev_list:
-                        eq_id = dev['equipment_id']
-                        if eq_id:
-                            equipment_groups.setdefault(eq_id, []).append(dev)
-                        else:
-                            ungrouped_devs.append(dev)
-
-                    # Every object-linked deviation is its own flat row
-                    # directly under the node (2026-08-25, see NOTES.md
-                    # "Slå ihop objekt-rad + avvikelse-rad") — no shared
-                    # Ledord wrapper anymore, even when several objects
-                    # happen to share the exact same description text
-                    # (Anton explicitly chose this over keeping a shared,
-                    # numbered heading when asked — a deliberate reversal
-                    # of the 2026-08-13 "16 avikelser" grouped-count
-                    # preference for this specific, object-linked case).
-                    # The row's label combines the object's tag with the
-                    # deviation text directly ("V-101 — Ventil felar
-                    # stängd") instead of the old two-row split (a
-                    # "⬡ N. {description}" Ledord header, then a
-                    # "{tag}, {typ}" child that was already, underneath,
-                    # the real DEV_T/CAUSE_T node — "kaka på kaka").
-                    # Object TYPE is intentionally dropped from the label
-                    # text entirely ("I trädet skall enbart Objektag +
-                    # avikelsetexten stå") — a later, separate change
-                    # will show it as a clickable icon instead; the
-                    # italic-when-undefined font cue is kept as a quiet
-                    # visual signal in the meantime.
-                    for eq_id, eq_devs in equipment_groups.items():
-                        eq = self.db.get_equipment_by_id(eq_id)
-                        etype = (eq.get('equipment_type') or '').strip() if eq else ''
-                        undefined = not eq or not etype
-                        tag = eq['tag'] if eq else f'Utrustning #{eq_id}'
-                        for dev in eq_devs:
-                            di += 1
-                            eq_label = f"{tag} — {dev['description'][:45]}"
-                            eitem = QTreeWidgetItem([f"  ⬡  {di}. {eq_label}"])
-                            eitem.setIcon(0, _icon('settings'))
-                            # 2026-08-20: objects no longer bold in the tree
-                            # (Anton — "Objekt behöver inte vara fetstilta i
-                            # hazopträdet"); undefined-type italic stays.
-                            eq_font = QFont()
-                            eq_font.setItalic(undefined)
-                            eitem.setFont(0, eq_font)
-                            eitem.setData(0, self._EQUIP_TAG_ROLE, eq_id)
-                            nitem.addChild(eitem)
-
-                            # "Kaka på kaka" (2026-08-10, see NOTES.md
-                            # "objektet redovisas två gånger"): if this
-                            # deviation's only cause has no real content
-                            # yet (created empty by a drag-and-drop tag
-                            # placement) and its tag matches this row's own
-                            # tag, attach the CAUSE's identity (and its
-                            # consequences) directly to this row instead of
-                            # a redundant child that repeats the tag a
-                            # second time with nothing new to say —
-                            # unchanged logic from before this rewrite,
-                            # just applied to the now-flat row.
-                            dev_causes = causes_by_dev.get(dev['id'], [])
-                            merge_tag = ((eq['tag'] or '').strip() if eq else '')
-                            trivial_desc = (dev_causes[0]['description'] or '').strip() in ('', 'Ny orsak') \
-                                if dev_causes else False
-                            if (len(dev_causes) == 1
-                                    and trivial_desc
-                                    and (dev_causes[0]['comp_tag'] or '').strip() == merge_tag
-                                    and merge_tag):
-                                cause = dev_causes[0]
-                                eitem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
-                                eitem.setData(0, Qt.ItemDataRole.UserRole + 1, CAUSE_T)
-                                if (CAUSE_T, cause['id']) in expanded: eitem.setExpanded(True)
-                                if select_type == CAUSE_T and select_id == cause['id']: target = eitem
-                                add_cause_children(eitem, cause)
-                            else:
-                                eitem.setData(0, Qt.ItemDataRole.UserRole, dev['id'])
-                                eitem.setData(0, Qt.ItemDataRole.UserRole + 1, DEV_T)
-                                if (DEV_T, dev['id']) in expanded: eitem.setExpanded(True)
-                                if select_type == DEV_T and select_id == dev['id']: target = eitem
-                                add_causes_to_item(eitem, dev['id'])
-
-                    # Ungrouped (no-equipment) deviations sharing this same
-                    # description keep the pre-existing Ledord-wrapper
-                    # rule, UNCHANGED (this rewrite only ever touched the
-                    # object-linked side above): a lone one skips the
-                    # wrapper entirely and goes straight under the node,
-                    # exactly like before this feature existed; 2+ sharing
-                    # a description still get a shared, numbered heading —
-                    # a genuinely rare case (no tag exists to make each one
-                    # distinguishable on its own row) nobody asked to
-                    # change today.
-                    if len(ungrouped_devs) == 1:
-                        dev = ungrouped_devs[0]
-                        # Every node is auto-seeded with one empty, generic
-                        # deviation per guide word (add_node()) — once an
-                        # object is linked to the SAME description, the
-                        # still-empty generic one is unused scaffolding and
-                        # gets hidden (reappears once it gets a real cause).
-                        if not (equipment_groups and not causes_by_dev.get(dev['id'], [])):
-                            di += 1
-                            add_deviation_subtree(nitem, dev, di)
-                    elif len(ungrouped_devs) >= 2:
-                        di += 1
-                        litem = QTreeWidgetItem([f"  ⬡  {di}. {description}"])
-                        ledord_key = f"{node['id']}:{description}"
-                        litem.setData(0, Qt.ItemDataRole.UserRole, ledord_key)
-                        litem.setData(0, Qt.ItemDataRole.UserRole + 1, LEDORD_T)
-                        led_font = QFont(); led_font.setItalic(True)
-                        litem.setFont(0, led_font)
-                        nitem.addChild(litem)
-                        if (LEDORD_T, ledord_key) in expanded: litem.setExpanded(True)
-                        for dev in ungrouped_devs:
-                            if equipment_groups and not causes_by_dev.get(dev['id'], []):
-                                continue
-                            di += 1
-                            add_deviation_subtree(litem, dev, di)
+                        for cause in causes_by_dev.get(dev['id'], []):
+                            ci += 1
+                            add_cause_item(ditem, cause, ci)
 
             # System → Nod (2026-08-24, see NOTES.md "Ny toppnivå System")
             # — Systems render as top-level items with their nodes nested
@@ -1050,7 +957,7 @@ class TreePanel(QWidget):
         """Current raw description for an editable item, fetched fresh from
         the DB rather than reverse-engineered from the tree's decorated
         display text (numbering/icons/emoji/truncation baked directly into
-        item text at construction time, see add_deviation_subtree etc.)."""
+        item text at construction time, see _add_node_item etc.)."""
         if type_ == NODE_T:
             node = self.db.get_node(id_)
             return (node.get('name') or '') if node else ''

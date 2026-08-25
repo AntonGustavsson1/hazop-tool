@@ -3572,12 +3572,18 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             tree_panel = win.tree_panel
             existing_eq = win.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
             node_id = win.db.add_node()
-            dev_id = win.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=existing_eq)
+            win.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=existing_eq)
+            # 2026-08-25 follow-up (see NOTES.md "Rättar ihopslagningen"):
+            # the avvikelse row now anchors on the GENERIC deviation
+            # (auto-seeded by add_node()), not the equipment-scoped one
+            # just created above — get_or_create_deviation is idempotent,
+            # so this resolves the same existing generic row.
+            anchor_id = win.db.get_or_create_deviation(node_id, "Lågt flöde")
             tree_panel.refresh()
             tree_panel.tree.expandAll()
-            dev_item = _find_tree_item(tree_panel.tree, DEV_T, dev_id)
+            dev_item = _find_tree_item(tree_panel.tree, DEV_T, anchor_id)
             self.assertIsNotNone(dev_item,
-                "sanity: a single equipment-linked deviation must render as its own flat DEV_T row")
+                "sanity: an equipment-linked guide word must still render as its own flat DEV_T row")
             pos = tree_panel.tree.visualItemRect(dev_item).center()
 
             captured = []
@@ -3591,8 +3597,8 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             self.assertEqual(len(captured), 1, "the drop must resolve to a deviation, not be swallowed")
             resolved_dev_id, marker_ids = captured[0]
             self.assertEqual(marker_ids, [42])
-            self.assertEqual(resolved_dev_id, dev_id,
-                "must resolve to the flattened row's own deviation")
+            self.assertEqual(resolved_dev_id, anchor_id,
+                "must resolve to the avvikelse row's own (generic) deviation")
 
     def test_drag_move_over_flattened_equipment_deviation_accepts_without_writing_to_db(self):
         """The DragMove hover-feedback path must only ever check whether
@@ -3602,10 +3608,11 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             tree_panel = win.tree_panel
             existing_eq = win.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
             node_id = win.db.add_node()
-            dev_id = win.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=existing_eq)
+            win.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=existing_eq)
+            anchor_id = win.db.get_or_create_deviation(node_id, "Lågt flöde")
             tree_panel.refresh()
             tree_panel.tree.expandAll()
-            dev_item = _find_tree_item(tree_panel.tree, DEV_T, dev_id)
+            dev_item = _find_tree_item(tree_panel.tree, DEV_T, anchor_id)
             pos = tree_panel.tree.visualItemRect(dev_item).center()
             before = win.db.deviations(node_id)
 
@@ -3621,24 +3628,24 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             self.assertEqual(win.db.deviations(node_id), before,
                 "hovering must not create a new deviation row")
 
-    def test_tree_drop_on_ledord_wrapper_for_shared_ungrouped_deviations_still_resolves(self):
-        """LEDORD_T survives 2026-08-25's flattening ONLY for 2+
-        deviations that share a description and have NO equipment
-        linked (see NOTES.md "Slå ihop objekt-rad + avvikelse-rad") —
-        a rare case (two separately-added generic deviations that
-        happen to read the same), but _deviation_item_at's LEDORD_T
-        branch is still live code and must still resolve a drop onto
-        it, same as before this rewrite."""
+    def test_tree_drop_on_ledord_wrapper_still_resolves(self):
+        """LEDORD_T is now fully unreachable via refresh() (2026-08-25,
+        see NOTES.md "Rättar ihopslagningen" — every avvikelse row is
+        DEV_T unconditionally, since object-vs-generic no longer needs
+        distinct rendering paths at all). _deviation_item_at's own
+        LEDORD_T resolution branch is left in place regardless (harmless,
+        zero cost) — verified here against a synthetically constructed
+        item instead of relying on refresh() to ever produce one."""
+        from PyQt6.QtWidgets import QTreeWidgetItem
         with _TempDbMainWindow() as win:
             tree_panel = win.tree_panel
             node_id = win.db.add_node()
-            win.db.add_deviation(node_id, "Lågt flöde")
-            win.db.add_deviation(node_id, "Lågt flöde")
             tree_panel.refresh()
             tree_panel.tree.expandAll()
-            ledord_item = _find_tree_item(tree_panel.tree, LEDORD_T, f"{node_id}:Lågt flöde")
-            self.assertIsNotNone(ledord_item,
-                "sanity: 2+ ungrouped deviations sharing a description must still render as a LEDORD_T wrapper")
+            node_item = _find_tree_item(tree_panel.tree, NODE_T, node_id)
+            ledord_item = QTreeWidgetItem(node_item, ["synthetic"])
+            ledord_item.setData(0, Qt.ItemDataRole.UserRole, f"{node_id}:Lågt flöde")
+            ledord_item.setData(0, Qt.ItemDataRole.UserRole + 1, LEDORD_T)
             pos = tree_panel.tree.visualItemRect(ledord_item).center()
 
             captured = []
@@ -4217,16 +4224,17 @@ class EquipmentIdentityCrossPanelSyncTests(unittest.TestCase):
 
     @staticmethod
     def _find_equip_tag_item(tree_panel, eq_id):
-        """An equipment row may render as a genuine EQUIP_T item or, for
-        the common single-deviation case, collapse onto a DEV_T/CAUSE_T
-        row instead (see TreePanel.refresh()'s "kaka på kaka" collapse) —
-        check both via _EQUIP_TAG_ROLE, which every equipment-tag header
-        row carries regardless of which branch it took."""
+        """2026-08-25 (see NOTES.md "Rättar ihopslagningen"): object
+        identity now lives on the Orsak (CAUSE_T) row, resolved live via
+        causes.equipment_id — find the cause row(s) linked to this
+        equipment directly, rather than a no-longer-set _EQUIP_TAG_ROLE."""
         it = QTreeWidgetItemIterator(tree_panel.tree)
         while it.value():
             item = it.value()
-            if item.data(0, tree_panel._EQUIP_TAG_ROLE) == eq_id:
-                return item
+            if item.data(0, Qt.ItemDataRole.UserRole + 1) == CAUSE_T:
+                cause = tree_panel.db.get_cause(item.data(0, Qt.ItemDataRole.UserRole))
+                if cause and cause.get('equipment_id') == eq_id:
+                    return item
             it += 1
         return None
 
