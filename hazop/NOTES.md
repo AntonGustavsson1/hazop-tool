@@ -925,6 +925,36 @@ noder) innan fixarna, mot en helt platt frågeräkning (15→15) efteråt.
 
 **Verifiering:** full 14-filssvit grön.
 
+## "+ Lägg till"-knappen för ny objekttyp i rubberband-popupen ändrad tillbaka till en bar "+" (2026-08-25)
+
+**Beställning:** Anton: "I popuprutan så står det '+ lägg till'. justera
+detta till bara '+' och justera knappens storlek (detta efter man dragit
+med gummibandet)." — gäller `EquipmentPlacementPopup` (`pid_panel_mod.py`),
+den kombinerade tagg+typ-popupen som visas både vid vanlig högerklick-
+"🔧 Objekt"-placering och vid höger-drag-gummiband-placering
+(`_on_zone_drawn` → `equipment_placement_requested` → `place_equipment_marker`).
+
+Detta är en **direkt reversering** av gårdagens ändring (se föregående
+avsnitt "Ny toppnivå 'System' ..."/"Åtta UX/logik-förbättringar" ovan,
+2026-08-24) där samma knapp gick från en bar `"+"`-kvadratknapp till en
+bredare `"+ Lägg till"`-knapp med text, av precis motsatt skäl (den
+bara "+"-knappen ansågs otydlig då). Med typ-comboboxen redan bredvid i
+en liten, smal popup blev den textade knappen istället för bred/
+klumpig — särskilt i det förenklade `simple=True`-läget (gummiband) som
+bara har två fält totalt. Löst genom att gå tillbaka till en bar `"+"`
+men behålla en tydlig tooltip ("Lägg till en ny objekttyp") för
+förklaring, samt göra knappen kvadratisk (`setFixedSize(H_SMALL_BTN,
+H_SMALL_BTN)` istället för `setFixedHeight` + auto-bredd) så den inte
+ser ihoptryckt/felproportionerad ut.
+
+Berörd regressionstest i `tests/test_pid_panel_mod.py`
+(`EquipmentPlacementRubberBandSimplePopupTests`) — gårdagens
+`test_add_type_button_has_visible_text_not_a_bare_plus` bytt mot
+`test_add_type_button_is_a_compact_square_plus` (verifierar bar `"+"`,
+tooltip, och att knappen är kvadratisk).
+
+**Verifiering:** `test_smoke` + `test_pid_panel_mod` (81 tester, grönt).
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

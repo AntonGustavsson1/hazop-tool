@@ -610,10 +610,11 @@ class EquipmentPlacementPopup(QWidget):
         # Same non-editable-dropdown-plus-add-button pattern as
         # EquipmentTagPopup/CauseTagPopup (2026-08-13 follow-up, see
         # their own docstrings for why an editable combo was rejected).
-        # The add-button used to be a bare "+" square icon with no visible
-        # text (2026-08-24 follow-up: unclear what it did) — now a labeled
-        # button, same wording as StandardObjectsSettingsPanel's own
-        # "+ Lägg till" (standard_objects_panel.py) for consistency.
+        # Was briefly a labeled "+ Lägg till" button (2026-08-24, see
+        # NOTES.md "Åtta UX/logik-förbättringar") but that made this small
+        # popup feel cramped after a rubber-band drag — reverted to a
+        # compact square "+" (tooltip still explains the action) at
+        # 2026-08-25.
         self._type_cb = QComboBox()
         self._type_cb.setFixedHeight(CONFIG['H_SMALL_BTN'])
         self._type_cb.setStyleSheet(_small)
@@ -621,8 +622,8 @@ class EquipmentPlacementPopup(QWidget):
         typ_row = QHBoxLayout()
         typ_row.setSpacing(4)
         typ_row.addWidget(self._type_cb)
-        add_type_btn = QPushButton("+ Lägg till")
-        add_type_btn.setFixedHeight(CONFIG['H_SMALL_BTN'])
+        add_type_btn = QPushButton("+")
+        add_type_btn.setFixedSize(CONFIG['H_SMALL_BTN'], CONFIG['H_SMALL_BTN'])
         add_type_btn.setStyleSheet(_small)
         add_type_btn.setToolTip("Lägg till en ny objekttyp")
         add_type_btn.clicked.connect(self._add_new_type)

@@ -560,12 +560,19 @@ class EquipmentPlacementRubberBandSimplePopupTests(unittest.TestCase):
         self.assertFalse(popup._simple)
         self.assertIsNotNone(popup._checklist)
 
-    def test_add_type_button_has_visible_text_not_a_bare_plus(self):
+    def test_add_type_button_is_a_compact_square_plus(self):
+        """2026-08-25 follow-up: the labeled "+ Lägg till" button (added
+        2026-08-24) made this small rubber-band popup feel cramped —
+        reverted to a bare "+" square, sized to match the row (tooltip
+        still explains the action for discoverability)."""
         popup = self._place_with_rect()
-        add_type_btns = [b for b in popup.findChildren(QPushButton)
-                          if "Lägg till" in b.text()]
+        add_type_btns = [b for b in popup.findChildren(QPushButton) if b.text() == "+"]
         self.assertEqual(len(add_type_btns), 1,
-            "the add-object-type button must have real, visible text, not a bare '+'")
+            "the add-object-type button must be a bare '+'")
+        btn = add_type_btns[0]
+        self.assertEqual(btn.toolTip(), "Lägg till en ny objekttyp")
+        self.assertEqual(btn.width(), btn.height(),
+            "the '+' button should be square, not a wide labeled button")
 
     def test_object_field_label_says_objekt_not_tag(self):
         """The simplified popup's field is framed as "Objekt"/"Objekttyp"
