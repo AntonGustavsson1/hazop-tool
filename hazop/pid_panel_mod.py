@@ -563,6 +563,12 @@ class EquipmentPlacementPopup(QWidget):
         self._equipment_id = equipment_id
         self._marker_id = marker_id
         self._tag_edited_by_user = False
+        # Set the moment "Skapa dublett" is clicked for a given tag string
+        # (2026-08-25, see NOTES.md) — lets that exact tag bypass the
+        # auto-merge in _commit_tag once the user has explicitly said they
+        # want a real duplicate, without needing to re-click on every
+        # subsequent commit as long as the text hasn't changed.
+        self._dup_confirmed_tag = None
         # `simple` (2026-08-24, see NOTES.md "Åtta UX/logik-förbättringar")
         # — the rubber-band placement flow (PIDPanel.place_equipment_marker
         # when pdf_rect is not None) now only creates the object itself:
@@ -644,11 +650,33 @@ class EquipmentPlacementPopup(QWidget):
         # data (deviations checked) rather than force-merging and risking
         # orphaning it; see _reassign_to_existing. A blocking QMessageBox
         # warning (2026-08-24, see NOTES.md) fires alongside this the
-        # moment a real duplicate is found — see _commit_tag.
+        # moment a real duplicate is found — see _commit_tag. Updated live
+        # on every keystroke (2026-08-25 follow-up), not just on commit, so
+        # editing the tag to no longer match makes the warning disappear
+        # immediately instead of lingering until the field loses focus.
         self._dup_hint = QLabel("")
         self._dup_hint.setStyleSheet("font-size:9px; color:#b8860b;")
         self._dup_hint.setWordWrap(True)
         outer.addWidget(self._dup_hint)
+
+        # "Skapa dublett" (2026-08-25, see NOTES.md) — without this, a
+        # matching tag always silently merges into the existing catalog
+        # row (_reassign_to_existing) with no way to deliberately create a
+        # second, separate row for the same tag. Only shown while the
+        # typed tag currently matches another object; clicking it confirms
+        # THIS exact tag text should NOT be merged. NoFocus so clicking it
+        # doesn't steal focus from _tag_edit first — a StrongFocus button
+        # here would fire _tag_edit's editingFinished (and thus the merge)
+        # before this button's own clicked() handler ever runs.
+        self._dup_confirm_btn = QPushButton("Skapa dublett")
+        self._dup_confirm_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._dup_confirm_btn.setStyleSheet(_small)
+        self._dup_confirm_btn.setToolTip(
+            "Skapa som ett nytt, separat objekt istället för att slå ihop "
+            "med det befintliga objektet som redan har denna tagg.")
+        self._dup_confirm_btn.setVisible(False)
+        self._dup_confirm_btn.clicked.connect(self._confirm_duplicate)
+        outer.addWidget(self._dup_confirm_btn)
 
         # Simple mode (rubber-band placement, 2026-08-24) drops the
         # embedded deviation checklist entirely — this popup now only
@@ -800,8 +828,49 @@ class EquipmentPlacementPopup(QWidget):
         self._tag_edit.setText(tag)
         self._commit_tag(show_warning=False)
 
-    def _on_tag_edited_by_user(self, _text):
+    def _on_tag_edited_by_user(self, text):
         self._tag_edited_by_user = True
+        self._update_dup_hint_live(text)
+
+    def _update_dup_hint_live(self, text):
+        """Live (per-keystroke) duplicate check, separate from _commit_tag's
+        commit-time check (2026-08-25, see NOTES.md) — only ever updates
+        the hint/button, never merges or writes to the database, so typing
+        a tag that happens to match another object mid-edit doesn't
+        trigger a merge before the user has finished typing. Editing the
+        tag so it no longer matches makes the hint disappear immediately,
+        rather than lingering until the field loses focus."""
+        tag = text.strip().upper()
+        existing = self.db.get_equipment_by_tag(tag) if tag else None
+        if existing and existing['id'] != self._equipment_id and tag != self._dup_confirmed_tag:
+            self._show_duplicate_hint(existing)
+        else:
+            self._dup_hint.setText("")
+            self._dup_confirm_btn.setVisible(False)
+
+    def _show_duplicate_hint(self, existing):
+        self._dup_hint.setText(
+            f"ℹ️ \"{existing['tag']}\" finns redan i katalogen "
+            f"({existing.get('equipment_type') or '?'}) — kopplas till den befintliga raden.")
+        self._dup_confirm_btn.setVisible(True)
+
+    def _confirm_duplicate(self):
+        """Skapa dublett clicked: the user has explicitly said this tag
+        should stay its own, separate object rather than merge into the
+        existing one (2026-08-25, see NOTES.md). Saves the tag on THIS
+        placeholder right away instead of waiting for _tag_edit's
+        editingFinished, since _dup_confirm_btn is NoFocus and so never
+        triggers that signal itself."""
+        tag = self._tag_edit.text().strip().upper()
+        self._dup_confirmed_tag = tag
+        self._dup_hint.setText("")
+        self._dup_confirm_btn.setVisible(False)
+        eq = self.db.get_equipment_by_id(self._equipment_id)
+        if not eq:
+            return
+        self.db.update_equipment_item(
+            self._equipment_id, tag, _equip_prefix_from_tag(tag) if tag else (eq.get('prefix') or ''),
+            eq.get('equipment_type') or '', eq.get('description') or '')
 
     def _add_new_type(self):
         """Same behavior as EquipmentTagPopup._add_new_type — also
@@ -833,10 +902,8 @@ class EquipmentPlacementPopup(QWidget):
             return
 
         existing = self.db.get_equipment_by_tag(tag) if tag else None
-        if existing and existing['id'] != self._equipment_id:
-            self._dup_hint.setText(
-                f"ℹ️ \"{existing['tag']}\" finns redan i katalogen "
-                f"({existing.get('equipment_type') or '?'}) — kopplas till den befintliga raden.")
+        if existing and existing['id'] != self._equipment_id and tag != self._dup_confirmed_tag:
+            self._show_duplicate_hint(existing)
             # 2026-08-24 (see NOTES.md): the hint label above was too easy
             # to miss — a real, blocking dialog makes the duplicate
             # unmissable. The merge itself (_reassign_to_existing, with
@@ -854,6 +921,7 @@ class EquipmentPlacementPopup(QWidget):
             return
 
         self._dup_hint.setText("")
+        self._dup_confirm_btn.setVisible(False)
         self.db.update_equipment_item(
             self._equipment_id, tag, _equip_prefix_from_tag(tag) if tag else (eq.get('prefix') or ''),
             eq.get('equipment_type') or '', eq.get('description') or '')

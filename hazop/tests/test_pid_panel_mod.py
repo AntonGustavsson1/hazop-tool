@@ -789,6 +789,62 @@ class EquipmentPlacementAsyncSearchTests(unittest.TestCase):
         self.assertIsNotNone(self.db.get_equipment_by_id(placeholder_id))
         self.assertIn("finns redan i katalogen", popup._dup_hint.text())
 
+    def test_dup_hint_and_button_update_live_as_the_tag_is_typed(self):
+        """2026-08-25, see NOTES.md: the hint/"Skapa dublett" button must
+        track the tag on every keystroke (textEdited), not just on commit
+        (editingFinished) — editing the tag so it no longer matches an
+        existing object must make the warning disappear immediately."""
+        from PyQt6.QtCore import QPointF
+        self.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", '', 0)
+
+        self.panel.place_equipment_marker("", "Ventil", QPointF(200, 200), 0)
+        popup = self._popup()
+        self.assertFalse(popup._dup_confirm_btn.isVisible())
+
+        popup._tag_edit.setText("PV-101")
+        popup._on_tag_edited_by_user("PV-101")
+        self.assertIn("finns redan i katalogen", popup._dup_hint.text())
+        self.assertTrue(popup._dup_confirm_btn.isVisible())
+
+        popup._tag_edit.setText("PV-102")
+        popup._on_tag_edited_by_user("PV-102")
+        self.assertEqual(popup._dup_hint.text(), "")
+        self.assertFalse(popup._dup_confirm_btn.isVisible())
+
+    def test_confirm_duplicate_button_creates_a_real_duplicate_without_merging(self):
+        """Clicking "Skapa dublett" must save the typed tag on the
+        placeholder as-is instead of _reassign_to_existing's usual merge
+        (2026-08-25, see NOTES.md) — the only way to deliberately end up
+        with two catalog rows sharing a tag."""
+        from PyQt6.QtCore import QPointF
+        existing_id = self.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", '', 0)
+
+        self.panel.place_equipment_marker("", "Ventil", QPointF(200, 200), 0)
+        popup = self._popup()
+        placeholder_id = popup._equipment_id
+
+        popup._tag_edit.setText("PV-101")
+        popup._on_tag_edited_by_user("PV-101")
+        self.assertTrue(popup._dup_confirm_btn.isVisible())
+
+        popup._confirm_duplicate()
+
+        self.assertEqual(popup._equipment_id, placeholder_id,
+            "confirming a duplicate must not reassign to the existing row")
+        self.assertEqual(self.db.get_equipment_by_id(placeholder_id)['tag'], "PV-101")
+        self.assertEqual(len(self.db.equipment_items()), 2,
+            "both the original and the confirmed duplicate must exist")
+        self.assertFalse(popup._dup_confirm_btn.isVisible())
+        self.assertEqual(popup._dup_hint.text(), "")
+
+        # A later commit (e.g. focus-out) against the SAME confirmed tag
+        # must not retroactively merge it away either.
+        with unittest.mock.patch.object(QMessageBox, 'warning') as mock_warn:
+            popup._commit_tag()
+        mock_warn.assert_not_called()
+        self.assertEqual(popup._equipment_id, placeholder_id)
+        self.assertIsNotNone(self.db.get_equipment_by_id(existing_id))
+
     def test_checking_a_deviation_in_the_new_popup_creates_a_cause(self):
         """The embedded _DeviationChecklist inside EquipmentPlacementPopup
         must create causes exactly like EquipmentDeviationBar's own

@@ -955,6 +955,52 @@ tooltip, och att knappen är kvadratisk).
 
 **Verifiering:** `test_smoke` + `test_pid_panel_mod` (81 tester, grönt).
 
+## Dublett-taggens varningstext i gummiband-popupen uppdateras nu live + ny "Skapa dublett"-knapp (2026-08-25)
+
+**Beställning:** Anton: "Dubletter vid gummibandsmarkering. Vid pop-upen
+finns nu text 'finns redan i katalog'. Om man ändrar taggnummer så det
+skiljer sig ska varningstexten direkt försvinna. För att skapa en ny
+dublett behövs en verifierar-knapp som dyker på pop-upen." — gäller
+samma `EquipmentPlacementPopup` (`pid_panel_mod.py`) som föregående
+avsnitt, specifikt dess `_dup_hint`-varning (2026-08-24) för en tagg som
+redan finns i katalogen.
+
+**Problem 1 — varningen låg kvar för länge.** `_dup_hint` uppdaterades
+bara i `_commit_tag()`, som bara körs vid `editingFinished` (fokus
+lämnar fältet/Enter) — skriver man om taggnumret till något som inte
+längre är en dublett syns den gamla varningen kvar tills fältet
+tappar fokus igen. Löst med en ny `_update_dup_hint_live()` kopplad till
+`_tag_edit.textEdited` (kör alltså på VARJE tangenttryckning) — den
+uppdaterar bara `_dup_hint`-texten och den nya knappen (se nedan), gör
+ALDRIG någon databasskrivning eller sammanslagning, så en dublett-tagg
+som råkar skrivas fram mitt i inmatningen inte utlöser en sammanslagning
+innan användaren är klar.
+
+**Problem 2 — omöjligt att medvetet skapa en riktig dublett.** Innan
+denna ändring körde `_commit_tag()` alltid `_reassign_to_existing()`
+(slå ihop med den befintliga raden) så fort en matchande tagg
+committades — det fanns inget sätt att säga "nej, jag vill faktiskt ha
+två separata objekt med samma tagg". Ny knapp `"Skapa dublett"`
+(`_dup_confirm_btn`), dold som standard, visas bara medan den inskrivna
+taggen matchar ett annat objekt. Klick sparar taggen på DENNA post
+direkt (`_confirm_duplicate()`) istället för att slås ihop, och minns
+den bekräftade taggtexten i `_dup_confirmed_tag` så att `_commit_tag()`
+(t.ex. vid senare fokus-byte) inte i efterhand slår ihop samma tagg ändå.
+
+**Knepig detalj:** knappen sätts till `Qt.FocusPolicy.NoFocus`. Utan det
+skulle ett klick på knappen först få `_tag_edit` att tappa fokus
+(`editingFinished`/`_commit_tag()` hinner köra och slå ihop/radera denna
+post INNAN knappens egen `clicked()`-hanterare ens körs) — samma
+"textfält med inbäddad knapp som inte får stjäla fokus"-mönster som
+t.ex. ett sök-fälts inbäddade rensa-knapp använder.
+
+Nya regressionstester i `tests/test_pid_panel_mod.py`
+(`EquipmentPlacementAsyncSearchTests`):
+`test_dup_hint_and_button_update_live_as_the_tag_is_typed`,
+`test_confirm_duplicate_button_creates_a_real_duplicate_without_merging`.
+
+**Verifiering:** `test_smoke` + `test_pid_panel_mod` (83 tester, grönt).
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.
