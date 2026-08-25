@@ -125,16 +125,14 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
             it += 1
         return out
 
-    def test_equipment_scoped_deviation_grouped_under_ledord_then_equip_t(self):
-        """A single deviation for this equipment+guide-word combo (the
+    def test_equipment_scoped_deviation_renders_as_flat_row_under_node(self):
+        """2026-08-25 (see NOTES.md 'Slå ihop objekt-rad + avvikelse-rad'):
+        a single deviation for this equipment+guide-word combo (the
         overwhelmingly common case — get_or_create_deviation is idempotent
-        per node+description+equipment) merges directly onto the
-        equipment's own tree item instead of wrapping it in a separate
-        DEV_T child (2026-08-09, see NOTES.md 'kaka på kaka' — the
-        deviation's description is always identical to the LEDORD_T
-        group's own label, so a nested child just repeated the same text
-        the user already saw one level up). The merged item carries the
-        DEVIATION's identity (not EQUIP_T) so 'add cause' and
+        per node+description+equipment) is ONE flat row directly under the
+        node — no separate LEDORD_T wrapper, no separate EQUIP_T item.
+        The row's label combines the tag with the deviation text, and it
+        carries the DEVIATION's identity (not EQUIP_T) so 'add cause' and
         equipment-dropped-on-deviation both work directly on it."""
         eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
         node_id = self.db.add_node()
@@ -142,27 +140,26 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         self.panel.refresh()
 
         items = self._tree_items()
-        # add_node() auto-seeds ~16 default guide words, so filter down to
-        # just the one this test cares about, not "any LEDORD_T at all".
-        ledord_rows = [x for x in items if x[0] == LEDORD_T and x[2] == NODE_T
-                       and str(x[1]).endswith("Lågt flöde")]
-        self.assertEqual(len(ledord_rows), 1, "the guide word must appear as its own tree item under the node")
+        self.assertEqual(len([x for x in items if x[0] == LEDORD_T
+                              and str(x[1]).endswith("Lågt flöde")]), 0,
+            "an equipment-linked guide word must no longer get a LEDORD_T wrapper")
         self.assertEqual(len([x for x in items if x[0] == EQUIP_T and x[1] == eq_id]), 0,
-            "a single deviation must not get a separate EQUIP_T wrapper anymore")
+            "a single deviation must not get a separate EQUIP_T row either")
         dev_rows = [x for x in items if x[0] == DEV_T and x[1] == dev_id]
         self.assertEqual(len(dev_rows), 1)
-        self.assertEqual(dev_rows[0][2], LEDORD_T,
-            "the merged equipment+deviation item must sit directly under the LEDORD_T (guide word) item")
+        self.assertEqual(dev_rows[0][2], NODE_T,
+            "the flat equipment+deviation row must sit directly under the node")
         self.assertEqual(self.panel._resolve_equipment_id(DEV_T, dev_id), eq_id,
-            "the merged item's underlying deviation must still resolve back to its equipment")
+            "the flat row's underlying deviation must still resolve back to its equipment")
 
-    def test_two_equipment_sharing_same_guide_word_grouped_under_one_ledord(self):
-        """The core reason for this hierarchy: 'Lågt flöde' for a pump AND
-        a valve under the same node must appear under ONE shared guide-word
-        item, each with its own equipment sub-item — not two separate
-        top-level groups. Each equipment has only one deviation here, so
-        each merges directly onto its own item (2026-08-09, see NOTES.md
-        'kaka på kaka') rather than wrapping in a separate EQUIP_T+DEV_T pair."""
+    def test_two_equipment_sharing_same_guide_word_render_as_separate_flat_rows(self):
+        """2026-08-25, confirmed via AskUserQuestion (see NOTES.md 'Slå
+        ihop objekt-rad + avvikelse-rad'): a pump AND a valve that both
+        have 'Lågt flöde' under the same node no longer share a grouped
+        guide-word heading — each gets its own independent flat row, even
+        though they read the exact same deviation text. This is a
+        deliberate reversal of the 2026-08-13 grouped-numbering
+        preference for the object-linked case specifically."""
         pump_id = self.db.add_equipment_item("P-101", "P-101", "P", 0, "Pump", '', 0)
         valve_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
         node_id = self.db.add_node()
@@ -171,12 +168,13 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         self.panel.refresh()
 
         items = self._tree_items()
-        ledord_rows = [x for x in items if x[0] == LEDORD_T]
-        matching = [x for x in ledord_rows if str(x[1]).endswith("Lågt flöde")]
-        self.assertEqual(len(matching), 1, "both equipment must share ONE 'Lågt flöde' guide-word item")
-        dev_rows = [x for x in items if x[0] == DEV_T and x[2] == LEDORD_T
+        self.assertEqual(len([x for x in items if x[0] == LEDORD_T
+                              and str(x[1]).endswith("Lågt flöde")]), 0,
+            "no shared guide-word heading must exist anymore for the object-linked case")
+        dev_rows = [x for x in items if x[0] == DEV_T and x[2] == NODE_T
                     and x[1] in (pump_dev, valve_dev)]
-        self.assertEqual({x[1] for x in dev_rows}, {pump_dev, valve_dev})
+        self.assertEqual({x[1] for x in dev_rows}, {pump_dev, valve_dev},
+            "both must render as their own flat rows directly under the node")
         self.assertEqual(self.panel._resolve_equipment_id(DEV_T, pump_dev), pump_id)
         self.assertEqual(self.panel._resolve_equipment_id(DEV_T, valve_dev), valve_id)
 
@@ -187,31 +185,34 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         no number at all — which then made a SECOND report surface:
         'jag vill att den ska kvarstå så att det alltid syns att det är
         exempelvis 16 avikelser' (the guide word's own number must stay
-        visible even once it's wrapped/merged, not disappear). The
-        Ledord wrapper itself now carries the guide word's number, and
-        equipment/deviation-instance items inside it use their own
-        separate local counter that can never steal from this top-level,
-        one-per-guide-word sequence."""
+        visible even once equipment is linked, not disappear).
+
+        2026-08-25 (see NOTES.md 'Slå ihop objekt-rad + avvikelse-rad'):
+        the flat equipment row now carries this SAME number directly in
+        its own combined label (no more separate wrapper to carry it
+        instead) — 'Lågt flöde' becomes '1. V-101 — Lågt flöde' in place,
+        still first in the sequence; the next plain guide word
+        ('Högt flöde') still continues right after it."""
         eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
         node_id = self.db.add_node()
         self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
         self.panel.refresh()
 
         it = QTreeWidgetItemIterator(self.panel.tree)
-        lagt_wrapper = hogt_item = None
+        lagt_item = hogt_item = None
         while it.value():
             item = it.value()
             t = item.data(0, Qt.ItemDataRole.UserRole + 1)
-            if t == LEDORD_T and "Lågt flöde" in item.text(0):
-                lagt_wrapper = item
             if (t == DEV_T and item.parent() is not None
-                    and item.parent().data(0, Qt.ItemDataRole.UserRole + 1) == NODE_T
-                    and "Högt flöde" in item.text(0)):
-                hogt_item = item
+                    and item.parent().data(0, Qt.ItemDataRole.UserRole + 1) == NODE_T):
+                if "Lågt flöde" in item.text(0):
+                    lagt_item = item
+                if "Högt flöde" in item.text(0):
+                    hogt_item = item
             it += 1
-        self.assertIsNotNone(lagt_wrapper, "'Lågt flöde' must be wrapped once equipment is linked")
-        self.assertIn("1. Lågt flöde", lagt_wrapper.text(0),
-            f"the guide word's own number must stay visible after wrapping, got: {lagt_wrapper.text(0)!r}")
+        self.assertIsNotNone(lagt_item, "'Lågt flöde' must still be a flat row directly under the node")
+        self.assertIn("1. V-101 — Lågt flöde", lagt_item.text(0),
+            f"the guide word's own number must stay visible on the flat row, got: {lagt_item.text(0)!r}")
         self.assertIsNotNone(hogt_item, "'Högt flöde' must still attach directly to the node")
         self.assertIn("2. Högt flöde", hogt_item.text(0),
             f"expected the next sequential number, got: {hogt_item.text(0)!r}")
@@ -260,13 +261,14 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         self.assertEqual(sorted(numbers), list(range(1, n_seeded + 1)),
             f"expected a gapless 1..{n_seeded} sequence, got: {sorted(numbers)}")
 
-    def test_merged_equipment_deviation_item_does_not_repeat_guide_word_text(self):
-        """Exact reported bug: '=M1.GPA6 — Pump' nested under 'Lågt flöde'
-        used to show ANOTHER child item labelled '1. Lågt flöde' — the
-        same guide-word text shown twice in a row for no reason, with the
-        real cause nested one level deeper still (2026-08-09, screenshot
-        in conversation). The merged item's own label must be the
-        equipment tag/type, never a repeat of the guide-word text."""
+    def test_flat_equipment_deviation_row_combines_tag_and_deviation_text(self):
+        """2026-08-25 (see NOTES.md 'Slå ihop objekt-rad + avvikelse-rad'):
+        with the LEDORD_T wrapper gone, the deviation text ('Lågt flöde')
+        no longer appears anywhere else — the flat row's own label must
+        show BOTH the tag and the deviation text together ('M1.GPA6 —
+        Lågt flöde'), not just the tag alone (the old, now-obsolete
+        'don't repeat the guide-word text' rule from 2026-08-09 applied
+        to a different tree shape that no longer exists)."""
         eq_id = self.db.add_equipment_item("M1.GPA6", "M1.GPA6", "M1", 0, "Pump", '', 0)
         node_id = self.db.add_node()
         dev_id = self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
@@ -282,10 +284,8 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
                 dev_item = item
             it += 1
         self.assertIsNotNone(dev_item)
-        self.assertIn("M1.GPA6", dev_item.text(0))
-        self.assertNotIn("Lågt flöde", dev_item.text(0),
-            "the merged item must not repeat the guide-word text its LEDORD_T parent already shows")
-        # The cause must be one level directly below the merged item, not two.
+        self.assertIn("M1.GPA6 — Lågt flöde", dev_item.text(0))
+        # The cause must be one level directly below the flat row, not two.
         self.assertEqual(dev_item.childCount(), 1)
         cause_item = dev_item.child(0)
         self.assertEqual(cause_item.data(0, Qt.ItemDataRole.UserRole + 1), CAUSE_T)
@@ -631,7 +631,11 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
     def test_generic_deviation_stays_visible_once_it_has_a_cause(self):
         """The hide-when-empty rule must never hide real user data: a
         generic deviation that already has a cause stays visible even if an
-        equipment-scoped sibling for the same guide word also exists."""
+        equipment-scoped sibling for the same guide word also exists.
+        2026-08-25 (see NOTES.md 'Slå ihop objekt-rad + avvikelse-rad'):
+        it now attaches directly to the node (flat), not to a shared
+        LEDORD_T wrapper — the equipment-linked sibling is its own,
+        separate flat row and no longer shares a parent with this one."""
         eq_id = self.db.add_equipment_item("P-101", "P-101", "P", 0, "Pump", '', 0)
         node_id = self.db.add_node()
         generic_dev = next(d for d in self.db.deviations(node_id)
@@ -641,7 +645,7 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         self.panel.refresh()
 
         items = self._tree_items()
-        direct_dev_rows = [x for x in items if x[0] == DEV_T and x[2] == LEDORD_T
+        direct_dev_rows = [x for x in items if x[0] == DEV_T and x[2] == NODE_T
                             and x[1] == generic_dev['id']]
         self.assertEqual(len(direct_dev_rows), 1,
                           "a generic deviation with an existing cause must remain visible")
@@ -693,18 +697,27 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
             mock_menu_cls.assert_not_called()
 
     def _equip_item(self, eq_id):
+        # 2026-08-25 (see NOTES.md "Slå ihop objekt-rad + avvikelse-rad"):
+        # the flat row now carries a "⬡ N. " numbering prefix ahead of the
+        # tag, so a plain startswith(tag) check (which worked when the
+        # tag was the very first thing in the label) no longer matches —
+        # find it via _EQUIP_TAG_ROLE instead, same robust lookup
+        # _equip_item_fallback already uses elsewhere in this file.
         it = QTreeWidgetItemIterator(self.panel.tree)
         while it.value():
             item = it.value()
-            if item.text(0).strip().startswith(self.db.get_equipment_by_id(eq_id)['tag']):
+            if item.data(0, self.panel._EQUIP_TAG_ROLE) == eq_id:
                 return item
             it += 1
         return None
 
-    def test_undefined_equipment_shows_ej_definierad_italic(self):
-        """"Idag: 'TAG-ABC —' ... Ska bli 'TAG-ABC, ej definierad' ...
-        (kursivt)" (2026-08-17) — an equipment_type of '' used to leave a
-        bare trailing dash with nothing after it."""
+    def test_undefined_equipment_type_shows_italic_but_no_type_text(self):
+        """2026-08-25 (see NOTES.md 'Slå ihop objekt-rad + avvikelse-rad'):
+        "I trädet skall enbart Objektag + avikelsetexten stå" — object
+        type is no longer spelled out as text at all (a later, separate
+        change will show it as a clickable icon instead), so the old
+        "TAG-ABC, ej definierad" wording is gone entirely. The italic
+        font is kept as a quiet "type not set" signal in the meantime."""
         eq_id = self.db.add_equipment_item("TAG-ABC", "TAG-ABC", "T", 0, "", "", 0)
         node_id = self.db.add_node()
         self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
@@ -712,11 +725,13 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
 
         item = self._equip_item(eq_id)
         self.assertIsNotNone(item)
-        self.assertIn("TAG-ABC, ej definierad", item.text(0))
-        self.assertNotIn("—", item.text(0))
+        self.assertIn("TAG-ABC — Lågt flöde", item.text(0))
+        self.assertNotIn("ej definierad", item.text(0))
         self.assertTrue(item.font(0).italic())
 
-    def test_defined_equipment_shows_type_not_italic(self):
+    def test_defined_equipment_type_not_italic_and_type_not_shown(self):
+        """Object type ("Ventil") must NOT appear in the label text at all
+        anymore, defined or not — only tag + deviation text."""
         eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", "", 0)
         node_id = self.db.add_node()
         self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
@@ -724,7 +739,8 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
 
         item = self._equip_item(eq_id)
         self.assertIsNotNone(item)
-        self.assertIn("V-101, Ventil", item.text(0))
+        self.assertIn("V-101 — Lågt flöde", item.text(0))
+        self.assertNotIn("Ventil", item.text(0))
         self.assertFalse(item.font(0).italic())
 
     def test_double_click_undefined_equipment_opens_type_picker_and_persists(self):
@@ -733,24 +749,24 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         2026-08-18: the QInputDialog type-only picker was replaced by the
         same Tag+Typ CauseTagPopup used for a tag click in the scenario
         table, with no OK button — selecting a type commits immediately.
-        Forces the genuinely-EQUIP_T (un-merged) code path via two manual
-        add_deviation() calls sharing one equipment_id + guide word — the
-        idempotent get_or_create_deviation used everywhere else in the app
-        never produces this combination "in practice" (see this class's
-        own docstring), but the code path exists and must work."""
+
+        2026-08-25 (see NOTES.md 'Slå ihop objekt-rad + avvikelse-rad'):
+        this now uses the COMMON single-deviation flat-row scenario — the
+        old EQUIP_T-at-rest state this test used to force via two manual
+        add_deviation() calls is no longer reachable at all, since every
+        object-linked deviation is now always a flat DEV_T/CAUSE_T row
+        regardless of count (see
+        test_two_equipment_sharing_same_guide_word_render_as_separate_flat_rows).
+        _EQUIP_TAG_ROLE-based popup routing is unaffected either way."""
         from hazop import CauseTagPopup
         eq_id = self.db.add_equipment_item("TAG-XYZ", "TAG-XYZ", "T", 0, "", "", 0)
         self.db.add_standard_object("Ventil")
         node_id = self.db.add_node()
-        self.db.add_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
-        self.db.add_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
         self.panel.refresh()
 
         item = self._equip_item(eq_id)
         self.assertIsNotNone(item)
-        self.assertEqual(item.data(0, Qt.ItemDataRole.UserRole + 1), EQUIP_T,
-                          "sanity: two deviations sharing one equipment+guide-word "
-                          "must produce a real (un-merged) EQUIP_T row")
 
         self.panel._on_item_double_click(item, 0)
         popups = self.panel.findChildren(CauseTagPopup)
@@ -761,18 +777,26 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
 
         self.assertEqual(self.db.get_equipment_by_id(eq_id)['equipment_type'], "Ventil")
         item_after = self._equip_item(eq_id)
-        self.assertIn("TAG-XYZ, Ventil", item_after.text(0))
+        self.assertIn("TAG-XYZ — Lågt flöde", item_after.text(0))
 
     def test_double_click_equipment_type_picker_emits_item_edited_inline(self):
+        """2026-08-25: uses the common single-deviation flat-row scenario
+        — see test_double_click_undefined_equipment_opens_type_picker_and_persists's
+        own docstring for why the old forced-EQUIP_T setup is gone.
+        _apply_equipment_tag_edit always emits (EQUIP_T, eq_id) here
+        regardless of the row's own current type (DEV_T at rest, in this
+        case) — unchanged by this rewrite, since that method itself
+        wasn't touched."""
         from hazop import CauseTagPopup
         eq_id = self.db.add_equipment_item("TAG-XYZ", "TAG-XYZ", "T", 0, "", "", 0)
         # "Pump" is already present in the default seeded standard_objects
         # library (Database() seeds it on construction) — no need to add it.
         node_id = self.db.add_node()
-        self.db.add_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
-        self.db.add_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
+        self.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
         self.panel.refresh()
         item = self._equip_item(eq_id)
+        self.assertEqual(item.data(0, Qt.ItemDataRole.UserRole + 1), DEV_T,
+            "sanity: a single equipment-linked deviation is a flat DEV_T row now")
 
         captured = []
         self.panel.item_edited_inline.connect(lambda t, i: captured.append((t, i)))

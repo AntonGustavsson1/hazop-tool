@@ -556,97 +556,57 @@ class TreePanel(QWidget):
                         else:
                             ungrouped_devs.append(dev)
 
-                    # Skip the Ledord wrapper for the common case: exactly
-                    # one plain (no equipment) deviation for this guide
-                    # word — no equipment to distinguish between, so the
-                    # wrapper item would just repeat the SAME guide-word
-                    # text directly above its own single child (reported:
-                    # "varför är det dubbelt?" — every guide word showed
-                    # its own name twice). Put the deviation straight under
-                    # the node instead, exactly like before this feature
-                    # existed. Once a SECOND deviation for this guide word
-                    # shows up (equipment-scoped, or another plain one),
-                    # the wrapper starts pulling real weight and comes back.
-                    if not equipment_groups and len(ungrouped_devs) == 1:
-                        di += 1
-                        add_deviation_subtree(nitem, ungrouped_devs[0], di)
-                        continue
-
-                    # The Ledord wrapper itself carries the guide word's
-                    # running number now (2026-08-13 follow-up: "jag vill
-                    # att den ska kvarstå så att det alltid syns att det
-                    # är exempelvis 16 avikelser") — linking an object to
-                    # a guide word switches it from the plain, ungrouped
-                    # branch above to this wrapped one, and the number
-                    # must not disappear just because of that. Equipment/
-                    # deviation-instance items INSIDE this group get their
-                    # own separate local counter (sub_di below) so they
-                    # never steal from this top-level, one-per-guide-word
-                    # sequence — that shared-counter bug is exactly what
-                    # caused the earlier "nummereringen blir konstig" report.
-                    di += 1
-                    sub_di = 0
-                    litem = QTreeWidgetItem([f"  ⬡  {di}. {description}"])
-                    ledord_key = f"{node['id']}:{description}"
-                    litem.setData(0, Qt.ItemDataRole.UserRole, ledord_key)
-                    litem.setData(0, Qt.ItemDataRole.UserRole + 1, LEDORD_T)
-                    led_font = QFont(); led_font.setItalic(True)
-                    litem.setFont(0, led_font)
-                    nitem.addChild(litem)
-                    if (LEDORD_T, ledord_key) in expanded: litem.setExpanded(True)
-
+                    # Every object-linked deviation is its own flat row
+                    # directly under the node (2026-08-25, see NOTES.md
+                    # "Slå ihop objekt-rad + avvikelse-rad") — no shared
+                    # Ledord wrapper anymore, even when several objects
+                    # happen to share the exact same description text
+                    # (Anton explicitly chose this over keeping a shared,
+                    # numbered heading when asked — a deliberate reversal
+                    # of the 2026-08-13 "16 avikelser" grouped-count
+                    # preference for this specific, object-linked case).
+                    # The row's label combines the object's tag with the
+                    # deviation text directly ("V-101 — Ventil felar
+                    # stängd") instead of the old two-row split (a
+                    # "⬡ N. {description}" Ledord header, then a
+                    # "{tag}, {typ}" child that was already, underneath,
+                    # the real DEV_T/CAUSE_T node — "kaka på kaka").
+                    # Object TYPE is intentionally dropped from the label
+                    # text entirely ("I trädet skall enbart Objektag +
+                    # avikelsetexten stå") — a later, separate change
+                    # will show it as a clickable icon instead; the
+                    # italic-when-undefined font cue is kept as a quiet
+                    # visual signal in the meantime.
                     for eq_id, eq_devs in equipment_groups.items():
                         eq = self.db.get_equipment_by_id(eq_id)
                         etype = (eq.get('equipment_type') or '').strip() if eq else ''
-                        # "TAG-ABC —" (2026-08-17, see NOTES.md "ej
-                        # definierad-hantering") — an empty equipment_type
-                        # used to leave a bare trailing dash with nothing
-                        # after it. Now reads "TAG-ABC, ej definierad"
-                        # (italic, a visible call to action) instead of
-                        # silently looking broken; a real type reads
-                        # "TAG-ABC, ventil" (not italic — nothing left to do).
                         undefined = not eq or not etype
-                        eq_label = (f"{eq['tag']}, {etype}" if eq and etype
-                                    else f"{eq['tag']}, ej definierad" if eq
-                                    else f"Utrustning #{eq_id}")
-                        eitem = QTreeWidgetItem([f"    {eq_label}"])
-                        eitem.setIcon(0, _icon('settings'))
-                        # 2026-08-20: objects no longer bold in the tree
-                        # (Anton — "Objekt behöver inte vara fetstilta i
-                        # hazopträdet"), just the "ej definierad" italic
-                        # call-to-action stays.
-                        eq_font = QFont()
-                        eq_font.setItalic(undefined)
-                        eitem.setFont(0, eq_font)
-                        eitem.setData(0, self._EQUIP_TAG_ROLE, eq_id)
-                        litem.addChild(eitem)
-                        if len(eq_devs) == 1:
-                            # Collapse the redundant deviation-description
-                            # level (2026-08-09, see NOTES.md "kaka på
-                            # kaka") — a deviation's description is always
-                            # identical to this Ledord group's own label
-                            # (grouped by description above), so a separate
-                            # child item under the equipment just repeats
-                            # text the user already sees one level up. This
-                            # item carries the DEVIATION's identity instead
-                            # of EQUIP_T (get_or_create_deviation makes this
-                            # the only deviation for this equipment+guide-word
-                            # combo in practice), so it's the direct,
-                            # interactive target for "add cause" and
-                            # equipment-dropped-on-deviation — previously
-                            # dead ends when the row was EQUIP_T.
-                            dev = eq_devs[0]
-                            # NOT "di += 1" here (2026-08-13 bug report:
-                            # "Nummereringen ... blir konstig när man
-                            # lägger till objekt i trädet") — this branch's
-                            # eitem keeps its equipment-tag label from
-                            # above (never relabelled with "{di}. "), so
-                            # bumping the counter here silently ate a
-                            # number that the NEXT plain guide word's
-                            # add_deviation_subtree() call would otherwise
-                            # have shown, making every later number one
-                            # (or more) higher than it should be as soon
-                            # as any object got added to a node.
+                        tag = eq['tag'] if eq else f'Utrustning #{eq_id}'
+                        for dev in eq_devs:
+                            di += 1
+                            eq_label = f"{tag} — {dev['description'][:45]}"
+                            eitem = QTreeWidgetItem([f"  ⬡  {di}. {eq_label}"])
+                            eitem.setIcon(0, _icon('settings'))
+                            # 2026-08-20: objects no longer bold in the tree
+                            # (Anton — "Objekt behöver inte vara fetstilta i
+                            # hazopträdet"); undefined-type italic stays.
+                            eq_font = QFont()
+                            eq_font.setItalic(undefined)
+                            eitem.setFont(0, eq_font)
+                            eitem.setData(0, self._EQUIP_TAG_ROLE, eq_id)
+                            nitem.addChild(eitem)
+
+                            # "Kaka på kaka" (2026-08-10, see NOTES.md
+                            # "objektet redovisas två gånger"): if this
+                            # deviation's only cause has no real content
+                            # yet (created empty by a drag-and-drop tag
+                            # placement) and its tag matches this row's own
+                            # tag, attach the CAUSE's identity (and its
+                            # consequences) directly to this row instead of
+                            # a redundant child that repeats the tag a
+                            # second time with nothing new to say —
+                            # unchanged logic from before this rewrite,
+                            # just applied to the now-flat row.
                             dev_causes = causes_by_dev.get(dev['id'], [])
                             merge_tag = ((eq['tag'] or '').strip() if eq else '')
                             trivial_desc = (dev_causes[0]['description'] or '').strip() in ('', 'Ny orsak') \
@@ -655,20 +615,6 @@ class TreePanel(QWidget):
                                     and trivial_desc
                                     and (dev_causes[0]['comp_tag'] or '').strip() == merge_tag
                                     and merge_tag):
-                                # One more "kaka på kaka" level (2026-08-10,
-                                # see NOTES.md "objektet redovisas två
-                                # gånger"): this deviation's only cause has
-                                # no real content yet — created empty by a
-                                # drag-and-drop tag placement — so its own
-                                # tree label falls back to the SAME
-                                # equipment tag this header row already
-                                # shows. Attach the cause's identity (and
-                                # its consequences) directly to this row
-                                # instead of a redundant child that repeats
-                                # the tag a second time with nothing new to
-                                # say. Reappears as a normal child row the
-                                # moment the cause gets a real description,
-                                # or a second cause is added.
                                 cause = dev_causes[0]
                                 eitem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
                                 eitem.setData(0, Qt.ItemDataRole.UserRole + 1, CAUSE_T)
@@ -681,29 +627,42 @@ class TreePanel(QWidget):
                                 if (DEV_T, dev['id']) in expanded: eitem.setExpanded(True)
                                 if select_type == DEV_T and select_id == dev['id']: target = eitem
                                 add_causes_to_item(eitem, dev['id'])
-                        else:
-                            eitem.setData(0, Qt.ItemDataRole.UserRole, eq_id)
-                            eitem.setData(0, Qt.ItemDataRole.UserRole + 1, EQUIP_T)
-                            if (EQUIP_T, eq_id) in expanded: eitem.setExpanded(True)
-                            if select_type == EQUIP_T and select_id == eq_id: target = eitem
-                            for dev in eq_devs:
-                                sub_di += 1
-                                add_deviation_subtree(eitem, dev, sub_di)
 
-                    for dev in ungrouped_devs:
+                    # Ungrouped (no-equipment) deviations sharing this same
+                    # description keep the pre-existing Ledord-wrapper
+                    # rule, UNCHANGED (this rewrite only ever touched the
+                    # object-linked side above): a lone one skips the
+                    # wrapper entirely and goes straight under the node,
+                    # exactly like before this feature existed; 2+ sharing
+                    # a description still get a shared, numbered heading —
+                    # a genuinely rare case (no tag exists to make each one
+                    # distinguishable on its own row) nobody asked to
+                    # change today.
+                    if len(ungrouped_devs) == 1:
+                        dev = ungrouped_devs[0]
                         # Every node is auto-seeded with one empty, generic
-                        # (equipment_id=NULL) deviation per guide word — see
-                        # add_node(). Once THIS SAME guide word also has a
-                        # real equipment-scoped entry, the still-empty
-                        # generic one is just unused scaffolding sitting
-                        # right next to it under the same Ledord label —
-                        # reads as "Lågt flöde" appearing twice. Hide it
-                        # (not delete — reappears the moment it gets a real
-                        # cause, and non-empty generic entries always show).
-                        if equipment_groups and not causes_by_dev.get(dev['id'], []):
-                            continue
+                        # deviation per guide word (add_node()) — once an
+                        # object is linked to the SAME description, the
+                        # still-empty generic one is unused scaffolding and
+                        # gets hidden (reappears once it gets a real cause).
+                        if not (equipment_groups and not causes_by_dev.get(dev['id'], [])):
+                            di += 1
+                            add_deviation_subtree(nitem, dev, di)
+                    elif len(ungrouped_devs) >= 2:
                         di += 1
-                        add_deviation_subtree(litem, dev, di)
+                        litem = QTreeWidgetItem([f"  ⬡  {di}. {description}"])
+                        ledord_key = f"{node['id']}:{description}"
+                        litem.setData(0, Qt.ItemDataRole.UserRole, ledord_key)
+                        litem.setData(0, Qt.ItemDataRole.UserRole + 1, LEDORD_T)
+                        led_font = QFont(); led_font.setItalic(True)
+                        litem.setFont(0, led_font)
+                        nitem.addChild(litem)
+                        if (LEDORD_T, ledord_key) in expanded: litem.setExpanded(True)
+                        for dev in ungrouped_devs:
+                            if equipment_groups and not causes_by_dev.get(dev['id'], []):
+                                continue
+                            di += 1
+                            add_deviation_subtree(litem, dev, di)
 
             # System → Nod (2026-08-24, see NOTES.md "Ny toppnivå System")
             # — Systems render as top-level items with their nodes nested

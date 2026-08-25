@@ -3552,24 +3552,93 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             self.assertEqual(len(captured), 1)
             self.assertEqual(captured[0], (dev_id, [42]))
 
-    def test_tree_drop_on_ledord_wrapper_with_existing_equipment_still_resolves(self):
+    def test_tree_drop_on_flattened_equipment_deviation_resolves_to_its_own_row(self):
         """Bug report (2026-08-13): 'om det redan ligger ett objekt på
         lågt flöde i trädet och jag drar ett nytt objekt dit så kan jag
-        inte detta' — once a guide word has ANY equipment linked, "Lågt
-        flöde" no longer renders as a plain DEV_T item; it becomes a
-        LEDORD_T wrapper, which the drop handler used to reject outright
-        (only literal DEV_T resolved), silently swallowing the drop of a
-        second/different object onto that same guide word."""
+        inte detta' — dropping a second/different object onto an
+        already-equipped guide word used to be silently swallowed.
+
+        2026-08-25 (see NOTES.md "Slå ihop objekt-rad + avvikelse-rad"):
+        a SINGLE equipment-linked deviation no longer renders as a
+        LEDORD_T wrapper around a nested equipment row — it's now one
+        flat DEV_T row ("V-101 — Lågt flöde"). That flat row is exactly
+        what a second/different object gets dropped onto here (there's
+        no longer a separate shared wrapper row to target); it must
+        still resolve to a real deviation, not be swallowed — same
+        resolution the pre-existing "kaka på kaka" CAUSE_T case below
+        already relies on, since _deviation_item_at's DEV_T/CAUSE_T
+        branches are unchanged by this rewrite."""
         with _TempDbMainWindow() as win:
             tree_panel = win.tree_panel
             existing_eq = win.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
             node_id = win.db.add_node()
-            win.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=existing_eq)
+            dev_id = win.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=existing_eq)
+            tree_panel.refresh()
+            tree_panel.tree.expandAll()
+            dev_item = _find_tree_item(tree_panel.tree, DEV_T, dev_id)
+            self.assertIsNotNone(dev_item,
+                "sanity: a single equipment-linked deviation must render as its own flat DEV_T row")
+            pos = tree_panel.tree.visualItemRect(dev_item).center()
+
+            captured = []
+            tree_panel.equipment_dropped_on_deviation.connect(
+                lambda d, ids: captured.append((d, ids)))
+
+            event = self._make_drop_event('hzp:equipment:42:-1:-1', pos)
+            handled = tree_panel.eventFilter(tree_panel.tree.viewport(), event)
+
+            self.assertTrue(handled)
+            self.assertEqual(len(captured), 1, "the drop must resolve to a deviation, not be swallowed")
+            resolved_dev_id, marker_ids = captured[0]
+            self.assertEqual(marker_ids, [42])
+            self.assertEqual(resolved_dev_id, dev_id,
+                "must resolve to the flattened row's own deviation")
+
+    def test_drag_move_over_flattened_equipment_deviation_accepts_without_writing_to_db(self):
+        """The DragMove hover-feedback path must only ever check whether
+        a drop WOULD be valid — it must not create a deviation row (a DB
+        write) just because the mouse passed over the item."""
+        with _TempDbMainWindow() as win:
+            tree_panel = win.tree_panel
+            existing_eq = win.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
+            node_id = win.db.add_node()
+            dev_id = win.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=existing_eq)
+            tree_panel.refresh()
+            tree_panel.tree.expandAll()
+            dev_item = _find_tree_item(tree_panel.tree, DEV_T, dev_id)
+            pos = tree_panel.tree.visualItemRect(dev_item).center()
+            before = win.db.deviations(node_id)
+
+            from PyQt6.QtCore import QEvent, QMimeData, QPointF
+            mime = QMimeData(); mime.setText('hzp:equipment:42:-1:-1')
+            event = unittest.mock.MagicMock()
+            event.type.return_value = QEvent.Type.DragMove
+            event.mimeData.return_value = mime
+            event.position.return_value = QPointF(pos)
+            tree_panel.eventFilter(tree_panel.tree.viewport(), event)
+
+            event.acceptProposedAction.assert_called_once()
+            self.assertEqual(win.db.deviations(node_id), before,
+                "hovering must not create a new deviation row")
+
+    def test_tree_drop_on_ledord_wrapper_for_shared_ungrouped_deviations_still_resolves(self):
+        """LEDORD_T survives 2026-08-25's flattening ONLY for 2+
+        deviations that share a description and have NO equipment
+        linked (see NOTES.md "Slå ihop objekt-rad + avvikelse-rad") —
+        a rare case (two separately-added generic deviations that
+        happen to read the same), but _deviation_item_at's LEDORD_T
+        branch is still live code and must still resolve a drop onto
+        it, same as before this rewrite."""
+        with _TempDbMainWindow() as win:
+            tree_panel = win.tree_panel
+            node_id = win.db.add_node()
+            win.db.add_deviation(node_id, "Lågt flöde")
+            win.db.add_deviation(node_id, "Lågt flöde")
             tree_panel.refresh()
             tree_panel.tree.expandAll()
             ledord_item = _find_tree_item(tree_panel.tree, LEDORD_T, f"{node_id}:Lågt flöde")
             self.assertIsNotNone(ledord_item,
-                "sanity: an already-equipped guide word must render as a LEDORD_T wrapper")
+                "sanity: 2+ ungrouped deviations sharing a description must still render as a LEDORD_T wrapper")
             pos = tree_panel.tree.visualItemRect(ledord_item).center()
 
             captured = []
@@ -3586,35 +3655,6 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             resolved = win.db.get_deviation(resolved_dev_id)
             self.assertEqual(resolved['node_id'], node_id)
             self.assertEqual(resolved['description'], "Lågt flöde")
-            self.assertIsNone(resolved['equipment_id'],
-                "must land on the guide word's own still-generic row, not steal the first object's")
-
-    def test_drag_move_over_ledord_wrapper_accepts_without_writing_to_db(self):
-        """The DragMove hover-feedback path must only ever check whether
-        a drop WOULD be valid — it must not create a deviation row (a DB
-        write) just because the mouse passed over the item."""
-        with _TempDbMainWindow() as win:
-            tree_panel = win.tree_panel
-            existing_eq = win.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
-            node_id = win.db.add_node()
-            win.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=existing_eq)
-            tree_panel.refresh()
-            tree_panel.tree.expandAll()
-            ledord_item = _find_tree_item(tree_panel.tree, LEDORD_T, f"{node_id}:Lågt flöde")
-            pos = tree_panel.tree.visualItemRect(ledord_item).center()
-            before = win.db.deviations(node_id)
-
-            from PyQt6.QtCore import QEvent, QMimeData, QPointF
-            mime = QMimeData(); mime.setText('hzp:equipment:42:-1:-1')
-            event = unittest.mock.MagicMock()
-            event.type.return_value = QEvent.Type.DragMove
-            event.mimeData.return_value = mime
-            event.position.return_value = QPointF(pos)
-            tree_panel.eventFilter(tree_panel.tree.viewport(), event)
-
-            event.acceptProposedAction.assert_called_once()
-            self.assertEqual(win.db.deviations(node_id), before,
-                "hovering must not create a new deviation row")
 
     def test_tree_drop_on_merged_single_equipment_cause_row_resolves_its_own_deviation(self):
         """The other tree shape an equipped guide word can collapse into

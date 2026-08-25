@@ -1154,6 +1154,75 @@ tag-redigering).
 `test_pid_graphics_view` + `test_integration` (331 tester) samt full
 14-filssvit, allt grönt.
 
+## Slå ihop objekt-rad + avvikelse-rad till en platt rad i trädet (2026-08-25, samma dag, uppföljning)
+
+**Beställning (planerad tillsammans via Plan Mode, inte direktimplementerad):**
+Anton: "Jag vill planera en förändring tillsammans i hierarkin. Under
+kategorin Avvikelse finns idag objekt-tag och sedan objekt-typ. Under
+denna kategorin visas sedan avikelsetexten: Ventil felar stängd. Jag
+vill att dessa två nivåer slås ihop till en. I trädet skall enbart
+Objektag + avikelsetexten stå. Detta skall vara på en rad istället för
+två rader som idag i trädet. Jag kommer även senare ersätta objekttyp
+med rätt figur man kan klicka på för att få denna information."
+
+**Tidigare beteende** (`tree_panel.py`, `_add_node_item`s Ledord/
+Utrustning-uppbyggnad): en avvikelse kopplad till ett objekt visade
+ALLTID två rader — en `LEDORD_T`-omslagsrad (`"⬡ N. {description}"`,
+t.ex. "⬡ 1. Ventil felar stängd") med en barn-rad under (`"{tag},
+{typ}"`, t.ex. "V-101, Ventil") som i det vanliga fallet redan
+tekniskt var `DEV_T`/`CAUSE_T`-noden ("kaka på kaka"-kollaps från
+2026-08-09) — bara etiketten visade fortfarande tag+typ istället för
+avvikelsetext.
+
+**Avstämt via `AskUserQuestion` innan implementation:** när flera
+objekt delar exakt samma avvikelsetext (tidigare grupperade under en
+delad numrerad rubrik, "16 avvikelser"-räkningen från 2026-08-13) valde
+Anton **"Platta alltid ut, oavsett antal"** — en avsiktlig reversering
+av den tidigare grupperingspreferensen, specifikt för det objekt-
+kopplade fallet.
+
+**Ny regel:** varje objekt-kopplad avvikelse (`equipment_id` satt) är
+nu EN platt rad direkt under noden, oavsett hur många andra avvikelser
+som råkar dela samma beskrivningstext — `LEDORD_T`-omslaget byggs inte
+längre för dessa. Ny etikett: `f"  ⬡  {di}. {tag} — {description[:45]}"`
+(em-dash, samma separator `scenario_panel.py`s egen tagg+typ-formatering
+redan använder). Objekttyp tas bort helt från etikett-TEXTEN ("I trädet
+skall ENBART Objektag + avikelsetexten stå") — kursiv font för "typ ej
+satt" behålls dock som tyst visuell signal i väntan på den klickbara
+figur/ikon Anton nämner som ett senare, separat steg. Löpande
+numrering (`di`) fortsätter oförändrad över alla avvikelse-rader under
+en nod ("16 avvikelser"-egenskapen bevarad, bara omfördelad till platta
+rader).
+
+`LEDORD_T` finns kvar, men bara för det sällsynta kvarvarande fallet:
+2+ avvikelser UTAN objekt som råkar dela exakt samma beskrivningstext
+under en nod — rörs inte, ingen del av dagens önskemål handlade om det.
+`EQUIP_T` som rader-typ-vid-vila försvinner därmed helt i praktiken
+(den existerade bara i den nu borttagna "samma objekt har 2+ avvikelser
+med identisk text"-grenen, bekräftat via kodgenomgång att detta ALDRIG
+uppstod genom appens normala `get_or_create_deviation`-flöde) —
+`EQUIP_T`-konstanten och dess resolvers lämnas dock orörda.
+
+**Drag-and-drop-verifiering:** `_deviation_item_at` (equipment-marker-
+drop-på-trädrad) rördes inte alls — dess redan befintliga `DEV_T`/
+`CAUSE_T`-hantering (byggd för "kaka på kaka"-fallet) tar automatiskt
+hand om de nu alltid-platta raderna, bekräftat med tre regressionstester
+i `tests/test_integration.py::EquipmentDropOnTreeDeviationTests`
+(drop på en platt-slagen rad, DragMove-hover över samma, samt drop på
+det kvarvarande `LEDORD_T`-fallet för delade ogrupperade avvikelser).
+
+Nästan alla ~9 påverkade tester låg i
+`tests/test_tree_panel.py::TreePanelEquipmentGroupingTests` — skrivna
+om för den nya platta strukturen, det nya etikettformatet, och det
+faktum att `EQUIP_T` inte längre går att nå (två dubbelklicks-tester
+skrivna om från att tvinga fram ett konstgjort `EQUIP_T`-läge till att
+använda det nu vanliga platta scenariot istället). Bekräftat att alla
+omskrivna tester verkligen slår av mot koden innan denna ändring (8 av
+8 misslyckas via `git stash`).
+
+**Verifiering:** `test_smoke` + `test_tree_panel` + `test_integration`
+(293 tester) samt full 14-filssvit, allt grönt.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.
