@@ -5135,11 +5135,22 @@ class NodeMarkupAutoOpenTests(unittest.TestCase):
     """2026-08-18 (see NOTES.md): "nodmarkupdialogen enbart ska synas om
     jag står på nivån nod i trädet. Den ska släckas om jag står på en
     avvikelse. Ritar jag in något i noden skall detta vara kopplat till
-    den noden jag står på." — node_markup_panel now opens automatically
-    when the tree selection is a Node (no explicit 'Editera nodmarkup'
-    needed), closes automatically the moment selection leaves the Node
-    level, and rebinds to whichever Node is currently selected rather
-    than staying stuck on the node it was first opened for."""
+    den noden jag står på." originally made node_markup_panel open
+    automatically the moment the tree selection became a Node.
+
+    2026-08-25 (see NOTES.md): that auto-open was reverted — "Om man
+    klickar på en nod i trädet idag försvinner hazop scenario och man
+    kommer direkt in i ritningläget på P&ID. Detta blir förvirrande...
+    För att gå in i editerarmode behöver jag aktivt trycka på pennan till
+    höger." A plain node click now only updates the ribbon/P&ID
+    active-node state and leaves HAZOP scenario + navigate mode alone;
+    markup mode is entered only via the explicit ✏️ toggle (or the
+    tree's own 'Editera nodmarkup' action). The one thing this class
+    still asserts from the 2026-08-18 behavior: WHILE markup mode is
+    already active, selecting a different node still rebinds it there
+    (matching "ritar jag in något i noden skall detta vara kopplat till
+    den noden jag står på"), and selecting a non-Node item still closes
+    it."""
 
     @classmethod
     def setUpClass(cls):
@@ -5157,45 +5168,30 @@ class NodeMarkupAutoOpenTests(unittest.TestCase):
         win.scenario_panel.load_cause = lambda *a, **k: None
         win.scenario_panel.load_consequence = lambda *a, **k: None
 
-    def test_selecting_a_node_opens_node_markup_panel_bound_to_it(self):
+    def test_selecting_a_node_does_not_open_node_markup_panel(self):
         with _TempDbMainWindow() as win:
             self._stub_scenario_loaders(win)
             node_id = win.db.add_node()
             win._on_selected(NODE_T, node_id)
-            try:
-                self.assertTrue(win.props_ribbon._markup_active)
-                self.assertEqual(win.props_ribbon.node_id, node_id)
-            finally:
-                win._on_close_node_markup()
+            self.assertFalse(win.props_ribbon._markup_active,
+                "a plain node click must stay in navigate mode, not auto-enter markup edit")
+            self.assertEqual(win.view_stack.currentIndex(), 0,
+                "a plain node click must not switch away from the current page")
 
-    def test_selecting_a_node_leaves_hazop_scenario_visible_by_default(self):
+    def test_selecting_a_node_leaves_hazop_scenario_visible(self):
         with _TempDbMainWindow() as win:
             self._stub_scenario_loaders(win)
             node_id = win.db.add_node()
             win._on_selected(NODE_T, node_id)
-            try:
-                self.assertFalse(win.scenario_panel.isHidden())
-                self.assertTrue(win.markup_table_panel.isHidden())
-            finally:
-                win._on_close_node_markup()
+            self.assertFalse(win.scenario_panel.isHidden())
+            self.assertTrue(win.markup_table_panel.isHidden())
 
-    def test_selecting_a_deviation_closes_node_markup_panel(self):
-        with _TempDbMainWindow() as win:
-            self._stub_scenario_loaders(win)
-            node_id = win.db.add_node()
-            dev_id = win.db.deviations(node_id)[0]['id']
-            win._on_selected(NODE_T, node_id)
-            self.assertTrue(win.props_ribbon._markup_active)
-
-            win._on_selected(DEV_T, dev_id)
-            self.assertFalse(win.props_ribbon._markup_active)
-
-    def test_selecting_a_different_node_rebinds_instead_of_staying_stuck(self):
+    def test_selecting_a_different_node_while_markup_active_rebinds_instead_of_staying_stuck(self):
         with _TempDbMainWindow() as win:
             self._stub_scenario_loaders(win)
             node_a = win.db.add_node()
             node_b = win.db.add_node()
-            win._on_selected(NODE_T, node_a)
+            win._on_edit_node_markup(node_a)   # explicit entry, e.g. the ✏️ toggle
             self.assertEqual(win.props_ribbon.node_id, node_a)
 
             win._on_selected(NODE_T, node_b)
@@ -5205,13 +5201,24 @@ class NodeMarkupAutoOpenTests(unittest.TestCase):
             finally:
                 win._on_close_node_markup()
 
-    def test_selecting_a_cause_closes_node_markup_panel(self):
+    def test_selecting_a_deviation_closes_node_markup_panel_if_active(self):
+        with _TempDbMainWindow() as win:
+            self._stub_scenario_loaders(win)
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            win._on_edit_node_markup(node_id)
+            self.assertTrue(win.props_ribbon._markup_active)
+
+            win._on_selected(DEV_T, dev_id)
+            self.assertFalse(win.props_ribbon._markup_active)
+
+    def test_selecting_a_cause_closes_node_markup_panel_if_active(self):
         with _TempDbMainWindow() as win:
             self._stub_scenario_loaders(win)
             node_id = win.db.add_node()
             dev_id = win.db.deviations(node_id)[0]['id']
             cause_id = win.db.add_cause(dev_id)
-            win._on_selected(NODE_T, node_id)
+            win._on_edit_node_markup(node_id)
             self.assertTrue(win.props_ribbon._markup_active)
 
             win._on_selected(CAUSE_T, cause_id)
@@ -5221,7 +5228,7 @@ class NodeMarkupAutoOpenTests(unittest.TestCase):
         with _TempDbMainWindow() as win:
             self._stub_scenario_loaders(win)
             node_id = win.db.add_node()
-            win._on_selected(NODE_T, node_id)
+            win._on_edit_node_markup(node_id)
             try:
                 self.assertFalse(win.scenario_panel.isHidden())
                 win._on_node_markup_tool_activated('polygon')
@@ -5234,7 +5241,7 @@ class NodeMarkupAutoOpenTests(unittest.TestCase):
         with _TempDbMainWindow() as win:
             self._stub_scenario_loaders(win)
             node_id = win.db.add_node()
-            win._on_selected(NODE_T, node_id)
+            win._on_edit_node_markup(node_id)
             try:
                 win._on_node_markup_tool_activated('select')
                 self.assertFalse(win.scenario_panel.isHidden())

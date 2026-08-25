@@ -1518,13 +1518,21 @@ class MainWindow(QMainWindow):
         self._cur_type = type_
         self._cur_id   = id_
         self.props_ribbon.set_item(type_, id_)
-        # Nodmarkup-panelen ska bara vara aktiv när man står på Nod-nivån i
-        # trädet (2026-08-18, se NOTES.md) — auto-öppnas och binds om till
-        # den valda noden här; stängs längst ned i denna metod så fort
-        # valet lämnar Nod-nivån (Avvikelse, Orsak, Konsekvens, Safeguard,
-        # eller något oväntat läge).
+        # Markup-läget ska INTE längre öppnas automatiskt bara för att man
+        # klickar på en nod i trädet (2026-08-25, se NOTES.md — reverterar
+        # 2026-08-18-beteendet: "Om man klickar på en nod i trädet idag
+        # försvinner hazop scenario och man kommer direkt in i
+        # ritningläget på P&ID... jag behöver aktivt trycka på pennan till
+        # höger"). Väljer man en nod medan markup-läget REDAN är aktivt
+        # (pennan intryckt) rebinds det ändå till den nya noden — annars
+        # skulle "ritar jag i noden skall det vara kopplat till noden jag
+        # står på" (2026-08-18) sluta fungera vid navigering mellan noder
+        # medan man faktiskt ritar. Stängs längst ned i denna metod så
+        # fort valet lämnar Nod-nivån (Avvikelse, Orsak, Konsekvens,
+        # Safeguard, eller något oväntat läge).
         if type_ == NODE_T:
-            self._on_edit_node_markup(id_)
+            if self.props_ribbon._markup_active:
+                self._on_edit_node_markup(id_)
             self.pid_panel.set_active_node(id_)
             self.scenario_panel.load_node(id_)
             if self.view_stack.currentIndex() == 0:
@@ -1887,11 +1895,14 @@ class MainWindow(QMainWindow):
         dlg.activateWindow()
 
     def _on_edit_node_markup(self, node_id):
-        """Entered either automatically (selecting a Node in the tree, see
-        _on_selected) or explicitly (tree right-click → 'Editera
+        """Entered explicitly only — tree right-click → 'Editera
         nodmarkup', the ✏️ toggle in props_ribbon, prev/next-node
         navigation, or returning from a red-markup symbol-placement
-        detour). Rebinding is idempotent — calling this again for a
+        detour. Also called from _on_selected, but ONLY while markup mode
+        is already active, to rebind it to whatever node is now selected
+        (2026-08-25, see NOTES.md — see that method's own comment); a
+        plain node click while NOT already editing no longer reaches this
+        method at all. Rebinding is idempotent — calling this again for a
         different node while already editing just re-targets everything
         at the new node, matching "ritar jag in något i noden skall detta
         vara kopplat till den noden jag står på" (2026-08-18, see
@@ -1903,15 +1914,17 @@ class MainWindow(QMainWindow):
         ribbon — Anton wanted the panel to feel docked alongside the rest
         of the app instead. tree_panel and props_ribbon now stay visible.
 
-        2026-08-18 (see NOTES.md): now also reachable just by SELECTING a
-        node in the tree (no explicit "Editera nodmarkup" needed) — since
-        that happens on every single node click, the bottom strip no
-        longer force-swaps to markup_table_panel here; HAZOP scenario
-        stays visible until the user actually starts drawing
-        (_on_node_markup_tool_activated), matching "HAZOP scenario
-        fönstret ska fortsatt vara öppet om jag inte börjar använda någon
-        av ritverktygen". The toggle button still lets the user flip
-        between the two manually at any time.
+        2026-08-18 (see NOTES.md): the bottom strip does not force-swap to
+        markup_table_panel here; HAZOP scenario stays visible until the
+        user actually starts drawing (_on_node_markup_tool_activated),
+        matching "HAZOP scenario fönstret ska fortsatt vara öppet om jag
+        inte börjar använda någon av ritverktygen". The toggle button
+        still lets the user flip between the two manually at any time.
+        (2026-08-18's OTHER change — reaching this automatically from a
+        plain node click with no explicit action — was reverted
+        2026-08-25, see NOTES.md: "Om man klickar på en nod i trädet idag
+        försvinner hazop scenario och man kommer direkt in i ritningläget
+        på P&ID... jag behöver aktivt trycka på pennan till höger".)
 
         2026-08-19 (see NOTES.md "Slå ihop nodmarkup i nodinställningar"):
         the separate NodeMarkupPanel widget is gone — its toolbar now
