@@ -811,6 +811,24 @@ class EquipmentPlacementAsyncSearchTests(unittest.TestCase):
         self.assertEqual(popup._dup_hint.text(), "")
         self.assertFalse(popup._dup_confirm_btn.isVisible())
 
+    def test_dup_hint_shows_on_completer_selection_not_just_raw_keystrokes(self):
+        """2026-08-25 follow-up, see NOTES.md: textEdited alone missed the
+        case where the user picks an existing tag from the tag completer's
+        dropdown instead of typing every character — a completer selection
+        changes QLineEdit's text without emitting textEdited. Calling only
+        setText() here (no _on_tag_edited_by_user, unlike the test above)
+        reproduces exactly that: the hint must still appear, proving the
+        check is wired to textChanged, not textEdited."""
+        from PyQt6.QtCore import QPointF
+        self.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", '', 0)
+
+        self.panel.place_equipment_marker("", "Ventil", QPointF(200, 200), 0)
+        popup = self._popup()
+
+        popup._tag_edit.setText("PV-101")
+        self.assertIn("finns redan i katalogen", popup._dup_hint.text())
+        self.assertTrue(popup._dup_confirm_btn.isVisible())
+
     def test_confirm_duplicate_button_creates_a_real_duplicate_without_merging(self):
         """Clicking "Skapa dublett" must save the typed tag on the
         placeholder as-is instead of _reassign_to_existing's usual merge

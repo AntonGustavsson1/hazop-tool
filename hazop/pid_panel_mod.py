@@ -605,6 +605,13 @@ class EquipmentPlacementPopup(QWidget):
         if completer:
             self._tag_edit.setCompleter(completer)
         self._tag_edit.textEdited.connect(self._on_tag_edited_by_user)
+        # textChanged (not textEdited) for the live dup-check (2026-08-25
+        # follow-up, see NOTES.md): textEdited only fires for actual
+        # keystrokes, not for a completer popup selection — picking an
+        # existing tag from the completer's dropdown (built from this same
+        # tag list) changed the text without ever showing the duplicate
+        # warning. textChanged fires either way.
+        self._tag_edit.textChanged.connect(self._update_dup_hint_live)
         self._tag_edit.editingFinished.connect(self._commit_tag)
         # "Objekt:" in simple mode to match the requested Objekt/Objekttyp
         # wording — same QLineEdit + tag-completer either way, so the user
@@ -828,18 +835,20 @@ class EquipmentPlacementPopup(QWidget):
         self._tag_edit.setText(tag)
         self._commit_tag(show_warning=False)
 
-    def _on_tag_edited_by_user(self, text):
+    def _on_tag_edited_by_user(self, _text):
         self._tag_edited_by_user = True
-        self._update_dup_hint_live(text)
 
     def _update_dup_hint_live(self, text):
-        """Live (per-keystroke) duplicate check, separate from _commit_tag's
-        commit-time check (2026-08-25, see NOTES.md) — only ever updates
-        the hint/button, never merges or writes to the database, so typing
-        a tag that happens to match another object mid-edit doesn't
-        trigger a merge before the user has finished typing. Editing the
-        tag so it no longer matches makes the hint disappear immediately,
-        rather than lingering until the field loses focus."""
+        """Live duplicate check, separate from _commit_tag's commit-time
+        check (2026-08-25, see NOTES.md) — only ever updates the
+        hint/button, never merges or writes to the database, so typing
+        (or completer-selecting) a tag that happens to match another
+        object doesn't trigger a merge before the field is committed.
+        Wired to textChanged rather than textEdited so it also fires when
+        a completer popup selection changes the text, not just raw
+        keystrokes. Editing the tag so it no longer matches makes the
+        hint disappear immediately, rather than lingering until the field
+        loses focus."""
         tag = text.strip().upper()
         existing = self.db.get_equipment_by_tag(tag) if tag else None
         if existing and existing['id'] != self._equipment_id and tag != self._dup_confirmed_tag:
