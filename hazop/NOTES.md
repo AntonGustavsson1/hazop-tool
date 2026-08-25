@@ -1001,6 +1001,103 @@ Nya regressionstester i `tests/test_pid_panel_mod.py`
 
 **Verifiering:** `test_smoke` + `test_pid_panel_mod` (83 tester, grönt).
 
+## Dublett-varningen missade tag-completerns egna val (2026-08-25, samma dag, uppföljning)
+
+**Beställning:** Anton: "Varningen skall även komma upp om texten ändras
+till ett objekt som heter likadant. Du behöver därför stämma av mot
+objektslistan vid textredigering." — följt av förtydligandet "Alltså
+varningen i pop-upen", vilket bekräftade att det gäller samma
+`EquipmentPlacementPopup` (`pid_panel_mod.py`) som föregående avsnitt.
+
+**Grundorsak:** dublett-kontrollen (`_update_dup_hint_live`, se
+föregående avsnitt) var kopplad till `_tag_edit.textEdited` — en Qt-
+signal som ENDAST triggas av riktiga tangenttryckningar, inte av att
+välja ett förslag ur tagg-completerns rullgardin (`_make_tag_completer`).
+Skriver man några tecken och sedan KLICKAR på ett befintligt taggförslag
+i completer-listan byts texten ut utan att `textEdited` någonsin
+triggas — varningen uteblev alltså exakt i det fall den borde synas som
+tydligast (användaren väljer aktivt en tagg som redan finns). Löst genom
+att istället koppla till `_tag_edit.textChanged`, som Qt garanterat
+triggar vid ALLA textändringar oavsett källa (tangenttryckning,
+completer-val, eller programmatisk `setText`) — samma mönster den äldre,
+redan korrekt fungerande `EquipmentTagPopup._check_duplicate_tag`
+(`equipment_panel.py`) redan använde. `_on_tag_edited_by_user` (kopplad
+kvar till `textEdited`) sköter fortsatt bara sitt eget jobb: markera att
+användaren skrivit något, så att en sen asynkron tagg-sökning
+(`set_detected_tag`) inte skriver över det.
+
+Ny regressionstest i `tests/test_pid_panel_mod.py`
+(`test_dup_hint_shows_on_completer_selection_not_just_raw_keystrokes`) —
+anropar bara `popup._tag_edit.setText(...)` direkt (ingen `_on_tag_edited_
+by_user`-anrop, till skillnad från syskontestet), vilket reproducerar
+exakt completer-scenariot. Bekräftat verkligen fånga den gamla buggen
+via `git stash` (misslyckades mot koden innan denna fix).
+
+**Verifiering:** `test_smoke` + `test_pid_panel_mod` (84 tester, grönt).
+
+## Nod-klick i trädet öppnar inte längre automatiskt P&ID-ritläge (2026-08-25)
+
+**Beställning:** Anton: "Om man klickar på en nod i trädet idag försvinner
+hazop scenario och man kommer direkt in i ritningläget på P&ID. Detta
+blir förvirrande. Därför ska du behålla HAZOP scenario och fortsätta
+vara i navigeraläget. För att gå in i editerarmode behöver jag aktivt
+trycka på pennan till höger."
+
+Detta reverterar HÄLFTEN av 2026-08-18-beteendet (se NOTES.md, samma
+dag som "nodmarkup dockas till höger"): `MainWindow._on_selected()`
+(`hazop.py`) anropade tidigare ovillkorligen `_on_edit_node_markup(id_)`
+för varje `NODE_T`-val i trädet — vilket bytte huvudvyn till P&ID-sidan
+(`_switch_view(1)`) OCH satte P&ID-canvasen i markup-redigeringsläge
+(`PIDPanel.enter_markup_edit` → `MODE_MARKUP_SELECT`, vilket stänger av
+normal navigering/gummiband-placering). Ändrat till att bara göra detta
+OM markup-läget redan är aktivt (pennan redan intryckt) — då rebinds det
+fortfarande till den nya noden, precis som tidigare, så "ritar jag i
+noden skall det vara kopplat till noden jag står på" (2026-08-18)
+fortsätter fungera medan man faktiskt ritar. Ett vanligt nodklick i
+navigeraläge uppdaterar nu bara ribbonens fält, P&ID:ns "aktiv nod" (för
+markörfärgning) och HAZOP scenario-tabellens filter — ingen sidbyte,
+inget lägesbyte. Enda vägen in i markup-redigering är nu den explicita
+✏️-knappen i `props_ribbon`, högerklick → "Editera nodmarkup", eller
+föregående/nästa-nod-knapparna medan man redan editerar.
+
+Berörd testklass `NodeMarkupAutoOpenTests` (`tests/test_integration.py`)
+skriven om helt — de tester som tidigare förväntade sig auto-öppning vid
+ett vanligt `_on_selected(NODE_T, ...)`-anrop använder nu ett explicit
+`_on_edit_node_markup(node_id)` innan de testar rebind/stäng-beteendet;
+nya tester lagts till som bekräftar att ett vanligt nodklick INTE
+aktiverar markup-läget och INTE byter sida.
+
+**Verifiering:** full 14-filssvit (878 tester, grönt).
+
+## Auto-collapse "avvikelser" dolde hela avvikelser istället för bara orsaks-nivån (2026-08-25, samma dag, uppföljning)
+
+**Beställning:** Anton: "Auto-collapse funktionen för avvikelser funkar
+inte som jag vill. Den skall alltså inte dölja avikelser utan den ska
+dölja orsaks-nivån och nedåt. Så står jag på högt flöde skall jag bara
+se orsaker på högt flöde." — rättar 2026-08-24-implementationen av samma
+kryssruta (se ovan, "Autocollapse ... delad i två").
+
+Den tidigare implementationen använde `setHidden(True)` på varje icke-
+aktiv `DEV_T`-rad — vilket dolde AVVIKELSEN SJÄLV, inte bara dess
+underliggande orsaker, plus en extra "dölj tomma Ledord/Utrustnings-
+grupper"-mekanism för att städa upp efteråt. Bytt till samma mönster som
+"nodes"-kryssrutan redan använder ETT NIVÅ HÖGRE UPP: `setExpanded(id_ ==
+active_dev_id)` på varje `DEV_T`-item. En kollapsad `QTreeWidgetItem`
+döljer bara SINA EGNA barn (orsaker, och därmed konsekvenser/safeguards
+under dem) — själva raden förblir synlig som syskon till den aktiva
+avvikelsen, exakt "dölj orsaks-nivån och nedåt" som efterfrågat. Den nu
+onödiga "dölj tomma grupper"-logiken (och dess `group_items`-insamling)
+togs bort helt, eftersom inget längre göms på avvikelsenivån som skulle
+kunna tömma en grupp.
+
+Fyra regressionstester i `tests/test_tree_panel.py`
+(`TreePanelAutoCollapseTests`) skrivna om för de nya semantiken
+(`test_deviations_toggle_collapses_causes_but_keeps_every_deviation_visible`
+m.fl.) — bekräftat att de faktiskt slår av på koden innan denna fix
+(4 av 9 tester i klassen, via `git stash`).
+
+**Verifiering:** `test_smoke` + `test_tree_panel` (79 tester, grönt).
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

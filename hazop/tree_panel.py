@@ -292,20 +292,24 @@ class TreePanel(QWidget):
           item other than the active one — this hides a whole
           system's/node's subtree, deviations included, since a
           collapsed item's descendants are never shown.
-        - "avvikelser": HIDES (setHidden(True)) every DEV_T item other
-          than the active one, tree-wide — NOT setExpanded(), which only
-          controls whether a deviation's own children (causes) show, not
-          whether the deviation row itself is visible. Any Ledord/
-          Utrustning grouping item left with zero visible deviation
-          children is hidden too, so an empty group header doesn't linger.
+        - "avvikelser": collapses (setExpanded(False)) every DEV_T item
+          other than the active one — NOT setHidden(), which would hide
+          the deviation row itself. 2026-08-25 (see NOTES.md) fix: the
+          original version HID every inactive deviation, which Anton
+          didn't want ("den ska inte dölja avikelser utan den ska dölja
+          orsaks-nivån och nedåt") — every deviation must stay visible as
+          a sibling; only its own children (causes, and everything below
+          them) should collapse away for whichever deviation isn't the
+          active one, exactly mirroring how the "nodes" toggle already
+          treats SYSTEM_T/NODE_T above.
         The active system/node/deviation (derived from the current tree
-        selection) always stay expanded and visible regardless of either
-        toggle. A no-op (after clearing any stale hidden rows from a
-        previous toggle) when both are off, leaving the normal expand/
-        collapse behavior (refresh()'s own `expanded` set, collapseAll/
-        expandAll) untouched. Called after refresh() rebuilds the tree
-        AND from _on_select, so switching the active row without a full
-        data refresh immediately re-applies both."""
+        selection) always stay expanded regardless of either toggle. A
+        no-op (after clearing any stale hidden rows a much older version
+        of this method could have left behind) when both are off, leaving
+        the normal expand/collapse behavior (refresh()'s own `expanded`
+        set, collapseAll/expandAll) untouched. Called after refresh()
+        rebuilds the tree AND from _on_select, so switching the active
+        row without a full data refresh immediately re-applies both."""
         collapse_nodes = self.db.get_config('tree_auto_collapse_nodes', '0') == '1'
         collapse_devs  = self.db.get_config('tree_auto_collapse_deviations', '0') == '1'
 
@@ -323,7 +327,6 @@ class TreePanel(QWidget):
 
         active_node_item = None
         active_dev_item = None
-        group_items = []   # LEDORD_T/EQUIP_T grouping rows, re-checked below
         it = QTreeWidgetItemIterator(self.tree)
         while it.value():
             item = it.value()
@@ -340,18 +343,16 @@ class TreePanel(QWidget):
             elif type_ == DEV_T:
                 if id_ == active_dev_id:
                     active_dev_item = item
-                elif collapse_devs:
-                    item.setHidden(True)
-            elif type_ in (LEDORD_T, EQUIP_T):
-                group_items.append(item)
+                if collapse_devs:
+                    item.setExpanded(id_ == active_dev_id)
             it += 1
 
         # Every ancestor level (System/Ledord/Utrustning) above whichever
-        # of these is deepest-active must stay expanded/visible, or the
-        # active row would be hidden behind a collapsed/hidden ancestor
-        # regardless of its own flags. Walking from both anchors (rather
-        # than just the deepest one) means this still works even when
-        # only a node — no deviation — is active.
+        # of these is deepest-active must stay expanded, or the active row
+        # would be hidden behind a collapsed ancestor regardless of its
+        # own flags. Walking from both anchors (rather than just the
+        # deepest one) means this still works even when only a node — no
+        # deviation — is active.
         for anchor in (active_dev_item, active_node_item):
             if anchor is None:
                 continue
@@ -360,16 +361,6 @@ class TreePanel(QWidget):
                 p.setExpanded(True)
                 p.setHidden(False)
                 p = p.parent()
-
-        if collapse_devs:
-            # Deepest groups first (reversed traversal order), so a
-            # Ledord wrapper around an Utrustning wrapper only gets hidden
-            # once its child's own hidden state has already been decided.
-            for g in reversed(group_items):
-                if g.isHidden():
-                    continue
-                if g.childCount() and all(g.child(i).isHidden() for i in range(g.childCount())):
-                    g.setHidden(True)
 
     def _reveal(self, item):
         """setCurrentItem() alone never expands anything (verified against

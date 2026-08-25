@@ -1193,15 +1193,18 @@ class TreePanelAutoCollapseTests(unittest.TestCase):
     """Two independent "Auto-collapse" toggles below the tree (2026-08-24,
     see NOTES.md "Åtta UX/logik-förbättringar", split into two the same
     day per follow-up feedback: "Autocollapse funktion funkar bra med att
-    öppna mellan noder ... Men den funkar inte för avikelser"). Root
-    cause of the deviations half not working: collapsing a NODE_T item
-    hides its ENTIRE subtree (every deviation along with it), but
-    setExpanded(False) on a DEV_T item only hides ITS OWN children
-    (causes) — the deviation row itself stays visible, since QTreeWidget
-    has no notion of "collapsing" a row to hide the row itself. Hiding
-    deviations needs setHidden(), which is now what the separate
-    "avvikelser" toggle drives. Both default off and leave the existing
-    expand/collapse behavior untouched."""
+    öppna mellan noder ... Men den funkar inte för avikelser").
+
+    2026-08-25 follow-up (see NOTES.md): the "avvikelser" toggle's FIRST
+    fix made it setHidden() every inactive deviation — Anton didn't want
+    that ("den ska inte dölja avikelser utan den ska dölja orsaks-nivån
+    och nedåt... Så står jag på högt flöde skall jag bara se orsaker på
+    högt flöde"). Every deviation must stay visible as a sibling; only
+    the CAUSE level and below collapses away for whichever deviation
+    isn't the active one — via setExpanded(False) on the DEV_T item
+    itself, exactly mirroring how "nodes" already treats SYSTEM_T/NODE_T.
+    Both toggles default off and leave the existing expand/collapse
+    behavior untouched."""
 
     @classmethod
     def setUpClass(cls):
@@ -1267,9 +1270,16 @@ class TreePanelAutoCollapseTests(unittest.TestCase):
         self.assertFalse(dev_item_1.isHidden(),
             "the 'nodes' toggle alone must not hide sibling deviations")
 
-    def test_deviations_toggle_hides_inactive_deviations(self):
+    def test_deviations_toggle_collapses_causes_but_keeps_every_deviation_visible(self):
+        """2026-08-25 fix, see NOTES.md: "den ska inte dölja avikelser
+        utan den ska dölja orsaks-nivån och nedåt" — every deviation
+        stays visible as a sibling; only the inactive one's own children
+        (causes) collapse away, via setExpanded(False) on the DEV_T item
+        itself, not setHidden()."""
         node_id = self.db.add_node()
         devs = self.db.deviations(node_id)
+        self.db.add_cause(devs[0]['id'])
+        self.db.add_cause(devs[1]['id'])
         self.panel.refresh()
         dev_item_0 = _find_tree_item(self.panel.tree, DEV_T, devs[0]['id'])
         dev_item_1 = _find_tree_item(self.panel.tree, DEV_T, devs[1]['id'])
@@ -1278,12 +1288,16 @@ class TreePanelAutoCollapseTests(unittest.TestCase):
         self.panel._auto_collapse_deviations_chk.setChecked(True)
 
         self.assertFalse(dev_item_0.isHidden(), "the active deviation must stay visible")
-        self.assertTrue(dev_item_1.isHidden(), "an inactive deviation must be hidden")
+        self.assertFalse(dev_item_1.isHidden(),
+            "an inactive deviation must ALSO stay visible — only its causes collapse")
+        self.assertTrue(dev_item_0.isExpanded(), "the active deviation's causes must show")
+        self.assertFalse(dev_item_1.isExpanded(),
+            "an inactive deviation's causes (and everything below) must collapse")
 
-    def test_deviations_toggle_keeps_shared_ledord_group_visible(self):
-        """A deviation merged under a shared guide-word grouping (Ledord)
-        must not drag its own visible group ancestor down with it just
-        because a SIBLING deviation under the same group got hidden."""
+    def test_deviations_toggle_keeps_shared_ledord_group_and_all_deviations_visible(self):
+        """Deviations merged under a shared guide-word grouping (Ledord)
+        must all stay visible regardless of which one is active — the
+        toggle only ever collapses the cause level, never hides a row."""
         pump_id = self.db.add_equipment_item("P-101", "P-101", "P", 0, "Pump", '', 0)
         valve_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
         node_id = self.db.add_node()
@@ -1297,41 +1311,51 @@ class TreePanelAutoCollapseTests(unittest.TestCase):
         self.panel._auto_collapse_deviations_chk.setChecked(True)
 
         self.assertFalse(pump_item.isHidden())
-        self.assertTrue(valve_item.isHidden())
+        self.assertFalse(valve_item.isHidden(), "an inactive sibling deviation must stay visible")
         self.assertFalse(pump_item.parent().isHidden(),
-            "the shared Ledord group must stay visible since it still has a visible deviation")
+            "the shared Ledord group must stay visible")
 
-    def test_switching_selection_live_rehides_previous_deviation(self):
+    def test_switching_selection_live_recollapses_previous_deviation(self):
         """Re-applied from _on_select too, not just refresh() — clicking a
-        different deviation must hide the previous one immediately,
-        without waiting for unrelated data to change."""
+        different deviation must collapse the previous one's causes
+        immediately, without waiting for unrelated data to change."""
         node_id = self.db.add_node()
         devs = self.db.deviations(node_id)
+        self.db.add_cause(devs[0]['id'])
+        self.db.add_cause(devs[1]['id'])
         self.panel.refresh()
         dev_item_0 = _find_tree_item(self.panel.tree, DEV_T, devs[0]['id'])
         dev_item_1 = _find_tree_item(self.panel.tree, DEV_T, devs[1]['id'])
         self.panel.tree.setCurrentItem(dev_item_0)
         self.panel._auto_collapse_deviations_chk.setChecked(True)
-        self.assertFalse(dev_item_0.isHidden())
+        self.assertTrue(dev_item_0.isExpanded())
 
         self.panel.tree.setCurrentItem(dev_item_1)
 
-        self.assertTrue(dev_item_0.isHidden())
+        self.assertFalse(dev_item_0.isHidden())
         self.assertFalse(dev_item_1.isHidden())
+        self.assertFalse(dev_item_0.isExpanded())
+        self.assertTrue(dev_item_1.isExpanded())
 
-    def test_disabling_deviations_toggle_unhides_everything(self):
+    def test_disabling_deviations_toggle_stops_forcing_collapse(self):
         node_id = self.db.add_node()
         devs = self.db.deviations(node_id)
+        self.db.add_cause(devs[0]['id'])
+        self.db.add_cause(devs[1]['id'])
         self.panel.refresh()
         dev_item_0 = _find_tree_item(self.panel.tree, DEV_T, devs[0]['id'])
         dev_item_1 = _find_tree_item(self.panel.tree, DEV_T, devs[1]['id'])
         self.panel.tree.setCurrentItem(dev_item_0)
         self.panel._auto_collapse_deviations_chk.setChecked(True)
-        self.assertTrue(dev_item_1.isHidden())
+        self.assertFalse(dev_item_1.isExpanded())
+        self.assertFalse(dev_item_1.isHidden())
 
         self.panel._auto_collapse_deviations_chk.setChecked(False)
+        dev_item_1.setExpanded(True)
+        self.panel.tree.setCurrentItem(dev_item_0)
 
-        self.assertFalse(dev_item_1.isHidden())
+        self.assertTrue(dev_item_1.isExpanded(),
+            "a disabled toggle must not keep forcing the collapse it applied while on")
 
     def test_both_disabled_leaves_expand_all_alone(self):
         node_a = self.db.add_node()
