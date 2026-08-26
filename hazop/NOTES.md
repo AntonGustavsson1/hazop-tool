@@ -2065,6 +2065,45 @@ argument 'db'`) som de andra `RiskMatrixPopup(...)`-konstruktionerna.
 + `test_node_markup` (406 test, täcker även den oförändrade ribbon-
 åtkomsten) och hela 14-filssviten (955 test) gröna.
 
+## Filtrera orsaker i trädet (2026-08-26)
+
+Anton (efter en tidigare, obesvarad förtydligandefråga samma session):
+"när jag drar från pod [P&ID] viewer till trädet så kopplar jag objektet
+mot en ny avvikelse. problemet är att i hazop scenario ser jag flera
+objekt. jag vill bara se det objektet som precis dragits."
+
+**Rotorsak:** `MainWindow._on_equipment_dropped_on_deviation` (hazop.py)
+— hanteraren för att dra en eller flera P&ID-utrustningsmarkörer till en
+avvikelse i HAZOP-trädet — skapade rätt tagg-kopplad orsak per markör,
+men avslutade med `self.scenario_panel.load_node(node_id)`: det visar
+HELA nodens samtliga avvikelser/orsaker, inte bara den/de precis
+skapade. Om noden redan hade andra, orelaterade orsaker under andra
+avvikelser (det vanliga fallet — en nod har typiskt många fördefinierade
+avvikelser) syntes alla dessa också, exakt "flera objekt"-symptomet.
+
+**Fix:** bytte till `self.scenario_panel.load_cause(last_cause_id)` —
+samma vy-avgränsning som att klicka på just den orsaken någon annanstans
+i trädet redan ger (en enda orsak + dess egna konsekvenser, inget annat).
+Vid flera samtidigt dragna markörer (stöds redan, en orsak skapas per
+markör) visas den SISTA skapade orsaken, samma "sista vinner"-princip
+trädmarkeringen (`tree_panel.refresh(CAUSE_T, last_cause_id)`) redan
+använde för vilken nod som markeras.
+
+**Verifiering:** ny test
+`test_dropping_one_marker_scopes_the_scenario_view_to_just_that_cause`
+i `EquipmentDropOnTreeDeviationTests` (tests/test_integration.py) — sätter
+upp en nod med flera orelaterade orsaker under ANDRA avvikelser (för att
+en naiv `load_node()` verkligen skulle läcka in dem), drar en ny markör
+till en av nodens avvikelser, och kontrollerar att `panel._row_meta`
+bara innehåller den precis skapade orsaken. Kontrollerat att testet
+verkligen FALLERAR mot koden innan denna ändring (`git stash` på
+hazop.py, testfilen orörd) — visade exakt de tre orelaterade orsakerna
+plus den nya, matchande den rapporterade buggen. De sex befintliga
+testerna i samma klass (`test_on_equipment_dropped_on_deviation_*`)
+kör om och gröna oförändrat. `test_smoke` + `test_hazop` +
+`test_integration` + `test_tree_panel` (306 test) samt hela 14-
+filssviten (956 test) gröna.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

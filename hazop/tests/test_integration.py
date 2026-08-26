@@ -4119,6 +4119,41 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             utr_item = panel._table.item(row, panel._C_UTR)
             self.assertIn('T-1', utr_item.text())
 
+    def test_dropping_one_marker_scopes_the_scenario_view_to_just_that_cause(self):
+        """"när jag drar från pod viewer till trädet så kopplar jag
+        objektet mot en ny avvikelse... i hazop scenario ser jag flera
+        objekt. jag vill bara se det objektet som precis dragits."
+        (2026-08-26) — _on_equipment_dropped_on_deviation used to call
+        scenario_panel.load_node(node_id) after the drop, which shows
+        every deviation/cause under the WHOLE node the object landed
+        in, not just the one the drop just created. Set up a node with
+        several UNRELATED pre-existing causes so a naive load_node()
+        would leak them into the view, then drop a brand new marker
+        onto one of its deviations and confirm only that single cause
+        shows."""
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            other_dev_id = win.db.deviations(node_id)[1]['id']
+            # Unrelated pre-existing causes elsewhere under the same node.
+            win.db.add_cause(dev_id)
+            win.db.add_cause(other_dev_id)
+            win.db.add_cause(other_dev_id)
+
+            eq_id = win.db.add_equipment_item("P-1", "P-1", "P", 0, "Pump", '', 0)
+            marker_id = win.db.add_equipment_marker(
+                eq_id, "P-1", 0, 1.0, 1.0, "Pump", confidence=0.9, link_method='leader')
+
+            win._on_equipment_dropped_on_deviation(dev_id, [marker_id])
+
+            panel = win.scenario_panel
+            causes = win.db.causes(node_id)
+            dropped_cause_id = next(c['id'] for c in causes if c['comp_tag'] == 'P-1')
+            cause_ids_shown = {m[1] for m in panel._row_meta if m[1] is not None}
+            self.assertEqual(cause_ids_shown, {dropped_cause_id},
+                "only the just-dropped object's cause should be visible, "
+                "not the whole node's other causes")
+
 
 class TreeInlineEditTests(unittest.TestCase):
     """Fas E (2026-08-17, see NOTES.md "Trädet: inline-redigering, synk,

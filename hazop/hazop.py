@@ -1875,8 +1875,16 @@ class MainWindow(QMainWindow):
         if last_cause_id is not None:
             self.tree_panel.refresh(CAUSE_T, last_cause_id)
             self.scenario_panel.refresh_placed()
-            if node_id is not None:
-                self.scenario_panel.load_node(node_id)
+            # Scope the scenario view to just the cause the drop created
+            # (2026-08-26, see NOTES.md "Filtrera orsaker i trädet") —
+            # this used to call load_node(node_id), showing every
+            # deviation/cause under the WHOLE node the object landed in;
+            # reported feedback: "jag ser flera objekt [men] jag vill
+            # bara se det objektet som precis dragits". load_cause()
+            # narrows the table to just this one cause (and its own
+            # consequences), same as clicking that cause anywhere else
+            # in the tree already does.
+            self.scenario_panel.load_cause(last_cause_id)
 
     def _open_consequence_step_picker(self, cons_id: int):
         """Open ConsequenceStepPickerDialog after a new consequence is created on P&ID."""
