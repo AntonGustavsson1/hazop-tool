@@ -2919,16 +2919,17 @@ class SafeguardRRFBadgeHeaderTests(unittest.TestCase):
 
 
 class SafeguardObjectPickerTests(unittest.TestCase):
-    """"när jag väljer safeguards i hazop scenario får jag upp en
-    rullista med objekt (dvs de som definerats på P&ID) jag måste också
-    kunna välja fritt själv. Du kan även inkludera en inställningsknapp
-    i rulllistan där jag kan klicka på och välja vilka typer av objekt."
-    (2026-08-19). A new 🏷 icon at the left of the SG cell (mirrored
-    click-zone geometry against the existing RRF badge zone on the
-    right) opens SafeguardObjectPopup — an editable QComboBox of
-    equipment_catalog tags (free text still allowed) plus a gear button
-    that restricts the list to chosen equipment_type values, persisted
-    project-wide via db.get_config/set_config."""
+    """Originally 2026-08-19 ("när jag väljer safeguards i hazop
+    scenario får jag upp en rullista med objekt ... Du kan även
+    inkludera en inställningsknapp ... vilka typer av objekt"), rebuilt
+    2026-08-26 ("Riv den nuvarande safeguard-funktionen markerad med
+    emoji. ... en sökbar rullgardinslista visa alla taggar/objekt
+    definierade på P&ID, sorterade numeriskt. Sökningen ska matcha var
+    som helst i taggen"): the gear-button equipment-type filter is gone
+    -- the 🏷 icon at the left of the SG cell now opens
+    SafeguardObjectPopup showing EVERY P&ID tag, naturally/numerically
+    sorted, with a "match anywhere" QCompleter (free text still
+    allowed)."""
 
     @classmethod
     def setUpClass(cls):
@@ -3041,53 +3042,52 @@ class SafeguardObjectPickerTests(unittest.TestCase):
         finally:
             popup.deleteLater()
 
-    def test_type_filter_restricts_dropdown_to_chosen_types(self):
-        import json
+    def test_dropdown_lists_every_tag_no_type_filter_exists_anymore(self):
+        """"Riv den nuvarande safeguard-funktionen markerad med emoji"
+        (2026-08-26) tore out the gear-button equipment-type filter
+        entirely -- the dropdown must always list every P&ID tag,
+        regardless of type."""
         from scenario_panel import SafeguardObjectPopup
-        self.db.set_config('sg_object_type_filter', json.dumps(['Instrument']))
-        popup = SafeguardObjectPopup(self.db, self.sg_id, '', parent=self.panel)
-        try:
-            items = [popup._combo.itemData(i) for i in range(popup._combo.count())]
-            self.assertIn('LT-101', items)
-            self.assertNotIn('PV-101', items,
-                "PV-101 is type Ventil, must be excluded by an Instrument-only filter")
-        finally:
-            popup.deleteLater()
-
-    def test_no_types_selected_means_unfiltered(self):
-        import json
-        from scenario_panel import SafeguardObjectPopup
-        self.db.set_config('sg_object_type_filter', json.dumps([]))
         popup = SafeguardObjectPopup(self.db, self.sg_id, '', parent=self.panel)
         try:
             items = [popup._combo.itemData(i) for i in range(popup._combo.count())]
             self.assertIn('LT-101', items)
             self.assertIn('PV-101', items)
+            self.assertFalse(hasattr(popup, '_allowed_types'),
+                "the type-filter mechanism must be gone, not just unused")
         finally:
             popup.deleteLater()
 
-    def test_type_filter_dialog_persists_selection(self):
-        from scenario_panel import _SgObjectTypeFilterDialog
-        dlg = _SgObjectTypeFilterDialog(self.db, parent=None)
-        try:
-            for cb in dlg._checks:
-                if cb.text() == 'Instrument':
-                    cb.setChecked(True)
-            self.assertEqual(dlg.selected_types(), ['Instrument'])
-        finally:
-            dlg.deleteLater()
-
-    def test_current_tag_always_shown_even_if_filtered_out(self):
-        """If a safeguard is already tagged to an object whose type has
-        since been filtered out via the gear button, the popup must
-        still show its current tag rather than silently blanking it."""
-        import json
+    def test_dropdown_is_sorted_numerically_not_lexicographically(self):
+        """"sorterade numeriskt" (2026-08-26) — 'O2-PI123' must sort
+        before 'O10-PI123', unlike plain string order (where '1' < '2'
+        puts "O10" ahead of "O2")."""
         from scenario_panel import SafeguardObjectPopup
-        self.db.set_safeguard_tag(self.sg_id, 'PV-101', 'Ventil')
-        self.db.set_config('sg_object_type_filter', json.dumps(['Instrument']))
-        popup = SafeguardObjectPopup(self.db, self.sg_id, 'PV-101', parent=self.panel)
+        self.db.add_equipment_item("O10-PI123", "O10-PI123", "PI", 0, "Instrument", '', 0)
+        self.db.add_equipment_item("O2-PI123", "O2-PI123", "PI", 0, "Instrument", '', 0)
+        popup = SafeguardObjectPopup(self.db, self.sg_id, '', parent=self.panel)
         try:
-            self.assertEqual(popup._combo.currentText(), 'PV-101')
+            items = [popup._combo.itemData(i) for i in range(popup._combo.count())]
+            self.assertLess(items.index('O2-PI123'), items.index('O10-PI123'),
+                "O2-PI123 must sort before O10-PI123 (numeric), not after (string)")
+        finally:
+            popup.deleteLater()
+
+    def test_search_matches_the_tag_suffix_not_just_a_prefix(self):
+        """"Sökningen ska matcha var som helst i taggen, t.ex. PI123 ska
+        visa både O1-PI123 och O2-PI123." (2026-08-26)"""
+        from scenario_panel import SafeguardObjectPopup
+        self.db.add_equipment_item("O1-PI123", "O1-PI123", "PI", 0, "Instrument", '', 0)
+        self.db.add_equipment_item("O2-PI123", "O2-PI123", "PI", 0, "Instrument", '', 0)
+        popup = SafeguardObjectPopup(self.db, self.sg_id, '', parent=self.panel)
+        try:
+            completer = popup._combo.completer()
+            self.assertEqual(completer.filterMode(), Qt.MatchFlag.MatchContains,
+                "must match anywhere in the tag, not just a prefix")
+            completer.setCompletionPrefix("PI123")
+            matches = {completer.completionModel().index(i, 0).data()
+                       for i in range(completer.completionCount())}
+            self.assertEqual(matches, {"O1-PI123", "O2-PI123"})
         finally:
             popup.deleteLater()
 

@@ -192,5 +192,28 @@ class EquipmentTypeOptionsSourcedFromStandardObjectsTests(unittest.TestCase):
         self.assertIn('Mitt eget objekt', _equipment_type_options(self.db))
 
 
+class NaturalSortKeyTests(unittest.TestCase):
+    """"sorterade numeriskt" (2026-08-26, see NOTES.md "Gör om
+    safeguard-valet") — _natural_sort_key backs the safeguard object-
+    picker's tag list so 'O2-PI123' sorts before 'O10-PI123' instead of
+    after it (plain string order puts '1' before '2')."""
+
+    def test_numeric_suffix_sorts_by_value_not_by_character(self):
+        from ui_helpers import _natural_sort_key
+        tags = ["O10-PI123", "O2-PI123", "O1-PI123"]
+        self.assertEqual(sorted(tags, key=_natural_sort_key),
+                          ["O1-PI123", "O2-PI123", "O10-PI123"])
+
+    def test_case_insensitive_on_the_text_portions(self):
+        from ui_helpers import _natural_sort_key
+        tags = ["b-1", "A-2"]
+        self.assertEqual(sorted(tags, key=_natural_sort_key), ["A-2", "b-1"])
+
+    def test_blank_and_none_do_not_raise(self):
+        from ui_helpers import _natural_sort_key
+        self.assertEqual(_natural_sort_key(""), [''])
+        self.assertEqual(_natural_sort_key(None), [''])
+
+
 if __name__ == "__main__":
     unittest.main()

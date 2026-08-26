@@ -6,6 +6,7 @@ this sits below both in the import layer graph."""
 
 import json
 import math
+import re
 
 from PyQt6.QtWidgets import QCompleter, QMessageBox, QInputDialog, QLineEdit
 from PyQt6.QtCore import Qt, QPointF
@@ -129,24 +130,27 @@ def _make_tag_completer(db, parent):
         return None
 
 
-def _equipment_tags_for_types(db, types=None):
-    """Distinct equipment_catalog tags, optionally restricted to a set of
-    equipment_type values (2026-08-19, safeguard object-picker dropdown,
-    see NOTES.md "Objekt-väljare för safeguards" — the gear-button type
-    filter there). `types` falsy (None or empty) means unfiltered, same
-    backward-compatible default convention _equipment_type_options
-    already follows."""
+_NATSORT_RE = re.compile(r'(\d+)')
+
+
+def _natural_sort_key(s):
+    """Split 's' into alternating text/number runs so a plain sort puts
+    'O2-PI123' before 'O10-PI123' (numeric order) instead of after it
+    (plain string order, where '1' < '2' makes "O10" < "O2"). Digit runs
+    compare as ints; everything else compares as lowercased text."""
+    return [int(part) if part.isdigit() else part.lower()
+            for part in _NATSORT_RE.split(s or '')]
+
+
+def _equipment_tags_for_types(db):
+    """Every distinct equipment_catalog tag, naturally/numerically
+    sorted (2026-08-26, see NOTES.md "Gör om safeguard-valet" — Anton:
+    "sorterade numeriskt") so e.g. 'O2-PI123' sorts before 'O10-PI123'
+    instead of after it. Feeds the safeguard object-picker dropdown
+    (SafeguardObjectPopup)."""
     try:
-        if types:
-            placeholders = ','.join('?' for _ in types)
-            rows = db.conn.execute(
-                f"SELECT DISTINCT tag FROM equipment_catalog "
-                f"WHERE equipment_type IN ({placeholders}) ORDER BY tag",
-                list(types)).fetchall()
-        else:
-            rows = db.conn.execute(
-                "SELECT DISTINCT tag FROM equipment_catalog ORDER BY tag").fetchall()
-        return [r[0] for r in rows]
+        rows = db.conn.execute("SELECT DISTINCT tag FROM equipment_catalog").fetchall()
+        return sorted((r[0] for r in rows), key=_natural_sort_key)
     except Exception:
         return []
 

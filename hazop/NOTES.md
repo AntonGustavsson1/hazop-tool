@@ -1891,6 +1891,42 @@ redan sant förut också, vilket är korrekt (det testar bara att
 reservvägen fortfarande fungerar rimligt, inte att den ändrats).
 `test_smoke` + `test_scenario_panel` (151 tester) gröna.
 
+## Gör om safeguard-valet — riven typfiltrering, numerisk sortering (2026-08-26)
+
+Anton: "Riv den nuvarande safeguard-funktionen markerad med emoji. När
+safeguard redigeras i HAZOP Scenario ska en sökbar rullgardinslista visa
+alla taggar/objekt definierade på P&ID, sorterade numeriskt. Sökningen
+ska matcha var som helst i taggen, t.ex. PI123 ska visa både O1-PI123
+och O2-PI123."
+
+**Vad "emoji-funktionen" var:** 🏷-ikonen längst till vänster i SG-cellen
+öppnade `SafeguardObjectPopup` (2026-08-19) — redan en redigerbar,
+sökbar combobox (QCompleter, `MatchContains` — "var som helst i taggen"
+var alltså redan uppfyllt) men med ett ⚙-kugghjul som öppnade
+`_SgObjectTypeFilterDialog`, en kryssrutelista för att BEGRÄNSA vilka
+`equipment_type`-värden som visades. Användarens "alla taggar/objekt"
+(inte en filtrerad delmängd) och "riv" pekade på just den delen.
+
+**Rivet helt:** `_SgObjectTypeFilterDialog`-klassen, `_SG_OBJECT_TYPE_
+FILTER_KEY`, `SafeguardObjectPopup._allowed_types()`/`_open_type_filter()`
+och kugghjulsknappen. `ui_helpers._equipment_tags_for_types(db)` tappade
+sin `types`-filterparameter helt (död kod efter rivningen — inget annat
+anropsställe fanns).
+
+**Nytt:** `ui_helpers._natural_sort_key()` — delar en sträng i växlande
+text/sifferdelar (siffror jämförs som int, text som gemener) så
+`sorted(tags, key=_natural_sort_key)` ger "O2-PI123" före "O10-PI123"
+istället för efter (vanlig strängsortering: '1' < '2' gör "O10" < "O2").
+`_equipment_tags_for_types()` sorterar nu med denna nyckel istället för
+`ORDER BY tag` i SQL.
+
+**Verifiering:** `NaturalSortKeyTests` (3 tester, tests/test_ui_helpers.py)
+för sorteringsfunktionen isolerat. `SafeguardObjectPickerTests` i
+tests/test_scenario_panel.py fick tre nya tester (alla taggar utan
+filter, numerisk sortering, sökning matchar suffix — det exakta PI123-
+exemplet från begäran) och tappade de fyra som testade det borttagna
+kugghjuls-filtret. `test_smoke` + hela 14-filssviten (943 tester) gröna.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

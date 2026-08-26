@@ -31,7 +31,7 @@ from ui_helpers import (
     freq_axis_label, cons_axis_label, _lookup_comp_type_for_tag,
     _resolve_std_deviation_id, _draw_text_with_bold_tags,
     total_freq_reduction, CHAIN_ITEMS, build_consequence_text, parse_chain_from_json,
-    _equipment_type_options, _equipment_tags_for_types, _resolve_comp_type_for_tag,
+    _equipment_tags_for_types, _resolve_comp_type_for_tag,
 )
 from tree_panel import (
     CauseObjectPopup, CauseTagPopup, RRFPopup,
@@ -2375,81 +2375,25 @@ class _LopaWidget(QWidget):
             self._saving = False
 
 
-_SG_OBJECT_TYPE_FILTER_KEY = 'sg_object_type_filter'   # app_config JSON list of allowed types
-
-
-class _SgObjectTypeFilterDialog(QDialog):
-    """Gear-button flyout from SafeguardObjectPopup — checklist of
-    equipment types allowed in the object-picker dropdown (2026-08-19,
-    see NOTES.md "Objekt-väljare för safeguards": Anton — "en
-    inställningsknapp i rullistan där jag kan klicka på och välja vilka
-    typer av objekt. Exempelvis bara instrument."). No types checked =
-    show every type (default) — same "empty means unfiltered" rule
-    _equipment_tags_for_types() itself follows, so an untouched filter
-    never hides anything.
-
-    A real modal QDialog rather than another live-commit Qt.WindowType.
-    Popup (this session's usual convention): it's opened FROM one
-    already-open Popup (SafeguardObjectPopup) via its gear button, and
-    stacking two frameless auto-dismiss Popups is fragile — the second
-    one grabbing the mouse tends to immediately deactivate (and thus
-    auto-close) the first. A plain modal dialog sidesteps that; the
-    parent popup closing as a side effect of the modal appearing is an
-    acceptable trade-off for what's a deliberate, occasional settings
-    action, not a per-keystroke one."""
-
-    def __init__(self, db, parent=None):
-        super().__init__(parent)
-        self.db = db
-        self.setWindowTitle("Visa objekttyper")
-        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
-        self.setMinimumWidth(CONFIG['W_DIALOG_MD'])
-
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(10, 10, 10, 10)
-        outer.setSpacing(4)
-        hdr = QLabel("<b>Visa objekttyper i rullistan</b>")
-        hdr.setStyleSheet("color:#8D9299;")
-        outer.addWidget(hdr)
-        hint = QLabel("Inga ikryssade = visa alla typer.")
-        hint.setStyleSheet("font-size:9px; color:#8D9299;")
-        outer.addWidget(hint)
-
-        try:
-            selected = set(json.loads(db.get_config(_SG_OBJECT_TYPE_FILTER_KEY, '[]')) or [])
-        except Exception:
-            selected = set()
-
-        self._checks = []
-        types = [t for t in _equipment_type_options(db) if t]
-        for t in types:
-            cb = QCheckBox(t)
-            cb.setChecked(t in selected)
-            outer.addWidget(cb)
-            self._checks.append(cb)
-
-        row = QHBoxLayout()
-        row.addStretch()
-        ok = QPushButton("Stäng")
-        ok.setDefault(True)
-        ok.setStyleSheet("background:#2F5FD0;color:white;border:none;"
-                         "border-radius:4px;padding:4px 16px;")
-        ok.clicked.connect(self.accept)
-        row.addWidget(ok)
-        outer.addLayout(row)
-
-    def selected_types(self):
-        return [cb.text() for cb in self._checks if cb.isChecked()]
-
 
 class SafeguardObjectPopup(QWidget):
-    """Object-picker for a safeguard's P&ID-object association — opened
-    by the 🏷 icon in the SG cell (2026-08-19, see NOTES.md "Objekt-
-    väljare för safeguards"). Anton: "en rullista med objekt (dvs de som
-    definerats på P&ID) jag måste också kunna välja fritt själv" — an
-    editable QComboBox (pick from equipment_catalog OR type anything,
-    with a QCompleter for as-you-type filtering) plus a gear button that
-    restricts which equipment_type values populate the list.
+    """Searchable P&ID-tag dropdown for a safeguard's object association
+    — opened by the 🏷 icon in the SG cell. Rebuilt 2026-08-26 (see
+    NOTES.md "Gör om safeguard-valet") — Anton: "en sökbar rullgardins-
+    lista visa alla taggar/objekt definierade på P&ID, sorterade
+    numeriskt. Sökningen ska matcha var som helst i taggen, t.ex. PI123
+    ska visa både O1-PI123 och O2-PI123." Torn out entirely rather than
+    patched: the previous version's gear-button equipment-type filter
+    (_SgObjectTypeFilterDialog) is gone -- the dropdown always lists
+    EVERY tag now, naturally/numerically sorted
+    (ui_helpers._natural_sort_key via _equipment_tags_for_types), with
+    the same "match anywhere in the tag" QCompleter (MatchContains) as
+    before.
+
+    Still an editable QComboBox (pick from equipment_catalog OR type
+    anything freely) — that part of the original design already matched
+    "en rullista ... jag måste också kunna välja fritt själv" and
+    "sökbar rullgardinslista", so it stayed.
 
     No OK/Avbryt — commits the moment an item is picked or the text
     field loses focus, same live-commit convention as CauseTagPopup/
@@ -2484,37 +2428,22 @@ class SafeguardObjectPopup(QWidget):
         title.setStyleSheet("font-size:11px; color:#8D9299;")
         outer.addWidget(title)
 
-        row = QHBoxLayout()
-        row.setSpacing(4)
         self._combo = QComboBox()
         self._combo.setEditable(True)
         self._combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self._combo.setFixedHeight(CONFIG['H_BTN_SMALL'])
-        row.addWidget(self._combo, 1)
-
-        gear_btn = QPushButton("⚙")
-        gear_btn.setFixedSize(CONFIG['H_BTN_SMALL'], CONFIG['H_BTN_SMALL'])
-        gear_btn.setToolTip("Filtrera vilka objekttyper som visas")
-        gear_btn.clicked.connect(self._open_type_filter)
-        row.addWidget(gear_btn)
-        outer.addLayout(row)
+        outer.addWidget(self._combo)
 
         self._populate(current_tag)
         self._combo.activated.connect(lambda _i: self._commit())
         self._combo.lineEdit().editingFinished.connect(self._commit)
         self._combo.setFocus()
 
-    def _allowed_types(self):
-        try:
-            return json.loads(self.db.get_config(_SG_OBJECT_TYPE_FILTER_KEY, '[]')) or []
-        except Exception:
-            return []
-
     def _populate(self, current_tag):
         self._combo.blockSignals(True)
         self._combo.clear()
         self._combo.addItem(self._NONE_LABEL, '')
-        tags = _equipment_tags_for_types(self.db, self._allowed_types())
+        tags = _equipment_tags_for_types(self.db)
         for tag in tags:
             self._combo.addItem(tag, tag)
         if current_tag and current_tag not in tags:
@@ -2536,16 +2465,6 @@ class SafeguardObjectPopup(QWidget):
             comp_type = _resolve_comp_type_for_tag(self.db, tag)
             self.db.set_safeguard_tag(self._sg_id, tag, comp_type)
         self.committed.emit()
-
-    def _open_type_filter(self):
-        dlg = _SgObjectTypeFilterDialog(self.db, self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            self.db.set_config(_SG_OBJECT_TYPE_FILTER_KEY,
-                               json.dumps(dlg.selected_types()))
-            try:
-                self._populate(self._combo.currentData() or '')
-            except RuntimeError:
-                pass   # this popup may have auto-closed when the modal dialog appeared
 
 
 class ScenarioTablePanel(QWidget):
