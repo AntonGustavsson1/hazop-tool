@@ -1927,6 +1927,76 @@ filter, numerisk sortering, sökning matchar suffix — det exakta PI123-
 exemplet från begäran) och tappade de fyra som testade det borttagna
 kugghjuls-filtret. `test_smoke` + hela 14-filssviten (943 tester) gröna.
 
+## Redigera rekommendationer direkt i HAZOP Scenario (2026-08-26)
+
+Anton: "Ta bort den separata popupen för redigering av rekommendationer.
+Rekommendationstexten ska kunna redigeras direkt i HAZOP Scenario. Extra
+information kan visas i en liten popup ovanför. Gör det även möjligt att
+snabbt skapa en ny rekommendation med Enter."
+
+**Rivet:** `RecommendationEditorDialog` (hazop.py) — den modala dialogen
+som REK-cellen tidigare alltid öppnade vid klick, med egen `_input`/
+`_table`/skapa-ny/redigera-UI. `scenario_panel._open_recommendation_editor`
+borttagen med den.
+
+**Nytt beteende:** REK-cellen är nu alltid direkt redigerbar (samma
+"första klick väljer, klick på redan-aktuell cell startar inline-
+redigering"-konvention som ORS/KON/SG, `_try_start_edit`/`_on_cell_clicked`).
+Eftersom en konsekvens kan ha 0, 1 eller flera länkade rekommendationer
+(många-till-många via `consequence_recommendations`) men cellen bara är
+EN textrad, valdes: 0 länkade → tom redigerare, Enter skapar en ny
+länkad rekommendation. 1 länkad → redigeraren visar den befintliga
+beskrivningen, Enter uppdaterar SAMMA rekommendation på plats (delar
+samma "uppdatera överallt / dela upp" `QMessageBox`-fråga som redan
+fanns för delade rekommendationer — flyttad ut ur
+`_RecommendationDetailDialog._save()` till en fristående
+`_apply_shared_recommendation_description_update()`-hjälpare i hazop.py
+så båda vägarna delar samma regel). 2+ länkade → tom redigerare, Enter
+LÄGGER TILL en tredje utan att röra de befintliga.
+
+**Extra info-popupen:** ny `RecommendationAssistPopup` (samma icke-
+toplevel-barnwidget-mönster som `StandardCauseSuggestPopup`, se
+"Standardorsaksförslag" — en riktig separat toplevel-popup visade sig
+tidigare trigga en falsk FocusOut på cellredigeraren och stänga den i
+förtid) öppnas ovanför cellen ("ovanför sitt fält", samma konvention som
+"Flytta HAZOP-popups ovanför"). Listar HELA rekommendationskatalogen som
+kryssrutor (kryssad = länkad till just denna konsekvens) plus en ✎-knapp
+per rad för att öppna den befintliga `_RecommendationDetailDialog` (ansvarig/
+förfallodatum/status) — oförändrad, bara nåbar via popupen istället för
+den rivna dialogen.
+
+**Qt-fälla hittad under arbetet:** Qt anropar ALLTID `setEditorData()`
+direkt efter `createEditor()` — standardimplementationen för en QLineEdit
+skriver då OVILLKORLIGEN över editorns text från modellens data, vilket
+tyst nollställde den seedning `createEditor()` gjorde för REK-cellen
+(bekräftat med ett isolerat testskript). Fixat med en `setEditorData()`-
+override på `_ScenarioDelegate` som hoppar över standardbeteendet just
+för REK-kolumnen. Samma latenta bugg finns troligen även i ORS-kolumnens
+emoji-prefix-strippning i `_PidDelegate.createEditor()`, men är osynlig
+där idag (strippat och ostrippat värde råkar vara identiska sedan
+2026-08-25 års ORS-omarbetning) — inte fixad, ren dokumentation.
+
+**Testfälla hittad under arbetet:** ett test som förlitade sig på att
+den RIKTIGA `QTimer.singleShot(200, ...)` faktiskt hann leverera sitt
+anrop inom ett `QTest.qWait(250)`-fönster passerade isolerat men
+FALLERADE deterministiskt (inte flakigt — samma fel två körningar i rad)
+när det kördes som del av den kombinerade sviten (386 test i samma
+process) — 250 ms räcker uppenbarligen inte alltid när processen redan
+kört hundratals tidigare tester. Fixat genom att byta till samma mönster
+som `KonInlineEditTests` redan använde: mocka `QTimer.singleShot` att
+köra sin callback synkront istället för att lita på den riktiga timern.
+
+**Verifiering:** `RecommendationColumnTests` (12 tester, inline-redigering
++ commit-vägarna för alla fyra länknings-fall) och `RecommendationAssistPopupTests`
+(5 tester, ersätter den rivna `RecommendationPickerPopupTests`) i
+tests/test_integration.py. `RecommendationEditConflictTests` (4 tester,
+testar `_RecommendationDetailDialog` oförändrat) omkörda och gröna mot
+den refaktorerade `_save()`. `test_smoke` + `test_scenario_panel` +
+`test_hazop` + `test_integration` (386 test) gröna två körningar i rad
+(kontrollerat specifikt för att verifiera att timer-fixen ovan verkligen
+löste den icke-deterministiska fallissemanget). Hela 14-filssviten
+(946 test) grön.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

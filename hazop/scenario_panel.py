@@ -1071,7 +1071,86 @@ class _ScenarioDelegate(QStyledItemDelegate):
             editor.setProperty('editing_row', index.row())
             editor.setProperty('editing_col', index.column())
             editor.installEventFilter(self._panel)
+            if index.column() == self._panel._C_REK:
+                self._prepare_recommendation_editor(editor, index, option)
         return editor
+
+    def setEditorData(self, editor, index):
+        if index.column() == self._panel._C_REK:
+            # The REK seed text is computed and set in createEditor()
+            # (see _prepare_recommendation_editor) -- Qt calls
+            # setEditorData() unconditionally right after createEditor()
+            # returns, and its default QLineEdit implementation would
+            # otherwise clobber that seed text with the cell's own raw
+            # multi-line "R-XXX. ..." summary (confirmed empirically:
+            # createEditor()'s own editor.setText() calls are silently
+            # overwritten a moment later without this override). Skip
+            # the default entirely for this column.
+            return
+        super().setEditorData(editor, index)
+
+    def _prepare_recommendation_editor(self, editor, index, option):
+        """REK inline editing (2026-08-26, see NOTES.md "Redigera
+        rekommendationer direkt i HAZOP Scenario" — replaces the old
+        modal RecommendationEditorDialog). Since a consequence can have
+        0, 1, or several linked recommendations but the cell only has
+        one line of live-editable text, the seed text/commit target is
+        picked so every case stays unambiguous (_on_cell_changed_inner's
+        'recommendation' branch mirrors this exactly):
+          0 linked -> editor starts blank; committing non-blank text
+                      CREATES a new recommendation ("skapa en ny
+                      rekommendation med Enter").
+          1 linked -> editor starts with that recommendation's own
+                      description; committing UPDATES it in place
+                      (through the shared "used elsewhere?" prompt).
+          2+ linked -> editor starts blank (no single one to edit);
+                      committing non-blank text ADDS one more, existing
+                      ones untouched.
+        RecommendationAssistPopup (opened alongside, same deferred
+        QTimer.singleShot(0, ...) pattern as _show_standard_cause_popup)
+        is the "extra information ... i en liten popup ovanför" the
+        request asked for -- the reuse-search/link-checkbox list that
+        used to be the whole modal dialog."""
+        row = index.row()
+        row_meta = getattr(self._panel, '_row_meta', [])
+        cons_id = row_meta[row][2] if row < len(row_meta) else None
+        if cons_id is None:
+            return
+        acts = self._panel.db.recommendations_for_consequence(cons_id)
+        if len(acts) == 1:
+            editor.setText(acts[0]['description'] or '')
+        else:
+            editor.setText('')
+        cell_rect = QRect(option.rect)
+        QTimer.singleShot(0, lambda ed=editor, r=row, cid=cons_id, rect=cell_rect:
+                          self._show_recommendation_assist_popup(ed, r, cid, rect))
+
+    def _show_recommendation_assist_popup(self, editor, row, cons_id, cell_rect):
+        """Mirrors _PidDelegate._show_standard_cause_popup's positioning
+        and focus-safety approach exactly (see that method's own
+        docstring for why this must be a plain non-toplevel child widget
+        of the panel's top-level window, not a QDialog/separate top-level
+        Popup) -- only the popup class and its cons_id differ."""
+        panel = self._panel
+        try:
+            top_level = panel.window()
+            popup = RecommendationAssistPopup(panel, cons_id, editor, parent=top_level)
+            top_global = panel._table.viewport().mapToGlobal(cell_rect.topLeft())
+            top = top_level.mapFromGlobal(top_global)
+            tl_rect = top_level.rect()
+            pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
+            x = min(top.x(), tl_rect.right() - pw)
+            y = top.y() - ph - 2
+            if y < tl_rect.top():
+                bottom_global = panel._table.viewport().mapToGlobal(cell_rect.bottomLeft())
+                bottom = top_level.mapFromGlobal(bottom_global)
+                y = bottom.y() + 2
+            popup.move(max(tl_rect.left(), x), max(tl_rect.top(), y))
+            popup.show()
+            popup.raise_()
+        except Exception:
+            logging.exception('_show_recommendation_assist_popup: failed to show '
+                              'popup (row=%d)', row)
 
     def sizeHint(self, option, index):
         # Defensive hardening: sizeHint() is invoked for every visible cell
@@ -1956,6 +2035,130 @@ class StandardCauseSuggestPopup(QWidget):
         # The frequency change already triggered a rebuild that tore
         # down the (now-closed) cell editor — close explicitly rather
         # than relying on the editor.destroyed signal to arrive first.
+        self.close()
+
+
+class RecommendationAssistPopup(QWidget):
+    """"Extra information kan visas i en liten popup ovanför" (2026-08-26,
+    see NOTES.md "Redigera rekommendationer direkt i HAZOP Scenario") —
+    shown automatically whenever a REK cell enters inline edit mode,
+    same non-toplevel-child-widget/NoFocus/closes-on-editor-Hide
+    approach as StandardCauseSuggestPopup (see its own docstring for
+    why a genuinely separate top-level window breaks the active cell
+    editor's focus).
+
+    Lists every recommendation already in the study catalog as a
+    checkbox row -- checked/unchecked reflects whether it's linked to
+    THIS consequence, and toggling commits the link/unlink immediately
+    (this is what used to be the whole RecommendationEditorDialog's
+    table). A "✎" button per row opens _RecommendationDetailDialog
+    (hazop.py, unchanged) for the fuller responsible/due-date/status
+    fields. Deliberately does NOT touch the inline editor's own text —
+    that field is for typing a NEW recommendation (see
+    _ScenarioDelegate._prepare_recommendation_editor's docstring for the
+    0/1/N-linked rule), independent from reusing an EXISTING one here."""
+
+    def __init__(self, panel, cons_id, editor, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setStyleSheet("RecommendationAssistPopup{background:#FFFFFF;"
+                           "border:1px solid #E2E3E1;}")
+        self._panel = panel
+        self._cons_id = cons_id
+        self._editor = editor
+        self._updating = False
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(3)
+        layout.setContentsMargins(8, 6, 8, 6)
+
+        header = QLabel("Tidigare rekommendationer — kryssa för att länka/avlänka:")
+        header.setStyleSheet("color:#777; font-size:9px;")
+        header.setWordWrap(True)
+        header.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        layout.addWidget(header)
+
+        self._list_layout = QVBoxLayout()
+        self._list_layout.setSpacing(1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setMaximumHeight(180)
+        scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        inner = QWidget()
+        inner.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        inner.setLayout(self._list_layout)
+        scroll.setWidget(inner)
+        layout.addWidget(scroll)
+
+        self.setMinimumWidth(260)
+        self.setMaximumWidth(360)
+        self._refresh_list()
+        self.adjustSize()
+
+        # Same two redundant close triggers as StandardCauseSuggestPopup
+        # (see its docstring for why neither alone is reliable).
+        editor.installEventFilter(self)
+        editor.destroyed.connect(self.close)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Hide:
+            self.close()
+        return super().eventFilter(obj, event)
+
+    def _refresh_list(self):
+        while self._list_layout.count():
+            child = self._list_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        linked = {r['id'] for r in self._panel.db.recommendations_for_consequence(self._cons_id)}
+        recs = self._panel.db.all_recommendations()
+        if not recs:
+            empty = QLabel("Inga rekommendationer i studien ännu.")
+            empty.setStyleSheet("font-size:9px; color:#8D9299;")
+            empty.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self._list_layout.addWidget(empty)
+            return
+        for rec in recs:
+            row = QHBoxLayout()
+            row.setSpacing(4)
+            cb = QCheckBox(f"R-{rec['id']:03d}. {rec['description'] or 'Ny rekommendation'}")
+            cb.setStyleSheet("font-size:10px;")
+            cb.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            cb.setChecked(rec['id'] in linked)
+            cb.toggled.connect(partial(self._on_toggled, rec['id']))
+            row.addWidget(cb, 1)
+            edit_btn = QPushButton("✎")
+            edit_btn.setFixedWidth(24)
+            edit_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            edit_btn.clicked.connect(partial(self._edit_recommendation, rec['id']))
+            row.addWidget(edit_btn)
+            self._list_layout.addLayout(row)
+
+    def _on_toggled(self, rec_id, checked):
+        if self._updating:
+            return
+        if checked:
+            self._panel.db.link_recommendation_to_consequence(rec_id, self._cons_id)
+        else:
+            self._panel.db.unlink_recommendation_from_consequence(rec_id, self._cons_id)
+        self._panel._refresh_recommendation_cell(self._cons_id)
+
+    def _edit_recommendation(self, rec_id):
+        """Commit any not-yet-confirmed typed text FIRST — opening a
+        real modal dialog here would otherwise steal focus from the
+        still-active cell editor the same way a top-level popup would
+        (see this class's own docstring), and _RecommendationDetailDialog
+        genuinely needs to be a real modal QDialog (it can show its own
+        blocking "shared recommendation" prompt)."""
+        from hazop import _RecommendationDetailDialog
+        self._panel._delegate.commitData.emit(self._editor)
+        self._panel._delegate.closeEditor.emit(
+            self._editor, QStyledItemDelegate.EndEditHint.NoHint)
+        dlg = _RecommendationDetailDialog(self._panel.db, rec_id, self._cons_id, self._panel)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._panel._refresh_recommendation_cell(self._cons_id)
         self.close()
 
 
@@ -4049,9 +4252,8 @@ class ScenarioTablePanel(QWidget):
         if acts is None:
             acts = self.db.recommendations_for_consequence(cid)
         rek_item = QTableWidgetItem(self._recommendation_summary(acts))
-        rek_item.setFlags(rek_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         rek_item.setData(Qt.ItemDataRole.UserRole, ('recommendation', cid))
-        rek_item.setToolTip("Klicka för att lägga till/återanvända/redigera rekommendationer")
+        rek_item.setToolTip("Klicka för att redigera direkt eller lägga till/återanvända en rekommendation")
         if not acts:
             rek_item.setForeground(QBrush(QColor('#8D9299')))
         self._table.setItem(r, self._C_REK, rek_item)
@@ -4132,27 +4334,6 @@ class ScenarioTablePanel(QWidget):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             # Rebuild risk cells (description changed)
             self._schedule_rebuild()
-
-    def _open_recommendation_editor(self, cons_id):
-        """Open the Rekommendation-column popup (2026-08-13, see
-        NOTES.md; rewritten 2026-08-25 for the shared recommendations
-        catalog — see "Rekommendationshantering") — the dialog persists
-        every change itself, so no Accepted/Rejected distinction is
-        needed. Connects recommendation_links_changed for a live refresh
-        while the popup is still open (creating/checking/editing a
-        recommendation must update the cell immediately, not just after
-        closing), in addition to the unconditional refresh below once it
-        closes either way."""
-        # Deferred import: RecommendationEditorDialog still lives in
-        # hazop.py, which imports ScenarioTablePanel from this module — a
-        # module-level import here would be circular.
-        from hazop import RecommendationEditorDialog
-        dlg = RecommendationEditorDialog(self.db, cons_id, self)
-        dlg.recommendation_links_changed.connect(
-            partial(self._refresh_recommendation_cell, cons_id))
-        dlg.move(self._pos_near_cons_row(cons_id, dlg.sizeHint()))
-        dlg.exec()
-        self._refresh_recommendation_cell(cons_id)
 
     def _refresh_recommendation_cell(self, cons_id):
         """Fast in-place patch of every row's REK cell for cons_id,
@@ -4507,7 +4688,14 @@ class ScenarioTablePanel(QWidget):
         if col == self._C_REK and row < len(self._row_meta):
             cons_id = self._row_meta[row][2]
             if cons_id is not None:
-                self._open_recommendation_editor(cons_id)
+                self.item_selected.emit(CONS_T, cons_id)
+            # Same "single-click on the already-current cell starts
+            # inline edit" convention as ORS/KON/SG (2026-08-26, see
+            # NOTES.md "Redigera rekommendationer direkt i HAZOP
+            # Scenario" -- replaces the old modal RecommendationEditor
+            # Dialog this click used to open unconditionally).
+            if self._table.currentRow() == row and self._table.currentColumn() == col:
+                QTimer.singleShot(200, lambda r=row, c=col: self._try_start_edit(r, c))
             return
         if col != self._C_RFORE:
             return
@@ -4589,7 +4777,7 @@ class ScenarioTablePanel(QWidget):
         # instead, which felt out of place and inconsistent with ORS/SG's
         # plain edit-in-place). The chain wizard remains reachable via the
         # right-click context menu (_open_chain_editor, unchanged there).
-        if col in (self._C_ORS, self._C_KON, self._C_SG):
+        if col in (self._C_ORS, self._C_KON, self._C_SG, self._C_REK):
             if not bool(item.flags() & Qt.ItemFlag.ItemIsEditable):
                 # A KON cell is always backed by a real (if blank)
                 # consequence row — every cause gets one auto-created —
@@ -5558,6 +5746,32 @@ class ScenarioTablePanel(QWidget):
                 self._update_row_text_only('safeguard', id_, desc)
             self.item_edited.emit(SG_T, id_)
 
+        elif kind == 'recommendation':
+            # id_ here is the CONSEQUENCE id (see the ('recommendation', cid)
+            # UserRole payload _add_row sets on this item), not a
+            # recommendation id — a consequence can have 0..N linked
+            # recommendations, so there's no single row id to key off.
+            # Same 0/1/N-linked rule as _prepare_recommendation_editor's
+            # own docstring (scenario_panel.py, above):
+            #   1 linked  -> update it in place (through the shared-
+            #                recommendation prompt), but ONLY if the text
+            #                actually changed -- committing an untouched
+            #                cell (click in, click out) must never pop
+            #                that confirmation for no reason.
+            #   0 or 2+   -> non-blank text becomes an ADDITIONAL new
+            #                recommendation; existing ones are untouched.
+            desc = text.split('\n')[0].strip()
+            acts = self.db.recommendations_for_consequence(id_)
+            if len(acts) == 1:
+                if desc and desc != (acts[0]['description'] or '').strip():
+                    from hazop import _apply_shared_recommendation_description_update
+                    _apply_shared_recommendation_description_update(
+                        self.db, self, acts[0]['id'], id_, desc)
+            elif desc:
+                self.db.add_recommendation_to_consequence(id_, description=desc)
+            self._refresh_recommendation_cell(id_)
+            self.item_edited.emit(CONS_T, id_)
+
         if (row, col) == (self._enter_row, self._enter_col):
             self._last_enter_committed = True
 
@@ -5568,7 +5782,9 @@ class ScenarioTablePanel(QWidget):
         # 'consequence' branch) already existed and worked; only the
         # trigger was missing. Double-click still opens the step-by-step
         # chain wizard (_open_chain_editor) for anyone who wants that.
-        if row < 0 or col not in (self._C_ORS, self._C_SG, self._C_KON):
+        # _C_REK added 2026-08-26 (see NOTES.md "Redigera
+        # rekommendationer direkt i HAZOP Scenario").
+        if row < 0 or col not in (self._C_ORS, self._C_SG, self._C_KON, self._C_REK):
             return
         item = self._table.item(row, col)
         if item and bool(item.flags() & Qt.ItemFlag.ItemIsEditable):

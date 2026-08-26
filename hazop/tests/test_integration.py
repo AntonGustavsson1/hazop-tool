@@ -3228,17 +3228,92 @@ class RecommendationColumnTests(unittest.TestCase):
         self.assertGreater(grown_h, one_line_h,
             "row must grow to fit 6 numbered recommendation lines")
 
-    def test_clicking_cell_opens_editor_and_refreshes_summary_after(self):
-        from hazop import RecommendationEditorDialog
-        _, row = self._rek_item()
-        with unittest.mock.patch.object(
-                RecommendationEditorDialog, 'exec',
-                side_effect=lambda: self.db.add_recommendation_to_consequence(
-                    self.cons_id, description='Ny åtgärd')):
+    def test_clicking_cell_selects_it_first_then_starts_inline_edit_when_already_current(self):
+        """"Rekommendationstexten ska kunna redigeras direkt i HAZOP
+        Scenario" (2026-08-26) replaced the old modal-dialog-on-click
+        with the same "first click selects, second click on the
+        already-current cell starts inline edit" convention ORS/KON/SG
+        already use."""
+        item, row = self._rek_item()
+        self.assertTrue(bool(item.flags() & Qt.ItemFlag.ItemIsEditable),
+            "the REK cell must be directly editable now, not view-only")
+
+        selected = []
+        self.panel.item_selected.connect(lambda t, i: selected.append((t, i)))
+        self.panel._table.setCurrentCell(-1, -1)
+        self.panel._on_cell_clicked(row, self.panel._C_REK)
+        self.assertEqual(selected, [(CONS_T, self.cons_id)])
+
+        # Same deterministic pattern as KonInlineEditTests
+        # (test_single_click_on_already_current_kon_cell_schedules_edit)
+        # -- patch QTimer.singleShot to fire synchronously instead of
+        # relying on the real 200ms timer landing inside a QTest.qWait()
+        # window. The real-timer version passed in isolation but failed
+        # deterministically in the combined suite run (200ms/250ms isn't
+        # reliably enough headroom once hundreds of prior tests have run
+        # in the same process) -- found and fixed 2026-08-26.
+        with unittest.mock.patch.object(self.panel, '_try_start_edit') as mock_edit, \
+             unittest.mock.patch('hazop.QTimer.singleShot',
+                                  side_effect=lambda _ms, fn: fn()):
+            self.panel._table.setCurrentCell(row, self.panel._C_REK)
             self.panel._on_cell_clicked(row, self.panel._C_REK)
-        item = self.panel._table.item(row, self.panel._C_REK)
-        rec_id = self.db.all_recommendations()[0]['id']
-        self.assertEqual(item.text(), f'R-{rec_id:03d}. Ny åtgärd')
+        mock_edit.assert_called_once_with(row, self.panel._C_REK)
+
+    def test_committing_typed_text_with_zero_linked_creates_a_new_recommendation(self):
+        """"Gör det även möjligt att snabbt skapa en ny rekommendation
+        med Enter." (2026-08-26) — committing the inline editor (Enter,
+        via _on_cell_changed_inner) on a REK cell with no recommendation
+        linked yet creates one."""
+        item, row = self._rek_item()
+        self.panel._table.blockSignals(True)
+        item.setText("Ny rekommendation")
+        self.panel._table.blockSignals(False)
+        self.panel._on_cell_changed_inner(row, self.panel._C_REK)
+        recs = self.db.all_recommendations()
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0]['description'], "Ny rekommendation")
+        self.assertEqual(item.text(), f"R-{recs[0]['id']:03d}. Ny rekommendation")
+
+    def test_committing_unchanged_text_on_the_sole_linked_recommendation_is_a_noop(self):
+        """Re-committing without editing (click in, click out) must not
+        pop the "shared recommendation" prompt for nothing."""
+        rec_id = self.db.add_recommendation_to_consequence(self.cons_id, description='Befintlig')
+        item, row = self._rek_item()
+        # Matches what the real inline editor actually seeds itself with
+        # for the "exactly one linked" case -- the recommendation's OWN
+        # bare description, not the cell's "R-XXX. ..." display summary
+        # (see _prepare_recommendation_editor's docstring).
+        self.panel._table.blockSignals(True)
+        item.setText("Befintlig")
+        self.panel._table.blockSignals(False)
+        with unittest.mock.patch.object(QMessageBox, 'exec') as mock_exec:
+            self.panel._on_cell_changed_inner(row, self.panel._C_REK)
+        mock_exec.assert_not_called()
+        self.assertEqual(self.db.get_recommendation(rec_id)['description'], 'Befintlig')
+
+    def test_committing_new_text_on_the_sole_linked_recommendation_updates_it_in_place(self):
+        rec_id = self.db.add_recommendation_to_consequence(self.cons_id, description='Gammal text')
+        item, row = self._rek_item()
+        self.panel._table.blockSignals(True)
+        item.setText("Ny text")
+        self.panel._table.blockSignals(False)
+        self.panel._on_cell_changed_inner(row, self.panel._C_REK)
+        self.assertEqual(self.db.get_recommendation(rec_id)['description'], 'Ny text')
+        self.assertEqual(len(self.db.all_recommendations()), 1,
+            "editing in place must not create a second catalog row")
+
+    def test_committing_text_with_two_linked_adds_a_third_without_touching_the_others(self):
+        rec1 = self.db.add_recommendation_to_consequence(self.cons_id, description='Första')
+        rec2 = self.db.add_recommendation_to_consequence(self.cons_id, description='Andra')
+        item, row = self._rek_item()
+        self.panel._table.blockSignals(True)
+        item.setText("Tredje")
+        self.panel._table.blockSignals(False)
+        self.panel._on_cell_changed_inner(row, self.panel._C_REK)
+        descs = {r['description'] for r in self.db.recommendations_for_consequence(self.cons_id)}
+        self.assertEqual(descs, {'Första', 'Andra', 'Tredje'})
+        self.assertEqual(self.db.get_recommendation(rec1)['description'], 'Första')
+        self.assertEqual(self.db.get_recommendation(rec2)['description'], 'Andra')
 
     def test_recommendation_column_spans_across_safeguard_rows(self):
         """Several safeguards under the same consequence must share ONE
@@ -3273,108 +3348,110 @@ class RecommendationColumnTests(unittest.TestCase):
             "reuse must not create a second catalog row")
 
 
-class RecommendationPickerPopupTests(unittest.TestCase):
-    """RecommendationEditorDialog's 2026-08-25 rework (see NOTES.md
-    "Rekommendationshantering — delad katalog med återanvändning"):
-    free-text field doubles as new-recommendation input and live search,
-    checkbox list links/unlinks existing catalog rows to the current
-    consequence directly (no OK button needed — same "persists itself"
-    pattern the old ActionEditor already used)."""
+class RecommendationAssistPopupTests(unittest.TestCase):
+    """RecommendationAssistPopup (2026-08-26, see NOTES.md "Redigera
+    rekommendationer direkt i HAZOP Scenario") — replaces the old modal
+    RecommendationEditorDialog's checkbox table as the "extra
+    information ... i en liten popup ovanför" shown alongside the REK
+    cell's own inline text editor. One checkbox row per catalog
+    recommendation; checked reflects whether it's linked to THIS
+    consequence, and toggling commits the link/unlink immediately (no
+    OK button needed — same "persists itself" pattern the old dialog
+    already used)."""
 
     @classmethod
     def setUpClass(cls):
         cls.app = _ensure_qapp()
 
     def setUp(self):
-        self._tmpdir = tempfile.mkdtemp(prefix="hazop_recpicker_test_")
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_recassist_test_")
         self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
-        node_id = self.db.add_node()
-        dev_id = self.db.deviations(node_id)[0]['id']
+        from hazop import ScenarioTablePanel
+        self.panel = ScenarioTablePanel(self.db)
+        self.node_id = self.db.add_node()
+        dev_id = self.db.deviations(self.node_id)[0]['id']
         cause_id = self.db.add_cause(dev_id)
         self.cons_id = self.db.add_consequence(cause_id)
         self.cause2 = self.db.add_cause(dev_id)
         self.cons2 = self.db.add_consequence(self.cause2)
 
     def tearDown(self):
+        self.panel.deleteLater()
         try:
             del self.db
         except Exception:
             pass
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    def _dlg(self, cons_id=None):
-        from hazop import RecommendationEditorDialog
-        return RecommendationEditorDialog(self.db, cons_id or self.cons_id)
+    def _popup(self, cons_id=None):
+        from scenario_panel import RecommendationAssistPopup
+        editor = QLineEdit()   # stand-in for the real REK cell editor
+        return RecommendationAssistPopup(self.panel, cons_id or self.cons_id, editor)
 
-    def test_typing_filters_the_list_case_insensitively_by_substring(self):
-        self.db.add_recommendation(description='Verify shutdown function')
-        self.db.add_recommendation(description='Check pressure relief valve')
-        dlg = self._dlg()
-        try:
-            dlg._input.setPlainText('SHUTDOWN')
-            self.assertEqual(dlg._table.rowCount(), 1)
-            self.assertIn('Verify shutdown function', dlg._table.item(0, 1).text())
-        finally:
-            dlg.deleteLater()
+    def _checkbox_for(self, popup, rec_id):
+        from PyQt6.QtWidgets import QCheckBox
+        for cb in popup.findChildren(QCheckBox):
+            if cb.text().startswith(f"R-{rec_id:03d}."):
+                return cb
+        return None
 
-    def test_empty_filter_shows_the_whole_catalog(self):
-        self.db.add_recommendation(description='A')
-        self.db.add_recommendation(description='B')
-        dlg = self._dlg()
+    def test_empty_catalog_shows_a_placeholder_not_an_empty_list(self):
+        popup = self._popup()
         try:
-            dlg._input.setPlainText('something not matching')
-            self.assertEqual(dlg._table.rowCount(), 0)
-            dlg._input.setPlainText('')
-            self.assertEqual(dlg._table.rowCount(), 2)
+            from PyQt6.QtWidgets import QCheckBox, QLabel
+            self.assertEqual(len(popup.findChildren(QCheckBox)), 0)
+            labels = [w.text() for w in popup.findChildren(QLabel)]
+            self.assertTrue(any('Inga rekommendationer' in t for t in labels))
         finally:
-            dlg.deleteLater()
+            popup.deleteLater()
 
     def test_checking_an_existing_recommendation_links_it_without_duplicating(self):
         rec_id = self.db.add_recommendation(description='Reusable text')
-        dlg = self._dlg()
+        popup = self._popup()
         try:
-            dlg._table.item(0, 0).setCheckState(Qt.CheckState.Checked)
+            cb = self._checkbox_for(popup, rec_id)
+            self.assertIsNotNone(cb)
+            self.assertFalse(cb.isChecked())
+            cb.setChecked(True)
             linked = {r['id'] for r in self.db.recommendations_for_consequence(self.cons_id)}
             self.assertEqual(linked, {rec_id})
             self.assertEqual(len(self.db.all_recommendations()), 1)
         finally:
-            dlg.deleteLater()
+            popup.deleteLater()
 
     def test_unchecking_unlinks_but_keeps_the_catalog_row(self):
         rec_id = self.db.add_recommendation_to_consequence(self.cons_id, description='Keep me')
-        dlg = self._dlg()
+        popup = self._popup()
         try:
-            dlg._table.item(0, 0).setCheckState(Qt.CheckState.Unchecked)
+            cb = self._checkbox_for(popup, rec_id)
+            self.assertTrue(cb.isChecked())
+            cb.setChecked(False)
             self.assertEqual(self.db.recommendations_for_consequence(self.cons_id), [])
             self.assertIsNotNone(self.db.get_recommendation(rec_id),
                 "unlinking must not delete the catalog row")
         finally:
-            dlg.deleteLater()
+            popup.deleteLater()
 
-    def test_creating_new_links_it_to_the_current_consequence_only(self):
-        dlg = self._dlg()
+    def test_linking_on_one_consequence_does_not_affect_another(self):
+        rec_id = self.db.add_recommendation(description='Shared candidate')
+        popup = self._popup(self.cons_id)
         try:
-            dlg._input.setPlainText('Brand new recommendation')
-            dlg._create_new()
-            recs = self.db.all_recommendations()
-            self.assertEqual(len(recs), 1)
-            self.assertEqual(recs[0]['description'], 'Brand new recommendation')
-            self.assertEqual({r['id'] for r in self.db.recommendations_for_consequence(self.cons_id)},
-                             {recs[0]['id']})
+            self._checkbox_for(popup, rec_id).setChecked(True)
             self.assertEqual(self.db.recommendations_for_consequence(self.cons2), [])
         finally:
-            dlg.deleteLater()
+            popup.deleteLater()
 
-    def test_checking_a_box_emits_links_changed_for_live_refresh(self):
-        self.db.add_recommendation(description='X')
-        dlg = self._dlg()
-        spy = unittest.mock.Mock()
-        dlg.recommendation_links_changed.connect(spy)
+    def test_checking_a_box_refreshes_the_cells_rek_summary_live(self):
+        rec_id = self.db.add_recommendation(description='Live refresh check')
+        self.panel.load_node(self.node_id)
+        row = next(r for r, m in enumerate(self.panel._row_meta) if m[2] == self.cons_id)
+        popup = self._popup()
         try:
-            dlg._table.item(0, 0).setCheckState(Qt.CheckState.Checked)
-            spy.assert_called_once()
+            self._checkbox_for(popup, rec_id).setChecked(True)
+            item = self.panel._table.item(row, self.panel._C_REK)
+            self.assertEqual(item.text(), f"R-{rec_id:03d}. Live refresh check")
         finally:
-            dlg.deleteLater()
+            popup.deleteLater()
 
 
 class RecommendationEditConflictTests(unittest.TestCase):

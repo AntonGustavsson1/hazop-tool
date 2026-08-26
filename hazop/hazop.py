@@ -660,6 +660,45 @@ def _create_tagged_cause(db, deviation_id, comp_type, comp_tag, equipment_id=Non
 # SHARED WIDGETS
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _apply_shared_recommendation_description_update(db, parent, rec_id, consequence_id, new_description):
+    """Update a recommendation's description, first asking whether a
+    SHARED one (linked to more than one consequence) should be updated
+    everywhere or forked into a new, independent copy for just this
+    consequence. Shared by _RecommendationDetailDialog._save() and the
+    inline REK-cell commit path (ScenarioTablePanel, see NOTES.md
+    "Redigera rekommendationer direkt i HAZOP Scenario", 2026-08-26) so
+    the "shared recommendation" rule only has one implementation.
+
+    Returns the id of the recommendation the description actually ended
+    up on (== rec_id for a direct update or a solo/"update all" case, a
+    NEW id if forked), or None if the user cancelled (nothing written)."""
+    count = db.recommendation_consequence_count(rec_id)
+    if count > 1:
+        box = QMessageBox(parent)
+        box.setWindowTitle("Delad rekommendation")
+        box.setText(
+            f"Denna rekommendation används av flera konsekvenser ({count} st). "
+            "Vill du uppdatera rekommendationen för samtliga?")
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            | QMessageBox.StandardButton.Cancel)
+        box.button(QMessageBox.StandardButton.Yes).setText("Ja, uppdatera alla")
+        box.button(QMessageBox.StandardButton.No).setText("Nej, bara denna")
+        box.button(QMessageBox.StandardButton.Cancel).setText("Avbryt")
+        box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        reply = box.exec()
+        if reply == QMessageBox.StandardButton.Cancel:
+            return None
+        if reply == QMessageBox.StandardButton.No:
+            new_id = db.add_recommendation(new_description)
+            db.unlink_recommendation_from_consequence(rec_id, consequence_id)
+            db.link_recommendation_to_consequence(new_id, consequence_id)
+            return new_id
+        # Yes falls through to the direct update below.
+    db.update_recommendation(rec_id, description=new_description)
+    return rec_id
+
+
 class _RecommendationDetailDialog(QDialog):
     """Small focused editor for ONE recommendation's fields (2026-08-25,
     see NOTES.md "Rekommendationshantering — delad katalog med
@@ -718,158 +757,28 @@ class _RecommendationDetailDialog(QDialog):
         due_date    = self._due.text()
         status      = self._status.currentText()
 
-        count = self.db.recommendation_consequence_count(self.recommendation_id)
-        if count > 1:
-            box = QMessageBox(self)
-            box.setWindowTitle("Delad rekommendation")
-            box.setText(
-                f"Denna rekommendation används av flera konsekvenser ({count} st). "
-                "Vill du uppdatera rekommendationen för samtliga?")
-            box.setStandardButtons(
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                | QMessageBox.StandardButton.Cancel)
-            box.button(QMessageBox.StandardButton.Yes).setText("Ja, uppdatera alla")
-            box.button(QMessageBox.StandardButton.No).setText("Nej, bara denna")
-            box.button(QMessageBox.StandardButton.Cancel).setText("Avbryt")
-            box.setDefaultButton(QMessageBox.StandardButton.Cancel)
-            reply = box.exec()
-            if reply == QMessageBox.StandardButton.Cancel:
-                self.reject()
-                return
-            if reply == QMessageBox.StandardButton.No:
-                new_id = self.db.add_recommendation(description, responsible, due_date, status)
-                self.db.unlink_recommendation_from_consequence(
-                    self.recommendation_id, self.consequence_id)
-                self.db.link_recommendation_to_consequence(new_id, self.consequence_id)
-                self.accept()
-                return
-            # Yes falls through to the direct update below.
-
-        self.db.update_recommendation(self.recommendation_id, description, responsible,
-                                      due_date, status)
+        target_id = _apply_shared_recommendation_description_update(
+            self.db, self, self.recommendation_id, self.consequence_id, description)
+        if target_id is None:
+            self.reject()
+            return
+        # The helper's own "description" write already landed on
+        # target_id (rec_id itself, or a freshly forked row) -- fill in
+        # the fields it doesn't know about.
+        self.db.update_recommendation(target_id, responsible=responsible,
+                                      due_date=due_date, status=status)
         self.accept()
 
 
-class RecommendationEditorDialog(QDialog):
-    """Popup opened from the Worksheet's "Rekommendation" column
-    (2026-08-13, see NOTES.md; rewritten 2026-08-25 for the shared
-    recommendations catalog, see "Rekommendationshantering — delad
-    katalog med återanvändning"). Combines a free-text field that
-    doubles as both "type a new recommendation" and "search the
-    catalog for one to reuse" with a checkbox list of every
-    recommendation in the study — checking one links it to this
-    consequence, unchecking unlinks it (the catalog row itself is never
-    deleted just by unlinking, so the text stays available for reuse
-    later)."""
-
-    recommendation_links_changed = pyqtSignal()
-
-    def __init__(self, db, consequence_id, parent=None):
-        super().__init__(parent)
-        self.db = db
-        self.consequence_id = consequence_id
-        self.setWindowTitle("Rekommendationer")
-        self.setMinimumWidth(480)
-        self._updating_table = False
-
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Ny rekommendation (eller sök bland befintliga):"))
-        self._input = QPlainTextEdit()
-        self._input.setFixedHeight(60)
-        self._input.textChanged.connect(self._apply_filter)
-        layout.addWidget(self._input)
-
-        create_btn = QPushButton("Skapa ny rekommendation")
-        create_btn.clicked.connect(self._create_new)
-        layout.addWidget(create_btn)
-
-        layout.addWidget(QLabel("Tidigare rekommendationer i studien:"))
-        self._table = QTableWidget(0, 3)
-        self._table.horizontalHeader().setVisible(False)
-        self._table.verticalHeader().setVisible(False)
-        hdr = self._table.horizontalHeader()
-        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        self._table.setColumnWidth(0, 28)
-        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        self._table.setColumnWidth(2, 32)
-        self._table.setMinimumHeight(CONFIG['H_TABLE_MIN'])
-        self._table.itemChanged.connect(self._on_item_changed)
-        layout.addWidget(self._table)
-
-        btns = QHBoxLayout()
-        btns.addStretch()
-        close_btn = QPushButton("Stäng")
-        close_btn.setDefault(True)
-        close_btn.clicked.connect(self.accept)
-        btns.addWidget(close_btn)
-        layout.addLayout(btns)
-
-        self._refresh_table()
-
-    def _linked_ids(self):
-        return {r['id'] for r in self.db.recommendations_for_consequence(self.consequence_id)}
-
-    def _refresh_table(self):
-        query = self._input.toPlainText().strip().lower()
-        linked = self._linked_ids()
-        self._updating_table = True
-        try:
-            self._table.setRowCount(0)
-            for rec in self.db.all_recommendations():
-                if query and query not in (rec['description'] or '').lower():
-                    continue
-                row = self._table.rowCount()
-                self._table.insertRow(row)
-
-                chk = QTableWidgetItem()
-                chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
-                chk.setCheckState(Qt.CheckState.Checked if rec['id'] in linked
-                                  else Qt.CheckState.Unchecked)
-                chk.setData(Qt.ItemDataRole.UserRole, rec['id'])
-                self._table.setItem(row, 0, chk)
-
-                label = f"R-{rec['id']:03d}. {rec['description'] or 'Ny rekommendation'}"
-                text_item = QTableWidgetItem(label)
-                text_item.setFlags(text_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                self._table.setItem(row, 1, text_item)
-
-                edit_btn = QPushButton("✎")
-                edit_btn.setFixedWidth(28)
-                edit_btn.clicked.connect(partial(self._edit_recommendation, rec['id']))
-                self._table.setCellWidget(row, 2, edit_btn)
-        finally:
-            self._updating_table = False
-
-    def _apply_filter(self):
-        self._refresh_table()
-
-    def _create_new(self):
-        text = self._input.toPlainText().strip()
-        if not text:
-            return
-        self.db.add_recommendation_to_consequence(self.consequence_id, description=text)
-        self._input.clear()
-        self._refresh_table()
-        self.recommendation_links_changed.emit()
-
-    def _on_item_changed(self, item):
-        if self._updating_table or item.column() != 0:
-            return
-        rec_id = item.data(Qt.ItemDataRole.UserRole)
-        if rec_id is None:
-            return
-        if item.checkState() == Qt.CheckState.Checked:
-            self.db.link_recommendation_to_consequence(rec_id, self.consequence_id)
-        else:
-            self.db.unlink_recommendation_from_consequence(rec_id, self.consequence_id)
-        self.recommendation_links_changed.emit()
-
-    def _edit_recommendation(self, rec_id):
-        dlg = _RecommendationDetailDialog(self.db, rec_id, self.consequence_id, self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._refresh_table()
-            self.recommendation_links_changed.emit()
+# RecommendationEditorDialog (the big modal "type new / search / check
+# to link" dialog) removed 2026-08-26, see NOTES.md "Redigera
+# rekommendationer direkt i HAZOP Scenario" -- replaced by inline
+# editing of the REK cell plus RecommendationAssistPopup
+# (scenario_panel.py), the same "small popup shown alongside an inline
+# editor" pattern StandardCauseSuggestPopup already established for the
+# ORS column. _RecommendationDetailDialog above (responsible/due-date/
+# status + the shared-recommendation prompt) is unrelated and unchanged
+# -- it's reachable from the new popup's own "✎" button.
 
 
 # ══════════════════════════════════════════════════════════════════════════════
