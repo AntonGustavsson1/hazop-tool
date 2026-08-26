@@ -159,6 +159,12 @@ class StandardCausesSettingsPanel(QWidget):
         btn_imp.clicked.connect(self._import_library)
         io_row.addWidget(btn_exp); io_row.addWidget(btn_imp)
         c3.addLayout(io_row)
+        btn_exp_xlsx = QPushButton("↑ Exportera Excel")
+        btn_exp_xlsx.setToolTip(
+            "Exportera samtliga standardavvikelser (grupperade per objekttyp) "
+            "till en redigerbar Excel-fil")
+        btn_exp_xlsx.clicked.connect(self._export_library_excel)
+        c3.addWidget(btn_exp_xlsx)
 
         layout.addLayout(c0, 1)
         layout.addLayout(c1, 1)
@@ -557,6 +563,88 @@ class StandardCausesSettingsPanel(QWidget):
         import json as _json
         with open(path, 'w', encoding='utf-8') as f:
             f.write(_json.dumps(data, ensure_ascii=False, indent=2))
+        QMessageBox.information(self, 'Exporterat', f'Sparat till:\n{path}')
+
+    # ── Excel export (2026-08-26): editable, re-importable spreadsheet ────────
+    def _export_library_excel(self):
+        """Export every standard cause, grouped by object type (Objekttyp),
+        to a plain flat .xlsx table -- one data row per standard cause, no
+        merged cells -- so it stays trivially sortable/filterable in Excel
+        AND re-importable later (a future importer only needs to match rows
+        by their own (Objekttyp, Avvikelse, Orsak) text, the same identity
+        JSON import already matches on in _import_library above -- no
+        hidden id columns needed)."""
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Exportera standardavvikelser till Excel',
+            'standardavvikelser.xlsx', 'Excel-filer (*.xlsx)')
+        if not path:
+            return
+        if not path.lower().endswith('.xlsx'):
+            path += '.xlsx'
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.utils import get_column_letter
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = 'Standardavvikelser'
+        headers = ['Objekttyp', 'Avvikelse', 'Orsak', 'Frekvens (/år)']
+        ws.append(headers)
+        header_fill = PatternFill('solid', fgColor='1F4E79')
+        for cell in ws[1]:
+            cell.font = Font(bold=True, color='FFFFFF')
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='left')
+
+        deviations = self.db.standard_deviations()
+        band_fill = PatternFill('solid', fgColor='EEF2F7')
+        band = False
+        row = 2
+        for obj in self.db.standard_objects():
+            obj_rows = []
+            for dev in deviations:
+                for c in self.db.standard_causes_for_object(dev['id'], obj['id']):
+                    obj_rows.append((dev, c))
+            if not obj_rows:
+                # No causes at all yet for this object type -- skip it
+                # rather than emitting an empty group; nothing to edit.
+                continue
+            band = not band
+            for dev, c in obj_rows:
+                freq = c.get('frequency')
+                ws.append([obj['name'], dev['description'], c['description'],
+                           freq if freq is not None else None])
+                if band:
+                    for cell in ws[row]:
+                        cell.fill = band_fill
+                row += 1
+
+        widths = {1: 28, 2: 22, 3: 60, 4: 16}
+        for col, w in widths.items():
+            ws.column_dimensions[get_column_letter(col)].width = w
+        ws.freeze_panes = 'A2'
+        ws.auto_filter.ref = ws.dimensions
+
+        info = wb.create_sheet('Läs mig')
+        info.column_dimensions['A'].width = 100
+        for text in (
+            'Denna flik listar programmets samtliga standardavvikelser, grupperade per objekttyp.',
+            '',
+            'Kolumner:',
+            '  Objekttyp -- måste stavas exakt som i programmets objekttypslista '
+            '(Inställningar -- Standardobjekt) för att kunna matchas vid en framtida import.',
+            '  Avvikelse -- t.ex. "Högt flöde", "Lågt tryck".',
+            '  Orsak -- fritext, en rad per orsak.',
+            '  Frekvens (/år) -- lämna tom om okänd.',
+            '',
+            'Radera eller redigera rader fritt, eller lägg till nya längst ned i valfri grupp.',
+            'Filen är ett rent tabellformat (inga sammanslagna celler) för att gå att läsa in igen.',
+        ):
+            info.append([text])
+        info['A1'].font = Font(bold=True)
+        info['A3'].font = Font(bold=True)
+
+        wb.save(path)
         QMessageBox.information(self, 'Exporterat', f'Sparat till:\n{path}')
 
     def _import_library(self):

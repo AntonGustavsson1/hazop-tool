@@ -1623,6 +1623,51 @@ för att bygga features på en tom grupp. Ny test:
 `PrintScenarioTableTests`) och hela `test_pid_viewer.py` (nytt fall i
 `SimilarSymbolSearchDialogTests`) — 134 tester, alla gröna.
 
+## Excel-export av standardavvikelser, grupperade per objekttyp (2026-08-26)
+
+Anton: "Skapa en Excel-fil med programmets samtliga standardavvikelser
+grupperade per objekttyp. Filen ska vara enkel att redigera manuellt och
+senare kunna läsas in igen för att uppdatera programmets standarddata."
+
+**Ny knapp** "↑ Exportera Excel" i Inställningar → Standardorsaker
+(`StandardCausesSettingsPanel._export_library_excel()`, standard_causes_
+panel.py), bredvid den befintliga JSON-export/import-knappraden ("Feature
+16") — samma standard_causes/standard_deviations/standard_objects-data,
+men i ett annat, till-hands-redigerbart format istället för JSON.
+
+**Format (medvetet valt för att gå att läsa in igen senare):** en helt
+platt tabell, EN rad per standard_causes-post, INGA sammanslagna celler —
+kolumner Objekttyp | Avvikelse | Orsak | Frekvens (/år). Grupperingen "per
+objekttyp" görs genom att sortera på `standard_objects`s egen sort_order
+och upprepa objekttypens namn på varje rad (inte via en rubrikrad eller
+sammanslagna celler) — en framtida importfunktion kan då matcha rader
+enbart på textidentiteten (Objekttyp, Avvikelse, Orsak), exakt samma
+matchningsprincip den befintliga JSON-importen (`_import_library`) redan
+använder (ingen dold id-kolumn behövdes). Objekttyper utan en enda orsak
+än utesluts helt (inget att redigera där). Alternerande radfärg per
+objekttyp-grupp ger visuell gruppering utan att offra platt struktur.
+En andra flik "Läs mig" förklarar kolumnerna och påminner om att
+Objekttyp-stavningen måste matcha appens egen lista exakt för att en
+framtida import ska kunna matcha den.
+
+**Avsiktlig avgränsning:** bara export byggd denna gång — användarens
+formulering ("ska... senare kunna läsas in igen") beskriver ett krav på
+FILFORMATET (måste vara re-importvänligt), inte en beställning av
+importfunktionen själv än. Filformatet är dock redan förberett för det
+(ingen omdesign ska behövas när import-knappen byggs).
+
+**Verifiering:** ny testklass `StandardCausesExcelExportTests` (4 tester)
+i tests/test_settings_panels.py — bekräftar kolumnrubriker, radantal mot
+riktiga `standard_causes`-data, att inga celler är sammanslagna, att
+grupperingen per objekttyp aldrig bryts (samma objekttyp dyker aldrig upp
+i två separata block), att en känd riktig frökt orsak ("Pump stopp" under
+Pump/Lågt flöde, 0.02/år) hamnar rätt, att tomma objekttyper utesluts, och
+att en avbruten spardialog inte skriver någon fil. Även manuellt körd mot
+den riktiga `hazop_project.db` (175 orsaker, 20 objekttyper) för att
+bekräfta att UTF-8/å-ä-ö-text och grupperingen ser korrekta ut i en
+verklig .xlsx öppnad med openpyxl. `test_smoke` + hela
+`test_settings_panels.py` (94 tester) gröna.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

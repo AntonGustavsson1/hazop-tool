@@ -233,6 +233,113 @@ class StandardCausesObjectCrudTests(unittest.TestCase):
             panel.deleteLater()
 
 
+class StandardCausesExcelExportTests(unittest.TestCase):
+    """"Exportera standardavvikelser till Excel" (2026-08-26): a plain,
+    re-importable-by-design .xlsx export of every standard cause, grouped
+    by object type (Objekttyp) -- no merged cells, one data row per
+    standard cause, so it stays trivially sortable/filterable to edit by
+    hand and later re-parseable by a future importer."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_stdcauses_xlsx_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        self.out_path = os.path.join(self._tmpdir, "export.xlsx")
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _export(self):
+        from hazop import StandardCausesSettingsPanel
+        panel = StandardCausesSettingsPanel(self.db)
+        try:
+            with unittest.mock.patch(
+                    'standard_causes_panel.QFileDialog.getSaveFileName',
+                    return_value=(self.out_path, 'Excel-filer (*.xlsx)')), \
+                 unittest.mock.patch('standard_causes_panel.QMessageBox.information'):
+                panel._export_library_excel()
+        finally:
+            panel.deleteLater()
+
+    def test_export_writes_a_flat_table_grouped_by_object_type(self):
+        self._export()
+        self.assertTrue(os.path.exists(self.out_path))
+
+        from openpyxl import load_workbook
+        wb = load_workbook(self.out_path)
+        self.assertIn('Standardavvikelser', wb.sheetnames)
+        self.assertIn('Läs mig', wb.sheetnames)
+        ws = wb['Standardavvikelser']
+
+        header = [c.value for c in ws[1]]
+        self.assertEqual(header, ['Objekttyp', 'Avvikelse', 'Orsak', 'Frekvens (/år)'])
+
+        rows = list(ws.iter_rows(min_row=2, values_only=True))
+        expected_causes = self.db.conn.execute(
+            "SELECT COUNT(*) FROM standard_causes").fetchone()[0]
+        self.assertEqual(len(rows), expected_causes,
+            "every real standard_causes row (the DB's own default seed "
+            "data) must appear exactly once, no merged/grouped duplicates")
+
+        # No merged cells anywhere -- every row must be fully self-contained
+        # (that's what makes the file re-importable later).
+        self.assertEqual(len(ws.merged_cells.ranges), 0)
+
+        # Grouped by object type: once a given Objekttyp value's run of rows
+        # ends, it must never reappear further down the sheet.
+        seen_and_closed = set()
+        current = None
+        for r in rows:
+            obj_name = r[0]
+            if obj_name != current:
+                self.assertNotIn(obj_name, seen_and_closed,
+                    f"Objekttyp {obj_name!r} appeared in two separate, "
+                    "non-contiguous blocks -- rows are not grouped by object type")
+                if current is not None:
+                    seen_and_closed.add(current)
+                current = obj_name
+
+    def test_export_includes_a_known_real_seeded_cause_with_its_frequency(self):
+        self._export()
+        from openpyxl import load_workbook
+        wb = load_workbook(self.out_path)
+        ws = wb['Standardavvikelser']
+        rows = list(ws.iter_rows(min_row=2, values_only=True))
+        match = [r for r in rows if r[0] == 'Pump' and r[2] == 'Pump stopp']
+        self.assertEqual(len(match), 1)
+        self.assertEqual(match[0][1], 'Lågt flöde',
+            "Pump stopp is seeded under the Lågt flöde deviation")
+        self.assertAlmostEqual(match[0][3], 0.02)
+
+    def test_object_types_with_zero_causes_are_omitted(self):
+        empty_obj_id = self.db.add_standard_object('Helt tom objekttyp')
+        self._export()
+        from openpyxl import load_workbook
+        wb = load_workbook(self.out_path)
+        ws = wb['Standardavvikelser']
+        obj_names = {r[0] for r in ws.iter_rows(min_row=2, values_only=True)}
+        self.assertNotIn('Helt tom objekttyp', obj_names)
+
+    def test_cancelling_the_save_dialog_writes_nothing(self):
+        from hazop import StandardCausesSettingsPanel
+        panel = StandardCausesSettingsPanel(self.db)
+        try:
+            with unittest.mock.patch(
+                    'standard_causes_panel.QFileDialog.getSaveFileName',
+                    return_value=('', '')):
+                panel._export_library_excel()
+            self.assertFalse(os.path.exists(self.out_path))
+        finally:
+            panel.deleteLater()
+
+
 class StandardCausesNodeTypeTests(unittest.TestCase):
     """"Ny kolumn till vänster om Avvikelse för nodtyper (standard: en typ,
     'Processnod', men användaren ska kunna skapa fler) — med drag-and-drop
