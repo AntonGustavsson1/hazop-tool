@@ -1803,6 +1803,46 @@ filter. `test_smoke` + `test_integration` + `test_hazop` +
 `test_pid_panel_mod` + `test_scenario_panel` + `test_tree_panel`
 (515 tester) gröna.
 
+## Återanvänd tidigare konsekvenser — autocomplete i HAZOP Scenario (2026-08-26)
+
+Anton: "Spara varje konsekvens som skrivs i HAZOP Scenario i en databas.
+Vid redigering ska en rullgardinslista visa tidigare konsekvenser.
+Filtrera listan direkt när användaren skriver, case-insensitive, baserat
+på att texten börjar med det inskrivna värdet."
+
+**Ny tabell** `consequence_history (id, description TEXT UNIQUE)` —
+avsiktligt en helt annan mekanism än `standard_causes`/`standard_deviations`
+(det kurerade biblioteket i Inställningar): den här växer TYST av sig
+själv från vad användaren faktiskt skriver, ingen admin-vy, ingen
+kategorisering. `Database.add_consequence_history(desc)` (INSERT OR
+IGNORE — redan sedd text är en no-op, inte ett fel) anropas från
+`_on_cell_changed_inner`s `'consequence'`-gren, direkt efter
+`update_consequence()` — samma commit-punkt som redan sparar KON-cellens
+text till DB. `Database.consequence_history()` returnerar listan
+alfabetiskt (COLLATE NOCASE).
+
+**Completer:** `_PidDelegate.createEditor()` fick en ny gren för
+`_C_KON` (samma mönster som ORS-kolumnens `_attach_cause_completer`,
+men medvetet EN annan matchningsprincip): `_attach_consequence_completer`
+bygger en `QCompleter` med `Qt.MatchFlag.MatchStartsWith` (prefix, inte
+"innehåller" som ORS-completerns) + `CaseSensitivity.CaseInsensitive`,
+källad direkt från `db.consequence_history()`. Ingen completer alls
+sätts om historiken är tom (en QCompleter med noll poster är bara
+brus).
+
+**Verifiering:** `ConsequenceHistoryTests` (4 tester, tests/test_database.py)
++ `ConsequenceHistoryAutocompleteTests` (4 tester, tests/test_scenario_panel.py)
+— sparning vid cellredigering, tom text smutsar inte ner historiken,
+completerns filterMode/caseSensitivity/innehåll, samt att ingen
+completer sätts på en tom historik. `test_smoke` + `test_database` +
+`test_scenario_panel` (224 tester) gröna (en isolerad, icke-relaterad
+flakighet i `BackupSystemTests.test_write_backup_creates_file_with_same_data`
+observerades en gång i en kombinerad körning men reproducerades INTE i
+upprepade körningar av samma kommando, varken med eller utan denna
+ändring — miljöflaknighet, inte en regression; se även den redan
+dokumenterade "kan hänga i EN GUI-skapande test"-posten under Kända
+begränsningar).
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

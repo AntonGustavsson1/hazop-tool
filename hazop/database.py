@@ -1249,6 +1249,10 @@ class Database:
                 comp_type     TEXT DEFAULT '',
                 created       TEXT DEFAULT ''
             );
+            CREATE TABLE IF NOT EXISTS consequence_history (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                description TEXT NOT NULL UNIQUE
+            );
             CREATE TABLE IF NOT EXISTS cause_descriptions (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 cause_id        INTEGER NOT NULL REFERENCES standard_causes(id) ON DELETE CASCADE,
@@ -3697,6 +3701,25 @@ class Database:
             "INSERT INTO consequences (cause_id,description,severity) VALUES (?,'',1)", (cause_id,))
         self.commit()
         return cur.lastrowid
+
+    def add_consequence_history(self, description):
+        """Remember a consequence description that was actually typed in
+        HAZOP Scenario (2026-08-26, see NOTES.md "Återanvänd tidigare
+        konsekvenser") — feeds the autocomplete dropdown shown while
+        editing a KON cell. INSERT OR IGNORE: a description already seen
+        before is a no-op, not an error or a duplicate row."""
+        description = (description or '').strip()
+        if not description:
+            return
+        self.conn.execute(
+            "INSERT OR IGNORE INTO consequence_history (description) VALUES (?)",
+            (description,))
+        self.commit()
+
+    def consequence_history(self):
+        return [r[0] for r in self.conn.execute(
+            "SELECT description FROM consequence_history "
+            "ORDER BY description COLLATE NOCASE").fetchall()]
 
     def add_safeguard(self, consequence_id):
         cur = self.conn.execute(

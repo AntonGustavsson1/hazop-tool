@@ -1302,7 +1302,38 @@ class _PidDelegate(_ScenarioDelegate):
                 cell_rect = QRect(option.rect)
                 QTimer.singleShot(0, lambda ed=editor, r=row, rect=cell_rect:
                                   self._show_standard_cause_popup(ed, r, rect))
+            elif index.column() == self._panel._C_KON:
+                self._attach_consequence_completer(editor)
         return editor
+
+    def _attach_consequence_completer(self, editor):
+        """"Spara varje konsekvens som skrivs i HAZOP Scenario i en
+        databas. Vid redigering ska en rullgardinslista visa tidigare
+        konsekvenser. Filtrera listan direkt när användaren skriver,
+        case-insensitive, baserat på att texten börjar med det
+        inskrivna värdet." (2026-08-26, see NOTES.md "Återanvänd
+        tidigare konsekvenser") — every KON cell ever committed is
+        recorded in `consequence_history` (_on_cell_changed_inner's
+        'consequence' branch); this suggests from that same growing
+        list while inline-editing a KON cell.
+
+        MatchStartsWith (prefix match), NOT MatchContains like the ORS
+        completer above -- explicitly requested for this one, unlike
+        the standard-cause completer's "match anywhere" behavior."""
+        db = getattr(self._panel, 'db', None)
+        if db is None:
+            return
+        try:
+            descs = db.consequence_history()
+        except Exception:
+            return
+        if not descs:
+            return
+        comp = QCompleter(descs, editor)
+        comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        comp.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        comp.setFilterMode(Qt.MatchFlag.MatchStartsWith)
+        editor.setCompleter(comp)
 
     def _show_standard_cause_popup(self, editor, row, cell_rect):
         """Auto-open StandardCauseSuggestPopup alongside the ORS editor
@@ -5545,6 +5576,11 @@ class ScenarioTablePanel(QWidget):
             if cons:
                 self.db.update_consequence(id_, desc, cons['severity'], cons['category'] or '')
                 self._update_row_text_only('consequence', id_, desc)
+                # "Spara varje konsekvens som skrivs i HAZOP Scenario i en
+                # databas" (2026-08-26, see NOTES.md "Återanvänd tidigare
+                # konsekvenser") — feeds the completer _attach_consequence_
+                # completer attaches to this same cell's editor.
+                self.db.add_consequence_history(desc)
             self.item_edited.emit(CONS_T, id_)
 
         elif kind == 'safeguard':

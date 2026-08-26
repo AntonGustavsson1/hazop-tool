@@ -3465,6 +3465,87 @@ class CauseCompleterFallbackTests(unittest.TestCase):
         self.assertEqual(descs, ["Specifik träff"])
 
 
+class ConsequenceHistoryAutocompleteTests(unittest.TestCase):
+    """"Spara varje konsekvens som skrivs i HAZOP Scenario i en databas.
+    Vid redigering ska en rullgardinslista visa tidigare konsekvenser.
+    Filtrera listan direkt när användaren skriver, case-insensitive,
+    baserat på att texten börjar med det inskrivna värdet." (2026-08-26)"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_conshistcompleter_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from hazop import ScenarioTablePanel
+        self.panel = ScenarioTablePanel(self.db)
+        self.node_id = self.db.add_node()
+        self.dev_id = self.db.deviations(self.node_id)[0]['id']
+        self.cause_id = self.db.add_cause(self.dev_id)
+        self.cons_id = self.db.add_consequence(self.cause_id)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _row_for_cons(self):
+        return next(r for r, m in enumerate(self.panel._row_meta) if m[2] == self.cons_id)
+
+    def test_committing_a_kon_cell_edit_saves_it_to_history(self):
+        self.panel.load_node(self.node_id)
+        row = self._row_for_cons()
+        item = self.panel._table.item(row, self.panel._C_KON)
+        item.setText("Hög nivå i tanken")
+        self.panel._on_cell_changed_inner(row, self.panel._C_KON)
+        self.assertIn("Hög nivå i tanken", self.db.consequence_history())
+
+    def test_blank_kon_edit_does_not_pollute_history(self):
+        self.panel.load_node(self.node_id)
+        row = self._row_for_cons()
+        item = self.panel._table.item(row, self.panel._C_KON)
+        item.setText("")
+        self.panel._on_cell_changed_inner(row, self.panel._C_KON)
+        self.assertEqual(self.db.consequence_history(), [])
+
+    def _start_edit_and_get_editor(self):
+        self.panel.load_node(self.node_id)
+        row = self._row_for_cons()
+        idx = self.panel._table.model().index(row, self.panel._C_KON)
+        self.panel._table.setCurrentIndex(idx)
+        self.panel._table.edit(idx)
+        self.app.processEvents()
+        from PyQt6.QtWidgets import QLineEdit
+        editors = [w for w in self.panel._table.viewport().findChildren(QLineEdit)
+                   if w.property('editing_row') == row]
+        return editors[0] if editors else None
+
+    def test_kon_editor_gets_a_prefix_matching_completer_from_history(self):
+        self.db.add_consequence_history("Hög nivå i tank")
+        self.db.add_consequence_history("Högt tryck i rörledning")
+        self.db.add_consequence_history("Läckage vid fläns")
+
+        editor = self._start_edit_and_get_editor()
+        self.assertIsNotNone(editor)
+        completer = editor.completer()
+        self.assertIsNotNone(completer, "KON editor must get a completer once history exists")
+        self.assertEqual(completer.filterMode(), Qt.MatchFlag.MatchStartsWith,
+            "must filter by prefix, not 'contains' like the ORS completer")
+        self.assertEqual(completer.caseSensitivity(), Qt.CaseSensitivity.CaseInsensitive)
+        model = completer.model()
+        descs = {model.index(i, 0).data() for i in range(model.rowCount())}
+        self.assertEqual(descs, {"Hög nivå i tank", "Högt tryck i rörledning", "Läckage vid fläns"})
+
+    def test_kon_editor_has_no_completer_when_history_is_empty(self):
+        editor = self._start_edit_and_get_editor()
+        self.assertIsNotNone(editor)
+        self.assertIsNone(editor.completer())
+
+
 class StandardCauseSuggestPopupTests(unittest.TestCase):
     """The popup itself (2026-08-25, see NOTES.md "Standardorsak-popup
     vid redigering av Orsak-cellen") — Anton: "När jag vill editera

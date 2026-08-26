@@ -1058,6 +1058,48 @@ class LegacyConsequenceLikelihoodColumnTests(unittest.TestCase):
             del db
 
 
+class ConsequenceHistoryTests(unittest.TestCase):
+    """"Spara varje konsekvens som skrivs i HAZOP Scenario i en databas."
+    (2026-08-26, see NOTES.md "Återanvänd tidigare konsekvenser") — the
+    autocomplete dropdown ScenarioTablePanel's KON-cell editor shows is
+    backed by this growing history table."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_conshistory_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_added_descriptions_are_returned(self):
+        self.db.add_consequence_history("Hög nivå i tank")
+        self.db.add_consequence_history("Läckage vid fläns")
+        self.assertEqual(set(self.db.consequence_history()),
+                          {"Hög nivå i tank", "Läckage vid fläns"})
+
+    def test_duplicate_description_is_not_stored_twice(self):
+        self.db.add_consequence_history("Hög nivå i tank")
+        self.db.add_consequence_history("Hög nivå i tank")
+        self.assertEqual(self.db.consequence_history(), ["Hög nivå i tank"])
+
+    def test_blank_description_is_a_noop(self):
+        self.db.add_consequence_history("")
+        self.db.add_consequence_history("   ")
+        self.db.add_consequence_history(None)
+        self.assertEqual(self.db.consequence_history(), [])
+
+    def test_history_is_returned_sorted_case_insensitively(self):
+        self.db.add_consequence_history("överfyllnad")
+        self.db.add_consequence_history("Backflöde")
+        self.db.add_consequence_history("acidkorrosion")
+        self.assertEqual(self.db.consequence_history(),
+                          ["acidkorrosion", "Backflöde", "överfyllnad"])
+
+
 class DatabaseBusyTimeoutTests(unittest.TestCase):
     """Database.__init__ used to connect with sqlite3's default 5s
     busy-timeout — too short for real lock contention (the online-backup
