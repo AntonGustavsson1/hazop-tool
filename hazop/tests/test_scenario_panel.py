@@ -2671,6 +2671,61 @@ class RiskMatrixPopupDismissalTests(unittest.TestCase):
     # relies on), not new code written here.
 
 
+class TooltipContrastTests(unittest.TestCase):
+    """"Vissa tooltips/popups som visas vid hover är oläsliga på grund av
+    färg/kontrast... även för objekt längst till höger." (2026-08-26).
+    Root cause: a widget's OWN local setStyleSheet() call scopes Qt's
+    style-sheet cascade away from the app-wide QToolTip rule (hazop.py's
+    global dark-bg/white-text rule) for tooltips requested from that
+    specific widget -- so any widget with its own stylesheet silently
+    fell back to the platform's default (often low-contrast) tooltip
+    colors. Fixed by repeating the QToolTip rule inside each affected
+    local stylesheet: the main HAZOP Scenario table (hosts nearly every
+    tooltip in the view, including the rightmost REK column) and
+    RiskMatrixPopup's per-cell buttons (the rightmost/highest-frequency
+    column is also the most strongly colored)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_tooltip_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_scenario_table_stylesheet_still_carries_the_dark_tooltip_rule(self):
+        from hazop import ScenarioTablePanel
+        panel = ScenarioTablePanel(self.db)
+        try:
+            ss = panel._table.styleSheet()
+            self.assertIn('QToolTip', ss)
+            self.assertIn('#17191C', ss)
+            self.assertIn('#FFFFFF', ss)
+        finally:
+            panel.deleteLater()
+
+    def test_every_risk_matrix_cell_button_carries_the_dark_tooltip_rule(self):
+        from hazop import RiskMatrixPopup
+        from PyQt6.QtWidgets import QPushButton
+        popup = RiskMatrixPopup(current_freq=2, current_cons=3)
+        try:
+            buttons = [b for b in popup.findChildren(QPushButton) if b.toolTip()]
+            self.assertTrue(buttons)
+            for btn in buttons:
+                self.assertIn('QToolTip', btn.styleSheet(),
+                    f"cell tooltipped {btn.toolTip()!r} has no local QToolTip rule "
+                    "-- its tooltip will fall back to the platform default")
+        finally:
+            popup.deleteLater()
+
+
 class SafeguardEditorTopAlignmentTests(unittest.TestCase):
     """"Text i HAZOP Scenario ska ligga i överkant även för safeguards.
     När safeguard redigeras får texten inte hoppa till vertikal
