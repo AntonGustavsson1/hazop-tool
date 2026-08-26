@@ -1058,47 +1058,6 @@ class LegacyConsequenceLikelihoodColumnTests(unittest.TestCase):
             del db
 
 
-class DeviationDefaultFrequencyTests(unittest.TestCase):
-    """"på avvikelserna ska man se den förvalda frekvensen" (2026-08-14)
-    — deviations have no frequency column of their own (confirmed via
-    AskUserQuestion, deliberately no new schema column). The default
-    shown is DERIVED from standard_causes instead: the lowest
-    standard_causes.frequency among rows whose standard_deviations
-    entry matches the deviation's description text."""
-
-    def setUp(self):
-        self._tmpdir = tempfile.mkdtemp(prefix="hazop_devdefaultfreq_test_")
-        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
-
-    def tearDown(self):
-        try:
-            del self.db
-        except Exception:
-            pass
-        shutil.rmtree(self._tmpdir, ignore_errors=True)
-
-    def test_returns_none_when_no_matching_standard_deviation(self):
-        self.assertIsNone(self.db.default_frequency_for_deviation("Helt påhittad avvikelse"))
-
-    def test_returns_none_when_matching_causes_have_no_frequency(self):
-        # A deliberately unique guide word — DEVIATION_TYPES/the seeded
-        # standard library already ships real entries like "Högt flöde"
-        # with their own preset frequencies, which would silently leak
-        # into this test's result if reused here.
-        dev_id = self.db.add_standard_deviation("ZZZ_Testavvikelse_Unik_1")
-        self.db.add_standard_cause(dev_id, "Ventilfel")
-        self.assertIsNone(self.db.default_frequency_for_deviation("ZZZ_Testavvikelse_Unik_1"))
-
-    def test_returns_lowest_frequency_among_matching_standard_causes(self):
-        dev_id = self.db.add_standard_deviation("ZZZ_Testavvikelse_Unik_2")
-        c1 = self.db.add_standard_cause(dev_id, "Ventilfel")
-        c2 = self.db.add_standard_cause(dev_id, "Sensorfel")
-        self.db.update_standard_cause(c1, frequency=0.5)
-        self.db.update_standard_cause(c2, frequency=0.1)
-        self.assertEqual(
-            self.db.default_frequency_for_deviation("ZZZ_Testavvikelse_Unik_2"), 0.1)
-
-
 class DatabaseBusyTimeoutTests(unittest.TestCase):
     """Database.__init__ used to connect with sqlite3's default 5s
     busy-timeout — too short for real lock contention (the online-backup

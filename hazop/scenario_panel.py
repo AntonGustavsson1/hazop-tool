@@ -35,7 +35,7 @@ from ui_helpers import (
 )
 from tree_panel import (
     CauseObjectPopup, CauseTagPopup, RRFPopup,
-    FrequencyPickerPopup, DeviationPickerPopup,
+    FrequencyPickerPopup,
 )
 
 class RiskMatrixPopup(QDialog):
@@ -4977,17 +4977,6 @@ class ScenarioTablePanel(QWidget):
             self.db.update_cause(cause_id, base_frequency=numeric)
         self._schedule_rebuild()
 
-    def _on_deviation_picked(self, cause_id, node_id, dev_id, new_desc):
-        """DeviationPickerPopup.deviation_picked handler for the
-        Avvikelse cell click (2026-08-14, see NOTES.md). Exactly one of
-        dev_id/new_desc is non-None — a preset moves the cause directly;
-        free text gets-or-creates that deviation first."""
-        target_dev_id = dev_id if dev_id is not None else \
-            self.db.get_or_create_deviation(node_id, new_desc)
-        self.db.move_cause_to_deviation(cause_id, target_dev_id)
-        self.structure_changed.emit()
-        self._schedule_rebuild()
-
     def _open_comment_popup(self, row, cause_id, global_pos):
         """Floating comment editor for a cause row."""
         current = self.db.get_cause_comment(cause_id) or ''
@@ -5141,24 +5130,6 @@ class ScenarioTablePanel(QWidget):
                             elif kind == 'safeguard':
                                 self._add_safeguard_via_plus_row(group_id)
                         return True
-
-            # Avvikelse cell click — reassign which deviation the row's
-            # cause belongs to (2026-08-14, see NOTES.md: "klockan man
-            # på avvikelsen justerar man avvikelsen"). Only meaningful
-            # once the row actually has a cause (placeholder "no causes
-            # yet" rows have cause_id None and nothing to move).
-            if row >= 0 and col == self._C_DEV and row < len(self._row_meta):
-                dev_id, cause_id = self._row_meta[row][0], self._row_meta[row][1]
-                if cause_id is not None and dev_id is not None:
-                    node_id = self.db.get_deviation(dev_id)['node_id']
-                    gp = self._table.viewport().mapToGlobal(pos)
-                    popup = DeviationPickerPopup.create_positioned(
-                        self.db, node_id, dev_id, gp, parent=self)
-                    popup.deviation_picked.connect(
-                        lambda picked_dev_id, new_desc, cid=cause_id, nid=node_id:
-                            self._on_deviation_picked(cid, nid, picked_dev_id, new_desc))
-                    popup.exec()
-                    return True
 
             # Object-tag zone click — the bold "TAG, " prefix at the start
             # of the cause cell's first line, pixel-exact to what paint()

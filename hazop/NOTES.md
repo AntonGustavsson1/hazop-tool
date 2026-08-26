@@ -1501,6 +1501,44 @@ tester), samt kontrollgrupp (`git stash` på `scenario_panel.py` — 14
 av 15 nya tester slog verkligen av mot koden innan denna ändring, den
 15:e gav en hård `ImportError` eftersom hela popup-klassen inte fanns).
 
+## Riv bort Avvikelse-cellens frekvenspopup (2026-08-26)
+
+Anton: "det finns någon konstig funktion om jag klickar på en
+avvikelse i hazop scenario som ger en pop-upryta utifrån detta med
+någon form av frekvens som jag inte förstår ... den funktion ska
+rivas." Bekräftat via en genererad skärmdump av den faktiska popupen
+innan något togs bort.
+
+**Funktionen som togs bort:** `DeviationPickerPopup` (tree_panel.py,
+tillagd 2026-08-14) — öppnades vid klick på Avvikelse-cellen (`_C_DEV`)
+i HAZOP scenario-tabellen för en rad med en riktig orsak, och visade en
+knappgrid med nodens övriga avvikelser, var och en annoterad med en
+härledd "förvald frekvens" (`Database.default_frequency_for_deviation`,
+lägsta `standard_causes.frequency` bland matchande
+`standard_deviations`), plus ett fritextfält för en ny/egen avvikelse.
+
+**Borttaget helt:** `DeviationPickerPopup`-klassen (tree_panel.py),
+dess import i `scenario_panel.py`/`hazop.py`, klick-hanteringen i
+`scenario_panel.py`s `eventFilter()` (Avvikelse-cellen är nu en vanlig,
+oklickbar cell igen), handlern `_on_deviation_picked`, samt
+`Database.default_frequency_for_deviation` (helt oanvänd efteråt —
+verifierat via grep, ingen annan kodplats läste den). Motsvarande
+tester (`AvvikelseCellPickerTests` i `tests/test_integration.py`,
+`DeviationDefaultFrequencyTests` i `tests/test_database.py`) togs bort
+med.
+
+**Uttryckligen INTE rört** (verifierat innan borttagning, en genuint
+separat funktion som råkar dela samma bakomliggande DB-anrop):
+"↕ Flytta till annan avvikelse…"-kontextmenyalternativet i trädet
+(`_move_cause_dialog`) och `always_show_deviation_column()` (används
+av Worksheet-vyn för att alltid visa Avvikelse-kolumnen) — båda
+oförändrade. `Database.move_cause_to_deviation`/`get_or_create_deviation`
+behölls likaså, eftersom `_move_cause_dialog` fortfarande anropar dem.
+
+**Verifiering:** `test_smoke`, hela 14-filssviten (910 tester), grep
+över hela kodbasen efter kvarvarande referenser till de borttagna
+symbolerna — inga funna.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

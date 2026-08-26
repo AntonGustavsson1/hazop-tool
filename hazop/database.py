@@ -3371,23 +3371,6 @@ class Database:
             (node_id, description, equipment_id)).fetchone()
         return row[0] if row else self.add_deviation(node_id, description, equipment_id)
 
-    def default_frequency_for_deviation(self, description):
-        """Best-effort preset frequency for a guide word, shown in
-        DeviationPickerPopup (2026-08-14, see NOTES.md: "på avvikelserna
-        ska man se den förvalda frekvensen"). Deviations themselves have
-        no frequency column — this is derived, not stored: the lowest
-        standard_causes.frequency among rows whose standard_deviations
-        entry matches the deviation's description text, across all
-        object types. None if there's no match or none have a
-        frequency set."""
-        rows = self.conn.execute(
-            "SELECT sc.frequency FROM standard_causes sc "
-            "JOIN standard_deviations sd ON sc.deviation_id = sd.id "
-            "WHERE sd.description=? AND sc.frequency IS NOT NULL",
-            (description,)).fetchall()
-        freqs = [r[0] for r in rows if r[0] is not None]
-        return min(freqs) if freqs else None
-
     # ── Standard deviation / cause template library ───────────────────────────
     def standard_deviations(self):
         return self.conn.execute(

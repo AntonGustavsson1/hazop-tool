@@ -47,7 +47,7 @@ from ui_helpers import (
 )
 from tree_panel import (
     TreePanel, CauseObjectPopup, CauseTagPopup,
-    RRFPopup, FrequencyPickerPopup, DeviationPickerPopup,
+    RRFPopup, FrequencyPickerPopup,
 )
 from scenario_panel import (
     ScenarioTablePanel, RiskMatrixPopup, ConsequenceStepPickerDialog,
