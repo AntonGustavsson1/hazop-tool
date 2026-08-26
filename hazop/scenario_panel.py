@@ -1389,16 +1389,19 @@ class _PidDelegate(_ScenarioDelegate):
             popup = StandardCauseSuggestPopup(
                 panel, row, cause_id, editor, comp_type, dev_description, rows,
                 parent=top_level)
-            anchor_global = panel._table.viewport().mapToGlobal(cell_rect.bottomLeft())
-            anchor = top_level.mapFromGlobal(anchor_global)
+            # Prefer ABOVE the cell (2026-08-26, see NOTES.md "Flytta
+            # HAZOP-popups ovanför"), falling back to below only if there
+            # isn't room above in the top-level window's own rect.
+            top_global = panel._table.viewport().mapToGlobal(cell_rect.topLeft())
+            top = top_level.mapFromGlobal(top_global)
             tl_rect = top_level.rect()
             pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
-            x = min(anchor.x(), tl_rect.right() - pw)
-            y = anchor.y() + 2
-            if y + ph > tl_rect.bottom():
-                top_global = panel._table.viewport().mapToGlobal(cell_rect.topLeft())
-                top = top_level.mapFromGlobal(top_global)
-                y = top.y() - ph - 2
+            x = min(top.x(), tl_rect.right() - pw)
+            y = top.y() - ph - 2
+            if y < tl_rect.top():
+                bottom_global = panel._table.viewport().mapToGlobal(cell_rect.bottomLeft())
+                bottom = top_level.mapFromGlobal(bottom_global)
+                y = bottom.y() + 2
             popup.move(max(tl_rect.left(), x), max(tl_rect.top(), y))
             popup.show()
             popup.raise_()
@@ -4177,17 +4180,26 @@ class ScenarioTablePanel(QWidget):
         the scenario table, clamped to the screen — so it opens right where
         the user is working instead of centered on screen. Falls back to the
         current cursor position if cons_id isn't visible in the table right
-        now (e.g. filtered out by the current node/deviation/cause scope)."""
+        now (e.g. filtered out by the current node/deviation/cause scope).
+
+        Prefers ABOVE the cell (2026-08-26, see NOTES.md "Flytta HAZOP-
+        popups ovanför"), falling back to below only if there's no room
+        above on screen."""
         row = next((r for r, m in enumerate(self._row_meta) if m[2] == cons_id), -1)
         if row >= 0:
             rect = self._table.visualRect(self._table.model().index(row, self._C_KON))
-            anchor = self._table.viewport().mapToGlobal(rect.bottomLeft())
+            top = self._table.viewport().mapToGlobal(rect.topLeft())
+            target_height = rect.height()
         else:
-            anchor = QCursor.pos()
-        scr = (QApplication.screenAt(anchor) or QApplication.primaryScreen()).availableGeometry()
+            top = QCursor.pos()
+            target_height = 0
+        scr = (QApplication.screenAt(top) or QApplication.primaryScreen()).availableGeometry()
         pw, ph = popup_size.width(), popup_size.height()
-        x = min(anchor.x(), scr.right() - pw)
-        y = min(anchor.y() + 4, scr.bottom() - ph)
+        x = min(top.x(), scr.right() - pw)
+        y = top.y() - ph - 4
+        if y < scr.top():
+            y = top.y() + target_height + 4
+        y = min(y, scr.bottom() - ph)
         return QPoint(max(scr.left(), x), max(scr.top(), y))
 
     def _open_chain_editor(self, cons_id: int, label_widget=None):
@@ -4631,15 +4643,20 @@ class ScenarioTablePanel(QWidget):
         self._schedule_rebuild()
 
     def _show_cat_sg_popup(self, sev_id, all_sgs):
-        """Open the safeguard-selection popup for a category row."""
+        """Open the safeguard-selection popup for a category row.
+        Prefers ABOVE the cursor (2026-08-26, see NOTES.md "Flytta
+        HAZOP-popups ovanför"), falling back to below only if there's no
+        room above on screen."""
         popup = CatSGSelectionPopup(self.db, sev_id, all_sgs, self)
         popup.adjustSize()
         gp  = QCursor.pos()
         scr = (QApplication.screenAt(gp) or QApplication.primaryScreen()).availableGeometry()
         pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
         x = min(gp.x(), scr.right() - pw)
-        y = min(gp.y() + 4, scr.bottom() - ph)
-        popup.move(max(scr.left(), x), max(scr.top(), y))
+        y = gp.y() - ph - 4
+        if y < scr.top():
+            y = gp.y() + 4
+        popup.move(max(scr.left(), x), max(scr.top(), min(y, scr.bottom() - ph)))
         if popup.exec() == QDialog.DialogCode.Accepted:
             self._schedule_rebuild()
 
@@ -4705,18 +4722,21 @@ class ScenarioTablePanel(QWidget):
                 lambda v, t, r=row, sid=sg_id: self._update_sg_rrf(r, sid, v, t))
 
         popup.adjustSize()
+        # Prefer ABOVE global_pos (2026-08-26, see NOTES.md "Flytta
+        # HAZOP-popups ovanför"), falling back to below only if there's
+        # no room above on screen.
         _scr   = QApplication.screenAt(global_pos) or QApplication.primaryScreen()
         screen = _scr.availableGeometry()
         pw = popup.sizeHint().width()
         ph = popup.sizeHint().height()
         x = global_pos.x()
-        y = global_pos.y() + 6
-        if y + ph > screen.bottom():
-            y = global_pos.y() - ph - 6
+        y = global_pos.y() - ph - 6
+        if y < screen.top():
+            y = global_pos.y() + 6
         if x + pw > screen.right():
             x = screen.right() - pw - 4
         x = max(screen.left() + 4, x)
-        y = max(screen.top() + 4, y)
+        y = max(screen.top() + 4, min(y, screen.bottom() - ph))
         popup.move(x, y)
         if popup.exec() == QDialog.DialogCode.Accepted:
             self._schedule_rebuild()
@@ -4733,13 +4753,16 @@ class ScenarioTablePanel(QWidget):
         popup.committed.connect(
             lambda: self._schedule_rebuild())
         popup.adjustSize()
+        # Prefer ABOVE global_pos (2026-08-26, see NOTES.md "Flytta
+        # HAZOP-popups ovanför"), falling back to below only if there's
+        # no room above on screen.
         scr = (QApplication.screenAt(global_pos) or QApplication.primaryScreen()).availableGeometry()
         pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
         x = min(global_pos.x(), scr.right() - pw)
-        y = global_pos.y() + 6
-        if y + ph > scr.bottom():
-            y = global_pos.y() - ph - 6
-        popup.move(max(scr.left(), x), max(scr.top(), y))
+        y = global_pos.y() - ph - 6
+        if y < scr.top():
+            y = global_pos.y() + 6
+        popup.move(max(scr.left(), x), max(scr.top(), min(y, scr.bottom() - ph)))
         popup.show()
 
     # ORS cell layout constants — shared between paint() (_PidDelegate,
@@ -4994,14 +5017,17 @@ class ScenarioTablePanel(QWidget):
             lambda ct, tg, r=row, cid=cause_id:
                 self._apply_cause_obj(r, cid, ct, tg, '', None))
         popup.adjustSize()
+        # Prefer ABOVE global_pos (2026-08-26, see NOTES.md "Flytta
+        # HAZOP-popups ovanför"), falling back to below only if there's
+        # no room above on screen.
         _scr   = QApplication.screenAt(global_pos) or QApplication.primaryScreen()
         screen = _scr.availableGeometry()
         pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
-        x, y   = global_pos.x(), global_pos.y() + 6
-        if y + ph > screen.bottom(): y = global_pos.y() - ph - 6
+        x, y   = global_pos.x(), global_pos.y() - ph - 6
+        if y < screen.top(): y = global_pos.y() + 6
         if x + pw > screen.right():  x = screen.right() - pw - 4
         x = max(screen.left() + 4, x)
-        y = max(screen.top()  + 4, y)
+        y = max(screen.top()  + 4, min(y, screen.bottom() - ph))
         popup.move(x, y)
         popup.show()
 
@@ -5095,11 +5121,16 @@ class ScenarioTablePanel(QWidget):
         btns.rejected.connect(popup.reject)
         lay.addWidget(btns)
         popup.adjustSize()
+        # Prefer ABOVE global_pos (2026-08-26, see NOTES.md "Flytta
+        # HAZOP-popups ovanför"), falling back to below only if there's
+        # no room above on screen.
         scr = (QApplication.screenAt(global_pos) or QApplication.primaryScreen()).availableGeometry()
         pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
         x = min(global_pos.x(), scr.right() - pw)
-        y = min(global_pos.y() + 4, scr.bottom() - ph)
-        popup.move(max(scr.left(), x), max(scr.top(), y))
+        y = global_pos.y() - ph - 4
+        if y < scr.top():
+            y = global_pos.y() + 4
+        popup.move(max(scr.left(), x), max(scr.top(), min(y, scr.bottom() - ph)))
         if popup.exec() == QDialog.DialogCode.Accepted:
             self.db.set_cause_comment(cause_id, txt.toPlainText().strip())
             self._schedule_rebuild()
@@ -5323,11 +5354,16 @@ class ScenarioTablePanel(QWidget):
                         gp = self._table.viewport().mapToGlobal(pos)
                         popup = ConsCategoryMatrixPopup(self.db, cons_id, self)
                         popup.adjustSize()
+                        # Prefer ABOVE gp (2026-08-26, see NOTES.md "Flytta
+                        # HAZOP-popups ovanför"), falling back to below only
+                        # if there's no room above on screen.
                         scr    = (QApplication.screenAt(gp) or QApplication.primaryScreen()).availableGeometry()
                         pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
                         x = min(gp.x(), scr.right() - pw)
-                        y = min(gp.y() + 4, scr.bottom() - ph)
-                        popup.move(max(scr.left(), x), max(scr.top(), y))
+                        y = gp.y() - ph - 4
+                        if y < scr.top():
+                            y = gp.y() + 4
+                        popup.move(max(scr.left(), x), max(scr.top(), min(y, scr.bottom() - ph)))
                         if popup.exec() == QDialog.DialogCode.Accepted:
                             self._schedule_rebuild()
                     return True
@@ -5476,13 +5512,17 @@ class ScenarioTablePanel(QWidget):
         popup.committed.connect(_on_committed)
         if global_pos is not None:
             popup.adjustSize()
+            # Prefer ABOVE global_pos (2026-08-26, see NOTES.md "Flytta
+            # HAZOP-popups ovanför"), falling back to below only if
+            # there's no room above on screen.
             _scr   = QApplication.screenAt(global_pos) or QApplication.primaryScreen()
             screen = _scr.availableGeometry()
             pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
-            x, y   = global_pos.x(), global_pos.y() + 6
-            if y + ph > screen.bottom(): y = global_pos.y() - ph - 6
+            x, y   = global_pos.x(), global_pos.y() - ph - 6
+            if y < screen.top(): y = global_pos.y() + 6
             if x + pw > screen.right():  x = screen.right() - pw - 4
-            popup.move(max(screen.left() + 4, x), max(screen.top() + 4, y))
+            popup.move(max(screen.left() + 4, x),
+                       max(screen.top() + 4, min(y, screen.bottom() - ph)))
         popup.exec()
 
     def _quick_add_consequence(self, cause_id):

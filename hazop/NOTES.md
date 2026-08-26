@@ -1843,6 +1843,54 @@ upprepade körningar av samma kommando, varken med eller utan denna
 dokumenterade "kan hänga i EN GUI-skapande test"-posten under Kända
 begränsningar).
 
+## Flytta HAZOP-popups ovanför sitt fält (2026-08-26)
+
+Anton: "Alla mindre popup-rutor och dropdowns i HAZOP Scenario ska öppnas
+ovanför sitt fält istället för nedanför."
+
+Genomgång av samtliga manuellt positionerade popups i scenario_panel.py
+(grep på `.move(`/`bottomLeft()`/`topLeft()`) hittade nio ställen — alla
+föredrog NEDANFÖR sin cell/klickpunkt (några med fallback uppåt om det
+inte fick plats, några helt utan fallback alls). Alla nio vändes till
+att föredra OVANFÖR, med nedanför bara som reservval när det uppåt inte
+finns plats på skärmen (samma `screen.top()`-koll som redan fanns i
+`RiskMatrixPopup`, det EN popup som redan gjorde rätt — se
+"Stäng riskmatris vid klick utanför" ovan):
+
+- `_show_standard_cause_popup` (ORS-editorns standardorsak-popup) — egen
+  fönster-relativ clamping (inte skärm-global, se dess docstring om
+  varför), bara riktningen vänd.
+- `_pos_near_cons_row` — DELAD av konsekvenskedjeguiden, rekommendations-
+  editorn OCH `MainWindow.position_near_row` (hazop.py) — en fix täcker
+  alla tre.
+- `_show_cat_sg_popup` (safeguard-val för kategorirad).
+- RRF-popupen (`SgRRFCategoryPopup`/`RRFPopup`).
+- `_show_sg_object_popup_at` (🏷-ikonen på safeguard-celler).
+- `_show_cause_obj_popup`/CauseTagPopup (klick på ORS-taggzonen).
+- `_open_comment_popup` (💬 orsakskommentar) — saknade helt en ovanför-
+  gren tidigare, inte bara fel prioritetsordning.
+- `ConsCategoryMatrixPopup` (📊-badgen i KON-cellen) — samma sak, saknade
+  ovanför-gren helt.
+- `_quick_add_cause`s CauseObjectPopup.
+
+**Medvetet OFÖRÄNDRAT:** native `QMenu.exec()`-kontextmenyer (t.ex.
+`_show_quick_add`) — Qt hanterar redan skärmkant-flip själv för dessa,
+och användarens formulering ("popup-rutor och dropdowns") syftar på
+appens egna, handbyggda popups, inte OS-konventionsenliga kontextmenyer.
+
+**Verifiering:** ny testklass `PopupsPreferOpeningAboveTheirFieldTests`
+(4 tester) i tests/test_scenario_panel.py — täcker den delade
+`_pos_near_cons_row`-hjälparen (både "får plats ovanför" och "faller
+tillbaka nedanför"-grenarna) samt två representativa exempel på det
+klick-punkt-ankrade mönstret (`_open_comment_popup`,
+`_show_cat_sg_popup`), via en `popup.move()`-mock för att fånga
+koordinaterna utan att behöva visa/köra popupen på riktigt. Kontrollerat
+att 3 av 4 nya tester verkligen FALLERAR mot koden innan denna ändring
+(`git stash` på scenario_panel.py) — det fjärde (nedanför-fallback) var
+redan sant förut också, vilket är korrekt (det testar bara att
+reservvägen fortfarande fungerar rimligt, inte att den ändrats).
+`test_smoke` + `test_scenario_panel` (151 tester) gröna.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

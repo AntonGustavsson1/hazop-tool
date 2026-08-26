@@ -2800,6 +2800,101 @@ class SafeguardEditorTopAlignmentTests(unittest.TestCase):
             panel.deleteLater()
 
 
+class PopupsPreferOpeningAboveTheirFieldTests(unittest.TestCase):
+    """"Alla mindre popup-rutor och dropdowns i HAZOP Scenario ska öppnas
+    ovanför sitt fält istället för nedanför." (2026-08-26). Every
+    manually-positioned popup in scenario_panel.py used to anchor BELOW
+    its cell/click point first, only flipping above if below ran off
+    screen (or, for a few, not flipping at all). All of them were
+    rewritten to prefer above, falling back to below only when there's
+    genuinely no room above on screen -- these tests cover the shared
+    `_pos_near_cons_row` helper (reused by the chain editor,
+    the recommendation editor, and MainWindow.position_near_row) plus
+    two of the cursor/click-anchored popups as representative examples
+    of the same pattern applied throughout the file."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_popupabove_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from hazop import ScenarioTablePanel
+        self.panel = ScenarioTablePanel(self.db)
+        self.panel.resize(900, 600)
+        self.panel.show()
+        self.node_id = self.db.add_node()
+        dev_id = self.db.deviations(self.node_id)[0]['id']
+        self.cause_id = self.db.add_cause(dev_id)
+        self.cons_id = self.db.add_consequence(self.cause_id)
+        self.panel.load_node(self.node_id)
+        self.app.processEvents()
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _kon_cell_top_global(self):
+        row = next(r for r, m in enumerate(self.panel._row_meta) if m[2] == self.cons_id)
+        rect = self.panel._table.visualRect(
+            self.panel._table.model().index(row, self.panel._C_KON))
+        return self.panel._table.viewport().mapToGlobal(rect.topLeft()), rect.height()
+
+    def test_pos_near_cons_row_prefers_above_when_it_fits(self):
+        from PyQt6.QtCore import QSize
+        top, _h = self._kon_cell_top_global()
+        pos = self.panel._pos_near_cons_row(self.cons_id, QSize(300, 40))
+        self.assertLess(pos.y(), top.y(),
+            "a small enough popup must open ABOVE the KON cell, not below")
+
+    def test_pos_near_cons_row_falls_back_below_when_it_does_not_fit(self):
+        from PyQt6.QtCore import QSize
+        top, h = self._kon_cell_top_global()
+        pos = self.panel._pos_near_cons_row(self.cons_id, QSize(300, 200))
+        self.assertGreaterEqual(pos.y(), top.y() + h,
+            "a popup too tall to fit above must fall back to below the cell")
+
+    def test_comment_popup_prefers_above_the_click_point(self):
+        from PyQt6.QtCore import QPoint
+        from PyQt6.QtWidgets import QDialog
+        click = QPoint(400, 400)   # comfortably away from every screen edge
+        captured = {}
+
+        def _capture_move(self_popup, x, y):
+            captured['pos'] = (x, y)
+
+        with unittest.mock.patch.object(QDialog, 'move', _capture_move), \
+             unittest.mock.patch.object(QDialog, 'exec', return_value=QDialog.DialogCode.Rejected):
+            self.panel._open_comment_popup(0, self.cause_id, click)
+        self.assertIn('pos', captured, "popup.move() must have been called")
+        self.assertLess(captured['pos'][1], click.y(),
+            "the comment popup must open ABOVE the click point, not below")
+
+    def test_cat_sg_popup_prefers_above_the_cursor(self):
+        from PyQt6.QtCore import QPoint
+        from PyQt6.QtWidgets import QDialog
+        from scenario_panel import CatSGSelectionPopup
+        cursor_pos = QPoint(400, 400)
+        sg_id = self.db.add_safeguard(self.cons_id)
+        captured = {}
+
+        def _capture_move(self_popup, x, y):
+            captured['pos'] = (x, y)
+
+        with unittest.mock.patch('scenario_panel.QCursor.pos', return_value=cursor_pos), \
+             unittest.mock.patch.object(QDialog, 'exec', return_value=QDialog.DialogCode.Rejected), \
+             unittest.mock.patch.object(CatSGSelectionPopup, 'move', _capture_move):
+            self.panel._show_cat_sg_popup(1, [{'id': sg_id, 'description': 'SG', 'rrf': 1}])
+        self.assertIn('pos', captured, "popup.move() must have been called")
+        self.assertLess(captured['pos'][1], cursor_pos.y(),
+            "the safeguard-selection popup must open ABOVE the cursor, not below")
+
+
 class SafeguardRRFBadgeHeaderTests(unittest.TestCase):
     """"rrf rutan på safeguard blir väldigt hög. gör denna lägre genom
     att ta bort rrf och låta det stå i kolumneubriken istället."
