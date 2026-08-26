@@ -2527,6 +2527,53 @@ class ScenarioColumnWidthPersistenceTests(unittest.TestCase):
         except Exception as e:
             self.fail(f"must not raise on corrupt saved widths: {e!r}")
 
+    def test_fresh_study_auto_fills_width_on_startup(self):
+        """"kanppen fyll bredd är ikryssad per default när programmet
+        startar" (2026-08-26) — a study with no saved column widths yet
+        (fresh install, or before the user has ever manually resized a
+        column) must start with ORS/KON/SG already spread to fill the
+        table's width, the same end state '↔ Fyll bredd' produces,
+        without requiring a manual click every session."""
+        from hazop import ScenarioTablePanel
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.resize(1400, 400)
+            panel.show()
+            self.app.processEvents()
+            self.app.processEvents()   # let the deferred singleShot(0, ...) fire
+
+            w_ors = panel._table.columnWidth(panel._C_ORS)
+            w_kon = panel._table.columnWidth(panel._C_KON)
+            w_sg  = panel._table.columnWidth(panel._C_SG)
+            self.assertEqual(w_ors, w_kon)
+            self.assertEqual(w_kon, w_sg)
+            self.assertGreater(w_ors, 180,
+                "must fill the available width, not sit at the hardcoded 180px default")
+        finally:
+            panel.deleteLater()
+
+    def test_a_study_with_saved_widths_does_not_auto_fill(self):
+        """Once the user has resized anything, _on_column_resized has
+        already saved real widths — the auto-fill-at-startup default
+        must not then override that customization on the next launch."""
+        from hazop import ScenarioTablePanel
+        panel1 = ScenarioTablePanel(self.db)
+        try:
+            panel1._table.setColumnWidth(panel1._C_ORS, 77)
+        finally:
+            panel1.deleteLater()
+
+        panel2 = ScenarioTablePanel(self.db)
+        try:
+            panel2.resize(1400, 400)
+            panel2.show()
+            self.app.processEvents()
+            self.app.processEvents()
+            self.assertEqual(panel2._table.columnWidth(panel2._C_ORS), 77,
+                "a study with saved widths must keep them, not auto-fill over them")
+        finally:
+            panel2.deleteLater()
+
 
 class RiskMatrixPopupHoverStyleTests(unittest.TestCase):
     """Reported feedback: clicking into the risk matrix popup looked like

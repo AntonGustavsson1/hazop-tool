@@ -2636,6 +2636,7 @@ class ScenarioTablePanel(QWidget):
         # time the app restarted. Columns are always Interactive (see
         # resize_modes above) so dragging works regardless of whether
         # "↔ Fyll bredd" has ever been clicked.
+        self._col_widths_user_set = False   # flipped by _on_column_resized
         saved_widths = self.db.get_config('scenario_col_widths', '')
         if saved_widths:
             try:
@@ -2645,6 +2646,23 @@ class ScenarioTablePanel(QWidget):
                         self._table.setColumnWidth(col, w)
             except Exception:
                 pass
+        else:
+            # No saved widths yet (fresh install, or before the user has
+            # ever manually resized a column) — "↔ Fyll bredd" behaves as
+            # the DEFAULT starting layout instead of requiring a manual
+            # click every session (2026-08-26, Anton: "kanppen fyll bredd
+            # är ikryssad per default när programmet startar"). Deferred
+            # via QTimer.singleShot(0, ...) since the table has no real
+            # viewport width yet at construction time, before this widget
+            # has been placed in a shown parent/laid out — _fill_width_once
+            # needs that width to compute an actual fill, not just its
+            # 60px-minimum fallback. Guarded by _col_widths_user_set
+            # (checked, not just decided here at schedule-time) because
+            # anything — a real drag, or a caller that resizes a column
+            # programmatically — could set a real width in the gap
+            # between scheduling and this actually firing; that must win
+            # over silently overwriting it a moment later.
+            QTimer.singleShot(0, self._fill_width_once_unless_user_set)
         h.sectionResized.connect(self._on_column_resized)
 
         # ── Sticky context bar — always shows current Nod + Avvikelse ──────────
@@ -2816,6 +2834,16 @@ class ScenarioTablePanel(QWidget):
     # Columns that stretch to fill remaining space in fill mode
     _STRETCH_COLS = None  # set after class constants are known
 
+    def _fill_width_once_unless_user_set(self):
+        """Guard for the deferred auto-fill-at-startup call scheduled in
+        __init__ (2026-08-26) — only runs _fill_width_once() if nothing
+        has resized a column (a real drag, or any other programmatic
+        setColumnWidth call) in the gap between __init__ scheduling this
+        and the event loop actually running it. _on_column_resized flips
+        _col_widths_user_set the instant anything does."""
+        if not self._col_widths_user_set:
+            self._fill_width_once()
+
     def _fill_width_once(self):
         """Redistribute ORS/KON/SG to fill the table's current width right
         now. Previously "Fyll skärm" was a persistent checkbox that locked
@@ -2841,6 +2869,7 @@ class ScenarioTablePanel(QWidget):
         NOTES.md) — only meaningful for Interactive columns ("Fyll skärm"
         unchecked), but harmless to also record Stretch/Fixed-driven
         resizes since they'd just re-save the same hardcoded defaults."""
+        self._col_widths_user_set = True
         try:
             saved = self.db.get_config('scenario_col_widths', '')
             widths = json.loads(saved) if saved else {}

@@ -1539,6 +1539,45 @@ behölls likaså, eftersom `_move_cause_dialog` fortfarande anropar dem.
 över hela kodbasen efter kvarvarande referenser till de borttagna
 symbolerna — inga funna.
 
+## "Fyll bredd" som standard vid uppstart (2026-08-26)
+
+Anton: "Du kan ordna så kanppen fyll bredd är ikryssad per default när
+programmet startar." Knappen "↔ Fyll bredd" i HAZOP scenario-tabellen
+är sedan tidigare en engångsknapp (inte en kryssruta — se
+`_fill_width_once`s egen docstring om varför den gamla, låsande
+kryssrutan togs bort 2026-08-10), som fördelar om Orsak/Konsekvens/
+Barriärer-kolumnerna jämnt över den lediga bredden.
+
+**Ändring:** en helt ny studie (ingen sparad `scenario_col_widths` i
+`app_config` än) kör nu automatiskt samma logik en gång vid uppstart —
+via `QTimer.singleShot(0, ...)` (tabellen har ingen riktig
+viewport-bredd vid själva konstruktionen, innan widgeten lagts in i ett
+visat fönster). Så fort användaren ändrat NÅGON kolumnbredd (drag eller
+programmatiskt) sparas riktiga bredder via `_on_column_resized`, och
+denna gren körs aldrig igen för den studien.
+
+**Bugg hittad och fixad under implementationen:** den första versionen
+körde den fördröjda auto-fyllningen ovillkorligt baserat ENDAST på om
+sparade bredder fanns vid KONSTRUKTIONSTILLFÄLLET — om något (ett
+riktigt test, eller i teorin ett annat kodställe) satte en kolumnbredd
+programmatiskt EFTER konstruktion men INNAN händelseloopen hann köra
+den fördröjda callbacken, skrevs den bredden tyst över ett ögonblick
+senare. Bekräftat genom att en befintlig test
+(`OrsInlineTagPrefixTests.test_tag_click_zone_matches_the_actual_rendered_prefix_width`,
+som sätter ORS-bredden till 400px direkt efter konstruktion) plötsligt
+slog av. Fixat med en `_col_widths_user_set`-flagga som
+`_on_column_resized` sätter omedelbart vid VILKEN SOM HELST
+breddändring (drag eller programmatisk) — den fördröjda auto-
+fyllningen kollar flaggan precis innan den kör och hoppar över sig
+själv om något redan hunnit sätta en bredd.
+
+**Verifiering:** `test_smoke`, hela `test_scenario_panel`-filen (138
+tester, inklusive två nya: en som bekräftar att en helt ny studie
+fyller bredden automatiskt, en som bekräftar att en studie med sparade
+bredder INTE skrivs över), samt kontrollgrupp (`git stash` — det nya
+testet för auto-fyllning slog verkligen av mot koden innan denna
+ändring), samt full 14-filssvit.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.
