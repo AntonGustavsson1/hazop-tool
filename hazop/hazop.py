@@ -2520,7 +2520,7 @@ class MainWindow(QMainWindow):
     # ── Print scenario table ──────────────────────────────────────────────────
     def _print_scenario_table(self):
         from PyQt6.QtPrintSupport import QPrinter, QPrintPreviewDialog
-        from PyQt6.QtGui import QTextDocument
+        from PyQt6.QtGui import QTextDocument, QPageSize, QPageLayout
 
         html = ['<html><body style="font-family:Arial;font-size:9pt;">',
                 '<h2>HAZOP Scenariotabell</h2>',
@@ -2551,10 +2551,10 @@ class MainWindow(QMainWindow):
         doc = QTextDocument()
         doc.setHtml(''.join(html))
         printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-        printer.setPageSize(QPrinter.PageSize.A4)
-        printer.setPageOrientation(QPrinter.Orientation.Landscape)
+        printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+        printer.setPageOrientation(QPageLayout.Orientation.Landscape)
         preview = QPrintPreviewDialog(printer, self)
-        preview.paintRequested.connect(doc.print_)
+        preview.paintRequested.connect(doc.print)
         preview.exec()
 
     # ── Statistics ────────────────────────────────────────────────────────────

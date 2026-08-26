@@ -1475,6 +1475,30 @@ class SimilarSymbolSearchDialogTests(unittest.TestCase):
         finally:
             dlg.deleteLater()
 
+    def test_save_as_template_shows_message_instead_of_crashing_when_all_segments_excluded(self):
+        """Same real crash class as test_excluding_every_segment_shows_a_
+        message_instead_of_crashing (2026-08-15, see NOTES.md), but hit via
+        a second, separately unguarded call site: "💾 Spara som mall…" also
+        calls similarity_features()/cluster_features() with the edited
+        (possibly emptied) index_group, and crashed the same way
+        (min() on an empty list) if a user excluded every segment before
+        clicking Save (crash_20260815_175028_ValueError.json)."""
+        self.db = Database(path=os.path.join(
+            tempfile.mkdtemp(prefix="hazop_savetemplate_test_"), "test_project.db"))
+        dlg = self._dialog(db=self.db)
+        try:
+            dlg._canvas._excluded_sources.update({0, 1})
+            dlg._canvas.selection_changed.emit()
+            self.assertEqual(dlg.edited_index_group(), [])
+            with unittest.mock.patch('pid_viewer.QInputDialog.getText') as mock_input, \
+                 unittest.mock.patch('pid_viewer.QMessageBox.warning') as mock_warn:
+                dlg._save_as_template()   # must not raise
+            mock_input.assert_not_called()
+            mock_warn.assert_called_once()
+            self.assertEqual(len(self.db.symbol_templates()), 0)
+        finally:
+            dlg.deleteLater()
+
     def test_method_toggle_visible_when_a_vector_cluster_was_resolved(self):
         dlg = self._dialog()
         try:

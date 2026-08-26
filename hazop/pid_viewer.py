@@ -1725,6 +1725,15 @@ class SimilarSymbolSearchDialog(QDialog):
         on this specific document again."""
         if not self._db or self._canvas is None:
             return
+        # Same empty-reference guard as _restart_scan (2026-08-15, see
+        # NOTES.md "Hitta liknande symbol" — symbolbibliotek): excluding
+        # every primitive in the vector reference canvas leaves an empty
+        # index_group, which crashes symbol_geometry.cluster_features()
+        # (min() on an empty list) — nothing to save as a template either.
+        if not self.use_image_matching() and not self.edited_index_group():
+            QMessageBox.warning(self, "Inget att spara",
+                "Inget kvar av referensformen — inkludera minst ett segment.")
+            return
         name, ok = QInputDialog.getText(self, "Spara som mall", "Namn:")
         name = (name or '').strip()
         if not ok or not name:

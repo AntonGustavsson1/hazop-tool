@@ -489,5 +489,34 @@ class MultiprocessingFreezeSupportTests(unittest.TestCase):
             "construction instead")
 
 
+class PrintScenarioTableTests(unittest.TestCase):
+    """Real crash found in the wild (crash_20260825_135308_AttributeError.
+    json): _print_scenario_table() built its QPrinter with the PyQt5-style
+    enum access `QPrinter.PageSize.A4` / `QPrinter.Orientation.Landscape`
+    -- PyQt6 removed both from QPrinter (page size/orientation now live on
+    QPageSize/QPageLayout instead), so "Skriv ut scenariotabell" crashed
+    with AttributeError every single time it was used, before a print
+    preview ever appeared. Fixing that surfaced a second, not-yet-reported
+    break in the same method one line later: `doc.print_` (the PyQt5 name,
+    trailing underscore because `print` is a Python keyword) was renamed to
+    plain `doc.print` in PyQt6 -- also fixed here."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_print_scenario_table_does_not_crash_building_the_printer(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.add_deviation(node_id, "Högt flöde")
+            cause_id = win.db.add_cause(dev_id)
+            cons_id = win.db.add_consequence(cause_id)
+            win.db.add_safeguard(cons_id)
+
+            with unittest.mock.patch(
+                    'PyQt6.QtPrintSupport.QPrintPreviewDialog.exec', return_value=0):
+                win._print_scenario_table()   # must not raise AttributeError
+
+
 if __name__ == "__main__":
     unittest.main()

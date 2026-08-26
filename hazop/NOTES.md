@@ -1578,6 +1578,51 @@ bredder INTE skrivs över), samt kontrollgrupp (`git stash` — det nya
 testet för auto-fyllning slog verkligen av mot koden innan denna
 ändring), samt full 14-filssvit.
 
+## Crash-genomgång: 27 nya krascher sedan 2026-08-12 triagerade, två levande buggar fixade (2026-08-26)
+
+Sessionsstart: startup-checklistan (se CLAUDE.md) hittade 27 nya filer i
+`crashes/` sedan senaste genomgången (2026-08-12). Triage av alla 27:
+9 redan bekräftat fixade i nuvarande kod (modulsplitten 2026-08-17/18,
+`_participant_matrix_panel`-db-swappen, `clear_equipment_catalog`s
+FK-nollning), 10 var dev/testskript-artefakter (traceback-toppen är
+`<string>`/`<stdin>`, dvs ett fristående `python -c`/testskript, inte den
+körande appen — bl.a. båda `UnicodeEncodeError`-emoji-kraschen: skriptet
+anropade aldrig `_configure_utf8_console_output()`, som redan fixar den
+riktiga apploggningsvägen sedan 2026-08-12). 2 var genuint fortfarande
+levande buggar, båda fixade nu:
+
+**1. "Skriv ut scenariotabell" kraschade varje gång (crash_20260825_135308_AttributeError.json).**
+`MainWindow._print_scenario_table()` (hazop.py) byggde sin `QPrinter` med
+PyQt5-stilens enum-access: `QPrinter.PageSize.A4` och
+`QPrinter.Orientation.Landscape` — PyQt6 tog bort båda från `QPrinter`
+(sidstorlek/orientering flyttade till `QPageSize`/`QPageLayout`). Fixat
+till `printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))` och
+`printer.setPageOrientation(QPageLayout.Orientation.Landscape)`. Att fixa
+detta avslöjade en ANDRA, ännu inte rapporterad krasch ett steg längre in
+i samma metod: `preview.paintRequested.connect(doc.print_)` —
+`QTextDocument.print_` (PyQt5-namnet, understreck eftersom `print` är ett
+Python-nyckelord) döptes om till bara `doc.print` i PyQt6. Båda fixade
+tillsammans eftersom den andra aldrig gick att nå förrän den första var
+löst. Ny test: `PrintScenarioTableTests` i `tests/test_hazop.py`.
+
+**2. "💾 Spara som mall…" i "Hitta liknande symbol" kunde fortfarande
+krascha på tomt referensurval (crash_20260815_175028_ValueError.json).**
+Samma bugg-klass som redan fixades 2026-08-15 för `_restart_scan`
+(`SimilarSymbolSearchDialogTests`) — att exkludera ALLA primitiv i
+referenscanvasen lämnar en tom `index_group`, som kraschar
+`symbol_geometry.cluster_features()` (`min()` på en tom lista). Den
+tidigare fixen skyddade bara scan-omstarten; `_save_as_template()`
+(pid_viewer.py) hade samma oskyddade anrop till `similarity_features()`
+kvar — om en användare exkluderade allt och sedan klickade "Spara som
+mall" innan skanningen hunnit köras (eller trots meddelandet) small den
+fortfarande. Fixat med samma vakt-mönster: visar en varningsruta istället
+för att bygga features på en tom grupp. Ny test:
+`test_save_as_template_shows_message_instead_of_crashing_when_all_segments_excluded`.
+
+**Verifiering:** `test_smoke`, hela `test_hazop.py` (nya
+`PrintScenarioTableTests`) och hela `test_pid_viewer.py` (nytt fall i
+`SimilarSymbolSearchDialogTests`) — 134 tester, alla gröna.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.
