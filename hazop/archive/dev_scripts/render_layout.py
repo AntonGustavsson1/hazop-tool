@@ -1,11 +1,23 @@
 # -*- coding: utf-8 -*-
-"""Render the proposed board layout as a PNG for visual inspection."""
+"""Render the proposed board layout as a PNG for visual inspection.
+
+Moved here 2026-08-26 alongside the retired "Smart layout" feature (see
+archive/smart_layout.py's own docstring) -- see analyze_refs.py's own
+header comment in this same folder for what changed (imports + sys.path
+only; the rendering logic itself is unedited)."""
 import sys, os, io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_HAZOP_DIR = os.path.dirname(os.path.dirname(_HERE))
+for _p in (_HERE, _HAZOP_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 import fitz
 from analyze_refs import Shim, sheet_id_from_filename
-from pid_viewer import _DIALECTS, _detect_dialect, _sheet_ref_variants, _propose_layout
+from pid_viewer import _DIALECTS, _detect_dialect, _sheet_ref_variants
+from archive.smart_layout import _propose_layout
 
 
 def main(folder, out_png):

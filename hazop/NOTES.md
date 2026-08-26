@@ -1668,6 +1668,62 @@ bekräfta att UTF-8/å-ä-ö-text och grupperingen ser korrekta ut i en
 verklig .xlsx öppnad med openpyxl. `test_smoke` + hela
 `test_settings_panels.py` (94 tester) gröna.
 
+## Riv Smart Layout ur den aktiva applikationen, arkivera implementationen (2026-08-26)
+
+Anton: "Riv den nuvarande Smart Layout-funktionen från den aktiva
+applikationen. Arkivera den gamla implementationen på lämplig plats i
+projektet så att koden finns kvar men inte används."
+
+**Borttaget från PIDPanel (pid_panel_mod.py):** knappen "Smart layout" i
+P&ID-verktygsraden, dess tre init-attribut (`_smart_layout_prev`,
+`_analyzer_thread`, `_analyzer_progress_dlg`) och de tre metoderna
+`_run_smart_layout`/`_on_smart_layout_done`/`_undo_smart_layout` (samt
+den nu oanvända `ConnectorAnalyzer`-importen). Kvar och oförändrat: hela
+den aktiva vägen som ritar upp REDAN SPARADE kopplingar/bågar när ett
+P&ID öppnas (`PIDPanel._load_overlays`, `add_sheet_conn_arc`) — den
+läser bara det som redan finns i DB:n och beror inte på hur datan en
+gång skapades.
+
+**Flyttat till `archive/smart_layout.py`:** hela `ConnectorAnalyzer`-
+klassen och `_propose_layout()`-funktionen (den Sugiyama-inspirerade
+lagerbaserade layouten), ordagrant, ur pid_viewer.py. Modulen importerar
+`_DIALECTS`/`_detect_dialect`/`_sheet_ref_variants`/`_RE_SHEET_NUM`
+TILLBAKA från pid_viewer.py istället för att duplicera dem — de stannade
+kvar där eftersom `_DIALECTS['classic']`s egen dict-literal refererar
+`_RE_SHEET_NUM` direkt och den aktiva bågritningskoden ovan fortfarande
+använder `_sheet_ref_variants`/`_detect_dialect`. Bara regex/dictar som
+en repo-bred grep bekräftade sakna alla andra anropsställen
+(`_RE_RDS_SHEET`, `_RE_ITS_CONN`, `_RE_GRYAAB_CONN`, `_RE_TO_FROM`,
+`_RE_DIR_KW`, `_RE_LINE_ID`, `_MEDIA_PATTERNS`, `_MEDIA_WEIGHTS`) flyttade
+ner tillsammans med koden som faktiskt använder dem.
+
+**Även flyttat** (samma dag, samma orsak): de två fristående
+dev-testverktygen `analyze_refs.py`/`render_layout.py` (byggda helt kring
+`ConnectorAnalyzer`/`_propose_layout` mot `P&ID ref/`-biblioteket) till
+`archive/dev_scripts/`, med uppdaterade importer
+(`from archive.smart_layout import ConnectorAnalyzer, _propose_layout`
+istället för `from pid_viewer import ...`) och en `sys.path`-fix eftersom
+de nu ligger två katalognivåer under hazop/ istället för en. Samt det
+enda testet som konstruerade `ConnectorAnalyzer` direkt
+(`ConnectorAnalyzerHangTests` i tests/test_pid_viewer.py) till
+`archive/tests/test_smart_layout_archived.py` — körs separat
+(`python -m unittest archive.tests.test_smart_layout_archived`), inte
+del av den aktiva sviten.
+
+**Medveten avvägning — SmartPipeTracer rördes INTE:** namnet "Smart" är
+delat mellan två helt orelaterade funktioner i den här kodbasen —
+`SmartPipeTracer` (pid_viewer.py, används av `pid_graphics_view.py` för
+att spåra en rörledning mellan två klickade punkter när man ritar
+markup/kopplingar) är INTE samma sak som "Smart layout"
+(bladpositionering) och är fortfarande aktiv. Bekräftat via grep innan
+något togs bort — annars hade fel funktion riskerat rivas.
+
+**Verifiering:** `python -m py_compile` på alla ändrade/nya filer, samt
+en faktisk import av `archive.smart_layout` och båda flyttade
+dev-skripten (inte bara py_compile) för att bekräfta att deras nya
+importer verkligen löser ut. Det arkiverade testet passerar isolerat.
+Hela 14-filssviten (922 tester) + `test_smoke` gröna efter borttagningen.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

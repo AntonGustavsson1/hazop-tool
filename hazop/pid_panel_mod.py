@@ -42,7 +42,7 @@ from pid_viewer import (
     _icon, _vline, _draw_pid_marker, _hex_to_fitz_rgb, _sheet_ref_variants,
     _equip_prefix_from_tag, _obj_type_matches, ensure_ocr_available,
     _MEDIA_COLORS,
-    ConnectorDotItem, ConnectorAnalyzer, PIDImportDialog,
+    ConnectorDotItem, PIDImportDialog,
     SimilarSymbolSearchDialog, SymbolTemplatePickerDialog,
     EquipmentMarkerReviewDialog, _ClusterPreviewCanvas,
     ParallelTagScanWorker, PageProgressDialog, EquipmentTagSearchWorker,
@@ -1201,9 +1201,6 @@ class PIDPanel(QWidget):
         self._pending_markup_pts          = None
         self._pending_markup_page         = None
         self._current_display_page  = 0
-        self._smart_layout_prev      = None   # {page: (ox, oy)} for undo
-        self._analyzer_thread        = None
-        self._analyzer_progress_dlg  = None
         # In-flight EquipmentTagSearchWorker instances, keyed by nothing —
         # just a keep-alive list (2026-08-18, see NOTES.md "kombinerad
         # placeringsmeny") so a QThread with no other living reference
@@ -1359,13 +1356,6 @@ class PIDPanel(QWidget):
             lambda on: (self._set_mode(MODE_ANNOTATION) if on
                         else self._set_mode(MODE_NAV)))
         bar.addWidget(self._annot_btn)
-
-        self.smart_btn = QPushButton("Smart layout")
-        self.smart_btn.setIcon(_icon('sparkle'))
-        self.smart_btn.setToolTip(
-            "Analyserar off-page connectors och föreslår optimal bladlayout (max 15 s)")
-        self.smart_btn.clicked.connect(self._run_smart_layout)
-        bar.addWidget(self.smart_btn)
 
         bar.addStretch()
         layout.addLayout(bar)
@@ -2447,117 +2437,6 @@ class PIDPanel(QWidget):
                     arc_index=arc_idx, weight=weight)
                 _make_dot(sc, src_pt, ox_fp, oy_fp, color_hex)
                 _make_dot(dc, dst_pt, ox_tp, oy_tp, color_hex)
-
-    def _run_smart_layout(self):
-        if not HAS_PYMUPDF or self.viewer.pdf_doc is None:
-            QMessageBox.information(self, "Smart layout",
-                "Öppna en P&ID-fil (PDF) först.")
-            return
-        if self._analyzer_thread and self._analyzer_thread.isRunning():
-            return
-        # Note: a running analysis can never reach this point (guard above
-        # returns first), so the old thread here — if any — is guaranteed to
-        # have already finished or failed. No need to quit()/wait() on it.
-        # Disconnect old thread's signal to prevent stale double-fires
-        if self._analyzer_thread is not None:
-            try:
-                self._analyzer_thread.finished_analysis.disconnect(self._on_smart_layout_done)
-            except Exception:
-                pass
-        # Save current layout for undo
-        self._smart_layout_prev = dict(self.viewer._page_offsets)
-        self.smart_btn.setEnabled(False)
-        self.smart_btn.setText("⏳ Analyserar…")
-
-        path         = self.db.get_pid_path()
-        active_pages = sorted(self.viewer._all_page_items.keys())
-        self._analyzer_thread = ConnectorAnalyzer(
-            path,
-            self.viewer.pdf_doc.page_count,
-            self.viewer._page_widths_pdf,
-            self.viewer._page_heights_pdf,
-            self.viewer.render_scale,
-            active_pages=active_pages,
-        )
-        self._analyzer_thread.progress.connect(
-            lambda msg: self.smart_btn.setText(f"⏳ {msg}"))
-        self._analyzer_thread.finished_analysis.connect(self._on_smart_layout_done)
-        self._analyzer_thread.start()
-
-        self._analyzer_progress_dlg = QProgressDialog(
-            "Analyserar P&ID-kopplingar…", None, 0, 0, self)
-        self._analyzer_progress_dlg.setWindowTitle("Smart layout")
-        self._analyzer_progress_dlg.setWindowModality(Qt.WindowModality.WindowModal)
-        self._analyzer_progress_dlg.setMinimumDuration(0)
-        self._analyzer_progress_dlg.show()
-        self._analyzer_thread.progress.connect(
-            lambda msg: self._analyzer_progress_dlg.setLabelText(msg)
-            if self._analyzer_progress_dlg else None)
-        QApplication.processEvents()
-
-    def _on_smart_layout_done(self, connectors, connections, layout, sheet_num_map):
-        if self._analyzer_progress_dlg is not None:
-            self._analyzer_progress_dlg.close()
-            self._analyzer_progress_dlg = None
-        self.smart_btn.setEnabled(True)
-        self.smart_btn.setText("Smart layout")
-
-        if not layout:
-            QMessageBox.information(self, "Smart layout",
-                "Inga off-page connectors hittades — kan inte föreslå layout.")
-            return
-
-        # Save to DB
-        self.db.clear_connector_analysis()
-        self.db.save_connectors(connectors)
-        self.db.save_pid_connections(connections)
-
-        import json as _json
-        # Save sheet-number map (page_idx → sheet_num_str) for visual arc drawing
-        self.db.set_pid_config_value('sheet_num_map', _json.dumps(sheet_num_map))
-
-        # Apply layout (scene coords = pdf_coords * render_scale already in layout dict)
-        for pn, (x, y) in layout.items():
-            if pn in self.viewer._all_page_items:
-                self.viewer._page_offsets[pn] = (x, y)
-                self.viewer._all_page_items[pn].setPos(x, y)
-
-        self.viewer._update_board_scene_rect()
-        self._load_overlays()
-
-        # Save board layout to DB
-        layout_data = {str(p): list(off)
-                       for p, off in self.viewer._page_offsets.items()}
-        self.db.set_pid_config_value('board_layout', _json.dumps(layout_data))
-
-        n_conn   = sum(1 for c in connections if not c.get('is_ghost'))
-        n_ghost  = sum(1 for c in connections if c.get('is_ghost'))
-        n_sheets = self.viewer.pdf_doc.page_count
-        msg = (f"Layout klar — {len(connectors)} connectors, "
-               f"{n_conn} kopplingar, {n_ghost} externa")
-        if n_ghost:
-            msg += f"\n({n_ghost} ritningar refererade men ej i workboard)"
-
-        box = QMessageBox(self)
-        box.setWindowTitle("Smart layout")
-        box.setText(msg)
-        undo_btn = box.addButton("Ångra", QMessageBox.ButtonRole.ResetRole)
-        undo_btn.setIcon(_icon('undo'))
-        box.addButton("OK", QMessageBox.ButtonRole.AcceptRole)
-        box.exec()
-        if box.clickedButton() == undo_btn:
-            self._undo_smart_layout()
-
-    def _undo_smart_layout(self):
-        if self._smart_layout_prev is None:
-            return
-        for pn, (ox, oy) in self._smart_layout_prev.items():
-            if pn in self.viewer._all_page_items:
-                self.viewer._page_offsets[pn] = (ox, oy)
-                self.viewer._all_page_items[pn].setPos(ox, oy)
-        self.viewer._update_board_scene_rect()
-        self._load_overlays()
-        self._smart_layout_prev = None
 
     def _update_pen(self):
         self.viewer.set_pen_style(

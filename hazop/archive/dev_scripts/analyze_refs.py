@@ -1,6 +1,15 @@
 # -*- coding: utf-8 -*-
 """Standalone analysis of off-page connector patterns in the P&ID ref library.
 
+Moved here 2026-08-26 alongside the retired "Smart layout" feature (see
+archive/smart_layout.py's own docstring) -- this was the dev-only tuning
+harness for ConnectorAnalyzer/_propose_layout, so it has no reason to run
+against an active feature anymore. Only the import of ConnectorAnalyzer/
+_propose_layout changed (now from archive.smart_layout instead of
+pid_viewer, where they no longer exist) plus the sys.path fix below (this
+file is now two directories below hazop/, not one) -- everything else is
+unedited.
+
 Merges every PDF in a library folder into one document (filename = sheet id),
 runs the same connector extraction as the app, and reports:
   * connectors per sheet (edge, direction, ref)
@@ -14,9 +23,13 @@ from collections import defaultdict
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
+_HAZOP_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _HAZOP_DIR not in sys.path:
+    sys.path.insert(0, _HAZOP_DIR)
+
 import fitz
-from pid_viewer import (_DIALECTS, _detect_dialect, ConnectorAnalyzer,
-                        _sheet_ref_variants, _propose_layout)
+from pid_viewer import _DIALECTS, _detect_dialect, _sheet_ref_variants
+from archive.smart_layout import ConnectorAnalyzer, _propose_layout
 
 
 class Shim:
