@@ -199,6 +199,11 @@ class HAZOPWorksheetTests(unittest.TestCase):
 
         ws = HAZOPWorksheet(self.db)
         try:
+            # "Visa samtliga noder" now defaults to checked (2026-08-26) —
+            # uncheck it first so combo selection actually drives
+            # load_node() again, same precondition this test always
+            # assumed, just no longer the construction-time default.
+            ws._all_nodes_cb.setChecked(False)
             ws._table_panel.load_node = unittest.mock.Mock()
             ws._node_combo.setCurrentIndex(1)
             ws._table_panel.load_node.assert_called_once_with(ids2['node_id'])
@@ -217,6 +222,12 @@ class HAZOPWorksheetTests(unittest.TestCase):
 
         ws = HAZOPWorksheet(self.db)
         try:
+            # "Visa samtliga noder" now defaults to checked (2026-08-26) —
+            # start from unchecked so the checked/unchecked transitions
+            # below actually fire toggled (Qt only emits it on a real
+            # value change) and exercise the same wiring this test always
+            # meant to cover.
+            ws._all_nodes_cb.setChecked(False)
             ws._node_combo.setCurrentIndex(1)  # select "Nod B" first
             ws._table_panel.load_node = unittest.mock.Mock()
             ws._table_panel.load_all = unittest.mock.Mock()
@@ -274,6 +285,11 @@ class HAZOPWorksheetTests(unittest.TestCase):
         ws = HAZOPWorksheet(self.db)
         try:
             ws.refresh()  # populate combo + load the node into _table_panel
+            # "Visa avvikelser utan orsaker" now defaults to checked
+            # (2026-08-26) — uncheck it first so the check/uncheck
+            # transitions below start from the same known baseline this
+            # test always assumed.
+            ws._show_empty_dev_cb.setChecked(False)
             self.assertFalse(ws._table_panel._show_empty_deviations)
             rows_before = ws._table_panel._table.rowCount()
 
@@ -291,6 +307,45 @@ class HAZOPWorksheetTests(unittest.TestCase):
         finally:
             ws.deleteLater()
 
+    def test_all_nodes_checkbox_defaults_to_checked_and_loads_all(self):
+        """"I Worksheet ska rutorna visa samtliga noder som standard."
+        (2026-08-26) — both the checkbox state AND the actual effect
+        (load_all(), not load_node()) must hold from construction, not
+        just the checkbox's own visual state."""
+        from hazop import HAZOPWorksheet
+        self._make_full_chain(node_name="Nod A")
+        self._make_full_chain(node_name="Nod B")
+
+        ws = HAZOPWorksheet(self.db)
+        try:
+            self.assertTrue(ws._all_nodes_cb.isChecked())
+            self.assertFalse(ws._node_combo.isEnabled(),
+                "combo must start disabled -- 'Visa samtliga noder' is on by default")
+            self.assertTrue(ws._table_panel._all_nodes,
+                "the embedded ScenarioTablePanel must actually be in "
+                "load_all() mode from construction, not just have a "
+                "checked-looking checkbox")
+        finally:
+            ws.deleteLater()
+
+    def test_show_empty_deviations_checkbox_defaults_to_checked(self):
+        """"Inställningen visa orsaker utan avvikelser ska vara ikryssad
+        som default." (2026-08-26, user's own wording reversed from the
+        actual 'Visa avvikelser utan orsaker' checkbox label -- same,
+        only existing such checkbox in the Worksheet)."""
+        from hazop import HAZOPWorksheet
+        ids = self._make_full_chain(node_name="Nod A")
+        self.db.add_deviation(ids['node_id'], description="Tom avvikelse")
+
+        ws = HAZOPWorksheet(self.db)
+        try:
+            self.assertTrue(ws._show_empty_dev_cb.isChecked())
+            self.assertTrue(ws._table_panel._show_empty_deviations,
+                "must actually be applied to the embedded ScenarioTablePanel "
+                "from construction, not just the checkbox's visual state")
+        finally:
+            ws.deleteLater()
+
     def test_deviation_column_always_visible_regardless_of_checkboxes(self):
         """The Avvikelse column must stay visible in the Worksheet even with
         both 'Visa samtliga noder' and 'Visa avvikelser utan orsaker'
@@ -303,6 +358,10 @@ class HAZOPWorksheetTests(unittest.TestCase):
 
         ws = HAZOPWorksheet(self.db)
         try:
+            # Both checkboxes now default to checked (2026-08-26) — force
+            # the "neither checked" scenario this test is actually about.
+            ws._all_nodes_cb.setChecked(False)
+            ws._show_empty_dev_cb.setChecked(False)
             ws.refresh()
             self.assertFalse(ws._all_nodes_cb.isChecked())
             self.assertFalse(ws._show_empty_dev_cb.isChecked())

@@ -64,6 +64,16 @@ class HAZOPWorksheet(QWidget):
         self._all_nodes_cb.toggled.connect(self._on_all_nodes_toggled)
         self._show_empty_dev_cb.toggled.connect(self._table_panel.set_show_empty_deviations)
 
+        # "I Worksheet ska rutorna visa samtliga noder som standard.
+        # Inställningen visa orsaker utan avvikelser ska vara ikryssad som
+        # default." (2026-08-26) — both default to checked. Set AFTER the
+        # toggled connects above (not before) so the real signal fires and
+        # actually propagates to _table_panel (load_all()/
+        # set_show_empty_deviations(True)) instead of just changing the
+        # checkbox's own visual state.
+        self._all_nodes_cb.setChecked(True)
+        self._show_empty_dev_cb.setChecked(True)
+
         # item_selected (row click -> update right-hand properties ribbon)
         # is not wired for v1: the Worksheet page has no properties ribbon
         # of its own, and piping it to MainWindow's ribbon would couple this

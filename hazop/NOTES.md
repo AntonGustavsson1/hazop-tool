@@ -2104,6 +2104,38 @@ kör om och gröna oförändrat. `test_smoke` + `test_hazop` +
 `test_integration` + `test_tree_panel` (306 test) samt hela 14-
 filssviten (956 test) gröna.
 
+## Ändra standardfilter i Worksheet (2026-08-26)
+
+Anton: "I Worksheet ska rutorna visa samtliga noder som standard.
+Inställningen visa orsaker utan avvikelser ska vara ikryssad som
+default." (den andra kryssrutans namn är i praktiken "Visa avvikelser
+utan orsaker" — enda existerande sådan kryssruta i Worksheet, texten är
+uppenbart samma ruta bara omvänd ordning på orden.)
+
+**Fix:** `HAZOPWorksheet.__init__` (worksheet.py) — båda kryssrutorna
+(`_all_nodes_cb`, `_show_empty_dev_cb`) sätts nu till `setChecked(True)`
+direkt efter att deras `toggled`-signaler kopplats (INTE före — Qt
+emitterar bara `toggled` vid en faktisk värdeändring, och innan
+signalerna är kopplade skulle en tidigare `setChecked(True)` bara ändra
+kryssrutans EGET visuella läge utan att nå `_table_panel.load_all()`/
+`set_show_empty_deviations(True)`).
+
+**Testuppdatering:** fyra befintliga tester i `HAZOPWorksheetTests`
+(tests/test_worksheet.py) antog implicit att båda rutorna startade
+avmarkerade (`test_selecting_combo_entry_calls_load_node_with_right_id`,
+`test_checking_all_nodes_disables_combo_and_calls_load_all`,
+`test_show_empty_dev_checkbox_calls_set_show_empty_deviations`,
+`test_deviation_column_always_visible_regardless_of_checkboxes`) —
+uppdaterade att explicit nollställa den relevanta rutan (`setChecked
+(False)`) INNAN de testar sina egna check/uncheck-övergångar, så samma
+mekanik verifieras som förut, bara mot ett nytt startläge. Två nya
+tester (`test_all_nodes_checkbox_defaults_to_checked_and_loads_all`,
+`test_show_empty_deviations_checkbox_defaults_to_checked`) verifierar
+både kryssrutans EGNA lägre och att effekten verkligen nått
+`_table_panel` (inte bara ett visuellt kryss). `test_smoke` +
+`test_worksheet` + `test_integration` (252 test) gröna — liten,
+väl avgränsad ändring i en fil, ingen full regressionskörning.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.
