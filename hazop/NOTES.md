@@ -1724,6 +1724,41 @@ dev-skripten (inte bara py_compile) för att bekräfta att deras nya
 importer verkligen löser ut. Det arkiverade testet passerar isolerat.
 Hela 14-filssviten (922 tester) + `test_smoke` gröna efter borttagningen.
 
+## Objekttypslistan på P&ID källas nu från Standardobjekt (2026-08-26)
+
+Anton: "Objektlistan som används när objekt definieras på P&ID ska vara
+samma som programmets standardobjektlista. Ändra P&ID-listan så att den
+använder standardlistan som källa."
+
+`ui_helpers._equipment_type_options(db)` — den delade hjälpfunktionen
+bakom typ-comboboxen i `EquipmentPlacementPopup`/`EquipmentDeviationBar`
+(pid_panel_mod.py, dvs. "definiera objekt på P&ID"), `EquipmentPanel`,
+`TreePanel` och `SafeguardObjectPopup`s typfilter — byggde tidigare listan
+som `_EQ_TYPE_ITEMS` (COMPONENT_TYPES, ~90 ISA-liknande prefixnamn) UNION
+`standard_objects`, dvs. de två listorna "pratade med varandra" men
+standardlistan var aldrig själva källan. Skrivet om: `standard_objects`
+(Inställningar → Standardobjekt) är nu bas-listan; endast ett
+`equipment_type`-värde som redan används i katalogen men INTE är ett
+standardobjekt läggs fortfarande på i slutet (så gammal/anpassad data
+inte tystnar ur listan). `_EQ_TYPE_ITEMS`-konstanten och dess enda
+återstående direktanvändning (Utrustningsregistrets tabellcell-delegat
+för inline-redigering av typ, equipment_panel.py:1205) lämnades
+medvetet orörda — avsiktligt avgränsat till den delade funktionen som
+faktiskt gäller "definiera objekt", inte hela appens typ-taxonomi.
+
+**Verifiering:** ny testklass `EquipmentTypeOptionsSourcedFromStandardObjectsTests`
+(4 tester) i tests/test_ui_helpers.py — bekräftar exakt listinnehåll,
+att en gammal ISA-stilsträng ("Ventil") som inte är ett standardobjekt
+inte längre dyker upp, att en genuint använd men icke-standard typ
+fortfarande läggs till sist, och att listan speglar en live-ändring av
+standard_objects (inte en cachead kopia). `test_smoke` + `test_ui_helpers`
++ `test_pid_panel_mod` + `test_equipment_panel` + `test_tree_panel` +
+`test_scenario_panel` + `test_settings_panels` (403 tester) gröna —
+inklusive två befintliga tester som redan förlitade sig på ett katalog-
+objekts EGET, redan satta legacy-`equipment_type`-värde ("Ventil"/
+"Behållare") fortfarande syns i dess combobox, precis det den nya
+extra-listan är till för.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

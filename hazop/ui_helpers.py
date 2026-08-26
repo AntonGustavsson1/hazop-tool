@@ -48,23 +48,36 @@ _EQ_TYPE_ITEMS = [''] + sorted(COMPONENT_TYPES.keys()) + ['Rörledning', 'Övrig
 
 
 def _equipment_type_options(db):
-    """_EQ_TYPE_ITEMS plus any custom equipment_type string already used
-    somewhere in the catalog (2026-08-13: 'vill kunna lägga till nya
-    typer av objekt som inte redan finns i listan') PLUS every name in
-    the Standardobjekt list (`standard_objects` — the admin-managed
-    catalogue used by the cause-suggestion forms, Inställningar →
-    Standardobjekt). The two lists must "prata med varandra" (2026-08-13
-    follow-up): a type added here also becomes a standard object (see
-    EquipmentTagPopup._add_new_type), and a standard object added via
-    Inställningar shows up here too, without either side needing a
-    special-cased import of the other."""
+    """Object-type dropdown options for every place the user assigns an
+    equipment type -- including defining a new object on the P&ID
+    (EquipmentPlacementPopup/EquipmentDeviationBar, pid_panel_mod.py) --
+    sourced from the Standardobjekt list (`standard_objects`, the same
+    admin-managed catalogue behind Inställningar → Standardobjekt and the
+    cause-suggestion forms) instead of a separate, larger ISA-style list.
+
+    2026-08-26 (Anton: "Objektlistan som används när objekt definieras på
+    P&ID ska vara samma som programmets standardobjektlista... använda
+    standardlistan som källa"): previously this unioned _EQ_TYPE_ITEMS
+    (COMPONENT_TYPES' ~90 ISA prefixes) together with standard_objects,
+    so the two lists only "pratade med varandra" instead of the P&ID one
+    actually BEING the standard one. standard_objects already covers the
+    same ground its old "Rörledning"/"Övrigt / Okänd" catch-alls did
+    ("Rörledning / slang", "Övrigt"), so nothing is lost by dropping
+    _EQ_TYPE_ITEMS as the base here.
+
+    Any equipment_type string already used in the catalog that ISN'T a
+    current standard object still gets appended at the end (2026-08-13:
+    "vill kunna lägga till nya typer av objekt som inte redan finns i
+    listan") -- legacy/custom data must stay visible/selectable, same
+    rationale as before, just against the new, standard_objects-first
+    baseline instead of the old ISA one."""
+    standard = [o['name'] for o in db.standard_objects()]
     rows = db.conn.execute(
         "SELECT DISTINCT equipment_type FROM equipment_catalog "
         "WHERE equipment_type IS NOT NULL AND equipment_type != ''").fetchall()
-    known = set(_EQ_TYPE_ITEMS)
-    extra = {r[0] for r in rows} - known
-    extra |= {o['name'] for o in db.standard_objects()} - known
-    return _EQ_TYPE_ITEMS[:-2] + sorted(extra) + _EQ_TYPE_ITEMS[-2:]
+    known = set(standard)
+    extra = sorted({r[0] for r in rows} - known)
+    return [''] + standard + extra
 
 
 def _tag_letter_prefix(tag: str) -> str:

@@ -141,5 +141,56 @@ class TagRefsAndBoldRangeTests(unittest.TestCase):
 
 
 
+class EquipmentTypeOptionsSourcedFromStandardObjectsTests(unittest.TestCase):
+    """"Objektlistan som används när objekt definieras på P&ID ska vara
+    samma som programmets standardobjektlista... använda standardlistan
+    som källa" (2026-08-26). _equipment_type_options() used to union a
+    separate ~90-entry ISA-style list (_EQ_TYPE_ITEMS, built from
+    equipment_detection.COMPONENT_TYPES) together with standard_objects;
+    now standard_objects IS the base list, with only genuinely
+    legacy/custom equipment_type values still used in the catalog
+    appended after it."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_eqtypeopts_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_options_are_exactly_blank_plus_standard_objects_by_default(self):
+        from hazop import _equipment_type_options
+        opts = _equipment_type_options(self.db)
+        standard_names = [o['name'] for o in self.db.standard_objects()]
+        self.assertEqual(opts, [''] + standard_names)
+
+    def test_a_plain_isa_style_name_not_in_standard_objects_is_absent(self):
+        """'Ventil' was in the old COMPONENT_TYPES-derived list but is not
+        one of the curated Standardobjekt entries (those spell it out,
+        e.g. 'Manuell ventil', 'On-off ventil') -- it must no longer
+        appear unless something in the catalog actually uses it."""
+        from hazop import _equipment_type_options
+        self.assertNotIn('Ventil', _equipment_type_options(self.db))
+
+    def test_legacy_equipment_type_in_use_is_still_appended(self):
+        from hazop import _equipment_type_options
+        self.db.add_equipment_item("X-1", "X-1", "X", 0, "Ventil", '', 0)
+        opts = _equipment_type_options(self.db)
+        standard_names = [o['name'] for o in self.db.standard_objects()]
+        self.assertEqual(opts, [''] + standard_names + ['Ventil'])
+
+    def test_renaming_a_standard_object_updates_the_options_list(self):
+        """Proves the list is truly SOURCED from standard_objects live,
+        not a cached/duplicated snapshot of it."""
+        from hazop import _equipment_type_options
+        obj = self.db.standard_objects()[0]
+        self.db.update_standard_object(obj['id'], 'Mitt eget objekt')
+        self.assertIn('Mitt eget objekt', _equipment_type_options(self.db))
+
+
 if __name__ == "__main__":
     unittest.main()
