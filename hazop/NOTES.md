@@ -1997,6 +1997,74 @@ den refaktorerade `_save()`. `test_smoke` + `test_scenario_panel` +
 löste den icke-deterministiska fallissemanget). Hela 14-filssviten
 (946 test) grön.
 
+## Flytta konsekvenskategori till riskmatrisen (2026-08-26)
+
+Anton: "Ta bort kategori-/C-värdesvalet från konsekvensfältet i HAZOP
+Scenario, inklusive visning som Per C5. Flytta detta till riskmatrisen.
+Där ska användaren kunna ange konsekvensnivå separat per kategori, t.ex.
+Person C5 och Miljö C3, och se respektive position i matrisen. Frekvens
+hämtas från orsaken."
+
+**Vad som togs bort:** KON-cellens "📊"-badgezon längst till vänster
+(`_kon_cat_zone_geometry`, konstanten `_KON_CAT_W`) — visade tidigare
+antingen ett "📊N"-märke eller staplade "Per C5"-liknande etiketter, en
+per kategori. Klick på zonen öppnade `ConsCategoryMatrixPopup` som en
+egen popup. Rivet helt: geometrihjälparen, editor-/storleksberäkningarnas
+`_KON_CAT_W`-avdrag (texten får nu hela cellens bredd) och klick-
+hanteringen i `eventFilter()`. **Medvetet KVAR, oförändrat:**
+`ConsCategoryMatrixPopup`-klassen själv och dess ANDRA anropsställe i
+`node_markup.py` (`PropertiesRibbon._edit_cons_sev`, "Konsekvens per
+kategori"-knappen i högerpanelen för en markerad konsekvens på P&ID) —
+begäran gällde specifikt "konsekvensfältet i HAZOP Scenario", inte den
+ribbonknappen, och att riva ett oberoende, fungerande åtkomstsätt hade
+varit en oombedd sidoeffekt.
+
+**Vart det flyttade:** `RiskMatrixPopup` (öppnas genom att klicka på
+"Risk före barriär"-cellen, samma popup oavsett om konsekvensen redan
+har en kategoribedömning eller inte) tar nu emot valfria `db=`/
+`cons_id=`-argument. När de ges visas en ny sektion under själva F×C-
+rutnätet: en rad per konsekvenskategori med kompakta severity-knappar
+(samma stil/mönster som `ConsCategoryMatrixPopup`, men sparar OMEDELBART
+per klick istället för att vänta på en OK-knapp — så markeringarna på
+rutnätet ovanför uppdateras direkt). Varje kategori med en satt severity
+ritar nu ut sin kortnamnsförkortning ("Per", "Mil" osv.) direkt i den
+rutnätscell den motsvarar — ALLTID i samma frekvenskolumn (den delade,
+från orsaken hämtade `current_freq`), så flera kategoriers positioner
+syns samtidigt i EN och samma matrisvy ("se respektive position i
+matrisen"). Frekvensen går inte att ändra per kategori i den nya
+sektionen (bara raden/severityn) — matchar "Frekvens hämtas från
+orsaken" ordagrant; att klicka en rutnätscell direkt (den befintliga,
+oförändrade snabbvägen för den enkla/icke-kategoriserade bedömningen)
+sätter fortfarande både frekvens och severity och stänger popupen precis
+som förut.
+
+**Ny signal:** `RiskMatrixPopup.category_changed` emitteras efter varje
+sparad/rensad kategori-severity; anropsstället (`_on_cell_clicked`s
+"Risk före barriär"-hantering) kopplar den till `self._schedule_rebuild()`
+— samma mönster `_apply_risk_from_matrix_cat` redan använde. Detta är
+också det som gör den FÖRSTA kategoribedömningen för en konsekvens
+möjlig att skapa nu: `_C_RFORE`-radernas per-kategori-vy krävde
+tidigare att en `consequence_severities`-rad redan fanns (skapad via det
+rivna badge-klicket) innan den visades alls — nu skapas den första raden
+direkt i den nya sektionen, tabellen bygger om, och en egen per-kategori-
+riskcell dyker upp i "Risk före barriär" för fortsatt redigering.
+
+**Verifiering:** `RiskMatrixCategorySectionTests` (6 tester — bakåt-
+kompatibilitet utan db/cons_id, en rad per kategori, spara+signal,
+rensa genom att klicka samma severity igen, markör i rätt/fel
+frekvenskolumn, förifyllda befintliga severities) och
+`KonCellCategoryBadgeMovedToRiskMatrixTests` (3 tester — tooltip nämner
+inte längre badgen, geometrihjälparen är borta, klick på riskcellen ger
+popupen `db`/`cons_id`) i tests/test_scenario_panel.py. Kontrollerat att
+8 av 9 nya tester verkligen FALLERAR mot koden innan denna ändring
+(`git stash` på scenario_panel.py, testfilen orörd) — den nionde
+(`test_clicking_a_severity_button_...`) föll också men syntes inte i den
+trunkerade outputen, samma orsak (`TypeError: unexpected keyword
+argument 'db'`) som de andra `RiskMatrixPopup(...)`-konstruktionerna.
+`test_smoke` + `test_scenario_panel` + `test_hazop` + `test_integration`
++ `test_node_markup` (406 test, täcker även den oförändrade ribbon-
+åtkomsten) och hela 14-filssviten (955 test) gröna.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

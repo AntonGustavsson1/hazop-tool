@@ -2671,6 +2671,195 @@ class RiskMatrixPopupDismissalTests(unittest.TestCase):
     # relies on), not new code written here.
 
 
+class RiskMatrixCategorySectionTests(unittest.TestCase):
+    """"Ta bort kategori-/C-värdesvalet från konsekvensfältet i HAZOP
+    Scenario... Flytta detta till riskmatrisen. Där ska användaren kunna
+    ange konsekvensnivå separat per kategori... och se respektive
+    position i matrisen. Frekvens hämtas från orsaken." (2026-08-26, see
+    NOTES.md "Flytta konsekvenskategori till riskmatrisen") —
+    RiskMatrixPopup now optionally hosts the per-category severity
+    picker that used to live behind the KON cell's "📊" badge
+    (ConsCategoryMatrixPopup, still used unchanged from the P&ID
+    node-markup ribbon) when constructed with db=/cons_id=."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_riskmatrix_cat_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.cons_id = self.db.add_consequence(cause_id)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_without_db_or_cons_id_no_category_section_is_built(self):
+        """Backward compat — every pre-existing call site/test that
+        doesn't pass db/cons_id (e.g. RiskMatrixPopupDismissalTests
+        above) must keep working exactly as before."""
+        from hazop import RiskMatrixPopup
+        popup = RiskMatrixPopup(current_freq=2, current_cons=3)
+        try:
+            self.assertFalse(hasattr(popup, '_cat_buttons'))
+        finally:
+            popup.deleteLater()
+
+    def test_with_db_and_cons_id_shows_one_row_per_category(self):
+        from hazop import RiskMatrixPopup
+        popup = RiskMatrixPopup(current_freq=2, current_cons=3,
+                                 db=self.db, cons_id=self.cons_id)
+        try:
+            cats = self.db.consequence_categories()
+            self.assertTrue(cats)
+            cat_ids = {c['id'] for c in cats}
+            button_cat_ids = {cid for (cid, _sev) in popup._cat_buttons}
+            self.assertEqual(button_cat_ids, cat_ids)
+        finally:
+            popup.deleteLater()
+
+    def test_clicking_a_severity_button_saves_immediately_and_emits_signal(self):
+        from hazop import RiskMatrixPopup
+        popup = RiskMatrixPopup(current_freq=2, current_cons=3,
+                                 db=self.db, cons_id=self.cons_id)
+        try:
+            cat = self.db.consequence_categories()[0]
+            emitted = []
+            popup.category_changed.connect(lambda: emitted.append(True))
+            popup._cat_buttons[(cat['id'], 5)].click()
+
+            saved = {r['category_id']: r['severity']
+                     for r in self.db.get_consequence_severities(self.cons_id)}
+            self.assertEqual(saved.get(cat['id']), 5)
+            self.assertEqual(emitted, [True])
+        finally:
+            popup.deleteLater()
+
+    def test_clicking_the_same_severity_again_clears_it(self):
+        from hazop import RiskMatrixPopup
+        cat = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(self.cons_id, cat['id'], 4)
+        popup = RiskMatrixPopup(current_freq=2, current_cons=3,
+                                 db=self.db, cons_id=self.cons_id)
+        try:
+            popup._cat_buttons[(cat['id'], 4)].click()
+            saved = {r['category_id']: r['severity']
+                     for r in self.db.get_consequence_severities(self.cons_id)}
+            self.assertNotIn(cat['id'], saved)
+        finally:
+            popup.deleteLater()
+
+    def test_category_at_the_shared_frequency_gets_a_marker_on_the_grid(self):
+        """"...och se respektive position i matrisen" — a category's
+        current severity must show up as a marker on the matrix cell it
+        occupies (always in the shared/from-the-cause frequency column,
+        since frequency isn't editable per category here)."""
+        from hazop import RiskMatrixPopup
+        cat = self.db.consequence_categories()[0]
+        popup = RiskMatrixPopup(current_freq=2, current_cons=3,
+                                 db=self.db, cons_id=self.cons_id)
+        try:
+            popup._cat_buttons[(cat['id'], 5)].click()
+            btn, _base = popup._grid_buttons[(2, 5)]
+            self.assertIn(cat['name'][:3], btn.text())
+            # A cell in a DIFFERENT frequency column must never get a
+            # marker — frequency always comes from the cause, never
+            # settable per category here.
+            other_btn, other_base = popup._grid_buttons[(3, 5)]
+            self.assertEqual(other_btn.text(), other_base)
+        finally:
+            popup.deleteLater()
+
+    def test_existing_severities_are_preseeded_as_checked(self):
+        from hazop import RiskMatrixPopup
+        cats = self.db.consequence_categories()
+        self.db.set_consequence_severity(self.cons_id, cats[0]['id'], 3)
+        popup = RiskMatrixPopup(current_freq=2, current_cons=3,
+                                 db=self.db, cons_id=self.cons_id)
+        try:
+            self.assertTrue(popup._cat_buttons[(cats[0]['id'], 3)].isChecked())
+        finally:
+            popup.deleteLater()
+
+
+class KonCellCategoryBadgeMovedToRiskMatrixTests(unittest.TestCase):
+    """The old "📊" category badge at the left of the KON cell (and its
+    "Per C5"-style stacked labels) is gone — assigning a consequence
+    level per category now happens inside the risk matrix popup (see
+    RiskMatrixCategorySectionTests above) instead."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_kon_cat_removed_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_kon_cell_tooltip_no_longer_mentions_the_badge(self):
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        cat = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(cons_id, cat['id'], 4)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+            item = panel._table.item(row, panel._C_KON)
+            self.assertNotIn('📊', item.toolTip())
+        finally:
+            panel.deleteLater()
+
+    def test_scenario_panel_no_longer_has_a_kon_category_zone_geometry_helper(self):
+        from hazop import ScenarioTablePanel
+        self.assertFalse(hasattr(ScenarioTablePanel, '_kon_cat_zone_geometry'))
+
+    def test_clicking_the_risk_cell_opens_a_category_aware_popup(self):
+        """The risk-matrix click path (_on_cell_clicked's _C_RFORE
+        branch) is the new entry point — it must now pass db/cons_id
+        through so the popup it opens can show the per-category
+        section (this is what makes the moved feature reachable at
+        all, now that the KON badge is gone)."""
+        from hazop import ScenarioTablePanel, RiskMatrixPopup
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+
+            captured = {}
+            orig_init = RiskMatrixPopup.__init__
+            def spy_init(self, *a, **kw):
+                captured.update(kw)
+                orig_init(self, *a, **kw)
+            with unittest.mock.patch.object(RiskMatrixPopup, '__init__', spy_init):
+                panel._on_cell_clicked(row, panel._C_RFORE)
+            self.assertIs(captured.get('db'), self.db)
+            self.assertEqual(captured.get('cons_id'), cons_id)
+        finally:
+            panel.deleteLater()
+
+
 class TooltipContrastTests(unittest.TestCase):
     """"Vissa tooltips/popups som visas vid hover är oläsliga på grund av
     färg/kontrast... även för objekt längst till höger." (2026-08-26).

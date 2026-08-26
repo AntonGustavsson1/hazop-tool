@@ -39,11 +39,23 @@ from tree_panel import (
 )
 
 class RiskMatrixPopup(QDialog):
-    """Popup risk matrix matching the configured format in Settings."""
+    """Popup risk matrix matching the configured format in Settings.
+
+    Optionally (2026-08-26, see NOTES.md "Flytta konsekvenskategori till
+    riskmatrisen") also hosts the per-category consequence-level picker
+    that used to live behind a separate "📊" badge on the KON cell —
+    pass `db`/`cons_id` to show it. Frequency stays a single value taken
+    from the cause (unchanged) and is never set per category here; only
+    each category's OWN severity is editable, and every category with a
+    severity set gets a small marker drawn directly on the matrix cell
+    it now occupies (same frequency column, shared across categories —
+    only the row differs), so their positions are visible together."""
 
     selection_made = pyqtSignal(int, int)   # freq_value, cons_value
+    category_changed = pyqtSignal()         # a per-category severity was set/cleared
 
-    def __init__(self, current_freq: int, current_cons: int, parent=None):
+    def __init__(self, current_freq: int, current_cons: int, parent=None,
+                 db=None, cons_id=None):
         super().__init__(parent)
         self.setWindowTitle("Välj risknivå")
         # Qt.WindowType.Popup (2026-08-26, see NOTES.md): same window type
@@ -68,6 +80,12 @@ class RiskMatrixPopup(QDialog):
         freq_on_x = cfg.get('x_axis', 'frequency') == 'frequency'
         x_rev     = cfg.get('x_reversed', False)
         y_rev     = cfg.get('y_reversed', False)
+
+        self._db          = db
+        self._cons_id     = cons_id
+        self._current_freq = current_freq
+        self._n_cons      = n_cons
+        self._grid_buttons = {}   # (freq_val, cons_val) -> (QPushButton, base label text)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(6, 6, 6, 6)
@@ -189,13 +207,103 @@ class RiskMatrixPopup(QDialog):
                 btn.clicked.connect(
                     lambda _, fv=freq_val, cv=cons_val: self._pick(fv, cv))
                 grid.addWidget(btn, r + 1, c + 1)
+                self._grid_buttons[(freq_val, cons_val)] = (btn, lbl[:4])
 
         outer.addLayout(grid)
+
+        if db is not None and cons_id is not None:
+            self._build_category_section(outer)
 
         cancel_btn = QPushButton("Avbryt")
         cancel_btn.clicked.connect(self.reject)
         outer.addWidget(cancel_btn)
 
+        self.adjustSize()
+
+    def _build_category_section(self, outer):
+        """Per-category severity picker, moved here from the old KON-cell
+        "📊" badge (ConsCategoryMatrixPopup) — same button-grid styling,
+        but severities are saved immediately per click (no separate OK)
+        so the markers on the matrix above update live as you go, and
+        the popup can just be dismissed (Avbryt / click outside) when
+        done rather than needing an explicit commit step."""
+        cats  = [dict(r) for r in self._db.consequence_categories()]
+        if not cats:
+            return
+        saved = {r['category_id']: r['severity']
+                 for r in self._db.get_consequence_severities(self._cons_id)}
+        self._cats = cats
+        self._cat_sel = {c['id']: saved.get(c['id'], 0) for c in cats}
+        self._cat_buttons = {}
+
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("color:#E2E3E1;")
+        outer.addWidget(sep)
+
+        hdr2 = QLabel("Konsekvens per kategori (frekvens hämtas från orsaken):")
+        hdr2.setStyleSheet("font-size:9px; color:#555;")
+        outer.addWidget(hdr2)
+
+        for cat in cats:
+            cid = cat['id']
+            row_l = QHBoxLayout(); row_l.setSpacing(2); row_l.setContentsMargins(0, 0, 0, 0)
+            name_l = QLabel(cat['name'])
+            name_l.setFixedWidth(70)
+            name_l.setStyleSheet("font-size:9px;")
+            row_l.addWidget(name_l)
+            for s in range(1, self._n_cons + 1):
+                cbtn = QPushButton(cons_axis_label(s))
+                cbtn.setFixedSize(36, 18)
+                cbtn.setCheckable(True)
+                cbtn.setChecked(self._cat_sel.get(cid, 0) == s)
+                cbtn.setStyleSheet(self._cat_bstyle(cbtn.isChecked()))
+                cbtn.setAutoDefault(False)
+                cbtn.setDefault(False)
+                cbtn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+                cbtn.clicked.connect(lambda _, ci=cid, sv=s: self._toggle_category(ci, sv))
+                self._cat_buttons[(cid, s)] = cbtn
+                row_l.addWidget(cbtn)
+            outer.addLayout(row_l)
+
+        self._refresh_category_markers()
+
+    @staticmethod
+    def _cat_bstyle(selected: bool) -> str:
+        if selected:
+            return ("QPushButton{background:#2F5FD0;color:white;"
+                    "border:2px solid #2F5FD0;border-radius:3px;"
+                    "font-size:8px;font-weight:bold;}"
+                    "QPushButton:hover{background:#3D6BD8;}")
+        return ("QPushButton{background:#F5F5F3;color:#17191C;"
+                "border:1px solid #CFD1CE;border-radius:3px;font-size:8px;}"
+                "QPushButton:hover{background:#E8E9E6;border:1px solid #B3B7B2;}")
+
+    def _toggle_category(self, cat_id, sev):
+        cur = self._cat_sel.get(cat_id, 0)
+        new_sev = 0 if cur == sev else sev
+        self._cat_sel[cat_id] = new_sev
+        for s in range(1, self._n_cons + 1):
+            btn = self._cat_buttons.get((cat_id, s))
+            if btn is not None:
+                checked = (s == new_sev)
+                btn.setChecked(checked)
+                btn.setStyleSheet(self._cat_bstyle(checked))
+        self._db.set_consequence_severity(self._cons_id, cat_id, new_sev)
+        self._refresh_category_markers()
+        self.category_changed.emit()
+
+    def _refresh_category_markers(self):
+        """Overlay each category's current severity onto the matrix
+        cell it now occupies — same (shared, from-the-cause) frequency
+        column for every category, one marker per row that has one."""
+        marks_by_cons_val = {}
+        for cat in getattr(self, '_cats', []):
+            sev = self._cat_sel.get(cat['id'], 0)
+            if sev > 0:
+                marks_by_cons_val.setdefault(sev, []).append(cat['name'][:3])
+        for (fv, cv), (btn, base) in self._grid_buttons.items():
+            marks = marks_by_cons_val.get(cv) if fv == self._current_freq else None
+            btn.setText(base + "\n" + ",".join(marks) if marks else base)
         self.adjustSize()
 
     def _pick(self, freq, cons):
@@ -1204,7 +1312,6 @@ class _ScenarioDelegate(QStyledItemDelegate):
             rect = fm.boundingRect(0, 0, w, 10000, Qt.TextFlag.TextWordWrap, combined)
             return QSize(option.rect.width(), max(one_line_h, rect.height() + 4))
         elif col == panel._C_KON:
-            w -= _KON_CAT_W
             w = max(40, w)
             rect = fm.boundingRect(0, 0, w, 10000, Qt.TextFlag.TextWordWrap, text)
             return QSize(option.rect.width(), max(one_line_h, rect.height() + 4))
@@ -1268,7 +1375,6 @@ class _ScenarioDelegate(QStyledItemDelegate):
 
 
 _PID_ICON_W  = 22          # pixels reserved on the left for the pin icon
-_KON_CAT_W   = 26          # pixels for the category badge zone in KON cells
 # Height of the ORS cell's FIRST TEXT LINE — where the (now inline, bold)
 # tag prefix, the frequency chip, and the comment dot all live (2026-08-25,
 # see NOTES.md "Slå ihop objektbaren i Orsak-kolumnen": the separate tag
@@ -1546,11 +1652,6 @@ class _PidDelegate(_ScenarioDelegate):
                                      max(10, r.width() - 4 - prefix_w),
                                      max(10, r.height())))
             return
-        elif col == self._panel._C_KON:
-            offset = _KON_CAT_W
-            editor.setGeometry(QRect(r.left() + offset, r.top(),
-                                     max(10, r.width() - offset), r.height()))
-            return
         elif col == self._panel._C_SG:
             # 2026-08-10 fix: this used to span the full remaining width,
             # visually covering the RRF badge (_RRF_W) while editing.
@@ -1759,7 +1860,10 @@ class _PidDelegate(_ScenarioDelegate):
                 painter.restore()
                 return
 
-        # ── Consequence cells: [cat-badge][description] ────────────────────────
+        # ── Consequence cells: description only (2026-08-26, see
+        # NOTES.md "Flytta konsekvenskategori till riskmatrisen" — the
+        # category/C-value badge zone that used to live at the left of
+        # this cell, e.g. "Per C5", moved to the risk matrix popup) ────
         if col == self._panel._C_KON:
             con_data = index.data(Qt.ItemDataRole.UserRole)
             if con_data and con_data[0] == 'consequence':
@@ -1772,48 +1876,7 @@ class _PidDelegate(_ScenarioDelegate):
                 else:
                     painter.fillRect(r, option.palette.base())
 
-                body_top = r.top()
-                body_h   = r.height()
-
-                cat_rect   = self._panel._kon_cat_zone_geometry(r)
-                txt_rect   = QRect(r.left() + _KON_CAT_W, body_top,
-                                   r.width() - _KON_CAT_W, body_h)
-
-                # Category badges — stacked vertically, one per category
-                n_cats      = index.data(Qt.ItemDataRole.UserRole + 4) or 0
-                all_cats    = index.data(Qt.ItemDataRole.UserRole + 5) or []
-                if all_cats:
-                    n         = len(all_cats)
-                    badge_h   = max(14, cat_rect.height() // n)
-                    cf = QFont(option.font)
-                    cf.setPointSize(max(6, option.font.pointSize() - 2))
-                    cf.setBold(True)
-                    painter.setFont(cf)
-                    for i, (cat_id, sev_id, cat_name, cat_sev) in enumerate(all_cats):
-                        badge = QRect(cat_rect.left() + 2,
-                                      cat_rect.top() + i * badge_h,
-                                      cat_rect.width() - 4,
-                                      badge_h - 1)
-                        badge_tc = (option.palette.highlightedText().color() if sel
-                                    else option.palette.text().color())
-                        painter.setPen(badge_tc)
-                        painter.drawText(badge, Qt.AlignmentFlag.AlignCenter,
-                                         f"{cat_name[:3]} {cons_axis_label(cat_sev)}")
-                elif n_cats > 0:
-                    painter.setPen(QColor('#17191C'))
-                    f2 = QFont(option.font)
-                    f2.setPointSize(max(6, option.font.pointSize() - 1))
-                    painter.setFont(f2)
-                    painter.drawText(cat_rect, Qt.AlignmentFlag.AlignCenter, f"📊{n_cats}")
-                # else: no category assessment yet — leave the zone blank
-                # rather than showing a muted "📊" placeholder on every
-                # single uncategorized row (2026-08-10, see NOTES.md
-                # "det känns lite plottrigt"; reduce chrome for unused
-                # features instead of always reserving visual weight for
-                # them).
-
-                painter.setPen(QPen(QColor('#E2E3E1'), 1))
-                painter.drawLine(cat_rect.right(), r.top(), cat_rect.right(), r.bottom())
+                txt_rect = r
 
                 # Description text — word-wrapped, drag-appended tags in
                 # bold (2026-08-09, see NOTES.md "fetmarkera objekttexten")
@@ -3772,7 +3835,7 @@ class ScenarioTablePanel(QWidget):
                                       Qt.TextFlag.TextWordWrap, combined)
                 h = max(one_line_h, rect.height() + 4)
             elif col == self._C_KON:
-                cell_w = max(40, w - _KON_CAT_W)
+                cell_w = max(40, w)
                 rect = fm.boundingRect(0, 0, cell_w, 10000,
                                       Qt.TextFlag.TextWordWrap, text)
                 h = max(one_line_h, rect.height() + 4)
@@ -4131,8 +4194,6 @@ class ScenarioTablePanel(QWidget):
         kon_item = QTableWidgetItem(cons_d['description'] or '—')
         kon_item.setData(Qt.ItemDataRole.UserRole, ('consequence', cid))
         kon_item.setData(Qt.ItemDataRole.UserRole + 3, None)   # no per-row cat badge
-        kon_item.setData(Qt.ItemDataRole.UserRole + 4, n_cats)
-        kon_item.setData(Qt.ItemDataRole.UserRole + 5, all_cat_infos or [])
         kon_item.setData(Qt.ItemDataRole.UserRole + 7, (cons_d.get('comp_type') or '',
                                                          cons_d.get('comp_tag')  or ''))
         # Every tag ever drag-appended into this text, bolded on paint
@@ -4140,8 +4201,7 @@ class ScenarioTablePanel(QWidget):
         # above only ever holds the MOST RECENT one.
         kon_item.setData(Qt.ItemDataRole.UserRole + 8,
                          parse_tag_refs(cons_d.get('tagged_refs') or ''))
-        tip = ("Klicka på 📊-ikonen för att sätta konsekvens per kategori\n"
-               "Dra en utrustningsmarkör hit (håll Shift) för att sätta tag\n"
+        tip = ("Dra en utrustningsmarkör hit (håll Shift) för att sätta tag\n"
                "Dubbelklicka för att redigera\nEnter för att lägga till ny konsekvens")
         if display_desc != cons_d['description']:
             tip += f"\nKedjetext: {display_desc}"
@@ -4571,7 +4631,7 @@ class ScenarioTablePanel(QWidget):
             rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, combined)
             return max(one_line_h, rect.height() + 4)
         else:   # self._C_KON
-            cell_w = max(40, w - _KON_CAT_W)
+            cell_w = max(40, w)
             rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, text)
             return max(one_line_h, rect.height() + 4)
 
@@ -4708,16 +4768,22 @@ class ScenarioTablePanel(QWidget):
 
         if meta[0] == 'risk_click_cat':
             _, cause_id, cons_id, cat_id, sev_id, cur_freq, cur_cons = meta
-            popup = RiskMatrixPopup(cur_freq, cur_cons, self)
+            popup = RiskMatrixPopup(cur_freq, cur_cons, self,
+                                     db=self.db, cons_id=cons_id)
             popup.selection_made.connect(
                 lambda f, c, caid=cause_id, coid=cons_id, catid=cat_id:
                     self._apply_risk_from_matrix_cat(caid, coid, catid, f, c))
         else:
             _, cause_id, cons_id, cur_freq, cur_cons = meta
-            popup = RiskMatrixPopup(cur_freq, cur_cons, self)
+            popup = RiskMatrixPopup(cur_freq, cur_cons, self,
+                                     db=self.db, cons_id=cons_id)
             popup.selection_made.connect(
                 lambda f, c, caid=cause_id, coid=cons_id:
                     self._apply_risk_from_matrix(caid, coid, f, c))
+        # Per-category severities (2026-08-26, see NOTES.md "Flytta
+        # konsekvenskategori till riskmatrisen") save themselves
+        # immediately inside the popup -- just needs a table refresh.
+        popup.category_changed.connect(self._schedule_rebuild)
 
         # Position popup: prefer above the cell, fall back to below if off-screen
         popup.adjustSize()
@@ -5066,12 +5132,6 @@ class ScenarioTablePanel(QWidget):
         between paint() and eventFilter()."""
         return QRect(cell_rect.right() - _RRF_W, cell_rect.top(),
                      _RRF_W, cell_rect.height())
-
-    def _kon_cat_zone_geometry(self, cell_rect):
-        """The 📊 category-badge zone at the left of a consequence (KON)
-        cell — shared between paint() and eventFilter()."""
-        return QRect(cell_rect.left(), cell_rect.top(),
-                     _KON_CAT_W, cell_rect.height())
 
     def _plus_badge_geometry(self, cell_rect):
         """The in-cell "+" quick-add badge, bottom-right corner — shared
@@ -5450,30 +5510,6 @@ class ScenarioTablePanel(QWidget):
                             self._open_comment_popup(row, cause_id,
                                                       self._table.viewport().mapToGlobal(pos))
                             return True
-
-            # 📊 Category badge click in KON cell
-            if row >= 0 and col == self._C_KON and row < len(self._row_meta):
-                cell_idx = self._table.model().index(row, col)
-                cat_zone = self._kon_cat_zone_geometry(self._table.visualRect(cell_idx))
-                if cat_zone.left() <= pos.x() < cat_zone.left() + cat_zone.width():
-                    cons_id = self._row_meta[row][2]
-                    if cons_id is not None:
-                        gp = self._table.viewport().mapToGlobal(pos)
-                        popup = ConsCategoryMatrixPopup(self.db, cons_id, self)
-                        popup.adjustSize()
-                        # Prefer ABOVE gp (2026-08-26, see NOTES.md "Flytta
-                        # HAZOP-popups ovanför"), falling back to below only
-                        # if there's no room above on screen.
-                        scr    = (QApplication.screenAt(gp) or QApplication.primaryScreen()).availableGeometry()
-                        pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
-                        x = min(gp.x(), scr.right() - pw)
-                        y = gp.y() - ph - 4
-                        if y < scr.top():
-                            y = gp.y() + 4
-                        popup.move(max(scr.left(), x), max(scr.top(), min(y, scr.bottom() - ph)))
-                        if popup.exec() == QDialog.DialogCode.Accepted:
-                            self._schedule_rebuild()
-                    return True
 
             # 🏷 object-picker icon click — left _SG_TAG_ICON_ZONE_W pixels
             # of safeguard cell (2026-08-19, see NOTES.md "Objekt-väljare
