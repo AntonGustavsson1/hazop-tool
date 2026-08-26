@@ -1432,9 +1432,20 @@ class _PidDelegate(_ScenarioDelegate):
         elif col == self._panel._C_SG:
             # 2026-08-10 fix: this used to span the full remaining width,
             # visually covering the RRF badge (_RRF_W) while editing.
+            # 2026-08-26 fix: anchor the editor to a single compact line
+            # at the TOP of the cell (matching _sg_row_height / the
+            # top-aligned static paint in _PidDelegate.paint()'s SG
+            # branch above) instead of stretching it to the full row
+            # height. A QLineEdit always vertically centers its own text
+            # within whatever rect it's given -- on any row taller than
+            # one line (height driven by a sibling ORS/KON cell's
+            # wrapped text, not by SG itself, since a row's height is
+            # shared across every column) the text visibly jumped from
+            # the top (painted) to the middle (editing) of the cell.
+            h = self._panel._sg_row_height(option.font)
             editor.setGeometry(QRect(r.left(), r.top(),
                                      max(10, r.width() - _RRF_W),
-                                     r.height()))
+                                     min(h, r.height())))
             return
         editor.setGeometry(r)
 

@@ -2671,6 +2671,80 @@ class RiskMatrixPopupDismissalTests(unittest.TestCase):
     # relies on), not new code written here.
 
 
+class SafeguardEditorTopAlignmentTests(unittest.TestCase):
+    """"Text i HAZOP Scenario ska ligga i överkant även för safeguards.
+    När safeguard redigeras får texten inte hoppa till vertikal
+    centrering." (2026-08-26). The static paint for SG already drew its
+    text top-aligned (_draw_text_with_bold_tags always passes
+    Qt.AlignmentFlag.AlignTop) -- but a plain QLineEdit editor always
+    vertically CENTERS its own text within whatever rect it's given, and
+    updateEditorGeometry used to hand it the cell's FULL row height. A
+    safeguard's own row height is shared with its sibling ORS/KON cells
+    on the same physical row (see _sg_row_height's docstring) -- on any
+    row taller than one line (driven by a long wrapped Orsak/Konsekvens
+    next to a short Barriär), the edited text visibly jumped from the
+    top (painted) to the middle (editing) of the cell."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_sgtopalign_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_sg_editor_geometry_stays_one_line_tall_and_top_anchored_on_a_tall_row(self):
+        from hazop import ScenarioTablePanel
+        from PyQt6.QtWidgets import QStyleOptionViewItem, QLineEdit
+        from PyQt6.QtCore import QRect
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            node_id = self.db.add_node()
+            dev_id = self.db.deviations(node_id)[0]['id']
+            cause_id = self.db.add_cause(dev_id)
+            # Long enough to word-wrap across many lines at any realistic
+            # column width, forcing this physical row much taller than a
+            # single line -- exactly the case that used to make the SG
+            # editor's text jump to vertical center.
+            self.db.update_cause(cause_id, description="Lång orsakstext " * 30)
+            cons_id = self.db.add_consequence(cause_id)
+            sg_id = self.db.add_safeguard(cons_id)
+            panel.load_node(node_id)
+
+            row = next(r for r, m in enumerate(panel._row_meta) if m[3] == sg_id)
+            row_h = panel._table.rowHeight(row)
+            sg_h  = panel._sg_row_height(panel._table.font())
+            self.assertGreater(row_h, sg_h,
+                "sanity check: the row must actually be taller than one "
+                "SG line, or this test isn't exercising the bug at all")
+
+            index = panel._table.model().index(row, panel._C_SG)
+            option = QStyleOptionViewItem()
+            option.rect = QRect(0, 0, 200, row_h)
+            option.font = panel._table.font()
+            editor = QLineEdit(panel._table)
+            try:
+                panel._pid_delegate.updateEditorGeometry(editor, option, index)
+                geo = editor.geometry()
+                self.assertEqual(geo.top(), option.rect.top(),
+                    "the editor must stay anchored to the TOP of the cell")
+                self.assertEqual(geo.height(), sg_h,
+                    "the editor must stay one compact SG line tall, not "
+                    "stretch to the full (taller) row height")
+            finally:
+                editor.deleteLater()
+        finally:
+            panel.deleteLater()
+
+
 class SafeguardRRFBadgeHeaderTests(unittest.TestCase):
     """"rrf rutan på safeguard blir väldigt hög. gör denna lägre genom
     att ta bort rrf och låta det stå i kolumneubriken istället."
