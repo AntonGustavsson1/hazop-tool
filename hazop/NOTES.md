@@ -1759,6 +1759,50 @@ objekts EGET, redan satta legacy-`equipment_type`-värde ("Ventil"/
 "Behållare") fortfarande syns i dess combobox, precis det den nya
 extra-listan är till för.
 
+## Behåll HAZOP-vyn när ett objekt tas bort från P&ID (2026-08-26)
+
+Anton: "När ett objekt tas bort från P&ID ska HAZOP-trädet uppdateras utan
+att öppna noder stängs. Behåll samma position och markerat objekt om
+möjligt. HAZOP Scenario-vyn ska inte hoppa eller bli blank."
+
+Båda hälfterna spårades till samma handler, `MainWindow.
+_on_equipment_changed_from_marker` (hazop.py), som körs för BÅDE
+`equipment_updated` och `equipment_deleted` (samma signal-mottagare,
+avsiktligt — se dess egen docstring).
+
+**Trädet tappade sin markering:** `refresh()` bevarar redan ALLA
+expanderade noder ovillkorligt (dess egna `expanded`-set byggs innan
+`self.tree.clear()`, oberoende av vad man anropar med) — men återmarkerar
+bara en rad om man talar om VILKEN via `select_type`/`select_id`.
+Handlern anropade `self.tree_panel.refresh()` helt utan argument, så
+trädet slutade alltid utan någon markerad rad efter "Ta bort", även för
+ett objekt helt orelaterat till det borttagna. Fix: läs
+`self.tree_panel._current()` INNAN ombyggnaden och skicka det vidare —
+`refresh(cur_type, cur_id)`. Om just den raden själv är det som
+försvann matchar den förstås inte längre (target=None, samma
+ofarliga fallback som redan fanns) men allt annat behåller sin markering.
+
+**HAZOP Scenario kunde bli blank:** `ScenarioTablePanel.load_equipment()`
+(körs när man klickar ett objekts P&ID-markör) filtrerar rader via ett
+tagg/typ-uppslag som läses LIVE från `equipment_catalog` varje ombyggnad
+(`_causes_for_equipment`/`causes_for_equipment`). Om just DET objektet
+sedan raderas matchar uppslaget noll rader — tabellen byggdes tyst om
+till en tom vy istället för att falla tillbaka på något. Fix: handlern
+kollar nu om scenariopanelens AKTIVA filter (`get_equipment_filter()`)
+pekar på just det borttagna id:t OCH att objektet verkligen är borta
+(`db.get_equipment_by_id(...) is None` — skiljer delete från en vanlig
+tag/typ-redigering, som ska lämna ett aktivt filter helt orört) — i så
+fall `load_all()` istället för `schedule_rebuild()`.
+
+**Verifiering:** tre nya tester i tests/test_integration.py
+(`EquipmentBarUpdateAndDeleteBubbleTests`) — bekräftat att båda de nya
+testerna verkligen FALLERAR mot koden innan fixen (kontrollgrupp via
+`git stash` på hazop.py) och passerar efter. Ett tredje test bekräftar
+att en redigering av ett ANNAT objekt inte rubbar ett redan aktivt
+filter. `test_smoke` + `test_integration` + `test_hazop` +
+`test_pid_panel_mod` + `test_scenario_panel` + `test_tree_panel`
+(515 tester) gröna.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

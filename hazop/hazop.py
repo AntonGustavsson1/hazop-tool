@@ -1896,9 +1896,34 @@ class MainWindow(QMainWindow):
         (equipment_updated/equipment_deleted), so this only needs to
         refresh the other two places that resolve an object's identity
         live from equipment_catalog, same as _on_equipment_edit_requested's
-        own refresh triplet above."""
-        self.scenario_panel.schedule_rebuild()
-        self.tree_panel.refresh()
+        own refresh triplet above.
+
+        Passes the tree's OWN currently selected (type, id) back into
+        refresh() (2026-08-26, see NOTES.md "Behåll HAZOP-vyn när P&ID
+        ändras") — refresh() already preserves every expanded node
+        unconditionally (see its own `expanded` set at the top), but only
+        re-selects/scrolls to an item when told which one via its
+        select_type/select_id params; called bare (as this was) it always
+        left the tree with nothing selected after "Ta bort" on a P&ID
+        marker, even though the item the user was actually looking at
+        (anything other than the just-deleted object itself) was still
+        right there in the rebuilt tree.
+
+        Also guards against the HAZOP Scenario view going blank: if the
+        table is currently filtered to just this object's rows
+        (ScenarioTablePanel.load_equipment(), triggered by clicking its
+        P&ID marker) and the object was just deleted rather than merely
+        edited, a plain rebuild would silently resolve to zero rows —
+        load_equipment()'s own tag/type match has nothing left to match
+        once the row is gone — instead of falling back to something
+        useful."""
+        if (self.scenario_panel.get_equipment_filter() == equipment_id
+                and self.db.get_equipment_by_id(equipment_id) is None):
+            self.scenario_panel.load_all()
+        else:
+            self.scenario_panel.schedule_rebuild()
+        cur_type, cur_id = self.tree_panel._current()
+        self.tree_panel.refresh(cur_type, cur_id)
 
     def _on_equipment_dropped_on_deviation(self, dev_id, marker_ids):
         """One or more equipment markers dragged from the P&ID onto a

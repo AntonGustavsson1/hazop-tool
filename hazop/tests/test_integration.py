@@ -4439,6 +4439,98 @@ class EquipmentBarUpdateAndDeleteBubbleTests(unittest.TestCase):
             mock_rebuild.assert_called_once()
 
 
+    def test_deleting_from_the_bar_preserves_the_trees_current_selection(self):
+        """"När ett objekt tas bort från P&ID ska HAZOP-trädet uppdateras
+        utan att öppna noder stängs. Behåll samma position och markerat
+        objekt om möjligt." (2026-08-26). MainWindow._on_equipment_changed_
+        from_marker used to call tree_panel.refresh() bare -- refresh()
+        only re-selects/scrolls to an item when told which one via its
+        select_type/select_id params, so the tree always ended up with
+        NOTHING selected after "Ta bort", even for an item completely
+        unrelated to the deleted object."""
+        eq_id = self.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", "", 0)
+        marker_id = self.db.add_equipment_marker(eq_id, "PV-101", 0, 1.0, 1.0, "Ventil")
+        other_node_id = self.db.add_node()
+
+        with _TempDbMainWindow() as win:
+            win.db = self.db
+            win.pid_panel.db = self.db
+            win.tree_panel.db = self.db
+            win.pid_panel._equipment_bar.db = self.db
+            win.pid_panel._equipment_bar.load(eq_id, marker_id)
+            win.tree_panel.refresh()
+            other_item = _find_tree_item(win.tree_panel.tree, NODE_T, other_node_id)
+            self.assertIsNotNone(other_item, "sanity check: the unrelated node must be in the tree")
+            win.tree_panel.tree.setCurrentItem(other_item)
+
+            with unittest.mock.patch.object(
+                    QMessageBox, 'question', return_value=QMessageBox.StandardButton.Yes), \
+                 unittest.mock.patch.object(win.pid_panel, '_load_overlays'):
+                win.pid_panel._equipment_bar._on_delete_clicked()
+
+            self.assertIsNone(self.db.get_equipment_by_id(eq_id))
+            cur = win.tree_panel.tree.currentItem()
+            self.assertIsNotNone(cur,
+                "the tree must not end up with nothing selected after "
+                "deleting an unrelated object from the P&ID")
+            self.assertEqual(cur.data(0, Qt.ItemDataRole.UserRole + 1), NODE_T)
+            self.assertEqual(cur.data(0, Qt.ItemDataRole.UserRole), other_node_id)
+
+    def test_deleting_the_objects_currently_filtered_in_scenario_falls_back_instead_of_blanking(self):
+        """"HAZOP Scenario-vyn ska inte hoppa eller bli blank." (2026-08-26).
+        ScenarioTablePanel.load_equipment() (triggered by clicking a P&ID
+        marker) filters rows by a tag/type match resolved live from
+        equipment_catalog -- once the row is deleted, that match resolves
+        to nothing and the table used to silently rebuild to zero rows.
+        The fix must detect exactly this case (filter target == the
+        deleted id) and fall back to load_all() instead."""
+        eq_id = self.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", "", 0)
+        marker_id = self.db.add_equipment_marker(eq_id, "PV-101", 0, 1.0, 1.0, "Ventil")
+
+        with _TempDbMainWindow() as win:
+            win.db = self.db
+            win.pid_panel.db = self.db
+            win.pid_panel._equipment_bar.db = self.db
+            win.pid_panel._equipment_bar.load(eq_id, marker_id)
+            win.scenario_panel.load_equipment(eq_id)
+            self.assertEqual(win.scenario_panel.get_equipment_filter(), eq_id)
+
+            with unittest.mock.patch.object(
+                    QMessageBox, 'question', return_value=QMessageBox.StandardButton.Yes), \
+                 unittest.mock.patch.object(win.pid_panel, '_load_overlays'), \
+                 unittest.mock.patch.object(win.tree_panel, 'refresh'):
+                win.pid_panel._equipment_bar._on_delete_clicked()
+
+            self.assertIsNone(self.db.get_equipment_by_id(eq_id))
+            self.assertIsNone(win.scenario_panel.get_equipment_filter(),
+                "the stale equipment filter must be cleared, not left "
+                "pointing at a now-deleted id")
+
+    def test_editing_a_different_objects_tag_does_not_disturb_an_active_equipment_filter(self):
+        """The fallback above must only trigger for the object the table
+        is ACTUALLY filtered to, and only when it was truly deleted (not
+        merely edited) -- otherwise every unrelated equipment_updated/
+        equipment_deleted signal would blow away a perfectly valid
+        filter."""
+        eq_id = self.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", "", 0)
+        other_eq_id = self.db.add_equipment_item("PV-102", "PV-102", "PV", 0, "Ventil", "", 0)
+        other_marker_id = self.db.add_equipment_marker(other_eq_id, "PV-102", 0, 2.0, 2.0, "Ventil")
+
+        with _TempDbMainWindow() as win:
+            win.db = self.db
+            win.pid_panel.db = self.db
+            win.pid_panel._equipment_bar.db = self.db
+            win.scenario_panel.load_equipment(eq_id)
+
+            win.pid_panel._equipment_bar.load(other_eq_id, other_marker_id)
+            with unittest.mock.patch.object(win.tree_panel, 'refresh'):
+                win.pid_panel._equipment_bar._tag_edit.setText("PV-103")
+                win.pid_panel._equipment_bar._commit_tag()
+
+            self.assertEqual(win.scenario_panel.get_equipment_filter(), eq_id,
+                "editing a DIFFERENT object must not touch the active filter")
+
+
 class EquipmentIdentityCrossPanelSyncTests(unittest.TestCase):
     """"Objektets identitet på P&ID, HAZOP scenario och trädet måste höra
     ihop. Bind dessa så de lirar och alltid på alla tre ställen oavsett
