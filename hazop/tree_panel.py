@@ -482,7 +482,7 @@ class TreePanel(QWidget):
                 if tag and trivial:
                     c_label = tag
                 elif tag:
-                    c_label = f"{tag} — {desc[:45]}"
+                    c_label = f"{tag}, {desc[:45]}"
                 else:
                     c_label = desc[:50]
                 citem = QTreeWidgetItem([f"    ⚙ {ci}. {c_label}"])

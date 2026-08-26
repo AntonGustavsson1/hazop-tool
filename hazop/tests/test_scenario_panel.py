@@ -2625,6 +2625,52 @@ class RiskMatrixPopupHoverStyleTests(unittest.TestCase):
             popup.deleteLater()
 
 
+class RiskMatrixPopupDismissalTests(unittest.TestCase):
+    """"Riskmatrisens popup ska stängas både med Avbryt och när användaren
+    klickar utanför popupen" (2026-08-26). Switched from an application-
+    modal QDialog shown via exec() to Qt.WindowType.Popup shown via
+    show() -- the same window type QMenu/QComboBox use for their own
+    dropdowns, which Qt closes automatically the instant a click lands
+    outside its geometry, on top of the existing Cancel/Escape handling."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_uses_popup_window_type_not_a_modal_dialog(self):
+        from hazop import RiskMatrixPopup
+        popup = RiskMatrixPopup(current_freq=2, current_cons=3)
+        try:
+            self.assertTrue(bool(popup.windowFlags() & Qt.WindowType.Popup),
+                "must use Qt.WindowType.Popup so outside clicks auto-dismiss it")
+        finally:
+            popup.deleteLater()
+
+    def test_cancel_button_closes_the_popup(self):
+        from hazop import RiskMatrixPopup
+        from PyQt6.QtWidgets import QPushButton
+        popup = RiskMatrixPopup(current_freq=2, current_cons=3)
+        try:
+            popup.show()
+            self.assertTrue(popup.isVisible())
+            cancel_btn = next(b for b in popup.findChildren(QPushButton) if b.text() == 'Avbryt')
+            cancel_btn.click()
+            self.assertFalse(popup.isVisible())
+        finally:
+            popup.deleteLater()
+
+    # NOTE: an end-to-end "does a real click outside the popup dismiss it"
+    # test was tried and dropped -- the offscreen QPA platform this suite
+    # runs under does not implement mouse/keyboard grabbing ("This plugin
+    # does not support grabbing the keyboard"), which is exactly the OS-
+    # level mechanism Qt.WindowType.Popup's outside-click dismissal relies
+    # on, so it can never pass headless regardless of correctness. The
+    # window-flag test above is what's actually within this suite's power
+    # to verify; the dismissal behavior itself is Qt's own well-established
+    # built-in Popup semantics (same as every QMenu/QComboBox already
+    # relies on), not new code written here.
+
+
 class SafeguardRRFBadgeHeaderTests(unittest.TestCase):
     """"rrf rutan på safeguard blir väldigt hög. gör denna lägre genom
     att ta bort rrf och låta det stå i kolumneubriken istället."

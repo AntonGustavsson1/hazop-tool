@@ -46,10 +46,15 @@ class RiskMatrixPopup(QDialog):
     def __init__(self, current_freq: int, current_cons: int, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Välj risknivå")
-        self.setWindowFlags(
-            Qt.WindowType.Dialog |
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint)
+        # Qt.WindowType.Popup (2026-08-26, see NOTES.md): same window type
+        # QMenu/QComboBox use for their own dropdowns -- Qt closes it
+        # automatically the instant a click lands outside its geometry, on
+        # top of the existing Cancel button and Escape handling below. Shown
+        # via show() now, not exec() (see the call site) -- a Popup grabs
+        # the mouse/keyboard itself and isn't meant to run its own nested
+        # modal event loop; nothing here relied on exec()'s return value,
+        # every outcome already flows through the selection_made signal.
+        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
         cfg       = get_matrix()
@@ -4547,7 +4552,7 @@ class ScenarioTablePanel(QWidget):
             y = anchor.y() + cell_rect.height() + 4   # fall back: below
         x = max(screen.left(), min(anchor.x(), screen.right() - pw))
         popup.move(x, y)
-        popup.exec()
+        popup.show()
 
     def _apply_risk_from_matrix(self, cause_id, cons_id, new_freq, new_cons):
         self.db.update_cause(cause_id, likelihood=new_freq)

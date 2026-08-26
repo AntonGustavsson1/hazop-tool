@@ -187,11 +187,11 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         self.assertIsNotNone(cause_item)
         self.assertIs(cause_item.parent(), dev_item,
             "the orsak row must be a direct child of the avvikelse row")
-        self.assertIn("V-101 — Felar stängd", cause_item.text(0))
+        self.assertIn("V-101, Felar stängd", cause_item.text(0))
 
     def test_orsak_row_shows_just_tag_when_cause_still_trivial(self):
         """A freshly tagged, not-yet-described cause shows just the tag
-        — "V-101 — Ny orsak" would be noise, not information."""
+        — "V-101, Ny orsak" would be noise, not information."""
         from hazop import _create_tagged_cause
         eq_id = self.db.add_equipment_item("V-101", "V-101", "V", 0, "Ventil", '', 0)
         node_id = self.db.add_node()
@@ -202,7 +202,7 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         cause_item = self._find_item(CAUSE_T, cause_id)
         self.assertIsNotNone(cause_item)
         self.assertIn("V-101", cause_item.text(0))
-        self.assertNotIn("—", cause_item.text(0),
+        self.assertNotIn(",", cause_item.text(0),
             "a still-trivial cause must show the bare tag, no separator/description")
 
     def test_orsak_row_shows_just_description_when_no_tag(self):
@@ -248,8 +248,8 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         self.assertIsNotNone(valve_item)
         self.assertIs(pump_item.parent(), valve_item.parent(),
             "both objects' causes must share the SAME avvikelse row as parent")
-        self.assertIn("P-101 — Felar stängd", pump_item.text(0))
-        self.assertIn("V-101 — Läcker", valve_item.text(0))
+        self.assertIn("P-101, Felar stängd", pump_item.text(0))
+        self.assertIn("V-101, Läcker", valve_item.text(0))
         # Only ONE avvikelse row for "Lågt flöde" under this node.
         parent = pump_item.parent()
         self.assertEqual(parent.data(0, Qt.ItemDataRole.UserRole + 1), DEV_T)
