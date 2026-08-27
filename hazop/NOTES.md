@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Flera öppna avvikelser för samma P&ID-objekt (2026-08-27)
+
+När flera avvikelser, till exempel Lågt flöde och Högt flöde, kryssas för samma
+objekt öppnas alla berörda avvikelsegrenar i trädet. Den andra grenen ersätter
+inte längre den första efter popupens uppdatering.
+
 ## Flera orsaker från P&ID-objekt (2026-08-27)
 
 Varje orsak som skapas genom att kryssa en avvikelse i objektets popup kopplas

@@ -1806,6 +1806,17 @@ class MainWindow(QMainWindow):
         without pulling in the rest of the node's unrelated causes too.
         """
         self.tree_panel.refresh(DEV_T, deviation_id, emit_selection=False)
+        # Keep every deviation for this clicked equipment open.  Refreshing
+        # with the newly-created deviation as target only reveals that one;
+        # when the same marker is assigned a second deviation, the earlier
+        # branch must remain visible as well (e.g. Lågt + Högt flöde).
+        # The deviation signal is emitted just before the automatic cause is
+        # inserted, so defer the reveal one event turn until that cause row
+        # exists.  This also handles the second checkbox without collapsing
+        # the first deviation's branch.
+        QTimer.singleShot(
+            0, lambda eid=equipment_id:
+                self.tree_panel.reveal_causes_for_equipment(eid))
         self.scenario_panel.load_equipment(equipment_id)
         self.scenario_panel.refresh_placed()
 
