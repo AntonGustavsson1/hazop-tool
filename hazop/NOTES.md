@@ -2891,3 +2891,13 @@ objekt dras till Orsak-fältet kopplas orsakens `equipment_id`, objekttyp och
 tagg till den första markerade utrustningen. Tabellen byggs om schemalagt och
 övriga paneler synkas via `item_edited`, så den nya objekttaggen visas direkt
 och den befintliga P&ID-/scenario-logiken återanvänds.
+
+## Viktat taggminne vid gummibandsplacering (2026-08-27)
+
+När ett objekt skapas via högerdragning används taggkodens alfabetiska
+teckenkombination som minnesnyckel; löpnummer ignoreras. `study_tag_memory`
+returnerar viktade typförslag där tidigare användningsfrekvens avgör mellan
+flera klassificeringar med samma prefix och en exakt tidigare tagg får extra
+vikt. Den högst rankade typen förifylls i Objekt/Objekttyp-dialogen, medan
+övriga typer fortfarande kan väljas manuellt. Ett manuellt bekräftat val lärs
+in och ökar därefter vikten för framtida taggar.

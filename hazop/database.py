@@ -7,6 +7,7 @@ import json
 import logging
 import sqlite3
 import datetime
+import re
 from pathlib import Path
 
 from constants import (
@@ -55,6 +56,19 @@ def add_tag_ref(raw: str, tag: str) -> str:
     refs = [t for t in parse_tag_refs(raw) if t != tag]
     refs.append(tag)
     return ','.join(refs)
+
+
+def _tag_letter_prefix(tag: str) -> str:
+    """Return the last alphabetic tag code, ignoring serial digits.
+
+    This deliberately lives in the database layer as a tiny dependency-free
+    fallback.  Tag memory must remain usable before the Qt helper modules have
+    finished importing (and compound tags such as ``E1.M1.PU103`` should be
+    keyed by ``PU`` rather than by their numbers).
+    """
+    value = str(tag or '').upper()
+    tokens = re.findall(r'[A-ZÅÄÖ]+', value)
+    return tokens[-1] if tokens else ''
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2285,6 +2299,45 @@ class Database:
             except Exception:
                 return ''
 
+    def get_tag_type_suggestions(self, tag: str, limit: int = 8):
+        """Rank remembered object types for a newly detected tag.
+
+        The alphabetic code (for example ``FT`` in ``20-FT-201``) is the
+        primary key; serial digits are intentionally ignored.  Usage count
+        provides the learned weighting when one code has been classified as
+        more than one type.  A remembered full example tag gets a strong
+        bonus, so an exact repeat wins without making other valid choices
+        disappear from the dropdown.
+        """
+        raw = str(tag or '').strip().upper()
+        prefix = _tag_letter_prefix(raw)
+        if not prefix:
+            return []
+        try:
+            rows = self.conn.execute(
+                "SELECT tag, comp_type, comp_tag, usage_count, updated "
+                "FROM study_tag_memory WHERE UPPER(tag)=UPPER(?) AND active=1",
+                (prefix,)).fetchall()
+        except Exception:
+            return []
+        ranked = []
+        for row in rows:
+            item = dict(row)
+            usage = max(0, int(item.get('usage_count') or 0))
+            exact = 1 if str(item.get('comp_tag') or '').strip().upper() == raw else 0
+            # Prefix match is the shared evidence; count and exact examples
+            # decide between competing types for the same alphabetic code.
+            score = usage * 10 + exact * 1000
+            ranked.append({
+                'comp_type': item.get('comp_type') or '',
+                'score': score,
+                'usage_count': usage,
+                'exact': bool(exact),
+                'updated': item.get('updated') or '',
+            })
+        ranked.sort(key=lambda item: (item['score'], item['usage_count'], item['updated']), reverse=True)
+        return ranked[:max(1, int(limit))]
+
     def set_tag_memory_active(self, prefix: str, comp_type: str, active: bool):
         """Enable/disable a specific (prefix, comp_type) entry."""
         self.conn.execute(
@@ -4360,7 +4413,7 @@ class Database:
                 if effective_tag is None: effective_tag = row['comp_tag']   or ''
         if effective_ct and effective_tag:
             try:
-                self.upsert_tag_memory(effective_tag, effective_ct)
+                self.upsert_tag_memory(effective_tag, effective_ct, comp_tag=effective_tag)
             except Exception:
                 pass
 

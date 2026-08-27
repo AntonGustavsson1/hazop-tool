@@ -828,6 +828,10 @@ class EquipmentPlacementPopup(QWidget):
         self._equipment_id = equipment_id
         self._marker_id = marker_id
         self._tag_edited_by_user = False
+        # A remembered type may be preselected from the tag code.  Once the
+        # user explicitly chooses a type, never replace that choice while the
+        # tag field is being edited or OCR finishes in the background.
+        self._type_selected_by_user = False
         # Set the moment "Skapa dublett" is clicked for a given tag string
         # (2026-08-25, see NOTES.md) — lets that exact tag bypass the
         # auto-merge in _commit_tag once the user has explicitly said they
@@ -910,7 +914,7 @@ class EquipmentPlacementPopup(QWidget):
         typ_lbl.setStyleSheet(_small)
         form.addRow(typ_lbl, typ_row)
         outer.addLayout(form)
-        self._type_cb.activated.connect(lambda _index: self._commit_type())
+        self._type_cb.activated.connect(self._on_type_activated)
 
         self._searching_lbl = QLabel("⏳ Söker tagg…")
         self._searching_lbl.setStyleSheet("font-size:9px; color:#8D9299; font-style:italic;")
@@ -967,11 +971,53 @@ class EquipmentPlacementPopup(QWidget):
             self._tag_edit.setText(eq.get('tag') or '')
             comp_type = eq.get('equipment_type') or ''
             if comp_type:
+                self._type_selected_by_user = True
                 idx = self._type_cb.findText(comp_type)
                 if idx < 0:
                     self._type_cb.addItem(comp_type)
                     idx = self._type_cb.count() - 1
                 self._type_cb.setCurrentIndex(idx)
+            else:
+                self._suggest_type_for_tag(eq.get('tag') or '')
+
+    def _on_type_activated(self, _index):
+        self._type_selected_by_user = True
+        self._commit_type()
+
+    def _suggest_type_for_tag(self, tag):
+        """Apply the highest-weight remembered type without overwriting an
+        existing user choice.  Competing types remain available in the same
+        dropdown; the ranking is only used for the initial selection."""
+        if self._type_selected_by_user or not tag:
+            return
+        try:
+            suggestions = self.db.get_tag_type_suggestions(tag)
+        except Exception:
+            suggestions = []
+        if not suggestions:
+            return
+        best = suggestions[0].get('comp_type') or ''
+        if not best:
+            return
+        idx = self._type_cb.findText(best)
+        if idx < 0:
+            self._type_cb.addItem(best)
+            idx = self._type_cb.count() - 1
+        self._type_cb.setCurrentIndex(idx)
+        # Persist the preselection on the placeholder immediately so that a
+        # tag commit/blur cannot discard it.  It is not counted as a new
+        # lesson until the user explicitly confirms a type (activated).
+        try:
+            eq = self.db.get_equipment_by_id(self._equipment_id)
+            if eq and not (eq.get('equipment_type') or ''):
+                self.db.update_equipment_item(
+                    self._equipment_id, eq.get('tag') or '', eq.get('prefix') or '',
+                    best, eq.get('description') or '')
+        except Exception:
+            pass
+        self._type_cb.setToolTip(
+            f"Förifylld från taggminne ({suggestions[0].get('usage_count', 0)} klassificeringar). "
+            "Välj annan typ om detta objekt skiljer sig.")
 
     def load_checklist(self, active_node_id=None):
         if self._checklist is not None:
@@ -1098,10 +1144,14 @@ class EquipmentPlacementPopup(QWidget):
         if self._tag_edited_by_user or not tag:
             return
         self._tag_edit.setText(tag)
+        self._suggest_type_for_tag(tag)
         self._commit_tag(show_warning=False)
 
     def _on_tag_edited_by_user(self, _text):
         self._tag_edited_by_user = True
+        # Manual typing is still allowed to benefit from the learned prefix;
+        # the guard only prevents changing a type the user already selected.
+        self._suggest_type_for_tag(self._tag_edit.text())
 
     def _update_dup_hint_live(self, text):
         """Live duplicate check, separate from _commit_tag's commit-time
@@ -1208,6 +1258,11 @@ class EquipmentPlacementPopup(QWidget):
         self.db.update_equipment_item(
             self._equipment_id, eq.get('tag') or '', eq.get('prefix') or '',
             comp_type, eq.get('description') or '')
+        if comp_type and eq.get('tag'):
+            try:
+                self.db.upsert_tag_memory(eq.get('tag'), comp_type, comp_tag=eq.get('tag'))
+            except Exception:
+                pass
         # Rebuild the checklist so its per-row standard-cause suggestions
         # (_build_deviation_row's `causes` lookup, keyed on comp_type) use
         # the type just picked, not whatever it was — usually blank — when
@@ -3428,6 +3483,15 @@ class PIDPanel(QWidget):
         gets; the same rectangle is also where the background tag search
         looks first."""
         tag = _apply_tag_identifier_rules(tag, self.db)
+        # Known prefixes can classify a tag immediately in the compact
+        # right-click flow.  Rubber-band placement starts blank and applies
+        # the same ranking when OCR or the user supplies the tag.
+        if not comp_type and tag:
+            try:
+                suggestions = self.db.get_tag_type_suggestions(tag)
+                comp_type = (suggestions[0].get('comp_type') or '') if suggestions else ''
+            except Exception:
+                comp_type = ''
         existing = self.db.get_equipment_by_tag(tag) if tag else None
         if existing:
             equipment_id = existing['id']
