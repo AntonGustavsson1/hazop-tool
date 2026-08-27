@@ -3327,6 +3327,56 @@ class PlusRowQuickAddTaggingTests(unittest.TestCase):
             self.assertFalse(cons_item.isExpanded(),
                 "Enter after safeguard editing must not expose safeguard rows")
 
+    def _assert_active_branch_survives_auto_collapse_after_edit(self, edited_type):
+        """Shared body for the two auto-collapse regression tests below —
+        only which scenario field gets edited differs (Konsekvens vs
+        Safeguard)."""
+        with _TempDbMainWindow() as win:
+            win.db.set_config('tree_auto_collapse_nodes', '1')
+            win.db.set_config('tree_auto_collapse_deviations', '1')
+            node = dict(win.db.nodes()[0])
+            node_id = node['id']
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            cons_id = win.db.add_consequence(cause_id)
+            sg_id = win.db.add_safeguard(cons_id)
+            edited_id = {CONS_T: cons_id, SG_T: sg_id}[edited_type]
+            win.tree_panel.refresh()
+
+            node_item = _find_tree_item(win.tree_panel.tree, NODE_T, node_id)
+            self.assertIsNotNone(node_item)
+            win.tree_panel.tree.setCurrentItem(node_item)
+            win.tree_panel._apply_auto_collapse()
+            self.assertTrue(node_item.isExpanded(),
+                "sanity check: the active node must be open before the edit")
+
+            win._on_scenario_item_edited(edited_type, edited_id)
+
+            system_item = _find_tree_item(win.tree_panel.tree, SYSTEM_T, node['system_id'])
+            node_item = _find_tree_item(win.tree_panel.tree, NODE_T, node_id)
+            self.assertIsNotNone(system_item)
+            self.assertIsNotNone(node_item)
+            self.assertTrue(system_item.isExpanded(),
+                "auto-collapse must not lose the active system just because "
+                "this refresh carried no navigation target")
+            self.assertTrue(node_item.isExpanded(),
+                "auto-collapse must not lose the active node just because "
+                "this refresh carried no navigation target")
+
+    def test_editing_consequence_with_auto_collapse_enabled_keeps_active_node_open(self):
+        """Regression: with 'Auto-collapse nodes'/'avvikelser' enabled,
+        Enter after Konsekvens editing used to collapse every System/Node
+        down to just the System row, because refresh()'s clear() wipes
+        currentItem() to None and this refresh path deliberately passes
+        no navigation target — _apply_auto_collapse() then saw no active
+        branch at all and collapsed everything, not just the consequence/
+        safeguard level. See NOTES.md."""
+        self._assert_active_branch_survives_auto_collapse_after_edit(CONS_T)
+
+    def test_editing_safeguard_with_auto_collapse_enabled_keeps_active_node_open(self):
+        """Same regression as above, reported for the Safeguard column."""
+        self._assert_active_branch_survives_auto_collapse_after_edit(SG_T)
+
     def test_quick_add_safeguard_creates_blank_row_no_popup(self):
         with _TempDbMainWindow() as win:
             panel = win.scenario_panel

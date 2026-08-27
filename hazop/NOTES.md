@@ -2601,3 +2601,37 @@ Verifiering: syntaxkontroll och ett end-to-end-test genom MainWindow som
 redigerar en safeguard medan konsekvensen är kollapsad och kontrollerar att
 barriären finns i det ombyggda trädet men fortfarande är dold. Ingen visuell
 GUI-körning gjordes.
+
+## Auto-collapse kollapsade hela trädet vid Scenario-redigering (2026-08-27)
+
+**Rapport:** Anton: "Hela systemet kollapsar när jag trycker enter och man ser
+bara systemmappen." — reproducerat till kolumnerna Konsekvens och Safeguard i
+HAZOP Scenario, men bara när kryssrutorna "Auto-collapse nodes"/"Auto-collapse
+avvikelser" (Inställningar → Träd) är påslagna.
+
+**Root cause:** ovanstående post samma dag gjorde `TreePanel.refresh()`
+medvetet mållös (`select_type=None`) efter en Scenario-redigering, för att
+inte tvinga upp Konsekvens/Safeguard-nivån. Men `refresh()` börjar alltid med
+`self.tree.clear()`, som nollställer `QTreeWidget.currentItem()` till `None`
+— och utan ett mål sattes den aldrig tillbaka. `_apply_auto_collapse()`
+(körs sist i `refresh()`) avgör vilken System/Nod-gren som är "aktiv" enbart
+via `self.tree.currentItem()` (`_active_system_node_and_deviation()`); med
+`currentItem()` == `None` matchade inget system `active_system_id`, så ALLA
+System-rader fälldes ihop — inte bara Konsekvens/Safeguard-nivån som var
+avsikten.
+
+**Fix:** `refresh()` sparar nu vilket item som var markerat innan `clear()`
+och söker upp motsvarande item i det ombyggda trädet igen. Om anropet saknade
+ett eget navigeringsmål sätts detta återfunna item tyst tillbaka som
+`currentItem()` (fortfarande innanför `blockSignals(True)`, ingen
+`_reveal()`/scroll, inga val-signaler) — ren bokföring åt auto-collapse, inte
+navigering. Konsekvens/Safeguard-fixen ovan är opåverkad eftersom
+`_reveal()`/scroll fortfarande aldrig anropas i detta läge.
+
+**Test:** `PlusRowQuickAddTaggingTests.test_editing_consequence_with_auto_collapse_enabled_keeps_active_node_open`
+och `..._safeguard_...` (tests/test_integration.py) — båda röd→grön
+verifierade (misslyckades utan fixen exakt som rapporterat: aktiv
+System/Nod-rad kollapsad efter redigering). `tests.test_smoke`,
+`tests.test_tree_panel` (60 tester, inkl. hela `TreePanelAutoCollapseTests`),
+`tests.test_scenario_panel` och hela `tests.test_integration` (240 tester)
+gröna. Ingen visuell GUI-körning gjordes.

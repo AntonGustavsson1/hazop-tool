@@ -384,6 +384,13 @@ class TreePanel(QWidget):
         self.tree.scrollToItem(item)
 
     def refresh(self, select_type=None, select_id=None, emit_selection=True):
+        # Captured before clear() wipes currentItem() to None — restored
+        # silently below (no target/emit_selection path) purely so
+        # _apply_auto_collapse()'s active-branch detection still has
+        # something to anchor on when this refresh carries no navigation
+        # target of its own. See the restore block after the tree is
+        # rebuilt for why.
+        prev_type, prev_id = self._current()
         expanded = set()
         it = QTreeWidgetItemIterator(self.tree)
         while it.value():
@@ -602,6 +609,28 @@ class TreePanel(QWidget):
 
             for ni, node in enumerate(ungrouped_nodes, 1):
                 _add_node_item(node, ni, None)
+
+            if target is None and prev_type is not None:
+                # No navigation target was requested (the common case right
+                # after a Scenario-table edit — see new_item_created/
+                # _on_scenario_item_edited in hazop.py, deliberately passing
+                # none so Orsak/Konsekvens/Safeguard aren't force-revealed).
+                # clear() above still wiped currentItem() to None, which
+                # made _apply_auto_collapse() below think NOTHING is active
+                # and collapse every System/Node — not just the intended
+                # Orsak/Konsekvens/Safeguard levels. Re-find and silently
+                # restore the previously-current item (still inside
+                # blockSignals — no _reveal/scroll, no selection signal;
+                # this is bookkeeping for auto-collapse, not real
+                # navigation).
+                it = QTreeWidgetItemIterator(self.tree)
+                while it.value():
+                    item = it.value()
+                    if (item.data(0, Qt.ItemDataRole.UserRole + 1) == prev_type and
+                            item.data(0, Qt.ItemDataRole.UserRole) == prev_id):
+                        self.tree.setCurrentItem(item)
+                        break
+                    it += 1
 
             if target and not emit_selection:
                 # Update the tree's visual highlight while signals are still
