@@ -186,6 +186,7 @@ class HAZOPPreparationPanel(QWidget):
         self._y_label_edits  = []   # QLineEdit per row (high→low)
         self._palette_swatches = []
         self._sev_def_edits  = {}   # (cat_id, sev_level) → QLineEdit, embedded in matrix grid
+        self._tor_report_fields = {}  # (tor|report, prepared|reviewed|approved) → QComboBox
 
         tabs = QTabWidget()
         self._tabs = tabs   # kept as an attribute for testability (tabText() lookups)
@@ -301,6 +302,26 @@ class HAZOPPreparationPanel(QWidget):
         # design rationale.
         self._participant_matrix_panel = ParticipantMatrixPanel(self.db)
         tabs.addTab(self._participant_matrix_panel, "Deltagare")
+
+        # ── Tab: ToR and Report ───────────────────────────────
+        # Names are editable combo boxes: registered participants are offered
+        # as suggestions, while an arbitrary free-text name remains valid.
+        tor_report_tab = QWidget()
+        tr_outer = QVBoxLayout(tor_report_tab)
+        tr_outer.setContentsMargins(16, 16, 16, 16)
+        tr_outer.setSpacing(12)
+        intro = QLabel(
+            "Ange ansvariga personer för Terms of Reference (ToR) och rapporten. "
+            "Välj en deltagare eller skriv ett eget namn.")
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color:#666; font-size:10px;")
+        tr_outer.addWidget(intro)
+
+        self._tor_report_add_section(tr_outer, "tor", "ToR")
+        self._tor_report_add_section(tr_outer, "report", "Report")
+        tr_outer.addStretch()
+        tabs.addTab(tor_report_tab, "ToR and Report")
+        tabs.currentChanged.connect(self._on_prep_tab_changed)
 
         # ── Tab: Riskmatris ───────────────────────────────────────────────────
         matrix_tab = QWidget()
@@ -616,8 +637,62 @@ class HAZOPPreparationPanel(QWidget):
 
         self._load_project_revisions()
         self._load_project_custom_fields()
+        self._load_tor_report_fields()
         self.refresh_sheets()
         self.refresh_nodes()
+
+    def _tor_report_add_section(self, outer, section, title):
+        """Build one compact sign-off form and wire each value to app_config."""
+        box = QGroupBox(title)
+        form = QFormLayout(box)
+        form.setContentsMargins(12, 10, 12, 10)
+        form.setSpacing(7)
+        for key, label in (
+                ("prepared", "Framtagen av:"),
+                ("reviewed", "Kvalitetsgranskad av:"),
+                ("approved", "Godkänd av:")):
+            combo = QComboBox()
+            combo.setEditable(True)
+            combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+            combo.setPlaceholderText("Välj deltagare eller skriv namn")
+            combo.setMinimumWidth(280)
+            combo.setStyleSheet(
+                "QComboBox{padding:3px 6px;border:1px solid #CFD1CE;"
+                "border-radius:0px;background:#FFFFFF;}"
+                "QComboBox:focus{border:2px solid #2F6FED;padding:2px 5px;}")
+            cfg_key = f"{section}_{key}_by"
+            combo.currentTextChanged.connect(
+                lambda text, k=cfg_key: self.db.set_config(k, text.strip()))
+            combo.lineEdit().editingFinished.connect(
+                lambda k=cfg_key, cb=combo: self.db.set_config(k, cb.currentText().strip()))
+            self._tor_report_fields[(section, key)] = combo
+            form.addRow(label, combo)
+        outer.addWidget(box)
+
+    def _participant_display_names(self):
+        names = []
+        for p in self.db.list_participants():
+            first = (p['first_name'] or '').strip()
+            last = (p['last_name'] or '').strip()
+            name = ' '.join(part for part in (first, last) if part)
+            if name and name not in names:
+                names.append(name)
+        return names
+
+    def _load_tor_report_fields(self):
+        names = self._participant_display_names()
+        for (section, key), combo in self._tor_report_fields.items():
+            value = self.db.get_config(f"{section}_{key}_by", '') or ''
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems(names)
+            combo.setCurrentText(value)
+            combo.blockSignals(False)
+
+    def _on_prep_tab_changed(self, index):
+        """Refresh participant suggestions when the new tab is opened."""
+        if self._tabs.tabText(index) == "ToR and Report":
+            self._load_tor_report_fields()
 
     # ── Blad (2026-08-17, moved from PIDManagementPanel, see NOTES.md) ──────
     def refresh_sheets(self):

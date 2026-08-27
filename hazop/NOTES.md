@@ -2,6 +2,13 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## ToR och Report-flik (2026-08-27)
+
+HAZOP Prep har fått en separat flik med dubbla signeringsfält för ToR och
+Report: Framtagen av, Kvalitetsgranskad av och Godkänd av. Fälten använder
+deltagare som förslag men är redigerbara kombinationsfält för fri text. Värdena
+lagras per studie i `app_config`.
+
 ## Kompakt markering i HAZOP Scenario (2026-08-27)
 
 Rekommendationsceller ritas nu med raka hörn, kompakt textyta och en smal blå
