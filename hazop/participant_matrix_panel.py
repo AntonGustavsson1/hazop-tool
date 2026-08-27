@@ -7,9 +7,9 @@ from pathlib import Path
 from functools import partial
 
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QColorDialog, QComboBox, QDateEdit,
+    QAbstractItemView, QApplication, QCheckBox, QColorDialog, QComboBox, QDateEdit,
     QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout,
-    QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
+    QDialog, QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton,
     QScrollArea, QSizePolicy, QSpinBox, QSplitter, QTableWidget,
     QTableWidgetItem, QTabWidget, QTextEdit, QToolButton, QVBoxLayout,
@@ -73,29 +73,40 @@ class ParticipantMatrixPanel(QWidget):
             else:
                 _base(event)
         self._table.keyPressEvent = _table_key_press
-        header = self._table.horizontalHeader()
+        header = _SessionHeaderView(Qt.Orientation.Horizontal, self._table)
+        self._table.setHorizontalHeader(header)
         header.setSectionsClickable(True)
         header.sectionDoubleClicked.connect(self._edit_header_label)
+        header.location_dropped.connect(self._copy_session_location)
         layout.addWidget(self._table)
 
+        # Compact controls directly below the matrix: plus/minus are placed
+        # next to the thing they affect instead of one long toolbar.
         btn_row = QHBoxLayout()
-        btn_add_p = QPushButton("+ Lägg till deltagare")
+        btn_add_p = QPushButton("+")
+        btn_add_p.setToolTip("Lägg till deltagare")
+        btn_add_p.setFixedWidth(30)
         btn_add_p.clicked.connect(self._add_participant)
-        btn_del_p = QPushButton("Ta bort deltagare")
+        btn_del_p = QPushButton("−")
+        btn_del_p.setToolTip("Ta bort markerad deltagare")
+        btn_del_p.setFixedWidth(30)
         btn_del_p.setToolTip("Tar bort den markerade raden (deltagaren)")
         btn_del_p.clicked.connect(self._delete_participant)
-        btn_add_col = QPushButton("+ Lägg till kolumn")
+        btn_row.addWidget(QLabel("Deltagare"))
+        btn_row.addWidget(btn_add_p)
+        btn_row.addWidget(btn_del_p)
+        btn_add_col = QPushButton("+ Övrig kolumn")
         btn_add_col.setToolTip("Lägg till en egen namngiven kolumn (t.ex. E-post, Företag, Roll)")
         btn_add_col.clicked.connect(self._add_column)
-        btn_del_col = QPushButton("Ta bort kolumn")
+        btn_del_col = QPushButton("− Övrig kolumn")
         btn_del_col.setToolTip("Tar bort den egna kolumn en markerad cell tillhör")
         btn_del_col.clicked.connect(self._delete_column)
-        btn_add_s = QPushButton("+ Lägg till analystillfälle")
+        btn_add_s = QPushButton("+ Analystillfälle")
         btn_add_s.clicked.connect(self._add_session)
-        btn_del_s = QPushButton("Ta bort analystillfälle")
+        btn_del_s = QPushButton("− Analystillfälle")
         btn_del_s.setToolTip("Tar bort kolumnen för det tillfälle en markerad cell tillhör")
         btn_del_s.clicked.connect(self._delete_session)
-        for b in (btn_add_p, btn_del_p, btn_add_col, btn_del_col, btn_add_s, btn_del_s):
+        for b in (btn_add_col, btn_del_col, btn_add_s, btn_del_s):
             btn_row.addWidget(b)
         btn_row.addStretch()
         layout.addLayout(btn_row)
@@ -116,7 +127,7 @@ class ParticipantMatrixPanel(QWidget):
             self._participant_ids = [p['id'] for p in participants]
 
             headers = (list(self._FIXED_COLS) + [c['name'] for c in columns] +
-                       [(s['label'] or f"Tillfälle {s['id']}") for s in sessions])
+                       [self._session_header_text(s) for s in sessions])
             self._table.setColumnCount(len(headers))
             self._table.setHorizontalHeaderLabels(headers)
             self._table.setRowCount(len(participants))
@@ -181,6 +192,7 @@ class ParticipantMatrixPanel(QWidget):
             self.db.add_participant_column(name.strip())
             self.refresh()
 
+
     def _delete_column(self):
         col = self._table.currentColumn()
         col_idx = col - len(self._FIXED_COLS)
@@ -195,10 +207,8 @@ class ParticipantMatrixPanel(QWidget):
         user can adjust the date/label without leaving the table
         (2026-08-18 user request, replacing the old _AnalysisSessionDateDialog
         popup)."""
-        new_id = self.db.add_analysis_session(QDate.currentDate().toString('yyyy-MM-dd'))
+        new_id = self.db.add_analysis_session()
         self.refresh()
-        col = len(self._FIXED_COLS) + len(self._column_ids) + self._session_ids.index(new_id)
-        self._edit_header_label(col)
 
     def _delete_session(self):
         col = self._table.currentColumn()
@@ -207,6 +217,27 @@ class ParticipantMatrixPanel(QWidget):
             return
         self.db.delete_analysis_session(self._session_ids[sess_idx])
         self.refresh()
+
+    @staticmethod
+    def _session_header_text(session):
+        session = dict(session)
+        date = session.get('date') or session.get('label') or f"Tillfälle {session['id']}"
+        location = session.get('location') or ''
+        return f"{date}\n{location}" if location else str(date)
+
+    def _copy_session_location(self, source_col, target_col):
+        n_fixed = len(self._FIXED_COLS) + len(self._column_ids)
+        src = source_col - n_fixed
+        dst = target_col - n_fixed
+        if src < 0 or dst < 0 or src >= len(self._session_ids) or dst >= len(self._session_ids):
+            return
+        sessions = [dict(s) for s in self.db.list_analysis_sessions()]
+        if src >= len(sessions):
+            return
+        location = sessions[src].get('location') or ''
+        if location:
+            self.db.set_analysis_session_location(self._session_ids[dst], location)
+            self.refresh()
 
     def _header_kind(self, col):
         """Returns ('column', id) / ('session', id) for a renamable header,
@@ -228,6 +259,9 @@ class ParticipantMatrixPanel(QWidget):
         (2026-08-18 user request)."""
         kind = self._header_kind(col)
         if kind is None:
+            return
+        if kind[0] == 'session':
+            self._edit_session_details(col)
             return
         header = self._table.horizontalHeader()
         item = self._table.horizontalHeaderItem(col)
@@ -264,6 +298,91 @@ class ParticipantMatrixPanel(QWidget):
             self.db.update_analysis_session(id_, text)
         self.refresh()
 
+    def _edit_session_details(self, col):
+        kind = self._header_kind(col)
+        if not kind or kind[0] != 'session':
+            return
+        session = next((dict(s) for s in self.db.list_analysis_sessions() if s['id'] == kind[1]), None)
+        if not session:
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Analystillfälle")
+        form = QFormLayout(dlg)
+        date_edit = QDateEdit()
+        date_edit.setCalendarPopup(True)
+        raw_date = session.get('date') or session.get('label') or ''
+        parsed = QDate.fromString(str(raw_date)[:10], 'yyyy-MM-dd')
+        date_edit.setDate(parsed if parsed.isValid() else QDate.currentDate())
+        location_edit = QLineEdit(session.get('location') or '')
+        location_edit.setPlaceholderText("Plats")
+        form.addRow("Datum:", date_edit)
+        form.addRow("Plats:", location_edit)
+        buttons = QHBoxLayout()
+        ok = QPushButton("OK"); cancel = QPushButton("Avbryt")
+        ok.clicked.connect(dlg.accept); cancel.clicked.connect(dlg.reject)
+        buttons.addWidget(ok); buttons.addWidget(cancel)
+        form.addRow(buttons)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            iso = date_edit.date().toString('yyyy-MM-dd')
+            self.db.update_analysis_session_details(kind[1], date=iso,
+                                                    location=location_edit.text().strip(),
+                                                    label=iso)
+            self.refresh()
+
+
+class _SessionHeaderView(QHeaderView):
+    """Header that supports dragging a filled session location to another
+    analystillfälle column."""
+    location_dropped = pyqtSignal(int, int)
+
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self.setAcceptDrops(True)
+        self._press_pos = None
+        self._source_section = -1
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._press_pos = event.position().toPoint()
+            self._source_section = self.logicalIndexAt(self._press_pos.x())
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if not (event.buttons() & Qt.MouseButton.LeftButton) or self._press_pos is None:
+            return super().mouseMoveEvent(event)
+        if (event.position().toPoint() - self._press_pos).manhattanLength() < QApplication.startDragDistance():
+            return super().mouseMoveEvent(event)
+        model = self.model(); source = self._source_section
+        if source < 0 or model is None:
+            return super().mouseMoveEvent(event)
+        text = model.headerData(source, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole) or ''
+        parts = str(text).split('\n', 1)
+        if len(parts) < 2 or not parts[1].strip():
+            return super().mouseMoveEvent(event)
+        mime = QMimeData()
+        mime.setData('application/x-prosa-session-location', str(source).encode('utf-8'))
+        drag = QDrag(self); drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.CopyAction)
+        self._press_pos = None
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat('application/x-prosa-session-location'):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        if not event.mimeData().hasFormat('application/x-prosa-session-location'):
+            event.ignore(); return
+        try:
+            source = int(bytes(event.mimeData().data('application/x-prosa-session-location')).decode('utf-8'))
+            target = self.logicalIndexAt(event.position().toPoint().x())
+        except (TypeError, ValueError):
+            event.ignore(); return
+        if target >= 0 and source != target:
+            self.location_dropped.emit(source, target)
+        event.acceptProposedAction()
+
 
 class _InlineHeaderEdit(QLineEdit):
     """QLineEdit embedded as a header-section child for inline header
@@ -277,5 +396,3 @@ class _InlineHeaderEdit(QLineEdit):
             self.canceled.emit()
             return
         super().keyPressEvent(event)
-
-

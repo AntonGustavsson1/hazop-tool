@@ -948,6 +948,17 @@ class Database:
         self._migrate_tables_and_seed()
         self._drop_legacy_consequence_likelihood_column()
         self._migrate_actions_to_recommendations()
+        # analysis_sessions is part of the base schema but some project files
+        # are created from an older schema snapshot.  Ensure the new metadata
+        # columns exist after all base-table creation passes have completed.
+        for statement in (
+                "ALTER TABLE analysis_sessions ADD COLUMN date TEXT DEFAULT ''",
+                "ALTER TABLE analysis_sessions ADD COLUMN location TEXT DEFAULT ''"):
+            try:
+                self.conn.execute(statement)
+            except sqlite3.OperationalError:
+                pass
+        self.commit()
         logging.info("Database: migration complete")
         self._validate_schema()
 
@@ -1055,6 +1066,8 @@ class Database:
             "ALTER TABLE nodes ADD COLUMN approved_at TEXT DEFAULT ''",
             "ALTER TABLE nodes ADD COLUMN study_status TEXT DEFAULT 'draft'",
             "ALTER TABLE study_tag_memory ADD COLUMN active INTEGER DEFAULT 1",
+            "ALTER TABLE analysis_sessions ADD COLUMN date TEXT DEFAULT ''",
+            "ALTER TABLE analysis_sessions ADD COLUMN location TEXT DEFAULT ''",
             # Smart object recognition — composite key so the same prefix can
             # map to multiple types (e.g. HV→Handventil×5, HV→Backventil×2).
             # The type with the highest usage_count wins on lookup.
@@ -2657,14 +2670,46 @@ class Database:
         return self.conn.execute(
             "SELECT * FROM analysis_sessions ORDER BY sort_order, id").fetchall()
 
-    def add_analysis_session(self, label=''):
+    def add_analysis_session(self, label='', date=None, location=''):
+        # New sessions normally follow the latest dated session by one day.
+        # Keep the old label argument for project files created before the
+        # date/location fields existed.
+        if date is None:
+            dates = []
+            for row in self.list_analysis_sessions():
+                value = row['date'] or row['label'] or ''
+                try:
+                    dates.append(datetime.date.fromisoformat(str(value)[:10]))
+                except (TypeError, ValueError):
+                    continue
+            next_date = (max(dates) + datetime.timedelta(days=1)) if dates else datetime.date.today()
+            date = next_date.isoformat()
+        if not label:
+            label = str(date)
         cur = self.conn.execute(
-            "INSERT INTO analysis_sessions (label) VALUES (?)", (label,))
+            "INSERT INTO analysis_sessions (label,date,location) VALUES (?,?,?)",
+            (label, date, location or ''))
         self.commit()
         return cur.lastrowid
 
     def update_analysis_session(self, id_, label):
         self.conn.execute("UPDATE analysis_sessions SET label=? WHERE id=?", (label, id_))
+        self.commit()
+
+    def update_analysis_session_details(self, id_, date=None, location=None, label=None):
+        row = self.conn.execute("SELECT * FROM analysis_sessions WHERE id=?", (id_,)).fetchone()
+        if not row:
+            return
+        self.conn.execute(
+            "UPDATE analysis_sessions SET date=?, location=?, label=? WHERE id=?",
+            (date if date is not None else (row['date'] or row['label'] or ''),
+             location if location is not None else (row['location'] or ''),
+             label if label is not None else (row['label'] or ''), id_))
+        self.commit()
+
+    def set_analysis_session_location(self, id_, location):
+        self.conn.execute("UPDATE analysis_sessions SET location=? WHERE id=?",
+                          (location or '', id_))
         self.commit()
 
     def delete_analysis_session(self, id_):

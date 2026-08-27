@@ -2920,3 +2920,11 @@ matrisknappar, så hela matrisen blir jämn. Mätningen schemaläggs även när 
 redigeras, så höjden ändras direkt utan att riskmatrisinställningen behöver
 byggas om manuellt. Vid konsekvens på X-axeln lämnas den befintliga
 höjdlogiken oförändrad.
+
+## Deltagarmatris: sessionsdatum och plats (2026-08-27)
+
+Analystillfällen har nu separata datum- och platsfält. Nya tillfällen föreslås
+dagen efter det senaste datumet. Datum redigeras med kalenderkontroll och plats
+visas i sessionens kolumnhuvud. En ifylld plats kan dras från ett
+analystillfälle till ett annat för att kopieras. Ett uppstartsundantag där en
+SQLite-rad behandlades som en dict är korrigerat.
