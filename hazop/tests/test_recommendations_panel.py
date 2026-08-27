@@ -63,6 +63,10 @@ class RecommendationsPanelConstructionTests(unittest.TestCase):
             except Exception as e:
                 self.fail(f"RecommendationsPanel.refresh() on an empty DB raised: {e!r}")
             self.assertEqual(panel._table.rowCount(), 0)
+            self.assertEqual(panel._table.columnCount(), 3)
+            self.assertEqual(
+                panel._table.horizontalHeaderItem(panel._COL_RESPONSIBLE).text(),
+                "Ansvarig person")
         finally:
             panel.deleteLater()
 
@@ -190,6 +194,26 @@ class RecommendationsPanelReferenceTests(unittest.TestCase):
                 panel._table.item(0, panel._COL_REC).text(), f"R-{rec_a:03d}. Först")
             self.assertEqual(
                 panel._table.item(1, panel._COL_REC).text(), f"R-{rec_b:03d}. Sedan")
+        finally:
+            panel.deleteLater()
+
+    def test_responsible_person_is_shown_and_missing_value_uses_placeholder(self):
+        db = self.db
+        assigned = db.add_recommendation(
+            description="Kontrollera ventil", responsible="Anna Andersson")
+        unassigned = db.add_recommendation(description="Utan ansvarig")
+
+        panel = RecommendationsPanel(db)
+        try:
+            panel.load()
+            responsible_by_id = {}
+            for row in range(panel._table.rowCount()):
+                label = panel._table.item(row, panel._COL_REC).text()
+                responsible = panel._table.item(row, panel._COL_RESPONSIBLE).text()
+                responsible_by_id[label.split('.', 1)[0]] = responsible
+
+            self.assertEqual(responsible_by_id[f"R-{assigned:03d}"], "Anna Andersson")
+            self.assertEqual(responsible_by_id[f"R-{unassigned:03d}"], "—")
         finally:
             panel.deleteLater()
 

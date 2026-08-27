@@ -31,7 +31,6 @@ from ui_helpers import (
     freq_axis_label, cons_axis_label, _lookup_comp_type_for_tag,
     _resolve_std_deviation_id, _draw_text_with_bold_tags,
     total_freq_reduction, CHAIN_ITEMS, build_consequence_text, parse_chain_from_json,
-    _equipment_tags_for_types, _resolve_comp_type_for_tag,
 )
 from tree_panel import (
     CauseObjectPopup, CauseTagPopup, RRFPopup,
@@ -1225,13 +1224,30 @@ class _ScenarioDelegate(QStyledItemDelegate):
         if cons_id is None:
             return
         acts = self._panel.db.recommendations_for_consequence(cons_id)
-        if len(acts) == 1:
+        force_add = getattr(
+            self._panel, '_recommendation_force_add_cons_id', None) == cons_id
+        if len(acts) == 1 and not force_add:
             editor.setText(acts[0]['description'] or '')
         else:
             editor.setText('')
         cell_rect = QRect(option.rect)
         QTimer.singleShot(0, lambda ed=editor, r=row, cid=cons_id, rect=cell_rect:
                           self._show_recommendation_assist_popup(ed, r, cid, rect))
+
+    def updateEditorGeometry(self, editor, option, index):
+        """Put a sequential-add editor below the saved REK lines."""
+        panel = self._panel
+        cons_id = None
+        if index.row() < len(getattr(panel, '_row_meta', [])):
+            cons_id = panel._row_meta[index.row()][2]
+        if (index.column() == panel._C_REK and cons_id is not None and
+                getattr(panel, '_recommendation_force_add_cons_id', None) == cons_id):
+            line_h = max(22, QFontMetrics(option.font).height() + 6)
+            rect = QRect(option.rect)
+            rect.setTop(max(rect.top(), rect.bottom() - line_h + 1))
+            editor.setGeometry(rect.adjusted(2, 1, -2, -1))
+            return
+        super().updateEditorGeometry(editor, option, index)
 
     def _show_recommendation_assist_popup(self, editor, row, cons_id, cell_rect):
         """Mirrors _PidDelegate._show_standard_cause_popup's positioning
@@ -1320,7 +1336,10 @@ class _ScenarioDelegate(QStyledItemDelegate):
         w = max(40, w)
         rect = fm.boundingRect(0, 0, w, 10000,
                                Qt.TextFlag.TextWordWrap, text)
-        return QSize(option.rect.width(), max(one_line_h, rect.height() + 4))
+        height = max(one_line_h, rect.height() + 4)
+        if col == panel._C_REK and text and text != '—':
+            height += one_line_h
+        return QSize(option.rect.width(), height)
 
     def paint(self, painter, option, index):
         """RFORE/SLUT (this base delegate — ORS/KON/SG are handled by
@@ -1392,12 +1411,6 @@ _ORS_FIRST_LINE_H = 17
 
 _RRF_W       = 54          # pixel width of the RRF badge column on the right of safeguard cells
 _PLUS_BADGE_SIZE = 16      # pixel size of the in-cell "+" quick-add badge (bottom-right corner)
-# Pixel width of the 🏷 object-picker icon zone at the LEFT of a safeguard
-# cell (2026-08-19, see NOTES.md "Objekt-väljare för safeguards") — kept
-# deliberately small so it costs width, not height, on an already-
-# compacted safeguard row (see _sg_row_height's own docstring).
-_SG_TAG_ICON_ZONE_W = 18
-
 _PID_ICON_RE = re.compile(r'^[🟢📌]\s*')   # strip any old emoji prefix
 
 
@@ -1693,26 +1706,11 @@ class _PidDelegate(_ScenarioDelegate):
                 body_top = r.top()
                 body_h   = r.height()
 
-                # ── Object-picker icon (🏷), far left — 2026-08-19, see
-                # NOTES.md "Objekt-väljare för safeguards": lets the user
-                # pick which P&ID object this safeguard relates to without
-                # growing the row (costs a little WIDTH, not height, unlike
-                # ORS's own full tag strip — safeguard rows were just
-                # compacted hard this session, see _sg_row_height's own
-                # docstring, and must stay that way). Darker/bolder when
-                # an object is already set, muted otherwise, so which
-                # safeguards already have one is visible at a glance.
-                comp_type_tag = index.data(Qt.ItemDataRole.UserRole + 6) or ('', '')
-                _sg_comp_tag = comp_type_tag[1] if len(comp_type_tag) > 1 else ''
-                icon_rect = self._panel._sg_icon_zone_geometry(r)
-                icon_tc = (option.palette.highlightedText().color() if sel
-                          else (QColor('#17191C') if _sg_comp_tag else QColor('#C2C4C8')))
-                painter.setPen(icon_tc)
-                painter.drawText(icon_rect, Qt.AlignmentFlag.AlignCenter, "🏷")
-
-                # Layout: [icon][description ...][RRF badge 54px]
-                desc_w    = r.width() - _RRF_W - _SG_TAG_ICON_ZONE_W
-                desc_rect = QRect(r.left() + _SG_TAG_ICON_ZONE_W, body_top, desc_w, body_h)
+                # Layout: [description ...][RRF badge 54px]. The former
+                # left-side safeguard object emoji/picker was removed and
+                # archived 2026-08-27, so description uses the full body.
+                desc_w    = r.width() - _RRF_W
+                desc_rect = QRect(r.left(), body_top, desc_w, body_h)
                 rrf_rect  = self._panel._sg_rrf_zone_geometry(r)
 
                 # Description text (elided to one line), drag-appended tags
@@ -2642,97 +2640,6 @@ class _LopaWidget(QWidget):
 
 
 
-class SafeguardObjectPopup(QWidget):
-    """Searchable P&ID-tag dropdown for a safeguard's object association
-    — opened by the 🏷 icon in the SG cell. Rebuilt 2026-08-26 (see
-    NOTES.md "Gör om safeguard-valet") — Anton: "en sökbar rullgardins-
-    lista visa alla taggar/objekt definierade på P&ID, sorterade
-    numeriskt. Sökningen ska matcha var som helst i taggen, t.ex. PI123
-    ska visa både O1-PI123 och O2-PI123." Torn out entirely rather than
-    patched: the previous version's gear-button equipment-type filter
-    (_SgObjectTypeFilterDialog) is gone -- the dropdown always lists
-    EVERY tag now, naturally/numerically sorted
-    (ui_helpers._natural_sort_key via _equipment_tags_for_types), with
-    the same "match anywhere in the tag" QCompleter (MatchContains) as
-    before.
-
-    Still an editable QComboBox (pick from equipment_catalog OR type
-    anything freely) — that part of the original design already matched
-    "en rullista ... jag måste också kunna välja fritt själv" and
-    "sökbar rullgardinslista", so it stayed.
-
-    No OK/Avbryt — commits the moment an item is picked or the text
-    field loses focus, same live-commit convention as CauseTagPopup/
-    EquipmentPlacementPopup this session's other popups already use.
-
-    Deliberately calls Database.set_safeguard_tag() (tag-only, leaves
-    the free-text description untouched), NOT append_tag_to_safeguard()
-    (which builds a running sentence into the description for the drag-
-    and-drop gesture) — this is a dedicated "change which object this
-    is" control; re-picking a different object here must not leave old
-    tag fragments behind in the description text."""
-
-    committed = pyqtSignal()
-
-    _NONE_LABEL = "— Inget objekt —"
-
-    def __init__(self, db, sg_id, current_tag, parent=None):
-        super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
-        self.db = db
-        self._sg_id = sg_id
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        self.setStyleSheet(
-            "SafeguardObjectPopup { background:#FFFFFF; border:1px solid #CFD1CE;"
-            " border-radius:6px; }")
-        self.setMinimumWidth(220)
-
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(10, 8, 10, 8)
-        outer.setSpacing(4)
-
-        title = QLabel("<b>🏷 Objekt</b>")
-        title.setStyleSheet("font-size:11px; color:#8D9299;")
-        outer.addWidget(title)
-
-        self._combo = QComboBox()
-        self._combo.setEditable(True)
-        self._combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self._combo.setFixedHeight(CONFIG['H_BTN_SMALL'])
-        outer.addWidget(self._combo)
-
-        self._populate(current_tag)
-        self._combo.activated.connect(lambda _i: self._commit())
-        self._combo.lineEdit().editingFinished.connect(self._commit)
-        self._combo.setFocus()
-
-    def _populate(self, current_tag):
-        self._combo.blockSignals(True)
-        self._combo.clear()
-        self._combo.addItem(self._NONE_LABEL, '')
-        tags = _equipment_tags_for_types(self.db)
-        for tag in tags:
-            self._combo.addItem(tag, tag)
-        if current_tag and current_tag not in tags:
-            self._combo.addItem(current_tag, current_tag)
-        idx = self._combo.findData(current_tag or '')
-        self._combo.setCurrentIndex(idx if idx >= 0 else 0)
-        completer = QCompleter(tags, self._combo)
-        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-        completer.setFilterMode(Qt.MatchFlag.MatchContains)
-        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
-        self._combo.setCompleter(completer)
-        self._combo.blockSignals(False)
-
-    def _commit(self):
-        tag = self._combo.currentText().strip()
-        if not tag or tag == self._NONE_LABEL:
-            self.db.set_safeguard_tag(self._sg_id, '', '')
-        else:
-            comp_type = _resolve_comp_type_for_tag(self.db, tag)
-            self.db.set_safeguard_tag(self._sg_id, tag, comp_type)
-        self.committed.emit()
-
-
 class ScenarioTablePanel(QWidget):
     """Extended scenario table with FA, Antändning, Övriga faktorer and Slutkonsekvens."""
 
@@ -2784,6 +2691,10 @@ class ScenarioTablePanel(QWidget):
         self._enter_row = -1
         self._enter_col = -1
         self._last_enter_committed = False
+        # Set while the blank REK editor below saved recommendations is
+        # active; its text must create a sibling, never overwrite the sole
+        # existing recommendation.
+        self._recommendation_force_add_cons_id = None
         self._cell_font_size = 9
         # Parallel list to _row_meta: None or (cat_id, cat_name, cat_sev)
         self._row_cat_info: list = []
@@ -4264,12 +4175,9 @@ class ScenarioTablePanel(QWidget):
             excl_cause_names = [desc for cid2, desc, _ in cause_popup_list
                                 if cid2 in excl_cause_ids]
             sg_item.setData(Qt.ItemDataRole.UserRole + 5, excl_cause_names)
-            sg_item.setData(Qt.ItemDataRole.UserRole + 6, (sg.get('comp_type') or '',
-                                                            sg.get('comp_tag')  or ''))
             sg_item.setData(Qt.ItemDataRole.UserRole + 7,
                              parse_tag_refs(sg.get('tagged_refs') or ''))
-            tip = "Klicka på 🏷 för att välja P&ID-objekt\n" \
-                  "Dra en utrustningsmarkör hit (håll Shift) för att sätta tag\n" \
+            tip = "Dra en utrustningsmarkör hit (håll Shift) för att sätta tag\n" \
                   "Dubbelklicka för att redigera\nEnter för att lägga till ny barriär\nKlicka på RRF-kolumnen för att ändra värdet"
             if excl_cat_names:
                 tip += "\n⚠ Gäller ej för kategori: " + ", ".join(excl_cat_names)
@@ -4415,6 +4323,10 @@ class ScenarioTablePanel(QWidget):
                     item.setForeground(QBrush(QColor('#8D9299' if not acts else '#000000')))
         finally:
             self._table.blockSignals(False)
+        # A saved recommendation reserves one additional compact line for
+        # the next blank editor. Recalculate immediately so the editor opened
+        # after Enter sits below, rather than on top of, the saved summary.
+        self._table.resizeRowsToContents()
 
     def _edit_extra(self, cons_id):
         # This slot runs on the call stack of a _LopaWidget's _extra_btn
@@ -4914,30 +4826,6 @@ class ScenarioTablePanel(QWidget):
         if popup.exec() == QDialog.DialogCode.Accepted:
             self._schedule_rebuild()
 
-    def _show_sg_object_popup_at(self, row, sg_id, global_pos):
-        """🏷 icon click (2026-08-19, see NOTES.md "Objekt-väljare för
-        safeguards") — non-modal, self-dismissing (same live-commit
-        convention as CauseTagPopup/EquipmentPlacementPopup this
-        session's other popups already use, no OK/Avbryt)."""
-        sg = self.db.get_safeguard(sg_id)
-        sg_d = dict(sg) if sg else {}
-        popup = SafeguardObjectPopup(
-            self.db, sg_id, sg_d.get('comp_tag') or '', parent=self)
-        popup.committed.connect(
-            lambda: self._schedule_rebuild())
-        popup.adjustSize()
-        # Prefer ABOVE global_pos (2026-08-26, see NOTES.md "Flytta
-        # HAZOP-popups ovanför"), falling back to below only if there's
-        # no room above on screen.
-        scr = (QApplication.screenAt(global_pos) or QApplication.primaryScreen()).availableGeometry()
-        pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
-        x = min(global_pos.x(), scr.right() - pw)
-        y = global_pos.y() - ph - 6
-        if y < scr.top():
-            y = global_pos.y() + 6
-        popup.move(max(scr.left(), x), max(scr.top(), min(y, scr.bottom() - ph)))
-        popup.show()
-
     # ORS cell layout constants — shared between paint() (_PidDelegate,
     # below) and the click hit-test in eventFilter() so the drawn zones
     # and the clickable zones can never drift apart. This file has a
@@ -5118,14 +5006,6 @@ class ScenarioTablePanel(QWidget):
         dot_y = cell_rect.top() + _ORS_FIRST_LINE_H // 2
         dot_x = cell_rect.right() - 5
         return QRect(dot_x - dot_r, dot_y - dot_r, dot_r * 2, dot_r * 2)
-
-    def _sg_icon_zone_geometry(self, cell_rect):
-        """The 🏷 object-picker icon zone at the left of a safeguard cell
-        (2026-08-19, see NOTES.md "Objekt-väljare för safeguards") —
-        shared between paint() and eventFilter() so they can't drift
-        apart, same rule as every other zone in this class."""
-        return QRect(cell_rect.left(), cell_rect.top(),
-                     _SG_TAG_ICON_ZONE_W, cell_rect.height())
 
     def _sg_rrf_zone_geometry(self, cell_rect):
         """The RRF badge zone at the right of a safeguard cell — shared
@@ -5511,21 +5391,6 @@ class ScenarioTablePanel(QWidget):
                                                       self._table.viewport().mapToGlobal(pos))
                             return True
 
-            # 🏷 object-picker icon click — left _SG_TAG_ICON_ZONE_W pixels
-            # of safeguard cell (2026-08-19, see NOTES.md "Objekt-väljare
-            # för safeguards") — mirrored geometry of the RRF badge zone
-            # just below, so the two never overlap.
-            if (row >= 0 and col == self._C_SG and row < len(self._row_meta)):
-                sg_id = self._row_meta[row][3]
-                if sg_id is not None:
-                    cell_idx = self._table.model().index(row, col)
-                    cr = self._table.visualRect(cell_idx)
-                    zone = self._sg_icon_zone_geometry(cr)
-                    if pos.x() < zone.left() + zone.width():
-                        gp = self._table.viewport().mapToGlobal(pos)
-                        self._show_sg_object_popup_at(row, sg_id, gp)
-                        return True
-
             # ⚡ RRF badge click — right _RRF_W pixels of safeguard cell
             if (row >= 0 and col == self._C_SG and row < len(self._row_meta)):
                 sg_id = self._row_meta[row][3]
@@ -5546,9 +5411,16 @@ class ScenarioTablePanel(QWidget):
                 if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                     row = obj.property('editing_row')
                     col = obj.property('editing_col')
+                    cons_id = None
+                    if row is not None and 0 <= row < len(self._row_meta):
+                        cons_id = self._row_meta[row][2]
                     self._delegate.commitData.emit(obj)
                     self._delegate.closeEditor.emit(obj, QStyledItemDelegate.EndEditHint.NoHint)
-                    if ctrl:
+                    if col == self._C_REK and cons_id is not None and not ctrl:
+                        QTimer.singleShot(
+                            0, lambda r=row, cid=cons_id:
+                            self._continue_recommendation_entry(r, cid))
+                    elif ctrl:
                         self._ctrl_enter(row, col)
                     return True  # always consume Enter in editor — prevents table-level handler
 
@@ -5600,6 +5472,20 @@ class ScenarioTablePanel(QWidget):
         self._last_enter_committed = False
         # Directly add next item based on column (no menu, feature 3)
         self._ctrl_enter(row, self._enter_col)
+
+    def _continue_recommendation_entry(self, row, cons_id):
+        """Open the next blank recommendation box after an Enter commit."""
+        if row < 0 or row >= len(self._row_meta) or self._row_meta[row][2] != cons_id:
+            row = next((r for r, meta in enumerate(self._row_meta)
+                        if meta[2] == cons_id), -1)
+        if row < 0:
+            return
+        self._recommendation_force_add_cons_id = cons_id
+        self._table.setCurrentCell(row, self._C_REK)
+        item = self._table.item(row, self._C_REK)
+        if item is not None:
+            self._table.scrollToItem(item)
+        self._try_start_edit(row, self._C_REK)
 
     def _show_quick_add(self, row, dev_id, cause_id, cons_id):
         cause = self.db.get_cause(cause_id)
@@ -5798,7 +5684,11 @@ class ScenarioTablePanel(QWidget):
             #                recommendation; existing ones are untouched.
             desc = text.split('\n')[0].strip()
             acts = self.db.recommendations_for_consequence(id_)
-            if len(acts) == 1:
+            force_add = self._recommendation_force_add_cons_id == id_
+            self._recommendation_force_add_cons_id = None
+            if force_add and desc:
+                self.db.add_recommendation_to_consequence(id_, description=desc)
+            elif len(acts) == 1:
                 if desc and desc != (acts[0]['description'] or '').strip():
                     from hazop import _apply_shared_recommendation_description_update
                     _apply_shared_recommendation_description_update(

@@ -3564,6 +3564,32 @@ class RecommendationColumnTests(unittest.TestCase):
         self.assertEqual(self.db.get_recommendation(rec1)['description'], 'Första')
         self.assertEqual(self.db.get_recommendation(rec2)['description'], 'Andra')
 
+    def test_sequential_blank_editor_adds_second_instead_of_overwriting_first(self):
+        first = self.db.add_recommendation_to_consequence(
+            self.cons_id, description='Första')
+        item, row = self._rek_item()
+        self.panel._recommendation_force_add_cons_id = self.cons_id
+        self.panel._table.blockSignals(True)
+        item.setText('Andra')
+        self.panel._table.blockSignals(False)
+
+        self.panel._on_cell_changed_inner(row, self.panel._C_REK)
+
+        recs = self.db.recommendations_for_consequence(self.cons_id)
+        self.assertEqual([r['description'] for r in recs], ['Första', 'Andra'])
+        self.assertEqual(self.db.get_recommendation(first)['description'], 'Första')
+
+    def test_continue_recommendation_entry_selects_same_cell_in_add_mode(self):
+        self.db.add_recommendation_to_consequence(self.cons_id, description='Första')
+        _, row = self._rek_item()
+        with unittest.mock.patch.object(self.panel, '_try_start_edit') as start_edit:
+            self.panel._continue_recommendation_entry(row, self.cons_id)
+
+        self.assertEqual(self.panel._recommendation_force_add_cons_id, self.cons_id)
+        self.assertEqual(self.panel._table.currentRow(), row)
+        self.assertEqual(self.panel._table.currentColumn(), self.panel._C_REK)
+        start_edit.assert_called_once_with(row, self.panel._C_REK)
+
     def test_recommendation_column_spans_across_safeguard_rows(self):
         """Several safeguards under the same consequence must share ONE
         merged REK cell, not one per safeguard row — same grouping KON/
@@ -4050,7 +4076,7 @@ class EquipmentDropOnSafeguardAndMultiTests(unittest.TestCase):
             self.assertEqual(new_sg['description'], "TSH-2")
             self.assertEqual(new_sg['comp_tag'], "TSH-2")
 
-    def test_sg_cell_carries_comp_tag_via_userrole(self):
+    def test_sg_cell_no_longer_carries_removed_object_picker_data(self):
         with _TempDbMainWindow() as win:
             panel = win.scenario_panel
             _n, _d, cause_id, _cons_id, sg_id = self._make_full_chain(win.db)
@@ -4060,9 +4086,7 @@ class EquipmentDropOnSafeguardAndMultiTests(unittest.TestCase):
             row = next(r for r, m in enumerate(panel._row_meta) if m[3] == sg_id)
 
             item = panel._table.item(row, panel._C_SG)
-            comp_type, comp_tag = item.data(Qt.ItemDataRole.UserRole + 6)
-            self.assertEqual(comp_tag, "FE-301")
-            self.assertEqual(comp_type, "Flödesgivare")
+            self.assertIsNone(item.data(Qt.ItemDataRole.UserRole + 6))
 
 
 class EquipmentDropOnTreeDeviationTests(unittest.TestCase):

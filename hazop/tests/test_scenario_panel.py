@@ -3107,6 +3107,56 @@ class SafeguardRRFBadgeHeaderTests(unittest.TestCase):
             "since the cell badge no longer spells out 'RRF', the column header must")
 
 
+class SafeguardObjectFeatureRemovedTests(unittest.TestCase):
+    """The safeguard emoji/object-picker was removed and archived 2026-08-27."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_sgobj_removed_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from hazop import ScenarioTablePanel
+        self.panel = ScenarioTablePanel(self.db)
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        self.sg_id = self.db.add_safeguard(cons_id)
+        self.panel.load_node(node_id)
+        self.row = next(r for r, m in enumerate(self.panel._row_meta)
+                        if m[3] == self.sg_id)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_picker_class_and_click_entry_points_are_absent(self):
+        import scenario_panel
+        self.assertFalse(hasattr(scenario_panel, 'SafeguardObjectPopup'))
+        self.assertFalse(hasattr(self.panel, '_show_sg_object_popup_at'))
+        self.assertFalse(hasattr(self.panel, '_sg_icon_zone_geometry'))
+
+    def test_safeguard_tooltip_no_longer_mentions_emoji_picker(self):
+        item = self.panel._table.item(self.row, self.panel._C_SG)
+        self.assertNotIn('🏷', item.toolTip())
+        self.assertNotIn('välja P&ID-objekt', item.toolTip())
+        self.assertIn('RRF', item.toolTip())
+
+    def test_safeguard_painter_no_longer_draws_object_emoji(self):
+        import inspect
+        from scenario_panel import _PidDelegate
+        src = inspect.getsource(_PidDelegate.paint)
+        self.assertNotIn('🏷', src)
+        self.assertNotIn('_SG_TAG_ICON_ZONE_W', src)
+
+
+@unittest.skip("Archived safeguard object-picker tests; feature removed 2026-08-27")
 class SafeguardObjectPickerTests(unittest.TestCase):
     """Originally 2026-08-19 ("när jag väljer safeguards i hazop
     scenario får jag upp en rullista med objekt ... Du kan även

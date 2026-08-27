@@ -8,7 +8,8 @@ database.py) appears once, not duplicated.
 
 Column 1 mirrors the "R-XXX. description" convention already used for the
 REK column in scenario_panel.py (_recommendation_summary/the picker popup).
-Column 2 shows the hierarchical studie.nod.avvikelse.orsak.konsekvens
+Column 2 shows the responsible person stored on the recommendation.
+Column 3 shows the hierarchical studie.nod.avvikelse.orsak.konsekvens
 reference(s) this recommendation currently resolves to (see
 _build_position_maps()'s docstring below for exactly how each level is
 numbered, and the deliberate simplification vs. the HAZOP tree's own
@@ -98,9 +99,10 @@ def _reference_for_consequence(cons_id, maps):
 
 
 class RecommendationsPanel(QWidget):
-    """Simple two-column, read-only QTableWidget: every recommendation in
-    the catalog (column 1, "R-XXX. <description>") next to every
-    hierarchical reference it currently resolves to (column 2, comma-
+    """Simple three-column, read-only QTableWidget: every recommendation in
+    the catalog (column 1, "R-XXX. <description>"), its responsible person
+    (column 2), and every hierarchical reference it currently resolves to
+    (column 3, comma-
     separated when linked to several consequences, "—" when linked to
     none — an orphaned but still-reusable catalog entry; this app
     deliberately never deletes a recommendation just because its last
@@ -110,7 +112,8 @@ class RecommendationsPanel(QWidget):
     existing entry points in HAZOP Scenario (the REK column), unchanged."""
 
     _COL_REC = 0
-    _COL_REF = 1
+    _COL_RESPONSIBLE = 1
+    _COL_REF = 2
 
     def __init__(self, db: Database):
         super().__init__()
@@ -120,9 +123,10 @@ class RecommendationsPanel(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
 
-        self._table = QTableWidget(0, 2)
+        self._table = QTableWidget(0, 3)
         self._table.setHorizontalHeaderLabels(
-            ["Rekommendation", "Referens (studie.nod.avvikelse.orsak.konsekvens)"])
+            ["Rekommendation", "Ansvarig person",
+             "Referens (studie.nod.avvikelse.orsak.konsekvens)"])
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -133,6 +137,7 @@ class RecommendationsPanel(QWidget):
         self._table.setSortingEnabled(True)
         header = self._table.horizontalHeader()
         header.setSectionResizeMode(self._COL_REC, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(self._COL_RESPONSIBLE, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self._COL_REF, QHeaderView.ResizeMode.ResizeToContents)
         # Qt quirk (verified empirically, not from memory): a freshly
         # created QTableWidget's header already carries an implicit
@@ -166,6 +171,7 @@ class RecommendationsPanel(QWidget):
                 rec_id = rec['id']
                 desc = rec['description'] or 'Ny rekommendation'
                 label = f"R-{rec_id:03d}. {desc}"
+                responsible = rec['responsible'] or _PLACEHOLDER
 
                 cons_ids = self.db.consequences_for_recommendation(rec_id)
                 refs = [ref for ref in (
@@ -174,6 +180,8 @@ class RecommendationsPanel(QWidget):
                 ref_text = ", ".join(refs) if refs else _PLACEHOLDER
 
                 self._table.setItem(row, self._COL_REC, QTableWidgetItem(label))
+                self._table.setItem(
+                    row, self._COL_RESPONSIBLE, QTableWidgetItem(responsible))
                 self._table.setItem(row, self._COL_REF, QTableWidgetItem(ref_text))
             self._table.resizeRowsToContents()
         finally:

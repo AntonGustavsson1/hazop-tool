@@ -38,7 +38,16 @@ beskrivningen fortfarande gäller.
 - Följ Git-reglerna i `CLAUDE.md`. Lägg aldrig till projektdata eller
   genererade filer såsom `*.db`, `*.pdf`, `*.xlsx`, `__pycache__/`,
   `build/` eller `dist/` i en commit.
+- Efter varje färdig, meningsfull ändring ska Codex köra relevanta tester,
+  uppdatera `NOTES.md`, committa endast de avsedda käll-/testfilerna och
+  pusha committen till aktuell upstream-gren innan arbetet lämnas över.
+  Detta gäller utan att Anton behöver be separat om commit/push varje gång.
+  Om tester, mergekonflikt, autentisering eller nätverk hindrar push ska Codex
+  inte dölja det: lämna inga halvfärdiga commits och redovisa exakt vad som
+  återstår innan Anton byter mellan Codex och Claude.
+- Codex får aldrig ta med orelaterade befintliga ändringar eller ospårade
+  projekt-/indatafiler i en sådan commit. Kontrollera `git status` före
+  staging och kontrollera efter push att lokal gren matchar upstream.
 - Skilj alltid mellan granskad kod, godkända automatiska tester och ett
   visuellt verifierat programflöde. Påstå inte att GUI-beteendet är visuellt
   verifierat om endast headless-tester har körts.
-

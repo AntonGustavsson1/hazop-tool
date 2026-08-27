@@ -2520,3 +2520,22 @@ kontrollerar `crashes/` och `git status`, följer projektets lagerarkitektur
 och teststrategi samt tydligt skiljer automatiska tester från visuell
 GUI-verifiering. Den klargör också att projektrotens SIL-instruktioner inte
 ska användas som HAZOP-specifikation vid konflikt.
+
+## Säkert byte mellan Codex och Claude (2026-08-27)
+
+Anton vill kunna växla mellan Codex och Claude utan att lokala, ocommittade
+HAZOP-ändringar lämnas över otydligt. `hazop/AGENTS.md` kräver därför nu
+uttryckligen att Codex efter varje färdig meningsfull ändring kör relevanta
+tester, uppdaterar denna fil, committar endast avsedda käll-/testfiler och
+pushar till aktuell upstream-gren utan en separat push-begäran. Före staging
+och efter push ska `git status` kontrolleras. Orelaterade eller ospårade
+projektdata får inte följa med. Om en push blockeras ska det redovisas tydligt
+så att inget agentbyte sker under falsk uppfattning att arbetet finns på GitHub.
+
+Samma commit färdigställer den pågående rekommendationsomgången: sidan
+Rekommendationer visar `Ansvarig person`, Enter efter en sparad rekommendation
+öppnar nästa tomma inmatningsrad utan att skriva över den första, och den
+borttagna safeguard-objektväljaren inklusive dess gamla cell-metadata och test
+är konsekvent arkiverad/borttagen. Verifiering: syntaxkontroll samt
+`tests.test_smoke`, `tests.test_recommendations_panel`,
+`tests.test_scenario_panel` och `tests.test_integration`.
