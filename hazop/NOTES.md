@@ -2602,6 +2602,30 @@ redigerar en safeguard medan konsekvensen är kollapsad och kontrollerar att
 barriären finns i det ombyggda trädet men fortfarande är dold. Ingen visuell
 GUI-körning gjordes.
 
+## Trädkontext färgar befintlig gummibandsmarkering (2026-08-27)
+
+Den uppskattade trädstyrda gröna markeringen ritades tidigare som en separat
+rund halo runt P&ID-objektet. Samtidigt hade själva utrustningspolygonen en
+äldre, konkurrerande färgregel: grå vid `deviation_count == 0` och grön vid
+`deviation_count > 0`. Den gamla avvikelsekopplade färgregeln och den separata
+halon är nu borttagna.
+
+`PIDGraphicsView.set_tree_context_highlights()` applicerar i stället samma
+trädscope och konfigurerbara färgprioritet direkt på den befintliga polygonen
+som skapades av gummibandsmarkeringen. Objekt utanför aktuell trädkontext är
+alltid neutralgrå; objekt inom kontext färgas gröna. När trädvalet byts eller
+rensas återställs polygonen direkt till neutralgrått. Den streckade blå
+multi-select-markeringen ligger fortsatt separat ovanpå och räknarbrickorna
+för avvikelse/konsekvens/barriär finns kvar, men deras antal styr inte längre
+polygonens färg.
+
+Verifiering: syntaxkontroll samt `tests.test_pid_graphics_view` och
+`tests.test_pid_panel_mod` (128 tester). Nya regressioner kontrollerar att
+`deviation_count > 0` fortfarande ger grå polygon, att trädscope färgar själva
+polygonen utan separat ellipselement, att färgen återställs vid kontextbyte och
+att beteendet överlever en full overlay-ombyggnad. Ingen visuell GUI-körning
+gjordes.
+
 ## Auto-collapse kollapsade hela trädet vid Scenario-redigering (2026-08-27)
 
 **Rapport:** Anton: "Hela systemet kollapsar när jag trycker enter och man ser

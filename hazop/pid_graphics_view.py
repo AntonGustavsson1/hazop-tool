@@ -123,7 +123,6 @@ class PIDGraphicsView(QGraphicsView):
         # set_tree_context_highlights()'s docstring for the visual
         # layering that keeps the two unambiguous).
         self._tree_context_highlights: dict = {}          # marker_id -> QColor
-        self._tree_context_highlight_overlays: dict = {}  # marker_id -> highlight QGraphicsItem
         self._ctrl_rband_start_scene  = None
         self._ctrl_rband_dragging     = False
         self._ctrl_rband_preview_item = None
@@ -1676,9 +1675,8 @@ class PIDGraphicsView(QGraphicsView):
         item = self._find_equipment_item(marker_id)
         if item is None:
             return
-        # A separate highlight overlay (not a pen change on the marker
-        # itself) — avoids having to know/restore whatever pen color the
-        # marker's own "has deviations?" state already uses.
+        # Multi-selection remains a separate dashed overlay so it stays
+        # distinct from the tree-context color applied to the marker itself.
         rect = item.mapRectToScene(item.boundingRect()).adjusted(-3, -3, 3, 3)
         pen = QPen(QColor(30, 110, 220), 2.5)
         pen.setStyle(Qt.PenStyle.DashLine)
@@ -1736,59 +1734,49 @@ class PIDGraphicsView(QGraphicsView):
         kontext ska återgå till sin normala färg" — anything not in the
         new map just never gets redrawn.
 
-        Deliberately a SEPARATE overlay from _select_equipment_marker's
-        dashed-blue multi-select rectangle, not a mutation of the
-        marker's own pen/brush (which already means something else —
-        "has ≥1 deviation") — the two can coexist on the same marker:
-        this draws a solid-outline halo ellipse (no dash, larger, filled
-        at low alpha) at Z_OVERLAY+3, strictly BELOW the multi-select
-        rectangle at Z_OVERLAY+5, so an actively multi-selected marker
-        still shows its familiar dashed blue rect on top of a green glow
-        underneath rather than the two competing for the same ring."""
-        for marker_id in list(self._tree_context_highlight_overlays.keys()):
-            self._clear_one_tree_context_highlight(marker_id)
+        Tree context now colors the EXISTING equipment/rubber-band polygon;
+        it no longer draws a separate circular halo. Anything leaving the
+        context is reset to the one neutral grey base style. The dashed-blue
+        multi-selection rectangle remains a separate overlay and can coexist
+        with the context-colored polygon."""
+        previous_ids = set(self._tree_context_highlights)
         self._tree_context_highlights = dict(marker_color_map)
+        for marker_id in previous_ids - set(self._tree_context_highlights):
+            self._apply_tree_context_color(marker_id, None)
         for marker_id, color in self._tree_context_highlights.items():
-            self._draw_tree_context_highlight(marker_id, color)
+            self._apply_tree_context_color(marker_id, color)
 
-    def _draw_tree_context_highlight(self, marker_id, color: QColor):
+    def _apply_tree_context_color(self, marker_id, color=None):
         item = self._find_equipment_item(marker_id)
         if item is None:
             return
-        rect = item.mapRectToScene(item.boundingRect()).adjusted(-6, -6, 6, 6)
-        pen = QPen(color, 3.0)
+        if color is None:
+            pen_color = QColor(120, 120, 120)
+            fill = QColor(150, 150, 150, 90)
+            width = 1.5
+        else:
+            pen_color = QColor(color)
+            fill = QColor(color)
+            fill.setAlpha(100)
+            width = 3.0
+        pen = QPen(pen_color, width)
         pen.setCosmetic(True)
-        fill = QColor(color)
-        fill.setAlpha(60)
-        overlay = self._scene.addEllipse(rect, pen, QBrush(fill))
-        overlay.setZValue(Z_OVERLAY + 3)
-        self._tree_context_highlight_overlays[marker_id] = overlay
-
-    def _clear_one_tree_context_highlight(self, marker_id):
-        overlay = self._tree_context_highlight_overlays.pop(marker_id, None)
-        if overlay is not None:
-            try: self._scene.removeItem(overlay)
-            except RuntimeError as e: logging.warning(f"Failed to remove tree-context highlight: {e}")
+        item.setPen(pen)
+        item.setBrush(QBrush(fill))
 
     def clear_tree_context_highlights(self):
-        for marker_id in list(self._tree_context_highlight_overlays.keys()):
-            self._clear_one_tree_context_highlight(marker_id)
+        for marker_id in list(self._tree_context_highlights):
+            self._apply_tree_context_color(marker_id, None)
         self._tree_context_highlights = {}
 
     def _reapply_tree_context_highlights(self):
-        """Mirrors _reapply_equipment_selection_overlays exactly — same
-        reason: clear_overlays() (called on every PIDPanel._load_overlays()
-        run) removes any scene item whose zValue falls in the overlay
-        range, including these plain addEllipse() items, so they must be
-        redrawn from the persisted marker_id->color map after every full
-        marker rebuild rather than surviving on their own."""
+        """Reapply cached context colors after equipment marker rebuild."""
         saved = dict(self._tree_context_highlights)
-        self._tree_context_highlight_overlays.clear()
         self._tree_context_highlights = {}
         for marker_id, color in saved.items():
             if self._find_equipment_item(marker_id) is not None:
                 self._tree_context_highlights[marker_id] = color
-                self._draw_tree_context_highlight(marker_id, color)
+                self._apply_tree_context_color(marker_id, color)
 
     def _equipment_markers_in_rect(self, band_rect):
         """Return equipment_markers.id values whose scene bounding rect
@@ -1921,12 +1909,10 @@ class PIDGraphicsView(QGraphicsView):
         geometric detection — see symbol_geometry.py / detect_equipment_symbols
         and the "🎯 Hitta på P&ID" flow in EquipmentPanel.
 
-        `deviation_count` (see NOTES.md "Nod → Utrustning → Avvikelse") —
-        0 keeps a neutral grey "no deviation linked yet" colour (was red
-        until 2026-08-24, see NOTES.md — changed at Anton's request); >0
-        switches to green and adds a small numbered badge in the marker's
-        top-right corner, so a glance at the P&ID shows which equipment
-        already has HAZOP deviations recorded against it.
+        Equipment polygons always start neutral grey. Their live green color
+        is applied separately by set_tree_context_highlights() according to
+        the selected HAZOP tree scope. `deviation_count` only controls its
+        numbered information badge and tooltip; it never controls color.
 
         `consequence_count`/`safeguard_count` (2026-08-11, see NOTES.md
         "Tre räknare på P&ID") — two further badges (bottom-right/
@@ -1934,14 +1920,12 @@ class PIDGraphicsView(QGraphicsView):
         this equipment's tag appears in consequences/safeguards
         (Database.equipment_consequence_count/equipment_safeguard_count —
         tag+type match, since those tables have no equipment_id FK to
-        join on the way deviations does). Deliberately does NOT change
-        the grey/green "analysed" colouring above, which stays tied to
-        deviation_count alone, unchanged from before this feature."""
+        join on the way deviations does)."""
         center = self.pdf_to_scene(x_pdf, y_pdf)
         r = 12.0
         has_deviations = deviation_count > 0
-        pen = QPen(QColor(0, 130, 60) if has_deviations else QColor(120, 120, 120), 1.5)
-        brush = QBrush(QColor(40, 180, 90, 100) if has_deviations else QColor(150, 150, 150, 90))
+        pen = QPen(QColor(120, 120, 120), 1.5)
+        brush = QBrush(QColor(150, 150, 150, 90))
 
         points = None
         if outline_pdf:
