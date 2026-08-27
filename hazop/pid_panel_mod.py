@@ -313,7 +313,7 @@ class _DeviationChecklist(QWidget):
         if causes and self._create_cause_fn is not None:
             top = causes[0]
             self._create_cause_fn(dev_id, eq.get('equipment_type') or '', eq.get('tag') or '',
-                                  top['description'], top.get('frequency'))
+                                  '', top.get('frequency'))
 
     def _deactivate_deviation(self, description, checkbox):
         """Kryssrutan ska gå att av-/aktivera (NOTES.md): unchecking now
@@ -3088,21 +3088,25 @@ class PIDPanel(QWidget):
             self.markup_item_selected.emit(mu_id)
             self.viewer.highlight_markup(mu_id)
 
-    def place_cause_from_template(self, dev_id, comp_type, comp_tag, description, frequency):
+    def place_cause_from_template(self, dev_id, comp_type, comp_tag, description, frequency,
+                                  equipment_id=None):
         """Called by EquipmentDeviationBar._create_cause_for_bar — the only
         remaining caller since the classic P&ID-click cause flow was
         removed (2026-08-13, see NOTES.md: the P&ID canvas is now
         object-placement-only). No cause marker is drawn on the P&ID — the
         equipment marker's own colour/badge already represents "this
         equipment has causes"."""
-        label = description or comp_tag or 'Ny orsak'
+        # Empty is intentional here: the tag belongs in the object-tag field,
+        # not as a pre-filled cause description. None keeps the old fallback.
+        label = description if description is not None else (comp_tag or 'Ny orsak')
 
         try:
             cause_id = self.db.add_cause(dev_id)
         except Exception as e:
             QMessageBox.critical(self, "Databasfel", f"Kunde inte skapa orsak:\n{e}")
             return None
-        self.db.update_cause(cause_id, label, comp_type=comp_type, comp_tag=comp_tag)
+        self.db.update_cause(cause_id, label, comp_type=comp_type, comp_tag=comp_tag,
+                             equipment_id=equipment_id)
         if frequency is not None:
             f_level = self._compute_f_level(frequency)
             self.db.update_cause(cause_id, likelihood=f_level, base_freq=frequency)
@@ -3432,11 +3436,12 @@ class PIDPanel(QWidget):
         straight through to place_cause_from_template's existing
         _compute_f_level() conversion — see NOTES.md."""
         marker = self.db.conn.execute(
-            "SELECT 1 FROM equipment_markers WHERE id=?", (marker_id,)).fetchone()
+            "SELECT equipment_id FROM equipment_markers WHERE id=?", (marker_id,)).fetchone()
         if not marker:
             return None
         return self.place_cause_from_template(
-            deviation_id, comp_type, comp_tag, description, frequency)
+            deviation_id, comp_type, comp_tag, description, frequency,
+            equipment_id=marker['equipment_id'])
 
 
     def _refresh_equipment_marker_visual(self, _equipment_id):

@@ -2,6 +2,13 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Flera orsaker från P&ID-objekt (2026-08-27)
+
+Varje orsak som skapas genom att kryssa en avvikelse i objektets popup kopplas
+nu till samma `equipment_id` som P&ID-markören. Orsaksbeskrivningen lämnas tom
+så att användaren själv kan skriva den i HAZOP Scenario; objekttagg och typ
+fylls fortfarande i automatiskt.
+
 ## Tree-context färgfilter på P&ID (2026-08-27)
 
 När en avvikelse är vald på HAZOP-trädet markeras utrustning i dess orsaks-,
