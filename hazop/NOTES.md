@@ -2291,6 +2291,97 @@ Rekommendationer-agentens navigerings-/sidindex-tillägg) — löst manuellt,
 en enda rad (`_reload_all_panels`s panellista), bekräftat med en full
 14-filskörning (996 test) efter sammanslagning.
 
+## Nytt projekt rensar inte P&ID-objekt (2026-08-27)
+
+Anton: "från tidigare körning blev det någon bugg att objekt på p&id inte
+försvinner ens om jag klickar nytt projekt uppe i file" — senare
+förtydligat: "buggen startade igår."
+
+**Rotorsak:** `MainWindow._hzp_new`s tabellrensning (`_PROJECT_TABLES`,
+ursprungligen från 2026-06-18) körde `DELETE FROM nodes` och `DELETE FROM
+equipment_catalog` medan foreign-key-tvång fortfarande var aktivt
+(`PRAGMA foreign_keys = ON`, satt en gång vid anslutning). Två kolumner
+tillagda senare via `ALTER TABLE` refererar dem UTAN `ON DELETE CASCADE`:
+`equipment_catalog.node_id → nodes.id` och `causes.equipment_id`/
+`deviations.equipment_id → equipment_catalog.id`. I varje projekt där ett
+objekt faktiskt länkats till en nod/avvikelse/orsak (det vanliga "dra
+objekt till trädet"-flödet) gjorde detta att just DESSA DELETE-satser
+föll på ett foreign-key-fel — tyst uppfångat av ett bart `except
+Exception: pass` — och lämnade noden OCH `equipment_catalog` helt
+orörda. `equipment_markers` (de faktiska P&ID-markörpositionerna/
+taggarna) fanns dessutom aldrig med i listan alls, och en lång rad andra
+tabeller (severity-bedömningar, rekommendationskatalog, LOPA-
+reduktionsfaktorer, safeguard-undantag, sid-/revisionshistorik,
+System-grupperingen) förlitade sig helt på CASCADE från just de tabeller
+som nu tystnat.
+
+**Varför "igår":** varken `PRAGMA foreign_keys = ON` eller de icke-
+kaskaderande kolumnerna är nya (alla från en refaktorering långt
+tillbaka) — själva koden är inte en regression. Bäst tolkning: dagens
+och gårdagens sessioner byggde/testade just den funktionalitet som
+SKAPAR dessa korsreferenser (dra P&ID-objekt till trädet, tagga orsaker
+med `equipment_id`), så en vanlig, redan existerande databasfil fick
+helt enkelt fler av just de länkar som triggar buggen. Buggen syns dessutom
+bara när själva databasfilen inte kan raderas-och-återskapas (OneDrive-
+lås, eller att appen redan är öppen — exakt det scenario 2026-06-18-
+committen själv skrevs för att skydda mot) — lyckas filraderingen slås
+allt rent oavsett tabellrensningens resultat, vilket gör buggen
+intermittent/svår att lita på som "det funkar" bara för att det
+råkade fungera senast.
+
+**Fix:** `_hzp_new`s tabellrensning bröts ut till en egen, direkt
+testbar metod `MainWindow._wipe_project_tables()` (tar inga sökvägs-/
+filargument alls — arbetar enbart mot `self.db.conn`). Den omsluter hela
+DELETE-loopen med `PRAGMA foreign_keys = OFF` / `= ON` — eliminerar
+ordningsproblemet helt (det finns ingen "fel ordning" när ändå VARJE rad
+i VARJE listad tabell ska bort) — samt utökar `_PROJECT_TABLES` med alla
+tabeller som tidigare bara förlitade sig på CASCADE:
+`equipment_markers`, `consequence_categories`, `severity_definitions`,
+`consequence_severities`, `consequence_severity_exclusions`,
+`safeguard_cause_exclusions`, `reduction_factors`, `recommendations`,
+`consequence_recommendations`, `consequence_steps`, `pid_revisions`,
+`pid_sheets`, `systems`. Medvetet OFÖRÄNDRADE (bevaras mellan projekt,
+precis som förut): `standard_causes`/`standard_deviations`/
+`standard_objects` (den delade mallbiblioteket), `tag_database`/
+`tag_database_settings` (inlärd tagg-vokabulär avsedd att återanvändas),
+statiska referenslistor (`component_types`/`node_types`/
+`failure_modes`), samt `symbol_templates`/`equipment_types` (oklart
+ägarskap, lämnade orörda för att undvika oombedd scope creep).
+
+**Fälla hittad under implementationen:** `PRAGMA foreign_keys = ON` är
+ett no-op om det körs MEDAN en transaktion fortfarande är öppen (SQLite
+tillåter bara växling mellan transaktioner) — mitt första försök körde
+den direkt efter DELETE-loopen men FÖRE `commit()`, vilket tyst misslyckades
+(inget undantag, bara ingen effekt) och lämnade foreign-key-tvånget
+avstängt för resten av sessionen. Fixat genom att flytta `commit()` före
+återaktiveringen av pragmat. Fångades av en egen ny regressionstest
+(`test_foreign_keys_enforcement_is_restored_afterward`) innan det hann
+bli ett andra, separat problem.
+
+**Verifiering — medvetet FARLIG kod att testa direkt:** `_hzp_new()`
+riktar sitt filraderings-/omöppningssteg alltid mot den modulglobala
+`DB_PATH`-konstanten, oavsett vad `self.db` råkar peka på — att anropa
+den direkt i ett test utan mycket noggrann `DB_PATH`-mockning riskerar en
+RIKTIG filoperation mot `hazop_project.db`. Detta hände faktiskt två
+gånger under själva felsökningen av denna bugg (ett `MainWindow()`-
+anrop utan `_TempDbMainWindow`, och `Database.__init__`s
+importtidsbundna default-sökväg som gjorde en `hazop.DB_PATH`-mockning
+verkningslös för just den konstruktorn) — ingen dataförlust i slutändan
+(en färsk backup från `hazop_backups/` gjorde återställningen trivial,
+se sessionens egen felsökningslogg), men det är EXAKT anledningen till
+att `_wipe_project_tables()` bröts ut som en egen, fristående metod:
+den tar inga sökvägsargument alls och är därför fullt säker att anropa
+direkt i ett test. Ny testklass `WipeProjectTablesTests`
+(tests/test_integration.py) — fyra tester: länkad nod/objekt/markör
+rensas trots foreign-key-relationen som tidigare blockerade det,
+tidigare fungerande orelaterat-data-fall fortsätter fungera oförändrat,
+foreign-key-tvånget är verkligen tillbaka på efteråt, och de nyupptäckta
+tabellerna (rekommendationer/kategorier) rensas också. Kontrollerat att
+alla fyra genuint FALLERAR mot koden innan fixen (`git stash` — metoden
+finns inte alls där, vilket i sig bevisar testerna verkligen träffar den
+nya koden). `test_smoke` + `test_hazop` + `test_integration` (253 test)
+samt hela 14-filssviten + `test_recommendations_panel` (988 test) gröna.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

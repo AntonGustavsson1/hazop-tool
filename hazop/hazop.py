@@ -2707,45 +2707,111 @@ class MainWindow(QMainWindow):
         name = Path(self._hzp_path).name if self._hzp_path else "Osparad"
         self.setWindowTitle(f"HAZOP Tool  —  {name}")
 
-    def _hzp_new(self):
-        if not self._confirm_discard():
-            return
+    # Every project-scoped table, cleared by _wipe_project_tables() below.
+    # Deliberately NOT listed (preserved across "New Project" on purpose):
+    # standard_causes/standard_deviations/standard_objects (the reusable
+    # template library), tag_database/tag_database_settings (taught
+    # cross-project tag vocabulary), component_types/node_types/
+    # failure_modes (static reference lookups), symbol_templates and
+    # equipment_types (no clear per-project ownership, left alone to avoid
+    # unrelated scope creep).
+    _PROJECT_TABLES = [
+        'nodes', 'deviations', 'causes', 'consequences', 'safeguards',
+        'actions', 'cause_markers', 'consequence_markers', 'safeguard_markers',
+        'study_tag_memory', 'symbol_fingerprints',
+        'equipment_catalog', 'equipment_markers', 'pid_identified_tags',
+        'pid_config',
+        'off_page_connector', 'board_annotations', 'pid_connection',
+        'node_markups', 'node_red_markups',
+        # Deltagarmatris (2026-08-11) — replaces the old
+        # 'project_participants' app_config field, see NOTES.md.
+        'participants', 'analysis_sessions', 'participant_attendance',
+        'participant_columns', 'participant_column_values',
+        # Manuell sidrotation (2026-08-12), see NOTES.md.
+        'pid_page_rotation',
+        # Projekt-flikens revisionstabell + fria fält (2026-08-17), se NOTES.md.
+        'project_revisions', 'project_custom_fields',
+        # Konsekvenskategorier + severity-nivåer per kategori — per-
+        # projekt, inte en delad mall (till skillnad från standard_*).
+        'consequence_categories', 'severity_definitions',
+        'consequence_severities', 'consequence_severity_exclusions',
+        'safeguard_cause_exclusions', 'reduction_factors',
+        # Rekommendationskatalog (2026-08-25/26), se NOTES.md.
+        'recommendations', 'consequence_recommendations',
+        # Konsekvenskedjan (event-tree-stegen per konsekvens).
+        'consequence_steps',
+        # Sidordning/revisionshistorik för P&ID:t.
+        'pid_revisions', 'pid_sheets',
+        # Toppnivå-grupperingen "System" ovanför Nod (2026-08-24).
+        'systems',
+    ]
+    _PROJECT_APP_CONFIG_KEYS = (
+        'project_name', 'project_date', 'project_revision',
+        # 'project_date' kept above for legacy DBs created before
+        # the 2026-08-11 date-range change; it is no longer
+        # written or read by SettingsPanel, only cleaned up here.
+        # 'project_hazop_leader' kept above for legacy DBs created
+        # before the field was removed (2026-08-17) in favor of a
+        # free Deltagare column, see NOTES.md.
+        'project_date_start', 'project_date_end', 'project_number',
+        'project_client',
+        'project_facility', 'project_hazop_leader', 'project_participants',
+        'ocr_default_engine', 'pid_page_orientation_hint',
+        'pid_path', 'pid_layout', 'fill_screen',
+    )
 
-        # Step 1: clear all project-specific tables using the existing connection.
-        # This guarantees a clean slate even if the DB file cannot be deleted.
-        _PROJECT_TABLES = [
-            'nodes', 'deviations', 'causes', 'consequences', 'safeguards',
-            'actions', 'cause_markers', 'consequence_markers', 'safeguard_markers',
-            'safeguard_markers', 'study_tag_memory', 'symbol_fingerprints',
-            'equipment_catalog', 'pid_identified_tags', 'pid_config',
-            'off_page_connector', 'board_annotations', 'pid_connection',
-            'node_markups', 'node_red_markups', 'pid_identified_tags',
-            # Deltagarmatris (2026-08-11) — replaces the old
-            # 'project_participants' app_config field, see NOTES.md.
-            'participants', 'analysis_sessions', 'participant_attendance',
-            'participant_columns', 'participant_column_values',
-            # Manuell sidrotation (2026-08-12), see NOTES.md.
-            'pid_page_rotation',
-            # Projekt-flikens revisionstabell + fria fält (2026-08-17), se NOTES.md.
-            'project_revisions', 'project_custom_fields',
-        ]
-        for tbl in _PROJECT_TABLES:
+    def _wipe_project_tables(self):
+        """Clear every project-scoped table using the CURRENT self.db
+        connection — guarantees a clean slate even if the DB file itself
+        can't be deleted afterward (OneDrive/lock — see _hzp_new's Step 2).
+        Factored out of _hzp_new (2026-08-27, see NOTES.md "Nytt projekt
+        rensar inte P&ID-objekt") so this, the part that actually
+        determines what "New Project" clears, is testable directly against
+        a plain self.db without touching DB_PATH or the filesystem at all.
+
+        'nodes' and 'equipment_catalog' used to get deleted here while
+        foreign-key enforcement (PRAGMA foreign_keys = ON, set once at
+        connection time — see Database.__init__) was still ACTIVE. Two
+        columns added later via ALTER TABLE reference them WITHOUT
+        ON DELETE CASCADE (equipment_catalog.node_id -> nodes.id,
+        deviations.equipment_id / causes.equipment_id -> equipment_
+        catalog.id) — any project that had actually linked an object to a
+        node/deviation/cause (the normal, everyday "dra objekt till
+        trädet" workflow) made those DELETEs fail with a silent FK
+        constraint violation (caught by the bare except below), leaving
+        nodes AND equipment_catalog completely untouched. equipment_
+        markers (the actual P&ID marker positions/tags) was never even in
+        _PROJECT_TABLES to begin with, and every one of these tables' many
+        per-consequence/per-cause children (severities, recommendations,
+        reduction factors, safeguard exclusions, revisions, sheets, the
+        System grouping...) was relying entirely on ON DELETE CASCADE to
+        get cleared — cascade only actually fires while foreign_keys
+        enforcement is on, so once THAT silently blocked the parent
+        delete, none of its children got touched either. Wrapping this
+        whole bulk wipe in foreign_keys=OFF sidesteps the ordering problem
+        entirely (there is no "wrong order" once every row in every listed
+        table is simply going to be deleted regardless) — but means every
+        project-scoped table now needs to be listed explicitly rather than
+        leaning on cascade, hence _PROJECT_TABLES' expansion alongside
+        this fix.
+
+        This bug was effectively masked whenever Step 2's physical file
+        delete+recreate succeeded (a truly fresh file has nothing left to
+        survive, regardless of whether this loop's deletes succeeded) —
+        it only became visible in practice when that file delete failed
+        (e.g. a OneDrive sync lock, or another running instance still
+        holding the file open), which is exactly the scenario the original
+        2026-06-18 "clear tables first" fix was written to guard against."""
+        try:
+            self.db.conn.execute("PRAGMA foreign_keys = OFF")
+        except Exception:
+            pass
+        for tbl in self._PROJECT_TABLES:
             try:
                 self.db.conn.execute(f"DELETE FROM {tbl}")
             except Exception:
                 pass
-        for key in ('project_name', 'project_date', 'project_revision',
-                    # 'project_date' kept above for legacy DBs created before
-                    # the 2026-08-11 date-range change; it is no longer
-                    # written or read by SettingsPanel, only cleaned up here.
-                    # 'project_hazop_leader' kept above for legacy DBs created
-                    # before the field was removed (2026-08-17) in favor of a
-                    # free Deltagare column, see NOTES.md.
-                    'project_date_start', 'project_date_end', 'project_number',
-                    'project_client',
-                    'project_facility', 'project_hazop_leader', 'project_participants',
-                    'ocr_default_engine', 'pid_page_orientation_hint',
-                    'pid_path', 'pid_layout', 'fill_screen'):
+        for key in self._PROJECT_APP_CONFIG_KEYS:
             try:
                 self.db.conn.execute("DELETE FROM app_config WHERE key=?", (key,))
             except Exception:
@@ -2754,6 +2820,24 @@ class MainWindow(QMainWindow):
             self.db.commit()
         except Exception:
             pass
+        # SQLite only allows toggling foreign_keys between transactions —
+        # attempting this WHILE the deletes above are still part of an
+        # open transaction is a silent no-op (not an error, so the bare
+        # except above wouldn't have caught it either) — verified
+        # empirically after this exact ordering mistake shipped once
+        # already. Must run strictly after the commit above.
+        try:
+            self.db.conn.execute("PRAGMA foreign_keys = ON")
+        except Exception:
+            pass
+
+    def _hzp_new(self):
+        if not self._confirm_discard():
+            return
+
+        # Step 1: clear all project-specific tables using the existing
+        # connection — see _wipe_project_tables() for what/why.
+        self._wipe_project_tables()
 
         # Step 2: flush WAL, close, then try to delete the file for a clean
         # file (optional — data is already gone from step 1).

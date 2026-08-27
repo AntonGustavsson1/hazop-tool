@@ -1526,6 +1526,114 @@ class ReloadAllPanelsDbSwapTests(unittest.TestCase):
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# 8b. "Nytt projekt" ("New Project") used to silently leave P&ID objects
+#     behind. MainWindow._wipe_project_tables (factored out of _hzp_new,
+#     2026-08-27) deletes 'nodes'/'equipment_catalog' while foreign-key
+#     enforcement was still active; two ALTER-TABLE-added columns
+#     (equipment_catalog.node_id -> nodes.id, causes.equipment_id/
+#     deviations.equipment_id -> equipment_catalog.id) have no ON DELETE
+#     CASCADE, so any project that had actually linked an object to a
+#     node/deviation/cause (the everyday "dra objekt till trädet" flow)
+#     made those DELETEs fail with a silently-caught FK violation, leaving
+#     nodes AND equipment_catalog (and equipment_markers, cascading from
+#     it) completely untouched. Reported as "objekt på p&id inte
+#     försvinner även om jag klickar nytt projekt" (2026-08-27).
+#
+#     Deliberately does NOT call the real MainWindow._hzp_new() end-to-end
+#     — see NOTES.md "Nytt projekt rensar inte P&ID-objekt" for why: it
+#     always targets the module-level DB_PATH constant for its file-
+#     delete-and-reopen step regardless of what self.db currently points
+#     to, so calling it directly is only safe with very careful DB_PATH
+#     mocking, and a mistake there risks a REAL data-touching accident
+#     (confirmed the hard way while diagnosing this bug). _wipe_project_
+#     tables() is exactly the part that determines what "New Project"
+#     actually clears and takes no path/file arguments at all — testing
+#     it directly is both safer and more precise.
+# ══════════════════════════════════════════════════════════════════════════
+
+class WipeProjectTablesTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def _make_linked_chain(self, win):
+        """A node/equipment/cause/marker chain with the exact cross-links
+        (equipment_catalog.node_id, causes.equipment_id) that used to
+        block 'DELETE FROM nodes'/'DELETE FROM equipment_catalog'."""
+        node_id = win.db.add_node()
+        eq_id = win.db.add_equipment_item("V-1", "V-1", "V", 0, "Ventil", '', 0)
+        win.db.set_equipment_node(eq_id, node_id)
+        marker_id = win.db.add_equipment_marker(
+            eq_id, "V-1", 0, 100.0, 100.0, "Ventil", confidence=0.9, link_method='leader')
+        dev_id = win.db.deviations(node_id)[0]['id']
+        cause_id = win.db.add_cause(dev_id)
+        win.db.conn.execute(
+            "UPDATE causes SET equipment_id=? WHERE id=?", (eq_id, cause_id))
+        win.db.commit()
+        return node_id, eq_id, marker_id, cause_id
+
+    def test_linked_node_and_equipment_are_actually_cleared(self):
+        with _TempDbMainWindow() as win:
+            self._make_linked_chain(win)
+            self.assertGreater(len(win.db.nodes()), 0)
+            self.assertGreater(len(win.db.equipment_markers_for_page(0)), 0)
+
+            win._wipe_project_tables()
+
+            self.assertEqual(win.db.nodes(), [],
+                "a node with a linked object must not survive 'New Project' "
+                "just because deleting it hit a foreign-key constraint")
+            self.assertEqual(win.db.equipment_markers_for_page(0), [],
+                "P&ID equipment markers must be cleared — this table was "
+                "missing from the wipe list entirely before the fix")
+
+    def test_unlinked_data_is_still_cleared_as_before(self):
+        """Sanity check: the fix must not accidentally make the wipe do
+        LESS for the plain, no-cross-links case that already worked."""
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            win.db.add_consequence(cause_id)
+
+            win._wipe_project_tables()
+
+            self.assertEqual(win.db.nodes(), [])
+            self.assertEqual(win.db.causes(node_id), [])
+
+    def test_foreign_keys_enforcement_is_restored_afterward(self):
+        """The wipe temporarily disables FK enforcement to avoid the
+        ordering problem — it must not leave it off for the rest of the
+        session, or every other real FK constraint in the app (cascading
+        deletes elsewhere) would silently stop working too."""
+        with _TempDbMainWindow() as win:
+            win._wipe_project_tables()
+            status = win.db.conn.execute("PRAGMA foreign_keys").fetchone()[0]
+            self.assertEqual(status, 1,
+                "foreign_keys enforcement must be back ON after the wipe")
+
+    def test_recommendations_and_categories_are_also_cleared(self):
+        """Additional tables found missing from the old wipe list during
+        the same investigation — not the originally-reported symptom, but
+        the same root gap (relying on cascade instead of an explicit
+        list), and just as visible to a user starting a "new" project
+        that still shows the old one's recommendations/categories."""
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            cons_id = win.db.add_consequence(cause_id)
+            win.db.add_recommendation_to_consequence(cons_id, description="Fixa X")
+            cat = win.db.consequence_categories()[0]
+            win.db.set_consequence_severity(cons_id, cat['id'], 3)
+
+            win._wipe_project_tables()
+
+            self.assertEqual(win.db.all_recommendations(), [])
+            self.assertEqual(win.db.consequence_categories(), [])
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # 9. Unified tag scanning — "🔍 Skanna P&ID" and "📋 Analysera P&ID" used to
 #    be two separate, inconsistent tag-matching implementations.
 #    scan_pdf_for_equipment()'s matcher silently dropped single-letter-
