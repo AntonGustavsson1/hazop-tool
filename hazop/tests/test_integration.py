@@ -3260,24 +3260,28 @@ class PlusRowQuickAddTaggingTests(unittest.TestCase):
         """Enter in HAZOP Scenario adds data without navigating the tree."""
         with _TempDbMainWindow() as win:
             panel = win.scenario_panel
-            node_id = win.db.add_node()
+            node = dict(win.db.nodes()[0])
+            node_id = node['id']
             dev_id = win.db.deviations(node_id)[0]['id']
             cause_id = win.db.add_cause(dev_id)
             win.db.update_cause(cause_id, description='Objekt')
             win.tree_panel.refresh()
-            win.tree_panel.tree.collapseAll()
-            top_items = [win.tree_panel.tree.topLevelItem(i)
-                         for i in range(win.tree_panel.tree.topLevelItemCount())]
-            self.assertTrue(top_items)
-            self.assertTrue(all(not item.isExpanded() for item in top_items))
+            system_item = _find_tree_item(win.tree_panel.tree, SYSTEM_T, node['system_id'])
+            node_item = _find_tree_item(win.tree_panel.tree, NODE_T, node_id)
+            self.assertIsNotNone(system_item)
+            self.assertIsNotNone(node_item)
+            system_item.setExpanded(True)
+            node_item.setExpanded(False)
 
             panel._quick_add_consequence(cause_id)
 
             self.assertEqual(len(win.db.consequences(cause_id)), 1)
-            top_items = [win.tree_panel.tree.topLevelItem(i)
-                         for i in range(win.tree_panel.tree.topLevelItemCount())]
-            self.assertTrue(all(not item.isExpanded() for item in top_items),
-                "adding a consequence in Scenario must leave Nytt system collapsed")
+            system_item = _find_tree_item(win.tree_panel.tree, SYSTEM_T, node['system_id'])
+            node_item = _find_tree_item(win.tree_panel.tree, NODE_T, node_id)
+            self.assertTrue(system_item.isExpanded(),
+                "the existing system level must stay open so Ny nod remains visible")
+            self.assertFalse(node_item.isExpanded(),
+                "adding a consequence in Scenario must leave Ny nod collapsed")
             cause_item = _find_tree_item(win.tree_panel.tree, CAUSE_T, cause_id)
             self.assertIsNotNone(cause_item,
                 "the consequence's object/cause must still exist in the rebuilt tree")
