@@ -2136,6 +2136,161 @@ både kryssrutans EGNA lägre och att effekten verkligen nått
 `test_worksheet` + `test_integration` (252 test) gröna — liten,
 väl avgränsad ändring i en fil, ingen full regressionskörning.
 
+## Ta bort Smart Polygon — arkiverad (2026-08-26)
+
+Anton: "Riv den befintliga Smart Polygon-funktionen som används när
+objekt markeras/kopplas på P&ID. Arkivera detta."
+
+**Tolkning (ingen exakt "Smart Polygon" hittades):** en genomsökning av
+hela kodbasen hittade ingen bokstavlig "Smart Polygon". Den enda
+"smart"+form/väg-funktionen som fanns var **"Smart polylinje"**
+(`MODE_SMART_POLYLINE`/`SmartPipeTracer`) — ett rörspårningsverktyg:
+klicka en start- och slutpunkt på P&ID, en algoritm föreslår en trolig
+rörledningsväg mellan dem (med vänster/höger-pil för att bläddra mellan
+alternativa vägar, Enter för att spara som en polylinje-markup). Detta
+gick vidare med som den avsedda funktionen (polygon/polylinje-
+förväxling, "kopplas" passar ett verktyg som just spårar en koppling
+mellan två punkter) — flaggas ändå tydligt här ifall det visar sig fel,
+eftersom arkivering (inte permanent radering) gör felbedömningen billig
+att ångra.
+
+**Arkiverat:** `SmartPipeTracer`-klassen flyttad ORÖRD till nya
+`hazop/archive/smart_pipe_tracer.py`, samma mönster som "Ta bort Smart
+Layout"-arkiveringen tidigare denna session (se ovan).
+
+**Rivet ur den aktiva appen:** `MODE_SMART_POLYLINE`-konstanten
+(pid_viewer.py), all `_smart_*`-tillståndshantering och rit-/
+förhandsgranskningslogik i pid_graphics_view.py, `'smart'`-verktygsknappen
+i nodmarkup-verktygsfältet (node_markup.py — den enda klickbara
+åtkomstpunkten), och `'smart': MODE_SMART_POLYLINE`-mappningen i
+`pid_panel_mod.py`s `_set_markup_tool` för BÅDE `'node'`- och
+`'red'`-fallen. Den `'red'`-mappningen var redan död kod innan denna
+ändring — `RedMarkupPanel._TOOLS` trimmades till bara select/symbol redan
+2026-08-17 (se "Red markup konsolideras"), så inget verktygsfält
+exponerade den längre — en bonus-städning upptäckt under arbetet, inte i
+ursprungsbegäran.
+
+**Verifiering:** 16 nya tester fördelade över `tests/test_node_markup.py`,
+`tests/test_pid_graphics_view.py`, `tests/test_pid_panel_mod.py` — bekräftar
+att `'smart'`/`MODE_SMART_POLYLINE`/`SmartPipeTracer` inte längre är
+nåbara och att kvarvarande verktyg (select/polygon/symbol) fungerar
+oförändrat. Hela 14-filssviten grön (974 test vid agentens egen körning;
+996 test i den slutliga, sammanslagna körningen med alla tre denna
+omgångs ändringar tillsammans).
+
+## Gör om Red Markup-knappen (2026-08-26)
+
+Anton: "Knappen för att rita symboler på P&ID ska inte längre öppna den
+gamla Red Markup-vyn. Riv den gamla funktionen och låt knappen istället
+öppna endast den mindre popupen för symbolval."
+
+**Vad "den gamla vyn" var:** `MainWindow._on_edit_red_markup` — klick på
+"Lägg ut P&ID-symbol" (props_ribbon) körde `_switch_view(1)`, ändrade om
+tre splitters, och visade dels `red_markup_panel` (en smal 2-knapps-
+ribbon, redan trimmad 2026-08-17) dels `red_markup_table_panel` (en
+tabell över befintliga red markups: Typ/Etikett/Färg/Opacitet/
+Tjocklek/👁) — INNAN den öppnade symbolval-popupen.
+
+**Viktig risk hanterad:** `_on_edit_red_markup` gjorde INTE bara visuella
+saker — den anropade även `pid_panel.enter_red_markup_edit(node_id)`,
+som binder vilken nod den nya symbolen ska sparas mot OCH kopplar de
+signaler (`markup_draw_finished`/`markup_item_clicked`) som gör att en
+ritad symbol faktiskt sparas till databasen. Att bara ta bort hela
+anropet hade tyst trasat sönder symbolplacering (man ritar en symbol,
+inget sparas, ingen felindikation). Den nya `_on_place_symbol_requested`
+behåller detta anrop men hoppar över ALL splitter-omstorlek/panel-
+visning — enda synliga effekten av knappen nu är att symbolval-popupen
+öppnas.
+
+**Ny "stäng"-koppling:** den gamla vägen ut ur red-markup-läge gick via
+`red_markup_panel`s ✕-knapp — oåtkomlig nu när panelen aldrig visas.
+Löst genom att `_on_red_markup_draw_finished` (efter att en symbol
+faktiskt sparats) omedelbart anropar `_on_close_red_markup()` själv —
+att placera en symbol är hela poängen med denna korta "avstickare" från
+nodmarkup-redigering, ingen separat stängningsknapp behövs längre.
+
+**Medveten funktionsförlust (flaggas explicit till Anton):**
+`RedMarkupTablePanel` är helt borttagen — det finns nu INGEN kvarvarande
+väg att RADERA en redan placerad red-markup-symbol eller ändra dess
+färg/opacitet/tjocklek (färg/opacitet/tjocklek var redan bortopererade
+2026-08-17 och gav bara fasta standardvärden). Storleksändring/rotation
+av en redan placerad symbol fungerar fortfarande oförändrat via
+"Välj/flytta"-verktygets grepp direkt på P&ID-canvasen — bara
+LISTVYN/RADERINGEN för redan placerade symboler är borta. Om detta visar
+sig behövas ändå är det en uppföljningsbegäran, inte återställd här.
+
+**Verifiering:** `RedMarkupConsolidationTests` (tests/test_node_markup.py)
+uppdaterad + två nya tester, inklusive ett fullständigt end-to-end-test
+(klicka knappen → välj symbol i popupen → simulera ritning på canvasen →
+bekräfta att en rad verkligen landade i databasen OCH att appen
+automatiskt återgick till nodmarkup-läge utan manuell stängning).
+`tests/test_integration.py` uppdaterad för borttagningen. Hela
+14-filssviten grön (960 test vid agentens egen körning; 996 test i den
+slutliga, sammanslagna körningen).
+
+## Skapa sidan Rekommendationer (2026-08-26)
+
+Anton: "Lägg till en ny sida i huvudmenyn bredvid Worksheet och P&ID
+View med namnet Rekommendationer. Lista alla rekommendationer i kolumn
+1. Kolumn 2 ska visa hierarkisk referens enligt
+studie.nod.avvikelse.orsak.konsekvens, exempelvis 1.1.1.1.1 eller
+1.3.1.1.1."
+
+**Ny sida:** `RecommendationsPanel` (nytt `recommendations_panel.py`,
+samma lager+re-export-mönster som `worksheet.py`) — infogad direkt efter
+Worksheet, ny index 3 (Utrustning/Studiehantering/Inställningar
+skiftade från 3/4/5 till 4/5/6; varje hårdkodad `_switch_view(N)`-plats i
+hazop.py räknades om i samma steg). En enkel, read-only tvåkolumns-
+tabell: kolumn 1 = "R-XXX. beskrivning" (samma konvention som REK-
+kolumnen i HAZOP Scenario), kolumn 2 = referens(er) — kommaseparerade om
+en rekommendation delas mellan flera konsekvenser, "—" om den (ännu)
+inte är kopplad till någon (appen raderar aldrig en rekommendation bara
+för att dess sista koppling tas bort).
+
+**Numreringsbeslut (medveten förenkling, inte samma som trädets egen
+numrering):** varje nivå numreras efter sin EGNA råa DB-radordning
+(`db.nodes()`, `db.deviations(node_id)`, `db.causes_for_deviation(...)`,
+`db.consequences(...)`, alla `ORDER BY id`) — platt över hela studien,
+System-grupperingen (SYSTEM_T) ignoreras helt (skulle kräva en sjätte
+siffra, aldrig efterfrågat). Detta är MEDVETET INTE samma avvikelse-
+numrering trädet (tree_panel.py) visar — trädet slår ihop flera råa
+`deviations`-rader som delar samma ledordstext till EN numrerad rad, så
+en rad-position kan skilja sig från vad trädet visar för samma avvikelse.
+Att återskapa den textmatchande ihopslagningen bedömdes vara
+oproportionerlig komplexitet för ett oklart mervärde — den enklare,
+helt deterministiska rå-DB-ordningen valdes istället. Om användare
+förväntar sig att sidans siffror matchar trädets exakt, är detta känt
+och avsiktligt, inte ett missat fall.
+
+**Bonusfixar hittade under arbetet:** `recommendations_panel` saknades i
+`_reload_all_panels()`s lista över paneler som får sin `db`-referens
+bytt vid projektbyte (samma buggklass som andra paneler i den listan
+redan skyddar mot) — tillagd. En `QTableWidget` med `setSortingEnabled
+(True)` visade sig (verifierat, inte antaget) bära ett implicit
+"kolumn 0, fallande"-sorteringsläge redan vid konstruktion, vilket
+tyst vände katalog-id-ordningen efter en bulk-populering — fixat med en
+explicit stigande sorteringsindikator.
+
+**Verifiering:** ny `tests/test_recommendations_panel.py` (8 tester,
+inklusive en medvetet ICKE-trivial position: 2:a noden / 3:e råa
+avvikelsen / 2:a orsaken / 2:a konsekvensen → `"1.2.3.2.2"`, plus
+nollkopplad-placeholder, flerkopplad-sammanslagning, och ett fullständigt
+navigeringsknapp-regressionsskydd som kontrollerar ALLA sju sidors
+index). `tests/test_smoke.py`/`tests/test_integration.py` uppdaterade
+för den nya sidan/förskjutna index. Hela 14-filssviten grön (958 test
+vid agentens egen körning, innan sammanslagning med de två andra
+ändringarna ovan; 996 test i den slutliga, sammanslagna körningen).
+
+**Genomförande denna omgång:** samtliga tre ändringar ovan (Smart
+Polygon, Red Markup, Rekommendationer) implementerades parallellt av tre
+subagenter i separata git worktrees (på Antons förslag om att prova
+subagenter för hastighet), var för sig fullt testade innan
+sammanslagning. `hazop.py` var den enda filen med en verklig sammanslag-
+ningskonflikt (Red Markup-agentens splitter-storleksändringar mot
+Rekommendationer-agentens navigerings-/sidindex-tillägg) — löst manuellt,
+en enda rad (`_reload_all_panels`s panellista), bekräftat med en full
+14-filskörning (996 test) efter sammanslagning.
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.
