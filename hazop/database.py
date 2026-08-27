@@ -3068,6 +3068,19 @@ class Database:
         RecommendationEditorDialog's reuse/search list."""
         return self.conn.execute("SELECT * FROM recommendations ORDER BY id").fetchall()
 
+    def consequences_for_recommendation(self, recommendation_id):
+        """Every consequence_id a recommendation currently links to, via
+        the consequence_recommendations join table — the reverse
+        direction of recommendations_for_consequence() (2026-08-26, added
+        for the Rekommendationer overview page: RecommendationsPanel uses
+        this to compute the studie.nod.avvikelse.orsak.konsekvens
+        reference(s) a reused recommendation currently resolves to)."""
+        rows = self.conn.execute(
+            "SELECT consequence_id FROM consequence_recommendations "
+            "WHERE recommendation_id=? ORDER BY consequence_id",
+            (recommendation_id,)).fetchall()
+        return [r['consequence_id'] for r in rows]
+
     def recommendation_consequence_count(self, recommendation_id):
         """How many consequences currently link to this recommendation —
         the basis for the "used by multiple causes, update all?" prompt
