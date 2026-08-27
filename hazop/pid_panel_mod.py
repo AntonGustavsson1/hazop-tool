@@ -37,7 +37,7 @@ from pid_viewer import (
     fitz, CONFIG, HAS_PYMUPDF, Z_TEMP,
     MODE_NAV, MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE,
     MODE_MARKUP_TEXT, MODE_MARKUP_COMMENT, MODE_MARKUP_SELECT,
-    MODE_SMART_POLYLINE, MODE_RED_MARKUP_SYMBOL, MODE_BOARD_LAYOUT,
+    MODE_RED_MARKUP_SYMBOL, MODE_BOARD_LAYOUT,
     MODE_PICK_REF_TAG, MODE_ANNOTATION,
     _icon, _vline, _draw_pid_marker, _hex_to_fitz_rgb, _sheet_ref_variants,
     _equip_prefix_from_tag, _obj_type_matches, ensure_ocr_available,
@@ -2948,15 +2948,13 @@ class PIDPanel(QWidget):
                     'polyline': MODE_MARKUP_POLYLINE,
                     'comment':  MODE_MARKUP_COMMENT,
                     'select':   MODE_MARKUP_SELECT,
-                    'smart':    MODE_SMART_POLYLINE,
                     'symbol':   MODE_RED_MARKUP_SYMBOL}
         else:
             _map = {'polygon':  MODE_MARKUP_POLYGON,
                     'polyline': MODE_MARKUP_POLYLINE,
                     'text':     MODE_MARKUP_TEXT,
                     'comment':  MODE_MARKUP_COMMENT,
-                    'select':   MODE_MARKUP_SELECT,
-                    'smart':    MODE_SMART_POLYLINE}
+                    'select':   MODE_MARKUP_SELECT}
         if tool in _map:
             self._set_mode(_map[tool])
         if markup_class == 'red':
@@ -2970,11 +2968,11 @@ class PIDPanel(QWidget):
             self.viewer.set_pen_style(color, width or default_width, int((opacity or default_opacity) * 210))
 
     def set_markup_tool(self, tool, color=None, opacity=None, width=None):
-        """Set drawing tool: 'polygon'|'polyline'|'text'|'comment'|'select'|'smart'."""
+        """Set drawing tool: 'polygon'|'polyline'|'text'|'comment'|'select'."""
         self._set_markup_tool('node', tool, color=color, opacity=opacity, width=width)
 
     def set_red_markup_tool(self, tool, color=None, opacity=None, width=None, symbol_id=None):
-        """Set red markup tool: 'polygon'|'polyline'|'comment'|'select'|'smart'|'symbol'."""
+        """Set red markup tool: 'polygon'|'polyline'|'comment'|'select'|'symbol'."""
         self._set_markup_tool('red', tool, color=color, opacity=opacity, width=width, symbol_id=symbol_id)
 
     def _refresh_markup_overlays(self, markup_class):

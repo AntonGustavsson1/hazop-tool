@@ -299,6 +299,77 @@ class RedMarkupConsolidationTests(unittest.TestCase):
             self.assertTrue(win.red_markup_panel.isHidden())
 
 
+class SmartPolylineRemovedTests(unittest.TestCase):
+    """"Smart polylinje" (the SmartPipeTracer-backed markup tool, informally
+    reported by the user as "Smart Polygon") was torn out of the active app
+    2026-08-26 and archived to archive/smart_pipe_tracer.py (see NOTES.md).
+    Confirms the node-markup toolbar no longer exposes a clickable 'smart'
+    button, and that the toolbar's other tools still work fine with that
+    tool gone — i.e. removing it left no gap/crash in the surrounding
+    button-building or tool-selection code."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_smart_removed_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_panel(self):
+        from hazop import PropertiesRibbon
+        panel = PropertiesRibbon(self.db)
+        node_id = self.db.add_node()
+        panel.set_item(NODE_T, node_id)
+        panel.enter_markup_mode(node_id)
+        return panel
+
+    def test_smart_not_in_markup_tools_spec(self):
+        from hazop import PropertiesRibbon
+        tool_names = [spec[0] for spec in PropertiesRibbon._MARKUP_TOOLS]
+        self.assertNotIn('smart', tool_names)
+
+    def test_smart_not_in_style_popup_tool_names(self):
+        from node_markup import _StylePopup
+        self.assertNotIn('smart', _StylePopup._TOOL_NAMES)
+
+    def test_smart_button_not_built_on_toolbar(self):
+        panel = self._make_panel()
+        try:
+            self.assertNotIn('smart', panel._tool_btns)
+        finally:
+            panel.deleteLater()
+
+    def test_other_tool_button_still_works_after_smart_removal(self):
+        """Clicking a surviving tool (polygon) must still select it and
+        emit tool_changed — i.e. the button-building loop and _on_tool
+        dispatch were not disturbed by dropping the 'smart' entry."""
+        panel = self._make_panel()
+        try:
+            seen = []
+            panel.tool_changed.connect(seen.append)
+            panel._tool_btns['polygon'].click()
+            self.assertEqual(seen, ['polygon'])
+            self.assertEqual(panel._current_tool, 'polygon')
+        finally:
+            panel.deleteLater()
+
+    def test_select_tool_still_works_after_smart_removal(self):
+        panel = self._make_panel()
+        try:
+            seen = []
+            panel.tool_changed.connect(seen.append)
+            panel._tool_btns['select'].click()
+            self.assertEqual(seen, ['select'])
+        finally:
+            panel.deleteLater()
 
 
 if __name__ == "__main__":

@@ -1920,6 +1920,58 @@ class ExportPdfMarkupTests(unittest.TestCase):
             panel.deleteLater()
 
 
+class SmartPolylineRemovedTests(unittest.TestCase):
+    """"Smart polylinje" (SmartPipeTracer-backed markup tool, informally
+    reported by the user as "Smart Polygon") was torn out of the active
+    app 2026-08-26 and archived to archive/smart_pipe_tracer.py (see
+    NOTES.md). Confirms PIDPanel._set_markup_tool's mode-maps no longer
+    offer 'smart' for either markup_class, and that surviving tools still
+    work through set_markup_tool/set_red_markup_tool."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_smart_removed_panel_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from pid_viewer import PIDPanel
+        self.panel = PIDPanel(self.db)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_smart_not_in_node_markup_tool_map(self):
+        # 'smart' must be silently ignored (no _set_mode call, no crash) —
+        # same as any other unknown tool name.
+        before = self.panel.viewer.mode
+        self.panel.set_markup_tool('smart')
+        self.assertEqual(self.panel.viewer.mode, before,
+            "an unmapped 'smart' tool must not change the viewer's mode")
+
+    def test_smart_not_in_red_markup_tool_map(self):
+        before = self.panel.viewer.mode
+        self.panel.set_red_markup_tool('smart')
+        self.assertEqual(self.panel.viewer.mode, before,
+            "an unmapped 'smart' tool must not change the viewer's mode")
+
+    def test_select_tool_still_works_on_node_markup(self):
+        from pid_viewer import MODE_MARKUP_SELECT
+        self.panel.set_markup_tool('select')
+        self.assertEqual(self.panel.viewer.mode, MODE_MARKUP_SELECT)
+
+    def test_symbol_tool_still_works_on_red_markup(self):
+        from pid_viewer import MODE_RED_MARKUP_SYMBOL
+        self.panel.set_red_markup_tool('symbol', symbol_id='some_symbol')
+        self.assertEqual(self.panel.viewer.mode, MODE_RED_MARKUP_SYMBOL)
+        self.assertEqual(self.panel._active_symbol_id, 'some_symbol')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
 

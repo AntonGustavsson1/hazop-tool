@@ -37,11 +37,13 @@ from pid_viewer import (
     Z_PAGE, Z_HIGHLIGHT, Z_SHEET_CONN, Z_CONNECT, Z_OVERLAY, Z_TEMP,
     MODE_NAV, MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE,
     MODE_MARKUP_TEXT, MODE_MARKUP_COMMENT, MODE_MARKUP_SELECT,
-    MODE_SMART_POLYLINE, MODE_RED_MARKUP_SYMBOL, MODE_BOARD_LAYOUT,
+    MODE_RED_MARKUP_SYMBOL, MODE_BOARD_LAYOUT,
     MODE_ADD_SHEET_LINK, MODE_PICK_REF_TAG, MODE_ANNOTATION,
-    _icon, _get_red_symbol_svg, SmartPipeTracer, _PageRenderer,
+    _icon, _get_red_symbol_svg, _PageRenderer,
     SimilarSymbolSearchDialog,
 )
+# MODE_SMART_POLYLINE / SmartPipeTracer ("Smart polylinje") removed
+# 2026-08-26 -- see NOTES.md and archive/smart_pipe_tracer.py.
 
 class PIDGraphicsView(QGraphicsView):
     node_markup_finished    = pyqtSignal(list, int)
@@ -231,13 +233,8 @@ class PIDGraphicsView(QGraphicsView):
         self._symbol_live_rot         = 0.0
         self._inline_edit_widget = None
 
-        self._smart_start_pdf   = None   # (pdf_x, pdf_y) first click
-        self._smart_end_pdf     = None
-        self._smart_paths       = []     # list of paths (each = [[pdf_x,pdf_y],...])
-        self._smart_path_idx    = 0
-        self._smart_preview     = []     # QGraphicsItem preview items on scene
-        self._smart_tracer      = None   # SmartPipeTracer, cached per page
-        self._smart_tracer_page = -1
+        # "Smart polylinje" state (_smart_*) removed 2026-08-26 along with
+        # MODE_SMART_POLYLINE/SmartPipeTracer -- see archive/smart_pipe_tracer.py.
 
         # Study board: multi-page layout
         self._all_page_items: dict  = {}   # page_idx → QGraphicsPixmapItem
@@ -755,10 +752,6 @@ class PIDGraphicsView(QGraphicsView):
         elif mode == MODE_ANNOTATION:
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
-        elif mode == MODE_SMART_POLYLINE:
-            self.setDragMode(QGraphicsView.DragMode.NoDrag)
-            self.setCursor(Qt.CursorShape.CrossCursor)
-            self._cancel_smart()
         elif mode == MODE_RED_MARKUP_SYMBOL:
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
@@ -769,12 +762,7 @@ class PIDGraphicsView(QGraphicsView):
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
         # Cancel any in-progress freehand draw when leaving draw-modes.
-        # MODE_SMART_POLYLINE is only excluded when we're staying in it
-        # (e.g. toggling a sub-option); switching *into* it from another
-        # mode should still cancel the previous draw.
-        staying_in_draw = (mode in (MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE)
-                           or (mode == MODE_SMART_POLYLINE
-                               and self.mode == MODE_SMART_POLYLINE))
+        staying_in_draw = mode in (MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE)
         if not staying_in_draw:
             self._cancel_drawing()
         self.setFocus()
@@ -1593,130 +1581,9 @@ class PIDGraphicsView(QGraphicsView):
         edit.returnPressed.connect(commit)
         edit.editingFinished.connect(commit)
 
-    # ---------------------------------------------------------------- smart polyline
-
-    def _clear_smart_preview(self):
-        for gi in self._smart_preview:
-            try: self._scene.removeItem(gi)
-            except RuntimeError as e: logging.warning(f"Failed to remove smart preview item: {e}")
-        self._smart_preview.clear()
-
-    def _draw_smart_marker(self, scene_pos, role):
-        """Draw start (green) or end (red) marker dot at scene_pos."""
-        color  = QColor('#4CAF50') if role == 'start' else QColor('#F44336')
-        r      = 6
-        dot    = QGraphicsEllipseItem(-r, -r, r * 2, r * 2)
-        dot.setBrush(QBrush(color))
-        dot.setPen(QPen(color.darker(130), 1.5))
-        dot.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
-        dot.setPos(scene_pos)
-        dot.setZValue(Z_OVERLAY + 8)
-        self._scene.addItem(dot)
-        self._smart_preview.append(dot)
-
-    def _run_smart_trace(self):
-        """Run SmartPipeTracer between the two clicked PDF points."""
-        if self._smart_start_pdf is None or self._smart_end_pdf is None:
-            return
-        # Re-use cached tracer if same page
-        if self._smart_tracer is None or self._smart_tracer_page != self.current_page:
-            self.setCursor(Qt.CursorShape.WaitCursor)
-            QApplication.processEvents()
-            self._smart_tracer      = SmartPipeTracer(self.pdf_doc, self.current_page)
-            self._smart_tracer_page = self.current_page
-        self.setCursor(Qt.CursorShape.WaitCursor)
-        QApplication.processEvents()
-        try:
-            paths = self._smart_tracer.trace(self._smart_start_pdf, self._smart_end_pdf,
-                                              n_alt=2)
-        finally:
-            self.setCursor(Qt.CursorShape.CrossCursor)
-
-        if not paths:
-            # No path found — inform user via a temporary scene text
-            sp = self.pdf_to_scene(*self._smart_end_pdf)
-            msg = QGraphicsSimpleTextItem("Ingen väg hittades – prova igen")
-            f   = QFont(); f.setPointSize(9)
-            msg.setFont(f)
-            msg.setBrush(QBrush(QColor('#F44336')))
-            msg.setPos(sp.x() + 10, sp.y() - 20)
-            msg.setZValue(Z_OVERLAY + 9)
-            self._scene.addItem(msg)
-            self._smart_preview.append(msg)
-            self._smart_start_pdf = None   # reset for new attempt
-            return
-
-        self._smart_paths    = paths
-        self._smart_path_idx = 0
-        self._show_smart_path(0)
-
-    def _show_smart_path(self, idx):
-        """Remove old path preview items and draw path[idx] as a dashed line."""
-        # Remove only path items (not the start/end dot markers — keep first 2 items)
-        markers = self._smart_preview[:2]
-        for gi in self._smart_preview[2:]:
-            try: self._scene.removeItem(gi)
-            except RuntimeError as e: logging.warning(f"Failed to remove smart path item: {e}")
-        self._smart_preview = markers
-
-        if not self._smart_paths or idx >= len(self._smart_paths):
-            return
-
-        path_pdf   = self._smart_paths[idx]
-        path_scene = [self.pdf_to_scene(*pt) for pt in path_pdf]
-
-        qpath = QPainterPath()
-        if path_scene:
-            qpath.moveTo(path_scene[0])
-            for pt in path_scene[1:]:
-                qpath.lineTo(pt)
-
-        # Use current draw_pen colour but dashed for preview
-        preview_pen = QPen(self.draw_pen)
-        preview_pen.setStyle(Qt.PenStyle.DashLine)
-        preview_pen.setCosmetic(True)
-        path_item = self._scene.addPath(qpath, preview_pen)
-        path_item.setZValue(Z_OVERLAY + 7)
-        self._smart_preview.append(path_item)
-
-        # Navigation hint text near end point
-        if len(self._smart_paths) > 1:
-            ep  = path_scene[-1]
-            lbl = f"Väg {idx + 1}/{len(self._smart_paths)}  ←  →  Enter=spara"
-            txt = QGraphicsSimpleTextItem(lbl)
-            f   = QFont(); f.setPointSize(8)
-            txt.setFont(f)
-            txt.setBrush(QBrush(QColor('#1565C0')))
-            bg_rect = txt.boundingRect()
-            bg = QGraphicsRectItem(ep.x() + 8, ep.y() - 18,
-                                    bg_rect.width() + 6, bg_rect.height() + 2)
-            bg.setBrush(QBrush(QColor(255, 255, 255, 200)))
-            bg.setPen(QPen(Qt.PenStyle.NoPen))
-            bg.setZValue(Z_OVERLAY + 8)
-            txt.setPos(ep.x() + 11, ep.y() - 17)
-            txt.setZValue(Z_OVERLAY + 9)
-            self._scene.addItem(bg)
-            self._scene.addItem(txt)
-            self._smart_preview.extend([bg, txt])
-
-    def _confirm_smart(self):
-        """Accept current path and emit it as a polyline markup."""
-        if not self._smart_paths or self._smart_path_idx >= len(self._smart_paths):
-            return
-        pts = self._smart_paths[self._smart_path_idx]
-        self._clear_smart_preview()
-        self._smart_start_pdf = None
-        self._smart_end_pdf   = None
-        self._smart_paths     = []
-        self.markup_draw_finished.emit('polyline', pts, self.current_page)
-
-    def _cancel_smart(self):
-        """Cancel the smart trace — reset state and clear preview."""
-        self._clear_smart_preview()
-        self._smart_start_pdf = None
-        self._smart_end_pdf   = None
-        self._smart_paths     = []
-        self._smart_path_idx  = 0
+    # "Smart polylinje" (SmartPipeTracer-backed path tracing/preview/
+    # confirm/cancel methods) removed 2026-08-26 -- see NOTES.md and
+    # archive/smart_pipe_tracer.py.
 
     def zoom_to_markup_items(self, mu_ids):
         """Zoom and pan the view to fit all given markup items."""
@@ -2515,20 +2382,6 @@ class PIDGraphicsView(QGraphicsView):
                 self._add_draw_point(self._snap_to_nearest(sp)); event.accept(); return
             elif event.button() == Qt.MouseButton.RightButton:
                 self._finish_markup_drawing(); event.accept(); return
-        elif self.mode == MODE_SMART_POLYLINE:
-            if event.button() == Qt.MouseButton.LeftButton:
-                if self._smart_start_pdf is None:
-                    self._smart_start_pdf = list(self.scene_to_pdf(sp))
-                    self._smart_end_pdf   = None
-                    self._clear_smart_preview()
-                    self._draw_smart_marker(sp, 'start')
-                else:
-                    self._smart_end_pdf = list(self.scene_to_pdf(sp))
-                    self._draw_smart_marker(sp, 'end')
-                    self._run_smart_trace()
-                event.accept(); return
-            elif event.button() == Qt.MouseButton.RightButton:
-                self._cancel_smart(); event.accept(); return
         elif self.mode in (MODE_MARKUP_TEXT, MODE_MARKUP_COMMENT):
             if event.button() == Qt.MouseButton.LeftButton:
                 # Single-click immediately triggers finished signal
@@ -2984,16 +2837,4 @@ class PIDGraphicsView(QGraphicsView):
                 self._finish_markup_drawing(); event.accept(); return
             elif event.key() == Qt.Key.Key_Escape:
                 self._cancel_drawing(); event.accept(); return
-        elif self.mode == MODE_SMART_POLYLINE and self._smart_paths:
-            k = event.key()
-            if k in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                self._confirm_smart(); event.accept(); return
-            elif k == Qt.Key.Key_Escape:
-                self._cancel_smart(); event.accept(); return
-            elif k == Qt.Key.Key_Left:
-                self._smart_path_idx = (self._smart_path_idx - 1) % len(self._smart_paths)
-                self._show_smart_path(self._smart_path_idx); event.accept(); return
-            elif k == Qt.Key.Key_Right:
-                self._smart_path_idx = (self._smart_path_idx + 1) % len(self._smart_paths)
-                self._show_smart_path(self._smart_path_idx); event.accept(); return
         super().keyPressEvent(event)

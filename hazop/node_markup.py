@@ -33,7 +33,8 @@ class _StylePopup(QWidget):
         'polyline': 'Rita polylinje',
         'text':     'Lägg ut nodnamn',
         'comment':  'Lägg till kommentar',
-        'smart':    'Smart polylinje',
+        # 'smart' ("Smart polylinje") removed 2026-08-26 -- see
+        # NOTES.md and archive/smart_pipe_tracer.py.
     }
 
     def __init__(self, ribbon, parent=None):
@@ -135,8 +136,8 @@ class _StylePopup(QWidget):
 
     def _configure_for(self, tool):
         self._title_lbl.setText(self._TOOL_NAMES.get(tool, tool))
-        self._opacity_row.setVisible(tool in ('polygon', 'polyline', 'comment', 'smart'))
-        self._width_row.setVisible(tool in ('polygon', 'polyline', 'smart'))
+        self._opacity_row.setVisible(tool in ('polygon', 'polyline', 'comment'))
+        self._width_row.setVisible(tool in ('polygon', 'polyline'))
         self._font_row.setVisible(tool in ('text', 'comment'))
         self._snap_row.setVisible(tool in ('polygon', 'polyline'))
 
@@ -245,7 +246,8 @@ class PropertiesRibbon(QWidget):
         ('select',   'select',   'Välj/flytta'),
         ('polygon',  'polygon',  'Rita polygon'),
         ('polyline', 'polyline', 'Rita polylinje'),
-        ('smart',    'smart',    'Smart polylinje'),
+        # ('smart', 'smart', 'Smart polylinje') removed 2026-08-26 -- see
+        # NOTES.md and archive/smart_pipe_tracer.py.
         ('text',     'text',     'Lägg ut nodnamn'),
         ('comment',  'comment',  'Lägg till kommentar'),
     ]

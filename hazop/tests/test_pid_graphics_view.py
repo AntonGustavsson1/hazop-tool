@@ -636,6 +636,70 @@ class AdaptiveRasterZoomTests(unittest.TestCase):
             "must not re-render when the currently-displayed tier already satisfies the zoom")
 
 
+class SmartPolylineRemovedTests(unittest.TestCase):
+    """"Smart polylinje" (SmartPipeTracer-backed A* pipe-path tracing tool,
+    informally reported by the user as "Smart Polygon") was torn out of
+    the active app 2026-08-26 and archived to archive/smart_pipe_tracer.py
+    (see NOTES.md). Confirms PIDGraphicsView carries none of its former
+    state/constants/methods, and that its mode-dispatch (set_mode,
+    mousePressEvent, keyPressEvent) still works cleanly for the modes that
+    remain."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_mode_smart_polyline_constant_gone(self):
+        import pid_viewer
+        self.assertFalse(hasattr(pid_viewer, 'MODE_SMART_POLYLINE'))
+
+    def test_smart_pipe_tracer_class_gone_from_pid_viewer(self):
+        import pid_viewer
+        self.assertFalse(hasattr(pid_viewer, 'SmartPipeTracer'))
+
+    def test_smart_pipe_tracer_still_available_archived(self):
+        from archive.smart_pipe_tracer import SmartPipeTracer
+        self.assertTrue(hasattr(SmartPipeTracer, 'trace'))
+
+    def test_view_has_no_smart_state_attrs(self):
+        from pid_viewer import PIDGraphicsView
+        view = PIDGraphicsView()
+        for attr in ('_smart_start_pdf', '_smart_end_pdf', '_smart_paths',
+                     '_smart_path_idx', '_smart_preview', '_smart_tracer',
+                     '_smart_tracer_page'):
+            self.assertFalse(hasattr(view, attr), f"{attr} should no longer exist")
+
+    def test_view_has_no_smart_methods(self):
+        from pid_viewer import PIDGraphicsView
+        view = PIDGraphicsView()
+        for name in ('_clear_smart_preview', '_draw_smart_marker',
+                     '_run_smart_trace', '_show_smart_path',
+                     '_confirm_smart', '_cancel_smart'):
+            self.assertFalse(hasattr(view, name), f"{name} should no longer exist")
+
+    def test_set_mode_still_works_for_surviving_modes(self):
+        """Sanity check that removing the MODE_SMART_POLYLINE branch (and
+        simplifying the staying_in_draw check in set_mode) didn't break
+        dispatch for the modes that remain."""
+        from pid_viewer import PIDGraphicsView, MODE_NAV, MODE_MARKUP_SELECT, MODE_MARKUP_POLYLINE
+        view = PIDGraphicsView()
+        view.set_mode(MODE_MARKUP_POLYLINE)
+        self.assertEqual(view.mode, MODE_MARKUP_POLYLINE)
+        view.set_mode(MODE_MARKUP_SELECT)
+        self.assertEqual(view.mode, MODE_MARKUP_SELECT)
+        view.set_mode(MODE_NAV)
+        self.assertEqual(view.mode, MODE_NAV)
+
+    def test_key_press_in_polyline_mode_does_not_crash_without_smart_state(self):
+        """keyPressEvent's MODE_NODE/MODE_MARKUP_POLYGON/MODE_MARKUP_POLYLINE
+        branch (Enter/Escape) must still run fine now that the elif branch
+        for MODE_SMART_POLYLINE right after it is gone."""
+        from pid_viewer import PIDGraphicsView, MODE_MARKUP_POLYLINE
+        view = PIDGraphicsView()
+        view.set_mode(MODE_MARKUP_POLYLINE)
+        event = unittest.mock.MagicMock()
+        event.key.return_value = Qt.Key.Key_Escape
+        view.keyPressEvent(event)  # must not raise
 
 
 if __name__ == "__main__":

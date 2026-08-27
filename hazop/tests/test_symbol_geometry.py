@@ -1793,8 +1793,9 @@ class PipeTraceTests(unittest.TestCase):
     """trace_pipe_points_from_bbox() — vector-only BFS along connected pipe
     primitives outward from a valve's bbox, used to find nearby line-
     number/medium/DN text (pid_viewer.trace_line_info_for_cluster).
-    Deliberately not raster/A* (see SmartPipeTracer) — must stay cheap
-    across a 50-page document."""
+    Deliberately not raster/A* (see the retired SmartPipeTracer,
+    archive/smart_pipe_tracer.py) — must stay cheap across a 50-page
+    document."""
 
     def test_walks_along_connected_line_from_bbox_edge(self):
         doc, page = _new_page(200, 200)
