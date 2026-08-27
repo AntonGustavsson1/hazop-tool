@@ -66,7 +66,6 @@ from settings_panels import (
 )
 from node_markup import (
     PropertiesRibbon, MarkupTablePanel, RedMarkupPanel,
-    RedMarkupTablePanel,
 )
 from worksheet import HAZOPWorksheet
 from recommendations_panel import RecommendationsPanel
@@ -1201,6 +1200,14 @@ class MainWindow(QMainWindow):
         self.props_ribbon.item_changed.connect(self._on_props_changed)
         self._h_splitter.addWidget(self.props_ribbon)
 
+        # Never made visible (2026-08-26, see NOTES.md "Gör om Red
+        # Markup-knappen") — kept only as the non-visual state/signal
+        # object _on_place_symbol_requested/_on_red_markup_draw_finished
+        # still need (open_symbol_picker()/get_current_style()/
+        # get_symbol_dims(), tool_changed/symbol_selected signals). Still
+        # added to the splitter (at its existing zero-width slot) rather
+        # than left parentless, simplest way to keep it a normal,
+        # cleanly-parented QWidget without extra plumbing.
         self.red_markup_panel = RedMarkupPanel(self.db)
         self.red_markup_panel.setVisible(False)
         self._h_splitter.addWidget(self.red_markup_panel)
@@ -1225,11 +1232,13 @@ class MainWindow(QMainWindow):
         self.markup_table_panel.setVisible(False)
         self._v_splitter.addWidget(self.markup_table_panel)
 
-        self.red_markup_table_panel = RedMarkupTablePanel(self.db)
-        self.red_markup_table_panel.setVisible(False)
-        self._v_splitter.addWidget(self.red_markup_table_panel)
-
-        self._v_splitter.setSizes([220, 0, 0])
+        # RedMarkupTablePanel (the "existing red markups" table this splitter
+        # slot used to hold) was deleted outright 2026-08-26 (see NOTES.md
+        # "Gör om Red Markup-knappen") along with the rest of the old Red
+        # Markup view — see MainWindow._on_place_symbol_requested's docstring
+        # for the resulting capability loss. Only two widgets share this
+        # splitter now, not three.
+        self._v_splitter.setSizes([220, 0])
         self._outer_splitter.addWidget(self._v_splitter)
         self._outer_splitter.setSizes([640, 220])
 
@@ -1364,15 +1373,9 @@ class MainWindow(QMainWindow):
             lambda mu_id, vis: self.pid_panel.viewer.set_markup_item_visible(mu_id, vis))
         self.markup_table_panel.item_selected.connect(
             lambda mu_id: self.pid_panel.viewer.highlight_markup(mu_id))
-        # Red markup table panel signals
-        self.red_markup_table_panel.item_deleted.connect(
-            lambda _: self.pid_panel.refresh_red_markup_overlays())
-        self.red_markup_table_panel.item_vis_toggled.connect(
-            lambda mu_id, vis: self.pid_panel.viewer.set_red_markup_item_visible(mu_id, vis))
-        self.red_markup_table_panel.item_selected.connect(
-            lambda mu_id: self.pid_panel.refresh_red_markup_overlays())
-        self.red_markup_table_panel.item_style_changed.connect(
-            lambda _: self.pid_panel.refresh_red_markup_overlays())
+        # RedMarkupTablePanel and its signal wiring were deleted outright
+        # 2026-08-26 (see NOTES.md "Gör om Red Markup-knappen") along with
+        # the rest of the old Red Markup view.
 
         self.pid_panel.markup_label_edited.connect(self._on_markup_label_edited)
         self.pid_panel.markup_duplicate_requested.connect(self._on_duplicate_markup)
@@ -1385,8 +1388,12 @@ class MainWindow(QMainWindow):
             self.markup_table_panel.select_markup)
         self.pid_panel.red_markup_draw_finished.connect(self._on_red_markup_draw_finished)
         self.pid_panel.red_markup_moved.connect(self._on_red_markup_moved)
-        self.pid_panel.red_markup_item_selected.connect(
-            self.red_markup_table_panel.select_markup)
+        # pid_panel.red_markup_item_selected used to drive
+        # red_markup_table_panel.select_markup — that panel is gone
+        # (2026-08-26, see NOTES.md "Gör om Red Markup-knappen"); the
+        # signal itself is left defined/emitted in pid_panel_mod.py
+        # (harmless with no listener) rather than touching that
+        # heavily-tested module for this.
         self.pid_panel.markup_symbol_dims_changed.connect(self._on_markup_symbol_dims_changed)
         self.pid_panel.board_layout_changed.connect(self._on_board_layout_changed)
         self.tree_panel.exit_pid_mode_requested.connect(
@@ -2066,7 +2073,7 @@ class MainWindow(QMainWindow):
         self.markup_table_panel.setVisible(True)
         self.scenario_panel.setVisible(False)
         self.props_ribbon.set_bottom_toggle_checked(False)
-        self._v_splitter.setSizes([0, 200, 0])
+        self._v_splitter.setSizes([0, 200])
         self._outer_splitter.setSizes([560, 200])
 
     def _on_toggle_bottom_panel(self, checked):
@@ -2075,7 +2082,7 @@ class MainWindow(QMainWindow):
         editing) and HAZOP scenario, without leaving markup-edit mode."""
         self.markup_table_panel.setVisible(not checked)
         self.scenario_panel.setVisible(checked)
-        self._v_splitter.setSizes([220, 0, 0] if checked else [0, 200, 0])
+        self._v_splitter.setSizes([220, 0] if checked else [0, 200])
 
     def _on_markup_mode_toggled(self, checked):
         """props_ribbon's ✏️ toggle button (2026-08-19, replaces the old
@@ -2103,60 +2110,91 @@ class MainWindow(QMainWindow):
         self.scenario_panel.setVisible(True)
         self.markup_table_panel.setVisible(False)
         self._h_splitter.setSizes([260, 650, 62, 0])
-        self._v_splitter.setSizes([220, 0, 0])
+        self._v_splitter.setSizes([220, 0])
         self._outer_splitter.setSizes([640, 220])
         self._markup_undo_stack.clear()
         self._undo_shortcut.setEnabled(False)
 
     def _on_place_symbol_requested(self):
-        """NodeMarkupPanel's "Lägg ut P&ID-symbol" button (2026-08-17, see
-        NOTES.md "Red markup konsolideras") — the two edit modes stay
-        technically separate under the hood (lower regression risk in the
-        heavily-tested P&ID drawing code than merging their state
-        machines), but the user experience is a single, continuous flow:
-        briefly switch into red-markup mode to place the symbol, then
-        _on_close_red_markup returns to node markup editing automatically."""
+        """PropertiesRibbon's "Lägg ut P&ID-symbol" button (2026-08-19,
+        see NOTES.md "Slå ihop nodmarkup i nodinställningar").
+
+        Reworked 2026-08-26 ("Gör om Red Markup-knappen", see NOTES.md):
+        this used to route through _on_edit_red_markup, which opened the
+        full old "Red Markup view" — a visible RedMarkupPanel ribbon plus
+        a RedMarkupTablePanel list of existing red markups, revealed by
+        resizing _h_splitter/_v_splitter/_outer_splitter and hiding
+        scenario_panel. That whole view is torn down now:
+        _on_edit_red_markup is deleted, RedMarkupTablePanel is deleted,
+        and this method changes NO visible chrome at all — tree_panel,
+        props_ribbon, scenario_panel and every splitter are left exactly
+        as they were. The only visible effect of clicking this button is
+        the small _SymbolSelectorPopup opening (via
+        red_markup_panel.open_symbol_picker()).
+
+        Underneath, pid_panel still needs to be told this placement is a
+        red-markup (not node-markup) one — the two stayed separate state
+        machines by design (see NOTES.md "Red markup konsolideras", lower
+        regression risk than merging them) — so enter_red_markup_edit()
+        must still run: it binds the active node
+        (pid_panel.set_active_node, needed so the eventual DB save in
+        _on_red_markup_draw_finished knows which node the symbol belongs
+        to) and connects viewer.markup_draw_finished/markup_item_clicked
+        (UniqueConnection-guarded) so a click on the canvas actually
+        reaches _on_red_markup_draw_finished at all. Skipping this call
+        would make drawing a symbol silently do nothing.
+
+        _return_to_node_markup_node_id records which node to snap back to
+        — the snap-back itself (_on_close_red_markup) is triggered from
+        _on_red_markup_draw_finished right after a symbol is actually
+        placed/saved, not from here (placing one symbol is the entire
+        point of this brief detour).
+
+        Judgement call on the OTHER way this could end — the user opens
+        the popup and picks no symbol at all (dismisses it via outside
+        click/Escape): deliberately left unhandled here rather than
+        adding new popup-cancel signal plumbing to the heavily-tested
+        picker/drawing code, because it already has a safe, natural way
+        out — reselecting any node in the tree, the ⬆/⬇ node navigation,
+        or the ✏️ toggle all force pid_panel back into a known state
+        (_on_edit_node_markup / _on_close_node_markup), regardless of
+        whether it was still sitting in the red-markup detour. The only
+        practical effect of not picking a symbol is that the P&ID
+        canvas's right-drag marker-placement gesture stays unavailable
+        until one of those happens — the same trade-off already accepted
+        for node-markup edit mode generally (see PIDPanel.enter_markup_edit),
+        not a new regression introduced by this rework."""
         node_id = self.props_ribbon.node_id
         if node_id is None:
             return
         self._return_to_node_markup_node_id = node_id
-        self._on_edit_red_markup(node_id)
+        self.red_markup_panel.load(node_id)
+        self.pid_panel.enter_red_markup_edit(node_id)
         self.red_markup_panel.open_symbol_picker()
 
-    def _on_edit_red_markup(self, node_id):
-        """Enter red-markup edit mode — 2026-08-17: only reachable via
-        _on_place_symbol_requested now (the tree's own "Editera redmarkup"
-        context-menu entry was removed, see NOTES.md "Red markup
-        konsolideras"). tree_panel/props_ribbon stay visible, matching
-        node markup's own docking fix — this mode is always a brief detour
-        FROM node markup editing now, so hiding and reshowing them across
-        the transition would just be visual noise. props_ribbon.
-        exit_markup_mode() (2026-08-19) only hides its markup-toolbar
-        SECTION, not the whole ribbon — the plain node-settings buttons
-        stay visible/usable throughout the detour."""
-        self._switch_view(1)
-        self.red_markup_panel.load(node_id)
-        self.red_markup_table_panel.load(node_id)
-        self.props_ribbon.exit_markup_mode()
-        self.red_markup_panel.setVisible(True)
-        self.markup_table_panel.setVisible(False)
-        self.scenario_panel.setVisible(False)
-        self.red_markup_table_panel.setVisible(True)
-        self._h_splitter.setSizes([260, 600, 62, 220])
-        self._v_splitter.setSizes([0, 0, 200])
-        self._outer_splitter.setSizes([560, 200])
-        self.pid_panel.enter_red_markup_edit(node_id)
-
     def _on_close_red_markup(self):
-        """Red markup ribbon close button clicked — leave red markup edit
-        mode. 2026-08-17: always returns to node markup editing for the
-        same node now (see _on_place_symbol_requested) rather than closing
-        everything, since the user only ever asked to place a symbol, not
-        to leave node markup editing."""
+        """Leave red-markup edit mode. Reached automatically right after a
+        symbol is placed (see _on_red_markup_draw_finished) — always
+        returns to node markup editing for the same node now (see
+        _on_place_symbol_requested) rather than closing everything, since
+        the user only ever asked to place a symbol, not to leave node
+        markup editing. RedMarkupPanel's own ✕ close button (the `closed`
+        signal) still wires here too, defensively — it's permanently
+        unreachable now that the panel is never shown (2026-08-26), but
+        leaving the connection costs nothing.
+
+        2026-08-26: no longer touches red_markup_table_panel (deleted
+        along with the rest of the old Red Markup view — see NOTES.md
+        "Gör om Red Markup-knappen"). The fallback branch below (no
+        return target) still restores tree_panel/props_ribbon/
+        scenario_panel visibility and the old splitter sizes for the one
+        remaining caller with no return target
+        (test_closing_red_markup_without_place_symbol_flow_goes_to_welcome) —
+        harmless/idempotent since _on_place_symbol_requested no longer
+        changes any of that chrome in the first place."""
         self.pid_panel.exit_red_markup_mode()
         self.pid_panel.reload_overlays()
         self.red_markup_panel.setVisible(False)
-        self.red_markup_table_panel.setVisible(False)
         return_node_id = self._return_to_node_markup_node_id
         self._return_to_node_markup_node_id = None
         if return_node_id is not None:
@@ -2170,11 +2208,28 @@ class MainWindow(QMainWindow):
         self.props_ribbon.setVisible(True)
         self.scenario_panel.setVisible(True)
         self._h_splitter.setSizes([260, 650, 62, 0])
-        self._v_splitter.setSizes([220, 0, 0])
+        self._v_splitter.setSizes([220, 0])
         self._outer_splitter.setSizes([640, 220])
 
     def _on_red_markup_draw_finished(self, type_, node_id, pts, page, label):
-        """New red markup drawn on P&ID — save to DB and refresh."""
+        """New red markup drawn on P&ID — save to DB and refresh.
+
+        2026-08-26: only 'symbol' can actually reach here now (see NOTES.md
+        "Gör om Red Markup-knappen") — _on_place_symbol_requested is the
+        sole entry point into red-markup mode and always leaves
+        RedMarkupPanel's tool on 'symbol' (open_symbol_picker); its other
+        drawing tools (polygon/polyline/comment/smart) were already
+        removed 2026-08-17 (see NOTES.md "Red markup konsolideras"). The
+        `else` branch is kept only as a defensive fallback for a code path
+        that no longer exists, not a live one.
+
+        Right after saving a symbol, immediately leaves red-markup mode
+        and returns to node-markup editing (_on_close_red_markup) — this
+        is the trigger the old RedMarkupPanel ✕ close button used to
+        provide before that button became permanently unreachable (the
+        panel is never shown anymore); placing one symbol is the entire
+        point of this brief detour, so there is no "Red Markup view" left
+        open to require a separate close action."""
         color, opacity, line_width, font_size = self.red_markup_panel.get_current_style()
         if type_ == 'symbol':
             symbol_id = label  # label holds the symbol_id for symbol type
@@ -2187,13 +2242,12 @@ class MainWindow(QMainWindow):
                 node_id, type_, pts, label, color, opacity, line_width, page, font_size)
         self.pid_panel.viewer._pending_path_item = None
         self.pid_panel.refresh_red_markup_overlays()
-        self.red_markup_table_panel.refresh()
-        self.red_markup_table_panel.select_markup(mu_id)
+        if type_ == 'symbol':
+            self._on_close_red_markup()
 
     def _on_red_markup_moved(self, mu_id, new_pts):
         """Red markup item dragged to new position — save to DB."""
         self.db.update_node_red_markup(mu_id, points=new_pts)
-        self.red_markup_table_panel.refresh()
 
     def _on_markup_symbol_dims_changed(self, mu_id, w, h, rot):
         """Symbol resized or rotated — save new dims to DB and re-render."""
@@ -2920,7 +2974,7 @@ class MainWindow(QMainWindow):
                       self.scenario_panel, self.equipment_panel,
                       self.admin_panel, self.settings_panel, self.hazop_prep_panel,
                       self.markup_table_panel,
-                      self.red_markup_panel, self.red_markup_table_panel,
+                      self.red_markup_panel,
                       self.worksheet, self.props_ribbon, self.recommendations_panel]:
             try:
                 panel.db = db

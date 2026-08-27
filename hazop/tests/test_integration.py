@@ -1283,7 +1283,9 @@ class EditExtraDeferredRebuildTests(unittest.TestCase):
 #    one, clicking the Worksheet tab crashed with sqlite3.ProgrammingError
 #    ("Cannot operate on a closed database") because HAZOPWorksheet.refresh()
 #    -> _populate_node_combo() -> self.db.nodes() still ran against the OLD,
-#    now-closed Database object.
+#    now-closed Database object. RedMarkupTablePanel itself was deleted
+#    outright 2026-08-26 (see NOTES.md "Gör om Red Markup-knappen") — only
+#    RedMarkupPanel remains to check here now.
 # ══════════════════════════════════════════════════════════════════════════
 
 class ReloadAllPanelsDbSwapTests(unittest.TestCase):
@@ -1304,7 +1306,8 @@ class ReloadAllPanelsDbSwapTests(unittest.TestCase):
             self.assertIs(win.worksheet._table_panel.db, win.db,
                 "HAZOPWorksheet's embedded ScenarioTablePanel must also receive the new db reference")
             self.assertIs(win.red_markup_panel.db, win.db)
-            self.assertIs(win.red_markup_table_panel.db, win.db)
+            self.assertFalse(hasattr(win, 'red_markup_table_panel'),
+                "RedMarkupTablePanel was torn down entirely, not just hidden")
 
     def test_worksheet_refresh_does_not_crash_after_db_swap(self):
         """End-to-end regression for the exact reported crash: switching to
