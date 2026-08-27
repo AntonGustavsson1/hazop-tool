@@ -1295,7 +1295,7 @@ class _ScenarioDelegate(QStyledItemDelegate):
             self._panel, '_recommendation_force_add_cons_id', None) == cons_id
         if rec_id is not None:
             rec = next((a for a in acts if a['id'] == rec_id), None)
-            editor.setText((rec or {}).get('description', '') if rec else '')
+            editor.setText(dict(rec).get('description', '') if rec else '')
         elif len(acts) == 1 and not force_add:
             editor.setText(acts[0]['description'] or '')
         else:

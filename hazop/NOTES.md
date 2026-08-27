@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Rekommendationseditor: sqlite-rad normaliseras (2026-08-27)
+
+Kraschen vid redigering av en redan länkad rekommendation berodde på att
+`_prepare_recommendation_editor` anropade `.get()` direkt på en `sqlite3.Row`.
+Raden konverteras nu till en dict innan beskrivningen läses.
+
 ## Kategorier placeras på rätt sida av riskmatrisen (2026-08-27)
 
 När konsekvens är Y-axel ligger kategoriurvalet nu till vänster om matrisen
