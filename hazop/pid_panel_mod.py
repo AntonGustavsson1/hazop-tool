@@ -2297,7 +2297,12 @@ class PIDPanel(QWidget):
         self.viewer._apply_lod(self.viewer.transform().m11())
 
     def navigate_to_marker(self, physical_page, x_pdf, y_pdf):
-        """Navigate to the page containing a marker and zoom in on it."""
+        """Navigate to the marker while keeping the complete PDF page visible.
+
+        Search results are highlighted separately, so there is no need to
+        zoom tightly into the symbol.  Fitting the page preserves the user's
+        requested overview while still centring the selected sheet.
+        """
         if self.viewer.pdf_doc is None:
             return
         display_n = physical_page
@@ -2316,10 +2321,17 @@ class PIDPanel(QWidget):
         self._current_display_page = display_n
         self.viewer.goto_page(physical)
         self._update_page_label()
-        scene_pt = self.viewer.pdf_to_scene(x_pdf, y_pdf, page=physical_page)
         self.viewer.resetTransform()
-        self.viewer.scale(2.5, 2.5)
-        self.viewer.centerOn(scene_pt)
+        page_item = self.viewer._all_page_items.get(physical)
+        if page_item is not None:
+            page_rect = page_item.mapToScene(page_item.boundingRect()).boundingRect()
+            page_rect.adjust(-12, -12, 12, 12)
+            self.viewer.fitInView(page_rect, Qt.AspectRatioMode.KeepAspectRatio)
+        else:
+            # The page may still be rendering; retain a sensible fallback
+            # until the page item becomes available.
+            scene_pt = self.viewer.pdf_to_scene(x_pdf, y_pdf, page=physical_page)
+            self.viewer.centerOn(scene_pt)
         self.viewer._apply_lod(self.viewer.transform().m11())
         self.viewer._schedule_lod_update()
 

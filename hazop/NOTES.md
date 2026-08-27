@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Sökresultat visar hela PDF-sidan (2026-08-27)
+
+När ett definierat objekt väljs i objektsökningen centreras rätt sida och
+passas in i vyn med marginal. Träffen markeras fortfarande blå, men sökningen
+zoomar inte längre tätt in på symbolen.
+
 ## Grupp av P&ID-objekt i orsak (2026-08-27)
 
 Vid drop av flera objekt på en avvikelse frågar HAZOP-trädet om objekten ska
