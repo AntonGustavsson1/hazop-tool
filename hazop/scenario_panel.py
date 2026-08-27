@@ -1221,9 +1221,14 @@ class _ScenarioDelegate(QStyledItemDelegate):
         if cons_id is None:
             return
         acts = self._panel.db.recommendations_for_consequence(cons_id)
+        rec_ids = getattr(self._panel, '_row_recommendation_ids', [])
+        rec_id = rec_ids[row] if row < len(rec_ids) else None
         force_add = getattr(
             self._panel, '_recommendation_force_add_cons_id', None) == cons_id
-        if len(acts) == 1 and not force_add:
+        if rec_id is not None:
+            rec = next((a for a in acts if a['id'] == rec_id), None)
+            editor.setText((rec or {}).get('description', '') if rec else '')
+        elif len(acts) == 1 and not force_add:
             editor.setText(acts[0]['description'] or '')
         else:
             editor.setText('')
@@ -2675,6 +2680,7 @@ class ScenarioTablePanel(QWidget):
         self._force_dev_column_visible = False  # if True, Avvikelse column stays visible regardless of _all_nodes (set by always_show_deviation_column)
         self._force_utr_column_hidden = False  # if True, Utrustning column stays hidden regardless of _all_nodes (set by hide_equipment_column)
         self._row_meta = []   # list of (dev_id, cause_id, cons_id, sg_id) per visible row
+        self._row_recommendation_ids = []
         # row index -> {col: ('cause', dev_id) | ('consequence', cause_id) |
         # ('safeguard', cons_id)} — marks the LAST real row of a group that
         # already has content with a small in-cell "+" quick-add badge in
@@ -3111,6 +3117,7 @@ class ScenarioTablePanel(QWidget):
                 self._table.setRowCount(0)
                 logging.info('_rebuild: E — reset meta')
                 self._row_meta = []
+                self._row_recommendation_ids = []
                 self._row_cat_info = []
                 self._row_plus_cols = {}
 
@@ -3412,7 +3419,11 @@ class ScenarioTablePanel(QWidget):
                             cat_rows_by_cons.get(cons_d['id'], [])]
                 n_cats = len(cat_rows)
                 n_sgs  = len(sgs)
-                n_rows = max(n_cats, n_sgs, 1)
+                n_recs = len(acts_by_cons.get(cons_d['id'], []))
+                # Recommendations occupy physical rows just like safeguards.
+                # Keep one trailing blank row so Enter can immediately create
+                # the next recommendation without reusing the previous cell.
+                n_rows = max(n_cats, n_sgs, n_recs + 1, 1)
 
                 # Precompute exclusions per severity assessment
                 cat_excl_map = {}           # sev_id → set of excluded sg_ids
@@ -3456,6 +3467,8 @@ class ScenarioTablePanel(QWidget):
                 first_row_for_cons = self._table.rowCount()
                 for i in range(n_rows):
                     sg_i    = sgs[i] if i < n_sgs else None
+                    rec_i   = (acts_by_cons.get(cons_d['id'], [])[i]
+                               if i < n_recs else None)
                     cr_i    = cat_rows[i] if i < n_cats else None
                     cat_info_i = ((cr_i['category_id'], cr_i['id'],
                                    cr_i['name'], cr_i['severity'])
@@ -3479,6 +3492,7 @@ class ScenarioTablePanel(QWidget):
                                   cause_status=cause_status,
                                   rfs=rfs_by_cons.get(cons_d['id'], []),
                                   acts=acts_by_cons.get(cons_d['id'], []),
+                                  recommendation=rec_i,
                                   excl_causes_by_sg=excl_causes_by_sg)
                     logging.info('_build_rows: H3 — _add_row cons_id=%s row_i=%d done',
                                  cons_d.get('id'), i)
@@ -3576,10 +3590,10 @@ class ScenarioTablePanel(QWidget):
             cat_id   = cat_info[0] if cat_info else None
             return (cons_id, cat_id)
 
-        # KON, LOPA and REK: span by cons_id (whole consequence merged) —
-        # a recommendation belongs to the CONSEQUENCE, not to one of its
-        # safeguard rows, same as KON/LOPA already group.
-        for col in (self._C_KON, self._C_LOPA, self._C_REK):
+        # KON and LOPA span by consequence. Recommendations are physical
+        # rows of their own, like safeguards, so REK is intentionally not
+        # included here.
+        for col in (self._C_KON, self._C_LOPA):
             _span_col(col, lambda r: _meta(r, 2))
         logging.info('_apply_spans: J5 — KON/LOPA/REK columns spanned')
 
@@ -3839,6 +3853,7 @@ class ScenarioTablePanel(QWidget):
         self._table.insertRow(r)
         dev_id = dev_d['id'] if dev_d else None
         self._row_meta.append((dev_id, None, None, None))
+        self._row_recommendation_ids.append(None)
         self._row_cat_info.append(None)
 
         def _ro(text=''):
@@ -3874,6 +3889,7 @@ class ScenarioTablePanel(QWidget):
         self._table.insertRow(r)
         dev_id = dev_d['id'] if dev_d else None
         self._row_meta.append((dev_id, cause_d['id'], None, None))
+        self._row_recommendation_ids.append(None)
         self._row_cat_info.append(None)
 
         def _ro(text=''):
@@ -3939,7 +3955,8 @@ class ScenarioTablePanel(QWidget):
                  cat_info=None, excl_cat_names=None, excl_for_cat=None,
                  cause_excl_sgs=None, sev_cat_list=None, all_cat_infos=None,
                  cause_popup_list=None, n_cats=0, repeats_previous_tag=False,
-                 cause_status=None, rfs=None, acts=None, excl_causes_by_sg=None):
+                 cause_status=None, rfs=None, acts=None, recommendation=None,
+                 excl_causes_by_sg=None):
         """One row in the scenario table.
 
         sg            – the safeguard for this row (None = no safeguard on this row).
@@ -3984,6 +4001,7 @@ class ScenarioTablePanel(QWidget):
         dev_id = dev_d['id'] if dev_d else None
 
         self._row_meta.append((dev_id, cause_d['id'], cid, sg['id'] if sg else None))
+        self._row_recommendation_ids.append(recommendation['id'] if recommendation else None)
         self._row_cat_info.append(cat_info)
 
         # ── Risk calculations ─────────────────────────────────────────────────
@@ -4215,10 +4233,15 @@ class ScenarioTablePanel(QWidget):
         # across several consequences without duplicating it.
         if acts is None:
             acts = self.db.recommendations_for_consequence(cid)
-        rek_item = QTableWidgetItem(self._recommendation_summary(acts))
-        rek_item.setData(Qt.ItemDataRole.UserRole, ('recommendation', cid))
+        rek_text = (f"R-{recommendation['id']:03d}. "
+                    f"{recommendation['description'] or 'Ny rekommendation'}"
+                    if recommendation else '')
+        rek_item = QTableWidgetItem(rek_text or '—')
+        rek_item.setData(Qt.ItemDataRole.UserRole,
+                         ('recommendation', cid,
+                          recommendation['id'] if recommendation else None))
         rek_item.setToolTip("Klicka för att redigera direkt eller lägga till/återanvända en rekommendation")
-        if not acts:
+        if recommendation is None:
             rek_item.setForeground(QBrush(QColor('#8D9299')))
         self._table.setItem(r, self._C_REK, rek_item)
 
@@ -4306,23 +4329,12 @@ class ScenarioTablePanel(QWidget):
         rows that have no real item of their own)."""
         if getattr(self, '_rebuilding', False):
             return
-        acts = self.db.recommendations_for_consequence(cons_id)
-        summary = self._recommendation_summary(acts)
-        self._table.blockSignals(True)
-        try:
-            for row, meta in enumerate(self._row_meta):
-                if meta[2] != cons_id:
-                    continue
-                item = self._table.item(row, self._C_REK)
-                if item is not None:
-                    item.setText(summary)
-                    item.setForeground(QBrush(QColor('#8D9299' if not acts else '#000000')))
-        finally:
-            self._table.blockSignals(False)
-        # A saved recommendation reserves one additional compact line for
-        # the next blank editor. Recalculate immediately so the editor opened
-        # after Enter sits below, rather than on top of, the saved summary.
-        self._table.resizeRowsToContents()
+        # REK is row-based now; defer the rebuild until the current editor's
+        # commit/close signal has fully unwound. Rebuilding synchronously from
+        # inside cellChanged would destroy the live QLineEdit before the
+        # eventFilter emits closeEditor, which is the crash seen after several
+        # consecutive Enter presses.
+        self._schedule_rebuild()
 
     def _edit_extra(self, cons_id):
         # This slot runs on the call stack of a _LopaWidget's _extra_btn
@@ -5475,9 +5487,10 @@ class ScenarioTablePanel(QWidget):
 
     def _continue_recommendation_entry(self, row, cons_id):
         """Open the next blank recommendation box after an Enter commit."""
-        if row < 0 or row >= len(self._row_meta) or self._row_meta[row][2] != cons_id:
-            row = next((r for r, meta in enumerate(self._row_meta)
-                        if meta[2] == cons_id), -1)
+        row = next((r for r, meta in enumerate(self._row_meta)
+                    if meta[2] == cons_id and
+                    (r >= len(self._row_recommendation_ids) or
+                     self._row_recommendation_ids[r] is None)), -1)
         if row < 0:
             return
         self._recommendation_force_add_cons_id = cons_id
@@ -5613,7 +5626,7 @@ class ScenarioTablePanel(QWidget):
         meta = item.data(Qt.ItemDataRole.UserRole)
         if not meta:
             return
-        kind, id_ = meta
+        kind, id_, *meta_extra = meta
         text = item.text().strip()
 
         if kind == 'cause':
@@ -5684,15 +5697,20 @@ class ScenarioTablePanel(QWidget):
             #                recommendation; existing ones are untouched.
             desc = text.split('\n')[0].strip()
             acts = self.db.recommendations_for_consequence(id_)
+            rec_id = meta_extra[0] if meta_extra else None
             force_add = self._recommendation_force_add_cons_id == id_
             self._recommendation_force_add_cons_id = None
-            if force_add and desc:
+            if rec_id is not None and force_add and desc:
                 self.db.add_recommendation_to_consequence(id_, description=desc)
-            elif len(acts) == 1:
-                if desc and desc != (acts[0]['description'] or '').strip():
-                    from hazop import _apply_shared_recommendation_description_update
-                    _apply_shared_recommendation_description_update(
-                        self.db, self, acts[0]['id'], id_, desc)
+                desc = ''
+            if rec_id is not None and desc:
+                rec = next((a for a in acts if a['id'] == rec_id), None)
+                if rec and desc == (rec['description'] or '').strip():
+                    desc = ''
+            if rec_id is not None and desc:
+                from hazop import _apply_shared_recommendation_description_update
+                _apply_shared_recommendation_description_update(
+                    self.db, self, rec_id, id_, desc)
             elif desc:
                 self.db.add_recommendation_to_consequence(id_, description=desc)
             self._refresh_recommendation_cell(id_)

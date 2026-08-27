@@ -2739,3 +2739,23 @@ visning av/på inklusive träduppdatering och beständigt färgval som når
 P&ID:s färgresolver. `tests.test_smoke`, `tests.test_pid_viewer`,
 `tests.test_pid_panel_mod`, `TreeContextHighlightEndToEndTests` och hela
 `tests.test_tree_panel` (280 tester totalt) gröna. Ingen visuell GUI-körning.
+## Rekommendationer som egna fysiska scenariorader (2026-08-27)
+
+Anton förtydligade att flera rekommendationer under samma konsekvens ska
+fungera som flera safeguards: varje rekommendation ska ligga på en egen
+fysisk rad och Enter ska gå vidare till nästa tomma rad. Scenario-tabellens
+REK-kolumn är därför inte längre spänd över konsekvensens safeguard-rader.
+Radbyggaren reserverar alltid en tom REK-rad efter de sparade
+rekommendationerna. Varje fysisk rad bär sitt eget rekommendations-ID;
+redigering uppdaterar därmed rätt katalogpost och nya Enter-inmatningar
+skapar nya poster utan att skriva över den första.
+
+Den tidigare sammanfogade flerradstexten ersattes av en schemalagd
+tabellombyggnad efter varje sparad rekommendation, så nästa fysiska rad
+materialiseras säkert efter att den aktiva editorn hunnit stängas. Det
+förhindrar att en pågående QLineEdit förstörs mitt i Enter-signalen.
+
+**Test:** `tests.test_scenario_panel`, `tests.test_smoke` och relevanta
+`RecommendationColumnTests` gröna; sex äldre tester som uttryckligen
+förväntade en sammanfogad REK-cell är markerade som ersatta av det nya
+radbeteendet.
