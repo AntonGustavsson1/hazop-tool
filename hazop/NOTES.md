@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Justerbar matrisbredd (2026-08-27)
+
+Riskmatrisens celler och konsekvensdefinitioner använder inte längre fasta
+widgetbredder. Splitterbredden kan därför justeras åt båda håll utan att
+matrisen låser sig på sin ursprungliga storlek eller hoppar tillbaka.
+
 ## Analystider och massmarkering av deltagare (2026-08-27)
 
 Varje analystillfälle kan nu få start- och sluttid i dialogen för

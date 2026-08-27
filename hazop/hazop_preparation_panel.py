@@ -93,7 +93,11 @@ class MatrixCellButton(QPushButton):
         self._label    = label
         self._is_top   = is_top_row
         self._is_left  = is_left_col
-        self.setFixedSize(80, 40)
+        # Width is controlled by the resizable matrix splitter; only the
+        # cell height is fixed so the grid can be narrowed or widened without
+        # fighting a widget-level fixed width.
+        self.setFixedHeight(40)
+        self.setMinimumWidth(30)
         self.setAcceptDrops(True)
         self._apply_style()
 
@@ -1252,7 +1256,8 @@ class HAZOPPreparationPanel(QWidget):
             data_c = (n_dcols - 1 - c) if x_rev else c
             txt = col_lbls[data_c] if data_c < len(col_lbls) else str(data_c)
             e = QLineEdit(txt)
-            e.setFixedSize(80, 28)
+            e.setFixedHeight(28)
+            e.setMinimumWidth(30)
             e.setAlignment(Qt.AlignmentFlag.AlignCenter)
             e.setStyleSheet(_hdr_style)
             e.setToolTip(col_tip + "\nEtiketten uppdateras automatiskt när du ändrar gränsvärdet.")
@@ -1276,7 +1281,8 @@ class HAZOPPreparationPanel(QWidget):
             # Row header
             txt = row_lbls[disp_r] if disp_r < len(row_lbls) else str(disp_r)
             ey = QLineEdit(txt)
-            ey.setFixedSize(90, 40)
+            ey.setFixedHeight(40)
+            ey.setMinimumWidth(30)
             ey.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             ey.setStyleSheet(_hdr_style)
             ey.setToolTip(row_tip)
@@ -1338,7 +1344,8 @@ class HAZOPPreparationPanel(QWidget):
                     btext = f"{float(bval):.4g}" if bval != '' else ''
                     e = QLineEdit(btext)
                     e.setPlaceholderText("—")
-                    e.setFixedSize(80, 22)
+                    e.setFixedHeight(22)
+                    e.setMinimumWidth(30)
                     e.setAlignment(Qt.AlignmentFlag.AlignCenter)
                     e.setStyleSheet(
                         "font-size:9px; border:1px solid #aaa; background:#fffde7;"
@@ -1376,7 +1383,8 @@ class HAZOPPreparationPanel(QWidget):
                     btext = f"{float(bval):.4g}" if bval != '' else ''
                     e = QLineEdit(btext)
                     e.setPlaceholderText("—")
-                    e.setFixedSize(70, 40)
+                    e.setFixedHeight(40)
+                    e.setMinimumWidth(30)
                     e.setAlignment(Qt.AlignmentFlag.AlignCenter)
                     e.setStyleSheet(
                         "font-size:9px; border:1px solid #aaa; background:#fffde7;"
@@ -1421,7 +1429,8 @@ class HAZOPPreparationPanel(QWidget):
                     text = defs.get(sev_level, {}).get(cat_id, '')
                     e = QTextEdit()
                     e.setPlainText(text)
-                    e.setFixedWidth(80)
+                    e.setMinimumWidth(30)
+                    e.setMaximumWidth(1000)
                     e.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
                     e.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
                     e.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -1456,7 +1465,8 @@ class HAZOPPreparationPanel(QWidget):
                 cat_hdr.setStyleSheet(_cat_hdr_style)
                 cat_hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 cat_hdr.setMinimumHeight(CONFIG['H_ROW_STD'])
-                cat_hdr.setMinimumWidth(130)
+                cat_hdr.setMinimumWidth(30)
+                cat_hdr.setMaximumWidth(1000)
                 cat_hdr.setWordWrap(True)
                 self._matrix_grid.addWidget(cat_hdr, 0, cat_col)
 
@@ -1466,7 +1476,8 @@ class HAZOPPreparationPanel(QWidget):
                     text = defs.get(sev_level, {}).get(cat_id, '')
                     e = QTextEdit()
                     e.setPlainText(text)
-                    e.setFixedWidth(130)
+                    e.setMinimumWidth(30)
+                    e.setMaximumWidth(1000)
                     e.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
                     e.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
                     e.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
