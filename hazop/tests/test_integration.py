@@ -2626,6 +2626,44 @@ class EquipmentMarkerNavigateFiltersScenarioTests(unittest.TestCase):
             self.assertIs(win.tree_panel.tree.currentItem(), cause_item,
                 "the object's own Orsak row should be highlighted")
 
+    def test_reveals_every_avvikelse_the_object_is_tagged_under(self):
+        """2026-08-27 follow-up, Anton: 'Klickar jag på ett objekt i pid
+        viewer som finns på två avikelser eller fler får du expandera
+        båda avikelserna.' Both deviations must open even with
+        'Auto-collapse avvikelser' enabled, which would otherwise only
+        keep ONE active deviation open."""
+        with _TempDbMainWindow() as win:
+            win.db.set_config('tree_auto_collapse_deviations', '1')
+            node = dict(win.db.nodes()[0])
+            node_id = node['id']
+            dev_a = win.db.get_or_create_deviation(node_id, "Högt tryck")
+            cause_a = win.db.add_cause(dev_a)
+            win.db.update_cause(cause_a, comp_type="Ventil", comp_tag="PSV-101")
+            dev_b = win.db.get_or_create_deviation(node_id, "Lågt tryck")
+            cause_b = win.db.add_cause(dev_b)
+            win.db.update_cause(cause_b, comp_type="Ventil", comp_tag="PSV-101")
+            eq_id = win.db.add_equipment_item("PSV-101", "PSV-101", "PSV", 0,
+                                               "Ventil", '', 0)
+            win.db.set_equipment_node(eq_id, node_id)
+            marker_id = win.db.add_equipment_marker(
+                eq_id, "PSV-101", 0, 100.0, 100.0, "Ventil", confidence=0.9,
+                link_method='leader')
+
+            win._on_equipment_marker_navigate(marker_id)
+
+            dev_a_item = _find_tree_item(win.tree_panel.tree, DEV_T, dev_a)
+            dev_b_item = _find_tree_item(win.tree_panel.tree, DEV_T, dev_b)
+            self.assertIsNotNone(dev_a_item)
+            self.assertIsNotNone(dev_b_item)
+            self.assertTrue(dev_a_item.isExpanded(),
+                "every avvikelse mentioning the object must stay open")
+            self.assertTrue(dev_b_item.isExpanded(),
+                "every avvikelse mentioning the object must stay open")
+            cause_a_item = _find_tree_item(win.tree_panel.tree, CAUSE_T, cause_a)
+            cause_b_item = _find_tree_item(win.tree_panel.tree, CAUSE_T, cause_b)
+            self.assertIsNotNone(cause_a_item)
+            self.assertIsNotNone(cause_b_item)
+
     def test_marker_with_node_but_no_cause_yet_falls_back_to_node_reveal(self):
         """An equipment placed on the P&ID and linked to a node, but with
         no HAZOP cause authored under it yet, has nothing at Orsak level

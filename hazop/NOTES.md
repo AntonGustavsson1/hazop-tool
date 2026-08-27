@@ -2669,3 +2669,28 @@ istället för att göra ingenting.
 `tests.test_equipment_panel`, hela `tests.test_integration`,
 `tests.test_pid_viewer` och `tests.test_pid_panel_mod` (693 tester totalt)
 gröna. Ingen visuell GUI-körning gjordes.
+
+## Uppföljning: klick på objekt visade bara EN av flera avvikelser (2026-08-27)
+
+**Rapport:** Anton: "Klickar jag på ett objekt i pid viewer som finns på två
+avikelser eller fler får du expandera båda avikelserna." — ovanstående
+implementation avslöjade medvetet bara den första (lägsta id) träffen, för
+att inte krocka med "Auto-collapse avvikelser".
+
+**Fix:** `TreePanel.reveal_causes_for_equipment()` expanderar nu ALLA
+Avvikelse-grenar som har en matchande orsak, inte bara den första. System/
+Nod-nivån följer fortfarande den vanliga en-aktiv-gren-policyn via
+`_apply_auto_collapse()` (matchningar för samma objekt ligger i praktiken
+alltid under samma nod). Avvikelse-nivån särbehandlas: efter att
+`_apply_auto_collapse()` annars bara skulle lämnat EN avvikelse öppen
+(enligt "Auto-collapse avvikelser"), tvingas varje avvikelse med en
+matchande orsak upp igen — obesläktade syskonavvikelser fälls fortfarande
+ihop precis som kryssrutan avser. Den lägsta orsaks-id:t väljs fortfarande
+som markerad `currentItem` för en enda synlig highlight.
+
+**Test:** `EquipmentMarkerNavigateFiltersScenarioTests.test_reveals_every_avvikelse_the_object_is_tagged_under`
+(tests/test_integration.py, röd→grön verifierad — misslyckades utan fixen
+exakt som rapporterat: den andra avvikelsen förblev hopfälld). Hela
+`tests.test_smoke`, `tests.test_tree_panel`, `tests.test_scenario_panel`,
+`tests.test_equipment_panel`, `tests.test_integration`, `tests.test_pid_viewer`
+och `tests.test_pid_panel_mod` gröna. Ingen visuell GUI-körning gjordes.
