@@ -1240,6 +1240,15 @@ class _ScenarioDelegate(QStyledItemDelegate):
     def createEditor(self, parent, option, index):
         editor = super().createEditor(parent, option, index)
         if editor is not None:
+            # Scenario editing is intentionally compact: rounded editor
+            # frames and generous default padding make multi-line
+            # recommendations look like pills and hide the last line.
+            # Keep the modern flat focus treatment, but reclaim the pixels.
+            editor.setStyleSheet(
+                "QLineEdit{border:1px solid #CFD1CE;border-radius:0px;"
+                "padding:1px 3px;background:#FFFFFF;}"
+                "QLineEdit:focus{border:2px solid #2F6FED;"
+                "padding:0px 2px;}")
             editor.setProperty('editing_row', index.row())
             editor.setProperty('editing_col', index.column())
             editor.installEventFilter(self._panel)
@@ -1434,6 +1443,36 @@ class _ScenarioDelegate(QStyledItemDelegate):
         path unchanged."""
         col = index.column()
         panel = self._panel
+        # Recommendations are often several lines long.  Draw their
+        # selection as a flat, compact row with a narrow accent bar instead
+        # of the rounded/padded item treatment supplied by the global QSS.
+        # This keeps the text fully readable while retaining a clear modern
+        # selection cue.
+        if col == panel._C_REK:
+            r = option.rect
+            painter.save()
+            sel = bool(option.state & QStyle.StateFlag.State_Selected)
+            if sel:
+                painter.fillRect(r, QColor('#E6ECFA'))
+                painter.fillRect(QRect(r.left(), r.top(), 3, r.height()),
+                                 QColor('#2F6FED'))
+                tc = QColor('#17191C')
+            else:
+                bg = index.data(Qt.ItemDataRole.BackgroundRole)
+                painter.fillRect(r, bg if bg is not None else (
+                    option.palette.alternateBase() if index.row() % 2 == 1
+                    else option.palette.base()))
+                fg = index.data(Qt.ItemDataRole.ForegroundRole)
+                tc = fg.color() if fg is not None else option.palette.text().color()
+            painter.setPen(tc)
+            font = index.data(Qt.ItemDataRole.FontRole)
+            painter.setFont(font if font is not None else option.font)
+            text = index.data(Qt.ItemDataRole.DisplayRole) or ''
+            painter.drawText(r.adjusted(5, 2, -3, -2),
+                             Qt.TextFlag.TextWordWrap | Qt.AlignmentFlag.AlignLeft |
+                             Qt.AlignmentFlag.AlignTop, text)
+            painter.restore()
+            return
         if col not in (panel._C_RFORE, panel._C_SLUT):
             super().paint(painter, option, index)
             return
@@ -2841,7 +2880,11 @@ class ScenarioTablePanel(QWidget):
         self._table.setWordWrap(True)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.setStyleSheet(
-            "QHeaderView::section{background:#F5F5F3;color:#8D9299;font-weight:600;padding:3px;}")
+            "QTableWidget{border-radius:0px;}"
+            "QTableWidget::item{padding:2px 3px;border:none;}"
+            "QTableWidget::item:selected{background:#E6ECFA;color:#17191C;}"
+            "QHeaderView::section{background:#F5F5F3;color:#8D9299;"
+            "font-weight:600;padding:3px;border-radius:0px;}")
         self._table.cellChanged.connect(self._on_cell_changed)
         self._table.cellClicked.connect(self._on_cell_clicked)
         self._table.itemDoubleClicked.connect(self._on_cell_double_clicked)

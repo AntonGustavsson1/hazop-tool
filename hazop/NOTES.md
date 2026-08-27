@@ -2,6 +2,13 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Kompakt markering i HAZOP Scenario (2026-08-27)
+
+Rekommendationsceller ritas nu med raka hörn, kompakt textyta och en smal blå
+accent vid markering i stället för en rundad helcellsmarkering. Inline-editorn
+har samma platta fokusram och mindre padding så att fler rekommendationsrader
+kan läsas samtidigt.
+
 ## Generisk orsak eller bindning till P&ID (2026-08-27)
 
 En orsak utan objekt kan nu redigeras direkt med ett vanligt klick för att
