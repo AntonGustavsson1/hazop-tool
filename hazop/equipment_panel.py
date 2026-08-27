@@ -1240,7 +1240,11 @@ class EquipmentPanel(QWidget):
         # that unconditionally in __init__ used to block the whole app at
         # startup even when the user never opens the Equipment page.
         # MainWindow._switch_view() already calls refresh() every time this
-        # page (index 2) becomes active, including the first time.
+        # page (index 4 as of 2026-08-26's Rekommendationer insertion; was
+        # index 3 before that, and index 2 before HAZOP preparation became
+        # index 0 on 2026-08-17 — this comment has lagged the real index
+        # more than once, see _switch_view itself for the current source
+        # of truth) becomes active, including the first time.
 
     # ── Populate ──────────────────────────────────────────────────────────────
 

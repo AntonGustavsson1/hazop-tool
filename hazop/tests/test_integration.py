@@ -2185,7 +2185,10 @@ class EquipmentMarkerClickNavigationTests(unittest.TestCase):
             win._on_marker_navigate('equipment', marker_id)
 
             load_eq_spy.assert_called_once_with(eq_id)
-            self.assertNotEqual(win.view_stack.currentIndex(), 3,
+            # Utrustning register is now index 4 (2026-08-26: Rekommendationer
+            # inserted as the new index 3, shifting Utrustning/Studiehantering/
+            # Inställningar from 3/4/5 to 4/5/6).
+            self.assertNotEqual(win.view_stack.currentIndex(), 4,
                 "clicking a marker must stay on the P&ID page — the filtered "
                 "scenario table is the bottom pane of that same page, no "
                 "need to navigate away to the Utrustning register")
@@ -2233,7 +2236,9 @@ class EquipmentMarkerClickNavigationTests(unittest.TestCase):
             win._on_marker_navigate('equipment', marker_id)
 
             load_eq_spy.assert_called_once_with(eq_id)
-            self.assertNotEqual(win.view_stack.currentIndex(), 3,
+            # Utrustning register is now index 4 (2026-08-26 renumbering, see
+            # comment on the earlier assertNotEqual in this file).
+            self.assertNotEqual(win.view_stack.currentIndex(), 4,
                 "must not switch to the Utrustning register page when the "
                 "equipment has a node to show a worksheet for")
             cons_and_sg_ids = {(m[2], m[3]) for m in win.scenario_panel._row_meta}
@@ -2262,7 +2267,9 @@ class EquipmentMarkerClickNavigationTests(unittest.TestCase):
             win._on_marker_navigate('equipment', marker_id)
 
             load_eq_spy.assert_called_once_with(eq_id)
-            self.assertNotEqual(win.view_stack.currentIndex(), 3,
+            # Utrustning register is now index 4 (2026-08-26 renumbering, see
+            # comment on the earlier assertNotEqual in this file).
+            self.assertNotEqual(win.view_stack.currentIndex(), 4,
                 "must not switch to the Utrustning page — no fallback anymore")
 
     def test_select_row_by_equipment_id_clears_blocking_filter(self):

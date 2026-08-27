@@ -69,6 +69,7 @@ from node_markup import (
     RedMarkupTablePanel,
 )
 from worksheet import HAZOPWorksheet
+from recommendations_panel import RecommendationsPanel
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QSplitter, QScrollArea,
@@ -1101,9 +1102,16 @@ class MainWindow(QMainWindow):
         # +1 accordingly; see _switch_view and every other hardcoded
         # _switch_view(N) call elsewhere in this file, all renumbered
         # together with this change.
+        #
+        # "Rekommendationer" (2026-08-26, see NOTES.md) — inserted right
+        # after Worksheet, becoming the new index 3; Utrustning/
+        # Studiehantering/Inställningar shifted from 3/4/5 to 4/5/6
+        # accordingly (again, _switch_view and every hardcoded
+        # _switch_view(N) call site renumbered together with this change).
         self.btn_prep      = QPushButton()
         self.btn_pid       = QPushButton()
         self.btn_sheet     = QPushButton()
+        self.btn_recommendations = QPushButton()
         self.btn_equip     = QPushButton()
         self.btn_admin     = QPushButton()
         self.btn_settings  = QPushButton()
@@ -1112,6 +1120,7 @@ class MainWindow(QMainWindow):
             self.btn_prep:     "HAZOP preparation",
             self.btn_pid:      "P&ID-vy",
             self.btn_sheet:    "Worksheet",
+            self.btn_recommendations: "Rekommendationer",
             self.btn_equip:    "Utrustning",
             self.btn_admin:    "Studiehantering",
             self.btn_settings: "Inställningar",
@@ -1120,13 +1129,14 @@ class MainWindow(QMainWindow):
             self.btn_prep:     'check',
             self.btn_pid:      'map',
             self.btn_sheet:    'clipboard',
+            self.btn_recommendations: 'flag',
             self.btn_equip:    'bolt-nut',
             self.btn_admin:    'document',
             self.btn_settings: 'settings',
         }
 
-        for btn in (self.btn_prep, self.btn_pid, self.btn_sheet, self.btn_equip,
-                    self.btn_admin, self.btn_settings):
+        for btn in (self.btn_prep, self.btn_pid, self.btn_sheet, self.btn_recommendations,
+                    self.btn_equip, self.btn_admin, self.btn_settings):
             btn.setCheckable(True)
             btn.setFixedSize(40, 40)
             btn.setToolTip(_nav_labels[btn])
@@ -1152,9 +1162,10 @@ class MainWindow(QMainWindow):
         self.btn_prep.clicked.connect(lambda: self._switch_view(0))
         self.btn_pid.clicked.connect(lambda: self._switch_view(1))
         self.btn_sheet.clicked.connect(lambda: self._switch_view(2))
-        self.btn_equip.clicked.connect(lambda: self._switch_view(3))
-        self.btn_admin.clicked.connect(lambda: self._switch_view(4))
-        self.btn_settings.clicked.connect(lambda: self._switch_view(5))
+        self.btn_recommendations.clicked.connect(lambda: self._switch_view(3))
+        self.btn_equip.clicked.connect(lambda: self._switch_view(4))
+        self.btn_admin.clicked.connect(lambda: self._switch_view(5))
+        self.btn_settings.clicked.connect(lambda: self._switch_view(6))
 
         # ── Page 0: HAZOP preparation ────────────────────────────────────────
         # Added FIRST so it becomes view_stack index 0 (QStackedWidget numbers
@@ -1226,7 +1237,14 @@ class MainWindow(QMainWindow):
         self.worksheet = HAZOPWorksheet(self.db)
         self.view_stack.addWidget(self.worksheet)
 
-        # ── Page 3: Equipment ─────────────────────────────────────────────────
+        # ── Page 3: Recommendations ("Rekommendationer", 2026-08-26) ──────────
+        # Must be added right here — QStackedWidget numbers pages in
+        # addWidget() call order, and this page is index 3 (right after
+        # Worksheet, before Equipment), per the nav-rail renumbering above.
+        self.recommendations_panel = RecommendationsPanel(self.db)
+        self.view_stack.addWidget(self.recommendations_panel)
+
+        # ── Page 4: Equipment ─────────────────────────────────────────────────
         self.equipment_panel = EquipmentPanel(self.db)
         self.equipment_panel.markers_saved.connect(self.pid_panel.reload_overlays)
         # An inline tag/type edit in the Utrustningsregister also reaches
@@ -1239,11 +1257,11 @@ class MainWindow(QMainWindow):
         self.equipment_panel.markers_saved.connect(self.tree_panel.refresh)
         self.view_stack.addWidget(self.equipment_panel)
 
-        # ── Page 4: Study management ──────────────────────────────────────────
+        # ── Page 5: Study management ──────────────────────────────────────────
         self.admin_panel = StudyManagementPanel(self.db)
         self.view_stack.addWidget(self.admin_panel)
 
-        # ── Page 5: Settings ──────────────────────────────────────────────────
+        # ── Page 6: Settings ──────────────────────────────────────────────────
         self.settings_panel = SettingsPanel(self.db)
         self.settings_panel.matrix_changed.connect(self._on_matrix_changed)
         self.hazop_prep_panel.matrix_changed.connect(self._on_matrix_changed)
@@ -1479,21 +1497,25 @@ class MainWindow(QMainWindow):
         # instead of leaving an empty strip below the nav rail's height.
         # Index 1, not 0, since HAZOP preparation (2026-08-17, see NOTES.md)
         # is now index 0 — every branch below shifted +1 accordingly.
+        # 2026-08-26: Rekommendationer inserted as the new index 3, shifting
+        # Utrustning/Studiehantering/Inställningar from 3/4/5 to 4/5/6.
         self._v_splitter.setVisible(page == 1)
         self.btn_prep.setChecked(page == 0)
         self.btn_pid.setChecked(page == 1)
         self.btn_sheet.setChecked(page == 2)
-        self.btn_equip.setChecked(page == 3)
-        self.btn_admin.setChecked(page == 4)
-        self.btn_settings.setChecked(page == 5)
+        self.btn_recommendations.setChecked(page == 3)
+        self.btn_equip.setChecked(page == 4)
+        self.btn_admin.setChecked(page == 5)
+        self.btn_settings.setChecked(page == 6)
         if page == 1 and prev != 1:
             self.pid_panel.reload_overlays()
         if page == 2: self.worksheet.refresh()
-        if page == 3: self.equipment_panel.refresh()
-        if page == 4:
+        if page == 3: self.recommendations_panel.refresh()
+        if page == 4: self.equipment_panel.refresh()
+        if page == 5:
             self.admin_panel.refresh()
             self.admin_panel.refresh_pid()
-        if page == 5:
+        if page == 6:
             # Guard against settings_panel not being initialized yet
             if hasattr(self, 'settings_panel') and self.settings_panel:
                 self.settings_panel.refresh_tag_memory()
@@ -1637,7 +1659,7 @@ class MainWindow(QMainWindow):
         P&ID" knappen köras.' The 'Analys klar' popup itself is unchanged
         (shown earlier, in PIDPanel._analyze_pid, before this signal fires);
         this only adds the follow-up confirm + chained run."""
-        self._switch_view(5)   # Settings page
+        self._switch_view(6)   # Settings page
         self.settings_panel.analysis_panel.refresh()
         # Switch to the "Identifierade objekt" tab inside settings
         tabs = self.settings_panel.findChild(QTabWidget)
@@ -1670,7 +1692,7 @@ class MainWindow(QMainWindow):
             # From EquipmentDeviationBar's "Visa i register" link — item_id
             # here IS already equipment_catalog.id (the bar knows it
             # directly, no marker lookup needed).
-            self._switch_view(3)
+            self._switch_view(4)
             self.equipment_panel.select_row_by_equipment_id(item_id)
             return
         type_map = {'cause': CAUSE_T, 'consequence': CONS_T, 'safeguard': SG_T}
@@ -2899,7 +2921,7 @@ class MainWindow(QMainWindow):
                       self.admin_panel, self.settings_panel, self.hazop_prep_panel,
                       self.markup_table_panel,
                       self.red_markup_panel, self.red_markup_table_panel,
-                      self.worksheet, self.props_ribbon]:
+                      self.worksheet, self.props_ribbon, self.recommendations_panel]:
             try:
                 panel.db = db
             except Exception:

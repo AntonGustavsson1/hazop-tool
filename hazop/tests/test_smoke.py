@@ -89,6 +89,7 @@ class SmokeTests(unittest.TestCase):
         cause_id = db.add_cause(dev_id)
         cons_id = db.add_consequence(cause_id)
         db.add_safeguard(cons_id)
+        db.add_recommendation_to_consequence(cons_id, description='Testrekommendation')
         db.add_revision('A', '', pdf_path='C:/fake/smoke_test.pdf')
         db.add_equipment_item('SM-101', 'SM-101', 'SM', 0, 'Ventil', '', 0)
 
@@ -99,6 +100,7 @@ class SmokeTests(unittest.TestCase):
         import worksheet, scenario_panel, equipment_panel, settings_panels
         import pid_viewer, pid_graphics_view, pid_panel_mod, hazop
         import equipment_detection, symbol_geometry, image_symbol_matching
+        import recommendations_panel
 
     # ── Every major panel constructs (and does its normal startup work)
     # against a REALISTIC, non-empty DB ──────────────────────────────────
@@ -123,6 +125,17 @@ class SmokeTests(unittest.TestCase):
         p = EquipmentPanel(self.db)
         try:
             p.refresh()
+        finally:
+            p.deleteLater()
+
+    def test_recommendations_panel_constructs(self):
+        """New page (2026-08-26, see NOTES.md) — construct against the
+        seeded DB (which now includes a real linked recommendation, see
+        _seed above) and load() it for real, not just __init__."""
+        from recommendations_panel import RecommendationsPanel
+        p = RecommendationsPanel(self.db)
+        try:
+            p.load()
         finally:
             p.deleteLater()
 
