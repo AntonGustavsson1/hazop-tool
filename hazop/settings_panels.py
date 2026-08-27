@@ -83,15 +83,19 @@ class SettingsPanel(QWidget):
         self._strip_spaces_chk.toggled.connect(
             lambda on: self.db.set_config('tag_strip_spaces', '1' if on else '0'))
         tag_gl.addWidget(self._strip_spaces_chk)
-        tag_gl.addWidget(QLabel('Ersätt tecken i identifierade taggar (t.ex. -:. ; _:-):'))
-        self._tag_replacements_edit = QLineEdit()
-        self._tag_replacements_edit.setPlaceholderText('Exempel: -:. ; _:-')
-        self._tag_replacements_edit.setToolTip(
-            'Regler separerade med semikolon. Exempel -:. betyder streck till punkt.')
-        self._tag_replacements_edit.editingFinished.connect(
-            lambda: self.db.set_config('tag_identifier_replacements',
-                                        self._tag_replacements_edit.text().strip()))
-        tag_gl.addWidget(self._tag_replacements_edit)
+        tag_gl.addWidget(QLabel('Ersätt tecken i identifierade taggar:'))
+        tag_gl.addWidget(QLabel('Ange tecknet som ska ersättas i X och ersättningen i Y.'))
+        self._replacement_rows = []
+        self._replacement_rows_host = QWidget()
+        self._replacement_rows_layout = QVBoxLayout(self._replacement_rows_host)
+        self._replacement_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._replacement_rows_layout.setSpacing(3)
+        tag_gl.addWidget(self._replacement_rows_host)
+        add_rule_btn = QPushButton('+')
+        add_rule_btn.setFixedWidth(28)
+        add_rule_btn.setToolTip('Lägg till ersättningsregel')
+        add_rule_btn.clicked.connect(lambda: self._add_replacement_row())
+        tag_gl.addWidget(add_rule_btn, 0, Qt.AlignmentFlag.AlignLeft)
 
         pid_l.addWidget(tag_grp)
 
@@ -224,8 +228,68 @@ class SettingsPanel(QWidget):
     def _load_all(self):
         self._strip_spaces_chk.setChecked(
             self.db.get_config('tag_strip_spaces', '1') == '1')
-        self._tag_replacements_edit.setText(
+        self._load_replacement_rows(
             self.db.get_config('tag_identifier_replacements', '') or '')
+
+    def _add_replacement_row(self, source='', target=''):
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(3)
+        source_edit = QLineEdit(source)
+        source_edit.setPlaceholderText('X')
+        source_edit.setToolTip('Tecken eller text som ska ersättas')
+        target_edit = QLineEdit(target)
+        target_edit.setPlaceholderText('Y')
+        target_edit.setToolTip('Ersättande tecken eller text')
+        arrow = QLabel('→')
+        remove_btn = QPushButton('-')
+        remove_btn.setFixedWidth(28)
+        remove_btn.setToolTip('Ta bort ersättningsregel')
+        layout.addWidget(source_edit)
+        layout.addWidget(arrow)
+        layout.addWidget(target_edit)
+        layout.addWidget(remove_btn)
+        self._replacement_rows_layout.addWidget(row)
+        entry = (row, source_edit, target_edit)
+        self._replacement_rows.append(entry)
+        source_edit.editingFinished.connect(self._save_replacement_rows)
+        target_edit.editingFinished.connect(self._save_replacement_rows)
+        remove_btn.clicked.connect(lambda: self._remove_replacement_row(entry))
+        return entry
+
+    def _remove_replacement_row(self, entry):
+        if entry not in self._replacement_rows:
+            return
+        self._replacement_rows.remove(entry)
+        entry[0].deleteLater()
+        self._save_replacement_rows()
+
+    def _load_replacement_rows(self, raw):
+        for entry in list(self._replacement_rows):
+            entry[0].deleteLater()
+        self._replacement_rows.clear()
+        for rule in str(raw or '').split(';'):
+            rule = rule.strip()
+            if not rule:
+                continue
+            if '->' in rule:
+                source, target = rule.split('->', 1)
+            elif ':' in rule:
+                source, target = rule.split(':', 1)
+            elif len(rule) >= 3:
+                source, target = rule[0], rule[2:]
+            else:
+                continue
+            self._add_replacement_row(source.strip(), target.strip())
+
+    def _save_replacement_rows(self):
+        rules = []
+        for _row, source_edit, target_edit in self._replacement_rows:
+            source, target = source_edit.text().strip(), target_edit.text().strip()
+            if source:
+                rules.append(f'{source}:{target}')
+        self.db.set_config('tag_identifier_replacements', '; '.join(rules))
 
         timeout_ms = int(self.db.get_config('equipment_tag_search_timeout_ms', '2000') or '2000')
         self._tag_search_timeout_spin.setValue(timeout_ms / 1000)

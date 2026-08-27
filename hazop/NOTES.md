@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Flera taggersättningsregler (2026-08-27)
+
+Taggidentifieringens inställning använder nu en rad per regel med X (ursprung)
+och Y (ersättning). Plus lägger till en ny rad och minus tar bort raden;
+reglerna sparas fortfarande i samma kompatibla semikolonformat.
+
 ## Konsekvenspopup följer riskmatrisens axel (2026-08-27)
 
 Riskmatrisens konsekvensval per kategori orienteras nu efter aktuell matris:
