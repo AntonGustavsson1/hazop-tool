@@ -2921,6 +2921,11 @@ redigeras, så höjden ändras direkt utan att riskmatrisinställningen behöver
 byggas om manuellt. Vid konsekvens på X-axeln lämnas den befintliga
 höjdlogiken oförändrad.
 
+Vid konsekvens på X-axeln är konsekvensdefinitionerna nu flerradiga textfält
+med individuell automatisk radhöjd. Varje kategorirad växer efter sin egen
+längsta beskrivning; raderna behöver därför inte vara lika höga i den
+orienteringen.
+
 ## Deltagarmatris: sessionsdatum och plats (2026-08-27)
 
 Analystillfällen har nu separata datum- och platsfält. Nya tillfällen föreslås

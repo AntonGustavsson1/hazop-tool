@@ -1075,6 +1075,7 @@ class HAZOPPreparationPanel(QWidget):
         self._freq_boundary_edits = []
         self._sev_def_edits       = {}
         self._category_row_edits  = []
+        self._x_category_rows     = []
 
         # Data always stored as [consequence_idx][frequency_idx]
         n_cons = cfg.get('rows', 5)    # consequence levels
@@ -1281,20 +1282,30 @@ class HAZOPPreparationPanel(QWidget):
                 cat_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 cat_lbl.setMinimumHeight(CONFIG['H_ROW_STD'])
                 self._matrix_grid.addWidget(cat_lbl, cat_row, 0)
+                row_edits = []
 
                 for c in range(n_dcols):      # n_dcols = n_cons
                     data_c    = (n_dcols - 1 - c) if x_rev else c
                     sev_level = data_c + 1
                     text = defs.get(sev_level, {}).get(cat_id, '')
-                    e = QLineEdit(text)
+                    e = QTextEdit()
+                    e.setPlainText(text)
+                    e.setFixedWidth(80)
+                    e.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+                    e.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+                    e.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
                     e.setMinimumHeight(CONFIG['H_ROW_STD'])
                     e.setStyleSheet(_def_style)
                     e.setPlaceholderText("—")
-                    e.editingFinished.connect(
+                    e.textChanged.connect(
                         lambda cid=cat_id, sl=sev_level, _e=e:
-                        self.db.set_severity_definition(sl, cid, _e.text().strip()))
+                        self.db.set_severity_definition(sl, cid, _e.toPlainText().strip()))
+                    e.textChanged.connect(self._schedule_category_row_resize)
                     self._matrix_grid.addWidget(e, cat_row, c + 1)
                     self._sev_def_edits[(cat_id, sev_level)] = e
+                    row_edits.append(e)
+                self._x_category_rows.append((cat_lbl, row_edits))
+            self._resize_category_rows()
         else:
             # Consequence on Y (rows) → category columns go to the RIGHT
             # n_dcols = n_freq; no boundary column exists (boundary is a row)
@@ -1342,7 +1353,7 @@ class HAZOPPreparationPanel(QWidget):
             self._resize_category_rows()
 
     def _schedule_category_row_resize(self):
-        """Resize the whole Y-axis matrix after wrapped category text changes.
+        """Resize matrix rows after wrapped category text changes.
 
         QTextEdit updates its document layout asynchronously, so queue the
         measurement until the next event-loop turn.  All consequence levels
@@ -1351,6 +1362,20 @@ class HAZOPPreparationPanel(QWidget):
         QTimer.singleShot(0, self._resize_category_rows)
 
     def _resize_category_rows(self):
+        # Consequence on X: category rows are independent and may therefore
+        # grow to different heights according to their own wrapped text.
+        x_rows = getattr(self, '_x_category_rows', None) or []
+        if x_rows:
+            for label, edits in x_rows:
+                needed = CONFIG['H_ROW_STD']
+                for edit in edits:
+                    doc = edit.document()
+                    doc.setTextWidth(edit.viewport().width())
+                    needed = max(needed, int(doc.size().height()) + 8)
+                label.setFixedHeight(needed)
+                for edit in edits:
+                    edit.setFixedHeight(needed)
+            return
         rows = getattr(self, '_category_row_edits', None) or []
         if not rows or not getattr(self, '_y_label_edits', None):
             return
