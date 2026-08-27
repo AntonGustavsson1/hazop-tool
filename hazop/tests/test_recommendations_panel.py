@@ -63,10 +63,10 @@ class RecommendationsPanelConstructionTests(unittest.TestCase):
             except Exception as e:
                 self.fail(f"RecommendationsPanel.refresh() on an empty DB raised: {e!r}")
             self.assertEqual(panel._table.rowCount(), 0)
-            self.assertEqual(panel._table.columnCount(), 3)
+            self.assertEqual(panel._table.columnCount(), 4)
             self.assertEqual(
                 panel._table.horizontalHeaderItem(panel._COL_RESPONSIBLE).text(),
-                "Ansvarig person")
+                "Ansvarig")
         finally:
             panel.deleteLater()
 
