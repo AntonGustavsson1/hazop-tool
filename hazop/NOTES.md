@@ -2512,3 +2512,11 @@ git add hazop.py pid_viewer.py NOTES.md
 git commit -m "feat: ..."
 git push
 ```
+# Codex-projektinstruktioner för nya sessioner (2026-08-27)
+
+Skapade `hazop/AGENTS.md` som beständig, HAZOP-specifik ingång för Codex.
+Filen kräver att varje ny session läser hela `CLAUDE.md` och `NOTES.md`,
+kontrollerar `crashes/` och `git status`, följer projektets lagerarkitektur
+och teststrategi samt tydligt skiljer automatiska tester från visuell
+GUI-verifiering. Den klargör också att projektrotens SIL-instruktioner inte
+ska användas som HAZOP-specifikation vid konflikt.
