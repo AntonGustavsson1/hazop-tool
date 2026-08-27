@@ -2861,6 +2861,7 @@ class EquipmentTagDragToConsequenceTests(unittest.TestCase):
             self.assertEqual(cons['comp_tag'], "HV-101")
             self.assertEqual(cons['comp_type'], "Ventil")
 
+    @unittest.skip("P&ID equipment can now be dropped onto the ORS cause field")
     def test_drop_equipment_on_non_kon_column_is_ignored(self):
         with _TempDbMainWindow() as win:
             panel = win.scenario_panel
@@ -2881,6 +2882,24 @@ class EquipmentTagDragToConsequenceTests(unittest.TestCase):
             event.acceptProposedAction.assert_not_called()
             cons = dict(win.db.get_consequence(cons_id))
             self.assertEqual(cons['comp_tag'], '')
+
+    def test_drop_equipment_on_ors_cause_field_attaches_object(self):
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            _n, _d, cause_id, cons_id = self._make_full_chain(win.db)
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+            eq_id = win.db.add_equipment_item("HV-102", "HV-102", "HV", 0, "Ventil", '', 0)
+            marker_id = win.db.add_equipment_marker(
+                eq_id, "HV-102", 0, 10.0, 10.0, "Ventil", confidence=0.9,
+                link_method='leader')
+            event = self._make_drop_event(
+                panel, f'hzp:equipment:{marker_id}:-1:-1', row, panel._C_ORS)
+            panel._handle_drop(event)
+            event.acceptProposedAction.assert_called_once()
+            cause = dict(win.db.get_cause(cause_id))
+            self.assertEqual(cause['equipment_id'], eq_id)
+            self.assertEqual(cause['comp_tag'], 'HV-102')
 
     def test_drop_equipment_marker_with_no_linked_catalog_row_is_ignored(self):
         """A marker whose equipment_id is NULL (untagged shape hit) must be

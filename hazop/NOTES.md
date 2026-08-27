@@ -2767,3 +2767,11 @@ P&ID Viewer. Trädet påverkas därför inte längre av knapptryckning eller
 lagervisningsinställningar; vanliga expandera-/kollapsa-regler gäller där.
 Färgvalet på knapparna och den befintliga P&ID-gummibandsmarkeringen är
 oförändrat.
+## Orsaksfältets P&ID-status och drag-and-drop (2026-08-27)
+
+HAZOP Scenario visar nu fetstilt **Objekt ej på P&ID** i Orsak-fältet när
+orsaken saknar en giltig koppling till `equipment_catalog`. När ett P&ID-
+objekt dras till Orsak-fältet kopplas orsakens `equipment_id`, objekttyp och
+tagg till den första markerade utrustningen. Tabellen byggs om schemalagt och
+övriga paneler synkas via `item_edited`, så den nya objekttaggen visas direkt
+och den befintliga P&ID-/scenario-logiken återanvänds.

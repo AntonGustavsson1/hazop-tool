@@ -4872,7 +4872,9 @@ class ScenarioTablePanel(QWidget):
         comp_type, comp_tag = obj_data if obj_data else ('', '')
         repeats_previous = bool(item.data(Qt.ItemDataRole.UserRole + 8)) if item else False
         tag_label = (comp_tag or '').strip()
-        return tag_label, bool(tag_label) and not repeats_previous
+        if not tag_label:
+            return 'Objekt ej på P&ID', True
+        return tag_label, not repeats_previous
 
     def _ors_combined_text(self, item, desc):
         """The exact string measured (sizeHint) and painted (paint) for
@@ -4894,6 +4896,8 @@ class ScenarioTablePanel(QWidget):
         start), so a click always lands exactly where the bold text
         visually ends."""
         tag_label, show_tag = self._ors_tag_prefix(item)
+        if tag_label == 'Objekt ej på P&ID':
+            return 0
         if not show_tag:
             return 0
         trivial = desc.strip() in ('', 'Ny orsak')
@@ -5878,7 +5882,20 @@ class ScenarioTablePanel(QWidget):
             equips = [e for e in (self.db.get_equipment_by_marker_id(m) for m in marker_ids) if e]
             if not equips:
                 event.ignore(); return
-            if tgt_col == self._C_KON and tgt_cons is not None:
+            if tgt_col == self._C_ORS and tgt_cause is not None:
+                # A cause has one primary P&ID object. Use the first marker
+                # when a multi-selection is dropped; additional markers can
+                # be assigned to separate causes without corrupting the row.
+                equip = equips[0]
+                self.db.update_cause(
+                    tgt_cause,
+                    comp_type=equip.get('equipment_type', ''),
+                    comp_tag=equip.get('tag', ''),
+                    equipment_id=equip.get('id'))
+                self._schedule_rebuild()
+                QTimer.singleShot(0, lambda cid=tgt_cause:
+                                  self.item_edited.emit(CAUSE_T, cid))
+            elif tgt_col == self._C_KON and tgt_cons is not None:
                 for equip in equips:
                     self.db.append_tag_to_consequence(
                         tgt_cons, equip.get('tag', ''), equip.get('equipment_type', ''))
