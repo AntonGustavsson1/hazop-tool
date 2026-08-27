@@ -575,14 +575,20 @@ class HAZOPPreparationPanel(QWidget):
         rev_row.addWidget(self._sheet_rev_combo, 1)
         sheets_layout.addLayout(rev_row)
 
-        self._sheet_list = QListWidget()
-        self._sheet_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+        self._sheet_list = QTableWidget(0, 5)
+        self._sheet_list.setHorizontalHeaderLabels(["Ritningsnummer", "Ritningsnamn", "Revision", "Datum", "PDF-sida"])
+        self._sheet_list.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._sheet_list.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
+        self._sheet_list.setEditTriggers(QTableWidget.EditTrigger.DoubleClicked | QTableWidget.EditTrigger.EditKeyPressed | QTableWidget.EditTrigger.SelectedClicked)
+        self._sheet_list.setDragDropMode(QTableWidget.DragDropMode.InternalMove)
         self._sheet_list.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self._sheet_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self._sheet_list.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._sheet_list.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self._sheet_list.itemChanged.connect(self._on_sheet_item_changed)
         self._sheet_list.model().rowsMoved.connect(self._on_sheets_reordered)
         self._sheet_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._sheet_list.customContextMenuRequested.connect(self._sheet_context_menu)
-        self._sheet_list.currentItemChanged.connect(self._on_sheet_selection_changed)
+        self._sheet_list.currentCellChanged.connect(self._on_sheet_selection_changed)
         _base_kp = self._sheet_list.keyPressEvent
         def _sheet_key_press(event, _base=_base_kp):
             if event.key() == Qt.Key.Key_Delete:
@@ -707,28 +713,35 @@ class HAZOPPreparationPanel(QWidget):
             self._sheet_rev_combo.addItem(rev['revision'] or f"Revision {rev['id']}", rev['id'])
         self._sheet_rev_combo.blockSignals(False)
 
-        self._sheet_list.clear()
-        for sheet in self.db.get_sheets():
-            item = QListWidgetItem(
-                f"{sheet['display_order'] + 1}. {sheet['sheet_name']}  "
-                f"(PDF-sida {sheet['physical_page'] + 1})")
-            item.setData(Qt.ItemDataRole.UserRole, sheet['id'])
-            item.setData(Qt.ItemDataRole.UserRole + 1, sheet['revision_id'])
+        self._sheet_list.blockSignals(True)
+        sheets = self.db.get_sheets()
+        self._sheet_list.setRowCount(len(sheets))
+        for row, sheet in enumerate(sheets):
+            values = [sheet['drawing_number'] or '', sheet['drawing_name'] or sheet['sheet_name'] or '',
+                      sheet['drawing_revision'] or '', sheet['drawing_date'] or '', str(sheet['physical_page'] + 1)]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setData(Qt.ItemDataRole.UserRole, sheet['id'])
+                item.setData(Qt.ItemDataRole.UserRole + 1, sheet['revision_id'])
+                if col == 4:
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self._sheet_list.setItem(row, col, item)
             nodes = self.db.nodes_on_page(sheet['physical_page'])
             if nodes:
                 names = ', '.join(n['name'] or f"Nod {n['id']}" for n in nodes)
                 item.setToolTip(f"Noder på detta blad: {names}")
-            self._sheet_list.addItem(item)
+        self._sheet_list.blockSignals(False)
 
     def _on_sheets_reordered(self, *_):
-        ids = [self._sheet_list.item(i).data(Qt.ItemDataRole.UserRole)
-               for i in range(self._sheet_list.count())]
+        ids = [self._sheet_list.item(i, 0).data(Qt.ItemDataRole.UserRole)
+               for i in range(self._sheet_list.rowCount())]
         self.db.reorder_sheets(ids)
         self.refresh_sheets()
 
     def _rename_sheet(self):
-        item = self._sheet_list.currentItem()
-        if not item:
+        row = self._sheet_list.currentRow()
+        item = self._sheet_list.item(row, 1) if row >= 0 else None
+        if item is None:
             return
         sheet_id = item.data(Qt.ItemDataRole.UserRole)
         current_name = ''
@@ -742,7 +755,8 @@ class HAZOPPreparationPanel(QWidget):
             self.refresh_sheets()
 
     def _delete_sheets(self):
-        selected = self._sheet_list.selectedItems()
+        selected = [self._sheet_list.item(row, 0)
+                    for row in sorted({idx.row() for idx in self._sheet_list.selectionModel().selectedRows()})]
         if not selected:
             return
         ids = [item.data(Qt.ItemDataRole.UserRole) for item in selected]
@@ -801,16 +815,30 @@ class HAZOPPreparationPanel(QWidget):
         self.sheets_changed.emit()
 
     def _sheet_context_menu(self, pos):
-        selected = self._sheet_list.selectedItems()
-        if not selected:
+        selected_rows = self._sheet_list.selectionModel().selectedRows()
+        if not selected_rows:
             return
         menu = QMenu(self)
-        if len(selected) == 1:
+        if len(selected_rows) == 1:
             menu.addAction(_icon('edit'), "Byt namn", self._rename_sheet)
         menu.addAction(_icon('delete'), "Ta bort", self._delete_sheets)
         menu.exec(self._sheet_list.viewport().mapToGlobal(pos))
 
-    def _on_sheet_selection_changed(self, current, previous):
+    def _on_sheet_item_changed(self, item):
+        """Persist editable drawing metadata immediately."""
+        if item.column() >= 4:
+            return
+        row = item.row()
+        id_item = self._sheet_list.item(row, 0)
+        if id_item is None:
+            return
+        sheet_id = id_item.data(Qt.ItemDataRole.UserRole)
+        values = [self._sheet_list.item(row, col).text().strip()
+                  if self._sheet_list.item(row, col) else '' for col in range(4)]
+        self.db.update_sheet_metadata(sheet_id, *values)
+
+    def _on_sheet_selection_changed(self, current_row, current_col, previous_row, previous_col):
+        current = self._sheet_list.item(current_row, 0) if current_row >= 0 else None
         self._sheet_rev_combo.blockSignals(True)
         if current is None:
             self._sheet_rev_combo.setCurrentIndex(0)
@@ -821,7 +849,8 @@ class HAZOPPreparationPanel(QWidget):
         self._sheet_rev_combo.blockSignals(False)
 
     def _on_sheet_revision_changed(self, _index):
-        item = self._sheet_list.currentItem()
+        row = self._sheet_list.currentRow()
+        item = self._sheet_list.item(row, 0) if row >= 0 else None
         if item is None:
             return
         sheet_id = item.data(Qt.ItemDataRole.UserRole)

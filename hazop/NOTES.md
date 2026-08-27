@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Redigerbara ritningsuppgifter på Blad (2026-08-27)
+
+Blad-fliken visar nu Ritningsnummer, Ritningsnamn, Revision, Datum och
+PDF-sida i en tabell. De fyra första kolumnerna kan redigeras direkt och
+sparas på samma bladpost som tidigare.
+
 ## Tom objektlista i Avvikelser & Orsaker (2026-08-27)
 
 Den reducerade standardkatalogens dubblettstädning kunde lämna alla

@@ -956,7 +956,11 @@ class Database:
                 "ALTER TABLE analysis_sessions ADD COLUMN location TEXT DEFAULT ''",
                 "ALTER TABLE analysis_sessions ADD COLUMN is_digital INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE analysis_sessions ADD COLUMN start_time TEXT DEFAULT ''",
-                "ALTER TABLE analysis_sessions ADD COLUMN end_time TEXT DEFAULT ''"):
+                "ALTER TABLE analysis_sessions ADD COLUMN end_time TEXT DEFAULT ''",
+                "ALTER TABLE pid_sheets ADD COLUMN drawing_number TEXT DEFAULT ''",
+                "ALTER TABLE pid_sheets ADD COLUMN drawing_name TEXT DEFAULT ''",
+                "ALTER TABLE pid_sheets ADD COLUMN drawing_revision TEXT DEFAULT ''",
+                "ALTER TABLE pid_sheets ADD COLUMN drawing_date TEXT DEFAULT ''"):
             try:
                 self.conn.execute(statement)
             except sqlite3.OperationalError:
@@ -3073,7 +3077,25 @@ class Database:
         self.commit()
 
     def update_sheet_name(self, id_, name):
-        self.conn.execute("UPDATE pid_sheets SET sheet_name=? WHERE id=?", (name, id_))
+        self.conn.execute("UPDATE pid_sheets SET sheet_name=?, drawing_name=? WHERE id=?", (name, name, id_))
+        self.commit()
+
+    def update_sheet_metadata(self, id_, drawing_number=None, drawing_name=None,
+                              drawing_revision=None, drawing_date=None):
+        row = self.conn.execute("SELECT * FROM pid_sheets WHERE id=?", (id_,)).fetchone()
+        if not row:
+            return
+        current = dict(row)
+        name = drawing_name if drawing_name is not None else (current.get('drawing_name') or current.get('sheet_name') or '')
+        self.conn.execute(
+            "UPDATE pid_sheets SET drawing_number=?, drawing_name=?, sheet_name=?, "
+            "drawing_revision=?, drawing_date=? WHERE id=?",
+            (drawing_number if drawing_number is not None else current.get('drawing_number', ''),
+             name,
+             name,
+             drawing_revision if drawing_revision is not None else current.get('drawing_revision', ''),
+             drawing_date if drawing_date is not None else current.get('drawing_date', ''),
+             id_))
         self.commit()
 
     def set_sheet_revision(self, id_, revision_id):
