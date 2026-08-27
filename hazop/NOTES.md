@@ -2585,3 +2585,19 @@ Verifiering: syntaxkontroll, `tests.test_smoke`, hela
 Scenario-Enter där system, nod och avvikelse förblir öppna så objektet syns,
 men objektet självt förblir kollapsat så konsekvens och barriär är dolda.
 Ingen visuell GUI-körning gjordes.
+
+## Barriärredigering i Scenario öppnar inte safeguardnivån (2026-08-27)
+
+`MainWindow._on_scenario_item_edited()` använde tidigare den redigerade raden
+som navigeringsmål vid trädets refresh. När en safeguard sparades med Enter
+kunde den därför bli trädets aktuella, dolda objekt och konsekvensen öppnas så
+att safeguardnivån syntes; ombyggnaden upplevdes även som att trädet släcktes
+och tändes igen. Scenario-redigering gör nu en ren `TreePanel.refresh()` utan
+navigeringsmål. System, nod, avvikelse, objekt och konsekvens behåller exakt
+sina manuella expansionslägen; en kollapsad konsekvens förblir kollapsad och
+barriären syns först efter manuellt klick på pilen.
+
+Verifiering: syntaxkontroll och ett end-to-end-test genom MainWindow som
+redigerar en safeguard medan konsekvensen är kollapsad och kontrollerar att
+barriären finns i det ombyggda trädet men fortfarande är dold. Ingen visuell
+GUI-körning gjordes.

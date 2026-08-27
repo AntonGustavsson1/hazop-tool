@@ -1633,18 +1633,14 @@ class MainWindow(QMainWindow):
     def _on_scenario_item_edited(self, type_, id_):
         """Scenario table committed an edit — sync tree and P&ID labels.
 
-        emit_selection=False: without it, tree_panel.refresh()'s
-        setCurrentItem cascades via currentItemChanged -> _on_select ->
-        item_selected -> _on_selected, which reloads the scenario panel and
-        triggers a SECOND, redundant _rebuild() on every single cell edit
-        (same anti-pattern already fixed for _on_marker_navigate,
-        _on_safeguard_created, _on_props_changed and node_created). Besides
-        the redundant work, this is what made the table visibly "jump away"
-        after committing an edit -- the extra rebuild reset the current
-        cell/selection a second time on top of whatever the first rebuild
-        already did.
+        This is a data sync, not tree navigation. Using the edited cause /
+        consequence / safeguard as refresh target made a hidden safeguard the
+        tree's current item after Enter and could unfold its consequence. It
+        also made the tree visibly blink between states. Rebuild without a
+        target so every manually open/collapsed branch is preserved and the
+        safeguard level stays hidden until its arrow is clicked.
         """
-        self.tree_panel.refresh(type_, id_, emit_selection=False)
+        self.tree_panel.refresh()
         self.pid_panel.reload_overlays()
         # Tree-context highlight (2026-08-27, see NOTES.md) — the edit
         # itself may have changed the very tag data the highlight scope

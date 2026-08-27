@@ -3297,6 +3297,36 @@ class PlusRowQuickAddTaggingTests(unittest.TestCase):
             self.assertFalse(cause_item.isExpanded(),
                 "the object must stay collapsed so its consequence remains hidden")
 
+    def test_editing_safeguard_keeps_safeguard_level_collapsed(self):
+        """Enter after SG editing syncs text without navigating the tree."""
+        with _TempDbMainWindow() as win:
+            node = dict(win.db.nodes()[0])
+            node_id = node['id']
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            cons_id = win.db.add_consequence(cause_id)
+            sg_id = win.db.add_safeguard(cons_id)
+            win.tree_panel.refresh()
+
+            for type_, id_ in ((SYSTEM_T, node['system_id']),
+                               (NODE_T, node_id), (DEV_T, dev_id),
+                               (CAUSE_T, cause_id)):
+                item = _find_tree_item(win.tree_panel.tree, type_, id_)
+                self.assertIsNotNone(item)
+                item.setExpanded(True)
+            cons_item = _find_tree_item(win.tree_panel.tree, CONS_T, cons_id)
+            self.assertIsNotNone(cons_item)
+            cons_item.setExpanded(False)
+
+            win._on_scenario_item_edited(SG_T, sg_id)
+
+            cons_item = _find_tree_item(win.tree_panel.tree, CONS_T, cons_id)
+            sg_item = _find_tree_item(win.tree_panel.tree, SG_T, sg_id)
+            self.assertIsNotNone(sg_item,
+                "the edited safeguard must remain present in the rebuilt tree")
+            self.assertFalse(cons_item.isExpanded(),
+                "Enter after safeguard editing must not expose safeguard rows")
+
     def test_quick_add_safeguard_creates_blank_row_no_popup(self):
         with _TempDbMainWindow() as win:
             panel = win.scenario_panel
