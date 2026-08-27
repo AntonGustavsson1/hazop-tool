@@ -1456,15 +1456,12 @@ class HAZOPPreparationPanel(QWidget):
             # n_drows = n_freq; no boundary row exists (boundary is a column)
             base_row = n_drows + 1
 
-            # Thin separator spanning all columns
-            sep = QLabel("── Konsekvensdefinitioner ──")
-            sep.setStyleSheet("font-size:8px; color:#888; padding:2px 4px;")
-            sep.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            self._matrix_grid.addWidget(sep, base_row, 0, 1, n_dcols + 1)
-
             for cat_i, cat in enumerate(cats):
                 cat_id  = cat['id']
-                cat_row = base_row + 1 + cat_i
+                # Begin immediately after the matrix/boundary row.  The old
+                # spanning separator reserved an extra band and made the
+                # definition editors appear detached at the bottom.
+                cat_row = base_row + cat_i
 
                 cat_lbl = QLabel(cat['name'])
                 cat_lbl.setStyleSheet(_cat_hdr_style)

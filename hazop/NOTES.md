@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Kompakt konsekvensdefinitioner (2026-08-27)
+
+Separatorn "Konsekvensdefinitioner" har tagits bort ur riskmatrisens grid.
+Definitionstexterna börjar nu direkt efter matrisen, så långa beskrivningar
+skapar inte längre ett extra tomt band längst ned.
+
 ## Objektdata per nodblad (2026-08-27)
 
 Noder-tabellen visar nu per blad objekttagg, objekttyp, hanterade avvikelser
