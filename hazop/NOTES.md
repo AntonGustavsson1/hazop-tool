@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## En enda funktion för ej kopplad orsak (2026-08-27)
+
+En orsak utan P&ID-objekt startar inte längre den vanliga inline-editorn efter
+ett enkelt klick. Det förhindrar att ett dubbelklick samtidigt öppnar både
+inline-redigering och dialogen för `ej på P&ID`.
+
 ## Shift-drag till redigerad orsak (2026-08-27)
 
 P&ID-markörer kan nu släppas direkt på den aktiva orsakseditorn. Eftersom

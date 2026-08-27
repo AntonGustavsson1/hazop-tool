@@ -4728,7 +4728,15 @@ class ScenarioTablePanel(QWidget):
                 self._add_cause_via_plus_row(dev_id, global_pos=gp)
                 return
             # Feature 7: single-click on already-current ORS cell → start edit
-            if self._table.currentRow() == row and self._table.currentColumn() == col:
+            # An unassigned cause uses the explicit "ej på P&ID" object
+            # dialog on double-click.  Do not also queue the generic inline
+            # editor from the preceding single-click event; otherwise one
+            # double-click opens two competing editing functions/popups.
+            item = self._table.item(row, col)
+            obj_data = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
+            has_object_tag = bool(obj_data and (obj_data[1] or '').strip())
+            if (has_object_tag and self._table.currentRow() == row and
+                    self._table.currentColumn() == col):
                 QTimer.singleShot(200, lambda r=row, c=col: self._try_start_edit(r, c))
             return
         if col == self._C_KON and row < len(self._row_meta):
