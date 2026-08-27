@@ -615,11 +615,15 @@ class HAZOPPreparationPanel(QWidget):
         add_node_btn.clicked.connect(self._add_node_from_noder_tab)
         nodes_hdr.addWidget(add_node_btn)
         nodes_layout.addLayout(nodes_hdr)
-        self._nodes_table = QTableWidget(0, 4)
-        self._nodes_table.setHorizontalHeaderLabels(["Nod nummer", "Namn", "Blad", "Objekt per blad"])
+        self._nodes_table = QTableWidget(0, 7)
+        self._nodes_table.setHorizontalHeaderLabels([
+            "Nod nummer", "Namn", "Blad", "Objekt per blad", "Objekttyp",
+            "Avvikelser per objekt", "Antal"])
         self._nodes_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self._nodes_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self._nodes_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self._nodes_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self._nodes_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self._nodes_table.setWordWrap(True)
         self._nodes_table.verticalHeader().setVisible(False)
         self._nodes_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -875,9 +879,18 @@ class HAZOPPreparationPanel(QWidget):
             pages = self.db.analysis_pages_for_node(node['id'])
             sheet_names = [sheets_by_page.get(p, f"sida {p + 1}") for p in pages]
             objects_by_page = self.db.analysis_objects_for_node(node['id'])
+            details_by_page = self.db.analysis_object_details_for_node(node['id'])
             object_lines = [', '.join(objects_by_page.get(p, [])) or '—' for p in pages]
+            detail_lines = [details_by_page.get(p, []) for p in pages]
             self._nodes_table.setItem(row, 2, QTableWidgetItem('\n'.join(sheet_names)))
             self._nodes_table.setItem(row, 3, QTableWidgetItem('\n'.join(object_lines)))
+            self._nodes_table.setItem(row, 4, QTableWidgetItem('\n'.join(
+                '\n'.join(obj['type'] or '—' for obj in objs) or '—' for objs in detail_lines)))
+            self._nodes_table.setItem(row, 5, QTableWidgetItem('\n'.join(
+                '\n'.join(', '.join(obj['deviations']) or '—' for obj in objs) or '—'
+                for objs in detail_lines)))
+            self._nodes_table.setItem(row, 6, QTableWidgetItem('\n'.join(
+                '\n'.join(str(obj['count']) for obj in objs) or '0' for objs in detail_lines)))
             self._nodes_table.resizeRowToContents(row)
 
     def _add_node_from_noder_tab(self):

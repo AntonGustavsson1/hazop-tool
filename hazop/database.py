@@ -4490,6 +4490,46 @@ class Database:
                     result[row['pid_page']].append(tag)
         return result
 
+    def analysis_object_details_for_node(self, node_id):
+        """Return {page: [{tag, type, deviations, count}]} for a node."""
+        rows = self.conn.execute(
+            """SELECT DISTINCT em.pid_page AS page, em.equipment_id,
+                      COALESCE(em.tag, ec.tag, '') AS tag,
+                      COALESCE(ec.equipment_type, em.comp_type, '') AS type,
+                      d.description AS deviation
+               FROM equipment_markers em
+               JOIN equipment_catalog ec ON ec.id = em.equipment_id
+               LEFT JOIN deviations d ON d.equipment_id = em.equipment_id
+               WHERE ec.node_id=? OR d.node_id=?
+               UNION
+               SELECT DISTINCT em.pid_page, em.equipment_id,
+                      COALESCE(em.tag, ec.tag, ''),
+                      COALESCE(ec.equipment_type, em.comp_type, ''),
+                      d.description
+               FROM equipment_markers em
+               JOIN equipment_catalog ec ON ec.id = em.equipment_id
+               JOIN causes c ON c.equipment_id = em.equipment_id
+               JOIN deviations d ON d.id = c.deviation_id
+               WHERE d.node_id=?
+               ORDER BY 1, 3, 5""",
+            (node_id, node_id, node_id)).fetchall()
+        result = {}
+        by_key = {}
+        for row in rows:
+            page = row['page']
+            key = (row['equipment_id'], row['tag'] or '')
+            obj = by_key.setdefault((page, key), {
+                'tag': (row['tag'] or '').strip(),
+                'type': (row['type'] or '').strip(),
+                'deviations': []})
+            deviation = (row['deviation'] or '').strip()
+            if deviation and deviation not in obj['deviations']:
+                obj['deviations'].append(deviation)
+        for (page, _), obj in by_key.items():
+            obj['count'] = len(obj['deviations'])
+            result.setdefault(page, []).append(obj)
+        return result
+
     def get_node_markup(self, mu_id):
         row = self.conn.execute(
             "SELECT * FROM node_markups WHERE id=?", (mu_id,)).fetchone()

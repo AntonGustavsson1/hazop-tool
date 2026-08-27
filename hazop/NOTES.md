@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Objektdata per nodblad (2026-08-27)
+
+Noder-tabellen visar nu per blad objekttagg, objekttyp, hanterade avvikelser
+och antal avvikelser per objekt. Fälten ligger radvis så flera blad och flera
+objekt kan läsas utan att informationen blandas ihop.
+
 ## Blad och objekt per nod (2026-08-27)
 
 Noder-tabellen visar nu varje blad på egen rad och har en separat kolumn med
