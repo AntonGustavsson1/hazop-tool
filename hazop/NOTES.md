@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Tagg följer med på flera orsaker från objekt-popup (2026-08-27)
+
+När flera avvikelser kryssas i efter vänsterklick på samma P&ID-objekt används
+nu objektets aktuella `equipment_id` direkt vid varje orsaksskapande. Därmed får
+andra och efterföljande orsaker samma koppling och tagg som den första.
+
 ## Rekommendationsnummer startar om per nytt projekt (2026-08-27)
 
 Vid "Nytt projekt" rensas nu även SQLite:s AUTOINCREMENT-räknare för

@@ -5528,6 +5528,26 @@ class AutoConsequenceAndSafeguardOnCauseTemplateTests(unittest.TestCase):
         self.assertEqual(len(cons_list), 1)
         self.assertEqual(len(self.db.safeguards(cons_list[0]['id'])), 1)
 
+    def test_multiple_deviations_from_one_object_keep_the_equipment_tag(self):
+        """Every checkbox in the left-click equipment bar must create a
+        cause linked to the same equipment, not only the first one."""
+        node_id = self.db.add_node()
+        dev1 = self.db.get_or_create_deviation(node_id, "Lågt flöde")
+        dev2 = self.db.get_or_create_deviation(node_id, "Högt flöde")
+        eq_id = self.db.add_equipment_item("P-101", "P-101", "P", 0, "Pump", '', 0)
+        marker_id = self.db.add_equipment_marker(
+            eq_id, "P-101", 0, 10.0, 10.0, "Pump", confidence=0.9, link_method='leader')
+        self.panel._equipment_bar.load(eq_id, marker_id)
+
+        create = self.panel._equipment_bar._create_cause_fn
+        create(dev1, "Pump", "P-101", "", None)
+        create(dev2, "Pump", "P-101", "", None)
+
+        causes = [dict(c) for c in self.db.causes_for_equipment(eq_id)]
+        self.assertEqual(len(causes), 2)
+        self.assertEqual({c['comp_tag'] for c in causes}, {'P-101'})
+        self.assertEqual({c['equipment_id'] for c in causes}, {eq_id})
+
     def test_create_cause_for_bar_does_not_draw_a_duplicate_marker(self):
         """Reported feedback (2026-08-12, see NOTES.md): 'När jag skapat
         ett manuellt objekt i pid viewer och sedan definerar en avikelse

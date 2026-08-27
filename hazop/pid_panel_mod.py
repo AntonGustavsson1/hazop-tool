@@ -1549,7 +1549,9 @@ class PIDPanel(QWidget):
         # unrelated marker_id — see place_equipment_marker()).
         self._equipment_bar._create_cause_fn = (
             lambda dev_id, ct, tag, desc, freq=None:
-                self._create_cause_for_bar(self._equipment_bar.marker_id, dev_id, ct, tag, desc, freq))
+                self._create_cause_for_bar(
+                    self._equipment_bar.marker_id, dev_id, ct, tag, desc, freq,
+                    equipment_id=self._equipment_bar._equipment_id))
 
         self._set_mode(MODE_NAV)
         self._update_pen()
@@ -3596,7 +3598,7 @@ class PIDPanel(QWidget):
         self.equipment_deleted.emit(equipment_id)
 
     def _create_cause_for_bar(self, marker_id, deviation_id, comp_type, comp_tag, description,
-                               frequency=None):
+                               frequency=None, equipment_id=None):
         """Callback wired into EquipmentDeviationBar._create_cause_fn AND
         EquipmentPlacementPopup.create_cause_fn (2026-08-18, see NOTES.md
         "kombinerad placeringsmeny") — same creation path as the normal
@@ -3608,13 +3610,19 @@ class PIDPanel(QWidget):
         (events/year, from standard_causes.frequency when known) is passed
         straight through to place_cause_from_template's existing
         _compute_f_level() conversion — see NOTES.md."""
-        marker = self.db.conn.execute(
-            "SELECT equipment_id FROM equipment_markers WHERE id=?", (marker_id,)).fetchone()
-        if not marker:
+        # The checklist already knows the object being edited.  Use that live
+        # equipment id first: after the first deviation is checked the tree
+        # and scenario panels may refresh/rebuild marker widgets, so resolving
+        # a later cause through a stale marker id could lose its tag link.
+        if equipment_id is None:
+            marker = self.db.conn.execute(
+                "SELECT equipment_id FROM equipment_markers WHERE id=?", (marker_id,)).fetchone()
+            equipment_id = marker['equipment_id'] if marker else None
+        if equipment_id is None:
             return None
         return self.place_cause_from_template(
             deviation_id, comp_type, comp_tag, description, frequency,
-            equipment_id=marker['equipment_id'])
+            equipment_id=equipment_id)
 
 
     def _refresh_equipment_marker_visual(self, _equipment_id):
