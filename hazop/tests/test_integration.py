@@ -1632,6 +1632,17 @@ class WipeProjectTablesTests(unittest.TestCase):
             self.assertEqual(win.db.all_recommendations(), [])
             self.assertEqual(win.db.consequence_categories(), [])
 
+    def test_recommendation_numbering_restarts_at_one_after_wipe(self):
+        with _TempDbMainWindow() as win:
+            first_id = win.db.add_recommendation("Gammalt projekt")
+            self.assertEqual(first_id, 1)
+
+            win._wipe_project_tables()
+
+            new_id = win.db.add_recommendation("Nytt projekt")
+            self.assertEqual(new_id, 1,
+                "new projects must display their first recommendation as R-001")
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # 8c. Dynamisk färgmarkering av objekt på P&ID (2026-08-27, see NOTES.md) —

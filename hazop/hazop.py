@@ -2931,6 +2931,16 @@ class MainWindow(QMainWindow):
                 self.db.conn.execute(f"DELETE FROM {tbl}")
             except Exception:
                 pass
+        # AUTOINCREMENT keeps its high-water mark in sqlite_sequence even
+        # after all rows are deleted.  A new project must start its own
+        # recommendation numbering at R-001; otherwise a OneDrive/lock
+        # fallback that reuses the same database file would continue the old
+        # project's R-XXX sequence.
+        try:
+            self.db.conn.execute(
+                "DELETE FROM sqlite_sequence WHERE name='recommendations'")
+        except Exception:
+            pass
         for key in self._PROJECT_APP_CONFIG_KEYS:
             try:
                 self.db.conn.execute("DELETE FROM app_config WHERE key=?", (key,))

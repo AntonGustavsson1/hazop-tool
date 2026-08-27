@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Rekommendationsnummer startar om per nytt projekt (2026-08-27)
+
+Vid "Nytt projekt" rensas nu även SQLite:s AUTOINCREMENT-räknare för
+rekommendationer. Första nya rekommendationen får därför åter `R-001`, även
+när projektfilen måste återanvändas på grund av låsning eller OneDrive-synk.
+
 ## Redmark-symboler från kugghjulsknappen (2026-08-27)
 
 Symbolväljaren för redmarkeringar ankras nu mot muspekaren när den öppnas från
