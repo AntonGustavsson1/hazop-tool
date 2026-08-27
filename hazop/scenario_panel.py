@@ -2765,6 +2765,7 @@ class ScenarioTablePanel(QWidget):
         self._enter_row = -1
         self._enter_col = -1
         self._last_enter_committed = False
+        self._pending_ors_edit_timer = None
         # Set while the blank REK editor below saved recommendations is
         # active; its text must create a sibling, never overwrite the sole
         # existing recommendation.
@@ -4732,12 +4733,9 @@ class ScenarioTablePanel(QWidget):
             # dialog on double-click.  Do not also queue the generic inline
             # editor from the preceding single-click event; otherwise one
             # double-click opens two competing editing functions/popups.
-            item = self._table.item(row, col)
-            obj_data = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
-            has_object_tag = bool(obj_data and (obj_data[1] or '').strip())
-            if (has_object_tag and self._table.currentRow() == row and
+            if (self._table.currentRow() == row and
                     self._table.currentColumn() == col):
-                QTimer.singleShot(200, lambda r=row, c=col: self._try_start_edit(r, c))
+                self._queue_ors_edit(row, col)
             return
         if col == self._C_KON and row < len(self._row_meta):
             cons_id = self._row_meta[row][2]
@@ -4849,6 +4847,7 @@ class ScenarioTablePanel(QWidget):
     def _on_cell_double_clicked(self, item):
         if item is None:
             return
+        self._cancel_pending_ors_edit()
         row = item.row()
         col = item.column()
         # Double-click starts inline edit — consistent across ORS/KON/SG
@@ -5841,6 +5840,34 @@ class ScenarioTablePanel(QWidget):
             self._last_enter_committed = True
 
     # ── Feature 7: try start inline edit ──────────────────────────────────────
+    def _cancel_pending_ors_edit(self):
+        timer = self._pending_ors_edit_timer
+        self._pending_ors_edit_timer = None
+        if timer is not None:
+            timer.stop()
+            timer.deleteLater()
+
+    def _queue_ors_edit(self, row, col):
+        """Start generic cause text editing after a click settles.
+
+        The delay leaves a double-click free to open the object-binding
+        popup, while a normal click still gives an unassigned cause a direct,
+        intuitive way to enter a generic cause description.
+        """
+        self._cancel_pending_ors_edit()
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        self._pending_ors_edit_timer = timer
+
+        def start():
+            if self._pending_ors_edit_timer is timer:
+                self._pending_ors_edit_timer = None
+            timer.deleteLater()
+            self._try_start_edit(row, col)
+
+        timer.timeout.connect(start)
+        timer.start(220)
+
     def _try_start_edit(self, row, col):
         # _C_KON added 2026-08-07 (see NOTES.md "Klicka direkt på
         # konsekvens") — the commit path (_on_cell_changed_inner's

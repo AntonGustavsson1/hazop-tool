@@ -2,6 +2,13 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Generisk orsak eller bindning till P&ID (2026-08-27)
+
+En orsak utan objekt kan nu redigeras direkt med ett vanligt klick för att
+skriva en generisk orsak. Dubbelklick öppnar i stället objekt-dialogen där ett
+befintligt P&ID-objekt kan bindas. Ett väntande enkelklick avbryts vid
+dubbelklick så att endast en funktion öppnas.
+
 ## En enda funktion för ej kopplad orsak (2026-08-27)
 
 En orsak utan P&ID-objekt startar inte längre den vanliga inline-editorn efter
