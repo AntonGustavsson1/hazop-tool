@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Flera orsaker från samma vänsterklickade objekt (2026-08-27)
+
+Orsaksflödet från objektets avvikelse-popup använder nu objektets aktuella
+`equipment_id` direkt för varje ny orsak. Detta gör att taggkopplingen inte
+tappas efter den första valda avvikelsen.
+
 ## Tagg följer med på flera orsaker från objekt-popup (2026-08-27)
 
 När flera avvikelser kryssas i efter vänsterklick på samma P&ID-objekt används
