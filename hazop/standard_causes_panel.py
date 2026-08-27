@@ -664,7 +664,7 @@ class StandardCausesSettingsPanel(QWidget):
                 self.db.add_standard_object(obj_name); added_objs += 1
         for dev_d in data.get('deviations', []):
             dev_row = self.db.conn.execute(
-                "SELECT id FROM standard_deviations WHERE description=?",
+                "SELECT id FROM standard_deviations WHERE description=? AND active=1",
                 (dev_d['description'],)).fetchone()
             if not dev_row:
                 dev_id = self.db.add_standard_deviation(dev_d['description'])
@@ -674,7 +674,7 @@ class StandardCausesSettingsPanel(QWidget):
             for c in dev_d.get('causes', []):
                 obj_id = c.get('object_id')
                 if not self.db.conn.execute(
-                        "SELECT id FROM standard_causes WHERE deviation_id=? AND description=?",
+                        "SELECT id FROM standard_causes WHERE deviation_id=? AND description=? AND active=1",
                         (dev_id, c['description'])).fetchone():
                     self.db.add_standard_cause_with_object(dev_id, obj_id or 0, c['description'])
                     added_causes += 1
@@ -682,5 +682,4 @@ class StandardCausesSettingsPanel(QWidget):
         self._load_deviations()
         QMessageBox.information(self, 'Importerat',
             f'Lagt till: {added_devs} avvikelser, {added_causes} orsaker, {added_objs} objekt.')
-
 

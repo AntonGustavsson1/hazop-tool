@@ -1965,7 +1965,7 @@ class CauseObjectPopup(QDialog):
                 dev_id = self._deviation_id
                 if dev_id is None and self._dev_description:
                     r = self._db.conn.execute(
-                        "SELECT id FROM standard_deviations WHERE description=? LIMIT 1",
+                        "SELECT id FROM standard_deviations WHERE description=? AND active=1 LIMIT 1",
                         (self._dev_description,)).fetchone()
                     if r:
                         dev_id = r[0]
@@ -1999,7 +1999,7 @@ class CauseObjectPopup(QDialog):
         dev_id = self._deviation_id
         if dev_id is None and self._dev_description and self._db is not None:
             r = self._db.conn.execute(
-                "SELECT id FROM standard_deviations WHERE description=? LIMIT 1",
+                "SELECT id FROM standard_deviations WHERE description=? AND active=1 LIMIT 1",
                 (self._dev_description,)).fetchone()
             if r:
                 dev_id = r[0]

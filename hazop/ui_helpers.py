@@ -179,7 +179,7 @@ def _resolve_std_deviation_id(db, deviation_description):
     if not deviation_description:
         return None
     row = db.conn.execute(
-        "SELECT id FROM standard_deviations WHERE description=? COLLATE NOCASE LIMIT 1",
+        "SELECT id FROM standard_deviations WHERE description=? AND active=1 COLLATE NOCASE LIMIT 1",
         (deviation_description,)).fetchone()
     return row[0] if row else None
 
@@ -241,7 +241,7 @@ def _maybe_save_as_standard_cause(parent, db, dev_id, obj_id, obj_name, descript
 
     try:
         existing = db.conn.execute(
-            "SELECT id FROM standard_causes WHERE deviation_id=? AND description=?",
+                "SELECT id FROM standard_causes WHERE deviation_id=? AND description=? AND active=1",
             (dev_id, description)).fetchone()
         if not existing:
             db.conn.execute(
@@ -444,5 +444,4 @@ def parse_chain_from_json(raw: str) -> dict:
         return json.loads(raw)
     except Exception:
         return {}
-
 

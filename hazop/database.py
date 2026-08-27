@@ -677,6 +677,59 @@ _COMP_TYPE_TO_OBJ: dict = {
     'Värmeväxlare': 'Värmeväxlare / kylare / värmare',
 }
 
+# The compact, project-facing standard-cause catalogue.  The former large
+# catalogue is deliberately retained in the archive during migration; this
+# list is what new cause pickers should expose.
+_REDUCED_STD_CATALOG = [
+    ('Manuell ventil', 'På samtliga avvikelser', 'Ventil felaktigt stängd'),
+    ('Manuell ventil', 'På samtliga avvikelser', 'Ventil felaktigt öppnad'),
+    ('On-off ventil', 'På samtliga avvikelser', 'Ventil felaktigt stängd'),
+    ('On-off ventil', 'På samtliga avvikelser', 'Ventil felaktigt öppnad'),
+    ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar stängd'),
+    ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar öppen'),
+    ('Säkerhetsventil / sprängbleck', 'Missriktat', 'Säkerhetsventil öppnar för tidigt/läcker'),
+    ('Backventil', 'Lågt flöde', 'Fastnar stängd'),
+    ('Backventil', 'Omvänt flöde', 'Felar öppen'),
+    ('Kompressor / fläkt', 'Lågt flöde', 'Kompressor / fläkt stopp'),
+    ('Kompressor / fläkt', 'Högt flöde', 'Kompressor, för hög kapacitet'),
+    ('Filter / sil', 'Lågt flöde', 'Filter / sil igensatt'),
+    ('Filter / sil', 'Högt tryck', 'Filter / sil igensatt'),
+    ('Filter / sil', 'Högt flöde', 'Filter skadat'),
+    ('Filter / sil', 'Avvikande sammansättning', 'Filter skadat'),
+    ('Värmeväxlare / kylare / värmare', 'Lågt flöde', 'Igensatt värmeväxlare'),
+    ('Värmeväxlare / kylare / värmare', 'Hög temperatur', 'Kylningsbortfall'),
+    ('Värmeväxlare / kylare / värmare', 'Hög temperatur', 'För hög värmning'),
+    ('Värmeväxlare / kylare / värmare', 'Låg temperatur', 'Värmebortfall'),
+    ('Värmeväxlare / kylare / värmare', 'Låg temperatur', 'För låg kylning'),
+    ('Värmeväxlare / kylare / värmare', 'Missriktat flöde', 'Läckage i värmeväxlare'),
+    ('Instrument', 'Lågt flöde', 'Givare felar, styrventil stänger'),
+    ('Instrument', 'Lågt flöde', 'Börvärde felaktigt inställt'),
+    ('Instrument', 'Högt flöde', 'Givare felar, styrventil öppnar'),
+    ('Instrument', 'Högt flöde', 'Börvärde felaktigt högt'),
+    ('Instrument', 'Missriktat flöde', 'Givare felar, styrventil öppnar'),
+    ('Instrument', 'Högt tryck', 'Givare felar, styrventil stänger'),
+    ('Instrument', 'Högt tryck', 'Börvärde tryckreglering felaktigt'),
+    ('Instrument', 'Lågt tryck', 'Givare felar, styrventil öppnar'),
+    ('Instrument', 'Hög nivå', 'Givare felar, reglering stänger ventil'),
+    ('Instrument', 'Hög nivå', 'Börvärde nivå felaktigt'),
+    ('Instrument', 'Låg nivå', 'Börvärde nivå felaktigt'),
+    ('Instrument', 'Låg nivå', 'Givare felar, reglering öppnar utlopp'),
+    ('Instrument', 'Hög temperatur', 'Givare felar, max kylning'),
+    ('Instrument', 'Låg temperatur', 'Givare felar, max värmning'),
+    ('Instrument', 'Avvikande sammansättning', 'Analysgivare felar'),
+    ('Instrument', 'Drift', 'Felläsning av mätvärde'),
+    ('Instrument', 'Underhåll', 'Instrument ej återdriftsatt'),
+    ('Pump', 'Lågt flöde', 'Pump stopp'),
+    ('Pump', 'Högt flöde', 'Pumpkapacitet för hög'),
+    ('Pump', 'Omvänt flöde', 'Pump stopp, backflöde via pump'),
+    ('Pump', 'Högt tryck', 'Utlopp blockerat'),
+    ('Pump', 'Start-up / Shut-down', 'Pump startas mot stängt utlopp'),
+    ('Pump', 'Start-up / Shut-down', 'Pump startas utan inloppstryck'),
+    ('Elförsörjning', 'Bortfall av hjälpsystem', 'Strömavbrott'),
+    ('Tryckluft / instrumentluft', 'Bortfall av hjälpsystem', 'Lufttrycksfall'),
+    ('Kylsystem / värmesystem', 'Bortfall av hjälpsystem', 'Bortfall av kylvatten'),
+]
+
 _COMP_KEY_TO_OBJ: dict = {
     # Legacy comp_type keys from old _COMP_STD_CAUSES
     'Pump':                    'Pump',
@@ -1059,6 +1112,8 @@ class Database:
             # Nodtyper i Avvikelser & Orsaker (2026-08-17, se NOTES.md) —
             # nullable, seedas mot "Processnod" lazily av Database.node_types().
             "ALTER TABLE standard_deviations ADD COLUMN node_type_id INTEGER REFERENCES node_types(id)",
+            "ALTER TABLE standard_deviations ADD COLUMN active INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE standard_causes ADD COLUMN active INTEGER NOT NULL DEFAULT 1",
         ]
 
         for sql in migrations:
@@ -1121,6 +1176,75 @@ class Database:
                 self.commit()
         except sqlite3.OperationalError as e:
             logging.warning(f"Could not backfill causes.equipment_id: {e}")
+
+    def _migrate_reduced_standard_catalog(self):
+        """Archive the former broad standard-cause catalogue and install the
+        compact project catalogue once.  Rows are never deleted: existing
+        ``causes.standard_cause_id`` references therefore remain valid, while
+        the archive tables provide an explicit recovery/export source."""
+        key = 'reduced_standard_catalog_v1'
+        if self.conn.execute("SELECT value FROM app_config WHERE key=?", (key,)).fetchone():
+            return
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS standard_deviations_archive (
+                archive_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                original_id INTEGER, description TEXT, sort_order INTEGER,
+                node_type_id INTEGER, archived_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS standard_causes_archive (
+                archive_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                original_id INTEGER, deviation_id INTEGER, description TEXT,
+                sort_order INTEGER, object_id INTEGER, comp_type TEXT,
+                frequency REAL, use_in_cause_form INTEGER, archived_at TEXT NOT NULL
+            );
+        """)
+        stamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        self.conn.execute(
+            "INSERT INTO standard_deviations_archive "
+            "(original_id,description,sort_order,node_type_id,archived_at) "
+            "SELECT id,description,sort_order,node_type_id,? FROM standard_deviations",
+            (stamp,))
+        self.conn.execute(
+            "INSERT INTO standard_causes_archive "
+            "(original_id,deviation_id,description,sort_order,object_id,comp_type,frequency,use_in_cause_form,archived_at) "
+            "SELECT id,deviation_id,description,sort_order,object_id,comp_type,frequency,use_in_cause_form,? "
+            "FROM standard_causes", (stamp,))
+        self.conn.execute("UPDATE standard_deviations SET active=0")
+        self.conn.execute("UPDATE standard_causes SET active=0")
+
+        # Universal rows are copied into every usable deviation template;
+        # this keeps the existing picker model (deviation -> causes) intact.
+        specific = {}
+        for obj, dev, desc in _REDUCED_STD_CATALOG:
+            specific.setdefault((obj, dev), []).append(desc)
+        usable_devs = [d for d in DEVIATION_TYPES if d != 'Övrigt']
+        for dev_name in usable_devs:
+            row = self.conn.execute(
+                "SELECT id FROM standard_deviations WHERE description=? AND active=1 LIMIT 1",
+                (dev_name,)).fetchone()
+            if row:
+                dev_id = row[0]
+            else:
+                sort_order = usable_devs.index(dev_name)
+                dev_id = self.conn.execute(
+                    "INSERT INTO standard_deviations(description,sort_order,active) VALUES (?,?,1)",
+                    (dev_name, sort_order)).lastrowid
+            entries = [(o, d, c) for o, d, c in _REDUCED_STD_CATALOG
+                       if d == 'På samtliga avvikelser' or d == dev_name]
+            for obj, _d, desc in entries:
+                obj_row = self.conn.execute(
+                    "SELECT id FROM standard_objects WHERE name=? LIMIT 1", (obj,)).fetchone()
+                self.conn.execute(
+                    "INSERT INTO standard_causes(deviation_id,description,sort_order,object_id,comp_type,frequency,active) "
+                    "VALUES (?,?,?,?,?,?,1)",
+                    (dev_id, desc, self.conn.execute(
+                        "SELECT COALESCE(MAX(sort_order),-1)+1 FROM standard_causes WHERE deviation_id=? AND active=1",
+                        (dev_id,)).fetchone()[0], obj_row[0] if obj_row else None, obj, None))
+        self.conn.execute(
+            "INSERT OR REPLACE INTO app_config(key,value) VALUES (?, '1')", (key,))
+        self.conn.commit()
+        logging.info("Archived old standard catalogue and installed reduced catalogue (%d entries)",
+                     len(_REDUCED_STD_CATALOG))
 
     def _migrate_tables_and_seed(self):
         self.conn.executescript("""
@@ -1552,6 +1676,8 @@ class Database:
             _seed_component_causes(self.conn)
             self.conn.execute(
                 "INSERT OR REPLACE INTO app_config (key,value) VALUES ('comp_causes_seeded_v5','1')")
+
+        self._migrate_reduced_standard_catalog()
 
         # Ensure every node has all standard deviations from template library
         std_devs = [r[0] for r in self.conn.execute(
@@ -3521,7 +3647,7 @@ class Database:
     # ── Standard deviation / cause template library ───────────────────────────
     def standard_deviations(self):
         return self.conn.execute(
-            "SELECT * FROM standard_deviations ORDER BY sort_order, id").fetchall()
+            "SELECT * FROM standard_deviations WHERE active=1 ORDER BY sort_order, id").fetchall()
 
     def add_standard_deviation(self, description, node_type_id=None):
         max_ord = self.conn.execute(
@@ -3625,7 +3751,7 @@ class Database:
 
     def standard_causes(self, deviation_id):
         return self.conn.execute(
-            "SELECT * FROM standard_causes WHERE deviation_id=? ORDER BY sort_order, id",
+            "SELECT * FROM standard_causes WHERE deviation_id=? AND active=1 ORDER BY sort_order, id",
             (deviation_id,)).fetchall()
 
     def standard_causes_for_name(self, deviation_name):
@@ -3673,7 +3799,7 @@ class Database:
         """Return sorted list of all comp_type values used in standard_causes (excl. empty)."""
         rows = self.conn.execute(
             "SELECT DISTINCT comp_type FROM standard_causes "
-            "WHERE comp_type != '' ORDER BY comp_type").fetchall()
+            "WHERE comp_type != '' AND active=1 ORDER BY comp_type").fetchall()
         return [r[0] for r in rows]
 
     def standard_causes_for_comp_type(self, comp_type, deviation_description=None):
@@ -3684,7 +3810,7 @@ class Database:
                 "sd.description AS deviation_name, sd.id AS deviation_id "
                 "FROM standard_causes sc "
                 "JOIN standard_deviations sd ON sc.deviation_id = sd.id "
-                "WHERE sc.comp_type=? AND sd.description=? "
+                "WHERE sc.comp_type=? AND sc.active=1 AND sd.active=1 AND sd.description=? "
                 "ORDER BY sd.sort_order, sc.sort_order",
                 (comp_type, deviation_description)).fetchall()
         return self.conn.execute(
@@ -3692,7 +3818,7 @@ class Database:
             "sd.description AS deviation_name, sd.id AS deviation_id "
             "FROM standard_causes sc "
             "JOIN standard_deviations sd ON sc.deviation_id = sd.id "
-            "WHERE sc.comp_type=? ORDER BY sd.sort_order, sc.sort_order",
+            "WHERE sc.comp_type=? AND sc.active=1 AND sd.active=1 ORDER BY sd.sort_order, sc.sort_order",
             (comp_type,)).fetchall()
 
     def add_standard_cause_for_comp_type(self, deviation_id, description, comp_type):
@@ -3713,7 +3839,7 @@ class Database:
                       COUNT(sc.id) AS n_causes
                FROM standard_objects so
                JOIN standard_causes sc ON sc.object_id = so.id
-               WHERE sc.deviation_id = ?
+               WHERE sc.deviation_id = ? AND sc.active=1
                GROUP BY so.id
                ORDER BY so.sort_order, so.name""",
             (deviation_id,)).fetchall()
@@ -3730,7 +3856,7 @@ class Database:
                       COUNT(sc.id) AS n_causes
                FROM standard_deviations sd
                JOIN standard_causes sc ON sc.deviation_id = sd.id
-               WHERE sc.object_id = ?
+               WHERE sc.object_id = ? AND sc.active=1 AND sd.active=1
                GROUP BY sd.id
                ORDER BY sd.sort_order, sd.id""",
             (object_id,)).fetchall()
