@@ -777,7 +777,12 @@ class PIDGraphicsView(QGraphicsView):
     def set_pen_style(self, color, width, alpha):
         c = QColor(color)
         self.draw_pen = QPen(QColor(c.red(), c.green(), c.blue(), alpha), width)
-        self.draw_pen.setCosmetic(True)
+        # Keep the live drawing pen in the same scene-unit coordinate system
+        # as the persisted markup overlay.  A cosmetic pen stays a fixed
+        # screen width while the reloaded polyline scales with the scene,
+        # making width (and the perceived alpha at different zoom) jump as
+        # soon as drawing mode is left.
+        self.draw_pen.setCosmetic(False)
         self.draw_brush = QBrush(QColor(c.red(), c.green(), c.blue(), max(30, alpha // 4)))
 
     def set_snap(self, enabled: bool):
