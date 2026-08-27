@@ -4424,6 +4424,33 @@ class Database:
             pages.add(m['pid_page'])
         return sorted(pages)
 
+    def analysis_pages_for_node(self, node_id):
+        """Return only pages with node graphics or linked cause objects."""
+        pages = set()
+        for table in ('node_markups', 'node_red_markups'):
+            rows = self.conn.execute(
+                f"SELECT pid_page FROM {table} WHERE node_id=?", (node_id,)).fetchall()
+            pages.update(r['pid_page'] for r in rows if r['pid_page'] is not None)
+        rows = self.conn.execute(
+            """SELECT em.pid_page
+               FROM equipment_markers em
+               JOIN equipment_catalog ec ON ec.id = em.equipment_id
+               WHERE ec.node_id=?
+               UNION
+               SELECT em.pid_page
+               FROM equipment_markers em
+               JOIN causes c ON c.equipment_id = em.equipment_id
+               JOIN deviations d ON d.id = c.deviation_id
+               WHERE d.node_id=?
+               UNION
+               SELECT em.pid_page
+               FROM equipment_markers em
+               JOIN deviations d ON d.equipment_id = em.equipment_id
+               WHERE d.node_id=?""",
+            (node_id, node_id, node_id)).fetchall()
+        pages.update(r['pid_page'] for r in rows if r['pid_page'] is not None)
+        return sorted(pages)
+
     def get_node_markup(self, mu_id):
         row = self.conn.execute(
             "SELECT * FROM node_markups WHERE id=?", (mu_id,)).fetchone()

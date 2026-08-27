@@ -616,7 +616,7 @@ class HAZOPPreparationPanel(QWidget):
         nodes_hdr.addWidget(add_node_btn)
         nodes_layout.addLayout(nodes_hdr)
         self._nodes_table = QTableWidget(0, 3)
-        self._nodes_table.setHorizontalHeaderLabels(["Nummer", "Namn", "Blad"])
+        self._nodes_table.setHorizontalHeaderLabels(["Nod nummer", "Namn", "Blad"])
         self._nodes_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self._nodes_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self._nodes_table.verticalHeader().setVisible(False)
@@ -860,15 +860,16 @@ class HAZOPPreparationPanel(QWidget):
 
     # ── Noder (2026-08-17, see NOTES.md "Ny Noder-flik") ─────────────────────
     def refresh_nodes(self):
-        sheets_by_page = {s['physical_page']: s['sheet_name'] for s in self.db.get_sheets()}
+        sheets_by_page = {s['physical_page']: (s['drawing_name'] or s['sheet_name'])
+                          for s in self.db.get_sheets()}
         nodes = self.db.nodes()
         self._nodes_table.setRowCount(len(nodes))
         for row, node in enumerate(nodes):
-            self._nodes_table.setItem(row, 0, QTableWidgetItem(str(node['id'])))
+            self._nodes_table.setItem(row, 0, QTableWidgetItem(f"Nod {node['id']}"))
             name_item = QTableWidgetItem(node['name'] or f"Nod {node['id']}")
             name_item.setData(Qt.ItemDataRole.UserRole, node['id'])
             self._nodes_table.setItem(row, 1, name_item)
-            pages = self.db.pages_for_node(node['id'])
+            pages = self.db.analysis_pages_for_node(node['id'])
             sheet_names = [sheets_by_page.get(p, f"sida {p + 1}") for p in pages]
             self._nodes_table.setItem(row, 2, QTableWidgetItem(', '.join(sheet_names)))
 

@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Noder visar relevanta blad (2026-08-27)
+
+Noder-fliken visar nu `Nod <löpnummer>` i första kolumnen. Bladkolumnen
+innehåller endast blad där nodgrafik (inklusive redmarkeringar) finns eller
+där ett P&ID-objekt är kopplat som orsaksobjekt på nodens avvikelser.
+
 ## Redigerbara ritningsuppgifter på Blad (2026-08-27)
 
 Blad-fliken visar nu Ritningsnummer, Ritningsnamn, Revision, Datum och
