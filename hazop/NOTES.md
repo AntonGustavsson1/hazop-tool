@@ -2635,3 +2635,37 @@ System/Nod-rad kollapsad efter redigering). `tests.test_smoke`,
 `tests.test_tree_panel` (60 tester, inkl. hela `TreePanelAutoCollapseTests`),
 `tests.test_scenario_panel` och hela `tests.test_integration` (240 tester)
 gröna. Ingen visuell GUI-körning gjordes.
+
+## Klick på objekt på P&ID visade inget i trädet (2026-08-27)
+
+**Rapport:** Anton: "Om jag klickar på ett objekt på P&ID viewer så kommer
+inget upp i trädet. Jag vill att den då också syns ner till objektnivå i
+trädet."
+
+**Root cause:** `MainWindow._on_equipment_marker_navigate()` filtrerade redan
+HAZOP Scenario-tabellen till objektets rader (`scenario_panel.load_equipment()`,
+2026-08-12), men reveal:ade trädet bara till **Nod**-nivå
+(`tree_panel.refresh(NODE_T, node_id, ...)`). Var noden redan synlig/öppen
+hände ingenting synligt.
+
+**Fix:** ny `TreePanel.reveal_causes_for_equipment(equipment_id)`
+(tree_panel.py) återanvänder den redan existerande
+`Database.causes_for_equipment()`-frågan (samma matchning: deviation-FK eller
+comp_tag+comp_type på orsak/konsekvens/safeguard) för att hitta den första
+(lägsta id) orsaken som nämner objektet, expanderar dess hela ankarkedja
+(Avvikelse → Nod → System) och sätter Orsak-raden som markerad/`currentItem`.
+Bara EN träff avslöjas även om objektet förekommer i flera avvikelser —
+scenario-tabellen listar redan alla förekomster separat, och att expandera
+flera grenar samtidigt skulle bara bli återkollapsat av
+"Auto-collapse nodes/avvikelser" (som per design bara håller EN aktiv gren
+öppen). Konsekvens/Safeguard-nivån under orsaken förblir hopfälld som vanligt.
+Om objektet saknar HAZOP-data helt (inget cause taggat än) faller
+`_on_equipment_marker_navigate` tillbaka till den gamla Nod-nivå-reveal:en
+istället för att göra ingenting.
+
+**Test:** `EquipmentMarkerNavigateFiltersScenarioTests.test_reveals_tree_down_to_the_causes_orsak_row`
+(röd→grön verifierad) och `..._falls_back_to_node_reveal` (tests/test_integration.py).
+`tests.test_smoke`, `tests.test_tree_panel`, `tests.test_scenario_panel`,
+`tests.test_equipment_panel`, hela `tests.test_integration`,
+`tests.test_pid_viewer` och `tests.test_pid_panel_mod` (693 tester totalt)
+gröna. Ingen visuell GUI-körning gjordes.

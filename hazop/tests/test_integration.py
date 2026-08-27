@@ -2593,6 +2593,56 @@ class EquipmentMarkerNavigateFiltersScenarioTests(unittest.TestCase):
                 win._on_equipment_marker_navigate(marker_id)
             mock_load_eq.assert_not_called()
 
+    def test_reveals_tree_down_to_the_causes_orsak_row(self):
+        """2026-08-27, Anton: 'om jag klickar på ett objekt på P&ID viewer
+        så kommer inget upp i trädet ... jag vill att den ... syns ner till
+        objektnivå i trädet.' Clicking the marker must expand the tree far
+        enough that the Orsak (object) row tagged to this equipment is
+        actually visible, not just the Nod row as before."""
+        with _TempDbMainWindow() as win:
+            node = dict(win.db.nodes()[0])
+            node_id = node['id']
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            win.db.update_cause(cause_id, comp_type="Ventil", comp_tag="PSV-101")
+            eq_id = win.db.add_equipment_item("PSV-101", "PSV-101", "PSV", 0,
+                                               "Ventil", '', 0)
+            win.db.set_equipment_node(eq_id, node_id)
+            marker_id = win.db.add_equipment_marker(
+                eq_id, "PSV-101", 0, 100.0, 100.0, "Ventil", confidence=0.9,
+                link_method='leader')
+
+            win._on_equipment_marker_navigate(marker_id)
+
+            system_item = _find_tree_item(win.tree_panel.tree, SYSTEM_T, node['system_id'])
+            node_item = _find_tree_item(win.tree_panel.tree, NODE_T, node_id)
+            dev_item = _find_tree_item(win.tree_panel.tree, DEV_T, dev_id)
+            cause_item = _find_tree_item(win.tree_panel.tree, CAUSE_T, cause_id)
+            self.assertIsNotNone(cause_item)
+            self.assertTrue(system_item.isExpanded())
+            self.assertTrue(node_item.isExpanded())
+            self.assertTrue(dev_item.isExpanded(),
+                "the avvikelse must be open so the object's Orsak row is visible")
+            self.assertIs(win.tree_panel.tree.currentItem(), cause_item,
+                "the object's own Orsak row should be highlighted")
+
+    def test_marker_with_node_but_no_cause_yet_falls_back_to_node_reveal(self):
+        """An equipment placed on the P&ID and linked to a node, but with
+        no HAZOP cause authored under it yet, has nothing at Orsak level
+        to reveal — falls back to the old Nod-level reveal instead of
+        doing nothing."""
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            eq_id = win.db.add_equipment_item("PV-101", "PV-101", "PV", 0, "Ventil", '', 0)
+            win.db.set_equipment_node(eq_id, node_id)
+            marker_id = win.db.add_equipment_marker(eq_id, "PV-101", 0, 10.0, 10.0, "Ventil")
+
+            win._on_equipment_marker_navigate(marker_id)
+
+            node_item = _find_tree_item(win.tree_panel.tree, NODE_T, node_id)
+            self.assertIsNotNone(node_item)
+            self.assertIs(win.tree_panel.tree.currentItem(), node_item)
+
 
 class EquipmentDeviationCheckboxKeepsScenarioFilterTests(unittest.TestCase):
     """'en mindre fix är att det skall se ut såhär även när jag klickar på

@@ -646,6 +646,65 @@ class TreePanel(QWidget):
                 self._reveal(target)
             self._apply_auto_collapse()
 
+    def reveal_causes_for_equipment(self, equipment_id):
+        """Expand the tree down to Orsak level for the cause that
+        'mentions' this equipment — same Database.causes_for_equipment()
+        query already used to filter HAZOP Scenario when a P&ID marker is
+        clicked (2026-08-27: Anton — clicking an object on the P&ID showed
+        nothing new in the tree, since _on_equipment_marker_navigate only
+        revealed down to Nod level). Call AFTER refresh() so the tree
+        reflects current data; this only expands an ancestor chain and
+        picks a current item, it does not rebuild the tree itself.
+
+        Only the FIRST match (lowest cause id) is revealed/selected, even
+        if the equipment appears in more than one avvikelse — the HAZOP
+        Scenario table (filtered separately via load_equipment()) already
+        lists every occurrence; picking just one deterministic anchor here
+        avoids fighting the "Auto-collapse nodes/avvikelser" toggles,
+        which only ever keep ONE active branch open by design (see
+        _apply_auto_collapse — collapsing every OTHER match's branch back
+        again would undo revealing more than one anyway). Ancestors are
+        expanded unconditionally (regardless of whether either toggle is
+        on) since revealing on click must not depend on that setting;
+        _apply_auto_collapse() is then reapplied so an enabled toggle
+        still collapses every unrelated branch exactly as it does after
+        any other refresh. The Orsak item itself is never expanded —
+        Konsekvens/Safeguard stay collapsed by default exactly as
+        everywhere else in the tree.
+
+        Done with signals blocked: this is a "make it visible" operation,
+        not navigation — the caller (_on_equipment_marker_navigate)
+        already drives the scenario-table filtering and register-row
+        selection explicitly, so this must not cascade into _on_selected
+        and override that. Returns True if a match was found and revealed,
+        False otherwise (e.g. the equipment has no HAZOP data yet) — the
+        caller can fall back to a coarser reveal in that case."""
+        causes = self.db.causes_for_equipment(equipment_id)
+        if not causes:
+            return False
+        cause_id = min(c['id'] for c in causes)
+        found = False
+        self.tree.blockSignals(True)
+        try:
+            it = QTreeWidgetItemIterator(self.tree)
+            while it.value():
+                item = it.value()
+                if (item.data(0, Qt.ItemDataRole.UserRole + 1) == CAUSE_T and
+                        item.data(0, Qt.ItemDataRole.UserRole) == cause_id):
+                    p = item.parent()
+                    while p is not None:
+                        p.setExpanded(True)
+                        p = p.parent()
+                    self.tree.setCurrentItem(item)
+                    self.tree.scrollToItem(item)
+                    found = True
+                    break
+                it += 1
+        finally:
+            self.tree.blockSignals(False)
+            self._apply_auto_collapse()
+        return found
+
     def _current(self):
         item = self.tree.currentItem()
         if item is None:

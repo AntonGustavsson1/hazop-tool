@@ -1747,7 +1747,15 @@ class MainWindow(QMainWindow):
             return
         equipment_id = row['equipment_id']
         node_id = self.db.equipment_node_id(equipment_id)
-        if node_id is not None:
+        # Reveal down to the object's own Orsak row in the tree (2026-08-27,
+        # Anton: "om jag klickar på ett objekt på P&ID viewer så kommer
+        # inget upp i trädet ... jag vill att den ... syns ner till
+        # objektnivå"), not just the Nod level as before — see
+        # TreePanel.reveal_causes_for_equipment(). Falls back to the old
+        # Nod-only reveal when the equipment has no HAZOP data yet (no
+        # cause to reveal down to).
+        self.tree_panel.refresh()
+        if not self.tree_panel.reveal_causes_for_equipment(equipment_id) and node_id is not None:
             self.tree_panel.refresh(NODE_T, node_id, emit_selection=False)
         self.scenario_panel.load_equipment(equipment_id)
         self.scenario_panel.refresh_placed()
