@@ -203,10 +203,23 @@ class RiskMatrixPopup(QDialog):
                 grid.addWidget(btn, r + 1, c + 1)
                 self._grid_buttons[(freq_val, cons_val)] = (btn, lbl[:4])
 
-        outer.addLayout(grid)
-
-        if db is not None and cons_id is not None:
-            self._build_category_section(outer)
+        if self._category_mode and self._freq_on_x:
+            # Consequence is the Y-axis: place the category selector directly
+            # to the left of the matrix so each C row is physically aligned.
+            category_host = QWidget()
+            category_layout = QVBoxLayout(category_host)
+            category_layout.setContentsMargins(0, 0, 4, 0)
+            category_layout.setSpacing(0)
+            self._build_category_section(category_layout, inline=True)
+            matrix_row = QHBoxLayout()
+            matrix_row.setSpacing(4)
+            matrix_row.addWidget(category_host)
+            matrix_row.addLayout(grid)
+            outer.addLayout(matrix_row)
+        else:
+            outer.addLayout(grid)
+            if self._category_mode:
+                self._build_category_section(outer)
 
         cancel_btn = QPushButton("Avbryt")
         cancel_btn.clicked.connect(self.reject)
@@ -214,7 +227,7 @@ class RiskMatrixPopup(QDialog):
 
         self.adjustSize()
 
-    def _build_category_section(self, outer):
+    def _build_category_section(self, outer, inline=False):
         """Build the per-category picker on the same axis as the matrix.
 
         Consequence is the matrix Y-axis when frequency is on X, so each
@@ -234,13 +247,14 @@ class RiskMatrixPopup(QDialog):
         self._cat_buttons = {}
         severity_defs = self._db.get_severity_definitions()
 
-        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color:#E2E3E1;")
-        outer.addWidget(sep)
+        if not inline:
+            sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+            sep.setStyleSheet("color:#E2E3E1;")
+            outer.addWidget(sep)
 
-        hdr2 = QLabel("Konsekvens per kategori (frekvens hämtas från orsaken):")
-        hdr2.setStyleSheet("font-size:9px; color:#555;")
-        outer.addWidget(hdr2)
+            hdr2 = QLabel("Konsekvens per kategori (frekvens hämtas från orsaken):")
+            hdr2.setStyleSheet("font-size:9px; color:#555;")
+            outer.addWidget(hdr2)
 
         def add_button(cid, s, add_widget):
             cbtn = QPushButton(cons_axis_label(s))
@@ -265,13 +279,13 @@ class RiskMatrixPopup(QDialog):
             # column per category.
             grid = QGridLayout(); grid.setSpacing(0)
             corner = QLabel('C')
-            corner.setFixedSize(50, 22)
+            corner.setFixedSize(50, 16)
             corner.setAlignment(Qt.AlignmentFlag.AlignCenter)
             corner.setStyleSheet("font-size:9px; font-weight:bold; color:#555;")
             grid.addWidget(corner, 0, 0)
             for col, cat in enumerate(cats, 1):
                 name_l = QLabel(cat['name'])
-                name_l.setFixedWidth(50)
+                name_l.setFixedSize(50, 16)
                 name_l.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 name_l.setStyleSheet("font-size:8px; font-weight:bold;")
                 name_l.setToolTip(cat['name'])

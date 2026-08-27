@@ -2,6 +2,13 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Kategorier placeras på rätt sida av riskmatrisen (2026-08-27)
+
+När konsekvens är Y-axel ligger kategoriurvalet nu till vänster om matrisen
+och C-rutorna delar samma höjdlinjer som matrisens konsekvensfält. När
+konsekvens är X-axel ligger urvalet under matrisen och följer samma kolumner.
+Rutorna använder samma storlek som matrisens celler.
+
 ## Flera taggersättningsregler (2026-08-27)
 
 Taggidentifieringens inställning använder nu en rad per regel med X (ursprung)
