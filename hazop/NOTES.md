@@ -2926,6 +2926,10 @@ med individuell automatisk radhöjd. Varje kategorirad växer efter sin egen
 längsta beskrivning; raderna behöver därför inte vara lika höga i den
 orienteringen.
 
+Riskmatrisinställningen har dessutom fått en horisontell splitter med dragkant
+till höger. Den ändrar bredden på hela matrisytan inklusive konsekvens-
+definitionerna under och behåller matrisen förankrad till vänster.
+
 ## Deltagarmatris: sessionsdatum och plats (2026-08-27)
 
 Analystillfällen har nu separata datum- och platsfält. Nya tillfällen föreslås

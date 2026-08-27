@@ -368,9 +368,21 @@ class HAZOPPreparationPanel(QWidget):
         self._matrix_grid.setSpacing(0)
         self._matrix_grid.setContentsMargins(0, 0, 0, 0)
 
-        _wrap_lay.addWidget(self._matrix_container,
-                            alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        _wrap_lay.addStretch(1)
+        # A horizontal splitter gives the matrix a visible right-hand drag
+        # edge.  The empty pane is intentional: it keeps the matrix anchored
+        # left while allowing its complete width (including definitions below)
+        # to be widened without resizing the surrounding settings page.
+        matrix_splitter = QSplitter(Qt.Orientation.Horizontal)
+        matrix_splitter.setChildrenCollapsible(False)
+        matrix_splitter.addWidget(self._matrix_container)
+        matrix_spacer = QWidget()
+        matrix_spacer.setMinimumWidth(8)
+        matrix_splitter.addWidget(matrix_spacer)
+        matrix_splitter.setStretchFactor(0, 0)
+        matrix_splitter.setStretchFactor(1, 1)
+        matrix_splitter.splitterMoved.connect(self._on_matrix_splitter_moved)
+        self._matrix_splitter = matrix_splitter
+        _wrap_lay.addWidget(matrix_splitter)
         scroll.setWidget(_wrap)
         ml.addWidget(scroll)
 
@@ -943,6 +955,37 @@ class HAZOPPreparationPanel(QWidget):
         self._load_palette_ui()
 
     # ── Matrix ────────────────────────────────────────────────────────────────
+
+    def _on_matrix_splitter_moved(self, _pos, _index):
+        """Keep grid controls readable when the matrix pane is widened.
+
+        The grid uses compact fixed-size controls by default.  On a drag of
+        the splitter handle, distribute the available width over its columns
+        so the matrix and the consequence definitions below grow together.
+        """
+        container = getattr(self, '_matrix_container', None)
+        grid = getattr(self, '_matrix_grid', None)
+        if container is None or grid is None:
+            return
+        target = max(0, container.width())
+        count = grid.columnCount()
+        if target <= 0 or count <= 0:
+            return
+        base = [max(1, grid.columnMinimumWidth(c)) for c in range(count)]
+        natural = max(sum(base), container.sizeHint().width())
+        if target <= natural:
+            return
+        extra = (target - natural) // count
+        remainder = (target - natural) % count
+        for col in range(count):
+            width = base[col] + extra + (1 if col < remainder else 0)
+            grid.setColumnMinimumWidth(col, width)
+            for row in range(grid.rowCount()):
+                item = grid.itemAtPosition(row, col)
+                widget = item.widget() if item else None
+                if widget is not None:
+                    widget.setMinimumWidth(width)
+                    widget.setMaximumWidth(width)
 
     def _load_matrix_ui(self):
         cfg = self.db.get_risk_matrix() or DEFAULT_MATRIX
