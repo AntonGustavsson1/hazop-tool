@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Redmark-symboler från kugghjulsknappen (2026-08-27)
+
+Symbolväljaren för redmarkeringar ankras nu mot muspekaren när den öppnas från
+kugghjulsknappen i den synliga nodmarkup-ribban. Den interna RedMarkupPanel är
+dold och kunde därför tidigare ge en ogiltig popup-position utanför skärmen.
+
 ## Sökresultat visar hela PDF-sidan (2026-08-27)
 
 När ett definierat objekt väljs i objektsökningen centreras rätt sida och

@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QCheckBox, QColorDialog,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QRect
-from PyQt6.QtGui import QColor, QFont, QPen, QPainter, QPixmap, QIcon
+from PyQt6.QtGui import QColor, QFont, QPen, QPainter, QPixmap, QIcon, QCursor
 
 from constants import NODE_T, CAUSE_T, CONS_T, SG_T, DEV_T, MARKUP_COLORS, CONFIG
 from database import Database, freq_to_f_level
@@ -1302,7 +1302,16 @@ class _SymbolSelectorPopup(QFrame):
         self.setFixedSize(220, 280)
 
     def show_near(self, btn):
-        gp = btn.mapToGlobal(btn.rect().bottomLeft())
+        # The picker is owned by the hidden RedMarkupPanel state object while
+        # its visible trigger lives in PropertiesRibbon.  Mapping a hidden
+        # button produces an origin/invalid position, making the popup appear
+        # off-screen.  During a real click the cursor is at the visible gear,
+        # so use that as the anchor whenever the supplied button is hidden.
+        if btn is None or not btn.isVisible():
+            gp = QCursor.pos()
+            gp.setY(gp.y() + 4)
+        else:
+            gp = btn.mapToGlobal(btn.rect().bottomLeft())
         self.move(gp.x() - self.width() - 4, gp.y())
         self.show()
 
