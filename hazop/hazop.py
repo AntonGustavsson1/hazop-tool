@@ -1310,7 +1310,7 @@ class MainWindow(QMainWindow):
                 # A scenario-created row belongs in the tree immediately, but
                 # must NOT become the tree's current item. Selecting a hidden
                 # consequence/safeguard made auto-collapse expand its complete
-                # ancestor path, so a compact tree showing only "Ny nod"
+                # ancestor path, so a compact tree showing only its deviations
                 # suddenly unfolded after Enter. Rebuild without a target;
                 # refresh() still preserves whatever the user manually had
                 # open, while the scenario table handles its own cursor below.

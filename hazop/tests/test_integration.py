@@ -3268,20 +3268,26 @@ class PlusRowQuickAddTaggingTests(unittest.TestCase):
             win.tree_panel.refresh()
             system_item = _find_tree_item(win.tree_panel.tree, SYSTEM_T, node['system_id'])
             node_item = _find_tree_item(win.tree_panel.tree, NODE_T, node_id)
+            dev_item = _find_tree_item(win.tree_panel.tree, DEV_T, dev_id)
             self.assertIsNotNone(system_item)
             self.assertIsNotNone(node_item)
+            self.assertIsNotNone(dev_item)
             system_item.setExpanded(True)
-            node_item.setExpanded(False)
+            node_item.setExpanded(True)
+            dev_item.setExpanded(False)
 
             panel._quick_add_consequence(cause_id)
 
             self.assertEqual(len(win.db.consequences(cause_id)), 1)
             system_item = _find_tree_item(win.tree_panel.tree, SYSTEM_T, node['system_id'])
             node_item = _find_tree_item(win.tree_panel.tree, NODE_T, node_id)
+            dev_item = _find_tree_item(win.tree_panel.tree, DEV_T, dev_id)
             self.assertTrue(system_item.isExpanded(),
-                "the existing system level must stay open so Ny nod remains visible")
-            self.assertFalse(node_item.isExpanded(),
-                "adding a consequence in Scenario must leave Ny nod collapsed")
+                "the existing system level must stay open")
+            self.assertTrue(node_item.isExpanded(),
+                "the existing node level must stay open so deviations remain visible")
+            self.assertFalse(dev_item.isExpanded(),
+                "adding a consequence in Scenario must leave the deviation collapsed")
             cause_item = _find_tree_item(win.tree_panel.tree, CAUSE_T, cause_id)
             self.assertIsNotNone(cause_item,
                 "the consequence's object/cause must still exist in the rebuilt tree")
