@@ -2910,3 +2910,13 @@ flera klassificeringar med samma prefix och en exakt tidigare tagg får extra
 vikt. Den högst rankade typen förifylls i Objekt/Objekttyp-dialogen, medan
 övriga typer fortfarande kan väljas manuellt. Ett manuellt bekräftat val lärs
 in och ökar därefter vikten för framtida taggar.
+
+## Automatisk höjd i riskmatrisens konsekvensrader (2026-08-27)
+
+När frekvens ligger på X-axeln och konsekvens på Y-axeln mäts nu alla
+flerradiga konsekvensbeskrivningar automatiskt efter textlayout. Den högsta
+behövda höjden används på samtliga konsekvensnivåer samt på radetiketter och
+matrisknappar, så hela matrisen blir jämn. Mätningen schemaläggs även när text
+redigeras, så höjden ändras direkt utan att riskmatrisinställningen behöver
+byggas om manuellt. Vid konsekvens på X-axeln lämnas den befintliga
+höjdlogiken oförändrad.

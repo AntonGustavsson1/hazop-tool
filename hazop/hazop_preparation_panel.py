@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QTabWidget, QTextEdit, QToolButton, QVBoxLayout,
     QWidget,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QDate, QEvent, QMimeData
+from PyQt6.QtCore import Qt, pyqtSignal, QDate, QEvent, QMimeData, QTimer
 from PyQt6.QtGui import QBrush, QColor, QDrag, QFont, QFontMetrics
 
 from constants import CONFIG, SEV_LABELS
@@ -1074,6 +1074,7 @@ class HAZOPPreparationPanel(QWidget):
         self._y_label_edits      = []
         self._freq_boundary_edits = []
         self._sev_def_edits       = {}
+        self._category_row_edits  = []
 
         # Data always stored as [consequence_idx][frequency_idx]
         n_cons = cfg.get('rows', 5)    # consequence levels
@@ -1332,23 +1333,39 @@ class HAZOPPreparationPanel(QWidget):
                     e.textChanged.connect(
                         lambda cid=cat_id, sl=sev_level, _e=e:
                         self.db.set_severity_definition(sl, cid, _e.toPlainText().strip()))
+                    e.textChanged.connect(self._schedule_category_row_resize)
                     self._matrix_grid.addWidget(e, r + 1, cat_col)
                     self._sev_def_edits[(cat_id, sev_level)] = e
                     row_cat_edits[r].append(e)
 
-            for r in range(n_drows):
-                if not row_cat_edits[r]:
-                    continue
-                needed = CONFIG['H_ROW_STD']
-                for e in row_cat_edits[r]:
-                    doc = e.document()
-                    doc.setTextWidth(e.width())
-                    needed = max(needed, int(doc.size().height()) + 8)
-                self._y_label_edits[r].setFixedHeight(needed)
-                for btn in self._cell_buttons[r][1]:
-                    btn.setFixedHeight(needed)
-                for e in row_cat_edits[r]:
-                    e.setFixedHeight(needed)
+            self._category_row_edits = row_cat_edits
+            self._resize_category_rows()
+
+    def _schedule_category_row_resize(self):
+        """Resize the whole Y-axis matrix after wrapped category text changes.
+
+        QTextEdit updates its document layout asynchronously, so queue the
+        measurement until the next event-loop turn.  All consequence levels
+        deliberately receive the same height, matching the matrix cells.
+        """
+        QTimer.singleShot(0, self._resize_category_rows)
+
+    def _resize_category_rows(self):
+        rows = getattr(self, '_category_row_edits', None) or []
+        if not rows or not getattr(self, '_y_label_edits', None):
+            return
+        needed = CONFIG['H_ROW_STD']
+        for edits in rows:
+            for edit in edits:
+                doc = edit.document()
+                doc.setTextWidth(edit.viewport().width())
+                needed = max(needed, int(doc.size().height()) + 8)
+        for row in range(min(len(self._y_label_edits), len(self._cell_buttons))):
+            self._y_label_edits[row].setFixedHeight(needed)
+            for btn in self._cell_buttons[row][1]:
+                btn.setFixedHeight(needed)
+            for edit in rows[row]:
+                edit.setFixedHeight(needed)
 
     def _sync_freq_label_from_boundary(self, boundary_edit, col_idx: int):
         """Auto-update the frequency axis label(s) adjacent to the changed boundary."""
@@ -1588,4 +1605,3 @@ class HAZOPPreparationPanel(QWidget):
 # ══════════════════════════════════════════════════════════════════════════════
 # ADMIN PANEL
 # ══════════════════════════════════════════════════════════════════════════════
-
