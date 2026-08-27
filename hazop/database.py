@@ -4459,6 +4459,37 @@ class Database:
         pages.update(r['pid_page'] for r in rows if r['pid_page'] is not None)
         return sorted(pages)
 
+    def analysis_objects_for_node(self, node_id):
+        """Return {physical_page: [object tags]} for objects relevant to node."""
+        rows = self.conn.execute(
+            """SELECT em.pid_page, COALESCE(em.tag, ec.tag, '') AS tag
+               FROM equipment_markers em
+               JOIN equipment_catalog ec ON ec.id = em.equipment_id
+               WHERE ec.node_id=?
+               UNION
+               SELECT em.pid_page, COALESCE(em.tag, ec.tag, '')
+               FROM equipment_markers em
+               JOIN equipment_catalog ec ON ec.id = em.equipment_id
+               JOIN causes c ON c.equipment_id = em.equipment_id
+               JOIN deviations d ON d.id = c.deviation_id
+               WHERE d.node_id=?
+               UNION
+               SELECT em.pid_page, COALESCE(em.tag, ec.tag, '')
+               FROM equipment_markers em
+               JOIN equipment_catalog ec ON ec.id = em.equipment_id
+               JOIN deviations d ON d.equipment_id = em.equipment_id
+               WHERE d.node_id=?
+               ORDER BY 1, 2""",
+            (node_id, node_id, node_id)).fetchall()
+        result = {}
+        for row in rows:
+            tag = (row['tag'] or '').strip()
+            if tag:
+                result.setdefault(row['pid_page'], [])
+                if tag not in result[row['pid_page']]:
+                    result[row['pid_page']].append(tag)
+        return result
+
     def get_node_markup(self, mu_id):
         row = self.conn.execute(
             "SELECT * FROM node_markups WHERE id=?", (mu_id,)).fetchone()

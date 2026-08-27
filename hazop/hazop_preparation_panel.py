@@ -615,10 +615,12 @@ class HAZOPPreparationPanel(QWidget):
         add_node_btn.clicked.connect(self._add_node_from_noder_tab)
         nodes_hdr.addWidget(add_node_btn)
         nodes_layout.addLayout(nodes_hdr)
-        self._nodes_table = QTableWidget(0, 3)
-        self._nodes_table.setHorizontalHeaderLabels(["Nod nummer", "Namn", "Blad"])
+        self._nodes_table = QTableWidget(0, 4)
+        self._nodes_table.setHorizontalHeaderLabels(["Nod nummer", "Namn", "Blad", "Objekt per blad"])
         self._nodes_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self._nodes_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self._nodes_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self._nodes_table.setWordWrap(True)
         self._nodes_table.verticalHeader().setVisible(False)
         self._nodes_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._nodes_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -872,7 +874,11 @@ class HAZOPPreparationPanel(QWidget):
             self._nodes_table.setItem(row, 1, name_item)
             pages = self.db.analysis_pages_for_node(node['id'])
             sheet_names = [sheets_by_page.get(p, f"sida {p + 1}") for p in pages]
-            self._nodes_table.setItem(row, 2, QTableWidgetItem(', '.join(sheet_names)))
+            objects_by_page = self.db.analysis_objects_for_node(node['id'])
+            object_lines = [', '.join(objects_by_page.get(p, [])) or '—' for p in pages]
+            self._nodes_table.setItem(row, 2, QTableWidgetItem('\n'.join(sheet_names)))
+            self._nodes_table.setItem(row, 3, QTableWidgetItem('\n'.join(object_lines)))
+            self._nodes_table.resizeRowToContents(row)
 
     def _add_node_from_noder_tab(self):
         self.db.add_node()

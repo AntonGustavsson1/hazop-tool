@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Blad och objekt per nod (2026-08-27)
+
+Noder-tabellen visar nu varje blad på egen rad och har en separat kolumn med
+objekttaggar per blad i samma ordning. Objekt hämtas från nodkopplade
+P&ID-markeringar samt orsaksobjekt under nodens avvikelser.
+
 ## Nodnummer och markerade blad (2026-08-27)
 
 Noder-flikens första kolumn använder nu listans löpnummer (`Nod 1`, `Nod 2`)
