@@ -2759,3 +2759,11 @@ förhindrar att en pågående QLineEdit förstörs mitt i Enter-signalen.
 `RecommendationColumnTests` gröna; sex äldre tester som uttryckligen
 förväntade en sammanfogad REK-cell är markerade som ersatta av det nya
 radbeteendet.
+## Korrigering: trädknappar styr endast P&ID-lager (2026-08-27)
+
+Anton förtydligade att knapparna Orsaker, Konsekvenser och Safeguards ovanför
+HAZOP-trädet inte ska dölja trädets rader. De styr enbart motsvarande lager i
+P&ID Viewer. Trädet påverkas därför inte längre av knapptryckning eller
+lagervisningsinställningar; vanliga expandera-/kollapsa-regler gäller där.
+Färgvalet på knapparna och den befintliga P&ID-gummibandsmarkeringen är
+oförändrat.

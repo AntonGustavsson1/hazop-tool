@@ -125,7 +125,9 @@ class TreePanel(QWidget):
             btn = QPushButton(label)
             btn.setCheckable(True)
             configurable = type_key in ('cause', 'consequence', 'safeguard')
-            config_visible = self.db.get_config(f'tree_show_{type_key}', '1') == '1'
+            # These controls belong to the P&ID marker layers. They must not
+            # filter or hide rows in the HAZOP tree itself.
+            config_visible = True
             color_on = (self.db.get_config(f'tree_color_{type_key}', '#00c800')
                         if configurable else '#7f8c8d')
             if not QColor(color_on).isValid():
@@ -279,8 +281,6 @@ class TreePanel(QWidget):
             "QPushButton:!checked{background:#e4e7e9; color:#7a7f83;}")
 
     def _on_visibility_toggled(self, type_key, checked):
-        self.db.set_config(f'tree_show_{type_key}', '1' if checked else '0')
-        self._apply_visibility_filters()
         self.visibility_changed.emit(type_key, checked)
 
     def _choose_visibility_color(self, type_key):
@@ -295,25 +295,9 @@ class TreePanel(QWidget):
         set_tree_context_link_color(type_key, color_hex)
         self.context_color_changed.emit(type_key, color_hex)
 
-    def _apply_visibility_filters(self):
-        """Hide optional HAZOP levels without deleting their tree data."""
-        visible_by_type = {
-            CAUSE_T: self._vis_btns['cause'].isChecked(),
-            CONS_T: self._vis_btns['consequence'].isChecked(),
-            SG_T: self._vis_btns['safeguard'].isChecked(),
-        }
-        it = QTreeWidgetItemIterator(self.tree)
-        while it.value():
-            item = it.value()
-            type_ = item.data(0, Qt.ItemDataRole.UserRole + 1)
-            if type_ in visible_by_type:
-                item.setHidden(not visible_by_type[type_])
-            it += 1
-
     def _on_auto_collapse_toggled(self, config_key, checked):
         self.db.set_config(config_key, '1' if checked else '0')
         self._apply_auto_collapse()
-        self._apply_visibility_filters()
 
     def _active_system_node_and_deviation(self):
         """Walks up from the current tree selection to find the nearest
@@ -701,7 +685,6 @@ class TreePanel(QWidget):
             if target and emit_selection:
                 self._reveal(target)
             self._apply_auto_collapse()
-            self._apply_visibility_filters()
 
     def reveal_causes_for_equipment(self, equipment_id):
         """Expand the tree down to Orsak level for EVERY cause that
@@ -767,7 +750,6 @@ class TreePanel(QWidget):
         finally:
             self.tree.blockSignals(False)
             self._apply_auto_collapse()
-            self._apply_visibility_filters()
             for dev_item in matched_dev_items:
                 dev_item.setExpanded(True)
         return found
@@ -1014,7 +996,6 @@ class TreePanel(QWidget):
         # clicking a different node/avvikelse immediately folds the
         # previous one away without waiting for unrelated data to change.
         self._apply_auto_collapse()
-        self._apply_visibility_filters()
 
     # Types editable directly in the tree via double-click (2026-08-17, see
     # NOTES.md "Dubbelklick -> redigera direkt i trädet"). EQUIP_T/LEDORD_T

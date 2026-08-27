@@ -121,22 +121,26 @@ class TreePanelLayerToggleTests(unittest.TestCase):
             self.assertTrue(button.isChecked())
             self.assertEqual(self.panel._vis_colors[type_key].lower(), '#00c800')
 
-    def test_click_hides_level_and_setting_survives_refresh(self):
+    def test_click_only_changes_pid_layer_signal_not_tree_rows(self):
         cases = (
             ('cause', CAUSE_T, self.cause_id),
             ('consequence', CONS_T, self.cons_id),
             ('safeguard', SG_T, self.sg_id),
         )
+        emitted = []
+        self.panel.visibility_changed.connect(lambda t, v: emitted.append((t, v)))
         for type_key, type_, id_ in cases:
             with self.subTest(type_key=type_key):
                 button = self.panel._vis_btns[type_key]
                 button.setChecked(False)
-                self.assertTrue(self._item(type_, id_).isHidden())
-                self.assertEqual(self.db.get_config(f'tree_show_{type_key}'), '0')
+                self.assertFalse(self._item(type_, id_).isHidden())
                 self.panel.refresh()
-                self.assertTrue(self._item(type_, id_).isHidden())
+                self.assertFalse(self._item(type_, id_).isHidden())
                 button.setChecked(True)
                 self.assertFalse(self._item(type_, id_).isHidden())
+        self.assertEqual(emitted,
+                         [(value, checked) for value, _, _ in cases
+                          for checked in (False, True)])
 
     def test_right_click_color_choice_is_saved_and_updates_pid_color(self):
         from pid_viewer import resolve_tree_context_color
