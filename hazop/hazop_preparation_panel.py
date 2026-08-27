@@ -860,12 +860,13 @@ class HAZOPPreparationPanel(QWidget):
 
     # ── Noder (2026-08-17, see NOTES.md "Ny Noder-flik") ─────────────────────
     def refresh_nodes(self):
-        sheets_by_page = {s['physical_page']: (s['drawing_name'] or s['sheet_name'])
+        sheets_by_page = {s['physical_page']: (s['drawing_name'] or s['sheet_name'] or
+                                               f"PDF-sida {s['physical_page'] + 1}")
                           for s in self.db.get_sheets()}
         nodes = self.db.nodes()
         self._nodes_table.setRowCount(len(nodes))
         for row, node in enumerate(nodes):
-            self._nodes_table.setItem(row, 0, QTableWidgetItem(f"Nod {node['id']}"))
+            self._nodes_table.setItem(row, 0, QTableWidgetItem(f"Nod {row + 1}"))
             name_item = QTableWidgetItem(node['name'] or f"Nod {node['id']}")
             name_item.setData(Qt.ItemDataRole.UserRole, node['id'])
             self._nodes_table.setItem(row, 1, name_item)

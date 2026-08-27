@@ -4427,6 +4427,14 @@ class Database:
     def analysis_pages_for_node(self, node_id):
         """Return only pages with node graphics or linked cause objects."""
         pages = set()
+        node = self.get_node(node_id)
+        if node and node['pid_page'] is not None:
+            try:
+                points = json.loads(node['markup_points'] or '[]')
+            except (TypeError, ValueError):
+                points = []
+            if points:
+                pages.add(node['pid_page'])
         for table in ('node_markups', 'node_red_markups'):
             rows = self.conn.execute(
                 f"SELECT pid_page FROM {table} WHERE node_id=?", (node_id,)).fetchall()

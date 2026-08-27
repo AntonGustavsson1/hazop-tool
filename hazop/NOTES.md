@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Nodnummer och markerade blad (2026-08-27)
+
+Noder-flikens första kolumn använder nu listans löpnummer (`Nod 1`, `Nod 2`)
+i stället för databastabellens interna ID. Nodens egen yta räknas som markerad
+om `markup_points` innehåller geometri, och visas då på nodens PDF-sida.
+
 ## Noder visar relevanta blad (2026-08-27)
 
 Noder-fliken visar nu `Nod <löpnummer>` i första kolumnen. Bladkolumnen
