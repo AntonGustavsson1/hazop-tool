@@ -3274,7 +3274,10 @@ class PlusRowQuickAddTaggingTests(unittest.TestCase):
             self.assertIsNotNone(dev_item)
             system_item.setExpanded(True)
             node_item.setExpanded(True)
-            dev_item.setExpanded(False)
+            dev_item.setExpanded(True)
+            cause_item = _find_tree_item(win.tree_panel.tree, CAUSE_T, cause_id)
+            self.assertIsNotNone(cause_item)
+            cause_item.setExpanded(False)
 
             panel._quick_add_consequence(cause_id)
 
@@ -3286,12 +3289,13 @@ class PlusRowQuickAddTaggingTests(unittest.TestCase):
                 "the existing system level must stay open")
             self.assertTrue(node_item.isExpanded(),
                 "the existing node level must stay open so deviations remain visible")
-            self.assertFalse(dev_item.isExpanded(),
-                "adding a consequence in Scenario must leave the deviation collapsed")
+            self.assertTrue(dev_item.isExpanded(),
+                "the deviation must stay open so its object remains visible")
             cause_item = _find_tree_item(win.tree_panel.tree, CAUSE_T, cause_id)
             self.assertIsNotNone(cause_item,
                 "the consequence's object/cause must still exist in the rebuilt tree")
-            self.assertFalse(cause_item.isExpanded())
+            self.assertFalse(cause_item.isExpanded(),
+                "the object must stay collapsed so its consequence remains hidden")
 
     def test_quick_add_safeguard_creates_blank_row_no_popup(self):
         with _TempDbMainWindow() as win:

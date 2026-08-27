@@ -2563,7 +2563,7 @@ arkiverade tester hoppades över). Separat global-tooltip-test tillagt i
 När en konsekvens eller barriär skapades med Enter i HAZOP Scenario använde
 `new_item_created` tidigare den nya, dolda raden som mål i
 `TreePanel.refresh(type_, id_, emit_selection=False)`. Med auto-collapse kunde
-detta öppna hela föräldravägen under en avvikelse. Scenario-skapade rader bygger nu
+detta öppna objektet och visa den nya konsekvensen direkt. Scenario-skapade rader bygger nu
 om trädet utan navigeringsmål;
 datan finns direkt i trädet men användarens kollapsade vy och manuella
 expansion bevaras. Scenario-tabellen väljer fortfarande den nya raden för
@@ -2582,5 +2582,6 @@ Tre tidigare riskmatrisuppföljningar är samtidigt slutförda:
 Verifiering: syntaxkontroll, `tests.test_smoke`, hela
 `tests.test_scenario_panel` (153 tester, 10 arkiverade hoppades över), hela
 `tests.test_integration` (239 tester) samt ett särskilt end-to-end-test för
-Scenario-Enter där system och nod förblir öppna men avvikelsen förblir
-kollapsad. Ingen visuell GUI-körning gjordes.
+Scenario-Enter där system, nod och avvikelse förblir öppna så objektet syns,
+men objektet självt förblir kollapsat så konsekvens och barriär är dolda.
+Ingen visuell GUI-körning gjordes.
