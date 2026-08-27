@@ -5355,6 +5355,22 @@ class ScenarioTablePanel(QWidget):
                                  event.modifiers() & Qt.KeyboardModifier.ControlModifier)
                 return True
 
+        # When a cause cell is being edited, its QLineEdit sits above the
+        # table viewport and receives the native drop instead.  Accept the
+        # same P&ID marker MIME there and route it through _handle_drop so the
+        # marker's equipment_id is linked to the cause rather than silently
+        # being treated as text.
+        if (isinstance(obj, QLineEdit) and
+                event.type() in (QEvent.Type.DragEnter, QEvent.Type.DragMove,
+                                 QEvent.Type.Drop) and
+                event.mimeData().hasText() and
+                event.mimeData().text().startswith('hzp:')):
+            if event.type() != QEvent.Type.Drop:
+                event.acceptProposedAction()
+            else:
+                self._handle_drop(event, source_obj=obj)
+            return True
+
         # ── Drop events on table ──────────────────────────────────────────────
         # Qt/PyQt6 delivers DragEnter/DragMove/Drop to whichever widget is
         # actually under the cursor — for a QAbstractItemView-based widget
@@ -5946,8 +5962,15 @@ class ScenarioTablePanel(QWidget):
             vp_pos = self._table.viewport().mapFrom(self._table, pos)
         else:
             vp_pos = pos
-        tgt_row = self._table.rowAt(vp_pos.y())
-        tgt_col = self._table.columnAt(vp_pos.x())
+        if isinstance(source_obj, QLineEdit):
+            tgt_row = source_obj.property('editing_row')
+            tgt_col = source_obj.property('editing_col')
+            if tgt_row is None or tgt_col is None:
+                event.ignore(); return
+            tgt_row, tgt_col = int(tgt_row), int(tgt_col)
+        else:
+            tgt_row = self._table.rowAt(vp_pos.y())
+            tgt_col = self._table.columnAt(vp_pos.x())
         if tgt_row < 0 or tgt_row >= len(self._row_meta):
             event.ignore(); return
 

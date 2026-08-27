@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Shift-drag till redigerad orsak (2026-08-27)
+
+P&ID-markörer kan nu släppas direkt på den aktiva orsakseditorn. Eftersom
+editorn är en QLineEdit ovanpå tabellen fångas drag/drop-händelsen där och
+kopplar markörens `equipment_id`, tagg och objekttyp till orsaken.
+
 ## Rekommendationseditor: sqlite-rad normaliseras (2026-08-27)
 
 Kraschen vid redigering av en redan länkad rekommendation berodde på att
