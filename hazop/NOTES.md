@@ -1,6 +1,13 @@
 # NOTES.md — Beslut och kontext
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
+
+## Tree-context färgfilter på P&ID (2026-08-27)
+
+När en avvikelse är vald på HAZOP-trädet markeras utrustning i dess orsaks-,
+konsekvens- och safeguard-gren. Aktiv knapp ger vald färg; avmarkerad roll
+visas grått i stället för att tas bort. Utrustningsknappen döljer fortsatt
+objekten helt.
 > Den bevarar beslut, avvägningar och uppskjutna funktioner som inte framgår av koden eller git-historiken.
 > Sessionsloggar äldre än 2026-08-17 flyttades till `NOTES_ARCHIVE.md` (2026-08-20) för att hålla denna fil kort — den läses i sin helhet varje session (se CLAUDE.md).
 

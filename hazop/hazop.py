@@ -1302,12 +1302,12 @@ class MainWindow(QMainWindow):
             lambda type_, id_: (self.scenario_panel.refresh(),
                                  self.pid_panel.reload_overlays()))
         self.tree_panel.item_edited_inline.connect(self.hazop_prep_panel.refresh_nodes)
-        self.tree_panel.visibility_changed.connect(
-            lambda t, v: self.pid_panel.viewer.set_marker_visibility(t, v))
+        self.tree_panel.visibility_changed.connect(self._on_tree_visibility_changed)
         self.tree_panel.context_color_changed.connect(
             self._on_tree_context_color_changed)
         for marker_type, button in self.tree_panel._vis_btns.items():
             self.pid_panel.viewer.set_marker_visibility(marker_type, button.isChecked())
+            self.pid_panel.set_tree_context_layer_visibility(marker_type, button.isChecked())
 
         self.scenario_panel.item_selected.connect(self._on_scenario_item_selected)
         self.scenario_panel.new_item_created.connect(
@@ -1559,6 +1559,11 @@ class MainWindow(QMainWindow):
             self.pid_panel.set_active_cause(id_)
         elif type_ == CONS_T:
             self.pid_panel.set_active_consequence(id_)
+
+    def _on_tree_visibility_changed(self, marker_type, visible):
+        """Keep P&ID marker visibility and tree-context colours in sync."""
+        self.pid_panel.viewer.set_marker_visibility(marker_type, visible)
+        self.pid_panel.set_tree_context_layer_visibility(marker_type, visible)
 
     def _on_tree_context_color_changed(self, link_type, color_hex):
         """Repaint the current P&ID context immediately after a color choice."""

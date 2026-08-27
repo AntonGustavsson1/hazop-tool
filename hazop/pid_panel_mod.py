@@ -1208,6 +1208,12 @@ class PIDPanel(QWidget):
         self._tree_scope_type             = None
         self._tree_scope_id               = None
         self._tree_scope_colors: dict     = {}
+        # Visibility of the three tree-context role layers.  This is separate
+        # from the viewer's marker-layer visibility: an unchecked role keeps
+        # its linked equipment visible, but colours it grey.
+        self._tree_context_layer_visibility = {
+            'cause': True, 'consequence': True, 'safeguard': True,
+        }
         self._active_markup_class         = 'node' # 'node' or 'red'
         self._active_symbol_id            = None   # set when red markup symbol tool selected
         self._pending_markup_pts          = None
@@ -3504,11 +3510,28 @@ class PIDPanel(QWidget):
             self._tree_scope_colors = {}
         else:
             link_types_by_equipment = self.db.equipment_link_types_in_scope(type_, id_)
+            disabled = {
+                role for role, visible in self._tree_context_layer_visibility.items()
+                if not visible
+            }
             self._tree_scope_colors = {
-                eq_id: resolve_tree_context_color(link_types)
+                eq_id: resolve_tree_context_color(link_types, disabled)
                 for eq_id, link_types in link_types_by_equipment.items()
             }
         self._apply_tree_context_highlight()
+
+    def set_tree_context_layer_visibility(self, layer_type, visible):
+        """Apply a tree role button state to the current P&ID context.
+
+        Cause/consequence/safeguard objects stay in the context when a role is
+        unchecked; only their accent changes to grey.  Recompute from the
+        cached selection so no database traversal is needed for a toggle.
+        """
+        if layer_type not in self._tree_context_layer_visibility:
+            return
+        self._tree_context_layer_visibility[layer_type] = bool(visible)
+        if self._tree_scope_id is not None:
+            self.set_tree_context(self._tree_scope_type, self._tree_scope_id)
 
     def _apply_tree_context_highlight(self):
         """The CHEAP half of the two-tier cache — no DB tree-walk. Re-maps

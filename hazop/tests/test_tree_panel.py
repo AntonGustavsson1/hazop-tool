@@ -151,6 +151,18 @@ class TreePanelLayerToggleTests(unittest.TestCase):
         self.assertEqual(resolve_tree_context_color({'cause'}).name(), '#2457a6')
         self.assertIn('#2457a6', self.panel._vis_btns['cause'].styleSheet())
 
+    def test_unchecked_role_is_grey_but_checked_role_stays_coloured(self):
+        from pid_viewer import (resolve_tree_context_color,
+                                TREE_CONTEXT_HIGHLIGHT_DISABLED)
+        self.assertEqual(
+            resolve_tree_context_color({'cause'}, {'cause'}).name(),
+            TREE_CONTEXT_HIGHLIGHT_DISABLED.name())
+        # If an object is linked through more than one role, an enabled role
+        # still supplies its colour even when another role is unchecked.
+        self.assertEqual(
+            resolve_tree_context_color({'cause', 'safeguard'}, {'cause'}).name(),
+            resolve_tree_context_color({'safeguard'}).name())
+
 class TreePanelEquipmentGroupingTests(unittest.TestCase):
     """TreePanel.refresh() builds Nod → Avvikelse → Orsak → Konsekvens →
     Safeguard (2026-08-25, see NOTES.md "Rättar ihopslagningen": rättar

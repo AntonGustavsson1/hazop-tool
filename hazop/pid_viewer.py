@@ -746,6 +746,10 @@ TREE_CONTEXT_LINK_COLORS = {
     'safeguard':   QColor(0, 200, 0),
 }
 TREE_CONTEXT_HIGHLIGHT_DEFAULT = QColor(0, 200, 0)   # fallback for an unknown link type
+# A linked object remains visible when its layer is unchecked, but loses the
+# coloured tree-context emphasis.  Keep this neutral grey distinct from the
+# active colours so the three layer buttons can act as colour filters.
+TREE_CONTEXT_HIGHLIGHT_DISABLED = QColor(128, 128, 128)
 
 # When one equipment object has several link types in scope at once
 # (e.g. tagged on both a cause and one of its safeguards), this priority
@@ -765,13 +769,21 @@ def set_tree_context_link_color(link_type, color):
         TREE_CONTEXT_LINK_COLORS[link_type] = qcolor
 
 
-def resolve_tree_context_color(link_types) -> QColor:
+def resolve_tree_context_color(link_types, disabled_link_types=None) -> QColor:
     """link_types: a set of 'deviation'|'cause'|'consequence'|'safeguard'
     strings (see Database.equipment_link_types_in_scope) -> the single
     QColor to highlight that equipment object with."""
+    disabled = set(disabled_link_types or ())
     for lt in TREE_CONTEXT_LINK_PRIORITY:
         if lt in link_types:
+            if lt in disabled:
+                continue
             return TREE_CONTEXT_LINK_COLORS.get(lt, TREE_CONTEXT_HIGHLIGHT_DEFAULT)
+    # The object is still in the selected deviation's scope, but every
+    # matching role is switched off.  Do not remove it from the P&ID; render
+    # it as an unaccented/grey context marker instead.
+    if link_types:
+        return TREE_CONTEXT_HIGHLIGHT_DISABLED
     return TREE_CONTEXT_HIGHLIGHT_DEFAULT
 
 
