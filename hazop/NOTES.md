@@ -2892,6 +2892,15 @@ tagg till den första markerade utrustningen. Tabellen byggs om schemalagt och
 övriga paneler synkas via `item_edited`, så den nya objekttaggen visas direkt
 och den befintliga P&ID-/scenario-logiken återanvänds.
 
+## Dubbla avvikelser i Worksheet (2026-08-27)
+
+En äldre seed/migrationsväg hade skapat dubbla `standard_deviations`, vilket
+sedan gav två identiska avvikelser per nod. Databasmigrationen deduplicerar nu
+mallar och generiska avvikelser, tar bort tomma generiska rader när en
+utrustningskopplad rad med samma beskrivning redan har innehåll, och skyddar
+med unika index mot att samma fel återkommer. Utrustningsspecifika avvikelser
+för olika objekt lämnas kvar.
+
 ## Viktat taggminne vid gummibandsplacering (2026-08-27)
 
 När ett objekt skapas via högerdragning används taggkodens alfabetiska

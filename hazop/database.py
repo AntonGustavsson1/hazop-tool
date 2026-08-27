@@ -1693,9 +1693,98 @@ class Database:
 
         self._migrate_reduced_standard_catalog()
 
-        # Ensure every node has all standard deviations from template library
-        std_devs = [r[0] for r in self.conn.execute(
-            "SELECT description FROM standard_deviations ORDER BY sort_order").fetchall()]
+        # Older migrations could seed the deviation template library twice.
+        # That made the per-node seeding loop create two equal deviations in
+        # the worksheet.  Collapse only generic (equipment_id IS NULL)
+        # duplicates; equal descriptions tied to different equipment are
+        # intentional and must remain separate.
+        if not self.conn.execute(
+                "SELECT 1 FROM app_config WHERE key='dedupe_deviations_v1'").fetchone():
+            try:
+                template_groups = self.conn.execute(
+                    "SELECT description, GROUP_CONCAT(id) ids FROM standard_deviations "
+                    "GROUP BY description HAVING COUNT(*) > 1").fetchall()
+                for group in template_groups:
+                    ids = [int(v) for v in str(group['ids']).split(',') if v]
+                    keep = min(ids)
+                    for duplicate in ids:
+                        if duplicate == keep:
+                            continue
+                        self.conn.execute(
+                            "UPDATE standard_causes SET deviation_id=? WHERE deviation_id=?",
+                            (keep, duplicate))
+                        self.conn.execute("DELETE FROM standard_deviations WHERE id=?", (duplicate,))
+
+                deviation_groups = self.conn.execute(
+                    "SELECT node_id, description, GROUP_CONCAT(id) ids "
+                    "FROM deviations WHERE equipment_id IS NULL "
+                    "GROUP BY node_id, description HAVING COUNT(*) > 1").fetchall()
+                for group in deviation_groups:
+                    ids = [int(v) for v in str(group['ids']).split(',') if v]
+                    cause_counts = {
+                        dev_id: self.conn.execute(
+                            "SELECT COUNT(*) FROM causes WHERE deviation_id=?", (dev_id,)
+                        ).fetchone()[0]
+                        for dev_id in ids
+                    }
+                    keep = max(ids, key=lambda dev_id: (cause_counts[dev_id], -dev_id))
+                    for duplicate in ids:
+                        if duplicate == keep:
+                            continue
+                        self.conn.execute(
+                            "UPDATE causes SET deviation_id=? WHERE deviation_id=?",
+                            (keep, duplicate))
+                        self.conn.execute("DELETE FROM deviations WHERE id=?", (duplicate,))
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO app_config (key,value) VALUES "
+                    "('dedupe_deviations_v1','1')")
+                self.commit()
+            except Exception:
+                logging.warning("Deviation duplicate cleanup failed", exc_info=True)
+
+        # A second edge case appeared after equipment-specific deviations were
+        # introduced: an old empty generic template row could remain beside a
+        # populated equipment-bound row with the same description.  The empty
+        # generic row is only a seed artefact, so remove it; populated rows
+        # for different equipment are retained.
+        if not self.conn.execute(
+                "SELECT 1 FROM app_config WHERE key='dedupe_deviations_v2'").fetchone():
+            try:
+                candidates = self.conn.execute(
+                    "SELECT d.id, d.node_id, d.description "
+                    "FROM deviations d WHERE d.equipment_id IS NULL "
+                    "AND NOT EXISTS (SELECT 1 FROM causes c WHERE c.deviation_id=d.id) "
+                    "AND EXISTS (SELECT 1 FROM deviations d2 "
+                    "            WHERE d2.node_id=d.node_id AND d2.description=d.description "
+                    "              AND d2.equipment_id IS NOT NULL "
+                    "              AND EXISTS (SELECT 1 FROM causes c2 WHERE c2.deviation_id=d2.id))"
+                ).fetchall()
+                for row in candidates:
+                    self.conn.execute("DELETE FROM deviations WHERE id=?", (row['id'],))
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO app_config (key,value) VALUES "
+                    "('dedupe_deviations_v2','1')")
+                self.commit()
+            except Exception:
+                logging.warning("Equipment deviation duplicate cleanup failed", exc_info=True)
+
+        # Prevent the same migration regression from reintroducing generic
+        # duplicates, while allowing equipment-specific deviations to coexist.
+        try:
+            self.conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_deviations_node_description_generic "
+                "ON deviations(node_id, description) WHERE equipment_id IS NULL")
+            self.conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_standard_deviations_description "
+                "ON standard_deviations(description)")
+        except Exception:
+            logging.warning("Could not create deviation uniqueness indexes", exc_info=True)
+
+        # Ensure every node has all standard deviations from template library.
+        # dict.fromkeys also protects fresh databases if a legacy template
+        # source ever contains the same description twice.
+        std_devs = list(dict.fromkeys(r[0] for r in self.conn.execute(
+            "SELECT description FROM standard_deviations ORDER BY sort_order").fetchall()))
         if not std_devs:
             std_devs = DEVIATION_TYPES
         all_nodes = [r[0] for r in self.conn.execute("SELECT id FROM nodes").fetchall()]
