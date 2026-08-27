@@ -2382,6 +2382,94 @@ finns inte alls där, vilket i sig bevisar testerna verkligen träffar den
 nya koden). `test_smoke` + `test_hazop` + `test_integration` (253 test)
 samt hela 14-filssviten + `test_recommendations_panel` (988 test) gröna.
 
+## Dynamisk färgmarkering av objekt på P&ID utifrån HAZOP-trädet (2026-08-27)
+
+Anton: "Ändra markeringarna på P&ID så att objekten automatiskt
+färgsätts beroende på vilken nivå användaren står på i HAZOP-trädet.
+Grönt ska tills vidare användas för objekt som är relevanta för den
+aktuella positionen i trädet... Bygg lösningen så att färgen inte
+hårdkodas direkt till typen av koppling."
+
+**Designbeslut fattade med Anton innan implementation (se plan-fasen):**
+1. Trädet har ingen egen "Objekt"-rad längre (togs bort 2026-08-25) — en
+   ENDA rekursiv regel täcker alla nivåer istället för fyra särfall: att
+   klicka en Orsak-rad ("Objekt-nivå") highlightar den orsakens eget
+   objekt PLUS allt taggat på dess egna konsekvenser/safeguards; en
+   Konsekvens-rad exkluderar sin förälders (orsakens) objekt men
+   inkluderar sina egna safeguards; scope flödar bara NEDÅT, aldrig
+   uppåt mot förälder.
+2. Tagg-matchning räknar ALLA historiskt dragna taggar (`tagged_refs`),
+   inte bara den senaste (`comp_tag`) — mer fullständigt.
+
+**Ny DB-metod:** `Database.equipment_link_types_in_scope(type_, id_) ->
+dict[equipment_id, set[link_type]]` (database.py) — en batchad
+nedåt-traversering (System ⊇ dess noder ⊇ deras avvikelser ⊇ deras
+orsaker ⊇ deras konsekvenser ⊇ deras safeguards) via samma
+bulk-hämtningsmönster `TreePanel.refresh()` redan använder
+(`deviations_for_nodes`/`causes_for_deviations`/
+`consequences_for_causes`/`safeguards_for_consequences`), INTE genom att
+återanvända de två redan existerande, sinsemellan redundanta
+"causes-under-nod"-vägarna — går alltid via avvikelser, exakt som
+trädet självt visar. Tagg-sträng → `equipment_id` löses via den redan
+existerande `Database.get_equipment_by_tag(tag)`, cachad lokalt per
+anrop. `deviations`s egna direkta `equipment_id`-koppling räknas också
+(länktyp `'deviation'`) trots att begäran bara nämnde orsak/konsekvens/
+safeguard — annars hade en avvikelse direktkopplad till ett objekt utan
+någon orsak ännu visat ingenting, ett synligt hål.
+
+**Extensibel färg-per-kopplingstyp (INTE hårdkodad):** nya konstanter i
+pid_viewer.py — `TREE_CONTEXT_LINK_COLORS` (dict `'deviation'|'cause'|
+'consequence'|'safeguard'` → `QColor`, alla grönt idag),
+`TREE_CONTEXT_LINK_PRIORITY` (avgör vilken färg som vinner om ett objekt
+har flera kopplingstyper samtidigt — just nu overksynligt, men en
+explicit, en-rads-omflyttningsbar ordning istället för att blanda
+färger) och `resolve_tree_context_color(link_types)`. Att senare ge
+orsak/konsekvens/safeguard olika färger blir en ändring av bara denna
+dict — traverseringen och rit-koden rör sig inte.
+
+**Ny, visuellt distinkt highlight i pid_graphics_view.py:** en SEPARAT
+overlay (`set_tree_context_highlights`/`_reapply_tree_context_
+highlights`, mönster kopierat från den befintliga multi-select-
+highlighten `_select_equipment_marker`), inte en mutation av markörens
+egen penna (som redan betyder "har avvikelser" via grönt) — en
+solid-konturerad halo-ellips vid `Z_OVERLAY+3`, strikt UNDER
+multi-select-rektangeln (`Z_OVERLAY+5`, streckad) så en markör som är
+både trädkontext-highlightad OCH multi-vald visar båda samtidigt utan
+att de flyter ihop.
+
+**Tvådelad cache i PIDPanel** (pid_panel_mod.py): `set_tree_context
+(type_, id_)` gör den dyra DB-trädvandringen ENDAST vid faktiskt
+trädvalbyte (anropas från `MainWindow._on_selected`); `_apply_tree_
+context_highlight()` gör den billiga om-mappningen (cachad
+`equipment_id → färg` mot vilka `equipment_markers`-rader som faktiskt
+finns just nu) — anropas dessutom vid varje `_load_overlays()`-körning
+(sidbyte, redigering) utan ny DB-trädvandring.
+
+**Ny gren för SYSTEM_T:** `MainWindow._on_selected` hade INGEN hantering
+alls för att välja ett System i trädet innan denna ändring — lades till
+(`pid_panel.clear_active_selection()`, samma städning varje annan gren
+redan gör). `_on_scenario_item_edited` tvingar en ny (dyr) omräkning
+(inte bara den billiga remappningen) eftersom en redigering kan ha
+ändrat själva tagg-datan scope beror på; `_on_structure_changed` släcker
+highlighten helt (`set_tree_context(None, None)`).
+
+**Verifiering:** `EquipmentLinkTypesInScopeTests` (10 tester,
+tests/test_database.py — varje trädnivå, tagged_refs-fullständighet,
+avvikelsens egen equipment_id, omatchbar fritext-tagg, frågeantal-
+regressionsskydd), `TreeContextHighlightTests` (6 tester,
+tests/test_pid_graphics_view.py — overlay ritas/ersätts, samexisterar
+synligt skilt från multi-select, överlever omritning), `TreeContext
+HighlightPanelTests` (3 tester, tests/test_pid_panel_mod.py — rätt
+`equipment_id`→flera `marker_id`, och att en ren overlay-omritning INTE
+kör om DB-trädvandringen — bevisar tvådelningen), `TreeContextHighlight
+EndToEndTests` (5 tester, tests/test_integration.py — Nod-val
+highlightar allt under den, Konsekvens-val exkluderar förälderns objekt,
+byte av val släcker det gamla, det nya System-valet, och ett fullt
+tagged_refs-scenario). `test_smoke` + samtliga berörda moduler samt
+hela 14-filssviten (1012 test) gröna (en känd, redan dokumenterad
+icke-deterministisk `BackupSystemTests`-flakighet sågs en gång,
+bekräftad orelaterad genom omkörning).
+
 ## Kända begränsningar och tekniska skulder
 
 - **Full `test_regression.py`-körning kan hänga i EN GUI-skapande test, position varierar mellan körningar** (2026-08-13, sett två gånger samma dag: en gång i `RiskCellActualRenderColorTests`, en gång i `EquipmentDropOnTreeDeviationTests` — båda helt orelaterade testklasser till den ändring som pågick) — misstänkt resursuttömning (Windows fönsterhandtag/native-widgets) efter tillräckligt många sekventiella riktiga Qt-widget-skapelser i denna miljö (Python 3.14 + PyQt6), inte reproducerbart isolerat eller i mindre testgrupper. Innan en framtida hängning antas vara en regression: kör den specifika testklassen den hänger i separat (`python -m unittest test_regression.<KlassNamn>`) — den passerar nästan garanterat direkt.

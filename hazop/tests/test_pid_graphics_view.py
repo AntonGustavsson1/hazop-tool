@@ -462,6 +462,129 @@ class EquipmentPlainClickHighlightTests(unittest.TestCase):
         self.assertEqual(view._equip_selection_overlays, {})
 
 
+class TreeContextHighlightTests(unittest.TestCase):
+    """set_tree_context_highlights (2026-08-27, see NOTES.md "Dynamisk
+    färgmarkering av objekt på P&ID") — the rendering half of the
+    tree-context P&ID highlight feature. Deliberately a SEPARATE overlay
+    from the dashed-blue multi-select rectangle (EquipmentMultiSelectTests
+    above), not a mutation of the marker's own pen/brush, so the two can
+    coexist on one marker without fighting over the same visual."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def _make_view_with_markers(self, marker_positions):
+        from pid_viewer import PIDGraphicsView, MODE_NAV
+        view = PIDGraphicsView()
+        view.mode = MODE_NAV
+        items = {}
+        for marker_id, pos in marker_positions.items():
+            item = view._scene.addEllipse(pos.x() - 5, pos.y() - 5, 10, 10)
+            item.setData(view._DATA_TYPE, 'equipment')
+            item.setData(view._DATA_ID, marker_id)
+            view._type_items.setdefault('equipment', []).append(item)
+            items[marker_id] = item
+        return view, items
+
+    def test_set_tree_context_highlights_draws_overlay_for_matching_marker(self):
+        from PyQt6.QtCore import QPointF
+        from PyQt6.QtGui import QColor
+        view, _items = self._make_view_with_markers({7: QPointF(50, 50)})
+        color = QColor(0, 200, 0)
+
+        view.set_tree_context_highlights({7: color})
+
+        self.assertEqual(view._tree_context_highlights, {7: color})
+        self.assertIn(7, view._tree_context_highlight_overlays)
+
+    def test_set_tree_context_highlights_replaces_previous_set(self):
+        """"objekt som inte längre tillhör aktuell kontext ska återgå
+        till sin normala färg" — a fresh call must drop anything not in
+        the new map, not accumulate."""
+        from PyQt6.QtCore import QPointF
+        from PyQt6.QtGui import QColor
+        view, _items = self._make_view_with_markers({
+            1: QPointF(10, 10), 2: QPointF(90, 90),
+        })
+        color = QColor(0, 200, 0)
+
+        view.set_tree_context_highlights({1: color})
+        self.assertIn(1, view._tree_context_highlight_overlays)
+
+        view.set_tree_context_highlights({2: color})
+        self.assertNotIn(1, view._tree_context_highlight_overlays,
+            "marker 1 must be un-highlighted once it's out of scope")
+        self.assertIn(2, view._tree_context_highlight_overlays)
+
+    def test_tree_context_highlight_coexists_with_multiselect_visually_distinct(self):
+        from PyQt6.QtCore import QPointF
+        from PyQt6.QtGui import QColor
+        from pid_viewer import Z_OVERLAY
+        view, _items = self._make_view_with_markers({7: QPointF(50, 50)})
+
+        view._select_equipment_marker(7)
+        view.set_tree_context_highlights({7: QColor(0, 200, 0)})
+
+        self.assertIn(7, view._equip_selection_overlays)
+        self.assertIn(7, view._tree_context_highlight_overlays)
+        # Multi-select (dashed rect) must sit strictly above the
+        # tree-context halo (solid ellipse) so both stay visible/legible
+        # on the same marker at once.
+        self.assertGreater(view._equip_selection_overlays[7].zValue(),
+                            view._tree_context_highlight_overlays[7].zValue())
+        self.assertGreaterEqual(view._tree_context_highlight_overlays[7].zValue(), Z_OVERLAY)
+
+    def test_reapply_tree_context_highlights_survives_marker_rebuild(self):
+        from PyQt6.QtCore import QPointF
+        from PyQt6.QtGui import QColor
+        view, items = self._make_view_with_markers({7: QPointF(50, 50)})
+        color = QColor(0, 200, 0)
+        view.set_tree_context_highlights({7: color})
+        self.assertIn(7, view._tree_context_highlight_overlays)
+
+        # Simulate clear_overlays() + marker rebuild: old overlay + old
+        # marker item both removed, a fresh marker item (same id) added.
+        view._scene.removeItem(view._tree_context_highlight_overlays[7])
+        view._scene.removeItem(items[7])
+        view._type_items['equipment'] = []
+        new_item = view._scene.addEllipse(45, 45, 10, 10)
+        new_item.setData(view._DATA_TYPE, 'equipment')
+        new_item.setData(view._DATA_ID, 7)
+        view._type_items['equipment'].append(new_item)
+
+        view._reapply_tree_context_highlights()
+
+        self.assertEqual(view._tree_context_highlights, {7: color})
+        self.assertIn(7, view._tree_context_highlight_overlays)
+
+    def test_reapply_tree_context_highlights_drops_deleted_markers(self):
+        from PyQt6.QtCore import QPointF
+        from PyQt6.QtGui import QColor
+        view, items = self._make_view_with_markers({7: QPointF(50, 50)})
+        view.set_tree_context_highlights({7: QColor(0, 200, 0)})
+
+        view._scene.removeItem(view._tree_context_highlight_overlays[7])
+        view._scene.removeItem(items[7])
+        view._type_items['equipment'] = []   # marker 7 genuinely gone now
+
+        view._reapply_tree_context_highlights()
+
+        self.assertEqual(view._tree_context_highlights, {})
+        self.assertEqual(view._tree_context_highlight_overlays, {})
+
+    def test_clear_tree_context_highlights_removes_everything(self):
+        from PyQt6.QtCore import QPointF
+        from PyQt6.QtGui import QColor
+        view, _items = self._make_view_with_markers({1: QPointF(10, 10)})
+        view.set_tree_context_highlights({1: QColor(0, 200, 0)})
+
+        view.clear_tree_context_highlights()
+
+        self.assertEqual(view._tree_context_highlights, {})
+        self.assertEqual(view._tree_context_highlight_overlays, {})
+
+
 class EquipmentMarkerThreeBadgesTests(unittest.TestCase):
     """PIDGraphicsView.add_equipment_marker draws one small numbered badge
     per non-zero counter (deviation/consequence/safeguard) — see

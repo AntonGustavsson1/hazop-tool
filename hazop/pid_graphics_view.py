@@ -116,6 +116,14 @@ class PIDGraphicsView(QGraphicsView):
         # of a >=2-member selection then drags the whole group.
         self._selected_equipment_markers: set = set()
         self._equip_selection_overlays: dict = {}   # marker_id -> highlight QGraphicsItem
+        # Tree-context equipment highlight (2026-08-27, see NOTES.md
+        # "Dynamisk färgmarkering av objekt på P&ID") — separate from the
+        # multi-select state just above; a marker can be both multi-
+        # selected AND tree-context-highlighted at once (see
+        # set_tree_context_highlights()'s docstring for the visual
+        # layering that keeps the two unambiguous).
+        self._tree_context_highlights: dict = {}          # marker_id -> QColor
+        self._tree_context_highlight_overlays: dict = {}  # marker_id -> highlight QGraphicsItem
         self._ctrl_rband_start_scene  = None
         self._ctrl_rband_dragging     = False
         self._ctrl_rband_preview_item = None
@@ -1714,6 +1722,73 @@ class PIDGraphicsView(QGraphicsView):
         for marker_id in ids:
             if self._find_equipment_item(marker_id) is not None:
                 self._select_equipment_marker(marker_id)
+
+    # ── Tree-context equipment highlight (2026-08-27, see NOTES.md
+    # "Dynamisk färgmarkering av objekt på P&ID") ──────────────────────────
+    def set_tree_context_highlights(self, marker_color_map: dict):
+        """Replace the WHOLE tree-context highlight set in one call — the
+        caller (PIDPanel._apply_tree_context_highlight) always recomputes
+        the full marker_id->QColor map from scratch on every tree
+        selection change rather than diffing against the previous one;
+        scope size is small enough that this is far simpler than tracking
+        incremental adds/removes across arbitrary tree navigation, and it
+        naturally satisfies "objekt som inte längre tillhör aktuell
+        kontext ska återgå till sin normala färg" — anything not in the
+        new map just never gets redrawn.
+
+        Deliberately a SEPARATE overlay from _select_equipment_marker's
+        dashed-blue multi-select rectangle, not a mutation of the
+        marker's own pen/brush (which already means something else —
+        "has ≥1 deviation") — the two can coexist on the same marker:
+        this draws a solid-outline halo ellipse (no dash, larger, filled
+        at low alpha) at Z_OVERLAY+3, strictly BELOW the multi-select
+        rectangle at Z_OVERLAY+5, so an actively multi-selected marker
+        still shows its familiar dashed blue rect on top of a green glow
+        underneath rather than the two competing for the same ring."""
+        for marker_id in list(self._tree_context_highlight_overlays.keys()):
+            self._clear_one_tree_context_highlight(marker_id)
+        self._tree_context_highlights = dict(marker_color_map)
+        for marker_id, color in self._tree_context_highlights.items():
+            self._draw_tree_context_highlight(marker_id, color)
+
+    def _draw_tree_context_highlight(self, marker_id, color: QColor):
+        item = self._find_equipment_item(marker_id)
+        if item is None:
+            return
+        rect = item.mapRectToScene(item.boundingRect()).adjusted(-6, -6, 6, 6)
+        pen = QPen(color, 3.0)
+        pen.setCosmetic(True)
+        fill = QColor(color)
+        fill.setAlpha(60)
+        overlay = self._scene.addEllipse(rect, pen, QBrush(fill))
+        overlay.setZValue(Z_OVERLAY + 3)
+        self._tree_context_highlight_overlays[marker_id] = overlay
+
+    def _clear_one_tree_context_highlight(self, marker_id):
+        overlay = self._tree_context_highlight_overlays.pop(marker_id, None)
+        if overlay is not None:
+            try: self._scene.removeItem(overlay)
+            except RuntimeError as e: logging.warning(f"Failed to remove tree-context highlight: {e}")
+
+    def clear_tree_context_highlights(self):
+        for marker_id in list(self._tree_context_highlight_overlays.keys()):
+            self._clear_one_tree_context_highlight(marker_id)
+        self._tree_context_highlights = {}
+
+    def _reapply_tree_context_highlights(self):
+        """Mirrors _reapply_equipment_selection_overlays exactly — same
+        reason: clear_overlays() (called on every PIDPanel._load_overlays()
+        run) removes any scene item whose zValue falls in the overlay
+        range, including these plain addEllipse() items, so they must be
+        redrawn from the persisted marker_id->color map after every full
+        marker rebuild rather than surviving on their own."""
+        saved = dict(self._tree_context_highlights)
+        self._tree_context_highlight_overlays.clear()
+        self._tree_context_highlights = {}
+        for marker_id, color in saved.items():
+            if self._find_equipment_item(marker_id) is not None:
+                self._tree_context_highlights[marker_id] = color
+                self._draw_tree_context_highlight(marker_id, color)
 
     def _equipment_markers_in_rect(self, band_rect):
         """Return equipment_markers.id values whose scene bounding rect

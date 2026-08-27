@@ -61,7 +61,7 @@ for _p in (_HAZOP_DIR, _TEST_DIR):
 import hazop  # noqa: E402  (import after sys.path setup, by design)
 from hazop import (  # noqa: E402
     Database, TreePanel, MainWindow,
-    NODE_T, DEV_T, CAUSE_T, CONS_T, SG_T, EQUIP_T, LEDORD_T,
+    NODE_T, DEV_T, CAUSE_T, CONS_T, SG_T, EQUIP_T, LEDORD_T, SYSTEM_T,
     freq_to_idx,
 )
 from PyQt6.QtWidgets import (  # noqa: E402
@@ -80,7 +80,7 @@ from equipment_detection import COMPONENT_TYPES  # noqa: E402
 
 from test_helpers import (
     _ensure_qapp, _menu_action_labels, _fake_pdf_loaded,
-    _TempDbMainWindow, _find_tree_item,
+    _TempDbMainWindow, _find_tree_item, count_selects,
 )
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1347,6 +1347,202 @@ class RecommendationCatalogTests(unittest.TestCase):
         # duplicate rows created).
         self.db._migrate_actions_to_recommendations()
         self.assertEqual(len(self.db.recommendations_for_consequence(self.cons_id)), 1)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Tree-context P&ID equipment highlight (2026-08-27, see NOTES.md
+# "Dynamisk färgmarkering av objekt på P&ID") — Database.
+# equipment_link_types_in_scope(type_, id_) backs the feature: given a
+# HAZOP tree selection, find every equipment_catalog id referenced by any
+# deviation/cause/consequence/safeguard in its subtree, and via which
+# link type(s).
+# ══════════════════════════════════════════════════════════════════════════
+
+class EquipmentLinkTypesInScopeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_scope_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_equipment(self, tag, comp_type='Ventil'):
+        return self.db.add_equipment_item(tag, tag, tag[0], 0, comp_type, '', 0)
+
+    def _make_chain(self, node_id, cause_equipment_id=None, cons_tags=(), sg_tags=()):
+        """One deviation/cause/consequence/safeguard under node_id. Tags
+        given as (comp_tag, tagged_refs_csv) pairs, so a test can exercise
+        both the current tag and the drag-history in one call."""
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        if cause_equipment_id is not None:
+            self.db.conn.execute(
+                "UPDATE causes SET equipment_id=? WHERE id=?", (cause_equipment_id, cause_id))
+        cons_id = self.db.add_consequence(cause_id)
+        if cons_tags:
+            comp_tag, tagged_refs = cons_tags
+            self.db.conn.execute(
+                "UPDATE consequences SET comp_tag=?, tagged_refs=? WHERE id=?",
+                (comp_tag, tagged_refs, cons_id))
+        sg_id = self.db.add_safeguard(cons_id)
+        if sg_tags:
+            comp_tag, tagged_refs = sg_tags
+            self.db.conn.execute(
+                "UPDATE safeguards SET comp_tag=?, tagged_refs=? WHERE id=?",
+                (comp_tag, tagged_refs, sg_id))
+        self.db.commit()
+        return dev_id, cause_id, cons_id, sg_id
+
+    def test_scope_system_level_includes_every_node_cause_consequence_safeguard(self):
+        sys_id = self.db.add_system("Sys A")
+        node_a = self.db.add_node(system_id=sys_id)
+        node_b = self.db.add_node(system_id=sys_id)
+        eq_a = self._make_equipment("V-1")
+        eq_b = self._make_equipment("V-2")
+        self._make_chain(node_a, cause_equipment_id=eq_a)
+        self._make_chain(node_b, cause_equipment_id=eq_b)
+
+        scope = self.db.equipment_link_types_in_scope(SYSTEM_T, sys_id)
+        self.assertEqual(set(scope.keys()), {eq_a, eq_b})
+
+    def test_scope_node_level_excludes_other_nodes(self):
+        node_a = self.db.add_node()
+        node_b = self.db.add_node()
+        eq_a = self._make_equipment("V-1")
+        eq_b = self._make_equipment("V-2")
+        self._make_chain(node_a, cause_equipment_id=eq_a)
+        self._make_chain(node_b, cause_equipment_id=eq_b)
+
+        scope = self.db.equipment_link_types_in_scope(NODE_T, node_a)
+        self.assertEqual(set(scope.keys()), {eq_a})
+
+    def test_scope_deviation_level_excludes_sibling_deviations(self):
+        node_id = self.db.add_node()
+        devs = self.db.deviations(node_id)
+        dev_a, dev_b = devs[0]['id'], devs[1]['id']
+        eq_a = self._make_equipment("V-1")
+        eq_b = self._make_equipment("V-2")
+        cause_a = self.db.add_cause(dev_a)
+        self.db.conn.execute("UPDATE causes SET equipment_id=? WHERE id=?", (eq_a, cause_a))
+        cause_b = self.db.add_cause(dev_b)
+        self.db.conn.execute("UPDATE causes SET equipment_id=? WHERE id=?", (eq_b, cause_b))
+        self.db.commit()
+
+        scope = self.db.equipment_link_types_in_scope(DEV_T, dev_a)
+        self.assertEqual(set(scope.keys()), {eq_a})
+
+    def test_scope_cause_level_includes_own_and_descendant_links_only(self):
+        """"Objekt-nivå" (Anton's decision): selecting a Cause row
+        includes its own object AND its own consequences'/safeguards'
+        tagged objects, but not a sibling cause's object."""
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        eq_a = self._make_equipment("V-1")
+        eq_b = self._make_equipment("P-1", "Pump")
+        eq_sibling = self._make_equipment("T-1", "Tank")
+
+        cause_a = self.db.add_cause(dev_id)
+        self.db.conn.execute("UPDATE causes SET equipment_id=? WHERE id=?", (eq_a, cause_a))
+        cons_a = self.db.add_consequence(cause_a)
+        self.db.conn.execute(
+            "UPDATE consequences SET comp_tag='P-1' WHERE id=?", (cons_a,))
+        self.db.commit()
+
+        cause_sibling = self.db.add_cause(dev_id)
+        self.db.conn.execute(
+            "UPDATE causes SET equipment_id=? WHERE id=?", (eq_sibling, cause_sibling))
+        self.db.commit()
+
+        scope = self.db.equipment_link_types_in_scope(CAUSE_T, cause_a)
+        self.assertEqual(set(scope.keys()), {eq_a, eq_b})
+        self.assertIn('cause', scope[eq_a])
+        self.assertIn('consequence', scope[eq_b])
+
+    def test_scope_consequence_level_excludes_parent_cause(self):
+        node_id = self.db.add_node()
+        eq_cause = self._make_equipment("V-1")
+        eq_cons = self._make_equipment("P-1", "Pump")
+        _dev, cause_id, cons_id, _sg = self._make_chain(
+            node_id, cause_equipment_id=eq_cause, cons_tags=("P-1", ""))
+
+        scope = self.db.equipment_link_types_in_scope(CONS_T, cons_id)
+        self.assertEqual(set(scope.keys()), {eq_cons},
+            "the parent cause's own object must NOT bleed into a "
+            "Consequence-level selection — scope only ever flows downward")
+
+    def test_scope_matches_every_tagged_refs_entry_not_just_latest(self):
+        """Anton's decision #2: match every historically-dragged tag
+        (tagged_refs), not just the current comp_tag."""
+        node_id = self.db.add_node()
+        eq_old = self._make_equipment("V-1")
+        eq_mid = self._make_equipment("P-1", "Pump")
+        eq_latest = self._make_equipment("T-1", "Tank")
+        _dev, _cause, cons_id, _sg = self._make_chain(
+            node_id, cons_tags=("T-1", "V-1,P-1,T-1"))
+
+        scope = self.db.equipment_link_types_in_scope(CONS_T, cons_id)
+        self.assertEqual(set(scope.keys()), {eq_old, eq_mid, eq_latest})
+        for eq_id in (eq_old, eq_mid, eq_latest):
+            self.assertIn('consequence', scope[eq_id])
+
+    def test_scope_deviation_own_equipment_id_returns_link_type_deviation(self):
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        eq_id = self._make_equipment("V-1")
+        self.db.conn.execute(
+            "UPDATE deviations SET equipment_id=? WHERE id=?", (eq_id, dev_id))
+        self.db.commit()
+
+        scope = self.db.equipment_link_types_in_scope(DEV_T, dev_id)
+        self.assertEqual(scope, {eq_id: {'deviation'}})
+
+    def test_scope_unresolvable_free_text_tag_is_skipped_not_error(self):
+        node_id = self.db.add_node()
+        _dev, _cause, cons_id, _sg = self._make_chain(
+            node_id, cons_tags=("DOES-NOT-EXIST", ""))
+        try:
+            scope = self.db.equipment_link_types_in_scope(CONS_T, cons_id)
+        except Exception as e:
+            self.fail(f"an unresolvable free-text tag must be skipped, not raise: {e!r}")
+        self.assertEqual(scope, {})
+
+    def test_scope_unknown_or_missing_selection_returns_empty(self):
+        self.assertEqual(self.db.equipment_link_types_in_scope(NODE_T, None), {})
+        self.assertEqual(self.db.equipment_link_types_in_scope(NODE_T, 999999), {})
+        self.assertEqual(self.db.equipment_link_types_in_scope(EQUIP_T, 1), {})
+
+    def test_scope_query_count_is_bounded_for_a_large_system(self):
+        """Regression guard, same discipline as TreePanel.refresh()'s own
+        N+1 fix (see test_tree_panel.py) — SELECT count must not scale
+        linearly with subtree size."""
+        sys_id = self.db.add_system("Big system")
+
+        def build(n_nodes):
+            for _ in range(n_nodes):
+                node_id = self.db.add_node(system_id=sys_id)
+                dev_id = self.db.deviations(node_id)[0]['id']
+                cause_id = self.db.add_cause(dev_id)
+                self.db.add_consequence(cause_id)
+
+        build(2)
+        small_count = count_selects(
+            self.db, lambda: self.db.equipment_link_types_in_scope(SYSTEM_T, sys_id))
+
+        build(20)
+        large_count = count_selects(
+            self.db, lambda: self.db.equipment_link_types_in_scope(SYSTEM_T, sys_id))
+
+        self.assertLess(large_count, small_count + 5,
+            f"SELECT count grew with subtree size ({small_count} -> "
+            f"{large_count}) — the batched traversal may have regressed to N+1")
 
 
 if __name__ == "__main__":

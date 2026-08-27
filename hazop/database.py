@@ -9,7 +9,10 @@ import sqlite3
 import datetime
 from pathlib import Path
 
-from constants import DEVIATION_TYPES, _app_dir
+from constants import (
+    DEVIATION_TYPES, _app_dir,
+    NODE_T, CAUSE_T, CONS_T, SG_T, DEV_T, SYSTEM_T,
+)
 
 
 def append_tag_to_text(description: str, tag: str) -> str:
@@ -3352,6 +3355,133 @@ class Database:
     def safeguards_for_consequences(self, consequence_ids):
         """Bulk version of safeguards() — see _fetch_grouped."""
         return self._fetch_grouped('safeguards', 'consequence_id', consequence_ids)
+
+    def _equipment_id_for_tag(self, tag, cache):
+        """Resolve a free-text tag string to an equipment_catalog id via
+        get_equipment_by_tag(), memoized in `cache` (a plain dict passed
+        in by the caller) so a tag repeated across many rows in one
+        equipment_link_types_in_scope() call only issues one query."""
+        tag = (tag or '').strip()
+        if not tag:
+            return None
+        if tag not in cache:
+            eq = self.get_equipment_by_tag(tag)
+            cache[tag] = eq['id'] if eq else None
+        return cache[tag]
+
+    def _tags_for_row(self, row):
+        """Every tag string a consequence/safeguard row references: its
+        current comp_tag plus every tag ever drag-appended into it
+        (tagged_refs) — 2026-08-27, see NOTES.md "Dynamisk färgmarkering
+        av objekt på P&ID": comp_tag alone only ever holds the MOST
+        RECENT drag, tagged_refs is the full history."""
+        tags = set(parse_tag_refs(row.get('tagged_refs') or ''))
+        comp_tag = (row.get('comp_tag') or '').strip()
+        if comp_tag:
+            tags.add(comp_tag)
+        return tags
+
+    def equipment_link_types_in_scope(self, type_, id_):
+        """Every equipment_catalog id "in scope" of the given HAZOP tree
+        selection, and via which link type(s) it was found there —
+        {equipment_id: {'deviation'|'cause'|'consequence'|'safeguard', ...}}.
+
+        Backs the P&ID's tree-context highlight (2026-08-27, see
+        NOTES.md "Dynamisk färgmarkering av objekt på P&ID"). ONE
+        recursive rule for every selectable tree level — scope(System) =
+        union of scope(its Nodes), scope(Node) = union of scope(its
+        Deviations), scope(Deviation) = its own direct equipment_id (if
+        any) + union of scope(its Causes), scope(Cause) = its own
+        equipment (equipment_id, else comp_tag) + union of scope(its
+        Consequences), scope(Consequence) = its own tags (comp_tag +
+        tagged_refs) + union of scope(its Safeguards), scope(Safeguard)
+        = its own tags only. Selecting a Cause therefore highlights that
+        cause's object AND everything tagged on its own consequences/
+        safeguards, but a Consequence's own selection does NOT pull in
+        its parent cause's object — the scope only ever flows downward.
+
+        Implemented as a batched top-down traversal (same shape
+        TreePanel.refresh() already uses to build the whole tree in a
+        handful of queries — deviations_for_nodes/causes_for_deviations/
+        consequences_for_causes/safeguards_for_consequences, all
+        _fetch_grouped-based) rather than naive per-row recursion, so the
+        query count stays bounded regardless of subtree size. Always
+        walks causes via their deviation (never the redundant, ok-to-
+        drift causes.node_id-direct / causes_for_node_all-via-deviations
+        pair — see NOTES.md), matching exactly what the tree itself
+        displays."""
+        result: dict = {}
+        if id_ is None:
+            return result
+        tag_cache: dict = {}
+
+        def add_link(equipment_id, link_type):
+            if equipment_id is not None:
+                result.setdefault(equipment_id, set()).add(link_type)
+
+        def collect_deviation(dev):
+            eq_id = dev.get('equipment_id')
+            if eq_id is not None:
+                add_link(eq_id, 'deviation')
+
+        def collect_cause(cause):
+            eq_id = cause.get('equipment_id')
+            if eq_id is not None:
+                add_link(eq_id, 'cause')
+            else:
+                add_link(self._equipment_id_for_tag(cause.get('comp_tag'), tag_cache), 'cause')
+
+        def collect_consequence_or_safeguard(row, link_type):
+            for tag in self._tags_for_row(row):
+                add_link(self._equipment_id_for_tag(tag, tag_cache), link_type)
+
+        dev_rows = cause_rows = cons_rows = sg_rows = None
+
+        if type_ == SYSTEM_T:
+            node_ids = [n['id'] for n in self.nodes() if n['system_id'] == id_]
+            devs_by_node = self.deviations_for_nodes(node_ids)
+            dev_rows = [dict(d) for devs in devs_by_node.values() for d in devs]
+        elif type_ == NODE_T:
+            devs_by_node = self.deviations_for_nodes([id_])
+            dev_rows = [dict(d) for d in devs_by_node.get(id_, [])]
+        elif type_ == DEV_T:
+            dev = self.get_deviation(id_)
+            dev_rows = [dev] if dev else []
+        elif type_ == CAUSE_T:
+            cause = self.get_cause(id_)
+            cause_rows = [cause] if cause else []
+        elif type_ == CONS_T:
+            cons = self.get_consequence(id_)
+            cons_rows = [cons] if cons else []
+        elif type_ == SG_T:
+            sg = self.get_safeguard(id_)
+            sg_rows = [sg] if sg else []
+        else:
+            return result
+
+        if dev_rows is not None:
+            for dev in dev_rows:
+                collect_deviation(dev)
+            causes_by_dev = self.causes_for_deviations([d['id'] for d in dev_rows])
+            cause_rows = [dict(c) for causes in causes_by_dev.values() for c in causes]
+
+        if cause_rows is not None:
+            for cause in cause_rows:
+                collect_cause(cause)
+            cons_by_cause = self.consequences_for_causes([c['id'] for c in cause_rows])
+            cons_rows = [dict(k) for conss in cons_by_cause.values() for k in conss]
+
+        if cons_rows is not None:
+            for cons in cons_rows:
+                collect_consequence_or_safeguard(cons, 'consequence')
+            sgs_by_cons = self.safeguards_for_consequences([k['id'] for k in cons_rows])
+            sg_rows = [dict(s) for sgs in sgs_by_cons.values() for s in sgs]
+
+        if sg_rows is not None:
+            for sg in sg_rows:
+                collect_consequence_or_safeguard(sg, 'safeguard')
+
+        return result
 
     def causes_for_node_excluding_deviation(self, node_id, deviation_id):
         """Return causes for the node that belong to OTHER deviations (for reuse dialog)."""

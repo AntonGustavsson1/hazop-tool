@@ -731,6 +731,40 @@ Z_CONNECT    = 3   # HAZOP cause/consequence/safeguard lines
 Z_OVERLAY    = 5
 Z_TEMP       = 10
 
+# ── Tree-context equipment highlight (2026-08-27, see NOTES.md "Dynamisk
+# färgmarkering av objekt på P&ID") — maps a link type (how an equipment
+# object was found "in scope" of the current HAZOP tree selection) to a
+# highlight color. Every entry points at the same green today; adding a
+# distinct color for e.g. safeguard-linked objects later is a one-line
+# change here, not a rewrite of the traversal (Database.
+# equipment_link_types_in_scope) or the rendering code
+# (PIDGraphicsView.set_tree_context_highlights).
+TREE_CONTEXT_LINK_COLORS = {
+    'deviation':   QColor(0, 200, 0),
+    'cause':       QColor(0, 200, 0),
+    'consequence': QColor(0, 200, 0),
+    'safeguard':   QColor(0, 200, 0),
+}
+TREE_CONTEXT_HIGHLIGHT_DEFAULT = QColor(0, 200, 0)   # fallback for an unknown link type
+
+# When one equipment object has several link types in scope at once
+# (e.g. tagged on both a cause and one of its safeguards), this priority
+# order picks which single color wins — first match wins. Currently
+# unobservable (every link type maps to the same green above), ordered
+# "most specific protective role first" so it's a sane default the
+# moment colors actually diverge.
+TREE_CONTEXT_LINK_PRIORITY = ('safeguard', 'consequence', 'cause', 'deviation')
+
+
+def resolve_tree_context_color(link_types) -> QColor:
+    """link_types: a set of 'deviation'|'cause'|'consequence'|'safeguard'
+    strings (see Database.equipment_link_types_in_scope) -> the single
+    QColor to highlight that equipment object with."""
+    for lt in TREE_CONTEXT_LINK_PRIORITY:
+        if lt in link_types:
+            return TREE_CONTEXT_LINK_COLORS.get(lt, TREE_CONTEXT_HIGHLIGHT_DEFAULT)
+    return TREE_CONTEXT_HIGHLIGHT_DEFAULT
+
 
 class PDFVectorItem(QGraphicsItem):
     """Renders a PDF page as pure vector — crisp at any zoom.

@@ -35,6 +35,7 @@ from equipment_detection import (
 from ui_helpers import _equipment_type_options, _make_tag_completer
 from pid_viewer import (
     fitz, CONFIG, HAS_PYMUPDF, Z_TEMP,
+    resolve_tree_context_color,
     MODE_NAV, MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE,
     MODE_MARKUP_TEXT, MODE_MARKUP_COMMENT, MODE_MARKUP_SELECT,
     MODE_RED_MARKUP_SYMBOL, MODE_BOARD_LAYOUT,
@@ -1196,6 +1197,17 @@ class PIDPanel(QWidget):
         self._active_cause_id             = None
         self._active_consequence_id       = None
         self._active_deviation_id         = None   # kept in sync with the current tree selection
+        # Tree-context equipment highlight (2026-08-27, see NOTES.md
+        # "Dynamisk färgmarkering av objekt på P&ID") — two-tier cache:
+        # _tree_scope_colors (equipment_id -> QColor) is only recomputed
+        # by set_tree_context() when the tree selection itself changes
+        # (one DB tree-walk); _apply_tree_context_highlight() re-maps that
+        # same cache onto whichever markers currently exist on-screen,
+        # cheaply, on every overlay reload too (page switch, edit) — see
+        # both methods' own docstrings below.
+        self._tree_scope_type             = None
+        self._tree_scope_id               = None
+        self._tree_scope_colors: dict     = {}
         self._active_markup_class         = 'node' # 'node' or 'red'
         self._active_symbol_id            = None   # set when red markup symbol tool selected
         self._pending_markup_pts          = None
@@ -2878,6 +2890,16 @@ class PIDPanel(QWidget):
         # Reapply LOD so newly added items get correct visibility at current zoom
         self.viewer._apply_lod(self.viewer.transform().m11(), force=True)
         self.viewer._reapply_equipment_selection_overlays()
+        # Tree-context highlight (2026-08-27, see NOTES.md) — the cheap
+        # remap step, not a DB tree-walk: re-maps the already-cached
+        # equipment_id->color scope onto whichever equipment_markers rows
+        # exist now. Deliberately NOT also calling
+        # viewer._reapply_tree_context_highlights() here — that method
+        # exists as a defensive/directly-testable primitive on the view,
+        # but _apply_tree_context_highlight() already fully replaces the
+        # view's highlight set via set_tree_context_highlights(), so
+        # invoking both would just be redundant work.
+        self._apply_tree_context_highlight()
 
     def reload_overlays(self):
         """Public helper to refresh all P&ID markers and connection lines."""
@@ -3462,6 +3484,51 @@ class PIDPanel(QWidget):
             cause = self.db.get_cause(cause_id)
             if cause:
                 self._active_node_id = dict(cause).get('node_id')
+
+    # ── Tree-context equipment highlight (2026-08-27, see NOTES.md
+    # "Dynamisk färgmarkering av objekt på P&ID") ──────────────────────────
+    def set_tree_context(self, type_, id_):
+        """Called by MainWindow._on_selected on every tree selection
+        change (any of NODE_T/DEV_T/CAUSE_T/CONS_T/SG_T/SYSTEM_T, or
+        (None, None) to clear) — the EXPENSIVE half of the two-tier
+        cache: one DB tree-walk (Database.equipment_link_types_in_scope)
+        to find which equipment is in scope and via which link type(s),
+        then one QColor lookup per equipment id
+        (pid_viewer.resolve_tree_context_color). Also re-run when the
+        underlying tag data itself might have changed under an unchanged
+        selection (MainWindow._on_scenario_item_edited) — cheap enough
+        for a single scope to redo on every edit, unlike a full tree
+        walk of the whole study."""
+        self._tree_scope_type, self._tree_scope_id = type_, id_
+        if id_ is None:
+            self._tree_scope_colors = {}
+        else:
+            link_types_by_equipment = self.db.equipment_link_types_in_scope(type_, id_)
+            self._tree_scope_colors = {
+                eq_id: resolve_tree_context_color(link_types)
+                for eq_id, link_types in link_types_by_equipment.items()
+            }
+        self._apply_tree_context_highlight()
+
+    def _apply_tree_context_highlight(self):
+        """The CHEAP half of the two-tier cache — no DB tree-walk. Re-maps
+        the already-cached equipment_id->color scope (_tree_scope_colors,
+        set by set_tree_context() above) onto whichever equipment_markers
+        rows exist on currently-active pages right now, using the exact
+        same per-page equipment_markers_for_page() query _load_overlays()
+        already issues — safe/cheap to call after every overlay rebuild
+        (page switch, edit) even when the tree selection itself hasn't
+        changed, since equipment_markers.equipment_id is the DB's own
+        source of truth for which marker belongs to which object (no
+        separate id-mapping index to keep in sync)."""
+        marker_color_map = {}
+        if self._tree_scope_colors:
+            for page in self.viewer._all_page_items.keys():
+                for m in self.db.equipment_markers_for_page(page):
+                    eq_id = m['equipment_id']
+                    if eq_id in self._tree_scope_colors:
+                        marker_color_map[m['id']] = self._tree_scope_colors[eq_id]
+        self.viewer.set_tree_context_highlights(marker_color_map)
 
     # Maps Excel category strings → component_type keys used in the app
     _CAT_TO_COMP = {

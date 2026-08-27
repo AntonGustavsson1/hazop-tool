@@ -61,7 +61,7 @@ for _p in (_HAZOP_DIR, _TEST_DIR):
 import hazop  # noqa: E402  (import after sys.path setup, by design)
 from hazop import (  # noqa: E402
     Database, TreePanel, MainWindow,
-    NODE_T, DEV_T, CAUSE_T, CONS_T, SG_T, EQUIP_T, LEDORD_T,
+    NODE_T, DEV_T, CAUSE_T, CONS_T, SG_T, EQUIP_T, LEDORD_T, SYSTEM_T,
     freq_to_idx,
 )
 from PyQt6.QtWidgets import (  # noqa: E402
@@ -1631,6 +1631,137 @@ class WipeProjectTablesTests(unittest.TestCase):
 
             self.assertEqual(win.db.all_recommendations(), [])
             self.assertEqual(win.db.consequence_categories(), [])
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 8c. Dynamisk färgmarkering av objekt på P&ID (2026-08-27, see NOTES.md) —
+#     end-to-end: MainWindow._on_selected must recompute the P&ID's
+#     tree-context highlight (pid_panel.set_tree_context) on every tree
+#     selection, including the new SYSTEM_T branch that had no handling
+#     at all before this feature.
+# ══════════════════════════════════════════════════════════════════════════
+
+class TreeContextHighlightEndToEndTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def _stub_scenario_loads(self, win):
+        """scenario_panel.load_*() ultimately hits QTableWidget.
+        resizeRowsToContents(), which reproducibly crashes under this
+        machine's headless Qt platform plugin (see
+        test_select_safeguard_in_tree_no_crash's own docstring above) —
+        unrelated to the tree-context highlight logic under test here,
+        so stubbed out the same way."""
+        win.scenario_panel.load_node = lambda *a, **k: None
+        win.scenario_panel.load_deviation = lambda *a, **k: None
+        win.scenario_panel.load_cause = lambda *a, **k: None
+        win.scenario_panel.load_consequence = lambda *a, **k: None
+
+    def _make_cause_with_equipment(self, db, node_id=None, tag='V-1'):
+        if node_id is None:
+            node_id = db.add_node()
+        dev_id = db.deviations(node_id)[0]['id']
+        eq_id = db.add_equipment_item(tag, tag, tag[0], 0, 'Ventil', '', 0)
+        cause_id = db.add_cause(dev_id)
+        db.conn.execute("UPDATE causes SET equipment_id=? WHERE id=?", (eq_id, cause_id))
+        db.commit()
+        marker_id = db.add_equipment_marker(eq_id, tag, 0, 10.0, 10.0, 'Ventil')
+        return node_id, cause_id, eq_id, marker_id
+
+    def test_selecting_node_highlights_equipment_under_it(self):
+        with _TempDbMainWindow() as win:
+            self._stub_scenario_loads(win)
+            _fake_pdf_loaded(win.pid_panel)
+            node_id, _cause_id, eq_id, marker_id = self._make_cause_with_equipment(win.db)
+
+            win._on_selected(NODE_T, node_id)
+
+            self.assertIn(marker_id, win.pid_panel.viewer._tree_context_highlights)
+
+    def test_selecting_consequence_excludes_parent_causes_object(self):
+        with _TempDbMainWindow() as win:
+            self._stub_scenario_loads(win)
+            _fake_pdf_loaded(win.pid_panel)
+            node_id, cause_id, eq_id, marker_id = self._make_cause_with_equipment(win.db)
+            cons_id = win.db.add_consequence(cause_id)
+            win.db.commit()
+
+            win._on_selected(CONS_T, cons_id)
+
+            self.assertNotIn(marker_id, win.pid_panel.viewer._tree_context_highlights,
+                "the parent cause's own object must not bleed into a "
+                "Consequence-level selection")
+
+    def test_switching_selection_unhighlights_out_of_scope_equipment(self):
+        """"Markeringen ska uppdateras direkt när användaren byter
+        position i trädet och objekt som inte längre tillhör aktuell
+        kontext ska återgå till sin normala färg" — the core requirement."""
+        with _TempDbMainWindow() as win:
+            self._stub_scenario_loads(win)
+            _fake_pdf_loaded(win.pid_panel)
+            node_a, _cause_a, _eq_a, marker_a = self._make_cause_with_equipment(win.db, tag='V-1')
+            node_b, _cause_b, _eq_b, marker_b = self._make_cause_with_equipment(win.db, tag='V-2')
+
+            win._on_selected(NODE_T, node_a)
+            self.assertIn(marker_a, win.pid_panel.viewer._tree_context_highlights)
+            self.assertNotIn(marker_b, win.pid_panel.viewer._tree_context_highlights)
+
+            win._on_selected(NODE_T, node_b)
+            self.assertNotIn(marker_a, win.pid_panel.viewer._tree_context_highlights,
+                "node A's object must be un-highlighted once selection moves away")
+            self.assertIn(marker_b, win.pid_panel.viewer._tree_context_highlights)
+
+    def test_selecting_system_highlights_everything_under_its_nodes(self):
+        """The new SYSTEM_T branch — selecting a System had NO handling
+        at all before this feature (see NOTES.md)."""
+        with _TempDbMainWindow() as win:
+            self._stub_scenario_loads(win)
+            _fake_pdf_loaded(win.pid_panel)
+            sys_id = win.db.add_system("Sys A")
+            node_a = win.db.add_node(system_id=sys_id)
+            node_b = win.db.add_node(system_id=sys_id)
+            _n, _c, _eq, marker_a = self._make_cause_with_equipment(win.db, node_id=node_a, tag='V-1')
+            _n, _c, _eq, marker_b = self._make_cause_with_equipment(win.db, node_id=node_b, tag='V-2')
+            # Set active state via a prior NODE_T selection so we can prove
+            # the SYSTEM_T branch actually clears it (clear_active_selection).
+            win._on_selected(NODE_T, node_a)
+
+            win._on_selected(SYSTEM_T, sys_id)
+
+            self.assertIn(marker_a, win.pid_panel.viewer._tree_context_highlights)
+            self.assertIn(marker_b, win.pid_panel.viewer._tree_context_highlights)
+            self.assertIsNone(win.pid_panel._active_node_id)
+            self.assertIsNone(win.pid_panel._active_cause_id)
+
+    def test_tagged_refs_historical_tag_still_highlighted_after_retag(self):
+        """End-to-end proof of Anton's decision #2: dragging tag A then
+        tag B onto the same safeguard (comp_tag becomes 'B', but
+        tagged_refs keeps 'A,B') must highlight BOTH A's and B's markers
+        once the owning Cause is selected."""
+        with _TempDbMainWindow() as win:
+            self._stub_scenario_loads(win)
+            _fake_pdf_loaded(win.pid_panel)
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            eq_a = win.db.add_equipment_item('V-1', 'V-1', 'V', 0, 'Ventil', '', 0)
+            eq_b = win.db.add_equipment_item('P-1', 'P-1', 'P', 0, 'Pump', '', 0)
+            marker_a = win.db.add_equipment_marker(eq_a, 'V-1', 0, 10.0, 10.0, 'Ventil')
+            marker_b = win.db.add_equipment_marker(eq_b, 'P-1', 0, 20.0, 20.0, 'Pump')
+            cause_id = win.db.add_cause(dev_id)
+            cons_id = win.db.add_consequence(cause_id)
+            sg_id = win.db.add_safeguard(cons_id)
+            # Drag A, then B — comp_tag ends up 'P-1' (latest), tagged_refs
+            # keeps the full history 'V-1,P-1'.
+            win.db.conn.execute(
+                "UPDATE safeguards SET comp_tag='P-1', tagged_refs='V-1,P-1' WHERE id=?",
+                (sg_id,))
+            win.db.commit()
+
+            win._on_selected(CAUSE_T, cause_id)
+
+            self.assertIn(marker_a, win.pid_panel.viewer._tree_context_highlights)
+            self.assertIn(marker_b, win.pid_panel.viewer._tree_context_highlights)
 
 
 # ══════════════════════════════════════════════════════════════════════════

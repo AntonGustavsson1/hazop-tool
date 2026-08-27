@@ -1617,6 +1617,20 @@ class MainWindow(QMainWindow):
                         self.scenario_panel.load_deviation(cause['deviation_id'])
                     else:
                         self.scenario_panel.load_consequence(cons['id'])
+        elif type_ == SYSTEM_T:
+            # SYSTEM_T had no branch at all before 2026-08-27 (see
+            # NOTES.md "Dynamisk färgmarkering av objekt på P&ID") —
+            # selecting a System still isn't a valid cause/consequence/
+            # safeguard PLACEMENT target (no scenario-table/zoom behavior
+            # added here, out of scope for that feature), but it must
+            # still clear whatever active_node/cause/consequence a
+            # previous NODE_T/CAUSE_T click left set, same as every
+            # other branch above keeps that state coherent via its own
+            # set_active_*() call.
+            self.pid_panel.clear_active_selection()
+        # Tree-context P&ID highlight (2026-08-27, see NOTES.md) —
+        # covers every branch above, including the new SYSTEM_T one.
+        self.pid_panel.set_tree_context(type_, id_)
         if type_ != NODE_T and self.props_ribbon._markup_active:
             self._on_close_node_markup()
 
@@ -1636,12 +1650,21 @@ class MainWindow(QMainWindow):
         """
         self.tree_panel.refresh(type_, id_, emit_selection=False)
         self.pid_panel.reload_overlays()
+        # Tree-context highlight (2026-08-27, see NOTES.md) — the edit
+        # itself may have changed the very tag data the highlight scope
+        # depends on (e.g. dragging a new object tag onto this
+        # consequence/safeguard), so force the expensive recompute
+        # (set_tree_context), not just reload_overlays()'s own cheap
+        # remap, even though the tree selection (self._cur_type/_cur_id)
+        # itself hasn't changed.
+        self.pid_panel.set_tree_context(self._cur_type, self._cur_id)
 
     def _on_structure_changed(self):
         self._cur_type = None
         self._cur_id   = None
         self.scenario_panel.clear()
         self.pid_panel.clear_active_selection()
+        self.pid_panel.set_tree_context(None, None)
         self.pid_panel.reload_overlays()
         if self.props_ribbon._markup_active:
             self._on_close_node_markup()

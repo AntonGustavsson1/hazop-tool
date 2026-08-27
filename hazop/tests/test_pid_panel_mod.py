@@ -1459,6 +1459,98 @@ class EquipmentIdentityLiveResolveTests(unittest.TestCase):
             panel.deleteLater()
 
 
+class TreeContextHighlightPanelTests(unittest.TestCase):
+    """PIDPanel.set_tree_context/_apply_tree_context_highlight (2026-08-27,
+    see NOTES.md "Dynamisk färgmarkering av objekt på P&ID") — the
+    two-tier cache: set_tree_context() does the expensive DB tree-walk
+    only when the tree selection actually changes; _apply_tree_context_
+    highlight() re-maps that cached result onto whatever markers exist
+    now, cheaply, on every overlay reload too."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_treecontext_panel_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_cause_with_equipment(self, tag='V-1'):
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        eq_id = self.db.add_equipment_item(tag, tag, tag[0], 0, 'Ventil', '', 0)
+        cause_id = self.db.add_cause(dev_id)
+        self.db.conn.execute("UPDATE causes SET equipment_id=? WHERE id=?", (eq_id, cause_id))
+        self.db.commit()
+        return node_id, cause_id, eq_id
+
+    def test_set_tree_context_maps_equipment_id_to_correct_marker_ids(self):
+        """Two equipment_markers rows pointing at the SAME equipment_id
+        (e.g. the same tag drawn on two pages/instances) must both pick
+        up the highlight."""
+        from pid_viewer import PIDPanel
+        node_id, cause_id, eq_id = self._make_cause_with_equipment()
+        m1 = self.db.add_equipment_marker(eq_id, 'V-1', 0, 10.0, 10.0, 'Ventil')
+        m2 = self.db.add_equipment_marker(eq_id, 'V-1', 0, 20.0, 20.0, 'Ventil')
+
+        panel = PIDPanel(self.db)
+        try:
+            _fake_pdf_loaded(panel)
+            panel.set_tree_context(CAUSE_T, cause_id)
+            self.assertEqual(set(panel.viewer._tree_context_highlights.keys()), {m1, m2})
+        finally:
+            panel.deleteLater()
+
+    def test_set_tree_context_none_clears_the_highlight(self):
+        from pid_viewer import PIDPanel
+        node_id, cause_id, eq_id = self._make_cause_with_equipment()
+        self.db.add_equipment_marker(eq_id, 'V-1', 0, 10.0, 10.0, 'Ventil')
+
+        panel = PIDPanel(self.db)
+        try:
+            _fake_pdf_loaded(panel)
+            panel.set_tree_context(CAUSE_T, cause_id)
+            self.assertTrue(panel.viewer._tree_context_highlights)
+
+            panel.set_tree_context(None, None)
+            self.assertEqual(panel.viewer._tree_context_highlights, {})
+        finally:
+            panel.deleteLater()
+
+    def test_reload_overlays_reapplies_highlight_without_a_new_db_tree_walk(self):
+        """Regression guard for the two-tier cache's whole point: a plain
+        overlay reload (page switch, unrelated edit) must re-map the
+        ALREADY-cached scope onto current markers, not re-run
+        Database.equipment_link_types_in_scope again."""
+        from pid_viewer import PIDPanel
+        node_id, cause_id, eq_id = self._make_cause_with_equipment()
+        marker_id = self.db.add_equipment_marker(eq_id, 'V-1', 0, 10.0, 10.0, 'Ventil')
+
+        panel = PIDPanel(self.db)
+        try:
+            _fake_pdf_loaded(panel)
+            panel.set_tree_context(CAUSE_T, cause_id)
+            self.assertIn(marker_id, panel.viewer._tree_context_highlights)
+
+            with unittest.mock.patch.object(
+                    self.db, 'equipment_link_types_in_scope') as mock_scope:
+                panel.reload_overlays()
+                mock_scope.assert_not_called()
+
+            # The highlight itself must still be correctly applied after
+            # the reload, using the cached scope from before.
+            self.assertIn(marker_id, panel.viewer._tree_context_highlights)
+        finally:
+            panel.deleteLater()
+
+
 class ObjektInRubberBandMenuTests(unittest.TestCase):
     """'När jag håller nere högerknappen och drar fram gummiband vill jag
     ... även kunna välja Objekt.' (2026-08-09, see NOTES.md) — the
