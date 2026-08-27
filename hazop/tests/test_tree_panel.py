@@ -68,7 +68,7 @@ from PyQt6.QtWidgets import (  # noqa: E402
     QApplication, QGraphicsPixmapItem, QTreeWidgetItemIterator, QTreeWidgetItem,
     QCheckBox, QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit,
 )
-from PyQt6.QtGui import QPixmap, QFocusEvent  # noqa: E402
+from PyQt6.QtGui import QPixmap, QFocusEvent, QColor  # noqa: E402
 from PyQt6.QtCore import Qt, QPoint, QDate, QEvent, QThread, pyqtSignal  # noqa: E402
 from equipment_detection import COMPONENT_TYPES  # noqa: E402
 
@@ -82,6 +82,70 @@ from test_helpers import (
     _ensure_qapp, _menu_action_labels, _fake_pdf_loaded,
     _TempDbMainWindow, _find_tree_item, count_selects,
 )
+
+
+class TreePanelLayerToggleTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        from pid_viewer import TREE_CONTEXT_LINK_COLORS
+        self._original_context_colors = {
+            key: QColor(value) for key, value in TREE_CONTEXT_LINK_COLORS.items()
+        }
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_tree_layers_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        node_id = self.db.add_node()
+        dev_id = self.db.get_or_create_deviation(node_id, "Lågt flöde")
+        self.cause_id = self.db.add_cause(dev_id)
+        self.cons_id = self.db.add_consequence(self.cause_id)
+        self.sg_id = self.db.add_safeguard(self.cons_id)
+        self.panel = TreePanel(self.db)
+        self.panel.refresh()
+
+    def tearDown(self):
+        from pid_viewer import set_tree_context_link_color
+        for key, color in self._original_context_colors.items():
+            set_tree_context_link_color(key, color)
+        self.panel.deleteLater()
+        del self.db
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _item(self, type_, id_):
+        return _find_tree_item(self.panel.tree, type_, id_)
+
+    def test_three_hazop_layers_are_green_and_visible_by_default(self):
+        for type_key in ('cause', 'consequence', 'safeguard'):
+            button = self.panel._vis_btns[type_key]
+            self.assertTrue(button.isChecked())
+            self.assertEqual(self.panel._vis_colors[type_key].lower(), '#00c800')
+
+    def test_click_hides_level_and_setting_survives_refresh(self):
+        cases = (
+            ('cause', CAUSE_T, self.cause_id),
+            ('consequence', CONS_T, self.cons_id),
+            ('safeguard', SG_T, self.sg_id),
+        )
+        for type_key, type_, id_ in cases:
+            with self.subTest(type_key=type_key):
+                button = self.panel._vis_btns[type_key]
+                button.setChecked(False)
+                self.assertTrue(self._item(type_, id_).isHidden())
+                self.assertEqual(self.db.get_config(f'tree_show_{type_key}'), '0')
+                self.panel.refresh()
+                self.assertTrue(self._item(type_, id_).isHidden())
+                button.setChecked(True)
+                self.assertFalse(self._item(type_, id_).isHidden())
+
+    def test_right_click_color_choice_is_saved_and_updates_pid_color(self):
+        from pid_viewer import resolve_tree_context_color
+        with unittest.mock.patch('tree_panel.QColorDialog.getColor',
+                                 return_value=QColor('#2457a6')):
+            self.panel._choose_visibility_color('cause')
+        self.assertEqual(self.db.get_config('tree_color_cause'), '#2457a6')
+        self.assertEqual(resolve_tree_context_color({'cause'}).name(), '#2457a6')
+        self.assertIn('#2457a6', self.panel._vis_btns['cause'].styleSheet())
 
 class TreePanelEquipmentGroupingTests(unittest.TestCase):
     """TreePanel.refresh() builds Nod → Avvikelse → Orsak → Konsekvens →

@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QGridLayout, QLineEdit, QLabel, QPushButton, QComboBox, QDialog,
     QDialogButtonBox, QMessageBox, QGroupBox, QMenu, QSpinBox,
     QDoubleSpinBox, QFrame, QListWidget, QListWidgetItem, QInputDialog,
-    QCheckBox, QButtonGroup, QRadioButton, QSplitter,
+    QCheckBox, QButtonGroup, QRadioButton, QSplitter, QColorDialog,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QRect, QMimeData, QEvent
 from PyQt6.QtGui import (
@@ -25,7 +25,7 @@ from constants import (
     DEVIATION_TYPES, CONFIG, MARKUP_COLORS, RISK_ICON, SG_TYPES,
 )
 from database import Database, get_matrix, risk_info, freq_to_f_level
-from pid_viewer import _icon, _obj_type_matches
+from pid_viewer import _icon, _obj_type_matches, set_tree_context_link_color
 from ui_helpers import (
     freq_axis_label, freq_axis_label_full, _equipment_type_options,
     _lookup_comp_type_for_tag, _make_tag_completer,
@@ -82,6 +82,7 @@ class TreePanel(QWidget):
     node_jump_to_markup               = pyqtSignal(int)         # node_id
     structure_changed           = pyqtSignal()
     visibility_changed          = pyqtSignal(str, bool)   # marker_type, visible
+    context_color_changed       = pyqtSignal(str, str)    # link_type, #rrggbb
     exit_pid_mode_requested     = pyqtSignal()    # exit any active P&ID placement mode
     # Equipment marker(s) dragged from the P&ID onto a deviation item (e.g.
     # "Lågt flöde") — 2026-08-08, see NOTES.md. Args: (deviation_id, list
@@ -119,17 +120,28 @@ class TreePanel(QWidget):
             ('equipment',    '🔧 Utrustning',    '#7f8c8d', '#ecf0f1'),
         ]
         self._vis_btns = {}
-        for type_key, label, color_on, color_off in _VIS_BTNS:
+        self._vis_colors = {}
+        for type_key, label, _old_color_on, _old_color_off in _VIS_BTNS:
             btn = QPushButton(label)
             btn.setCheckable(True)
-            btn.setChecked(True)
+            configurable = type_key in ('cause', 'consequence', 'safeguard')
+            config_visible = self.db.get_config(f'tree_show_{type_key}', '1') == '1'
+            color_on = (self.db.get_config(f'tree_color_{type_key}', '#00c800')
+                        if configurable else '#7f8c8d')
+            if not QColor(color_on).isValid():
+                color_on = '#00c800' if configurable else '#7f8c8d'
+            self._vis_colors[type_key] = color_on
+            if configurable:
+                set_tree_context_link_color(type_key, color_on)
+                btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                btn.customContextMenuRequested.connect(
+                    lambda _pos, t=type_key: self._choose_visibility_color(t))
+                btn.setToolTip("Vänsterklick: visa/dölj. Högerklick: välj färg.")
+            btn.setChecked(config_visible)
             btn.setFixedHeight(CONFIG['H_CTRL_STD'])
-            btn.setStyleSheet(
-                f"QPushButton{{background:{color_on}; color:white; border:none;"
-                f" border-radius:3px; font-size:10px; font-weight:bold; padding:0 4px;}}"
-                f"QPushButton:!checked{{background:{color_off}; color:#aaa;}}")
+            self._style_visibility_button(btn, color_on)
             btn.toggled.connect(
-                lambda checked, t=type_key: self.visibility_changed.emit(t, checked))
+                lambda checked, t=type_key: self._on_visibility_toggled(t, checked))
             vis_row.addWidget(btn)
             self._vis_btns[type_key] = btn
 
@@ -255,9 +267,53 @@ class TreePanel(QWidget):
             lambda checked: self._on_auto_collapse_toggled('tree_auto_collapse_deviations', checked))
         layout.addWidget(self._auto_collapse_deviations_chk)
 
+    @staticmethod
+    def _style_visibility_button(btn, color):
+        qcolor = QColor(color)
+        luminance = (0.299 * qcolor.red() + 0.587 * qcolor.green()
+                     + 0.114 * qcolor.blue())
+        foreground = '#111111' if luminance > 155 else '#ffffff'
+        btn.setStyleSheet(
+            f"QPushButton{{background:{qcolor.name()}; color:{foreground}; border:none;"
+            f" border-radius:3px; font-size:10px; font-weight:bold; padding:0 4px;}}"
+            "QPushButton:!checked{background:#e4e7e9; color:#7a7f83;}")
+
+    def _on_visibility_toggled(self, type_key, checked):
+        self.db.set_config(f'tree_show_{type_key}', '1' if checked else '0')
+        self._apply_visibility_filters()
+        self.visibility_changed.emit(type_key, checked)
+
+    def _choose_visibility_color(self, type_key):
+        initial = QColor(self._vis_colors.get(type_key, '#00c800'))
+        color = QColorDialog.getColor(initial, self, "Välj markeringsfärg")
+        if not color.isValid():
+            return
+        color_hex = color.name()
+        self._vis_colors[type_key] = color_hex
+        self.db.set_config(f'tree_color_{type_key}', color_hex)
+        self._style_visibility_button(self._vis_btns[type_key], color_hex)
+        set_tree_context_link_color(type_key, color_hex)
+        self.context_color_changed.emit(type_key, color_hex)
+
+    def _apply_visibility_filters(self):
+        """Hide optional HAZOP levels without deleting their tree data."""
+        visible_by_type = {
+            CAUSE_T: self._vis_btns['cause'].isChecked(),
+            CONS_T: self._vis_btns['consequence'].isChecked(),
+            SG_T: self._vis_btns['safeguard'].isChecked(),
+        }
+        it = QTreeWidgetItemIterator(self.tree)
+        while it.value():
+            item = it.value()
+            type_ = item.data(0, Qt.ItemDataRole.UserRole + 1)
+            if type_ in visible_by_type:
+                item.setHidden(not visible_by_type[type_])
+            it += 1
+
     def _on_auto_collapse_toggled(self, config_key, checked):
         self.db.set_config(config_key, '1' if checked else '0')
         self._apply_auto_collapse()
+        self._apply_visibility_filters()
 
     def _active_system_node_and_deviation(self):
         """Walks up from the current tree selection to find the nearest
@@ -645,6 +701,7 @@ class TreePanel(QWidget):
             if target and emit_selection:
                 self._reveal(target)
             self._apply_auto_collapse()
+            self._apply_visibility_filters()
 
     def reveal_causes_for_equipment(self, equipment_id):
         """Expand the tree down to Orsak level for EVERY cause that
@@ -710,6 +767,7 @@ class TreePanel(QWidget):
         finally:
             self.tree.blockSignals(False)
             self._apply_auto_collapse()
+            self._apply_visibility_filters()
             for dev_item in matched_dev_items:
                 dev_item.setExpanded(True)
         return found
@@ -956,6 +1014,7 @@ class TreePanel(QWidget):
         # clicking a different node/avvikelse immediately folds the
         # previous one away without waiting for unrelated data to change.
         self._apply_auto_collapse()
+        self._apply_visibility_filters()
 
     # Types editable directly in the tree via double-click (2026-08-17, see
     # NOTES.md "Dubbelklick -> redigera direkt i trädet"). EQUIP_T/LEDORD_T

@@ -756,6 +756,15 @@ TREE_CONTEXT_HIGHLIGHT_DEFAULT = QColor(0, 200, 0)   # fallback for an unknown l
 TREE_CONTEXT_LINK_PRIORITY = ('safeguard', 'consequence', 'cause', 'deviation')
 
 
+def set_tree_context_link_color(link_type, color):
+    """Update one tree-link highlight color for the running application."""
+    if link_type not in TREE_CONTEXT_LINK_COLORS:
+        return
+    qcolor = QColor(color)
+    if qcolor.isValid():
+        TREE_CONTEXT_LINK_COLORS[link_type] = qcolor
+
+
 def resolve_tree_context_color(link_types) -> QColor:
     """link_types: a set of 'deviation'|'cause'|'consequence'|'safeguard'
     strings (see Database.equipment_link_types_in_scope) -> the single

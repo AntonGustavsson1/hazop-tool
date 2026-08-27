@@ -2718,3 +2718,24 @@ exakt som rapporterat: den andra avvikelsen förblev hopfälld). Hela
 `tests.test_smoke`, `tests.test_tree_panel`, `tests.test_scenario_panel`,
 `tests.test_equipment_panel`, `tests.test_integration`, `tests.test_pid_viewer`
 och `tests.test_pid_panel_mod` gröna. Ingen visuell GUI-körning gjordes.
+
+## Trädets lagerknappar styr visning och P&ID-färg (2026-08-27)
+
+De tre knapparna **Orsaker**, **Konsekvenser** och **Safeguards** ovanför
+HAZOP-trädet är nu oberoende lagerreglage. Vänsterklick visar/döljer
+respektive nivå i trädet och behåller samtidigt den tidigare styrningen av
+motsvarande P&ID-markörlager. Valet sparas i projektets `app_config` och
+återappliceras efter varje träduppdatering.
+
+Alla tre är gröna och aktiva som standard. Högerklick öppnar Qt:s
+färgväljare; vald färg sparas per lager och används både som knappfärg och
+av den befintliga gummibandsmarkeringen runt berörda objekt på P&ID. Om ett
+objekt har flera länktyper används den redan etablerade prioriteten
+Safeguard → Konsekvens → Orsak → Avvikelse. Avstängda knappar visas neutralt
+grå och textfärgen på aktiva knappar anpassas efter vald färgs ljushet.
+
+**Test:** tre nya regressionstester verifierar standardfärg/-synlighet,
+visning av/på inklusive träduppdatering och beständigt färgval som når
+P&ID:s färgresolver. `tests.test_smoke`, `tests.test_pid_viewer`,
+`tests.test_pid_panel_mod`, `TreeContextHighlightEndToEndTests` och hela
+`tests.test_tree_panel` (280 tester totalt) gröna. Ingen visuell GUI-körning.

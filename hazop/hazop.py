@@ -36,6 +36,7 @@ from pid_viewer import (
     PageProgressDialog,
     FREQ_LABELS, freq_to_idx, idx_to_freq,
     _obj_type_matches,
+    set_tree_context_link_color,
     _mk_pm, _mk_icon, _icon, _EMOJI_ICON,
 )
 from ui_helpers import (
@@ -1303,6 +1304,10 @@ class MainWindow(QMainWindow):
         self.tree_panel.item_edited_inline.connect(self.hazop_prep_panel.refresh_nodes)
         self.tree_panel.visibility_changed.connect(
             lambda t, v: self.pid_panel.viewer.set_marker_visibility(t, v))
+        self.tree_panel.context_color_changed.connect(
+            self._on_tree_context_color_changed)
+        for marker_type, button in self.tree_panel._vis_btns.items():
+            self.pid_panel.viewer.set_marker_visibility(marker_type, button.isChecked())
 
         self.scenario_panel.item_selected.connect(self._on_scenario_item_selected)
         self.scenario_panel.new_item_created.connect(
@@ -1554,6 +1559,11 @@ class MainWindow(QMainWindow):
             self.pid_panel.set_active_cause(id_)
         elif type_ == CONS_T:
             self.pid_panel.set_active_consequence(id_)
+
+    def _on_tree_context_color_changed(self, link_type, color_hex):
+        """Repaint the current P&ID context immediately after a color choice."""
+        set_tree_context_link_color(link_type, color_hex)
+        self.pid_panel.set_tree_context(self._cur_type, self._cur_id)
 
     def _on_selected(self, type_, id_):
         self._cur_type = type_
