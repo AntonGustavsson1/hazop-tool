@@ -2937,3 +2937,7 @@ dagen efter det senaste datumet. Datum redigeras med kalenderkontroll och plats
 visas i sessionens kolumnhuvud. En ifylld plats kan dras från ett
 analystillfälle till ett annat för att kopieras. Ett uppstartsundantag där en
 SQLite-rad behandlades som en dict är korrigerat.
+
+Analystillfällen har dessutom ett sparat digitalt-läge. Nya tillfällen ärver
+senaste analystillfällets ort, medan Digitalt visar en kryssruta som stänger av
+ortfältet och visas som "Digitalt" i kolumnhuvudet.

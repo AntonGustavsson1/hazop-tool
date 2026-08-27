@@ -223,6 +223,8 @@ class ParticipantMatrixPanel(QWidget):
         session = dict(session)
         date = session.get('date') or session.get('label') or f"Tillfälle {session['id']}"
         location = session.get('location') or ''
+        if session.get('is_digital'):
+            location = 'Digitalt'
         return f"{date}\n{location}" if location else str(date)
 
     def _copy_session_location(self, source_col, target_col):
@@ -315,8 +317,13 @@ class ParticipantMatrixPanel(QWidget):
         date_edit.setDate(parsed if parsed.isValid() else QDate.currentDate())
         location_edit = QLineEdit(session.get('location') or '')
         location_edit.setPlaceholderText("Plats")
+        digital_cb = QCheckBox("Digitalt")
+        digital_cb.setChecked(bool(session.get('is_digital')))
+        location_edit.setEnabled(not digital_cb.isChecked())
+        digital_cb.toggled.connect(location_edit.setDisabled)
         form.addRow("Datum:", date_edit)
         form.addRow("Plats:", location_edit)
+        form.addRow("", digital_cb)
         buttons = QHBoxLayout()
         ok = QPushButton("OK"); cancel = QPushButton("Avbryt")
         ok.clicked.connect(dlg.accept); cancel.clicked.connect(dlg.reject)
@@ -326,7 +333,8 @@ class ParticipantMatrixPanel(QWidget):
             iso = date_edit.date().toString('yyyy-MM-dd')
             self.db.update_analysis_session_details(kind[1], date=iso,
                                                     location=location_edit.text().strip(),
-                                                    label=iso)
+                                                    label=iso,
+                                                    is_digital=digital_cb.isChecked())
             self.refresh()
 
 

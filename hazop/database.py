@@ -953,7 +953,8 @@ class Database:
         # columns exist after all base-table creation passes have completed.
         for statement in (
                 "ALTER TABLE analysis_sessions ADD COLUMN date TEXT DEFAULT ''",
-                "ALTER TABLE analysis_sessions ADD COLUMN location TEXT DEFAULT ''"):
+                "ALTER TABLE analysis_sessions ADD COLUMN location TEXT DEFAULT ''",
+                "ALTER TABLE analysis_sessions ADD COLUMN is_digital INTEGER NOT NULL DEFAULT 0"):
             try:
                 self.conn.execute(statement)
             except sqlite3.OperationalError:
@@ -2670,7 +2671,7 @@ class Database:
         return self.conn.execute(
             "SELECT * FROM analysis_sessions ORDER BY sort_order, id").fetchall()
 
-    def add_analysis_session(self, label='', date=None, location=''):
+    def add_analysis_session(self, label='', date=None, location=None, is_digital=False):
         # New sessions normally follow the latest dated session by one day.
         # Keep the old label argument for project files created before the
         # date/location fields existed.
@@ -2684,11 +2685,14 @@ class Database:
                     continue
             next_date = (max(dates) + datetime.timedelta(days=1)) if dates else datetime.date.today()
             date = next_date.isoformat()
+        if location is None:
+            previous = list(self.list_analysis_sessions())
+            location = (previous[-1]['location'] or '') if previous else ''
         if not label:
             label = str(date)
         cur = self.conn.execute(
-            "INSERT INTO analysis_sessions (label,date,location) VALUES (?,?,?)",
-            (label, date, location or ''))
+            "INSERT INTO analysis_sessions (label,date,location,is_digital) VALUES (?,?,?,?)",
+            (label, date, location or '', 1 if is_digital else 0))
         self.commit()
         return cur.lastrowid
 
@@ -2696,15 +2700,17 @@ class Database:
         self.conn.execute("UPDATE analysis_sessions SET label=? WHERE id=?", (label, id_))
         self.commit()
 
-    def update_analysis_session_details(self, id_, date=None, location=None, label=None):
+    def update_analysis_session_details(self, id_, date=None, location=None, label=None,
+                                        is_digital=None):
         row = self.conn.execute("SELECT * FROM analysis_sessions WHERE id=?", (id_,)).fetchone()
         if not row:
             return
         self.conn.execute(
-            "UPDATE analysis_sessions SET date=?, location=?, label=? WHERE id=?",
+            "UPDATE analysis_sessions SET date=?, location=?, label=?, is_digital=? WHERE id=?",
             (date if date is not None else (row['date'] or row['label'] or ''),
              location if location is not None else (row['location'] or ''),
-             label if label is not None else (row['label'] or ''), id_))
+             label if label is not None else (row['label'] or ''),
+             int(is_digital) if is_digital is not None else int(row['is_digital'] or 0), id_))
         self.commit()
 
     def set_analysis_session_location(self, id_, location):
