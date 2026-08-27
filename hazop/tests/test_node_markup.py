@@ -189,7 +189,15 @@ class RedMarkupConsolidationTests(unittest.TestCase):
     P&ID-symbol; NodeMarkupPanel gets a new button that's the sole entry
     point now (the tree's own "Editera redmarkup" context-menu action is
     gone). The two edit-mode state machines stay technically separate —
-    placing a symbol briefly switches into red-markup mode and back."""
+    placing a symbol briefly switches into red-markup mode and back.
+
+    2026-08-26 follow-up ("Gör om Red Markup-knappen", see NOTES.md): the
+    old Red Markup VIEW (this ribbon shown via splitter resize, plus
+    RedMarkupTablePanel, a table of existing red markups) is torn down
+    completely — the button now opens ONLY the small symbol-selector
+    popup, no chrome changes at all. RedMarkupTablePanel is deleted
+    outright; RedMarkupPanel itself is kept (never shown) purely as the
+    non-visual state/signal object MainWindow still needs."""
 
     @classmethod
     def setUpClass(cls):
@@ -261,11 +269,86 @@ class RedMarkupConsolidationTests(unittest.TestCase):
                         win.red_markup_panel, 'open_symbol_picker') as mock_open:
                     win._on_place_symbol_requested()
                     mock_open.assert_called_once()
-                self.assertFalse(win.red_markup_panel.isHidden())
-                self.assertFalse(win.props_ribbon._markup_active)
+                # 2026-08-26 rework: the old Red Markup view is gone — the
+                # button must NOT reveal red_markup_panel anymore, and
+                # props_ribbon's own chrome (still showing the node-markup
+                # toolbar) is left completely untouched.
+                self.assertTrue(win.red_markup_panel.isHidden())
+                self.assertTrue(win.props_ribbon._markup_active)
                 self.assertEqual(win._return_to_node_markup_node_id, node_id)
             finally:
                 win._on_close_red_markup()
+
+    def test_place_symbol_opens_only_the_popup_no_other_chrome_changes(self):
+        """Direct regression test for "Gör om Red Markup-knappen" (see
+        NOTES.md, 2026-08-26): clicking the place-symbol button must not
+        resurrect any part of the old Red Markup view — no RedMarkupPanel
+        ribbon, no RedMarkupTablePanel (deleted outright), and none of
+        tree_panel/scenario_panel/props_ribbon's own visibility changes at
+        all. Only the small symbol popup opens."""
+        with _TempDbMainWindow() as win:
+            self.assertFalse(hasattr(win, 'red_markup_table_panel'),
+                "RedMarkupTablePanel must be torn down entirely, not just hidden")
+            node_id = win.db.add_node()
+            win._on_edit_node_markup(node_id)
+            tree_hidden_before = win.tree_panel.isHidden()
+            scenario_hidden_before = win.scenario_panel.isHidden()
+            ribbon_hidden_before = win.props_ribbon.isHidden()
+            try:
+                with unittest.mock.patch.object(
+                        win.red_markup_panel, 'open_symbol_picker') as mock_open:
+                    win._on_place_symbol_requested()
+                    mock_open.assert_called_once()
+                self.assertTrue(win.red_markup_panel.isHidden(),
+                    "the old Red Markup ribbon must never be shown")
+                self.assertEqual(win.tree_panel.isHidden(), tree_hidden_before)
+                self.assertEqual(win.scenario_panel.isHidden(), scenario_hidden_before)
+                self.assertEqual(win.props_ribbon.isHidden(), ribbon_hidden_before)
+            finally:
+                win._on_close_red_markup()
+
+    def test_place_symbol_then_draw_saves_to_db_and_returns_to_node_markup(self):
+        """End-to-end regression for the exact risk flagged while reworking
+        this flow: essential plumbing (set_active_node + the
+        markup_draw_finished/markup_item_clicked wiring done by
+        pid_panel.enter_red_markup_edit) must still run even though none
+        of the old view's chrome does anymore — otherwise a symbol drawn
+        on the canvas would silently never reach the DB. Simulates the
+        full user flow: click place-symbol -> pick a symbol from the
+        popup -> draw it on the canvas (viewer emits markup_draw_finished)
+        -> verify a row actually landed in node_red_markups, and that the
+        app automatically snapped back to node-markup editing for the
+        same node afterward (no old Red Markup view left open)."""
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            win._on_edit_node_markup(node_id)
+
+            win._on_place_symbol_requested()
+            self.assertEqual(win.pid_panel._active_markup_class, 'red')
+            self.assertEqual(win.pid_panel._active_node_id, node_id)
+
+            # Pick a symbol from the popup (mirrors what a real click on a
+            # popup button does: RedMarkupPanel._on_symbol_selected).
+            win.red_markup_panel._on_symbol_selected('valve')
+
+            # Draw it on the canvas — same call the viewer itself makes
+            # once a symbol placement click completes.
+            win.pid_panel._on_viewer_markup_drawn('symbol', [[10.0, 20.0]], 0)
+
+            rows = [dict(r) for r in win.db.node_red_markups_for_node(node_id)]
+            self.assertEqual(len(rows), 1,
+                "the drawn symbol must actually be saved to the DB")
+            self.assertEqual(rows[0]['type'], 'symbol')
+            self.assertEqual(rows[0]['label'], 'valve')
+
+            # The whole point of the detour is done — must have snapped
+            # back to node-markup editing automatically, no manual close
+            # required (the old ✕ close button is unreachable now).
+            self.assertIsNone(win._return_to_node_markup_node_id)
+            self.assertEqual(win.pid_panel._active_markup_class, 'node')
+            self.assertTrue(win.red_markup_panel.isHidden())
+            self.assertEqual(win.props_ribbon.node_id, node_id)
+            win._on_close_node_markup()
 
     def test_closing_red_markup_returns_to_node_markup_for_same_node(self):
         with _TempDbMainWindow() as win:
@@ -284,12 +367,16 @@ class RedMarkupConsolidationTests(unittest.TestCase):
     def test_closing_red_markup_without_place_symbol_flow_goes_to_welcome(self):
         """If red-markup mode were ever entered WITHOUT going through
         _on_place_symbol_requested (defensive — no such path exists
-        anymore, but _on_close_red_markup must still degrade safely),
-        closing it must fall back to the normal closed state instead of
-        crashing on a stale/missing return target."""
+        anymore; _on_edit_red_markup, the old method that used to wrap
+        this, was itself deleted 2026-08-26 along with the rest of the
+        old Red Markup view, see NOTES.md "Gör om Red Markup-knappen" —
+        entering pid_panel.enter_red_markup_edit directly is now the only
+        way to simulate this defensive scenario), closing it must fall
+        back to the normal closed state instead of crashing on a
+        stale/missing return target."""
         with _TempDbMainWindow() as win:
             node_id = win.db.add_node()
-            win._on_edit_red_markup(node_id)
+            win.pid_panel.enter_red_markup_edit(node_id)
             self.assertIsNone(win._return_to_node_markup_node_id)
 
             win._on_close_red_markup()

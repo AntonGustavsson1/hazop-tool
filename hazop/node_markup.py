@@ -1306,14 +1306,33 @@ class _SymbolSelectorPopup(QFrame):
 
 
 class RedMarkupPanel(QWidget):
-    """Narrow vertical ribbon for red markup — trimmed 2026-08-17 (see
-    NOTES.md "Red markup konsolideras") to just Välj/flytta (needed to
-    select an already-placed symbol for size/rotation editing) and Lägg
-    ut P&ID-symbol; every other drawing tool (polygon/polyline/smart/
+    """Red-markup state/signal holder — trimmed 2026-08-17 (see NOTES.md
+    "Red markup konsolideras") to just Välj/flytta (needed to select an
+    already-placed symbol for size/rotation editing) and Lägg ut
+    P&ID-symbol; every other drawing tool (polygon/polyline/smart/
     comment), the color/opacity/width popup, and the show/hide-all toggle
     are gone per explicit request ("skrota allt utom 'Välj P&ID-symbol'").
+
+    2026-08-26 follow-up ("Gör om Red Markup-knappen", see NOTES.md):
+    this widget's visible ribbon UI is no longer shown AT ALL — the old
+    "Red Markup view" (this ribbon + RedMarkupTablePanel, splitter-resized
+    into visibility) has been torn down completely. The button
+    (PropertiesRibbon._place_symbol_btn) now opens ONLY the small
+    _SymbolSelectorPopup below; MainWindow never calls setVisible(True)
+    on this panel anymore. The object itself is still constructed and
+    still kept as a normal QWidget (never shown) purely because it's the
+    non-visual home for the state/behavior MainWindow still needs:
+    open_symbol_picker() (opens the popup), get_current_style()/
+    get_symbol_dims() (fixed constants a saved symbol's DB row still
+    needs), and the tool_changed/symbol_selected signals that drive
+    pid_panel's red-markup drawing mode. RedMarkupTablePanel (the visible
+    "existing red markups" table this ribbon used to sit beside) was
+    deleted outright — see MainWindow._on_place_symbol_requested's
+    docstring for the resulting capability loss (no more delete/edit-style
+    UI for an already-placed red-markup symbol).
+
     This panel is no longer reachable from the tree's own context menu —
-    NodeMarkupPanel's own "Lägg ut P&ID-symbol" button is the sole entry
+    PropertiesRibbon's "Lägg ut P&ID-symbol" button is the sole entry
     point now (see MainWindow._on_place_symbol_requested), which is why
     the two edit-mode state machines stayed technically separate rather
     than being merged: lower regression risk for the heavily-tested P&ID
@@ -1441,232 +1460,5 @@ class RedMarkupPanel(QWidget):
         self._selected_symbol_id = symbol_id
         self.symbol_selected.emit(symbol_id)
         self.tool_changed.emit('symbol')
-
-
-class RedMarkupTablePanel(QWidget):
-    """Table of red markups for the active node."""
-    item_deleted     = pyqtSignal(int)
-    item_vis_toggled = pyqtSignal(int, bool)
-    item_selected    = pyqtSignal(int)
-    item_style_changed = pyqtSignal(int)
-
-    _TYPE_ICON = {'polygon': '◻', 'polyline': '〰', 'text': '𝐀',
-                  'comment': '💬', 'symbol': '⚙'}
-    _COLS      = ['Typ', 'Etikett', 'Färg', 'Opacitet', 'Tjocklek', '👁']
-
-    def __init__(self, db: Database, parent=None):
-        super().__init__(parent)
-        self.db      = db
-        self.node_id = None
-
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(4, 4, 4, 4)
-        lay.setSpacing(2)
-
-        hdr = QHBoxLayout()
-        title = QLabel("🔴 Redmarkeringar")
-        f = QFont(); f.setBold(True); f.setPointSize(9)
-        title.setFont(f)
-        hdr.addWidget(title)
-        hdr.addStretch()
-        lay.addLayout(hdr)
-
-        self._table = QTableWidget(0, len(self._COLS))
-        self._table.setHorizontalHeaderLabels(self._COLS)
-        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._table.setAlternatingRowColors(True)
-        self._table.verticalHeader().setVisible(False)
-        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._table.customContextMenuRequested.connect(self._on_ctx_menu)
-        self._table.cellClicked.connect(self._on_cell_clicked)
-        self._table.setStyleSheet(
-            "QTableWidget{border:1px solid #FFCDD2;font-size:10px;}"
-            "QTableWidget::item:selected{background:#FFEBEE;color:#C62828;}")
-
-        hh = self._table.horizontalHeader()
-        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
-        lay.addWidget(self._table)
-
-    def load(self, node_id):
-        self.node_id = node_id
-        self.refresh()
-
-    def refresh(self):
-        self._table.setRowCount(0)
-        if self.node_id is None:
-            return
-        for mu in self.db.node_red_markups_for_node(self.node_id):
-            m = dict(mu)
-            row = self._table.rowCount()
-            self._table.insertRow(row)
-            mu_id   = m['id']
-            typ     = m.get('type', 'polygon')
-            label   = m.get('label', '') or ''
-            color   = m.get('color', '#CC0000')
-            opacity = m.get('opacity', 1.0)
-            width   = m.get('line_width', 4)
-            visible = bool(m.get('visible', 1))
-
-            icon_item = QTableWidgetItem(self._TYPE_ICON.get(typ, '◻'))
-            icon_item.setData(Qt.ItemDataRole.UserRole, mu_id)
-            icon_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._table.setItem(row, 0, icon_item)
-
-            display_label = label if typ != 'symbol' else f"⚙ {label}"
-            lbl_item = QTableWidgetItem(display_label)
-            lbl_item.setData(Qt.ItemDataRole.UserRole, mu_id)
-            self._table.setItem(row, 1, lbl_item)
-
-            color_item = QTableWidgetItem(color)
-            color_item.setData(Qt.ItemDataRole.UserRole, mu_id)
-            color_item.setBackground(QColor(color))
-            color_item.setForeground(QColor(color))
-            color_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._table.setItem(row, 2, color_item)
-
-            op_item = QTableWidgetItem(f"{int(opacity * 100)}%")
-            op_item.setData(Qt.ItemDataRole.UserRole, mu_id)
-            op_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._table.setItem(row, 3, op_item)
-
-            w_item = QTableWidgetItem(str(width))
-            w_item.setData(Qt.ItemDataRole.UserRole, mu_id)
-            w_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._table.setItem(row, 4, w_item)
-
-            vis_item = QTableWidgetItem('👁' if visible else '○')
-            vis_item.setData(Qt.ItemDataRole.UserRole, mu_id)
-            vis_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._table.setItem(row, 5, vis_item)
-
-    def select_markup(self, mu_id):
-        for row in range(self._table.rowCount()):
-            item = self._table.item(row, 0)
-            if item and item.data(Qt.ItemDataRole.UserRole) == mu_id:
-                self._table.selectRow(row)
-                break
-
-    def clear(self):
-        self.node_id = None
-        self._table.setRowCount(0)
-
-    def _on_cell_clicked(self, row, col):
-        item = self._table.item(row, 0)
-        if item is None:
-            return
-        mu_id = item.data(Qt.ItemDataRole.UserRole)
-        if col == 5:
-            self._toggle_visibility(row, mu_id)
-        else:
-            self.item_selected.emit(mu_id)
-
-    def _toggle_visibility(self, row, mu_id):
-        mu = self.db.get_node_red_markup(mu_id)
-        if not mu:
-            return
-        new_vis = not bool(dict(mu).get('visible', 1))
-        self.db.update_node_red_markup(mu_id, visible=new_vis)
-        vis_item = self._table.item(row, 5)
-        if vis_item:
-            vis_item.setText('👁' if new_vis else '○')
-        self.item_vis_toggled.emit(mu_id, new_vis)
-
-    def _on_ctx_menu(self, pos):
-        seen, rows = set(), []
-        for idx in self._table.selectedIndexes():
-            r = idx.row()
-            if r not in seen:
-                seen.add(r)
-                item = self._table.item(r, 0)
-                if item:
-                    rows.append(item)
-        if not rows:
-            return
-        menu = QMenu(self)
-        n = len(rows)
-        lbl = f"Ta bort ({n} valda)" if n > 1 else "Ta bort"
-        act_del = menu.addAction(_icon('delete'), lbl)
-        act_style = None
-        if n == 1:
-            mu = self.db.get_node_red_markup(rows[0].data(Qt.ItemDataRole.UserRole))
-            if mu and dict(mu).get('type') == 'symbol':
-                act_style = menu.addAction("📐 Ändra storlek/rotation...")
-            else:
-                act_style = menu.addAction(_icon('edit'), "Ändra stil...")
-        result = menu.exec(self._table.viewport().mapToGlobal(pos))
-        if result == act_del:
-            for item in rows:
-                mu_id = item.data(Qt.ItemDataRole.UserRole)
-                self.db.delete_node_red_markup(mu_id)
-                self.item_deleted.emit(mu_id)
-            self.refresh()
-        elif act_style is not None and result == act_style:
-            mu_id = rows[0].data(Qt.ItemDataRole.UserRole)
-            mu = self.db.get_node_red_markup(mu_id)
-            if mu:
-                mu = dict(mu)
-                if mu.get('type') == 'symbol':
-                    dlg = _SymbolDimsDialog(
-                        float(mu.get('symbol_w', 40)),
-                        float(mu.get('symbol_h', 40)),
-                        float(mu.get('symbol_rot', 0)),
-                        self)
-                    if dlg.exec() == QDialog.DialogCode.Accepted:
-                        w, h, rot = dlg.get_dims()
-                        self.db.update_node_red_markup(mu_id, symbol_w=w, symbol_h=h, symbol_rot=rot)
-                        self.item_style_changed.emit(mu_id)
-                        self.refresh()
-                else:
-                    dlg = _MarkupStyleDialog(
-                        mu.get('type', 'polygon'),
-                        mu.get('color', '#CC0000'),
-                        float(mu.get('opacity', 1.0)),
-                        int(mu.get('line_width', 4)),
-                        int(mu.get('font_size', 12)),
-                        self)
-                    if dlg.exec() == QDialog.DialogCode.Accepted:
-                        c, op, lw, fs = dlg.get_style()
-                        self.db.update_node_red_markup(mu_id, color=c, opacity=op,
-                                                       line_width=lw, font_size=fs)
-                        self.item_style_changed.emit(mu_id)
-                        self.refresh()
-
-
-class _SymbolDimsDialog(QDialog):
-    """Dialog to adjust symbol width, height, and rotation."""
-    def __init__(self, w=40, h=40, rot=0, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Symbolstorlek och rotation")
-        self.setFixedWidth(CONFIG['W_PANEL_MIN'])
-        self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
-        outer = QVBoxLayout(self)
-        outer.setSpacing(10)
-
-        form = QFormLayout()
-        self._w_sp = QSpinBox(); self._w_sp.setRange(5, 500); self._w_sp.setValue(int(w))
-        self._w_sp.setSuffix(" pt")
-        self._h_sp = QSpinBox(); self._h_sp.setRange(5, 500); self._h_sp.setValue(int(h))
-        self._h_sp.setSuffix(" pt")
-        self._r_sp = QSpinBox(); self._r_sp.setRange(-360, 360); self._r_sp.setValue(int(rot))
-        self._r_sp.setSuffix(" °")
-        form.addRow("Bredd:", self._w_sp)
-        form.addRow("Höjd:", self._h_sp)
-        form.addRow("Rotation:", self._r_sp)
-        outer.addLayout(form)
-
-        btns = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-        outer.addWidget(btns)
-
-    def get_dims(self):
-        return float(self._w_sp.value()), float(self._h_sp.value()), float(self._r_sp.value())
 
 
