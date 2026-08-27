@@ -1307,18 +1307,14 @@ class MainWindow(QMainWindow):
         self.scenario_panel.item_selected.connect(self._on_scenario_item_selected)
         self.scenario_panel.new_item_created.connect(
             lambda type_, id_: (
-                # emit_selection=False: the explicit scenario_panel.refresh()
-                # right after already rebuilds the table for the new item, so
-                # letting refresh()'s setCurrentItem cascade via
-                # currentItemChanged -> _on_select -> item_selected ->
-                # _on_selected would trigger a second, redundant
-                # scenario_panel._rebuild() (same anti-pattern fixed in
-                # _on_marker_navigate, commit 84c8b7c). This path is hit when
-                # quick-adding a cause/consequence/safeguard directly from the
-                # scenario table (e.g. via Enter-to-add-next-row), so a
-                # redundant rebuild here can race with a cell editor's
-                # focus-out mid-edit-commit.
-                self.tree_panel.refresh(type_, id_, emit_selection=False),
+                # A scenario-created row belongs in the tree immediately, but
+                # must NOT become the tree's current item. Selecting a hidden
+                # consequence/safeguard made auto-collapse expand its complete
+                # ancestor path, so a compact tree showing only "Nytt system"
+                # suddenly unfolded after Enter. Rebuild without a target;
+                # refresh() still preserves whatever the user manually had
+                # open, while the scenario table handles its own cursor below.
+                self.tree_panel.refresh(),
                 self.scenario_panel.refresh(),
                 # Land the editing cursor on the new item instead of leaving
                 # selection wherever the rebuild happened to reset it to --

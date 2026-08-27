@@ -82,6 +82,7 @@ class RiskMatrixPopup(QDialog):
 
         self._db          = db
         self._cons_id     = cons_id
+        self._category_mode = db is not None and cons_id is not None
         self._current_freq = current_freq
         self._n_cons      = n_cons
         self._grid_buttons = {}   # (freq_val, cons_val) -> (QPushButton, base label text)
@@ -297,6 +298,11 @@ class RiskMatrixPopup(QDialog):
         self.adjustSize()
 
     def _pick(self, freq, cons):
+        if self._category_mode:
+            # Frequency comes from the cause and severity must be chosen on
+            # an explicit category row below. The grid is only a visual map
+            # in this mode; clicking it may not create a fallback assessment.
+            return
         self.selection_made.emit(freq, cons)
         self.accept()
 
@@ -4111,7 +4117,13 @@ class ScenarioTablePanel(QWidget):
         # action (pre-existing in _on_risk_cell_clicked, previously dead code
         # since nothing ever emitted it) instead of 'risk_click_cat' when
         # there's no real category_id/severity_id to edit.
-        rb = QTableWidgetItem(f"{freq_axis_label(freq)}  {cons_axis_label(sev)}")
+        if cat_info:
+            cat_short = (cat_name or '')[:3]
+            rb_text = f"{cat_short}  {freq_axis_label(freq)}  {cons_axis_label(sev)}"
+        else:
+            rb_text = "Välj kategori"
+            bg_b, fg_b = '#FFFFFF', '#8D9299'
+        rb = QTableWidgetItem(rb_text)
         rb.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
         rb.setToolTip(f"🖱 Klicka för att ändra i riskmatrisen\n{level_b}")
@@ -4178,8 +4190,12 @@ class ScenarioTablePanel(QWidget):
         # Shown for every row now (2026-08-09, see NOTES.md) — same fallback
         # rationale as RFORE above; final_f/sev/bg_s/fg_s are already
         # computed unconditionally regardless of cat_info.
-        slut_text = (f"−{total_steps} steg\n" if total_steps else "") + \
-                    f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}"
+        if cat_info:
+            cat_short = (cat_name or '')[:3]
+            slut_text = f"{cat_short}  {freq_axis_label(final_f)}  {cons_axis_label(sev)}"
+        else:
+            slut_text = "—"
+            bg_s, fg_s = '#FFFFFF', '#8D9299'
         rs = QTableWidgetItem(slut_text)
         rs.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -4448,8 +4464,12 @@ class ScenarioTablePanel(QWidget):
                 # computed unconditionally above, regardless of cat_info, so
                 # a non-categorized consequence's SLUT cell used to go
                 # stale/blank forever after an RRF change.
-                slut_text = (f"−{total_steps} steg\n" if total_steps else "") + \
-                            f"{freq_axis_label(final_f)}  {cons_axis_label(sev)}"
+                if cat_info:
+                    cat_short = (cat_name or '')[:3]
+                    slut_text = f"{cat_short}  {freq_axis_label(final_f)}  {cons_axis_label(sev)}"
+                else:
+                    slut_text = "—"
+                    bg_s, fg_s = '#FFFFFF', '#8D9299'
                 rs = self._table.item(row, self._C_SLUT)
                 if rs:
                     rs.setText(slut_text)

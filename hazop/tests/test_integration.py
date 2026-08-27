@@ -3256,6 +3256,33 @@ class PlusRowQuickAddTaggingTests(unittest.TestCase):
             new_id = captured[0][1]
             self.assertEqual(dict(win.db.get_consequence(new_id))['description'], '')
 
+    def test_scenario_created_consequence_does_not_expand_collapsed_tree(self):
+        """Enter in HAZOP Scenario adds data without navigating the tree."""
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            win.db.update_cause(cause_id, description='Objekt')
+            win.tree_panel.refresh()
+            win.tree_panel.tree.collapseAll()
+            top_items = [win.tree_panel.tree.topLevelItem(i)
+                         for i in range(win.tree_panel.tree.topLevelItemCount())]
+            self.assertTrue(top_items)
+            self.assertTrue(all(not item.isExpanded() for item in top_items))
+
+            panel._quick_add_consequence(cause_id)
+
+            self.assertEqual(len(win.db.consequences(cause_id)), 1)
+            top_items = [win.tree_panel.tree.topLevelItem(i)
+                         for i in range(win.tree_panel.tree.topLevelItemCount())]
+            self.assertTrue(all(not item.isExpanded() for item in top_items),
+                "adding a consequence in Scenario must leave Nytt system collapsed")
+            cause_item = _find_tree_item(win.tree_panel.tree, CAUSE_T, cause_id)
+            self.assertIsNotNone(cause_item,
+                "the consequence's object/cause must still exist in the rebuilt tree")
+            self.assertFalse(cause_item.isExpanded())
+
     def test_quick_add_safeguard_creates_blank_row_no_popup(self):
         with _TempDbMainWindow() as win:
             panel = win.scenario_panel

@@ -2557,3 +2557,29 @@ Verifiering: syntaxkontroll samt `tests.test_smoke`, `tests.test_node_markup`,
 `tests.test_tree_panel` och `tests.test_scenario_panel` (241 tester, 10
 arkiverade tester hoppades över). Separat global-tooltip-test tillagt i
 `tests.test_hazop`.
+
+## Scenario-Enter lämnar trädet stängt + kategoristyrd riskvisning (2026-08-27)
+
+När en konsekvens eller barriär skapades med Enter i HAZOP Scenario använde
+`new_item_created` tidigare den nya, dolda raden som mål i
+`TreePanel.refresh(type_, id_, emit_selection=False)`. Med auto-collapse kunde
+detta öppna hela föräldravägen och ändra `Nytt system` från stängt till
+expanderat. Scenario-skapade rader bygger nu om trädet utan navigeringsmål;
+datan finns direkt i trädet men användarens kollapsade vy och manuella
+expansion bevaras. Scenario-tabellen väljer fortfarande den nya raden för
+fortsatt inline-inmatning.
+
+Tre tidigare riskmatrisuppföljningar är samtidigt slutförda:
+
+- En konsekvens utan vald konsekvenskategori visar `Välj kategori` och ingen
+  automatisk riskfärg/C1-bedömning. Första riskbedömningen skapas först när
+  användaren väljer en kategori och dess C-nivå i riskmatrisen.
+- Kategorirader visar kortnamn (`Per`, `Mil` osv.) före F/C-värdet i både
+  Risk före barriärer och Slutkonsekvens.
+- `−N steg` är borttaget ur Slutkonsekvenscellens synliga text. Reduktions-
+  informationen finns fortsatt i tooltipen.
+
+Verifiering: syntaxkontroll, `tests.test_smoke`, hela
+`tests.test_scenario_panel` (153 tester, 10 arkiverade hoppades över), hela
+`tests.test_integration` (239 tester) samt ett särskilt end-to-end-test för
+Scenario-Enter med kollapsat `Nytt system`. Ingen visuell GUI-körning gjordes.

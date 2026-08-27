@@ -1905,7 +1905,7 @@ class RiskCellColorTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_uncategorized_row_still_shows_plain_severity_colors(self):
+    def test_uncategorized_row_requires_explicit_category_before_risk_exists(self):
         """A consequence with no per-category severity assessment (the
         common case — ConsequencePanel's plain severity+category fields,
         not the opt-in 📊 per-category feature) must still show a real
@@ -1927,16 +1927,15 @@ class RiskCellColorTests(unittest.TestCase):
             row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
 
             item = panel._table.item(row, panel._C_RFORE)
-            self.assertNotEqual(item.text(), '')
-            _, expected_bg, expected_fg = risk_info(3, 4)
-            self.assertEqual(item.background().color(), QColor(expected_bg))
-            self.assertEqual(item.foreground().color(), QColor(expected_fg))
+            self.assertEqual(item.text(), 'Välj kategori')
+            self.assertEqual(item.background().color(), QColor('#FFFFFF'))
+            self.assertEqual(item.foreground().color(), QColor('#8D9299'))
             meta = item.data(Qt.ItemDataRole.UserRole)
             self.assertEqual(meta[0], 'risk_click')
         finally:
             panel.deleteLater()
 
-    def test_uncategorized_slut_also_shows_plain_severity_colors(self):
+    def test_uncategorized_slut_has_no_automatic_risk(self):
         from hazop import ScenarioTablePanel, risk_info
         from PyQt6.QtGui import QColor
         panel = ScenarioTablePanel(self.db)
@@ -1950,15 +1949,14 @@ class RiskCellColorTests(unittest.TestCase):
             panel.load_node(node_id)
             row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
 
-            _, expected_bg, expected_fg = risk_info(3, 4)
             item = panel._table.item(row, panel._C_SLUT)
-            self.assertNotEqual(item.text(), '')
-            self.assertEqual(item.background().color(), QColor(expected_bg))
-            self.assertEqual(item.foreground().color(), QColor(expected_fg))
+            self.assertEqual(item.text(), '—')
+            self.assertEqual(item.background().color(), QColor('#FFFFFF'))
+            self.assertEqual(item.foreground().color(), QColor('#8D9299'))
         finally:
             panel.deleteLater()
 
-    def test_update_lopa_risk_recolors_uncategorized_row_too(self):
+    def test_update_lopa_keeps_uncategorized_row_without_risk(self):
         """The incremental RRF-change path (_update_lopa_risk) must also
         keep patching SLUT for rows without a category assessment —
         previously it silently stopped updating them after the first
@@ -1980,11 +1978,10 @@ class RiskCellColorTests(unittest.TestCase):
             panel._update_lopa_risk(cons_id)
 
             row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
-            final_f, _rrf, _steps = total_freq_reduction(4, 100, False, 10, False, 10, [])
-            _, expected_bg, expected_fg = risk_info(final_f, 3)
             slut_item = panel._table.item(row, panel._C_SLUT)
-            self.assertEqual(slut_item.background().color(), QColor(expected_bg))
-            self.assertEqual(slut_item.foreground().color(), QColor(expected_fg))
+            self.assertEqual(slut_item.text(), '—')
+            self.assertEqual(slut_item.background().color(), QColor('#FFFFFF'))
+            self.assertEqual(slut_item.foreground().color(), QColor('#8D9299'))
         finally:
             panel.deleteLater()
 
@@ -2083,6 +2080,8 @@ class RiskCellActualRenderColorTests(unittest.TestCase):
             self.db.update_cause(cause_id, likelihood=5)
             cons_id = self.db.add_consequence(cause_id)
             self.db.update_consequence(cons_id, 'Ny konsekvens', 5, '')
+            cat = self.db.consequence_categories()[0]
+            self.db.set_consequence_severity(cons_id, cat['id'], 5)
             panel.load_node(node_id)
             row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
 
@@ -2111,6 +2110,8 @@ class RiskCellActualRenderColorTests(unittest.TestCase):
             self.db.update_cause(cause_id, likelihood=0)
             cons_id = self.db.add_consequence(cause_id)
             self.db.update_consequence(cons_id, 'Ny konsekvens', 1, '')
+            cat = self.db.consequence_categories()[0]
+            self.db.set_consequence_severity(cons_id, cat['id'], 1)
             panel.load_node(node_id)
             row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
 
@@ -2788,6 +2789,19 @@ class RiskMatrixCategorySectionTests(unittest.TestCase):
         finally:
             popup.deleteLater()
 
+    def test_grid_click_does_not_create_uncategorized_assessment(self):
+        from hazop import RiskMatrixPopup
+        popup = RiskMatrixPopup(current_freq=2, current_cons=3,
+                                 db=self.db, cons_id=self.cons_id)
+        try:
+            emitted = []
+            popup.selection_made.connect(lambda *args: emitted.append(args))
+            popup._grid_buttons[(2, 4)][0].click()
+            self.assertEqual(emitted, [])
+            self.assertEqual(self.db.get_consequence_severities(self.cons_id), [])
+        finally:
+            popup.deleteLater()
+
 
 class KonCellCategoryBadgeMovedToRiskMatrixTests(unittest.TestCase):
     """The old "📊" category badge at the left of the KON cell (and its
@@ -2856,6 +2870,29 @@ class KonCellCategoryBadgeMovedToRiskMatrixTests(unittest.TestCase):
                 panel._on_cell_clicked(row, panel._C_RFORE)
             self.assertIs(captured.get('db'), self.db)
             self.assertEqual(captured.get('cons_id'), cons_id)
+        finally:
+            panel.deleteLater()
+
+    def test_category_prefix_is_shown_and_slut_has_no_step_text(self):
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(cause_id, likelihood=3)
+        cons_id = self.db.add_consequence(cause_id)
+        cat = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(cons_id, cat['id'], 4)
+        sg_id = self.db.add_safeguard(cons_id)
+        self.db.update_safeguard(sg_id, rrf=10)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+            prefix = cat['name'][:3]
+            self.assertTrue(panel._table.item(row, panel._C_RFORE).text().startswith(prefix))
+            slut_text = panel._table.item(row, panel._C_SLUT).text()
+            self.assertTrue(slut_text.startswith(prefix))
+            self.assertNotIn('steg', slut_text.lower())
         finally:
             panel.deleteLater()
 
