@@ -85,6 +85,9 @@ class RiskMatrixPopup(QDialog):
         self._category_mode = db is not None and cons_id is not None
         self._current_freq = current_freq
         self._n_cons      = n_cons
+        self._freq_on_x   = freq_on_x
+        self._x_rev       = x_rev
+        self._y_rev       = y_rev
         self._grid_buttons = {}   # (freq_val, cons_val) -> (QPushButton, base label text)
 
         outer = QVBoxLayout(self)
@@ -212,12 +215,15 @@ class RiskMatrixPopup(QDialog):
         self.adjustSize()
 
     def _build_category_section(self, outer):
-        """Per-category severity picker, moved here from the old KON-cell
-        "📊" badge (ConsCategoryMatrixPopup) — same button-grid styling,
-        but severities are saved immediately per click (no separate OK)
-        so the markers on the matrix above update live as you go, and
-        the popup can just be dismissed (Avbryt / click outside) when
-        done rather than needing an explicit commit step."""
+        """Build the per-category picker on the same axis as the matrix.
+
+        Consequence is the matrix Y-axis when frequency is on X, so each
+        category gets a vertical C1..Cn column.  When the matrix is rotated,
+        consequence is the X-axis and the category controls run horizontally.
+        Cell dimensions match the matrix cells, making the orientation and
+        order immediately recognisable.  Severity descriptions are exposed
+        through each button's tooltip.
+        """
         cats  = [dict(r) for r in self._db.consequence_categories()]
         if not cats:
             return
@@ -226,6 +232,7 @@ class RiskMatrixPopup(QDialog):
         self._cats = cats
         self._cat_sel = {c['id']: saved.get(c['id'], 0) for c in cats}
         self._cat_buttons = {}
+        severity_defs = self._db.get_severity_definitions()
 
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
         sep.setStyleSheet("color:#E2E3E1;")
@@ -235,26 +242,73 @@ class RiskMatrixPopup(QDialog):
         hdr2.setStyleSheet("font-size:9px; color:#555;")
         outer.addWidget(hdr2)
 
-        for cat in cats:
-            cid = cat['id']
-            row_l = QHBoxLayout(); row_l.setSpacing(2); row_l.setContentsMargins(0, 0, 0, 0)
-            name_l = QLabel(cat['name'])
-            name_l.setFixedWidth(70)
-            name_l.setStyleSheet("font-size:9px;")
-            row_l.addWidget(name_l)
-            for s in range(1, self._n_cons + 1):
-                cbtn = QPushButton(cons_axis_label(s))
-                cbtn.setFixedSize(36, 18)
-                cbtn.setCheckable(True)
-                cbtn.setChecked(self._cat_sel.get(cid, 0) == s)
-                cbtn.setStyleSheet(self._cat_bstyle(cbtn.isChecked()))
-                cbtn.setAutoDefault(False)
-                cbtn.setDefault(False)
-                cbtn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-                cbtn.clicked.connect(lambda _, ci=cid, sv=s: self._toggle_category(ci, sv))
-                self._cat_buttons[(cid, s)] = cbtn
-                row_l.addWidget(cbtn)
-            outer.addLayout(row_l)
+        def add_button(cid, s, add_widget):
+            cbtn = QPushButton(cons_axis_label(s))
+            cbtn.setFixedSize(50, 32)
+            cbtn.setCheckable(True)
+            cbtn.setChecked(self._cat_sel.get(cid, 0) == s)
+            cbtn.setStyleSheet(self._cat_bstyle(cbtn.isChecked()))
+            cbtn.setAutoDefault(False)
+            cbtn.setDefault(False)
+            cbtn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            cat_desc = severity_defs.get(s, {}).get(cid, '')
+            tip = f"{cons_axis_label(s)}"
+            if cat_desc:
+                tip += f": {cat_desc}"
+            cbtn.setToolTip(tip)
+            cbtn.clicked.connect(lambda _, ci=cid, sv=s: self._toggle_category(ci, sv))
+            self._cat_buttons[(cid, s)] = cbtn
+            add_widget(cbtn)
+
+        if self._freq_on_x:
+            # Consequence is Y: severity values are rows, one aligned vertical
+            # column per category.
+            grid = QGridLayout(); grid.setSpacing(0)
+            corner = QLabel('C')
+            corner.setFixedSize(50, 22)
+            corner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            corner.setStyleSheet("font-size:9px; font-weight:bold; color:#555;")
+            grid.addWidget(corner, 0, 0)
+            for col, cat in enumerate(cats, 1):
+                name_l = QLabel(cat['name'])
+                name_l.setFixedWidth(50)
+                name_l.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                name_l.setStyleSheet("font-size:8px; font-weight:bold;")
+                name_l.setToolTip(cat['name'])
+                grid.addWidget(name_l, 0, col)
+            severity_order = (range(1, self._n_cons + 1) if self._y_rev
+                              else range(self._n_cons, 0, -1))
+            for row, s in enumerate(severity_order, 1):
+                axis_l = QLabel(cons_axis_label(s))
+                axis_l.setFixedSize(50, 32)
+                axis_l.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                axis_l.setStyleSheet("font-size:8px; font-weight:bold; color:#555;")
+                grid.addWidget(axis_l, row, 0)
+                for col, cat in enumerate(cats, 1):
+                    add_button(cat['id'], s,
+                               lambda widget, r=row, c=col: grid.addWidget(widget, r, c))
+            outer.addLayout(grid)
+        else:
+            # Consequence is X: severity values run horizontally per category.
+            hdr = QHBoxLayout(); hdr.setSpacing(0); hdr.setContentsMargins(0, 0, 0, 0)
+            pad = QLabel(); pad.setFixedWidth(70); hdr.addWidget(pad)
+            severity_order = (range(self._n_cons, 0, -1) if self._x_rev
+                              else range(1, self._n_cons + 1))
+            for s in severity_order:
+                axis_l = QLabel(cons_axis_label(s)); axis_l.setFixedSize(50, 22)
+                axis_l.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                axis_l.setStyleSheet("font-size:8px; font-weight:bold; color:#555;")
+                axis_l.setToolTip(cons_axis_label(s))
+                hdr.addWidget(axis_l)
+            outer.addLayout(hdr)
+            for cat in cats:
+                row_l = QHBoxLayout(); row_l.setSpacing(0); row_l.setContentsMargins(0, 0, 0, 0)
+                name_l = QLabel(cat['name']); name_l.setFixedWidth(70)
+                name_l.setStyleSheet("font-size:9px; font-weight:bold;")
+                name_l.setToolTip(cat['name']); row_l.addWidget(name_l)
+                for s in severity_order:
+                    add_button(cat['id'], s, row_l.addWidget)
+                outer.addLayout(row_l)
 
         self._refresh_category_markers()
 

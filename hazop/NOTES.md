@@ -2,6 +2,13 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Konsekvenspopup följer riskmatrisens axel (2026-08-27)
+
+Riskmatrisens konsekvensval per kategori orienteras nu efter aktuell matris:
+vertikala C-rutor när konsekvens ligger på Y-axeln och horisontella C-rutor
+när konsekvens ligger på X-axeln. Ordningen följer även eventuell omvänd axel.
+Varje nivå har tooltip med den sparade konsekvensbeskrivningen.
+
 ## Flera orsaker från samma vänsterklickade objekt (2026-08-27)
 
 Orsaksflödet från objektets avvikelse-popup använder nu objektets aktuella
