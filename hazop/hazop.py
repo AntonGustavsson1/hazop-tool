@@ -1945,22 +1945,82 @@ class MainWindow(QMainWindow):
         dev = self.db.get_deviation(dev_id)
         if not dev:
             return
-        node_id = dev['node_id']
-        dev_equipment_id = dev['equipment_id']
-        last_cause_id = None
+        dev = dict(dev)
+        node_id = dev.get('node_id')
+        dev_equipment_id = dev.get('equipment_id')
+        equipments = []
         for marker_id in marker_ids:
-            equip = self.db.get_equipment_by_marker_id(marker_id)
-            if not equip:
-                continue
+            equipment = self.db.get_equipment_by_marker_id(marker_id)
+            if equipment:
+                equipments.append(dict(equipment))
+        if not equipments:
+            return
+        # Multiple P&ID objects need an explicit decision: independent causes
+        # or one functional cause chain. Never infer this from drag order.
+        grouped = False
+        if len(equipments) > 1:
+            grouped = QMessageBox.question(
+                self, "Flera objekt",
+                "Ska objekten behandlas som en grupp?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes
+
+        last_cause_id = None
+        for equip in equipments:
             if equip.get('node_id') is None and node_id is not None:
                 self.db.set_equipment_node(equip['id'], node_id)
             if dev_equipment_id is None:
                 self.db.set_deviation_equipment(dev_id, equip['id'])
                 dev_equipment_id = equip['id']
-            cause_id, _cons_id = _create_tagged_cause(
+            if grouped:
+                continue
+            cause_id, _ = _create_tagged_cause(
                 self.db, dev_id, equip.get('equipment_type', ''), equip.get('tag', ''),
                 equipment_id=equip['id'])
             last_cause_id = cause_id
+
+        if grouped:
+            control_keys = ('instrument', 'givare', 'transmitter', 'regler',
+                            'controller', 'styrsignal', 'frekvensomriktare')
+            affected_keys = ('ventil', 'pump', 'motor', 'värmare', 'kylare',
+                             'kylning', 'fläkt', 'kompressor')
+
+            def has_type(equipment, keys):
+                kind = (equipment.get('equipment_type') or '').casefold()
+                return any(key in kind for key in keys)
+
+            control = next((e for e in equipments if has_type(e, control_keys)), None)
+            affected = next((e for e in equipments
+                             if e is not control and has_type(e, affected_keys)), None)
+            if control is not None and affected is not None:
+                deviation_text = (dev.get('description') or '').casefold()
+                high = any(word in deviation_text for word in ('högt', 'hög ', 'high'))
+                affected_kind = (affected.get('equipment_type') or '').casefold()
+                if 'ventil' in affected_kind:
+                    effect = 'öppnar fullt' if high else 'stänger'
+                elif any(key in affected_kind for key in ('pump', 'motor', 'fläkt', 'kompressor')):
+                    effect = 'går på maximalt varvtal' if high else 'stannar'
+                elif any(key in affected_kind for key in ('värmare', 'kylare', 'kylning')):
+                    effect = 'går på full effekt' if high else 'stänger av'
+                else:
+                    effect = 'påverkas'
+                control_tag = control.get('tag') or 'Objekt'
+                affected_tag = affected.get('tag') or 'Objekt'
+                direction = 'högt' if high else 'lågt'
+                mechanism = f"{control_tag} felar {direction} → {affected_tag} {effect}"
+                last_cause_id, _ = _create_tagged_cause(
+                    self.db, dev_id, control.get('equipment_type', ''),
+                    f"{control_tag} + {affected_tag}", equipment_id=control.get('id'))
+                self.db.update_cause(last_cause_id, description=mechanism)
+
+        if last_cause_id is None:
+            # User chose separate causes, or no defensible control/effect
+            # relationship could be identified.
+            for equip in equipments:
+                cause_id, _ = _create_tagged_cause(
+                    self.db, dev_id, equip.get('equipment_type', ''),
+                    equip.get('tag', ''), equipment_id=equip.get('id'))
+                last_cause_id = cause_id
         if last_cause_id is not None:
             self.tree_panel.refresh(CAUSE_T, last_cause_id)
             self.scenario_panel.refresh_placed()

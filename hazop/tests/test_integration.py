@@ -4533,7 +4533,12 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             m2 = win.db.add_equipment_marker(eq2, "V-2", 0, 2.0, 2.0, "Ventil",
                                              confidence=0.9, link_method='leader')
 
-            win._on_equipment_dropped_on_deviation(dev_id, [m1, m2])
+            # Multiple drops ask whether this is a functional group; this
+            # test covers the independent-cause (No) branch.
+            with unittest.mock.patch(
+                    'hazop.QMessageBox.question',
+                    return_value=QMessageBox.StandardButton.No):
+                win._on_equipment_dropped_on_deviation(dev_id, [m1, m2])
 
             causes = win.db.causes(node_id)
             tagged = {c['comp_tag'] for c in causes}
@@ -4555,6 +4560,27 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             win._on_equipment_dropped_on_deviation(dev_id, [marker_id])
 
             self.assertEqual(win.db.equipment_node_id(eq_id), node_id)
+
+    def test_grouped_control_and_affected_objects_create_functional_chain(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.get_or_create_deviation(node_id, "Högt flöde")
+            instrument_id = win.db.add_equipment_item("FI-1", "FI-1", "FI", 0, "Instrument", '', 0)
+            valve_id = win.db.add_equipment_item("FV-1", "FV-1", "FV", 0, "Reglerventil", '', 0)
+            m1 = win.db.add_equipment_marker(instrument_id, "FI-1", 0, 1.0, 1.0, "Instrument")
+            m2 = win.db.add_equipment_marker(valve_id, "FV-1", 0, 2.0, 2.0, "Reglerventil")
+
+            with unittest.mock.patch(
+                    'hazop.QMessageBox.question',
+                    return_value=QMessageBox.StandardButton.Yes):
+                win._on_equipment_dropped_on_deviation(dev_id, [m1, m2])
+
+            causes = [dict(c) for c in win.db.causes(node_id)
+                      if c['deviation_id'] == dev_id]
+            self.assertEqual(len(causes), 1)
+            self.assertEqual(causes[0]['comp_tag'], 'FI-1 + FV-1')
+            self.assertIn('FI-1 felar högt', causes[0]['description'])
+            self.assertIn('FV-1 öppnar fullt', causes[0]['description'])
 
     def test_on_equipment_dropped_on_deviation_ignores_unlinked_markers(self):
         with _TempDbMainWindow() as win:

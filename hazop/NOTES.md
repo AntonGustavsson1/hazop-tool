@@ -2,6 +2,14 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Grupp av P&ID-objekt i orsak (2026-08-27)
+
+Vid drop av flera objekt på en avvikelse frågar HAZOP-trädet om objekten ska
+behandlas som grupp. Nej skapar separata orsaker. Ja skapar en enda funktionell
+orsakskedja när ett styrande objekt och ett påverkat objekt kan identifieras;
+annars används separata orsaker. Kedjan innehåller båda fetmarkerade taggarna
+och beskriver felmekanismen, till exempel `Instrument felar högt → Ventil öppnar fullt`.
+
 ## Orsak utan P&ID-objekt (2026-08-27)
 
 Orsaksfält utan kopplad utrustning visar nu **ej på P&ID**. Drag-and-drop från
