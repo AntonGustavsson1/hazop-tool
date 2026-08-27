@@ -2,6 +2,11 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Objektuppgifter per blad (2026-08-27)
+
+Noder-tabellen visar nu även objekttyp, hanterade avvikelser och antal per
+objekt i separata kolumner. Raderna är fortsatt parallella med bladlistan.
+
 ## Kompakt konsekvensdefinitioner (2026-08-27)
 
 Separatorn "Konsekvensdefinitioner" har tagits bort ur riskmatrisens grid.
