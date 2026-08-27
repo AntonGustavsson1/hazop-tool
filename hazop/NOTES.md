@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Tom objektlista i Avvikelser & Orsaker (2026-08-27)
+
+Den reducerade standardkatalogens dubblettstädning kunde lämna alla
+standardavvikelser inaktiva trots att orsakerna fortfarande var aktiva. Vid
+databasstart återaktiveras nu avvikelser som har aktiva standardorsaker.
+
 ## Justerbar matrisbredd (2026-08-27)
 
 Riskmatrisens celler och konsekvensdefinitioner använder inte längre fasta

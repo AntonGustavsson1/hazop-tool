@@ -1214,6 +1214,19 @@ class Database:
         the archive tables provide an explicit recovery/export source."""
         key = 'reduced_standard_catalog_v1'
         if self.conn.execute("SELECT value FROM app_config WHERE key=?", (key,)).fetchone():
+            # The first reduced-catalog migration could be followed by the
+            # legacy duplicate-deviation cleanup.  That cleanup selected the
+            # old (now archived/inactive) row as the canonical duplicate and
+            # accidentally left the entire active deviation list empty while
+            # the active causes still referenced those original rows.  Heal
+            # existing project files in place; never delete or rewrite data.
+            active_count = self.conn.execute(
+                "SELECT COUNT(*) FROM standard_deviations WHERE active=1").fetchone()[0]
+            if not active_count:
+                self.conn.execute(
+                    "UPDATE standard_deviations SET active=1 WHERE id IN "
+                    "(SELECT DISTINCT deviation_id FROM standard_causes WHERE active=1)")
+                self.conn.commit()
             return
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS standard_deviations_archive (

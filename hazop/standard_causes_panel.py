@@ -306,6 +306,10 @@ class StandardCausesSettingsPanel(QWidget):
         else:
             rows = self.db.objects_for_deviation(dev_id)
         for r in rows:
+            # Database queries return sqlite3.Row objects; normalize before
+            # optional-field access so one malformed `.get()` cannot leave
+            # the entire object list empty after it was cleared.
+            r = dict(r)
             label = r['name']
             n = r.get('n_causes', 0)
             if n:
@@ -343,6 +347,7 @@ class StandardCausesSettingsPanel(QWidget):
         obj_name = obj_item.data(Qt.ItemDataRole.UserRole + 1) if obj_item else ''
         self._cause_lbl.setText(f"<b>Orsaker</b> — {dev_name} / {obj_name}")
         for c in self.db.standard_causes_for_object(dev_id, obj_id):
+            c = dict(c)
             freq = c.get('frequency')
             label = c['description']
             if freq is not None:
@@ -682,4 +687,3 @@ class StandardCausesSettingsPanel(QWidget):
         self._load_deviations()
         QMessageBox.information(self, 'Importerat',
             f'Lagt till: {added_devs} avvikelser, {added_causes} orsaker, {added_objs} objekt.')
-
