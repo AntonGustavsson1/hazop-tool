@@ -330,11 +330,11 @@ class RiskMatrixPopup(QDialog):
     def _cat_bstyle(selected: bool) -> str:
         if selected:
             return ("QPushButton{background:#2F5FD0;color:white;"
-                    "border:2px solid #2F5FD0;border-radius:3px;"
+                    "border:2px solid #2F5FD0;border-radius:0px;"
                     "font-size:8px;font-weight:bold;}"
                     "QPushButton:hover{background:#3D6BD8;}")
         return ("QPushButton{background:#F5F5F3;color:#17191C;"
-                "border:1px solid #CFD1CE;border-radius:3px;font-size:8px;}"
+                "border:1px solid #CFD1CE;border-radius:0px;font-size:8px;}"
                 "QPushButton:hover{background:#E8E9E6;border:1px solid #B3B7B2;}")
 
     def _toggle_category(self, cat_id, sev):
@@ -600,8 +600,8 @@ class ConsequenceStepPickerDialog(QDialog):
     _COL_W = 150   # fixed width per "Del N" column — keeps the dialog tight
 
     _LIST_SS = (
-        "QListWidget { border:1px solid #E2E3E1; border-radius:5px; background:white; }"
-        "QListWidget::item { padding:3px 5px; border-radius:3px; font-size:10px; }"
+        "QListWidget { border:1px solid #E2E3E1; border-radius:0px; background:white; }"
+        "QListWidget::item { padding:2px 4px; border-radius:0px; font-size:10px; }"
         "QListWidget::item:selected {"
         "  background:#E6ECFA; color:#17191C; font-weight:bold;"
         "  border:1px solid #2F5FD0; }"
@@ -648,7 +648,7 @@ class ConsequenceStepPickerDialog(QDialog):
             if cause_text: ctx_parts.append(f"<b>Orsak:</b> {cause_text[:80]}")
             ctx = QLabel("  ·  ".join(ctx_parts))
             ctx.setStyleSheet("color:#17191C; font-size:10px; padding:2px 4px;"
-                              "background:#F5F5F3; border-radius:3px;")
+                              "background:#F5F5F3; border-radius:0px;")
             ctx.setWordWrap(True)
             main.addWidget(ctx)
 
@@ -703,7 +703,7 @@ class ConsequenceStepPickerDialog(QDialog):
             end_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             end_lbl.setStyleSheet(
                 "color:#9a6a3d; font-size:9px; background:#fff7ed;"
-                "border:1px solid #fde8cc; border-radius:5px; padding:6px;")
+                "border:1px solid #fde8cc; border-radius:0px; padding:4px;")
             end_lbl.setMinimumHeight(110)
             end_lbl.setVisible(False)
             col_l.addWidget(end_lbl, 1)
@@ -739,7 +739,7 @@ class ConsequenceStepPickerDialog(QDialog):
             pin_btn.setFixedSize(22, 22)
             pin_btn.setToolTip("Klicka på P&ID för att välja referensobjekt")
             pin_btn.setStyleSheet(
-                "QPushButton { border:1px solid #dc2626; border-radius:3px;"
+                "QPushButton { border:1px solid #dc2626; border-radius:0px;"
                 "  background:#fee2e2; color:#dc2626; font-size:10px; }"
                 "QPushButton:hover { background:#fca5a5; }")
             pin_btn.clicked.connect(partial(self._request_pick_for_col, step-1))
@@ -808,7 +808,7 @@ class ConsequenceStepPickerDialog(QDialog):
         # ── Preview strip ─────────────────────────────────────────────────────
         prev_frame = QFrame()
         prev_frame.setFrameShape(QFrame.Shape.StyledPanel)
-        prev_frame.setStyleSheet("background:#f0f9ff; border-radius:4px;")
+        prev_frame.setStyleSheet("background:#f0f9ff; border-radius:0px;")
         prev_lay = QVBoxLayout(prev_frame)
         prev_lay.setContentsMargins(6, 4, 6, 4)
         lbl = QLabel("Genererad kedjetext:")
@@ -830,7 +830,7 @@ class ConsequenceStepPickerDialog(QDialog):
             "för att omedelbart markera ytterligare ett objekt.")
         add_more_btn.setStyleSheet(
             "background:#2F5FD0; color:white; border:none;"
-            "border-radius:4px; padding:4px 10px;")
+            "border-radius:0px; padding:3px 8px;")
         add_more_btn.clicked.connect(self._save_and_add_more)
         btn_row.addWidget(add_more_btn)
         btn_row.addStretch()
@@ -1009,13 +1009,13 @@ class ConsequenceStepPickerDialog(QDialog):
         has_opts = bool(self._options[step_idx])
         if has_sel:
             style = ("font-weight:bold; color:white; font-size:10px;"
-                     "background:#2F5FD0; border-radius:3px; padding:3px;")
+                     "background:#2F5FD0; border-radius:0px; padding:2px 3px;")
         elif not has_opts:
             style = ("font-weight:bold; color:#8D9299; font-size:10px;"
-                     "background:#F5F5F3; border-radius:3px; padding:3px;")
+                     "background:#F5F5F3; border-radius:0px; padding:2px 3px;")
         else:
             style = ("font-weight:bold; color:#17191C; font-size:10px;"
-                     "background:#FFFFFF; border:1px solid #CFD1CE; border-radius:3px; padding:2px;")
+                     "background:#FFFFFF; border:1px solid #CFD1CE; border-radius:0px; padding:1px 2px;")
         col['hdr'].setStyleSheet(style)
 
     # ── Selection logic ───────────────────────────────────────────────────────
@@ -2059,11 +2059,11 @@ class StandardCauseSuggestPopup(QWidget):
 
     _BTN_STYLE = (
         "QPushButton{text-align:left; font-size:10px; padding:3px 6px;"
-        "border:none; background:transparent; border-radius:3px;}"
+        "border:none; background:transparent; border-radius:0px;}"
         "QPushButton:hover{background:#F5F5F3;}")
     _FREQ_BTN_STYLE = (
-        "QPushButton{color:#17191C; background:#F5F5F3; border-radius:3px;"
-        "padding:2px 8px; font-size:10px; font-weight:bold; border:none;}"
+        "QPushButton{color:#17191C; background:#F5F5F3; border-radius:0px;"
+        "padding:1px 6px; font-size:10px; font-weight:bold; border:none;}"
         "QPushButton:hover{background:#E8E9E6;}")
 
     def __init__(self, panel, row, cause_id, editor, comp_type, dev_description,
@@ -2387,7 +2387,7 @@ class SgRRFCategoryPopup(QDialog):
             btn.setFixedWidth(52)
             btn.setStyleSheet(
                 "QPushButton{background:#2F5FD0;color:white;border:none;"
-                "border-radius:3px;padding:3px;font-weight:bold;font-size:9px;}"
+                "border-radius:0px;padding:2px 8px;font-weight:bold;font-size:9px;}"
                 "QPushButton:hover{background:#3D6BD8;}")
             btn.clicked.connect(lambda _, v=v: self._spin.setValue(v))
             presets.addWidget(btn)
@@ -2437,7 +2437,7 @@ class SgRRFCategoryPopup(QDialog):
         ok.setDefault(True)
         ok.setStyleSheet(
             "QPushButton{font-size:10px;padding:2px 12px;"
-            "background:#2F5FD0;color:white;border-radius:3px;}"
+            "background:#2F5FD0;color:white;border-radius:0px;}"
             "QPushButton:hover{background:#3D6BD8;}")
         ok.clicked.connect(self._ok)
         cancel = QPushButton("Avbryt")
@@ -2517,7 +2517,7 @@ class CatSGSelectionPopup(QDialog):
         ok.setDefault(True)
         ok.setStyleSheet(
             "QPushButton{font-size:10px;padding:2px 12px;"
-            "background:#2F5FD0;color:white;border-radius:3px;}"
+            "background:#2F5FD0;color:white;border-radius:0px;}"
             "QPushButton:hover{background:#3D6BD8;}")
         ok.clicked.connect(self._ok)
         cancel = QPushButton("Avbryt")
@@ -2606,7 +2606,7 @@ class ConsCategoryMatrixPopup(QDialog):
         ok.setDefault(True)
         ok.setStyleSheet(
             "QPushButton{font-size:10px;padding:2px 12px;"
-            "background:#2F5FD0;color:white;border-radius:3px;}"
+            "background:#2F5FD0;color:white;border-radius:0px;}"
             "QPushButton:hover{background:#3D6BD8;}")
         ok.clicked.connect(self._ok)
         cancel = QPushButton("Avbryt")
@@ -2620,11 +2620,11 @@ class ConsCategoryMatrixPopup(QDialog):
     def _bstyle(selected: bool) -> str:
         if selected:
             return ("QPushButton{background:#2F5FD0;color:white;"
-                    "border:2px solid #2F5FD0;border-radius:3px;"
+                    "border:2px solid #2F5FD0;border-radius:0px;"
                     "font-size:9px;font-weight:bold;}"
                     "QPushButton:hover{background:#3D6BD8;}")
         return ("QPushButton{background:#F5F5F3;color:#17191C;"
-                "border:1px solid #CFD1CE;border-radius:3px;font-size:9px;}"
+                "border:1px solid #CFD1CE;border-radius:0px;font-size:9px;}"
                 "QPushButton:hover{background:#E8E9E6;border:1px solid #B3B7B2;}")
 
     def _toggle(self, cat_id: int, sev: int):
