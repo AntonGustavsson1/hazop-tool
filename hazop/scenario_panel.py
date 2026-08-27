@@ -5899,7 +5899,7 @@ class ScenarioTablePanel(QWidget):
                 for equip in equips:
                     self.db.append_tag_to_consequence(
                         tgt_cons, equip.get('tag', ''), equip.get('equipment_type', ''))
-            elif tgt_col == self._C_SG and tgt_sg is not None:
+            elif tgt_col == self._C_SG and tgt_cons is not None:
                 # The dropped-on row only ever absorbs an object if it has
                 # no object on it yet — once it already carries a tag
                 # (from an earlier drop, single or multi), a NEW drop must
@@ -5909,8 +5909,9 @@ class ScenarioTablePanel(QWidget):
                 # safeguards med (flera rader)" — applies whether the
                 # extra objects arrive in one multi-select drag or as
                 # separate later single-object drags onto the same row).
-                sg_row = self.db.get_safeguard(tgt_sg)
-                row_is_free = bool(sg_row) and not (sg_row.get('tagged_refs') or '').strip()
+                sg_row = self.db.get_safeguard(tgt_sg) if tgt_sg is not None else None
+                row_is_free = (tgt_sg is not None and bool(sg_row)
+                               and not (sg_row.get('tagged_refs') or '').strip())
                 for i, equip in enumerate(equips):
                     if i == 0 and row_is_free:
                         self.db.append_tag_to_safeguard(

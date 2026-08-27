@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Direkt drop till tom safeguard (2026-08-27)
+
+P&ID-utrustning kan nu dras direkt till en tom safeguard/barriär-rad efter att
+en konsekvens skapats. Om raden saknar safeguard-id skapas barriären under
+den aktuella konsekvensen automatiskt och får den släppta objektkopplingen.
+
 ## Flera öppna avvikelser för samma P&ID-objekt (2026-08-27)
 
 När flera avvikelser, till exempel Lågt flöde och Högt flöde, kryssas för samma
