@@ -116,6 +116,8 @@ class PIDGraphicsView(QGraphicsView):
         # of a >=2-member selection then drags the whole group.
         self._selected_equipment_markers: set = set()
         self._equip_selection_overlays: dict = {}   # marker_id -> highlight QGraphicsItem
+        self._search_highlight_marker = None
+        self._search_highlight_overlay = None
         # Tree-context equipment highlight (2026-08-27, see NOTES.md
         # "Dynamisk färgmarkering av objekt på P&ID") — separate from the
         # multi-select state just above; a marker can be both multi-
@@ -1726,6 +1728,37 @@ class PIDGraphicsView(QGraphicsView):
             if self._find_equipment_item(marker_id) is not None:
                 self._select_equipment_marker(marker_id)
 
+    def set_search_highlight(self, marker_id):
+        """Highlight one object selected by the defined-object search in blue."""
+        self._clear_search_highlight()
+        self._search_highlight_marker = int(marker_id) if marker_id is not None else None
+        self._reapply_search_highlight()
+
+    def _clear_search_highlight(self):
+        overlay = self._search_highlight_overlay
+        if overlay is not None:
+            try:
+                self._scene.removeItem(overlay)
+            except RuntimeError:
+                pass
+        self._search_highlight_overlay = None
+
+    def _reapply_search_highlight(self):
+        self._clear_search_highlight()
+        if self._search_highlight_marker is None:
+            return
+        item = self._find_equipment_item(self._search_highlight_marker)
+        if item is None:
+            return
+        rect = item.mapRectToScene(item.boundingRect()).adjusted(-5, -5, 5, 5)
+        pen = QPen(QColor(30, 105, 235), 3.0)
+        pen.setCosmetic(True)
+        self._search_highlight_overlay = self._scene.addRect(
+            rect, pen, QBrush(Qt.BrushStyle.NoBrush))
+        self._search_highlight_overlay.setZValue(Z_OVERLAY + 8)
+        self._search_highlight_overlay.setVisible(
+            self._type_visible.get('equipment', True))
+
     # ── Tree-context equipment highlight (2026-08-27, see NOTES.md
     # "Dynamisk färgmarkering av objekt på P&ID") ──────────────────────────
     def set_tree_context_highlights(self, marker_color_map: dict):
@@ -1804,6 +1837,8 @@ class PIDGraphicsView(QGraphicsView):
                 item.setVisible(visible)
             except Exception:
                 pass
+        if marker_type == 'equipment' and self._search_highlight_overlay is not None:
+            self._search_highlight_overlay.setVisible(bool(visible))
 
     def _show_context_menu(self, sp, global_pos):
         menu = QMenu(self.viewport())

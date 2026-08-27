@@ -20,7 +20,7 @@ import equipment_detection
 from PyQt6.QtWidgets import (
     QAbstractSpinBox, QApplication, QCheckBox, QColorDialog, QComboBox,
     QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog,
-    QLabel, QLineEdit, QMessageBox, QProgressDialog, QPushButton,
+    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QProgressDialog, QPushButton,
     QScrollArea, QSizePolicy, QSlider, QSpinBox, QVBoxLayout, QWidget,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QPointF, QRectF, QTimer
@@ -50,6 +50,98 @@ from pid_viewer import (
     scan_pdf_for_equipment, apply_scan_result_to_equipment_catalog,
     upsert_identified_tags_from_scan, resolve_ocr_scan_choice, ocr_status,
 )
+
+
+class _EquipmentSearchPopup(QWidget):
+    """Small, live-filtered popup for the defined P&ID equipment model.
+
+    Rows come from ``equipment_catalog`` joined to ``equipment_markers``;
+    consequently an arbitrary word in the PDF can never become a result.
+    The marker coordinates are carried on each list item for immediate
+    navigation when the user clicks it.
+    """
+    result_chosen = pyqtSignal(int, int, float, float)
+
+    def __init__(self, panel):
+        super().__init__(panel, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self._panel = panel
+        self.setObjectName("equipmentSearchPopup")
+        self.setFixedWidth(330)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(5)
+        title = QLabel("Sök definierat objekt")
+        title.setStyleSheet("font-weight:600;")
+        outer.addWidget(title)
+        self._edit = QLineEdit()
+        self._edit.setPlaceholderText("Tagg, typ eller ID …")
+        self._edit.textChanged.connect(self._filter)
+        outer.addWidget(self._edit)
+        self._list = QListWidget()
+        self._list.setMinimumHeight(90)
+        self._list.itemClicked.connect(self._choose)
+        outer.addWidget(self._list)
+
+    def show_near(self, global_pos):
+        self.adjustSize()
+        screen = QApplication.screenAt(global_pos)
+        if screen:
+            rect = screen.availableGeometry()
+            x = min(global_pos.x(), rect.right() - self.width())
+            y = min(global_pos.y(), rect.bottom() - self.height())
+            global_pos = QPoint(max(rect.left(), x), max(rect.top(), y))
+        self.move(global_pos)
+        self.show()
+        self._edit.setFocus()
+        self._edit.selectAll()
+
+    def refresh(self):
+        self._rows = []
+        # A catalog row without a marker has no navigable P&ID position and
+        # is intentionally excluded.  One row per defined equipment object;
+        # duplicate marker shapes for the same object use the first marker.
+        try:
+            rows = self._panel.db.conn.execute(
+                "SELECT ec.id, ec.tag, ec.prefix, ec.equipment_type, "
+                "em.id AS marker_id, em.pid_page, em.x, em.y "
+                "FROM equipment_catalog ec "
+                "JOIN equipment_markers em ON em.equipment_id=ec.id "
+                "WHERE COALESCE(ec.include,1)=1 "
+                "GROUP BY ec.id ORDER BY UPPER(COALESCE(ec.tag,'')), ec.id"
+            ).fetchall()
+            self._rows = [dict(r) for r in rows]
+        except Exception:
+            logging.exception("Could not load defined P&ID objects for search")
+        self._filter(self._edit.text())
+
+    def _filter(self, text):
+        query = (text or '').strip().casefold()
+        self._list.clear()
+        matches = []
+        for row in getattr(self, '_rows', []):
+            hay = ' '.join(str(row.get(k) or '') for k in
+                           ('tag', 'prefix', 'equipment_type', 'id')).casefold()
+            if not query or query in hay:
+                matches.append(row)
+        if not matches:
+            empty = QListWidgetItem("Inga definierade objekt matchar sökningen")
+            empty.setFlags(Qt.ItemFlag.NoItemFlags)
+            self._list.addItem(empty)
+            return
+        for row in matches:
+            tag = row.get('tag') or row.get('prefix') or '(utan tagg)'
+            typ = row.get('equipment_type') or 'Okänd typ'
+            item = QListWidgetItem(f"{tag}  ·  {typ}")
+            item.setData(Qt.ItemDataRole.UserRole, row)
+            self._list.addItem(item)
+
+    def _choose(self, item):
+        row = item.data(Qt.ItemDataRole.UserRole)
+        if not row:
+            return
+        self.result_chosen.emit(int(row['marker_id']), int(row['pid_page']),
+                                float(row['x']), float(row['y']))
+        self.hide()
 
 class _DeviationChecklist(QWidget):
     """Embeddable per-node deviation checklist — checking off which of the
@@ -1369,6 +1461,14 @@ class PIDPanel(QWidget):
         self.layout_btn.toggled.connect(self._on_layout_mode_toggled)
         bar.addWidget(self.layout_btn)
 
+        # Search only the equipment objects already identified in the P&ID
+        # model.  This is deliberately a small popup beside Layout rather
+        # than a modal or a PDF text search (2026-08-27).
+        self.search_btn = QPushButton("Sök objekt")
+        self.search_btn.setToolTip("Sök bland definierade objekt i P&ID-modellen")
+        self.search_btn.clicked.connect(self._show_equipment_search)
+        bar.addWidget(self.search_btn)
+
         self._annot_btn = QPushButton("Notering")
         self._annot_btn.setIcon(_icon('edit'))
         self._annot_btn.setCheckable(True)
@@ -1403,6 +1503,9 @@ class PIDPanel(QWidget):
         self.viewer.sheet_conn_add_requested.connect(self._add_sheet_link)
 
         layout.addWidget(self.viewer)
+
+        self._equipment_search_popup = _EquipmentSearchPopup(self)
+        self._equipment_search_popup.result_chosen.connect(self._on_equipment_search_result)
 
         # A floating popup (Qt.WindowType.Popup), not docked into this
         # layout — see EquipmentDeviationBar's own docstring and
@@ -2224,6 +2327,17 @@ class PIDPanel(QWidget):
         else:
             self._set_mode(MODE_NAV)
 
+    def _show_equipment_search(self):
+        """Show the compact object search next to the toolbar button."""
+        self._equipment_search_popup.refresh()
+        pos = self.search_btn.mapToGlobal(self.search_btn.rect().bottomLeft())
+        self._equipment_search_popup.show_near(pos)
+
+    def _on_equipment_search_result(self, marker_id, page, x, y):
+        """Navigate to a selected catalog object and mark that result blue."""
+        self.navigate_to_marker(int(page), float(x), float(y))
+        self.viewer.set_search_highlight(int(marker_id))
+
     def _break_sheet_link(self, conn_id: int):
         """Delete a sheet connection from DB and redraw arcs."""
         if conn_id < 0:
@@ -2899,6 +3013,7 @@ class PIDPanel(QWidget):
         # Reapply LOD so newly added items get correct visibility at current zoom
         self.viewer._apply_lod(self.viewer.transform().m11(), force=True)
         self.viewer._reapply_equipment_selection_overlays()
+        self.viewer._reapply_search_highlight()
         # Tree-context highlight (2026-08-27, see NOTES.md) — the cheap
         # remap step, not a DB tree-walk: re-maps the already-cached
         # equipment_id->color scope onto whichever equipment_markers rows
