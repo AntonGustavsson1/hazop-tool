@@ -1187,6 +1187,7 @@ class PIDPanel(QWidget):
     red_markup_moved         = pyqtSignal(int, list)                  # mu_id, new PDF pts
     markup_symbol_dims_changed = pyqtSignal(int, float, float, float)  # mu_id, w, h, rot_deg
     board_layout_changed = pyqtSignal(str)
+    cause_equipment_bound = pyqtSignal(int, int)  # cause_id, equipment_id
 
     def __init__(self, db, parent=None):
         super().__init__(parent)
@@ -1232,6 +1233,7 @@ class PIDPanel(QWidget):
         # instead of navigating away and destroying it. None (and thus
         # a no-op) when PIDPanel is used standalone, e.g. in tests.
         self._active_edit_query_fn  = None
+        self._pending_cause_bind_id = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -3132,6 +3134,22 @@ class PIDPanel(QWidget):
     # scenario är de där objektet finns med".)
 
     def _on_marker_clicked(self, item_type, item_id):
+        if item_type == 'equipment' and self._pending_cause_bind_id is not None:
+            row = self.db.conn.execute(
+                "SELECT equipment_id FROM equipment_markers WHERE id=?", (item_id,)).fetchone()
+            equipment_id = row['equipment_id'] if row else None
+            cause_id = self._pending_cause_bind_id
+            self._pending_cause_bind_id = None
+            self.viewer.setCursor(Qt.CursorShape.ArrowCursor)
+            if equipment_id is not None:
+                eq = self.db.get_equipment_by_id(equipment_id)
+                self.db.update_cause(cause_id,
+                                     comp_type=eq.get('equipment_type', '') if eq else '',
+                                     comp_tag=eq.get('tag', '') if eq else '',
+                                     equipment_id=equipment_id)
+                self._load_overlays()
+                self.cause_equipment_bound.emit(cause_id, equipment_id)
+            return
         if item_type == 'equipment' and self._active_edit_query_fn is not None:
             # Shift+click a marker while an ORS/KON/SG cell is being
             # edited inserts its tag right into the open text instead
@@ -3170,6 +3188,11 @@ class PIDPanel(QWidget):
             self.marker_navigated.emit(item_type, item_id)
             return
         self.marker_navigated.emit(item_type, item_id)
+
+    def start_cause_equipment_bind(self, cause_id):
+        """Arm the viewer so the next clicked P&ID object is bound to a cause."""
+        self._pending_cause_bind_id = int(cause_id)
+        self.viewer.setCursor(Qt.CursorShape.CrossCursor)
 
     def _insert_tag_into_editor(self, editor, tag):
         """Insert `tag` at the cursor of a live ORS/KON/SG QLineEdit

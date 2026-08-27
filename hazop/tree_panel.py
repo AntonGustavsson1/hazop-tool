@@ -2200,8 +2200,9 @@ class CauseTagPopup(QDialog):
     EquipmentDeviationBar) rather than a modal dialog requiring an
     explicit confirm."""
     committed = pyqtSignal(str, str)  # (comp_type, comp_tag)
+    bind_requested = pyqtSignal()
 
-    def __init__(self, db, comp_type='', comp_tag='', parent=None):
+    def __init__(self, db, comp_type='', comp_tag='', parent=None, cause_id=None):
         super().__init__(parent)
         self._db = db
         self.setWindowTitle("Tagg")
@@ -2243,6 +2244,13 @@ class CauseTagPopup(QDialog):
         typ_lbl.setStyleSheet(_small)
         form.addRow(typ_lbl, self._type_cb)
         layout.addLayout(form)
+
+        if cause_id is not None:
+            bind = QPushButton("Bind till objekt på P&ID")
+            bind.setFixedHeight(CONFIG['H_BTN_SMALL'])
+            bind.setStyleSheet(_small)
+            bind.clicked.connect(self.bind_requested.emit)
+            layout.addWidget(bind)
 
         self._tag_edit.editingFinished.connect(self._commit)
         self._type_cb.activated.connect(lambda _index: self._commit())

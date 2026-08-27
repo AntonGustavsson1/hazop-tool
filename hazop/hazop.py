@@ -1310,6 +1310,10 @@ class MainWindow(QMainWindow):
             self.pid_panel.set_tree_context_layer_visibility(marker_type, button.isChecked())
 
         self.scenario_panel.item_selected.connect(self._on_scenario_item_selected)
+        self.scenario_panel.bind_cause_to_pid_requested.connect(
+            self.pid_panel.start_cause_equipment_bind)
+        self.pid_panel.cause_equipment_bound.connect(
+            self._on_cause_equipment_bound)
         self.scenario_panel.new_item_created.connect(
             lambda type_, id_: (
                 # A scenario-created row belongs in the tree immediately, but
@@ -1559,6 +1563,13 @@ class MainWindow(QMainWindow):
             self.pid_panel.set_active_cause(id_)
         elif type_ == CONS_T:
             self.pid_panel.set_active_consequence(id_)
+
+    def _on_cause_equipment_bound(self, cause_id, _equipment_id):
+        """Refresh all views after selecting a P&ID object for a cause."""
+        self.scenario_panel.schedule_rebuild()
+        cur_type, cur_id = self.tree_panel._current()
+        self.tree_panel.refresh(cur_type, cur_id)
+        self.pid_panel.set_tree_context(self._cur_type, self._cur_id)
 
     def _on_tree_visibility_changed(self, marker_type, visible):
         """Keep P&ID marker visibility and tree-context colours in sync."""

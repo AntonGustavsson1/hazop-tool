@@ -2,6 +2,13 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Orsak utan P&ID-objekt (2026-08-27)
+
+Orsaksfält utan kopplad utrustning visar nu **ej på P&ID**. Drag-and-drop från
+P&ID till orsaksfältet visar och sparar objektet direkt. Dubbelklick på
+placeholdern öppnar tagg-/typdialogen med knappen **Bind till objekt på P&ID**;
+därefter väljs ett befintligt objekt genom klick i P&ID-viewern.
+
 ## Direkt drop till tom safeguard (2026-08-27)
 
 P&ID-utrustning kan nu dras direkt till en tom safeguard/barriär-rad efter att

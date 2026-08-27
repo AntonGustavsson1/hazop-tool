@@ -2650,6 +2650,7 @@ class ScenarioTablePanel(QWidget):
     item_edited                = pyqtSignal(int, int)   # (type_, id_) — cell edit committed → sync right panel
     structure_changed          = pyqtSignal()           # item moved/deleted/duplicated → refresh tree
     equipment_renamed          = pyqtSignal()           # an ORS tag edit renamed the linked equipment_catalog row
+    bind_cause_to_pid_requested = pyqtSignal(int)      # choose an existing P&ID object
 
     # Column indices
     _C_NOD, _C_UTR, _C_DEV, _C_ORS, _C_KON, _C_RFORE = 0, 1, 2, 3, 4, 5
@@ -4768,6 +4769,14 @@ class ScenarioTablePanel(QWidget):
         # plain edit-in-place). The chain wizard remains reachable via the
         # right-click context menu (_open_chain_editor, unchanged there).
         if col in (self._C_ORS, self._C_KON, self._C_SG, self._C_REK):
+            if col == self._C_ORS and row < len(self._row_meta):
+                cause_id = self._row_meta[row][1]
+                obj_data = item.data(Qt.ItemDataRole.UserRole + 2) or ('', '')
+                if cause_id is not None and not (obj_data[1] or '').strip():
+                    gp = self._table.viewport().mapToGlobal(
+                        self._table.visualRect(self._table.model().index(row, col)).topLeft())
+                    self._show_cause_obj_popup(row, cause_id, gp)
+                    return
             if not bool(item.flags() & Qt.ItemFlag.ItemIsEditable):
                 # A KON cell is always backed by a real (if blank)
                 # consequence row — every cause gets one auto-created —
@@ -4873,7 +4882,7 @@ class ScenarioTablePanel(QWidget):
         repeats_previous = bool(item.data(Qt.ItemDataRole.UserRole + 8)) if item else False
         tag_label = (comp_tag or '').strip()
         if not tag_label:
-            return 'Objekt ej på P&ID', True
+            return 'ej på P&ID', True
         return tag_label, not repeats_previous
 
     def _ors_combined_text(self, item, desc):
@@ -4896,7 +4905,7 @@ class ScenarioTablePanel(QWidget):
         start), so a click always lands exactly where the bold text
         visually ends."""
         tag_label, show_tag = self._ors_tag_prefix(item)
-        if tag_label == 'Objekt ej på P&ID':
+        if tag_label == 'ej på P&ID':
             return 0
         if not show_tag:
             return 0
@@ -5075,7 +5084,9 @@ class ScenarioTablePanel(QWidget):
         obj_data  = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
         comp_type, comp_tag = obj_data if obj_data else ('', '')
 
-        popup = CauseTagPopup(self.db, comp_type, comp_tag, parent=self)
+        popup = CauseTagPopup(self.db, comp_type, comp_tag, parent=self, cause_id=cause_id)
+        popup.bind_requested.connect(
+            lambda cid=cause_id: self.bind_cause_to_pid_requested.emit(cid))
         popup.committed.connect(
             lambda ct, tg, r=row, cid=cause_id:
                 self._apply_cause_obj(r, cid, ct, tg, '', None))
