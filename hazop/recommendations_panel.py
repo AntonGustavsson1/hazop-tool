@@ -26,6 +26,7 @@ database.py, nothing defined in hazop.py itself."""
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
+    QComboBox,
 )
 
 from database import Database
@@ -113,7 +114,8 @@ class RecommendationsPanel(QWidget):
 
     _COL_REC = 0
     _COL_RESPONSIBLE = 1
-    _COL_REF = 2
+    _COL_DUE = 2
+    _COL_REF = 3
 
     def __init__(self, db: Database):
         super().__init__()
@@ -123,12 +125,14 @@ class RecommendationsPanel(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
 
-        self._table = QTableWidget(0, 3)
+        self._table = QTableWidget(0, 4)
         self._table.setHorizontalHeaderLabels(
-            ["Rekommendation", "Ansvarig person",
+            ["Rekommendation", "Ansvarig", "Ska vara åtgärdat",
              "Referens (studie.nod.avvikelse.orsak.konsekvens)"])
         self._table.verticalHeader().setVisible(False)
-        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked |
+                                    QAbstractItemView.EditTrigger.EditKeyPressed |
+                                    QAbstractItemView.EditTrigger.SelectedClicked)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setWordWrap(True)
         # Native click-to-sort is effectively free with a QTableWidget and
@@ -138,6 +142,7 @@ class RecommendationsPanel(QWidget):
         header = self._table.horizontalHeader()
         header.setSectionResizeMode(self._COL_REC, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(self._COL_RESPONSIBLE, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(self._COL_DUE, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self._COL_REF, QHeaderView.ResizeMode.ResizeToContents)
         # Qt quirk (verified empirically, not from memory): a freshly
         # created QTableWidget's header already carries an implicit
@@ -150,7 +155,21 @@ class RecommendationsPanel(QWidget):
         # indicator on column 0 up front so the default view matches
         # catalog id order; clicking either header still re-sorts freely.
         header.setSortIndicator(self._COL_REC, Qt.SortOrder.AscendingOrder)
+        self._table.itemChanged.connect(self._on_item_changed)
         layout.addWidget(self._table)
+
+    def _on_item_changed(self, item):
+        rec_id = item.data(Qt.ItemDataRole.UserRole)
+        if rec_id is None:
+            return
+        value = item.text().strip()
+        if item.column() == self._COL_REC:
+            parts = value.split('. ', 1)
+            self.db.update_recommendation(int(rec_id), description=parts[1] if len(parts) == 2 else value)
+        elif item.column() == self._COL_RESPONSIBLE:
+            self.db.update_recommendation(int(rec_id), responsible=value)
+        elif item.column() == self._COL_DUE:
+            self.db.update_recommendation(int(rec_id), due_date=value)
 
     def refresh(self):
         """Called when the Rekommendationer page becomes visible
@@ -172,6 +191,7 @@ class RecommendationsPanel(QWidget):
                 desc = rec['description'] or 'Ny rekommendation'
                 label = f"R-{rec_id:03d}. {desc}"
                 responsible = rec['responsible'] or _PLACEHOLDER
+                due_date = rec['due_date'] or _PLACEHOLDER
 
                 cons_ids = self.db.consequences_for_recommendation(rec_id)
                 refs = [ref for ref in (
@@ -179,10 +199,29 @@ class RecommendationsPanel(QWidget):
                 ) if ref is not None]
                 ref_text = ", ".join(refs) if refs else _PLACEHOLDER
 
-                self._table.setItem(row, self._COL_REC, QTableWidgetItem(label))
-                self._table.setItem(
-                    row, self._COL_RESPONSIBLE, QTableWidgetItem(responsible))
-                self._table.setItem(row, self._COL_REF, QTableWidgetItem(ref_text))
+                for col, value in ((self._COL_REC, label),
+                                   (self._COL_RESPONSIBLE, responsible),
+                                   (self._COL_DUE, due_date),
+                                   (self._COL_REF, ref_text)):
+                    cell = QTableWidgetItem(value)
+                    cell.setData(Qt.ItemDataRole.UserRole, rec_id)
+                    cell.setTextAlignment(Qt.AlignmentFlag.AlignLeft |
+                                          Qt.AlignmentFlag.AlignTop)
+                    if col == self._COL_REF:
+                        cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    self._table.setItem(row, col, cell)
+                combo = QComboBox(self._table)
+                combo.setEditable(True)
+                combo.addItem('')
+                for person in self.db.list_participants():
+                    name = f"{person['first_name']} {person['last_name']}".strip()
+                    if name:
+                        combo.addItem(name)
+                combo.setCurrentText(rec['responsible'] or '')
+                combo.currentTextChanged.connect(
+                    lambda text, rid=rec_id: self.db.update_recommendation(
+                        rid, responsible=text.strip()))
+                self._table.setCellWidget(row, self._COL_RESPONSIBLE, combo)
             self._table.resizeRowsToContents()
         finally:
             self._table.setSortingEnabled(was_sorting)

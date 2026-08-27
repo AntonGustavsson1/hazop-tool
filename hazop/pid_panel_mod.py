@@ -1253,6 +1253,7 @@ class PIDPanel(QWidget):
             "och skapar en nyckel i Inställningar → Identifierade objekt.")
         self.analyze_btn.clicked.connect(self._analyze_pid)
         self.analyze_btn.setEnabled(False)
+        self.analyze_btn.setVisible(False)
         bar.addWidget(self.analyze_btn)
 
         self.export_btn = QPushButton("Exportera PDF")

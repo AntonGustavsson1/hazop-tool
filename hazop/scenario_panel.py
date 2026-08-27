@@ -4242,6 +4242,7 @@ class ScenarioTablePanel(QWidget):
                          ('recommendation', cid,
                           recommendation['id'] if recommendation else None))
         rek_item.setToolTip("Klicka för att redigera direkt eller lägga till/återanvända en rekommendation")
+        rek_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         if recommendation is None:
             rek_item.setForeground(QBrush(QColor('#8D9299')))
         self._table.setItem(r, self._C_REK, rek_item)
