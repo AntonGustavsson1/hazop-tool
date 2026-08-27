@@ -2539,3 +2539,21 @@ borttagna safeguard-objektväljaren inklusive dess gamla cell-metadata och test
 är konsekvent arkiverad/borttagen. Verifiering: syntaxkontroll samt
 `tests.test_smoke`, `tests.test_recommendations_panel`,
 `tests.test_scenario_panel` och `tests.test_integration`.
+
+## Globala läsbara tooltips + manuellt öppnade konsekvenser/barriärer (2026-08-27)
+
+Tooltipen för 📍 i högermenyn Nod hade texten `Visa nod på P&ID`, men kunde
+visas utan läsbar kontrast när källwidgeten hade en lokal stylesheet.
+Tooltipfärgerna ligger nu centralt i applikationspaletten: mörk bakgrund
+`#17191C` och vit text `#FFFFFF`. Tidigare duplicerade lokala `QToolTip`-regler
+i scenariotabellen och riskmatrisens knappar är borttagna.
+
+HAZOP-trädet hålls dessutom kompakt vid val: ett valt objekt/orsak fäller ihop
+sina konsekvenser och en vald konsekvens fäller ihop sina safeguards/barriärer.
+Användaren öppnar respektive undernivå manuellt med pilen; manuell expansion
+är fortfarande tillgänglig och `Expandera allt` är oförändrat.
+
+Verifiering: syntaxkontroll samt `tests.test_smoke`, `tests.test_node_markup`,
+`tests.test_tree_panel` och `tests.test_scenario_panel` (241 tester, 10
+arkiverade tester hoppades över). Separat global-tooltip-test tillagt i
+`tests.test_hazop`.

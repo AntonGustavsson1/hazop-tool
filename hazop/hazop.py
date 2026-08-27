@@ -3266,6 +3266,11 @@ if __name__ == '__main__':
     _palette.setColor(QPalette.ColorRole.Base, QColor('#FFFFFF'))
     _palette.setColor(QPalette.ColorRole.Text, QColor('#17191C'))
     _palette.setColor(QPalette.ColorRole.WindowText, QColor('#17191C'))
+    # Tooltips are top-level windows.  Set their contrast on the application
+    # palette so every tooltip stays readable even when its source widget has
+    # a local stylesheet of its own.
+    _palette.setColor(QPalette.ColorRole.ToolTipBase, QColor('#17191C'))
+    _palette.setColor(QPalette.ColorRole.ToolTipText, QColor('#FFFFFF'))
     app.setPalette(_palette)
 
     # Apply Windows 11 light theme

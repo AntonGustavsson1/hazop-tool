@@ -207,6 +207,19 @@ class GlobalStylesheetFontSizeTests(unittest.TestCase):
             "setFont() call, including ScenarioTablePanel's zoom spinbox")
 
 
+class GlobalTooltipContrastTests(unittest.TestCase):
+    """Tooltip colors belong to the application, not individual widgets."""
+
+    def test_main_sets_readable_application_tooltip_palette(self):
+        src = Path(hazop.__file__).read_text(encoding='utf-8')
+        main_idx = src.index("if __name__ == '__main__':")
+        startup = src[main_idx:]
+        self.assertIn(
+            "QPalette.ColorRole.ToolTipBase, QColor('#17191C')", startup)
+        self.assertIn(
+            "QPalette.ColorRole.ToolTipText, QColor('#FFFFFF')", startup)
+
+
 class Utf8ConsoleOutputTests(unittest.TestCase):
     """The console echo log handler wrote straight to the unreconfigured
     sys.stderr, whose default encoding on a Windows console is the system

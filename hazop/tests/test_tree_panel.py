@@ -658,6 +658,37 @@ class TreeAutoExpandCappedAtObjectLevelTests(unittest.TestCase):
             item = _find_tree_item(self.panel.tree, type_, id_)
             self.assertTrue(item.isExpanded())
 
+    def test_selecting_object_collapses_consequences_until_arrow_is_used(self):
+        _node_id, _dev_id, cause_id = self._chain()
+        self.db.add_consequence(cause_id)
+        self.panel.refresh()
+        cause_item = _find_tree_item(self.panel.tree, CAUSE_T, cause_id)
+        cause_item.setExpanded(True)
+
+        self.panel.tree.setCurrentItem(cause_item)
+
+        self.assertFalse(cause_item.isExpanded(),
+            "selecting an object/cause must leave consequences behind its arrow")
+        cause_item.setExpanded(True)  # explicit disclosure-arrow equivalent
+        self.assertTrue(cause_item.isExpanded(),
+            "manual expansion must remain available")
+
+    def test_selecting_consequence_collapses_safeguards_until_arrow_is_used(self):
+        _node_id, _dev_id, cause_id = self._chain()
+        cons_id = self.db.add_consequence(cause_id)
+        self.db.add_safeguard(cons_id)
+        self.panel.refresh()
+        cons_item = _find_tree_item(self.panel.tree, CONS_T, cons_id)
+        cons_item.setExpanded(True)
+
+        self.panel.tree.setCurrentItem(cons_item)
+
+        self.assertFalse(cons_item.isExpanded(),
+            "selecting a consequence must leave barriers behind its arrow")
+        cons_item.setExpanded(True)
+        self.assertTrue(cons_item.isExpanded(),
+            "manual expansion must remain available")
+
 
 class TreeInternalReparentDragDropTests(unittest.TestCase):
     """"implementera även drag and drop I hazop trädet mellan olika nivåer.

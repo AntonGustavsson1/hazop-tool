@@ -189,20 +189,11 @@ class RiskMatrixPopup(QDialog):
                 # looked like "two cells are marked" (reported feedback).
                 # Dashed blue is unmistakably "just hovering", never "this
                 # is the current value".
-                # QToolTip rule repeated here (2026-08-26, see NOTES.md
-                # "Fixa oläsliga tooltips"): this button's own local
-                # stylesheet otherwise scopes Qt's cascade away from the
-                # app-wide dark QToolTip rule, so its tooltip fell back to
-                # the platform default — most noticeable on the matrix's
-                # own colored cells (e.g. the rightmost/highest-frequency
-                # column), where that default could clash badly.
                 btn.setStyleSheet(
                     f"QPushButton{{background:{color}; color:{fg};"
                     f"font-size:8px; font-weight:bold;"
                     f"border:{border}; border-radius:0px; margin:0px;}}"
-                    f"QPushButton:hover{{border:2px dashed #2f6fed;}}"
-                    f"QToolTip{{background-color:#17191C;color:#FFFFFF;"
-                    f"border:none;border-radius:4px;padding:4px 8px;}}")
+                    f"QPushButton:hover{{border:2px dashed #2f6fed;}}")
                 btn.clicked.connect(
                     lambda _, fv=freq_val, cv=cons_val: self._pick(fv, cv))
                 grid.addWidget(btn, r + 1, c + 1)
@@ -2765,19 +2756,8 @@ class ScenarioTablePanel(QWidget):
         self._table.setAlternatingRowColors(True)
         self._table.setWordWrap(True)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        # 2026-08-26: a widget's OWN local setStyleSheet() call scopes Qt's
-        # style-sheet cascade away from the app-wide QToolTip rule
-        # (hazop.py's global "#17191C bg / white text") for tooltips
-        # requested FROM that widget — this table hosts nearly every
-        # tooltip in HAZOP Scenario (ORS/KON/SG/RFORE/SLUT/REK, including
-        # the rightmost REK column), so without repeating the rule here
-        # those tooltips silently fell back to the platform's default
-        # (often low-contrast) colors instead. See NOTES.md "Fixa oläsliga
-        # tooltips".
         self._table.setStyleSheet(
-            "QHeaderView::section{background:#F5F5F3;color:#8D9299;font-weight:600;padding:3px;}"
-            "QToolTip{background-color:#17191C;color:#FFFFFF;border:none;"
-            "border-radius:4px;padding:4px 8px;}")
+            "QHeaderView::section{background:#F5F5F3;color:#8D9299;font-weight:600;padding:3px;}")
         self._table.cellChanged.connect(self._on_cell_changed)
         self._table.cellClicked.connect(self._on_cell_clicked)
         self._table.itemDoubleClicked.connect(self._on_cell_double_clicked)

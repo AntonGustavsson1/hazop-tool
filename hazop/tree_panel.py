@@ -846,6 +846,13 @@ class TreePanel(QWidget):
         if current is None: return
         type_ = current.data(0, Qt.ItemDataRole.UserRole + 1)
         id_   = current.data(0, Qt.ItemDataRole.UserRole)
+        # Selecting the object/cause row must not expose its consequences,
+        # and selecting a consequence must not expose its barriers.  Those
+        # two deeper levels are intentionally manual: the user opens them
+        # with the disclosure arrow when needed.  This keeps a large study
+        # compact even when branches happened to be open before a refresh.
+        if type_ in (CAUSE_T, CONS_T):
+            current.setExpanded(False)
         self.item_selected.emit(type_, id_)
         # Auto-collapse (2026-08-24, see NOTES.md) — re-applied on every
         # plain selection change too, not just a full refresh(), so
