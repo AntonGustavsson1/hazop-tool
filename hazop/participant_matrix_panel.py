@@ -13,9 +13,9 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton,
     QScrollArea, QSizePolicy, QSpinBox, QSplitter, QTableWidget,
     QTableWidgetItem, QTabWidget, QTextEdit, QToolButton, QVBoxLayout,
-    QWidget,
+    QWidget, QTimeEdit,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QDate, QEvent, QMimeData
+from PyQt6.QtCore import Qt, pyqtSignal, QDate, QTime, QEvent, QMimeData
 from PyQt6.QtGui import QBrush, QColor, QDrag, QFont, QFontMetrics
 
 from constants import CONFIG, SEV_LABELS
@@ -79,6 +79,8 @@ class ParticipantMatrixPanel(QWidget):
         header.sectionDoubleClicked.connect(self._edit_header_label)
         header.location_dropped.connect(self._copy_session_location)
         layout.addWidget(self._table)
+        self._table.currentCellChanged.connect(
+            lambda *_: self._refresh_select_all_state())
 
         # Compact controls directly below the matrix: plus/minus are placed
         # next to the thing they affect instead of one long toolbar.
@@ -110,6 +112,13 @@ class ParticipantMatrixPanel(QWidget):
             btn_row.addWidget(b)
         btn_row.addStretch()
         layout.addLayout(btn_row)
+
+        self._select_all_cb = QCheckBox("Markera alla deltagare för valt analystillfälle")
+        self._select_all_cb.setTristate(True)
+        self._select_all_cb.setToolTip(
+            "Välj en cell i ett analystillfälle och markera alla deltagare för den dagen")
+        self._select_all_cb.stateChanged.connect(self._select_all_changed)
+        layout.addWidget(self._select_all_cb)
 
         self.refresh()
 
@@ -149,6 +158,7 @@ class ParticipantMatrixPanel(QWidget):
                     item.setCheckState(
                         Qt.CheckState.Checked if attended else Qt.CheckState.Unchecked)
                     self._table.setItem(row, n_fixed + col, item)
+            self._refresh_select_all_state()
         finally:
             self._loading = False
 
@@ -225,7 +235,49 @@ class ParticipantMatrixPanel(QWidget):
         location = session.get('location') or ''
         if session.get('is_digital'):
             location = 'Digitalt'
-        return f"{date}\n{location}" if location else str(date)
+        times = ''
+        start = session.get('start_time') or ''
+        end = session.get('end_time') or ''
+        if start or end:
+            times = f"{start or '–'}–{end or '–'}"
+        details = ' · '.join(part for part in (location, times) if part)
+        return f"{date}\n{details}" if details else str(date)
+
+    def _selected_session_index(self):
+        n_fixed = len(self._FIXED_COLS) + len(self._column_ids)
+        col = self._table.currentColumn()
+        idx = col - n_fixed
+        return idx if 0 <= idx < len(self._session_ids) else None
+
+    def _refresh_select_all_state(self):
+        """Reflect attendance for the currently selected session column."""
+        if not hasattr(self, '_select_all_cb'):
+            return
+        idx = self._selected_session_index()
+        self._select_all_cb.blockSignals(True)
+        if idx is None or not self._participant_ids:
+            self._select_all_cb.setEnabled(False)
+            self._select_all_cb.setCheckState(Qt.CheckState.Unchecked)
+        else:
+            self._select_all_cb.setEnabled(True)
+            sid = self._session_ids[idx]
+            states = [self.db.get_attendance(pid, sid) for pid in self._participant_ids]
+            self._select_all_cb.setCheckState(
+                Qt.CheckState.Checked if all(states) else
+                Qt.CheckState.PartiallyChecked if any(states) else
+                Qt.CheckState.Unchecked)
+        self._select_all_cb.blockSignals(False)
+
+    def _select_all_changed(self, state):
+        idx = self._selected_session_index()
+        if idx is None:
+            return
+        state_value = getattr(state, 'value', state)
+        attended = state_value == Qt.CheckState.Checked.value
+        sid = self._session_ids[idx]
+        for pid in self._participant_ids:
+            self.db.set_attendance(pid, sid, attended)
+        self.refresh()
 
     def _copy_session_location(self, source_col, target_col):
         n_fixed = len(self._FIXED_COLS) + len(self._column_ids)
@@ -321,7 +373,20 @@ class ParticipantMatrixPanel(QWidget):
         digital_cb.setChecked(bool(session.get('is_digital')))
         location_edit.setEnabled(not digital_cb.isChecked())
         digital_cb.toggled.connect(location_edit.setDisabled)
+        start_edit = QTimeEdit()
+        start_edit.setDisplayFormat("HH:mm")
+        end_edit = QTimeEdit()
+        end_edit.setDisplayFormat("HH:mm")
+        def _stored_time(value, fallback):
+            parsed = QTime.fromString(str(value or ''), 'HH:mm')
+            return parsed if parsed.isValid() else fallback
+        start_edit.setTime(_stored_time(session.get('start_time'), QTime(8, 0)))
+        end_edit.setTime(_stored_time(session.get('end_time'), QTime(16, 0)))
+        start_edit.setSpecialValueText('')
+        end_edit.setSpecialValueText('')
         form.addRow("Datum:", date_edit)
+        form.addRow("Från:", start_edit)
+        form.addRow("Till:", end_edit)
         form.addRow("Plats:", location_edit)
         form.addRow("", digital_cb)
         buttons = QHBoxLayout()
@@ -334,7 +399,9 @@ class ParticipantMatrixPanel(QWidget):
             self.db.update_analysis_session_details(kind[1], date=iso,
                                                     location=location_edit.text().strip(),
                                                     label=iso,
-                                                    is_digital=digital_cb.isChecked())
+                                                    is_digital=digital_cb.isChecked(),
+                                                    start_time=start_edit.time().toString('HH:mm'),
+                                                    end_time=end_edit.time().toString('HH:mm'))
             self.refresh()
 
 

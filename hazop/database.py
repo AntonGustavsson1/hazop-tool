@@ -954,7 +954,9 @@ class Database:
         for statement in (
                 "ALTER TABLE analysis_sessions ADD COLUMN date TEXT DEFAULT ''",
                 "ALTER TABLE analysis_sessions ADD COLUMN location TEXT DEFAULT ''",
-                "ALTER TABLE analysis_sessions ADD COLUMN is_digital INTEGER NOT NULL DEFAULT 0"):
+                "ALTER TABLE analysis_sessions ADD COLUMN is_digital INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE analysis_sessions ADD COLUMN start_time TEXT DEFAULT ''",
+                "ALTER TABLE analysis_sessions ADD COLUMN end_time TEXT DEFAULT ''"):
             try:
                 self.conn.execute(statement)
             except sqlite3.OperationalError:
@@ -2691,8 +2693,9 @@ class Database:
         if not label:
             label = str(date)
         cur = self.conn.execute(
-            "INSERT INTO analysis_sessions (label,date,location,is_digital) VALUES (?,?,?,?)",
-            (label, date, location or '', 1 if is_digital else 0))
+            "INSERT INTO analysis_sessions (label,date,location,is_digital,start_time,end_time) "
+            "VALUES (?,?,?,?,?,?)",
+            (label, date, location or '', 1 if is_digital else 0, '', ''))
         self.commit()
         return cur.lastrowid
 
@@ -2701,16 +2704,19 @@ class Database:
         self.commit()
 
     def update_analysis_session_details(self, id_, date=None, location=None, label=None,
-                                        is_digital=None):
+                                        is_digital=None, start_time=None, end_time=None):
         row = self.conn.execute("SELECT * FROM analysis_sessions WHERE id=?", (id_,)).fetchone()
         if not row:
             return
         self.conn.execute(
-            "UPDATE analysis_sessions SET date=?, location=?, label=?, is_digital=? WHERE id=?",
+            "UPDATE analysis_sessions SET date=?, location=?, label=?, is_digital=?, "
+            "start_time=?, end_time=? WHERE id=?",
             (date if date is not None else (row['date'] or row['label'] or ''),
              location if location is not None else (row['location'] or ''),
              label if label is not None else (row['label'] or ''),
-             int(is_digital) if is_digital is not None else int(row['is_digital'] or 0), id_))
+             int(is_digital) if is_digital is not None else int(row['is_digital'] or 0),
+             start_time if start_time is not None else (row['start_time'] or ''),
+             end_time if end_time is not None else (row['end_time'] or ''), id_))
         self.commit()
 
     def set_analysis_session_location(self, id_, location):

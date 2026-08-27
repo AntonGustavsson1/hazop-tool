@@ -2,6 +2,14 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Analystider och massmarkering av deltagare (2026-08-27)
+
+Varje analystillfälle kan nu få start- och sluttid i dialogen för
+sessiondetaljer. Tiderna sparas i `analysis_sessions` och visas i
+deltagarmatrisens rubrik. En kryssruta under listan markerar eller avmarkerar
+alla deltagare för det valda analystillfället; blandad närvaro visas som
+delvis markerad.
+
 ## ToR och Report-flik (2026-08-27)
 
 HAZOP Prep har fått en separat flik med dubbla signeringsfält för ToR och
