@@ -2680,6 +2680,8 @@ class ScenarioTablePanel(QWidget):
         self._show_empty_deviations = False  # if True, deviations with zero causes get a placeholder row instead of being omitted
         self._force_dev_column_visible = False  # if True, Avvikelse column stays visible regardless of _all_nodes (set by always_show_deviation_column)
         self._force_utr_column_hidden = False  # if True, Utrustning column stays hidden regardless of _all_nodes (set by hide_equipment_column)
+        self._hide_unplaced_tag = False
+        self._merge_node_labels = False
         self._row_meta = []   # list of (dev_id, cause_id, cons_id, sg_id) per visible row
         self._row_recommendation_ids = []
         # row index -> {col: ('cause', dev_id) | ('consequence', cause_id) |
@@ -2989,6 +2991,14 @@ class ScenarioTablePanel(QWidget):
         Orsak cell regardless."""
         self._force_utr_column_hidden = True
         self._set_all_nodes_columns_visible(self._all_nodes)
+
+    def hide_unplaced_tag(self):
+        """Hide the synthetic 'ej på P&ID' label in worksheet hosts."""
+        self._hide_unplaced_tag = True
+
+    def merge_node_labels(self):
+        """Merge adjacent rows with the same displayed node name."""
+        self._merge_node_labels = True
 
     # Columns that stretch to fill remaining space in fill mode
     _STRETCH_COLS = None  # set after class constants are known
@@ -3562,7 +3572,8 @@ class ScenarioTablePanel(QWidget):
 
         # Nod: group by node_id stored in UserRole
         _span_col(self._C_NOD, lambda r: (
-            self._table.item(r, self._C_NOD).data(Qt.ItemDataRole.UserRole)
+            self._table.item(r, self._C_NOD).text() if self._merge_node_labels
+            else self._table.item(r, self._C_NOD).data(Qt.ItemDataRole.UserRole)
             if self._table.item(r, self._C_NOD) else None))
         logging.info('_apply_spans: J2 — NOD column spanned')
 
@@ -4882,6 +4893,8 @@ class ScenarioTablePanel(QWidget):
         comp_type, comp_tag = obj_data if obj_data else ('', '')
         repeats_previous = bool(item.data(Qt.ItemDataRole.UserRole + 8)) if item else False
         tag_label = (comp_tag or '').strip()
+        if not tag_label and self._hide_unplaced_tag:
+            return '', False
         if not tag_label:
             return 'ej på P&ID', True
         return tag_label, not repeats_previous

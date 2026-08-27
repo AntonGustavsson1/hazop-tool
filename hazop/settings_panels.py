@@ -12,7 +12,7 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QGroupBox, QHBoxLayout,
-    QHeaderView, QLabel, QMessageBox, QPushButton, QTableWidget,
+    QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget,
     QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -83,6 +83,15 @@ class SettingsPanel(QWidget):
         self._strip_spaces_chk.toggled.connect(
             lambda on: self.db.set_config('tag_strip_spaces', '1' if on else '0'))
         tag_gl.addWidget(self._strip_spaces_chk)
+        tag_gl.addWidget(QLabel('Ersätt tecken i identifierade taggar (t.ex. -:. ; _:-):'))
+        self._tag_replacements_edit = QLineEdit()
+        self._tag_replacements_edit.setPlaceholderText('Exempel: -:. ; _:-')
+        self._tag_replacements_edit.setToolTip(
+            'Regler separerade med semikolon. Exempel -:. betyder streck till punkt.')
+        self._tag_replacements_edit.editingFinished.connect(
+            lambda: self.db.set_config('tag_identifier_replacements',
+                                        self._tag_replacements_edit.text().strip()))
+        tag_gl.addWidget(self._tag_replacements_edit)
 
         pid_l.addWidget(tag_grp)
 
@@ -215,6 +224,8 @@ class SettingsPanel(QWidget):
     def _load_all(self):
         self._strip_spaces_chk.setChecked(
             self.db.get_config('tag_strip_spaces', '1') == '1')
+        self._tag_replacements_edit.setText(
+            self.db.get_config('tag_identifier_replacements', '') or '')
 
         timeout_ms = int(self.db.get_config('equipment_tag_search_timeout_ms', '2000') or '2000')
         self._tag_search_timeout_spin.setValue(timeout_ms / 1000)

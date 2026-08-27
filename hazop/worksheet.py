@@ -58,6 +58,8 @@ class HAZOPWorksheet(QWidget):
         # samtliga noder" mode; the tag is already shown at the top of
         # each Orsak cell regardless.
         self._table_panel.hide_equipment_column()
+        self._table_panel.hide_unplaced_tag()
+        self._table_panel.merge_node_labels()
         layout.addWidget(self._table_panel, 1)
 
         self._node_combo.currentIndexChanged.connect(self._on_node_combo_changed)
@@ -121,4 +123,3 @@ class HAZOPWorksheet(QWidget):
             node_id = self._node_combo.currentData()
             if node_id is not None:
                 self._table_panel.load_node(node_id)
-

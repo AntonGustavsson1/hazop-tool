@@ -33,6 +33,27 @@ from equipment_detection import (
     _pick_best_tag, _rotate_words, _spatial_combine, find_tag_near_point,
 )
 from ui_helpers import _equipment_type_options, _make_tag_completer
+
+def _apply_tag_identifier_rules(tag, db=None):
+    """Apply configured tag cleanup rules (``from:to``; semicolon-separated)."""
+    value = str(tag or '').strip().upper()
+    if db is not None and db.get_config('tag_strip_spaces', '1') == '1':
+        value = value.replace(' ', '')
+    raw = (db.get_config('tag_identifier_replacements', '') if db else '') or ''
+    for rule in raw.split(';'):
+        rule = rule.strip()
+        if not rule:
+            continue
+        if '->' in rule:
+            src, dst = rule.split('->', 1)
+        elif ':' in rule:
+            src, dst = rule.split(':', 1)
+        elif len(rule) >= 3:
+            src, dst = rule[0], rule[2:]
+        else:
+            continue
+        value = value.replace(src.strip(), dst.strip())
+    return value
 from pid_viewer import (
     fitz, CONFIG, HAS_PYMUPDF, Z_TEMP,
     resolve_tree_context_color,
@@ -3201,6 +3222,7 @@ class PIDPanel(QWidget):
 
     def _on_viewer_markup_clicked(self, mu_id):
         if self._active_markup_class == 'red':
+            self.viewer.highlight_markup(mu_id)
             self.red_markup_item_selected.emit(mu_id)
         else:
             self.markup_item_selected.emit(mu_id)
@@ -3391,7 +3413,7 @@ class PIDPanel(QWidget):
         symbol) instead of the generic bowtie-icon fallback a bare point
         gets; the same rectangle is also where the background tag search
         looks first."""
-        tag = (tag or '').strip().upper()
+        tag = _apply_tag_identifier_rules(tag, self.db)
         existing = self.db.get_equipment_by_tag(tag) if tag else None
         if existing:
             equipment_id = existing['id']
@@ -3484,7 +3506,7 @@ class PIDPanel(QWidget):
             if not state['done']:
                 state['done'] = True
                 try:
-                    popup.set_detected_tag(found_tag)
+                    popup.set_detected_tag(_apply_tag_identifier_rules(found_tag, self.db))
                 except RuntimeError:
                     pass   # popup already closed — nothing left to update
             cleanup()
