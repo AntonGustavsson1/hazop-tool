@@ -364,6 +364,7 @@ class HAZOPPreparationPanel(QWidget):
         _wrap_lay.setSpacing(0)
 
         self._matrix_container = QWidget()
+        self._matrix_container.setMinimumWidth(0)
         self._matrix_grid = QGridLayout(self._matrix_container)
         self._matrix_grid.setSpacing(0)
         self._matrix_grid.setContentsMargins(0, 0, 0, 0)
@@ -971,14 +972,26 @@ class HAZOPPreparationPanel(QWidget):
         count = grid.columnCount()
         if target <= 0 or count <= 0:
             return
-        base = [max(1, grid.columnMinimumWidth(c)) for c in range(count)]
-        natural = max(sum(base), container.sizeHint().width())
-        if target <= natural:
-            return
-        extra = (target - natural) // count
-        remainder = (target - natural) % count
+        # Use current content widths as proportions.  Unlike the previous
+        # implementation this also handles dragging left (shrinking), not
+        # only dragging right to enlarge the matrix.
+        base = []
         for col in range(count):
-            width = base[col] + extra + (1 if col < remainder else 0)
+            widest = 30
+            for row in range(grid.rowCount()):
+                item = grid.itemAtPosition(row, col)
+                widget = item.widget() if item else None
+                if widget is not None:
+                    widest = max(widest, widget.sizeHint().width())
+            base.append(widest)
+        natural = max(sum(base), 1)
+        usable = max(count * 30, target)
+        scaled = [max(30, int(usable * width / natural)) for width in base]
+        correction = usable - sum(scaled)
+        if correction:
+            scaled[-1] += correction
+        for col in range(count):
+            width = scaled[col]
             grid.setColumnMinimumWidth(col, width)
             for row in range(grid.rowCount()):
                 item = grid.itemAtPosition(row, col)
