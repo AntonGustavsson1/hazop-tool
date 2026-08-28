@@ -70,7 +70,8 @@ from PyQt6.QtWidgets import (  # noqa: E402
     QTableWidgetItem,
 )
 from PyQt6.QtGui import QPixmap, QFocusEvent  # noqa: E402
-from PyQt6.QtCore import Qt, QPoint, QDate, QEvent, QThread, pyqtSignal  # noqa: E402
+from PyQt6.QtCore import (Qt, QPoint, QDate, QEvent, QThread, pyqtSignal,
+                          QItemSelectionModel)  # noqa: E402
 from equipment_detection import COMPONENT_TYPES  # noqa: E402
 
 
@@ -1632,6 +1633,25 @@ class CompactScenarioDragGhostTests(unittest.TestCase):
             self.assertLess(
                 pixmap.height(), panel._table.rowHeight(0),
                 "drag ghost should be shorter than the wrapped source cell")
+
+    def test_selected_same_column_fields_are_encoded_as_one_drag(self):
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            panel._table.insertRow(0)
+            panel._table.insertRow(1)
+            panel._table.setItem(0, panel._C_KON, QTableWidgetItem('KON-1'))
+            panel._table.setItem(1, panel._C_KON, QTableWidgetItem('KON-2'))
+            panel._row_meta = [(1, 11, 101, None), (1, 12, 102, None)]
+            selection = panel._table.selectionModel()
+            select_flag = QItemSelectionModel.SelectionFlag.Select
+            selection.select(panel._table.model().index(0, panel._C_KON), select_flag)
+            selection.select(panel._table.model().index(1, panel._C_KON), select_flag)
+
+            with unittest.mock.patch('scenario_panel.QDrag') as drag_cls:
+                panel._start_drag(1, panel._C_KON, False)
+
+            payload = drag_cls.return_value.setMimeData.call_args.args[0].text()
+            self.assertEqual(payload, 'hzp:scenario-multi:cons:101,0;102,1')
 
 
 class BoldTagPaintSmokeTests(unittest.TestCase):

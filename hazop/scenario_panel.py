@@ -3823,6 +3823,13 @@ class ScenarioTablePanel(QWidget):
             h.setSectionResizeMode(col, mode)
             self._table.setColumnWidth(col, width)
         self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # Allow the user to extend a field selection with Shift before
+        # dragging. Normal clicks still select one cell; the existing inline
+        # editing and drop handling remain unchanged.
+        self._table.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectItems)
         self._table.verticalHeader().setVisible(False)
         # Compact row heights — category sub-rows should be tight
         _init_fm = QFontMetrics(self._table.font())
@@ -7940,13 +7947,15 @@ class ScenarioTablePanel(QWidget):
 
     # ── Feature 1 & 6: Drag start ─────────────────────────────────────────────
     def _make_compact_drag_pixmap(self, row, col, kind, item_id,
-                                  is_copy_modifier):
+                                  is_copy_modifier, item_count=1):
         """Create a small drag ghost instead of copying the whole cell."""
         labels = {'cause': 'Orsak', 'cons': 'Konsekvens', 'sg': 'Barriär'}
         action = 'Kopiera' if is_copy_modifier else 'Flytta'
         item = self._table.item(row, col)
         text = ' '.join((item.text() if item else '').split())
-        if not text:
+        if item_count > 1:
+            text = f'{item_count} fält'
+        elif not text:
             text = f'#{item_id}'
 
         font = QFont(self._table.font())
@@ -7974,6 +7983,24 @@ class ScenarioTablePanel(QWidget):
         painter.end()
         return pm
 
+    def _selected_drag_entries(self, row, col, kind, item_id):
+        """Return unique same-kind fields selected for a multi-drag."""
+        entries = []
+        seen = set()
+        for index in self._table.selectedIndexes():
+            if index.column() != col or not (0 <= index.row() < len(self._row_meta)):
+                continue
+            meta = self._row_meta[index.row()]
+            candidate = (meta[3] if kind == 'sg' else
+                         meta[1] if kind == 'cause' else meta[2])
+            if candidate is None or candidate in seen:
+                continue
+            seen.add(candidate)
+            entries.append((int(candidate), index.row()))
+        if item_id not in seen:
+            entries.insert(0, (int(item_id), row))
+        return entries
+
     def _start_drag(self, row, col, is_copy_modifier):
         if row < 0 or row >= len(self._row_meta):
             return
@@ -7987,12 +8014,18 @@ class ScenarioTablePanel(QWidget):
         else:
             return
 
+        entries = self._selected_drag_entries(row, col, kind, item_id)
         mime = QMimeData()
-        mime.setText(f'hzp:{kind}:{item_id}:{row}:{col}')
+        if len(entries) > 1:
+            encoded = ';'.join(f'{entry_id},{source_row}'
+                               for entry_id, source_row in entries)
+            mime.setText(f'hzp:scenario-multi:{kind}:{encoded}')
+        else:
+            mime.setText(f'hzp:{kind}:{item_id}:{row}:{col}')
 
         # Keep the drag ghost compact even for tall/wrapped/grouped cells.
         pm = self._make_compact_drag_pixmap(
-            row, col, kind, item_id, is_copy_modifier)
+            row, col, kind, item_id, is_copy_modifier, len(entries))
 
         drag = QDrag(self._table)
         drag.setMimeData(mime)
@@ -8007,13 +8040,34 @@ class ScenarioTablePanel(QWidget):
         if not text.startswith('hzp:'):
             return
         parts = text.split(':')
-        if len(parts) < 5:
-            return
-        kind, item_id_s, src_row_s = parts[1], parts[2], parts[3]
-        try:
-            src_row = int(src_row_s)
-        except ValueError:
-            return
+        if len(parts) >= 4 and parts[1] == 'scenario-multi':
+            kind = parts[2]
+            entries = []
+            try:
+                for encoded in parts[3].split(';'):
+                    item_id_s, src_row_s = encoded.split(',', 1)
+                    entries.append((int(item_id_s), int(src_row_s)))
+            except (TypeError, ValueError):
+                return
+            if not entries:
+                return
+            item_ids = [item_id for item_id, _ in entries]
+            source_rows = [source_row for _, source_row in entries]
+            src_row = source_rows[0]
+            item_id_s = str(item_ids[0])
+        else:
+            if len(parts) < 5:
+                return
+            kind, item_id_s, src_row_s = parts[1], parts[2], parts[3]
+            try:
+                src_row = int(src_row_s)
+            except ValueError:
+                return
+            try:
+                item_ids = [int(item_id_s)]
+            except ValueError:
+                return
+            source_rows = [src_row]
         is_copy = bool(event.dropAction() == Qt.DropAction.CopyAction)
 
         # Find target row/col from drop position. The event's position is
@@ -8143,34 +8197,61 @@ class ScenarioTablePanel(QWidget):
             return
 
         if kind == 'sg':
-            if tgt_cons is None or tgt_cons == self._row_meta[src_row][2]:
+            if tgt_cons is None:
                 event.ignore(); return
-            if is_copy:
-                self.db.copy_safeguard(item_id, tgt_cons)
-            else:
-                self.db.move_safeguard(item_id, tgt_cons)
+            changed = False
+            for item_id, source_row in zip(item_ids, source_rows):
+                if not (0 <= source_row < len(self._row_meta)):
+                    continue
+                if tgt_cons == self._row_meta[source_row][2]:
+                    continue
+                if is_copy:
+                    self.db.copy_safeguard(item_id, tgt_cons)
+                else:
+                    self.db.move_safeguard(item_id, tgt_cons)
+                changed = True
+            if not changed:
+                event.ignore(); return
             self._schedule_rebuild()
             QTimer.singleShot(0, self.structure_changed.emit)
             event.acceptProposedAction()
 
         elif kind == 'cons':
-            if tgt_cause is None or tgt_cause == self._row_meta[src_row][1]:
+            if tgt_cause is None:
                 event.ignore(); return
-            if is_copy:
-                self.db.copy_consequence(item_id, tgt_cause)
-            else:
-                self.db.move_consequence(item_id, tgt_cause)
+            changed = False
+            for item_id, source_row in zip(item_ids, source_rows):
+                if not (0 <= source_row < len(self._row_meta)):
+                    continue
+                if tgt_cause == self._row_meta[source_row][1]:
+                    continue
+                if is_copy:
+                    self.db.copy_consequence(item_id, tgt_cause)
+                else:
+                    self.db.move_consequence(item_id, tgt_cause)
+                changed = True
+            if not changed:
+                event.ignore(); return
             self._schedule_rebuild()
             QTimer.singleShot(0, self.structure_changed.emit)
             event.acceptProposedAction()
 
         elif kind == 'cause':
-            if tgt_dev is None or tgt_dev == self._row_meta[src_row][0]:
+            if tgt_dev is None:
                 event.ignore(); return
-            if is_copy:
-                self.db.copy_cause(item_id, tgt_dev)
-            else:
-                self.db.move_cause_to_deviation(item_id, tgt_dev)
+            changed = False
+            for item_id, source_row in zip(item_ids, source_rows):
+                if not (0 <= source_row < len(self._row_meta)):
+                    continue
+                if tgt_dev == self._row_meta[source_row][0]:
+                    continue
+                if is_copy:
+                    self.db.copy_cause(item_id, tgt_dev)
+                else:
+                    self.db.move_cause_to_deviation(item_id, tgt_dev)
+                changed = True
+            if not changed:
+                event.ignore(); return
             self._schedule_rebuild()
             QTimer.singleShot(0, self.structure_changed.emit)
             event.acceptProposedAction()

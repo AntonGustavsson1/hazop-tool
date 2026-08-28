@@ -17,6 +17,14 @@ Dragning av Orsak, Konsekvens eller Barriär visar nu en liten etikett med
 av hela cellen och blev därför oproportionerligt hög för radbrutna eller
 grupperade celler. Drop-payload och flytta/kopiera-beteende är oförändrade.
 
+## Flera fält via Shift-drag i HAZOP Scenario (2026-08-28)
+
+Scenario-tabellen använder nu utökad cellmarkering. Flera Orsaker, Konsekvenser
+eller Barriärer i samma kolumn kan markeras med Shift och dras som ett paket.
+De skickas i en separat multi-payload och behandlas sedan av samma befintliga
+flytta/kopiera-regler som en enskild post. Blandade kolumntyper samlas inte
+automatiskt ihop.
+
 ## Tidigare konsekvenser och rekommendationer vid redigering (2026-08-28)
 
 Konsekvenseditorn visar nu historik-popupen explicit även för den multiline-
