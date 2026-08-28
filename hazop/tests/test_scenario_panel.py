@@ -2941,18 +2941,7 @@ class TooltipContrastTests(unittest.TestCase):
 
 
 class SafeguardEditorTopAlignmentTests(unittest.TestCase):
-    """"Text i HAZOP Scenario ska ligga i överkant även för safeguards.
-    När safeguard redigeras får texten inte hoppa till vertikal
-    centrering." (2026-08-26). The static paint for SG already drew its
-    text top-aligned (_draw_text_with_bold_tags always passes
-    Qt.AlignmentFlag.AlignTop) -- but a plain QLineEdit editor always
-    vertically CENTERS its own text within whatever rect it's given, and
-    updateEditorGeometry used to hand it the cell's FULL row height. A
-    safeguard's own row height is shared with its sibling ORS/KON cells
-    on the same physical row (see _sg_row_height's docstring) -- on any
-    row taller than one line (driven by a long wrapped Orsak/Konsekvens
-    next to a short Barriär), the edited text visibly jumped from the
-    top (painted) to the middle (editing) of the cell."""
+    """SG editing uses the wrapped text area and leaves the RRF badge clear."""
 
     @classmethod
     def setUpClass(cls):
@@ -2969,9 +2958,10 @@ class SafeguardEditorTopAlignmentTests(unittest.TestCase):
             pass
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    def test_sg_editor_geometry_stays_one_line_tall_and_top_anchored_on_a_tall_row(self):
+    def test_sg_editor_geometry_uses_wrapped_text_area_on_a_tall_row(self):
         from hazop import ScenarioTablePanel
-        from PyQt6.QtWidgets import QStyleOptionViewItem, QLineEdit
+        from scenario_panel import _BoldTagTextEdit
+        from PyQt6.QtWidgets import QStyleOptionViewItem
         from PyQt6.QtCore import QRect
 
         panel = ScenarioTablePanel(self.db)
@@ -2999,15 +2989,16 @@ class SafeguardEditorTopAlignmentTests(unittest.TestCase):
             option = QStyleOptionViewItem()
             option.rect = QRect(0, 0, 200, row_h)
             option.font = panel._table.font()
-            editor = QLineEdit(panel._table)
+            editor = _BoldTagTextEdit(panel._table)
             try:
                 panel._pid_delegate.updateEditorGeometry(editor, option, index)
                 geo = editor.geometry()
-                self.assertEqual(geo.top(), option.rect.top(),
+                self.assertEqual(geo.top(), option.rect.top() + 1,
                     "the editor must stay anchored to the TOP of the cell")
-                self.assertEqual(geo.height(), sg_h,
-                    "the editor must stay one compact SG line tall, not "
-                    "stretch to the full (taller) row height")
+                self.assertEqual(geo.height(), row_h - 2,
+                    "the multiline editor must use the available row height")
+                self.assertEqual(geo.width(), 200 - 32 - 4,
+                    "the editor must leave the RRF badge area untouched")
             finally:
                 editor.deleteLater()
         finally:

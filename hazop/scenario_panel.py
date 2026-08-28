@@ -110,6 +110,8 @@ class _BoldTagTextEdit(QTextEdit):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setTabChangesFocus(True)
         self.setFrameStyle(QFrame.Shape.NoFrame)
+        self.setContentsMargins(0, 0, 0, 0)
+        self.document().setDocumentMargin(0)
 
     def text(self):
         return self.toPlainText()
@@ -1564,21 +1566,15 @@ class _ScenarioDelegate(QStyledItemDelegate):
                           self._show_recommendation_assist_popup(ed, r, cid, rect))
 
     def updateEditorGeometry(self, editor, option, index):
-        """Put a sequential-add editor below the saved REK lines."""
+        """Keep the recommendation editor in the cell's existing layout."""
         panel = self._panel
-        cons_id = None
-        if index.row() < len(getattr(panel, '_row_meta', [])):
-            cons_id = panel._row_meta[index.row()][2]
-        if (index.column() == panel._C_REK and cons_id is not None and
-                getattr(panel, '_recommendation_force_add_cons_id', None) == cons_id):
-            line_h = max(22, QFontMetrics(option.font).height() + 6)
-            rect = QRect(option.rect)
-            rect.setTop(max(rect.top(), rect.bottom() - line_h + 1))
-            editor.setGeometry(rect.adjusted(2, 1, -2, -1))
-            return
-        # The multiline editor must occupy the complete painted cell so its
-        # wrapping and vertical position stay aligned while editing.
-        editor.setGeometry(QRect(option.rect).adjusted(2, 2, -2, -2))
+        # The multiline editor must occupy the same painted text area so its
+        # wrapping and vertical position stay aligned while editing.  REK's
+        # static painter has a slightly wider inset than the other generic
+        # cells, so keep that inset here too.
+        inset = (5, 2, -3, -2) if index.column() == panel._C_REK \
+            else (2, 2, -2, -2)
+        editor.setGeometry(QRect(option.rect).adjusted(*inset))
 
     def _show_recommendation_assist_popup(self, editor, row, cons_id, cell_rect):
         """Mirrors _PidDelegate._show_standard_cause_popup's positioning
@@ -1635,23 +1631,8 @@ class _ScenarioDelegate(QStyledItemDelegate):
         fm = self._fm
         one_line_h = fm.height() + 6
 
-        wrap_cols = {panel._C_ORS, panel._C_KON, panel._C_REK}
+        wrap_cols = {panel._C_ORS, panel._C_KON, panel._C_SG, panel._C_REK}
         if col not in wrap_cols:
-            if col == panel._C_SG:
-                # SG's description never word-wraps (unlike ORS/KON) — a
-                # single compact line is always enough. Uses its own
-                # (smaller) row height, not one_line_h — see
-                # panel._sg_row_height's docstring.
-                text = index.data(Qt.ItemDataRole.DisplayRole) or ''
-                item = panel._table.item(index.row(), col)
-                if item is not None:
-                    num = item.data(Qt.ItemDataRole.UserRole + 10)
-                    if num:
-                        text = f"{num}.  {text}"
-                w = max(40, option.rect.width() - _RRF_W - 6)
-                rect = fm.boundingRect(0, 0, w, 10000,
-                                       Qt.TextFlag.TextWordWrap, text)
-                return QSize(option.rect.width(), max(one_line_h, rect.height() + 4))
             # Non-wrap columns (risk cells) stay at one compact line
             base = super().sizeHint(option, index)
             return QSize(base.width(), one_line_h)
@@ -2142,8 +2123,8 @@ class _PidDelegate(_ScenarioDelegate):
                 desc_rect = QRect(r.left(), body_top, desc_w, body_h)
                 rrf_rect  = self._panel._sg_rrf_zone_geometry(r)
 
-                # Description text (elided to one line), drag-appended tags
-                # in bold (2026-08-09, see NOTES.md "fetmarkera objekttexten").
+                # Description text wraps inside the area left of the RRF
+                # badge; drag-appended tags remain bold.
                 # Same font size as every other cell — only the row's own
                 # padding shrank (self._panel._sg_row_height), not the
                 # text (2026-08-18 follow-up: Anton clarified it's the
@@ -4210,7 +4191,7 @@ class ScenarioTablePanel(QWidget):
             fm = QFontMetrics(table.font())
         one_line_h = fm.height() + 6
         sg_row_h = self._sg_row_height(table.font())
-        wrap_cols = (self._C_ORS, self._C_KON, self._C_REK)
+        wrap_cols = (self._C_ORS, self._C_KON, self._C_SG, self._C_REK)
 
         def _cause_id(r):
             return self._row_meta[r][1] if 0 <= r < len(self._row_meta) else None
@@ -4274,8 +4255,8 @@ class ScenarioTablePanel(QWidget):
                 continue
 
             if col == self._C_SG:
-                # SG's description never word-wraps, and never spans — a
-                # single compact line is always enough.
+                # SG does not span, but its description must wrap inside the
+                # area left of the RRF badge just like the other text cells.
                 item = table.item(row, col)
                 text = item.text() if item is not None else ''
                 if item is not None:

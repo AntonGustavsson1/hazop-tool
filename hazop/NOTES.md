@@ -3159,3 +3159,11 @@ valbara fel-/effektalternativ; primär/sekundär-växlingen ligger kvar som en
 diskret gemensam åtgärd. Den enskilda objektpopupen visar motsvarande objekt-
 och P&ID-information ovanför tagg- och typredigeringen. Den gamla Bind till
 objekt-knappen är borttagen.
+
+## Edit Mode: cellens layout och wrapping (2026-08-28)
+
+Den gemensamma flerradiga editorn använder nu exakt cellens textområde för
+Orsak, Konsekvens, Safeguard och Rekommendation. Orsakens objektprefix,
+Konsekvensens nummer och Safeguardens RRF-badge ligger kvar synliga bredvid
+editorn. Alla fyra textfält tillåter word wrap även under redigering, så texten
+flyttar inte till en separat rad eller täcker andra delar av cellen.
