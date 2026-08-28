@@ -724,7 +724,7 @@ class KonInlineEditTests(unittest.TestCase):
             # no longer early-returns for the KON column at all.
             edit_spy.assert_called()
 
-    def test_single_click_on_already_current_kon_cell_schedules_edit(self):
+    def test_single_click_on_already_current_kon_cell_does_not_start_edit(self):
         with _TempDbMainWindow() as win:
             panel = win.scenario_panel
             _node_id, _dev_id, cause_id, cons_id = self._make_full_chain(win.db)
@@ -732,9 +732,9 @@ class KonInlineEditTests(unittest.TestCase):
             row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
             panel._table.setCurrentCell(row, panel._C_KON)
 
-            with unittest.mock.patch.object(panel, '_queue_cell_edit') as mock_queue:
+            with unittest.mock.patch.object(panel, '_try_start_edit') as mock_edit:
                 panel._on_cell_clicked(row, panel._C_KON)
-            mock_queue.assert_called_once_with(row, panel._C_KON)
+            mock_edit.assert_not_called()
 
     def test_editing_kon_cell_saves_to_consequence_description(self):
         with _TempDbMainWindow() as win:

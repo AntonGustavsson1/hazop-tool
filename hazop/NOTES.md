@@ -3091,3 +3091,15 @@ passerar.
 Inline-redigering i HAZOP Scenario behåller nu fet visning av kända P&ID-taggar även när editorn är aktiv. Vid redigering av Konsekvens eller Safeguard identifieras ett borttaget gammalt taggnummer och ett nytt taggformat innan texten sparas. En exakt träff i aktuell equipment_catalog ger dialogen Koppla till objekt / Byt endast namn / Avbryt; utan träff krävs uttryckligt godkännande av namnbytet. Dubblettnamn blockeras och den nya taggen sparas i tagged_refs så att fetstil består.
 
 Orsakens befintliga live-koppling och namnbytesflöde återanvänds. Tre nya regressionstester täcker koppling utan att döpa om gammalt objekt, avbryt utan databasändring och taggmedveten inline-editor. Verifierat med py_compile, tests.test_smoke (12 tester) och berörda edit-tester (26 tester totalt). Ingen visuell GUI-verifiering är gjord.
+
+## Korrigering av Edit Mode-trigger och textens position (2026-08-28)
+
+Enkelklick i Orsak, Konsekvens, Safeguard och Rekommendation väljer nu bara
+cellen och startar inte längre någon fördröjd editor. Redigering startar
+endast med dubbelklick; den faktiska klickpositionen används för caret utan
+helmarkering.
+
+Editorns fokusstyling använder samma borderbredd och padding före och efter
+fokus. Standardgeometrin hålls mot cellens övre textlinje i stället för att
+centrera en enkelradig QLineEdit i en hög, radbruten rad. 15 berörda tester
+passerar. Ingen visuell GUI-verifiering är gjord.
