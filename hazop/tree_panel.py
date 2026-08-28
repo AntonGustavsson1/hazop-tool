@@ -542,7 +542,9 @@ class TreePanel(QWidget):
                     # orsak" here.  Show the primary and secondary objects
                     # in order until the user chooses/edit the events.
                     if desc in ('', 'Ny orsak') and tag and secondary_tag:
-                        c_label = f"{tag} → {secondary_tag}"
+                        # Keep the two live group objects visually separate
+                        # in the tree, as in the Scenario table.
+                        c_label = f"{tag}\n{secondary_tag}"
                     else:
                         c_label = desc[:80]
                 elif tag and trivial:

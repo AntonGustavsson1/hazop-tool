@@ -4692,7 +4692,7 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             win.tree_panel.refresh()
             item = _find_tree_item(win.tree_panel.tree, CAUSE_T, cause['id'])
             self.assertIsNotNone(item)
-            self.assertIn('A-101 → B-202', item.text(0))
+            self.assertIn('A-101\nB-202', item.text(0))
             self.assertNotIn('Ny orsak', item.text(0))
 
     def test_group_choice_buttons_are_independent_and_group_text_remains_editable(self):

@@ -3404,5 +3404,8 @@ att den reduceras till första raden.
 En grupp som skapades med utrustningstyper där ingen automatisk
 primär/sekundär mekanism kunde härledas fick tidigare texten "Ny orsak" i
 trädet. Trädpanelen visar nu i stället alltid primärt objekt följt av
-sekundärt objekt, exempelvis `A-101 → B-202`, tills en händelsetext har valts
+sekundärt objekt, exempelvis `A-101` följt av `B-202`, tills en händelsetext har valts
 eller redigerats.
+
+Gruppobjekten visas på separata rader i trädet (`A-101` följt av `B-202`) för
+att återgå till den tidigare tydliga grupppresentationen.
