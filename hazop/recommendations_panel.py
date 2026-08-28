@@ -23,10 +23,10 @@ RecommendationsPanel` keeps working for tests, same as
 this needs no deferred/circular-import dance: it only reaches into
 database.py, nothing defined in hazop.py itself."""
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QComboBox,
+    QComboBox, QDateEdit,
 )
 
 from database import Database
@@ -207,9 +207,26 @@ class RecommendationsPanel(QWidget):
                     cell.setData(Qt.ItemDataRole.UserRole, rec_id)
                     cell.setTextAlignment(Qt.AlignmentFlag.AlignLeft |
                                           Qt.AlignmentFlag.AlignTop)
-                    if col == self._COL_REF:
+                    # The visible R-XXX number is a stable database identity,
+                    # not an editable field. Description editing remains
+                    # available from the HAZOP scenario editor.
+                    if col in (self._COL_REC, self._COL_REF):
                         cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     self._table.setItem(row, col, cell)
+                due = QDateEdit(self._table)
+                due.setCalendarPopup(True)
+                due.setDisplayFormat('yyyy-MM-dd')
+                due.setProperty('recommendation_id', rec_id)
+                parsed = QDate.fromString(rec['due_date'] or '', 'yyyy-MM-dd')
+                if parsed.isValid():
+                    due.setDate(parsed)
+                else:
+                    due.setSpecialValueText('')
+                    due.setDate(QDate.currentDate())
+                due.dateChanged.connect(
+                    lambda date, rid=rec_id: self.db.update_recommendation(
+                        rid, due_date=date.toString('yyyy-MM-dd')))
+                self._table.setCellWidget(row, self._COL_DUE, due)
                 combo = QComboBox(self._table)
                 combo.setEditable(True)
                 combo.addItem('')

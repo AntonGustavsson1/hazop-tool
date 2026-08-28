@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Agent 3: rekommendationslistans datum och stabila nummer (2026-08-28)
+
+Rekommendationens R-nummer är nu låst i översiktslistan och fältet "Ska
+vara åtgärdat" använder en interaktiv kalender med ISO-datum. Ändringen
+behåller redigering av rekommendationstext i HAZOP-scenariot.
+
 ## Kraschskydd för tagg-completer och gruppfält (2026-08-28)
 
 Fördröjd taggmatchning avbryts nu säkert om inline-editorn har hunnit tas
