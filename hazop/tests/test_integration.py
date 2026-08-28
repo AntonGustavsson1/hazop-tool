@@ -4632,8 +4632,7 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             tagged = {c['comp_tag'] for c in causes}
             self.assertEqual(tagged, {"V-1", "V-2"})
             for c in causes:
-                # 2026-08-10: unified placeholder text, see NOTES.md
-                self.assertEqual(dict(c)['description'], 'Ny orsak')
+                self.assertEqual(dict(c)['description'], '')
                 self.assertEqual(len(win.db.consequences(c['id'])), 1)
 
     def test_on_equipment_dropped_on_deviation_assigns_node_when_missing(self):
@@ -4667,8 +4666,7 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
                       if c['deviation_id'] == dev_id]
             self.assertEqual(len(causes), 1)
             self.assertEqual(causes[0]['comp_tag'], 'FI-1 + FV-1')
-            self.assertIn('FI-1 felar högt', causes[0]['description'])
-            self.assertIn('FV-1 öppnar fullt', causes[0]['description'])
+            self.assertEqual(causes[0]['description'], '')
 
     def test_group_created_without_default_mechanism_shows_both_objects_in_tree(self):
         with _TempDbMainWindow() as win:

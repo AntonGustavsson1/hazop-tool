@@ -642,11 +642,8 @@ def _create_tagged_cause(db, deviation_id, comp_type, comp_tag, equipment_id=Non
     """Create a new cause under deviation_id (only its equipment tag/type
     set) plus one empty consequence — used when an equipment marker is
     dropped directly onto a deviation in the HAZOP tree (2026-08-08, see
-    NOTES.md). No popup: the description defaults to the same "Ny orsak"
-    placeholder _create_cause_from_pick's own fallback uses (2026-08-10 —
-    was blank, unified to match every other auto-created cause/
-    consequence/safeguard's placeholder-text convention), immediately
-    inline-editable/overtype-able.
+    NOTES.md). No popup and no prefilled cause description: the user enters
+    the cause text explicitly after the drop.
 
     `equipment_id` (2026-08-13, see NOTES.md) links the cause's tag
     strip live to the equipment_catalog row it came from, when the
@@ -655,7 +652,7 @@ def _create_tagged_cause(db, deviation_id, comp_type, comp_tag, equipment_id=Non
     Returns (cause_id, consequence_id).
     """
     new_id = db.add_cause(deviation_id)
-    db.update_cause(new_id, description='Ny orsak', comp_type=comp_type, comp_tag=comp_tag,
+    db.update_cause(new_id, description='', comp_type=comp_type, comp_tag=comp_tag,
                      equipment_id=equipment_id)
     cons_id = db.add_consequence(new_id)
     return new_id, cons_id
@@ -2340,28 +2337,15 @@ class MainWindow(QMainWindow):
             affected = next((e for e in equipments
                              if e is not control and has_type(e, affected_keys)), None)
             if control is not None and affected is not None:
-                # The direction/effect is edited from the two compact `…`
-                # controls in the Orsak cell; use the deviation as a sensible
-                # initial suggestion without interrupting group creation.
-                deviation_text = (dev.get('description') or '').casefold()
-                high = any(word in deviation_text for word in ('högt', 'hög ', 'high'))
-                affected_kind = (affected.get('equipment_type') or '').casefold()
-                if 'ventil' in affected_kind:
-                    effect = 'öppnar fullt' if high else 'stänger'
-                elif any(key in affected_kind for key in ('pump', 'motor', 'fläkt', 'kompressor')):
-                    effect = 'går på maximalt varvtal' if high else 'stannar'
-                elif any(key in affected_kind for key in ('värmare', 'kylare', 'kylning')):
-                    effect = 'går på full effekt' if high else 'stänger av'
-                else:
-                    effect = 'påverkas'
+                # Keep the functional group and both live object links, but
+                # do not invent a mechanism/effect description.  Both
+                # primary and secondary fault text must be entered by the
+                # user after the drop.
                 control_tag = control.get('tag') or 'Objekt'
                 affected_tag = affected.get('tag') or 'Objekt'
-                direction = 'högt' if high else 'lågt'
-                mechanism = f"{control_tag} felar {direction} → {affected_tag} {effect}"
                 last_cause_id, _ = _create_tagged_cause(
                     self.db, dev_id, control.get('equipment_type', ''),
                     f"{control_tag} + {affected_tag}", equipment_id=control.get('id'))
-                self.db.update_cause(last_cause_id, description=mechanism)
                 self.db.update_cause(last_cause_id,
                                      secondary_equipment_id=affected.get('id'))
 

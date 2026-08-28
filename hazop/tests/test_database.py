@@ -999,10 +999,9 @@ class SafeguardTagDbTests(unittest.TestCase):
         cause_id, cons_id = _create_tagged_cause(self.db, dev_id, "Pump", "P-101")
 
         cause = dict(self.db.get_cause(cause_id))
-        # 2026-08-10: unified to the same "Ny orsak" placeholder every
-        # other auto-created cause/consequence/safeguard already uses
-        # (was blank) — see NOTES.md.
-        self.assertEqual(cause['description'], 'Ny orsak')
+        # A cause created from a dragged P&ID object starts completely blank;
+        # the user supplies the description explicitly.
+        self.assertEqual(cause['description'], '')
         self.assertEqual(cause['comp_type'], "Pump")
         self.assertEqual(cause['comp_tag'], "P-101")
         cons = self.db.get_consequence(cons_id)

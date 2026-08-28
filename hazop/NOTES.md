@@ -2,6 +2,14 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Dragning till avvikelse: ingen förifylld orsaksbeskrivning (2026-08-28)
+
+När P&ID-objekt dras till en avvikelse skapas orsaken nu med tom beskrivning.
+Även den automatiska kontroll/ventil-gruppen behåller sina objektkopplingar
+men får ingen påhittad felmekanism eller effekttext. Primär- och
+sekundärtext skrivs därmed av användaren. Verifierat med riktade dragtester,
+smoke-test och trädpaneltest.
+
 ## Grupporsak: editor placeras på rätt visuell rad direkt (2026-08-28)
 
 Gruppeditorns `group_line` sätts nu redan när editorn skapas, före Qt:s första
