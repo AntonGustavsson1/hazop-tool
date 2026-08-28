@@ -2193,6 +2193,9 @@ class _PidDelegate(_ScenarioDelegate):
                         selected = (lines[group_line[1]].strip()
                                     if group_line[1] < len(lines) else
                                     str(group_tags[group_line[1]]))
+                        tag = str(group_tags[group_line[1]]).strip()
+                        if tag and selected.casefold().startswith(tag.casefold()):
+                            selected = selected[len(tag):].lstrip(' ,:→-')
                         editor.setText(selected)
                         editor.setProperty('group_line', int(group_line[1]))
 
@@ -2342,7 +2345,11 @@ class _PidDelegate(_ScenarioDelegate):
                 lines = (cause.get('description') or '').splitlines()
                 while len(lines) < 2:
                     lines.append('')
-                lines[int(group_line)] = clean
+                group_tags = self._panel._table.item(
+                    index.row(), index.column()).data(
+                        Qt.ItemDataRole.UserRole + 9) or []
+                tag = str(group_tags[int(group_line)]).strip()
+                lines[int(group_line)] = f'{tag} {clean}'.strip() if tag else clean
                 while lines and not lines[-1].strip():
                     lines.pop()
                 clean = '\n'.join(lines)
@@ -2377,6 +2384,22 @@ class _PidDelegate(_ScenarioDelegate):
                 # the bold object tag. Leave both parts outside the editor.
                 prefix_w += QFontMetrics(option.font).horizontalAdvance(
                     f"{num}.  ")
+            group_line = editor.property('group_line')
+            group_tags = item.data(Qt.ItemDataRole.UserRole + 9) if item else []
+            if group_line in (0, 1) and len(group_tags or []) >= 2:
+                tag_font = QFont(option.font)
+                tag_font.setBold(True)
+                prefix_w = (QFontMetrics(option.font).horizontalAdvance(
+                                f"{num}.  ") if num and group_line == 0 else 0)
+                prefix_w += QFontMetrics(tag_font).horizontalAdvance(
+                    str(group_tags[group_line])) + 5
+                line_h = max(_ORS_FIRST_LINE_H,
+                             QFontMetrics(option.font).height() + 4)
+                top = r.top() + 2 + line_h * group_line
+                editor.setGeometry(QRect(r.left() + 2 + prefix_w, top,
+                                         max(10, r.right() - r.left() - prefix_w - 4),
+                                         max(10, line_h - 2)))
+                return
             freq_x, freq_w, _freq = self._panel._ors_freq_zone_geometry(
                 item, r.left() + 2, r.right() - 2)
             editor.setGeometry(QRect(r.left() + 2 + prefix_w, r.top() + 2,

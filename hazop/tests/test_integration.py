@@ -4747,8 +4747,8 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             try:
                 panel._pid_delegate.setEditorData(editor, index)
                 self.assertEqual(editor.toPlainText(),
-                                 'FV-1 öppnar felaktigt')
-                editor.setText('FV-1 behöver manövreras manuellt')
+                                 'öppnar felaktigt')
+                editor.setText('behöver manövreras manuellt')
                 panel._pid_delegate.setModelData(
                     editor, panel._table.model(), index)
             finally:

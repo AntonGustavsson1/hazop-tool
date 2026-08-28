@@ -3446,3 +3446,10 @@ Popupen som visade primär och sekundär samtidigt är borttagen. Alla popupväg
 för grupporsak visar nu endast den rad som klickades: primärhändelse för den
 övre raden och sekundärhändelse för den nedre. Även klickzoner som saknar
 direkt radmetadata bestämmer raden från klickets vertikala position.
+
+## Fri text till höger om gruppobjekt (2026-08-28)
+
+Vid direkt redigering av en grupporsaksrad ligger primär- eller
+sekundärobjektet kvar som synlig tagg till vänster. Editorn startar efter
+taggen och visar endast den fria händelsetexten. Vid sparning sätts rätt tagg
+tillbaka på den valda raden och den andra grupp-raden lämnas orörd.
