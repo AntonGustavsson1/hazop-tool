@@ -705,16 +705,14 @@ class GroupCausePopup(QDialog):
     """Compact two-column editor for a functional two-object cause."""
 
     choice_requested = pyqtSignal(int, str)  # column (0/1), choice
-    swap_requested = pyqtSignal()
-
     def __init__(self, primary, secondary, direction, effect, parent=None,
-                 only_column=None):
+                 only_column=0):
         super().__init__(parent)
         self.setWindowTitle(
             "Primärhändelse" if only_column == 0 else
-            "Sekundärhändelse" if only_column == 1 else "Grupporsak")
+            "Sekundärhändelse")
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
-        self.setMinimumWidth(260 if only_column is not None else 390)
+        self.setMinimumWidth(260)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -768,22 +766,7 @@ class GroupCausePopup(QDialog):
             self._current_labels[column] = current_label
             box_layout.addWidget(current_label)
             columns.addWidget(box)
-            if column == 0 and only_column is None:
-                divider = QFrame()
-                divider.setFrameShape(QFrame.Shape.VLine)
-                divider.setFrameShadow(QFrame.Shadow.Plain)
-                divider.setStyleSheet("color:#E2E3E1;")
-                columns.addWidget(divider)
         layout.addLayout(columns)
-
-        if only_column is None:
-            swap = QPushButton("Byt primär / sekundär")
-            swap.setFixedHeight(CONFIG['H_BTN_SMALL'])
-            swap.setStyleSheet(
-                "QPushButton{background:transparent;color:#2F5FD0;border:0px;"
-                "font-weight:bold;} QPushButton:hover{color:#234AAB;}")
-            swap.clicked.connect(self.swap_requested.emit)
-            layout.addWidget(swap)
 
     def set_current(self, column, value):
         """Keep the open popup's status in sync after an inline choice."""
@@ -6191,7 +6174,14 @@ class ScenarioTablePanel(QWidget):
         item      = self._table.item(row, self._C_ORS)
         group_tags = item.data(Qt.ItemDataRole.UserRole + 9) or [] if item else []
         if len(group_tags) >= 2:
-            self._show_group_cause_popup(row, cause_id, global_pos)
+            cell_rect = self._table.visualRect(
+                self._table.model().index(row, self._C_ORS))
+            top = self._table.viewport().mapToGlobal(cell_rect.topLeft()).y()
+            line_h = max(_ORS_FIRST_LINE_H,
+                         QFontMetrics(self._table.font()).height() + 4)
+            line = 0 if global_pos.y() < top + line_h else 1
+            self._show_group_cause_popup(
+                row, cause_id, global_pos, only_column=line)
             return
         obj_data  = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
         comp_type, comp_tag = obj_data if obj_data else ('', '')
@@ -6246,10 +6236,7 @@ class ScenarioTablePanel(QWidget):
         def apply_choice(which, choice):
             self._apply_group_cause_choice(cause_id, which, choice)
             popup.set_current(which, choice)
-        def swap_objects():
-            self._swap_group_objects(cause_id)
         popup.choice_requested.connect(apply_choice)
-        popup.swap_requested.connect(swap_objects)
         popup.adjustSize()
         screen = (QApplication.screenAt(global_pos) or QApplication.primaryScreen()).availableGeometry()
         x = min(global_pos.x(), screen.right() - popup.width() - 4)

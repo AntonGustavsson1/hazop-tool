@@ -3439,3 +3439,10 @@ När båda grupphändelserna redan finns valda ändrar ett nytt primärval endas
 primärtexten. Sekundärtexten behålls i databasen och i den återrenderade
 Orsak-cellen. Den separata tvåklicksregeln för helt nya grupper gäller fortsatt
 så att ett första primärval inte skapar en sekundärhändelse.
+
+## Ingen gemensam Grupporsak-popup (2026-08-28)
+
+Popupen som visade primär och sekundär samtidigt är borttagen. Alla popupvägar
+för grupporsak visar nu endast den rad som klickades: primärhändelse för den
+övre raden och sekundärhändelse för den nedre. Även klickzoner som saknar
+direkt radmetadata bestämmer raden från klickets vertikala position.
