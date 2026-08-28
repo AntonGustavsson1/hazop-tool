@@ -4792,6 +4792,40 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             primary_popup.deleteLater()
             secondary_popup.deleteLater()
 
+    def test_group_secondary_edit_uses_same_inline_editor_and_popup_as_single_cause(self):
+        from scenario_panel import _BoldTagTextEdit, StandardCauseSuggestPopup
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.get_or_create_deviation(node_id, 'High flow')
+            primary_id = win.db.add_equipment_item('FI-1', 'FI-1', 'FI', 0,
+                                                   'Instrument', '', 0)
+            secondary_id = win.db.add_equipment_item('FV-1', 'FV-1', 'FV', 0,
+                                                     'Reglerventil', '', 0)
+            cause_id = win.db.add_cause(dev_id)
+            win.db.update_cause(
+                cause_id, comp_type='Instrument', comp_tag='FI-1 + FV-1',
+                equipment_id=primary_id, secondary_equipment_id=secondary_id,
+                description='FI-1 primary text\nFV-1 secondary text',
+                group_choices_set=3)
+            panel = win.scenario_panel
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta)
+                       if m[1] == cause_id)
+            index = panel._table.model().index(row, panel._C_ORS)
+            panel._group_edit_line = (row, 1)
+            panel._table.setCurrentIndex(index)
+            panel._table.edit(index)
+            QApplication.processEvents()
+            editors = panel._table.viewport().findChildren(_BoldTagTextEdit)
+            self.assertTrue(editors)
+            self.assertTrue(any(e.property('group_line') == 1 and
+                                e.toPlainText() == 'secondary text'
+                                for e in editors))
+            self.assertTrue(panel.window().findChildren(StandardCauseSuggestPopup),
+                            'the grouped row must use the same standard-cause popup')
+            for editor in editors:
+                editor.deleteLater()
+
     def test_group_popup_uses_secondary_object_and_free_text_preserves_both_rows(self):
         with _TempDbMainWindow() as win:
             node_id = win.db.add_node()
