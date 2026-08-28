@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Grafisk linjering av gruppobjekt i trädet (2026-08-28)
+
+När en grupp med flera objekt visas i samma trädpost får fortsättningsraderna
+nu samma indrag som den första objekttaggen. Primär och sekundär hamnar då
+under varandra i stället för att sekundär börjar längst till vänster.
+
 ## Gruppmeny visas via Qt:s context-signal (2026-08-28)
 
 Gruppens flyttmeny kopplas nu även in via tabellens

@@ -564,10 +564,20 @@ class TreePanel(QWidget):
                     c_label = f"{tag}, {desc[:45]}"
                 else:
                     c_label = desc[:50]
-                citem = QTreeWidgetItem([f"    ⚙ {ci}. {c_label}"])
+                # A grouped cause is rendered as multiple physical lines in
+                # one tree item.  Indent continuation lines under the first
+                # object's tag, not at the start of the tree item; otherwise
+                # the secondary object appears too far to the left.
+                cause_prefix = f"    ⚙ {ci}. "
+                if is_group and '\n' in c_label:
+                    parts = c_label.splitlines()
+                    c_label = parts[0] + ''.join(
+                        f"\n{' ' * len(cause_prefix)}{part}"
+                        for part in parts[1:])
+                citem = QTreeWidgetItem([f"{cause_prefix}{c_label}"])
                 citem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
                 citem.setData(0, Qt.ItemDataRole.UserRole + 1, CAUSE_T)
-                citem.setData(0, self._PREFIX_ROLE, f"    ⚙ {ci}. ")
+                citem.setData(0, self._PREFIX_ROLE, cause_prefix)
                 parent_item.addChild(citem)
                 if (CAUSE_T, cause['id']) in expanded: citem.setExpanded(True)
                 if select_type == CAUSE_T and select_id == cause['id']: target = citem
