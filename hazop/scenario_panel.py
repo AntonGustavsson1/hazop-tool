@@ -6982,6 +6982,28 @@ class ScenarioTablePanel(QWidget):
             row = self._table.rowAt(point.y())
             col = self._table.columnAt(point.x())
             if col in (self._C_ORS, self._C_KON, self._C_SG, self._C_REK):
+                if col == self._C_ORS and 0 <= row < self._table.rowCount():
+                    item = self._table.item(row, col)
+                    group_tags = (item.data(Qt.ItemDataRole.UserRole + 9) or []) if item else []
+                    if len(group_tags) >= 2:
+                        cell_rect = self._table.visualRect(
+                            self._table.model().index(row, col))
+                        line_h = max(_ORS_FIRST_LINE_H,
+                                     QFontMetrics(self._table.font()).height() + 4)
+                        rel_y = point.y() - cell_rect.top() - 2
+                        line_no = int(rel_y // line_h) if rel_y >= 0 else -1
+                        font_h = QFontMetrics(self._table.font()).height()
+                        text_pad = max(0, (line_h - font_h) // 2)
+                        line_top = line_no * line_h
+                        in_text_band = (
+                            0 <= line_no < len(group_tags) and
+                            line_top + text_pad <= rel_y <
+                            line_top + text_pad + font_h)
+                        if not in_text_band:
+                            # Consume the event before QTableWidget's native
+                            # double-click editor can open a generic editor.
+                            self._double_click_edit = None
+                            return True
                 self._double_click_edit = (row, col, point)
 
         # ── Drag: record press position for potential drag-start ─────────────────

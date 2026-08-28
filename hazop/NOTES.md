@@ -14,6 +14,9 @@ inte längre öppna den vanliga fullcells-editorn.
 Även den tunna vertikala marginalen ovanför första gruppobjektet är nu
 passiv; bara den målade textremsan på en objektrad kan starta redigering.
 
+Dubbelklick i gruppens övriga cellområde konsumeras nu redan i eventfiltret,
+så Qt:s generella fullcells-editor kan inte öppnas där heller.
+
 Generell gruppredigering är dessutom blockerad via F2, högerklickets
 Redigera och programmatisk redigeringsstart. Grupporsaker kan därmed bara
 redigeras genom primär- eller sekundärradens egna textområden.
