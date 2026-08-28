@@ -19,6 +19,10 @@ from pathlib import Path
 # ── Headless Qt setup — MUST happen before importing PyQt6 or hazop ────────
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PyQt6.QtCore import Qt, QEvent
+from PyQt6.QtGui import QKeyEvent
+from PyQt6.QtWidgets import QHeaderView, QMessageBox
+
 _TEST_DIR = Path(__file__).resolve().parent
 _HAZOP_DIR = _TEST_DIR.parent
 for _p in (_HAZOP_DIR, _TEST_DIR):
@@ -67,6 +71,35 @@ class RecommendationsPanelConstructionTests(unittest.TestCase):
             self.assertEqual(
                 panel._table.horizontalHeaderItem(panel._COL_RESPONSIBLE).text(),
                 "Ansvarig")
+        finally:
+            panel.deleteLater()
+
+    def test_responsible_column_is_wide_and_columns_are_draggable(self):
+        panel = RecommendationsPanel(self.db)
+        try:
+            header = panel._table.horizontalHeader()
+            self.assertGreaterEqual(panel._table.columnWidth(panel._COL_RESPONSIBLE), 200)
+            self.assertTrue(header.sectionsMovable())
+            for col in range(panel._table.columnCount()):
+                self.assertEqual(header.sectionResizeMode(col),
+                                 QHeaderView.ResizeMode.Interactive)
+        finally:
+            panel.deleteLater()
+
+    def test_delete_key_removes_selected_recommendation_after_confirmation(self):
+        rec_id = self.db.add_recommendation(description="Ta bort mig")
+        panel = RecommendationsPanel(self.db)
+        try:
+            panel.load()
+            panel._table.selectRow(0)
+            with unittest.mock.patch(
+                    'recommendations_panel.QMessageBox.question',
+                    return_value=QMessageBox.StandardButton.Yes):
+                event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Delete,
+                                  Qt.KeyboardModifier.NoModifier)
+                panel._table.keyPressEvent(event)
+            self.assertIsNone(self.db.get_recommendation(rec_id))
+            self.assertEqual(panel._table.rowCount(), 0)
         finally:
             panel.deleteLater()
 

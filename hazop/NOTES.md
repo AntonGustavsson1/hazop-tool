@@ -3808,6 +3808,12 @@ Placeringssignalen från objektpopupen anger nu tagg och objekttyp i samma
 ordning som P&ID-placement-API:t förväntar sig. Tag-numret hamnar därför i
 taggfältet och objekttypen i objekttypfältet.
 
+## Rekommendationsfliken: delete och dragbara kolumner (2026-08-28)
+
+Rekommendationslistan har nu Delete-tangent och en synlig knapp med
+bekräftelse. Ansvarig-kolumnen är bredare, och samtliga kolumner kan ändra
+bredd samt flyttas genom att dras i tabellhuvudet.
+
 ## Worksheet-drop uppdaterar trädet (2026-08-28)
 
 När objekt från P&ID släpps i worksheetens konsekvens- eller barriärfält

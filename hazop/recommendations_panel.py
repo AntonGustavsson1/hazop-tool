@@ -23,10 +23,10 @@ RecommendationsPanel` keeps working for tests, same as
 this needs no deferred/circular-import dance: it only reaches into
 database.py, nothing defined in hazop.py itself."""
 
-from PyQt6.QtCore import Qt, QDate
+from PyQt6.QtCore import Qt, QDate, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QComboBox, QDateEdit,
+    QComboBox, QDateEdit, QPushButton, QMessageBox,
 )
 
 from database import Database
@@ -99,6 +99,19 @@ def _reference_for_consequence(cons_id, maps):
     return f"1.{n}.{d}.{c}.{k}"
 
 
+class _RecommendationsTable(QTableWidget):
+    """Recommendation table with a safe row-delete keyboard shortcut."""
+
+    delete_requested = pyqtSignal()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Delete:
+            self.delete_requested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class RecommendationsPanel(QWidget):
     """Simple three-column, read-only QTableWidget: every recommendation in
     the catalog (column 1, "R-XXX. <description>"), its responsible person
@@ -125,7 +138,7 @@ class RecommendationsPanel(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
 
-        self._table = QTableWidget(0, 4)
+        self._table = _RecommendationsTable(0, 4)
         self._table.setHorizontalHeaderLabels(
             ["Rekommendation", "Ansvarig", "Ska vara åtgärdat",
              "Referens (studie.nod.avvikelse.orsak.konsekvens)"])
@@ -135,15 +148,26 @@ class RecommendationsPanel(QWidget):
                                     QAbstractItemView.EditTrigger.SelectedClicked)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setWordWrap(True)
+        self._table.setAlternatingRowColors(True)
+        self._table.delete_requested.connect(self._delete_selected)
+        self._table.itemSelectionChanged.connect(self._update_delete_button)
         # Native click-to-sort is effectively free with a QTableWidget and
         # was explicitly called out as fine to include — no custom
         # filtering/search UI beyond that, per the request.
         self._table.setSortingEnabled(True)
         header = self._table.horizontalHeader()
-        header.setSectionResizeMode(self._COL_REC, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(self._COL_RESPONSIBLE, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(self._COL_DUE, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(self._COL_REF, QHeaderView.ResizeMode.ResizeToContents)
+        # All columns are manually resizable/reorderable. ResizeToContents
+        # made Ansvarig especially hard to widen and made the list feel
+        # fixed, despite the other HAZOP tables being user-adjustable.
+        for col in range(4):
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+        header.setSectionsMovable(True)
+        header.setStretchLastSection(False)
+        header.setMinimumSectionSize(80)
+        self._table.setColumnWidth(self._COL_REC, 360)
+        self._table.setColumnWidth(self._COL_RESPONSIBLE, 240)
+        self._table.setColumnWidth(self._COL_DUE, 150)
+        self._table.setColumnWidth(self._COL_REF, 360)
         # Qt quirk (verified empirically, not from memory): a freshly
         # created QTableWidget's header already carries an implicit
         # "column 0, DESCENDING" sort indicator even though nothing ever
@@ -157,6 +181,43 @@ class RecommendationsPanel(QWidget):
         header.setSortIndicator(self._COL_REC, Qt.SortOrder.AscendingOrder)
         self._table.itemChanged.connect(self._on_item_changed)
         layout.addWidget(self._table)
+
+        self._delete_btn = QPushButton("Ta bort markerad rekommendation")
+        self._delete_btn.setEnabled(False)
+        self._delete_btn.clicked.connect(self._delete_selected)
+        layout.addWidget(self._delete_btn)
+
+    def _update_delete_button(self):
+        self._delete_btn.setEnabled(bool(self._selected_recommendation_ids()))
+
+    def _selected_recommendation_ids(self):
+        ids = []
+        for row in sorted({index.row() for index in self._table.selectedIndexes()}):
+            item = self._table.item(row, self._COL_REC)
+            rec_id = item.data(Qt.ItemDataRole.UserRole) if item else None
+            if rec_id is not None:
+                ids.append(int(rec_id))
+        return ids
+
+    def _delete_selected(self):
+        rec_ids = self._selected_recommendation_ids()
+        if not rec_ids:
+            return
+        if len(rec_ids) == 1:
+            rec = self.db.get_recommendation(rec_ids[0]) or {}
+            label = f"R-{rec_ids[0]:03d}. {(rec.get('description') or '').strip()}"
+            question = f"Ta bort rekommendationen {label or rec_ids[0]}?"
+        else:
+            question = f"Ta bort {len(rec_ids)} markerade rekommendationer?"
+        answer = QMessageBox.question(
+            self, "Ta bort rekommendation", question,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        for rec_id in rec_ids:
+            self.db.delete_recommendation(rec_id)
+        self.load()
 
     def _on_item_changed(self, item):
         rec_id = item.data(Qt.ItemDataRole.UserRole)
