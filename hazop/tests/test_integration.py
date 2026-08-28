@@ -1733,6 +1733,26 @@ class TreeContextHighlightEndToEndTests(unittest.TestCase):
 
             self.assertIn(marker_id, win.pid_panel.viewer._tree_context_highlights)
 
+    def test_selecting_grouped_deviation_highlights_later_group_rows(self):
+        with _TempDbMainWindow() as win:
+            self._stub_scenario_loads(win)
+            _fake_pdf_loaded(win.pid_panel)
+            node_id = win.db.add_node()
+            dev_id = win.db.get_or_create_deviation(node_id, 'Lagt flode')
+            ids = [win.db.add_equipment_item(tag, tag, tag[0], 0, 'Ventil', '', 0)
+                   for tag in ('V-1', 'V-2', 'V-3')]
+            cause_id = win.db.add_cause(dev_id)
+            win.db.update_cause(cause_id, equipment_id=ids[0],
+                                secondary_equipment_id=ids[1],
+                                group_equipment_ids=ids)
+            markers = [win.db.add_equipment_marker(eq_id, tag, 0, float(i), 10.0, 'Ventil')
+                       for i, (eq_id, tag) in enumerate(zip(ids, ('V-1', 'V-2', 'V-3')))]
+
+            win._on_selected(DEV_T, dev_id)
+
+            for marker_id in markers:
+                self.assertIn(marker_id, win.pid_panel.viewer._tree_context_highlights)
+
     def test_selecting_consequence_excludes_parent_causes_object(self):
         with _TempDbMainWindow() as win:
             self._stub_scenario_loads(win)
@@ -2679,6 +2699,25 @@ class EquipmentMarkerNavigateFiltersScenarioTests(unittest.TestCase):
                 "the avvikelse must be open so the object's Orsak row is visible")
             self.assertIs(win.tree_panel.tree.currentItem(), cause_item,
                 "the object's own Orsak row should be highlighted")
+
+    def test_clicking_later_group_object_highlights_the_whole_group(self):
+        with _TempDbMainWindow() as win:
+            _fake_pdf_loaded(win.pid_panel)
+            node_id = win.db.add_node()
+            dev_id = win.db.get_or_create_deviation(node_id, "Lagt flode")
+            ids = [win.db.add_equipment_item(tag, tag, tag[0], 0, "Ventil", '', 0)
+                   for tag in ("V-1", "V-2", "V-3")]
+            cause_id = win.db.add_cause(dev_id)
+            win.db.update_cause(cause_id, equipment_id=ids[0],
+                                secondary_equipment_id=ids[1],
+                                group_equipment_ids=ids)
+            markers = [win.db.add_equipment_marker(eq_id, tag, 0, float(i), 10.0, "Ventil")
+                       for i, (eq_id, tag) in enumerate(zip(ids, ("V-1", "V-2", "V-3")))]
+
+            win._on_equipment_marker_navigate(markers[1])
+
+            for marker_id in markers:
+                self.assertIn(marker_id, win.pid_panel.viewer._tree_context_highlights)
 
     def test_reveals_every_avvikelse_the_object_is_tagged_under(self):
         """2026-08-27 follow-up, Anton: 'Klickar jag på ett objekt i pid

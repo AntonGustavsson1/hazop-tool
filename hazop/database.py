@@ -3775,21 +3775,33 @@ class Database:
         tag = (equip or {}).get('tag', '') or ''
         comp_type = (equip or {}).get('equipment_type', '') or ''
         if not tag:
-            return self.conn.execute(
+            rows = self.conn.execute(
                 "SELECT DISTINCT c.* FROM causes c "
                 "JOIN deviations d ON d.id=c.deviation_id "
                 "WHERE d.equipment_id=? ORDER BY c.id", (equipment_id,)).fetchall()
-        return self.conn.execute(
-            "SELECT DISTINCT c.* FROM causes c "
-            "JOIN deviations d ON d.id=c.deviation_id "
-            "LEFT JOIN consequences k ON k.cause_id=c.id "
-            "LEFT JOIN safeguards s ON s.consequence_id=k.id "
-            "WHERE d.equipment_id=? "
-            "   OR (c.comp_tag=? AND c.comp_type=?) "
-            "   OR (k.comp_tag=? AND k.comp_type=?) "
-            "   OR (s.comp_tag=? AND s.comp_type=?) "
-            "ORDER BY c.id",
-            (equipment_id, tag, comp_type, tag, comp_type, tag, comp_type)).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT DISTINCT c.* FROM causes c "
+                "JOIN deviations d ON d.id=c.deviation_id "
+                "LEFT JOIN consequences k ON k.cause_id=c.id "
+                "LEFT JOIN safeguards s ON s.consequence_id=k.id "
+                "WHERE d.equipment_id=? "
+                "   OR (c.comp_tag=? AND c.comp_type=?) "
+                "   OR (k.comp_tag=? AND k.comp_type=?) "
+                "   OR (s.comp_tag=? AND s.comp_type=?) "
+                "ORDER BY c.id",
+                (equipment_id, tag, comp_type, tag, comp_type, tag, comp_type)).fetchall()
+        found = {row['id'] for row in rows}
+        # A grouped cause can mention this object only in its later rows;
+        # those rows are not represented by the legacy comp_tag columns.
+        grouped = self.conn.execute(
+            "SELECT c.* FROM causes c JOIN deviations d ON d.id=c.deviation_id "
+            "WHERE c.group_equipment_ids IS NOT NULL "
+            "ORDER BY c.id").fetchall()
+        for row in grouped:
+            if row['id'] not in found and equipment_id in self._group_equipment_ids_for_cause(row):
+                rows.append(row)
+        return sorted(rows, key=lambda row: row['id'])
 
     def consequences_for_node(self, node_id):
         """All consequences for a node across all causes."""
@@ -3875,6 +3887,38 @@ class Database:
             tags.add(comp_tag)
         return tags
 
+    def _group_equipment_ids_for_cause(self, cause):
+        """Return every equipment id represented by a grouped cause.
+
+        The first id is also stored in ``equipment_id`` for compatibility,
+        while later rows live in ``group_equipment_ids`` (with the older
+        two-object ``secondary_equipment_id`` as a fallback).
+        """
+        if not isinstance(cause, dict):
+            cause = dict(cause)
+        ids = []
+        raw = cause.get('group_equipment_ids') or ''
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw) if raw else []
+            except (TypeError, ValueError):
+                raw = []
+        if isinstance(raw, (list, tuple)):
+            ids.extend(raw)
+        for key in ('equipment_id', 'secondary_equipment_id'):
+            value = cause.get(key)
+            if value is not None:
+                ids.append(value)
+        result = []
+        for value in ids:
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                continue
+            if value not in result:
+                result.append(value)
+        return result
+
     def equipment_link_types_in_scope(self, type_, id_):
         """Every equipment_catalog id "in scope" of the given HAZOP tree
         selection, and via which link type(s) it was found there —
@@ -3919,9 +3963,10 @@ class Database:
                 add_link(eq_id, 'deviation')
 
         def collect_cause(cause):
-            eq_id = cause.get('equipment_id')
-            if eq_id is not None:
-                add_link(eq_id, 'cause')
+            group_ids = self._group_equipment_ids_for_cause(cause)
+            if group_ids:
+                for eq_id in group_ids:
+                    add_link(eq_id, 'cause')
             else:
                 add_link(self._equipment_id_for_tag(cause.get('comp_tag'), tag_cache), 'cause')
 

@@ -2131,8 +2131,15 @@ class MainWindow(QMainWindow):
         # Nod-only reveal when the equipment has no HAZOP data yet (no
         # cause to reveal down to).
         self.tree_panel.refresh()
+        matching_causes = self.db.causes_for_equipment(equipment_id)
         if not self.tree_panel.reveal_causes_for_equipment(equipment_id) and node_id is not None:
             self.tree_panel.refresh(NODE_T, node_id, emit_selection=False)
+        if matching_causes:
+            # Keep the P&ID click on the same grouped scope as a tree click.
+            # This is important when the clicked marker is the secondary or
+            # a later member of a grouped cause: the tree reveal intentionally
+            # blocks selection signals, so it cannot update the colour scope.
+            self.pid_panel.set_tree_context(CAUSE_T, matching_causes[0]['id'])
         self.scenario_panel.load_equipment(equipment_id)
         self.scenario_panel.refresh_placed()
         self.equipment_panel.select_row_by_equipment_id(equipment_id)

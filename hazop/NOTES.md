@@ -3795,3 +3795,9 @@ gjord.
 
 Den manuella “Objekt”-åtgärden i P&ID-vyns högerklicksmeny är borttagen.
 Drag-and-drop-flödet och övriga högerklicksåtgärder är oförändrade.
+
+## Gruppobjekt färgas från alla rader (2026-08-28)
+
+P&ID-contextfärgningen använder nu hela `group_equipment_ids`-listan,
+inklusive sekundära och tertiära objekt. Klick på ett senare gruppobjekt på
+P&ID sätter dessutom samma gruppscope som en vald avvikelse.
