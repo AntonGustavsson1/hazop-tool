@@ -3790,3 +3790,8 @@ en riktig dubbelklickposition (inte bara sätter `_group_edit_line` manuellt)
 och som fallerar mot den gamla koden; `tests.test_smoke` och riktade
 `tests.test_integration`-tester passerar. Ingen visuell GUI-verifiering är
 gjord.
+
+## Högerklicksplacering på P&ID borttagen (2026-08-28)
+
+Den manuella “Objekt”-åtgärden i P&ID-vyns högerklicksmeny är borttagen.
+Drag-and-drop-flödet och övriga högerklicksåtgärder är oförändrade.

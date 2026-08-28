@@ -1945,9 +1945,6 @@ class PIDGraphicsView(QGraphicsView):
             del_act.triggered.connect(partial(self.equipment_delete_requested.emit, mid))
             menu.addSeparator()
 
-        menu.addAction("🔧 Objekt",
-                       partial(self.context_action.emit, 'equipment', sp, self.current_page))
-        menu.addSeparator()
         menu.addAction(_icon('search'), "Hitta liknande symbol",
                        partial(self.context_action.emit, 'find_similar', sp, self.current_page))
         menu.addAction(_icon('search'), "Hitta liknande symbol (från mall)…",

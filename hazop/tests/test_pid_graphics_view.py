@@ -324,6 +324,21 @@ class EquipmentMultiSelectTests(unittest.TestCase):
 
         self.assertTrue(any("Rensa markering" in t for t in texts), texts)
 
+    def test_context_menu_does_not_offer_manual_equipment_placement(self):
+        from PyQt6.QtCore import QPointF, QPoint
+        from PyQt6.QtWidgets import QMenu
+        view, _items = self._make_view_with_markers({1: QPointF(10, 10)})
+        texts = []
+
+        def _fake_exec(menu_self, _pos=None):
+            texts.extend(a.text() for a in menu_self.actions())
+            return None
+
+        with unittest.mock.patch.object(QMenu, 'exec', new=_fake_exec):
+            view._show_context_menu(QPointF(500, 500), QPoint(0, 0))
+
+        self.assertFalse(any("Objekt" in t for t in texts), texts)
+
     def test_clearing_via_context_menu_action_clears_selection(self):
         from PyQt6.QtCore import QPointF, QPoint
         from PyQt6.QtWidgets import QMenu
