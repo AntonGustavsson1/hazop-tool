@@ -6158,14 +6158,16 @@ class ScenarioTablePanel(QWidget):
         """Return the displayed operator between a group's two objects."""
         tags = (item.data(Qt.ItemDataRole.UserRole + 9) or []) if item else []
         if len(tags) < 2:
-            return '<>'
+            return 'OR'
         meta = item.data(Qt.ItemDataRole.UserRole) if item else None
         cause = self.db.get_cause(meta[1]) if meta else None
         raw = (cause.get('comp_tag') or '') if cause else ''
-        match = re.search(r'\s(&|<>|->|\+)\s', raw)
+        match = re.search(r'\s(&|OR|<>|->|\+)\s', raw, re.IGNORECASE)
         if not match:
-            return '<>'
-        return '&' if match.group(1) == '+' else match.group(1)
+            return 'OR'
+        if match.group(1) == '+':
+            return '&'
+        return 'OR' if match.group(1).casefold() in ('<>', 'or') else match.group(1)
 
     def _set_group_operator(self, cause_id, operator):
         cause = self.db.get_cause(cause_id)
@@ -6173,7 +6175,7 @@ class ScenarioTablePanel(QWidget):
             return
         primary = self.db.get_equipment_by_id(cause.get('equipment_id'))
         secondary = self.db.get_equipment_by_id(cause.get('secondary_equipment_id'))
-        if not primary or not secondary or operator not in ('&', '<>', '->'):
+        if not primary or not secondary or operator not in ('&', 'OR', '->'):
             return
         self.db.update_cause(
             cause_id,
@@ -6182,7 +6184,7 @@ class ScenarioTablePanel(QWidget):
 
     def _choose_group_operator(self, row, cause_id, global_pos):
         menu = QMenu(self)
-        for operator in ('&', '<>', '->'):
+        for operator in ('&', 'OR', '->'):
             action = menu.addAction(operator)
             action.setData(operator)
         chosen = menu.exec(global_pos)
@@ -6509,10 +6511,11 @@ class ScenarioTablePanel(QWidget):
                        else (selected_tag if group_line == 0 else ''))
         secondary_tag = ((secondary.get('tag') or '').strip() if secondary
                          else (selected_tag if group_line == 1 else ''))
-        operator_match = re.search(r'\s(&|<>|->|\+)\s',
-                                   cause.get('comp_tag') or '')
+        operator_match = re.search(r'\s(&|OR|<>|->|\+)\s',
+                                   cause.get('comp_tag') or '', re.IGNORECASE)
         operator = ('&' if not operator_match or operator_match.group(1) == '+'
-                    else operator_match.group(1))
+                    else ('OR' if operator_match.group(1).casefold() in ('<>', 'or')
+                          else operator_match.group(1)))
         self.db.update_cause(
             cause_id,
             comp_type=(primary.get('equipment_type') if primary
@@ -6670,10 +6673,11 @@ class ScenarioTablePanel(QWidget):
         secondary = self.db.get_equipment_by_id(cause.get('secondary_equipment_id'))
         if not primary or not secondary:
             return
-        operator_match = re.search(r'\s(&|<>|->|\+)\s',
-                                   cause.get('comp_tag') or '')
+        operator_match = re.search(r'\s(&|OR|<>|->|\+)\s',
+                                   cause.get('comp_tag') or '', re.IGNORECASE)
         operator = ('&' if not operator_match or operator_match.group(1) == '+'
-                    else operator_match.group(1))
+                    else ('OR' if operator_match.group(1).casefold() in ('<>', 'or')
+                          else operator_match.group(1)))
         self.db.update_cause(
             cause_id,
             equipment_id=secondary['id'],

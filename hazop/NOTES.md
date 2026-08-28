@@ -74,8 +74,8 @@ sin respektive visuella rad.
 
 ## Grupporsak: operator före sekundärtagg (2026-08-28)
 
-Sekundärraden visar nu ett klickbart operatorfält med standardvärdet `<>`.
-Via fältet kan användaren välja `&`, `<>` eller `->`; valet sparas i den
+Sekundärraden visar nu ett klickbart operatorfält med standardvärdet `OR`.
+Via fältet kan användaren välja `&`, `OR` eller `->`; valet sparas i den
 befintliga gruppens taggmetadata och påverkar inte primär/sekundär-länkarna.
 Verifierat med riktade operator- och popup-tester samt smoke-test.
 
