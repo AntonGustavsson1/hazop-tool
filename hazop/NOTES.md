@@ -3363,3 +3363,8 @@ Orsakseditorn lämnar nu plats för både löpnummer och hela objekt-taggen.
 Rekommendationscellen läser dessutom om den länkade rekommendationen från det
 aktuella underlaget vid rendering, så den sparade texten visas i stället för
 standardtexten "Ny rekommendation".
+## X-riktningsknappens bredd (2026-08-28)
+
+X-riktningsknappen i riskmatrisinställningarna följer nu endast matrisens
+egna kolumner. Konsekvenskategori-fälten till höger påverkar inte längre
+knappens bredd; bredden synkroniseras efter ombyggnad och splitterdragning.

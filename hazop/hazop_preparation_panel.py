@@ -475,6 +475,9 @@ class HAZOPPreparationPanel(QWidget):
         shell_grid.addWidget(self._x_rev_chk, 0, 1)
         shell_grid.addWidget(self._y_rev_chk, 1, 0)
         shell_grid.addWidget(self._matrix_container, 1, 1)
+        shell_grid.setAlignment(self._x_rev_chk,
+                                Qt.AlignmentFlag.AlignLeft |
+                                Qt.AlignmentFlag.AlignBottom)
         matrix_splitter.replaceWidget(0, self._matrix_axis_shell)
         ml.addLayout(ax_row)
 
@@ -1178,6 +1181,34 @@ class HAZOPPreparationPanel(QWidget):
                 if widget is not None:
                     widget.setMinimumWidth(width)
                     widget.setMaximumWidth(width)
+        self._sync_x_axis_button_width()
+
+    def _sync_x_axis_button_width(self):
+        """Keep the X-direction button over the matrix, not category fields."""
+        grid = getattr(self, '_matrix_grid', None)
+        button = getattr(self, '_x_rev_chk', None)
+        main_cols = getattr(self, '_matrix_main_column_count', 0)
+        if grid is None or button is None or not main_cols:
+            return
+        grid.activate()
+        width = 0
+        for col in range(min(main_cols, grid.columnCount())):
+            cell_width = grid.cellRect(0, col).width()
+            widest = max(30, grid.columnMinimumWidth(col), cell_width)
+            if cell_width <= 0:
+                widest = max(widest, 30)
+            for row in range(grid.rowCount()):
+                item = grid.itemAtPosition(row, col)
+                widget = item.widget() if item else None
+                if widget is not None:
+                    # A widget's width is the full grid cell/container width
+                    # while layouts are being resolved; use its natural size
+                    # instead so the button cannot grow to the category area.
+                    if cell_width <= 0:
+                        widest = max(widest, widget.sizeHint().width())
+            width += widest
+        if width > 0:
+            button.setFixedWidth(width)
 
     def _load_matrix_ui(self):
         cfg = self.db.get_risk_matrix() or DEFAULT_MATRIX
@@ -1352,6 +1383,10 @@ class HAZOPPreparationPanel(QWidget):
             corner_txt = "F \\ C"
             col_tip = "Konsekvensnivå (X-axel)\nExempel: C4 – Allvarlig"
             row_tip = "Frekvensetikett (Y-axel)\nExempel: F3 – Möjlig | 10-100 år"
+
+        # The X-direction button belongs only to the matrix width. Category
+        # definitions must not widen this span.
+        self._matrix_main_column_count = n_dcols + 1 + (0 if freq_on_x else 1)
 
         _hdr_style = ("font-size:8px; font-weight:bold;"
                       "border:1px solid #aaa; border-radius:0px;"
@@ -1606,6 +1641,8 @@ class HAZOPPreparationPanel(QWidget):
 
             self._category_row_edits = row_cat_edits
             self._resize_category_rows()
+
+        QTimer.singleShot(0, self._sync_x_axis_button_width)
 
     def _schedule_category_row_resize(self):
         """Resize matrix rows after wrapped category text changes.
