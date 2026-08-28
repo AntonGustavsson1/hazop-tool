@@ -3473,3 +3473,9 @@ The grouped cause path now mirrors the single-object standard-cause editor,
 but selects the equipment type from the clicked visual row. Stored grouped
 causes keep two tag-prefixed rows at all times. Changing one row updates only
 that row; the other row, including arbitrary free text, is preserved verbatim.
+## Grupporsak: robust dubbelklick till höger om tagg (2026-08-28)
+
+Dubbelklickets radposition samlas nu in både från tabellens viewport och från
+själva tabellen. Om Qt inte levererar positionen via eventfiltret används
+musens globala position som reserv. Detta gör att dubbelklick i fritextdelen
+fortsatt väljer primär eller sekundär rad och öppnar inline-editorn.

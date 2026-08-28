@@ -5805,6 +5805,17 @@ class ScenarioTablePanel(QWidget):
                     # the mechanism/effect text goes through the same inline
                     # editor as an ordinary single-object cause.
                     click = self._double_click_edit
+                    # On some Qt/platform combinations the viewport event
+                    # filter is not the receiver of the double-click, even
+                    # though itemDoubleClicked is emitted.  Recover the
+                    # actual cursor position here so grouped rows still
+                    # select the correct visual line and can enter inline
+                    # editing to the right of the tag.
+                    if not click or click[0] != row or click[1] != col:
+                        vp_pos = self._table.viewport().mapFromGlobal(QCursor.pos())
+                        if (self._table.rowAt(vp_pos.y()) == row and
+                                self._table.columnAt(vp_pos.x()) == col):
+                            click = (row, col, vp_pos)
                     tag_hit = False
                     if click and click[0] == row and click[1] == col:
                         cell_rect = self._table.visualRect(
@@ -6629,10 +6640,12 @@ class ScenarioTablePanel(QWidget):
         ctrl = bool(event.type() == QEvent.Type.KeyPress and
                     event.modifiers() & Qt.KeyboardModifier.ControlModifier)
 
-        if (obj is self._table.viewport() and
+        if (obj in (self._table, self._table.viewport()) and
                 event.type() == QEvent.Type.MouseButtonDblClick and
                 event.button() == Qt.MouseButton.LeftButton):
             point = event.position().toPoint()
+            if obj is self._table:
+                point = self._table.viewport().mapFrom(self._table, point)
             row = self._table.rowAt(point.y())
             col = self._table.columnAt(point.x())
             if col in (self._C_ORS, self._C_KON, self._C_SG, self._C_REK):
