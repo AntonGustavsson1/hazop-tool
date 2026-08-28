@@ -1280,7 +1280,13 @@ class HAZOPPreparationPanel(QWidget):
         while self._matrix_grid.count():
             item = self._matrix_grid.takeAt(0)
             if item.widget():
-                item.widget().deleteLater()
+                widget = item.widget()
+                # X/Y controls are persistent widgets owned by the panel,
+                # not disposable grid contents.  They are moved to new grid
+                # positions on every axis rebuild; deleteLater() here leaves
+                # a queued deletion that crashes the next click on F\\C.
+                if widget not in (self._x_rev_chk, self._y_rev_chk):
+                    widget.deleteLater()
         self._cell_buttons       = []
         self._x_label_edits      = []
         self._y_label_edits      = []

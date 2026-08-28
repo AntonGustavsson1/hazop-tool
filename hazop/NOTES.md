@@ -3311,3 +3311,6 @@ sök-/export-/layouttester. Ingen visuell GUI-verifiering är gjord.
 ## 2026-08-28 — en synlig närvarokryssruta per cell
 
 - Närvarocellerna behåller sitt modellvärde men är inte längre `ItemIsUserCheckable`. Den tidigare modellindikatorn målades som en extra, icke-klickbar kryssruta ovanpå den riktiga cellkontrollen.
+## 2026-08-28 — F\\C-knappen
+
+- Crashrapporten visade att X/Y-riktningsknapparna placerades i gridet men samtidigt markerades för `deleteLater()` när axlarna byggdes om. De är nu panelägda och återanvänds vid axelbyte, vilket gör F\\C-klicket säkert.
