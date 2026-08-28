@@ -66,7 +66,7 @@ from hazop import (  # noqa: E402
 )
 from PyQt6.QtWidgets import (  # noqa: E402
     QApplication, QGraphicsPixmapItem, QTreeWidgetItemIterator, QCheckBox,
-    QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit,
+    QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit, QSizePolicy,
 )
 from PyQt6.QtGui import QPixmap, QFocusEvent  # noqa: E402
 from PyQt6.QtCore import Qt, QPoint, QDate, QEvent, QThread, pyqtSignal  # noqa: E402
@@ -659,6 +659,9 @@ class PDFViewerSplitterFlexibilityTests(unittest.TestCase):
             self.assertLessEqual(win.pid_panel.minimumWidth(), 240)
             self.assertLessEqual(win.scenario_panel.minimumHeight(), 110)
             self.assertGreater(win.scenario_panel.maximumHeight(), 1000)
+            self.assertEqual(
+                win._outer_splitter.widget(0).sizePolicy().verticalPolicy(),
+                QSizePolicy.Policy.Ignored)
             self.assertFalse(win._h_splitter.isCollapsible(0))
             self.assertFalse(win._h_splitter.isCollapsible(1))
 

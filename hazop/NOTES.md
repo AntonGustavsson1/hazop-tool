@@ -6,7 +6,9 @@
 
 Den yttre vertikala splittern låter nu HAZOP Scenario växa med fönstret och
 dras upp med splittern utan en konstgjord maxhöjd. Panelens befintliga
-minimihöjd och P&ID-vyns övriga layoutlogik är kvar.
+minimihöjd och P&ID-vyns övriga layoutlogik är kvar. Övre panelens
+vertikala storlekspolicy är ignorerad så att dolda höga sidor i
+QStackedWidget inte blockerar splittern när P&ID-sidan visas.
 
 ## Tidigare konsekvenser och rekommendationer vid redigering (2026-08-28)
 

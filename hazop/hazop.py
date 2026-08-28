@@ -1336,6 +1336,13 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self._outer_splitter)
 
         top_widget = QWidget()
+        # QStackedWidget's minimumSizeHint is the maximum of all pages. The
+        # Settings page is tall, so letting the top pane use its normal
+        # vertical size policy makes that unrelated page block the outer
+        # splitter handle on the P&ID page. Ignored here means the active
+        # P&ID layout, not another hidden page, controls the split range.
+        top_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
         root_layout = QHBoxLayout(top_widget)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
