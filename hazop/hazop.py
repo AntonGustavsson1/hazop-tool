@@ -790,7 +790,7 @@ class _RecommendationDetailDialog(QDialog):
 # EXPORT
 # ══════════════════════════════════════════════════════════════════════════════
 
-def export_excel(db: Database, filepath: str):
+def export_excel(db: Database, filepath: str, merge_identical=False):
     try:
         import openpyxl
         from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -841,8 +841,58 @@ def export_excel(db: Database, filepath: str):
                 cell.fill = PatternFill(start_color=fc, end_color=fc, fill_type='solid')
         ws.row_dimensions[r].height = 36
 
+    if merge_identical and ws.max_row >= 2:
+        # Merge only adjacent identical values, preserving the worksheet's
+        # tree-like visual hierarchy without merging risk/action data that
+        # may legitimately differ between otherwise equal rows.
+        for col in (1, 2, 3, 5, 9, 10):
+            start = 2
+            previous = ws.cell(start, col).value
+            for r in range(3, ws.max_row + 2):
+                current = ws.cell(r, col).value if r <= ws.max_row else object()
+                if current != previous:
+                    if r - start > 1 and previous not in (None, ''):
+                        ws.merge_cells(start_row=start, start_column=col,
+                                       end_row=r - 1, end_column=col)
+                    start = r
+                    previous = current
+
     try:
         wb.save(filepath); return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+def export_recommendations_excel(db: Database, filepath: str):
+    """Export the global recommendation catalog as a standalone workbook."""
+    try:
+        import openpyxl
+        from openpyxl.styles import Font, Alignment
+    except ImportError:
+        return False, "openpyxl saknas.\nKör: pip install openpyxl"
+    try:
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Rekommendationer"
+        headers = ["ID", "Rekommendation", "Ansvarig", "Ska vara åtgärdat",
+                   "Status", "Antal kopplingar"]
+        ws.append(headers)
+        for cell in ws[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.alignment = Alignment(horizontal="center", wrap_text=True)
+            cell.fill = openpyxl.styles.PatternFill(
+                "solid", fgColor="1F4E79")
+        for rec in db.all_recommendations():
+            ws.append([rec['id'], rec['description'] or '', rec['responsible'] or '',
+                       rec['due_date'] or '', rec['status'] or '',
+                       db.recommendation_consequence_count(rec['id'])])
+        widths = [10, 60, 24, 18, 14, 16]
+        for i, width in enumerate(widths, 1):
+            ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = width
+        ws.freeze_panes = 'A2'
+        ws.auto_filter.ref = ws.dimensions
+        wb.save(filepath)
+        return True, ""
     except Exception as e:
         return False, str(e)
 
@@ -1240,6 +1290,7 @@ class MainWindow(QMainWindow):
 
         export_menu = mb.addMenu("Export")
         export_menu.addAction(_icon('chart'), "Excel",           self._export_excel)
+        export_menu.addAction(_icon('chart'), "Åtgärder (Excel)", self._export_actions_excel)
         export_menu.addAction(_icon('document'), "PDF",             self._export_pdf)
         export_menu.addAction(_icon('clipboard'), "Åtgärder",        self._export_actions_pdf)
 
@@ -2715,7 +2766,25 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(
             self, "Exportera Excel", "hazop_rapport.xlsx", "Excel (*.xlsx)")
         if not path: return
-        ok, err = export_excel(self.db, path)
+        merge = QMessageBox.question(
+            self, "Excel-export",
+            "Vill du slå ihop identiska intilliggande celler?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes) == QMessageBox.StandardButton.Yes
+        ok, err = export_excel(self.db, path, merge_identical=merge)
+        if ok:
+            self.status_bar.showMessage(f"Excel sparad: {path}", 6000)
+            QMessageBox.information(self, "Klar", f"Exporterad till:\n{path}")
+        else:
+            QMessageBox.critical(self, "Fel vid export", err)
+
+    def _export_actions_excel(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Exportera rekommendationer", "rekommendationer.xlsx",
+            "Excel (*.xlsx)")
+        if not path:
+            return
+        ok, err = export_recommendations_excel(self.db, path)
         if ok:
             self.status_bar.showMessage(f"Excel sparad: {path}", 6000)
             QMessageBox.information(self, "Klar", f"Exporterad till:\n{path}")

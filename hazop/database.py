@@ -956,6 +956,7 @@ class Database:
         self._migrate_tables_and_seed()
         self._drop_legacy_consequence_likelihood_column()
         self._migrate_actions_to_recommendations()
+        self._clean_existing_recommendation_markup()
         # analysis_sessions is part of the base schema but some project files
         # are created from an older schema snapshot.  Ensure the new metadata
         # columns exist after all base-table creation passes have completed.
@@ -976,6 +977,22 @@ class Database:
         self.commit()
         logging.info("Database: migration complete")
         self._validate_schema()
+
+    def _clean_existing_recommendation_markup(self):
+        """One-time-safe cleanup for imported HTML document fragments."""
+        try:
+            rows = self.conn.execute("SELECT id, description FROM recommendations").fetchall()
+        except sqlite3.OperationalError:
+            return
+        changed = []
+        for row in rows:
+            clean = self._clean_recommendation_text(row['description'])
+            if clean != (row['description'] or ''):
+                changed.append((clean, row['id']))
+        if changed:
+            self.conn.executemany(
+                "UPDATE recommendations SET description=? WHERE id=?", changed)
+            self.commit()
 
     def _migrate_actions_to_recommendations(self):
         """One-time data migration for the 2026-08-25 recommendations

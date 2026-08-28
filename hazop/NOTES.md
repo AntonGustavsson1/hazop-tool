@@ -2,6 +2,13 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Excel-export: valfri sammanslagning och rekommendationslista (2026-08-28)
+
+Excel-exporten frågar nu om identiska intilliggande trädvärden ska slås ihop
+och kan slå ihop Nod, P&ID, Orsak, Konsekvens, Safeguards och Åtgärder utan att
+slå ihop riskdata. Exportmenyn har dessutom en separat Åtgärder (Excel)-export
+för den globala rekommendationslistan.
+
 ## Agent 3: rekommendationslistans datum och stabila nummer (2026-08-28)
 
 Rekommendationens R-nummer är nu låst i översiktslistan och fältet "Ska
