@@ -2,6 +2,14 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Tidigare konsekvenser och rekommendationer vid redigering (2026-08-28)
+
+Konsekvenseditorn visar nu historik-popupen explicit även för den multiline-
+editor som används i scenariotabellen. Konsekvenser matchas från första
+tecknet, medan rekommendationspopupens katalog filtreras på text var som
+helst i rekommendationen när användaren skriver. Nummerdelen `R-xxx` ingår
+inte i rekommendationssökningen.
+
 ## Läsbarare tunna P&ID-linjer (2026-08-28)
 
 P&ID-rastervisningen kan nu förstärka mycket tunna streck med en mild

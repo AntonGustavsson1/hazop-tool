@@ -4021,6 +4021,26 @@ class RecommendationAssistPopupTests(unittest.TestCase):
         finally:
             popup.deleteLater()
 
+    def test_typed_recommendation_text_filters_catalog_anywhere(self):
+        first_id = self.db.add_recommendation(description='Verify shutdown function')
+        second_id = self.db.add_recommendation(description='Inspect pressure relief valve')
+        from scenario_panel import RecommendationAssistPopup
+        editor = QLineEdit()
+        popup = RecommendationAssistPopup(self.panel, self.cons_id, editor)
+        try:
+            editor.setText('shutdown')
+            self.app.processEvents()
+            labels = []
+            for i in range(popup._list_layout.count()):
+                row = popup._list_layout.itemAt(i)
+                if row.layout() and row.layout().itemAt(0).widget():
+                    labels.append(row.layout().itemAt(0).widget().text())
+            self.assertEqual(labels, [f'R-{first_id:03d}. Verify shutdown function'])
+            self.assertNotIn(f'R-{second_id:03d}. Inspect pressure relief valve', labels)
+        finally:
+            popup.deleteLater()
+            editor.deleteLater()
+
     def test_checking_an_existing_recommendation_links_it_without_duplicating(self):
         rec_id = self.db.add_recommendation(description='Reusable text')
         popup = self._popup()

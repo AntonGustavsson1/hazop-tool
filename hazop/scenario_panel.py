@@ -111,6 +111,8 @@ class _BoldTagTextEdit(QTextEdit):
         self._tag_completer = None
         self._tag_completion_serial = 0
         self._tag_completion_range = None
+        self._completion_serial = 0
+        self._completion_range = None
         self.setAcceptRichText(False)
         self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -149,6 +151,15 @@ class _BoldTagTextEdit(QTextEdit):
     def setCompleter(self, completer):
         self._completer = completer
         completer.setWidget(self)
+        popup = completer.popup()
+        popup.setWindowFlag(Qt.WindowType.Popup, True)
+        popup.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        popup.setMinimumWidth(260)
+        popup.setStyleSheet(
+            "QAbstractItemView { background:#ffffff; color:#17191C; "
+            "border:1px solid #8D9299; padding:2px; }"
+            "QAbstractItemView::item { padding:3px 6px; }"
+        )
         try:
             completer.activated.disconnect()
         except (TypeError, RuntimeError):
@@ -204,13 +215,13 @@ class _BoldTagTextEdit(QTextEdit):
             if len(token) < min_length:
                 self._tag_completer.popup().hide()
                 return
-            if self._completer is not None:
-                self._completer.popup().hide()
             self._tag_completion_range = (start, pos)
             self._tag_completer.setCompletionPrefix(token)
             if self._tag_completer.completionCount() <= 0:
                 self._tag_completer.popup().hide()
                 return
+            if self._completer is not None:
+                self._completer.popup().hide()
             self._tag_completer.complete(self.cursorRect())
             # complete() schedules the view show internally.  Raise it after
             # that call as the editor is embedded in a table viewport.
@@ -267,8 +278,51 @@ class _BoldTagTextEdit(QTextEdit):
 
     def _insert_completion(self, completion):
         cursor = self.textCursor()
+        if self._completion_range is not None:
+            start, end = self._completion_range
+            cursor.setPosition(start)
+            cursor.setPosition(end, cursor.MoveMode.KeepAnchor)
         cursor.insertText(str(completion))
         self.setTextCursor(cursor)
+        self._completion_range = None
+
+    def _schedule_completion(self):
+        """Show the ordinary text-history completer after user typing.
+
+        QCompleter natively knows how to follow QLineEdit, but this project
+        uses QTextEdit for wrapped scenario cells. Drive the popup explicitly
+        so consequence history (and standard-cause suggestions) is visible
+        in the same editor instead of only being attached in memory.
+        """
+        if self._completer is None:
+            return
+        self._completion_serial += 1
+        serial = self._completion_serial
+        editor_ref = weakref.ref(self)
+        QTimer.singleShot(120, lambda s=serial, ref=editor_ref:
+                          _show_completion_if_alive(ref, s))
+
+    def _show_completion(self, serial):
+        try:
+            if serial != self._completion_serial or self._completer is None:
+                return
+            if self._tag_completer is not None and self._tag_completer.popup().isVisible():
+                return
+            cursor = self.textCursor()
+            end = cursor.position()
+            prefix = self.toPlainText()[:end]
+            if not prefix.strip():
+                self._completer.popup().hide()
+                return
+            self._completion_range = (0, end)
+            self._completer.setCompletionPrefix(prefix)
+            if self._completer.completionCount() <= 0:
+                self._completer.popup().hide()
+                return
+            self._completer.complete(self.cursorRect())
+            self._completer.popup().raise_()
+        except RuntimeError:
+            return
 
     def set_bold_tags(self, tags):
         self._bold_tags = [str(tag).strip() for tag in (tags or [])
@@ -277,6 +331,7 @@ class _BoldTagTextEdit(QTextEdit):
 
     def keyPressEvent(self, event):
         super().keyPressEvent(event)
+        self._schedule_completion()
         # Apply after QTextEdit has completed the document mutation. Doing
         # this from textChanged can re-enter Qt's layout engine while it is
         # still processing the key event.
@@ -343,6 +398,14 @@ def _show_tag_completion_if_alive(editor_ref, serial):
     if editor is None or sip.isdeleted(editor):
         return
     editor._show_tag_completion(serial)
+
+
+def _show_completion_if_alive(editor_ref, serial):
+    """Run a delayed history completion only while its editor still exists."""
+    editor = editor_ref()
+    if editor is None or sip.isdeleted(editor):
+        return
+    editor._show_completion(serial)
 
 
 def _resume_tag_editing(editor_ref, position):
@@ -3092,6 +3155,9 @@ class RecommendationAssistPopup(QWidget):
         self._cons_id = cons_id
         self._editor = editor
         self._updating = False
+        self._filter_text = str(
+            editor.toPlainText() if hasattr(editor, 'toPlainText')
+            else editor.text() or '').strip()
 
         layout = QVBoxLayout(self)
         layout.setSpacing(3)
@@ -3125,6 +3191,7 @@ class RecommendationAssistPopup(QWidget):
         # (see its docstring for why neither alone is reliable).
         editor.installEventFilter(self)
         editor.destroyed.connect(self.close)
+        editor.textChanged.connect(self._on_editor_text_changed)
 
     def eventFilter(self, obj, event):
         if event.type() == QEvent.Type.Hide:
@@ -3144,7 +3211,16 @@ class RecommendationAssistPopup(QWidget):
             empty.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             self._list_layout.addWidget(empty)
             return
-        for rec in recs:
+        needle = self._filter_text.casefold().strip()
+        visible_recs = [rec for rec in recs
+                        if not needle or needle in (rec['description'] or '').casefold()]
+        if not visible_recs:
+            empty = QLabel("Inga rekommendationer matchar texten.")
+            empty.setStyleSheet("font-size:9px; color:#8D9299;")
+            empty.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self._list_layout.addWidget(empty)
+            return
+        for rec in visible_recs:
             row = QHBoxLayout()
             row.setSpacing(4)
             cb = QCheckBox(f"R-{rec['id']:03d}. {rec['description'] or 'Ny rekommendation'}")
@@ -3159,6 +3235,23 @@ class RecommendationAssistPopup(QWidget):
             edit_btn.clicked.connect(partial(self._edit_recommendation, rec['id']))
             row.addWidget(edit_btn)
             self._list_layout.addLayout(row)
+
+    def _on_editor_text_changed(self):
+        """Reduce the existing recommendation list as the user types.
+
+        Recommendation text is searched with ``contains`` so a word in the
+        middle of a longer recommendation is enough to find it. The R-number
+        is deliberately excluded from the search text.
+        """
+        if self._editor is None:
+            return
+        text = self._editor.toPlainText() if hasattr(self._editor, 'toPlainText') \
+            else self._editor.text()
+        new_filter = str(text or '').strip()
+        if new_filter == self._filter_text:
+            return
+        self._filter_text = new_filter
+        self._refresh_list()
 
     def _on_toggled(self, rec_id, checked):
         if self._updating:
