@@ -2203,8 +2203,16 @@ class _PidDelegate(_ScenarioDelegate):
             # wrapped text, not by SG itself, since a row's height is
             # shared across every column) the text visibly jumped from
             # the top (painted) to the middle (editing) of the cell.
-            editor.setGeometry(QRect(r.left() + 2, r.top() + 1,
-                                     max(10, r.width() - _RRF_W - 4),
+            # The painted safeguard text includes its sequence number.  Start
+            # the live editor after that prefix, otherwise the editor's white
+            # background covers the number as soon as editing begins.
+            item = self._panel._table.item(index.row(), col)
+            left = r.left() + 2
+            num = item.data(Qt.ItemDataRole.UserRole + 10) if item is not None else None
+            if num:
+                left += QFontMetrics(option.font).horizontalAdvance(f"{num}.  ")
+            editor.setGeometry(QRect(left, r.top() + 1,
+                                     max(10, r.right() - left - _RRF_W - 2),
                                      max(10, r.height() - 2)))
             return
         left = r.left() + 2

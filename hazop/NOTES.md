@@ -3296,3 +3296,6 @@ sök-/export-/layouttester. Ingen visuell GUI-verifiering är gjord.
 ## 2026-08-28 — orsakstaggar efter Fyll bredd
 
 - `Fyll bredd` får inte längre krympa Orsak/Konsekvens/Barriärer till en bredd där ett inline-visat P&ID-tagnummer radbryts eller klipps när orsaken öppnas för redigering. Minsta gemensamma bredd är 180 px för de tre textkolumnerna; smalare fönster får horisontell scroll.
+## 2026-08-28 — safeguard-nummer vid redigering
+
+- Safeguard-editorn startar nu efter det målade sekvensnumret och lämnar numret synligt när safeguardtexten redigeras, på samma sätt som konsekvenseditorn.
