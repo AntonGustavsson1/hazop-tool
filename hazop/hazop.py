@@ -2273,7 +2273,7 @@ class MainWindow(QMainWindow):
 
         buttons = QButtonGroup(dialog)
         choices = (
-            ("AND (&)", "&"),
+            ("AND (&&)", "&"),
             ("OR", "OR"),
             ("Chain (->)", "->"),
         )
@@ -2284,7 +2284,9 @@ class MainWindow(QMainWindow):
             buttons.addButton(radio)
             layout.addWidget(radio)
             radios.append(radio)
-        radios[0].setChecked(True)
+        # Chain is the safest/default interpretation for an ordered group;
+        # the user can still choose AND or OR explicitly.
+        radios[2].setChecked(True)
 
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |

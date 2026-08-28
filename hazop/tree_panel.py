@@ -2296,6 +2296,7 @@ class CauseTagPopup(QDialog):
 
         if group_operator:
             operator_label = QLabel(f"Gruppkoppling: {group_operator}")
+            operator_label.setTextFormat(Qt.TextFormat.PlainText)
             operator_label.setStyleSheet("font-size:9px; color:#6B7280;")
             layout.addWidget(operator_label)
 

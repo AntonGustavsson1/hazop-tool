@@ -6249,7 +6249,10 @@ class ScenarioTablePanel(QWidget):
     def _choose_group_operator(self, row, cause_id, global_pos):
         menu = QMenu(self)
         for operator in ('&', 'OR', '->'):
-            action = menu.addAction(operator)
+            # In Qt menu text, a single ampersand marks a mnemonic and is
+            # therefore not painted. Escape it for display while keeping
+            # the real operator in QAction.data().
+            action = menu.addAction(operator.replace('&', '&&'))
             action.setData(operator)
         chosen = menu.exec(global_pos)
         if chosen is not None:

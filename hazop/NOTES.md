@@ -38,6 +38,9 @@ Vid dragning av flera P&ID-objekt till en avvikelse visas val för AND, OR
 eller Chain. De sparas som `&`, `OR` respektive `->` mellan objekttaggarna.
 Separata orsaker kan fortfarande väljas.
 
+`Chain` är nu förvalt i frågan. Användaren kan fortfarande välja AND eller OR
+innan gruppen skapas.
+
 ## Grupporsak: primäreditor tar inte med sekundärhändelsen (2026-08-28)
 
 Äldre grupporsaker kan ha båda händelserna lagrade som en enda piltext.
