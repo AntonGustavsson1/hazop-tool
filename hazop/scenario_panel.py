@@ -707,7 +707,8 @@ class GroupCausePopup(QDialog):
     choice_requested = pyqtSignal(int, str)  # column (0/1), choice
     swap_requested = pyqtSignal()
 
-    def __init__(self, primary, secondary, direction, effect, parent=None):
+    def __init__(self, primary, secondary, direction, effect, parent=None,
+                 only_column=None):
         super().__init__(parent)
         self.setWindowTitle("Grupporsak")
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
@@ -725,6 +726,8 @@ class GroupCausePopup(QDialog):
                 ("Sekundär", secondary, effect,
                  ("Öppnar felaktigt", "Stänger felaktigt", "Öppnar fullt",
                   "Stänger helt")))):
+            if only_column is not None and column != only_column:
+                continue
             box = QWidget()
             box_layout = QVBoxLayout(box)
             box_layout.setContentsMargins(0, 0, 0, 0)
@@ -763,7 +766,7 @@ class GroupCausePopup(QDialog):
             self._current_labels[column] = current_label
             box_layout.addWidget(current_label)
             columns.addWidget(box)
-            if column == 0:
+            if column == 0 and only_column is None:
                 divider = QFrame()
                 divider.setFrameShape(QFrame.Shape.VLine)
                 divider.setFrameShadow(QFrame.Shadow.Plain)
@@ -2191,6 +2194,21 @@ class _PidDelegate(_ScenarioDelegate):
             # table rebuild.
             tags += self._panel._matching_pid_tags(editor.toPlainText())
             editor.set_bold_tags(tags)
+            if index.column() == self._panel._C_ORS:
+                group_line = getattr(self._panel, '_group_edit_line', None)
+                if group_line is not None and group_line[0] == index.row():
+                    item = self._panel._table.item(index.row(), index.column())
+                    group_tags = item.data(Qt.ItemDataRole.UserRole + 9) if item else []
+                    meta = item.data(Qt.ItemDataRole.UserRole) if item else None
+                    if len(group_tags or []) >= 2 and meta:
+                        cause = self._panel.db.get_cause(meta[1])
+                        lines = ((cause.get('description') or '').splitlines()
+                                 if cause else [])
+                        selected = (lines[group_line[1]].strip()
+                                    if group_line[1] < len(lines) else
+                                    str(group_tags[group_line[1]]))
+                        editor.setText(selected)
+                        editor.setProperty('group_line', int(group_line[1]))
 
     def _attach_consequence_completer(self, editor):
         """"Spara varje konsekvens som skrivs i HAZOP Scenario i en
@@ -2329,6 +2347,19 @@ class _PidDelegate(_ScenarioDelegate):
 
     def setModelData(self, editor, model, index):
         clean = _PID_ICON_RE.sub('', editor.text().strip())
+        group_line = editor.property('group_line')
+        if index.column() == self._panel._C_ORS and group_line in (0, 1):
+            meta = self._panel._table.item(index.row(), index.column()).data(
+                Qt.ItemDataRole.UserRole)
+            cause = self._panel.db.get_cause(meta[1]) if meta else None
+            if cause and cause.get('secondary_equipment_id'):
+                lines = (cause.get('description') or '').splitlines()
+                while len(lines) < 2:
+                    lines.append('')
+                lines[int(group_line)] = clean
+                while lines and not lines[-1].strip():
+                    lines.pop()
+                clean = '\n'.join(lines)
         if index.column() == self._panel._C_REK:
             # Be defensive for editors created by an older delegate path:
             # the running number is presentation-only and must never be
@@ -5737,6 +5768,7 @@ class ScenarioTablePanel(QWidget):
             return
         row = item.row()
         col = item.column()
+        group_line = None
         # Double-click starts inline edit — consistent across ORS/KON/SG
         # (reported feedback: KON used to open the "Konsekvenskedja" wizard
         # instead, which felt out of place and inconsistent with ORS/SG's
@@ -5761,6 +5793,7 @@ class ScenarioTablePanel(QWidget):
                         rel_y = click[2].y() - cell_rect.top() - 2
                         line_no = int(rel_y // line_h) if rel_y >= 0 else -1
                         if line_no in (0, 1):
+                            group_line = line_no
                             bold_font = QFont(self._table.font())
                             bold_font.setBold(True)
                             tag_start = cell_rect.left() + 2
@@ -5774,7 +5807,8 @@ class ScenarioTablePanel(QWidget):
                             tag_hit = tag_start <= click[2].x() <= tag_start + tag_width
                     if tag_hit:
                         gp = self._table.viewport().mapToGlobal(click[2])
-                        self._show_group_cause_popup(row, cause_id, gp)
+                        self._show_group_cause_popup(
+                            row, cause_id, gp, only_column=group_line)
                         self._double_click_edit = None
                         return
                 if cause_id is not None and not (obj_data[1] or '').strip():
@@ -5797,7 +5831,12 @@ class ScenarioTablePanel(QWidget):
                     if cons_id is not None:
                         self._quick_add_safeguard(cons_id)
                 return
+            if col == self._C_ORS and group_line in (0, 1):
+                self._group_edit_line = (row, group_line)
+            else:
+                self._group_edit_line = None
             self._table.edit(self._table.model().index(row, col))
+            QTimer.singleShot(0, lambda: setattr(self, '_group_edit_line', None))
             click = self._double_click_edit
             self._double_click_edit = None
             if click and click[0] == row and click[1] == col:
@@ -6168,7 +6207,8 @@ class ScenarioTablePanel(QWidget):
         popup.move(x, y)
         popup.show()
 
-    def _show_group_cause_popup(self, row, cause_id, global_pos):
+    def _show_group_cause_popup(self, row, cause_id, global_pos,
+                                only_column=None):
         """Open the two-column editor used for a grouped cause."""
         cause = self.db.get_cause(cause_id)
         if not cause:
@@ -6187,7 +6227,8 @@ class ScenarioTablePanel(QWidget):
             'Öppnar felaktigt', 'Stänger felaktigt', 'Öppnar fullt',
             'Stänger helt') if value.lower() in desc), 'Öppnar fullt') \
             if choices_set & 2 else 'Ej vald'
-        popup = GroupCausePopup(primary, secondary, direction, effect, parent=self)
+        popup = GroupCausePopup(primary, secondary, direction, effect,
+                                parent=self, only_column=only_column)
         def apply_choice(which, choice):
             self._apply_group_cause_choice(cause_id, which, choice)
             popup.set_current(which, choice)

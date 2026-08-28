@@ -3409,3 +3409,11 @@ eller redigerats.
 
 Gruppobjekten visas på separata rader i trädet (`A-101` följt av `B-202`) för
 att återgå till den tidigare tydliga grupppresentationen.
+
+## Radstyrd redigering av grupporsak i HAZOP Scenario (2026-08-28)
+
+En grupporsak i Scenario-panelens Orsak-cell är en cell med två visuella
+rader. Dubbelklick på primärraden öppnar nu endast primärtexten och ett klick
+på sekundärraden endast sekundärtexten. Klick på respektive fetstilt objekt
+öppnar dessutom Grupporsak-popupen filtrerad till rätt sida. Vid direkt
+redigering skrivs endast den valda raden tillbaka; den andra raden bevaras.

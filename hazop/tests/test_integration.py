@@ -4726,6 +4726,29 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             row = next(r for r, m in enumerate(panel._row_meta)
                        if m[1] == cause_id)
             item = panel._table.item(row, panel._C_ORS)
+            panel._group_edit_line = (row, 1)
+            index = panel._table.model().index(row, panel._C_ORS)
+            option = QStyleOptionViewItem()
+            option.rect = panel._table.visualRect(index)
+            editor = panel._pid_delegate.createEditor(panel._table, option, index)
+            try:
+                panel._pid_delegate.setEditorData(editor, index)
+                self.assertEqual(editor.toPlainText(),
+                                 'FV-1 öppnar felaktigt')
+                editor.setText('FV-1 behöver manövreras manuellt')
+                panel._pid_delegate.setModelData(
+                    editor, panel._table.model(), index)
+            finally:
+                editor.deleteLater()
+            panel._group_edit_line = None
+            self.assertEqual(
+                dict(win.db.get_cause(cause_id))['description'],
+                'FI-1 felar lågt\nFV-1 behöver manövreras manuellt')
+
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta)
+                       if m[1] == cause_id)
+            item = panel._table.item(row, panel._C_ORS)
             panel._table.blockSignals(True)
             item.setText('FI-1 felar lågt\nFV-1 behöver manövreras manuellt')
             panel._table.blockSignals(False)
