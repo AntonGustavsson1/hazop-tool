@@ -3302,3 +3302,6 @@ sök-/export-/layouttester. Ingen visuell GUI-verifiering är gjord.
 ## 2026-08-28 — synlig tagg-popup i konsekvenseditorn
 
 - Tagg-completerns popup görs till ett uttryckligt Qt-popupfönster med vit kontrastyta, minsta läsbredd och `raise_()` efter visning. Detta hindrar tabellens viewport från att dölja förslagen när två eller fler taggtecken skrivs i Konsekvens.
+## 2026-08-28 — gemensamt faktorregister i Enablers
+
+- Dialogen Övriga reduktionsfaktorer läser nu om det gemensamma faktorregistret vid varje uppdatering och efter redigering. En ny eller ändrad enabler blir därför direkt valbar även från en annan konsekvens.

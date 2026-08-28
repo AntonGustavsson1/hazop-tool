@@ -1535,10 +1535,7 @@ class ReductionFactorsDialog(QDialog):
         layout.addWidget(add_btn)
         catalog_row = QHBoxLayout()
         self._catalog_combo = QComboBox()
-        self._catalog_combo.addItem("Välj sparad faktor…", None)
-        for factor in self.db.reduction_factor_catalog():
-            self._catalog_combo.addItem(
-                f"{factor['description']} (RRF {factor['rrf']})", dict(factor))
+        self._populate_catalog()
         catalog_row.addWidget(self._catalog_combo, 1)
         use_btn = QPushButton("Lägg till vald")
         use_btn.clicked.connect(self._add_catalog_factor)
@@ -1549,6 +1546,10 @@ class ReductionFactorsDialog(QDialog):
         self._refresh()
 
     def _refresh(self):
+        # Re-read the shared catalog whenever the dialog refreshes.  A factor
+        # edited/created in one consequence can otherwise remain absent from
+        # the selector until that dialog is reconstructed.
+        self._populate_catalog()
         try: self._tbl.cellChanged.disconnect()
         except RuntimeError as e: logging.warning(f"Table cellChanged signal not connected: {e}")
         self._tbl.setRowCount(0)
@@ -1564,6 +1565,22 @@ class ReductionFactorsDialog(QDialog):
             self._tbl.setCellWidget(r, 2, del_btn)
             self._tbl.setRowHeight(r, 26)
         self._tbl.cellChanged.connect(self._on_cell)
+
+    def _populate_catalog(self):
+        current = self._catalog_combo.currentData() if hasattr(self, '_catalog_combo') else None
+        self._catalog_combo.blockSignals(True)
+        self._catalog_combo.clear()
+        self._catalog_combo.addItem("Välj sparad faktor…", None)
+        selected = -1
+        for factor in self.db.reduction_factor_catalog():
+            data = dict(factor)
+            self._catalog_combo.addItem(
+                f"{data['description']} (RRF {data['rrf']})", data)
+            if current and data.get('id') == current.get('id'):
+                selected = self._catalog_combo.count() - 1
+        if selected >= 0:
+            self._catalog_combo.setCurrentIndex(selected)
+        self._catalog_combo.blockSignals(False)
 
     def _add(self):
         new_id = self.db.add_reduction_factor(self.consequence_id, 'Ny faktor', 10)
@@ -1585,6 +1602,7 @@ class ReductionFactorsDialog(QDialog):
         try: rrf = int(self._tbl.item(row, 1).text()) if self._tbl.item(row, 1) else 10
         except ValueError: rrf = 10
         self.db.update_reduction_factor(rf_id, desc, rrf, 1)
+        self._populate_catalog()
 
 
 class _ScenarioDelegate(QStyledItemDelegate):
