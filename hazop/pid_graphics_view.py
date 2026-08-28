@@ -39,6 +39,7 @@ from pid_viewer import (
     MODE_MARKUP_TEXT, MODE_MARKUP_COMMENT, MODE_MARKUP_SELECT,
     MODE_RED_MARKUP_SYMBOL, MODE_BOARD_LAYOUT,
     MODE_ADD_SHEET_LINK, MODE_PICK_REF_TAG, MODE_ANNOTATION,
+    MODE_PLACE_EQUIPMENT,
     _icon, _get_red_symbol_svg, _PageRenderer,
     SimilarSymbolSearchDialog,
 )
@@ -50,6 +51,7 @@ class PIDGraphicsView(QGraphicsView):
     context_action          = pyqtSignal(str, object, int)
     marker_clicked          = pyqtSignal(str, int)
     ref_tag_picked          = pyqtSignal(str)   # MODE_PICK_REF_TAG one-shot result
+    equipment_place_requested = pyqtSignal(object, int)  # scene_pos, page
     annotation_clicked      = pyqtSignal(object)  # QPointF — MODE_ANNOTATION click
     # Markup editing signals
     markup_draw_finished    = pyqtSignal(str, list, int)   # type_, pdf_pts, page
@@ -759,6 +761,9 @@ class PIDGraphicsView(QGraphicsView):
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
         elif mode == MODE_ANNOTATION:
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        elif mode == MODE_PLACE_EQUIPMENT:
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
         elif mode == MODE_RED_MARKUP_SYMBOL:
@@ -2424,6 +2429,11 @@ class PIDGraphicsView(QGraphicsView):
         if self.mode in (MODE_NAV, MODE_MARKUP_SELECT):
             self._press_pos = event.position()
         sp = self.mapToScene(event.position().toPoint())
+
+        if self.mode == MODE_PLACE_EQUIPMENT and event.button() == Qt.MouseButton.LeftButton:
+            self.set_mode(MODE_NAV)
+            self.equipment_place_requested.emit(sp, self.current_page)
+            event.accept(); return
 
         # ── Shift+press on an equipment marker: arm a possible drag-to-worksheet ──
         # (dragging a tag onto a HAZOP consequence row). A plain click (no Shift)

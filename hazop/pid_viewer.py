@@ -479,6 +479,7 @@ MODE_BOARD_LAYOUT    = 14  # drag pages to reposition on study board
 MODE_ADD_SHEET_LINK  = 15  # click target page to create a manual inter-sheet link
 MODE_PICK_REF_TAG   = 16  # one-shot click: detect tag near point → emit ref_tag_picked
 MODE_ANNOTATION     = 17  # click on board to place a sticky note
+MODE_PLACE_EQUIPMENT = 18 # one-shot click to place an equipment marker
 
 # ── Off-page connector analysis ───────────────────────────────────────────────
 _RE_TO_FROM = re.compile(

@@ -2210,10 +2210,12 @@ class CauseTagPopup(QDialog):
     committed = pyqtSignal(str, str)  # (comp_type, comp_tag)
     bind_requested = pyqtSignal()
     reorder_requested = pyqtSignal()
+    place_requested = pyqtSignal(int, str, str)  # cause_id, comp_type, comp_tag
 
     def __init__(self, db, comp_type='', comp_tag='', parent=None, cause_id=None):
         super().__init__(parent)
         self._db = db
+        self._cause_id = cause_id
         self.setWindowTitle("Tagg")
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setMinimumWidth(220)
@@ -2222,6 +2224,26 @@ class CauseTagPopup(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(4)
         layout.setContentsMargins(8, 8, 8, 8)
+
+        self._object_cb = QComboBox()
+        self._object_cb.setFixedHeight(CONFIG['H_BTN_SMALL'])
+        self._object_cb.setStyleSheet(_small)
+        self._object_cb.addItem("Nytt objekt…", None)
+        try:
+            for equipment in db.equipment_items():
+                equipment = dict(equipment)
+                tag = str(equipment.get('tag') or '').strip()
+                if not tag:
+                    continue
+                details = [tag]
+                if equipment.get('equipment_type'):
+                    details.append(str(equipment['equipment_type']))
+                if equipment.get('pid_page'):
+                    details.append(f"P&ID · sida {equipment['pid_page']}")
+                self._object_cb.addItem("  ·  ".join(details), equipment)
+        except Exception:
+            pass
+        layout.addWidget(self._object_cb)
 
         if cause_id is not None:
             try:
@@ -2277,6 +2299,27 @@ class CauseTagPopup(QDialog):
         form.addRow(typ_lbl, self._type_cb)
         layout.addLayout(form)
 
+        def _select_object(index):
+            equipment = self._object_cb.itemData(index)
+            if not equipment:
+                return
+            self._tag_edit.setText(equipment.get('tag') or '')
+            wanted_type = equipment.get('equipment_type') or ''
+            type_index = self._type_cb.findText(wanted_type)
+            if type_index >= 0:
+                self._type_cb.setCurrentIndex(type_index)
+        self._object_cb.currentIndexChanged.connect(_select_object)
+
+        if cause_id is not None:
+            place = QPushButton("Placera objekt på P&ID")
+            place.setFixedHeight(CONFIG['H_BTN_SMALL'])
+            place.setStyleSheet(
+                "QPushButton{background:#2F5FD0;color:white;border:0px;"
+                "border-radius:3px;font-weight:bold;}"
+                "QPushButton:hover{background:#3D6BD8;}")
+            place.clicked.connect(self._place_on_pid)
+            layout.addWidget(place)
+
         if cause_id is not None:
             try:
                 cause = db.get_cause(cause_id)
@@ -2297,6 +2340,18 @@ class CauseTagPopup(QDialog):
         tag = self._tag_edit.text().strip().upper()
         comp_type = self._type_cb.currentText().strip()
         self.committed.emit(comp_type, tag)
+
+    def _place_on_pid(self):
+        tag = self._tag_edit.text().strip().upper()
+        if not tag:
+            QMessageBox.information(self, "Tagg saknas",
+                                    "Ange eller välj en tagg innan objektet placeras.")
+            return
+        comp_type = self._type_cb.currentText().strip()
+        self.committed.emit(comp_type, tag)
+        if self._cause_id is not None:
+            self.place_requested.emit(self._cause_id, comp_type, tag)
+            self.close()
 
 
 class RRFPopup(QDialog):

@@ -3177,6 +3177,14 @@ Frekvensklick på grupporsak går nu vidare till samma frekvenspopup och
 sparlogik som för enskild orsak. Gruppens taggzon blockerar inte längre
 frekvenszonen.
 
+## Objektväljare och placering från tom orsak (2026-08-28)
+
+Popupen för en tom orsak visar nu en lista över befintliga objekt i
+equipment_catalog samt alternativet `Nytt objekt…`. Val av ett befintligt
+objekt fyller tagg och typ; fria värden kan användas för ett nytt objekt.
+Knappen `Placera objekt på P&ID` startar ett engångsläge där nästa klick på
+ritningen placerar markören och kopplar objektet till orsaken.
+
 ## Edit Mode: cellens layout och wrapping (2026-08-28)
 
 Den gemensamma flerradiga editorn använder nu exakt cellens textområde för

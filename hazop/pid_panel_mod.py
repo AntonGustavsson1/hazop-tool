@@ -60,7 +60,7 @@ from pid_viewer import (
     MODE_NAV, MODE_NODE, MODE_MARKUP_POLYGON, MODE_MARKUP_POLYLINE,
     MODE_MARKUP_TEXT, MODE_MARKUP_COMMENT, MODE_MARKUP_SELECT,
     MODE_RED_MARKUP_SYMBOL, MODE_BOARD_LAYOUT,
-    MODE_PICK_REF_TAG, MODE_ANNOTATION,
+    MODE_PICK_REF_TAG, MODE_ANNOTATION, MODE_PLACE_EQUIPMENT,
     _icon, _vline, _draw_pid_marker, _hex_to_fitz_rgb, _sheet_ref_variants,
     _equip_prefix_from_tag, _obj_type_matches, ensure_ocr_available,
     _MEDIA_COLORS,
@@ -1402,6 +1402,7 @@ class PIDPanel(QWidget):
         # a no-op) when PIDPanel is used standalone, e.g. in tests.
         self._active_edit_query_fn  = None
         self._pending_cause_bind_id = None
+        self._pending_cause_place = None  # (cause_id, tag, comp_type)
         self._pdf_view_save_timer = QTimer(self)
         self._pdf_view_save_timer.setSingleShot(True)
         self._pdf_view_save_timer.setInterval(400)
@@ -1573,6 +1574,7 @@ class PIDPanel(QWidget):
         self.viewer.ref_tag_picked.connect(self.ref_tag_picked)
         self.viewer.annotation_clicked.connect(self._on_annotation_click)
         self.viewer.marker_clicked.connect(self._on_marker_clicked)
+        self.viewer.equipment_place_requested.connect(self._on_cause_place_requested)
         self.viewer.markup_moved.connect(self.markup_moved)
         self.viewer.markup_label_edited.connect(self.markup_label_edited)
         self.viewer.markup_duplicate_requested.connect(self.markup_duplicate_requested)
@@ -3503,6 +3505,30 @@ class PIDPanel(QWidget):
         """Arm the viewer so the next clicked P&ID object is bound to a cause."""
         self._pending_cause_bind_id = int(cause_id)
         self.viewer.setCursor(Qt.CursorShape.CrossCursor)
+
+    def start_cause_equipment_placement(self, cause_id, tag, comp_type):
+        """Arm a one-shot P&ID click for placing and linking a new cause object."""
+        tag = _apply_tag_identifier_rules(tag, self.db)
+        if not tag:
+            return
+        self._pending_cause_place = (int(cause_id), tag, (comp_type or '').strip())
+        self.viewer.set_mode(MODE_PLACE_EQUIPMENT)
+
+    def _on_cause_place_requested(self, scene_pos, page):
+        pending = self._pending_cause_place
+        self._pending_cause_place = None
+        if not pending:
+            return
+        cause_id, tag, comp_type = pending
+        self.place_equipment_marker(tag, comp_type, scene_pos, page)
+        equipment = self.db.get_equipment_by_tag(tag)
+        if equipment:
+            self.db.update_cause(
+                cause_id,
+                equipment_id=equipment['id'],
+                comp_type=equipment.get('equipment_type') or comp_type,
+                comp_tag=equipment.get('tag') or tag)
+            self.cause_equipment_bound.emit(cause_id, equipment['id'])
 
     def start_secondary_cause_equipment_bind(self, cause_id):
         """Arm the viewer to replace the affected object in a group cause."""

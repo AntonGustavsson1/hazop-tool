@@ -3137,6 +3137,7 @@ class ScenarioTablePanel(QWidget):
     equipment_renamed          = pyqtSignal()           # an ORS tag edit renamed the linked equipment_catalog row
     bind_cause_to_pid_requested = pyqtSignal(int)      # choose an existing P&ID object
     bind_secondary_cause_to_pid_requested = pyqtSignal(int)  # group affected object
+    place_cause_object_requested = pyqtSignal(int, str, str)  # cause_id, type, tag
 
     # Column indices
     _C_NOD, _C_UTR, _C_DEV, _C_ORS, _C_KON, _C_RFORE = 0, 1, 2, 3, 4, 5
@@ -5780,6 +5781,8 @@ class ScenarioTablePanel(QWidget):
         popup.committed.connect(
             lambda ct, tg, r=row, cid=cause_id:
                 self._apply_cause_obj(r, cid, ct, tg, '', None))
+        popup.place_requested.connect(
+            lambda cid, ct, tg: self.place_cause_object_requested.emit(cid, ct, tg))
         popup.adjustSize()
         # Prefer ABOVE global_pos (2026-08-26, see NOTES.md "Flytta
         # HAZOP-popups ovanför"), falling back to below only if there's

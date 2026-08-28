@@ -1518,6 +1518,8 @@ class MainWindow(QMainWindow):
             self.pid_panel.start_cause_equipment_bind)
         self.scenario_panel.bind_secondary_cause_to_pid_requested.connect(
             self.pid_panel.start_secondary_cause_equipment_bind)
+        self.scenario_panel.place_cause_object_requested.connect(
+            self.pid_panel.start_cause_equipment_placement)
         self.pid_panel.cause_equipment_bound.connect(
             self._on_cause_equipment_bound)
         self.scenario_panel.new_item_created.connect(
