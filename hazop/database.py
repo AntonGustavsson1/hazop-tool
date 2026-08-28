@@ -975,6 +975,11 @@ class Database:
                 self.conn.execute(statement)
             except sqlite3.OperationalError:
                 pass
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS reduction_factor_catalog ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "description TEXT NOT NULL UNIQUE, rrf INTEGER NOT NULL DEFAULT 10,"
+            "active INTEGER NOT NULL DEFAULT 1)")
         self.commit()
         logging.info("Database: migration complete")
         self._validate_schema()
@@ -5020,12 +5025,29 @@ class Database:
             "INSERT INTO reduction_factors (consequence_id,description,rrf,active) VALUES (?,?,?,1)",
             (consequence_id, description, rrf))
         self.commit()
+        self.remember_reduction_factor(description, rrf)
         return cur.lastrowid
 
     def update_reduction_factor(self, id_, description, rrf, active):
         self.conn.execute(
             "UPDATE reduction_factors SET description=?,rrf=?,active=? WHERE id=?",
             (description, rrf, int(active), id_))
+        self.commit()
+        self.remember_reduction_factor(description, rrf)
+
+    def reduction_factor_catalog(self):
+        return self.conn.execute(
+            "SELECT * FROM reduction_factor_catalog WHERE active=1 "
+            "ORDER BY description COLLATE NOCASE").fetchall()
+
+    def remember_reduction_factor(self, description, rrf=10):
+        description = str(description or '').strip()
+        if not description:
+            return
+        self.conn.execute(
+            "INSERT INTO reduction_factor_catalog(description,rrf,active) VALUES (?,?,1) "
+            "ON CONFLICT(description) DO UPDATE SET rrf=excluded.rrf, active=1",
+            (description, int(rrf)))
         self.commit()
 
     def delete_reduction_factor(self, id_):

@@ -3247,6 +3247,10 @@ stör inte den övriga texten.
 
 ## Beta-flik for P&ID-verktyg (2026-08-28)
 
+Nya reduktionsfaktorer lÃ¤ggs nu samtidigt i en global faktorkatalog. I RRF-
+dialogen kan en faktor som redan anvÃ¤nts pÃ¥ ett objekt vÃ¤ljas och lÃ¤ggas till
+pÃ¥ ett annat objekt.
+
 Deltagarmatrisens analystillfällen visar nu en kompakt närvarokryssruta och
 ett integrerat fritextfält per deltagare och tillfälle. Anteckningen sparas
 tillsammans med närvaron i databasen.

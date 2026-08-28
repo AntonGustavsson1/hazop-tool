@@ -1504,6 +1504,17 @@ class ReductionFactorsDialog(QDialog):
         add_btn = QPushButton("+ Lägg till faktor")
         add_btn.clicked.connect(self._add)
         layout.addWidget(add_btn)
+        catalog_row = QHBoxLayout()
+        self._catalog_combo = QComboBox()
+        self._catalog_combo.addItem("Välj sparad faktor…", None)
+        for factor in self.db.reduction_factor_catalog():
+            self._catalog_combo.addItem(
+                f"{factor['description']} (RRF {factor['rrf']})", dict(factor))
+        catalog_row.addWidget(self._catalog_combo, 1)
+        use_btn = QPushButton("Lägg till vald")
+        use_btn.clicked.connect(self._add_catalog_factor)
+        catalog_row.addWidget(use_btn)
+        layout.addLayout(catalog_row)
         layout.addWidget(QDialogButtonBox(QDialogButtonBox.StandardButton.Close,
                                           accepted=self.accept, rejected=self.accept))
         self._refresh()
@@ -1527,6 +1538,14 @@ class ReductionFactorsDialog(QDialog):
 
     def _add(self):
         new_id = self.db.add_reduction_factor(self.consequence_id, 'Ny faktor', 10)
+        self._refresh()
+
+    def _add_catalog_factor(self):
+        factor = self._catalog_combo.currentData()
+        if not factor:
+            return
+        self.db.add_reduction_factor(
+            self.consequence_id, factor.get('description', ''), factor.get('rrf', 10))
         self._refresh()
 
     def _on_cell(self, row, col):
