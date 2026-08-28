@@ -2257,6 +2257,56 @@ class MainWindow(QMainWindow):
         cur_type, cur_id = self.tree_panel._current()
         self.tree_panel.refresh(cur_type, cur_id)
 
+    def _choose_drop_group_operator(self):
+        """Ask how two dropped objects should be combined.
+
+        The existing drop workflow deliberately keeps the decision here,
+        before any cause is written.  Returning ``None`` means that the
+        operation was cancelled; ``('separate', None)`` keeps the old
+        independent-cause choice.
+        """
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Flera objekt")
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Ska objekten behandlas som en grupp?"))
+        layout.addWidget(QLabel("Välj koppling mellan primärt och sekundärt objekt:"))
+
+        buttons = QButtonGroup(dialog)
+        choices = (
+            ("AND (&)", "&"),
+            ("OR", "OR"),
+            ("Chain (->)", "->"),
+        )
+        radios = []
+        for label, operator in choices:
+            radio = QRadioButton(label)
+            radio.setProperty("group_operator", operator)
+            buttons.addButton(radio)
+            layout.addWidget(radio)
+            radios.append(radio)
+        radios[0].setChecked(True)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel)
+        button_box.button(QDialogButtonBox.StandardButton.Ok).setText("Skapa grupp")
+        button_box.button(QDialogButtonBox.StandardButton.Cancel).setText("Avbryt")
+        separate_button = button_box.addButton(
+            "Separata orsaker", QDialogButtonBox.ButtonRole.DestructiveRole)
+        layout.addWidget(button_box)
+
+        result = {"value": None}
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        separate_button.clicked.connect(
+            lambda: (result.__setitem__("value", ("separate", None)), dialog.accept()))
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        if result["value"] is not None:
+            return result["value"]
+        selected = buttons.checkedButton()
+        return ("group", selected.property("group_operator")) if selected else None
+
     def _on_equipment_dropped_on_deviation(self, dev_id, marker_ids):
         """One or more equipment markers dragged from the P&ID onto a
         deviation in the HAZOP tree (2026-08-08, see NOTES.md) — creates
@@ -2302,12 +2352,13 @@ class MainWindow(QMainWindow):
         # Multiple P&ID objects need an explicit decision: independent causes
         # or one functional cause chain. Never infer this from drag order.
         grouped = False
+        group_operator = None
         if len(equipments) > 1:
-            grouped = QMessageBox.question(
-                self, "Flera objekt",
-                "Ska objekten behandlas som en grupp?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes) == QMessageBox.StandardButton.Yes
+            group_choice = self._choose_drop_group_operator()
+            if group_choice is None:
+                return
+            grouped = group_choice[0] == 'group'
+            group_operator = group_choice[1]
 
         last_cause_id = None
         for equip in equipments:
@@ -2345,7 +2396,8 @@ class MainWindow(QMainWindow):
                 affected_tag = affected.get('tag') or 'Objekt'
                 last_cause_id, _ = _create_tagged_cause(
                     self.db, dev_id, control.get('equipment_type', ''),
-                    f"{control_tag} + {affected_tag}", equipment_id=control.get('id'))
+                    f"{control_tag} {group_operator} {affected_tag}",
+                    equipment_id=control.get('id'))
                 self.db.update_cause(last_cause_id,
                                      secondary_equipment_id=affected.get('id'))
 
@@ -2357,7 +2409,8 @@ class MainWindow(QMainWindow):
                 tags = [e.get('tag', '') for e in equipments if e.get('tag')]
                 last_cause_id, _ = _create_tagged_cause(
                     self.db, dev_id, equipments[0].get('equipment_type', ''),
-                    ' + '.join(tags), equipment_id=equipments[0].get('id'))
+                    f" {group_operator} ".join(tags),
+                    equipment_id=equipments[0].get('id'))
                 if len(equipments) > 1:
                     self.db.update_cause(last_cause_id,
                                          secondary_equipment_id=equipments[1].get('id'))

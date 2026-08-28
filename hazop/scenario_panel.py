@@ -1684,15 +1684,16 @@ class _ScenarioDelegate(QStyledItemDelegate):
     def createEditor(self, parent, option, index):
         editor = _BoldTagTextEdit(parent)
         if editor is not None:
-            # Scenario editing is intentionally compact: rounded editor
-            # frames and generous default padding make multi-line
-            # recommendations look like pills and hide the last line.
-            # Keep the modern flat focus treatment, but reclaim the pixels.
+            # Inline editing should not introduce a second framed cell on
+            # top of the painted table cell.  This is especially distracting
+            # when the click lands below the second row of a grouped cause.
+            # Keep the editor itself, but remove its frame completely.
             editor.setStyleSheet(
-                "QTextEdit{border:1px solid #CFD1CE;border-radius:0px;"
+                "QTextEdit{border:none;border-radius:0px;"
                 "padding:0px;background:#FFFFFF;}"
-                "QTextEdit:focus{border:1px solid #2F6FED;"
+                "QTextEdit:focus{border:none;"
                 "padding:0px;}")
+            editor.setFrameStyle(QFrame.Shape.NoFrame)
             editor.setProperty('editing_row', index.row())
             editor.setProperty('editing_col', index.column())
             # Set the grouped row before Qt asks the delegate for the

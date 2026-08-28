@@ -2,6 +2,18 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Ramfri inline-redigering (2026-08-28)
+
+Inline-editorn i scenario-tabellen visar inte längre en extra ram eller
+fokusram ovanpå cellen. Gruppens primär/sekundär-radval och sparlogik är
+oförändrade.
+
+## Gruppoperator vid dragning av flera objekt (2026-08-28)
+
+Vid dragning av flera P&ID-objekt till en avvikelse visas val för AND, OR
+eller Chain. De sparas som `&`, `OR` respektive `->` mellan objekttaggarna.
+Separata orsaker kan fortfarande väljas.
+
 ## Grupporsak: primäreditor tar inte med sekundärhändelsen (2026-08-28)
 
 Äldre grupporsaker kan ha båda händelserna lagrade som en enda piltext.

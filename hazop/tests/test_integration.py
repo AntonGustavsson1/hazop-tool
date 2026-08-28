@@ -4642,8 +4642,8 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             # Multiple drops ask whether this is a functional group; this
             # test covers the independent-cause (No) branch.
             with unittest.mock.patch(
-                    'hazop.QMessageBox.question',
-                    return_value=QMessageBox.StandardButton.No):
+                    'hazop.MainWindow._choose_drop_group_operator',
+                    return_value=('separate', None)):
                 win._on_equipment_dropped_on_deviation(dev_id, [m1, m2])
 
             causes = win.db.causes(node_id)
@@ -4676,15 +4676,37 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             m2 = win.db.add_equipment_marker(valve_id, "FV-1", 0, 2.0, 2.0, "Reglerventil")
 
             with unittest.mock.patch(
-                    'hazop.QMessageBox.question',
-                    return_value=QMessageBox.StandardButton.Yes):
+                    'hazop.MainWindow._choose_drop_group_operator',
+                    return_value=('group', '&')):
                 win._on_equipment_dropped_on_deviation(dev_id, [m1, m2])
 
             causes = [dict(c) for c in win.db.causes(node_id)
                       if c['deviation_id'] == dev_id]
             self.assertEqual(len(causes), 1)
-            self.assertEqual(causes[0]['comp_tag'], 'FI-1 + FV-1')
+            self.assertEqual(causes[0]['comp_tag'], 'FI-1 & FV-1')
             self.assertEqual(causes[0]['description'], '')
+
+    def test_grouped_drop_stores_selected_operator(self):
+        for operator in ('&', 'OR', '->'):
+            with self.subTest(operator=operator), _TempDbMainWindow() as win:
+                node_id = win.db.add_node()
+                dev_id = win.db.get_or_create_deviation(node_id, "HÃ¶gt flÃ¶de")
+                first_id = win.db.add_equipment_item("A-1", "A-1", "A", 0,
+                                                     "Instrument", '', 0)
+                second_id = win.db.add_equipment_item("B-2", "B-2", "B", 0,
+                                                      "Ventil", '', 0)
+                m1 = win.db.add_equipment_marker(first_id, "A-1", 0, 1.0, 1.0,
+                                                 "Instrument")
+                m2 = win.db.add_equipment_marker(second_id, "B-2", 0, 2.0, 2.0,
+                                                 "Ventil")
+                with unittest.mock.patch(
+                        'hazop.MainWindow._choose_drop_group_operator',
+                        return_value=('group', operator)):
+                    win._on_equipment_dropped_on_deviation(dev_id, [m1, m2])
+
+                cause = next(c for c in win.db.causes(node_id)
+                             if c['secondary_equipment_id'])
+                self.assertEqual(cause['comp_tag'], f'A-1 {operator} B-2')
 
     def test_group_created_without_default_mechanism_shows_both_objects_in_tree(self):
         with _TempDbMainWindow() as win:
@@ -4699,8 +4721,8 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             m2 = win.db.add_equipment_marker(second_id, "B-202", 0, 2.0, 2.0,
                                              "Värmeväxlare")
             with unittest.mock.patch(
-                    'hazop.QMessageBox.question',
-                    return_value=QMessageBox.StandardButton.Yes):
+                    'hazop.MainWindow._choose_drop_group_operator',
+                    return_value=('group', '&')):
                 win._on_equipment_dropped_on_deviation(dev_id, [m1, m2])
 
             cause = next(c for c in win.db.causes(node_id)
