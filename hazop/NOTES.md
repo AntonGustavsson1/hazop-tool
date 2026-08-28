@@ -3245,6 +3245,14 @@ skrivna tecken med cirka 220 ms debounce i Orsak, Konsekvens, Safeguard och
 Rekommendation. Popupen ersätter bara den aktuella taggdelen vid val och
 stör inte den övriga texten.
 
+## Beta-flik for P&ID-verktyg (2026-08-28)
+
+Skanna P&ID, Skapa HAZOP-noder och Hitta objekt pa P&ID finns nu samlade i
+den nya Beta-fliken langst ned i vanstermenyn, med korta forklaringar.
+Funktionerna ateranvander EquipmentPanels befintliga arbetsfloden, inklusive
+progressdialoger och bakgrundskorning. Verktygsknapparna ar dolda i
+utrustningsregistret for att undvika dubbla ingangar.
+
 ## Edit Mode: cellens layout och wrapping (2026-08-28)
 
 Den gemensamma flerradiga editorn använder nu exakt cellens textområde för

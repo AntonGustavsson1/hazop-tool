@@ -1384,6 +1384,7 @@ class MainWindow(QMainWindow):
         self.btn_equip     = QPushButton()
         self.btn_admin     = QPushButton()
         self.btn_settings  = QPushButton()
+        self.btn_beta      = QPushButton()
 
         _nav_labels = {
             self.btn_prep:     "HAZOP preparation",
@@ -1394,6 +1395,7 @@ class MainWindow(QMainWindow):
             self.btn_admin:    "Studiehantering",
             self.btn_settings: "Inställningar",
         }
+        _nav_labels[self.btn_beta] = "Beta"
         _nav_icons = {
             self.btn_prep:     'check',
             self.btn_pid:      'map',
@@ -1403,9 +1405,10 @@ class MainWindow(QMainWindow):
             self.btn_admin:    'document',
             self.btn_settings: 'settings',
         }
+        _nav_icons[self.btn_beta] = 'bolt-nut'
 
         for btn in (self.btn_prep, self.btn_pid, self.btn_sheet, self.btn_recommendations,
-                    self.btn_equip, self.btn_admin, self.btn_settings):
+                    self.btn_equip, self.btn_admin, self.btn_settings, self.btn_beta):
             btn.setCheckable(True)
             btn.setFixedSize(40, 40)
             btn.setToolTip(_nav_labels[btn])
@@ -1435,6 +1438,7 @@ class MainWindow(QMainWindow):
         self.btn_equip.clicked.connect(lambda: self._switch_view(4))
         self.btn_admin.clicked.connect(lambda: self._switch_view(5))
         self.btn_settings.clicked.connect(lambda: self._switch_view(6))
+        self.btn_beta.clicked.connect(lambda: self._switch_view(7))
 
         # ── Page 0: HAZOP preparation ────────────────────────────────────────
         # Added FIRST so it becomes view_stack index 0 (QStackedWidget numbers
@@ -1553,6 +1557,56 @@ class MainWindow(QMainWindow):
         self.settings_panel.matrix_changed.connect(self._on_matrix_changed)
         self.hazop_prep_panel.matrix_changed.connect(self._on_matrix_changed)
         self.view_stack.addWidget(self.settings_panel)
+
+        # Page 7: Beta tools. These controls reuse the existing equipment
+        # workflows so worker, progress and dialog behaviour stays centralised.
+        self.beta_panel = QWidget()
+        beta_layout = QVBoxLayout(self.beta_panel)
+        beta_layout.setContentsMargins(28, 24, 28, 24)
+        beta_layout.setSpacing(14)
+        beta_title = QLabel("Beta")
+        beta_title.setStyleSheet("font-size:22px; font-weight:bold;")
+        beta_layout.addWidget(beta_title)
+        beta_intro = QLabel("Experimentella verktyg för analys av P&ID och skapande av kopplingar.")
+        beta_intro.setStyleSheet("color:#667085;")
+        beta_intro.setWordWrap(True)
+        beta_layout.addWidget(beta_intro)
+
+        def _beta_action(label_text, description, callback):
+            row = QFrame()
+            row.setFrameShape(QFrame.Shape.StyledPanel)
+            row.setStyleSheet(
+                "QFrame{background:#F7F8FA;border:1px solid #E4E7EC;border-radius:6px;}"
+                "QPushButton{background:#2F5FD0;color:white;border:none;border-radius:4px;padding:7px 12px;}"
+                "QPushButton:hover{background:#244EAF;}"
+            )
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(14, 10, 14, 10)
+            copy = QVBoxLayout()
+            title = QLabel(label_text)
+            title.setStyleSheet("font-weight:bold; border:none; background:transparent;")
+            detail = QLabel(description)
+            detail.setStyleSheet("color:#667085; border:none; background:transparent;")
+            detail.setWordWrap(True)
+            copy.addWidget(title)
+            copy.addWidget(detail)
+            row_layout.addLayout(copy, 1)
+            action = QPushButton(label_text)
+            action.clicked.connect(callback)
+            row_layout.addWidget(action, 0, Qt.AlignmentFlag.AlignVCenter)
+            beta_layout.addWidget(row)
+
+        _beta_action("Skanna P&ID", "Läs in identifierade utrustningstaggar från den aktiva P&ID-filen.", self.equipment_panel._scan)
+        _beta_action("Skapa HAZOP-noder", "Skapa noder från markerade poster i utrustningsregistret.", self.equipment_panel._create_nodes)
+        _beta_action("Hitta objekt på P&ID", "Analysera ritningen och försök koppla taggar till ritade symboler.", self.equipment_panel._autodetect)
+        beta_layout.addStretch()
+        self.view_stack.addWidget(self.beta_panel)
+
+        # The tools are now available from Beta; keep the equipment register
+        # focused on browsing and editing its data.
+        self.equipment_panel._scan_btn.hide()
+        self.equipment_panel._create_btn.hide()
+        self.equipment_panel._autodetect_btn.hide()
 
         # ── Undo shortcut (Ctrl+Z) — only active during markup editing ────────
         self._undo_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)
@@ -1799,6 +1853,7 @@ class MainWindow(QMainWindow):
         self.btn_equip.setChecked(page == 4)
         self.btn_admin.setChecked(page == 5)
         self.btn_settings.setChecked(page == 6)
+        self.btn_beta.setChecked(page == 7)
         if page == 1 and prev != 1:
             self.pid_panel.reload_overlays()
         if page == 2: self.worksheet.refresh()
@@ -1811,6 +1866,8 @@ class MainWindow(QMainWindow):
             # Guard against settings_panel not being initialized yet
             if hasattr(self, 'settings_panel') and self.settings_panel:
                 self.settings_panel.refresh_tag_memory()
+        if page == 7:
+            self.equipment_panel.refresh()
 
     def _on_props_changed(self):
         """PropertiesRibbon saved a field — refresh tree + scenario."""
