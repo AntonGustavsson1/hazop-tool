@@ -13,6 +13,7 @@ from pathlib import Path
 from functools import partial
 import platform
 import inspect
+import html
 
 from constants import (
     CONFIG, SEV_LABELS, RRF_VALUES, RRF_LABELS, SG_TYPES, MARKUP_COLORS,
@@ -91,6 +92,7 @@ from PyQt6.QtCore import (
     QAbstractTableModel, QModelIndex, QSortFilterProxyModel, QDate,
 )
 from PyQt6.QtGui import QFont, QFontMetrics, QColor, QAction, QBrush, QPen, QPainter, QDrag, QPainterPath, QPixmap, QIcon, QPolygonF, QShortcut, QKeySequence, QCursor, QPalette, QTextLayout, QTextOption, QTextCharFormat
+from PyQt6.QtSvgWidgets import QSvgWidget
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SPLASH SCREEN — STARTUP PROGRESS
@@ -102,37 +104,40 @@ class SplashScreen(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.WindowType.SplashScreen | Qt.WindowType.FramelessWindowHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedSize(400, 300)
+        self.setStyleSheet("background: #071821;")
+        self.setFixedSize(640, 360)
 
         # Center on screen
         screen = QApplication.primaryScreen()
         geometry = screen.geometry()
-        x = (geometry.width() - 400) // 2
-        y = (geometry.height() - 300) // 2
+        x = (geometry.width() - 640) // 2
+        y = (geometry.height() - 360) // 2
         self.move(x, y)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(20)
-        layout.addStretch()
+        layout.setSpacing(8)
+
+        logo = QSvgWidget(str(Path(__file__).with_name('project_lumen_startup.svg')))
+        logo.setFixedSize(640, 280)
+        layout.addWidget(logo)
 
         # Logo/title
         title = QLabel("HAZOP Tool")
-        title.setStyleSheet("font-size: 24px; font-weight: bold; color: #17191C;")
+        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #FFFFFF;")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
 
         # Subtitle
         subtitle = QLabel("Startar upp...")
-        subtitle.setStyleSheet("font-size: 12px; color: #666666;")
+        subtitle.setStyleSheet("font-size: 11px; color: #D9EAF0;")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.subtitle = subtitle
         layout.addWidget(subtitle)
 
         # Spinner (simple rotating dots)
         spinner = QLabel("●  ○  ○")
-        spinner.setStyleSheet("font-size: 16px; color: #17191C; letter-spacing: 8px;")
+        spinner.setStyleSheet("font-size: 14px; color: #D9EAF0; letter-spacing: 8px;")
         spinner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.spinner = spinner
         layout.addWidget(spinner)
@@ -150,7 +155,6 @@ class SplashScreen(QWidget):
         self._timer.timeout.connect(self._animate_spinner)
         self._timer.start(200)
 
-        layout.addStretch()
 
     def _animate_spinner(self):
         self.spinner.setText(self._spinner_frames[self._spinner_state % len(self._spinner_frames)])
@@ -911,8 +915,57 @@ def export_pdf(db: Database, filepath: str):
 
 # ── Feature 19: Global search dialog ──────────────────────────────────────────
 class GlobalSearchDialog(QDialog):
-    """Ctrl+F floating search across all nodes, causes, consequences, safeguards."""
-    navigate_requested = pyqtSignal(int, int)   # (type_, id_)
+    """Ctrl+F search across persisted, user-authored project information."""
+    navigate_requested = pyqtSignal(object)   # search-hit dict
+    data_changed = pyqtSignal()
+
+    # Explicit allowlist: configuration values, geometry JSON and imported OCR
+    # internals must not leak into a user-facing search merely because they are
+    # TEXT columns. Missing migrated columns are ignored for old project files.
+    _SEARCH_SOURCES = (
+        ('systems', 'System', 'system', ('name',)),
+        ('nodes', 'Nod', 'node', ('name', 'description', 'pid_ref', 'media', 'pressure', 'temperature')),
+        ('deviations', 'Avvikelse', 'deviation', ('description',)),
+        ('causes', 'Orsak', 'cause', ('description', 'comment', 'comp_type', 'comp_tag')),
+        ('consequences', 'Konsekvens', 'consequence', ('description', 'category', 'consequence_chain', 'comp_type', 'comp_tag', 'tagged_refs')),
+        ('consequence_steps', 'Konsekvensdel', 'consequence_step', ('text', 'ref_tag')),
+        ('safeguards', 'Safeguard', 'safeguard', ('description', 'sg_type', 'comp_type', 'comp_tag', 'tagged_refs')),
+        ('reduction_factors', 'Reduktionsfaktor', 'reduction_factor', ('description',)),
+        ('recommendations', 'Rekommendation', 'recommendation', ('description', 'responsible', 'due_date', 'status')),
+        ('equipment_catalog', 'Utrustning', 'equipment', ('tag', 'original_tag', 'equipment_type', 'description')),
+        ('pid_revisions', 'PDF-revision', 'pdf_revision', ('revision', 'notes', 'created_at', 'pdf_path')),
+        ('pid_sheets', 'PDF-sida', 'pdf_sheet', ('sheet_name', 'drawing_number', 'drawing_name', 'drawing_revision', 'drawing_date')),
+        ('project_revisions', 'Projektrevision', 'project_revision', ('label', 'date', 'description')),
+        ('project_custom_fields', 'Projektfält', 'project_field', ('name', 'value')),
+        ('participants', 'Deltagare', 'participant', ('first_name', 'last_name', 'role')),
+        ('analysis_sessions', 'Analystillfälle', 'analysis_session', ('label', 'date', 'location', 'start_time', 'end_time')),
+        ('participant_columns', 'Deltagarfält', 'participant_column', ('name',)),
+        ('participant_column_values', 'Deltagaruppgift', 'participant_value', ('value',)),
+        ('board_annotations', 'Anteckning', 'annotation', ('text',)),
+        ('node_markups', 'Nodmarkering', 'node_markup', ('label',)),
+        ('node_red_markups', 'Röd markering', 'node_red_markup', ('label',)),
+    )
+    _FIELD_LABELS = {
+        'name': 'Namn', 'description': 'Beskrivning', 'pid_ref': 'P&ID-referens',
+        'media': 'Medium', 'pressure': 'Tryck', 'temperature': 'Temperatur',
+        'comment': 'Kommentar', 'comp_type': 'Objekttyp', 'comp_tag': 'Objekttagg',
+        'category': 'Kategori', 'consequence_chain': 'Konsekvenskedja',
+        'tagged_refs': 'Taggreferenser', 'text': 'Text', 'ref_tag': 'Referenstagg',
+        'sg_type': 'Safeguardtyp', 'responsible': 'Ansvarig', 'due_date': 'Förfallodatum',
+        'status': 'Status', 'tag': 'Tagg', 'original_tag': 'Ursprunglig tagg',
+        'equipment_type': 'Utrustningstyp', 'revision': 'Revision', 'notes': 'Noteringar',
+        'created_at': 'Skapad', 'pdf_path': 'PDF-dokument', 'sheet_name': 'Sidnamn',
+        'drawing_number': 'Ritningsnummer', 'drawing_name': 'Ritningsnamn',
+        'drawing_revision': 'Ritningsrevision', 'drawing_date': 'Ritningsdatum',
+        'label': 'Rubrik', 'date': 'Datum', 'value': 'Värde', 'first_name': 'Förnamn',
+        'last_name': 'Efternamn', 'role': 'Roll', 'location': 'Plats',
+        'start_time': 'Starttid', 'end_time': 'Sluttid',
+    }
+    _PROTECTED_FIELDS = {'tag', 'original_tag', 'comp_tag', 'ref_tag',
+                         'tagged_refs', 'comp_type'}
+    _NON_REPLACEABLE_FIELDS = {'pdf_path', 'created_at', 'date', 'due_date',
+                               'start_time', 'end_time', 'status', 'revision',
+                               'drawing_revision', 'drawing_date'}
 
     def __init__(self, db, parent=None):
         super().__init__(parent)
@@ -927,15 +980,31 @@ class GlobalSearchDialog(QDialog):
 
         row = QHBoxLayout()
         self._edit = QLineEdit()
-        self._edit.setPlaceholderText("Sök i noder, orsaker, konsekvenser, barriärer…")
+        self._edit.setPlaceholderText("Sök i all sparad projektinformation…")
         self._edit.textChanged.connect(self._search)
         self._edit.setClearButtonEnabled(True)
         row.addWidget(self._edit)
         lay.addLayout(row)
 
+        replace_row = QHBoxLayout()
+        replace_row.addWidget(QLabel("ErsÃ¤tt med:"))
+        self._replace_edit = QLineEdit()
+        self._replace_edit.setPlaceholderText("Ny text")
+        replace_row.addWidget(self._replace_edit, 1)
+        self._replace_btn = QPushButton("ErsÃ¤tt")
+        self._replace_all_btn = QPushButton("ErsÃ¤tt alla")
+        self._undo_replace_btn = QPushButton("Ã…ngra senaste ersÃ¤ttning")
+        self._replace_btn.clicked.connect(self._replace_current)
+        self._replace_all_btn.clicked.connect(self._replace_all)
+        self._undo_replace_btn.clicked.connect(self._undo_last_replace)
+        replace_row.addWidget(self._replace_btn)
+        replace_row.addWidget(self._replace_all_btn)
+        replace_row.addWidget(self._undo_replace_btn)
+        lay.addLayout(replace_row)
+
         self._list = QListWidget()
         self._list.setAlternatingRowColors(True)
-        self._list.itemDoubleClicked.connect(self._navigate)
+        self._list.itemClicked.connect(self._navigate)
         lay.addWidget(self._list)
 
         self._count = QLabel('')
@@ -967,43 +1036,168 @@ class GlobalSearchDialog(QDialog):
         if len(q) < 2:
             self._count.setText('')
             return
-        q_low = q.lower()
+        q_fold = q.casefold()
         results = []
-        for node in self._db.nodes():
-            nd = dict(node)
-            if q_low in nd['name'].lower():
-                results.append((NODE_T, nd['id'], nd['name'], f"🏭 Nod: {nd['name']}"))
-            for dev in self._db.deviations(nd['id']):
-                for c in self._db.causes_for_deviation(dev['id']):
-                    cd = dict(c)
-                    if q_low in cd['description'].lower():
-                        results.append((CAUSE_T, cd['id'], cd['description'],
-                                        f"⚙ {nd['name']} / {dev['description'][:30]}: {cd['description']}"))
-                    for cons in self._db.consequences(cd['id']):
-                        kd = dict(cons)
-                        if q_low in kd['description'].lower():
-                            results.append((CONS_T, kd['id'], kd['description'],
-                                            f"⚠ {nd['name']} / {cd['description'][:25]}: {kd['description']}"))
-                        for sg in self._db.safeguards(kd['id']):
-                            sd = dict(sg)
-                            if q_low in sd['description'].lower():
-                                results.append((SG_T, sd['id'], sd['description'],
-                                                f"🛡 {nd['name']} / {cd['description'][:20]}: {sd['description']}"))
-            if len(results) > 200:
-                break
-        for type_, id_, _, label in results[:200]:
+        conn = self._db.conn
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        document = Path(self._db.get_pid_path() or '').name or 'HAZOP-projekt'
+        for table, post_name, kind, requested_fields in self._SEARCH_SOURCES:
+            if table not in tables:
+                continue
+            columns = {r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')}
+            fields = [f for f in requested_fields if f in columns]
+            if not fields:
+                continue
+            id_expr = 'id' if 'id' in columns else 'rowid'
+            selected = ', '.join([f'"{id_expr}" AS _search_id'] + [f'"{f}"' for f in fields])
+            for row in conn.execute(f'SELECT {selected} FROM "{table}"'):
+                data = dict(row)
+                for field in fields:
+                    value = str(data.get(field) or '').strip()
+                    if value and q_fold in value.casefold():
+                        protected = (field in self._PROTECTED_FIELDS or
+                                     field in self._NON_REPLACEABLE_FIELDS or
+                                     (table in ('nodes', 'systems') and field == 'name') or
+                                     (table == 'equipment_catalog' and field == 'equipment_type'))
+                        results.append({'kind': kind, 'id': data['_search_id'], 'table': table,
+                            'document': document, 'post': f'{post_name} #{data["_search_id"]}',
+                            'field': field, 'field_label': self._FIELD_LABELS.get(field, field),
+                            'value': value, 'protected': protected})
+        results.sort(key=lambda h: (h['post'].casefold(), h['field_label'].casefold(), h['id']))
+        for hit in results[:200]:
+            excerpt = hit['value'].replace('\n', ' ')
+            if len(excerpt) > 100:
+                excerpt = excerpt[:97] + '…'
+            label = f"{hit['document']}  ›  {hit['post']}  ›  {hit['field_label']}: {excerpt}"
             item = QListWidgetItem(label)
-            item.setData(Qt.ItemDataRole.UserRole, type_)
-            item.setData(Qt.ItemDataRole.UserRole + 1, id_)
+            item.setToolTip(label)
+            item.setData(Qt.ItemDataRole.UserRole, hit)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked if hit['protected'] else Qt.CheckState.Checked)
+            if hit['protected']:
+                item.setToolTip(label + "\nSkyddat identitetsfÃ¤lt â€” Ã¤ndra via objektets ordinarie redigering.")
             self._list.addItem(item)
+            rich_excerpt = html.escape(excerpt)
+            if q:
+                rich_excerpt = re.sub(
+                    re.escape(html.escape(q)),
+                    lambda m: f'<span style="background:#FFE08A;font-weight:600">{m.group(0)}</span>',
+                    rich_excerpt, flags=re.IGNORECASE)
+            rich = (f"{html.escape(hit['document'])} &rsaquo; {html.escape(hit['post'])} "
+                    f"&rsaquo; {html.escape(hit['field_label'])}: {rich_excerpt}")
+            rich_label = QLabel(rich)
+            rich_label.setTextFormat(Qt.TextFormat.RichText)
+            rich_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            rich_label.setContentsMargins(4, 1, 4, 1)
+            self._list.setItemWidget(item, rich_label)
         self._count.setText(f"{min(len(results),200)} träffar" + (" (begränsat till 200)" if len(results)>200 else ""))
 
     def _navigate(self, item):
         if item is None: return
-        type_ = item.data(Qt.ItemDataRole.UserRole)
-        id_   = item.data(Qt.ItemDataRole.UserRole + 1)
-        if type_ is not None and id_ is not None:
-            self.navigate_requested.emit(type_, id_)
+        hit = item.data(Qt.ItemDataRole.UserRole)
+        if hit:
+            self.navigate_requested.emit(hit)
+
+    def _selected_replace_hits(self):
+        hits = []
+        for row in range(self._list.count()):
+            item = self._list.item(row)
+            hit = item.data(Qt.ItemDataRole.UserRole)
+            if (hit and not hit.get('protected') and
+                    item.checkState() == Qt.CheckState.Checked):
+                hits.append(hit)
+        return hits
+
+    def _replace_current(self):
+        item = self._list.currentItem()
+        if item is None:
+            return
+        hit = item.data(Qt.ItemDataRole.UserRole)
+        if hit.get('protected'):
+            QMessageBox.warning(
+                self, "Skyddat identitetsfÃ¤lt",
+                "Taggar, objektnamn och objektkopplingar mÃ¥ste Ã¤ndras via "
+                "objektets ordinarie redigering, dÃ¤r dubbletter och kopplingar kontrolleras.")
+            self.navigate_requested.emit(hit)
+            return
+        row = self._list.currentRow()
+        if self._apply_replacements([hit]):
+            self._search(self._edit.text())
+            if self._list.count():
+                self._list.setCurrentRow(min(row, self._list.count() - 1))
+
+    def _replace_all(self):
+        hits = self._selected_replace_hits()
+        if not hits:
+            QMessageBox.information(self, "ErsÃ¤tt alla", "Inga valda, Ã¤ndringsbara trÃ¤ffar.")
+            return
+        source = self._edit.text()
+        replacement = self._replace_edit.text()
+        reply = QMessageBox.question(
+            self, "BekrÃ¤fta ErsÃ¤tt alla",
+            f"Du Ã¤r pÃ¥ vÃ¤g att ersÃ¤tta '{source}' med '{replacement}' "
+            f"pÃ¥ {len(hits)} platser. Vill du fortsÃ¤tta?",
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Ok,
+            QMessageBox.StandardButton.Cancel)
+        if reply != QMessageBox.StandardButton.Ok:
+            return
+        count = self._apply_replacements(hits)
+        if count:
+            self._search(self._edit.text())
+            QMessageBox.information(self, "ErsÃ¤tt alla", f"{count} fÃ¶rekomster ersattes.")
+
+    def _apply_replacements(self, hits):
+        source = self._edit.text()
+        if not source:
+            return 0
+        replacement = self._replace_edit.text()
+        changes = []
+        conn = self._db.conn
+        try:
+            conn.execute('BEGIN')
+            current_rows = []
+            for hit in hits:
+                row = conn.execute(
+                    f'SELECT "{hit["field"]}" FROM "{hit["table"]}" WHERE id=?',
+                    (hit['id'],)).fetchone()
+                if not row:
+                    raise RuntimeError("En sÃ¶ktrÃ¤ff har tagits bort. SÃ¶kningen har inte Ã¤ndrats.")
+                old = str(row[0] or '')
+                if old != hit.get('value', old):
+                    raise RuntimeError(
+                        "En sÃ¶ktrÃ¤ff har Ã¤ndrats sedan sÃ¶kningen gjordes. "
+                        "Uppdatera sÃ¶kningen och fÃ¶rsÃ¶k igen.")
+                current_rows.append((hit, old))
+            for hit, old in current_rows:
+                new, occurrences = re.subn(re.escape(source), replacement, old,
+                                           flags=re.IGNORECASE)
+                if not occurrences or new == old:
+                    continue
+                conn.execute(
+                    f'UPDATE "{hit["table"]}" SET "{hit["field"]}"=? WHERE id=?',
+                    (new, hit['id']))
+                changes.append({'table': hit['table'], 'field': hit['field'],
+                                'id': hit['id'], 'old': old, 'new': new,
+                                'occurrences': occurrences})
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            QMessageBox.critical(self, "ErsÃ¤ttning misslyckades", str(exc))
+            return 0
+        if not changes:
+            return 0
+        parent = self.parent()
+        if parent is not None and hasattr(parent, '_register_global_replace_undo'):
+            parent._register_global_replace_undo(changes)
+        self.data_changed.emit()
+        return sum(change['occurrences'] for change in changes)
+
+    def _undo_last_replace(self):
+        parent = self.parent()
+        if parent is not None and hasattr(parent, '_undo_global_replace'):
+            if parent._undo_global_replace():
+                self.data_changed.emit()
+                self._search(self._edit.text())
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1036,6 +1230,9 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         self._act_save = file_menu.addAction(_icon('save'), "Spara",         self._hzp_save)
         file_menu.addAction(_icon('save'), "Spara som…",         self._hzp_save_as)
+        file_menu.addSeparator()
+        self._act_search = file_menu.addAction(_icon('search'), "Sök…", self._open_global_search)
+        self._act_search.setShortcut(QKeySequence("Ctrl+F"))
         file_menu.addSeparator()
         file_menu.addAction(_icon('print'), "Skriv ut",           self._print_scenario_table)
         file_menu.addSeparator()
@@ -1183,12 +1380,11 @@ class MainWindow(QMainWindow):
         self._h_splitter = QSplitter(Qt.Orientation.Horizontal)
 
         self.tree_panel = TreePanel(self.db)
-        self.tree_panel.setMinimumWidth(220)
-        self.tree_panel.setMaximumWidth(340)
+        self.tree_panel.setMinimumWidth(120)
         self._h_splitter.addWidget(self.tree_panel)
 
         self.pid_panel = PIDPanel(self.db)
-        self.pid_panel.setMinimumWidth(400)
+        self.pid_panel.setMinimumWidth(240)
         self._h_splitter.addWidget(self.pid_panel)
 
         # Narrow properties ribbon — also carries the P&ID node-markup
@@ -1214,6 +1410,12 @@ class MainWindow(QMainWindow):
         self._h_splitter.addWidget(self.red_markup_panel)
 
         self._h_splitter.setSizes([260, 650, 62, 0])
+        self._h_splitter.setStretchFactor(0, 0)
+        self._h_splitter.setStretchFactor(1, 1)
+        self._h_splitter.setStretchFactor(2, 0)
+        self._h_splitter.setCollapsible(0, False)
+        self._h_splitter.setCollapsible(1, False)
+        self._h_splitter.setCollapsible(2, False)
         self.view_stack.addWidget(self._h_splitter)
 
         # Bottom pane of the OUTER splitter (full window width, below the
@@ -1242,6 +1444,9 @@ class MainWindow(QMainWindow):
         self._v_splitter.setSizes([220, 0])
         self._outer_splitter.addWidget(self._v_splitter)
         self._outer_splitter.setSizes([640, 220])
+        self._outer_splitter.setStretchFactor(0, 1)
+        self._outer_splitter.setStretchFactor(1, 0)
+        self._outer_splitter.setCollapsible(0, False)
 
         # ── Page 2: Worksheet ─────────────────────────────────────────────────
         self.worksheet = HAZOPWorksheet(self.db)
@@ -1279,13 +1484,12 @@ class MainWindow(QMainWindow):
 
         # ── Undo shortcut (Ctrl+Z) — only active during markup editing ────────
         self._undo_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)
-        self._undo_shortcut.setEnabled(False)
+        self._undo_shortcut.setEnabled(True)
         self._undo_shortcut.activated.connect(self._undo_last_markup)
 
-        # ── Global search Ctrl+F (feature 19) ────────────────────────────────
-        _search_sc = QShortcut(QKeySequence("Ctrl+F"), self)
-        _search_sc.activated.connect(self._open_global_search)
+        # ── Global search state (the Fil-menu QAction owns Ctrl+F) ───────────
         self._search_dialog = None
+        self._global_replace_undo_stack = []
 
         # ── Wire signals ──────────────────────────────────────────────────────
         self.tree_panel.item_selected.connect(self._on_selected)
@@ -1312,6 +1516,8 @@ class MainWindow(QMainWindow):
         self.scenario_panel.item_selected.connect(self._on_scenario_item_selected)
         self.scenario_panel.bind_cause_to_pid_requested.connect(
             self.pid_panel.start_cause_equipment_bind)
+        self.scenario_panel.bind_secondary_cause_to_pid_requested.connect(
+            self.pid_panel.start_secondary_cause_equipment_bind)
         self.pid_panel.cause_equipment_bound.connect(
             self._on_cause_equipment_bound)
         self.scenario_panel.new_item_created.connect(
@@ -1949,10 +2155,20 @@ class MainWindow(QMainWindow):
         node_id = dev.get('node_id')
         dev_equipment_id = dev.get('equipment_id')
         equipments = []
+        seen_equipment_ids = set()
         for marker_id in marker_ids:
             equipment = self.db.get_equipment_by_marker_id(marker_id)
             if equipment:
-                equipments.append(dict(equipment))
+                equipment = dict(equipment)
+                # A multi-selection can contain the same marker more than
+                # once (for example after a second drag gesture).  Treat it
+                # as one object; otherwise a grouped cause is created with
+                # the primary object duplicated as its secondary object.
+                equipment_id = equipment.get('id')
+                if equipment_id in seen_equipment_ids:
+                    continue
+                seen_equipment_ids.add(equipment_id)
+                equipments.append(equipment)
         if not equipments:
             return
         # Multiple P&ID objects need an explicit decision: independent causes
@@ -1963,7 +2179,7 @@ class MainWindow(QMainWindow):
                 self, "Flera objekt",
                 "Ska objekten behandlas som en grupp?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes
+                QMessageBox.StandardButton.Yes) == QMessageBox.StandardButton.Yes
 
         last_cause_id = None
         for equip in equipments:
@@ -1993,6 +2209,9 @@ class MainWindow(QMainWindow):
             affected = next((e for e in equipments
                              if e is not control and has_type(e, affected_keys)), None)
             if control is not None and affected is not None:
+                # The direction/effect is edited from the two compact `…`
+                # controls in the Orsak cell; use the deviation as a sensible
+                # initial suggestion without interrupting group creation.
                 deviation_text = (dev.get('description') or '').casefold()
                 high = any(word in deviation_text for word in ('högt', 'hög ', 'high'))
                 affected_kind = (affected.get('equipment_type') or '').casefold()
@@ -2012,15 +2231,28 @@ class MainWindow(QMainWindow):
                     self.db, dev_id, control.get('equipment_type', ''),
                     f"{control_tag} + {affected_tag}", equipment_id=control.get('id'))
                 self.db.update_cause(last_cause_id, description=mechanism)
+                self.db.update_cause(last_cause_id,
+                                     secondary_equipment_id=affected.get('id'))
 
         if last_cause_id is None:
             # User chose separate causes, or no defensible control/effect
-            # relationship could be identified.
-            for equip in equipments:
-                cause_id, _ = _create_tagged_cause(
-                    self.db, dev_id, equip.get('equipment_type', ''),
-                    equip.get('tag', ''), equipment_id=equip.get('id'))
-                last_cause_id = cause_id
+            # relationship could be identified. A chosen group must still
+            # remain one cause row; only the explicit No branch is separate.
+            if grouped and equipments:
+                tags = [e.get('tag', '') for e in equipments if e.get('tag')]
+                last_cause_id, _ = _create_tagged_cause(
+                    self.db, dev_id, equipments[0].get('equipment_type', ''),
+                    ' + '.join(tags), equipment_id=equipments[0].get('id'))
+                if len(equipments) > 1:
+                    self.db.update_cause(last_cause_id,
+                                         secondary_equipment_id=equipments[1].get('id'))
+            else:
+                # Explicitly separate causes.
+                for equip in equipments:
+                    cause_id, _ = _create_tagged_cause(
+                        self.db, dev_id, equip.get('equipment_type', ''),
+                        equip.get('tag', ''), equipment_id=equip.get('id'))
+                    last_cause_id = cause_id
         if last_cause_id is not None:
             self.tree_panel.refresh(CAUSE_T, last_cause_id)
             self.scenario_panel.refresh_placed()
@@ -2459,6 +2691,8 @@ class MainWindow(QMainWindow):
 
     def _undo_last_markup(self):
         if not self._markup_undo_stack:
+            if getattr(self, 'scenario_panel', None) and self.scenario_panel.undo_last_text_edit():
+                self.status_bar.showMessage("Senaste HAZOP-ändring ångrades", 2500)
             return
         entry = self._markup_undo_stack.pop()
         if entry['op'] == 'draw':
@@ -2799,20 +3033,123 @@ class MainWindow(QMainWindow):
             return
         dlg = GlobalSearchDialog(self.db, self)
         dlg.navigate_requested.connect(self._on_search_navigate)
+        dlg.data_changed.connect(self._refresh_after_global_replace)
         dlg.finished.connect(lambda _: setattr(self, '_search_dialog', None))
         self._search_dialog = dlg
         dlg.show()
 
-    def _on_search_navigate(self, type_, id_):
+    def _register_global_replace_undo(self, changes):
+        """Register one atomic replace operation for one-step undo."""
+        self._global_replace_undo_stack.append(list(changes))
+        self.status_bar.showMessage(
+            f"{sum(c.get('occurrences', 1) for c in changes)} fÃ¶rekomster ersattes", 4000)
+
+    def _undo_global_replace(self):
+        if not self._global_replace_undo_stack:
+            QMessageBox.information(self, "Ã…ngra ersÃ¤ttning",
+                                    "Det finns ingen global ersÃ¤ttning att Ã¥ngra.")
+            return False
+        changes = self._global_replace_undo_stack.pop()
+        try:
+            self.db.conn.execute('BEGIN')
+            for change in changes:
+                current = self.db.conn.execute(
+                    f'SELECT "{change["field"]}" FROM "{change["table"]}" WHERE id=?',
+                    (change['id'],)).fetchone()
+                if not current or str(current[0] or '') != change['new']:
+                    raise RuntimeError(
+                        "En post har Ã¤ndrats efter ersÃ¤ttningen. Ã…ngra avbrÃ¶ts utan Ã¤ndringar.")
+            for change in changes:
+                self.db.conn.execute(
+                    f'UPDATE "{change["table"]}" SET "{change["field"]}"=? WHERE id=?',
+                    (change['old'], change['id']))
+            self.db.conn.commit()
+        except Exception as exc:
+            self.db.conn.rollback()
+            self._global_replace_undo_stack.append(changes)
+            QMessageBox.critical(self, "Ã…ngra misslyckades", str(exc))
+            return False
+        self._refresh_after_global_replace()
+        self.status_bar.showMessage("Global ersÃ¤ttning Ã¥ngrades", 3500)
+        return True
+
+    def _refresh_after_global_replace(self):
+        """Refresh user-facing panels after a transaction without reloading PDF."""
+        self.tree_panel.refresh()
+        try:
+            self.scenario_panel.refresh()
+        except Exception:
+            pass
+        for panel, method in ((self.equipment_panel, 'refresh'),
+                              (self.recommendations_panel, 'load')):
+            try:
+                getattr(panel, method)()
+            except Exception:
+                pass
+        try:
+            self.hazop_prep_panel.refresh_nodes()
+        except Exception:
+            pass
+
+    def _on_search_navigate(self, hit):
+        kind, id_ = hit.get('kind'), hit.get('id')
+        # Child/detail records navigate through their owning visible post.
+        owner_queries = {
+            'consequence_step': ('SELECT consequence_id FROM consequence_steps WHERE id=?', 'consequence'),
+            'reduction_factor': ('SELECT consequence_id FROM reduction_factors WHERE id=?', 'consequence'),
+            'node_markup': ('SELECT node_id FROM node_markups WHERE id=?', 'node'),
+            'node_red_markup': ('SELECT node_id FROM node_red_markups WHERE id=?', 'node'),
+        }
+        if kind in owner_queries:
+            sql, owner_kind = owner_queries[kind]
+            owner = self.db.conn.execute(sql, (id_,)).fetchone()
+            if owner:
+                kind, id_ = owner_kind, owner[0]
+        type_ = {'system': SYSTEM_T, 'node': NODE_T, 'deviation': DEV_T,
+                 'cause': CAUSE_T, 'consequence': CONS_T,
+                 'safeguard': SG_T}.get(kind)
+        if type_ is None:
+            if kind == 'equipment':
+                self._switch_view(4)
+                self.equipment_panel.select_row_by_equipment_id(id_)
+            elif kind == 'recommendation':
+                self._switch_view(3)
+                self.recommendations_panel.load()
+                for row in range(self.recommendations_panel._table.rowCount()):
+                    cell = self.recommendations_panel._table.item(row, 0)
+                    if cell and cell.data(Qt.ItemDataRole.UserRole) == id_:
+                        self.recommendations_panel._table.selectRow(row)
+                        self.recommendations_panel._table.scrollToItem(cell)
+                        break
+            elif kind == 'pdf_sheet':
+                row = self.db.conn.execute('SELECT physical_page FROM pid_sheets WHERE id=?', (id_,)).fetchone()
+                if row:
+                    self._switch_view(1)
+                    self.pid_panel.navigate_to_marker(int(row[0]), 0.0, 0.0)
+            elif kind == 'pdf_revision':
+                row = self.db.conn.execute('SELECT pdf_path FROM pid_revisions WHERE id=?', (id_,)).fetchone()
+                if row and row[0]:
+                    self._switch_view(1)
+                    self.pid_panel.try_reload_pdf(override_path=row[0])
+            elif kind == 'annotation':
+                self._switch_view(1)
+            elif kind in ('project_revision', 'project_field', 'participant',
+                          'participant_column', 'participant_value', 'analysis_session'):
+                self._switch_view(0)
+            return
         self._on_selected(type_, id_)
+        self.tree_panel.refresh(type_, id_, emit_selection=False)
         self._switch_view(1)
-        if type_ == CAUSE_T:
-            c = self.db.get_cause(id_)
-            if c:
-                markers = self.db.cause_markers_for_cause(id_)
-                if markers:
-                    m = markers[0]
-                    self.pid_panel.navigate_to_marker(m['pid_page'], m['x'], m['y'])
+        marker_queries = {CAUSE_T: ('cause_markers', 'cause_id'),
+                          CONS_T: ('consequence_markers', 'consequence_id'),
+                          SG_T: ('safeguard_markers', 'safeguard_id')}
+        if type_ in marker_queries:
+            table, fk = marker_queries[type_]
+            marker = self.db.conn.execute(
+                f'SELECT pid_page, x, y FROM {table} WHERE {fk}=? ORDER BY id LIMIT 1',
+                (id_,)).fetchone()
+            if marker:
+                self.pid_panel.navigate_to_marker(marker['pid_page'], marker['x'], marker['y'])
 
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -3049,6 +3386,7 @@ class MainWindow(QMainWindow):
 
     def _write_hzp(self, path: str):
         import zipfile, json, tempfile, datetime, sqlite3 as _sql
+        self.pid_panel._persist_pdf_view_state()
         self.db.conn.commit()   # flush all pending writes
         self.db._write_backup(startup=True)   # force immediate backup snapshot
 
@@ -3094,6 +3432,14 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"Sparat: {path}", 5000)
         self._hzp_path = path
         self._update_title()
+
+    def closeEvent(self, event):
+        """Flush the last PDF viewport state before the database closes."""
+        try:
+            self.pid_panel._persist_pdf_view_state()
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     def _load_hzp(self, path: str):
         import zipfile, json, shutil, tempfile

@@ -340,6 +340,11 @@ def _draw_text_with_bold_tags(painter, rect, text, tags, base_font, color, word_
         line = layout.createLine()
         if not line.isValid():
             break
+        # The line width must be assigned immediately after creation, before
+        # positioning the line.  Assigning it afterwards leaves the first
+        # line at its natural (unwrapped) width in Qt 6, which is especially
+        # visible for grouped HAZOP causes where the explicit newline between
+        # the two object rows could be painted on top of the first row.
         line.setLineWidth(rect.width())
         line.setPosition(QPointF(0, y))
         y += line.height()
@@ -444,4 +449,3 @@ def parse_chain_from_json(raw: str) -> dict:
         return json.loads(raw)
     except Exception:
         return {}
-

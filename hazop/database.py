@@ -37,6 +37,13 @@ def append_tag_to_text(description: str, tag: str) -> str:
     return description + ' ' + tag
 
 
+def normalize_arrows(text: str) -> str:
+    """Convert ASCII arrows typed by users to the UI's standard arrow."""
+    if not text:
+        return text or ''
+    return re.sub(r'\s*(?:=>|->)\s*', ' → ', str(text)).strip()
+
+
 def parse_tag_refs(raw: str) -> list:
     """Decode tagged_refs (comma-separated, order preserved) into a list
     of tag strings — every tag ever drag-appended into a KON/SG cell's
@@ -1122,6 +1129,10 @@ class Database:
             # comp_tag mot equipment_catalog.tag) körs separat efter denna
             # lista, se _backfill_cause_equipment_ids().
             "ALTER TABLE causes ADD COLUMN equipment_id INTEGER REFERENCES equipment_catalog(id)",
+            # A functional group cause keeps the affected/secondary object as
+            # a real P&ID link as well as the primary controlling object.
+            "ALTER TABLE causes ADD COLUMN secondary_equipment_id INTEGER REFERENCES equipment_catalog(id)",
+            "ALTER TABLE causes ADD COLUMN group_choices_set INTEGER NOT NULL DEFAULT 0",
             # Drag-and-drop tagg från P&ID till konsekvens (2026-08-07, se
             # NOTES.md) — en konsekvens kan nu bära ett eget taggnummer
             # (t.ex. en pump nedströms orsaken), visat högst upp i
@@ -1231,6 +1242,12 @@ class Database:
                     "UPDATE standard_deviations SET active=1 WHERE id IN "
                     "(SELECT DISTINCT deviation_id FROM standard_causes WHERE active=1)")
                 self.conn.commit()
+            # Reduced standard causes use one conservative default frequency
+            # when no explicit rate was supplied.
+            self.conn.execute(
+                "UPDATE standard_causes SET frequency=0.02 "
+                "WHERE active=1 AND frequency IS NULL")
+            self.conn.commit()
             return
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS standard_deviations_archive (
@@ -1286,7 +1303,7 @@ class Database:
                     "VALUES (?,?,?,?,?,?,1)",
                     (dev_id, desc, self.conn.execute(
                         "SELECT COALESCE(MAX(sort_order),-1)+1 FROM standard_causes WHERE deviation_id=? AND active=1",
-                        (dev_id,)).fetchone()[0], obj_row[0] if obj_row else None, obj, None))
+                        (dev_id,)).fetchone()[0], obj_row[0] if obj_row else None, obj, 0.02))
         self.conn.execute(
             "INSERT OR REPLACE INTO app_config(key,value) VALUES (?, '1')", (key,))
         self.conn.commit()
@@ -3479,7 +3496,7 @@ class Database:
         new text visible to every consequence already linked to it."""
         sets, vals = [], []
         if description is not None:
-            sets.append("description=?"); vals.append(description)
+            sets.append("description=?"); vals.append(normalize_arrows(description))
         if responsible is not None:
             sets.append("responsible=?"); vals.append(responsible)
         if due_date is not None:
@@ -4658,7 +4675,9 @@ class Database:
 
     def update_cause(self, id_, description=None, likelihood=None, base_frequency=_SENTINEL,
                      standard_cause_id=_SENTINEL, comp_type=_SENTINEL, comp_tag=_SENTINEL,
-                     base_freq=_SENTINEL, equipment_id=_SENTINEL):
+                     base_freq=_SENTINEL, equipment_id=_SENTINEL,
+                     secondary_equipment_id=_SENTINEL,
+                     group_choices_set=_SENTINEL):
         # Support old parameter name for backward compatibility
         if base_freq is not Database._SENTINEL and base_frequency is Database._SENTINEL:
             base_frequency = base_freq
@@ -4682,6 +4701,10 @@ class Database:
         # comp_type/comp_tag already use via _SENTINEL.
         if equipment_id is not Database._SENTINEL:
             sets.append("equipment_id=?"); vals.append(equipment_id)
+        if secondary_equipment_id is not Database._SENTINEL:
+            sets.append("secondary_equipment_id=?"); vals.append(secondary_equipment_id)
+        if group_choices_set is not Database._SENTINEL:
+            sets.append("group_choices_set=?"); vals.append(group_choices_set)
         if sets:
             vals.append(id_)
             self.conn.execute(f"UPDATE causes SET {', '.join(sets)} WHERE id=?", vals)
@@ -4724,6 +4747,7 @@ class Database:
     def update_consequence(self, id_, description, severity, category='',
                            consequence_chain='', comp_tag=None, comp_type=None,
                            tagged_refs=None):
+        description = normalize_arrows(description)
         self.conn.execute(
             "UPDATE consequences SET description=?,severity=?,category=?,"
             "consequence_chain=? WHERE id=?",
@@ -4800,7 +4824,7 @@ class Database:
             return
         parts, vals = [], []
         if description is not None:
-            parts.append("description=?"); vals.append(description)
+            parts.append("description=?"); vals.append(normalize_arrows(description))
         if rrf is not None:
             parts.append("rrf=?"); vals.append(rrf)
         if sg_type is not None:

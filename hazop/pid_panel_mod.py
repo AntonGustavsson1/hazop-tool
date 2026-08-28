@@ -1402,6 +1402,10 @@ class PIDPanel(QWidget):
         # a no-op) when PIDPanel is used standalone, e.g. in tests.
         self._active_edit_query_fn  = None
         self._pending_cause_bind_id = None
+        self._pdf_view_save_timer = QTimer(self)
+        self._pdf_view_save_timer.setSingleShot(True)
+        self._pdf_view_save_timer.setInterval(400)
+        self._pdf_view_save_timer.timeout.connect(self._persist_pdf_view_state)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -1577,6 +1581,10 @@ class PIDPanel(QWidget):
         self.viewer.board_layout_changed.connect(self._load_overlays)
         self.viewer.sheet_conn_break_requested.connect(self._break_sheet_link)
         self.viewer.sheet_conn_add_requested.connect(self._add_sheet_link)
+        self.viewer.horizontalScrollBar().valueChanged.connect(
+            self._schedule_pdf_view_state_save)
+        self.viewer.verticalScrollBar().valueChanged.connect(
+            self._schedule_pdf_view_state_save)
 
         layout.addWidget(self.viewer)
 
@@ -2034,6 +2042,7 @@ class PIDPanel(QWidget):
         if not paths:
             return
         paths = sorted(paths)   # alphabetical merge order
+        first_new_physical = 0
 
         working      = self._working_pdf_path()
         has_existing = working.exists()
@@ -2101,6 +2110,7 @@ class PIDPanel(QWidget):
                 try:
                     existing_doc    = fitz.open(str(working))
                     existing_pg_cnt = existing_doc.page_count
+                    first_new_physical = existing_pg_cnt
                     n_new = 0
                     for p in paths:
                         ext = fitz.open(p)
@@ -2220,6 +2230,12 @@ class PIDPanel(QWidget):
             prog.setLabelText("Laddar markeringar…")
             QApplication.processEvents()
         self._load_overlays()
+        # Open the first sheet added by this import and show the complete
+        # page in the largest currently available document canvas.
+        reverse_map = {phys: disp for disp, phys in self._sheet_map.items()}
+        self._goto_page(reverse_map.get(first_new_physical, first_new_physical))
+        self._fit_current_page()
+        self._persist_pdf_view_state()
         prog.close()
         self.analyze_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
@@ -2243,9 +2259,21 @@ class PIDPanel(QWidget):
         self._update_page_label()
         # Feature 10: restore saved zoom/scroll for new page
         self._restore_page_view(display_n)
+        self._schedule_pdf_view_state_save()
 
     def _on_page_spin_changed(self):
         self._goto_page(self.page_spin.value() - 1)
+
+    def _fit_current_page(self):
+        """Fit the active physical PDF page into the current viewer canvas."""
+        page_item = self.viewer._all_page_items.get(self.viewer.current_page)
+        if page_item is None:
+            return
+        page_rect = page_item.mapToScene(page_item.boundingRect()).boundingRect()
+        page_rect.adjust(-12, -12, 12, 12)
+        self.viewer.fitInView(page_rect, Qt.AspectRatioMode.KeepAspectRatio)
+        self.viewer._apply_lod(self.viewer.transform().m11())
+        self.viewer._schedule_lod_update()
 
     def _current_physical_page(self):
         """Physical page number behind self._current_display_page — same
@@ -2391,6 +2419,76 @@ class PIDPanel(QWidget):
             self.viewer.centerOn(scene_pt)
         self.viewer._apply_lod(self.viewer.transform().m11())
         self.viewer._schedule_lod_update()
+
+    def _schedule_pdf_view_state_save(self, *_args):
+        """Debounce project-local PDF view persistence while the user pans."""
+        if self.viewer.pdf_doc is not None:
+            self._pdf_view_save_timer.start()
+
+    def _persist_pdf_view_state(self):
+        """Persist the active sheet, zoom and viewport position in pid_config."""
+        if self.viewer.pdf_doc is None or not hasattr(self.db, 'set_pid_config_value'):
+            return
+        physical = int(self.viewer.current_page)
+        display = int(self._current_display_page)
+        t = self.viewer.transform()
+        state = {
+            'version': 1,
+            'physical_page': physical,
+            'display_page': display,
+            'transform': [t.m11(), t.m12(), t.m21(), t.m22()],
+            'h_scroll': self.viewer.horizontalScrollBar().value(),
+            'v_scroll': self.viewer.verticalScrollBar().value(),
+        }
+        try:
+            self.db.set_pid_config_value('view_state', json.dumps(state))
+        except Exception as exc:
+            logging.warning("Could not persist P&ID view state: %s", exc)
+
+    def _read_persisted_pdf_view_state(self):
+        """Return a validated pid_config view-state dict, or None."""
+        if not hasattr(self.db, 'get_pid_config_value'):
+            return None
+        try:
+            state = json.loads(self.db.get_pid_config_value('view_state') or '')
+            if not isinstance(state, dict):
+                return None
+            transform = state.get('transform')
+            if (not isinstance(transform, list)
+                    or len(transform) != 4):
+                return None
+            state['physical_page'] = int(state.get('physical_page', 0))
+            state['display_page'] = int(state.get('display_page', 0))
+            state['transform'] = [float(value) for value in transform]
+            state['h_scroll'] = int(state.get('h_scroll', 0))
+            state['v_scroll'] = int(state.get('v_scroll', 0))
+            return state
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+    def _restore_persisted_pdf_view_state(self, state):
+        """Apply validated state after the PDF and display-page map exist."""
+        if not state or self.viewer.pdf_doc is None:
+            return False
+        physical = state['physical_page']
+        reverse_map = {phys: disp for disp, phys in self._sheet_map.items()}
+        if self._sheet_map:
+            if physical not in reverse_map:
+                return False
+            display = reverse_map[physical]
+        else:
+            if not 0 <= physical < self.viewer.page_count():
+                return False
+            display = physical
+        self._current_display_page = display
+        self.viewer.goto_page(physical)
+        self._update_page_label()
+        if not hasattr(self, '_page_views'):
+            self._page_views = {}
+        self._page_views[display] = (*state['transform'],
+                                     state['h_scroll'], state['v_scroll'])
+        self._restore_page_view(display)
+        return True
 
     def _set_mode(self, mode):
         for m, btn in self.mode_buttons.items():
@@ -3345,15 +3443,20 @@ class PIDPanel(QWidget):
             row = self.db.conn.execute(
                 "SELECT equipment_id FROM equipment_markers WHERE id=?", (item_id,)).fetchone()
             equipment_id = row['equipment_id'] if row else None
-            cause_id = self._pending_cause_bind_id
+            pending = self._pending_cause_bind_id
+            secondary = isinstance(pending, tuple)
+            cause_id = pending[0] if secondary else pending
             self._pending_cause_bind_id = None
             self.viewer.setCursor(Qt.CursorShape.ArrowCursor)
             if equipment_id is not None:
                 eq = self.db.get_equipment_by_id(equipment_id)
-                self.db.update_cause(cause_id,
-                                     comp_type=eq.get('equipment_type', '') if eq else '',
-                                     comp_tag=eq.get('tag', '') if eq else '',
-                                     equipment_id=equipment_id)
+                kwargs = dict(comp_type=eq.get('equipment_type', '') if eq else '',
+                              comp_tag=eq.get('tag', '') if eq else '')
+                if secondary:
+                    kwargs['secondary_equipment_id'] = equipment_id
+                else:
+                    kwargs['equipment_id'] = equipment_id
+                self.db.update_cause(cause_id, **kwargs)
                 self._load_overlays()
                 self.cause_equipment_bound.emit(cause_id, equipment_id)
             return
@@ -3399,6 +3502,11 @@ class PIDPanel(QWidget):
     def start_cause_equipment_bind(self, cause_id):
         """Arm the viewer so the next clicked P&ID object is bound to a cause."""
         self._pending_cause_bind_id = int(cause_id)
+        self.viewer.setCursor(Qt.CursorShape.CrossCursor)
+
+    def start_secondary_cause_equipment_bind(self, cause_id):
+        """Arm the viewer to replace the affected object in a group cause."""
+        self._pending_cause_bind_id = (int(cause_id), True)
         self.viewer.setCursor(Qt.CursorShape.CrossCursor)
 
     def _insert_tag_into_editor(self, editor, tag):
@@ -3948,6 +4056,7 @@ class PIDPanel(QWidget):
     def try_reload_pdf(self, override_path=None):
         path = override_path or self.db.get_pid_path()
         if path and Path(path).exists() and HAS_PYMUPDF:
+            saved_view_state = self._read_persisted_pdf_view_state()
             layout_offsets = None
             if hasattr(self.db, 'get_pid_config_value'):
                 raw = self.db.get_pid_config_value('board_layout')
@@ -3969,6 +4078,11 @@ class PIDPanel(QWidget):
                 self._current_display_page = 0
                 self._update_page_label()
                 self._load_overlays()
+                # Rendering/goto_page changes scrollbars and therefore arms the
+                # debounce timer.  Stop it before it can overwrite the state
+                # that was read at the start of this reload.
+                self._pdf_view_save_timer.stop()
+                self._restore_persisted_pdf_view_state(saved_view_state)
                 self.analyze_btn.setEnabled(True)
         else:
             # No P&ID in database — clear the canvas completely

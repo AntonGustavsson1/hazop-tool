@@ -511,6 +511,7 @@ class TreePanel(QWidget):
                 deviation row it hangs off, so this works the same whether
                 the parent Avvikelse is generic or object-linked."""
                 nonlocal target
+                cause = dict(cause)
                 # Resolved LIVE from equipment_catalog via causes.equipment_id
                 # when the cause is linked to a real object (2026-08-13 — same
                 # live-FK pattern scenario_panel.py's own _cause_tag_display
@@ -520,19 +521,26 @@ class TreePanel(QWidget):
                 # time. Falls back to the frozen comp_tag for a custom/
                 # unmatched tag (equipment_id is None) or a deleted object.
                 eq = self.db.get_equipment_by_id(cause['equipment_id']) if cause['equipment_id'] else None
+                is_group = bool(cause.get('secondary_equipment_id'))
                 tag = (eq.get('tag') or '').strip() if eq else (cause['comp_tag'] or '').strip()
                 desc = (cause['description'] or '').strip()
                 # A still-untouched placeholder cause (no real content yet)
                 # shows just the tag, if it has one — showing "V-101 — Ny
                 # orsak" would be noise, not information.
                 trivial = desc in ('', 'Ny orsak')
-                if tag and trivial:
+                if is_group:
+                    # The chain sentence already contains both live object
+                    # tags; avoid repeating the first object as a prefix.
+                    c_label = desc[:80]
+                elif tag and trivial:
                     c_label = tag
                 elif tag:
                     c_label = f"{tag}, {desc[:45]}"
                 else:
                     c_label = desc[:50]
                 citem = QTreeWidgetItem([f"    ⚙ {ci}. {c_label}"])
+                if is_group:
+                    citem.setFont(0, bold_font)
                 citem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
                 citem.setData(0, Qt.ItemDataRole.UserRole + 1, CAUSE_T)
                 citem.setData(0, self._PREFIX_ROLE, f"    ⚙ {ci}. ")
@@ -2201,6 +2209,7 @@ class CauseTagPopup(QDialog):
     explicit confirm."""
     committed = pyqtSignal(str, str)  # (comp_type, comp_tag)
     bind_requested = pyqtSignal()
+    reorder_requested = pyqtSignal()
 
     def __init__(self, db, comp_type='', comp_tag='', parent=None, cause_id=None):
         super().__init__(parent)
@@ -2251,6 +2260,16 @@ class CauseTagPopup(QDialog):
             bind.setStyleSheet(_small)
             bind.clicked.connect(self.bind_requested.emit)
             layout.addWidget(bind)
+            try:
+                cause = db.get_cause(cause_id)
+                if cause and cause.get('secondary_equipment_id'):
+                    swap = QPushButton("Byt primär / sekundär")
+                    swap.setFixedHeight(CONFIG['H_BTN_SMALL'])
+                    swap.setStyleSheet(_small)
+                    swap.clicked.connect(self.reorder_requested.emit)
+                    layout.addWidget(swap)
+            except Exception:
+                pass
 
         self._tag_edit.editingFinished.connect(self._commit)
         self._type_cb.activated.connect(lambda _index: self._commit())

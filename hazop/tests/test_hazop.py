@@ -83,6 +83,120 @@ from test_helpers import (
     _TempDbMainWindow, _find_tree_item,
 )
 
+
+class GlobalSearchDialogTests(unittest.TestCase):
+    """Global search covers user fields and exposes useful navigation data."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix='.db')
+        os.close(fd)
+        self.db = Database(self.path)
+
+    def tearDown(self):
+        self.db.conn.close()
+        os.unlink(self.path)
+
+    def _add_node(self, name):
+        cur = self.db.conn.execute("INSERT INTO nodes(name) VALUES (?)", (name,))
+        self.db.conn.commit()
+        return cur.lastrowid
+
+    def test_partial_search_is_case_insensitive_and_names_the_field(self):
+        node_id = self._add_node('Stockholms terminal')
+        self.db.conn.execute(
+            "UPDATE nodes SET description=? WHERE id=?",
+            ('Placering i STOCKHOLM', node_id))
+        self.db.conn.commit()
+        dlg = hazop.GlobalSearchDialog(self.db)
+        dlg._search('stock')
+        labels = [dlg._list.item(i).text() for i in range(dlg._list.count())]
+        self.assertTrue(any('Nod #' in label and 'Namn:' in label for label in labels))
+        self.assertTrue(any('Beskrivning:' in label for label in labels))
+
+    def test_search_includes_non_scenario_user_data(self):
+        self.db.conn.execute(
+            "INSERT INTO recommendations(description, responsible) VALUES (?, ?)",
+            ('Byt ventil i Stockholm', 'Anna Andersson'))
+        self.db.conn.execute(
+            "INSERT INTO project_custom_fields(name, value) VALUES (?, ?)",
+            ('Anläggning', 'Stockholmsdepån'))
+        self.db.conn.commit()
+        dlg = hazop.GlobalSearchDialog(self.db)
+        dlg._search('stock')
+        hits = [dlg._list.item(i).data(Qt.ItemDataRole.UserRole)
+                for i in range(dlg._list.count())]
+        self.assertIn('recommendation', {h['kind'] for h in hits})
+        self.assertIn('project_field', {h['kind'] for h in hits})
+        self.assertTrue(all(h['document'] and h['post'] and h['field_label'] for h in hits))
+
+    def test_activating_result_emits_complete_navigation_hit(self):
+        node_id = self._add_node('Stockholm')
+        dlg = hazop.GlobalSearchDialog(self.db)
+        received = []
+        dlg.navigate_requested.connect(received.append)
+        dlg._search('stock')
+        dlg._navigate(dlg._list.item(0))
+        self.assertEqual(received[0]['kind'], 'node')
+        self.assertEqual(received[0]['id'], node_id)
+        self.assertEqual(received[0]['field'], 'name')
+
+    def test_replace_current_changes_only_selected_hit_and_moves_on(self):
+        node_id = self._add_node('Nod')
+        dev_id = self.db.add_deviation(node_id, 'Pump stopped')
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(cause_id, description='Pump stopped twice')
+        dlg = hazop.GlobalSearchDialog(self.db)
+        dlg._edit.setText('Pump stopped')
+        dlg._replace_edit.setText('Pump trip')
+        cause_row = next(i for i in range(dlg._list.count())
+                         if dlg._list.item(i).data(Qt.ItemDataRole.UserRole)['kind'] == 'cause')
+        dlg._list.setCurrentRow(cause_row)
+        dlg._replace_current()
+        self.assertEqual(self.db.get_cause(cause_id)['description'], 'Pump trip twice')
+        self.assertEqual(self.db.conn.execute(
+            'SELECT description FROM deviations WHERE id=?', (dev_id,)).fetchone()[0],
+            'Pump stopped')
+
+    def test_replace_all_uses_checked_preview_and_is_one_undo_operation(self):
+        node_id = self._add_node('Nod')
+        dev_id = self.db.add_deviation(node_id, 'Pump stopped')
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(cause_id, description='Pump stopped')
+        with _TempDbMainWindow() as win:
+            # The dialog must use the same database as its parent window.
+            window_db = win.db
+            try:
+                win.db = self.db
+                dlg = hazop.GlobalSearchDialog(self.db, win)
+                dlg._edit.setText('Pump stopped')
+                dlg._replace_edit.setText('Pump trip')
+                with unittest.mock.patch.object(
+                        QMessageBox, 'question', return_value=QMessageBox.StandardButton.Ok), \
+                     unittest.mock.patch.object(QMessageBox, 'information'):
+                    dlg._replace_all()
+                self.assertEqual(self.db.get_cause(cause_id)['description'], 'Pump trip')
+                self.assertEqual(len(win._global_replace_undo_stack), 1)
+                self.assertTrue(win._undo_global_replace())
+                self.assertEqual(self.db.get_cause(cause_id)['description'], 'Pump stopped')
+            finally:
+                win.db = window_db
+
+    def test_tag_identity_hit_is_protected_from_direct_replace(self):
+        equipment_id = self.db.add_equipment_item(
+            'PSHH-101', 'PSHH-101', 'PSHH', 0, 'Instrument', '', 0)
+        dlg = hazop.GlobalSearchDialog(self.db)
+        dlg._edit.setText('PSHH')
+        hit_item = next(dlg._list.item(i) for i in range(dlg._list.count())
+                        if dlg._list.item(i).data(Qt.ItemDataRole.UserRole)['field'] == 'tag')
+        self.assertTrue(hit_item.data(Qt.ItemDataRole.UserRole)['protected'])
+        self.assertEqual(hit_item.checkState(), Qt.CheckState.Unchecked)
+        self.assertEqual(dlg._selected_replace_hits(), [])
+        self.assertEqual(self.db.get_equipment_by_id(equipment_id)['tag'], 'PSHH-101')
+
 # ══════════════════════════════════════════════════════════════════════════
 # 5. Global sys.excepthook regression — exception in a Qt slot must not
 #    silently close the whole application
@@ -529,6 +643,24 @@ class PrintScenarioTableTests(unittest.TestCase):
             with unittest.mock.patch(
                     'PyQt6.QtPrintSupport.QPrintPreviewDialog.exec', return_value=0):
                 win._print_scenario_table()   # must not raise AttributeError
+
+
+class PDFViewerSplitterFlexibilityTests(unittest.TestCase):
+    """The PDF canvas and information areas must have a broad usable range."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_main_pdf_panels_are_no_longer_tightly_capped(self):
+        with _TempDbMainWindow() as win:
+            self.assertLessEqual(win.tree_panel.minimumWidth(), 120)
+            self.assertGreater(win.tree_panel.maximumWidth(), 1000)
+            self.assertLessEqual(win.pid_panel.minimumWidth(), 240)
+            self.assertLessEqual(win.scenario_panel.minimumHeight(), 110)
+            self.assertGreater(win.scenario_panel.maximumHeight(), 1000)
+            self.assertFalse(win._h_splitter.isCollapsible(0))
+            self.assertFalse(win._h_splitter.isCollapsible(1))
 
 
 if __name__ == "__main__":

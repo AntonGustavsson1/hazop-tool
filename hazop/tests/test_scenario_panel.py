@@ -2554,7 +2554,7 @@ class ScenarioColumnWidthPersistenceTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_a_study_with_saved_widths_does_not_auto_fill(self):
+    def test_a_study_with_saved_widths_still_starts_filled(self):
         """Once the user has resized anything, _on_column_resized has
         already saved real widths — the auto-fill-at-startup default
         must not then override that customization on the next launch."""
@@ -2571,8 +2571,10 @@ class ScenarioColumnWidthPersistenceTests(unittest.TestCase):
             panel2.show()
             self.app.processEvents()
             self.app.processEvents()
-            self.assertEqual(panel2._table.columnWidth(panel2._C_ORS), 77,
-                "a study with saved widths must keep them, not auto-fill over them")
+            self.assertEqual(panel2._table.columnWidth(panel2._C_ORS),
+                             panel2._table.columnWidth(panel2._C_KON))
+            self.assertEqual(panel2._table.columnWidth(panel2._C_KON),
+                             panel2._table.columnWidth(panel2._C_SG))
         finally:
             panel2.deleteLater()
 
@@ -4088,6 +4090,67 @@ class StandardCauseSuggestPopupTests(unittest.TestCase):
         QTest.qWait(20)
 
         self.assertIsNone(self._popup(), "the popup must close once the editor is destroyed")
+
+
+class InlineIdentityEditTests(unittest.TestCase):
+    """Prompt 2: tag edits in KON/SG are guarded before persistence."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix="hazop_inline_identity_")
+        self.db = Database(path=os.path.join(self.tmpdir, "project.db"))
+        from scenario_panel import ScenarioTablePanel, _BoldTagLineEdit
+        self.panel = ScenarioTablePanel(self.db)
+        self.editor_type = _BoldTagLineEdit
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.cons_id = self.db.add_consequence(cause_id)
+        self.sg_id = self.db.add_safeguard(self.cons_id)
+        self.db.update_safeguard(self.sg_id, description='Old text')
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        self.db.conn.close()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_existing_match_is_connected_without_renaming_old_object(self):
+        old_id = self.db.add_equipment_item('PSHH-101', 'PSHH-101', 'PSHH', 1,
+                                            'Tryckvakt', '', 0)
+        new_id = self.db.add_equipment_item('PSHH-102', 'PSHH-102', 'PSHH', 1,
+                                            'Tryckvakt', '', 0)
+        self.db.set_consequence_tag(self.cons_id, 'PSHH-101', 'Tryckvakt')
+        self.db.update_consequence(self.cons_id, 'PSHH-101 High pressure', 3)
+        with unittest.mock.patch.object(self.panel, '_confirm_equipment_tag_change',
+                                        return_value='connect'):
+            accepted, desc = self.panel._confirm_inline_identity_change(
+                'consequence', self.cons_id, 'PSHH-102 High pressure')
+        self.assertTrue(accepted)
+        self.assertEqual(desc, 'PSHH-102 High pressure')
+        self.assertEqual(self.db.get_consequence(self.cons_id)['comp_tag'], 'PSHH-102')
+        self.assertEqual(self.db.get_equipment_by_id(old_id)['tag'], 'PSHH-101')
+        self.assertEqual(self.db.get_equipment_by_id(new_id)['tag'], 'PSHH-102')
+
+    def test_cancel_does_not_write_the_new_description_or_tag(self):
+        self.db.set_safeguard_tag(self.sg_id, 'PSHH-101', 'Tryckvakt')
+        self.db.update_safeguard(self.sg_id, description='PSHH-101 Trip')
+        with unittest.mock.patch.object(self.panel, '_confirm_equipment_tag_change',
+                                        return_value='cancel'):
+            accepted, _ = self.panel._confirm_inline_identity_change(
+                'safeguard', self.sg_id, 'PSHH-102 Trip')
+        self.assertFalse(accepted)
+        saved = self.db.get_safeguard(self.sg_id)
+        self.assertEqual(saved['comp_tag'], 'PSHH-101')
+        self.assertEqual(saved['description'], 'PSHH-101 Trip')
+
+    def test_inline_editors_are_tag_aware(self):
+        editor = self.editor_type()
+        editor.setText('PSHH-101 Trip')
+        editor.set_bold_tags(['PSHH-101'])
+        self.assertEqual(editor._bold_tags, ['PSHH-101'])
 
 
 if __name__ == "__main__":

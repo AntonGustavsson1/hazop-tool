@@ -37,6 +37,54 @@ from tree_panel import (
     FrequencyPickerPopup,
 )
 
+
+class _BoldTagLineEdit(QLineEdit):
+    """Inline editor that keeps known P&ID tags visibly bold.
+
+    QLineEdit has no rich-text editing mode.  The normal editor remains fully
+    editable, while the known tag tokens are painted once more with a bold
+    font over Qt's normal text painting.  This preserves the visual contract
+    of the Scenario table during editing without changing the stored text or
+    cursor behaviour.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._bold_tags = []
+
+    def set_bold_tags(self, tags):
+        self._bold_tags = [str(tag).strip() for tag in (tags or []) if str(tag).strip()]
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self._bold_tags or not self.text():
+            return
+        painter = QPainter(self)
+        painter.setClipRect(self.contentsRect())
+        font = QFont(self.font())
+        font.setBold(True)
+        fm = QFontMetrics(font)
+        normal_fm = QFontMetrics(self.font())
+        text = self.text()
+        scroll = self.horizontalScrollBar().value() if self.horizontalScrollBar() else 0
+        x0 = self.contentsRect().left() + 3 - scroll
+        y = self.contentsRect().top()
+        h = self.contentsRect().height()
+        for tag in self._bold_tags:
+            start = 0
+            while True:
+                pos = text.casefold().find(tag.casefold(), start)
+                if pos < 0:
+                    break
+                x = x0 + normal_fm.horizontalAdvance(text[:pos])
+                painter.setFont(font)
+                painter.drawText(QRect(x, y, fm.horizontalAdvance(tag) + 2, h),
+                                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                                 text[pos:pos + len(tag)])
+                start = pos + len(tag)
+        painter.end()
+
 class RiskMatrixPopup(QDialog):
     """Popup risk matrix matching the configured format in Settings.
 
@@ -1238,7 +1286,7 @@ class _ScenarioDelegate(QStyledItemDelegate):
         self._fm      = None   # cached QFontMetrics — rebuilt only when font changes
 
     def createEditor(self, parent, option, index):
-        editor = super().createEditor(parent, option, index)
+        editor = _BoldTagLineEdit(parent)
         if editor is not None:
             # Scenario editing is intentionally compact: rounded editor
             # frames and generous default padding make multi-line
@@ -1396,16 +1444,24 @@ class _ScenarioDelegate(QStyledItemDelegate):
             return QSize(base.width(), one_line_h)
 
         text = index.data(Qt.ItemDataRole.DisplayRole) or ''
-        if not text:
+        # A grouped cause may intentionally have an empty description: its
+        # two object tags are still rendered as two lines by
+        # ``_ors_combined_text``.  Do not return the one-line fallback before
+        # looking at the group metadata, otherwise the second object is
+        # clipped in the Scenario table (the common freshly-created group
+        # case).
+        item = panel._table.item(index.row(), col)
+        group_rows = 2 if (col == panel._C_ORS and item and
+                           (item.data(Qt.ItemDataRole.UserRole + 9) or [])) else 1
+        if not text and group_rows == 1:
             return QSize(option.rect.width(), one_line_h)
 
         w = option.rect.width() if option.rect.width() > 0 else 200
         if col == panel._C_ORS:
             w = max(40, option.rect.width() - 6)
-            item = panel._table.item(index.row(), col)
             combined = panel._ors_combined_text(item, text)
             rect = fm.boundingRect(0, 0, w, 10000, Qt.TextFlag.TextWordWrap, combined)
-            return QSize(option.rect.width(), max(one_line_h, rect.height() + 4))
+            return QSize(option.rect.width(), max(one_line_h * group_rows, rect.height() + 4))
         elif col == panel._C_KON:
             w = max(40, w)
             rect = fm.boundingRect(0, 0, w, 10000, Qt.TextFlag.TextWordWrap, text)
@@ -1591,6 +1647,24 @@ class _PidDelegate(_ScenarioDelegate):
             if clean == '—':
                 clean = ''
             editor.setText(clean)
+            # Keep the identity tokens bold while the editor is active.  For
+            # Orsak the tag prefix remains outside the editor; Konsekvens and
+            # Safeguard may carry tags inside their description.
+            if isinstance(editor, _BoldTagLineEdit):
+                tags = []
+                item = self._panel._table.item(index.row(), index.column())
+                if index.column() == self._panel._C_ORS:
+                    obj_data = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
+                    tags = [obj_data[1]] if obj_data and obj_data[1] else []
+                elif index.column() == self._panel._C_KON:
+                    obj_data = item.data(Qt.ItemDataRole.UserRole + 7) if item else None
+                    refs = item.data(Qt.ItemDataRole.UserRole + 8) if item else []
+                    tags = ([obj_data[1]] if obj_data and obj_data[1] else []) + (refs or [])
+                elif index.column() == self._panel._C_SG:
+                    obj_data = item.data(Qt.ItemDataRole.UserRole + 6) if item else None
+                    refs = item.data(Qt.ItemDataRole.UserRole + 7) if item else []
+                    tags = ([obj_data[1]] if obj_data and obj_data[1] else []) + (refs or [])
+                editor.set_bold_tags(tags)
             if index.column() == self._panel._C_ORS:
                 self._attach_cause_completer(editor, index)
                 # Deferred to the next event-loop iteration — showing the
@@ -1829,6 +1903,9 @@ class _PidDelegate(_ScenarioDelegate):
                 # text (2026-08-18 follow-up: Anton clarified it's the
                 # CELL height that should shrink, not the text itself).
                 desc = index.data(Qt.ItemDataRole.DisplayRole) or ''
+                _num = index.data(Qt.ItemDataRole.UserRole + 10)
+                if _num:
+                    desc = f"{_num}.  {desc}"
                 tc = (option.palette.highlightedText().color() if sel
                       else option.palette.text().color())
                 tagged_refs = index.data(Qt.ItemDataRole.UserRole + 7) or []
@@ -1919,9 +1996,59 @@ class _PidDelegate(_ScenarioDelegate):
                 # file's own documented history of paint/geometry bugs.
                 tc = (option.palette.highlightedText().color() if sel
                       else option.palette.text().color())
-                tags = [tag_label] if show_tag else []
-                _draw_text_with_bold_tags(painter, desc_rect.adjusted(0, 1, 0, -1),
-                                          combined, tags, option.font, tc, word_wrap=True)
+                tags = index.data(Qt.ItemDataRole.UserRole + 9) or []
+                if not tags:
+                    tags = [tag_label] if show_tag else []
+                if len(tags) >= 2:
+                    # Group causes are deliberately rendered line-by-line.
+                    # QTextLayout's wrapping can collapse the explicit line
+                    # break when the cell is spanned by QTableWidget; direct
+                    # drawing makes the one-cell/two-physical-lines contract
+                    # deterministic.
+                    bf = QFont(option.font)
+                    bf.setBold(True)
+                    line_h = max(_ORS_FIRST_LINE_H,
+                                 QFontMetrics(option.font).height() + 4)
+                    painter.setPen(tc)
+                    for line_no, line_text in enumerate(combined.splitlines()[:2]):
+                        # Keep the child number normal-weight, then bold the
+                        # actual object tag.  On the first line the number is
+                        # part of the displayed text (``1. FI ...``), whereas
+                        # the second line starts directly with the affected
+                        # object.
+                        number_prefix = ''
+                        if line_no == 0 and line_text[:1].isdigit():
+                            m = re.match(r'^(\d+\.\s+)(.*)$', line_text)
+                            if m:
+                                number_prefix, line_text = m.group(1), m.group(2)
+                        parts = line_text.split(' ', 1)
+                        y = desc_rect.top() + line_no * line_h
+                        x = desc_rect.left()
+                        if number_prefix:
+                            painter.setFont(option.font)
+                            painter.drawText(QRect(x, y, desc_rect.width(), line_h),
+                                             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                                             number_prefix)
+                            x += QFontMetrics(option.font).horizontalAdvance(number_prefix)
+                        painter.setFont(bf)
+                        painter.drawText(QRect(x, y,
+                                               max(0, desc_rect.right() - x + 1), line_h),
+                                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                                         parts[0])
+                        if len(parts) > 1:
+                            # Leave a small, consistent visual gap after the
+                            # bold object tag before its mechanism/effect text.
+                            x += (QFontMetrics(bf).horizontalAdvance(parts[0]) +
+                                  QFontMetrics(option.font).horizontalAdvance(' '))
+                            painter.setFont(option.font)
+                            painter.drawText(QRect(x, y,
+                                                   max(0, desc_rect.right() - x + 1), line_h),
+                                             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                                             parts[1])
+                else:
+                    _draw_text_with_bold_tags(
+                        painter, desc_rect.adjusted(0, 1, 0, -1),
+                        combined, tags, option.font, tc, word_wrap=True)
 
                 # ── Frequency — floats over the first line, right-aligned,
                 # drawn AFTER the text so it stays on top ("längst ut till
@@ -1988,6 +2115,9 @@ class _PidDelegate(_ScenarioDelegate):
                 # Description text — word-wrapped, drag-appended tags in
                 # bold (2026-08-09, see NOTES.md "fetmarkera objekttexten")
                 display = index.data(Qt.ItemDataRole.DisplayRole) or ''
+                _num = index.data(Qt.ItemDataRole.UserRole + 10)
+                if _num:
+                    display = f"{_num}.  {display}"
                 tc = (option.palette.highlightedText().color() if sel
                       else option.palette.text().color())
                 tagged_refs = index.data(Qt.ItemDataRole.UserRole + 8) or []
@@ -2758,6 +2888,7 @@ class ScenarioTablePanel(QWidget):
     structure_changed          = pyqtSignal()           # item moved/deleted/duplicated → refresh tree
     equipment_renamed          = pyqtSignal()           # an ORS tag edit renamed the linked equipment_catalog row
     bind_cause_to_pid_requested = pyqtSignal(int)      # choose an existing P&ID object
+    bind_secondary_cause_to_pid_requested = pyqtSignal(int)  # group affected object
 
     # Column indices
     _C_NOD, _C_UTR, _C_DEV, _C_ORS, _C_KON, _C_RFORE = 0, 1, 2, 3, 4, 5
@@ -2809,14 +2940,14 @@ class ScenarioTablePanel(QWidget):
         # active; its text must create a sibling, never overwrite the sole
         # existing recommendation.
         self._recommendation_force_add_cons_id = None
+        self._text_undo_stack = []
+        self._undoing_text = False
         self._cell_font_size = 9
         # Parallel list to _row_meta: None or (cat_id, cat_name, cat_sev)
         self._row_cat_info: list = []
-        self.setMinimumHeight(CONFIG['H_TABLE_STD'])
-        # 380px cap fits the P&ID page's bottom-splitter usage, where this panel
-        # shares vertical space with the canvas above it. A full-page host
-        # (e.g. HAZOPWorksheet) should call allow_full_height() to lift this cap.
-        self.setMaximumHeight(380)
+        # Keep the table usable at its smallest size, but let the surrounding
+        # splitter decide how much of the window it may use.
+        self.setMinimumHeight(110)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(4, 2, 4, 2)
@@ -2935,8 +3066,11 @@ class ScenarioTablePanel(QWidget):
             # programmatically — could set a real width in the gap
             # between scheduling and this actually firing; that must win
             # over silently overwriting it a moment later.
-            QTimer.singleShot(0, self._fill_width_once_unless_user_set)
+            pass
         h.sectionResized.connect(self._on_column_resized)
+        # "Fyll bredd" is the default on every launch, including studies
+        # that contain older saved manual widths. Columns remain draggable.
+        QTimer.singleShot(0, self._fill_width_once)
 
         # ── Sticky context bar — always shows current Nod + Avvikelse ──────────
         self._ctx_bar = QLabel()
@@ -3289,12 +3423,50 @@ class ScenarioTablePanel(QWidget):
         column), falling back to the frozen comp_type/comp_tag strings
         for a custom/unmatched tag (equipment_id is None) or if the
         linked row was since deleted."""
+        # Functional group causes render both linked objects in the cause
+        # sentence itself.  Do not repeat the primary tag in the prefix.
+        if cause_d.get('secondary_equipment_id'):
+            return '', ''
         eq_id = cause_d.get('equipment_id')
         if eq_id:
             eq = self.db.get_equipment_by_id(eq_id)
             if eq:
                 return eq.get('equipment_type') or '', eq.get('tag') or ''
         return cause_d.get('comp_type') or '', cause_d.get('comp_tag') or ''
+
+    def _node_number(self, node_id):
+        for i, node in enumerate(self.db.nodes(), 1):
+            if node['id'] == node_id:
+                return i
+        return None
+
+    def _deviation_number(self, node_id, deviation_id):
+        if not node_id or not deviation_id:
+            return None
+        for i, dev in enumerate(self.db.deviations(node_id), 1):
+            if dev['id'] == deviation_id:
+                return i
+        return None
+
+    def _numbered_node(self, node_id, name):
+        n = self._node_number(node_id)
+        return f"{n}.  {name}" if n else name
+
+    def _numbered_deviation(self, node_id, deviation_id, description):
+        n = self._deviation_number(node_id, deviation_id)
+        return f"{n}.  {description}" if n else description
+
+    def _child_number(self, kind, parent_id, item_id):
+        if not parent_id or not item_id:
+            return None
+        if kind == 'cause':
+            rows = self.db.causes_for_deviation(parent_id)
+        elif kind == 'consequence':
+            rows = self.db.consequences(parent_id)
+        else:
+            grouped = self.db.safeguards_for_consequences([parent_id])
+            rows = grouped.get(parent_id, [])
+        return next((i + 1 for i, r in enumerate(rows) if r['id'] == item_id), None)
 
     def _causes_for_node(self, node_id):
         """Return [(cause_dict, deviation_dict), ...] for every cause under
@@ -3856,7 +4028,9 @@ class ScenarioTablePanel(QWidget):
 
             item = table.item(row, col)
             text = item.text() if item is not None else ''
-            if not text:
+            grouped_cause = (col == self._C_ORS and item is not None and
+                             (item.data(Qt.ItemDataRole.UserRole + 9) or []))
+            if not text and not grouped_cause:
                 continue
 
             w = table.columnWidth(col)
@@ -3868,7 +4042,10 @@ class ScenarioTablePanel(QWidget):
                 combined = self._ors_combined_text(item, text)
                 rect = fm.boundingRect(0, 0, cell_w, 10000,
                                       Qt.TextFlag.TextWordWrap, combined)
-                h = max(one_line_h, rect.height() + 4)
+                # A newly-created group has no description yet, but its two
+                # object tags still occupy two explicit lines.
+                h = max(one_line_h * (2 if grouped_cause else 1),
+                        rect.height() + 4)
             elif col == self._C_KON:
                 cell_w = max(40, w)
                 rect = fm.boundingRect(0, 0, cell_w, 10000,
@@ -3884,7 +4061,8 @@ class ScenarioTablePanel(QWidget):
                 max_h = share
 
         ors_item = table.item(row, self._C_ORS)
-        if ors_item and ors_item.text():
+        if ors_item and (ors_item.text() or
+                         (ors_item.data(Qt.ItemDataRole.UserRole + 9) or [])):
             min_ors = fm.height() * 2 + 20  # floor for ORS rows: ~2 lines + strip
             share = _share(min_ors, _span_group_size(row, _cause_id))
             if max_h < share:
@@ -3985,13 +4163,16 @@ class ScenarioTablePanel(QWidget):
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             return item
 
-        nod = _ro(node_name)
+        nod = _ro(self._numbered_node(dev_d.get('node_id') if dev_d else None, node_name))
         self._table.setItem(r, self._C_NOD, nod)
         eq_id, eq_label = self._equipment_for_dev(dev_d or {})
         utr = _ro(eq_label)
         utr.setData(Qt.ItemDataRole.UserRole, eq_id)
         self._table.setItem(r, self._C_UTR, utr)
-        dev_item = _ro(dev_d['description'] if dev_d else '')
+        dev_item = _ro(self._numbered_deviation(
+            dev_d.get('node_id') if dev_d else None,
+            dev_d.get('id') if dev_d else None,
+            dev_d['description'] if dev_d else ''))
         dev_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self._table.setItem(r, self._C_DEV, dev_item)
 
@@ -4021,7 +4202,7 @@ class ScenarioTablePanel(QWidget):
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             return item
 
-        nod = _ro(node_name)
+        nod = _ro(self._numbered_node(cause_d.get('node_id'), node_name))
         nod.setData(Qt.ItemDataRole.UserRole, cause_d['node_id'])
         self._table.setItem(r, self._C_NOD, nod)
 
@@ -4030,7 +4211,10 @@ class ScenarioTablePanel(QWidget):
         utr.setData(Qt.ItemDataRole.UserRole, eq_id)
         self._table.setItem(r, self._C_UTR, utr)
 
-        dev_item = _ro(dev_d['description'] if dev_d else '')
+        dev_item = _ro(self._numbered_deviation(
+            dev_d.get('node_id') if dev_d else None,
+            dev_d.get('id') if dev_d else None,
+            dev_d['description'] if dev_d else ''))
         dev_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self._table.setItem(r, self._C_DEV, dev_item)
 
@@ -4039,6 +4223,23 @@ class ScenarioTablePanel(QWidget):
         ors.setData(Qt.ItemDataRole.UserRole + 2, self._cause_tag_display(cause_d))
         ors.setData(Qt.ItemDataRole.UserRole + 3, freq)
         ors.setData(Qt.ItemDataRole.UserRole + 8, repeats_previous_tag)
+        # Group causes keep both tags as live object references and bold them
+        # in the sentence (the old ``primary + secondary`` prefix duplicated
+        # the first object visually).
+        group_tags = []
+        if cause_d.get('secondary_equipment_id'):
+            for _eid in (cause_d.get('equipment_id'), cause_d.get('secondary_equipment_id')):
+                _eq = self.db.get_equipment_by_id(_eid) if _eid else None
+                if _eq and _eq.get('tag'):
+                    group_tags.append(_eq.get('tag'))
+        if len(group_tags) < 2:
+            _legacy = (cause_d.get('comp_tag') or '').strip()
+            if ' + ' in _legacy:
+                group_tags = [part.strip() for part in _legacy.split(' + ')
+                               if part.strip()]
+        ors.setData(Qt.ItemDataRole.UserRole + 9, group_tags)
+        ors.setData(Qt.ItemDataRole.UserRole + 10,
+                    self._child_number('cause', dev_d.get('id'), cause_d.get('id')))
         self._table.setItem(r, self._C_ORS, ors)
 
         kon = _ro()
@@ -4160,7 +4361,7 @@ class ScenarioTablePanel(QWidget):
         level_s, bg_s, fg_s = risk_info(final_f, sev)
 
         # ── Col 0: Nod ────────────────────────────────────────────────────────
-        nod = QTableWidgetItem(node_name)
+        nod = QTableWidgetItem(self._numbered_node(cause_d.get('node_id'), node_name))
         nod.setFlags(nod.flags() & ~Qt.ItemFlag.ItemIsEditable)
         nod.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         nod.setData(Qt.ItemDataRole.UserRole, cause_d['node_id'])
@@ -4175,7 +4376,10 @@ class ScenarioTablePanel(QWidget):
         self._table.setItem(r, self._C_UTR, utr_item)
 
         # ── Col 1: Avvikelse ─────────────────────────────────────────────────
-        dev_item = QTableWidgetItem(dev_d['description'] if dev_d else '')
+        dev_item = QTableWidgetItem(self._numbered_deviation(
+            dev_d.get('node_id') if dev_d else None,
+            dev_d.get('id') if dev_d else None,
+            dev_d['description'] if dev_d else ''))
         dev_item.setFlags(dev_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         dev_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self._table.setItem(r, self._C_DEV, dev_item)
@@ -4209,6 +4413,20 @@ class ScenarioTablePanel(QWidget):
         ors.setData(Qt.ItemDataRole.UserRole + 3, freq)
         ors.setData(Qt.ItemDataRole.UserRole + 5, cause_d.get('base_frequency'))
         ors.setData(Qt.ItemDataRole.UserRole + 8, repeats_previous_tag)
+        ors.setData(Qt.ItemDataRole.UserRole + 10,
+                    self._child_number('cause', dev_d.get('id'), cause_d.get('id')))
+        group_tags = []
+        if cause_d.get('secondary_equipment_id'):
+            for _eid in (cause_d.get('equipment_id'), cause_d.get('secondary_equipment_id')):
+                _eq = self.db.get_equipment_by_id(_eid) if _eid else None
+                if _eq and _eq.get('tag'):
+                    group_tags.append(_eq.get('tag'))
+        if len(group_tags) < 2:
+            _legacy = (cause_d.get('comp_tag') or '').strip()
+            if ' + ' in _legacy:
+                group_tags = [part.strip() for part in _legacy.split(' + ')
+                               if part.strip()]
+        ors.setData(Qt.ItemDataRole.UserRole + 9, group_tags)
         # _status_icon is no longer stored on the item (2026-08-18, see
         # NOTES.md "skrota pluppen") — the green/yellow/orange/red fill-
         # status dot it drove is gone from paint(); the underlying
@@ -4230,7 +4448,7 @@ class ScenarioTablePanel(QWidget):
         # (verified: setData() on one overwrites what the other reads
         # back), so _PidDelegate.createEditor() strips the "—" sentinel
         # itself when opening the editor instead.
-        kon_item = QTableWidgetItem(cons_d['description'] or '—')
+        kon_item = QTableWidgetItem(cons_d['description'] or '')
         kon_item.setData(Qt.ItemDataRole.UserRole, ('consequence', cid))
         kon_item.setData(Qt.ItemDataRole.UserRole + 3, None)   # no per-row cat badge
         kon_item.setData(Qt.ItemDataRole.UserRole + 7, (cons_d.get('comp_type') or '',
@@ -4240,6 +4458,8 @@ class ScenarioTablePanel(QWidget):
         # above only ever holds the MOST RECENT one.
         kon_item.setData(Qt.ItemDataRole.UserRole + 8,
                          parse_tag_refs(cons_d.get('tagged_refs') or ''))
+        kon_item.setData(Qt.ItemDataRole.UserRole + 10,
+                         self._child_number('consequence', cause_d.get('id'), cid))
         tip = ("Dra en utrustningsmarkör hit (håll Shift) för att sätta tag\n"
                "Dubbelklicka för att redigera\nEnter för att lägga till ny konsekvens")
         if display_desc != cons_d['description']:
@@ -4285,7 +4505,7 @@ class ScenarioTablePanel(QWidget):
 
         # ── Col 5: Barriär ───────────────────────────────────────────────────
         if sg is None:
-            sg_item = QTableWidgetItem('—')
+            sg_item = QTableWidgetItem('')
             sg_item.setFlags(sg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             sg_item.setToolTip("Enter för att lägga till barriär")
         else:
@@ -4293,7 +4513,7 @@ class ScenarioTablePanel(QWidget):
             # "—" placeholder when empty (2026-08-12, see NOTES.md) — no
             # separate EditRole set here, see the KON cell's comment above
             # on why that would silently overwrite this back to empty.
-            sg_item = QTableWidgetItem(sg['description'] or '—')
+            sg_item = QTableWidgetItem(sg['description'] or '')
             sg_item.setData(Qt.ItemDataRole.UserRole,     ('safeguard', sg['id']))
             sg_item.setData(Qt.ItemDataRole.UserRole + 1, rrf)
             # Yellow indicator: list of category names this sg is excluded from
@@ -4309,8 +4529,12 @@ class ScenarioTablePanel(QWidget):
             excl_cause_names = [desc for cid2, desc, _ in cause_popup_list
                                 if cid2 in excl_cause_ids]
             sg_item.setData(Qt.ItemDataRole.UserRole + 5, excl_cause_names)
+            sg_item.setData(Qt.ItemDataRole.UserRole + 6,
+                            (sg.get('comp_type') or '', sg.get('comp_tag') or ''))
             sg_item.setData(Qt.ItemDataRole.UserRole + 7,
                              parse_tag_refs(sg.get('tagged_refs') or ''))
+            sg_item.setData(Qt.ItemDataRole.UserRole + 10,
+                            self._child_number('safeguard', cid, sg.get('id')))
             tip = "Dra en utrustningsmarkör hit (håll Shift) för att sätta tag\n" \
                   "Dubbelklicka för att redigera\nEnter för att lägga till ny barriär\nKlicka på RRF-kolumnen för att ändra värdet"
             if excl_cat_names:
@@ -4336,7 +4560,7 @@ class ScenarioTablePanel(QWidget):
             cat_short = (cat_name or '')[:3]
             slut_text = f"{cat_short}  {freq_axis_label(final_f)}  {cons_axis_label(sev)}"
         else:
-            slut_text = "—"
+            slut_text = ""
             bg_s, fg_s = '#FFFFFF', '#8D9299'
         rs = QTableWidgetItem(slut_text)
         rs.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -4360,7 +4584,7 @@ class ScenarioTablePanel(QWidget):
         rek_text = (f"R-{recommendation['id']:03d}. "
                     f"{recommendation['description'] or 'Ny rekommendation'}"
                     if recommendation else '')
-        rek_item = QTableWidgetItem(rek_text or '—')
+        rek_item = QTableWidgetItem(rek_text or '')
         rek_item.setData(Qt.ItemDataRole.UserRole,
                          ('recommendation', cid,
                           recommendation['id'] if recommendation else None))
@@ -4385,7 +4609,7 @@ class ScenarioTablePanel(QWidget):
         The column joins wrap_cols so multi-line content gets the row
         height it needs, same as ORS/KON."""
         if not acts:
-            return '—'
+            return ''
         return '\n'.join(f"R-{a['id']:03d}. {a['description'] or 'Ny rekommendation'}"
                           for a in acts)
 
@@ -4605,7 +4829,7 @@ class ScenarioTablePanel(QWidget):
                     cat_short = (cat_name or '')[:3]
                     slut_text = f"{cat_short}  {freq_axis_label(final_f)}  {cons_axis_label(sev)}"
                 else:
-                    slut_text = "—"
+                    slut_text = ""
                     bg_s, fg_s = '#FFFFFF', '#8D9299'
                 rs = self._table.item(row, self._C_SLUT)
                 if rs:
@@ -4671,14 +4895,16 @@ class ScenarioTablePanel(QWidget):
         one_line_h = fm.height() + 6
         item = table.item(row, col)
         text = item.text() if item is not None else ''
-        if not text:
+        group_rows = 2 if (col == self._C_ORS and item and
+                           (item.data(Qt.ItemDataRole.UserRole + 9) or [])) else 1
+        if not text and group_rows == 1:
             return one_line_h
         w = table.columnWidth(col)
         if col == self._C_ORS:
             cell_w = max(40, w - 6)
             combined = self._ors_combined_text(item, text)
             rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, combined)
-            return max(one_line_h, rect.height() + 4)
+            return max(one_line_h * group_rows, rect.height() + 4)
         else:   # self._C_KON
             cell_w = max(40, w)
             rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, text)
@@ -5014,10 +5240,35 @@ class ScenarioTablePanel(QWidget):
         if not tag_label and self._hide_unplaced_tag:
             return '', False
         if not tag_label:
-            return 'ej på P&ID', True
+            # Empty/unbound causes stay visually empty; the worksheet no
+            # longer needs a placeholder label in the cell.
+            return '', False
         return tag_label, not repeats_previous
 
     def _ors_combined_text(self, item, desc):
+        _group_tags = (item.data(Qt.ItemDataRole.UserRole + 9) or []) if item else []
+        # Recover legacy grouped tags while a row is being rebuilt.  Some
+        # persisted grouped causes only expose the original ``A + B`` tag;
+        # the display must still keep the two objects on separate lines.
+        if len(_group_tags) < 2 and item:
+            _obj_data = item.data(Qt.ItemDataRole.UserRole + 2)
+            _legacy_tag = (_obj_data[1] if isinstance(_obj_data, (tuple, list))
+                           and len(_obj_data) > 1 else '')
+            if isinstance(_legacy_tag, str) and ' + ' in _legacy_tag:
+                _group_tags = [part.strip() for part in _legacy_tag.split(' + ')
+                               if part.strip()]
+        if len(_group_tags) >= 2:
+            _num = item.data(Qt.ItemDataRole.UserRole + 10) or ''
+            cause_id = item.data(Qt.ItemDataRole.UserRole)[1] if item.data(Qt.ItemDataRole.UserRole) else None
+            cause = self.db.get_cause(cause_id) if cause_id else None
+            if cause and not cause.get('group_choices_set'):
+                return f"{_num}.  {_group_tags[0]}\n{_group_tags[1]}" if _num else f"{_group_tags[0]}\n{_group_tags[1]}"
+            _low = (desc or '').lower()
+            _direction = 'felar lågt' if 'felar lågt' in _low else 'felar högt'
+            _effect = next((o for o in ('stänger helt', 'stänger felaktigt', 'stänger',
+                                         'öppnar felaktigt', 'öppnar fullt') if o in _low),
+                            'öppnar fullt')
+            return f"{_num}.  {_group_tags[0]} {_direction}\n{_group_tags[1]} {_effect}" if _num else f"{_group_tags[0]} {_direction}\n{_group_tags[1]} {_effect}"
         """The exact string measured (sizeHint) and painted (paint) for
         an ORS cell — "TAG, beskrivning", just "TAG" while the
         description is still an untouched placeholder (same "bare tag
@@ -5026,9 +5277,12 @@ class ScenarioTablePanel(QWidget):
         the plain description when no tag should show."""
         tag_label, show_tag = self._ors_tag_prefix(item)
         if not show_tag:
-            return desc
+            num = item.data(Qt.ItemDataRole.UserRole + 10) if item else None
+            return f"{num}.  {desc}" if num else desc
         trivial = desc.strip() in ('', 'Ny orsak')
-        return tag_label if trivial else f"{tag_label}, {desc}"
+        num = item.data(Qt.ItemDataRole.UserRole + 10) if item else None
+        text = tag_label if trivial else f"{tag_label}, {desc}"
+        return f"{num}.  {text}" if num else text
 
     def _ors_tag_prefix_pixel_width(self, item, desc, font):
         """Pixel width of the bold portion of _ors_combined_text — shared
@@ -5036,6 +5290,28 @@ class ScenarioTablePanel(QWidget):
         updateEditorGeometry (where the description editor should
         start), so a click always lands exactly where the bold text
         visually ends."""
+        group_tags = item.data(Qt.ItemDataRole.UserRole + 9) if item else []
+        if len(group_tags) >= 2:
+            low = (desc or '').lower()
+            direction = 'felar lågt' if 'felar lågt' in low else 'felar högt'
+            effect = 'öppnar fullt'
+            for option in ('stänger helt', 'stänger felaktigt', 'stänger',
+                           'öppnar felaktigt', 'öppnar fullt'):
+                if option in low:
+                    effect = option
+                    break
+            return 0
+        group_tags = item.data(Qt.ItemDataRole.UserRole + 9) if item else []
+        if len(group_tags) >= 2:
+            low = (desc or '').lower()
+            direction = 'felar lågt' if 'felar lågt' in low else 'felar högt'
+            effect = 'öppnar fullt'
+            for option in ('stänger helt', 'stänger felaktigt', 'stänger',
+                           'öppnar felaktigt', 'öppnar fullt'):
+                if option in low:
+                    effect = option
+                    break
+            return f"{group_tags[0]} {direction}\n{group_tags[1]} {effect}"
         tag_label, show_tag = self._ors_tag_prefix(item)
         if tag_label == 'ej på P&ID':
             return 0
@@ -5219,6 +5495,8 @@ class ScenarioTablePanel(QWidget):
         popup = CauseTagPopup(self.db, comp_type, comp_tag, parent=self, cause_id=cause_id)
         popup.bind_requested.connect(
             lambda cid=cause_id: self.bind_cause_to_pid_requested.emit(cid))
+        popup.reorder_requested.connect(
+            lambda cid=cause_id: self._swap_group_objects(cid))
         popup.committed.connect(
             lambda ct, tg, r=row, cid=cause_id:
                 self._apply_cause_obj(r, cid, ct, tg, '', None))
@@ -5236,6 +5514,72 @@ class ScenarioTablePanel(QWidget):
         y = max(screen.top()  + 4, min(y, screen.bottom() - ph))
         popup.move(x, y)
         popup.show()
+
+    def _edit_group_cause_choice(self, cause_id, which):
+        """Show choices for the first/second ellipsis in a group cause."""
+        cause = self.db.get_cause(cause_id)
+        if not cause or not cause.get('secondary_equipment_id'):
+            return
+        primary = self.db.get_equipment_by_id(cause.get('equipment_id'))
+        secondary = self.db.get_equipment_by_id(cause.get('secondary_equipment_id'))
+        if not primary or not secondary:
+            return
+        menu = QMenu(self)
+        choices = (['Felar högt', 'Felar lågt'] if which == 0 else
+                   ['Öppnar felaktigt', 'Stänger felaktigt', 'Öppnar fullt',
+                    'Stänger helt', 'Skriv eget…'])
+        for choice in choices:
+            act = menu.addAction(choice)
+            act.triggered.connect(lambda _=False, c=choice:
+                                   self._apply_group_cause_choice(cause_id, which, c))
+        menu.exec(QCursor.pos())
+
+    def _apply_group_cause_choice(self, cause_id, which, choice):
+        cause = self.db.get_cause(cause_id)
+        if not cause:
+            return
+        p = self.db.get_equipment_by_id(cause.get('equipment_id'))
+        s = self.db.get_equipment_by_id(cause.get('secondary_equipment_id'))
+        if not p or not s:
+            return
+        old = cause.get('description') or ''
+        direction = 'felar lågt' if 'lågt' in old else 'felar högt'
+        effect = 'öppnar felaktigt'
+        for option in ('stänger helt', 'stänger felaktigt', 'öppnar fullt', 'öppnar felaktigt'):
+            if option in old.lower():
+                effect = option
+                break
+        if which == 0:
+            direction = choice.lower()
+        else:
+            effect = choice.lower()
+        if choice == 'Skriv eget…':
+            value, accepted = QInputDialog.getText(
+                self, "Eget alternativ",
+                "Skriv in önskad felmekanism/effekt:")
+            if not accepted or not value.strip():
+                return
+            choice = value.strip()
+        desc = f"{p.get('tag', 'Objekt')} {direction} → {s.get('tag', 'Objekt')} {effect}"
+        self.db.update_cause(cause_id, description=desc, group_choices_set=1)
+        self._schedule_rebuild()
+
+    def _swap_group_objects(self, cause_id):
+        """Swap the live primary/secondary P&ID links of a group cause."""
+        cause = self.db.get_cause(cause_id)
+        if not cause or not cause.get('secondary_equipment_id'):
+            return
+        primary = self.db.get_equipment_by_id(cause.get('equipment_id'))
+        secondary = self.db.get_equipment_by_id(cause.get('secondary_equipment_id'))
+        if not primary or not secondary:
+            return
+        self.db.update_cause(
+            cause_id,
+            equipment_id=secondary['id'],
+            secondary_equipment_id=primary['id'],
+            comp_type=secondary.get('equipment_type', ''),
+            comp_tag=f"{secondary.get('tag', '')} + {primary.get('tag', '')}")
+        self._schedule_rebuild()
 
     def _apply_cause_obj(self, row, cause_id, comp_type, comp_tag, description, frequency):
         # Live tag link (2026-08-13, see NOTES.md: "taggen är kopplad
@@ -5255,15 +5599,45 @@ class ScenarioTablePanel(QWidget):
         renamed = False
         if old_equipment_id is not None:
             old_eq = self.db.get_equipment_by_id(old_equipment_id)
-            if old_eq and new_tag and new_tag != (old_eq.get('tag') or ''):
-                self.db.update_equipment_item(
-                    old_equipment_id, new_tag, old_eq.get('prefix') or '',
-                    old_eq.get('equipment_type') or comp_type, old_eq.get('description') or '')
-                self.equipment_renamed.emit()
-                renamed = True
+            old_tag = (old_eq.get('tag') or '').strip() if old_eq else ''
+            if old_eq and new_tag and new_tag.casefold() != old_tag.casefold():
+                match = self.db.get_equipment_by_tag(new_tag)
+                decision = self._confirm_equipment_tag_change(
+                    old_tag, new_tag, match, linked=True)
+                if decision == 'cancel':
+                    return
+                if decision == 'connect' and match and match.get('id') != old_equipment_id:
+                    # Reuse the existing catalog identity; never rename the
+                    # old object or create a duplicate catalog row.
+                    equipment_id = match['id']
+                else:
+                    # Explicit "rename only" is still protected against
+                    # duplicate tags.  The catalog update is the one place
+                    # where the P&ID identity changes, so do it only after
+                    # the user has confirmed the operation.
+                    duplicate = self.db.get_equipment_by_tag(new_tag)
+                    if duplicate and duplicate.get('id') != old_equipment_id:
+                        QMessageBox.warning(
+                            self, "Taggen finns redan",
+                            f"Taggen {new_tag} används redan av ett annat objekt "
+                            "på denna P&ID. Välj Koppla för att använda det objektet.")
+                        return
+                    self.db.update_equipment_item(
+                        old_equipment_id, new_tag, old_eq.get('prefix') or '',
+                        old_eq.get('equipment_type') or comp_type,
+                        old_eq.get('description') or '')
+                    self.equipment_renamed.emit()
+                    renamed = True
         elif new_tag:
             match = self.db.get_equipment_by_tag(new_tag)
-            equipment_id = match['id'] if match else None
+            if match:
+                decision = self._confirm_equipment_tag_change(
+                    '', new_tag, match, linked=False)
+                if decision == 'cancel':
+                    return
+                if decision == 'connect':
+                    equipment_id = match['id']
+
 
         # Do all DB writes first — learning is handled inside update_cause
         self.db.update_cause(cause_id, comp_type=comp_type, comp_tag=comp_tag,
@@ -5287,6 +5661,48 @@ class ScenarioTablePanel(QWidget):
                 item.setData(Qt.ItemDataRole.UserRole + 2, (comp_type, comp_tag))
             self._table.blockSignals(False)
             self._table.viewport().update()
+
+    def _confirm_equipment_tag_change(self, old_tag, new_tag, match, linked=False):
+        """Return ``connect``, ``rename`` or ``cancel`` for a tag edit.
+
+        Tag edits represent object identity, unlike ordinary scenario text.
+        Keeping this decision in one helper makes every popup/inline path use
+        the same guarded workflow and makes it straightforward to mock in
+        regression tests.
+        """
+        if match and (not linked or match.get('tag', '').casefold() != (old_tag or '').casefold()):
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setWindowTitle("Koppla objekt")
+            if old_tag:
+                intro = f"Du har ändrat objektnamnet från {old_tag} till {new_tag}.\n\n"
+            else:
+                intro = "Den här taggen matchar ett identifierat objekt.\n\n"
+            details = (f"Taggen {new_tag} finns redan på denna P&ID.\n"
+                       f"Objekt: {match.get('tag') or new_tag}"
+                       f" ({match.get('equipment_type') or 'Okänd typ'})")
+            box.setText(intro + details)
+            connect = box.addButton(f"Koppla till {new_tag}", QMessageBox.ButtonRole.AcceptRole)
+            rename = box.addButton("Byt endast namn", QMessageBox.ButtonRole.DestructiveRole)
+            cancel = box.addButton("Avbryt", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is connect:
+                return 'connect'
+            if clicked is rename:
+                return 'rename'
+            return 'cancel'
+
+        if old_tag:
+            answer = QMessageBox.question(
+                self, "Bekräfta namnbyte",
+                f"Du har ändrat objektnamnet från {old_tag} till {new_tag}.\n\n"
+                f"Taggen {new_tag} finns inte bland identifierade objekt på denna P&ID.\n"
+                "Vill du byta namn på objektet?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            return 'rename' if answer == QMessageBox.StandardButton.Yes else 'cancel'
+        return 'rename'
 
     def _update_sg_rrf(self, row, sg_id, rrf, sg_type=None):
         self.db.update_safeguard(sg_id, rrf=rrf, sg_type=sg_type)
@@ -5491,10 +5907,33 @@ class ScenarioTablePanel(QWidget):
             # when there's no tag to show, or this row repeats the
             # previous one's tag (2026-08-18 dedup, unchanged).
             if (row >= 0 and col == self._C_ORS and row < len(self._row_meta) and
-                    pos.y() - self._table.rowViewportPosition(row) < _ORS_FIRST_LINE_H):
+                    pos.y() - self._table.rowViewportPosition(row) < _ORS_FIRST_LINE_H * 2):
                 col_x      = self._table.columnViewportPosition(col)
                 item       = self._table.item(row, col)
                 desc       = item.text() if item is not None else ''
+                group_tags = item.data(Qt.ItemDataRole.UserRole + 9) if item else []
+                if group_tags:
+                    bf = QFont(self._table.font()); bf.setBold(True)
+                    fm = QFontMetrics(bf)
+                    line_h = max(_ORS_FIRST_LINE_H, fm.height() + 4)
+                    line = 0 if pos.y() - self._table.rowViewportPosition(row) < line_h else 1
+                    tag = group_tags[min(line, 1)]
+                    suffix = ('felar högt' if 'felar högt' in desc.lower() else 'felar lågt') if line == 0 else 'öppnar fullt'
+                    x = col_x + 2
+                    tag_w = fm.horizontalAdvance(tag)
+                    if x <= pos.x() < x + tag_w:
+                        cause_id = self._row_meta[row][1]
+                        if cause_id is not None:
+                            (self.bind_cause_to_pid_requested.emit if line == 0
+                             else self.bind_secondary_cause_to_pid_requested.emit)(cause_id)
+                        return True
+                    choice_x = x + tag_w
+                    choice_w = fm.horizontalAdvance(' ' + suffix)
+                    if choice_x <= pos.x() < choice_x + choice_w:
+                        cause_id = self._row_meta[row][1]
+                        if cause_id is not None:
+                            self._edit_group_cause_choice(cause_id, line)
+                        return True
                 prefix_w   = self._ors_tag_prefix_pixel_width(item, desc, self._table.font())
                 if prefix_w > 0 and col_x <= pos.x() < col_x + 2 + prefix_w:
                     cause_id = self._row_meta[row][1]
@@ -5776,11 +6215,100 @@ class ScenarioTablePanel(QWidget):
                 self._try_start_edit(row, col)  # KON supported too since 2026-08-07 — see NOTES.md
                 return
 
+    def undo_last_text_edit(self):
+        """Restore the last committed HAZOP text edit (Ctrl+Z)."""
+        if not self._text_undo_stack:
+            return False
+        kind, id_, old = self._text_undo_stack.pop()
+        self._undoing_text = True
+        try:
+            if kind == 'cause':
+                self.db.update_cause(id_, description=old)
+            elif kind == 'consequence':
+                c = self.db.get_consequence(id_)
+                if c:
+                    self.db.update_consequence(id_, old, c['severity'], c['category'] or '')
+            elif kind == 'safeguard':
+                s = self.db.get_safeguard(id_)
+                if s:
+                    self.db.update_safeguard(id_, old, s['rrf'] or 1)
+            elif kind == 'recommendation':
+                self.db.update_recommendation(id_, description=old)
+            else:
+                return False
+        finally:
+            self._undoing_text = False
+        self._schedule_rebuild()
+        self.item_edited.emit({'cause': CAUSE_T, 'consequence': CONS_T,
+                               'safeguard': SG_T, 'recommendation': CONS_T}[kind], id_)
+        return True
+
     def _on_cell_changed(self, row, col):
         try:
             self._on_cell_changed_inner(row, col)
         except Exception as e:
             QMessageBox.critical(self, "Fel vid celländring (scenario)", str(e))
+
+    _INLINE_TAG_RE = re.compile(
+        r"(?<![A-Za-z0-9])([A-Za-z]{1,10}[-_][A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*)(?![A-Za-z0-9])")
+
+    def _confirm_inline_identity_change(self, kind, id_, desc):
+        """Guard a tag replacement embedded in a KON/SG description.
+
+        Returns ``(accepted, description)``.  The identity columns are flat
+        for KON/SG, but the same P&ID object semantics still apply: connect to
+        an exact catalog match, or explicitly rename the old catalog object.
+        """
+        row = self.db.get_consequence(id_) if kind == 'consequence' else self.db.get_safeguard(id_)
+        if not row:
+            return True, desc
+        old_tag = (row.get('comp_tag') or '').strip()
+        if not old_tag or old_tag.casefold() in desc.casefold():
+            return True, desc
+        candidates = [m.group(1) for m in self._INLINE_TAG_RE.finditer(desc)]
+        new_tag = next((tag for tag in candidates
+                        if tag.casefold() != old_tag.casefold()), None)
+        if not new_tag:
+            return True, desc
+
+        old_eq = self.db.get_equipment_by_tag(old_tag)
+        match = self.db.get_equipment_by_tag(new_tag)
+        decision = self._confirm_equipment_tag_change(
+            old_tag, new_tag, match, linked=bool(old_eq))
+        if decision == 'cancel':
+            return False, desc
+
+        comp_type = row.get('comp_type') or ''
+        if decision == 'connect' and match:
+            comp_type = match.get('equipment_type') or comp_type
+        elif decision == 'rename' and old_eq:
+            duplicate = match if match and match.get('id') != old_eq.get('id') else None
+            if duplicate:
+                QMessageBox.warning(
+                    self, "Taggen finns redan",
+                    f"Taggen {new_tag} används redan av ett annat objekt på denna P&ID. "
+                    "Välj Koppla för att använda det objektet.")
+                return False, desc
+            self.db.update_equipment_item(
+                old_eq['id'], new_tag, old_eq.get('prefix') or '',
+                old_eq.get('equipment_type') or comp_type,
+                old_eq.get('description') or '')
+            self.equipment_renamed.emit()
+
+        refs = parse_tag_refs(row.get('tagged_refs') or '')
+        refs = [new_tag if ref.casefold() == old_tag.casefold() else ref for ref in refs]
+        if not any(ref.casefold() == new_tag.casefold() for ref in refs):
+            refs.append(new_tag)
+        if kind == 'consequence':
+            self.db.update_consequence(
+                id_, row.get('description') or '', row['severity'], row.get('category') or '',
+                row.get('consequence_chain') or '', comp_tag=new_tag,
+                comp_type=comp_type, tagged_refs=','.join(refs))
+        else:
+            self.db.update_safeguard(
+                id_, tagged_refs=','.join(refs))
+            self.db.set_safeguard_tag(id_, new_tag, comp_type)
+        return True, desc
 
     def _on_cell_changed_inner(self, row, col):
         item = self._table.item(row, col)
@@ -5807,6 +6335,8 @@ class ScenarioTablePanel(QWidget):
                     self.db.update_cause(id_, comp_tag=desc)
                 else:
                     # User edited description
+                    if not self._undoing_text and desc != old_desc:
+                        self._text_undo_stack.append(('cause', id_, old_desc))
                     self.db.update_cause(id_, desc)
                     # Sync any OTHER row showing this same cause (span groups
                     # merge same-id rows visually, but each still has its own
@@ -5819,6 +6349,13 @@ class ScenarioTablePanel(QWidget):
             desc = text.split('\n')[0].strip()
             cons = self.db.get_consequence(id_)
             if cons:
+                accepted, desc = self._confirm_inline_identity_change('consequence', id_, desc)
+                if not accepted:
+                    self._schedule_rebuild()
+                    return
+                old_desc = cons.get('description', '') or ''
+                if not self._undoing_text and desc != old_desc:
+                    self._text_undo_stack.append(('consequence', id_, old_desc))
                 self.db.update_consequence(id_, desc, cons['severity'], cons['category'] or '')
                 self._update_row_text_only('consequence', id_, desc)
                 # "Spara varje konsekvens som skrivs i HAZOP Scenario i en
@@ -5836,6 +6373,13 @@ class ScenarioTablePanel(QWidget):
             desc = str(edit_val).strip() if edit_val is not None else text.split('\n')[0].strip()
             sg = self.db.get_safeguard(id_)
             if sg:
+                accepted, desc = self._confirm_inline_identity_change('safeguard', id_, desc)
+                if not accepted:
+                    self._schedule_rebuild()
+                    return
+                old_desc = sg.get('description', '') or ''
+                if not self._undoing_text and desc != old_desc:
+                    self._text_undo_stack.append(('safeguard', id_, old_desc))
                 self.db.update_safeguard(id_, desc, sg['rrf'] or 1)
                 # A safeguard's description never affects its own row's RRF/
                 # risk-derived columns (those depend on rrf, not text) or any
@@ -5871,6 +6415,11 @@ class ScenarioTablePanel(QWidget):
                 if rec and desc == (rec['description'] or '').strip():
                     desc = ''
             if rec_id is not None and desc:
+                rec = next((a for a in acts if a['id'] == rec_id), None)
+                if rec and not self._undoing_text:
+                    rec = dict(rec)
+                    self._text_undo_stack.append(('recommendation', rec_id,
+                                                  rec.get('description', '') or ''))
                 from hazop import _apply_shared_recommendation_description_update
                 _apply_shared_recommendation_description_update(
                     self.db, self, rec_id, id_, desc)
@@ -6077,15 +6626,19 @@ class ScenarioTablePanel(QWidget):
             if not equips:
                 event.ignore(); return
             if tgt_col == self._C_ORS and tgt_cause is not None:
-                # A cause has one primary P&ID object. Use the first marker
-                # when a multi-selection is dropped; additional markers can
-                # be assigned to separate causes without corrupting the row.
+                # Causes support a functional group: retain the first object
+                # as the controlling link and the second as a separate live
+                # affected-object link.  Keep all selected tags in the
+                # visible object field so a multi-drop is never lost.
                 equip = equips[0]
+                tags = [e.get('tag', '').strip() for e in equips if e.get('tag')]
                 self.db.update_cause(
                     tgt_cause,
                     comp_type=equip.get('equipment_type', ''),
-                    comp_tag=equip.get('tag', ''),
-                    equipment_id=equip.get('id'))
+                    comp_tag=' + '.join(tags),
+                    equipment_id=equip.get('id'),
+                    secondary_equipment_id=(equips[1].get('id')
+                                            if len(equips) > 1 else None))
                 self._schedule_rebuild()
                 QTimer.singleShot(0, lambda cid=tgt_cause:
                                   self.item_edited.emit(CAUSE_T, cid))

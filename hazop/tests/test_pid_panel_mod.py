@@ -36,6 +36,7 @@ so the suite runs without a display (CI, SSH, etc.).
 
 import gc
 import io
+import json
 import os
 import sys
 import shutil
@@ -82,6 +83,67 @@ from test_helpers import (
     _ensure_qapp, _menu_action_labels, _fake_pdf_loaded,
     _TempDbMainWindow, _find_tree_item,
 )
+
+
+class PIDViewStatePersistenceTests(unittest.TestCase):
+    """The last active P&ID sheet and manual view survive a panel restart."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        import fitz
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_pid_view_state_")
+        self.db = Database(path=os.path.join(self._tmpdir, "project.db"))
+        self.pdf_path = str(Path(self.db.path).with_name("project_pid.pdf"))
+        doc = fitz.open()
+        doc.new_page(width=400, height=300)
+        doc.new_page(width=600, height=450)
+        doc.save(self.pdf_path)
+        doc.close()
+        self.db.set_pid_path(self.pdf_path)
+        self.db.ensure_sheets_initialized(2, self.pdf_path)
+
+    def tearDown(self):
+        self.db.conn.close()
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_try_reload_restores_active_page_and_zoom(self):
+        from pid_viewer import PIDPanel
+        from PyQt6.QtGui import QTransform
+
+        first = PIDPanel(self.db)
+        first.try_reload_pdf()
+        first._goto_page(1)
+        first.viewer.setTransform(QTransform(2.25, 0, 0, 2.25, 0, 0))
+        first._persist_pdf_view_state()
+        first.deleteLater()
+
+        restored = PIDPanel(self.db)
+        restored.try_reload_pdf()
+        try:
+            self.assertEqual(restored.viewer.current_page, 1)
+            self.assertEqual(restored._current_display_page, 1)
+            self.assertAlmostEqual(restored.viewer.transform().m11(), 2.25)
+            self.assertEqual(restored.page_spin.value(), 2)
+        finally:
+            restored.deleteLater()
+
+    def test_invalid_or_stale_state_falls_back_to_first_page(self):
+        from pid_viewer import PIDPanel
+
+        for raw in ('not-json', '[]', json.dumps({
+                'physical_page': 99, 'display_page': 99,
+                'transform': [3.0, 0.0, 0.0, 3.0]})):
+            self.db.set_pid_config_value('view_state', raw)
+            panel = PIDPanel(self.db)
+            panel.try_reload_pdf()
+            try:
+                self.assertEqual(panel.viewer.current_page, 0)
+                self.assertEqual(panel._current_display_page, 0)
+            finally:
+                panel.deleteLater()
 
 class EquipmentDeviationBarTests(unittest.TestCase):
     """The small popup shown near a clicked equipment marker on the P&ID —

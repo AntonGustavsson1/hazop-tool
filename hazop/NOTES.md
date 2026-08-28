@@ -3020,3 +3020,51 @@ SQLite-rad behandlades som en dict är korrigerat.
 Analystillfällen har dessutom ett sparat digitalt-läge. Nya tillfällen ärver
 senaste analystillfällets ort, medan Digitalt visar en kryssruta som stänger av
 ortfältet och visas som "Digitalt" i kolumnhuvudet.
+# 2026-08-27 — Grupporsak: separata live-objekt och manuell felriktning
+Vid drag-and-drop av flera P&ID-objekt som grupp sparas styrande objekt i
+`causes.equipment_id` och påverkat objekt i `causes.secondary_equipment_id`.
+Gruppfrågan ber nu användaren välja högt/lågt fel och ventilens öppna/stänga-
+effekt. Grupporsaken visar kedjetexten fetmarkerad utan dubblerad objekttagg.
+# 2026-08-27 — Tomma HAZOP-celler
+Tomma konsekvens-, safeguard-, slutrisk- och rekommendationsceller i HAZOP
+Scenario visas utan utfyllnadsstreck. Streck som ingår i faktisk text eller
+riskinformation påverkas inte.
+# 2026-08-27 — Gruppobjekt: klick och ångra
+Grupporsakens fetmarkerade taggar är separata klickzoner. Styrande objekt
+startar vanlig P&ID-bindning och påverkat objekt startar sekundär bindning.
+Ctrl+Z ångrar dessutom senaste textändring i orsak, konsekvens, safeguard
+eller befintlig rekommendation.
+# 2026-08-27 — Normaliserade orsakspilar
+ASCII-pilarna `->` och `=>` normaliseras vid sparning till `→` i orsak,
+konsekvens och safeguard. Samma regel gäller redigering från trädet och
+HAZOP Scenario.
+# 2026-08-27 — Flera objekt i Orsak-fältet
+Shift-drag av flera P&ID-objekt till en befintlig orsak behåller hela gruppen:
+första objektet lagras som primär koppling, andra som sekundär koppling och
+båda taggarna visas fetmarkerade i orsaksfältet. Gruppens taggar visas även
+när orsaken ännu saknar konsekvens.
+# 2026-08-27 — Byt ordning på gruppobjekt
+Grupporsakens taggpopup visar en ordningsknapp när två objekt är kopplade.
+Den byter primär/sekundär live-koppling och uppdaterar taggordningen samtidigt.
+# 2026-08-27 — Grupporsakens valpunkter
+Grupporsaken visas kompakt som `primär … sekundär …`. Första ellipsen väljer
+felriktning (högt/lågt) och den andra väljer typisk effekt (öppnar/stänger
+eller annan effekt). Gruppskapandet avbryts inte längre av fasta frågor.
+# 2026-08-27 — Grupporsak på två rader
+Grupporsaker visas nu i samma ORS-cell på två rader: styrande objekt och
+felriktning på rad ett, påverkat objekt och effekt på rad två. Taggarna är
+fetmarkerade och respektive textdel är klickbar för val av alternativ.
+# 2026-08-27 — Förenklat orsaksbibliotek
+Det reducerade standardorsaksbiblioteket är aktivt som standard. Aktiva
+standardorsaker utan egen frekvens får standardvärdet 0,02/år; det äldre
+biblioteket ligger kvar i arkivet.
+
+# 2026-08-27
+# 2026-08-27 — Project Lumen startbild
+Startup använder project_lumen_startup.svg i splashskärmen och behåller status/spinner under databas- och GUI-initialisering.
+
+## Intelligent namnbyte och objektkoppling i Edit Mode (2026-08-28)
+
+Inline-redigering i HAZOP Scenario behåller nu fet visning av kända P&ID-taggar även när editorn är aktiv. Vid redigering av Konsekvens eller Safeguard identifieras ett borttaget gammalt taggnummer och ett nytt taggformat innan texten sparas. En exakt träff i aktuell equipment_catalog ger dialogen Koppla till objekt / Byt endast namn / Avbryt; utan träff krävs uttryckligt godkännande av namnbytet. Dubblettnamn blockeras och den nya taggen sparas i tagged_refs så att fetstil består.
+
+Orsakens befintliga live-koppling och namnbytesflöde återanvänds. Tre nya regressionstester täcker koppling utan att döpa om gammalt objekt, avbryt utan databasändring och taggmedveten inline-editor. Verifierat med py_compile, tests.test_smoke (12 tester) och berörda edit-tester (26 tester totalt). Ingen visuell GUI-verifiering är gjord.
