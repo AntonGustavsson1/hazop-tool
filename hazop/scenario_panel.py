@@ -7939,6 +7939,41 @@ class ScenarioTablePanel(QWidget):
                 self._schedule_rebuild()
 
     # ── Feature 1 & 6: Drag start ─────────────────────────────────────────────
+    def _make_compact_drag_pixmap(self, row, col, kind, item_id,
+                                  is_copy_modifier):
+        """Create a small drag ghost instead of copying the whole cell."""
+        labels = {'cause': 'Orsak', 'cons': 'Konsekvens', 'sg': 'Barriär'}
+        action = 'Kopiera' if is_copy_modifier else 'Flytta'
+        item = self._table.item(row, col)
+        text = ' '.join((item.text() if item else '').split())
+        if not text:
+            text = f'#{item_id}'
+
+        font = QFont(self._table.font())
+        font.setPointSize(max(8, min(10, font.pointSize())))
+        fm = QFontMetrics(font)
+        prefix = f'{action} {labels.get(kind, kind)}: '
+        max_width = 250
+        text_width = max(1, max_width - fm.horizontalAdvance(prefix) - 12)
+        shown = fm.elidedText(text, Qt.TextElideMode.ElideRight, text_width)
+        display = prefix + shown
+        width = min(max_width, max(150, fm.horizontalAdvance(display) + 16))
+        height = max(26, fm.height() + 10)
+
+        pm = QPixmap(width, height)
+        pm.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pm)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor('#B8C1D1')))
+        painter.setBrush(QBrush(QColor(255, 255, 255, 238)))
+        painter.drawRoundedRect(pm.rect().adjusted(1, 1, -2, -2), 5, 5)
+        painter.setFont(font)
+        painter.setPen(QColor('#20252B'))
+        painter.drawText(pm.rect().adjusted(8, 0, -8, 0),
+                         Qt.AlignmentFlag.AlignVCenter, display)
+        painter.end()
+        return pm
+
     def _start_drag(self, row, col, is_copy_modifier):
         if row < 0 or row >= len(self._row_meta):
             return
@@ -7955,15 +7990,9 @@ class ScenarioTablePanel(QWidget):
         mime = QMimeData()
         mime.setText(f'hzp:{kind}:{item_id}:{row}:{col}')
 
-        # Drag pixmap: render the source cell
-        idx = self._table.model().index(row, col)
-        cell_rect = self._table.visualRect(idx)
-        px = self._table.viewport().grab(cell_rect)
-        pm = QPixmap(px.size())
-        pm.fill(QColor(255, 255, 255, 180))
-        p = QPainter(pm)
-        p.drawPixmap(0, 0, px)
-        p.end()
+        # Keep the drag ghost compact even for tall/wrapped/grouped cells.
+        pm = self._make_compact_drag_pixmap(
+            row, col, kind, item_id, is_copy_modifier)
 
         drag = QDrag(self._table)
         drag.setMimeData(mime)

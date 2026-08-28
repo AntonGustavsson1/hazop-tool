@@ -10,6 +10,13 @@ minimihöjd och P&ID-vyns övriga layoutlogik är kvar. Övre panelens
 vertikala storlekspolicy är ignorerad så att dolda höga sidor i
 QStackedWidget inte blockerar splittern när P&ID-sidan visas.
 
+## Kompakt dragbild i HAZOP Scenario (2026-08-28)
+
+Dragning av Orsak, Konsekvens eller Barriär visar nu en liten etikett med
+åtgärd, celltyp och förkortad text. Den tidigare dragbilden var en skärmbild
+av hela cellen och blev därför oproportionerligt hög för radbrutna eller
+grupperade celler. Drop-payload och flytta/kopiera-beteende är oförändrade.
+
 ## Tidigare konsekvenser och rekommendationer vid redigering (2026-08-28)
 
 Konsekvenseditorn visar nu historik-popupen explicit även för den multiline-

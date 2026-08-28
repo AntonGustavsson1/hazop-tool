@@ -67,6 +67,7 @@ from hazop import (  # noqa: E402
 from PyQt6.QtWidgets import (  # noqa: E402
     QApplication, QGraphicsPixmapItem, QTreeWidgetItemIterator, QCheckBox,
     QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit,
+    QTableWidgetItem,
 )
 from PyQt6.QtGui import QPixmap, QFocusEvent  # noqa: E402
 from PyQt6.QtCore import Qt, QPoint, QDate, QEvent, QThread, pyqtSignal  # noqa: E402
@@ -1605,6 +1606,32 @@ class AppendTagToFreeTextTests(unittest.TestCase):
     def test_append_tag_to_text_blank_tag_is_a_noop(self):
         from hazop import append_tag_to_text
         self.assertEqual(append_tag_to_text("hög nivå i", ""), "hög nivå i")
+
+
+class CompactScenarioDragGhostTests(unittest.TestCase):
+    """The transient drag image must not inherit a tall wrapped cell."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_drag_ghost_stays_compact_for_a_tall_cell(self):
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            panel._table.insertRow(0)
+            panel._table.setItem(
+                0, panel._C_KON, QTableWidgetItem("radbruten text\n" * 20))
+            panel._row_meta = [(1, 2, 3, None)]
+            panel._table.resizeRowsToContents()
+
+            pixmap = panel._make_compact_drag_pixmap(
+                0, panel._C_KON, 'cons', 3, False)
+
+            self.assertLessEqual(pixmap.width(), 250)
+            self.assertLessEqual(pixmap.height(), 40)
+            self.assertLess(
+                pixmap.height(), panel._table.rowHeight(0),
+                "drag ghost should be shorter than the wrapped source cell")
 
 
 class BoldTagPaintSmokeTests(unittest.TestCase):
