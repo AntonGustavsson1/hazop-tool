@@ -523,6 +523,12 @@ class TreePanel(QWidget):
                 eq = self.db.get_equipment_by_id(cause['equipment_id']) if cause['equipment_id'] else None
                 is_group = bool(cause.get('secondary_equipment_id'))
                 tag = (eq.get('tag') or '').strip() if eq else (cause['comp_tag'] or '').strip()
+                secondary_eq = (self.db.get_equipment_by_id(
+                    cause.get('secondary_equipment_id'))
+                                if is_group and cause.get('secondary_equipment_id')
+                                else None)
+                secondary_tag = ((secondary_eq.get('tag') or '').strip()
+                                 if secondary_eq else '')
                 desc = (cause['description'] or '').strip()
                 # A still-untouched placeholder cause (no real content yet)
                 # shows just the tag, if it has one — showing "V-101 — Ny
@@ -530,8 +536,15 @@ class TreePanel(QWidget):
                 trivial = desc in ('', 'Ny orsak')
                 if is_group:
                     # The chain sentence already contains both live object
-                    # tags; avoid repeating the first object as a prefix.
-                    c_label = desc[:80]
+                    # tags; avoid repeating the first object as a prefix.  A
+                    # group created from two equipment types without a
+                    # defensible default mechanism used to inherit "Ny
+                    # orsak" here.  Show the primary and secondary objects
+                    # in order until the user chooses/edit the events.
+                    if desc in ('', 'Ny orsak') and tag and secondary_tag:
+                        c_label = f"{tag} → {secondary_tag}"
+                    else:
+                        c_label = desc[:80]
                 elif tag and trivial:
                     c_label = tag
                 elif tag:

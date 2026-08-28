@@ -4670,6 +4670,31 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             self.assertIn('FI-1 felar högt', causes[0]['description'])
             self.assertIn('FV-1 öppnar fullt', causes[0]['description'])
 
+    def test_group_created_without_default_mechanism_shows_both_objects_in_tree(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.get_or_create_deviation(node_id, "Övrigt")
+            first_id = win.db.add_equipment_item("A-101", "A-101", "A", 0,
+                                                 "Behållare", '', 0)
+            second_id = win.db.add_equipment_item("B-202", "B-202", "B", 0,
+                                                  "Värmeväxlare", '', 0)
+            m1 = win.db.add_equipment_marker(first_id, "A-101", 0, 1.0, 1.0,
+                                             "Behållare")
+            m2 = win.db.add_equipment_marker(second_id, "B-202", 0, 2.0, 2.0,
+                                             "Värmeväxlare")
+            with unittest.mock.patch(
+                    'hazop.QMessageBox.question',
+                    return_value=QMessageBox.StandardButton.Yes):
+                win._on_equipment_dropped_on_deviation(dev_id, [m1, m2])
+
+            cause = next(c for c in win.db.causes(node_id)
+                         if c['secondary_equipment_id'])
+            win.tree_panel.refresh()
+            item = _find_tree_item(win.tree_panel.tree, CAUSE_T, cause['id'])
+            self.assertIsNotNone(item)
+            self.assertIn('A-101 → B-202', item.text(0))
+            self.assertNotIn('Ny orsak', item.text(0))
+
     def test_group_choice_buttons_are_independent_and_group_text_remains_editable(self):
         with _TempDbMainWindow() as win:
             node_id = win.db.add_node()

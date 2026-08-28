@@ -3398,3 +3398,11 @@ lagras som en bitmask i `group_choices_set`, så popupen visar också korrekt
 vilken sida som ännu inte är vald. Grupporsakens text kan dessutom
 inline-redigeras som ett helt textblock, inklusive egna formuleringar, utan
 att den reduceras till första raden.
+
+## Grupporsak visas i trädet (2026-08-28)
+
+En grupp som skapades med utrustningstyper där ingen automatisk
+primär/sekundär mekanism kunde härledas fick tidigare texten "Ny orsak" i
+trädet. Trädpanelen visar nu i stället alltid primärt objekt följt av
+sekundärt objekt, exempelvis `A-101 → B-202`, tills en händelsetext har valts
+eller redigerats.
