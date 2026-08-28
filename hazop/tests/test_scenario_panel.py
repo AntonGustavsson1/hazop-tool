@@ -3774,8 +3774,8 @@ class CauseCompleterFallbackTests(unittest.TestCase):
         self.panel._table.setCurrentIndex(idx)
         self.panel._table.edit(idx)
         self.app.processEvents()
-        from PyQt6.QtWidgets import QLineEdit
-        editors = [w for w in self.panel._table.viewport().findChildren(QLineEdit)
+        from scenario_panel import _BoldTagTextEdit
+        editors = [w for w in self.panel._table.viewport().findChildren(_BoldTagTextEdit)
                    if w.property('editing_row') == row]
         return editors[0] if editors else None
 
@@ -3878,8 +3878,8 @@ class ConsequenceHistoryAutocompleteTests(unittest.TestCase):
         self.panel._table.setCurrentIndex(idx)
         self.panel._table.edit(idx)
         self.app.processEvents()
-        from PyQt6.QtWidgets import QLineEdit
-        editors = [w for w in self.panel._table.viewport().findChildren(QLineEdit)
+        from scenario_panel import _BoldTagTextEdit
+        editors = [w for w in self.panel._table.viewport().findChildren(_BoldTagTextEdit)
                    if w.property('editing_row') == row]
         return editors[0] if editors else None
 
@@ -3958,8 +3958,8 @@ class StandardCauseSuggestPopupTests(unittest.TestCase):
         return row
 
     def _editor_for_row(self, row):
-        from PyQt6.QtWidgets import QLineEdit
-        editors = [w for w in self.panel._table.viewport().findChildren(QLineEdit)
+        from scenario_panel import _BoldTagTextEdit
+        editors = [w for w in self.panel._table.viewport().findChildren(_BoldTagTextEdit)
                    if w.property('editing_row') == row]
         return editors[0] if editors else None
 
@@ -4102,9 +4102,9 @@ class InlineIdentityEditTests(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix="hazop_inline_identity_")
         self.db = Database(path=os.path.join(self.tmpdir, "project.db"))
-        from scenario_panel import ScenarioTablePanel, _BoldTagLineEdit
+        from scenario_panel import ScenarioTablePanel, _BoldTagTextEdit
         self.panel = ScenarioTablePanel(self.db)
-        self.editor_type = _BoldTagLineEdit
+        self.editor_type = _BoldTagTextEdit
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
         cause_id = self.db.add_cause(dev_id)
@@ -4158,6 +4158,8 @@ class InlineIdentityEditTests(unittest.TestCase):
         editor.setProperty('editing_row', 0)
         editor.setProperty('editing_col', self.panel._C_KON)
         editor.setText('PSHH-101 High pressure trip')
+        editor.show()
+        self.app.processEvents()
         editor.selectAll()
         self.panel._place_editor_caret(0, self.panel._C_KON, QPoint(20 + 9 * 7, 10))
         self.assertEqual(editor.selectedText(), '')

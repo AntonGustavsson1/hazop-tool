@@ -6008,7 +6008,8 @@ class ShiftClickInsertsTagIntoActiveEditorTests(unittest.TestCase):
         item = self.panel._table.item(row, self.panel._C_KON)
         self.panel._table.editItem(item)
         editor = self.panel._table.focusWidget()
-        assert isinstance(editor, QLineEdit)
+        from scenario_panel import _BoldTagTextEdit
+        assert isinstance(editor, _BoldTagTextEdit)
         if text:
             editor.setText(text)
             editor.setCursorPosition(len(text))

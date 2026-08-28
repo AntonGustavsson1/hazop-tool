@@ -21,7 +21,7 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QBrush, QColor, QCursor, QDrag, QFont, QFontMetrics, QIcon, QPainter,
-    QPen, QPixmap,
+    QPen, QPixmap, QTextCharFormat, QTextCursor,
 )
 
 from constants import CAUSE_T, CONS_T, SG_T, SG_TYPES, CONFIG
@@ -88,6 +88,104 @@ class _BoldTagLineEdit(QLineEdit):
                                  text[pos:pos + len(tag)])
                 start = pos + len(tag)
         painter.end()
+
+
+class _BoldTagTextEdit(QTextEdit):
+    """Shared multiline scenario editor.
+
+    The table paints wrapped cell text itself, so using a one-line
+    ``QLineEdit`` as the delegate editor made the text jump or clip as soon
+    as a row became taller.  This editor keeps the same plain-text API used
+    by the existing delegate/popup code while letting Qt wrap the live text
+    in the same cell rectangle.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._bold_tags = []
+        self._completer = None
+        self.setAcceptRichText(False)
+        self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setTabChangesFocus(True)
+        self.setFrameStyle(QFrame.Shape.NoFrame)
+
+    def text(self):
+        return self.toPlainText()
+
+    def setText(self, text):
+        self.setPlainText('' if text is None else str(text))
+        self._apply_bold_formats()
+
+    def deselect(self):
+        cursor = self.textCursor()
+        cursor.clearSelection()
+        self.setTextCursor(cursor)
+
+    def selectedText(self):
+        return self.textCursor().selectedText()
+
+    def cursorPosition(self):
+        return self.textCursor().position()
+
+    def setCursorPosition(self, position):
+        cursor = self.textCursor()
+        cursor.setPosition(max(0, min(int(position), len(self.toPlainText()))))
+        self.setTextCursor(cursor)
+
+    def cursorPositionAt(self, point):
+        return self.cursorForPosition(point).position()
+
+    def setCompleter(self, completer):
+        self._completer = completer
+        completer.setWidget(self)
+        try:
+            completer.activated.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        completer.activated.connect(self._insert_completion)
+
+    def completer(self):
+        return self._completer
+
+    def _insert_completion(self, completion):
+        cursor = self.textCursor()
+        cursor.insertText(str(completion))
+        self.setTextCursor(cursor)
+
+    def set_bold_tags(self, tags):
+        self._bold_tags = [str(tag).strip() for tag in (tags or [])
+                           if str(tag).strip()]
+        self._apply_bold_formats()
+
+    def _apply_bold_formats(self):
+        if not self._bold_tags:
+            return
+        text = self.toPlainText()
+        if not text:
+            return
+        cursor_pos = self.textCursor().position()
+        cursor = QTextCursor(self.document())
+        normal = QTextCharFormat()
+        normal.setFontWeight(QFont.Weight.Normal)
+        cursor.select(QTextCursor.SelectionType.Document)
+        cursor.setCharFormat(normal)
+        bold = QTextCharFormat()
+        bold.setFontWeight(QFont.Weight.Bold)
+        folded = text.casefold()
+        for tag in self._bold_tags:
+            start = 0
+            needle = tag.casefold()
+            while True:
+                pos = folded.find(needle, start)
+                if pos < 0:
+                    break
+                cursor.setPosition(pos)
+                cursor.setPosition(pos + len(tag), QTextCursor.MoveMode.KeepAnchor)
+                cursor.setCharFormat(bold)
+                start = pos + len(tag)
+        self.setCursorPosition(cursor_pos)
 
 class RiskMatrixPopup(QDialog):
     """Popup risk matrix matching the configured format in Settings.
@@ -1290,17 +1388,17 @@ class _ScenarioDelegate(QStyledItemDelegate):
         self._fm      = None   # cached QFontMetrics — rebuilt only when font changes
 
     def createEditor(self, parent, option, index):
-        editor = _BoldTagLineEdit(parent)
+        editor = _BoldTagTextEdit(parent)
         if editor is not None:
             # Scenario editing is intentionally compact: rounded editor
             # frames and generous default padding make multi-line
             # recommendations look like pills and hide the last line.
             # Keep the modern flat focus treatment, but reclaim the pixels.
             editor.setStyleSheet(
-                "QLineEdit{border:1px solid #CFD1CE;border-radius:0px;"
-                "padding:1px 3px;background:#FFFFFF;}"
-                "QLineEdit:focus{border:1px solid #2F6FED;"
-                "padding:1px 3px;}")
+                "QTextEdit{border:1px solid #CFD1CE;border-radius:0px;"
+                "padding:0px;background:#FFFFFF;}"
+                "QTextEdit:focus{border:1px solid #2F6FED;"
+                "padding:0px;}")
             editor.setProperty('editing_row', index.row())
             editor.setProperty('editing_col', index.column())
             editor.installEventFilter(self._panel)
@@ -1382,14 +1480,9 @@ class _ScenarioDelegate(QStyledItemDelegate):
             rect.setTop(max(rect.top(), rect.bottom() - line_h + 1))
             editor.setGeometry(rect.adjusted(2, 1, -2, -1))
             return
-        # Keep the editor on the same top-aligned text baseline as the
-        # delegate's painted cell.  QLineEdit vertically centers its text;
-        # using the complete wrapped row rect therefore makes the text jump
-        # whenever a neighbouring cell makes the row taller.
-        line_h = max(22, QFontMetrics(option.font).height() + 6)
-        rect = QRect(option.rect)
-        rect.setHeight(min(line_h, rect.height()))
-        editor.setGeometry(rect.adjusted(2, 1, -2, -1))
+        # The multiline editor must occupy the complete painted cell so its
+        # wrapping and vertical position stay aligned while editing.
+        editor.setGeometry(QRect(option.rect).adjusted(2, 2, -2, -2))
 
     def _show_recommendation_assist_popup(self, editor, row, cons_id, cell_rect):
         """Mirrors _PidDelegate._show_standard_cause_popup's positioning
@@ -1453,7 +1546,16 @@ class _ScenarioDelegate(QStyledItemDelegate):
                 # single compact line is always enough. Uses its own
                 # (smaller) row height, not one_line_h — see
                 # panel._sg_row_height's docstring.
-                return QSize(option.rect.width(), panel._sg_row_height(option.font))
+                text = index.data(Qt.ItemDataRole.DisplayRole) or ''
+                item = panel._table.item(index.row(), col)
+                if item is not None:
+                    num = item.data(Qt.ItemDataRole.UserRole + 10)
+                    if num:
+                        text = f"{num}.  {text}"
+                w = max(40, option.rect.width() - _RRF_W - 6)
+                rect = fm.boundingRect(0, 0, w, 10000,
+                                       Qt.TextFlag.TextWordWrap, text)
+                return QSize(option.rect.width(), max(one_line_h, rect.height() + 4))
             # Non-wrap columns (risk cells) stay at one compact line
             base = super().sizeHint(option, index)
             return QSize(base.width(), one_line_h)
@@ -1666,7 +1768,7 @@ class _PidDelegate(_ScenarioDelegate):
             # Keep the identity tokens bold while the editor is active.  For
             # Orsak the tag prefix remains outside the editor; Konsekvens and
             # Safeguard may carry tags inside their description.
-            if isinstance(editor, _BoldTagLineEdit):
+            if isinstance(editor, _BoldTagTextEdit):
                 tags = []
                 item = self._panel._table.item(index.row(), index.column())
                 if index.column() == self._panel._C_ORS:
@@ -1860,10 +1962,9 @@ class _PidDelegate(_ScenarioDelegate):
             item = self._panel._table.item(index.row(), col)
             desc = item.text() if item is not None else ''
             prefix_w = self._panel._ors_tag_prefix_pixel_width(item, desc, option.font)
-            line_h = max(22, QFontMetrics(option.font).height() + 6)
-            editor.setGeometry(QRect(r.left() + 2 + prefix_w, r.top(),
+            editor.setGeometry(QRect(r.left() + 2 + prefix_w, r.top() + 2,
                                      max(10, r.width() - 4 - prefix_w),
-                                     min(line_h, r.height())))
+                                     max(10, r.height() - 4)))
             return
         elif col == self._panel._C_SG:
             # 2026-08-10 fix: this used to span the full remaining width,
@@ -1878,14 +1979,19 @@ class _PidDelegate(_ScenarioDelegate):
             # wrapped text, not by SG itself, since a row's height is
             # shared across every column) the text visibly jumped from
             # the top (painted) to the middle (editing) of the cell.
-            h = self._panel._sg_row_height(option.font)
-            editor.setGeometry(QRect(r.left(), r.top(),
-                                     max(10, r.width() - _RRF_W),
-                                     min(h, r.height())))
+            editor.setGeometry(QRect(r.left() + 2, r.top() + 1,
+                                     max(10, r.width() - _RRF_W - 4),
+                                     max(10, r.height() - 2)))
             return
-        line_h = max(22, QFontMetrics(option.font).height() + 6)
-        editor.setGeometry(QRect(r.left(), r.top(), r.width(),
-                                 min(line_h, r.height())))
+        left = r.left() + 2
+        item = self._panel._table.item(index.row(), col)
+        if col == self._panel._C_KON and item is not None:
+            num = item.data(Qt.ItemDataRole.UserRole + 10)
+            if num:
+                left += QFontMetrics(option.font).horizontalAdvance(f"{num}.  ")
+        editor.setGeometry(QRect(left, r.top() + 2,
+                                 max(10, r.right() - left - 1),
+                                 max(10, r.height() - 4)))
 
     def paint(self, painter, option, index):
         row, col = index.row(), index.column()
@@ -1930,7 +2036,7 @@ class _PidDelegate(_ScenarioDelegate):
                 tagged_refs = index.data(Qt.ItemDataRole.UserRole + 7) or []
                 _draw_text_with_bold_tags(
                     painter, desc_rect.adjusted(2, 1, -2, -1), desc,
-                    tagged_refs, option.font, tc, word_wrap=False)
+                    tagged_refs, option.font, tc, word_wrap=True)
 
                 # RRF badge (right column)
                 badge_bg = QColor('#2F5FD0') if sel else QColor('#F5F5F3')
@@ -4036,8 +4142,18 @@ class ScenarioTablePanel(QWidget):
             if col == self._C_SG:
                 # SG's description never word-wraps, and never spans — a
                 # single compact line is always enough.
-                if sg_row_h > max_h:
-                    max_h = sg_row_h
+                item = table.item(row, col)
+                text = item.text() if item is not None else ''
+                if item is not None:
+                    num = item.data(Qt.ItemDataRole.UserRole + 10)
+                    if num:
+                        text = f"{num}.  {text}"
+                cell_w = max(40, table.columnWidth(col) - _RRF_W - 6)
+                rect = fm.boundingRect(0, 0, cell_w, 10000,
+                                       Qt.TextFlag.TextWordWrap, text)
+                h = max(sg_row_h, rect.height() + 4)
+                if h > max_h:
+                    max_h = h
                 continue
 
             if col not in wrap_cols:
@@ -4980,7 +5096,7 @@ class ScenarioTablePanel(QWidget):
         if self._table.state() != QAbstractItemView.State.EditingState:
             return None
         editor = self._table.focusWidget()
-        if not isinstance(editor, QLineEdit):
+        if not isinstance(editor, (_BoldTagTextEdit, QLineEdit)):
             return None
         row, col = editor.property('editing_row'), editor.property('editing_col')
         if row is None or col is None:
@@ -5833,7 +5949,7 @@ class ScenarioTablePanel(QWidget):
         # same P&ID marker MIME there and route it through _handle_drop so the
         # marker's equipment_id is linked to the cause rather than silently
         # being treated as text.
-        if (isinstance(obj, QLineEdit) and
+        if (isinstance(obj, (_BoldTagTextEdit, QLineEdit)) and
                 event.type() in (QEvent.Type.DragEnter, QEvent.Type.DragMove,
                                  QEvent.Type.Drop) and
                 event.mimeData().hasText() and
@@ -6025,7 +6141,7 @@ class ScenarioTablePanel(QWidget):
                         return True
 
         # Delegate inline editor (regular cell in edit mode)
-        if (isinstance(obj, QLineEdit) and
+        if (isinstance(obj, (_BoldTagTextEdit, QLineEdit)) and
                 obj.property('editing_row') is not None and
                 obj.property('sg_id') is None):
             if event.type() == QEvent.Type.KeyPress:
@@ -6441,13 +6557,27 @@ class ScenarioTablePanel(QWidget):
     # ── Feature 7: try start inline edit ──────────────────────────────────────
     def _place_editor_caret(self, row, col, viewport_pos):
         """Place the caret from the actual double-click, never select all."""
-        for editor in self._table.findChildren(QLineEdit):
+        for editor in (self._table.findChildren(_BoldTagTextEdit) +
+                       self._table.findChildren(QLineEdit)):
             if (editor.property('editing_row') == row and
                     editor.property('editing_col') == col):
                 local = QPoint(viewport_pos.x() - editor.geometry().x(),
                                viewport_pos.y() - editor.geometry().y())
                 try:
+                    if isinstance(editor, _BoldTagTextEdit):
+                        local = editor.viewport().mapFrom(editor, local)
                     position = editor.cursorPositionAt(local)
+                    if (isinstance(editor, _BoldTagTextEdit) and position == 0
+                            and local.x() > 4 and editor.toPlainText()):
+                        # A not-yet-laid-out offscreen QTextEdit can report
+                        # position zero for a point inside its text area.
+                        # Keep the click intent by using the font's average
+                        # advance as a conservative fallback.
+                        fm = QFontMetrics(editor.font())
+                        position = min(
+                            len(editor.toPlainText()),
+                            max(1, round((local.x() - 4) /
+                                         max(1, fm.averageCharWidth()))))
                 except (AttributeError, TypeError):
                     position = len(editor.text())
                 editor.setFocus(Qt.FocusReason.MouseFocusReason)
@@ -6584,7 +6714,7 @@ class ScenarioTablePanel(QWidget):
             vp_pos = self._table.viewport().mapFrom(self._table, pos)
         else:
             vp_pos = pos
-        if isinstance(source_obj, QLineEdit):
+        if isinstance(source_obj, (_BoldTagTextEdit, QLineEdit)):
             tgt_row = source_obj.property('editing_row')
             tgt_col = source_obj.property('editing_col')
             if tgt_row is None or tgt_col is None:

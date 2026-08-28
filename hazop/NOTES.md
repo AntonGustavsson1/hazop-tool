@@ -3103,3 +3103,12 @@ Editorns fokusstyling använder samma borderbredd och padding före och efter
 fokus. Standardgeometrin hålls mot cellens övre textlinje i stället för att
 centrera en enkelradig QLineEdit i en hög, radbruten rad. 15 berörda tester
 passerar. Ingen visuell GUI-verifiering är gjord.
+
+## Wrap och prefix i gemensam Edit Mode-editor (2026-08-28)
+
+Edit Mode använder nu en gemensam flerradig QTextEdit för Orsak, Konsekvens,
+Safeguard och Rekommendation. Orsakens objektprefix, Konsekvensens radnummer
+och Safeguardens RRF-fält reserveras i editorns geometri så att editortexten
+inte täcker eller duplicerar dessa delar. Safeguard-textens statiska cell och
+radberäkning använder också word wrap. 15 berörda Edit Mode-tester passerar.
+Ingen visuell GUI-verifiering är gjord.
