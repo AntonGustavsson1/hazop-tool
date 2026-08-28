@@ -3,6 +3,7 @@
 hazop.py 2026-08-17, see NOTES.md "Förenkla koden + dela upp hazop.py i
 fler filer"."""
 
+import json
 import math
 import traceback
 from functools import partial
@@ -521,14 +522,24 @@ class TreePanel(QWidget):
                 # time. Falls back to the frozen comp_tag for a custom/
                 # unmatched tag (equipment_id is None) or a deleted object.
                 eq = self.db.get_equipment_by_id(cause['equipment_id']) if cause['equipment_id'] else None
-                is_group = bool(cause.get('secondary_equipment_id'))
+                group_ids = []
+                try:
+                    group_ids = [int(value) for value in json.loads(
+                        cause.get('group_equipment_ids') or '[]')]
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    pass
+                if not group_ids:
+                    group_ids = [cause.get('equipment_id'),
+                                 cause.get('secondary_equipment_id')]
+                group_ids = list(dict.fromkeys(value for value in group_ids
+                                               if value is not None))[:20]
+                is_group = len(group_ids) >= 2
                 tag = (eq.get('tag') or '').strip() if eq else (cause['comp_tag'] or '').strip()
-                secondary_eq = (self.db.get_equipment_by_id(
-                    cause.get('secondary_equipment_id'))
-                                if is_group and cause.get('secondary_equipment_id')
-                                else None)
-                secondary_tag = ((secondary_eq.get('tag') or '').strip()
-                                 if secondary_eq else '')
+                group_tags = []
+                for group_id in group_ids:
+                    group_eq = self.db.get_equipment_by_id(group_id)
+                    if group_eq and group_eq.get('tag'):
+                        group_tags.append((group_eq.get('tag') or '').strip())
                 desc = (cause['description'] or '').strip()
                 # A still-untouched placeholder cause (no real content yet)
                 # shows just the tag, if it has one — showing "V-101 — Ny
@@ -541,10 +552,10 @@ class TreePanel(QWidget):
                     # defensible default mechanism used to inherit "Ny
                     # orsak" here.  Show the primary and secondary objects
                     # in order until the user chooses/edit the events.
-                    if desc in ('', 'Ny orsak') and tag and secondary_tag:
+                    if desc in ('', 'Ny orsak') and len(group_tags) >= 2:
                         # Keep the two live group objects visually separate
                         # in the tree, as in the Scenario table.
-                        c_label = f"{tag}\n{secondary_tag}"
+                        c_label = '\n'.join(group_tags)
                     else:
                         c_label = desc[:80]
                 elif tag and trivial:

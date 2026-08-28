@@ -2359,6 +2359,8 @@ class MainWindow(QMainWindow):
                 return
             grouped = group_choice[0] == 'group'
             group_operator = group_choice[1]
+            if grouped:
+                equipments = equipments[:20]
 
         last_cause_id = None
         for equip in equipments:
@@ -2392,14 +2394,17 @@ class MainWindow(QMainWindow):
                 # do not invent a mechanism/effect description.  Both
                 # primary and secondary fault text must be entered by the
                 # user after the drop.
-                control_tag = control.get('tag') or 'Objekt'
-                affected_tag = affected.get('tag') or 'Objekt'
+                ordered = [control, affected] + [e for e in equipments
+                                                  if e not in (control, affected)]
+                group_ids = [e.get('id') for e in ordered]
+                tags = [e.get('tag') or 'Objekt' for e in ordered]
                 last_cause_id, _ = _create_tagged_cause(
                     self.db, dev_id, control.get('equipment_type', ''),
-                    f"{control_tag} {group_operator} {affected_tag}",
+                    f" {group_operator} ".join(tags),
                     equipment_id=control.get('id'))
                 self.db.update_cause(last_cause_id,
-                                     secondary_equipment_id=affected.get('id'))
+                                     secondary_equipment_id=affected.get('id'),
+                                     group_equipment_ids=group_ids)
 
         if last_cause_id is None:
             # User chose separate causes, or no defensible control/effect
@@ -2413,7 +2418,8 @@ class MainWindow(QMainWindow):
                     equipment_id=equipments[0].get('id'))
                 if len(equipments) > 1:
                     self.db.update_cause(last_cause_id,
-                                         secondary_equipment_id=equipments[1].get('id'))
+                                         secondary_equipment_id=equipments[1].get('id'),
+                                         group_equipment_ids=[e.get('id') for e in equipments])
             else:
                 # Explicitly separate causes.
                 for equip in equipments:

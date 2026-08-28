@@ -15,6 +15,13 @@ Generell gruppredigering är dessutom blockerad via F2, högerklickets
 Redigera och programmatisk redigeringsstart. Grupporsaker kan därmed bara
 redigeras genom primär- eller sekundärradens egna textområden.
 
+## Flerobjektsgrupper (2026-08-28)
+
+Grupper kan nu innehålla upp till 20 P&ID-objekt. De extra objekten sparas i
+en utökad gruppreferens medan de äldre primär/sekundär-fälten behålls för
+bakåtkompatibilitet. Varje objekt får en egen visuell rad och egen inline-
+redigering med samma tomma start som sekundärraden.
+
 Gruppoperatorn visas nu även separat i objekt-popupen, till exempel
 `Gruppkoppling: &`, medan taggfältet fortfarande bara avser det klickade
 objektet.

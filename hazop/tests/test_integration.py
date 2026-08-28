@@ -36,6 +36,7 @@ so the suite runs without a display (CI, SSH, etc.).
 
 import gc
 import io
+import json
 import os
 import sys
 import shutil
@@ -4707,6 +4708,54 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
                 cause = next(c for c in win.db.causes(node_id)
                              if c['secondary_equipment_id'])
                 self.assertEqual(cause['comp_tag'], f'A-1 {operator} B-2')
+
+    def test_grouped_drop_keeps_three_objects_and_renders_three_rows(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.get_or_create_deviation(node_id, "HÃ¶gt flÃ¶de")
+            ids = [win.db.add_equipment_item(tag, tag, prefix, 0, kind, '', 0)
+                   for tag, prefix, kind in (
+                       ('FI-1', 'FI', 'Instrument'),
+                       ('FV-1', 'FV', 'Ventil'),
+                       ('P-1', 'P', 'Pump'))]
+            markers = [win.db.add_equipment_marker(equipment_id, tag, 0, float(i), float(i), kind)
+                       for i, (equipment_id, tag, kind) in enumerate(zip(
+                           ids, ('FI-1', 'FV-1', 'P-1'),
+                           ('Instrument', 'Ventil', 'Pump')), 1)]
+            with unittest.mock.patch(
+                    'hazop.MainWindow._choose_drop_group_operator',
+                    return_value=('group', 'OR')):
+                win._on_equipment_dropped_on_deviation(dev_id, markers)
+
+            cause = next(c for c in win.db.causes(node_id)
+                         if c['secondary_equipment_id'])
+            self.assertEqual(json.loads(cause['group_equipment_ids']), ids)
+            self.assertEqual(cause['comp_tag'], 'FI-1 OR FV-1 OR P-1')
+            win.scenario_panel.load_node(node_id)
+            row = next(r for r, meta in enumerate(win.scenario_panel._row_meta)
+                       if meta[1] == cause['id'])
+            item = win.scenario_panel._table.item(row, win.scenario_panel._C_ORS)
+            self.assertEqual(item.data(Qt.ItemDataRole.UserRole + 9),
+                             ['FI-1', 'FV-1', 'P-1'])
+            self.assertEqual(
+                win.scenario_panel._ors_combined_text(item, item.text()).count('\n'), 2)
+            panel = win.scenario_panel
+            index = panel._table.model().index(row, panel._C_ORS)
+            option = QStyleOptionViewItem()
+            option.rect = panel._table.visualRect(index)
+            panel._group_edit_line = (row, 2)
+            editor = panel._pid_delegate.createEditor(panel._table, option, index)
+            try:
+                panel._pid_delegate.setEditorData(editor, index)
+                self.assertEqual(editor.toPlainText(), '')
+                editor.setText('tredje hÃ¤ndelsen')
+                panel._pid_delegate.setModelData(editor, panel._table.model(), index)
+            finally:
+                editor.deleteLater()
+            panel._group_edit_line = None
+            self.assertEqual(
+                dict(win.db.get_cause(cause['id']))['description'],
+                'FI-1\nFV-1\nP-1 tredje hÃ¤ndelsen')
 
     def test_group_created_without_default_mechanism_shows_both_objects_in_tree(self):
         with _TempDbMainWindow() as win:

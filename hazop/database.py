@@ -1156,6 +1156,7 @@ class Database:
             # A functional group cause keeps the affected/secondary object as
             # a real P&ID link as well as the primary controlling object.
             "ALTER TABLE causes ADD COLUMN secondary_equipment_id INTEGER REFERENCES equipment_catalog(id)",
+            "ALTER TABLE causes ADD COLUMN group_equipment_ids TEXT DEFAULT ''",
             "ALTER TABLE causes ADD COLUMN group_choices_set INTEGER NOT NULL DEFAULT 0",
             # Drag-and-drop tagg från P&ID till konsekvens (2026-08-07, se
             # NOTES.md) — en konsekvens kan nu bära ett eget taggnummer
@@ -4789,7 +4790,8 @@ class Database:
                      standard_cause_id=_SENTINEL, comp_type=_SENTINEL, comp_tag=_SENTINEL,
                      base_freq=_SENTINEL, equipment_id=_SENTINEL,
                      secondary_equipment_id=_SENTINEL,
-                     group_choices_set=_SENTINEL):
+                     group_choices_set=_SENTINEL,
+                     group_equipment_ids=_SENTINEL):
         # Support old parameter name for backward compatibility
         if base_freq is not Database._SENTINEL and base_frequency is Database._SENTINEL:
             base_frequency = base_freq
@@ -4817,6 +4819,10 @@ class Database:
             sets.append("secondary_equipment_id=?"); vals.append(secondary_equipment_id)
         if group_choices_set is not Database._SENTINEL:
             sets.append("group_choices_set=?"); vals.append(group_choices_set)
+        if group_equipment_ids is not Database._SENTINEL:
+            sets.append("group_equipment_ids=?")
+            vals.append(json.dumps(group_equipment_ids) if isinstance(group_equipment_ids, (list, tuple))
+                        else group_equipment_ids)
         if sets:
             vals.append(id_)
             self.conn.execute(f"UPDATE causes SET {', '.join(sets)} WHERE id=?", vals)
