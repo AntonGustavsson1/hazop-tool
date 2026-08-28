@@ -1653,6 +1653,30 @@ class WipeProjectTablesTests(unittest.TestCase):
 #     at all before this feature.
 # ══════════════════════════════════════════════════════════════════════════
 
+class TreeCauseSelectionScenarioScopeTests(unittest.TestCase):
+    """Selecting one object/cause must not widen Scenario to its deviation."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_tree_cause_selection_loads_only_that_cause(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.get_or_create_deviation(node_id, 'LÃ¥gt flÃ¶de')
+            first_cause = win.db.add_cause(dev_id)
+            second_cause = win.db.add_cause(dev_id)
+
+            with unittest.mock.patch.object(
+                    win.scenario_panel, 'load_cause') as load_cause, \
+                 unittest.mock.patch.object(
+                    win.scenario_panel, 'load_deviation') as load_deviation:
+                win._on_selected(CAUSE_T, first_cause)
+
+            load_cause.assert_called_once_with(first_cause)
+            load_deviation.assert_not_called()
+
+
 class TreeContextHighlightEndToEndTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

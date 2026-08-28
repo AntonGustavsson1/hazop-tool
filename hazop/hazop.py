@@ -1960,10 +1960,10 @@ class MainWindow(QMainWindow):
         elif type_ == CAUSE_T:
             self.pid_panel.set_active_cause(id_)
             _row = self.db.get_cause(id_); cause = dict(_row) if _row else None
-            if cause and cause.get('deviation_id'):
-                self.scenario_panel.load_deviation(cause['deviation_id'])
-            else:
-                self.scenario_panel.load_cause(id_)
+            # A click on an individual object/cause in the tree must scope
+            # HAZOP Scenario to that cause and its descendants. Loading its
+            # deviation instead shows every object sharing the guide word.
+            self.scenario_panel.load_cause(id_)
         elif type_ == CONS_T:
             self.pid_panel.set_active_consequence(id_)
             _cons = self.db.get_consequence(id_)

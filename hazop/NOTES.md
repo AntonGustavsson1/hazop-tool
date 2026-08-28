@@ -31,6 +31,12 @@ Rekommendationsrutan som öppnas vid inline-redigering skyddas nu mot dubbla
 fördröjda öppningar. Varje editor får en generationsmarkör och en gammal
 assist-popup stängs innan den aktuella visas.
 
+## Objektval i trädet visar bara objektets scenario (2026-08-28)
+
+När en enskild Orsak/objektrad väljs i trädet laddas nu just den orsaken med
+dess konsekvenser och barriärer. Den gemensamma avvikelsen laddas inte längre
+som filter, eftersom det annars visar alla objekt som delar samma avvikelse.
+
 ## Tidigare konsekvenser och rekommendationer vid redigering (2026-08-28)
 
 Konsekvenseditorn visar nu historik-popupen explicit även för den multiline-
