@@ -2419,6 +2419,38 @@ class _PidDelegate(_ScenarioDelegate):
             clean = re.sub(r'^R-\d+\.\s*', '', clean, flags=re.IGNORECASE)
         model.setData(index, clean, Qt.ItemDataRole.EditRole)
 
+    def _active_group_edit_line(self, index, rect):
+        """Return the grouped row currently covered by an inline editor.
+
+        The delegate paints the cell before Qt paints the editor widget.  A
+        grouped editor only covers its own description area, so the static
+        description would otherwise remain visible underneath it as ghost
+        text.  Identify the live editor by the row/column identity already
+        stored on it; the other grouped line must remain painted as context.
+        """
+        viewport = self._panel._table.viewport()
+        for editor in viewport.findChildren(_BoldTagTextEdit):
+            if not editor.isVisible():
+                continue
+            if (editor.property('editing_row') != index.row() or
+                    editor.property('editing_col') != index.column()):
+                continue
+            # QAbstractItemView normally parents the editor to the viewport,
+            # but use an explicit mapping so this remains correct if Qt or a
+            # style inserts another intermediate parent later.  Both rects
+            # are then expressed in the viewport's coordinate system.
+            editor_top_left = editor.mapTo(viewport, QPoint(0, 0))
+            editor_rect = QRect(editor_top_left, editor.size())
+            if not editor_rect.intersects(rect):
+                continue
+            try:
+                group_line = int(editor.property('group_line'))
+            except (TypeError, ValueError):
+                continue
+            if group_line in (0, 1):
+                return group_line
+        return None
+
     def updateEditorGeometry(self, editor, option, index):
         r = option.rect
         col = index.column()
@@ -2658,6 +2690,7 @@ class _PidDelegate(_ScenarioDelegate):
                     bf.setBold(True)
                     line_h = max(_ORS_FIRST_LINE_H,
                                  QFontMetrics(option.font).height() + 4)
+                    active_group_line = self._active_group_edit_line(index, r)
                     painter.setPen(tc)
                     for line_no, line_text in enumerate(combined.splitlines()[:2]):
                         # Keep the child number normal-weight, then bold the
@@ -2687,6 +2720,12 @@ class _PidDelegate(_ScenarioDelegate):
                         if len(parts) > 1:
                             # Leave a small, consistent visual gap after the
                             # bold object tag before its mechanism/effect text.
+                            if line_no == active_group_line:
+                                # The live editor paints this description
+                                # itself.  Keep only the number/tag visible
+                                # as context and suppress the stale static
+                                # description underneath the editor.
+                                continue
                             x += (QFontMetrics(bf).horizontalAdvance(parts[0]) +
                                   QFontMetrics(option.font).horizontalAdvance(' '))
                             painter.setFont(option.font)

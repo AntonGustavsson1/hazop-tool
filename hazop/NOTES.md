@@ -33,6 +33,14 @@ under pågående redigering utan att ändra innehåll, radval eller sparlogik.
 Smoke-test och riktat regressionstest passerade. Hela Scenario-sviten hann inte
 slutföras i denna körning.
 
+## Gruppeditor: dölj aktiv radens spöktext (2026-08-28)
+
+När en primär- eller sekundärrad redigeras undertrycks den statiskt målade
+beskrivningen på just den raden, medan den andra grupp-raden ligger kvar som
+kontext. Editor- och cellrektangeln jämförs efter explicit mappning till
+viewportens koordinatsystem. Verifierat med riktat gruppeditorstest,
+smoke-test och syntaxkontroll.
+
 ## Grupporsak: sekundärredigering sparas inte som primär (2026-08-28)
 
 Vid fokusförlust efter redigering av sekundärraden normaliseras editorns
