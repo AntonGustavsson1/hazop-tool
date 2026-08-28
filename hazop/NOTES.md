@@ -2,6 +2,15 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Grupporsak: sparad beskrivning visas i Scenario-cellen (2026-08-28)
+
+Grupp-renderingen visade tidigare endast de två objekttaggarna när
+`group_choices_set` var noll, även om en beskrivning redan fanns sparad och
+syntes i trädet. Villkoret visar nu bara bare taggar för en verkligt tom grupp;
+en befintlig beskrivning renderas direkt i cellen. Primär/sekundär-radernas
+val- och sparlogik är oförändrad. Verifierat med syntaxkontroll, smoke-test
+och grupprelaterade integrationstester.
+
 ## Grupporsak: liten extra marginal före fri text (2026-08-28)
 
 Editorns horisontella startposition flyttas endast 5 px åt höger efter den

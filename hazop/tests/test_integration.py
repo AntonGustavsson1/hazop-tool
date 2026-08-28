@@ -4713,10 +4713,6 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             panel.load_node(node_id)
             row = next(r for r, m in enumerate(panel._row_meta)
                        if m[1] == cause_id)
-            item = panel._table.item(row, panel._C_ORS)
-            self.assertIn('FI-1\nFV-1',
-                          panel._ors_combined_text(item, item.text()))
-
             panel._apply_group_cause_choice(cause_id, 0, 'Felar lågt')
             cause = dict(win.db.get_cause(cause_id))
             self.assertEqual(cause['group_choices_set'], 3)
@@ -4917,6 +4913,10 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             panel.load_node(node_id)
             row = next(r for r, m in enumerate(panel._row_meta)
                        if m[1] == cause_id)
+            ors_item = panel._table.item(row, panel._C_ORS)
+            combined = panel._ors_combined_text(ors_item, ors_item.text())
+            self.assertIn('signal intermittent', combined)
+            self.assertIn('opens fully', combined)
 
             _std_id, primary_type, _dev, _rows = \
                 panel._ors_standard_causes_for_row(row, 0)

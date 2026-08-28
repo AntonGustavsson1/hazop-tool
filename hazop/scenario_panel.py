@@ -5994,7 +5994,13 @@ class ScenarioTablePanel(QWidget):
             _num = item.data(Qt.ItemDataRole.UserRole + 10) or ''
             cause_id = item.data(Qt.ItemDataRole.UserRole)[1] if item.data(Qt.ItemDataRole.UserRole) else None
             cause = self.db.get_cause(cause_id) if cause_id else None
-            if cause and not cause.get('group_choices_set'):
+            # A newly created group with no selected standard choices uses
+            # the two bare tags as its placeholder.  If a description has
+            # nevertheless been entered (for example in the tree), keep it
+            # visible in the Scenario cell; the old condition hid that text
+            # until the cell entered edit mode.
+            if (cause and not cause.get('group_choices_set') and
+                    not (desc or '').strip()):
                 return f"{_num}.  {_group_tags[0]}\n{_group_tags[1]}" if _num else f"{_group_tags[0]}\n{_group_tags[1]}"
             # Once a group has a choice, display the stored text verbatim.
             # This preserves partial groups (only primary or only secondary)
