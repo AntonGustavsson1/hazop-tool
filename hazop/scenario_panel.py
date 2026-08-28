@@ -6149,45 +6149,6 @@ class ScenarioTablePanel(QWidget):
                 QTimer.singleShot(0, lambda r=row, c=col, p=click[2]:
                                   self._place_editor_caret(r, c, p))
 
-        # Right-clicking a painted group tag opens the group-row actions.
-        # Blank cell space deliberately has no such shortcut.
-        if (obj is self._table.viewport() and
-                event.type() == QEvent.Type.MouseButtonPress and
-                event.button() == Qt.MouseButton.RightButton):
-            pos = event.pos()
-            row = self._table.rowAt(pos.y())
-            col = self._table.columnAt(pos.x())
-            if row >= 0 and col == self._C_ORS:
-                item = self._table.item(row, col)
-                group_tags = (item.data(Qt.ItemDataRole.UserRole + 9) or []) if item else []
-                if len(group_tags) >= 2:
-                    line_h = max(_ORS_FIRST_LINE_H,
-                                 QFontMetrics(self._table.font()).height() + 4)
-                    line_no = int((pos.y() - self._table.rowViewportPosition(row) - 2)
-                                  // line_h)
-                    if 0 <= line_no < len(group_tags):
-                        x = self._table.columnViewportPosition(col) + 2
-                        if line_no == 0:
-                            num = item.data(Qt.ItemDataRole.UserRole + 10) or ''
-                            if num:
-                                x += QFontMetrics(self._table.font()).horizontalAdvance(
-                                    f"{num}.  ")
-                        else:
-                            operators = self._group_operators(item)
-                            operator = operators[line_no] if line_no < len(operators) else 'OR'
-                            x += QFontMetrics(self._table.font()).horizontalAdvance(
-                                f"{operator} ")
-                        tag_font = QFont(self._table.font())
-                        tag_font.setBold(True)
-                        width = QFontMetrics(tag_font).horizontalAdvance(str(group_tags[line_no]))
-                        if x <= pos.x() <= x + width:
-                            cause_id = self._row_meta[row][1] if row < len(self._row_meta) else None
-                            if cause_id is not None:
-                                self._show_group_tag_menu(
-                                    row, cause_id, line_no,
-                                    self._table.viewport().mapToGlobal(pos))
-                                return True
-
     def _show_rrf_popup(self, row, sg_id):
         """Called from context menu — centre on the cell."""
         item = self._table.item(row, self._C_SG)
@@ -7259,6 +7220,45 @@ class ScenarioTablePanel(QWidget):
     def eventFilter(self, obj, event):
         ctrl = bool(event.type() == QEvent.Type.KeyPress and
                     event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+
+        # Right-clicking a painted group tag opens the group-row actions.
+        # Blank cell space deliberately has no such shortcut.
+        if (obj is self._table.viewport() and
+                event.type() == QEvent.Type.MouseButtonPress and
+                event.button() == Qt.MouseButton.RightButton):
+            pos = event.pos()
+            row = self._table.rowAt(pos.y())
+            col = self._table.columnAt(pos.x())
+            if row >= 0 and col == self._C_ORS:
+                item = self._table.item(row, col)
+                group_tags = (item.data(Qt.ItemDataRole.UserRole + 9) or []) if item else []
+                if len(group_tags) >= 2:
+                    line_h = max(_ORS_FIRST_LINE_H,
+                                 QFontMetrics(self._table.font()).height() + 4)
+                    line_no = int((pos.y() - self._table.rowViewportPosition(row) - 2)
+                                  // line_h)
+                    if 0 <= line_no < len(group_tags):
+                        x = self._table.columnViewportPosition(col) + 2
+                        if line_no == 0:
+                            num = item.data(Qt.ItemDataRole.UserRole + 10) or ''
+                            if num:
+                                x += QFontMetrics(self._table.font()).horizontalAdvance(
+                                    f"{num}.  ")
+                        else:
+                            operators = self._group_operators(item)
+                            operator = operators[line_no] if line_no < len(operators) else 'OR'
+                            x += QFontMetrics(self._table.font()).horizontalAdvance(
+                                f"{operator} ")
+                        tag_font = QFont(self._table.font())
+                        tag_font.setBold(True)
+                        width = QFontMetrics(tag_font).horizontalAdvance(str(group_tags[line_no]))
+                        if x <= pos.x() <= x + width:
+                            cause_id = self._row_meta[row][1] if row < len(self._row_meta) else None
+                            if cause_id is not None:
+                                self._show_group_tag_menu(
+                                    row, cause_id, line_no,
+                                    self._table.viewport().mapToGlobal(pos))
+                                return True
 
         if (obj in (self._table, self._table.viewport()) and
                 event.type() == QEvent.Type.MouseButtonDblClick and

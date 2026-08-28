@@ -2,6 +2,13 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Kraschfix: högerklick på grupptagg (2026-08-28)
+
+Den senaste kraschen var en `NameError` i dubbelklickshanteraren: den nya
+högerklickskoden låg i `_on_cell_double_clicked`, där `obj` och `event` inte
+finns. Koden flyttades till `eventFilter`, som är den metod där musobjekt och
+mus-event faktiskt finns.
+
 ## Gruppobjekt: radvis ordning och operatorer (2026-08-28)
 
 Knappen för att byta primär/sekundär är borttagen från objekttaggs-popupen.
