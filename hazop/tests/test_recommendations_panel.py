@@ -67,7 +67,7 @@ class RecommendationsPanelConstructionTests(unittest.TestCase):
             except Exception as e:
                 self.fail(f"RecommendationsPanel.refresh() on an empty DB raised: {e!r}")
             self.assertEqual(panel._table.rowCount(), 0)
-            self.assertEqual(panel._table.columnCount(), 4)
+            self.assertEqual(panel._table.columnCount(), 5)
             self.assertEqual(
                 panel._table.horizontalHeaderItem(panel._COL_RESPONSIBLE).text(),
                 "Ansvarig")
@@ -247,6 +247,39 @@ class RecommendationsPanelReferenceTests(unittest.TestCase):
 
             self.assertEqual(responsible_by_id[f"R-{assigned:03d}"], "Anna Andersson")
             self.assertEqual(responsible_by_id[f"R-{unassigned:03d}"], "—")
+        finally:
+            panel.deleteLater()
+
+    def test_search_and_status_filter_hide_non_matching_rows(self):
+        db = self.db
+        open_id = db.add_recommendation(description="Kontrollera pump", status="Öppen")
+        db.add_recommendation(description="Byt packning", status="Klar")
+        panel = RecommendationsPanel(db)
+        try:
+            panel.load()
+            self.assertEqual(panel._count_label.text(), "Visar 2 av 2")
+            panel._search.setText("pump")
+            self.assertEqual(panel._count_label.text(), "Visar 1 av 2")
+            self.assertFalse(panel._table.isRowHidden(0 if open_id < 2 else 1))
+            panel._search.clear()
+            panel._status_filter.setCurrentText("Klar")
+            self.assertEqual(panel._count_label.text(), "Visar 1 av 2")
+        finally:
+            panel.deleteLater()
+
+    def test_status_combo_and_description_edit_are_saved(self):
+        db = self.db
+        rec_id = db.add_recommendation(description="Gammal text", status="Öppen")
+        panel = RecommendationsPanel(db)
+        try:
+            panel.load()
+            status = panel._table.cellWidget(0, panel._COL_STATUS)
+            status.setCurrentText("Pågår")
+            item = panel._table.item(0, panel._COL_REC)
+            item.setText(f"R-{rec_id:03d}. Ny text")
+            saved = db.get_recommendation(rec_id)
+            self.assertEqual(saved['status'], "Pågår")
+            self.assertEqual(saved['description'], "Ny text")
         finally:
             panel.deleteLater()
 

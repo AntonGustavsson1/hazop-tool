@@ -3820,6 +3820,17 @@ När objekt från P&ID släpps i worksheetens konsekvens- eller barriärfält
 signaleras nu även en strukturändring, så trädet visar nya eller kopierade
 rader direkt efter ett Shift-drag.
 
+## Rekommendationsfliken: sÃ¶k, status och direktredigering (2026-08-28)
+
+RekommendationsÃ¶versikten har nu sÃ¶kfÃ¤lt som filtrerar pÃ¥ hela raden, statusfilter
+och statuskolumn med valen Ã–ppen, PÃ¥gÃ¥r, Klar och FÃ¶rsenad. Rekommendationstexten
+kan redigeras direkt efter R-numret utan att numreringen Ã¤ndras. En rÃ¤knare visar
+antal synliga av totalt antal rader. Befintlig delete-, ansvarig-, datum- och
+kolumnflyttningslogik Ã¤r bevarad.
+
+Verifierat med `tests.test_recommendations_panel` (13 tester), `tests.test_smoke`
+(12 tester) och `py_compile`. Ingen visuell GUI-verifiering Ã¤r gjord.
+
 ## Worksheet: Enter och cross-view-synk (2026-08-28)
 
 Worksheetens inbäddade ScenarioTablePanel uppdaterar nu sig själv och väljer

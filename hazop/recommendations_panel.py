@@ -23,13 +23,19 @@ RecommendationsPanel` keeps working for tests, same as
 this needs no deferred/circular-import dance: it only reaches into
 database.py, nothing defined in hazop.py itself."""
 
+import re
+
 from PyQt6.QtCore import Qt, QDate, pyqtSignal
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QComboBox, QDateEdit, QPushButton, QMessageBox,
+    QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QHeaderView,
+    QAbstractItemView, QComboBox, QDateEdit, QPushButton, QMessageBox, QLabel,
+    QLineEdit,
 )
 
 from database import Database
+
+_STATUS_ALL = 'Alla statusar'
+_STATUS_VALUES = ('Öppen', 'Pågår', 'Klar', 'Försenad')
 
 _PLACEHOLDER = '—'   # same "no link yet" convention as KON/SG/REK cells elsewhere
 
@@ -129,6 +135,7 @@ class RecommendationsPanel(QWidget):
     _COL_RESPONSIBLE = 1
     _COL_DUE = 2
     _COL_REF = 3
+    _COL_STATUS = 4
 
     def __init__(self, db: Database):
         super().__init__()
@@ -138,10 +145,28 @@ class RecommendationsPanel(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
 
-        self._table = _RecommendationsTable(0, 4)
+        filters = QHBoxLayout()
+        filters.setSpacing(6)
+        filters.addWidget(QLabel('Sök:'))
+        self._search = QLineEdit()
+        self._search.setPlaceholderText('Rekommendation, ansvarig, status eller referens…')
+        self._search.setClearButtonEnabled(True)
+        self._search.textChanged.connect(self._apply_filters)
+        filters.addWidget(self._search, 1)
+        filters.addWidget(QLabel('Status:'))
+        self._status_filter = QComboBox()
+        self._status_filter.addItem(_STATUS_ALL)
+        self._status_filter.addItems(_STATUS_VALUES)
+        self._status_filter.currentTextChanged.connect(self._apply_filters)
+        filters.addWidget(self._status_filter)
+        self._count_label = QLabel('Visar 0 av 0')
+        filters.addWidget(self._count_label)
+        layout.addLayout(filters)
+
+        self._table = _RecommendationsTable(0, 5)
         self._table.setHorizontalHeaderLabels(
             ["Rekommendation", "Ansvarig", "Ska vara åtgärdat",
-             "Referens (studie.nod.avvikelse.orsak.konsekvens)"])
+             "Referens (studie.nod.avvikelse.orsak.konsekvens)", "Status"])
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked |
                                     QAbstractItemView.EditTrigger.EditKeyPressed |
@@ -168,6 +193,7 @@ class RecommendationsPanel(QWidget):
         self._table.setColumnWidth(self._COL_RESPONSIBLE, 240)
         self._table.setColumnWidth(self._COL_DUE, 150)
         self._table.setColumnWidth(self._COL_REF, 360)
+        self._table.setColumnWidth(self._COL_STATUS, 130)
         # Qt quirk (verified empirically, not from memory): a freshly
         # created QTableWidget's header already carries an implicit
         # "column 0, DESCENDING" sort indicator even though nothing ever
@@ -225,12 +251,13 @@ class RecommendationsPanel(QWidget):
             return
         value = item.text().strip()
         if item.column() == self._COL_REC:
-            parts = value.split('. ', 1)
-            self.db.update_recommendation(int(rec_id), description=parts[1] if len(parts) == 2 else value)
+            description = re.sub(r'^R-\d+\.\s*', '', value)
+            self.db.update_recommendation(int(rec_id), description=description)
         elif item.column() == self._COL_RESPONSIBLE:
             self.db.update_recommendation(int(rec_id), responsible=value)
         elif item.column() == self._COL_DUE:
             self.db.update_recommendation(int(rec_id), due_date=value)
+        self._apply_filters()
 
     def refresh(self):
         """Called when the Rekommendationer page becomes visible
@@ -243,6 +270,7 @@ class RecommendationsPanel(QWidget):
         (all_recommendations() returns [] -> zero rows, no crash)."""
         was_sorting = self._table.isSortingEnabled()
         self._table.setSortingEnabled(False)
+        self._table.blockSignals(True)
         try:
             maps = _build_position_maps(self.db)
             recs = self.db.all_recommendations()
@@ -263,15 +291,15 @@ class RecommendationsPanel(QWidget):
                 for col, value in ((self._COL_REC, label),
                                    (self._COL_RESPONSIBLE, responsible),
                                    (self._COL_DUE, due_date),
-                                   (self._COL_REF, ref_text)):
+                                   (self._COL_REF, ref_text),
+                                   (self._COL_STATUS, rec['status'] or 'Öppen')):
                     cell = QTableWidgetItem(value)
                     cell.setData(Qt.ItemDataRole.UserRole, rec_id)
                     cell.setTextAlignment(Qt.AlignmentFlag.AlignLeft |
                                           Qt.AlignmentFlag.AlignTop)
-                    # The visible R-XXX number is a stable database identity,
-                    # not an editable field. Description editing remains
-                    # available from the HAZOP scenario editor.
-                    if col in (self._COL_REC, self._COL_REF):
+                    # The R-number stays stable, while the description after
+                    # it can be edited directly in this overview.
+                    if col == self._COL_REF:
                         cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     self._table.setItem(row, col, cell)
                 due = QDateEdit(self._table)
@@ -300,6 +328,41 @@ class RecommendationsPanel(QWidget):
                     lambda text, rid=rec_id: self.db.update_recommendation(
                         rid, responsible=text.strip()))
                 self._table.setCellWidget(row, self._COL_RESPONSIBLE, combo)
+                status = QComboBox(self._table)
+                status.addItems(_STATUS_VALUES)
+                stored_status = rec['status'] or 'Öppen'
+                if stored_status not in _STATUS_VALUES:
+                    status.addItem(stored_status)
+                status.setCurrentText(stored_status)
+                status.currentTextChanged.connect(
+                    lambda text, rid=rec_id: self.db.update_recommendation(
+                        rid, status=text))
+                self._table.setCellWidget(row, self._COL_STATUS, status)
             self._table.resizeRowsToContents()
         finally:
+            self._table.blockSignals(False)
             self._table.setSortingEnabled(was_sorting)
+            self._apply_filters()
+
+    def _apply_filters(self):
+        """Hide non-matching rows without rebuilding the table."""
+        query = self._search.text().strip().casefold()
+        selected_status = self._status_filter.currentText()
+        visible = 0
+        total = self._table.rowCount()
+        for row in range(total):
+            values = []
+            for col in range(self._table.columnCount()):
+                item = self._table.item(row, col)
+                if item:
+                    values.append(item.text())
+                widget = self._table.cellWidget(row, col)
+                if isinstance(widget, QComboBox):
+                    values.append(widget.currentText())
+            status_widget = self._table.cellWidget(row, self._COL_STATUS)
+            row_status = status_widget.currentText() if isinstance(status_widget, QComboBox) else ''
+            matches = (not query or query in ' '.join(values).casefold())
+            matches = matches and (selected_status == _STATUS_ALL or row_status == selected_status)
+            self._table.setRowHidden(row, not matches)
+            visible += int(matches)
+        self._count_label.setText(f'Visar {visible} av {total}')
