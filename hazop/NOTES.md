@@ -3247,6 +3247,9 @@ stör inte den övriga texten.
 
 ## Beta-flik for P&ID-verktyg (2026-08-28)
 
+HAZOP-tabellens kontextheader och riskkolumner Ã¤r ytterligare komprimerade
+fÃ¶r att minska tom yta utan att ta bort mÃ¶jligheten att dra kolumnkanterna.
+
 Nya reduktionsfaktorer lÃ¤ggs nu samtidigt i en global faktorkatalog. I RRF-
 dialogen kan en faktor som redan anvÃ¤nts pÃ¥ ett objekt vÃ¤ljas och lÃ¤ggas till
 pÃ¥ ett annat objekt.

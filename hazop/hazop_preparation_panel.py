@@ -632,6 +632,10 @@ class HAZOPPreparationPanel(QWidget):
         nodes_layout.addWidget(self._nodes_table)
         tabs.addTab(nodes_widget, "Noder")
 
+        # Keep ToR and Report as the rightmost preparation tab.
+        tabs.removeTab(tabs.indexOf(tor_report_tab))
+        tabs.addTab(tor_report_tab, "ToR and Report")
+
         self._load_all()
 
     def _load_all(self):

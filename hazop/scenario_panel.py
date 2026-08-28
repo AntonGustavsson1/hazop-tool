@@ -3307,12 +3307,12 @@ class ScenarioTablePanel(QWidget):
         self.setMinimumHeight(110)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(4, 2, 4, 2)
-        outer.setSpacing(2)
+        outer.setContentsMargins(3, 1, 3, 1)
+        outer.setSpacing(1)
 
         hdr_row = QHBoxLayout()
         self._hdr_lbl = QLabel("HAZOP Scenario")
-        f = QFont(); f.setBold(True); f.setPointSize(9)
+        f = QFont(); f.setBold(True); f.setPointSize(8)
         self._hdr_lbl.setFont(f)
         hdr_row.addWidget(self._hdr_lbl)
         hdr_row.addStretch()
@@ -3348,10 +3348,10 @@ class ScenarioTablePanel(QWidget):
             self._C_DEV:   (QHeaderView.ResizeMode.Interactive, 120),
             self._C_ORS:   (QHeaderView.ResizeMode.Interactive, 180),
             self._C_KON:   (QHeaderView.ResizeMode.Interactive, 180),
-            self._C_RFORE: (QHeaderView.ResizeMode.Interactive,  68),
+            self._C_RFORE: (QHeaderView.ResizeMode.Interactive,  58),
             self._C_SG:    (QHeaderView.ResizeMode.Interactive, 130),
             self._C_LOPA:  (QHeaderView.ResizeMode.Interactive, 130),
-            self._C_SLUT:  (QHeaderView.ResizeMode.Interactive,  68),
+            self._C_SLUT:  (QHeaderView.ResizeMode.Interactive,  58),
             self._C_REK:   (QHeaderView.ResizeMode.Interactive, 140),
         }
         for col, (mode, width) in resize_modes.items():
