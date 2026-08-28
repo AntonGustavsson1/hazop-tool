@@ -285,6 +285,24 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         self.assertNotIn(",", cause_item.text(0),
             "a still-trivial cause must show the bare tag, no separator/description")
 
+    def test_grouped_orsak_row_is_not_bold(self):
+        node_id = self.db.add_node()
+        dev_id = self.db.get_or_create_deviation(node_id, "LÃ¥gt flÃ¶de")
+        primary_id = self.db.add_equipment_item(
+            "FI-1", "FI-1", "FI", 0, "Instrument", '', 0)
+        secondary_id = self.db.add_equipment_item(
+            "FV-1", "FV-1", "FV", 0, "Reglerventil", '', 0)
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(
+            cause_id, comp_type="Instrument", comp_tag="FI-1 + FV-1",
+            equipment_id=primary_id, secondary_equipment_id=secondary_id,
+            description="FI-1 felar\nFV-1 öppnar")
+        self.panel.refresh()
+
+        cause_item = self._find_item(CAUSE_T, cause_id)
+        self.assertIsNotNone(cause_item)
+        self.assertFalse(cause_item.font(0).bold())
+
     def test_orsak_row_shows_just_description_when_no_tag(self):
         """'Det räcker om instrumentet E1.M1.QMA127 dyker upp på en rad
         i trädhierarkin' (2026-08-11) — a plain, untagged cause (no

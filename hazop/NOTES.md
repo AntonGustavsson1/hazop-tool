@@ -55,6 +55,12 @@ kopplade objekttaggvärde. Därmed kan primärobjektet inte försvinna när en n
 grupps sekundärtext redigeras och editorn stängs. Verifierat med ett riktat
 test för ny grupp samt befintliga grupp- och smoke-tester.
 
+## Grupporsaker i vänsterträdet är inte fetstilta (2026-08-28)
+
+Grupporsakens trädtext använder nu normal font precis som en vanlig orsak.
+Fetstil på nod- och övriga hierarkinivåer är oförändrad. Verifierat med
+riktat trädtest, smoke-test och syntaxkontroll.
+
 ## Grupporsak: sekundärredigering sparas inte som primär (2026-08-28)
 
 Vid fokusförlust efter redigering av sekundärraden normaliseras editorns

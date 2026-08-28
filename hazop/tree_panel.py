@@ -554,8 +554,6 @@ class TreePanel(QWidget):
                 else:
                     c_label = desc[:50]
                 citem = QTreeWidgetItem([f"    ⚙ {ci}. {c_label}"])
-                if is_group:
-                    citem.setFont(0, bold_font)
                 citem.setData(0, Qt.ItemDataRole.UserRole, cause['id'])
                 citem.setData(0, Qt.ItemDataRole.UserRole + 1, CAUSE_T)
                 citem.setData(0, self._PREFIX_ROLE, f"    ⚙ {ci}. ")
