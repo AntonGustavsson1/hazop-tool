@@ -2223,6 +2223,29 @@ class CauseTagPopup(QDialog):
         layout.setSpacing(4)
         layout.setContentsMargins(8, 8, 8, 8)
 
+        if cause_id is not None:
+            try:
+                cause = db.get_cause(cause_id)
+                equipment_id = cause.get('equipment_id') if cause else None
+                equipment = db.get_equipment_by_id(equipment_id) if equipment_id else None
+            except Exception:
+                equipment = None
+            if equipment:
+                equipment = dict(equipment)
+                object_info = QLabel(str(equipment.get('tag') or comp_tag or 'Objekt'))
+                object_info.setStyleSheet("font-weight:bold; font-size:12px; color:#17191C;")
+                object_info.setToolTip(str(equipment.get('description') or ''))
+                layout.addWidget(object_info)
+                details = []
+                if equipment.get('equipment_type'):
+                    details.append(str(equipment['equipment_type']))
+                if equipment.get('pid_page'):
+                    details.append(f"P&ID · sida {equipment['pid_page']}")
+                if details:
+                    detail_label = QLabel("  ·  ".join(details))
+                    detail_label.setStyleSheet("font-size:9px; color:#6B7280;")
+                    layout.addWidget(detail_label)
+
         form = QFormLayout()
         form.setSpacing(3)
         form.setContentsMargins(0, 0, 0, 0)
@@ -2255,11 +2278,6 @@ class CauseTagPopup(QDialog):
         layout.addLayout(form)
 
         if cause_id is not None:
-            bind = QPushButton("Bind till objekt på P&ID")
-            bind.setFixedHeight(CONFIG['H_BTN_SMALL'])
-            bind.setStyleSheet(_small)
-            bind.clicked.connect(self.bind_requested.emit)
-            layout.addWidget(bind)
             try:
                 cause = db.get_cause(cause_id)
                 if cause and cause.get('secondary_equipment_id'):

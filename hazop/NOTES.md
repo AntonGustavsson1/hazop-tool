@@ -3077,6 +3077,14 @@ kvar eftersom de är en del av cellens funktionella layout. Regressionstesterna
 uppdaterades till den gemensamma edit-starten och 27 berörda tester passerar.
 Ingen visuell GUI-verifiering är gjord.
 
+## Kompakta frekvens- och RRF-badges (2026-08-28)
+
+Orsakens frekvensbadge delar nu en kompakt 32 px-zon med Safeguardens RRF-
+badge. F1 visas centrerat och fetstilt i den översta textraden; långa värden
+elideras i stället för att bredda cellen. RRF visas på samma sätt och exempelvis
+RRF 1000 får kortare visning när värdet inte ryms. Badge-zonerna används fortsatt
+gemensamt av målning, klickhantering och editorns geometri.
+
 ## Grupporsak redigeras med samma objektlogik (2026-08-28)
 
 Dubbelklick på en Orsak-grupp öppnar nu en gemensam tvåkolumnspopup med
@@ -3142,3 +3150,12 @@ och Safeguardens RRF-fält reserveras i editorns geometri så att editortexten
 inte täcker eller duplicerar dessa delar. Safeguard-textens statiska cell och
 radberäkning använder också word wrap. 15 berörda Edit Mode-tester passerar.
 Ingen visuell GUI-verifiering är gjord.
+
+## Minimalistiska objektpopups (2026-08-28)
+
+Grupporsakens popup visar nu två rena objektkolumner utan GroupBox-ramar och
+utan extra rubriktext. Varje kolumn visar roll, fet tagg, typ/P&ID-sida och
+valbara fel-/effektalternativ; primär/sekundär-växlingen ligger kvar som en
+diskret gemensam åtgärd. Den enskilda objektpopupen visar motsvarande objekt-
+och P&ID-information ovanför tagg- och typredigeringen. Den gamla Bind till
+objekt-knappen är borttagen.

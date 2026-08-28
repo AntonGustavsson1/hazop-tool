@@ -560,49 +560,69 @@ class GroupCausePopup(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Grupporsak")
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(390)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
-        title = QLabel("Redigera grupporsak")
-        title.setStyleSheet("font-weight:bold; font-size:11px;")
-        layout.addWidget(title)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
 
         columns = QHBoxLayout()
-        columns.setSpacing(8)
+        columns.setSpacing(14)
         for column, (heading, equipment, current, choices) in enumerate((
-                ("Orsaksfel", primary, direction,
+                ("Primär", primary, direction,
                  ("Felar högt", "Felar lågt")),
-                ("Vad konsekvensen leder till", secondary, effect,
+                ("Sekundär", secondary, effect,
                  ("Öppnar felaktigt", "Stänger felaktigt", "Öppnar fullt",
                   "Stänger helt")))):
-            box = QGroupBox(heading)
+            box = QWidget()
             box_layout = QVBoxLayout(box)
+            box_layout.setContentsMargins(0, 0, 0, 0)
+            box_layout.setSpacing(4)
+            role = QLabel(heading.upper())
+            role.setStyleSheet("color:#6B7280; font-size:8px; font-weight:bold;")
+            box_layout.addWidget(role)
             tag = QLabel(str(equipment.get('tag') or 'Objekt'))
-            tag.setStyleSheet("font-weight:bold; font-size:11px;")
+            tag.setStyleSheet("color:#17191C; font-weight:bold; font-size:12px;")
             tag.setToolTip(str(equipment.get('description') or ''))
             box_layout.addWidget(tag)
-            type_text = str(equipment.get('equipment_type') or '')
-            if type_text:
-                typ = QLabel(type_text)
-                typ.setStyleSheet("color:#666; font-size:9px;")
+            info = []
+            if equipment.get('equipment_type'):
+                info.append(str(equipment['equipment_type']))
+            if equipment.get('pid_page'):
+                info.append(f"P&ID · sida {equipment['pid_page']}")
+            if info:
+                typ = QLabel("  ·  ".join(info))
+                typ.setStyleSheet("color:#6B7280; font-size:9px;")
                 box_layout.addWidget(typ)
             for choice in choices:
                 button = QPushButton(choice)
                 button.setFixedHeight(CONFIG['H_BTN_SMALL'])
+                button.setStyleSheet(
+                    "QPushButton{background:#F5F5F3;color:#17191C;border:0px;"
+                    "border-radius:3px;text-align:left;padding:3px 7px;}"
+                    "QPushButton:hover{background:#E8E9E6;}"
+                    "QPushButton:pressed{background:#D9DBD8;}")
                 button.clicked.connect(
                     lambda _=False, c=column, value=choice:
                     self.choice_requested.emit(c, value))
                 box_layout.addWidget(button)
             current_label = QLabel(f"Valt: {current}")
-            current_label.setStyleSheet("color:#555; font-size:9px;")
+            current_label.setStyleSheet("color:#6B7280; font-size:9px;")
             box_layout.addWidget(current_label)
             columns.addWidget(box)
+            if column == 0:
+                divider = QFrame()
+                divider.setFrameShape(QFrame.Shape.VLine)
+                divider.setFrameShadow(QFrame.Shadow.Plain)
+                divider.setStyleSheet("color:#E2E3E1;")
+                columns.addWidget(divider)
         layout.addLayout(columns)
 
         swap = QPushButton("Byt primär / sekundär")
         swap.setFixedHeight(CONFIG['H_BTN_SMALL'])
+        swap.setStyleSheet(
+            "QPushButton{background:transparent;color:#2F5FD0;border:0px;"
+            "font-weight:bold;} QPushButton:hover{color:#234AAB;}")
         swap.clicked.connect(self.swap_requested.emit)
         layout.addWidget(swap)
 
@@ -1767,7 +1787,7 @@ _PID_ICON_W  = 22          # pixels reserved on the left for the pin icon
 # the bottom of wrapped description text). See NOTES.md.
 _ORS_FIRST_LINE_H = 17
 
-_RRF_W       = 54          # pixel width of the RRF badge column on the right of safeguard cells
+_RRF_W       = 32          # compact width shared by RRF and Orsak frequency badges
 _PLUS_BADGE_SIZE = 16      # pixel size of the in-cell "+" quick-add badge (bottom-right corner)
 _PID_ICON_RE = re.compile(r'^[🟢📌]\s*')   # strip any old emoji prefix
 
@@ -2151,9 +2171,14 @@ class _PidDelegate(_ScenarioDelegate):
                 # instead, so this single-line badge doesn't force the
                 # row taller than the ORS/description content needs
                 # (2026-08-14, see NOTES.md).
-                painter.drawText(rrf_rect.adjusted(2, 0, -2, 0),
-                                 Qt.AlignmentFlag.AlignCenter,
-                                 f"{rrf}")
+                raw_rrf = f"{rrf}"
+                rrf_text = QFontMetrics(badge_font).elidedText(
+                    raw_rrf, Qt.TextElideMode.ElideRight,
+                    max(1, rrf_rect.width() - 4))
+                painter.drawText(rrf_rect.adjusted(1, 0, -1, 0),
+                                 Qt.AlignmentFlag.AlignCenter |
+                                 Qt.AlignmentFlag.AlignVCenter,
+                                 rrf_text)
 
                 # Separator line between description and badge
                 painter.setPen(QPen(QColor('#bcd'), 1))
@@ -2287,19 +2312,26 @@ class _PidDelegate(_ScenarioDelegate):
                     self._panel._ors_freq_zone_geometry(index, r.left() + 2, r.right() - 2)
                 if freq_str is not None:
                     ff = QFont(option.font)
+                    # Keep the compact first-line badge within the shared
+                    # 17px line; boldness and alignment match the RRF badge.
                     ff.setPointSize(max(6, option.font.pointSize() - 1))
+                    ff.setBold(True)
                     ffm = QFontMetrics(ff)
-                    chip_rect = QRect(freq_zone_x, r.top(), freq_zone_w, r.height())
+                    # The badge belongs to the first line, not the full
+                    # wrapped cause cell; otherwise AlignVCenter makes it
+                    # visibly drift downward when the description wraps.
+                    chip_rect = QRect(freq_zone_x, r.top(), freq_zone_w,
+                                      min(_ORS_FIRST_LINE_H, r.height()))
                     chip_bg = QColor('#2F5FD0') if sel else QColor('#F5F5F3')
                     painter.fillRect(chip_rect, chip_bg)
                     painter.setFont(ff)
                     f_tc = (option.palette.highlightedText().color() if sel
                             else QColor('#17191C'))
                     painter.setPen(f_tc)
-                    painter.drawText(chip_rect.adjusted(2, 0, -2, 0),
-                                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                    painter.drawText(chip_rect.adjusted(1, 0, -1, 0),
+                                     Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
                                      ffm.elidedText(freq_str, Qt.TextElideMode.ElideRight,
-                                                     freq_zone_w - 4))
+                                                    max(1, freq_zone_w - 2)))
                     painter.setPen(QPen(QColor('#bcd'), 1))
                     painter.drawLine(chip_rect.left(), r.top(),
                                      chip_rect.left(), r.bottom())

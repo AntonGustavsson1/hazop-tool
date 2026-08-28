@@ -3537,15 +3537,16 @@ class OrsStripReworkTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_frequency_renders_right_aligned_on_the_cells_first_line(self):
+    def test_frequency_renders_centered_on_the_cells_first_line(self):
         """2026-08-18 follow-up ("hamnar nu på olika rader vilket tar
         onödigt mycket plats"): the frequency doesn't get its own
-        reserved row — it floats right-aligned over the first line,
+        reserved row — it floats centered in its compact badge on the first line,
         the SAME line the (now inline) tag prefix and description text
         start on (2026-08-25, see NOTES.md "Slå ihop objektbaren i
         Orsak-kolumnen" — there's no more separate tag strip for it to
         sit "below" anymore, both share one first line)."""
         from hazop import ScenarioTablePanel, _ORS_FIRST_LINE_H
+        from scenario_panel import _RRF_W
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
         cause_id = self.db.add_cause(dev_id)
@@ -3556,7 +3557,9 @@ class OrsStripReworkTests(unittest.TestCase):
             row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
             image = self._render_ors_cell(panel, row)
 
-            right_x_range = range(image.width() - 60, image.width() - 5)
+            # The frequency badge is deliberately compact and shares the
+            # RRF width; inspect only that zone rather than an old 60px strip.
+            right_x_range = range(image.width() - _RRF_W + 2, image.width() - 2)
             freq_zone_has_text = any(
                 self._is_dark(image.pixelColor(x, y))
                 for x in right_x_range for y in range(0, _ORS_FIRST_LINE_H))
