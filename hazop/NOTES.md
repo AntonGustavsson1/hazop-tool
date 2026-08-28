@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Global sökning i P&ID-text (2026-08-28)
+
+Ctrl+F har nu kryssrutan "Sök i text på P&ID". När den är aktiv läses
+textlagret i den aktuella PDF:en med UTF-8-bevarande och träffar visas per
+sida som skyddade sökträffar.
+
 ## Excel-export: valfri sammanslagning och rekommendationslista (2026-08-28)
 
 Excel-exporten frågar nu om identiska intilliggande trädvärden ska slås ihop

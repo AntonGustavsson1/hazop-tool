@@ -1034,6 +1034,10 @@ class GlobalSearchDialog(QDialog):
         self._edit.textChanged.connect(self._search)
         self._edit.setClearButtonEnabled(True)
         row.addWidget(self._edit)
+        self._search_pid_text = QCheckBox("Sök i text på P&ID")
+        self._search_pid_text.setToolTip("Inkludera textlager i den aktiva P&ID-PDF:en")
+        self._search_pid_text.toggled.connect(lambda _checked: self._search(self._edit.text()))
+        row.addWidget(self._search_pid_text)
         lay.addLayout(row)
 
         replace_row = QHBoxLayout()
@@ -1113,6 +1117,23 @@ class GlobalSearchDialog(QDialog):
                             'document': document, 'post': f'{post_name} #{data["_search_id"]}',
                             'field': field, 'field_label': self._FIELD_LABELS.get(field, field),
                             'value': value, 'protected': protected})
+        if self._search_pid_text.isChecked():
+            try:
+                import fitz
+                pdf_path = self._db.get_pid_path()
+                if pdf_path:
+                    with fitz.open(str(pdf_path)) as pdf:
+                        for page_no, page in enumerate(pdf, start=1):
+                            page_text = page.get_text('text') or ''
+                            if q_fold in page_text.casefold():
+                                results.append({
+                                    'kind': 'pid_text', 'id': page_no,
+                                    'table': 'pid_text', 'document': document,
+                                    'post': f'P&ID sida {page_no}',
+                                    'field': 'text', 'field_label': 'P&ID-text',
+                                    'value': page_text.strip(), 'protected': True})
+            except Exception:
+                logging.exception('GlobalSearchDialog: P&ID text search failed')
         results.sort(key=lambda h: (h['post'].casefold(), h['field_label'].casefold(), h['id']))
         for hit in results[:200]:
             excerpt = hit['value'].replace('\n', ' ')
