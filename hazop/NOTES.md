@@ -2,6 +2,14 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Grupporsak: objekttaggar öppnar inte längre Primär/Sekundär-popup (2026-08-28)
+
+Objekttaggarna i grupporsakens Orsak-cell är nu presentation-only. Klick eller
+dubbelklick på taggen öppnar inte längre de radstyrda Primärhändelse- eller
+Sekundärhändelse-popupfönstren; dubbelklick fortsätter i stället till samma
+inline-redigering som fritextdelen. Verifierat med syntaxkontroll, smoke-test
+och grupprelaterade integrationstester.
+
 ## RRF-popup: positiv tillämpningslogik (2026-08-28)
 
 RRF-popupens kategori- och orsaksval visar nu "Gäller för" och är förvalda

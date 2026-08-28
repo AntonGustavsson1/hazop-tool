@@ -5837,12 +5837,10 @@ class ScenarioTablePanel(QWidget):
                             tag_width = QFontMetrics(bold_font).horizontalAdvance(
                                 str(group_tags[line_no]))
                             tag_hit = tag_start <= click[2].x() <= tag_start + tag_width
-                    if tag_hit:
-                        gp = self._table.viewport().mapToGlobal(click[2])
-                        self._show_group_cause_popup(
-                            row, cause_id, gp, only_column=group_line)
-                        self._double_click_edit = None
-                        return
+                    # The bold object tag is presentation-only.  A
+                    # double-click there follows the same inline editor path
+                    # as a double-click in the row's free text; no separate
+                    # Primär/Sekundär popup is shown.
                 # A grouped cause always reports an empty single-tag
                 # obj_data (its identity lives in the two-entry group_tags
                 # list instead, checked above) -- without the len() guard
@@ -6244,15 +6242,9 @@ class ScenarioTablePanel(QWidget):
         so it's shown non-modally instead of exec()'d."""
         item      = self._table.item(row, self._C_ORS)
         group_tags = item.data(Qt.ItemDataRole.UserRole + 9) or [] if item else []
+        # Grouped object tags are presentation-only.  Do not open the old
+        # Primär/Sekundär popup from this shared helper.
         if len(group_tags) >= 2:
-            cell_rect = self._table.visualRect(
-                self._table.model().index(row, self._C_ORS))
-            top = self._table.viewport().mapToGlobal(cell_rect.topLeft()).y()
-            line_h = max(_ORS_FIRST_LINE_H,
-                         QFontMetrics(self._table.font()).height() + 4)
-            line = 0 if global_pos.y() < top + line_h else 1
-            self._show_group_cause_popup(
-                row, cause_id, global_pos, only_column=line)
             return
         obj_data  = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
         comp_type, comp_tag = obj_data if obj_data else ('', '')

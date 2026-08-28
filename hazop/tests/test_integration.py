@@ -4771,27 +4771,6 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
                 dict(win.db.get_cause(cause_id))['description'],
                 'FI-1 felar lågt\nFV-1 behöver manövreras manuellt')
 
-    def test_group_popup_is_filtered_to_the_clicked_group_line(self):
-        from scenario_panel import GroupCausePopup
-        primary = {'tag': 'FI-1', 'equipment_type': 'Instrument'}
-        secondary = {'tag': 'FV-1', 'equipment_type': 'Reglerventil'}
-        primary_popup = GroupCausePopup(
-            primary, secondary, 'Felar högt', 'Öppnar fullt', only_column=0)
-        secondary_popup = GroupCausePopup(
-            primary, secondary, 'Felar högt', 'Öppnar fullt', only_column=1)
-        try:
-            self.assertEqual(primary_popup.windowTitle(), 'Primärhändelse')
-            self.assertEqual(secondary_popup.windowTitle(), 'Sekundärhändelse')
-            primary_buttons = [b.text() for b in primary_popup.findChildren(QPushButton)]
-            secondary_buttons = [b.text() for b in secondary_popup.findChildren(QPushButton)]
-            self.assertEqual(primary_buttons, ['Felar högt', 'Felar lågt'])
-            self.assertEqual(secondary_buttons,
-                             ['Öppnar felaktigt', 'Stänger felaktigt',
-                              'Öppnar fullt', 'Stänger helt'])
-        finally:
-            primary_popup.deleteLater()
-            secondary_popup.deleteLater()
-
     def test_group_secondary_edit_uses_same_inline_editor_and_popup_as_single_cause(self):
         from scenario_panel import _BoldTagTextEdit, StandardCauseSuggestPopup
         with _TempDbMainWindow() as win:
@@ -4868,13 +4847,14 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             row = next(r for r, m in enumerate(panel._row_meta)
                        if m[1] == cause_id)
 
-            def click_right_of_tag(line_no):
+            def click_in_group_row(line_no, x_offset=None):
                 idx = table.model().index(row, panel._C_ORS)
                 rect = table.visualRect(idx)
                 item = table.item(row, panel._C_ORS)
                 line_h = max(_ORS_FIRST_LINE_H,
                              QFontMetrics(table.font()).height() + 4)
-                pos = QPoint(rect.left() + rect.width() - 10,
+                x = rect.left() + rect.width() - 10 if x_offset is None else rect.left() + x_offset
+                pos = QPoint(x,
                              rect.top() + 2 + line_no * line_h + line_h // 2)
                 panel._double_click_edit = (row, panel._C_ORS, pos)
                 panel._on_cell_double_clicked(item)
@@ -4894,7 +4874,15 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
                     p.close()
                 QApplication.processEvents()
 
-            click_right_of_tag(0)
+            # Clicking the bold object tag itself must no longer open the
+            # Primär/Sekundär popup; it enters the same inline editor flow.
+            click_in_group_row(0, x_offset=12)
+            editors = table.viewport().findChildren(_BoldTagTextEdit)
+            self.assertTrue(editors, 'primary tag click must open the inline editor')
+            self.assertFalse(panel.findChildren(GroupCausePopup))
+            close_editors()
+
+            click_in_group_row(0)
             editors = table.viewport().findChildren(_BoldTagTextEdit)
             self.assertTrue(editors, 'primary row click must open the inline editor')
             self.assertTrue(any(e.property('group_line') == 0 for e in editors))
@@ -4903,7 +4891,7 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
                               'clicking right of the tag must not open the object picker')
             close_editors()
 
-            click_right_of_tag(1)
+            click_in_group_row(1)
             editors = table.viewport().findChildren(_BoldTagTextEdit)
             self.assertTrue(editors, 'secondary row click must open the inline editor')
             self.assertTrue(any(e.property('group_line') == 1 for e in editors))
