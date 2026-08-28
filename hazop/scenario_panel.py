@@ -3658,8 +3658,9 @@ class ScenarioTablePanel(QWidget):
         self._table.setColumnHidden(self._C_NOD, not visible)
         self._table.setColumnHidden(
             self._C_DEV, not (visible or self._force_dev_column_visible))
-        self._table.setColumnHidden(
-            self._C_UTR, self._force_utr_column_hidden or not visible)
+        # The old Utrustning presentation column is retired.  Keep the
+        # internal compatibility column hidden in every Scenario view.
+        self._table.setColumnHidden(self._C_UTR, True)
 
     def always_show_deviation_column(self):
         """Keep the Avvikelse column visible at all times, regardless of

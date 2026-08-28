@@ -3334,3 +3334,8 @@ sök-/export-/layouttester. Ingen visuell GUI-verifiering är gjord.
 Barriär/Safeguard visar P&ID-taggförslag redan efter ett tecken. Exakta taggar
 från P&ID-registret fetmarkeras live när de skrivs eller väljs; Konsekvens
 behåller tvåteckengränsen för popupen.
+## Utrustningskolumnen i HAZOP Scenario (2026-08-28)
+
+Den gamla Utrustning-kolumnen är permanent dold även i Visa samtliga noder och
+P&ID-filter. P&ID-taggen visas i stället i Orsak-cellen; anrop som tidigare
+gjorde kolumnen synlig i dessa lägen används inte längre.

@@ -418,8 +418,8 @@ class HAZOPWorksheetTests(unittest.TestCase):
 
             panel._all_nodes = True
             panel._set_all_nodes_columns_visible(True)
-            self.assertFalse(panel._table.isColumnHidden(panel._C_UTR),
-                "Utrustning must still appear in genuine all-nodes mode")
+            self.assertTrue(panel._table.isColumnHidden(panel._C_UTR),
+                "Utrustning must remain retired in genuine all-nodes mode")
         finally:
             panel.deleteLater()
 

@@ -3480,8 +3480,8 @@ class OrsStripReworkTests(unittest.TestCase):
 
             panel.load_all()
             row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
-            self.assertFalse(panel._table.isColumnHidden(panel._C_UTR),
-                "test assumes load_all() shows the Utrustning column")
+            self.assertTrue(panel._table.isColumnHidden(panel._C_UTR),
+                "Utrustning must remain retired in load_all()")
             item = panel._table.item(row, panel._C_ORS)
             tag_label, show_tag = panel._ors_tag_prefix(item)
             self.assertTrue(show_tag,
