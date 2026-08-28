@@ -190,6 +190,7 @@ class TreePanel(QWidget):
         self.tree.itemDoubleClicked.connect(self._on_item_double_click)
         self._inline_edit_target = None   # (type_, id_) while an inline edit is in progress
         self.tree.installEventFilter(self)   # keyboard navigation (feature 17)
+        self.tree.viewport().installEventFilter(self)  # grouped line hit-testing
         # Internal drag-and-drop between tree levels (2026-08-17, user
         # request: drag a Cause/Consequence/Safeguard onto a different
         # parent to reparent it there — e.g. dragging a Consequence onto
@@ -1091,6 +1092,45 @@ class TreePanel(QWidget):
         if type_ in self._INLINE_EDIT_TYPES:
             self._begin_inline_edit(item, type_, id_)
 
+    def _group_equipment_ids(self, cause):
+        if not cause:
+            return []
+        try:
+            values = json.loads(cause.get('group_equipment_ids') or '[]')
+        except (TypeError, ValueError, json.JSONDecodeError):
+            values = []
+        if not values:
+            values = [cause.get('equipment_id'), cause.get('secondary_equipment_id')]
+        return list(dict.fromkeys(value for value in values if value is not None))[:20]
+
+    def _open_group_object_tag_popup(self, item, cause_id, group_line):
+        """Edit only the object represented by one visual group line."""
+        cause = self.db.get_cause(cause_id)
+        ids = self._group_equipment_ids(cause)
+        if not cause or not (0 <= group_line < len(ids)):
+            return
+        equipment = self.db.get_equipment_by_id(ids[group_line])
+        if not equipment:
+            return
+        equipment = dict(equipment)
+        rect = self.tree.visualItemRect(item)
+        global_pos = self.tree.viewport().mapToGlobal(rect.bottomLeft())
+        popup = CauseTagPopup(
+            self.db, equipment.get('equipment_type') or '',
+            equipment.get('tag') or '', parent=self,
+            cause_id=cause_id, equipment_id=equipment.get('id'))
+        popup.committed.connect(
+            lambda comp_type, tag, eqid=equipment.get('id'):
+            self._apply_equipment_tag_edit(eqid, comp_type, tag))
+        popup.adjustSize()
+        screen = (QApplication.screenAt(global_pos) or QApplication.primaryScreen()).availableGeometry()
+        x = min(global_pos.x(), screen.right() - popup.width() - 4)
+        y = global_pos.y() + 2
+        if y + popup.height() > screen.bottom():
+            y = global_pos.y() - popup.height() - 2
+        popup.move(max(screen.left() + 4, x), max(screen.top() + 4, y))
+        popup.show()
+
     def _open_equipment_tag_popup(self, item, eq_id):
         """Double-click an equipment/tag header row -> the same
         minimalistic Tag+Typ popup already used for a tag click in the
@@ -1378,6 +1418,27 @@ class TreePanel(QWidget):
             if event.mimeData().hasText() and event.mimeData().text().startswith('hzp:treeitem:'):
                 self._handle_tree_reparent_drop(event, obj)
                 return True
+
+        # A grouped cause is one QTreeWidgetItem with several visual lines.
+        # Intercept the double-click before Qt sends the item as a whole to
+        # _on_item_double_click, so each object's line opens its own tag/type
+        # editor instead of editing the complete group at once.
+        if (obj is self.tree.viewport() and
+                event.type() == QEvent.Type.MouseButtonDblClick and
+                event.button() == Qt.MouseButton.LeftButton):
+            pos = event.position().toPoint()
+            item = self.tree.itemAt(pos)
+            if item is not None and item.data(0, Qt.ItemDataRole.UserRole + 1) == CAUSE_T:
+                cause_id = item.data(0, Qt.ItemDataRole.UserRole)
+                cause = self.db.get_cause(cause_id)
+                group_ids = self._group_equipment_ids(cause)
+                lines = (item.text(0) or '').splitlines()
+                rect = self.tree.visualItemRect(item)
+                line_h = max(1, QFontMetrics(self.tree.font()).height())
+                line_no = int((pos.y() - rect.top()) // line_h)
+                if len(group_ids) >= 2 and len(lines) >= 2 and 0 <= line_no < len(group_ids):
+                    self._open_group_object_tag_popup(item, cause_id, line_no)
+                    return True
 
         if obj is not self.tree or event.type() != QEvent.Type.KeyPress:
             return super().eventFilter(obj, event)

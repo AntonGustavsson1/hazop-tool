@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Enskild gruppobjektredigering i trädet (2026-08-28)
+
+En grupp visas fortfarande som en gemensam trädpost, men dubbelklick på en
+enskild objektrad öppnar nu tagg-/typeditorn för just det objektet. Träfftestet
+görs på trädets viewport och påverkar inte gruppens ordning eller länkar.
+
 ## Grafisk linjering av gruppobjekt i trädet (2026-08-28)
 
 När en grupp med flera objekt visas i samma trädpost får fortsättningsraderna
