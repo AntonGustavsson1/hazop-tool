@@ -3308,3 +3308,6 @@ sök-/export-/layouttester. Ingen visuell GUI-verifiering är gjord.
 ## 2026-08-28 — Nytt projekt och deltagardatum
 
 - När ett nytt projekt laddades byttes databaskopplingen för deltagarpanelen, men den synliga tabellen uppdaterades inte. `_reload_all_panels()` refreshar nu deltagarmatrisen direkt, så analystillfällen och datum från föregående projekt försvinner omedelbart.
+## 2026-08-28 — en synlig närvarokryssruta per cell
+
+- Närvarocellerna behåller sitt modellvärde men är inte längre `ItemIsUserCheckable`. Den tidigare modellindikatorn målades som en extra, icke-klickbar kryssruta ovanpå den riktiga cellkontrollen.

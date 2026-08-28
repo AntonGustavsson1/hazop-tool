@@ -148,12 +148,14 @@ class ParticipantMatrixPanel(QWidget):
                     self._table.setItem(row, len(self._FIXED_COLS) + ci, QTableWidgetItem(val))
                 for col, sess in enumerate(sessions):
                     attended, note = attendance.get((p['id'], sess['id']), (False, ''))
-                    # Keep a check-state item as the model-side representation
-                    # for sorting/tests/accessibility, while the cell widget
-                    # below adds the per-participant note field.
+                    # Keep the attendance state on the item for model/tests,
+                    # but explicitly remove ItemIsUserCheckable.  The actual
+                    # cell widget below owns the only visible checkbox;
+                    # otherwise QTableWidget paints a second, non-clickable
+                    # indicator in the same cell.
                     state_item = QTableWidgetItem()
                     state_item.setFlags(
-                        (state_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                        (state_item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
                         & ~Qt.ItemFlag.ItemIsEditable)
                     state_item.setCheckState(
                         Qt.CheckState.Checked if attended else Qt.CheckState.Unchecked)
