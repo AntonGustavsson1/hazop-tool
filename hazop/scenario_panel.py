@@ -3655,6 +3655,17 @@ class ScenarioTablePanel(QWidget):
         used = sum(self._table.columnWidth(c) for c in other_cols)
         available = max(0, self._table.viewport().width() - used)
         per_col = max(60, available // len(stretch_cols))
+        # The ORS cell contains an inline bold equipment tag.  Allowing the
+        # fill operation to shrink it to the generic 60 px floor makes tags
+        # wrap/clip exactly when the user starts editing the cause.  Keep the
+        # same practical minimums as the initial layout; a narrow window may
+        # scroll horizontally, but it must never hide part of an identity tag.
+        minimums = {
+            self._C_ORS: 180,
+            self._C_KON: 180,
+            self._C_SG: 130,
+        }
+        per_col = max(per_col, max(minimums.values()))
         self._applying_fill_width = True
         try:
             for col in stretch_cols:

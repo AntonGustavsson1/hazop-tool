@@ -3293,3 +3293,6 @@ sök-/export-/layouttester. Ingen visuell GUI-verifiering är gjord.
 - Deltagarnas snabbmarkering är kolumnjusterad under analystillfällena och fritext per deltagare/tillfälle behålls.
 - Placera på P&ID stöder vänsterklick-drag med streckad gummibandsförhandsvisning och skickar PDF-rektangel till kopplingsflödet.
 - Scenariohuvudet hålls kompakt; aktuell kontext visas i tooltip. Fördröjd taggkomplettering avbryts säkert om editorn redan är borttagen.
+## 2026-08-28 — orsakstaggar efter Fyll bredd
+
+- `Fyll bredd` får inte längre krympa Orsak/Konsekvens/Barriärer till en bredd där ett inline-visat P&ID-tagnummer radbryts eller klipps när orsaken öppnas för redigering. Minsta gemensamma bredd är 180 px för de tre textkolumnerna; smalare fönster får horisontell scroll.
