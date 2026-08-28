@@ -67,6 +67,7 @@ from hazop import (  # noqa: E402
 from PyQt6.QtWidgets import (  # noqa: E402
     QApplication, QGraphicsPixmapItem, QTreeWidgetItemIterator, QCheckBox,
     QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit,
+    QStyleOptionViewItem,
 )
 from PyQt6.QtGui import QPixmap, QFocusEvent  # noqa: E402
 from PyQt6.QtCore import Qt, QPoint, QDate, QEvent, QThread, pyqtSignal  # noqa: E402
@@ -3791,6 +3792,39 @@ class RecommendationColumnTests(unittest.TestCase):
         self.assertEqual(self.db.get_recommendation(rec_id)['description'], 'Ny text')
         self.assertEqual(len(self.db.all_recommendations()), 1,
             "editing in place must not create a second catalog row")
+
+    def test_real_recommendation_delegate_saves_plain_text_not_html(self):
+        """The live QTextEdit delegate must persist the recommendation text.
+
+        This exercises the same create/set-editor-data/set-model-data path as
+        an actual inline edit, including the table's itemChanged callback.
+        It guards against the regression where Qt put the QTextEdit HTML
+        document into the cell and the database ended up empty.
+        """
+        rec_id = self.db.add_recommendation_to_consequence(
+            self.cons_id, description='Gammal text')
+        item, row = self._rek_item()
+        index = self.panel._table.model().index(row, self.panel._C_REK)
+        option = QStyleOptionViewItem()
+        option.rect = self.panel._table.visualRect(index)
+        editor = self.panel._delegate.createEditor(
+            self.panel._table, option, index)
+        try:
+            self.panel._delegate.setEditorData(editor, index)
+            self.assertEqual(editor.toPlainText(), 'Gammal text')
+            editor.setText('se till att stoppa pump x vid y')
+            self.panel._delegate.setModelData(
+                editor, self.panel._table.model(), index)
+        finally:
+            editor.deleteLater()
+
+        saved = self.db.get_recommendation(rec_id)
+        self.assertEqual(saved['description'], 'se till att stoppa pump x vid y')
+        self.assertNotIn('<!DOCTYPE', saved['description'])
+        QApplication.processEvents()
+        refreshed_item, _ = self._rek_item()
+        self.assertEqual(refreshed_item.text(),
+                         f'R-{rec_id:03d}. se till att stoppa pump x vid y')
 
     @unittest.skip("REK additions now use the dedicated trailing physical row")
     def test_committing_text_with_two_linked_adds_a_third_without_touching_the_others(self):

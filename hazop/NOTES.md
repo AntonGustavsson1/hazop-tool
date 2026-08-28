@@ -3368,3 +3368,14 @@ standardtexten "Ny rekommendation".
 X-riktningsknappen i riskmatrisinställningarna följer nu endast matrisens
 egna kolumner. Konsekvenskategori-fälten till höger påverkar inte längre
 knappens bredd; bredden synkroniseras efter ombyggnad och splitterdragning.
+
+## Rekommendationstext sparas som vanlig text (2026-08-28)
+
+Den kvarstående visningen av "Ny rekommendation" berodde på att
+rekommendationskolumnen använde `_ScenarioDelegate` utan egen
+`setModelData()`. Qt kunde då lägga in hela QTextEdit-dokumentet
+(`<!DOCTYPE HTML ...>`) i tabellcellen. `itemChanged` tolkade dokumentet som
+text, databasens HTML-rengöring lämnade en tom beskrivning och nästa rendering
+föll tillbaka till standardtexten. Delegaten sparar nu alltid `toPlainText()`
+och signalhanteraren rengör defensivt även äldre HTML-innehåll. Ett
+integrationsprov täcker den verkliga editor/delegate/modell/databaskedjan.

@@ -1692,6 +1692,29 @@ class _ScenarioDelegate(QStyledItemDelegate):
             return
         super().setEditorData(editor, index)
 
+    def setModelData(self, editor, model, index):
+        """Commit the editor's plain text, never QTextEdit's HTML document.
+
+        The recommendation column uses this delegate directly (unlike the
+        P&ID text columns, which use ``_PidDelegate``).  QStyledItemDelegate's
+        generic QTextEdit handling can otherwise pass the complete HTML
+        document to the table model.  The table's ``itemChanged`` handler
+        then sees the ``<!DOCTYPE HTML...>`` header and the recommendation is
+        saved as empty text, which later renders as ``Ny rekommendation``.
+        """
+        if isinstance(editor, _BoldTagTextEdit):
+            clean = editor.toPlainText().strip()
+        elif isinstance(editor, QLineEdit):
+            clean = editor.text().strip()
+        else:
+            clean = str(editor.text()).strip()
+        clean = _PID_ICON_RE.sub('', clean)
+        if index.column() == self._panel._C_REK:
+            # The running number is presentation-only and must never be
+            # stored as part of the recommendation description.
+            clean = re.sub(r'^R-\d+\.\s*', '', clean, flags=re.IGNORECASE)
+        model.setData(index, clean, Qt.ItemDataRole.EditRole)
+
     def _prepare_recommendation_editor(self, editor, index, option):
         """REK inline editing (2026-08-26, see NOTES.md "Redigera
         rekommendationer direkt i HAZOP Scenario" — replaces the old
@@ -7079,7 +7102,11 @@ class ScenarioTablePanel(QWidget):
             #                that confirmation for no reason.
             #   0 or 2+   -> non-blank text becomes an ADDITIONAL new
             #                recommendation; existing ones are untouched.
-            desc = text.split('\n')[0].strip()
+            # A recommendation cell may have been produced by an older Qt
+            # editor path that wrote a complete QTextEdit HTML document into
+            # the item.  Clean before selecting the first line so that such
+            # a cell cannot be interpreted as an empty recommendation.
+            desc = Database._clean_recommendation_text(text).split('\n')[0].strip()
             acts = self.db.recommendations_for_consequence(id_)
             rec_id = meta_extra[0] if meta_extra else None
             force_add = self._recommendation_force_add_cons_id == id_
