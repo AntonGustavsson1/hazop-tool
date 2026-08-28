@@ -5843,7 +5843,16 @@ class ScenarioTablePanel(QWidget):
                             row, cause_id, gp, only_column=group_line)
                         self._double_click_edit = None
                         return
-                if cause_id is not None and not (obj_data[1] or '').strip():
+                # A grouped cause always reports an empty single-tag
+                # obj_data (its identity lives in the two-entry group_tags
+                # list instead, checked above) -- without the len() guard
+                # here, every double-click on a grouped row's free-text
+                # zone (tag_hit already False) was wrongly read as "no
+                # object bound yet" and re-routed into the tag/object
+                # picker popup, so the inline free-text editor below could
+                # never be reached for a grouped cause at all.
+                if (cause_id is not None and len(group_tags) < 2 and
+                        not (obj_data[1] or '').strip()):
                     gp = self._table.viewport().mapToGlobal(
                         self._table.visualRect(self._table.model().index(row, col)).topLeft())
                     self._show_cause_obj_popup(row, cause_id, gp)

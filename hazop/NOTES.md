@@ -3479,3 +3479,21 @@ Dubbelklickets radposition samlas nu in både från tabellens viewport och från
 själva tabellen. Om Qt inte levererar positionen via eventfiltret används
 musens globala position som reserv. Detta gör att dubbelklick i fritextdelen
 fortsatt väljer primär eller sekundär rad och öppnar inline-editorn.
+
+## Grupporsak: dubbelklick till höger om tagg öppnade fel popup (2026-08-28)
+
+Trots gårdagens rad-/geometrilogik öppnade ett dubbelklick i fritextdelen av
+EN grupporsaksrad ändå alltid Grupporsak-popupen (tagg-/objektväljaren) i
+stället för inline-texteditorn, för både primär och sekundär rad. Orsaken:
+`_on_cell_double_clicked`s fallback "orsaken saknar kopplat objekt ännu"
+kontrollerade det gamla enkel-taggfältet (`obj_data`), som alltid är tomt för
+en grupporsak eftersom dess identitet i stället ligger i den tvåradiga
+`group_tags`-listan — så varje grupporsaksklick lästes felaktigt som
+"inget objekt kopplat" och kortslöt till objektväljaren innan den redan
+korrekta rad-/tag_hit-logiken ovanför någonsin nådde fram till att öppna
+editorn. Villkoret kräver nu även `len(group_tags) < 2`, så en grupporsak
+aldrig tar den vägen. Verifierat med ett nytt regressionstest som simulerar
+en riktig dubbelklickposition (inte bara sätter `_group_edit_line` manuellt)
+och som fallerar mot den gamla koden; `tests.test_smoke` och riktade
+`tests.test_integration`-tester passerar. Ingen visuell GUI-verifiering är
+gjord.

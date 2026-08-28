@@ -4826,6 +4826,92 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             for editor in editors:
                 editor.deleteLater()
 
+    def test_group_row_real_double_click_right_of_tag_opens_inline_editor(self):
+        """Regression test for a bug where EVERY double-click on a
+        grouped cause's ORS cell -- even one clearly to the right of the
+        bold tag, in the free-text zone -- opened the tag/object picker
+        (GroupCausePopup) instead of the inline free-text editor.
+
+        Root cause: _on_cell_double_clicked's "cause has no object bound
+        yet" fallback checked the single-tag obj_data field, which is
+        always empty for a grouped cause (its identity lives in the
+        two-entry group_tags list instead) -- so it always looked like
+        an unbound cause and short-circuited before ever reaching the
+        already-correct group_line/tag_hit logic above it.
+
+        Unlike test_group_secondary_edit_uses_same_inline_editor_and_popup_as_single_cause
+        (which manually sets `panel._group_edit_line` and calls
+        `table.edit()` directly, bypassing hit-testing entirely), this
+        drives the real `_on_cell_double_clicked` entry point with a
+        `_double_click_edit` position computed the same way a genuine
+        mouse click would be, so it actually exercises the tag_hit/
+        line_no geometry that was broken."""
+        from scenario_panel import (_BoldTagTextEdit, StandardCauseSuggestPopup,
+                                     GroupCausePopup, _ORS_FIRST_LINE_H)
+        from PyQt6.QtWidgets import QStyledItemDelegate
+        from PyQt6.QtGui import QFontMetrics
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.get_or_create_deviation(node_id, 'High flow')
+            primary_id = win.db.add_equipment_item('FI-1', 'FI-1', 'FI', 0,
+                                                   'Instrument', '', 0)
+            secondary_id = win.db.add_equipment_item('FV-1', 'FV-1', 'FV', 0,
+                                                     'Reglerventil', '', 0)
+            cause_id = win.db.add_cause(dev_id)
+            win.db.update_cause(
+                cause_id, comp_type='Instrument', comp_tag='FI-1 + FV-1',
+                equipment_id=primary_id, secondary_equipment_id=secondary_id,
+                description='FI-1\nFV-1', group_choices_set=0)
+            panel = win.scenario_panel
+            panel.load_node(node_id)
+            table = panel._table
+            row = next(r for r, m in enumerate(panel._row_meta)
+                       if m[1] == cause_id)
+
+            def click_right_of_tag(line_no):
+                idx = table.model().index(row, panel._C_ORS)
+                rect = table.visualRect(idx)
+                item = table.item(row, panel._C_ORS)
+                line_h = max(_ORS_FIRST_LINE_H,
+                             QFontMetrics(table.font()).height() + 4)
+                pos = QPoint(rect.left() + rect.width() - 10,
+                             rect.top() + 2 + line_no * line_h + line_h // 2)
+                panel._double_click_edit = (row, panel._C_ORS, pos)
+                panel._on_cell_double_clicked(item)
+                QApplication.processEvents()
+
+            def close_editors():
+                # Must tell the view itself the edit session ended (not
+                # just delete the editor widget) -- QAbstractItemView
+                # tracks an open editor per index internally and refuses
+                # a second table.edit() on the same index ("editing
+                # failed") until that bookkeeping is cleared, same as the
+                # real StandardCauseSuggestPopup._pick()/Enter-key paths.
+                delegate = panel._pid_delegate
+                for e in list(table.viewport().findChildren(_BoldTagTextEdit)):
+                    delegate.closeEditor.emit(e, QStyledItemDelegate.EndEditHint.NoHint)
+                for p in list(panel.window().findChildren(StandardCauseSuggestPopup)):
+                    p.close()
+                QApplication.processEvents()
+
+            click_right_of_tag(0)
+            editors = table.viewport().findChildren(_BoldTagTextEdit)
+            self.assertTrue(editors, 'primary row click must open the inline editor')
+            self.assertTrue(any(e.property('group_line') == 0 for e in editors))
+            self.assertTrue(panel.window().findChildren(StandardCauseSuggestPopup))
+            self.assertFalse(panel.findChildren(GroupCausePopup),
+                              'clicking right of the tag must not open the object picker')
+            close_editors()
+
+            click_right_of_tag(1)
+            editors = table.viewport().findChildren(_BoldTagTextEdit)
+            self.assertTrue(editors, 'secondary row click must open the inline editor')
+            self.assertTrue(any(e.property('group_line') == 1 for e in editors))
+            self.assertTrue(panel.window().findChildren(StandardCauseSuggestPopup))
+            self.assertFalse(panel.findChildren(GroupCausePopup),
+                              'clicking right of the tag must not open the object picker')
+            close_editors()
+
     def test_group_popup_uses_secondary_object_and_free_text_preserves_both_rows(self):
         with _TempDbMainWindow() as win:
             node_id = win.db.add_node()
