@@ -3063,6 +3063,20 @@ biblioteket ligger kvar i arkivet.
 # 2026-08-27 — Project Lumen startbild
 Startup använder project_lumen_startup.svg i splashskärmen och behåller status/spinner under databas- och GUI-initialisering.
 
+## Konsekvent redigering av HAZOP-scenarioceller (2026-08-28)
+
+Orsak, Konsekvens, Safeguard och Rekommendation använder nu samma fördröjda
+edit-start. Dubbelklick avbryter enkelklickets väntande edit, fångar den
+faktiska klickpositionen och placerar textmarkören där utan helmarkering.
+Editorn avmarkerar efter fokus och använder inte `selectAll()`.
+
+Den gemensamma taggmedvetna editorn behåller samma cellposition och visuella
+taggmarkering under redigering. Befintliga specialgeometrier för Orsakens
+tagg/frekvens, Safeguards RRF och Rekommendationens sekventiella tillägg är
+kvar eftersom de är en del av cellens funktionella layout. Regressionstesterna
+uppdaterades till den gemensamma edit-starten och 27 berörda tester passerar.
+Ingen visuell GUI-verifiering är gjord.
+
 ## Intelligent namnbyte och objektkoppling i Edit Mode (2026-08-28)
 
 Inline-redigering i HAZOP Scenario behåller nu fet visning av kända P&ID-taggar även när editorn är aktiv. Vid redigering av Konsekvens eller Safeguard identifieras ett borttaget gammalt taggnummer och ett nytt taggformat innan texten sparas. En exakt träff i aktuell equipment_catalog ger dialogen Koppla till objekt / Byt endast namn / Avbryt; utan träff krävs uttryckligt godkännande av namnbytet. Dubblettnamn blockeras och den nya taggen sparas i tagged_refs så att fetstil består.

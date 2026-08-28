@@ -4152,6 +4152,17 @@ class InlineIdentityEditTests(unittest.TestCase):
         editor.set_bold_tags(['PSHH-101'])
         self.assertEqual(editor._bold_tags, ['PSHH-101'])
 
+    def test_double_click_caret_is_positioned_without_selection(self):
+        editor = self.editor_type(self.panel._table.viewport())
+        editor.setGeometry(20, 0, 240, 28)
+        editor.setProperty('editing_row', 0)
+        editor.setProperty('editing_col', self.panel._C_KON)
+        editor.setText('PSHH-101 High pressure trip')
+        editor.selectAll()
+        self.panel._place_editor_caret(0, self.panel._C_KON, QPoint(20 + 9 * 7, 10))
+        self.assertEqual(editor.selectedText(), '')
+        self.assertGreater(editor.cursorPosition(), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

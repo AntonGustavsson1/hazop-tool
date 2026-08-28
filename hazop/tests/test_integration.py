@@ -732,10 +732,9 @@ class KonInlineEditTests(unittest.TestCase):
             row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
             panel._table.setCurrentCell(row, panel._C_KON)
 
-            with unittest.mock.patch('hazop.QTimer.singleShot',
-                                      side_effect=lambda _ms, fn: fn()) as mock_timer:
+            with unittest.mock.patch.object(panel, '_queue_cell_edit') as mock_queue:
                 panel._on_cell_clicked(row, panel._C_KON)
-            mock_timer.assert_called_once()
+            mock_queue.assert_called_once_with(row, panel._C_KON)
 
     def test_editing_kon_cell_saves_to_consequence_description(self):
         with _TempDbMainWindow() as win:

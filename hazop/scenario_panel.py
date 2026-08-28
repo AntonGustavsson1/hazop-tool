@@ -1300,6 +1300,10 @@ class _ScenarioDelegate(QStyledItemDelegate):
             editor.setProperty('editing_row', index.row())
             editor.setProperty('editing_col', index.column())
             editor.installEventFilter(self._panel)
+            # Do not let focus acquisition turn a normal cell edit into a
+            # whole-text selection.  The panel places the caret explicitly
+            # for double-clicks; all other entry points start unselected.
+            editor.deselect()
             if index.column() == self._panel._C_REK:
                 self._prepare_recommendation_editor(editor, index, option)
         return editor
@@ -1647,6 +1651,7 @@ class _PidDelegate(_ScenarioDelegate):
             if clean == '—':
                 clean = ''
             editor.setText(clean)
+            editor.deselect()
             # Keep the identity tokens bold while the editor is active.  For
             # Orsak the tag prefix remains outside the editor; Konsekvens and
             # Safeguard may carry tags inside their description.
@@ -2936,6 +2941,8 @@ class ScenarioTablePanel(QWidget):
         self._enter_col = -1
         self._last_enter_committed = False
         self._pending_ors_edit_timer = None
+        self._pending_cell_edit_timer = None
+        self._double_click_edit = None  # (row, col, viewport position)
         # Set while the blank REK editor below saved recommendations is
         # active; its text must create a sibling, never overwrite the sole
         # existing recommendation.
@@ -5004,7 +5011,7 @@ class ScenarioTablePanel(QWidget):
             # double-click opens two competing editing functions/popups.
             if (self._table.currentRow() == row and
                     self._table.currentColumn() == col):
-                self._queue_ors_edit(row, col)
+                self._queue_cell_edit(row, col)
             return
         if col == self._C_KON and row < len(self._row_meta):
             cons_id = self._row_meta[row][2]
@@ -5015,7 +5022,7 @@ class ScenarioTablePanel(QWidget):
             # konsekvensen för att redigera den direkt där" (NOTES.md).
             # Double-click still opens the chain wizard (_on_cell_double_clicked).
             if self._table.currentRow() == row and self._table.currentColumn() == col:
-                QTimer.singleShot(200, lambda r=row, c=col: self._try_start_edit(r, c))
+                self._queue_cell_edit(row, col)
             return
         if col == self._C_SG and row < len(self._row_meta):
             sg_id = self._row_meta[row][3]
@@ -5023,7 +5030,7 @@ class ScenarioTablePanel(QWidget):
                 self.item_selected.emit(SG_T, sg_id)
             # Feature 7: single-click on already-current SG cell → start edit
             if self._table.currentRow() == row and self._table.currentColumn() == col:
-                QTimer.singleShot(200, lambda r=row, c=col: self._try_start_edit(r, c))
+                self._queue_cell_edit(row, col)
             return
         if col == self._C_REK and row < len(self._row_meta):
             cons_id = self._row_meta[row][2]
@@ -5035,7 +5042,7 @@ class ScenarioTablePanel(QWidget):
             # Scenario" -- replaces the old modal RecommendationEditor
             # Dialog this click used to open unconditionally).
             if self._table.currentRow() == row and self._table.currentColumn() == col:
-                QTimer.singleShot(200, lambda r=row, c=col: self._try_start_edit(r, c))
+                self._queue_cell_edit(row, col)
             return
         if col != self._C_RFORE:
             return
@@ -5117,6 +5124,7 @@ class ScenarioTablePanel(QWidget):
         if item is None:
             return
         self._cancel_pending_ors_edit()
+        self._cancel_pending_cell_edit()
         row = item.row()
         col = item.column()
         # Double-click starts inline edit — consistent across ORS/KON/SG
@@ -5148,8 +5156,12 @@ class ScenarioTablePanel(QWidget):
                     if cons_id is not None:
                         self._quick_add_safeguard(cons_id)
                 return
-            self._table.setFocus()
             self._table.edit(self._table.model().index(row, col))
+            click = self._double_click_edit
+            self._double_click_edit = None
+            if click and click[0] == row and click[1] == col:
+                QTimer.singleShot(0, lambda r=row, c=col, p=click[2]:
+                                  self._place_editor_caret(r, c, p))
 
     def _show_rrf_popup(self, row, sg_id):
         """Called from context menu — centre on the cell."""
@@ -5791,6 +5803,17 @@ class ScenarioTablePanel(QWidget):
     def eventFilter(self, obj, event):
         ctrl = bool(event.type() == QEvent.Type.KeyPress and
                     event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+
+        if (obj is self._table.viewport() and
+                event.type() == QEvent.Type.MouseButtonDblClick and
+                event.button() == Qt.MouseButton.LeftButton):
+            point = event.position().toPoint()
+            row = self._table.rowAt(point.y())
+            col = self._table.columnAt(point.x())
+            if col in (self._C_ORS, self._C_KON, self._C_SG, self._C_REK):
+                self._cancel_pending_ors_edit()
+                self._cancel_pending_cell_edit()
+                self._double_click_edit = (row, col, point)
 
         # ── Drag: record press position for potential drag-start ─────────────────
         if (obj is self._table.viewport() and
@@ -6438,6 +6461,47 @@ class ScenarioTablePanel(QWidget):
         if timer is not None:
             timer.stop()
             timer.deleteLater()
+
+    def _cancel_pending_cell_edit(self):
+        timer = self._pending_cell_edit_timer
+        self._pending_cell_edit_timer = None
+        if timer is not None:
+            timer.stop()
+            timer.deleteLater()
+
+    def _queue_cell_edit(self, row, col):
+        """Queue the common single-click edit without competing with a
+        double-click.  All four editable scenario columns use this same
+        delayed path; a double-click cancels it before opening its editor."""
+        self._cancel_pending_cell_edit()
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        self._pending_cell_edit_timer = timer
+
+        def start():
+            if self._pending_cell_edit_timer is timer:
+                self._pending_cell_edit_timer = None
+            timer.deleteLater()
+            self._try_start_edit(row, col)
+
+        timer.timeout.connect(start)
+        timer.start(200)
+
+    def _place_editor_caret(self, row, col, viewport_pos):
+        """Place the caret from the actual double-click, never select all."""
+        for editor in self._table.findChildren(QLineEdit):
+            if (editor.property('editing_row') == row and
+                    editor.property('editing_col') == col):
+                local = QPoint(viewport_pos.x() - editor.geometry().x(),
+                               viewport_pos.y() - editor.geometry().y())
+                try:
+                    position = editor.cursorPositionAt(local)
+                except (AttributeError, TypeError):
+                    position = len(editor.text())
+                editor.setFocus(Qt.FocusReason.MouseFocusReason)
+                editor.deselect()
+                editor.setCursorPosition(max(0, min(position, len(editor.text()))))
+                return
 
     def _queue_ors_edit(self, row, col):
         """Start generic cause text editing after a click settles.
