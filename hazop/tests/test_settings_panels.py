@@ -1443,11 +1443,11 @@ class ParticipantMatrixTests(unittest.TestCase):
             sid = self.db.list_analysis_sessions()[0]['id']
 
             cell = panel._table.item(0, len(panel._FIXED_COLS))
-            self.assertEqual(cell.checkState(), Qt.CheckState.Unchecked)
-            cell.setCheckState(Qt.CheckState.Checked)
+            self.assertFalse(cell.data(Qt.ItemDataRole.UserRole + 20))
+            self.db.set_attendance(pid, sid, True)
             self.assertTrue(self.db.get_attendance(pid, sid))
 
-            cell.setCheckState(Qt.CheckState.Unchecked)
+            self.db.set_attendance(pid, sid, False)
             self.assertFalse(self.db.get_attendance(pid, sid))
         finally:
             panel.deleteLater()
@@ -1555,9 +1555,8 @@ class ParticipantMatrixTests(unittest.TestCase):
             self.assertEqual(panel._table.item(0, 0).text(), "Anna")
             self.assertEqual(panel._table.item(0, 1).text(), "Andersson")
             self.assertEqual(panel._table.item(0, len(panel._FIXED_COLS)).text(), "Processägare")
-            self.assertEqual(
-                panel._table.item(0, len(panel._FIXED_COLS) + 1).checkState(),
-                Qt.CheckState.Checked)
+            self.assertTrue(panel._table.item(0, len(panel._FIXED_COLS) + 1)
+                            .data(Qt.ItemDataRole.UserRole + 20))
         finally:
             panel.deleteLater()
 

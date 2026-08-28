@@ -3314,3 +3314,6 @@ sök-/export-/layouttester. Ingen visuell GUI-verifiering är gjord.
 ## 2026-08-28 — F\\C-knappen
 
 - Crashrapporten visade att X/Y-riktningsknapparna placerades i gridet men samtidigt markerades för `deleteLater()` när axlarna byggdes om. De är nu panelägda och återanvänds vid axelbyte, vilket gör F\\C-klicket säkert.
+## 2026-08-28 — dubbel målning i deltagarmatrisen
+
+- Headless-testernas modellvärde för närvaro såg korrekt ut men bevisade inte vad Qt målade visuellt. Modellcellen använder därför inte längre `checkState`; närvaro lagras i en vanlig dataroll och endast den riktiga QCheckBox-widgeten visas.

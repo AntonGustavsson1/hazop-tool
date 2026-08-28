@@ -157,8 +157,11 @@ class ParticipantMatrixPanel(QWidget):
                     state_item.setFlags(
                         (state_item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
                         & ~Qt.ItemFlag.ItemIsEditable)
-                    state_item.setCheckState(
-                        Qt.CheckState.Checked if attended else Qt.CheckState.Unchecked)
+                    # Do not assign QTableWidgetItem.checkState here.  Qt can
+                    # paint that state as a second checkbox even when the
+                    # item is not user-checkable.  The cell's QCheckBox below
+                    # is the single visible/editable attendance control.
+                    state_item.setData(Qt.ItemDataRole.UserRole + 20, bool(attended))
                     self._table.setItem(row, n_fixed + col, state_item)
                     cell = QWidget()
                     cell_layout = QHBoxLayout(cell)
