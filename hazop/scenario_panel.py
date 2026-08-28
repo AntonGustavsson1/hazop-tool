@@ -5954,6 +5954,17 @@ class ScenarioTablePanel(QWidget):
                         rel_y = click[2].y() - cell_rect.top() - 2
                         line_no = int(rel_y // line_h) if rel_y >= 0 else -1
                         if 0 <= line_no < len(group_tags):
+                            # Only the painted text band is editable.  The
+                            # small vertical margin above the first object
+                            # (and between/below rows) must not become an
+                            # accidental full-cell edit target.
+                            font_h = QFontMetrics(self._table.font()).height()
+                            line_top = line_no * line_h
+                            text_pad = max(0, (line_h - font_h) // 2)
+                            if not (line_top + text_pad <= rel_y <
+                                    line_top + text_pad + font_h):
+                                self._double_click_edit = None
+                                return
                             group_line = line_no
                             bold_font = QFont(self._table.font())
                             bold_font.setBold(True)
