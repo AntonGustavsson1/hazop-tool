@@ -2233,7 +2233,7 @@ class CauseTagPopup(QDialog):
             if equipment:
                 equipment = dict(equipment)
                 object_info = QLabel(str(equipment.get('tag') or comp_tag or 'Objekt'))
-                object_info.setStyleSheet("font-weight:bold; font-size:12px; color:#17191C;")
+                object_info.setStyleSheet("font-weight:bold; font-size:11px; color:#17191C;")
                 object_info.setToolTip(str(equipment.get('description') or ''))
                 layout.addWidget(object_info)
                 details = []

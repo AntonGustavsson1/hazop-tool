@@ -584,7 +584,7 @@ class GroupCausePopup(QDialog):
             role.setStyleSheet("color:#6B7280; font-size:8px; font-weight:bold;")
             box_layout.addWidget(role)
             tag = QLabel(str(equipment.get('tag') or 'Objekt'))
-            tag.setStyleSheet("color:#17191C; font-weight:bold; font-size:12px;")
+            tag.setStyleSheet("color:#17191C; font-weight:bold; font-size:11px;")
             tag.setToolTip(str(equipment.get('description') or ''))
             box_layout.addWidget(tag)
             info = []
@@ -610,6 +610,8 @@ class GroupCausePopup(QDialog):
                 box_layout.addWidget(button)
             current_label = QLabel(f"Valt: {current}")
             current_label.setStyleSheet("color:#6B7280; font-size:9px;")
+            self._current_labels = getattr(self, '_current_labels', {})
+            self._current_labels[column] = current_label
             box_layout.addWidget(current_label)
             columns.addWidget(box)
             if column == 0:
@@ -627,6 +629,12 @@ class GroupCausePopup(QDialog):
             "font-weight:bold;} QPushButton:hover{color:#234AAB;}")
         swap.clicked.connect(self.swap_requested.emit)
         layout.addWidget(swap)
+
+    def set_current(self, column, value):
+        """Keep the open popup's status in sync after an inline choice."""
+        label = getattr(self, '_current_labels', {}).get(column)
+        if label is not None:
+            label.setText(f"Valt: {value}")
 
 
 # ── NEW: column-based step picker ─────────────────────────────────────────────
@@ -5355,10 +5363,35 @@ class ScenarioTablePanel(QWidget):
                 obj_data = item.data(Qt.ItemDataRole.UserRole + 2) or ('', '')
                 group_tags = item.data(Qt.ItemDataRole.UserRole + 9) or []
                 if cause_id is not None and len(group_tags) >= 2:
-                    gp = self._table.viewport().mapToGlobal(
-                        self._table.visualRect(self._table.model().index(row, col)).topLeft())
-                    self._show_group_cause_popup(row, cause_id, gp)
-                    return
+                    # The two bold tag portions open the object/group popup;
+                    # the mechanism/effect text goes through the same inline
+                    # editor as an ordinary single-object cause.
+                    click = self._double_click_edit
+                    tag_hit = False
+                    if click and click[0] == row and click[1] == col:
+                        cell_rect = self._table.visualRect(
+                            self._table.model().index(row, col))
+                        line_h = max(_ORS_FIRST_LINE_H,
+                                     QFontMetrics(self._table.font()).height() + 4)
+                        rel_y = click[2].y() - cell_rect.top() - 2
+                        line_no = int(rel_y // line_h) if rel_y >= 0 else -1
+                        if line_no in (0, 1):
+                            bold_font = QFont(self._table.font())
+                            bold_font.setBold(True)
+                            tag_start = cell_rect.left() + 2
+                            if line_no == 0:
+                                num = item.data(Qt.ItemDataRole.UserRole + 10) or ''
+                                if num:
+                                    tag_start += QFontMetrics(self._table.font()).horizontalAdvance(
+                                        f"{num}.  ")
+                            tag_width = QFontMetrics(bold_font).horizontalAdvance(
+                                str(group_tags[line_no]))
+                            tag_hit = tag_start <= click[2].x() <= tag_start + tag_width
+                    if tag_hit:
+                        gp = self._table.viewport().mapToGlobal(click[2])
+                        self._show_group_cause_popup(row, cause_id, gp)
+                        self._double_click_edit = None
+                        return
                 if cause_id is not None and not (obj_data[1] or '').strip():
                     gp = self._table.viewport().mapToGlobal(
                         self._table.visualRect(self._table.model().index(row, col)).topLeft())
@@ -5768,10 +5801,9 @@ class ScenarioTablePanel(QWidget):
         popup = GroupCausePopup(primary, secondary, direction, effect, parent=self)
         def apply_choice(which, choice):
             self._apply_group_cause_choice(cause_id, which, choice)
-            popup.close()
+            popup.set_current(which, choice)
         def swap_objects():
             self._swap_group_objects(cause_id)
-            popup.close()
         popup.choice_requested.connect(apply_choice)
         popup.swap_requested.connect(swap_objects)
         popup.adjustSize()
