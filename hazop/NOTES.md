@@ -3460,3 +3460,16 @@ Radmarkeringen fÃ¶r grupporsakens inline-editor raderas nu fÃ¶rst efter att
 nÃ¤sta event-loop-varv efter `table.edit()`, vilket gjorde att dubbelklick i
 fritextdelen till hÃ¶ger om taggen tappade den valda primÃ¤r- eller
 sekundÃ¤rraden.
+## Grupporsak: två beständiga rader och radvis standardorsak (2026-08-28)
+
+Grupporsakens editor följer nu enkelobjektets flöde. Primär- och sekundärrad
+använder rätt utrustning när standardorsaker hämtas, och popupval commitas via
+den aktiva P&ID-delegaten. En grupp sparar alltid båda taggarna på separata
+rader; en ej vald händelse är kvar som bar tagg. När den ena raden ändras
+bevaras den andra raden ordagrant, även om den innehåller fritext.
+## Group cause editing: preserve both rows (2026-08-28)
+
+The grouped cause path now mirrors the single-object standard-cause editor,
+but selects the equipment type from the clicked visual row. Stored grouped
+causes keep two tag-prefixed rows at all times. Changing one row updates only
+that row; the other row, including arbitrary free text, is preserved verbatim.

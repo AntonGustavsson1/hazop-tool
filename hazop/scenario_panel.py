@@ -748,7 +748,6 @@ class GroupCausePopup(QDialog):
                 typ = QLabel("  ·  ".join(info))
                 typ.setStyleSheet("color:#6B7280; font-size:9px;")
                 box_layout.addWidget(typ)
-            choices = (*choices, "Skriv fritext...")
             for choice in choices:
                 button = QPushButton(choice)
                 button.setFixedHeight(CONFIG['H_BTN_SMALL'])
@@ -2285,8 +2284,10 @@ class _PidDelegate(_ScenarioDelegate):
         if cause_id is None:
             return
         try:
+            group_line = editor.property('group_line')
             _std_dev_id, comp_type, dev_description, rows = \
-                panel._ors_standard_causes_for_row(row)
+                panel._ors_standard_causes_for_row(
+                    row, group_line if group_line in (0, 1) else None)
             top_level = panel.window()
             popup = StandardCauseSuggestPopup(
                 panel, row, cause_id, editor, comp_type, dev_description, rows,
@@ -2909,8 +2910,9 @@ class StandardCauseSuggestPopup(QWidget):
         and keep editing"), same commitData/closeEditor emit pattern
         the Enter key already uses (eventFilter(), scenario_panel.py)."""
         self._editor.setText(description)
-        self._panel._delegate.commitData.emit(self._editor)
-        self._panel._delegate.closeEditor.emit(
+        delegate = self._panel._pid_delegate
+        delegate.commitData.emit(self._editor)
+        delegate.closeEditor.emit(
             self._editor, QStyledItemDelegate.EndEditHint.NoHint)
         self.close()
 
@@ -2921,8 +2923,9 @@ class StandardCauseSuggestPopup(QWidget):
         ScenarioTablePanel._rebuild()'s "Proactively clear focus from
         any active cell editor" comment) — committing first means that
         teardown can never silently discard typed-but-unconfirmed text."""
-        self._panel._delegate.commitData.emit(self._editor)
-        self._panel._delegate.closeEditor.emit(
+        delegate = self._panel._pid_delegate
+        delegate.commitData.emit(self._editor)
+        delegate.closeEditor.emit(
             self._editor, QStyledItemDelegate.EndEditHint.NoHint)
 
         item = self._current_ors_item()
@@ -6043,7 +6046,7 @@ class ScenarioTablePanel(QWidget):
         prefix = tag_label if trivial else f"{tag_label}, "
         return fm.horizontalAdvance(prefix)
 
-    def _ors_standard_causes_for_row(self, row):
+    def _ors_standard_causes_for_row(self, row, group_line=None):
         """(std_dev_id, comp_type, dev_description, rows) of standard
         causes applicable to this ORS row's deviation + object type
         (2026-08-25, see NOTES.md "Standardorsak-popup vid redigering av
@@ -6067,6 +6070,23 @@ class ScenarioTablePanel(QWidget):
         item = self._table.item(row, self._C_ORS)
         obj_data = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
         comp_type = (obj_data or ('', ''))[0]
+
+        # A grouped cause has one object identity per visual line.  The
+        # ordinary single-object path already uses this value as the source
+        # for the standard-cause popup; select the corresponding equipment
+        # here so the secondary line does not accidentally reuse primary
+        # suggestions.
+        if group_line in (0, 1) and item is not None:
+            meta = item.data(Qt.ItemDataRole.UserRole)
+            cause = self.db.get_cause(meta[1]) if meta else None
+            equipment_id = None
+            if cause:
+                equipment_id = (cause.get('equipment_id') if group_line == 0
+                                else cause.get('secondary_equipment_id'))
+            equipment = (self.db.get_equipment_by_id(equipment_id)
+                         if equipment_id else None)
+            if equipment:
+                comp_type = equipment.get('equipment_type') or comp_type
 
         std_dev_id, dev_description = None, None
         if dev_id is not None:
@@ -6308,19 +6328,38 @@ class ScenarioTablePanel(QWidget):
         old = cause.get('description') or ''
         choices_set = int(cause.get('group_choices_set') or 0)
         old_lines = [line.strip() for line in old.splitlines() if line.strip()]
-        # Older grouped causes were stored without the choice bitmask. If
-        # the existing secondary line contains text (not merely its tag),
-        # preserve that event when the primary event is changed.
-        secondary_tag = str(s.get('tag', '')).strip().casefold()
-        if not choices_set and len(old_lines) >= 2 and secondary_tag:
+        primary_tag = str(p.get('tag', 'Objekt')).strip()
+        secondary_tag = str(s.get('tag', 'Objekt')).strip()
+
+        def existing_group_line(tag):
+            folded = tag.casefold()
             for line in old_lines:
                 line_lower = line.casefold()
-                tag_pos = line_lower.find(secondary_tag)
-                if tag_pos >= 0:
-                    remainder = line[tag_pos + len(secondary_tag):].strip(' ,:-')
-                    if remainder:
-                        choices_set |= 2
-                    break
+                tag_pos = line_lower.find(folded)
+                if tag_pos < 0:
+                    continue
+                value = line[tag_pos:]
+                # Legacy groups stored both events in one arrow sentence.
+                # Extract only this object's segment before returning it as
+                # the independent line used by the new two-row model.
+                other_tag = secondary_tag if folded == primary_tag.casefold() else primary_tag
+                other_pos = value.casefold().find(other_tag.casefold(), len(tag))
+                if other_pos >= 0:
+                    value = value[:other_pos].rstrip(' ,:→-')
+                return value.strip()
+            return ''
+
+        existing_primary = existing_group_line(primary_tag)
+        existing_secondary = existing_group_line(secondary_tag)
+
+        # Older grouped causes were stored without the choice bitmask. Infer
+        # already-entered events from two non-empty tagged lines, but do not
+        # treat bare tags (the new-group placeholder) as selected choices.
+        for bit, tag, line in ((1, primary_tag, existing_primary),
+                               (2, secondary_tag, existing_secondary)):
+            remainder = line[len(tag):].strip(' ,:→-') if line else ''
+            if remainder and not choices_set & bit:
+                choices_set |= bit
         direction = 'felar lågt' if 'lågt' in old else 'felar högt'
         effect = 'öppnar felaktigt'
         for option in ('stänger helt', 'stänger felaktigt', 'öppnar fullt', 'öppnar felaktigt'):
@@ -6347,11 +6386,16 @@ class ScenarioTablePanel(QWidget):
             if not accepted or not value.strip():
                 return
             choice = value.strip()
-        lines = []
-        if choices_set & 1:
-            lines.append(f"{p.get('tag', 'Objekt')} {direction}")
-        if choices_set & 2:
-            lines.append(f"{s.get('tag', 'Objekt')} {effect}")
+        # Always retain both linked objects as two rows.  A row without a
+        # selected mechanism is represented by its bare tag, never removed.
+        lines = [
+            (existing_primary if which != 0 and existing_primary
+             else f"{primary_tag} {direction}" if choices_set & 1
+             else primary_tag),
+            (existing_secondary if which != 1 and existing_secondary
+             else f"{secondary_tag} {effect}" if choices_set & 2
+             else secondary_tag),
+        ]
         desc = '\n'.join(lines)
         self.db.update_cause(cause_id, description=desc,
                              group_choices_set=choices_set)

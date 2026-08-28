@@ -4719,8 +4719,9 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
 
             panel._apply_group_cause_choice(cause_id, 0, 'Felar lågt')
             cause = dict(win.db.get_cause(cause_id))
-            self.assertEqual(cause['group_choices_set'], 1)
-            self.assertEqual(cause['description'], 'FI-1 felar lågt')
+            self.assertEqual(cause['group_choices_set'], 3)
+            self.assertEqual(cause['description'],
+                             'FI-1 felar lågt\nFV-1 öppnar fullt')
 
             panel._apply_group_cause_choice(cause_id, 1, 'Öppnar felaktigt')
             cause = dict(win.db.get_cause(cause_id))
@@ -4781,14 +4782,8 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
         try:
             self.assertEqual(primary_popup.windowTitle(), 'Primärhändelse')
             self.assertEqual(secondary_popup.windowTitle(), 'Sekundärhändelse')
-            primary_all_buttons = [b.text() for b in primary_popup.findChildren(QPushButton)]
-            secondary_all_buttons = [b.text() for b in secondary_popup.findChildren(QPushButton)]
-            self.assertIn('Skriv fritext...', primary_all_buttons)
-            self.assertIn('Skriv fritext...', secondary_all_buttons)
-            primary_buttons = [b for b in primary_all_buttons
-                               if not b.startswith('Skriv fritext')]
-            secondary_buttons = [b for b in secondary_all_buttons
-                                 if not b.startswith('Skriv fritext')]
+            primary_buttons = [b.text() for b in primary_popup.findChildren(QPushButton)]
+            secondary_buttons = [b.text() for b in secondary_popup.findChildren(QPushButton)]
             self.assertEqual(primary_buttons, ['Felar högt', 'Felar lågt'])
             self.assertEqual(secondary_buttons,
                              ['Öppnar felaktigt', 'Stänger felaktigt',
@@ -4796,6 +4791,42 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
         finally:
             primary_popup.deleteLater()
             secondary_popup.deleteLater()
+
+    def test_group_popup_uses_secondary_object_and_free_text_preserves_both_rows(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.get_or_create_deviation(node_id, 'High flow')
+            primary_id = win.db.add_equipment_item('FI-1', 'FI-1', 'FI', 0,
+                                                   'Instrument', '', 0)
+            secondary_id = win.db.add_equipment_item('FV-1', 'FV-1', 'FV', 0,
+                                                     'Reglerventil', '', 0)
+            cause_id = win.db.add_cause(dev_id)
+            win.db.update_cause(
+                cause_id, comp_type='Instrument', comp_tag='FI-1 + FV-1',
+                equipment_id=primary_id, secondary_equipment_id=secondary_id,
+                description='FI-1 signal intermittent\nFV-1 opens fully')
+            panel = win.scenario_panel
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta)
+                       if m[1] == cause_id)
+
+            _std_id, primary_type, _dev, _rows = \
+                panel._ors_standard_causes_for_row(row, 0)
+            _std_id, secondary_type, _dev, _rows = \
+                panel._ors_standard_causes_for_row(row, 1)
+            self.assertEqual(primary_type, 'Instrument')
+            self.assertEqual(secondary_type, 'Reglerventil')
+
+            panel._apply_group_cause_choice(cause_id, 0, 'primary custom')
+            self.assertEqual(
+                dict(win.db.get_cause(cause_id))['description'],
+                'FI-1 primary custom\nFV-1 opens fully')
+
+            panel._apply_group_cause_choice(
+                cause_id, 1, 'needs manual operation')
+            self.assertEqual(
+                dict(win.db.get_cause(cause_id))['description'],
+                'FI-1 primary custom\nFV-1 needs manual operation')
 
     def test_on_equipment_dropped_on_deviation_ignores_unlinked_markers(self):
         with _TempDbMainWindow() as win:
