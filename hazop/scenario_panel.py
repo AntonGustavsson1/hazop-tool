@@ -239,6 +239,30 @@ class _BoldTagTextEdit(QTextEdit):
                           _resume_tag_editing(ed, pos))
         self._refresh_pid_tag_bolding()
 
+    def _accept_visible_tag_completion(self):
+        """Accept the selected tag when Enter is delivered to the editor.
+
+        The popup is deliberately non-activating so focus remains in the
+        inline editor.  On some Windows styles that means Enter reaches the
+        editor's event filter instead of emitting QCompleter.activated from
+        the popup.  Consume the selected completion here before the normal
+        Enter handling commits/closes the table editor.
+        """
+        completer = self._tag_completer
+        if completer is None:
+            return False
+        popup = completer.popup()
+        if not popup.isVisible():
+            return False
+        index = popup.currentIndex()
+        completion = index.data(Qt.ItemDataRole.DisplayRole) if index.isValid() else None
+        if not completion:
+            completion = completer.currentCompletion()
+        if not completion:
+            return False
+        self._insert_tag_completion(completion)
+        return True
+
     def _insert_completion(self, completion):
         cursor = self.textCursor()
         cursor.insertText(str(completion))
@@ -1676,7 +1700,27 @@ class _ScenarioDelegate(QStyledItemDelegate):
             editor.deselect()
             if index.column() == self._panel._C_REK:
                 self._prepare_recommendation_editor(editor, index, option)
+                self._attach_tag_completer(editor)
         return editor
+
+    def _attach_tag_completer(self, editor):
+        """Offer P&ID tag completion in the recommendation editor too."""
+        db = getattr(self._panel, 'db', None)
+        if db is None or not isinstance(editor, _BoldTagTextEdit):
+            return
+        try:
+            tags = sorted({str(row['tag']).strip() for row in db.equipment_items()
+                           if row['tag'] and str(row['tag']).strip()},
+                          key=str.casefold)
+        except Exception:
+            tags = []
+        if not tags:
+            return
+        completer = QCompleter(tags, editor)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        editor.setTagCompleter(completer)
 
     def setEditorData(self, editor, index):
         if index.column() == self._panel._C_REK:
@@ -6663,6 +6707,9 @@ class ScenarioTablePanel(QWidget):
                 obj.property('sg_id') is None):
             if event.type() == QEvent.Type.KeyPress:
                 if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                    if (not ctrl and isinstance(obj, _BoldTagTextEdit) and
+                            obj._accept_visible_tag_completion()):
+                        return True
                     row = obj.property('editing_row')
                     col = obj.property('editing_col')
                     cons_id = None

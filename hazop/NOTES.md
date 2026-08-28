@@ -3379,3 +3379,12 @@ text, databasens HTML-rengöring lämnade en tom beskrivning och nästa renderin
 föll tillbaka till standardtexten. Delegaten sparar nu alltid `toPlainText()`
 och signalhanteraren rengör defensivt även äldre HTML-innehåll. Ett
 integrationsprov täcker den verkliga editor/delegate/modell/databaskedjan.
+
+## Enter accepterar vald P&ID-tagg (2026-08-28)
+
+När taggpopupen visas i Konsekvens, Safeguard eller Rekommendation accepterar
+Enter nu den markerade taggen innan den vanliga editor-committen körs. Popupen
+är icke-aktiverande för att behålla fokus i textfältet, vilket på vissa
+Windows/Qt-lägen gjorde att Enter annars stängde editorn utan att infoga
+taggen. Fokus och markör återgår efter infogningen så fortsatt text kan
+skrivas direkt. Rekommendationseditorn använder nu också P&ID-taggbiblioteket.

@@ -69,7 +69,7 @@ from PyQt6.QtWidgets import (  # noqa: E402
     QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit,
     QStyleOptionViewItem,
 )
-from PyQt6.QtGui import QPixmap, QFocusEvent  # noqa: E402
+from PyQt6.QtGui import QPixmap, QFocusEvent, QKeyEvent  # noqa: E402
 from PyQt6.QtCore import Qt, QPoint, QDate, QEvent, QThread, pyqtSignal  # noqa: E402
 from equipment_detection import COMPONENT_TYPES  # noqa: E402
 
@@ -3825,6 +3825,50 @@ class RecommendationColumnTests(unittest.TestCase):
         refreshed_item, _ = self._rek_item()
         self.assertEqual(refreshed_item.text(),
                          f'R-{rec_id:03d}. se till att stoppa pump x vid y')
+
+    def test_enter_accepts_selected_pid_tag_and_keeps_editor_open(self):
+        """Enter accepts the visible tag suggestion instead of committing."""
+        self.db.add_equipment_item('E1.P-101', 'E1.P-101', 'P', 0, 'Pump', '', 0)
+        sg_id = self.db.add_safeguard(self.cons_id)
+        self.panel.load_node(self.node_id)
+        rows = {
+            'kon': next(r for r, m in enumerate(self.panel._row_meta)
+                        if m[2] == self.cons_id),
+            'sg': next(r for r, m in enumerate(self.panel._row_meta)
+                       if m[3] == sg_id),
+            'rek': next(r for r, m in enumerate(self.panel._row_meta)
+                        if m[2] == self.cons_id),
+        }
+        columns = {
+            'kon': self.panel._C_KON,
+            'sg': self.panel._C_SG,
+            'rek': self.panel._C_REK,
+        }
+        for kind, row in rows.items():
+            col = columns[kind]
+            delegate = (self.panel._pid_delegate if kind != 'rek'
+                        else self.panel._delegate)
+            index = self.panel._table.model().index(row, col)
+            option = QStyleOptionViewItem()
+            option.rect = self.panel._table.visualRect(index)
+            editor = delegate.createEditor(self.panel._table, option, index)
+            try:
+                delegate.setEditorData(editor, index)
+                editor.setText('E1')
+                completer = editor._tag_completer
+                self.assertIsNotNone(completer, kind)
+                completer.setCompletionPrefix('E1')
+                popup = completer.popup()
+                popup.setCurrentIndex(completer.completionModel().index(0, 0))
+                popup.show()
+                editor._tag_completion_range = (0, 2)
+                event = QKeyEvent(
+                    QEvent.Type.KeyPress, Qt.Key.Key_Return,
+                    Qt.KeyboardModifier.NoModifier)
+                self.assertTrue(self.panel.eventFilter(editor, event), kind)
+                self.assertEqual(editor.toPlainText(), 'E1.P-101', kind)
+            finally:
+                editor.deleteLater()
 
     @unittest.skip("REK additions now use the dedicated trailing physical row")
     def test_committing_text_with_two_linked_adds_a_third_without_touching_the_others(self):
