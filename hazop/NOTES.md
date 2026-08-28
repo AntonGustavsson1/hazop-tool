@@ -3339,3 +3339,14 @@ behåller tvåteckengränsen för popupen.
 Den gamla Utrustning-kolumnen är permanent dold även i Visa samtliga noder och
 P&ID-filter. P&ID-taggen visas i stället i Orsak-cellen; anrop som tidigare
 gjorde kolumnen synlig i dessa lägen används inte längre.
+## Rekommendationsredigering i HAZOP Scenario (2026-08-28)
+
+Rekommendationens R-nummer är nu presentation-only: inline-editorn startar
+efter numret och sparar endast beskrivningen. Den gemensamma delegaten skriver
+inte längre över editorns beskrivning med den formaterade celltexten, så texten
+behålls efter sparning i stället för att visas som "Ny rekommendation".
+## Fortsatt skrivning efter P&ID-tagg-popup (2026-08-28)
+
+När en tagg väljs med Enter stängs popupen och fokus återgår till Barriär- eller
+Konsekvensfältet direkt efter den infogade taggen, så användaren kan fortsätta
+skriva utan att klicka i fältet igen.

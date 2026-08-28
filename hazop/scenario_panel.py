@@ -227,8 +227,16 @@ class _BoldTagTextEdit(QTextEdit):
         cursor.setPosition(start)
         cursor.setPosition(end, cursor.MoveMode.KeepAnchor)
         cursor.insertText(str(completion))
+        caret_pos = cursor.position()
         self.setTextCursor(cursor)
         self._tag_completion_range = None
+        if self._tag_completer is not None:
+            self._tag_completer.popup().hide()
+        # QCompleter may still own keyboard focus while its activated signal
+        # is being delivered. Return focus after that event so the user can
+        # continue typing immediately after the inserted P&ID tag.
+        QTimer.singleShot(0, lambda ed=weakref.ref(self), pos=caret_pos:
+                          _resume_tag_editing(ed, pos))
         self._refresh_pid_tag_bolding()
 
     def _insert_completion(self, completion):
@@ -296,6 +304,21 @@ def _show_tag_completion_if_alive(editor_ref, serial):
     if editor is None or sip.isdeleted(editor):
         return
     editor._show_tag_completion(serial)
+
+
+def _resume_tag_editing(editor_ref, position):
+    """Restore the text editor after accepting a tag-completer item."""
+    editor = editor_ref()
+    if editor is None or sip.isdeleted(editor):
+        return
+    try:
+        editor.setFocus(Qt.FocusReason.OtherFocusReason)
+        cursor = editor.textCursor()
+        cursor.clearSelection()
+        cursor.setPosition(max(0, min(position, len(editor.toPlainText()))))
+        editor.setTextCursor(cursor)
+    except RuntimeError:
+        return
 
 
 class RiskMatrixPopup(QDialog):
@@ -1719,9 +1742,25 @@ class _ScenarioDelegate(QStyledItemDelegate):
         # wrapping and vertical position stay aligned while editing.  REK's
         # static painter has a slightly wider inset than the other generic
         # cells, so keep that inset here too.
-        inset = (5, 2, -3, -2) if index.column() == panel._C_REK \
-            else (2, 2, -2, -2)
-        editor.setGeometry(QRect(option.rect).adjusted(*inset))
+        if index.column() == panel._C_REK:
+            # The recommendation number is display metadata, not part of
+            # the editable description. Leave it painted by the delegate and
+            # start the editor after it, so it cannot disappear or be edited.
+            item = panel._table.item(index.row(), index.column())
+            rec_id = panel._row_recommendation_ids[index.row()] \
+                if index.row() < len(panel._row_recommendation_ids) else None
+            if not rec_id and item is not None:
+                meta = item.data(Qt.ItemDataRole.UserRole) or ()
+                rec_id = meta[2] if len(meta) > 2 else None
+            number_width = QFontMetrics(option.font).horizontalAdvance(
+                f"R-{int(rec_id):03d}.  ") if rec_id else 0
+            rect = QRect(option.rect)
+            left = rect.left() + 5 + number_width
+            editor.setGeometry(QRect(left, rect.top() + 2,
+                                      max(10, rect.right() - left - 3),
+                                      max(10, rect.height() - 4)))
+            return
+        editor.setGeometry(QRect(option.rect).adjusted(2, 2, -2, -2))
 
     def _show_recommendation_assist_popup(self, editor, row, cons_id, cell_rect):
         """Mirrors _PidDelegate._show_standard_cause_popup's positioning
@@ -1988,7 +2027,11 @@ class _PidDelegate(_ScenarioDelegate):
             # here too; start the editor blank instead of on top of it.
             if clean == '—':
                 clean = ''
-            editor.setText(clean)
+            # _ScenarioDelegate.createEditor() has already seeded REK with
+            # the description only. Do not replace it with the painted
+            # "R-xxx. description" cell text.
+            if index.column() != self._panel._C_REK:
+                editor.setText(clean)
             editor.deselect()
             # Keep the identity tokens bold while the editor is active.  For
             # Orsak the tag prefix remains outside the editor; Konsekvens and
@@ -2219,6 +2262,11 @@ class _PidDelegate(_ScenarioDelegate):
 
     def setModelData(self, editor, model, index):
         clean = _PID_ICON_RE.sub('', editor.text().strip())
+        if index.column() == self._panel._C_REK:
+            # Be defensive for editors created by an older delegate path:
+            # the running number is presentation-only and must never be
+            # stored as part of the recommendation description.
+            clean = re.sub(r'^R-\d+\.\s*', '', clean, flags=re.IGNORECASE)
         model.setData(index, clean, Qt.ItemDataRole.EditRole)
 
     def updateEditorGeometry(self, editor, option, index):
