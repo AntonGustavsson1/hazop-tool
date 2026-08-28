@@ -1804,10 +1804,11 @@ class _ScenarioDelegate(QStyledItemDelegate):
         painter.setPen(tc)
         font = index.data(Qt.ItemDataRole.FontRole)
         painter.setFont(font if font is not None else option.font)
-        text_rect = QRect(r.left() + _PID_ICON_W, r.top(),
-                          r.width() - _PID_ICON_W, r.height())
+        # Risk cells no longer contain a pin/icon strip.  Use the whole
+        # compact cell and center the short `Per F1 C1` value.
+        text_rect = r
         painter.drawText(text_rect.adjusted(2, 2, -2, -2),
-                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                         Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
                          index.data(Qt.ItemDataRole.DisplayRole) or '')
         painter.restore()
 
@@ -3323,10 +3324,10 @@ class ScenarioTablePanel(QWidget):
             self._C_DEV:   (QHeaderView.ResizeMode.Interactive, 120),
             self._C_ORS:   (QHeaderView.ResizeMode.Interactive, 180),
             self._C_KON:   (QHeaderView.ResizeMode.Interactive, 180),
-            self._C_RFORE: (QHeaderView.ResizeMode.Interactive,  85),
+            self._C_RFORE: (QHeaderView.ResizeMode.Interactive,  68),
             self._C_SG:    (QHeaderView.ResizeMode.Interactive, 130),
             self._C_LOPA:  (QHeaderView.ResizeMode.Interactive, 130),
-            self._C_SLUT:  (QHeaderView.ResizeMode.Interactive,  85),
+            self._C_SLUT:  (QHeaderView.ResizeMode.Interactive,  68),
             self._C_REK:   (QHeaderView.ResizeMode.Interactive, 140),
         }
         for col, (mode, width) in resize_modes.items():
@@ -3373,6 +3374,7 @@ class ScenarioTablePanel(QWidget):
         # resize_modes above) so dragging works regardless of whether
         # "↔ Fyll bredd" has ever been clicked.
         self._col_widths_user_set = False   # flipped by _on_column_resized
+        self._applying_fill_width = False
         saved_widths = self.db.get_config('scenario_col_widths', '')
         if saved_widths:
             try:
@@ -3400,9 +3402,11 @@ class ScenarioTablePanel(QWidget):
             # over silently overwriting it a moment later.
             pass
         h.sectionResized.connect(self._on_column_resized)
-        # "Fyll bredd" is the default on every launch, including studies
-        # that contain older saved manual widths. Columns remain draggable.
-        QTimer.singleShot(0, self._fill_width_once)
+        # Auto-fill is the default for a fresh layout.  It is deferred until
+        # the panel has a real viewport width; otherwise the first call can
+        # calculate from a construction-time width and appear ineffective.
+        self._auto_fill_pending = True
+        QTimer.singleShot(0, self._fill_width_once_unless_user_set)
 
         # ── Sticky context bar — always shows current Nod + Avvikelse ──────────
         self._ctx_bar = QLabel()
@@ -3419,6 +3423,11 @@ class ScenarioTablePanel(QWidget):
 
         # ── Deferred rebuild system (signal-based, not timer-based) ──────────────
         self._rebuild_pending = False
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if getattr(self, '_auto_fill_pending', False):
+            QTimer.singleShot(0, self._fill_width_once_unless_user_set)
 
     def allow_full_height(self):
         """Lift the 380px cap so this panel fills whatever container it's
@@ -3603,19 +3612,28 @@ class ScenarioTablePanel(QWidget):
         this just gives it one immediate, visible effect instead of a
         silent mode flip."""
         stretch_cols = [self._C_ORS, self._C_KON, self._C_SG]
+        if self._table.viewport().width() <= 0:
+            return
         other_cols = [c for c in range(self._table.columnCount())
                       if c not in stretch_cols and not self._table.isColumnHidden(c)]
         used = sum(self._table.columnWidth(c) for c in other_cols)
         available = max(0, self._table.viewport().width() - used)
         per_col = max(60, available // len(stretch_cols))
-        for col in stretch_cols:
-            self._table.setColumnWidth(col, per_col)
+        self._applying_fill_width = True
+        try:
+            for col in stretch_cols:
+                self._table.setColumnWidth(col, per_col)
+        finally:
+            self._applying_fill_width = False
+            self._auto_fill_pending = False
 
     def _on_column_resized(self, col, old_size, new_size):
         """Persist manually-resized column widths (2026-08-10, see
         NOTES.md) — only meaningful for Interactive columns ("Fyll skärm"
         unchecked), but harmless to also record Stretch/Fixed-driven
         resizes since they'd just re-save the same hardcoded defaults."""
+        if self._applying_fill_width:
+            return
         self._col_widths_user_set = True
         try:
             saved = self.db.get_config('scenario_col_widths', '')

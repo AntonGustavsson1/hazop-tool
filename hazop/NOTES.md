@@ -2,6 +2,13 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Kompaktare riskkolumner och automatisk fyllbredd (2026-08-28)
+
+Kolumnerna Risk före barriär och Slutkonsekvens har smalare standardbredd.
+Risktexten centreras i hela cellen utan reserverad ikonmarginal. Fyll bredd
+körs automatiskt när panelen startar efter att en riktig viewportbredd finns,
+men dess programmatisk breddjustering sparas inte som en manuell ändring.
+
 ## Matchande objekttaggar och frånkoppling i HAZOP-celler (2026-08-28)
 
 Taggar som skrivs in i Orsak, Konsekvens eller Safeguard matchas mot aktuell
