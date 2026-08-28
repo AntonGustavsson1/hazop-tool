@@ -69,7 +69,7 @@ from PyQt6.QtWidgets import (  # noqa: E402
     QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit,
     QStyleOptionViewItem,
 )
-from PyQt6.QtGui import QPixmap, QFocusEvent, QKeyEvent  # noqa: E402
+from PyQt6.QtGui import QPixmap, QFocusEvent, QKeyEvent, QFont  # noqa: E402
 from PyQt6.QtCore import Qt, QPoint, QDate, QEvent, QThread, pyqtSignal  # noqa: E402
 from equipment_detection import COMPONENT_TYPES  # noqa: E402
 
@@ -4879,6 +4879,16 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             click_in_group_row(0, x_offset=12)
             editors = table.viewport().findChildren(_BoldTagTextEdit)
             self.assertTrue(editors, 'primary tag click must open the inline editor')
+            primary_editor = next(e for e in editors if e.property('group_line') == 0)
+            cell_rect = table.visualRect(table.model().index(row, panel._C_ORS))
+            bold_font = QFont(table.font())
+            bold_font.setBold(True)
+            expected_left = (cell_rect.left() + 2 +
+                             QFontMetrics(table.font()).horizontalAdvance('1.  ') +
+                             QFontMetrics(bold_font).horizontalAdvance('FI-1') + 8)
+            self.assertGreaterEqual(
+                primary_editor.geometry().left(), expected_left,
+                'inline editor must leave the cause number and object tag visible')
             self.assertFalse(panel.findChildren(GroupCausePopup))
             close_editors()
 
