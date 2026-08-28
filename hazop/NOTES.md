@@ -61,6 +61,14 @@ Grupporsakens trädtext använder nu normal font precis som en vanlig orsak.
 Fetstil på nod- och övriga hierarkinivåer är oförändrad. Verifierat med
 riktat trädtest, smoke-test och syntaxkontroll.
 
+## Objekt kopplat till grupperad avvikelse markeras och numreras rätt (2026-08-28)
+
+En avvikelse som visas som gemensam guideordsrad kan ha en objektspecifik
+syskonrad i databasen. Tree-context-scope inkluderar nu alla sådana syskon
+med samma text i samma nod, och Scenario-numret delas mellan dem i stället
+för att använda syskonets råa databasposition. Verifierat med databas-,
+integrations-, scenario- och smoke-tester.
+
 ## Grupporsak: sekundärredigering sparas inte som primär (2026-08-28)
 
 Vid fokusförlust efter redigering av sekundärraden normaliseras editorns

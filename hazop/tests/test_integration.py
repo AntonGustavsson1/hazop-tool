@@ -1690,6 +1690,24 @@ class TreeContextHighlightEndToEndTests(unittest.TestCase):
 
             self.assertIn(marker_id, win.pid_panel.viewer._tree_context_highlights)
 
+    def test_selecting_grouped_deviation_highlights_equipment_specific_sibling(self):
+        with _TempDbMainWindow() as win:
+            self._stub_scenario_loads(win)
+            _fake_pdf_loaded(win.pid_panel)
+            node_id = win.db.add_node()
+            dev_id = win.db.get_or_create_deviation(node_id, 'LÃ¥gt flÃ¶de')
+            eq_id = win.db.add_equipment_item('V-2', 'V-2', 'V', 0,
+                                              'Ventil', '', 0)
+            sibling_id = win.db.add_deviation(
+                node_id, 'LÃ¥gt flÃ¶de', equipment_id=eq_id)
+            marker_id = win.db.add_equipment_marker(
+                eq_id, 'V-2', 0, 10.0, 10.0, 'Ventil')
+
+            # TreePanel renders dev_id and sibling_id as one shared row.
+            win._on_selected(DEV_T, dev_id)
+
+            self.assertIn(marker_id, win.pid_panel.viewer._tree_context_highlights)
+
     def test_selecting_consequence_excludes_parent_causes_object(self):
         with _TempDbMainWindow() as win:
             self._stub_scenario_loads(win)

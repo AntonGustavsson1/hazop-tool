@@ -4186,9 +4186,17 @@ class ScenarioTablePanel(QWidget):
     def _deviation_number(self, node_id, deviation_id):
         if not node_id or not deviation_id:
             return None
-        for i, dev in enumerate(self.db.deviations(node_id), 1):
+        # The tree displays deviations with the same guide-word text as one
+        # row.  An object assigned through the left-click deviation checklist
+        # may create a same-text, equipment-specific sibling; it must share
+        # the visible number rather than shifting all later numbers.
+        numbers_by_description = {}
+        for dev in self.db.deviations(node_id):
+            description = dev['description']
+            if description not in numbers_by_description:
+                numbers_by_description[description] = len(numbers_by_description) + 1
             if dev['id'] == deviation_id:
-                return i
+                return numbers_by_description[description]
         return None
 
     def _numbered_node(self, node_id, name):

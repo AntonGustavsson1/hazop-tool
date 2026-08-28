@@ -3921,7 +3921,15 @@ class Database:
             dev_rows = [dict(d) for d in devs_by_node.get(id_, [])]
         elif type_ == DEV_T:
             dev = self.get_deviation(id_)
-            dev_rows = [dev] if dev else []
+            if dev:
+                # TreePanel renders deviations with the same guide-word
+                # text in one shared row.  Selecting that row must therefore
+                # include equipment assigned to every matching deviation in
+                # the same node, including an object-specific sibling row.
+                dev_rows = [dict(d) for d in self.deviations(dev['node_id'])
+                            if d['description'] == dev['description']]
+            else:
+                dev_rows = []
         elif type_ == CAUSE_T:
             cause = self.get_cause(id_)
             cause_rows = [cause] if cause else []

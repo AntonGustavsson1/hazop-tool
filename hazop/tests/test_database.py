@@ -1438,6 +1438,20 @@ class EquipmentLinkTypesInScopeTests(unittest.TestCase):
         scope = self.db.equipment_link_types_in_scope(DEV_T, dev_a)
         self.assertEqual(set(scope.keys()), {eq_a})
 
+    def test_scope_grouped_deviation_includes_same_text_equipment_siblings(self):
+        node_id = self.db.add_node()
+        dev_a = self.db.get_or_create_deviation(node_id, "LÃ¥gt flÃ¶de")
+        eq_b = self._make_equipment("V-2")
+        dev_b = self.db.add_deviation(node_id, "LÃ¥gt flÃ¶de", equipment_id=eq_b)
+        cause_b = self.db.add_cause(dev_b)
+        self.db.conn.execute(
+            "UPDATE causes SET equipment_id=? WHERE id=?", (eq_b, cause_b))
+        self.db.commit()
+
+        scope = self.db.equipment_link_types_in_scope(DEV_T, dev_a)
+        self.assertIn(eq_b, scope)
+        self.assertIn('deviation', scope[eq_b])
+
     def test_scope_cause_level_includes_own_and_descendant_links_only(self):
         """"Objekt-nivå" (Anton's decision): selecting a Cause row
         includes its own object AND its own consequences'/safeguards'

@@ -255,6 +255,24 @@ class ScenarioTablePanelAllNodesTests(unittest.TestCase):
             panel.deleteLater()
 
 
+    def test_grouped_deviation_keeps_one_visible_number(self):
+        from hazop import ScenarioTablePanel
+
+        node_id = self.db.add_node()
+        first_dev = self.db.get_or_create_deviation(node_id, "LÃ¥gt flÃ¶de")
+        eq_id = self.db.add_equipment_item(
+            "V-2", "V-2", "V", 0, "Ventil", '', 0)
+        sibling_dev = self.db.add_deviation(
+            node_id, "LÃ¥gt flÃ¶de", equipment_id=eq_id)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            first_number = panel._deviation_number(node_id, first_dev)
+            self.assertEqual(
+                panel._deviation_number(node_id, sibling_dev), first_number)
+        finally:
+            panel.deleteLater()
+
+
 class ScenarioTablePanelShowEmptyDeviationsTests(unittest.TestCase):
     """ScenarioTablePanel.set_show_empty_deviations(): deviations with zero
     causes are silently omitted by default (_causes_for_node's normal
