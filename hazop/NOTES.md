@@ -2,6 +2,13 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Återanvänd samma rekommendationstext (2026-08-28)
+
+När en ny rekommendation sparas jämför databasen den rensade texten med
+befintliga rekommendationer, utan hänsyn till stora/små bokstäver eller
+överflödiga mellanslag. En matchande rekommendation får samma R-nummer och
+länkas till den aktuella konsekvensen i stället för att skapa en ny post.
+
 ## Trädmarkering och drag/kopiering (2026-08-28)
 
 Trädet använder nu utökad markering: Ctrl väljer enskilda poster och Shift

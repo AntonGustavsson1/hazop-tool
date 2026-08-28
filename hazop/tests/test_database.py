@@ -1272,6 +1272,17 @@ class RecommendationCatalogTests(unittest.TestCase):
                          [rec_id])
         self.assertEqual(self.db.recommendation_consequence_count(rec_id), 2)
 
+    def test_same_recommendation_text_reuses_existing_number(self):
+        first = self.db.add_recommendation_to_consequence(
+            self.cons_id, description='Kontrollera ventilen')
+        second = self.db.add_recommendation_to_consequence(
+            self.cons2, description='  kontrollera   ventilen  ')
+        self.assertEqual(second, first)
+        self.assertEqual(len(self.db.all_recommendations()), 1)
+        self.assertEqual(
+            [r['id'] for r in self.db.recommendations_for_consequence(self.cons2)],
+            [first])
+
     def test_linking_twice_to_the_same_consequence_is_idempotent(self):
         rec_id = self.db.add_recommendation(description='X')
         self.db.link_recommendation_to_consequence(rec_id, self.cons_id)

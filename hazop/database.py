@@ -3579,10 +3579,16 @@ class Database:
         """Create a new, unlinked catalog row. Its id doubles as the
         never-reused running number shown as 'R-XXX' everywhere the
         recommendation is used."""
+        cleaned = self._clean_recommendation_text(description)
+        if cleaned:
+            key = ' '.join(cleaned.split()).casefold()
+            for row in self.all_recommendations():
+                existing = self._clean_recommendation_text(row['description'] or '')
+                if existing and ' '.join(existing.split()).casefold() == key:
+                    return row['id']
         cur = self.conn.execute(
             "INSERT INTO recommendations (description,responsible,due_date,status) "
-            "VALUES (?,?,?,?)", (self._clean_recommendation_text(description),
-                                   responsible, due_date, status))
+            "VALUES (?,?,?,?)", (cleaned, responsible, due_date, status))
         self.commit()
         return cur.lastrowid
 
