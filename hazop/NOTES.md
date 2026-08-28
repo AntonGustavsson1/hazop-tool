@@ -8,6 +8,9 @@ Inline-editorn i scenario-tabellen visar inte längre en extra ram eller
 fokusram ovanpå cellen. Gruppens primär/sekundär-radval och sparlogik är
 oförändrade.
 
+Dubbelklick under sekundärradens visuella område ignoreras nu, så det kan
+inte längre öppna den vanliga fullcells-editorn.
+
 ## Gruppoperator vid dragning av flera objekt (2026-08-28)
 
 Vid dragning av flera P&ID-objekt till en avvikelse visas val för AND, OR

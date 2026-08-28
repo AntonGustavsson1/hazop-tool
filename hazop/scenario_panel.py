@@ -5955,6 +5955,12 @@ class ScenarioTablePanel(QWidget):
                             tag_width = QFontMetrics(bold_font).horizontalAdvance(
                                 str(group_tags[line_no]))
                             tag_hit = tag_start <= click[2].x() <= tag_start + tag_width
+                        elif rel_y >= 2 * line_h:
+                            # The area below the secondary row is only cell
+                            # whitespace.  It must not fall through to
+                            # QTableWidget's ordinary full-cell editor.
+                            self._double_click_edit = None
+                            return
                     # The bold object tag is presentation-only.  A
                     # double-click there follows the same inline editor path
                     # as a double-click in the row's free text; no separate
