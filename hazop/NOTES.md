@@ -3801,3 +3801,9 @@ Drag-and-drop-flödet och övriga högerklicksåtgärder är oförändrade.
 P&ID-contextfärgningen använder nu hela `group_equipment_ids`-listan,
 inklusive sekundära och tertiära objekt. Klick på ett senare gruppobjekt på
 P&ID sätter dessutom samma gruppscope som en vald avvikelse.
+
+## P&ID-placering: rätt ordning på tagg och objekttyp (2026-08-28)
+
+Placeringssignalen från objektpopupen anger nu tagg och objekttyp i samma
+ordning som P&ID-placement-API:t förväntar sig. Tag-numret hamnar därför i
+taggfältet och objekttypen i objekttypfältet.

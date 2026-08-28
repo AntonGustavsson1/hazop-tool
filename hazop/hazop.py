@@ -1658,7 +1658,12 @@ class MainWindow(QMainWindow):
         self.scenario_panel.bind_secondary_cause_to_pid_requested.connect(
             self.pid_panel.start_secondary_cause_equipment_bind)
         self.scenario_panel.place_cause_object_requested.connect(
-            self.pid_panel.start_cause_equipment_placement)
+            # Scenario/Tree popups publish (cause_id, comp_type, comp_tag),
+            # while the P&ID placement API takes (cause_id, tag, comp_type).
+            # Keep the public signal order unchanged and adapt it here.
+            lambda cause_id, comp_type, comp_tag:
+                self.pid_panel.start_cause_equipment_placement(
+                    cause_id, comp_tag, comp_type))
         self.pid_panel.cause_equipment_bound.connect(
             self._on_cause_equipment_bound)
         self.scenario_panel.new_item_created.connect(
