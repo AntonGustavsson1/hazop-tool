@@ -160,6 +160,19 @@ class _BoldTagTextEdit(QTextEdit):
         """Attach the shared delayed P&ID-tag popup to this text editor."""
         self._tag_completer = completer
         completer.setWidget(self)
+        # A delegate editor lives inside QTableWidget's viewport.  The
+        # default completer view can consequently be clipped/painted behind
+        # the table on some Windows styles.  Make it an explicit non-modal
+        # popup window so the tag suggestions are visible above the table.
+        popup = completer.popup()
+        popup.setWindowFlag(Qt.WindowType.Popup, True)
+        popup.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        popup.setMinimumWidth(180)
+        popup.setStyleSheet(
+            "QAbstractItemView { background:#ffffff; color:#17191C; "
+            "border:1px solid #8D9299; padding:2px; }"
+            "QAbstractItemView::item { padding:3px 6px; }"
+        )
         try:
             completer.activated.disconnect()
         except (TypeError, RuntimeError):
@@ -196,6 +209,10 @@ class _BoldTagTextEdit(QTextEdit):
                 self._tag_completer.popup().hide()
                 return
             self._tag_completer.complete(self.cursorRect())
+            # complete() schedules the view show internally.  Raise it after
+            # that call as the editor is embedded in a table viewport.
+            popup = self._tag_completer.popup()
+            popup.raise_()
         except RuntimeError:
             # A deferred completion can outlive the delegate editor when a
             # rebuild, focus change, or popup closes the cell editor.

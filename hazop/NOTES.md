@@ -3299,3 +3299,6 @@ sök-/export-/layouttester. Ingen visuell GUI-verifiering är gjord.
 ## 2026-08-28 — safeguard-nummer vid redigering
 
 - Safeguard-editorn startar nu efter det målade sekvensnumret och lämnar numret synligt när safeguardtexten redigeras, på samma sätt som konsekvenseditorn.
+## 2026-08-28 — synlig tagg-popup i konsekvenseditorn
+
+- Tagg-completerns popup görs till ett uttryckligt Qt-popupfönster med vit kontrastyta, minsta läsbredd och `raise_()` efter visning. Detta hindrar tabellens viewport från att dölja förslagen när två eller fler taggtecken skrivs i Konsekvens.
