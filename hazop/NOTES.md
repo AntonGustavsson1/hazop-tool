@@ -41,6 +41,13 @@ kontext. Editor- och cellrektangeln jämförs efter explicit mappning till
 viewportens koordinatsystem. Verifierat med riktat gruppeditorstest,
 smoke-test och syntaxkontroll.
 
+## Grupporsak: sekundärtagg kvar vid ny primärtext (2026-08-28)
+
+En ny grupp kan ha primärtext sparad innan sekundärtexten hunnit skapas.
+Renderingen kompletterar då den saknade andra raden med sekundärtaggen, så
+den inte försvinner när primärorsaken öppnas för redigering. Verifierat med
+ett särskilt integrationstest för detta nygruppsfall.
+
 ## Grupporsak: sekundärredigering sparas inte som primär (2026-08-28)
 
 Vid fokusförlust efter redigering av sekundärraden normaliseras editorns

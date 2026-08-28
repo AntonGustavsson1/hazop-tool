@@ -6105,6 +6105,13 @@ class ScenarioTablePanel(QWidget):
                 elif _group_tags[1] in stored:
                     pos = stored.find(_group_tags[1])
                     stored = f'{stored[:pos].strip()}\n{stored[pos:].strip()}'
+                else:
+                    # A newly grouped cause can briefly contain only the
+                    # primary text while the secondary object is already
+                    # linked. Keep the second visual row visible so entering
+                    # the primary editor cannot make the secondary tag
+                    # disappear.
+                    stored = f'{stored}\n{_group_tags[1]}'
             return f"{_num}.  {stored}" if _num else stored
         """The exact string measured (sizeHint) and painted (paint) for
         an ORS cell — "TAG, beskrivning", just "TAG" while the
