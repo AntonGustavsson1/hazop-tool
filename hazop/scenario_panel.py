@@ -3948,25 +3948,28 @@ class ScenarioTablePanel(QWidget):
             if self._all_nodes:
                 # No nodes (or no deviations/causes) anywhere in the study yet —
                 # nothing sensible to show as a placeholder across all nodes.
-                self._hdr_lbl.setText("HAZOP Scenario — Hela studien")
+                self._hdr_lbl.setText("HAZOP Scenario")
             elif self._equipment_filter_id is not None:
                 # No causes mention this equipment yet — nothing sensible to
                 # show as a placeholder (no single deviation to attach it to).
                 equip = self.db.get_equipment_by_id(self._equipment_filter_id)
                 tag = equip.get('tag', '?') if equip else '?'
-                self._hdr_lbl.setText(f"HAZOP Scenario — Objekt: {tag} (inga orsaker än)")
+                self._hdr_lbl.setText("HAZOP Scenario")
+                self._hdr_lbl.setToolTip(f"Objekt: {tag} (inga orsaker än)")
             elif self._deviation_id is not None:
                 dev = self.db.get_deviation(self._deviation_id)
                 if dev:
                     dev_d = dict(dev)
                     node  = self.db.get_node(dev_d['node_id'])
                     nn    = node['name'] if node else '?'
-                    self._hdr_lbl.setText(f"HAZOP Scenario — {nn} / {dev_d['description']}")
+                    self._hdr_lbl.setText("HAZOP Scenario")
+                    self._hdr_lbl.setToolTip(f"{nn} / {dev_d['description']}")
                     self._add_placeholder_row(nn, dev_d)
             elif self._node_id is not None:
                 node = self.db.get_node(self._node_id)
                 nn   = node['name'] if node else '?'
-                self._hdr_lbl.setText(f"HAZOP Scenario — {nn}")
+                self._hdr_lbl.setText("HAZOP Scenario")
+                self._hdr_lbl.setToolTip(nn)
                 devs = list(self.db.deviations(self._node_id))
                 if devs:
                     for dev in devs:
@@ -3984,28 +3987,31 @@ class ScenarioTablePanel(QWidget):
         node = self.db.get_node(first_node_id) if first_node_id else None
         node_name_hdr = node['name'] if node else '?'
         if self._all_nodes:
-            self._hdr_lbl.setText("HAZOP Scenario — Hela studien")
+            self._hdr_lbl.setText("HAZOP Scenario")
         elif self._equipment_filter_id is not None:
             equip = self.db.get_equipment_by_id(self._equipment_filter_id)
             tag = equip.get('tag', '?') if equip else '?'
-            self._hdr_lbl.setText(f"HAZOP Scenario — Objekt: {tag}")
+            self._hdr_lbl.setText("HAZOP Scenario")
+            self._hdr_lbl.setToolTip(f"Objekt: {tag}")
         elif self._cons_id is not None:
             cons = self.db.get_consequence(self._cons_id)
             cons_desc = cons['description'] if cons else '?'
             _first_desc = first_cause.get('description', '?') if first_cause is not None else '?'
-            self._hdr_lbl.setText(
-                f"HAZOP Scenario — {node_name_hdr} / {_first_desc} / {cons_desc}")
+            self._hdr_lbl.setText("HAZOP Scenario")
+            self._hdr_lbl.setToolTip(f"{node_name_hdr} / {_first_desc} / {cons_desc}")
         elif self._deviation_id is not None:
             dev = self.db.get_deviation(self._deviation_id)
-            self._hdr_lbl.setText(
-                f"HAZOP Scenario — {node_name_hdr} / {dev['description'] if dev else ''}")
+            self._hdr_lbl.setText("HAZOP Scenario")
+            self._hdr_lbl.setToolTip(f"{node_name_hdr} / {dev['description'] if dev else ''}")
         elif self.cause_id is not None:
-            self._hdr_lbl.setText(
-                f"HAZOP Scenario — {node_name_hdr} / {first_cause.get('description', '?')}")
+            self._hdr_lbl.setText("HAZOP Scenario")
+            self._hdr_lbl.setToolTip(f"{node_name_hdr} / {first_cause.get('description', '?')}")
         elif self._node_id is not None:
-            self._hdr_lbl.setText(f"HAZOP Scenario — {node_name_hdr}")
+            self._hdr_lbl.setText("HAZOP Scenario")
+            self._hdr_lbl.setToolTip(node_name_hdr)
         else:
-            self._hdr_lbl.setText(f"HAZOP Scenario — {node_name_hdr}")
+            self._hdr_lbl.setText("HAZOP Scenario")
+            self._hdr_lbl.setToolTip(node_name_hdr)
 
         logging.info('_build_rows: G0 — header set (%r)', self._hdr_lbl.text())
         self.refresh_placed()

@@ -53,6 +53,7 @@ class PIDGraphicsView(QGraphicsView):
     marker_clicked          = pyqtSignal(str, int)
     ref_tag_picked          = pyqtSignal(str)   # MODE_PICK_REF_TAG one-shot result
     equipment_place_requested = pyqtSignal(object, int)  # scene_pos, page
+    equipment_place_zone_requested = pyqtSignal(object, int)  # PDF QRectF, page
     annotation_clicked      = pyqtSignal(object)  # QPointF — MODE_ANNOTATION click
     # Markup editing signals
     markup_draw_finished    = pyqtSignal(str, list, int)   # type_, pdf_pts, page
@@ -210,6 +211,9 @@ class PIDGraphicsView(QGraphicsView):
         self._rband_preview_item = None
         self._rband_label_item   = None   # QGraphicsTextItem in right-drag rband
         self._rband_dragging     = False
+        self._place_rband_start_scene = None
+        self._place_rband_preview_item = None
+        self._place_rband_dragging = False
 
         # Label slot tracker: (qx, qy) → next free row index (reset on clear_overlays)
         self._label_slots: dict = {}
@@ -732,6 +736,7 @@ class PIDGraphicsView(QGraphicsView):
         canonical cleanup location; add new rubber-band attributes here only.
         """
         for attr in ('_rband_preview_item', '_rband_label_item',
+                     '_place_rband_preview_item',
                      '_ctrl_rband_preview_item', '_ctrl_rband_count_label'):
             item = getattr(self, attr, None)
             if item is not None:
@@ -742,6 +747,8 @@ class PIDGraphicsView(QGraphicsView):
                 setattr(self, attr, None)
         self._rband_start_scene      = None
         self._rband_dragging         = False
+        self._place_rband_start_scene = None
+        self._place_rband_dragging = False
         self._ctrl_rband_start_scene = None
         self._ctrl_rband_dragging    = False
 
@@ -2439,8 +2446,8 @@ class PIDGraphicsView(QGraphicsView):
         sp = self.mapToScene(event.position().toPoint())
 
         if self.mode == MODE_PLACE_EQUIPMENT and event.button() == Qt.MouseButton.LeftButton:
-            self.set_mode(MODE_NAV)
-            self.equipment_place_requested.emit(sp, self.current_page)
+            self._place_rband_start_scene = sp
+            self._place_rband_dragging = False
             event.accept(); return
 
         if self.mode == MODE_EDIT_EQUIPMENT and event.button() == Qt.MouseButton.LeftButton:
@@ -2611,6 +2618,31 @@ class PIDGraphicsView(QGraphicsView):
         super().mouseDoubleClickEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if (self.mode == MODE_PLACE_EQUIPMENT and
+                event.button() == Qt.MouseButton.LeftButton and
+                self._place_rband_start_scene is not None):
+            sp = self.mapToScene(event.position().toPoint())
+            start = self._place_rband_start_scene
+            dragging = self._place_rband_dragging
+            if self._place_rband_preview_item is not None:
+                try: self._scene.removeItem(self._place_rband_preview_item)
+                except RuntimeError: pass
+                self._place_rband_preview_item = None
+            self._place_rband_start_scene = None
+            self._place_rband_dragging = False
+            page = self.current_page
+            self.set_mode(MODE_NAV)
+            if dragging:
+                rect = QRectF(start, sp).normalized()
+                rs = self.render_scale
+                ox, oy = self._page_offsets.get(page, (0.0, 0.0))
+                pdf_rect = QRectF((rect.x() - ox) / rs, (rect.y() - oy) / rs,
+                                  rect.width() / rs, rect.height() / rs)
+                self.equipment_place_zone_requested.emit(pdf_rect, page)
+            else:
+                self.equipment_place_requested.emit(sp, page)
+            event.accept(); return
+
         # ── Board layout page drag release ────────────────────────────────────
         if (self.mode == MODE_BOARD_LAYOUT and self._dragging_page is not None and
                 event.button() == Qt.MouseButton.LeftButton):
@@ -2721,6 +2753,26 @@ class PIDGraphicsView(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def mouseMoveEvent(self, event):
+        if (self.mode == MODE_PLACE_EQUIPMENT and
+                self._place_rband_start_scene is not None and
+                event.buttons() & Qt.MouseButton.LeftButton):
+            sp = self.mapToScene(event.position().toPoint())
+            start = self._place_rband_start_scene
+            dx, dy = sp.x() - start.x(), sp.y() - start.y()
+            if not self._place_rband_dragging and dx * dx + dy * dy > 100:
+                self._place_rband_dragging = True
+            if self._place_rband_dragging:
+                rect = QRectF(start, sp).normalized()
+                if self._place_rband_preview_item is None:
+                    pen = QPen(QColor(0, 100, 200), 1.5)
+                    pen.setStyle(Qt.PenStyle.DashLine); pen.setCosmetic(True)
+                    self._place_rband_preview_item = self._scene.addRect(
+                        rect, pen, QBrush(QColor(0, 100, 200, 28)))
+                    self._place_rband_preview_item.setZValue(Z_TEMP)
+                else:
+                    self._place_rband_preview_item.setRect(rect)
+            event.accept(); return
+
         # ── Shift+drag of an equipment marker → worksheet consequence row ─────
         if (self._equip_drag_candidate is not None and
                 event.buttons() & Qt.MouseButton.LeftButton and

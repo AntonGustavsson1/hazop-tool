@@ -79,11 +79,11 @@ class ParticipantMatrixPanel(QWidget):
         header.sectionDoubleClicked.connect(self._edit_header_label)
         header.location_dropped.connect(self._copy_session_location)
         layout.addWidget(self._table)
+        self._table.currentCellChanged.connect(
+            lambda *_: self._refresh_select_all_state())
         self._session_actions_row = QHBoxLayout()
         self._session_actions_row.setSpacing(4)
         layout.addLayout(self._session_actions_row)
-        self._table.currentCellChanged.connect(
-            lambda *_: self._refresh_select_all_state())
 
         # Compact controls directly below the matrix: plus/minus are placed
         # next to the thing they affect instead of one long toolbar.
@@ -187,23 +187,6 @@ class ParticipantMatrixPanel(QWidget):
         finally:
             self._loading = False
 
-    def _rebuild_session_action_buttons(self, sessions):
-        while self._session_actions_row.count():
-            item = self._session_actions_row.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        self._session_actions_row.addWidget(QLabel("Markera alla:"))
-        for idx, session in enumerate(sessions):
-            label = self._session_header_text(session).replace('\n', ' ')
-            button = QPushButton(f"✓ {label}")
-            button.setToolTip(f"Markera alla deltagare för {label}")
-            button.setCheckable(True)
-            button.clicked.connect(
-                lambda checked, i=idx: self._set_all_for_session(i, checked))
-            self._session_actions_row.addWidget(button)
-        self._session_actions_row.addStretch()
-
     def _set_all_for_session(self, session_index, attended):
         if not 0 <= session_index < len(self._session_ids):
             return
@@ -211,6 +194,31 @@ class ParticipantMatrixPanel(QWidget):
         for participant_id in self._participant_ids:
             self.db.set_attendance(participant_id, session_id, attended)
         self.refresh()
+
+    def _rebuild_session_action_buttons(self, sessions):
+        while self._session_actions_row.count():
+            item = self._session_actions_row.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        # Keep the controls directly aligned with their table columns.  The
+        # spacer mirrors the fixed/custom columns; each button mirrors the
+        # corresponding session column width.
+        prefix_width = sum(self._table.columnWidth(i)
+                           for i in range(len(self._FIXED_COLS) + len(self._column_ids)))
+        prefix = QWidget()
+        prefix.setFixedWidth(max(0, prefix_width))
+        self._session_actions_row.addWidget(prefix)
+        for idx, session in enumerate(sessions):
+            label = self._session_header_text(session).replace('\n', ' ')
+            button = QPushButton(f"✓ {label}")
+            button.setFixedWidth(max(60, self._table.columnWidth(
+                len(self._FIXED_COLS) + len(self._column_ids) + idx)))
+            button.setToolTip(f"Markera alla deltagare för {label}")
+            button.setCheckable(True)
+            button.clicked.connect(lambda checked, i=idx: self._set_all_for_session(i, checked))
+            self._session_actions_row.addWidget(button)
+        self._session_actions_row.addStretch()
 
     def _set_attendance_from_cell(self, row, session_index, attended):
         if self._loading or not (0 <= row < len(self._participant_ids)):

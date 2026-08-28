@@ -3717,7 +3717,7 @@ class Database:
             "INSERT INTO nodes (name, system_id) VALUES ('Ny nod', ?)", (system_id,))
         node_id = cur.lastrowid
         std = [r[0] for r in self.conn.execute(
-            "SELECT description FROM standard_deviations ORDER BY sort_order").fetchall()]
+            "SELECT description FROM standard_deviations WHERE active=1 ORDER BY sort_order").fetchall()]
         for dev_type in (std or DEVIATION_TYPES):
             self.conn.execute(
                 "INSERT INTO deviations (node_id, description) VALUES (?,?)",

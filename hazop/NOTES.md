@@ -3286,3 +3286,10 @@ P&ID-textträffar navigerar till rätt sida.
 
 Verifierat med syntaxkontroll, `tests.test_smoke` (12 tester) och riktade
 sök-/export-/layouttester. Ingen visuell GUI-verifiering är gjord.
+## 2026-08-28 — kvarvarande HAZOP-flöden
+
+- Aktiva standardavvikelser filtreras även när en nod skapas direkt via `add_node()`.
+- Riskmatrisens hörn `F \\ C` är klickbart för axelbyte; X/Y-riktningarna ligger vid respektive axel.
+- Deltagarnas snabbmarkering är kolumnjusterad under analystillfällena och fritext per deltagare/tillfälle behålls.
+- Placera på P&ID stöder vänsterklick-drag med streckad gummibandsförhandsvisning och skickar PDF-rektangel till kopplingsflödet.
+- Scenariohuvudet hålls kompakt; aktuell kontext visas i tooltip. Fördröjd taggkomplettering avbryts säkert om editorn redan är borttagen.

@@ -419,7 +419,6 @@ class HAZOPPreparationPanel(QWidget):
         self._axis_combo.addItem("Frekvens → X,  Konsekvens → Y  (standard)", 'frequency')
         self._axis_combo.addItem("Konsekvens → X,  Frekvens → Y", 'consequence')
         ax_row.addWidget(self._axis_combo, 1)
-        ax_row.addWidget(QLabel("  Riktning:"))
         # Clickable arrows instead of checkboxes (2026-08-17 user request) —
         # QToolButton in checkable mode is a drop-in for QCheckBox here:
         # every other call site only ever touches .isChecked()/.setChecked()/
@@ -449,8 +448,6 @@ class HAZOPPreparationPanel(QWidget):
         self._y_rev_chk.toggled.connect(_update_y_arrow)
         _update_x_arrow(False)
         _update_y_arrow(False)
-        ax_row.addWidget(self._x_rev_chk)
-        ax_row.addWidget(self._y_rev_chk)
         ml.addLayout(ax_row)
 
         # Live update: rebuild grid immediately on any control change
@@ -1320,10 +1317,14 @@ class HAZOPPreparationPanel(QWidget):
                       "border:1px solid #aaa; border-radius:0px;"
                       "background:#eef2f7; padding:0 3px;")
 
-        # Corner
-        corner = QLabel(corner_txt)
-        corner.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        corner.setStyleSheet("font-size:9px; color:#555;")
+        # The corner is an actual control: clicking F\\C (or C\\F) swaps
+        # the semantic axes while keeping the matrix data intact.
+        corner = QToolButton()
+        corner.setText(corner_txt)
+        corner.setToolTip("Byt vilken axel som visar frekvens respektive konsekvens")
+        corner.clicked.connect(lambda: self._axis_combo.setCurrentIndex(
+            1 - max(0, self._axis_combo.currentIndex())))
+        corner.setStyleSheet("font-size:9px; font-weight:bold; border:1px solid #888; background:#eef2f7;")
         self._matrix_grid.addWidget(corner, 0, 0)
 
         # Column headers — apply x_rev: if reversed, col 0 shows the highest value
@@ -1345,6 +1346,8 @@ class HAZOPPreparationPanel(QWidget):
             e.setCursorPosition(0)
             self._matrix_grid.addWidget(e, 0, c + 1)
             self._x_label_edits.append(e)
+
+        self._matrix_grid.addWidget(self._x_rev_chk, 0, n_dcols + 1)
 
         # Rows — apply y_rev: if NOT reversed, highest value is at top (default)
         for r in range(n_drows):
@@ -1565,6 +1568,11 @@ class HAZOPPreparationPanel(QWidget):
 
             self._category_row_edits = row_cat_edits
             self._resize_category_rows()
+
+        # Keep the Y-direction control alongside the vertical axis labels.
+        # It is placed below the matrix so it never steals a severity label or
+        # a frequency-boundary cell.
+        self._matrix_grid.addWidget(self._y_rev_chk, n_drows + 2, 0)
 
     def _schedule_category_row_resize(self):
         """Resize matrix rows after wrapped category text changes.

@@ -1578,6 +1578,7 @@ class PIDPanel(QWidget):
         self.viewer.annotation_clicked.connect(self._on_annotation_click)
         self.viewer.marker_clicked.connect(self._on_marker_clicked)
         self.viewer.equipment_place_requested.connect(self._on_cause_place_requested)
+        self.viewer.equipment_place_zone_requested.connect(self._on_cause_place_zone_requested)
         self.viewer.markup_moved.connect(self.markup_moved)
         self.viewer.markup_label_edited.connect(self.markup_label_edited)
         self.viewer.markup_duplicate_requested.connect(self.markup_duplicate_requested)
@@ -3524,6 +3525,24 @@ class PIDPanel(QWidget):
             return
         cause_id, tag, comp_type = pending
         self.place_equipment_marker(tag, comp_type, scene_pos, page)
+        equipment = self.db.get_equipment_by_tag(tag)
+        if equipment:
+            self.db.update_cause(
+                cause_id,
+                equipment_id=equipment['id'],
+                comp_type=equipment.get('equipment_type') or comp_type,
+                comp_tag=equipment.get('tag') or tag)
+            self.cause_equipment_bound.emit(cause_id, equipment['id'])
+
+    def _on_cause_place_zone_requested(self, pdf_rect, page):
+        """Finish cause placement from the left-button rubber band."""
+        pending = self._pending_cause_place
+        self._pending_cause_place = None
+        if not pending:
+            return
+        cause_id, tag, comp_type = pending
+        center = self.viewer.pdf_to_scene(pdf_rect.center().x(), pdf_rect.center().y(), page=page)
+        self.place_equipment_marker(tag, comp_type, center, page, pdf_rect=pdf_rect)
         equipment = self.db.get_equipment_by_tag(tag)
         if equipment:
             self.db.update_cause(
