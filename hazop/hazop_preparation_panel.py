@@ -827,8 +827,29 @@ class HAZOPPreparationPanel(QWidget):
         menu = QMenu(self)
         if len(selected_rows) == 1:
             menu.addAction(_icon('edit'), "Byt namn", self._rename_sheet)
+            menu.addAction(_icon('document'), "Lägg till ny revision av P&ID…",
+                           self._add_pid_revision)
         menu.addAction(_icon('delete'), "Ta bort", self._delete_sheets)
         menu.exec(self._sheet_list.viewport().mapToGlobal(pos))
+
+    def _add_pid_revision(self):
+        """Create a revision record from the currently loaded P&ID file."""
+        current = self._sheet_list.currentRow()
+        if current < 0:
+            return
+        revision, ok = QInputDialog.getText(
+            self, "Ny P&ID-revision", "Revision (t.ex. Rev F):")
+        if not ok or not revision.strip():
+            return
+        date, ok = QInputDialog.getText(
+            self, "Ny P&ID-revision", "Datum (ÅÅÅÅ-MM-DD):",
+            text=QDate.currentDate().toString("yyyy-MM-dd"))
+        if not ok:
+            return
+        pdf_path = self.db.get_pid_path() or ''
+        self.db.add_revision(revision.strip(), '', pdf_path, date.strip())
+        self.refresh_sheets()
+        self.sheets_changed.emit()
 
     def _on_sheet_item_changed(self, item):
         """Persist editable drawing metadata immediately."""
