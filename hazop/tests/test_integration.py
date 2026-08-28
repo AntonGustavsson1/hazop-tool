@@ -4711,6 +4711,19 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             panel.load_node(node_id)
             row = next(r for r, m in enumerate(panel._row_meta)
                        if m[1] == cause_id)
+            index = panel._table.model().index(row, panel._C_ORS)
+            option = QStyleOptionViewItem()
+            option.rect = panel._table.visualRect(index)
+            panel._group_edit_line = (row, 0)
+            primary_editor = panel._pid_delegate.createEditor(
+                panel._table, option, index)
+            try:
+                panel._pid_delegate.setEditorData(primary_editor, index)
+                self.assertEqual(primary_editor.toPlainText(),
+                                 'felar högt')
+            finally:
+                primary_editor.deleteLater()
+            panel._group_edit_line = None
             panel._apply_group_cause_choice(cause_id, 0, 'Felar lågt')
             cause = dict(win.db.get_cause(cause_id))
             self.assertEqual(cause['group_choices_set'], 3)

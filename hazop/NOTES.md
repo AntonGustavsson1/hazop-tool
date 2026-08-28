@@ -2,6 +2,13 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Grupporsak: primäreditor tar inte med sekundärhändelsen (2026-08-28)
+
+Äldre grupporsaker kan ha båda händelserna lagrade som en enda piltext.
+Editorns inläsning delar nu denna representation innan den valda raden visas,
+så primär- och sekundärtexten hålls separata även vid redigering av äldre data.
+Verifierat med riktade gruppeditor-tester och smoke-test.
+
 ## Dragning till avvikelse: ingen förifylld orsaksbeskrivning (2026-08-28)
 
 När P&ID-objekt dras till en avvikelse skapas orsaken nu med tom beskrivning.

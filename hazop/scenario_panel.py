@@ -2204,11 +2204,13 @@ class _PidDelegate(_ScenarioDelegate):
             tags += self._panel._matching_pid_tags(editor.toPlainText())
             editor.set_bold_tags(tags)
             if index.column() == self._panel._C_ORS:
-                group_line = getattr(self._panel, '_group_edit_line', None)
-                if group_line is None:
-                    stored_line = editor.property('group_line')
-                    if stored_line in (0, 1):
-                        group_line = (index.row(), int(stored_line))
+                # The editor's own row marker is authoritative.  The panel
+                # marker is only a hand-off value and may still contain the
+                # previous click while Qt is opening this editor.
+                stored_line = editor.property('group_line')
+                group_line = ((index.row(), int(stored_line))
+                              if stored_line in (0, 1) else
+                              getattr(self._panel, '_group_edit_line', None))
                 if group_line is not None and group_line[0] == index.row():
                     item = self._panel._table.item(index.row(), index.column())
                     group_tags = item.data(Qt.ItemDataRole.UserRole + 9) if item else []
@@ -2217,6 +2219,22 @@ class _PidDelegate(_ScenarioDelegate):
                         cause = self._panel.db.get_cause(meta[1])
                         lines = ((cause.get('description') or '').splitlines()
                                  if cause else [])
+                        # Older grouped causes stored both events as one
+                        # arrow sentence.  Split that legacy representation
+                        # before selecting the clicked row, otherwise the
+                        # primary editor receives the secondary event too.
+                        if len(lines) == 1 and len(group_tags or []) >= 2:
+                            legacy = lines[0]
+                            secondary_tag = str(group_tags[1]).strip()
+                            secondary_pos = legacy.casefold().find(
+                                secondary_tag.casefold(),
+                                len(str(group_tags[0]).strip()))
+                            if secondary_pos >= 0:
+                                lines = [legacy[:secondary_pos].rstrip(' ,:→-'),
+                                         legacy[secondary_pos:]]
+                            elif '→' in legacy:
+                                left, right = legacy.split('→', 1)
+                                lines = [left.strip(), right.strip()]
                         selected = (lines[group_line[1]].strip()
                                     if group_line[1] < len(lines) else
                                     str(group_tags[group_line[1]]))
