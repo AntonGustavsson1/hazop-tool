@@ -2660,6 +2660,15 @@ class EquipmentMarkerNavigateFiltersScenarioTests(unittest.TestCase):
             mock_load_eq.assert_called_once_with(eq_id)
             mock_load_node.assert_not_called()
 
+    def test_place_on_pid_wires_tag_before_type(self):
+        with _TempDbMainWindow() as win:
+            with unittest.mock.patch.object(
+                    win.pid_panel, 'start_cause_equipment_placement') as place:
+                win.scenario_panel.place_cause_object_requested.emit(
+                    17, 'Ventil', 'V-101')
+
+            place.assert_called_once_with(17, 'V-101', 'Ventil')
+
     def test_unlinked_marker_is_a_no_op(self):
         with _TempDbMainWindow() as win:
             marker_id = win.db.add_equipment_marker(None, "?", 0, 10.0, 10.0, "")
