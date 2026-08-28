@@ -3807,3 +3807,9 @@ P&ID sätter dessutom samma gruppscope som en vald avvikelse.
 Placeringssignalen från objektpopupen anger nu tagg och objekttyp i samma
 ordning som P&ID-placement-API:t förväntar sig. Tag-numret hamnar därför i
 taggfältet och objekttypen i objekttypfältet.
+
+## Worksheet-drop uppdaterar trädet (2026-08-28)
+
+När objekt från P&ID släpps i worksheetens konsekvens- eller barriärfält
+signaleras nu även en strukturändring, så trädet visar nya eller kopierade
+rader direkt efter ett Shift-drag.

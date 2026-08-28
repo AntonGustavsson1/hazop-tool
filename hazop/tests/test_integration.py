@@ -4419,6 +4419,26 @@ class EquipmentDropOnSafeguardAndMultiTests(unittest.TestCase):
             self.assertEqual(sg['comp_tag'], "PSV-101")
             self.assertEqual(sg['comp_type'], "Säkerhetsventil")
 
+    def test_drop_equipment_on_sg_notifies_tree_refresh(self):
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            _n, _d, cause_id, _cons_id, sg_id = self._make_full_chain(win.db)
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[3] == sg_id)
+            eq_id = win.db.add_equipment_item("PSV-201", "PSV-201", "PSV", 0,
+                                              "Sakerhetsventil", '', 0)
+            marker_id = win.db.add_equipment_marker(
+                eq_id, "PSV-201", 0, 10.0, 10.0, "Sakerhetsventil")
+            event = self._make_drop_event(
+                panel, f'hzp:equipment:{marker_id}:-1:-1', row, panel._C_SG)
+
+            with unittest.mock.patch.object(win.tree_panel, 'refresh') as refresh:
+                self.assertTrue(panel.eventFilter(panel._table.viewport(), event))
+                QApplication.processEvents()
+
+            self.assertTrue(refresh.called,
+                            "worksheet equipment drop must refresh the tree")
+
     def test_second_separate_drop_onto_an_already_tagged_sg_row_creates_new_row(self):
         """The 'different objects on different rows' rule for safeguards
         must hold even when the objects arrive as two SEPARATE drag

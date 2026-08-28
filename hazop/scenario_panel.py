@@ -8425,6 +8425,13 @@ class ScenarioTablePanel(QWidget):
             else:
                 event.ignore(); return
             self._schedule_rebuild()
+            # Dropping on KON/SG can add or append rows that are also shown
+            # in the left tree (especially Shift-drag with several objects).
+            # The scenario table rebuild alone does not notify MainWindow,
+            # so refresh the tree after the drop has committed.  ORS already
+            # emits item_edited above and keeps its existing path unchanged.
+            if tgt_col in (self._C_KON, self._C_SG):
+                QTimer.singleShot(0, self.structure_changed.emit)
             event.acceptProposedAction()
             return
 
