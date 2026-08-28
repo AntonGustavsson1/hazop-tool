@@ -2,6 +2,14 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Drag-and-drop av gruppens objektrader (2026-08-28)
+
+Gruppraderna i trädet delar en QTreeWidgetItem och kan därför inte använda
+Qt:s vanliga interna objektflytt. En särskild drag-payload för gruppens
+visuella rad flyttar nu objektet till den rad där det släpps, uppdaterar
+primär/sekundär och flyttar med motsvarande radtext. Den befintliga
+dragningen mellan trädnivåer är oförändrad.
+
 ## Radvis redigering av grupporsak i trädet (2026-08-28)
 
 När en grupporsak har separata beskrivningsrader öppnar dubbelklick på en rad

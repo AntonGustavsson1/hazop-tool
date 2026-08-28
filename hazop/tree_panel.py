@@ -5,6 +5,7 @@ fler filer"."""
 
 import json
 import math
+import re
 import traceback
 from functools import partial
 
@@ -18,7 +19,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QRect, QMimeData, QEvent
 from PyQt6.QtGui import (
-    QFont, QFontMetrics, QColor, QBrush, QPen, QPainter, QPixmap, QPolygonF,
+    QFont, QFontMetrics, QColor, QBrush, QPen, QPainter, QPixmap, QPolygonF, QDrag,
 )
 
 from constants import (
@@ -191,6 +192,7 @@ class TreePanel(QWidget):
         self._inline_edit_target = None   # (type_, id_) while an inline edit is in progress
         self.tree.installEventFilter(self)   # keyboard navigation (feature 17)
         self.tree.viewport().installEventFilter(self)  # grouped line hit-testing
+        self._group_drag = None  # (cause_id, line, item, press_position)
         # Internal drag-and-drop between tree levels (2026-08-17, user
         # request: drag a Cause/Consequence/Safeguard onto a different
         # parent to reparent it there — e.g. dragging a Consequence onto
@@ -1366,6 +1368,57 @@ class TreePanel(QWidget):
         menu.addAction("Ta bort", self.delete_selected)
         menu.exec(self.tree.viewport().mapToGlobal(pos))
 
+    def _group_line_at(self, item, pos):
+        """Return the visual group-row index under a viewport position."""
+        if item is None:
+            return None
+        cause_id = item.data(0, Qt.ItemDataRole.UserRole)
+        if item.data(0, Qt.ItemDataRole.UserRole + 1) != CAUSE_T:
+            return None
+        count = len(self._group_equipment_ids(self.db.get_cause(cause_id)))
+        if count < 2:
+            return None
+        rect = self.tree.visualItemRect(item)
+        line_h = max(1, QFontMetrics(self.tree.font()).height())
+        line = int((pos.y() - rect.top()) // line_h)
+        return line if 0 <= line < count else None
+
+    def _move_group_row_by_drag(self, cause_id, source_line, target_line):
+        if source_line == target_line:
+            return
+        cause = self.db.get_cause(cause_id)
+        ids = self._group_equipment_ids(cause)
+        if not cause or not (0 <= source_line < len(ids)) or not (0 <= target_line < len(ids)):
+            return
+        ids.insert(target_line, ids.pop(source_line))
+        tags = []
+        for equipment_id in ids:
+            equipment = self.db.get_equipment_by_id(equipment_id)
+            tags.append((equipment.get('tag') if equipment else '') or 'Objekt')
+        operators = [value for value in re.findall(
+            r'\s(&|OR|<>|->|\+)\s', cause.get('comp_tag') or '', re.IGNORECASE)]
+        if not operators:
+            operators = ['OR']
+        if len(operators) == 1:
+            operators *= len(ids) - 1
+        operators = operators[:len(ids) - 1] + ['OR'] * len(ids)
+        normal = {'+': '&', '<>': 'OR', 'or': 'OR'}
+        operators = [normal.get(str(value).casefold(), value) for value in operators[:len(ids) - 1]]
+        lines = (cause.get('description') or '').splitlines()
+        if len(lines) >= len(ids):
+            lines.insert(target_line, lines.pop(source_line))
+        self.db.update_cause(
+            cause_id,
+            comp_type=(self.db.get_equipment_by_id(ids[0]) or {}).get('equipment_type', ''),
+            comp_tag=tags[0] + ''.join(
+                f" {operators[i - 1]} {tags[i]}" for i in range(1, len(tags))),
+            equipment_id=ids[0],
+            secondary_equipment_id=ids[1] if len(ids) > 1 else None,
+            group_equipment_ids=ids,
+            description='\n'.join(lines) if len(lines) >= len(ids) else cause.get('description', ''))
+        self.refresh(CAUSE_T, cause_id, emit_selection=False)
+        self.item_edited_inline.emit(CAUSE_T, cause_id)
+
     def _copy_item(self, type_, id_):
         self._clipboard = {'type': type_, 'id': id_}
 
@@ -1417,6 +1470,56 @@ class TreePanel(QWidget):
     # ── Feature 17: keyboard navigation ───────────────────────────────────────
     def eventFilter(self, obj, event):
         from PyQt6.QtCore import QEvent
+        _tree_targets = (self.tree, self.tree.viewport())
+
+        if (obj is self.tree.viewport() and
+                event.type() == QEvent.Type.MouseButtonPress and
+                event.button() == Qt.MouseButton.LeftButton):
+            pos = event.position().toPoint()
+            item = self.tree.itemAt(pos)
+            line = self._group_line_at(item, pos)
+            self._group_drag = (
+                (item.data(0, Qt.ItemDataRole.UserRole), line, item, pos)
+                if line is not None else None)
+
+        if (obj is self.tree.viewport() and
+                event.type() == QEvent.Type.MouseMove and
+                self._group_drag and
+                event.buttons() & Qt.MouseButton.LeftButton):
+            start_pos = self._group_drag[3]
+            if ((event.position().toPoint() - start_pos).manhattanLength() >=
+                    QApplication.startDragDistance()):
+                cause_id, line, _item, _ = self._group_drag
+                self._group_drag = None
+                mime = QMimeData()
+                mime.setText(f'hzp:group-row:{cause_id}:{line}')
+                drag = QDrag(self.tree)
+                drag.setMimeData(mime)
+                drag.exec(Qt.DropAction.MoveAction)
+                return True
+
+        if obj in _tree_targets and event.type() == QEvent.Type.Drop:
+            text = event.mimeData().text() if event.mimeData().hasText() else ''
+            if text.startswith('hzp:group-row:'):
+                try:
+                    _, _, cause_id, source_line = text.split(':', 3)
+                    cause_id, source_line = int(cause_id), int(source_line)
+                except (TypeError, ValueError):
+                    event.ignore()
+                    return True
+                pos = event.position().toPoint()
+                if obj is self.tree:
+                    pos = self.tree.viewport().mapFrom(self.tree, pos)
+                target_item = self.tree.itemAt(pos)
+                target_line = self._group_line_at(target_item, pos)
+                if (target_item is not None and
+                        target_item.data(0, Qt.ItemDataRole.UserRole) == cause_id and
+                        target_line is not None):
+                    self._move_group_row_by_drag(cause_id, source_line, target_line)
+                    event.acceptProposedAction()
+                else:
+                    event.ignore()
+                return True
         # ── External drop: equipment marker(s) dragged from the P&ID onto a
         # deviation item (2026-08-08, see NOTES.md). Qt delivers drag/drop
         # events to the tree's VIEWPORT, not the outer QTreeWidget — see
