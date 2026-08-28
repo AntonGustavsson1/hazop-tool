@@ -3077,6 +3077,15 @@ kvar eftersom de är en del av cellens funktionella layout. Regressionstesterna
 uppdaterades till den gemensamma edit-starten och 27 berörda tester passerar.
 Ingen visuell GUI-verifiering är gjord.
 
+## Grupporsak redigeras med samma objektlogik (2026-08-28)
+
+Dubbelklick på en Orsak-grupp öppnar nu en gemensam tvåkolumnspopup med
+`Orsaksfel` för primärt objekt och `Vad konsekvensen leder till` för sekundärt
+objekt. Den visar båda taggarna, befintliga val för felriktning/effekt samt
+knappen `Byt primär / sekundär`. Gruppens gamla enkelklicksväg till P&ID-bind
+är borttagen; gruppen redigeras i stället via popupen på samma sätt som ett
+enskilt objekt redigeras via sin befintliga popup.
+
 ## Korrigering av frekvensyta, taggformat och namnbytesvarningar (2026-08-28)
 
 Orsakens frekvenszon reserveras nu med samma dynamiska breddlogik som den

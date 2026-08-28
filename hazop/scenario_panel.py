@@ -550,6 +550,63 @@ class RiskMatrixPopup(QDialog):
             super().keyPressEvent(event)
 
 
+class GroupCausePopup(QDialog):
+    """Compact two-column editor for a functional two-object cause."""
+
+    choice_requested = pyqtSignal(int, str)  # column (0/1), choice
+    swap_requested = pyqtSignal()
+
+    def __init__(self, primary, secondary, direction, effect, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Grupporsak")
+        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.setMinimumWidth(420)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+        title = QLabel("Redigera grupporsak")
+        title.setStyleSheet("font-weight:bold; font-size:11px;")
+        layout.addWidget(title)
+
+        columns = QHBoxLayout()
+        columns.setSpacing(8)
+        for column, (heading, equipment, current, choices) in enumerate((
+                ("Orsaksfel", primary, direction,
+                 ("Felar högt", "Felar lågt")),
+                ("Vad konsekvensen leder till", secondary, effect,
+                 ("Öppnar felaktigt", "Stänger felaktigt", "Öppnar fullt",
+                  "Stänger helt")))):
+            box = QGroupBox(heading)
+            box_layout = QVBoxLayout(box)
+            tag = QLabel(str(equipment.get('tag') or 'Objekt'))
+            tag.setStyleSheet("font-weight:bold; font-size:11px;")
+            tag.setToolTip(str(equipment.get('description') or ''))
+            box_layout.addWidget(tag)
+            type_text = str(equipment.get('equipment_type') or '')
+            if type_text:
+                typ = QLabel(type_text)
+                typ.setStyleSheet("color:#666; font-size:9px;")
+                box_layout.addWidget(typ)
+            for choice in choices:
+                button = QPushButton(choice)
+                button.setFixedHeight(CONFIG['H_BTN_SMALL'])
+                button.clicked.connect(
+                    lambda _=False, c=column, value=choice:
+                    self.choice_requested.emit(c, value))
+                box_layout.addWidget(button)
+            current_label = QLabel(f"Valt: {current}")
+            current_label.setStyleSheet("color:#555; font-size:9px;")
+            box_layout.addWidget(current_label)
+            columns.addWidget(box)
+        layout.addLayout(columns)
+
+        swap = QPushButton("Byt primär / sekundär")
+        swap.setFixedHeight(CONFIG['H_BTN_SMALL'])
+        swap.clicked.connect(self.swap_requested.emit)
+        layout.addWidget(swap)
+
+
 # ── NEW: column-based step picker ─────────────────────────────────────────────
 _N_STEPS = 5
 
@@ -5283,6 +5340,12 @@ class ScenarioTablePanel(QWidget):
             if col == self._C_ORS and row < len(self._row_meta):
                 cause_id = self._row_meta[row][1]
                 obj_data = item.data(Qt.ItemDataRole.UserRole + 2) or ('', '')
+                group_tags = item.data(Qt.ItemDataRole.UserRole + 9) or []
+                if cause_id is not None and len(group_tags) >= 2:
+                    gp = self._table.viewport().mapToGlobal(
+                        self._table.visualRect(self._table.model().index(row, col)).topLeft())
+                    self._show_group_cause_popup(row, cause_id, gp)
+                    return
                 if cause_id is not None and not (obj_data[1] or '').strip():
                     gp = self._table.viewport().mapToGlobal(
                         self._table.visualRect(self._table.model().index(row, col)).topLeft())
@@ -5643,6 +5706,10 @@ class ScenarioTablePanel(QWidget):
         — it commits live and dismisses itself on Escape/outside click,
         so it's shown non-modally instead of exec()'d."""
         item      = self._table.item(row, self._C_ORS)
+        group_tags = item.data(Qt.ItemDataRole.UserRole + 9) or [] if item else []
+        if len(group_tags) >= 2:
+            self._show_group_cause_popup(row, cause_id, global_pos)
+            return
         obj_data  = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
         comp_type, comp_tag = obj_data if obj_data else ('', '')
 
@@ -5667,6 +5734,41 @@ class ScenarioTablePanel(QWidget):
         x = max(screen.left() + 4, x)
         y = max(screen.top()  + 4, min(y, screen.bottom() - ph))
         popup.move(x, y)
+        popup.show()
+
+    def _show_group_cause_popup(self, row, cause_id, global_pos):
+        """Open the two-column editor used for a grouped cause."""
+        cause = self.db.get_cause(cause_id)
+        if not cause:
+            return
+        cause = dict(cause)
+        primary = self.db.get_equipment_by_id(cause.get('equipment_id'))
+        secondary = self.db.get_equipment_by_id(cause.get('secondary_equipment_id'))
+        if not primary or not secondary:
+            return
+        primary, secondary = dict(primary), dict(secondary)
+        desc = (cause.get('description') or '').lower()
+        direction = 'Felar lågt' if 'felar lågt' in desc else 'Felar högt'
+        effect = next((value for value in (
+            'Öppnar felaktigt', 'Stänger felaktigt', 'Öppnar fullt',
+            'Stänger helt') if value.lower() in desc), 'Öppnar fullt')
+        popup = GroupCausePopup(primary, secondary, direction, effect, parent=self)
+        def apply_choice(which, choice):
+            self._apply_group_cause_choice(cause_id, which, choice)
+            popup.close()
+        def swap_objects():
+            self._swap_group_objects(cause_id)
+            popup.close()
+        popup.choice_requested.connect(apply_choice)
+        popup.swap_requested.connect(swap_objects)
+        popup.adjustSize()
+        screen = (QApplication.screenAt(global_pos) or QApplication.primaryScreen()).availableGeometry()
+        x = min(global_pos.x(), screen.right() - popup.width() - 4)
+        y = global_pos.y() - popup.height() - 6
+        if y < screen.top():
+            y = global_pos.y() + 6
+        popup.move(max(screen.left() + 4, x),
+                   max(screen.top() + 4, min(y, screen.bottom() - popup.height())))
         popup.show()
 
     def _edit_group_cause_choice(self, cause_id, which):
@@ -6076,27 +6178,10 @@ class ScenarioTablePanel(QWidget):
                 desc       = item.text() if item is not None else ''
                 group_tags = item.data(Qt.ItemDataRole.UserRole + 9) if item else []
                 if group_tags:
-                    bf = QFont(self._table.font()); bf.setBold(True)
-                    fm = QFontMetrics(bf)
-                    line_h = max(_ORS_FIRST_LINE_H, fm.height() + 4)
-                    line = 0 if pos.y() - self._table.rowViewportPosition(row) < line_h else 1
-                    tag = group_tags[min(line, 1)]
-                    suffix = ('felar högt' if 'felar högt' in desc.lower() else 'felar lågt') if line == 0 else 'öppnar fullt'
-                    x = col_x + 2
-                    tag_w = fm.horizontalAdvance(tag)
-                    if x <= pos.x() < x + tag_w:
-                        cause_id = self._row_meta[row][1]
-                        if cause_id is not None:
-                            (self.bind_cause_to_pid_requested.emit if line == 0
-                             else self.bind_secondary_cause_to_pid_requested.emit)(cause_id)
-                        return True
-                    choice_x = x + tag_w
-                    choice_w = fm.horizontalAdvance(' ' + suffix)
-                    if choice_x <= pos.x() < choice_x + choice_w:
-                        cause_id = self._row_meta[row][1]
-                        if cause_id is not None:
-                            self._edit_group_cause_choice(cause_id, line)
-                        return True
+                    # Group tags are informational in the table. The old
+                    # one-click P&ID bind path is intentionally removed;
+                    # double-click opens the two-column group popup.
+                    return False
                 prefix_w   = self._ors_tag_prefix_pixel_width(item, desc, self._table.font())
                 if prefix_w > 0 and col_x <= pos.x() < col_x + 2 + prefix_w:
                     cause_id = self._row_meta[row][1]
