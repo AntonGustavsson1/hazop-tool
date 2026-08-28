@@ -4980,6 +4980,25 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
                 dict(win.db.get_cause(cause_id))['description'],
                 'FI-1 primary custom\nFV-1 needs manual operation')
 
+    def test_group_operator_can_be_changed_without_changing_object_links(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.get_or_create_deviation(node_id, 'LÃ¥gt flÃ¶de')
+            primary_id = win.db.add_equipment_item(
+                'FI-1', 'FI-1', 'FI', 0, 'Instrument', '', 0)
+            secondary_id = win.db.add_equipment_item(
+                'FV-1', 'FV-1', 'FV', 0, 'Reglerventil', '', 0)
+            cause_id = win.db.add_cause(dev_id)
+            win.db.update_cause(
+                cause_id, comp_type='Instrument', comp_tag='FI-1 + FV-1',
+                equipment_id=primary_id, secondary_equipment_id=secondary_id,
+                description='FI-1\nFV-1')
+            win.scenario_panel._set_group_operator(cause_id, '->')
+            cause = dict(win.db.get_cause(cause_id))
+            self.assertEqual(cause['comp_tag'], 'FI-1 -> FV-1')
+            self.assertEqual(cause['equipment_id'], primary_id)
+            self.assertEqual(cause['secondary_equipment_id'], secondary_id)
+
     def test_new_group_keeps_both_object_tags_when_secondary_text_saved(self):
         with _TempDbMainWindow() as win:
             node_id = win.db.add_node()

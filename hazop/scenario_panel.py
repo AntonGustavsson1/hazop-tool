@@ -2492,6 +2492,9 @@ class _PidDelegate(_ScenarioDelegate):
                 # Keep the editable text clearly to the right of the
                 # object tag on BOTH visual rows.  Do not change group_line
                 # or any of the primary/secondary data handling here.
+                if int(group_line) == 1:
+                    prefix_w += QFontMetrics(option.font).horizontalAdvance(
+                        f"{self._panel._group_operator(item)} ")
                 prefix_w += QFontMetrics(tag_font).horizontalAdvance(
                     str(group_tags[group_line])) + 10
                 line_h = max(_ORS_FIRST_LINE_H,
@@ -2719,6 +2722,14 @@ class _PidDelegate(_ScenarioDelegate):
                                              Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                                              number_prefix)
                             x += QFontMetrics(option.font).horizontalAdvance(number_prefix)
+                        if line_no == 1:
+                            operator = self._panel._group_operator(item)
+                            painter.setFont(option.font)
+                            painter.drawText(QRect(x, y, desc_rect.width(), line_h),
+                                             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                                             f"{operator} ")
+                            x += QFontMetrics(option.font).horizontalAdvance(
+                                f"{operator} ")
                         painter.setFont(bf)
                         painter.drawText(QRect(x, y,
                                                max(0, desc_rect.right() - x + 1), line_h),
@@ -6143,6 +6154,41 @@ class ScenarioTablePanel(QWidget):
         text = tag_label if trivial else f"{tag_label}, {desc}"
         return f"{num}.  {text}" if num else text
 
+    def _group_operator(self, item):
+        """Return the displayed operator between a group's two objects."""
+        tags = (item.data(Qt.ItemDataRole.UserRole + 9) or []) if item else []
+        if len(tags) < 2:
+            return '<>'
+        meta = item.data(Qt.ItemDataRole.UserRole) if item else None
+        cause = self.db.get_cause(meta[1]) if meta else None
+        raw = (cause.get('comp_tag') or '') if cause else ''
+        match = re.search(r'\s(&|<>|->|\+)\s', raw)
+        if not match:
+            return '<>'
+        return '&' if match.group(1) == '+' else match.group(1)
+
+    def _set_group_operator(self, cause_id, operator):
+        cause = self.db.get_cause(cause_id)
+        if not cause or not cause.get('secondary_equipment_id'):
+            return
+        primary = self.db.get_equipment_by_id(cause.get('equipment_id'))
+        secondary = self.db.get_equipment_by_id(cause.get('secondary_equipment_id'))
+        if not primary or not secondary or operator not in ('&', '<>', '->'):
+            return
+        self.db.update_cause(
+            cause_id,
+            comp_tag=f"{primary.get('tag', '')} {operator} {secondary.get('tag', '')}")
+        self._schedule_rebuild()
+
+    def _choose_group_operator(self, row, cause_id, global_pos):
+        menu = QMenu(self)
+        for operator in ('&', '<>', '->'):
+            action = menu.addAction(operator)
+            action.setData(operator)
+        chosen = menu.exec(global_pos)
+        if chosen is not None:
+            self._set_group_operator(cause_id, chosen.data())
+
     def _ors_tag_prefix_pixel_width(self, item, desc, font):
         """Pixel width of the bold portion of _ors_combined_text — shared
         by the click zone (what counts as "clicked the tag") and
@@ -6463,11 +6509,15 @@ class ScenarioTablePanel(QWidget):
                        else (selected_tag if group_line == 0 else ''))
         secondary_tag = ((secondary.get('tag') or '').strip() if secondary
                          else (selected_tag if group_line == 1 else ''))
+        operator_match = re.search(r'\s(&|<>|->|\+)\s',
+                                   cause.get('comp_tag') or '')
+        operator = ('&' if not operator_match or operator_match.group(1) == '+'
+                    else operator_match.group(1))
         self.db.update_cause(
             cause_id,
             comp_type=(primary.get('equipment_type') if primary
                        else cause.get('comp_type') or comp_type),
-            comp_tag=f"{primary_tag} + {secondary_tag}",
+            comp_tag=f"{primary_tag} {operator} {secondary_tag}",
             equipment_id=primary_id,
             secondary_equipment_id=secondary_id)
         self._schedule_rebuild()
@@ -6620,12 +6670,16 @@ class ScenarioTablePanel(QWidget):
         secondary = self.db.get_equipment_by_id(cause.get('secondary_equipment_id'))
         if not primary or not secondary:
             return
+        operator_match = re.search(r'\s(&|<>|->|\+)\s',
+                                   cause.get('comp_tag') or '')
+        operator = ('&' if not operator_match or operator_match.group(1) == '+'
+                    else operator_match.group(1))
         self.db.update_cause(
             cause_id,
             equipment_id=secondary['id'],
             secondary_equipment_id=primary['id'],
             comp_type=secondary.get('equipment_type', ''),
-            comp_tag=f"{secondary.get('tag', '')} + {primary.get('tag', '')}")
+            comp_tag=f"{secondary.get('tag', '')} {operator} {primary.get('tag', '')}")
         self._schedule_rebuild()
 
     def _apply_cause_obj(self, row, cause_id, comp_type, comp_tag, description, frequency):
@@ -6995,6 +7049,17 @@ class ScenarioTablePanel(QWidget):
                             if num:
                                 tag_start += QFontMetrics(self._table.font()).horizontalAdvance(
                                     f"{num}.  ")
+                        elif line_no == 1:
+                            operator = self._group_operator(item)
+                            operator_width = QFontMetrics(self._table.font()).horizontalAdvance(
+                                f"{operator} ")
+                            if tag_start <= pos.x() < tag_start + operator_width:
+                                cause_id = self._row_meta[row][1]
+                                if cause_id is not None:
+                                    gp = self._table.viewport().mapToGlobal(pos)
+                                    self._choose_group_operator(row, cause_id, gp)
+                                return True
+                            tag_start += operator_width
                         tag_width = QFontMetrics(self._table.font()).horizontalAdvance(
                             str(group_tags[line_no]))
                         if tag_start <= pos.x() < tag_start + tag_width:
