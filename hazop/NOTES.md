@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Radvis redigering av grupporsak i trädet (2026-08-28)
+
+När en grupporsak har separata beskrivningsrader öppnar dubbelklick på en rad
+nu en inline-editor för just den raden. Grupper som ännu bara visar taggar
+öppnar fortsatt objektets tagg-/typeditor.
+
 ## Enskild gruppobjektredigering i trädet (2026-08-28)
 
 En grupp visas fortfarande som en gemensam trädpost, men dubbelklick på en

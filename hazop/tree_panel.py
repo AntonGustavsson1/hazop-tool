@@ -1131,6 +1131,43 @@ class TreePanel(QWidget):
         popup.move(max(screen.left() + 4, x), max(screen.top() + 4, y))
         popup.show()
 
+    def _begin_group_line_edit(self, item, cause_id, group_line):
+        """Inline-edit only one stored description line of a group."""
+        cause = self.db.get_cause(cause_id)
+        lines = (cause.get('description') or '').splitlines() if cause else []
+        if not cause or not (0 <= group_line < len(lines)):
+            return
+        rect = self.tree.visualItemRect(item)
+        prefix = item.data(0, self._PREFIX_ROLE) or ''
+        icon_w = self._PREFIX_ICON_W if not item.icon(0).isNull() else 0
+        fm = QFontMetrics(item.font(0))
+        left = rect.x() + icon_w + fm.horizontalAdvance(prefix)
+        line_h = max(1, fm.height())
+        editor = _InlineTreeEdit(self.tree.viewport())
+        editor.setText(lines[group_line].strip())
+        editor.setGeometry(left, rect.y() + group_line * line_h,
+                           max(rect.right() - left, 80), line_h + 2)
+        state = {'done': False}
+
+        def finish(save):
+            if state['done']:
+                return
+            state['done'] = True
+            value = editor.text().strip()
+            editor.deleteLater()
+            if save:
+                updated = list(lines)
+                updated[group_line] = value
+                self.db.update_cause(cause_id, description='\n'.join(updated))
+                self.refresh(CAUSE_T, cause_id, emit_selection=False)
+                self.item_edited_inline.emit(CAUSE_T, cause_id)
+
+        editor.editingFinished.connect(lambda: finish(True))
+        editor.canceled.connect(lambda: finish(False))
+        editor.show()
+        editor.setFocus()
+        editor.selectAll()
+
     def _open_equipment_tag_popup(self, item, eq_id):
         """Double-click an equipment/tag header row -> the same
         minimalistic Tag+Typ popup already used for a tag click in the
@@ -1437,7 +1474,11 @@ class TreePanel(QWidget):
                 line_h = max(1, QFontMetrics(self.tree.font()).height())
                 line_no = int((pos.y() - rect.top()) // line_h)
                 if len(group_ids) >= 2 and len(lines) >= 2 and 0 <= line_no < len(group_ids):
-                    self._open_group_object_tag_popup(item, cause_id, line_no)
+                    cause_description = (cause.get('description') or '').strip() if cause else ''
+                    if cause_description and cause_description != 'Ny orsak':
+                        self._begin_group_line_edit(item, cause_id, line_no)
+                    else:
+                        self._open_group_object_tag_popup(item, cause_id, line_no)
                     return True
 
         if obj is not self.tree or event.type() != QEvent.Type.KeyPress:
