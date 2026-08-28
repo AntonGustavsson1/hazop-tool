@@ -1877,8 +1877,13 @@ class _ScenarioDelegate(QStyledItemDelegate):
         else:
             editor.setText('')
         cell_rect = QRect(option.rect)
-        QTimer.singleShot(0, lambda ed=editor, r=row, cid=cons_id, rect=cell_rect:
-                          self._show_recommendation_assist_popup(ed, r, cid, rect))
+        panel = self._panel
+        popup_token = getattr(panel, '_recommendation_popup_token', 0) + 1
+        panel._recommendation_popup_token = popup_token
+        QTimer.singleShot(
+            0, lambda ed=editor, r=row, cid=cons_id, rect=cell_rect,
+            token=popup_token:
+            self._show_recommendation_assist_popup(ed, r, cid, rect, token))
 
     def updateEditorGeometry(self, editor, option, index):
         """Keep the recommendation editor in the cell's existing layout."""
@@ -1907,7 +1912,8 @@ class _ScenarioDelegate(QStyledItemDelegate):
             return
         editor.setGeometry(QRect(option.rect).adjusted(2, 2, -2, -2))
 
-    def _show_recommendation_assist_popup(self, editor, row, cons_id, cell_rect):
+    def _show_recommendation_assist_popup(self, editor, row, cons_id,
+                                          cell_rect, popup_token=None):
         """Mirrors _PidDelegate._show_standard_cause_popup's positioning
         and focus-safety approach exactly (see that method's own
         docstring for why this must be a plain non-toplevel child widget
@@ -1915,7 +1921,15 @@ class _ScenarioDelegate(QStyledItemDelegate):
         Popup) -- only the popup class and its cons_id differ."""
         panel = self._panel
         try:
+            if (popup_token is not None and
+                    popup_token != getattr(panel, '_recommendation_popup_token', None)):
+                return
             top_level = panel.window()
+            # A previous deferred editor-start can otherwise leave a second
+            # assist popup behind when editing is reopened quickly. Keep one
+            # visible recommendation popup per active Scenario editor.
+            for old_popup in top_level.findChildren(RecommendationAssistPopup):
+                old_popup.close()
             popup = RecommendationAssistPopup(panel, cons_id, editor, parent=top_level)
             top_global = panel._table.viewport().mapToGlobal(cell_rect.topLeft())
             top = top_level.mapFromGlobal(top_global)

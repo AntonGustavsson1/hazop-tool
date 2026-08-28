@@ -4021,6 +4021,24 @@ class RecommendationAssistPopupTests(unittest.TestCase):
         finally:
             popup.deleteLater()
 
+    def test_showing_assist_popup_twice_keeps_one_visible_popup(self):
+        from PyQt6.QtCore import QRect
+        from scenario_panel import RecommendationAssistPopup
+        self.panel.show()
+        editor = QLineEdit()
+        editor.show()
+        try:
+            self.panel._delegate._show_recommendation_assist_popup(
+                editor, 0, self.cons_id, QRect(0, 0, 260, 32))
+            self.panel._delegate._show_recommendation_assist_popup(
+                editor, 0, self.cons_id, QRect(0, 0, 260, 32))
+            self.app.processEvents()
+            visible = [popup for popup in self.panel.findChildren(
+                RecommendationAssistPopup) if popup.isVisible()]
+            self.assertEqual(len(visible), 1)
+        finally:
+            editor.deleteLater()
+
     def test_typed_recommendation_text_filters_catalog_anywhere(self):
         first_id = self.db.add_recommendation(description='Verify shutdown function')
         second_id = self.db.add_recommendation(description='Inspect pressure relief valve')

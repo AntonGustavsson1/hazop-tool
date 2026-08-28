@@ -25,6 +25,12 @@ De skickas i en separat multi-payload och behandlas sedan av samma befintliga
 flytta/kopiera-regler som en enskild post. Blandade kolumntyper samlas inte
 automatiskt ihop.
 
+## En rekommendations-popup åt gången (2026-08-28)
+
+Rekommendationsrutan som öppnas vid inline-redigering skyddas nu mot dubbla
+fördröjda öppningar. Varje editor får en generationsmarkör och en gammal
+assist-popup stängs innan den aktuella visas.
+
 ## Tidigare konsekvenser och rekommendationer vid redigering (2026-08-28)
 
 Konsekvenseditorn visar nu historik-popupen explicit även för den multiline-
