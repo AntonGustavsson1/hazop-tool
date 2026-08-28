@@ -3819,3 +3819,9 @@ bredd samt flyttas genom att dras i tabellhuvudet.
 När objekt från P&ID släpps i worksheetens konsekvens- eller barriärfält
 signaleras nu även en strukturändring, så trädet visar nya eller kopierade
 rader direkt efter ett Shift-drag.
+
+## Worksheet: Enter och cross-view-synk (2026-08-28)
+
+Worksheetens inbäddade ScenarioTablePanel uppdaterar nu sig själv och väljer
+det nya fältet efter Enter. Strukturändringar och redigeringar skickas också
+vidare till trädet, P&ID och huvudvyn så att alla vyer hålls synkroniserade.

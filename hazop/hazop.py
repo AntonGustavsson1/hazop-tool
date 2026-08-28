@@ -1686,6 +1686,16 @@ class MainWindow(QMainWindow):
         self.scenario_panel.item_edited.connect(self._on_scenario_item_edited)
         self.scenario_panel.structure_changed.connect(
             lambda: (self.tree_panel.refresh(), self.pid_panel.reload_overlays()))
+        # Worksheet owns a separate ScenarioTablePanel instance. Mirror its
+        # cross-view refresh wiring so Enter-created rows and Shift-drops are
+        # immediately visible in the tree, main Scenario view and P&ID too.
+        self.worksheet.structure_changed.connect(
+            lambda: (self.tree_panel.refresh(), self.scenario_panel.refresh(),
+                     self.pid_panel.reload_overlays()))
+        self.worksheet.item_edited.connect(
+            lambda _type, _id: (self.tree_panel.refresh(),
+                                self.scenario_panel.refresh(),
+                                self.pid_panel.reload_overlays()))
 
         self.tree_panel.equipment_dropped_on_deviation.connect(
             self._on_equipment_dropped_on_deviation)

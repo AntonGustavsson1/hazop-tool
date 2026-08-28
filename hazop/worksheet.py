@@ -2,6 +2,7 @@
 """HAZOP worksheet page — split out of hazop.py 2026-08-17, see NOTES.md
 "Förenkla koden + dela upp hazop.py i fler filer"."""
 
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QCheckBox
 
 from database import Database
@@ -15,6 +16,9 @@ class HAZOPWorksheet(QWidget):
     the main P&ID page) instead of duplicating it in a second flat table —
     see load_all()/_all_nodes on ScenarioTablePanel.
     """
+
+    structure_changed = pyqtSignal()
+    item_edited = pyqtSignal(int, int)
 
     def __init__(self, db: Database):
         super().__init__()
@@ -60,6 +64,13 @@ class HAZOPWorksheet(QWidget):
         self._table_panel.hide_equipment_column()
         self._table_panel.hide_unplaced_tag()
         self._table_panel.merge_node_labels()
+        # The embedded panel has the same Enter/drop signals as HAZOP
+        # Scenario, but it is a separate instance and therefore needs its
+        # own handoff. Without this, Enter creates the DB row but the visible
+        # worksheet is not rebuilt and the cursor appears to do nothing.
+        self._table_panel.new_item_created.connect(self._on_new_item_created)
+        self._table_panel.structure_changed.connect(self.structure_changed)
+        self._table_panel.item_edited.connect(self.item_edited)
         layout.addWidget(self._table_panel, 1)
 
         self._node_combo.currentIndexChanged.connect(self._on_node_combo_changed)
@@ -113,6 +124,16 @@ class HAZOPWorksheet(QWidget):
             node_id = self._node_combo.currentData()
             if node_id is not None:
                 self._table_panel.load_node(node_id)
+
+    def _on_new_item_created(self, type_, id_):
+        """Rebuild the embedded table and focus the new field after Enter."""
+        if self._all_nodes_cb.isChecked():
+            self._table_panel.load_all()
+        else:
+            node_id = self._node_combo.currentData()
+            if node_id is not None:
+                self._table_panel.load_node(node_id)
+        self._table_panel.select_item(type_, id_)
 
     def refresh(self):
         """Called when the Worksheet page becomes visible (MainWindow._switch_view page==1)."""

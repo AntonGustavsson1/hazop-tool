@@ -265,6 +265,20 @@ class HAZOPWorksheetTests(unittest.TestCase):
         finally:
             ws.deleteLater()
 
+    def test_enter_created_item_is_reloaded_and_selected(self):
+        from hazop import HAZOPWorksheet, CONS_T
+
+        self._make_full_chain(node_name="Nod A")
+        ws = HAZOPWorksheet(self.db)
+        try:
+            ws._table_panel.load_all = unittest.mock.Mock()
+            ws._table_panel.select_item = unittest.mock.Mock()
+            ws._on_new_item_created(CONS_T, 123)
+            ws._table_panel.load_all.assert_called_once()
+            ws._table_panel.select_item.assert_called_once_with(CONS_T, 123)
+        finally:
+            ws.deleteLater()
+
     def test_show_empty_dev_checkbox_calls_set_show_empty_deviations(self):
         """The 'Visa avvikelser utan orsaker' checkbox must be wired directly
         to the embedded ScenarioTablePanel's set_show_empty_deviations(bool).
