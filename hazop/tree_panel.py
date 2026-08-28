@@ -2225,7 +2225,8 @@ class CauseTagPopup(QDialog):
     reorder_requested = pyqtSignal()
     place_requested = pyqtSignal(int, str, str)  # cause_id, comp_type, comp_tag
 
-    def __init__(self, db, comp_type='', comp_tag='', parent=None, cause_id=None):
+    def __init__(self, db, comp_type='', comp_tag='', parent=None, cause_id=None,
+                 equipment_id=None):
         super().__init__(parent)
         self._db = db
         self._cause_id = cause_id
@@ -2261,7 +2262,8 @@ class CauseTagPopup(QDialog):
         if cause_id is not None:
             try:
                 cause = db.get_cause(cause_id)
-                equipment_id = cause.get('equipment_id') if cause else None
+                if equipment_id is None:
+                    equipment_id = cause.get('equipment_id') if cause else None
                 equipment = db.get_equipment_by_id(equipment_id) if equipment_id else None
             except Exception:
                 equipment = None

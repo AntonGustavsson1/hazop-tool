@@ -6351,7 +6351,7 @@ class ScenarioTablePanel(QWidget):
         "single source of truth" claimed."""
         return QFontMetrics(base_font).height() + 4
 
-    def _show_cause_obj_popup(self, row, cause_id, global_pos):
+    def _show_cause_obj_popup(self, row, cause_id, global_pos, group_line=None):
         """A plain click on the ORS tag zone opens just a tag+type
         popup (2026-08-14, see NOTES.md) — the full avvikelse-context +
         standard-cause CauseObjectPopup is still reachable, unchanged,
@@ -6361,21 +6361,35 @@ class ScenarioTablePanel(QWidget):
         so it's shown non-modally instead of exec()'d."""
         item      = self._table.item(row, self._C_ORS)
         group_tags = item.data(Qt.ItemDataRole.UserRole + 9) or [] if item else []
-        # Grouped object tags are presentation-only.  Do not open the old
+        # Grouped object tags use the same compact popup as ordinary cause
         # Primär/Sekundär popup from this shared helper.
-        if len(group_tags) >= 2:
-            return
         obj_data  = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
-        comp_type, comp_tag = obj_data if obj_data else ('', '')
+        equipment_id = None
+        if len(group_tags) >= 2 and group_line in (0, 1):
+            cause = self.db.get_cause(cause_id)
+            equipment_id = (cause.get('equipment_id') if group_line == 0
+                            else cause.get('secondary_equipment_id')) if cause else None
+            equipment = self.db.get_equipment_by_id(equipment_id) if equipment_id else None
+            comp_type = equipment.get('equipment_type', '') if equipment else ''
+            comp_tag = equipment.get('tag', '') if equipment else group_tags[group_line]
+        else:
+            comp_type, comp_tag = obj_data if obj_data else ('', '')
 
-        popup = CauseTagPopup(self.db, comp_type, comp_tag, parent=self, cause_id=cause_id)
+        popup = CauseTagPopup(
+            self.db, comp_type, comp_tag, parent=self, cause_id=cause_id,
+            equipment_id=equipment_id)
         popup.bind_requested.connect(
             lambda cid=cause_id: self.bind_cause_to_pid_requested.emit(cid))
         popup.reorder_requested.connect(
             lambda cid=cause_id: self._swap_group_objects(cid))
-        popup.committed.connect(
-            lambda ct, tg, r=row, cid=cause_id:
-                self._apply_cause_obj(r, cid, ct, tg, '', None))
+        if group_line in (0, 1):
+            popup.committed.connect(
+                lambda ct, tg, r=row, cid=cause_id, line=group_line:
+                    self._apply_group_cause_obj(r, cid, line, ct, tg))
+        else:
+            popup.committed.connect(
+                lambda ct, tg, r=row, cid=cause_id:
+                    self._apply_cause_obj(r, cid, ct, tg, '', None))
         popup.place_requested.connect(
             lambda cid, ct, tg: self.place_cause_object_requested.emit(cid, ct, tg))
         popup.adjustSize()
@@ -6392,6 +6406,71 @@ class ScenarioTablePanel(QWidget):
         y = max(screen.top()  + 4, min(y, screen.bottom() - ph))
         popup.move(x, y)
         popup.show()
+
+    def _apply_group_cause_obj(self, row, cause_id, group_line,
+                               comp_type, comp_tag):
+        """Apply a tag/type edit to the object whose group tag was clicked."""
+        cause = self.db.get_cause(cause_id)
+        if not cause or group_line not in (0, 1):
+            return
+        field = 'equipment_id' if group_line == 0 else 'secondary_equipment_id'
+        old_id = cause.get(field)
+        new_tag = (comp_tag or '').strip()
+        selected_id = old_id
+        selected_tag = ''
+        old_eq = self.db.get_equipment_by_id(old_id) if old_id else None
+        if old_eq:
+            selected_tag = (old_eq.get('tag') or '').strip()
+            if new_tag and new_tag.casefold() != selected_tag.casefold():
+                match = self.db.get_equipment_by_tag(new_tag)
+                decision = self._confirm_equipment_tag_change(
+                    selected_tag, new_tag, match, linked=True)
+                if decision == 'cancel':
+                    return
+                if decision == 'connect' and match and match.get('id') != old_id:
+                    selected_id = match['id']
+                    selected_tag = (match.get('tag') or new_tag).strip()
+                else:
+                    duplicate = self.db.get_equipment_by_tag(new_tag)
+                    if duplicate and duplicate.get('id') != old_id:
+                        QMessageBox.warning(
+                            self, "Taggen finns redan",
+                            f"Taggen {new_tag} används redan av ett annat objekt "
+                            "på denna P&ID. Välj Koppla för att använda det objektet.")
+                        return
+                    self.db.update_equipment_item(
+                        old_id, new_tag, old_eq.get('prefix') or '',
+                        old_eq.get('equipment_type') or comp_type,
+                        old_eq.get('description') or '')
+                    selected_tag = new_tag
+        elif new_tag:
+            match = self.db.get_equipment_by_tag(new_tag)
+            if match:
+                decision = self._confirm_equipment_tag_change(
+                    '', new_tag, match, linked=False)
+                if decision == 'cancel':
+                    return
+                if decision == 'connect':
+                    selected_id = match['id']
+                    selected_tag = (match.get('tag') or new_tag).strip()
+
+        primary_id = selected_id if group_line == 0 else cause.get('equipment_id')
+        secondary_id = (selected_id if group_line == 1
+                        else cause.get('secondary_equipment_id'))
+        primary = self.db.get_equipment_by_id(primary_id) if primary_id else None
+        secondary = self.db.get_equipment_by_id(secondary_id) if secondary_id else None
+        primary_tag = ((primary.get('tag') or '').strip() if primary
+                       else (selected_tag if group_line == 0 else ''))
+        secondary_tag = ((secondary.get('tag') or '').strip() if secondary
+                         else (selected_tag if group_line == 1 else ''))
+        self.db.update_cause(
+            cause_id,
+            comp_type=(primary.get('equipment_type') if primary
+                       else cause.get('comp_type') or comp_type),
+            comp_tag=f"{primary_tag} + {secondary_tag}",
+            equipment_id=primary_id,
+            secondary_equipment_id=secondary_id)
+        self._schedule_rebuild()
 
     def _show_group_cause_popup(self, row, cause_id, global_pos,
                                 only_column=None):
@@ -6904,9 +6983,29 @@ class ScenarioTablePanel(QWidget):
                             gp = self._table.viewport().mapToGlobal(pos)
                             self._show_cause_obj_popup(row, cause_id, gp)
                         return True
-                # Group tags are informational in the table. Do not return
-                # here: the frequency zone below must remain reachable for
-                # grouped causes too.
+                elif len(group_tags) >= 2:
+                    line_h = max(_ORS_FIRST_LINE_H,
+                                 QFontMetrics(self._table.font()).height() + 4)
+                    line_no = int((pos.y() - self._table.rowViewportPosition(row) - 2)
+                                  // line_h)
+                    if line_no in (0, 1):
+                        tag_start = col_x + 2
+                        if line_no == 0:
+                            num = item.data(Qt.ItemDataRole.UserRole + 10) or ''
+                            if num:
+                                tag_start += QFontMetrics(self._table.font()).horizontalAdvance(
+                                    f"{num}.  ")
+                        tag_width = QFontMetrics(self._table.font()).horizontalAdvance(
+                            str(group_tags[line_no]))
+                        if tag_start <= pos.x() < tag_start + tag_width:
+                            cause_id = self._row_meta[row][1]
+                            if cause_id is not None:
+                                gp = self._table.viewport().mapToGlobal(pos)
+                                self._show_cause_obj_popup(
+                                    row, cause_id, gp, group_line=line_no)
+                            return True
+                # The frequency zone below remains reachable for grouped
+                # causes when the click was outside either object tag.
 
             # Frequency zone click — floats over the description's own
             # first line (2026-08-18, see NOTES.md "Frekvensen ... hör

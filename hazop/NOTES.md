@@ -61,6 +61,17 @@ Grupporsakens trädtext använder nu normal font precis som en vanlig orsak.
 Fetstil på nod- och övriga hierarkinivåer är oförändrad. Verifierat med
 riktat trädtest, smoke-test och syntaxkontroll.
 
+## Grupporsakens objekttagg öppnar samma taggpopup (2026-08-28)
+
+Klick på primär- eller sekundärtaggen i en grupporsak öppnar nu samma
+kompakta `CauseTagPopup` som en vanlig orsak. Popupen får samtidigt rätt
+objektposition, så en ändring av sekundärtaggen påverkar inte primärobjektet;
+fritextklick fortsätter till inline-redigering. Verifierat med riktade popup-
+och gruppeditor-tester samt smoke-test.
+
+Grupporsakens primär- och sekundärtagg kan nu öppna taggpopupen direkt från
+sin respektive visuella rad.
+
 ## Objekt kopplat till grupperad avvikelse markeras och numreras rätt (2026-08-28)
 
 En avvikelse som visas som gemensam guideordsrad kan ha en objektspecifik

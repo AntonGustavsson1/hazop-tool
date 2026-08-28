@@ -6229,6 +6229,31 @@ class OrsTagZoneOpensMinimalPopupTests(unittest.TestCase):
         captured['slot']('Ventil', 'PV-999')
         apply_spy.assert_called_once_with(self.row, self.cause_id, 'Ventil', 'PV-999', '', None)
 
+    def test_group_tag_popup_targets_the_clicked_secondary_object(self):
+        from PyQt6.QtCore import QSize
+        from scenario_panel import CauseTagPopup
+        node_id = self.db.add_node()
+        dev_id = self.db.get_or_create_deviation(node_id, 'LÃ¥gt flÃ¶de')
+        primary_id = self.db.add_equipment_item(
+            'FI-1', 'FI-1', 'FI', 0, 'Instrument', '', 0)
+        secondary_id = self.db.add_equipment_item(
+            'FV-1', 'FV-1', 'FV', 0, 'Reglerventil', '', 0)
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(
+            cause_id, comp_type='Instrument', comp_tag='FI-1 + FV-1',
+            equipment_id=primary_id, secondary_equipment_id=secondary_id,
+            description='FI-1\nFV-1')
+        self.panel.load_node(node_id)
+        row = next(r for r, m in enumerate(self.panel._row_meta)
+                   if m[1] == cause_id)
+        fake_popup = unittest.mock.Mock()
+        fake_popup.sizeHint.return_value = QSize(200, 100)
+        with unittest.mock.patch('scenario_panel.CauseTagPopup',
+                                 return_value=fake_popup) as popup_cls:
+            self.panel._show_cause_obj_popup(
+                row, cause_id, QPoint(100, 100), group_line=1)
+        self.assertIs(popup_cls.call_args.kwargs['equipment_id'], secondary_id)
+
 
 class OrsFrequencyZoneClickTests(unittest.TestCase):
     """"klickar man på frekvens skall man kunna justera frekvens"
