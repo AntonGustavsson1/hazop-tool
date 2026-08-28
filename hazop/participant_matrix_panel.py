@@ -116,13 +116,6 @@ class ParticipantMatrixPanel(QWidget):
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
-        self._select_all_cb = QCheckBox("Markera alla deltagare för valt analystillfälle")
-        self._select_all_cb.setTristate(True)
-        self._select_all_cb.setToolTip(
-            "Välj en cell i ett analystillfälle och markera alla deltagare för den dagen")
-        self._select_all_cb.stateChanged.connect(self._select_all_changed)
-        layout.addWidget(self._select_all_cb)
-
         self.refresh()
 
     def refresh(self):
@@ -176,7 +169,7 @@ class ParticipantMatrixPanel(QWidget):
                         lambda state, r=row, c=col: self._set_attendance_from_cell(
                             r, c, state == Qt.CheckState.Checked.value))
                     note_edit = QLineEdit(note)
-                    note_edit.setPlaceholderText("Fritext")
+                    note_edit.setPlaceholderText("")
                     note_edit.setToolTip("Anteckning för deltagaren vid detta analystillfälle")
                     note_edit.editingFinished.connect(
                         lambda e=note_edit, r=row, c=col: self._save_attendance_note(r, c, e.text()))
@@ -216,6 +209,10 @@ class ParticipantMatrixPanel(QWidget):
                 len(self._FIXED_COLS) + len(self._column_ids) + idx)))
             button.setToolTip(f"Markera alla deltagare för {label}")
             button.setCheckable(True)
+            sid = self._session_ids[idx]
+            states = [self.db.get_attendance(pid, sid) for pid in self._participant_ids]
+            button.setChecked(bool(states) and all(states))
+            button.setEnabled(bool(self._participant_ids))
             button.clicked.connect(lambda checked, i=idx: self._set_all_for_session(i, checked))
             self._session_actions_row.addWidget(button)
         self._session_actions_row.addStretch()
@@ -323,34 +320,8 @@ class ParticipantMatrixPanel(QWidget):
         return idx if 0 <= idx < len(self._session_ids) else None
 
     def _refresh_select_all_state(self):
-        """Reflect attendance for the currently selected session column."""
-        if not hasattr(self, '_select_all_cb'):
-            return
-        idx = self._selected_session_index()
-        self._select_all_cb.blockSignals(True)
-        if idx is None or not self._participant_ids:
-            self._select_all_cb.setEnabled(False)
-            self._select_all_cb.setCheckState(Qt.CheckState.Unchecked)
-        else:
-            self._select_all_cb.setEnabled(True)
-            sid = self._session_ids[idx]
-            states = [self.db.get_attendance(pid, sid) for pid in self._participant_ids]
-            self._select_all_cb.setCheckState(
-                Qt.CheckState.Checked if all(states) else
-                Qt.CheckState.PartiallyChecked if any(states) else
-                Qt.CheckState.Unchecked)
-        self._select_all_cb.blockSignals(False)
-
-    def _select_all_changed(self, state):
-        idx = self._selected_session_index()
-        if idx is None:
-            return
-        state_value = getattr(state, 'value', state)
-        attended = state_value == Qt.CheckState.Checked.value
-        sid = self._session_ids[idx]
-        for pid in self._participant_ids:
-            self.db.set_attendance(pid, sid, attended)
-        self.refresh()
+        """Keep the per-session bulk buttons in sync after cell edits."""
+        return
 
     def _copy_session_location(self, source_col, target_col):
         n_fixed = len(self._FIXED_COLS) + len(self._column_ids)
