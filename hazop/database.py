@@ -8,6 +8,7 @@ import logging
 import sqlite3
 import datetime
 import re
+import html
 from pathlib import Path
 
 from constants import (
@@ -3461,6 +3462,16 @@ class Database:
             (recommendation_id,)).fetchall()
         return [r['consequence_id'] for r in rows]
 
+    @staticmethod
+    def _clean_recommendation_text(value):
+        """Remove accidental HTML document markup imported into a recommendation."""
+        text = '' if value is None else str(value)
+        if '<!doctype' in text.casefold() or re.search(r'<\s*(html|body|p|div)\b', text, re.I):
+            text = re.sub(r'<!doctype[^>]*>', '', text, flags=re.I)
+            text = re.sub(r'<[^>]+>', '', text)
+            text = html.unescape(text)
+        return text.strip()
+
     def recommendation_consequence_count(self, recommendation_id):
         """How many consequences currently link to this recommendation —
         the basis for the "used by multiple causes, update all?" prompt
@@ -3475,7 +3486,8 @@ class Database:
         recommendation is used."""
         cur = self.conn.execute(
             "INSERT INTO recommendations (description,responsible,due_date,status) "
-            "VALUES (?,?,?,?)", (description, responsible, due_date, status))
+            "VALUES (?,?,?,?)", (self._clean_recommendation_text(description),
+                                   responsible, due_date, status))
         self.commit()
         return cur.lastrowid
 
@@ -3496,7 +3508,8 @@ class Database:
         new text visible to every consequence already linked to it."""
         sets, vals = [], []
         if description is not None:
-            sets.append("description=?"); vals.append(normalize_arrows(description))
+            sets.append("description=?"); vals.append(
+                self._clean_recommendation_text(normalize_arrows(description)))
         if responsible is not None:
             sets.append("responsible=?"); vals.append(responsible)
         if due_date is not None:

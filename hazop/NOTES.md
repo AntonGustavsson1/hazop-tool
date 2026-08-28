@@ -2,6 +2,14 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Kraschskydd för tagg-completer och gruppfält (2026-08-28)
+
+Fördröjd taggmatchning avbryts nu säkert om inline-editorn har hunnit tas
+bort av en rebuild eller fokusändring. Gruppens tagglista normaliseras från
+`None` till en tom lista innan den används. Rekommendationer som råkar
+importeras som HTML-dokument rensas vid både skapande och uppdatering, medan
+databasen fortsatt lagrar vanlig UTF-8-text.
+
 ## Kompaktare riskkolumner och automatisk fyllbredd (2026-08-28)
 
 Kolumnerna Risk före barriär och Slutkonsekvens har smalare standardbredd.

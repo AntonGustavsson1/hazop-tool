@@ -171,26 +171,31 @@ class _BoldTagTextEdit(QTextEdit):
         QTimer.singleShot(220, lambda s=serial: self._show_tag_completion(s))
 
     def _show_tag_completion(self, serial):
-        if serial != self._tag_completion_serial or self._tag_completer is None:
+        try:
+            if serial != self._tag_completion_serial or self._tag_completer is None:
+                return
+            cursor = self.textCursor()
+            pos = cursor.position()
+            text = self.toPlainText()
+            start = pos
+            while start > 0 and re.match(r'[A-Za-z0-9_.-]', text[start - 1]):
+                start -= 1
+            token = text[start:pos]
+            if len(token) < 2:
+                self._tag_completer.popup().hide()
+                return
+            if self._completer is not None:
+                self._completer.popup().hide()
+            self._tag_completion_range = (start, pos)
+            self._tag_completer.setCompletionPrefix(token)
+            if self._tag_completer.completionCount() <= 0:
+                self._tag_completer.popup().hide()
+                return
+            self._tag_completer.complete(self.cursorRect())
+        except RuntimeError:
+            # A deferred completion can outlive the delegate editor when a
+            # rebuild, focus change, or popup closes the cell editor.
             return
-        cursor = self.textCursor()
-        pos = cursor.position()
-        text = self.toPlainText()
-        start = pos
-        while start > 0 and re.match(r'[A-Za-z0-9_.-]', text[start - 1]):
-            start -= 1
-        token = text[start:pos]
-        if len(token) < 2:
-            self._tag_completer.popup().hide()
-            return
-        if self._completer is not None:
-            self._completer.popup().hide()
-        self._tag_completion_range = (start, pos)
-        self._tag_completer.setCompletionPrefix(token)
-        if self._tag_completer.completionCount() <= 0:
-            self._tag_completer.popup().hide()
-            return
-        self._tag_completer.complete(self.cursorRect())
 
     def _insert_tag_completion(self, completion):
         if not self._tag_completion_range:
@@ -5673,7 +5678,7 @@ class ScenarioTablePanel(QWidget):
         updateEditorGeometry (where the description editor should
         start), so a click always lands exactly where the bold text
         visually ends."""
-        group_tags = item.data(Qt.ItemDataRole.UserRole + 9) if item else []
+        group_tags = (item.data(Qt.ItemDataRole.UserRole + 9) or []) if item else []
         if len(group_tags) >= 2:
             low = (desc or '').lower()
             direction = 'felar lågt' if 'felar lågt' in low else 'felar högt'
@@ -5684,7 +5689,7 @@ class ScenarioTablePanel(QWidget):
                     effect = option
                     break
             return 0
-        group_tags = item.data(Qt.ItemDataRole.UserRole + 9) if item else []
+        group_tags = (item.data(Qt.ItemDataRole.UserRole + 9) or []) if item else []
         if len(group_tags) >= 2:
             low = (desc or '').lower()
             direction = 'felar lågt' if 'felar lågt' in low else 'felar högt'
@@ -6338,7 +6343,7 @@ class ScenarioTablePanel(QWidget):
                 col_x      = self._table.columnViewportPosition(col)
                 item       = self._table.item(row, col)
                 desc       = item.text() if item is not None else ''
-                group_tags = item.data(Qt.ItemDataRole.UserRole + 9) if item else []
+                group_tags = (item.data(Qt.ItemDataRole.UserRole + 9) or []) if item else []
                 if not group_tags:
                     prefix_w = self._ors_tag_prefix_pixel_width(
                         item, desc, self._table.font())
