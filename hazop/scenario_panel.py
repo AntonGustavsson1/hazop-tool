@@ -7686,6 +7686,13 @@ class ScenarioTablePanel(QWidget):
         if row < 0 or col not in (self._C_ORS, self._C_SG, self._C_KON, self._C_REK):
             return
         item = self._table.item(row, col)
+        # A grouped cause has two distinct visual edit targets. Never open
+        # the generic full-cell editor from F2, a context-menu action, or a
+        # programmatic selection because it has no row context.
+        if col == self._C_ORS and item is not None:
+            group_tags = item.data(Qt.ItemDataRole.UserRole + 9) or []
+            if len(group_tags) >= 2:
+                return
         if item and bool(item.flags() & Qt.ItemFlag.ItemIsEditable):
             self._table.setFocus()
             self._table.edit(self._table.model().index(row, col))
@@ -7946,8 +7953,12 @@ class ScenarioTablePanel(QWidget):
             c = self.db.get_cause(cause_id)
             c_desc = dict(c).get('description', '?')[:40] if c else '?'
             menu.addSection(_icon('settings'), f"Orsak: {c_desc}")
-            menu.addAction(_icon('edit'), "Redigera",
-                lambda: self._try_start_edit(row, self._C_ORS))
+            ors_item = self._table.item(row, self._C_ORS)
+            grouped = bool(ors_item and
+                           len(ors_item.data(Qt.ItemDataRole.UserRole + 9) or []) >= 2)
+            if not grouped:
+                menu.addAction(_icon('edit'), "Redigera",
+                    lambda: self._try_start_edit(row, self._C_ORS))
             a_dup = menu.addAction(_icon('document'), "Duplicera orsak (med konsekvenser)")
             a_dup.triggered.connect(
                 lambda: self._duplicate_cause(cause_id))

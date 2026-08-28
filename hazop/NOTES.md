@@ -11,6 +11,10 @@ oförändrade.
 Dubbelklick under sekundärradens visuella område ignoreras nu, så det kan
 inte längre öppna den vanliga fullcells-editorn.
 
+Generell gruppredigering är dessutom blockerad via F2, högerklickets
+Redigera och programmatisk redigeringsstart. Grupporsaker kan därmed bara
+redigeras genom primär- eller sekundärradens egna textområden.
+
 ## Gruppoperator vid dragning av flera objekt (2026-08-28)
 
 Vid dragning av flera P&ID-objekt till en avvikelse visas val för AND, OR
