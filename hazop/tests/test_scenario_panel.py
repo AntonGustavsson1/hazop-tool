@@ -1927,7 +1927,7 @@ class RiskCellColorTests(unittest.TestCase):
             row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
 
             item = panel._table.item(row, panel._C_RFORE)
-            self.assertEqual(item.text(), 'Välj kategori')
+            self.assertEqual(item.text(), '')
             self.assertEqual(item.background().color(), QColor('#FFFFFF'))
             self.assertEqual(item.foreground().color(), QColor('#8D9299'))
             meta = item.data(Qt.ItemDataRole.UserRole)

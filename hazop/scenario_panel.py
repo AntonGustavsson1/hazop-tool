@@ -319,7 +319,8 @@ class RiskMatrixPopup(QDialog):
                 except (IndexError, KeyError, TypeError):
                     fg = '#ffffff'
 
-                is_current = (freq_val == current_freq and cons_val == current_cons)
+                is_current = (not self._category_mode and
+                              freq_val == current_freq and cons_val == current_cons)
                 border = '3px solid #000' if is_current else '0px'
 
                 btn = QPushButton(lbl[:4])
@@ -351,6 +352,8 @@ class RiskMatrixPopup(QDialog):
                 btn.clicked.connect(
                     lambda _, fv=freq_val, cv=cons_val: self._pick(fv, cv))
                 grid.addWidget(btn, r + 1, c + 1)
+                btn.setProperty('risk_color', color)
+                btn.setProperty('risk_fg', fg)
                 self._grid_buttons[(freq_val, cons_val)] = (btn, lbl[:4])
 
         if self._category_mode and self._freq_on_x:
@@ -513,6 +516,15 @@ class RiskMatrixPopup(QDialog):
         for (fv, cv), (btn, base) in self._grid_buttons.items():
             marks = marks_by_cons_val.get(cv) if fv == self._current_freq else None
             btn.setText(base + "\n" + ",".join(marks) if marks else base)
+            if self._category_mode:
+                color = btn.property('risk_color') or '#27ae60'
+                fg = btn.property('risk_fg') or '#ffffff'
+                border = '2px solid #17191C' if marks else '0px'
+                btn.setStyleSheet(
+                    f"QPushButton{{background:{color}; color:{fg};"
+                    f"font-size:8px; font-weight:bold; border:{border};"
+                    f"border-radius:0px; margin:0px;}}"
+                    f"QPushButton:hover{{border:2px dashed #2f6fed;}}")
         self.adjustSize()
 
     def _pick(self, freq, cons):
@@ -1575,7 +1587,7 @@ class _ScenarioDelegate(QStyledItemDelegate):
 
         w = option.rect.width() if option.rect.width() > 0 else 200
         if col == panel._C_ORS:
-            w = max(40, option.rect.width() - 6)
+            w = max(40, option.rect.width() - 6 - _RRF_W)
             combined = panel._ors_combined_text(item, text)
             rect = fm.boundingRect(0, 0, w, 10000, Qt.TextFlag.TextWordWrap, combined)
             return QSize(option.rect.width(), max(one_line_h * group_rows, rect.height() + 4))
@@ -1962,8 +1974,11 @@ class _PidDelegate(_ScenarioDelegate):
             item = self._panel._table.item(index.row(), col)
             desc = item.text() if item is not None else ''
             prefix_w = self._panel._ors_tag_prefix_pixel_width(item, desc, option.font)
+            freq_x, freq_w, _freq = self._panel._ors_freq_zone_geometry(
+                item, r.left() + 2, r.right() - 2)
             editor.setGeometry(QRect(r.left() + 2 + prefix_w, r.top() + 2,
-                                     max(10, r.width() - 4 - prefix_w),
+                                     max(10, (freq_x if freq_w else r.right() - 2)
+                                         - (r.left() + 2 + prefix_w)),
                                      max(10, r.height() - 4)))
             return
         elif col == self._panel._C_SG:
@@ -2111,7 +2126,8 @@ class _PidDelegate(_ScenarioDelegate):
                     painter.fillRect(r, option.palette.base())
 
                 desc_rect = QRect(r.left() + 2, r.top() + 2,
-                                   r.width() - 4, max(0, r.height() - 4))
+                                   max(0, r.width() - 4 - _RRF_W),
+                                   max(0, r.height() - 4))
 
                 # ── Combined text: bold tag prefix (if any) + plain
                 # description, word-wrapped as ONE block via the same
@@ -2182,25 +2198,25 @@ class _PidDelegate(_ScenarioDelegate):
                 # NOTES.md). Unchanged in substance by this rewrite — only
                 # desc_rect's own top moved (no more strip above it).
                 freq_zone_x, freq_zone_w, freq_str = \
-                    self._panel._ors_freq_zone_geometry(index, desc_rect.left(), desc_rect.right())
+                    self._panel._ors_freq_zone_geometry(index, r.left() + 2, r.right() - 2)
                 if freq_str is not None:
                     ff = QFont(option.font)
                     ff.setPointSize(max(6, option.font.pointSize() - 1))
                     ffm = QFontMetrics(ff)
-                    chip_h = ffm.height() + 2
-                    chip_rect = QRect(freq_zone_x, desc_rect.top(), freq_zone_w, chip_h)
-                    chip_bg = (option.palette.highlight() if sel else
-                              (option.palette.alternateBase() if row % 2 == 1
-                               else option.palette.base()))
+                    chip_rect = QRect(freq_zone_x, r.top(), freq_zone_w, r.height())
+                    chip_bg = QColor('#2F5FD0') if sel else QColor('#F5F5F3')
                     painter.fillRect(chip_rect, chip_bg)
                     painter.setFont(ff)
                     f_tc = (option.palette.highlightedText().color() if sel
                             else QColor('#17191C'))
                     painter.setPen(f_tc)
-                    painter.drawText(chip_rect.adjusted(0, 0, -3, 0),
+                    painter.drawText(chip_rect.adjusted(2, 0, -2, 0),
                                      Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                                      ffm.elidedText(freq_str, Qt.TextElideMode.ElideRight,
-                                                    freq_zone_w - 3))
+                                                     freq_zone_w - 4))
+                    painter.setPen(QPen(QColor('#bcd'), 1))
+                    painter.drawLine(chip_rect.left(), r.top(),
+                                     chip_rect.left(), r.bottom())
 
                 # ── Comment dot — the only icon here since the 2026-08-18
                 # fill-status "plupp" removal. Drawn AFTER the text (like
@@ -3023,7 +3039,7 @@ class ScenarioTablePanel(QWidget):
         'Nod',
         'Utrustning',
         'Avvikelse',
-        'Orsak',
+        'Orsak (frekvens)',
         'Konsekvens',
         'Risk före barriär',
         'Barriärer (RRF)',
@@ -4173,7 +4189,7 @@ class ScenarioTablePanel(QWidget):
             # consequences); KON/REK span by cons_id.
             group_key_fn = _cause_id if col == self._C_ORS else _cons_id
             if col == self._C_ORS:
-                cell_w = max(40, w - 6)
+                cell_w = max(40, w - 6 - _RRF_W)
                 combined = self._ors_combined_text(item, text)
                 rect = fm.boundingRect(0, 0, cell_w, 10000,
                                       Qt.TextFlag.TextWordWrap, combined)
@@ -4618,7 +4634,7 @@ class ScenarioTablePanel(QWidget):
             cat_short = (cat_name or '')[:3]
             rb_text = f"{cat_short}  {freq_axis_label(freq)}  {cons_axis_label(sev)}"
         else:
-            rb_text = "Välj kategori"
+            rb_text = ""
             bg_b, fg_b = '#FFFFFF', '#8D9299'
         rb = QTableWidgetItem(rb_text)
         rb.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -5512,13 +5528,8 @@ class ScenarioTablePanel(QWidget):
         freq_val = item.data(Qt.ItemDataRole.UserRole + 3) if item else None
         base_freq_per_year = item.data(Qt.ItemDataRole.UserRole + 5) if item else None
         freq_str = self._ors_freq_label(freq_val, base_freq_per_year)
-        freq_zone_w = 0
-        if freq_str:
-            ff = QFont(self._table.font())
-            ff.setPointSize(max(6, self._table.font().pointSize() - 1))
-            freq_zone_w = min(QFontMetrics(ff).horizontalAdvance(freq_str) + 6,
-                              self._ORS_FREQ_MAX_W)
-        freq_zone_x = row_right - self._ORS_DOT_RESERVE_W - self._ORS_FREQ_MARGIN - freq_zone_w
+        freq_zone_w = _RRF_W if freq_str else 0
+        freq_zone_x = row_right - freq_zone_w if freq_zone_w else row_right
         return freq_zone_x, freq_zone_w, freq_str
 
     def _ors_comment_dot_geometry(self, cell_rect):

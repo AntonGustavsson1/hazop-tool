@@ -3077,6 +3077,17 @@ kvar eftersom de är en del av cellens funktionella layout. Regressionstesterna
 uppdaterades till den gemensamma edit-starten och 27 berörda tester passerar.
 Ingen visuell GUI-verifiering är gjord.
 
+## Frekvensruta och riskmatrisens kategori-markeringar (2026-08-28)
+
+Orsak-kolumnens frekvens visas nu i en fast ruta med samma visuella modell
+som Safeguardens RRF-ruta, och kolumnrubriken är `Orsak (frekvens)`. Den
+gamla texten `Välj kategori` i Risk före barriär är borttagen.
+
+I riskmatrisens kategori-läge finns ingen förvald markerad riskruta längre.
+Ramarna sätts i stället på de konsekvensnivåer som faktiskt är valda per
+kategori vid den gemensamma frekvensen. Flera konsekvensnivåer kan därför
+vara markerade samtidigt. 15 riskmatris-/kategori-tester passerar.
+
 ## Kraschfix: taggeditor saknade horizontalScrollBar (2026-08-28)
 
 Kraschrapporten `crash_20260828_092809_AttributeError.json` visade att
