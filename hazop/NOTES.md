@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Fritt höjbar HAZOP Scenario-yta (2026-08-28)
+
+Den yttre vertikala splittern låter nu HAZOP Scenario växa med fönstret och
+dras upp med splittern utan en konstgjord maxhöjd. Panelens befintliga
+minimihöjd och P&ID-vyns övriga layoutlogik är kvar.
+
 ## Tidigare konsekvenser och rekommendationer vid redigering (2026-08-28)
 
 Konsekvenseditorn visar nu historik-popupen explicit även för den multiline-

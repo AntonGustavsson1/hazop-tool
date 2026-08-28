@@ -1498,6 +1498,11 @@ class MainWindow(QMainWindow):
         self._v_splitter = QSplitter(Qt.Orientation.Vertical)
 
         self.scenario_panel = ScenarioTablePanel(self.db)
+        # The scenario area is intentionally user-resizable without an
+        # artificial height cap. Let both panes participate in the outer
+        # splitter's available height so the handle can be dragged as far as
+        # the window allows and the panel grows with a taller window.
+        self.scenario_panel.allow_full_height()
         # Same opt-in HAZOPWorksheet already uses (see always_show_deviation_column
         # docstring) — needed so load_node() from the equipment bar shows WHICH
         # deviation/equipment each row belongs to, not just the causes themselves.
@@ -1507,6 +1512,8 @@ class MainWindow(QMainWindow):
         self.markup_table_panel = MarkupTablePanel(self.db)
         self.markup_table_panel.setVisible(False)
         self._v_splitter.addWidget(self.markup_table_panel)
+        self._v_splitter.setStretchFactor(0, 1)
+        self._v_splitter.setStretchFactor(1, 0)
 
         # RedMarkupTablePanel (the "existing red markups" table this splitter
         # slot used to hold) was deleted outright 2026-08-26 (see NOTES.md
@@ -1518,7 +1525,7 @@ class MainWindow(QMainWindow):
         self._outer_splitter.addWidget(self._v_splitter)
         self._outer_splitter.setSizes([640, 220])
         self._outer_splitter.setStretchFactor(0, 1)
-        self._outer_splitter.setStretchFactor(1, 0)
+        self._outer_splitter.setStretchFactor(1, 1)
         self._outer_splitter.setCollapsible(0, False)
 
         # ── Page 2: Worksheet ─────────────────────────────────────────────────
