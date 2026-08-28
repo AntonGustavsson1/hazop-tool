@@ -2578,8 +2578,9 @@ class _PidDelegate(_ScenarioDelegate):
                 # object tag on BOTH visual rows.  Do not change group_line
                 # or any of the primary/secondary data handling here.
                 if int(group_line) > 0:
+                    operators = self._panel._group_operators(item)
                     prefix_w += QFontMetrics(option.font).horizontalAdvance(
-                        f"{self._panel._group_operator(item)} ")
+                        f"{operators[group_line]} ")
                 prefix_w += QFontMetrics(tag_font).horizontalAdvance(
                     str(group_tags[group_line])) + 10
                 line_h = max(_ORS_FIRST_LINE_H,
@@ -2808,7 +2809,9 @@ class _PidDelegate(_ScenarioDelegate):
                                              number_prefix)
                             x += QFontMetrics(option.font).horizontalAdvance(number_prefix)
                         if line_no > 0:
-                            operator = self._panel._group_operator(item)
+                            operators = self._panel._group_operators(item)
+                            operator = (operators[line_no]
+                                        if line_no < len(operators) else 'OR')
                             painter.setFont(option.font)
                             painter.drawText(QRect(x, y, desc_rect.width(), line_h),
                                              Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
@@ -6146,6 +6149,45 @@ class ScenarioTablePanel(QWidget):
                 QTimer.singleShot(0, lambda r=row, c=col, p=click[2]:
                                   self._place_editor_caret(r, c, p))
 
+        # Right-clicking a painted group tag opens the group-row actions.
+        # Blank cell space deliberately has no such shortcut.
+        if (obj is self._table.viewport() and
+                event.type() == QEvent.Type.MouseButtonPress and
+                event.button() == Qt.MouseButton.RightButton):
+            pos = event.pos()
+            row = self._table.rowAt(pos.y())
+            col = self._table.columnAt(pos.x())
+            if row >= 0 and col == self._C_ORS:
+                item = self._table.item(row, col)
+                group_tags = (item.data(Qt.ItemDataRole.UserRole + 9) or []) if item else []
+                if len(group_tags) >= 2:
+                    line_h = max(_ORS_FIRST_LINE_H,
+                                 QFontMetrics(self._table.font()).height() + 4)
+                    line_no = int((pos.y() - self._table.rowViewportPosition(row) - 2)
+                                  // line_h)
+                    if 0 <= line_no < len(group_tags):
+                        x = self._table.columnViewportPosition(col) + 2
+                        if line_no == 0:
+                            num = item.data(Qt.ItemDataRole.UserRole + 10) or ''
+                            if num:
+                                x += QFontMetrics(self._table.font()).horizontalAdvance(
+                                    f"{num}.  ")
+                        else:
+                            operators = self._group_operators(item)
+                            operator = operators[line_no] if line_no < len(operators) else 'OR'
+                            x += QFontMetrics(self._table.font()).horizontalAdvance(
+                                f"{operator} ")
+                        tag_font = QFont(self._table.font())
+                        tag_font.setBold(True)
+                        width = QFontMetrics(tag_font).horizontalAdvance(str(group_tags[line_no]))
+                        if x <= pos.x() <= x + width:
+                            cause_id = self._row_meta[row][1] if row < len(self._row_meta) else None
+                            if cause_id is not None:
+                                self._show_group_tag_menu(
+                                    row, cause_id, line_no,
+                                    self._table.viewport().mapToGlobal(pos))
+                                return True
+
     def _show_rrf_popup(self, row, sg_id):
         """Called from context menu — centre on the cell."""
         item = self._table.item(row, self._C_SG)
@@ -6323,6 +6365,47 @@ class ScenarioTablePanel(QWidget):
             return '&'
         return 'OR' if match.group(1).casefold() in ('<>', 'or') else match.group(1)
 
+    @staticmethod
+    def _normalise_group_operator(value):
+        value = str(value or '').strip()
+        if value == '+':
+            return '&'
+        if value.casefold() in ('or', '<>'):
+            return 'OR'
+        return value if value in ('&', 'OR', '->') else 'OR'
+
+    def _group_operators(self, item):
+        """Return one operator for each group row after the first.
+
+        Older data stores one operator for the complete group.  Repeat that
+        value for all separators so old groups render exactly as before.
+        Newer data can store a different separator between every pair of
+        tags in ``comp_tag``.
+        """
+        tags = (item.data(Qt.ItemDataRole.UserRole + 9) or []) if item else []
+        count = len(tags)
+        if count < 2:
+            return []
+        meta = item.data(Qt.ItemDataRole.UserRole) if item else None
+        cause = self.db.get_cause(meta[1]) if meta else None
+        raw = (cause.get('comp_tag') or '') if cause else ''
+        found = [self._normalise_group_operator(value)
+                 for value in re.findall(r'\s(&|OR|<>|->|\+)\s', raw,
+                                        re.IGNORECASE)]
+        if not found:
+            found = [self._group_operator(item)]
+        if len(found) == 1:
+            found *= count - 1
+        return ([''] + found + ['OR'] * count)[:count]
+
+    def _group_comp_tag(self, tags, operators):
+        """Build the persisted tag expression from ordered rows."""
+        if not tags:
+            return ''
+        return tags[0] + ''.join(
+            f" {self._normalise_group_operator(operators[i - 1])} {tags[i]}"
+            for i in range(1, len(tags)))
+
     def _group_equipment_ids(self, cause):
         """Return all live equipment links for a group, in display order.
 
@@ -6354,13 +6437,102 @@ class ScenarioTablePanel(QWidget):
             if not equipment:
                 return
             tags.append(equipment.get('tag', ''))
-        self.db.update_cause(
-            cause_id,
-            comp_tag=f" {operator} ".join(tags),
-            group_equipment_ids=equipment_ids)
+        self.db.update_cause(cause_id,
+                             comp_tag=f" {operator} ".join(tags),
+                             group_equipment_ids=equipment_ids)
         self._schedule_rebuild()
 
-    def _choose_group_operator(self, row, cause_id, global_pos):
+    def _set_group_row_operator(self, cause_id, row_index, operator):
+        """Change only the separator immediately before one group row."""
+        cause = self.db.get_cause(cause_id)
+        ids = self._group_equipment_ids(cause)
+        if not cause or row_index <= 0 or row_index >= len(ids):
+            return
+        operator = self._normalise_group_operator(operator)
+        tags = []
+        for equipment_id in ids:
+            equipment = self.db.get_equipment_by_id(equipment_id)
+            tags.append((equipment.get('tag') if equipment else '') or 'Objekt')
+        # Parse the existing expression directly; a single legacy operator is
+        # expanded to every separator by the same rule used for painting.
+        old_ops = [self._normalise_group_operator(value)
+                   for value in re.findall(r'\s(&|OR|<>|->|\+)\s',
+                                           cause.get('comp_tag') or '',
+                                           re.IGNORECASE)]
+        if not old_ops:
+            old_ops = ['OR']
+        if len(old_ops) == 1:
+            old_ops *= len(ids) - 1
+        old_ops = (old_ops + ['OR'] * len(ids))[:len(ids) - 1]
+        old_ops[row_index - 1] = operator
+        self.db.update_cause(cause_id,
+                             comp_tag=self._group_comp_tag(tags, old_ops),
+                             group_equipment_ids=ids)
+        self._schedule_rebuild()
+
+    def _move_group_row(self, cause_id, row_index, delta):
+        """Move a group row and its description one position up/down."""
+        cause = self.db.get_cause(cause_id)
+        ids = self._group_equipment_ids(cause)
+        target = row_index + delta
+        if not cause or not (0 <= row_index < len(ids)) or not (0 <= target < len(ids)):
+            return
+        ids[row_index], ids[target] = ids[target], ids[row_index]
+        tags = []
+        for equipment_id in ids:
+            equipment = self.db.get_equipment_by_id(equipment_id)
+            tags.append((equipment.get('tag') if equipment else '') or 'Objekt')
+        old_ops = [self._normalise_group_operator(value)
+                   for value in re.findall(r'\s(&|OR|<>|->|\+)\s',
+                                           cause.get('comp_tag') or '',
+                                           re.IGNORECASE)]
+        if not old_ops:
+            old_ops = ['OR']
+        if len(old_ops) == 1:
+            old_ops *= len(ids) - 1
+        old_ops = (old_ops + ['OR'] * len(ids))[:len(ids) - 1]
+        # Keep operator positions stable while object rows move.  The user
+        # can change each affected row's incoming operator independently from
+        # its own context menu, without silently changing other connections.
+        # Keep group descriptions aligned with their object rows.
+        lines = (cause.get('description') or '').splitlines()
+        if len(lines) >= len(ids):
+            lines[row_index], lines[target] = lines[target], lines[row_index]
+        self.db.update_cause(
+            cause_id,
+            comp_type=(self.db.get_equipment_by_id(ids[0]) or {}).get('equipment_type', ''),
+            comp_tag=self._group_comp_tag(tags, old_ops),
+            equipment_id=ids[0],
+            secondary_equipment_id=ids[1] if len(ids) > 1 else None,
+            group_equipment_ids=ids,
+            description='\n'.join(lines) if len(lines) >= len(ids) else cause.get('description', ''))
+        self._schedule_rebuild()
+
+    def _show_group_tag_menu(self, row, cause_id, group_line, global_pos):
+        menu = QMenu(self)
+        up = menu.addAction('Flytta uppåt')
+        up.setEnabled(group_line > 0)
+        up.triggered.connect(lambda: self._move_group_row(cause_id, group_line, -1))
+        down = menu.addAction('Flytta nedåt')
+        cause = self.db.get_cause(cause_id)
+        count = len(self._group_equipment_ids(cause))
+        down.setEnabled(group_line < count - 1)
+        down.triggered.connect(lambda: self._move_group_row(cause_id, group_line, 1))
+        if group_line > 0:
+            menu.addSeparator()
+            submenu = menu.addMenu('Koppling till föregående rad')
+            current = self._group_operators(self._table.item(row, self._C_ORS))
+            current = current[group_line] if group_line < len(current) else 'OR'
+            for operator in ('&', 'OR', '->'):
+                action = submenu.addAction(operator.replace('&', '&&'))
+                action.setCheckable(True)
+                action.setChecked(operator == current)
+                action.triggered.connect(
+                    lambda _checked=False, op=operator:
+                    self._set_group_row_operator(cause_id, group_line, op))
+        menu.exec(global_pos)
+
+    def _choose_group_operator(self, row, cause_id, group_line, global_pos):
         menu = QMenu(self)
         for operator in ('&', 'OR', '->'):
             # In Qt menu text, a single ampersand marks a mnemonic and is
@@ -6370,7 +6542,7 @@ class ScenarioTablePanel(QWidget):
             action.setData(operator)
         chosen = menu.exec(global_pos)
         if chosen is not None:
-            self._set_group_operator(cause_id, chosen.data())
+            self._set_group_row_operator(cause_id, group_line, chosen.data())
 
     def _ors_tag_prefix_pixel_width(self, item, desc, font):
         """Pixel width of the bold portion of _ors_combined_text — shared
@@ -6612,8 +6784,6 @@ class ScenarioTablePanel(QWidget):
             equipment_id=equipment_id, group_operator=group_operator)
         popup.bind_requested.connect(
             lambda cid=cause_id: self.bind_cause_to_pid_requested.emit(cid))
-        popup.reorder_requested.connect(
-            lambda cid=cause_id: self._swap_group_objects(cid))
         if group_line is not None and group_line >= 0:
             popup.committed.connect(
                 lambda ct, tg, r=row, cid=cause_id, line=group_line:
@@ -7270,14 +7440,16 @@ class ScenarioTablePanel(QWidget):
                                 tag_start += QFontMetrics(self._table.font()).horizontalAdvance(
                                     f"{num}.  ")
                         elif line_no > 0:
-                            operator = self._group_operator(item)
+                            operators = self._group_operators(item)
+                            operator = (operators[line_no]
+                                        if line_no < len(operators) else 'OR')
                             operator_width = QFontMetrics(self._table.font()).horizontalAdvance(
                                 f"{operator} ")
                             if tag_start <= pos.x() < tag_start + operator_width:
                                 cause_id = self._row_meta[row][1]
                                 if cause_id is not None:
                                     gp = self._table.viewport().mapToGlobal(pos)
-                                    self._choose_group_operator(row, cause_id, gp)
+                                    self._choose_group_operator(row, cause_id, line_no, gp)
                                 return True
                             tag_start += operator_width
                         tag_width = QFontMetrics(self._table.font()).horizontalAdvance(

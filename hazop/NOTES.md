@@ -2,6 +2,15 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Gruppobjekt: radvis ordning och operatorer (2026-08-28)
+
+Knappen för att byta primär/sekundär är borttagen från objekttaggs-popupen.
+Högerklick på en faktisk grupptagg visar i stället `Flytta uppåt` och
+`Flytta nedåt`. För rad 2 och framåt finns även en separat koppling till
+föregående rad: `&`, `OR` eller `->`. Äldre grupper med en gemensam operator
+visas fortfarande korrekt; den nya representationen sparas som operatorer
+mellan taggarna i `comp_tag`, exempelvis `A -> B OR C`.
+
 ## Fritt höjbar HAZOP Scenario-yta (2026-08-28)
 
 Den yttre vertikala splittern låter nu HAZOP Scenario växa med fönstret och

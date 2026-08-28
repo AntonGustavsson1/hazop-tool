@@ -2233,7 +2233,6 @@ class CauseTagPopup(QDialog):
     explicit confirm."""
     committed = pyqtSignal(str, str)  # (comp_type, comp_tag)
     bind_requested = pyqtSignal()
-    reorder_requested = pyqtSignal()
     place_requested = pyqtSignal(int, str, str)  # cause_id, comp_type, comp_tag
 
     def __init__(self, db, comp_type='', comp_tag='', parent=None, cause_id=None,
@@ -2354,18 +2353,6 @@ class CauseTagPopup(QDialog):
                 "QPushButton:hover{background:#3D6BD8;}")
             place.clicked.connect(self._place_on_pid)
             layout.addWidget(place)
-
-        if cause_id is not None:
-            try:
-                cause = db.get_cause(cause_id)
-                if cause and cause.get('secondary_equipment_id'):
-                    swap = QPushButton("Byt primär / sekundär")
-                    swap.setFixedHeight(CONFIG['H_BTN_SMALL'])
-                    swap.setStyleSheet(_small)
-                    swap.clicked.connect(self.reorder_requested.emit)
-                    layout.addWidget(swap)
-            except Exception:
-                pass
 
         self._tag_edit.editingFinished.connect(self._commit)
         self._type_cb.activated.connect(lambda _index: self._commit())
