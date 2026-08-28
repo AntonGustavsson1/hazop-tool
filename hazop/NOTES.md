@@ -3166,6 +3166,10 @@ gruppens beskrivande mekanism/effekt öppnar samma inline-editor som en enskild
 orsak, medan dubbelklick på någon av de fetstilta taggarna fortfarande öppnar
 objektpopupen.
 
+Frekvensklick på grupporsak går nu vidare till samma frekvenspopup och
+sparlogik som för enskild orsak. Gruppens taggzon blockerar inte längre
+frekvenszonen.
+
 ## Edit Mode: cellens layout och wrapping (2026-08-28)
 
 Den gemensamma flerradiga editorn använder nu exakt cellens textområde för

@@ -6222,18 +6222,18 @@ class ScenarioTablePanel(QWidget):
                 item       = self._table.item(row, col)
                 desc       = item.text() if item is not None else ''
                 group_tags = item.data(Qt.ItemDataRole.UserRole + 9) if item else []
-                if group_tags:
-                    # Group tags are informational in the table. The old
-                    # one-click P&ID bind path is intentionally removed;
-                    # double-click opens the two-column group popup.
-                    return False
-                prefix_w   = self._ors_tag_prefix_pixel_width(item, desc, self._table.font())
-                if prefix_w > 0 and col_x <= pos.x() < col_x + 2 + prefix_w:
-                    cause_id = self._row_meta[row][1]
-                    if cause_id is not None:
-                        gp = self._table.viewport().mapToGlobal(pos)
-                        self._show_cause_obj_popup(row, cause_id, gp)
-                    return True
+                if not group_tags:
+                    prefix_w = self._ors_tag_prefix_pixel_width(
+                        item, desc, self._table.font())
+                    if prefix_w > 0 and col_x <= pos.x() < col_x + 2 + prefix_w:
+                        cause_id = self._row_meta[row][1]
+                        if cause_id is not None:
+                            gp = self._table.viewport().mapToGlobal(pos)
+                            self._show_cause_obj_popup(row, cause_id, gp)
+                        return True
+                # Group tags are informational in the table. Do not return
+                # here: the frequency zone below must remain reachable for
+                # grouped causes too.
 
             # Frequency zone click — floats over the description's own
             # first line (2026-08-18, see NOTES.md "Frekvensen ... hör
