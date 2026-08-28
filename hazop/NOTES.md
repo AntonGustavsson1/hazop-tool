@@ -3388,3 +3388,13 @@ Enter nu den markerade taggen innan den vanliga editor-committen körs. Popupen
 Windows/Qt-lägen gjorde att Enter annars stängde editorn utan att infoga
 taggen. Fokus och markör återgår efter infogningen så fortsatt text kan
 skrivas direkt. Rekommendationseditorn använder nu också P&ID-taggbiblioteket.
+
+## Oberoende val och redigering av grupporsak (2026-08-28)
+
+Grupporsakens primär- och sekundärhändelse väljs nu oberoende av varandra.
+Första klicket på exempelvis `Felar högt` sparar endast primärhändelsen;
+sekundärhändelsen skapas först när ett separat sekundärval görs. Tillståndet
+lagras som en bitmask i `group_choices_set`, så popupen visar också korrekt
+vilken sida som ännu inte är vald. Grupporsakens text kan dessutom
+inline-redigeras som ett helt textblock, inklusive egna formuleringar, utan
+att den reduceras till första raden.

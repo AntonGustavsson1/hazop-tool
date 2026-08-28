@@ -4670,6 +4670,45 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             self.assertIn('FI-1 felar högt', causes[0]['description'])
             self.assertIn('FV-1 öppnar fullt', causes[0]['description'])
 
+    def test_group_choice_buttons_are_independent_and_group_text_remains_editable(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.get_or_create_deviation(node_id, "Högt flöde")
+            primary_id = win.db.add_equipment_item("FI-1", "FI-1", "FI", 0,
+                                                   "Instrument", '', 0)
+            secondary_id = win.db.add_equipment_item("FV-1", "FV-1", "FV", 0,
+                                                     "Reglerventil", '', 0)
+            cause_id = win.db.add_cause(dev_id)
+            win.db.update_cause(
+                cause_id, comp_type='Instrument', comp_tag='FI-1 + FV-1',
+                equipment_id=primary_id,
+                secondary_equipment_id=secondary_id,
+                description='FI-1 felar högt → FV-1 öppnar fullt')
+            panel = win.scenario_panel
+
+            panel._apply_group_cause_choice(cause_id, 0, 'Felar lågt')
+            cause = dict(win.db.get_cause(cause_id))
+            self.assertEqual(cause['group_choices_set'], 1)
+            self.assertEqual(cause['description'], 'FI-1 felar lågt')
+
+            panel._apply_group_cause_choice(cause_id, 1, 'Öppnar felaktigt')
+            cause = dict(win.db.get_cause(cause_id))
+            self.assertEqual(cause['group_choices_set'], 3)
+            self.assertEqual(cause['description'],
+                             'FI-1 felar lågt\nFV-1 öppnar felaktigt')
+
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta)
+                       if m[1] == cause_id)
+            item = panel._table.item(row, panel._C_ORS)
+            panel._table.blockSignals(True)
+            item.setText('FI-1 felar lågt\nFV-1 behöver manövreras manuellt')
+            panel._table.blockSignals(False)
+            panel._on_cell_changed_inner(row, panel._C_ORS)
+            self.assertEqual(
+                dict(win.db.get_cause(cause_id))['description'],
+                'FI-1 felar lågt\nFV-1 behöver manövreras manuellt')
+
     def test_on_equipment_dropped_on_deviation_ignores_unlinked_markers(self):
         with _TempDbMainWindow() as win:
             node_id = win.db.add_node()

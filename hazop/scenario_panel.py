@@ -5916,12 +5916,11 @@ class ScenarioTablePanel(QWidget):
             cause = self.db.get_cause(cause_id) if cause_id else None
             if cause and not cause.get('group_choices_set'):
                 return f"{_num}.  {_group_tags[0]}\n{_group_tags[1]}" if _num else f"{_group_tags[0]}\n{_group_tags[1]}"
-            _low = (desc or '').lower()
-            _direction = 'felar lågt' if 'felar lågt' in _low else 'felar högt'
-            _effect = next((o for o in ('stänger helt', 'stänger felaktigt', 'stänger',
-                                         'öppnar felaktigt', 'öppnar fullt') if o in _low),
-                            'öppnar fullt')
-            return f"{_num}.  {_group_tags[0]} {_direction}\n{_group_tags[1]} {_effect}" if _num else f"{_group_tags[0]} {_direction}\n{_group_tags[1]} {_effect}"
+            # Once a group has a choice, display the stored text verbatim.
+            # This preserves partial groups (only primary or only secondary)
+            # and also lets the user edit arbitrary group wording later.
+            stored = (desc or '').strip()
+            return f"{_num}.  {stored}" if _num else stored
         """The exact string measured (sizeHint) and painted (paint) for
         an ORS cell — "TAG, beskrivning", just "TAG" while the
         description is still an untouched placeholder (same "bare tag
@@ -6181,10 +6180,13 @@ class ScenarioTablePanel(QWidget):
             return
         primary, secondary = dict(primary), dict(secondary)
         desc = (cause.get('description') or '').lower()
-        direction = 'Felar lågt' if 'felar lågt' in desc else 'Felar högt'
+        choices_set = int(cause.get('group_choices_set') or 0)
+        direction = ('Felar lågt' if 'felar lågt' in desc else 'Felar högt') \
+            if choices_set & 1 else 'Ej vald'
         effect = next((value for value in (
             'Öppnar felaktigt', 'Stänger felaktigt', 'Öppnar fullt',
-            'Stänger helt') if value.lower() in desc), 'Öppnar fullt')
+            'Stänger helt') if value.lower() in desc), 'Öppnar fullt') \
+            if choices_set & 2 else 'Ej vald'
         popup = GroupCausePopup(primary, secondary, direction, effect, parent=self)
         def apply_choice(which, choice):
             self._apply_group_cause_choice(cause_id, which, choice)
@@ -6231,6 +6233,7 @@ class ScenarioTablePanel(QWidget):
         if not p or not s:
             return
         old = cause.get('description') or ''
+        choices_set = int(cause.get('group_choices_set') or 0)
         direction = 'felar lågt' if 'lågt' in old else 'felar högt'
         effect = 'öppnar felaktigt'
         for option in ('stänger helt', 'stänger felaktigt', 'öppnar fullt', 'öppnar felaktigt'):
@@ -6239,8 +6242,10 @@ class ScenarioTablePanel(QWidget):
                 break
         if which == 0:
             direction = choice.lower()
+            choices_set |= 1
         else:
             effect = choice.lower()
+            choices_set |= 2
         if choice == 'Skriv eget…':
             value, accepted = QInputDialog.getText(
                 self, "Eget alternativ",
@@ -6248,8 +6253,14 @@ class ScenarioTablePanel(QWidget):
             if not accepted or not value.strip():
                 return
             choice = value.strip()
-        desc = f"{p.get('tag', 'Objekt')} {direction} → {s.get('tag', 'Objekt')} {effect}"
-        self.db.update_cause(cause_id, description=desc, group_choices_set=1)
+        lines = []
+        if choices_set & 1:
+            lines.append(f"{p.get('tag', 'Objekt')} {direction}")
+        if choices_set & 2:
+            lines.append(f"{s.get('tag', 'Objekt')} {effect}")
+        desc = '\n'.join(lines)
+        self.db.update_cause(cause_id, description=desc,
+                             group_choices_set=choices_set)
         self._schedule_rebuild()
 
     def _swap_group_objects(self, cause_id):
@@ -7053,7 +7064,12 @@ class ScenarioTablePanel(QWidget):
         text = item.text().strip()
 
         if kind == 'cause':
-            desc = text.split('\n')[0].strip()
+            group_tags = item.data(Qt.ItemDataRole.UserRole + 9) or []
+            # Group causes are edited as one two-line text block.  Ordinary
+            # causes keep the historic first-line behavior because their
+            # first line is the editable description and later lines are
+            # presentation metadata.
+            desc = text if len(group_tags) >= 2 else text.split('\n')[0].strip()
             cause = self.db.get_cause(id_)
             if cause:
                 # Check if the text is comp_tag (component tag) or description
