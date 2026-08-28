@@ -216,11 +216,16 @@ class TreePanel(QWidget):
         def _tree_mime_data(items, _tree=self.tree):
             md = QMimeData()
             entries = []
+            item_types = set()
             for item in items:
                 type_ = item.data(0, Qt.ItemDataRole.UserRole + 1)
                 id_ = item.data(0, Qt.ItemDataRole.UserRole)
-                if type_ in (NODE_T, DEV_T, CAUSE_T, CONS_T, SG_T) and id_ is not None:
-                    entries.append(f'{type_}:{id_}')
+                if type_ not in (CAUSE_T, CONS_T, SG_T) or id_ is None:
+                    return md
+                item_types.add(type_)
+                entries.append(f'{type_}:{id_}')
+            if len(item_types) > 1:
+                return md
             if entries:
                 md.setText(('hzp:treeitem:' + entries[0]) if len(entries) == 1
                            else 'hzp:treeitems:' + ';'.join(entries))
@@ -1743,7 +1748,8 @@ class TreePanel(QWidget):
             copied = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier)
             changed = self._drop_tree_entries(entries, target, copied)
             if changed:
-                self.refresh()
+                result = getattr(self, '_last_drop_result', None)
+                self.refresh(result[0], result[1]) if result else self.refresh()
                 self.structure_changed.emit()
                 event.acceptProposedAction()
             else:
@@ -1879,6 +1885,7 @@ class TreePanel(QWidget):
         return [row['id'] for row in rows]
 
     def _drop_tree_entries(self, entries, target, copied):
+        self._last_drop_result = None
         tgt_type, tgt_id = target
         target_parent_col, target_parent_id = self._tree_target_parent(tgt_type, tgt_id)
         if not target_parent_col:
@@ -1905,6 +1912,7 @@ class TreePanel(QWidget):
                     {CAUSE_T: 'causes', CONS_T: 'consequences', SG_T: 'safeguards'}[src_type],
                     src_parent_col, src_parent_id, siblings)
                 changed = True
+                self._last_drop_result = (src_type, src_id)
                 continue
             if src_type == CAUSE_T:
                 dev_id = self._resolve_deviation_id(tgt_type, tgt_id)
@@ -1938,6 +1946,7 @@ class TreePanel(QWidget):
                         new_id = None
             if new_id:
                 changed = True
+                self._last_drop_result = (src_type, new_id)
         return changed
 
     def _delete_item(self, type_, id_):

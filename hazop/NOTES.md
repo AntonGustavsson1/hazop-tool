@@ -2,6 +2,13 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Shift-kopiering synlig i trädet (2026-08-28)
+
+Efter Shift-drag av en eller flera poster uppdateras trädet nu med den senast
+skapade kopian som aktuell och synlig post. Därmed expanderas målgrenen vid
+behov i stället för att kopian skapas i databasen men förblir dold bakom en
+kollapsad trädgren. Multidrag accepterar endast poster av samma typ.
+
 ## Deleteknapp i rekommendationslistan (2026-08-28)
 
 Varje rekommendation i den studiegemensamma listan har nu en `Ta bort`-knapp.
