@@ -2,6 +2,13 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Grupporsak: editor placeras på rätt visuell rad direkt (2026-08-28)
+
+Gruppeditorns `group_line` sätts nu redan när editorn skapas, före Qt:s första
+geometriberäkning. Det förhindrar att redigering av sekundärraden först placeras
+överst i cellen. Primär/sekundär-val, textinnehåll och sparlogik är oförändrade.
+Verifierat med syntaxkontroll, smoke-test samt riktade primär- och sekundärradtester.
+
 ## Inline-editor: bevara markör och scrolläge vid liveformatering (2026-08-28)
 
 Den gemensamma QTextEdit-editorn återställer nu hela markörtillståndet,

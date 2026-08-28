@@ -1695,6 +1695,16 @@ class _ScenarioDelegate(QStyledItemDelegate):
                 "padding:0px;}")
             editor.setProperty('editing_row', index.row())
             editor.setProperty('editing_col', index.column())
+            # Set the grouped row before Qt asks the delegate for the
+            # editor geometry.  If this is delayed until setEditorData(),
+            # the first geometry pass can place a secondary-row editor at
+            # the top of the cell and it may never be repositioned.
+            group_edit_line = getattr(self._panel, '_group_edit_line', None)
+            if (index.column() == self._panel._C_ORS and
+                    group_edit_line is not None and
+                    group_edit_line[0] == index.row() and
+                    group_edit_line[1] in (0, 1)):
+                editor.setProperty('group_line', int(group_edit_line[1]))
             editor.installEventFilter(self._panel)
             # Do not let focus acquisition turn a normal cell edit into a
             # whole-text selection.  The panel places the caret explicitly
@@ -2195,6 +2205,10 @@ class _PidDelegate(_ScenarioDelegate):
             editor.set_bold_tags(tags)
             if index.column() == self._panel._C_ORS:
                 group_line = getattr(self._panel, '_group_edit_line', None)
+                if group_line is None:
+                    stored_line = editor.property('group_line')
+                    if stored_line in (0, 1):
+                        group_line = (index.row(), int(stored_line))
                 if group_line is not None and group_line[0] == index.row():
                     item = self._panel._table.item(index.row(), index.column())
                     group_tags = item.data(Qt.ItemDataRole.UserRole + 9) if item else []
