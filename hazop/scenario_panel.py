@@ -1982,6 +1982,11 @@ class _PidDelegate(_ScenarioDelegate):
                 obj_data = item.data(Qt.ItemDataRole.UserRole + 6) if item else None
                 refs = item.data(Qt.ItemDataRole.UserRole + 7) if item else []
                 tags = ([obj_data[1]] if obj_data and obj_data[1] else []) + (refs or [])
+            # A tag typed into the text is still an object reference when it
+            # exactly matches the P&ID catalogue.  Include those live matches
+            # while editing, so the bold identity is not lost before the next
+            # table rebuild.
+            tags += self._panel._matching_pid_tags(editor.toPlainText())
             editor.set_bold_tags(tags)
 
     def _attach_consequence_completer(self, editor):
@@ -2215,7 +2220,8 @@ class _PidDelegate(_ScenarioDelegate):
                     desc = f"{_num}.  {desc}"
                 tc = (option.palette.highlightedText().color() if sel
                       else option.palette.text().color())
-                tagged_refs = index.data(Qt.ItemDataRole.UserRole + 7) or []
+                tagged_refs = list(index.data(Qt.ItemDataRole.UserRole + 7) or [])
+                tagged_refs += self._panel._matching_pid_tags(desc)
                 _draw_text_with_bold_tags(
                     painter, desc_rect.adjusted(2, 1, -2, -1), desc,
                     tagged_refs, option.font, tc, word_wrap=True)
@@ -2309,9 +2315,10 @@ class _PidDelegate(_ScenarioDelegate):
                 # file's own documented history of paint/geometry bugs.
                 tc = (option.palette.highlightedText().color() if sel
                       else option.palette.text().color())
-                tags = index.data(Qt.ItemDataRole.UserRole + 9) or []
+                tags = list(index.data(Qt.ItemDataRole.UserRole + 9) or [])
                 if not tags:
                     tags = [tag_label] if show_tag else []
+                tags += self._panel._matching_pid_tags(desc)
                 if len(tags) >= 2:
                     # Group causes are deliberately rendered line-by-line.
                     # QTextLayout's wrapping can collapse the explicit line
@@ -2440,7 +2447,8 @@ class _PidDelegate(_ScenarioDelegate):
                     display = f"{_num}.  {display}"
                 tc = (option.palette.highlightedText().color() if sel
                       else option.palette.text().color())
-                tagged_refs = index.data(Qt.ItemDataRole.UserRole + 8) or []
+                tagged_refs = list(index.data(Qt.ItemDataRole.UserRole + 8) or [])
+                tagged_refs += self._panel._matching_pid_tags(display)
                 _draw_text_with_bold_tags(
                     painter, txt_rect.adjusted(2, 2, -2, -2), display,
                     tagged_refs, option.font, tc, word_wrap=True)
@@ -3263,6 +3271,9 @@ class ScenarioTablePanel(QWidget):
         self._recommendation_force_add_cons_id = None
         self._text_undo_stack = []
         self._undoing_text = False
+        # Tags explicitly disconnected by the user must remain ordinary prose
+        # even though their text still matches the P&ID catalogue.
+        self._detached_tags = set()
         self._cell_font_size = 9
         # Parallel list to _row_meta: None or (cat_id, cat_name, cat_sev)
         self._row_cat_info: list = []
@@ -6644,6 +6655,29 @@ class ScenarioTablePanel(QWidget):
     _INLINE_TAG_RE = re.compile(
         r"(?<![A-Za-z0-9])([A-Za-z]{1,10}[-_][A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*)(?![A-Za-z0-9])")
 
+    def _matching_pid_tags(self, text):
+        """Return catalogue tags occurring as complete tokens in *text*.
+
+        This is deliberately based on the current P&ID catalogue rather than
+        on tag-shaped text alone: ordinary prose must not become bold merely
+        because it contains a hyphen.
+        """
+        if not text:
+            return []
+        try:
+            catalogue = [str(row.get('tag') or '').strip()
+                         for row in self.db.equipment_items()]
+        except Exception:
+            return []
+        found = []
+        for tag in sorted({t for t in catalogue if t}, key=len, reverse=True):
+            if tag.casefold() in self._detached_tags:
+                continue
+            if re.search(r'(?<![A-Za-z0-9])' + re.escape(tag) +
+                         r'(?![A-Za-z0-9])', str(text), re.IGNORECASE):
+                found.append(tag)
+        return found
+
     def _confirm_inline_identity_change(self, kind, id_, desc):
         """Guard a tag replacement embedded in a KON/SG description.
 
@@ -6752,7 +6786,15 @@ class ScenarioTablePanel(QWidget):
                 old_desc = cons.get('description', '') or ''
                 if not self._undoing_text and desc != old_desc:
                     self._text_undo_stack.append(('consequence', id_, old_desc))
-                self.db.update_consequence(id_, desc, cons['severity'], cons['category'] or '')
+                refs = parse_tag_refs(cons.get('tagged_refs') or '')
+                for tag in self._matching_pid_tags(desc):
+                    self._detached_tags.discard(tag.casefold())
+                    if not any(ref.casefold() == tag.casefold() for ref in refs):
+                        refs.append(tag)
+                self.db.update_consequence(id_, desc, cons['severity'],
+                                           cons['category'] or '',
+                                           tagged_refs=','.join(refs))
+                item.setData(Qt.ItemDataRole.UserRole + 8, refs)
                 self._update_row_text_only('consequence', id_, desc)
                 # "Spara varje konsekvens som skrivs i HAZOP Scenario i en
                 # databas" (2026-08-26, see NOTES.md "Återanvänd tidigare
@@ -6776,7 +6818,14 @@ class ScenarioTablePanel(QWidget):
                 old_desc = sg.get('description', '') or ''
                 if not self._undoing_text and desc != old_desc:
                     self._text_undo_stack.append(('safeguard', id_, old_desc))
-                self.db.update_safeguard(id_, desc, sg['rrf'] or 1)
+                refs = parse_tag_refs(sg.get('tagged_refs') or '')
+                for tag in self._matching_pid_tags(desc):
+                    self._detached_tags.discard(tag.casefold())
+                    if not any(ref.casefold() == tag.casefold() for ref in refs):
+                        refs.append(tag)
+                self.db.update_safeguard(id_, desc, sg['rrf'] or 1,
+                                         tagged_refs=','.join(refs))
+                item.setData(Qt.ItemDataRole.UserRole + 7, refs)
                 # A safeguard's description never affects its own row's RRF/
                 # risk-derived columns (those depend on rrf, not text) or any
                 # other row, so a full _rebuild() was pure overhead here —
@@ -7143,6 +7192,12 @@ class ScenarioTablePanel(QWidget):
                     row, cause_id, self._table.viewport().mapToGlobal(pos)))
             a_clone = menu.addAction(_icon('clipboard'), "Duplicera scenario till annan avvikelse…")
             a_clone.triggered.connect(lambda: self._clone_scenario(cause_id))
+            cause_tag = (c.get('comp_tag') or '').strip() if c else ''
+            if cause_tag:
+                a_disconnect = menu.addAction(_icon('close'), f"Ta bort tagg – koppla loss {cause_tag}")
+                a_disconnect.triggered.connect(
+                    lambda _, cid=cause_id, tag=cause_tag:
+                    self._disconnect_tag('cause', cid, tag))
             menu.addSeparator()
             a_del = menu.addAction(_icon('delete'), "Ta bort orsak")
             a_del.triggered.connect(lambda cid=cause_id: self._confirm_delete('cause', cid))
@@ -7160,9 +7215,16 @@ class ScenarioTablePanel(QWidget):
             a_move = menu.addAction("↕  Flytta till annan orsak…")
             a_move.triggered.connect(
                 lambda: self._move_consequence_dialog(cons_id))
-            if k and (dict(k).get('comp_tag') or dict(k).get('comp_type')):
-                a_untag = menu.addAction(_icon('close'), "Ta bort tagg")
-                a_untag.triggered.connect(lambda cid=cons_id: self._untag_consequence(cid))
+            if k:
+                k = dict(k)
+                tags = parse_tag_refs(k.get('tagged_refs') or '')
+                if k.get('comp_tag') and not any(t.casefold() == k['comp_tag'].casefold() for t in tags):
+                    tags.insert(0, k['comp_tag'])
+                for tag in tags:
+                    a_disconnect = menu.addAction(_icon('close'), f"Ta bort tagg – koppla loss {tag}")
+                    a_disconnect.triggered.connect(
+                        lambda _, cid=cons_id, t=tag:
+                        self._disconnect_tag('consequence', cid, t))
             menu.addSeparator()
             a_del = menu.addAction(_icon('delete'), "Ta bort konsekvens")
             a_del.triggered.connect(lambda cid=cons_id: self._confirm_delete('cons', cid))
@@ -7182,9 +7244,16 @@ class ScenarioTablePanel(QWidget):
             a_move = menu.addAction("↕  Flytta till annan konsekvens…")
             a_move.triggered.connect(
                 lambda: self._move_safeguard_dialog(sg_id))
-            if sg and (dict(sg).get('comp_tag') or dict(sg).get('comp_type')):
-                a_untag = menu.addAction(_icon('close'), "Ta bort tagg")
-                a_untag.triggered.connect(lambda sid=sg_id: self._untag_safeguard(sid))
+            if sg:
+                sg = dict(sg)
+                tags = parse_tag_refs(sg.get('tagged_refs') or '')
+                if sg.get('comp_tag') and not any(t.casefold() == sg['comp_tag'].casefold() for t in tags):
+                    tags.insert(0, sg['comp_tag'])
+                for tag in tags:
+                    a_disconnect = menu.addAction(_icon('close'), f"Ta bort tagg – koppla loss {tag}")
+                    a_disconnect.triggered.connect(
+                        lambda _, sid=sg_id, t=tag:
+                        self._disconnect_tag('safeguard', sid, t))
             menu.addSeparator()
             a_del = menu.addAction(_icon('delete'), "Ta bort barriär")
             a_del.triggered.connect(lambda sid=sg_id: self._confirm_delete('sg', sid))
@@ -7192,17 +7261,63 @@ class ScenarioTablePanel(QWidget):
         if not menu.isEmpty():
             menu.exec(self._table.viewport().mapToGlobal(pos))
 
+    def _disconnect_tag(self, kind, id_, tag):
+        """Disconnect one P&ID tag while leaving its characters as prose."""
+        tag = (tag or '').strip()
+        if not tag:
+            return
+        self._detached_tags.add(tag.casefold())
+        if kind == 'cause':
+            row = self.db.get_cause(id_)
+            if row and (row.get('comp_tag') or '').strip().casefold() == tag.casefold():
+                self.db.update_cause(id_, comp_tag='', comp_type='',
+                                     equipment_id=None, secondary_equipment_id=None)
+        elif kind == 'consequence':
+            row = self.db.get_consequence(id_)
+            if row:
+                refs = [r for r in parse_tag_refs(row.get('tagged_refs') or '')
+                        if r.casefold() != tag.casefold()]
+                current = (row.get('comp_tag') or '').strip()
+                next_tag = next((r for r in refs if r.casefold() == current.casefold()), '')
+                next_type = row.get('comp_type') or '' if next_tag else ''
+                self.db.update_consequence(
+                    id_, row.get('description') or '', row.get('severity') or 1,
+                    row.get('category') or '', row.get('consequence_chain') or '',
+                    comp_tag=next_tag, comp_type=next_type,
+                    tagged_refs=','.join(refs))
+        elif kind == 'safeguard':
+            row = self.db.get_safeguard(id_)
+            if row:
+                refs = [r for r in parse_tag_refs(row.get('tagged_refs') or '')
+                        if r.casefold() != tag.casefold()]
+                current = (row.get('comp_tag') or '').strip()
+                next_tag = next((r for r in refs if r.casefold() == current.casefold()), '')
+                self.db.update_safeguard(id_, tagged_refs=','.join(refs))
+                self.db.set_safeguard_tag(
+                    id_, next_tag, row.get('comp_type') or '' if next_tag else '')
+        self._schedule_rebuild()
+
     def _untag_consequence(self, cons_id):
         """Detach a dragged-in equipment tag from a KON cell without
         deleting the row — the inline "×" this replaced sat in the tag
         strip, which was removed 2026-08-10 (see NOTES.md; the tag still
         shows bolded in the description text via tagged_refs)."""
-        self.db.set_consequence_tag(cons_id, '', '')
+        row = self.db.get_consequence(cons_id)
+        if row:
+            self._detached_tags.update(t.casefold() for t in parse_tag_refs(row.get('tagged_refs') or ''))
+            self.db.update_consequence(
+                cons_id, row.get('description') or '', row.get('severity') or 1,
+                row.get('category') or '', row.get('consequence_chain') or '',
+                comp_tag='', comp_type='', tagged_refs='')
         self._schedule_rebuild()
 
     def _untag_safeguard(self, sg_id):
         """Same as _untag_consequence, for a safeguard cell."""
-        self.db.set_safeguard_tag(sg_id, '', '')
+        row = self.db.get_safeguard(sg_id)
+        if row:
+            self._detached_tags.update(t.casefold() for t in parse_tag_refs(row.get('tagged_refs') or ''))
+            self.db.update_safeguard(sg_id, tagged_refs='')
+            self.db.set_safeguard_tag(sg_id, '', '')
         self._schedule_rebuild()
 
     def _confirm_delete(self, kind, item_id):

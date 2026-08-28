@@ -2,6 +2,13 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Matchande objekttaggar och frånkoppling i HAZOP-celler (2026-08-28)
+
+Taggar som skrivs in i Orsak, Konsekvens eller Safeguard matchas mot aktuell
+P&ID-katalog och fetmarkeras. Matchningen sparas som `tagged_refs` för
+Konsekvens/Safeguard. Högerklick på en kopplad tagg erbjuder frånkoppling per
+tagg; texten lämnas kvar men visas därefter som vanlig löptext.
+
 ## Objektuppgifter per blad (2026-08-27)
 
 Noder-tabellen visar nu även objekttyp, hanterade avvikelser och antal per
