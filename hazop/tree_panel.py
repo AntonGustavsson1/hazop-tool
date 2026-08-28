@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox, QMessageBox, QGroupBox, QMenu, QSpinBox,
     QDoubleSpinBox, QFrame, QListWidget, QListWidgetItem, QInputDialog,
     QCheckBox, QButtonGroup, QRadioButton, QSplitter, QColorDialog,
+    QAbstractItemView,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QRect, QMimeData, QEvent
 from PyQt6.QtGui import (
@@ -180,6 +181,8 @@ class TreePanel(QWidget):
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
         self.tree.setIndentation(16)
+        self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.tree.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         # Accepts an external drop (equipment marker dragged from the P&ID
         # view onto a deviation, e.g. "Lågt flöde" — 2026-08-08, see
         # NOTES.md) — handled in eventFilter below, not Qt's own internal
@@ -212,11 +215,15 @@ class TreePanel(QWidget):
         self.tree.setDragEnabled(True)
         def _tree_mime_data(items, _tree=self.tree):
             md = QMimeData()
-            if len(items) == 1:
-                type_ = items[0].data(0, Qt.ItemDataRole.UserRole + 1)
-                id_ = items[0].data(0, Qt.ItemDataRole.UserRole)
-                if type_ in (CAUSE_T, CONS_T, SG_T) and id_ is not None:
-                    md.setText(f'hzp:treeitem:{type_}:{id_}')
+            entries = []
+            for item in items:
+                type_ = item.data(0, Qt.ItemDataRole.UserRole + 1)
+                id_ = item.data(0, Qt.ItemDataRole.UserRole)
+                if type_ in (NODE_T, DEV_T, CAUSE_T, CONS_T, SG_T) and id_ is not None:
+                    entries.append(f'{type_}:{id_}')
+            if entries:
+                md.setText(('hzp:treeitem:' + entries[0]) if len(entries) == 1
+                           else 'hzp:treeitems:' + ';'.join(entries))
             return md
         self.tree.mimeData = _tree_mime_data
         layout.addWidget(self.tree)
@@ -1544,18 +1551,18 @@ class TreePanel(QWidget):
 
         # ── Internal drag-and-drop between tree levels (2026-08-17) ──────────
         if obj in _drop_targets and event.type() == QEvent.Type.DragEnter:
-            if event.mimeData().hasText() and event.mimeData().text().startswith('hzp:treeitem:'):
+            if event.mimeData().hasText() and event.mimeData().text().startswith(('hzp:treeitem:', 'hzp:treeitems:')):
                 event.acceptProposedAction()
                 return True
         if obj in _drop_targets and event.type() == QEvent.Type.DragMove:
-            if event.mimeData().hasText() and event.mimeData().text().startswith('hzp:treeitem:'):
+            if event.mimeData().hasText() and event.mimeData().text().startswith(('hzp:treeitem:', 'hzp:treeitems:')):
                 if self._tree_reparent_target_at(event, obj) is not None:
                     event.acceptProposedAction()
                 else:
                     event.ignore()
                 return True
         if obj in _drop_targets and event.type() == QEvent.Type.Drop:
-            if event.mimeData().hasText() and event.mimeData().text().startswith('hzp:treeitem:'):
+            if event.mimeData().hasText() and event.mimeData().text().startswith(('hzp:treeitem:', 'hzp:treeitems:')):
                 self._handle_tree_reparent_drop(event, obj)
                 return True
 
@@ -1721,6 +1728,27 @@ class TreePanel(QWidget):
 
     def _handle_tree_reparent_drop(self, event, source_obj):
         text = event.mimeData().text()
+        if text.startswith('hzp:treeitems:'):
+            target = self._tree_reparent_target_at(event, source_obj)
+            if target is None:
+                event.ignore()
+                return
+            entries = []
+            for raw in text.removeprefix('hzp:treeitems:').split(';'):
+                try:
+                    type_, id_ = raw.split(':', 1)
+                    entries.append((int(type_), int(id_)))
+                except (TypeError, ValueError):
+                    continue
+            copied = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier)
+            changed = self._drop_tree_entries(entries, target, copied)
+            if changed:
+                self.refresh()
+                self.structure_changed.emit()
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+            return
         parts = text.split(':')   # ['hzp', 'treeitem', type, id]
         if len(parts) < 4:
             event.ignore(); return
@@ -1734,6 +1762,23 @@ class TreePanel(QWidget):
         if target is None:
             event.ignore(); return
         tgt_type, tgt_id = target
+
+        # A plain drag onto a sibling reorders that level instead of trying
+        # to reparent the item to its own existing parent.
+        src_parent = self._tree_parent(src_type, src_id)
+        tgt_parent = self._tree_target_parent(tgt_type, tgt_id)
+        compatible = {CAUSE_T: (DEV_T, CAUSE_T),
+                      CONS_T: (CAUSE_T, CONS_T),
+                      SG_T: (CONS_T, SG_T)}
+        if (src_type in compatible and tgt_type in compatible[src_type] and
+                src_parent == tgt_parent):
+            if self._drop_tree_entries([(src_type, src_id)], target, False):
+                self.refresh()
+                self.structure_changed.emit()
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+            return
 
         # Shift+drag copies (reuses the same copy_cause/copy_consequence/
         # copy_safeguard the right-click Kopiera/Klistra in feature already
@@ -1799,6 +1844,101 @@ class TreePanel(QWidget):
             event.acceptProposedAction()
         else:
             event.ignore()
+
+    def _tree_parent(self, type_, id_):
+        if type_ == NODE_T:
+            row = self.db.get_node(id_)
+            return ('system_id', row.get('system_id') if row else None)
+        if type_ == DEV_T:
+            row = self.db.get_deviation(id_)
+            return ('node_id', row.get('node_id') if row else None)
+        if type_ == CAUSE_T:
+            row = self.db.get_cause(id_)
+            return ('deviation_id', row.get('deviation_id') if row else None)
+        if type_ == CONS_T:
+            row = self.db.get_consequence(id_)
+            return ('cause_id', row.get('cause_id') if row else None)
+        if type_ == SG_T:
+            row = self.db.get_safeguard(id_)
+            return ('consequence_id', row.get('consequence_id') if row else None)
+        return (None, None)
+
+    def _tree_target_parent(self, type_, id_):
+        if type_ in (NODE_T, DEV_T, CAUSE_T, CONS_T, SG_T):
+            return self._tree_parent(type_, id_)
+        return (None, None)
+
+    def _siblings(self, type_, parent_column, parent_id):
+        table = {NODE_T: 'nodes', DEV_T: 'deviations', CAUSE_T: 'causes',
+                 CONS_T: 'consequences', SG_T: 'safeguards'}.get(type_)
+        if not table or not parent_column:
+            return []
+        rows = self.db.conn.execute(
+            f"SELECT id FROM {table} WHERE {parent_column} IS ? ORDER BY sort_order, id",
+            (parent_id,)).fetchall()
+        return [row['id'] for row in rows]
+
+    def _drop_tree_entries(self, entries, target, copied):
+        tgt_type, tgt_id = target
+        target_parent_col, target_parent_id = self._tree_target_parent(tgt_type, tgt_id)
+        if not target_parent_col:
+            return False
+        changed = False
+        for src_type, src_id in entries:
+            if src_type not in (CAUSE_T, CONS_T, SG_T):
+                continue
+            src_parent_col, src_parent_id = self._tree_parent(src_type, src_id)
+            if not src_parent_col:
+                continue
+            target_type = {CAUSE_T: (DEV_T, CAUSE_T),
+                           CONS_T: (CAUSE_T, CONS_T),
+                           SG_T: (CONS_T, SG_T)}.get(src_type, ())
+            if tgt_type not in target_type:
+                continue
+            if not copied and src_parent_col == target_parent_col and src_parent_id == target_parent_id:
+                siblings = self._siblings(src_type, src_parent_col, src_parent_id)
+                if src_id not in siblings or tgt_id not in siblings:
+                    continue
+                siblings.remove(src_id)
+                siblings.insert(siblings.index(tgt_id), src_id)
+                self.db.set_sibling_order(
+                    {CAUSE_T: 'causes', CONS_T: 'consequences', SG_T: 'safeguards'}[src_type],
+                    src_parent_col, src_parent_id, siblings)
+                changed = True
+                continue
+            if src_type == CAUSE_T:
+                dev_id = self._resolve_deviation_id(tgt_type, tgt_id)
+                if copied:
+                    new_id = self.db.copy_cause(src_id, dev_id) if dev_id is not None else None
+                else:
+                    if dev_id is not None:
+                        self.db.move_cause_to_deviation(src_id, dev_id)
+                        new_id = src_id
+                    else:
+                        new_id = None
+            elif src_type == CONS_T:
+                cause_id = self._resolve_cause_id(tgt_type, tgt_id)
+                if copied:
+                    new_id = self.db.copy_consequence(src_id, cause_id) if cause_id is not None else None
+                else:
+                    if cause_id is not None:
+                        self.db.move_consequence(src_id, cause_id)
+                        new_id = src_id
+                    else:
+                        new_id = None
+            else:
+                cons_id = self._resolve_consequence_id(tgt_type, tgt_id)
+                if copied:
+                    new_id = self.db.copy_safeguard(src_id, cons_id) if cons_id is not None else None
+                else:
+                    if cons_id is not None:
+                        self.db.move_safeguard(src_id, cons_id)
+                        new_id = src_id
+                    else:
+                        new_id = None
+            if new_id:
+                changed = True
+        return changed
 
     def _delete_item(self, type_, id_):
         if type_ == SYSTEM_T:    self.db.delete_system(id_)

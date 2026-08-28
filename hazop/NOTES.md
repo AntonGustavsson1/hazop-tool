@@ -2,6 +2,14 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Trädmarkering och drag/kopiering (2026-08-28)
+
+Trädet använder nu utökad markering: Ctrl väljer enskilda poster och Shift
+väljer ett sammanhängande intervall. Flera markerade orsaker, konsekvenser
+eller safeguards kan dras tillsammans. Vanlig dragning flyttar poster och
+Shift-drag kopierar dem till målgruppen. Trädnivåernas ordning sparas i en
+separat `sort_order` så att den överlever en omladdning.
+
 ## Drag-and-drop av gruppens objektrader (2026-08-28)
 
 Gruppraderna i trädet delar en QTreeWidgetItem och kan därför inte använda

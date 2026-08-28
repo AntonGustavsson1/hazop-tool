@@ -101,14 +101,16 @@ CREATE TABLE IF NOT EXISTS nodes (
     pid_ref     TEXT DEFAULT '',
     media       TEXT DEFAULT '',
     pressure    TEXT DEFAULT '',
-    temperature TEXT DEFAULT ''
+    temperature TEXT DEFAULT '',
+    sort_order  INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS causes (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     node_id     INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     description TEXT NOT NULL DEFAULT 'Ny orsak',
-    likelihood  INTEGER NOT NULL DEFAULT 1
+    likelihood  INTEGER NOT NULL DEFAULT 1,
+    sort_order  INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS consequences (
@@ -117,7 +119,8 @@ CREATE TABLE IF NOT EXISTS consequences (
     description       TEXT NOT NULL DEFAULT 'Ny konsekvens',
     severity          INTEGER NOT NULL DEFAULT 1,
     category          TEXT DEFAULT '',
-    consequence_chain TEXT DEFAULT ''
+    consequence_chain TEXT DEFAULT '',
+    sort_order        INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS safeguards (
@@ -125,7 +128,8 @@ CREATE TABLE IF NOT EXISTS safeguards (
     consequence_id  INTEGER NOT NULL REFERENCES consequences(id) ON DELETE CASCADE,
     description     TEXT NOT NULL DEFAULT '',
     rrf             INTEGER NOT NULL DEFAULT 1,
-    source_id       INTEGER DEFAULT NULL
+    source_id       INTEGER DEFAULT NULL,
+    sort_order      INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS reduction_factors (
@@ -1065,13 +1069,18 @@ class Database:
             "ALTER TABLE nodes ADD COLUMN updated_at TEXT DEFAULT ''",
             "ALTER TABLE nodes ADD COLUMN updated_by TEXT DEFAULT ''",
             "ALTER TABLE nodes ADD COLUMN system_id INTEGER REFERENCES systems(id)",
+            "ALTER TABLE nodes ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE deviations ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE causes ADD COLUMN likelihood INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE causes ADD COLUMN source_id INTEGER DEFAULT NULL",
             "ALTER TABLE causes ADD COLUMN base_frequency REAL DEFAULT NULL",
             "ALTER TABLE causes ADD COLUMN deviation_id INTEGER REFERENCES deviations(id)",
+            "ALTER TABLE causes ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE safeguards ADD COLUMN rrf INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE safeguards ADD COLUMN source_id INTEGER DEFAULT NULL",
+            "ALTER TABLE safeguards ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE consequences ADD COLUMN category TEXT DEFAULT ''",
+            "ALTER TABLE consequences ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE consequences ADD COLUMN consequence_chain TEXT DEFAULT ''",
             "ALTER TABLE consequences ADD COLUMN source_id INTEGER DEFAULT NULL",
             "ALTER TABLE consequences ADD COLUMN fa_active INTEGER DEFAULT 0",
@@ -3462,7 +3471,7 @@ class Database:
 
     # ── Queries ───────────────────────────────────────────────────────────────
     def nodes(self):
-        return self.conn.execute("SELECT * FROM nodes ORDER BY id").fetchall()
+        return self.conn.execute("SELECT * FROM nodes ORDER BY sort_order, id").fetchall()
 
     def systems(self):
         """Top-level hierarchy grouping above Nod (2026-08-24, see NOTES.md
@@ -3475,11 +3484,11 @@ class Database:
 
     def causes(self, node_id):
         return self.conn.execute(
-            "SELECT * FROM causes WHERE node_id=? ORDER BY id", (node_id,)).fetchall()
+            "SELECT * FROM causes WHERE node_id=? ORDER BY sort_order, id", (node_id,)).fetchall()
 
     def consequences(self, cause_id):
         return self.conn.execute(
-            "SELECT * FROM consequences WHERE cause_id=? ORDER BY id", (cause_id,)).fetchall()
+            "SELECT * FROM consequences WHERE cause_id=? ORDER BY sort_order, id", (cause_id,)).fetchall()
 
     def safeguards_for_cause(self, cause_id):
         """Return all safeguards attached to any consequence of cause_id."""
@@ -3490,7 +3499,7 @@ class Database:
 
     def safeguards(self, consequence_id):
         return self.conn.execute(
-            "SELECT * FROM safeguards WHERE consequence_id=? ORDER BY id", (consequence_id,)).fetchall()
+            "SELECT * FROM safeguards WHERE consequence_id=? ORDER BY sort_order, id", (consequence_id,)).fetchall()
 
     def recommendations_for_consequence(self, consequence_id):
         """Recommendations linked to one consequence, via the
@@ -3728,11 +3737,11 @@ class Database:
 
     def deviations(self, node_id):
         return self.conn.execute(
-            "SELECT * FROM deviations WHERE node_id=? ORDER BY id", (node_id,)).fetchall()
+            "SELECT * FROM deviations WHERE node_id=? ORDER BY sort_order, id", (node_id,)).fetchall()
 
     def deviations_for_equipment(self, equipment_id):
         return self.conn.execute(
-            "SELECT * FROM deviations WHERE equipment_id=? ORDER BY id", (equipment_id,)).fetchall()
+            "SELECT * FROM deviations WHERE equipment_id=? ORDER BY sort_order, id", (equipment_id,)).fetchall()
 
     def get_deviation(self, id_):
         row = self.conn.execute("SELECT * FROM deviations WHERE id=?", (id_,)).fetchone()
@@ -3786,7 +3795,7 @@ class Database:
 
     def causes_for_deviation(self, deviation_id):
         return self.conn.execute(
-            "SELECT * FROM causes WHERE deviation_id=? ORDER BY id", (deviation_id,)).fetchall()
+            "SELECT * FROM causes WHERE deviation_id=? ORDER BY sort_order, id", (deviation_id,)).fetchall()
 
     def _fetch_grouped(self, table, fk_column, ids):
         """Bulk-fetch every row from `table` whose `fk_column` is in `ids`
@@ -3809,9 +3818,12 @@ class Database:
         for start in range(0, len(ids), CHUNK):
             chunk = ids[start:start + CHUNK]
             placeholders = ','.join('?' * len(chunk))
+            order_column = ('sort_order, ' if table in {
+                'nodes', 'deviations', 'causes', 'consequences', 'safeguards'
+            } else '')
             rows = self.conn.execute(
                 f"SELECT * FROM {table} WHERE {fk_column} IN ({placeholders}) "
-                f"ORDER BY {fk_column}, id", chunk).fetchall()
+                f"ORDER BY {fk_column}, {order_column}id", chunk).fetchall()
             for row in rows:
                 result[row[fk_column]].append(row)
         return result
@@ -5124,9 +5136,15 @@ class Database:
             return None
         dev = self.get_deviation(target_deviation_id)
         node_id = dev['node_id'] if dev else orig['node_id']
+        orig = dict(orig)
         cur = self.conn.execute(
-            "INSERT INTO causes (node_id,deviation_id,description,likelihood,source_id) VALUES (?,?,?,?,?)",
-            (node_id, target_deviation_id, orig['description'], orig['likelihood'], cause_id))
+            "INSERT INTO causes (node_id,deviation_id,description,likelihood,source_id,"
+            "comp_type,comp_tag,equipment_id,secondary_equipment_id,group_equipment_ids,"
+            "group_choices_set) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (node_id, target_deviation_id, orig['description'], orig['likelihood'], cause_id,
+             orig.get('comp_type') or '', orig.get('comp_tag') or '',
+             orig.get('equipment_id'), orig.get('secondary_equipment_id'),
+             orig.get('group_equipment_ids') or '', orig.get('group_choices_set') or 0))
         self.commit()
         return cur.lastrowid
 
@@ -5188,6 +5206,24 @@ class Database:
     def move_safeguard(self, sg_id, target_cons_id):
         self.conn.execute("UPDATE safeguards SET consequence_id=? WHERE id=?",
                           (target_cons_id, sg_id))
+        self.commit()
+
+    def set_sibling_order(self, table, parent_column, parent_id, ordered_ids):
+        """Persist a user's drag-and-drop order for one tree level."""
+        allowed = {
+            'nodes': ('system_id', 'id'),
+            'deviations': ('node_id', 'id'),
+            'causes': ('deviation_id', 'id'),
+            'consequences': ('cause_id', 'id'),
+            'safeguards': ('consequence_id', 'id'),
+        }
+        expected_parent = allowed.get(table)
+        if not expected_parent or expected_parent[0] != parent_column:
+            raise ValueError('unsupported sibling order target')
+        for order, row_id in enumerate(ordered_ids):
+            self.conn.execute(
+                f"UPDATE {table} SET sort_order=? WHERE id=? AND {parent_column} IS ?",
+                (order, row_id, parent_id))
         self.commit()
 
     def stats(self):
