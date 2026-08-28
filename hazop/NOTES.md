@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Deltagarmatris: snabbmarkering per analystillfälle (2026-08-28)
+
+Deltagarmatrisen visar nu en separat snabbknapp under varje analystillfälle.
+Knappen markerar eller avmarkerar alla deltagare för just det tillfället och
+behåller den befintliga individuella kryssrutan per deltagare.
+
 ## Global sökning i P&ID-text (2026-08-28)
 
 Ctrl+F har nu kryssrutan "Sök i text på P&ID". När den är aktiv läses

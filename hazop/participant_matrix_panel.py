@@ -79,6 +79,9 @@ class ParticipantMatrixPanel(QWidget):
         header.sectionDoubleClicked.connect(self._edit_header_label)
         header.location_dropped.connect(self._copy_session_location)
         layout.addWidget(self._table)
+        self._session_actions_row = QHBoxLayout()
+        self._session_actions_row.setSpacing(4)
+        layout.addLayout(self._session_actions_row)
         self._table.currentCellChanged.connect(
             lambda *_: self._refresh_select_all_state())
 
@@ -140,6 +143,7 @@ class ParticipantMatrixPanel(QWidget):
             self._table.setColumnCount(len(headers))
             self._table.setHorizontalHeaderLabels(headers)
             self._table.setRowCount(len(participants))
+            self._rebuild_session_action_buttons(sessions)
 
             n_custom = len(columns)
             n_fixed = len(self._FIXED_COLS) + n_custom
@@ -161,6 +165,31 @@ class ParticipantMatrixPanel(QWidget):
             self._refresh_select_all_state()
         finally:
             self._loading = False
+
+    def _rebuild_session_action_buttons(self, sessions):
+        while self._session_actions_row.count():
+            item = self._session_actions_row.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._session_actions_row.addWidget(QLabel("Markera alla:"))
+        for idx, session in enumerate(sessions):
+            label = self._session_header_text(session).replace('\n', ' ')
+            button = QPushButton(f"✓ {label}")
+            button.setToolTip(f"Markera alla deltagare för {label}")
+            button.setCheckable(True)
+            button.clicked.connect(
+                lambda checked, i=idx: self._set_all_for_session(i, checked))
+            self._session_actions_row.addWidget(button)
+        self._session_actions_row.addStretch()
+
+    def _set_all_for_session(self, session_index, attended):
+        if not 0 <= session_index < len(self._session_ids):
+            return
+        session_id = self._session_ids[session_index]
+        for participant_id in self._participant_ids:
+            self.db.set_attendance(participant_id, session_id, attended)
+        self.refresh()
 
     def _on_item_changed(self, item):
         if self._loading:
