@@ -3077,6 +3077,15 @@ kvar eftersom de är en del av cellens funktionella layout. Regressionstesterna
 uppdaterades till den gemensamma edit-starten och 27 berörda tester passerar.
 Ingen visuell GUI-verifiering är gjord.
 
+## Kraschfix: taggeditor saknade horizontalScrollBar (2026-08-28)
+
+Kraschrapporten `crash_20260828_092809_AttributeError.json` visade att
+`_BoldTagLineEdit.paintEvent()` anropade en metod som inte finns på PyQt6-
+`QLineEdit`. Textens synliga startpunkt beräknas nu från `cursorRect()` och
+caret-positionen, vilket även hanterar Qt:s horisontella textscrollning.
+Direkt repaint-reproduktion, syntaxkontroll samt 16 smoke-/Edit Mode-tester
+passerar.
+
 ## Intelligent namnbyte och objektkoppling i Edit Mode (2026-08-28)
 
 Inline-redigering i HAZOP Scenario behåller nu fet visning av kända P&ID-taggar även när editorn är aktiv. Vid redigering av Konsekvens eller Safeguard identifieras ett borttaget gammalt taggnummer och ett nytt taggformat innan texten sparas. En exakt träff i aktuell equipment_catalog ger dialogen Koppla till objekt / Byt endast namn / Avbryt; utan träff krävs uttryckligt godkännande av namnbytet. Dubblettnamn blockeras och den nya taggen sparas i tagged_refs så att fetstil består.

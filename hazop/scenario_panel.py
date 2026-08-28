@@ -67,8 +67,12 @@ class _BoldTagLineEdit(QLineEdit):
         fm = QFontMetrics(font)
         normal_fm = QFontMetrics(self.font())
         text = self.text()
-        scroll = self.horizontalScrollBar().value() if self.horizontalScrollBar() else 0
-        x0 = self.contentsRect().left() + 3 - scroll
+        # QLineEdit does not expose a public horizontalScrollBar() in
+        # PyQt6.  Derive the current text origin from the visible caret;
+        # this remains correct when Qt has horizontally scrolled the text.
+        cursor_x = self.cursorRect().x()
+        x0 = cursor_x - normal_fm.horizontalAdvance(
+            text[:self.cursorPosition()])
         y = self.contentsRect().top()
         h = self.contentsRect().height()
         for tag in self._bold_tags:
