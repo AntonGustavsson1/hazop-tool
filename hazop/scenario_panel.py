@@ -159,6 +159,13 @@ class _BoldTagTextEdit(QTextEdit):
                            if str(tag).strip()]
         self._apply_bold_formats()
 
+    def keyPressEvent(self, event):
+        super().keyPressEvent(event)
+        # Apply after QTextEdit has completed the document mutation. Doing
+        # this from textChanged can re-enter Qt's layout engine while it is
+        # still processing the key event.
+        self._apply_bold_formats()
+
     def _apply_bold_formats(self):
         if not self._bold_tags:
             return
@@ -1812,10 +1819,32 @@ class _PidDelegate(_ScenarioDelegate):
                 row = index.row()
                 cell_rect = QRect(option.rect)
                 QTimer.singleShot(0, lambda ed=editor, r=row, rect=cell_rect:
-                                  self._show_standard_cause_popup(ed, r, rect))
+                                   self._show_standard_cause_popup(ed, r, rect))
             elif index.column() == self._panel._C_KON:
                 self._attach_consequence_completer(editor)
         return editor
+
+    def setEditorData(self, editor, index):
+        # QStyledItemDelegate calls setText() after createEditor().  That
+        # replaces the document contents and clears QTextEdit's character
+        # formats, so restore the identity formatting after Qt has populated
+        # the editor rather than relying only on createEditor().
+        super().setEditorData(editor, index)
+        if isinstance(editor, _BoldTagTextEdit):
+            item = self._panel._table.item(index.row(), index.column())
+            tags = []
+            if index.column() == self._panel._C_ORS:
+                obj_data = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
+                tags = [obj_data[1]] if obj_data and obj_data[1] else []
+            elif index.column() == self._panel._C_KON:
+                obj_data = item.data(Qt.ItemDataRole.UserRole + 7) if item else None
+                refs = item.data(Qt.ItemDataRole.UserRole + 8) if item else []
+                tags = ([obj_data[1]] if obj_data and obj_data[1] else []) + (refs or [])
+            elif index.column() == self._panel._C_SG:
+                obj_data = item.data(Qt.ItemDataRole.UserRole + 6) if item else None
+                refs = item.data(Qt.ItemDataRole.UserRole + 7) if item else []
+                tags = ([obj_data[1]] if obj_data and obj_data[1] else []) + (refs or [])
+            editor.set_bold_tags(tags)
 
     def _attach_consequence_completer(self, editor):
         """"Spara varje konsekvens som skrivs i HAZOP Scenario i en
@@ -5052,7 +5081,7 @@ class ScenarioTablePanel(QWidget):
             return one_line_h
         w = table.columnWidth(col)
         if col == self._C_ORS:
-            cell_w = max(40, w - 6)
+            cell_w = max(40, w - 6 - _RRF_W)
             combined = self._ors_combined_text(item, text)
             rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, combined)
             return max(one_line_h * group_rows, rect.height() + 4)
@@ -6396,6 +6425,10 @@ class ScenarioTablePanel(QWidget):
         row = self.db.get_consequence(id_) if kind == 'consequence' else self.db.get_safeguard(id_)
         if not row:
             return True, desc
+        # Database queries return sqlite3.Row objects, which deliberately do
+        # not implement dict.get().  Convert once here because the identity
+        # flow uses optional fields throughout the confirmation logic.
+        row = dict(row)
         old_tag = (row.get('comp_tag') or '').strip()
         if not old_tag or old_tag.casefold() in desc.casefold():
             return True, desc

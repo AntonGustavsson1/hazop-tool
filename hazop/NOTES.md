@@ -3077,6 +3077,16 @@ kvar eftersom de är en del av cellens funktionella layout. Regressionstesterna
 uppdaterades till den gemensamma edit-starten och 27 berörda tester passerar.
 Ingen visuell GUI-verifiering är gjord.
 
+## Korrigering av frekvensyta, taggformat och namnbytesvarningar (2026-08-28)
+
+Orsakens frekvenszon reserveras nu med samma dynamiska breddlogik som den
+visade taggen och aktuell textstorlek, så tagg och frekvens inte överlappar.
+Den gemensamma QTextEdit-editorn återställer fetformat för kända P&ID-taggar
+efter Qt:s setEditorData och uppdaterar formatet vid textändring. Identity-
+bekräftelsen konverterar sqlite3.Row till dict innan valfria fält läses, så
+namnbytesdialoger och varningar kan visas utan exception. Berörda tester
+passerar. Ingen visuell GUI-verifiering är gjord.
+
 ## Frekvensruta och riskmatrisens kategori-markeringar (2026-08-28)
 
 Orsak-kolumnens frekvens visas nu i en fast ruta med samma visuella modell
