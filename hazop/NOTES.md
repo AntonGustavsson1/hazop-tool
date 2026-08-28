@@ -3350,3 +3350,8 @@ behålls efter sparning i stället för att visas som "Ny rekommendation".
 När en tagg väljs med Enter stängs popupen och fokus återgår till Barriär- eller
 Konsekvensfältet direkt efter den infogade taggen, så användaren kan fortsätta
 skriva utan att klicka i fältet igen.
+## Barriärredigering och löpnummer (2026-08-28)
+
+Barriärens löpnummer behandlas nu som separat visningsmetadata även efter
+inline-redigering. Editorn lämnar plats för numret och sparandet återställer
+numret explicit, så det försvinner inte när barriärtexten ändras.

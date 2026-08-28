@@ -2313,6 +2313,11 @@ class _PidDelegate(_ScenarioDelegate):
             item = self._panel._table.item(index.row(), col)
             left = r.left() + 2
             num = item.data(Qt.ItemDataRole.UserRole + 10) if item is not None else None
+            if not num and index.row() < len(self._panel._row_meta):
+                cons_id, sg_id = (self._panel._row_meta[index.row()][2],
+                                  self._panel._row_meta[index.row()][3])
+                if sg_id:
+                    num = self._panel._child_number('safeguard', cons_id, sg_id)
             if num:
                 left += QFontMetrics(option.font).horizontalAdvance(f"{num}.  ")
             editor.setGeometry(QRect(left, r.top() + 1,
@@ -5410,7 +5415,17 @@ class ScenarioTablePanel(QWidget):
                     continue
                 item = self._table.item(row, col)
                 if item is not None:
+                    sequence = item.data(Qt.ItemDataRole.UserRole + 10)
                     item.setText(new_desc)
+                    # setText normally preserves custom roles, but explicitly
+                    # restore the safeguard sequence number so the separate
+                    # painted prefix can never disappear after an edit.
+                    if kind == 'safeguard':
+                        if not sequence:
+                            sequence = self._child_number(
+                                'safeguard', meta[2], meta[3])
+                        if sequence:
+                            item.setData(Qt.ItemDataRole.UserRole + 10, sequence)
                 if needs_height_recalc:
                     # Recompute the WHOLE row's height (_compute_row_height),
                     # not just what this one column now needs — otherwise
