@@ -40,6 +40,7 @@ from pid_viewer import (
     MODE_RED_MARKUP_SYMBOL, MODE_BOARD_LAYOUT,
     MODE_ADD_SHEET_LINK, MODE_PICK_REF_TAG, MODE_ANNOTATION,
     MODE_PLACE_EQUIPMENT,
+    MODE_EDIT_EQUIPMENT,
     _icon, _get_red_symbol_svg, _PageRenderer,
     SimilarSymbolSearchDialog,
 )
@@ -67,6 +68,8 @@ class PIDGraphicsView(QGraphicsView):
     equipment_drag_finished = pyqtSignal()  # Shift+drag of an equipment marker released (drop accepted or not)
     equipment_edit_requested = pyqtSignal(int)  # equipment_markers.id — right-click "✏️ Redigera objekt"
     equipment_delete_requested = pyqtSignal(int)  # equipment_markers.id — right-click "Ta bort" (2026-08-25)
+    equipment_reposition_requested = pyqtSignal(int)
+    equipment_reposition_finished = pyqtSignal(int, object, int)
 
     # Keys for QGraphicsItem.setData / .data
     _DATA_TYPE      = 0    # 'cause' | 'consequence' | 'safeguard' | 'markup'
@@ -764,6 +767,9 @@ class PIDGraphicsView(QGraphicsView):
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
         elif mode == MODE_PLACE_EQUIPMENT:
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        elif mode == MODE_EDIT_EQUIPMENT:
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
         elif mode == MODE_RED_MARKUP_SYMBOL:
@@ -1893,6 +1899,8 @@ class PIDGraphicsView(QGraphicsView):
             act = menu.addAction(_icon('edit'), "Redigera objekt")
             mid = hovered_id
             act.triggered.connect(partial(self.equipment_edit_requested.emit, mid))
+            move_act = menu.addAction(_icon('move'), "Redigera placering")
+            move_act.triggered.connect(partial(self.equipment_reposition_requested.emit, mid))
             # "Ta bort" alongside it (2026-08-25, see NOTES.md — Anton:
             # "om man högerklickar på objektet så ska också alternativet
             # att ta bort finnas") — this menu previously had no way to
@@ -2433,6 +2441,14 @@ class PIDGraphicsView(QGraphicsView):
         if self.mode == MODE_PLACE_EQUIPMENT and event.button() == Qt.MouseButton.LeftButton:
             self.set_mode(MODE_NAV)
             self.equipment_place_requested.emit(sp, self.current_page)
+            event.accept(); return
+
+        if self.mode == MODE_EDIT_EQUIPMENT and event.button() == Qt.MouseButton.LeftButton:
+            marker_id = getattr(self, '_reposition_marker_id', None)
+            self._reposition_marker_id = None
+            self.set_mode(MODE_NAV)
+            if marker_id is not None:
+                self.equipment_reposition_finished.emit(int(marker_id), sp, self.current_page)
             event.accept(); return
 
         # ── Shift+press on an equipment marker: arm a possible drag-to-worksheet ──

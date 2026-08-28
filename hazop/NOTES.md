@@ -3255,6 +3255,11 @@ utrustningsregistret for att undvika dubbla ingangar.
 
 ## Edit Mode: cellens layout och wrapping (2026-08-28)
 
+P&ID-objektens hÃ¶gerklicksmeny har dessutom fÃ¥tt `Redigera placering`.
+Det aktiverar ett tydligt engÃ¥ngslÃ¤ge dÃ¤r anvÃ¤ndaren klickar den nya
+centrumpositionen; den befintliga objektkopplingen behÃ¥lls och positionen
+sparas till databasen.
+
 Den gemensamma flerradiga editorn använder nu exakt cellens textområde för
 Orsak, Konsekvens, Safeguard och Rekommendation. Orsakens objektprefix,
 Konsekvensens nummer och Safeguardens RRF-badge ligger kvar synliga bredvid

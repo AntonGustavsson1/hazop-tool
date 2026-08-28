@@ -61,6 +61,7 @@ from pid_viewer import (
     MODE_MARKUP_TEXT, MODE_MARKUP_COMMENT, MODE_MARKUP_SELECT,
     MODE_RED_MARKUP_SYMBOL, MODE_BOARD_LAYOUT,
     MODE_PICK_REF_TAG, MODE_ANNOTATION, MODE_PLACE_EQUIPMENT,
+    MODE_EDIT_EQUIPMENT,
     _icon, _vline, _draw_pid_marker, _hex_to_fitz_rgb, _sheet_ref_variants,
     _equip_prefix_from_tag, _obj_type_matches, ensure_ocr_available,
     _MEDIA_COLORS,
@@ -1570,6 +1571,8 @@ class PIDPanel(QWidget):
         self.viewer.zone_drawn.connect(self._on_zone_drawn)
         self.viewer.equipment_drag_finished.connect(self._on_equipment_drag_finished)
         self.viewer.equipment_edit_requested.connect(self.equipment_edit_requested.emit)
+        self.viewer.equipment_reposition_requested.connect(self._begin_equipment_reposition)
+        self.viewer.equipment_reposition_finished.connect(self._finish_equipment_reposition)
         self.viewer.equipment_delete_requested.connect(self._on_equipment_delete_requested)
         self.viewer.ref_tag_picked.connect(self.ref_tag_picked)
         self.viewer.annotation_clicked.connect(self._on_annotation_click)
@@ -3794,6 +3797,32 @@ class PIDPanel(QWidget):
         self.db.delete_equipment_item(equipment_id)
         self._load_overlays()
         self.equipment_deleted.emit(equipment_id)
+
+    def _begin_equipment_reposition(self, marker_id):
+        """Arm a one-click move for an existing equipment marker."""
+        row = self.db.conn.execute(
+            "SELECT tag FROM equipment_markers WHERE id=?", (int(marker_id),)
+        ).fetchone()
+        if not row:
+            return
+        self.viewer._reposition_marker_id = int(marker_id)
+        self.viewer.set_mode(MODE_EDIT_EQUIPMENT)
+        self.viewer.setToolTip(
+            f"Klicka på den nya placeringen för {row['tag'] or 'objektet'}. Högerklick avbryter.")
+
+    def _finish_equipment_reposition(self, marker_id, scene_pos, page):
+        """Persist a marker's new center and redraw the active P&ID page."""
+        try:
+            x_pdf, y_pdf = self.viewer.scene_to_pdf(scene_pos)
+            row = self.db.conn.execute(
+                "SELECT equipment_id FROM equipment_markers WHERE id=?",
+                (int(marker_id),)).fetchone()
+            self.db.update_equipment_marker_position(marker_id, page, x_pdf, y_pdf)
+            self._load_overlays()
+            if row and row['equipment_id'] is not None:
+                self.equipment_updated.emit(int(row['equipment_id']))
+        finally:
+            self.viewer.setToolTip('')
 
     def _create_cause_for_bar(self, marker_id, deviation_id, comp_type, comp_tag, description,
                                frequency=None, equipment_id=None):

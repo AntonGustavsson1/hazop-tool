@@ -3387,6 +3387,13 @@ class Database:
             (equipment_id, tag, marker_id))
         self.commit()
 
+    def update_equipment_marker_position(self, marker_id, page, x, y):
+        """Move an existing P&ID equipment marker without changing its link."""
+        self.conn.execute(
+            "UPDATE equipment_markers SET pid_page=?, x=?, y=? WHERE id=?",
+            (int(page), float(x), float(y), int(marker_id)))
+        self.commit()
+
     def delete_equipment_marker(self, id_):
         self.conn.execute("DELETE FROM equipment_markers WHERE id=?", (id_,))
         self.commit()
