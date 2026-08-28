@@ -2,6 +2,15 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Inline-editor: bevara markör och scrolläge vid liveformatering (2026-08-28)
+
+Den gemensamma QTextEdit-editorn återställer nu hela markörtillståndet,
+inklusive eventuell markering samt vertikalt och horisontellt scrolläge, efter
+att P&ID-taggar fetmarkeras. Detta minskar risken att texten hoppar visuellt
+under pågående redigering utan att ändra innehåll, radval eller sparlogik.
+Smoke-test och riktat regressionstest passerade. Hela Scenario-sviten hann inte
+slutföras i denna körning.
+
 ## Grupporsak: sparad beskrivning visas i Scenario-cellen (2026-08-28)
 
 Grupp-renderingen visade tidigare endast de två objekttaggarna när

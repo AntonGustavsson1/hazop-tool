@@ -4146,6 +4146,17 @@ class InlineIdentityEditTests(unittest.TestCase):
         editor.set_bold_tags(['PSHH-101'])
         self.assertEqual(editor._bold_tags, ['PSHH-101'])
 
+    def test_bold_refresh_preserves_cursor_selection(self):
+        editor = self.editor_type()
+        editor.setText('PSHH-101 High pressure trip')
+        cursor = editor.textCursor()
+        cursor.setPosition(5)
+        cursor.setPosition(12, cursor.MoveMode.KeepAnchor)
+        editor.setTextCursor(cursor)
+        editor.set_bold_tags(['PSHH-101'])
+        self.assertEqual(editor.textCursor().anchor(), 5)
+        self.assertEqual(editor.textCursor().position(), 12)
+
     def test_double_click_caret_is_positioned_without_selection(self):
         editor = self.editor_type(self.panel._table.viewport())
         editor.setGeometry(20, 0, 240, 28)

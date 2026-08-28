@@ -300,7 +300,15 @@ class _BoldTagTextEdit(QTextEdit):
         text = self.toPlainText()
         if not text:
             return
-        cursor_pos = self.textCursor().position()
+        # Reapplying character formats rebuilds parts of QTextEdit's layout.
+        # Preserve the complete cursor state and the current scroll offsets,
+        # not only the caret position, so the text cannot visibly jump while
+        # the user types or a P&ID tag is recognised.
+        current_cursor = self.textCursor()
+        cursor_pos = current_cursor.position()
+        cursor_anchor = current_cursor.anchor()
+        v_scroll = self.verticalScrollBar().value()
+        h_scroll = self.horizontalScrollBar().value()
         cursor = QTextCursor(self.document())
         normal = QTextCharFormat()
         normal.setFontWeight(QFont.Weight.Normal)
@@ -320,7 +328,12 @@ class _BoldTagTextEdit(QTextEdit):
                 cursor.setPosition(pos + len(tag), QTextCursor.MoveMode.KeepAnchor)
                 cursor.setCharFormat(bold)
                 start = pos + len(tag)
-        self.setCursorPosition(cursor_pos)
+        restored_cursor = QTextCursor(self.document())
+        restored_cursor.setPosition(cursor_anchor)
+        restored_cursor.setPosition(cursor_pos, QTextCursor.MoveMode.KeepAnchor)
+        self.setTextCursor(restored_cursor)
+        self.verticalScrollBar().setValue(v_scroll)
+        self.horizontalScrollBar().setValue(h_scroll)
 
 def _show_tag_completion_if_alive(editor_ref, serial):
     """Run a delayed completion only while its Qt editor still exists."""
