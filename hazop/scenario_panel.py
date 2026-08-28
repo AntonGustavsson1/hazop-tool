@@ -3935,9 +3935,20 @@ class ScenarioTablePanel(QWidget):
                              _cause_idx, len(causes_to_show), cause_d.get('id'))
             node = nodes_by_id.get(cause_d['node_id'])
             node_name = node['name'] if node else '?'
+            # A directly-created blank cause keeps the database's required
+            # likelihood value for calculations, but must not show a chosen
+            # frequency badge until the user selects one.
+            frequency_unset = (not (cause_d.get('description') or '').strip()
+                               and not (cause_d.get('comp_tag') or '').strip()
+                               and cause_d.get('base_frequency') is None
+                               and not cause_d.get('standard_cause_id')
+                               and cause_d.get('likelihood') == 0)
             freq = self.db.cause_frequency_level(cause_d)
+            if frequency_unset:
+                cause_d['_frequency_unset'] = True
             _fi = freq_to_idx(freq)
-            freq_lbl = FREQ_LABELS[_fi] if _fi < len(FREQ_LABELS) else f'F{freq}'
+            freq_lbl = ('' if frequency_unset else
+                        (FREQ_LABELS[_fi] if _fi < len(FREQ_LABELS) else f'F{freq}'))
             first_row_for_cause = self._table.rowCount()
             all_cons = list(cons_by_cause.get(cause_d['id'], []))
             # Status icon inputs (feature 5, ORS column) depend on ALL of
@@ -4479,7 +4490,8 @@ class ScenarioTablePanel(QWidget):
         ors = QTableWidgetItem(cause_d['description'])
         ors.setData(Qt.ItemDataRole.UserRole,     ('cause', cause_d['id']))
         ors.setData(Qt.ItemDataRole.UserRole + 2, self._cause_tag_display(cause_d))
-        ors.setData(Qt.ItemDataRole.UserRole + 3, freq)
+        ors.setData(Qt.ItemDataRole.UserRole + 3,
+                    None if cause_d.get('_frequency_unset') else freq)
         ors.setData(Qt.ItemDataRole.UserRole + 8, repeats_previous_tag)
         # Group causes keep both tags as live object references and bold them
         # in the sentence (the old ``primary + secondary`` prefix duplicated
@@ -4668,7 +4680,8 @@ class ScenarioTablePanel(QWidget):
         ors = QTableWidgetItem(cause_d['description'])
         ors.setData(Qt.ItemDataRole.UserRole,     ('cause', cause_d['id']))
         ors.setData(Qt.ItemDataRole.UserRole + 2, self._cause_tag_display(cause_d))
-        ors.setData(Qt.ItemDataRole.UserRole + 3, freq)
+        ors.setData(Qt.ItemDataRole.UserRole + 3,
+                    None if cause_d.get('_frequency_unset') else freq)
         ors.setData(Qt.ItemDataRole.UserRole + 5, cause_d.get('base_frequency'))
         ors.setData(Qt.ItemDataRole.UserRole + 8, repeats_previous_tag)
         ors.setData(Qt.ItemDataRole.UserRole + 10,
@@ -6360,7 +6373,7 @@ class ScenarioTablePanel(QWidget):
         dev_id, cause_id, cons_id, _sg_id = self._row_meta[row]
         if col in (self._C_ORS, self._C_NOD, self._C_DEV):
             if dev_id is not None:
-                self._quick_add_cause(dev_id)
+                self._quick_add_cause(dev_id, from_enter=True)
         elif col in (self._C_KON, self._C_RFORE):
             if cause_id is not None:
                 self._quick_add_consequence(cause_id)
@@ -6417,7 +6430,7 @@ class ScenarioTablePanel(QWidget):
         pos   = self._table.viewport().mapToGlobal(rect.bottomLeft())
         menu.exec(pos)
 
-    def _quick_add_cause(self, deviation_id, global_pos=None):
+    def _quick_add_cause(self, deviation_id, global_pos=None, from_enter=False):
         """Reported feedback (2026-08-12, see NOTES.md): a new/empty cause
         in HAZOP scenario should open the same compact CauseObjectPopup
         (Tag + Typ + Standardorsaker) already used everywhere a cause's
@@ -6429,6 +6442,17 @@ class ScenarioTablePanel(QWidget):
         cell (_on_cell_clicked), so both entry points behave identically."""
         dev = self.db.get_deviation(deviation_id)
         dev_desc = dev['description'] if dev else ''
+
+        # Enter creates a blank sibling directly. It must not open the old
+        # object/frequency dialog; the required DB likelihood is kept at zero
+        # only as an internal unset marker and is hidden in the Scenario cell.
+        if from_enter:
+            new_id = self.db.add_cause(deviation_id)
+            self.db.update_cause(new_id, description='', comp_type='', comp_tag='',
+                                 likelihood=0, base_frequency=None)
+            cons_id = self.db.add_consequence(new_id)
+            self.new_item_created.emit(CONS_T, cons_id)
+            return
 
         popup = CauseObjectPopup(
             '', '', self.db, dev_description=dev_desc,

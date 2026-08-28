@@ -3160,6 +3160,13 @@ diskret gemensam åtgärd. Den enskilda objektpopupen visar motsvarande objekt-
 och P&ID-information ovanför tagg- och typredigeringen. Den gamla Bind till
 objekt-knappen är borttagen.
 
+## Tom orsak via Enter (2026-08-28)
+
+Enter skapar nu en tom orsak och en tom konsekvens direkt utan Orsak på
+P&ID-dialog och utan automatisk frekvens. Den interna standardnivån används
+endast som beräkningsfallback; frekvensbadgen visas först när användaren väljer
+en frekvens i cellen.
+
 Grupporsakens popup stannar nu öppen när ett fel-/effektalternativ väljs eller
 när primär och sekundär växlas; statusfältet uppdateras direkt. Dubbelklick på
 gruppens beskrivande mekanism/effekt öppnar samma inline-editor som en enskild
