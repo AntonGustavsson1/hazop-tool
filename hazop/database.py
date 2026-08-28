@@ -966,6 +966,7 @@ class Database:
                 "ALTER TABLE analysis_sessions ADD COLUMN is_digital INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE analysis_sessions ADD COLUMN start_time TEXT DEFAULT ''",
                 "ALTER TABLE analysis_sessions ADD COLUMN end_time TEXT DEFAULT ''",
+                "ALTER TABLE participant_attendance ADD COLUMN note TEXT DEFAULT ''",
                 "ALTER TABLE pid_sheets ADD COLUMN drawing_number TEXT DEFAULT ''",
                 "ALTER TABLE pid_sheets ADD COLUMN drawing_name TEXT DEFAULT ''",
                 "ALTER TABLE pid_sheets ADD COLUMN drawing_revision TEXT DEFAULT ''",
@@ -3113,6 +3114,24 @@ class Database:
 
     def update_sheet_name(self, id_, name):
         self.conn.execute("UPDATE pid_sheets SET sheet_name=?, drawing_name=? WHERE id=?", (name, name, id_))
+        self.commit()
+
+    def get_attendance_details(self):
+        """Return {(participant_id, session_id): (attended, note)}."""
+        rows = self.conn.execute(
+            "SELECT participant_id, session_id, attended, COALESCE(note, '') AS note "
+            "FROM participant_attendance").fetchall()
+        return {(r['participant_id'], r['session_id']):
+                (bool(r['attended']), r['note'] or '') for r in rows}
+
+    def set_attendance_note(self, participant_id, session_id, note):
+        """Persist free text attached to one participant and analysis session."""
+        self.conn.execute(
+            "INSERT INTO participant_attendance (participant_id, session_id, attended, note) "
+            "VALUES (?,?,COALESCE((SELECT attended FROM participant_attendance "
+            "WHERE participant_id=? AND session_id=?),0),?) "
+            "ON CONFLICT(participant_id, session_id) DO UPDATE SET note=excluded.note",
+            (participant_id, session_id, participant_id, session_id, str(note or '')))
         self.commit()
 
     def update_sheet_metadata(self, id_, drawing_number=None, drawing_name=None,

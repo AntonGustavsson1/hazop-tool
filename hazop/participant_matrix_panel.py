@@ -131,7 +131,7 @@ class ParticipantMatrixPanel(QWidget):
             columns = self.db.list_participant_columns()
             sessions = self.db.list_analysis_sessions()
             participants = self.db.list_participants()
-            attendance = self.db.get_attendance_matrix()
+            attendance = self.db.get_attendance_details()
             col_values = self.db.get_participant_column_values()
 
             self._column_ids = [c['id'] for c in columns]
@@ -154,14 +154,35 @@ class ParticipantMatrixPanel(QWidget):
                     val = col_values.get((p['id'], col_def['id']), '')
                     self._table.setItem(row, len(self._FIXED_COLS) + ci, QTableWidgetItem(val))
                 for col, sess in enumerate(sessions):
-                    item = QTableWidgetItem()
-                    item.setFlags(
-                        (item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                    attended, note = attendance.get((p['id'], sess['id']), (False, ''))
+                    # Keep a check-state item as the model-side representation
+                    # for sorting/tests/accessibility, while the cell widget
+                    # below adds the per-participant note field.
+                    state_item = QTableWidgetItem()
+                    state_item.setFlags(
+                        (state_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                         & ~Qt.ItemFlag.ItemIsEditable)
-                    attended = attendance.get((p['id'], sess['id']), False)
-                    item.setCheckState(
+                    state_item.setCheckState(
                         Qt.CheckState.Checked if attended else Qt.CheckState.Unchecked)
-                    self._table.setItem(row, n_fixed + col, item)
+                    self._table.setItem(row, n_fixed + col, state_item)
+                    cell = QWidget()
+                    cell_layout = QHBoxLayout(cell)
+                    cell_layout.setContentsMargins(3, 1, 3, 1)
+                    cell_layout.setSpacing(4)
+                    check = QCheckBox()
+                    check.setChecked(attended)
+                    check.setToolTip("Markera när deltagaren närvarade")
+                    check.stateChanged.connect(
+                        lambda state, r=row, c=col: self._set_attendance_from_cell(
+                            r, c, state == Qt.CheckState.Checked.value))
+                    note_edit = QLineEdit(note)
+                    note_edit.setPlaceholderText("Fritext")
+                    note_edit.setToolTip("Anteckning för deltagaren vid detta analystillfälle")
+                    note_edit.editingFinished.connect(
+                        lambda e=note_edit, r=row, c=col: self._save_attendance_note(r, c, e.text()))
+                    cell_layout.addWidget(check, 0)
+                    cell_layout.addWidget(note_edit, 1)
+                    self._table.setCellWidget(row, n_fixed + col, cell)
             self._refresh_select_all_state()
         finally:
             self._loading = False
@@ -190,6 +211,21 @@ class ParticipantMatrixPanel(QWidget):
         for participant_id in self._participant_ids:
             self.db.set_attendance(participant_id, session_id, attended)
         self.refresh()
+
+    def _set_attendance_from_cell(self, row, session_index, attended):
+        if self._loading or not (0 <= row < len(self._participant_ids)):
+            return
+        if 0 <= session_index < len(self._session_ids):
+            self.db.set_attendance(self._participant_ids[row],
+                                   self._session_ids[session_index], attended)
+            self._refresh_select_all_state()
+
+    def _save_attendance_note(self, row, session_index, note):
+        if self._loading or not (0 <= row < len(self._participant_ids)):
+            return
+        if 0 <= session_index < len(self._session_ids):
+            self.db.set_attendance_note(self._participant_ids[row],
+                                        self._session_ids[session_index], note)
 
     def _on_item_changed(self, item):
         if self._loading:

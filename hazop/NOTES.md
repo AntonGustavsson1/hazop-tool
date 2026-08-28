@@ -3247,6 +3247,10 @@ stör inte den övriga texten.
 
 ## Beta-flik for P&ID-verktyg (2026-08-28)
 
+Deltagarmatrisens analystillfällen visar nu en kompakt närvarokryssruta och
+ett integrerat fritextfält per deltagare och tillfälle. Anteckningen sparas
+tillsammans med närvaron i databasen.
+
 Skanna P&ID, Skapa HAZOP-noder och Hitta objekt pa P&ID finns nu samlade i
 den nya Beta-fliken langst ned i vanstermenyn, med korta forklaringar.
 Funktionerna ateranvander EquipmentPanels befintliga arbetsfloden, inklusive
