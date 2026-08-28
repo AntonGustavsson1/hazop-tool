@@ -387,6 +387,7 @@ class HAZOPPreparationPanel(QWidget):
         _wrap_lay = QVBoxLayout(_wrap)
         _wrap_lay.setContentsMargins(0, 0, 0, 0)
         _wrap_lay.setSpacing(0)
+        _wrap_lay.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
         self._matrix_container = QWidget()
         self._matrix_container.setMinimumWidth(0)
@@ -397,7 +398,14 @@ class HAZOPPreparationPanel(QWidget):
         self._matrix_grid.setHorizontalSpacing(0)
         self._matrix_grid.setVerticalSpacing(0)
         self._matrix_grid.setContentsMargins(0, 0, 0, 0)
+        # Keep spare viewport height below the matrix, never between rows.
+        # QGridLayout otherwise distributes it across zero-stretch rows on
+        # larger screens, making the apparent row gap resolution-dependent.
+        self._matrix_grid.setAlignment(Qt.AlignmentFlag.AlignTop |
+                                       Qt.AlignmentFlag.AlignLeft)
         self._matrix_container.setStyleSheet("QWidget { margin: 0px; padding: 0px; }")
+        self._matrix_container.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                             QSizePolicy.Policy.Preferred)
 
         # A horizontal splitter gives the matrix a visible right-hand drag
         # edge.  The empty pane is intentional: it keeps the matrix anchored
