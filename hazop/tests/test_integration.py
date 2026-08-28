@@ -6294,6 +6294,7 @@ class OrsTagZoneOpensMinimalPopupTests(unittest.TestCase):
             self.panel._show_cause_obj_popup(
                 row, cause_id, QPoint(100, 100), group_line=1)
         self.assertIs(popup_cls.call_args.kwargs['equipment_id'], secondary_id)
+        self.assertEqual(popup_cls.call_args.kwargs['group_operator'], '&')
 
 
 class OrsFrequencyZoneClickTests(unittest.TestCase):

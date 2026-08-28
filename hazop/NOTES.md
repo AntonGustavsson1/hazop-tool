@@ -15,6 +15,10 @@ Generell gruppredigering är dessutom blockerad via F2, högerklickets
 Redigera och programmatisk redigeringsstart. Grupporsaker kan därmed bara
 redigeras genom primär- eller sekundärradens egna textområden.
 
+Gruppoperatorn visas nu även separat i objekt-popupen, till exempel
+`Gruppkoppling: &`, medan taggfältet fortfarande bara avser det klickade
+objektet.
+
 ## Gruppoperator vid dragning av flera objekt (2026-08-28)
 
 Vid dragning av flera P&ID-objekt till en avvikelse visas val för AND, OR

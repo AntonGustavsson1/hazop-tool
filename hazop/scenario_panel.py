@@ -6416,6 +6416,7 @@ class ScenarioTablePanel(QWidget):
         so it's shown non-modally instead of exec()'d."""
         item      = self._table.item(row, self._C_ORS)
         group_tags = item.data(Qt.ItemDataRole.UserRole + 9) or [] if item else []
+        group_operator = self._group_operator(item) if len(group_tags) >= 2 else None
         # Grouped object tags use the same compact popup as ordinary cause
         # Primär/Sekundär popup from this shared helper.
         obj_data  = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
@@ -6432,7 +6433,7 @@ class ScenarioTablePanel(QWidget):
 
         popup = CauseTagPopup(
             self.db, comp_type, comp_tag, parent=self, cause_id=cause_id,
-            equipment_id=equipment_id)
+            equipment_id=equipment_id, group_operator=group_operator)
         popup.bind_requested.connect(
             lambda cid=cause_id: self.bind_cause_to_pid_requested.emit(cid))
         popup.reorder_requested.connect(

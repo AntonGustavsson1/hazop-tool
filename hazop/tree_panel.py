@@ -2226,7 +2226,7 @@ class CauseTagPopup(QDialog):
     place_requested = pyqtSignal(int, str, str)  # cause_id, comp_type, comp_tag
 
     def __init__(self, db, comp_type='', comp_tag='', parent=None, cause_id=None,
-                 equipment_id=None):
+                 equipment_id=None, group_operator=None):
         super().__init__(parent)
         self._db = db
         self._cause_id = cause_id
@@ -2282,6 +2282,11 @@ class CauseTagPopup(QDialog):
                     detail_label = QLabel("  ·  ".join(details))
                     detail_label.setStyleSheet("font-size:9px; color:#6B7280;")
                     layout.addWidget(detail_label)
+
+        if group_operator:
+            operator_label = QLabel(f"Gruppkoppling: {group_operator}")
+            operator_label.setStyleSheet("font-size:9px; color:#6B7280;")
+            layout.addWidget(operator_label)
 
         form = QFormLayout()
         form.setSpacing(3)
