@@ -3453,3 +3453,10 @@ Vid direkt redigering av en grupporsaksrad ligger primär- eller
 sekundärobjektet kvar som synlig tagg till vänster. Editorn startar efter
 taggen och visar endast den fria händelsetexten. Vid sparning sätts rätt tagg
 tillbaka på den valda raden och den andra grupp-raden lämnas orörd.
+## Dubbelklick till hÃ¶ger om grupptagg (2026-08-28)
+
+Radmarkeringen fÃ¶r grupporsakens inline-editor raderas nu fÃ¶rst efter att
+`setEditorData()` har anvÃ¤nt den. Qt kan annars skapa delegateditorn pÃ¥
+nÃ¤sta event-loop-varv efter `table.edit()`, vilket gjorde att dubbelklick i
+fritextdelen till hÃ¶ger om taggen tappade den valda primÃ¤r- eller
+sekundÃ¤rraden.

@@ -748,6 +748,7 @@ class GroupCausePopup(QDialog):
                 typ = QLabel("  ·  ".join(info))
                 typ.setStyleSheet("color:#6B7280; font-size:9px;")
                 box_layout.addWidget(typ)
+            choices = (*choices, "Skriv fritext...")
             for choice in choices:
                 button = QPushButton(choice)
                 button.setFixedHeight(CONFIG['H_BTN_SMALL'])
@@ -2198,6 +2199,14 @@ class _PidDelegate(_ScenarioDelegate):
                             selected = selected[len(tag):].lstrip(' ,:→-')
                         editor.setText(selected)
                         editor.setProperty('group_line', int(group_line[1]))
+                    # The row marker is only needed until Qt has populated
+                    # this editor.  Clearing it here (rather than with a
+                    # zero-delay timer in the click handler) is important:
+                    # QTableWidget may create/populate the delegate editor
+                    # on a later event-loop turn.  The old timer could erase
+                    # the marker first, so a double-click to the right of a
+                    # grouped tag opened the wrong full-cell editor.
+                    self._panel._group_edit_line = None
 
     def _attach_consequence_completer(self, editor):
         """"Spara varje konsekvens som skrivs i HAZOP Scenario i en
@@ -5845,7 +5854,6 @@ class ScenarioTablePanel(QWidget):
             else:
                 self._group_edit_line = None
             self._table.edit(self._table.model().index(row, col))
-            QTimer.singleShot(0, lambda: setattr(self, '_group_edit_line', None))
             click = self._double_click_edit
             self._double_click_edit = None
             if click and click[0] == row and click[1] == col:
@@ -6299,12 +6307,33 @@ class ScenarioTablePanel(QWidget):
             return
         old = cause.get('description') or ''
         choices_set = int(cause.get('group_choices_set') or 0)
+        old_lines = [line.strip() for line in old.splitlines() if line.strip()]
+        # Older grouped causes were stored without the choice bitmask. If
+        # the existing secondary line contains text (not merely its tag),
+        # preserve that event when the primary event is changed.
+        secondary_tag = str(s.get('tag', '')).strip().casefold()
+        if not choices_set and len(old_lines) >= 2 and secondary_tag:
+            for line in old_lines:
+                line_lower = line.casefold()
+                tag_pos = line_lower.find(secondary_tag)
+                if tag_pos >= 0:
+                    remainder = line[tag_pos + len(secondary_tag):].strip(' ,:-')
+                    if remainder:
+                        choices_set |= 2
+                    break
         direction = 'felar lågt' if 'lågt' in old else 'felar högt'
         effect = 'öppnar felaktigt'
         for option in ('stänger helt', 'stänger felaktigt', 'öppnar fullt', 'öppnar felaktigt'):
             if option in old.lower():
                 effect = option
                 break
+        if choice.startswith('Skriv fritext'):
+            value, accepted = QInputDialog.getText(
+                self, "Eget alternativ",
+                "Skriv in önskad felmekanism/effekt:")
+            if not accepted or not value.strip():
+                return
+            choice = value.strip()
         if which == 0:
             direction = choice.lower()
             choices_set |= 1

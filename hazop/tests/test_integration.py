@@ -4781,8 +4781,14 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
         try:
             self.assertEqual(primary_popup.windowTitle(), 'Primärhändelse')
             self.assertEqual(secondary_popup.windowTitle(), 'Sekundärhändelse')
-            primary_buttons = [b.text() for b in primary_popup.findChildren(QPushButton)]
-            secondary_buttons = [b.text() for b in secondary_popup.findChildren(QPushButton)]
+            primary_all_buttons = [b.text() for b in primary_popup.findChildren(QPushButton)]
+            secondary_all_buttons = [b.text() for b in secondary_popup.findChildren(QPushButton)]
+            self.assertIn('Skriv fritext...', primary_all_buttons)
+            self.assertIn('Skriv fritext...', secondary_all_buttons)
+            primary_buttons = [b for b in primary_all_buttons
+                               if not b.startswith('Skriv fritext')]
+            secondary_buttons = [b for b in secondary_all_buttons
+                                 if not b.startswith('Skriv fritext')]
             self.assertEqual(primary_buttons, ['Felar högt', 'Felar lågt'])
             self.assertEqual(secondary_buttons,
                              ['Öppnar felaktigt', 'Stänger felaktigt',
