@@ -104,6 +104,9 @@ class _BoldTagTextEdit(QTextEdit):
         super().__init__(parent)
         self._bold_tags = []
         self._completer = None
+        self._tag_completer = None
+        self._tag_completion_serial = 0
+        self._tag_completion_range = None
         self.setAcceptRichText(False)
         self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -150,6 +153,55 @@ class _BoldTagTextEdit(QTextEdit):
 
     def completer(self):
         return self._completer
+
+    def setTagCompleter(self, completer):
+        """Attach the shared delayed P&ID-tag popup to this text editor."""
+        self._tag_completer = completer
+        completer.setWidget(self)
+        try:
+            completer.activated.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        completer.activated.connect(self._insert_tag_completion)
+        self.textChanged.connect(self._schedule_tag_completion)
+
+    def _schedule_tag_completion(self):
+        self._tag_completion_serial += 1
+        serial = self._tag_completion_serial
+        QTimer.singleShot(220, lambda s=serial: self._show_tag_completion(s))
+
+    def _show_tag_completion(self, serial):
+        if serial != self._tag_completion_serial or self._tag_completer is None:
+            return
+        cursor = self.textCursor()
+        pos = cursor.position()
+        text = self.toPlainText()
+        start = pos
+        while start > 0 and re.match(r'[A-Za-z0-9_.-]', text[start - 1]):
+            start -= 1
+        token = text[start:pos]
+        if len(token) < 2:
+            self._tag_completer.popup().hide()
+            return
+        if self._completer is not None:
+            self._completer.popup().hide()
+        self._tag_completion_range = (start, pos)
+        self._tag_completer.setCompletionPrefix(token)
+        if self._tag_completer.completionCount() <= 0:
+            self._tag_completer.popup().hide()
+            return
+        self._tag_completer.complete(self.cursorRect())
+
+    def _insert_tag_completion(self, completion):
+        if not self._tag_completion_range:
+            return
+        start, end = self._tag_completion_range
+        cursor = self.textCursor()
+        cursor.setPosition(start)
+        cursor.setPosition(end, cursor.MoveMode.KeepAnchor)
+        cursor.insertText(str(completion))
+        self.setTextCursor(cursor)
+        self._tag_completion_range = None
 
     def _insert_completion(self, completion):
         cursor = self.textCursor()
@@ -1868,6 +1920,7 @@ class _PidDelegate(_ScenarioDelegate):
                     refs = item.data(Qt.ItemDataRole.UserRole + 7) if item else []
                     tags = ([obj_data[1]] if obj_data and obj_data[1] else []) + (refs or [])
                 editor.set_bold_tags(tags)
+            self._attach_tag_completer(editor)
             if index.column() == self._panel._C_ORS:
                 self._attach_cause_completer(editor, index)
                 # Deferred to the next event-loop iteration — showing the
@@ -1889,6 +1942,25 @@ class _PidDelegate(_ScenarioDelegate):
             elif index.column() == self._panel._C_KON:
                 self._attach_consequence_completer(editor)
         return editor
+
+    def _attach_tag_completer(self, editor):
+        """Offer matching P&ID tags in every shared scenario text editor."""
+        db = getattr(self._panel, 'db', None)
+        if db is None or not isinstance(editor, _BoldTagTextEdit):
+            return
+        try:
+            tags = sorted({str(row['tag']).strip() for row in db.equipment_items()
+                           if row['tag'] and str(row['tag']).strip()},
+                          key=str.casefold)
+        except Exception:
+            tags = []
+        if not tags:
+            return
+        completer = QCompleter(tags, editor)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        editor.setTagCompleter(completer)
 
     def setEditorData(self, editor, index):
         # QStyledItemDelegate calls setText() after createEditor().  That

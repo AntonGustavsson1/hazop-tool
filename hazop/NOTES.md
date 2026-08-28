@@ -3185,6 +3185,13 @@ objekt fyller tagg och typ; fria värden kan användas för ett nytt objekt.
 Knappen `Placera objekt på P&ID` startar ett engångsläge där nästa klick på
 ritningen placerar markören och kopplar objektet till orsaken.
 
+## Fördröjd P&ID-taggväljare i Edit Mode (2026-08-28)
+
+Den gemensamma texteditorn erbjuder nu matchande P&ID-taggar efter två
+skrivna tecken med cirka 220 ms debounce i Orsak, Konsekvens, Safeguard och
+Rekommendation. Popupen ersätter bara den aktuella taggdelen vid val och
+stör inte den övriga texten.
+
 ## Edit Mode: cellens layout och wrapping (2026-08-28)
 
 Den gemensamma flerradiga editorn använder nu exakt cellens textområde för
