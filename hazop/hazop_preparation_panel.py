@@ -453,6 +453,21 @@ class HAZOPPreparationPanel(QWidget):
         self._y_rev_chk.toggled.connect(_update_y_arrow)
         _update_x_arrow(False)
         _update_y_arrow(False)
+        # Put direction controls in a shell around the matrix: X spans the
+        # matrix width above it, Y spans its height to the left.
+        self._matrix_axis_shell = QWidget()
+        shell_grid = QGridLayout(self._matrix_axis_shell)
+        shell_grid.setContentsMargins(0, 0, 0, 0)
+        shell_grid.setSpacing(0)
+        self._x_rev_chk.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                      QSizePolicy.Policy.Fixed)
+        self._y_rev_chk.setSizePolicy(QSizePolicy.Policy.Fixed,
+                                      QSizePolicy.Policy.Expanding)
+        self._y_rev_chk.setMinimumWidth(30)
+        shell_grid.addWidget(self._x_rev_chk, 0, 1)
+        shell_grid.addWidget(self._y_rev_chk, 1, 0)
+        shell_grid.addWidget(self._matrix_container, 1, 1)
+        matrix_splitter.replaceWidget(0, self._matrix_axis_shell)
         ml.addLayout(ax_row)
 
         # Live update: rebuild grid immediately on any control change
@@ -1364,8 +1379,6 @@ class HAZOPPreparationPanel(QWidget):
             self._matrix_grid.addWidget(e, 0, c + 1)
             self._x_label_edits.append(e)
 
-        self._matrix_grid.addWidget(self._x_rev_chk, 0, n_dcols + 1)
-
         # Rows — apply y_rev: if NOT reversed, highest value is at top (default)
         for r in range(n_drows):
             if y_rev:
@@ -1585,11 +1598,6 @@ class HAZOPPreparationPanel(QWidget):
 
             self._category_row_edits = row_cat_edits
             self._resize_category_rows()
-
-        # Keep the Y-direction control alongside the vertical axis labels.
-        # It is placed below the matrix so it never steals a severity label or
-        # a frequency-boundary cell.
-        self._matrix_grid.addWidget(self._y_rev_chk, n_drows + 2, 0)
 
     def _schedule_category_row_resize(self):
         """Resize matrix rows after wrapped category text changes.

@@ -3323,3 +3323,6 @@ sök-/export-/layouttester. Ingen visuell GUI-verifiering är gjord.
 ## 2026-08-28 — gemensam höjd för högra kategorikolumner
 
 - Kategori-editorn till höger om riskmatrisen hade 28 px medan riskcellerna var 40 px. Det skapade synlig luft tills en lång text tvingade fram tre rader. Den högra layouten börjar nu på 40 px och växer gemensamt för alla delar av raden.
+## 2026-08-28 — axelreglage runt riskmatrisen
+
+- X/Y-riktningsknapparna ligger nu i ett eget skal runt matrisen: X ovanför och lika bred som matrisen, Y till vänster och lika hög som matrisen. De ligger inte längre i cellgridden där de försvann vid ombyggnad.
