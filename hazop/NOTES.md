@@ -2,6 +2,13 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Gruppmeny visas via Qt:s context-signal (2026-08-28)
+
+Gruppens flyttmeny kopplas nu även in via tabellens
+`customContextMenuRequested`. Högerklick fungerar därmed oavsett om Qt
+levererar eventet till tabellen eller dess viewport. Menytexterna för första
+och andra raden visar uttryckligen när flytten byter sekundär/primär.
+
 ## Kraschfix: högerklick på grupptagg (2026-08-28)
 
 Den senaste kraschen var en `NameError` i dubbelklickshanteraren: den nya

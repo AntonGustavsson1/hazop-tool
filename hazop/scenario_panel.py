@@ -6472,11 +6472,15 @@ class ScenarioTablePanel(QWidget):
     def _show_group_tag_menu(self, row, cause_id, group_line, global_pos):
         menu = QMenu(self)
         up = menu.addAction('Flytta uppåt')
+        if group_line == 1:
+            up.setText('Flytta uppåt (byt till primär)')
         up.setEnabled(group_line > 0)
         up.triggered.connect(lambda: self._move_group_row(cause_id, group_line, -1))
         down = menu.addAction('Flytta nedåt')
         cause = self.db.get_cause(cause_id)
         count = len(self._group_equipment_ids(cause))
+        if group_line == 0 and count > 1:
+            down.setText('Flytta nedåt (byt till sekundär)')
         down.setEnabled(group_line < count - 1)
         down.triggered.connect(lambda: self._move_group_row(cause_id, group_line, 1))
         if group_line > 0:
@@ -8449,6 +8453,39 @@ class ScenarioTablePanel(QWidget):
         if row < 0 or row >= len(self._row_meta):
             return
         dev_id, cause_id, cons_id, sg_id = self._row_meta[row]
+
+        # The table's custom-context signal is more reliable than depending
+        # on which internal table widget received the mouse press.  For a
+        # grouped object tag, show the row-order menu before the generic row
+        # actions are built.
+        if col == self._C_ORS and cause_id:
+            item = self._table.item(row, col)
+            tags = (item.data(Qt.ItemDataRole.UserRole + 9) or []) if item else []
+            if len(tags) >= 2:
+                line_h = max(_ORS_FIRST_LINE_H,
+                             QFontMetrics(self._table.font()).height() + 4)
+                line_no = int((pos.y() - self._table.rowViewportPosition(row) - 2)
+                              // line_h)
+                if 0 <= line_no < len(tags):
+                    x = self._table.columnViewportPosition(col) + 2
+                    if line_no == 0:
+                        num = item.data(Qt.ItemDataRole.UserRole + 10) or ''
+                        if num:
+                            x += QFontMetrics(self._table.font()).horizontalAdvance(
+                                f"{num}.  ")
+                    else:
+                        operators = self._group_operators(item)
+                        operator = operators[line_no] if line_no < len(operators) else 'OR'
+                        x += QFontMetrics(self._table.font()).horizontalAdvance(
+                            f"{operator} ")
+                    tag_font = QFont(self._table.font())
+                    tag_font.setBold(True)
+                    width = QFontMetrics(tag_font).horizontalAdvance(str(tags[line_no]))
+                    if x <= pos.x() <= x + width:
+                        self._show_group_tag_menu(
+                            row, cause_id, line_no,
+                            self._table.viewport().mapToGlobal(pos))
+                        return
 
         menu = QMenu(self)
 
