@@ -19,7 +19,9 @@ inte i rekommendationssökningen.
 ## Läsbarare tunna P&ID-linjer (2026-08-28)
 
 P&ID-rastervisningen kan nu förstärka mycket tunna streck med en mild
-bildfilterbaserad minsta bredd. Standard är 1 px förstärkning per sida.
+bildfilterbaserad minsta bredd. Standard är nu 2 px förstärkning per sida,
+eftersom första sidan i Sunpine-referensen använder cirka 0,71 pt (0,25 mm)
+linjer som blir subpixel-tunna vid översiktszoom.
 Funktionen styrs av `P&ID-inställningar` → `P&ID-linjer`, där den kan
 stängas av eller justeras mellan 1 och 4 px. Original-PDF, PDF-export och
 alla sparade PDF-koordinater påverkas inte; endast skärmrasterbilden byggs om.

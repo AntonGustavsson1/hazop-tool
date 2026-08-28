@@ -1637,7 +1637,7 @@ class SettingsPanelPidTabRenameAndNewSettingsTests(unittest.TestCase):
         panel = SettingsPanel(self.db)
         try:
             self.assertTrue(panel._min_pid_lines_chk.isChecked())
-            self.assertEqual(panel._min_pid_lines_spin.value(), 1)
+            self.assertEqual(panel._min_pid_lines_spin.value(), 2)
             panel._min_pid_lines_spin.setValue(2)
             self.assertEqual(self.db.get_config('pid_min_line_width'), '2')
             panel._min_pid_lines_chk.setChecked(False)

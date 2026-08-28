@@ -4134,9 +4134,9 @@ class PIDPanel(QWidget):
             return 0
         try:
             return max(1, min(4, int(
-                self.db.get_config('pid_min_line_width', '1') or '1')))
+                self.db.get_config('pid_min_line_width', '2') or '2')))
         except (TypeError, ValueError):
-            return 1
+            return 2
 
     def refresh_pdf_rendering(self):
         """Re-render the open P&ID after a display rendering setting changes."""

@@ -221,7 +221,10 @@ class SettingsPanel(QWidget):
         line_row.addWidget(QLabel("Förstärkning:"))
         self._min_pid_lines_spin = QSpinBox()
         self._min_pid_lines_spin.setRange(1, 4)
-        self._min_pid_lines_spin.setValue(1)
+        # Sunpine's first-page P&ID uses approximately 0.25 mm (0.71 pt)
+        # strokes. At overview zoom that rasterises to less than one pixel,
+        # so the gentlest 1 px setting is not sufficient as the default.
+        self._min_pid_lines_spin.setValue(2)
         self._min_pid_lines_spin.setSuffix(" px")
         self._min_pid_lines_spin.setToolTip(
             "Antal bildpunkter som läggs till på varje sida av mycket tunna streck.")
@@ -264,7 +267,7 @@ class SettingsPanel(QWidget):
         self._min_pid_lines_chk.setChecked(
             self.db.get_config('pid_min_line_width_enabled', '1') == '1')
         try:
-            width = int(self.db.get_config('pid_min_line_width', '1') or '1')
+            width = int(self.db.get_config('pid_min_line_width', '2') or '2')
         except (TypeError, ValueError):
             width = 1
         self._min_pid_lines_spin.setValue(max(1, min(4, width)))
