@@ -243,12 +243,18 @@ class SettingsPanel(QWidget):
         target_edit.setPlaceholderText('Y')
         target_edit.setToolTip('Ersättande tecken eller text')
         arrow = QLabel('→')
+        confirm_btn = QPushButton('Bekräfta')
+        confirm_btn.setToolTip(
+            'Visa definierade objekt där X finns och bekräfta ersättning')
+        confirm_btn.clicked.connect(
+            lambda: self._confirm_replacement(source_edit, target_edit))
         remove_btn = QPushButton('-')
         remove_btn.setFixedWidth(28)
         remove_btn.setToolTip('Ta bort ersättningsregel')
         layout.addWidget(source_edit)
         layout.addWidget(arrow)
         layout.addWidget(target_edit)
+        layout.addWidget(confirm_btn)
         layout.addWidget(remove_btn)
         self._replacement_rows_layout.addWidget(row)
         entry = (row, source_edit, target_edit)
@@ -257,6 +263,47 @@ class SettingsPanel(QWidget):
         target_edit.editingFinished.connect(self._save_replacement_rows)
         remove_btn.clicked.connect(lambda: self._remove_replacement_row(entry))
         return entry
+
+    def _confirm_replacement(self, source_edit, target_edit):
+        """Preview and explicitly apply a tag replacement to defined objects."""
+        source = source_edit.text().strip()
+        target = target_edit.text().strip()
+        if not source:
+            QMessageBox.information(self, 'Ersätt tecken',
+                                    'Ange först tecknet/texten som ska ersättas.')
+            return
+        rows = self.db.conn.execute(
+            "SELECT id, tag, equipment_type, pid_page FROM equipment_catalog "
+            "WHERE LOWER(tag) LIKE LOWER(?) ORDER BY prefix, tag",
+            (f'%{source}%',)).fetchall()
+        if not rows:
+            QMessageBox.information(self, 'Ersätt tecken',
+                                    f'Inga definierade objekt innehåller “{source}”.')
+            return
+        lines = []
+        for row in rows:
+            old = row['tag'] or ''
+            new = re.sub(re.escape(source), target, old, flags=re.IGNORECASE)
+            lines.append(f'{old}  →  {new}')
+        answer = QMessageBox.question(
+            self, 'Bekräfta ersättning',
+            f'{len(lines)} definierade objekt innehåller “{source}”.\n\n' +
+            '\n'.join(lines[:30]) +
+            ('\n…' if len(lines) > 30 else '') +
+            '\n\nSka objekten och deras P&ID-kopplingar uppdateras?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            changes = self.db.replace_equipment_tag_text(source, target)
+        except Exception as exc:
+            QMessageBox.critical(self, 'Ersättning misslyckades', str(exc))
+            return
+        QMessageBox.information(self, 'Ersättning klar',
+                                f'{len(changes)} objekt uppdaterades.')
+        if hasattr(self, 'analysis_panel'):
+            self.analysis_panel.refresh()
 
     def _remove_replacement_row(self, entry):
         if entry not in self._replacement_rows:

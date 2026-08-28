@@ -3276,3 +3276,13 @@ Orsak, Konsekvens, Safeguard och Rekommendation. Orsakens objektprefix,
 Konsekvensens nummer och Safeguardens RRF-badge ligger kvar synliga bredvid
 editorn. Alla fyra textfält tillåter word wrap även under redigering, så texten
 flyttar inte till en separat rad eller täcker andra delar av cellen.
+## Uppföljning av önskelista och avbruten körning (2026-08-28)
+
+Den fördröjda P&ID-taggkompletteringen skyddas nu mot borttagna Qt-editors.
+Nya noder får endast aktiva standardavvikelser. X→Y-taggersättning visar
+definierade objekt före bekräftelse och uppdaterar objekt samt P&ID-markörer.
+Den trädorienterade Excel-exporten är åter kopplad till menyknappen och
+P&ID-textträffar navigerar till rätt sida.
+
+Verifierat med syntaxkontroll, `tests.test_smoke` (12 tester) och riktade
+sök-/export-/layouttester. Ingen visuell GUI-verifiering är gjord.

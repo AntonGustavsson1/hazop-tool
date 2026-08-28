@@ -1857,8 +1857,12 @@ class Database:
         # Ensure every node has all standard deviations from template library.
         # dict.fromkeys also protects fresh databases if a legacy template
         # source ever contains the same description twice.
+        # Archived deviations remain available in the library, but must not
+        # be copied into newly created nodes.  The old unfiltered query made
+        # the retired library reappear after a fresh database migration.
         std_devs = list(dict.fromkeys(r[0] for r in self.conn.execute(
-            "SELECT description FROM standard_deviations ORDER BY sort_order").fetchall()))
+            "SELECT description FROM standard_deviations "
+            "WHERE active=1 ORDER BY sort_order").fetchall()))
         if not std_devs:
             std_devs = DEVIATION_TYPES
         all_nodes = [r[0] for r in self.conn.execute("SELECT id FROM nodes").fetchall()]
@@ -2249,6 +2253,39 @@ class Database:
             "UPDATE equipment_catalog SET tag=?,prefix=?,equipment_type=?,description=? WHERE id=?",
             (tag, prefix, eq_type, desc, id_))
         self.commit()
+
+    def replace_equipment_tag_text(self, source, target):
+        """Replace text in defined equipment tags and their marker labels.
+
+        Returns the affected catalog rows.  The operation is atomic so the
+        confirmation dialog can safely apply the exact preview it showed.
+        """
+        import re as _re
+        source, target = str(source or ''), str(target or '')
+        if not source:
+            return []
+        rows = self.conn.execute(
+            "SELECT id, tag FROM equipment_catalog "
+            "WHERE LOWER(tag) LIKE LOWER(?) ORDER BY prefix, tag",
+            (f'%{source}%',)).fetchall()
+        changes = []
+        try:
+            self.conn.execute('BEGIN')
+            for row in rows:
+                old = row['tag'] or ''
+                new = _re.sub(_re.escape(source), target, old, flags=_re.IGNORECASE)
+                if new == old:
+                    continue
+                self.conn.execute("UPDATE equipment_catalog SET tag=? WHERE id=?",
+                                  (new, row['id']))
+                self.conn.execute("UPDATE equipment_markers SET tag=? WHERE equipment_id=?",
+                                  (new, row['id']))
+                changes.append({'id': row['id'], 'old': old, 'new': new})
+            self.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return changes
 
     def update_equipment_scan_fields(self, id_, tag, prefix, page, is_ocr):
         """Update only the fields a P&ID rescan actually knows about — used
@@ -3934,9 +3971,15 @@ class Database:
 
     def add_deviation(self, node_id, description="Övrigt", equipment_id=None):
         cur = self.conn.execute(
-            "INSERT INTO deviations (node_id, description, equipment_id) VALUES (?,?,?)",
+            "INSERT OR IGNORE INTO deviations (node_id, description, equipment_id) VALUES (?,?,?)",
             (node_id, description, equipment_id))
         self.commit()
+        if cur.rowcount == 0:
+            row = self.conn.execute(
+                "SELECT id FROM deviations WHERE node_id=? AND description=? "
+                "AND equipment_id IS ? ORDER BY id LIMIT 1",
+                (node_id, description, equipment_id)).fetchone()
+            return row['id'] if row else None
         return cur.lastrowid
 
     def update_deviation(self, id_, description):

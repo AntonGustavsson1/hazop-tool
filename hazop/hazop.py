@@ -2905,7 +2905,7 @@ class MainWindow(QMainWindow):
             QApplication.instance().setPalette(QApplication.style().standardPalette())
 
     # ── Excel export (IEC 61511 layout) ──────────────────────────────────────
-    def _export_excel(self):
+    def _export_excel_legacy(self):
         try:
             import openpyxl
             from openpyxl.styles import (PatternFill, Font, Alignment, Border, Side)
@@ -3258,7 +3258,12 @@ class MainWindow(QMainWindow):
                  'cause': CAUSE_T, 'consequence': CONS_T,
                  'safeguard': SG_T}.get(kind)
         if type_ is None:
-            if kind == 'equipment':
+            if kind == 'pid_text':
+                # Text-layer hits are page results, not database records.
+                # Open the P&ID and navigate to the matching PDF page.
+                self._switch_view(1)
+                self.pid_panel.navigate_to_marker(max(0, int(id_) - 1), 0.0, 0.0)
+            elif kind == 'equipment':
                 self._switch_view(4)
                 self.equipment_panel.select_row_by_equipment_id(id_)
             elif kind == 'recommendation':

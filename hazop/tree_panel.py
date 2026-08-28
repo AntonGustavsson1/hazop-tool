@@ -2310,7 +2310,10 @@ class CauseTagPopup(QDialog):
                 self._type_cb.setCurrentIndex(type_index)
         self._object_cb.currentIndexChanged.connect(_select_object)
 
-        if cause_id is not None:
+        # Once the cause is linked to a defined P&ID object, placement is
+        # already represented by that object's gummiband marker.  Do not
+        # offer a second placement action in the object popup.
+        if cause_id is not None and not equipment_id:
             place = QPushButton("Placera objekt på P&ID")
             place.setFixedHeight(CONFIG['H_BTN_SMALL'])
             place.setStyleSheet(

@@ -6,7 +6,9 @@ fler filer"."""
 import re
 import json
 import logging
+import weakref
 from functools import partial
+from PyQt6 import sip
 
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QCompleter,
@@ -168,7 +170,9 @@ class _BoldTagTextEdit(QTextEdit):
     def _schedule_tag_completion(self):
         self._tag_completion_serial += 1
         serial = self._tag_completion_serial
-        QTimer.singleShot(220, lambda s=serial: self._show_tag_completion(s))
+        editor_ref = weakref.ref(self)
+        QTimer.singleShot(220, lambda s=serial, ref=editor_ref:
+                          _show_tag_completion_if_alive(ref, s))
 
     def _show_tag_completion(self, serial):
         try:
@@ -252,6 +256,14 @@ class _BoldTagTextEdit(QTextEdit):
                 cursor.setCharFormat(bold)
                 start = pos + len(tag)
         self.setCursorPosition(cursor_pos)
+
+def _show_tag_completion_if_alive(editor_ref, serial):
+    """Run a delayed completion only while its Qt editor still exists."""
+    editor = editor_ref()
+    if editor is None or sip.isdeleted(editor):
+        return
+    editor._show_tag_completion(serial)
+
 
 class RiskMatrixPopup(QDialog):
     """Popup risk matrix matching the configured format in Settings.
@@ -6362,6 +6374,10 @@ class ScenarioTablePanel(QWidget):
                 col_x      = self._table.columnViewportPosition(col)
                 item       = self._table.item(row, col)
                 desc       = item.text() if item is not None else ''
+                # Older/partially rebuilt rows may carry an explicit None in
+                # UserRole+9.  Treat it as an empty group, just like the
+                # paint and geometry helpers do, so a click on an ordinary
+                # cause cannot crash the event filter.
                 group_tags = (item.data(Qt.ItemDataRole.UserRole + 9) or []) if item else []
                 if not group_tags:
                     prefix_w = self._ors_tag_prefix_pixel_width(
