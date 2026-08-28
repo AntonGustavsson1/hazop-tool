@@ -3329,3 +3329,8 @@ sök-/export-/layouttester. Ingen visuell GUI-verifiering är gjord.
 ## 2026-08-28 — upplösningsoberoende riskmatris
 
 - Riskmatrisen är nu toppjusterad med naturlig radhöjd. QGridLayout får inte längre fördela tillgänglig skärmhöjd mellan raderna; extra yta hamnar under matrisen och smalare/lägre fönster använder scroll.
+## Tagg-popup och P&ID-koppling i Barriär (2026-08-28)
+
+Barriär/Safeguard visar P&ID-taggförslag redan efter ett tecken. Exakta taggar
+från P&ID-registret fetmarkeras live när de skrivs eller väljs; Konsekvens
+behåller tvåteckengränsen för popupen.

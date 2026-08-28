@@ -198,7 +198,8 @@ class _BoldTagTextEdit(QTextEdit):
             while start > 0 and re.match(r'[A-Za-z0-9_.-]', text[start - 1]):
                 start -= 1
             token = text[start:pos]
-            if len(token) < 2:
+            min_length = int(getattr(self, '_tag_completion_min_length', 2))
+            if len(token) < min_length:
                 self._tag_completer.popup().hide()
                 return
             if self._completer is not None:
@@ -228,6 +229,7 @@ class _BoldTagTextEdit(QTextEdit):
         cursor.insertText(str(completion))
         self.setTextCursor(cursor)
         self._tag_completion_range = None
+        self._refresh_pid_tag_bolding()
 
     def _insert_completion(self, completion):
         cursor = self.textCursor()
@@ -245,6 +247,20 @@ class _BoldTagTextEdit(QTextEdit):
         # this from textChanged can re-enter Qt's layout engine while it is
         # still processing the key event.
         self._apply_bold_formats()
+        self._refresh_pid_tag_bolding()
+
+    def _refresh_pid_tag_bolding(self):
+        """Bold complete P&ID tag tokens as text is entered."""
+        matcher = getattr(self, '_tag_matcher', None)
+        if not callable(matcher):
+            return
+        try:
+            matches = matcher(self.toPlainText())
+        except Exception:
+            matches = []
+        tags = list(dict.fromkeys(self._bold_tags + list(matches or [])))
+        if tags != self._bold_tags:
+            self.set_bold_tags(tags)
 
     def _apply_bold_formats(self):
         if not self._bold_tags:
@@ -2041,6 +2057,11 @@ class _PidDelegate(_ScenarioDelegate):
         # the editor rather than relying only on createEditor().
         super().setEditorData(editor, index)
         if isinstance(editor, _BoldTagTextEdit):
+            # Consequence keeps the deliberate two-character trigger, while
+            # Barrier/Safeguard must offer a P&ID match after one character.
+            editor._tag_completion_min_length = (
+                1 if index.column() == self._panel._C_SG else 2)
+            editor._tag_matcher = self._panel._matching_pid_tags
             item = self._panel._table.item(index.row(), index.column())
             tags = []
             if index.column() == self._panel._C_ORS:
@@ -6783,8 +6804,15 @@ class ScenarioTablePanel(QWidget):
         if not text:
             return []
         try:
-            catalogue = [str(row.get('tag') or '').strip()
-                         for row in self.db.equipment_items()]
+            catalogue = []
+            for row in self.db.equipment_items():
+                try:
+                    tag = row['tag']
+                except (KeyError, TypeError, IndexError):
+                    tag = row.get('tag') if hasattr(row, 'get') else ''
+                tag = str(tag or '').strip()
+                if tag:
+                    catalogue.append(tag)
         except Exception:
             return []
         found = []
