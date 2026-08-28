@@ -3417,3 +3417,25 @@ rader. Dubbelklick på primärraden öppnar nu endast primärtexten och ett klic
 på sekundärraden endast sekundärtexten. Klick på respektive fetstilt objekt
 öppnar dessutom Grupporsak-popupen filtrerad till rätt sida. Vid direkt
 redigering skrivs endast den valda raden tillbaka; den andra raden bevaras.
+
+## Två visuella rader även för äldre grupporsaker (2026-08-28)
+
+Äldre grupporsaker kan ha båda händelserna sparade som en enda piltext.
+Scenario-renderingen delar därför även dessa värden visuellt mellan primär- och
+sekundärraden utan att ändra det sparade databasvärdet.
+
+## Radanpassad Grupporsak-popup (2026-08-28)
+
+När ett gruppobjekt klickas i Orsak-cellen öppnas nu en popup för den klickade
+raden. Primärraden visar endast `Primärhändelse` med primärobjektets val och
+sekundärraden visar endast `Sekundärhändelse` med sekundärobjektets val.
+Den gemensamma popupens funktion `Byt primär / sekundär` visas endast när hela
+gruppen redigeras. Direkt textredigering i cellen lämnar den andra raden
+oförändrad.
+
+## Primärval bevarar sekundärrad (2026-08-28)
+
+När båda grupphändelserna redan finns valda ändrar ett nytt primärval endast
+primärtexten. Sekundärtexten behålls i databasen och i den återrenderade
+Orsak-cellen. Den separata tvåklicksregeln för helt nya grupper gäller fortsatt
+så att ett första primärval inte skapar en sekundärhändelse.

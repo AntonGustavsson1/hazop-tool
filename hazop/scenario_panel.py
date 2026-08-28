@@ -710,9 +710,11 @@ class GroupCausePopup(QDialog):
     def __init__(self, primary, secondary, direction, effect, parent=None,
                  only_column=None):
         super().__init__(parent)
-        self.setWindowTitle("Grupporsak")
+        self.setWindowTitle(
+            "Primärhändelse" if only_column == 0 else
+            "Sekundärhändelse" if only_column == 1 else "Grupporsak")
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
-        self.setMinimumWidth(390)
+        self.setMinimumWidth(260 if only_column is not None else 390)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -774,13 +776,14 @@ class GroupCausePopup(QDialog):
                 columns.addWidget(divider)
         layout.addLayout(columns)
 
-        swap = QPushButton("Byt primär / sekundär")
-        swap.setFixedHeight(CONFIG['H_BTN_SMALL'])
-        swap.setStyleSheet(
-            "QPushButton{background:transparent;color:#2F5FD0;border:0px;"
-            "font-weight:bold;} QPushButton:hover{color:#234AAB;}")
-        swap.clicked.connect(self.swap_requested.emit)
-        layout.addWidget(swap)
+        if only_column is None:
+            swap = QPushButton("Byt primär / sekundär")
+            swap.setFixedHeight(CONFIG['H_BTN_SMALL'])
+            swap.setStyleSheet(
+                "QPushButton{background:transparent;color:#2F5FD0;border:0px;"
+                "font-weight:bold;} QPushButton:hover{color:#234AAB;}")
+            swap.clicked.connect(self.swap_requested.emit)
+            layout.addWidget(swap)
 
     def set_current(self, column, value):
         """Keep the open popup's status in sync after an inline choice."""
@@ -5959,6 +5962,17 @@ class ScenarioTablePanel(QWidget):
             # This preserves partial groups (only primary or only secondary)
             # and also lets the user edit arbitrary group wording later.
             stored = (desc or '').strip()
+            if '\n' not in stored and len(_group_tags) >= 2:
+                # Older groups stored both events as one arrow sentence.
+                # Keep the visual contract of the Scenario group cell by
+                # splitting that legacy value back into primary/secondary
+                # lines without changing the database text.
+                if '→' in stored:
+                    left, right = stored.split('→', 1)
+                    stored = f'{left.strip()}\n{right.strip()}'
+                elif _group_tags[1] in stored:
+                    pos = stored.find(_group_tags[1])
+                    stored = f'{stored[:pos].strip()}\n{stored[pos:].strip()}'
             return f"{_num}.  {stored}" if _num else stored
         """The exact string measured (sizeHint) and painted (paint) for
         an ORS cell — "TAG, beskrivning", just "TAG" while the

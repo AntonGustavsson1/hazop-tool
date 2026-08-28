@@ -4710,6 +4710,12 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
                 secondary_equipment_id=secondary_id,
                 description='FI-1 felar högt → FV-1 öppnar fullt')
             panel = win.scenario_panel
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta)
+                       if m[1] == cause_id)
+            item = panel._table.item(row, panel._C_ORS)
+            self.assertIn('FI-1\nFV-1',
+                          panel._ors_combined_text(item, item.text()))
 
             panel._apply_group_cause_choice(cause_id, 0, 'Felar lågt')
             cause = dict(win.db.get_cause(cause_id))
@@ -4721,6 +4727,13 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             self.assertEqual(cause['group_choices_set'], 3)
             self.assertEqual(cause['description'],
                              'FI-1 felar lågt\nFV-1 öppnar felaktigt')
+
+            # Changing only the primary choice must not hide or overwrite the
+            # already selected secondary event.
+            panel._apply_group_cause_choice(cause_id, 0, 'Felar högt')
+            cause = dict(win.db.get_cause(cause_id))
+            self.assertEqual(cause['description'],
+                             'FI-1 felar högt\nFV-1 öppnar felaktigt')
 
             panel.load_node(node_id)
             row = next(r for r, m in enumerate(panel._row_meta)
@@ -4743,7 +4756,7 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             panel._group_edit_line = None
             self.assertEqual(
                 dict(win.db.get_cause(cause_id))['description'],
-                'FI-1 felar lågt\nFV-1 behöver manövreras manuellt')
+                'FI-1 felar högt\nFV-1 behöver manövreras manuellt')
 
             panel.load_node(node_id)
             row = next(r for r, m in enumerate(panel._row_meta)
@@ -4756,6 +4769,27 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             self.assertEqual(
                 dict(win.db.get_cause(cause_id))['description'],
                 'FI-1 felar lågt\nFV-1 behöver manövreras manuellt')
+
+    def test_group_popup_is_filtered_to_the_clicked_group_line(self):
+        from scenario_panel import GroupCausePopup
+        primary = {'tag': 'FI-1', 'equipment_type': 'Instrument'}
+        secondary = {'tag': 'FV-1', 'equipment_type': 'Reglerventil'}
+        primary_popup = GroupCausePopup(
+            primary, secondary, 'Felar högt', 'Öppnar fullt', only_column=0)
+        secondary_popup = GroupCausePopup(
+            primary, secondary, 'Felar högt', 'Öppnar fullt', only_column=1)
+        try:
+            self.assertEqual(primary_popup.windowTitle(), 'Primärhändelse')
+            self.assertEqual(secondary_popup.windowTitle(), 'Sekundärhändelse')
+            primary_buttons = [b.text() for b in primary_popup.findChildren(QPushButton)]
+            secondary_buttons = [b.text() for b in secondary_popup.findChildren(QPushButton)]
+            self.assertEqual(primary_buttons, ['Felar högt', 'Felar lågt'])
+            self.assertEqual(secondary_buttons,
+                             ['Öppnar felaktigt', 'Stänger felaktigt',
+                              'Öppnar fullt', 'Stänger helt'])
+        finally:
+            primary_popup.deleteLater()
+            secondary_popup.deleteLater()
 
     def test_on_equipment_dropped_on_deviation_ignores_unlinked_markers(self):
         with _TempDbMainWindow() as win:
