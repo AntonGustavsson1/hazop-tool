@@ -391,8 +391,13 @@ class HAZOPPreparationPanel(QWidget):
         self._matrix_container = QWidget()
         self._matrix_container.setMinimumWidth(0)
         self._matrix_grid = QGridLayout(self._matrix_container)
-        self._matrix_grid.setSpacing(0)
+        # The matrix is one continuous table.  Set both directions explicitly
+        # (rather than relying on QLayout's combined spacing property) and
+        # remove any style-provided outer padding from the host widget.
+        self._matrix_grid.setHorizontalSpacing(0)
+        self._matrix_grid.setVerticalSpacing(0)
         self._matrix_grid.setContentsMargins(0, 0, 0, 0)
+        self._matrix_container.setStyleSheet("QWidget { margin: 0px; padding: 0px; }")
 
         # A horizontal splitter gives the matrix a visible right-hand drag
         # edge.  The empty pane is intentional: it keeps the matrix anchored
@@ -1315,7 +1320,7 @@ class HAZOPPreparationPanel(QWidget):
 
         _hdr_style = ("font-size:8px; font-weight:bold;"
                       "border:1px solid #aaa; border-radius:0px;"
-                      "background:#eef2f7; padding:0 3px;")
+                      "background:#eef2f7; padding:0 3px; margin:0px;")
 
         # The corner is an actual control: clicking F\\C (or C\\F) swaps
         # the semantic axes while keeping the matrix data intact.
