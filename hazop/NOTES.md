@@ -3317,3 +3317,6 @@ sök-/export-/layouttester. Ingen visuell GUI-verifiering är gjord.
 ## 2026-08-28 — dubbel målning i deltagarmatrisen
 
 - Headless-testernas modellvärde för närvaro såg korrekt ut men bevisade inte vad Qt målade visuellt. Modellcellen använder därför inte längre `checkState`; närvaro lagras i en vanlig dataroll och endast den riktiga QCheckBox-widgeten visas.
+## 2026-08-28 — radavstånd vid kategorier till höger
+
+- Riskmatrisens grid behåller inte längre gamla explicita radminimum när orienteringen byggs om. Dessa kvarvarande höjder var orsaken till luft mellan raderna när konsekvenskategorierna låg till höger.

@@ -1287,6 +1287,12 @@ class HAZOPPreparationPanel(QWidget):
                 # a queued deletion that crashes the next click on F\\C.
                 if widget not in (self._x_rev_chk, self._y_rev_chk):
                     widget.deleteLater()
+        # QGridLayout retains explicit row minimums across rebuilds.  When
+        # switching orientation, an old 40 px row could therefore remain
+        # behind a new 28 px category editor and appear as air between rows.
+        for row in range(32):
+            self._matrix_grid.setRowMinimumHeight(row, 0)
+            self._matrix_grid.setRowStretch(row, 0)
         self._cell_buttons       = []
         self._x_label_edits      = []
         self._y_label_edits      = []
@@ -1619,6 +1625,8 @@ class HAZOPPreparationPanel(QWidget):
                 doc.setTextWidth(edit.viewport().width())
                 needed = max(needed, int(doc.size().height()) + 8)
         for row in range(min(len(self._y_label_edits), len(self._cell_buttons))):
+            self._matrix_grid.setRowMinimumHeight(row + 1, needed)
+            self._matrix_grid.setRowStretch(row + 1, 0)
             self._y_label_edits[row].setFixedHeight(needed)
             for btn in self._cell_buttons[row][1]:
                 btn.setFixedHeight(needed)
