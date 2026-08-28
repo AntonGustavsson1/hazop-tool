@@ -1618,7 +1618,12 @@ class HAZOPPreparationPanel(QWidget):
         rows = getattr(self, '_category_row_edits', None) or []
         if not rows or not getattr(self, '_y_label_edits', None):
             return
-        needed = CONFIG['H_ROW_STD']
+        # The risk cells themselves are 40 px high.  A shorter category
+        # editor is vertically centred in that row and looks like a gap
+        # between rows; once its text reaches three lines it merely happens
+        # to grow to 40 px, which masked the problem.  Keep the whole row
+        # aligned from the start and grow all members together thereafter.
+        needed = max(CONFIG['H_ROW_STD'], 40)
         for edits in rows:
             for edit in edits:
                 doc = edit.document()

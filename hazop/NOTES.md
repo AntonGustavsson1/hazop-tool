@@ -3320,3 +3320,6 @@ sök-/export-/layouttester. Ingen visuell GUI-verifiering är gjord.
 ## 2026-08-28 — radavstånd vid kategorier till höger
 
 - Riskmatrisens grid behåller inte längre gamla explicita radminimum när orienteringen byggs om. Dessa kvarvarande höjder var orsaken till luft mellan raderna när konsekvenskategorierna låg till höger.
+## 2026-08-28 — gemensam höjd för högra kategorikolumner
+
+- Kategori-editorn till höger om riskmatrisen hade 28 px medan riskcellerna var 40 px. Det skapade synlig luft tills en lång text tvingade fram tre rader. Den högra layouten börjar nu på 40 px och växer gemensamt för alla delar av raden.
