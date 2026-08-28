@@ -2,13 +2,6 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
-## Grupporsak: objektnummer och objekttagg förblir synliga vid redigering (2026-08-28)
-
-Inline-editorn för en grupporsak börjar nu efter både löpnumret och den
-fetmarkerade objekttaggen, med ett tydligt extra avstånd. Den vita editorbakgrunden
-kan därför inte täcka objektinformationen under redigering. Verifierat med
-syntaxkontroll, smoke-test och grupprelaterade integrationstester.
-
 ## Grupporsak: objekttaggar öppnar inte längre Primär/Sekundär-popup (2026-08-28)
 
 Objekttaggarna i grupporsakens Orsak-cell är nu presentation-only. Klick eller

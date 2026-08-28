@@ -2399,17 +2399,10 @@ class _PidDelegate(_ScenarioDelegate):
             if group_line in (0, 1) and len(group_tags or []) >= 2:
                 tag_font = QFont(option.font)
                 tag_font.setBold(True)
-                # Keep a clear safety gap between the painted object number/
-                # tag and the live editor.  The editor has an opaque white
-                # background, so starting it too close to the tag can make
-                # its border/padding visually cover the last tag pixels.
-                # This is deliberately based on the same number + bold-tag
-                # metrics used by _PidDelegate.paint().
-                group_editor_gap = 8
                 prefix_w = (QFontMetrics(option.font).horizontalAdvance(
                                 f"{num}.  ") if num and group_line == 0 else 0)
                 prefix_w += QFontMetrics(tag_font).horizontalAdvance(
-                    str(group_tags[group_line])) + group_editor_gap
+                    str(group_tags[group_line])) + 5
                 line_h = max(_ORS_FIRST_LINE_H,
                              QFontMetrics(option.font).height() + 4)
                 top = r.top() + 2 + line_h * group_line
