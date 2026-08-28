@@ -2287,6 +2287,12 @@ class _PidDelegate(_ScenarioDelegate):
             item = self._panel._table.item(index.row(), col)
             desc = item.text() if item is not None else ''
             prefix_w = self._panel._ors_tag_prefix_pixel_width(item, desc, option.font)
+            num = item.data(Qt.ItemDataRole.UserRole + 10) if item is not None else None
+            if num:
+                # The painted ORS text starts with the cause number before
+                # the bold object tag. Leave both parts outside the editor.
+                prefix_w += QFontMetrics(option.font).horizontalAdvance(
+                    f"{num}.  ")
             freq_x, freq_w, _freq = self._panel._ors_freq_zone_geometry(
                 item, r.left() + 2, r.right() - 2)
             editor.setGeometry(QRect(r.left() + 2 + prefix_w, r.top() + 2,
@@ -3445,14 +3451,15 @@ class ScenarioTablePanel(QWidget):
         self._hdr_lbl.setFont(f)
         hdr_row.addWidget(self._hdr_lbl)
         hdr_row.addStretch()
+        # Retained as a non-visible compatibility object for older host code;
+        # width filling is automatic and this control is never added to the UI.
         self._fill_btn = QPushButton("Fyll bredd")
+        self._fill_btn.hide()
         self._fill_btn.setIcon(_icon('resize-horizontal'))
         self._fill_btn.setToolTip(
             "Fördela om Orsak/Konsekvens/Barriärer-kolumnerna så de fyller "
             "hela bredden just nu — kolumnerna går alltid att dra i")
         self._fill_btn.clicked.connect(self._fill_width_once)
-        hdr_row.addWidget(self._fill_btn)
-        hdr_row.addSpacing(8)
         hdr_row.addWidget(QLabel("Textstorlek:"))
         self._fs_spin = QSpinBox()
         self._fs_spin.setRange(7, 16)
@@ -3559,7 +3566,7 @@ class ScenarioTablePanel(QWidget):
         # the panel has a real viewport width; otherwise the first call can
         # calculate from a construction-time width and appear ineffective.
         self._auto_fill_pending = True
-        QTimer.singleShot(0, self._fill_width_once_unless_user_set)
+        QTimer.singleShot(0, self._fill_width_once)
 
         # ── Sticky context bar — always shows current Nod + Avvikelse ──────────
         self._ctx_bar = QLabel()
@@ -3579,8 +3586,12 @@ class ScenarioTablePanel(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        if getattr(self, '_auto_fill_pending', False):
-            QTimer.singleShot(0, self._fill_width_once_unless_user_set)
+        QTimer.singleShot(0, self._fill_width_once)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Keep the former "Fyll bredd" behavior active continuously.
+        QTimer.singleShot(0, self._fill_width_once)
 
     def allow_full_height(self):
         """Lift the 380px cap so this panel fills whatever container it's
@@ -5125,8 +5136,18 @@ class ScenarioTablePanel(QWidget):
         # across several consequences without duplicating it.
         if acts is None:
             acts = self.db.recommendations_for_consequence(cid)
+        if recommendation is not None and acts:
+            # Use the freshly fetched linked row as the source of truth. This
+            # avoids rendering the placeholder when the row object passed by
+            # the prefetch path is stale after an inline edit.
+            rec_id = recommendation['id']
+            recommendation = next(
+                (a for a in acts if a['id'] == rec_id), recommendation)
+        rec_description = ''
+        if recommendation is not None:
+            rec_description = (recommendation['description'] or '').strip()
         rek_text = (f"R-{recommendation['id']:03d}. "
-                    f"{recommendation['description'] or 'Ny rekommendation'}"
+                    f"{rec_description or 'Ny rekommendation'}"
                     if recommendation else '')
         rek_item = QTableWidgetItem(rek_text or '')
         rek_item.setData(Qt.ItemDataRole.UserRole,
@@ -5154,8 +5175,9 @@ class ScenarioTablePanel(QWidget):
         height it needs, same as ORS/KON."""
         if not acts:
             return ''
-        return '\n'.join(f"R-{a['id']:03d}. {a['description'] or 'Ny rekommendation'}"
-                          for a in acts)
+        return '\n'.join(
+            f"R-{a['id']:03d}. {(a['description'] or '').strip() or 'Ny rekommendation'}"
+            for a in acts)
 
     def _get_cons_context(self, cons_id: int):
         """Return (deviation, comp_type, cause_text) for the consequence."""

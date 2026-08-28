@@ -3355,3 +3355,11 @@ skriva utan att klicka i fältet igen.
 Barriärens löpnummer behandlas nu som separat visningsmetadata även efter
 inline-redigering. Editorn lämnar plats för numret och sparandet återställer
 numret explicit, så det försvinner inte när barriärtexten ändras.
+## Scenario-layout och rekommendationstext (2026-08-28)
+
+Den manuella knappen Fyll bredd är borttagen från användargränssnittet och
+kolumnfördelningen körs automatiskt även efter fönster- och splitterstorlek.
+Orsakseditorn lämnar nu plats för både löpnummer och hela objekt-taggen.
+Rekommendationscellen läser dessutom om den länkade rekommendationen från det
+aktuella underlaget vid rendering, så den sparade texten visas i stället för
+standardtexten "Ny rekommendation".
