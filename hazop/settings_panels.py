@@ -12,7 +12,7 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QGroupBox, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget,
+    QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QTableWidget,
     QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -45,6 +45,7 @@ class SettingsPanel(QWidget):
     is duplicated across both panels rather than shared."""
 
     matrix_changed = pyqtSignal()
+    pid_render_settings_changed = pyqtSignal()
 
     def __init__(self, db: Database):
         super().__init__()
@@ -200,6 +201,36 @@ class SettingsPanel(QWidget):
         orient_gl.addWidget(self._page_orientation_combo)
         pid_l.addWidget(orient_grp)
 
+        # ── Tunna P&ID-linjer ────────────────────────────────────────────────
+        line_grp = QGroupBox("P&ID-linjer")
+        line_gl = QVBoxLayout(line_grp)
+        line_gl.setSpacing(6)
+        line_lbl = QLabel(
+            "Förstärker mycket tunna linjer i skärmvisningen så att de "
+            "inte försvinner vid låg zoom. Påverkar inte original-PDF:en "
+            "eller sparade positioner.")
+        line_lbl.setWordWrap(True)
+        line_gl.addWidget(line_lbl)
+        self._min_pid_lines_chk = QCheckBox("Förstärk tunna linjer")
+        self._min_pid_lines_chk.setToolTip(
+            "Gör mycket tunna streck tydligare i P&ID-vyn. Avmarkera "
+            "för originalets oförändrade rastervisning.")
+        self._min_pid_lines_chk.toggled.connect(self._on_pid_line_setting_changed)
+        line_gl.addWidget(self._min_pid_lines_chk)
+        line_row = QHBoxLayout()
+        line_row.addWidget(QLabel("Förstärkning:"))
+        self._min_pid_lines_spin = QSpinBox()
+        self._min_pid_lines_spin.setRange(1, 4)
+        self._min_pid_lines_spin.setValue(1)
+        self._min_pid_lines_spin.setSuffix(" px")
+        self._min_pid_lines_spin.setToolTip(
+            "Antal bildpunkter som läggs till på varje sida av mycket tunna streck.")
+        self._min_pid_lines_spin.valueChanged.connect(self._on_pid_line_setting_changed)
+        line_row.addWidget(self._min_pid_lines_spin)
+        line_row.addStretch()
+        line_gl.addLayout(line_row)
+        pid_l.addWidget(line_grp)
+
         pid_l.addStretch()
         tabs.addTab(pid_tab, "P&ID-inställningar")
 
@@ -230,6 +261,14 @@ class SettingsPanel(QWidget):
             self.db.get_config('tag_strip_spaces', '1') == '1')
         self._load_replacement_rows(
             self.db.get_config('tag_identifier_replacements', '') or '')
+        self._min_pid_lines_chk.setChecked(
+            self.db.get_config('pid_min_line_width_enabled', '1') == '1')
+        try:
+            width = int(self.db.get_config('pid_min_line_width', '1') or '1')
+        except (TypeError, ValueError):
+            width = 1
+        self._min_pid_lines_spin.setValue(max(1, min(4, width)))
+        self._min_pid_lines_spin.setEnabled(self._min_pid_lines_chk.isChecked())
 
     def _add_replacement_row(self, source='', target=''):
         row = QWidget()
@@ -348,6 +387,12 @@ class SettingsPanel(QWidget):
             self.db.get_config('pid_page_orientation_hint', 'auto'))
         if idx >= 0:
             self._page_orientation_combo.setCurrentIndex(idx)
+    def _on_pid_line_setting_changed(self, *_args):
+        enabled = self._min_pid_lines_chk.isChecked()
+        self._min_pid_lines_spin.setEnabled(enabled)
+        self.db.set_config('pid_min_line_width_enabled', '1' if enabled else '0')
+        self.db.set_config('pid_min_line_width', str(self._min_pid_lines_spin.value()))
+        self.pid_render_settings_changed.emit()
 
     def refresh_tag_memory(self):
         """Refresh the Smart igenkänning tab so newly learned tags show up."""

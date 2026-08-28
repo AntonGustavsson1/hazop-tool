@@ -683,6 +683,25 @@ class AdaptiveRasterZoomTests(unittest.TestCase):
             "at normal (100%) zoom the fixed base raster is already crisp "
             "enough — must not upgrade unnecessarily")
 
+    def test_min_pdf_line_width_adds_pixels_without_changing_page_geometry(self):
+        import fitz
+        from pid_viewer import _apply_min_pdf_line_width
+        doc = fitz.open()
+        page = doc.new_page(width=100, height=80)
+        page.draw_line(fitz.Point(10, 40), fitz.Point(90, 40), width=0.2)
+        pix = page.get_pixmap(matrix=fitz.Matrix(3, 3), alpha=False)
+        raw0, width0, height0, stride0 = _apply_min_pdf_line_width(pix, 0)
+        raw1, width1, height1, stride1 = _apply_min_pdf_line_width(pix, 1)
+        self.assertEqual((width0, height0), (width1, height1))
+        self.assertEqual(stride0, stride1)
+        self.assertEqual(len(raw0), len(raw1))
+        dark0 = sum(1 for i in range(0, len(raw0), 3)
+                    if sum(raw0[i:i + 3]) < 700)
+        dark1 = sum(1 for i in range(0, len(raw1), 3)
+                    if sum(raw1[i:i + 3]) < 700)
+        self.assertGreater(dark1, dark0)
+        doc.close()
+
     def test_target_raster_scale_increases_with_zoom(self):
         """The bug report's exact scenario: zooming the QGraphicsView in
         past what _RASTER_SCALE alone can supply must raise the target

@@ -2,6 +2,14 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Läsbarare tunna P&ID-linjer (2026-08-28)
+
+P&ID-rastervisningen kan nu förstärka mycket tunna streck med en mild
+bildfilterbaserad minsta bredd. Standard är 1 px förstärkning per sida.
+Funktionen styrs av `P&ID-inställningar` → `P&ID-linjer`, där den kan
+stängas av eller justeras mellan 1 och 4 px. Original-PDF, PDF-export och
+alla sparade PDF-koordinater påverkas inte; endast skärmrasterbilden byggs om.
+
 ## Ramfri inline-redigering (2026-08-28)
 
 Inline-editorn i scenario-tabellen visar inte längre en extra ram eller

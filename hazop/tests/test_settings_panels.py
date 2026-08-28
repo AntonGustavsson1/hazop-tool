@@ -1632,6 +1632,21 @@ class SettingsPanelPidTabRenameAndNewSettingsTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_min_pid_line_width_setting_persists_and_can_be_disabled(self):
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            self.assertTrue(panel._min_pid_lines_chk.isChecked())
+            self.assertEqual(panel._min_pid_lines_spin.value(), 1)
+            panel._min_pid_lines_spin.setValue(2)
+            self.assertEqual(self.db.get_config('pid_min_line_width'), '2')
+            panel._min_pid_lines_chk.setChecked(False)
+            self.assertEqual(self.db.get_config('pid_min_line_width_enabled'), '0')
+            panel._min_pid_lines_chk.setChecked(True)
+            self.assertEqual(self.db.get_config('pid_min_line_width_enabled'), '1')
+        finally:
+            panel.deleteLater()
+
     def test_tag_strip_spaces_checkbox_still_works(self):
         from hazop import SettingsPanel
         panel = SettingsPanel(self.db)

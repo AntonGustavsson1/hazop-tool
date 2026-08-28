@@ -1565,6 +1565,7 @@ class PIDPanel(QWidget):
 
         # ── Viewer ────────────────────────────────────────────────────────────
         self.viewer = PIDGraphicsView()
+        self.viewer.set_min_pdf_line_width(self._configured_min_pdf_line_width())
         self.viewer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.viewer.node_markup_finished.connect(self._on_markup_finished)
         self.viewer.context_action.connect(self._on_context_action)
@@ -4126,6 +4127,32 @@ class PIDPanel(QWidget):
             if float(freq_per_year) < b:
                 return i - 1
         return len(boundaries) - 1
+
+    def _configured_min_pdf_line_width(self):
+        """Return the project setting used for display-only line enhancement."""
+        if self.db.get_config('pid_min_line_width_enabled', '1') != '1':
+            return 0
+        try:
+            return max(1, min(4, int(
+                self.db.get_config('pid_min_line_width', '1') or '1')))
+        except (TypeError, ValueError):
+            return 1
+
+    def refresh_pdf_rendering(self):
+        """Re-render the open P&ID after a display rendering setting changes."""
+        width = self._configured_min_pdf_line_width()
+        if self.viewer.pdf_doc is None:
+            self.viewer.set_min_pdf_line_width(width)
+            return
+        if not self.viewer.set_min_pdf_line_width(width):
+            return
+        self._save_page_view(self._current_display_page)
+        active = sorted(self.viewer._all_page_items.keys())
+        layout_offsets = dict(self.viewer._page_offsets)
+        self.viewer._render_all_pages(
+            active_pages=active, layout_offsets=layout_offsets)
+        self._load_overlays()
+        self._restore_page_view(self._current_display_page)
 
     def try_reload_pdf(self, override_path=None):
         path = override_path or self.db.get_pid_path()

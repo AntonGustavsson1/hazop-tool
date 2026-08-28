@@ -41,7 +41,7 @@ from pid_viewer import (
     MODE_ADD_SHEET_LINK, MODE_PICK_REF_TAG, MODE_ANNOTATION,
     MODE_PLACE_EQUIPMENT,
     MODE_EDIT_EQUIPMENT,
-    _icon, _get_red_symbol_svg, _PageRenderer,
+    _icon, _get_red_symbol_svg, _PageRenderer, _apply_min_pdf_line_width,
     SimilarSymbolSearchDialog,
 )
 # MODE_SMART_POLYLINE / SmartPipeTracer ("Smart polylinje") removed
@@ -147,6 +147,9 @@ class PIDGraphicsView(QGraphicsView):
         self.page_rect_width  = 0.0
         self.page_rect_height = 0.0
         self._RASTER_SCALE    = 3.0
+        # Display-only enhancement for sub-pixel P&ID strokes. Zero disables
+        # it; the PIDPanel initialises this from the project settings.
+        self._min_pdf_line_width = 0
         self._pdf_path        = None
         self._page_cache: dict = {}
         # Raster scale each cached pixmap was actually rendered at — a page
@@ -298,6 +301,28 @@ class PIDGraphicsView(QGraphicsView):
                 pass
             self.pdf_doc = None
 
+    def set_min_pdf_line_width(self, width):
+        """Set the display-only thin-line enhancement in source pixels.
+
+        Existing raster caches are discarded because their pixels were made
+        with the previous setting. The caller is responsible for invoking
+        ``_render_all_pages`` afterwards when a document is open.
+        """
+        try:
+            width = max(0, min(4, int(width or 0)))
+        except (TypeError, ValueError):
+            width = 0
+        if width == self._min_pdf_line_width:
+            return False
+        self._min_pdf_line_width = width
+        self._cancel_prefetch()
+        self._cancel_lod_render()
+        self._page_cache.clear()
+        self._page_cache_scale.clear()
+        self._cache_order.clear()
+        self._page_display_scale.clear()
+        return True
+
     def load_pdf(self, path, page=0, layout_offsets=None, active_pages=None,
                  progress_cb=None, page_rotations=None):
         if not HAS_PYMUPDF:
@@ -353,8 +378,9 @@ class PIDGraphicsView(QGraphicsView):
         else:
             mat = fitz.Matrix(self._RASTER_SCALE, self._RASTER_SCALE)
             pix = page.get_pixmap(matrix=mat, alpha=False)
-            img = QImage(pix.samples, pix.width, pix.height,
-                         pix.stride, QImage.Format.Format_RGB888)
+            raw, width, height, stride = _apply_min_pdf_line_width(
+                pix, self._min_pdf_line_width)
+            img = QImage(raw, width, height, stride, QImage.Format.Format_RGB888)
             pixmap = QPixmap.fromImage(img.copy())
             self._add_to_cache(pn, pixmap)
 
@@ -412,8 +438,9 @@ class PIDGraphicsView(QGraphicsView):
             # coordinate) stays identical to a full-res render.
             mat = fitz.Matrix(self._LOW_SCALE, self._LOW_SCALE)
             pix = fitz_page.get_pixmap(matrix=mat, alpha=False)
-            img = QImage(pix.samples, pix.width, pix.height,
-                         pix.stride, QImage.Format.Format_RGB888)
+            raw, width, height, stride = _apply_min_pdf_line_width(
+                pix, self._min_pdf_line_width)
+            img = QImage(raw, width, height, stride, QImage.Format.Format_RGB888)
             pixmap = QPixmap.fromImage(img.copy())
             self._low_pixmaps[pn] = pixmap
 
@@ -533,8 +560,9 @@ class PIDGraphicsView(QGraphicsView):
         rotations = {n: (self._intrinsic_rotation.get(n, 0) +
                          self._page_rotation_override.get(n, 0)) % 360
                     for n in to_fetch if n in self._page_rotation_override}
-        self._prefetch_thread = _PageRenderer(self._pdf_path, to_fetch, self._RASTER_SCALE,
-                                              rotations=rotations)
+        self._prefetch_thread = _PageRenderer(
+            self._pdf_path, to_fetch, self._RASTER_SCALE,
+            rotations=rotations, min_line_width=self._min_pdf_line_width)
         self._prefetch_thread.page_ready.connect(self._on_page_prefetched)
         self._prefetch_thread.start()
 
@@ -655,8 +683,9 @@ class PIDGraphicsView(QGraphicsView):
                               self._page_rotation_override.get(pn, 0)) % 360
                         for pn in to_render}
             self._cancel_lod_render()
-            self._lod_renderer = _PageRenderer(self._pdf_path, to_render,
-                                               batch_scale, rotations=rotations)
+            self._lod_renderer = _PageRenderer(
+                self._pdf_path, to_render, batch_scale,
+                rotations=rotations, min_line_width=self._min_pdf_line_width)
             self._lod_renderer.page_ready.connect(self._on_lod_page_ready)
             self._lod_renderer.start()
 

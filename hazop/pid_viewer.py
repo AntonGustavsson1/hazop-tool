@@ -50,6 +50,32 @@ def _qt_msg_handler(mode, context, message):
 
 qInstallMessageHandler(_qt_msg_handler)
 
+
+def _apply_min_pdf_line_width(pix, min_width=0):
+    """Gently thicken very fine rasterised PDF strokes for screen display.
+
+    PyMuPDF does not expose a minimum stroke width for ``get_pixmap()``.
+    Applying a small PIL ``MinFilter`` after rasterisation is therefore the
+    least invasive way to keep sub-pixel P&ID lines visible at overview
+    zooms. The original PDF and all PDF-space coordinates remain untouched.
+    ``min_width`` is the number of source pixels added on each side; zero is
+    a strict no-op. If PIL is unavailable, the unmodified pixmap is used.
+    """
+    try:
+        amount = max(0, min(4, int(min_width or 0)))
+    except (TypeError, ValueError):
+        amount = 0
+    if amount <= 0 or not HAS_PIL:
+        return pix.samples, pix.width, pix.height, pix.stride
+    try:
+        image = _PILImage.frombytes('RGB', (pix.width, pix.height), pix.samples)
+        image = image.filter(ImageFilter.MinFilter(2 * amount + 1))
+        raw = image.tobytes()
+        return raw, pix.width, pix.height, pix.width * 3
+    except Exception:
+        logging.debug('Could not apply minimum P&ID line width', exc_info=True)
+        return pix.samples, pix.width, pix.height, pix.stride
+
 from PyQt6.QtWidgets import (
     QWidget, QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QComboBox, QListWidget, QListWidgetItem, QAbstractItemView,
@@ -2723,11 +2749,13 @@ class _PageRenderer(QThread):
     # nominal _RASTER_SCALE, see PIDGraphicsView._target_raster_scale)
     page_ready = pyqtSignal(int, object, int, int, int, float)
 
-    def __init__(self, pdf_path, pages, scale, parent=None, rotations=None):
+    def __init__(self, pdf_path, pages, scale, parent=None, rotations=None,
+                 min_line_width=0):
         super().__init__(parent)
         self._path  = pdf_path
         self._pages = pages
         self._scale = scale
+        self._min_line_width = min_line_width
         # {page_num: total rotation degrees} — this thread opens its OWN fitz
         # document (can't safely share PIDGraphicsView.pdf_doc across
         # threads), so a manual per-page rotation override applied there
@@ -2749,8 +2777,9 @@ class _PageRenderer(QThread):
                     page.set_rotation(self._rotations[pn])
                 mat  = fitz.Matrix(self._scale, self._scale)
                 pix  = page.get_pixmap(matrix=mat, alpha=False)
-                self.page_ready.emit(pn, bytes(pix.samples), pix.width, pix.height,
-                                     pix.stride, self._scale)
+                raw, width, height, stride = _apply_min_pdf_line_width(
+                    pix, self._min_line_width)
+                self.page_ready.emit(pn, raw, width, height, stride, self._scale)
         except Exception as e:
             # Log exception silently — thread errors shouldn't crash main UI
             import logging

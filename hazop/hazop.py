@@ -1552,6 +1552,8 @@ class MainWindow(QMainWindow):
         # ── Page 6: Settings ──────────────────────────────────────────────────
         self.settings_panel = SettingsPanel(self.db)
         self.settings_panel.matrix_changed.connect(self._on_matrix_changed)
+        self.settings_panel.pid_render_settings_changed.connect(
+            self.pid_panel.refresh_pdf_rendering)
         self.hazop_prep_panel.matrix_changed.connect(self._on_matrix_changed)
         self.view_stack.addWidget(self.settings_panel)
 
