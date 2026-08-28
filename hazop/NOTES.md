@@ -2,6 +2,13 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Grupporsak: liten extra marginal före fri text (2026-08-28)
+
+Editorns horisontella startposition flyttas endast 5 px åt höger efter den
+aktuella radens objekttagg. Samma geometriregel gäller primär och sekundär
+rad; radval, felhändelser och sparlogik är oförändrade. Verifierat med
+syntaxkontroll, smoke-test och riktat grupp-radtest.
+
 ## Grupporsak: objekttaggar öppnar inte längre Primär/Sekundär-popup (2026-08-28)
 
 Objekttaggarna i grupporsakens Orsak-cell är nu presentation-only. Klick eller

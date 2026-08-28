@@ -2401,8 +2401,11 @@ class _PidDelegate(_ScenarioDelegate):
                 tag_font.setBold(True)
                 prefix_w = (QFontMetrics(option.font).horizontalAdvance(
                                 f"{num}.  ") if num and group_line == 0 else 0)
+                # Keep the editable text clearly to the right of the
+                # object tag on BOTH visual rows.  Do not change group_line
+                # or any of the primary/secondary data handling here.
                 prefix_w += QFontMetrics(tag_font).horizontalAdvance(
-                    str(group_tags[group_line])) + 5
+                    str(group_tags[group_line])) + 10
                 line_h = max(_ORS_FIRST_LINE_H,
                              QFontMetrics(option.font).height() + 4)
                 top = r.top() + 2 + line_h * group_line
