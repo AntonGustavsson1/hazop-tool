@@ -3305,3 +3305,6 @@ sök-/export-/layouttester. Ingen visuell GUI-verifiering är gjord.
 ## 2026-08-28 — gemensamt faktorregister i Enablers
 
 - Dialogen Övriga reduktionsfaktorer läser nu om det gemensamma faktorregistret vid varje uppdatering och efter redigering. En ny eller ändrad enabler blir därför direkt valbar även från en annan konsekvens.
+## 2026-08-28 — Nytt projekt och deltagardatum
+
+- När ett nytt projekt laddades byttes databaskopplingen för deltagarpanelen, men den synliga tabellen uppdaterades inte. `_reload_all_panels()` refreshar nu deltagarmatrisen direkt, så analystillfällen och datum från föregående projekt försvinner omedelbart.

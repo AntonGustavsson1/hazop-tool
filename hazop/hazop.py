@@ -3726,6 +3726,11 @@ class MainWindow(QMainWindow):
                 sub = getattr(hp, attr, None)
                 if sub is not None:
                     sub.db = db
+                    # These panels own visible tables, so changing only the
+                    # db reference leaves the previous project's dates and
+                    # participants painted until the tab is opened again.
+                    if attr == '_participant_matrix_panel':
+                        sub.refresh()
             except Exception:
                 pass
         # analysis_panel (PIDAnalysisPanel) is likewise backed by
