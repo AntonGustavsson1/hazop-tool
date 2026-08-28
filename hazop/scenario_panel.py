@@ -2407,6 +2407,13 @@ class _PidDelegate(_ScenarioDelegate):
                 group_tags = self._panel._table.item(
                     index.row(), index.column()).data(
                         Qt.ItemDataRole.UserRole + 9) or []
+                # A newly created group may still have an empty description
+                # when the secondary row is edited first. Preserve both
+                # linked object tags as the two visual row anchors instead
+                # of letting the untouched primary row become blank.
+                for line_no in (0, 1):
+                    if not lines[line_no].strip() and line_no < len(group_tags):
+                        lines[line_no] = str(group_tags[line_no]).strip()
                 tag = str(group_tags[int(group_line)]).strip()
                 lines[int(group_line)] = f'{tag} {clean}'.strip() if tag else clean
                 while lines and not lines[-1].strip():

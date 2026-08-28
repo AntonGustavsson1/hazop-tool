@@ -48,6 +48,13 @@ Renderingen kompletterar då den saknade andra raden med sekundärtaggen, så
 den inte försvinner när primärorsaken öppnas för redigering. Verifierat med
 ett särskilt integrationstest för detta nygruppsfall.
 
+## Grupporsak: primärtagg kvar efter sekundärredigering (2026-08-28)
+
+Vid sparning av en sekundärrad fylls en tom, orörd grupprad nu med sitt
+kopplade objekttaggvärde. Därmed kan primärobjektet inte försvinna när en ny
+grupps sekundärtext redigeras och editorn stängs. Verifierat med ett riktat
+test för ny grupp samt befintliga grupp- och smoke-tester.
+
 ## Grupporsak: sekundärredigering sparas inte som primär (2026-08-28)
 
 Vid fokusförlust efter redigering av sekundärraden normaliseras editorns

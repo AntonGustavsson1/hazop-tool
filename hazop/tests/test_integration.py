@@ -4897,6 +4897,13 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             self.assertFalse(panel.findChildren(GroupCausePopup),
                               'clicking right of the tag must not open the object picker')
             close_editors()
+            ors_item = table.item(row, panel._C_ORS)
+            self.assertEqual(
+                ors_item.data(Qt.ItemDataRole.UserRole + 9),
+                ['FI-1', 'FV-1'])
+            combined = panel._ors_combined_text(ors_item, ors_item.text())
+            self.assertIn('FI-1', combined)
+            self.assertIn('FV-1', combined)
 
             click_in_group_row(1)
             editors = table.viewport().findChildren(_BoldTagTextEdit)
@@ -4955,7 +4962,7 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
                 dict(win.db.get_cause(cause_id))['description'],
                 'FI-1 primary custom\nFV-1 needs manual operation')
 
-    def test_new_group_with_only_primary_text_keeps_secondary_tag_visible(self):
+    def test_new_group_keeps_both_object_tags_when_secondary_text_saved(self):
         with _TempDbMainWindow() as win:
             node_id = win.db.add_node()
             dev_id = win.db.get_or_create_deviation(node_id, 'High flow')
@@ -4967,14 +4974,25 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             win.db.update_cause(
                 cause_id, comp_type='Instrument', comp_tag='FI-1 + FV-1',
                 equipment_id=primary_id, secondary_equipment_id=secondary_id,
-                description='FI-1 primary text', group_choices_set=0)
+                description='', group_choices_set=0)
             panel = win.scenario_panel
             panel.load_node(node_id)
             row = next(r for r, m in enumerate(panel._row_meta)
                        if m[1] == cause_id)
             item = panel._table.item(row, panel._C_ORS)
             combined = panel._ors_combined_text(item, item.text())
-            self.assertEqual(combined, '1.  FI-1 primary text\nFV-1')
+            self.assertEqual(combined, '1.  FI-1\nFV-1')
+
+            from scenario_panel import _BoldTagTextEdit
+            editor = _BoldTagTextEdit(panel._table.viewport())
+            editor.setProperty('group_line', 1)
+            editor.setText('secondary text')
+            panel._pid_delegate.setModelData(
+                editor, panel._table.model(),
+                panel._table.model().index(row, panel._C_ORS))
+            self.assertEqual(
+                dict(win.db.get_cause(cause_id))['description'],
+                'FI-1\nFV-1 secondary text')
 
     def test_on_equipment_dropped_on_deviation_ignores_unlinked_markers(self):
         with _TempDbMainWindow() as win:
