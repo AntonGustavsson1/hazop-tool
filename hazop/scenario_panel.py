@@ -4839,9 +4839,11 @@ class ScenarioTablePanel(QWidget):
                 combined = self._ors_combined_text(item, text)
                 rect = fm.boundingRect(0, 0, cell_w, 10000,
                                       Qt.TextFlag.TextWordWrap, combined)
-                # A newly-created group has no description yet, but its two
-                # object tags still occupy two explicit lines.
-                h = max(one_line_h * (2 if grouped_cause else 1),
+                # A newly-created group has no description yet, but every
+                # linked object still occupies its own explicit line.
+                group_line_count = (len(item.data(Qt.ItemDataRole.UserRole + 9) or [])
+                                    if grouped_cause else 1)
+                h = max(one_line_h * max(1, group_line_count),
                         rect.height() + 4)
             elif col == self._C_KON:
                 cell_w = max(40, w)
@@ -4860,7 +4862,8 @@ class ScenarioTablePanel(QWidget):
         ors_item = table.item(row, self._C_ORS)
         if ors_item and (ors_item.text() or
                          (ors_item.data(Qt.ItemDataRole.UserRole + 9) or [])):
-            min_ors = fm.height() * 2 + 20  # floor for ORS rows: ~2 lines + strip
+            group_line_count = len(ors_item.data(Qt.ItemDataRole.UserRole + 9) or [])
+            min_ors = fm.height() * max(2, group_line_count) + 20
             share = _share(min_ors, _span_group_size(row, _cause_id))
             if max_h < share:
                 max_h = share
@@ -5963,8 +5966,8 @@ class ScenarioTablePanel(QWidget):
                             tag_width = QFontMetrics(bold_font).horizontalAdvance(
                                 str(group_tags[line_no]))
                             tag_hit = tag_start <= click[2].x() <= tag_start + tag_width
-                        elif rel_y >= 2 * line_h:
-                            # The area below the secondary row is only cell
+                        elif rel_y >= len(group_tags) * line_h:
+                            # The area below the last group row is only cell
                             # whitespace.  It must not fall through to
                             # QTableWidget's ordinary full-cell editor.
                             self._double_click_edit = None
@@ -5986,6 +5989,11 @@ class ScenarioTablePanel(QWidget):
                     gp = self._table.viewport().mapToGlobal(
                         self._table.visualRect(self._table.model().index(row, col)).topLeft())
                     self._show_cause_obj_popup(row, cause_id, gp)
+                    return
+                if cause_id is not None and len(group_tags) >= 2 and group_line is None:
+                    # No visual group row was hit.  Do not let this event
+                    # fall through to the generic full-cell editor.
+                    self._double_click_edit = None
                     return
             if not bool(item.flags() & Qt.ItemFlag.ItemIsEditable):
                 # A KON cell is always backed by a real (if blank)
