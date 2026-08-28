@@ -2392,6 +2392,10 @@ class _PidDelegate(_ScenarioDelegate):
     def setModelData(self, editor, model, index):
         clean = _PID_ICON_RE.sub('', editor.text().strip())
         group_line = editor.property('group_line')
+        try:
+            group_line = int(group_line)
+        except (TypeError, ValueError):
+            group_line = None
         if index.column() == self._panel._C_ORS and group_line in (0, 1):
             meta = self._panel._table.item(index.row(), index.column()).data(
                 Qt.ItemDataRole.UserRole)

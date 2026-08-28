@@ -4901,7 +4901,15 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             click_in_group_row(1)
             editors = table.viewport().findChildren(_BoldTagTextEdit)
             self.assertTrue(editors, 'secondary row click must open the inline editor')
-            self.assertTrue(any(e.property('group_line') == 1 for e in editors))
+            secondary_editor = next(e for e in editors
+                                    if e.property('group_line') == 1)
+            secondary_editor.setText('secondary changed')
+            panel._pid_delegate.setModelData(
+                secondary_editor, table.model(),
+                table.model().index(row, panel._C_ORS))
+            self.assertEqual(
+                dict(win.db.get_cause(cause_id))['description'],
+                'FI-1\nFV-1 secondary changed')
             self.assertTrue(panel.window().findChildren(StandardCauseSuggestPopup))
             self.assertFalse(panel.findChildren(GroupCausePopup),
                               'clicking right of the tag must not open the object picker')

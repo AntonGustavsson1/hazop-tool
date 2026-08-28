@@ -33,6 +33,13 @@ under pågående redigering utan att ändra innehåll, radval eller sparlogik.
 Smoke-test och riktat regressionstest passerade. Hela Scenario-sviten hann inte
 slutföras i denna körning.
 
+## Grupporsak: sekundärredigering sparas inte som primär (2026-08-28)
+
+Vid fokusförlust efter redigering av sekundärraden normaliseras editorns
+`group_line` innan sparning. Därmed sparas texten på rätt rad även när Qt
+levererar radvärdet som en annan numerisk typ. Primär/sekundär-logiken i
+övrigt är oförändrad. Verifierat med riktat dubbelklickstest och smoke-test.
+
 ## Grupporsak: sparad beskrivning visas i Scenario-cellen (2026-08-28)
 
 Grupp-renderingen visade tidigare endast de två objekttaggarna när
