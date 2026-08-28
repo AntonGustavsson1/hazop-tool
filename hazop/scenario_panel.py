@@ -3251,6 +3251,15 @@ class RecommendationAssistPopup(QWidget):
             edit_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             edit_btn.clicked.connect(partial(self._edit_recommendation, rec['id']))
             row.addWidget(edit_btn)
+            delete_btn = QPushButton("Ta bort")
+            delete_btn.setFixedHeight(CONFIG['H_BTN_SMALL'])
+            delete_btn.setToolTip("Ta bort rekommendationen ur hela studien")
+            delete_btn.setStyleSheet(
+                "QPushButton{color:#8B1E1E; background:#FDECEC; border:1px solid #E8B8B8;"
+                "border-radius:3px; padding:1px 5px; font-size:9px;}"
+                "QPushButton:hover{background:#F8D8D8;}")
+            delete_btn.clicked.connect(partial(self._delete_recommendation, rec['id']))
+            row.addWidget(delete_btn)
             self._list_layout.addLayout(row)
 
     def _on_editor_text_changed(self):
@@ -3278,6 +3287,25 @@ class RecommendationAssistPopup(QWidget):
         else:
             self._panel.db.unlink_recommendation_from_consequence(rec_id, self._cons_id)
         self._panel._refresh_recommendation_cell(self._cons_id)
+
+    def _delete_recommendation(self, rec_id):
+        rec = self._panel.db.get_recommendation(rec_id)
+        if not rec:
+            return
+        description = (rec.get('description') or '').strip() or 'Ny rekommendation'
+        linked_count = self._panel.db.recommendation_consequence_count(rec_id)
+        scope = (f"\n\nDen används på {linked_count} konsekvens(er) och tas bort där också."
+                 if linked_count else '')
+        answer = QMessageBox.question(
+            self, "Ta bort rekommendation",
+            f"Vill du ta bort R-{rec_id:03d}:\n{description[:120]}?{scope}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._panel.db.delete_recommendation(rec_id)
+        self._panel._refresh_recommendation_cell(self._cons_id)
+        self._refresh_list()
 
     def _edit_recommendation(self, rec_id):
         """Commit any not-yet-confirmed typed text FIRST — opening a

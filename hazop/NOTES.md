@@ -2,6 +2,13 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Deleteknapp i rekommendationslistan (2026-08-28)
+
+Varje rekommendation i den studiegemensamma listan har nu en `Ta bort`-knapp.
+Knappen kräver bekräftelse och tar bort rekommendationen ur katalogen samt
+alla dess konsekvenslänkar. Delete i HAZOP-raden är fortsatt begränsad till
+att ta bort länken från den aktuella konsekvensen.
+
 ## Delete tar bort rekommendationslänk (2026-08-28)
 
 När en rekommendationsrad är aktiv i HAZOP Scenario kan Delete användas för
