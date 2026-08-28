@@ -2868,20 +2868,20 @@ class SgRRFCategoryPopup(QDialog):
         if self._sev_cat_list:
             sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
             sep.setStyleSheet("color:#E2E3E1;"); outer.addWidget(sep)
-            lbl = QLabel("Gäller ej för kategori:")
+            lbl = QLabel("Gäller för kategori:")
             lbl.setStyleSheet("font-size:9px; color:#666;")
             outer.addWidget(lbl)
             for sev_id, cat_name in self._sev_cat_list:
                 cb = QCheckBox(f"{cat_name}")
                 cb.setStyleSheet("font-size:10px;")
-                cb.setChecked(excl_by_sev.get(sev_id, False))
+                cb.setChecked(not excl_by_sev.get(sev_id, False))
                 self._cat_checks[sev_id] = cb
                 outer.addWidget(cb)
 
         if self._cause_list:
             sep3 = QFrame(); sep3.setFrameShape(QFrame.Shape.HLine)
             sep3.setStyleSheet("color:#E2E3E1;"); outer.addWidget(sep3)
-            lbl2 = QLabel("Gäller ej för orsak:")
+            lbl2 = QLabel("Gäller för orsak:")
             lbl2.setStyleSheet("font-size:9px; color:#666;")
             outer.addWidget(lbl2)
             for cause_id, desc, is_chain in self._cause_list:
@@ -2889,7 +2889,7 @@ class SgRRFCategoryPopup(QDialog):
                 label  = f"{prefix}{desc[:40]}"
                 cb = QCheckBox(label)
                 cb.setStyleSheet("font-size:10px;")
-                cb.setChecked(cause_id in excl_cause_ids)
+                cb.setChecked(cause_id not in excl_cause_ids)
                 self._cause_checks[cause_id] = cb
                 outer.addWidget(cb)
 
@@ -2920,13 +2920,13 @@ class SgRRFCategoryPopup(QDialog):
         for sev_id, cb in self._cat_checks.items():
             excl_set = self.db.get_severity_excluded_sgs(sev_id)
             if cb.isChecked():
-                excl_set.add(self._sg_id)
-            else:
                 excl_set.discard(self._sg_id)
+            else:
+                excl_set.add(self._sg_id)
             self.db.set_severity_excluded_sgs(sev_id, excl_set)
 
         # Save cause exclusions
-        excl_cause_ids = {cid for cid, cb in self._cause_checks.items() if cb.isChecked()}
+        excl_cause_ids = {cid for cid, cb in self._cause_checks.items() if not cb.isChecked()}
         self.db.set_safeguard_excluded_causes(self._sg_id, excl_cause_ids)
 
         self.accept()
@@ -2957,7 +2957,7 @@ class CatSGSelectionPopup(QDialog):
         title.setFont(tf)
         outer.addWidget(title)
 
-        note = QLabel("Avmarkera 'Gäller ej' för barriärer som inte gäller denna kategori.")
+        note = QLabel("Bocka ur barriärer som inte gäller denna kategori.")
         note.setStyleSheet("font-size:9px; color:#666;")
         note.setWordWrap(True)
         outer.addWidget(note)

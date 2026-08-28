@@ -2,6 +2,12 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## RRF-popup: positiv tillämpningslogik (2026-08-28)
+
+RRF-popupens kategori- och orsaksval visar nu "Gäller för" och är förvalda
+som aktiva. Användaren avmarkerar de kategorier eller orsaker där barriären
+inte gäller; databasen fortsätter lagra dessa som exkluderingar.
+
 ## Deltagarmatris: snabbmarkering per analystillfälle (2026-08-28)
 
 Deltagarmatrisen visar nu en separat snabbknapp under varje analystillfälle.
