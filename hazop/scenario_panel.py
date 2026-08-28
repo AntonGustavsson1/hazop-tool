@@ -8110,6 +8110,25 @@ class ScenarioTablePanel(QWidget):
         if row < 0 or row >= len(self._row_meta):
             return
         dev_id, cause_id, cons_id, sg_id = self._row_meta[row]
+        if col == self._C_REK:
+            rec_id = (self._row_recommendation_ids[row]
+                      if row < len(self._row_recommendation_ids) else None)
+            if not rec_id or not cons_id:
+                return
+            rec = self.db.get_recommendation(rec_id)
+            label = f"R-{rec_id:03d}"
+            if rec and (rec.get('description') or '').strip():
+                label += f" – {(rec.get('description') or '').strip()[:70]}"
+            if QMessageBox.question(
+                    self, "Ta bort rekommendation",
+                    f"Ta bort {label} från denna konsekvens?\n\n"
+                    "Rekommendationen ligger kvar i katalogen och kan återanvändas.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
+                self.db.unlink_recommendation_from_consequence(rec_id, cons_id)
+                self._refresh_recommendation_cell(cons_id)
+                self.structure_changed.emit()
+            return
         if col == self._C_SG and sg_id:
             if QMessageBox.question(self, "Ta bort barriär",
                     "Ta bort denna barriär?",

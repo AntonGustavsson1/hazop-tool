@@ -2,6 +2,13 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Delete tar bort rekommendationslänk (2026-08-28)
+
+När en rekommendationsrad är aktiv i HAZOP Scenario kan Delete användas för
+att ta bort rekommendationen från den aktuella konsekvensen. Åtgärden kräver
+bekräftelse och tar bara bort länken; katalogposten och R-numret bevaras så
+att en delad rekommendation inte förstörs på andra konsekvenser.
+
 ## Återanvänd samma rekommendationstext (2026-08-28)
 
 När en ny rekommendation sparas jämför databasen den rensade texten med
