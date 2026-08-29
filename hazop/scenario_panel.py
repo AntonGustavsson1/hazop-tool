@@ -1777,6 +1777,10 @@ class _ScenarioDelegate(QStyledItemDelegate):
             if index.column() == self._panel._C_REK:
                 self._prepare_recommendation_editor(editor, index, option)
                 self._attach_tag_completer(editor)
+                row = index.row()
+                editor.textChanged.connect(
+                    lambda r=row, ed=editor:
+                    self._panel._resize_recommendation_editor(ed, r))
         return editor
 
     def _attach_tag_completer(self, editor):
@@ -6099,6 +6103,36 @@ class ScenarioTablePanel(QWidget):
             cell_w = max(40, w)
             rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, text)
             return max(one_line_h, rect.height() + 4)
+
+    def _resize_recommendation_editor(self, editor, row):
+        """Let a live REK editor grow the row as its text wraps.
+
+        The saved table item is intentionally not updated until commit, so
+        the normal row-height calculation cannot see text being typed. Use
+        the editor's current width and plain text here, then keep the
+        existing shared-row requirements as the lower bound. Changing only
+        the row height preserves the active editor and its caret.
+        """
+        if (getattr(self, '_rebuilding', False) or
+                not isinstance(editor, _BoldTagTextEdit) or
+                row < 0 or row >= self._table.rowCount()):
+            return
+        width = editor.width()
+        if width <= 0:
+            return
+        fm = QFontMetrics(editor.font())
+        text = editor.toPlainText() or ''
+        wrapped = fm.boundingRect(
+            0, 0, max(40, width), 10000,
+            Qt.TextFlag.TextWordWrap, text)
+        required = max(fm.height() + 6, wrapped.height() + 4)
+        try:
+            base = self._compute_row_height(row)
+        except Exception:
+            base = self._table.rowHeight(row)
+        target = max(base, required)
+        if target != self._table.rowHeight(row):
+            self._table.setRowHeight(row, target)
 
     def refresh_placed(self):
         """Repaint the table — kept as a thin call so its many existing

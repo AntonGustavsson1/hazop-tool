@@ -3102,6 +3102,32 @@ class RecommendationInlineAddRowTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_recommendation_editor_grows_with_wrapped_text(self):
+        from hazop import ScenarioTablePanel
+        from scenario_panel import _BoldTagTextEdit
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        self.db.add_recommendation_to_consequence(cons_id, 'Kort text')
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, meta in enumerate(panel._row_meta)
+                       if meta[2] == cons_id)
+            panel._table.setColumnWidth(panel._C_REK, 120)
+            panel._try_start_edit(row, panel._C_REK)
+            self.app.processEvents()
+            editor = next(w for w in panel._table.viewport().findChildren(_BoldTagTextEdit)
+                          if w.property('editing_row') == row)
+            before = panel._table.rowHeight(row)
+            editor.setText('Detta är en lång rekommendation som ska radbrytas '
+                           'och göra hela texten synlig under redigering.')
+            self.app.processEvents()
+            self.assertGreater(panel._table.rowHeight(row), before)
+        finally:
+            panel.deleteLater()
+
 
 class TooltipContrastTests(unittest.TestCase):
     """Tooltip appearance is application-global, never copied into local QSS."""

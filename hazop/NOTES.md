@@ -1,5 +1,12 @@
 # NOTES.md — Beslut och kontext
 
+## Rekommendationer radbryts under redigering (2026-08-29)
+
+Den aktiva rekommendationseditorn använder nu sin aktuella bredd för att
+beräkna radbrytning och höjer den egna tabellraden när texten blir längre.
+Det sker utan rebuild, så markering, caret och befintliga rekommendationsrader
+behålls under redigering.
+
 ## RRF-popup utan Gäller ej för (2026-08-29)
 
 Den utökade RRF-popupen innehåller nu endast RRF-värde och barriärtyp.
