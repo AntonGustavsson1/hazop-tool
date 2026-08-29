@@ -2374,9 +2374,60 @@ class Database:
         self.commit()
 
     def equipment_deviation_count(self, equipment_id):
-        row = self.conn.execute(
-            "SELECT COUNT(*) FROM deviations WHERE equipment_id=?", (equipment_id,)).fetchone()
-        return row[0] if row else 0
+        equipment = self.get_equipment_by_id(equipment_id)
+        if not equipment:
+            return 0
+        tag = (equipment.get('tag') or '').strip()
+        count = 0
+        for deviation in self.conn.execute("SELECT * FROM deviations").fetchall():
+            if deviation['equipment_id'] == equipment_id:
+                count += 1
+                continue
+            found = False
+            for cause in self.causes_for_deviation(deviation['id']):
+                cause = dict(cause)
+                if (cause.get('equipment_id') == equipment_id or
+                        equipment_id in self._group_equipment_ids_for_cause(cause) or
+                        self._equipment_tag_matches_row(cause, tag)):
+                    found = True
+                    break
+                for consequence in self.consequences(cause['id']):
+                    if self._equipment_tag_matches_row(dict(consequence), tag):
+                        found = True
+                        break
+                    if any(self._equipment_tag_matches_row(dict(sg), tag)
+                           for sg in self.safeguards(consequence['id'])):
+                        found = True
+                        break
+                if found:
+                    break
+            if found:
+                count += 1
+        return count
+
+    @staticmethod
+    def _equipment_tag_matches_row(row, tag):
+        """Match an actively visible equipment tag in a HAZOP row.
+
+        Do not use ``tagged_refs`` here: that column intentionally keeps
+        historical drag references for bold rendering, even after a user
+        removes the tag from the actual text. Counters must reflect current
+        occurrences, not additions made in the past.
+        """
+        if not tag:
+            return False
+        tag = str(tag).strip()
+        text = ' '.join(str(row.get(key) or '')
+                        for key in ('comp_tag', 'description'))
+        return bool(re.search(
+            rf'(?<![A-Za-z0-9]){re.escape(tag)}(?![A-Za-z0-9])',
+            text, re.IGNORECASE))
+
+    @staticmethod
+    def _equipment_tag_in_description(row, tag):
+        return bool(re.search(
+            rf'(?<![A-Za-z0-9]){re.escape(str(tag).strip())}(?![A-Za-z0-9])',
+            str(row.get('description') or ''), re.IGNORECASE))
 
     def equipment_consequence_count(self, comp_tag, comp_type=''):
         """How many consequences reference this equipment's tag — the
@@ -2386,10 +2437,12 @@ class Database:
         equipment_deviation_count's FK join — this matches by tag+type."""
         if not comp_tag:
             return 0
-        row = self.conn.execute(
-            "SELECT COUNT(*) FROM consequences WHERE comp_tag=? AND comp_type=?",
-            (comp_tag, comp_type or '')).fetchone()
-        return row[0] if row else 0
+        return sum(
+            1 for row in self.conn.execute("SELECT * FROM consequences").fetchall()
+            if self._equipment_tag_matches_row(dict(row), comp_tag)
+            and (not row['comp_tag'] or not comp_type or
+                 row['comp_type'] == comp_type or
+                 self._equipment_tag_in_description(dict(row), comp_tag)))
 
     def equipment_safeguard_count(self, comp_tag, comp_type=''):
         """How many safeguards reference this equipment's tag — the
@@ -2398,10 +2451,12 @@ class Database:
         equipment_id FK, only comp_tag/comp_type)."""
         if not comp_tag:
             return 0
-        row = self.conn.execute(
-            "SELECT COUNT(*) FROM safeguards WHERE comp_tag=? AND comp_type=?",
-            (comp_tag, comp_type or '')).fetchone()
-        return row[0] if row else 0
+        return sum(
+            1 for row in self.conn.execute("SELECT * FROM safeguards").fetchall()
+            if self._equipment_tag_matches_row(dict(row), comp_tag)
+            and (not row['comp_tag'] or not comp_type or
+                 row['comp_type'] == comp_type or
+                 self._equipment_tag_in_description(dict(row), comp_tag)))
 
     def set_deviation_equipment(self, deviation_id, equipment_id):
         """Tie an EXISTING deviation to a specific equipment item — used
