@@ -2052,6 +2052,15 @@ class _ScenarioDelegate(QStyledItemDelegate):
         # selection cue.
         if col == panel._C_REK:
             r = option.rect
+            # The table delegate paints before Qt paints the live editor.
+            # Keep the compact number visible, but never paint the saved
+            # description beneath an active REK editor: it otherwise reads
+            # as ghost text while the user types a replacement.
+            editing = any(
+                editor.isVisible() and
+                editor.property('editing_row') == index.row() and
+                editor.property('editing_col') == col
+                for editor in panel._table.findChildren(_BoldTagTextEdit))
             painter.save()
             sel = bool(option.state & QStyle.StateFlag.State_Selected)
             if sel:
@@ -2069,10 +2078,21 @@ class _ScenarioDelegate(QStyledItemDelegate):
             painter.setPen(tc)
             font = index.data(Qt.ItemDataRole.FontRole)
             painter.setFont(font if font is not None else option.font)
-            text = index.data(Qt.ItemDataRole.DisplayRole) or ''
-            painter.drawText(r.adjusted(5, 2, -3, -2),
-                             Qt.TextFlag.TextWordWrap | Qt.AlignmentFlag.AlignLeft |
-                             Qt.AlignmentFlag.AlignTop, text)
+            if editing:
+                rec_id = (panel._row_recommendation_ids[index.row()]
+                          if index.row() < len(panel._row_recommendation_ids)
+                          else None)
+                rec = panel.db.get_recommendation(rec_id) if rec_id else None
+                number = (rec or {}).get('display_number')
+                text = f"{number:03d}." if number else ''
+                painter.drawText(r.adjusted(5, 2, -3, -2),
+                                 Qt.AlignmentFlag.AlignLeft |
+                                 Qt.AlignmentFlag.AlignTop, text)
+            else:
+                text = index.data(Qt.ItemDataRole.DisplayRole) or ''
+                painter.drawText(r.adjusted(5, 2, -3, -2),
+                                 Qt.TextFlag.TextWordWrap | Qt.AlignmentFlag.AlignLeft |
+                                 Qt.AlignmentFlag.AlignTop, text)
             painter.restore()
             return
         if col not in (panel._C_RFORE, panel._C_SLUT):
@@ -4973,6 +4993,30 @@ class ScenarioTablePanel(QWidget):
             return self._row_meta[r][1] if 0 <= r < len(self._row_meta) else None
         def _cons_id(r):
             return self._row_meta[r][2] if 0 <= r < len(self._row_meta) else None
+        rec_counts = {}
+        for r in range(table.rowCount()):
+            cons_id = _cons_id(r)
+            rec_id = (self._row_recommendation_ids[r]
+                      if r < len(self._row_recommendation_ids) else None)
+            if cons_id is not None and rec_id is not None:
+                rec_counts[cons_id] = rec_counts.get(cons_id, 0) + 1
+
+        def _rek_span_key(r):
+            """Match REK's actual span rule from _apply_spans().
+
+            A single recommendation shares its consequence's full height,
+            but two or more entries are separate physical rows.  Their
+            wrapped text must therefore reserve height for itself rather
+            than being divided across all recommendation rows.
+            """
+            cons_id = _cons_id(r)
+            if cons_id is None:
+                return None
+            if rec_counts.get(cons_id, 0) <= 1:
+                return ('consequence', cons_id)
+            rec_id = (self._row_recommendation_ids[r]
+                      if r < len(self._row_recommendation_ids) else None)
+            return ('recommendation', rec_id if rec_id is not None else r)
         def _cat_info(r):
             return self._row_cat_info[r] if 0 <= r < len(self._row_cat_info) else None
 
@@ -5062,7 +5106,9 @@ class ScenarioTablePanel(QWidget):
             w = table.columnWidth(col)
             # ORS spans by cause_id (broader — a cause can have several
             # consequences); KON/REK span by cons_id.
-            group_key_fn = _cause_id if col == self._C_ORS else _cons_id
+            group_key_fn = (_cause_id if col == self._C_ORS else
+                            _rek_span_key if col == self._C_REK else
+                            _cons_id)
             if col == self._C_ORS:
                 cell_w = max(40, w - 6 - _RRF_W)
                 combined = self._ors_combined_text(item, text)
@@ -7696,11 +7742,7 @@ class ScenarioTablePanel(QWidget):
                         cons_id = self._row_meta[row][2]
                     self._delegate.commitData.emit(obj)
                     self._delegate.closeEditor.emit(obj, QStyledItemDelegate.EndEditHint.NoHint)
-                    if col == self._C_REK and cons_id is not None and not ctrl:
-                        QTimer.singleShot(
-                            0, lambda r=row, cid=cons_id:
-                            self._continue_recommendation_entry(r, cid))
-                    elif ctrl:
+                    if ctrl:
                         self._ctrl_enter(row, col)
                     return True  # always consume Enter in editor — prevents table-level handler
 

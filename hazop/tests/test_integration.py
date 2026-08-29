@@ -4086,6 +4086,31 @@ class RecommendationColumnTests(unittest.TestCase):
         next_recommendation.assert_called_once_with(row, self.cons_id)
         add_safeguard.assert_not_called()
 
+    def test_recommendation_editor_enter_requires_a_second_press_for_next_row(self):
+        """The first Enter saves/closes; a second Enter on the selected REK
+        cell starts the next blank recommendation entry."""
+        from scenario_panel import _BoldTagTextEdit
+
+        _, row = self._rek_item()
+        editor = _BoldTagTextEdit(self.panel._table.viewport())
+        editor.setProperty('editing_row', row)
+        editor.setProperty('editing_col', self.panel._C_REK)
+        try:
+            with unittest.mock.patch.object(
+                    self.panel, '_continue_recommendation_entry') as next_recommendation:
+                first = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return,
+                                  Qt.KeyboardModifier.NoModifier)
+                self.assertTrue(self.panel.eventFilter(editor, first))
+                next_recommendation.assert_not_called()
+
+                self.panel._table.setCurrentCell(row, self.panel._C_REK)
+                second = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return,
+                                   Qt.KeyboardModifier.NoModifier)
+                self.assertTrue(self.panel.eventFilter(self.panel._table, second))
+                next_recommendation.assert_called_once_with(row, self.cons_id)
+        finally:
+            editor.deleteLater()
+
     @unittest.skip("REK continuation now selects the next physical row")
     def test_continue_recommendation_entry_selects_same_cell_in_add_mode(self):
         self.db.add_recommendation_to_consequence(self.cons_id, description='Första')
@@ -7513,6 +7538,25 @@ class RecommendationPhysicalRowTests(RecommendationColumnTests):
         self.assertEqual(
             [self.panel._row_recommendation_ids[r] for r in rows],
             [first, second])
+
+    def test_long_recommendation_gets_its_own_wrapped_row_height(self):
+        long_text = "Kontrollera ventilens funktion och dokumentera resultatet " * 8
+        first = self.db.add_recommendation_to_consequence(
+            self.cons_id, description=long_text)
+        second = self.db.add_recommendation_to_consequence(
+            self.cons_id, description='Kort rekommendation')
+        self.panel.load_node(self.node_id)
+
+        rows_by_rec = {
+            self.panel._row_recommendation_ids[row]: row
+            for row, meta in enumerate(self.panel._row_meta)
+            if meta[2] == self.cons_id and
+            self.panel._row_recommendation_ids[row] is not None
+        }
+        self.assertGreater(
+            self.panel._table.rowHeight(rows_by_rec[first]),
+            self.panel._table.rowHeight(rows_by_rec[second]),
+            "a long REK entry must grow its own physical row, not share its height")
 
     def test_risk_and_single_recommendation_cover_all_safeguard_rows(self):
         for _ in range(3):

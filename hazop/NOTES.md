@@ -16,6 +16,12 @@ det kompakta numret används ensamt i celler, listor, popupen och exporten.
 Tretalssiffrorna är en minsta bredd, inte en gräns: efter `999.` visas
 `1000.`, `1001.` osv utan avkortning.
 
+Vid inline-redigering av REK målas bara numret bakom editorn; den sparade
+beskrivningen döljs tills redigeringen är klar så att ingen spöktext syns.
+När två eller fler rekommendationer hör till samma konsekvens får varje REK-rad
+nu sin egen radhöjd för radbrytning. Enter i editorn sparar och stänger först;
+ett nytt Enter på den markerade REK-cellen öppnar en tom rekommendation under.
+
 ## Gemensam konsekvenshöjd för risk, barriärer och rekommendationer (2026-08-29)
 
 Risk före, risk efter och konsekvens spänner nu över hela konsekvensblocket
