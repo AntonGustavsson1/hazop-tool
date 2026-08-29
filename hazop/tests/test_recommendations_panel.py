@@ -103,6 +103,29 @@ class RecommendationsPanelConstructionTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_enter_on_selected_recommendation_creates_next_number(self):
+        first_id = self.db.add_recommendation(description="Första")
+        self.db.add_recommendation(description="Andra")
+        panel = RecommendationsPanel(self.db)
+        try:
+            panel.load()
+            panel._table.selectRow(0)
+            event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return,
+                              Qt.KeyboardModifier.NoModifier)
+            panel._table.keyPressEvent(event)
+
+            recs = panel.db.all_recommendations()
+            self.assertEqual(len(recs), 3)
+            new_rec = recs[-1]
+            self.assertGreater(new_rec['id'], first_id)
+            self.assertEqual(new_rec['display_number'], 3)
+            self.assertEqual(panel._table.currentRow(), 2)
+            self.assertEqual(
+                panel._table.item(2, panel._COL_REC).text(),
+                "003. Ny rekommendation")
+        finally:
+            panel.deleteLater()
+
     def test_catalog_delete_defaults_to_yes_and_emits_refresh_signal(self):
         rec_id = self.db.add_recommendation(description="Ta bort mig")
         panel = RecommendationsPanel(self.db)

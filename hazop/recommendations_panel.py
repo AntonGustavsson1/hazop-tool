@@ -106,13 +106,18 @@ def _reference_for_consequence(cons_id, maps):
 
 
 class _RecommendationsTable(QTableWidget):
-    """Recommendation table with a safe row-delete keyboard shortcut."""
+    """Recommendation table with delete and new-row keyboard shortcuts."""
 
     delete_requested = pyqtSignal()
+    new_recommendation_requested = pyqtSignal()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Delete:
             self.delete_requested.emit()
+            event.accept()
+            return
+        if event.key() in (Qt.Key.Key_Enter, Qt.Key.Key_Return) and self.currentRow() >= 0:
+            self.new_recommendation_requested.emit()
             event.accept()
             return
         super().keyPressEvent(event)
@@ -177,6 +182,7 @@ class RecommendationsPanel(QWidget):
         self._table.setWordWrap(True)
         self._table.setAlternatingRowColors(True)
         self._table.delete_requested.connect(self._delete_selected)
+        self._table.new_recommendation_requested.connect(self._add_new_recommendation)
         self._table.itemSelectionChanged.connect(self._update_delete_button)
         # Native click-to-sort is effectively free with a QTableWidget and
         # was explicitly called out as fine to include — no custom
@@ -247,6 +253,23 @@ class RecommendationsPanel(QWidget):
         for rec_id in rec_ids:
             self.db.delete_recommendation(rec_id)
         self.load()
+        self.recommendations_changed.emit()
+
+    def _add_new_recommendation(self):
+        """Create and select a fresh catalog entry after Enter on a row.
+
+        Database.add_recommendation() assigns MAX(display_number)+1, so this
+        remains correct after deletions and after recommendations were added
+        through HAZOP Scenario/Worksheet or another catalog path.
+        """
+        rec_id = self.db.add_recommendation(description='')
+        self.load()
+        for row in range(self._table.rowCount()):
+            item = self._table.item(row, self._COL_REC)
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) == rec_id:
+                self._table.setCurrentCell(row, self._COL_REC)
+                self._table.scrollToItem(item)
+                break
         self.recommendations_changed.emit()
 
     def _on_item_changed(self, item):

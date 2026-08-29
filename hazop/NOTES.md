@@ -1,5 +1,12 @@
 # NOTES.md — Beslut och kontext
 
+## Enter skapar ny rekommendation i rekommendationsfliken (2026-08-29)
+
+När en rekommendationsrad är markerad skapar Enter nu en ny tom
+rekommendation i katalogen. Databasen tilldelar automatiskt nästa högsta
+`display_number`, även efter tidigare borttagningar. Den nya raden laddas
+om och markeras direkt.
+
 ## Rekommendationer radbryts under redigering (2026-08-29)
 
 Den aktiva rekommendationseditorn använder nu sin aktuella bredd för att
