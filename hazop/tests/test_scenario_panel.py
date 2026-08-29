@@ -4155,7 +4155,7 @@ class StandardCauseSuggestPopupTests(unittest.TestCase):
         self._start_edit(cause_id)
         popup = self._popup()
         self.assertIsNotNone(popup)
-        self.assertIn("border:2px solid #000000", popup.styleSheet())
+        self.assertIn("border:1px solid #4B5563", popup.styleSheet())
         self.assertEqual(popup.objectName(), "standardCauseSuggestPopup")
         self.assertTrue(popup.testAttribute(Qt.WidgetAttribute.WA_StyledBackground))
 

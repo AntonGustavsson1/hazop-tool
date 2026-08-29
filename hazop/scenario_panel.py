@@ -3125,7 +3125,7 @@ class StandardCauseSuggestPopup(QWidget):
         # application background. It remains a non-focusable child widget;
         # only the visual framing changes here.
         self.setStyleSheet("QWidget#standardCauseSuggestPopup{"
-                           "background:#FFFFFF;border:2px solid #000000;"
+                           "background:#FFFFFF;border:1px solid #4B5563;"
                            "border-radius:3px;}")
         self._panel = panel
         self._row = row
