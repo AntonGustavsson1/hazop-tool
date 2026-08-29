@@ -715,6 +715,8 @@ class EquipmentConsequenceSafeguardCountTests(unittest.TestCase):
         self.assertEqual(self.db.equipment_consequence_count("V-101", "Ventil"), 0)
         c1 = self.db.add_consequence(self.cause_id)
         c2 = self.db.add_consequence(self.cause_id)
+        self.db.update_consequence(c1, 'Kontrollera V-101', 1)
+        self.db.update_consequence(c2, 'Kontrollera V-101', 1)
         self.db.set_consequence_tag(c1, "V-101", "Ventil")
         self.db.set_consequence_tag(c2, "V-101", "Ventil")
         self.assertEqual(self.db.equipment_consequence_count("V-101", "Ventil"), 2)
@@ -726,6 +728,7 @@ class EquipmentConsequenceSafeguardCountTests(unittest.TestCase):
         cons_id = self.db.add_consequence(self.cause_id)
         self.assertEqual(self.db.equipment_safeguard_count("PSV-1", "Säkerhetsventil"), 0)
         sg1 = self.db.add_safeguard(cons_id)
+        self.db.update_safeguard(sg1, description='Larm PSV-1')
         self.db.set_safeguard_tag(sg1, "PSV-1", "Säkerhetsventil")
         self.assertEqual(self.db.equipment_safeguard_count("PSV-1", "Säkerhetsventil"), 1)
         self.assertEqual(self.db.equipment_safeguard_count("PSV-2", "Säkerhetsventil"), 0)
@@ -737,6 +740,21 @@ class EquipmentConsequenceSafeguardCountTests(unittest.TestCase):
         self.db.set_consequence_tag(c1, '', '')
         self.assertEqual(self.db.equipment_consequence_count('', ''), 0)
         self.assertEqual(self.db.equipment_safeguard_count('', ''), 0)
+
+    def test_stale_identity_fields_do_not_count_without_tag_in_cell(self):
+        cons_id = self.db.add_consequence(self.cause_id)
+        sg_id = self.db.add_safeguard(cons_id)
+        self.db.conn.execute(
+            "UPDATE consequences SET comp_tag='V-101', comp_type='Ventil', "
+            "tagged_refs='V-101', description='Gammal text' WHERE id=?",
+            (cons_id,))
+        self.db.conn.execute(
+            "UPDATE safeguards SET comp_tag='V-101', comp_type='Ventil', "
+            "tagged_refs='V-101', description='Gammal barriär' WHERE id=?",
+            (sg_id,))
+        self.db.commit()
+        self.assertEqual(self.db.equipment_consequence_count('V-101', 'Ventil'), 0)
+        self.assertEqual(self.db.equipment_safeguard_count('V-101', 'Ventil'), 0)
 
 
 class CausesForEquipmentTests(unittest.TestCase):
@@ -768,6 +786,15 @@ class CausesForEquipmentTests(unittest.TestCase):
         ids = [dict(c)['id'] for c in self.db.causes_for_equipment(self.eq_id)]
         self.assertEqual(ids, [])
 
+    def test_stale_cause_equipment_id_without_visible_tag_is_excluded(self):
+        dev_id = self.db.deviations(self.node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.db.conn.execute(
+            "UPDATE causes SET equipment_id=?, comp_tag='', description='Gammal orsak' "
+            "WHERE id=?", (self.eq_id, cause_id))
+        self.db.commit()
+        self.assertEqual(self.db.causes_for_equipment(self.eq_id), [])
+
     def test_cause_with_a_linked_recommendation_mentioning_equipment_is_included(self):
         dev_id = self.db.deviations(self.node_id)[0]['id']
         cause_id = self.db.add_cause(dev_id)
@@ -787,6 +814,7 @@ class CausesForEquipmentTests(unittest.TestCase):
         dev_id = self.db.deviations(self.node_id)[0]['id']
         cause_id = self.db.add_cause(dev_id)
         cons_id = self.db.add_consequence(cause_id)
+        self.db.update_consequence(cons_id, 'Kontrollera PV-101', 1)
         self.db.set_consequence_tag(cons_id, "PV-101", "Ventil")
         ids = [dict(c)['id'] for c in self.db.causes_for_equipment(self.eq_id)]
         self.assertEqual(ids, [cause_id])
@@ -796,6 +824,7 @@ class CausesForEquipmentTests(unittest.TestCase):
         cause_id = self.db.add_cause(dev_id)
         cons_id = self.db.add_consequence(cause_id)
         sg_id = self.db.add_safeguard(cons_id)
+        self.db.update_safeguard(sg_id, description='Larm PV-101')
         self.db.set_safeguard_tag(sg_id, "PV-101", "Ventil")
         ids = [dict(c)['id'] for c in self.db.causes_for_equipment(self.eq_id)]
         self.assertEqual(ids, [cause_id])
@@ -815,6 +844,7 @@ class CausesForEquipmentTests(unittest.TestCase):
         dev_id = self.db.get_or_create_deviation(self.node_id, "Lågt flöde", equipment_id=self.eq_id)
         cause_id = self.db.add_cause(dev_id)
         cons_id = self.db.add_consequence(cause_id)
+        self.db.update_consequence(cons_id, 'Kontrollera PV-101', 1)
         self.db.set_consequence_tag(cons_id, "PV-101", "Ventil")
         rows = self.db.causes_for_equipment(self.eq_id)
         self.assertEqual(len(rows), 1)
@@ -1511,20 +1541,22 @@ class EquipmentLinkTypesInScopeTests(unittest.TestCase):
             "the parent cause's own object must NOT bleed into a "
             "Consequence-level selection — scope only ever flows downward")
 
-    def test_scope_matches_every_tagged_refs_entry_not_just_latest(self):
-        """Anton's decision #2: match every historically-dragged tag
-        (tagged_refs), not just the current comp_tag."""
+    def test_scope_ignores_historical_tagged_refs_not_in_cell(self):
+        """Historical drag references must not keep removed objects active."""
         node_id = self.db.add_node()
         eq_old = self._make_equipment("V-1")
         eq_mid = self._make_equipment("P-1", "Pump")
         eq_latest = self._make_equipment("T-1", "Tank")
         _dev, _cause, cons_id, _sg = self._make_chain(
             node_id, cons_tags=("T-1", "V-1,P-1,T-1"))
+        self.db.conn.execute(
+            "UPDATE consequences SET description='Kontrollera T-1' WHERE id=?",
+            (cons_id,))
+        self.db.commit()
 
         scope = self.db.equipment_link_types_in_scope(CONS_T, cons_id)
-        self.assertEqual(set(scope.keys()), {eq_old, eq_mid, eq_latest})
-        for eq_id in (eq_old, eq_mid, eq_latest):
-            self.assertIn('consequence', scope[eq_id])
+        self.assertEqual(set(scope.keys()), {eq_latest})
+        self.assertIn('consequence', scope[eq_latest])
 
     def test_scope_deviation_own_equipment_id_returns_link_type_deviation(self):
         node_id = self.db.add_node()

@@ -2380,15 +2380,10 @@ class Database:
         tag = (equipment.get('tag') or '').strip()
         count = 0
         for deviation in self.conn.execute("SELECT * FROM deviations").fetchall():
-            if deviation['equipment_id'] == equipment_id:
-                count += 1
-                continue
             found = False
             for cause in self.causes_for_deviation(deviation['id']):
                 cause = dict(cause)
-                if (cause.get('equipment_id') == equipment_id or
-                        equipment_id in self._group_equipment_ids_for_cause(cause) or
-                        self._equipment_tag_matches_row(cause, tag)):
+                if self._equipment_tag_matches_cause(cause, tag):
                     found = True
                     break
                 for consequence in self.consequences(cause['id']):
@@ -2417,10 +2412,26 @@ class Database:
         if not tag:
             return False
         tag = str(tag).strip()
+        # Only text currently visible in the consequence/safeguard cell is
+        # authoritative.  comp_tag/tagged_refs can be stale after editing.
+        text = str(row.get('description') or '')
+        return bool(re.search(
+            rf'(?<![A-Za-z0-9]){re.escape(tag)}(?![A-Za-z0-9])',
+            text, re.IGNORECASE))
+
+    @staticmethod
+    def _equipment_tag_matches_cause(row, tag):
+        """Match the visible identity of an ordinary cause cell.
+
+        Cause tags are rendered from ``comp_tag`` as the bold prefix, so its
+        current value is part of that cell's visible text.
+        """
+        if not tag:
+            return False
         text = ' '.join(str(row.get(key) or '')
                         for key in ('comp_tag', 'description'))
         return bool(re.search(
-            rf'(?<![A-Za-z0-9]){re.escape(tag)}(?![A-Za-z0-9])',
+            rf'(?<![A-Za-z0-9]){re.escape(str(tag).strip())}(?![A-Za-z0-9])',
             text, re.IGNORECASE))
 
     @staticmethod
@@ -2441,8 +2452,7 @@ class Database:
             1 for row in self.conn.execute("SELECT * FROM consequences").fetchall()
             if self._equipment_tag_matches_row(dict(row), comp_tag)
             and (not row['comp_tag'] or not comp_type or
-                 row['comp_type'] == comp_type or
-                 self._equipment_tag_in_description(dict(row), comp_tag)))
+                 row['comp_type'] == comp_type))
 
     def equipment_safeguard_count(self, comp_tag, comp_type=''):
         """How many safeguards reference this equipment's tag — the
@@ -2455,8 +2465,7 @@ class Database:
             1 for row in self.conn.execute("SELECT * FROM safeguards").fetchall()
             if self._equipment_tag_matches_row(dict(row), comp_tag)
             and (not row['comp_tag'] or not comp_type or
-                 row['comp_type'] == comp_type or
-                 self._equipment_tag_in_description(dict(row), comp_tag)))
+                 row['comp_type'] == comp_type))
 
     def set_deviation_equipment(self, deviation_id, equipment_id):
         """Tie an EXISTING deviation to a specific equipment item — used
@@ -3871,12 +3880,12 @@ class Database:
                 "LEFT JOIN safeguards s ON s.consequence_id=k.id "
                 "LEFT JOIN consequence_recommendations cr ON cr.consequence_id=k.id "
                 "LEFT JOIN recommendations r ON r.id=cr.recommendation_id "
-                "WHERE (c.equipment_id=? OR c.comp_tag=? ) "
-                "   OR (k.comp_tag=? AND k.comp_type=?) "
-                "   OR (s.comp_tag=? AND s.comp_type=?) "
+                "WHERE c.comp_tag=? "
+                "   OR k.description LIKE '%' || ? || '%' "
+                "   OR s.description LIKE '%' || ? || '%' "
                 "   OR (r.description LIKE '%' || ? || '%') "
                 "ORDER BY c.id",
-                (equipment_id, tag, tag, comp_type, tag, comp_type, tag)).fetchall()
+                (tag, tag, tag, tag)).fetchall()
         found = {row['id'] for row in rows}
         # A grouped cause can mention this object only in its later rows;
         # those rows are not represented by the legacy comp_tag columns.
@@ -3885,8 +3894,11 @@ class Database:
             "WHERE c.group_equipment_ids IS NOT NULL "
             "ORDER BY c.id").fetchall()
         for row in grouped:
-            if row['id'] not in found and equipment_id in self._group_equipment_ids_for_cause(row):
-                rows.append(row)
+            if row['id'] not in found:
+                group_ids = self._group_equipment_ids_for_cause(row)
+                if equipment_id in group_ids and self._equipment_tag_matches_cause(
+                        dict(row), tag):
+                    rows.append(row)
         return sorted(rows, key=lambda row: row['id'])
 
     def consequences_for_node(self, node_id):
@@ -3962,14 +3974,22 @@ class Database:
         return cache[tag]
 
     def _tags_for_row(self, row):
-        """Every tag string a consequence/safeguard row references: its
-        current comp_tag plus every tag ever drag-appended into it
-        (tagged_refs) — 2026-08-27, see NOTES.md "Dynamisk färgmarkering
-        av objekt på P&ID": comp_tag alone only ever holds the MOST
-        RECENT drag, tagged_refs is the full history."""
-        tags = set(parse_tag_refs(row.get('tagged_refs') or ''))
-        comp_tag = (row.get('comp_tag') or '').strip()
-        if comp_tag:
+        """Return only tags currently present in the cell text.
+
+        ``tagged_refs`` is retained for migration/undo compatibility, but it
+        is history rather than an active relationship.  A removed tag must
+        therefore stop highlighting and stop contributing to tree scope.
+        """
+        description = str(row.get('description') or '')
+        tags = set(parse_tag_refs(row.get('tagged_refs') or '')) & {
+            tag for tag in parse_tag_refs(row.get('tagged_refs') or '')
+            if re.search(rf'(?<![A-Za-z0-9]){re.escape(tag)}(?![A-Za-z0-9])',
+                         description, re.IGNORECASE)
+        }
+        comp_tag = str(row.get('comp_tag') or '').strip()
+        if comp_tag and re.search(
+                rf'(?<![A-Za-z0-9]){re.escape(comp_tag)}(?![A-Za-z0-9])',
+                description, re.IGNORECASE):
             tags.add(comp_tag)
         return tags
 
@@ -4045,16 +4065,23 @@ class Database:
 
         def collect_deviation(dev):
             eq_id = dev.get('equipment_id')
-            if eq_id is not None:
+            eq = self.get_equipment_by_id(eq_id) if eq_id is not None else None
+            if eq and self._equipment_tag_matches_cause(dev, eq.get('tag')):
                 add_link(eq_id, 'deviation')
 
         def collect_cause(cause):
             group_ids = self._group_equipment_ids_for_cause(cause)
             if group_ids:
                 for eq_id in group_ids:
-                    add_link(eq_id, 'cause')
+                    eq = self.get_equipment_by_id(eq_id)
+                    if eq and self._equipment_tag_matches_cause(
+                            cause, eq.get('tag')):
+                        add_link(eq_id, 'cause')
             else:
-                add_link(self._equipment_id_for_tag(cause.get('comp_tag'), tag_cache), 'cause')
+                eq_id = self._equipment_id_for_tag(cause.get('comp_tag'), tag_cache)
+                if eq_id and self._equipment_tag_matches_cause(
+                        cause, cause.get('comp_tag')):
+                    add_link(eq_id, 'cause')
 
         def collect_consequence_or_safeguard(row, link_type):
             for tag in self._tags_for_row(row):

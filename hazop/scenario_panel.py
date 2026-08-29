@@ -2787,7 +2787,8 @@ class _PidDelegate(_ScenarioDelegate):
                     desc = f"{_num}.  {desc}"
                 tc = (option.palette.highlightedText().color() if sel
                       else option.palette.text().color())
-                tagged_refs = list(index.data(Qt.ItemDataRole.UserRole + 7) or [])
+                tagged_refs = self._panel._active_tag_refs_in_text(
+                    index.data(Qt.ItemDataRole.UserRole + 7) or [], desc)
                 tagged_refs += self._panel._matching_pid_tags(desc)
                 _draw_text_with_bold_tags(
                     painter, desc_rect.adjusted(2, 1, -2, -1), desc,
@@ -3031,7 +3032,8 @@ class _PidDelegate(_ScenarioDelegate):
                     display = f"{_num}.  {display}"
                 tc = (option.palette.highlightedText().color() if sel
                       else option.palette.text().color())
-                tagged_refs = list(index.data(Qt.ItemDataRole.UserRole + 8) or [])
+                tagged_refs = self._panel._active_tag_refs_in_text(
+                    index.data(Qt.ItemDataRole.UserRole + 8) or [], display)
                 tagged_refs += self._panel._matching_pid_tags(display)
                 _draw_text_with_bold_tags(
                     painter, txt_rect.adjusted(2, 2, -2, -2), display,
@@ -8078,6 +8080,14 @@ class ScenarioTablePanel(QWidget):
                 found.append(tag)
         return found
 
+    @staticmethod
+    def _active_tag_refs_in_text(refs, text):
+        """Discard historical tag references no longer present in a cell."""
+        current = str(text or '')
+        return [tag for tag in refs or [] if re.search(
+            rf'(?<![A-Za-z0-9]){re.escape(str(tag).strip())}(?![A-Za-z0-9])',
+            current, re.IGNORECASE)]
+
     def _recognized_pid_equipment(self, text):
         """Return the first real catalogue object mentioned in *text*."""
         text = str(text or '')
@@ -8250,13 +8260,17 @@ class ScenarioTablePanel(QWidget):
                 old_desc = cons.get('description', '') or ''
                 if not self._undoing_text and desc != old_desc:
                     self._text_undo_stack.append(('consequence', id_, old_desc))
-                refs = parse_tag_refs(cons.get('tagged_refs') or '')
-                for tag in self._matching_pid_tags(desc):
-                    self._detached_tags.discard(tag.casefold())
-                    if not any(ref.casefold() == tag.casefold() for ref in refs):
-                        refs.append(tag)
+                # A text edit is authoritative: old tagged_refs must not
+                # keep removed objects bold or connected to this cell.
+                refs = self._matching_pid_tags(desc)
+                active_tag = refs[-1] if refs else ''
+                active_eq = (self.db.get_equipment_by_tag(active_tag)
+                             if active_tag else None)
                 self.db.update_consequence(id_, desc, cons['severity'],
                                            cons['category'] or '',
+                                           comp_tag=active_tag,
+                                           comp_type=(active_eq.get('equipment_type')
+                                                      if active_eq else ''),
                                            tagged_refs=','.join(refs))
                 item.setData(Qt.ItemDataRole.UserRole + 8, refs)
                 self._update_row_text_only('consequence', id_, desc)
@@ -8282,13 +8296,16 @@ class ScenarioTablePanel(QWidget):
                 old_desc = sg.get('description', '') or ''
                 if not self._undoing_text and desc != old_desc:
                     self._text_undo_stack.append(('safeguard', id_, old_desc))
-                refs = parse_tag_refs(sg.get('tagged_refs') or '')
-                for tag in self._matching_pid_tags(desc):
-                    self._detached_tags.discard(tag.casefold())
-                    if not any(ref.casefold() == tag.casefold() for ref in refs):
-                        refs.append(tag)
+                # Keep only catalogue tags still present in the edited cell.
+                refs = self._matching_pid_tags(desc)
+                active_tag = refs[-1] if refs else ''
+                active_eq = (self.db.get_equipment_by_tag(active_tag)
+                             if active_tag else None)
                 self.db.update_safeguard(id_, desc, sg['rrf'] or 1,
                                          tagged_refs=','.join(refs))
+                self.db.set_safeguard_tag(
+                    id_, active_tag,
+                    active_eq.get('equipment_type') if active_eq else '')
                 item.setData(Qt.ItemDataRole.UserRole + 7, refs)
                 # A safeguard's description never affects its own row's RRF/
                 # risk-derived columns (those depend on rrf, not text) or any

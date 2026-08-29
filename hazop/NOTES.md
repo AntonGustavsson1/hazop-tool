@@ -2,6 +2,14 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Objektkoppling fÃ¶ljer aktuell celltext (2026-08-29)
+
+En konsekvens eller safeguard Ã¤r bara aktivt kopplad till ett P&ID-objekt om
+objektets tagg faktiskt finns i cellens beskrivning. Historiska `tagged_refs`
+och gamla identitetsfÃ¤lt fÃ¥r inte lÃ¤ngre hÃ¥lla kvar en fÃ¶rekomst efter att
+taggen redigerats bort. P&ID-rÃ¤knarna och HAZOP Scenario-filtret anvÃ¤nder
+samma regel.
+
 ## Riskmatris: kategorier frikopplade frÃ¥n safeguards (2026-08-29)
 
 Konsekvenskategorier skapar inte lÃ¤ngre tomma safeguard-rader. Riskkolumnerna
