@@ -1,5 +1,13 @@
 # NOTES.md — Beslut och kontext
 
+## Objekttagg visas på varje orsaksrad (2026-08-29)
+
+Objekttaggen i orsaksfältet döljs inte längre på en rad bara för att samma
+tagg står på föregående orsaksrad. Varje orsaksrad visar därför sin egen
+koppling, exempelvis SPADE på både orsak 3 och orsak 4. Detta ändrar endast
+presentationen; orsaksradernas kopplingar, räknare och grupp-/primärlogik
+påverkas inte.
+
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
 ## Objektkoppling fÃ¶ljer aktuell celltext (2026-08-29)

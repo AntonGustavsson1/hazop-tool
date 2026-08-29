@@ -4739,8 +4739,11 @@ class ScenarioTablePanel(QWidget):
                 self._add_placeholder_row(node_name, dev_d)
                 continue
             _tag_display = self._cause_tag_display(cause_d)
-            _repeats_previous_tag = (bool(_tag_display[0] or _tag_display[1])
-                                     and _tag_display == _prev_tag_display)
+            # Every cause row owns its visible object tag. Do not suppress a
+            # repeated tag on the following row: two causes may be separate
+            # records even when they refer to the same object (for example
+            # SPADE on cause 3 and cause 4).
+            _repeats_previous_tag = False
             _prev_tag_display = _tag_display
             if _cause_idx % 10 == 0 or _cause_idx == len(causes_to_show) - 1:
                 logging.info('_build_rows: G2 — cause loop iter %d/%d (cause_id=%s)',

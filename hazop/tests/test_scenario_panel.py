@@ -3623,13 +3623,9 @@ class OrsStripReworkTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_tag_hidden_only_on_a_consecutive_repeat_of_the_same_object(self):
-        """2026-08-18 follow-up ("om det visas flera avikelser efter
-        varandra som tillhör samma objekttagg behöver denna inte
-        repeteras ... tagbannern [kan] försvinna på nummer två i listan
-        och nedåt"): the tag banner is hidden only when this row's object
-        is the SAME as the immediately preceding cause row's — not tied
-        to Utrustning-column visibility at all anymore."""
+    def test_tag_shown_on_every_cause_row_even_when_repeated(self):
+        """Every cause row shows its own object tag, including consecutive
+        causes that refer to the same object."""
         from hazop import ScenarioTablePanel
         node_id = self.db.add_node()
         devs = self.db.deviations(node_id)
@@ -3653,8 +3649,8 @@ class OrsStripReworkTests(unittest.TestCase):
 
             self.assertTrue(_tag_visible(row1),
                 "first occurrence of V-1 must show its tag prefix")
-            self.assertFalse(_tag_visible(row2),
-                "an immediate repeat of the same object (V-1) must not repeat the prefix")
+            self.assertTrue(_tag_visible(row2),
+                "every cause row must show its own repeated object prefix")
             self.assertTrue(_tag_visible(row3),
                 "a different object (P-1) right after must show its own tag prefix")
         finally:
