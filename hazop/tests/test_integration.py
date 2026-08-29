@@ -7381,6 +7381,62 @@ class StandardCauseContextTests(unittest.TestCase):
         self.assertEqual(helper_object_id, standard_object_id)
         self.assertEqual([r['description'] for r in popup_rows], [cause_text])
 
+    def test_typing_known_tag_refreshes_popup_context_and_binds_on_save(self):
+        suffix = os.path.basename(self._tmpdir)
+        deviation_text = f'Inline deviation {suffix}'
+        object_type = f'Inline valve {suffix}'
+        cause_text = 'Chosen from standard causes'
+        node_id = self.db.add_node()
+        deviation_id = self.db.get_or_create_deviation(node_id, deviation_text)
+        standard_deviation_id = self.db.add_standard_deviation(deviation_text)
+        standard_object_id = self.db.add_standard_object(object_type)
+        self.db.add_standard_cause_with_object(
+            standard_deviation_id, standard_object_id, cause_text)
+        equipment_id = self.db.add_equipment_item(
+            'PV-901', 'PV-901', 'PV', 0, object_type, '', 0)
+        cause_id = self.db.add_cause(deviation_id)
+        self.panel.load_node(node_id)
+        row = next(r for r, meta in enumerate(self.panel._row_meta)
+                   if meta[1] == cause_id)
+        equipment = self.panel._recognized_pid_equipment('Failure at PV-901')
+        self.assertEqual(equipment['id'], equipment_id)
+        _std_id, comp_type, _dev, rows = \
+            self.panel._ors_standard_causes_for_row(
+                row, equipment_override=equipment)
+        self.assertEqual(comp_type, object_type)
+        self.assertEqual([r['description'] for r in rows], [cause_text])
+
+        from scenario_panel import _BoldTagTextEdit
+        from PyQt6.QtCore import QRect
+        editor = _BoldTagTextEdit(self.panel._table.viewport())
+        editor.setText('PV-901 fails to close')
+        editor.setProperty('typed_cause_object_serial', 1)
+        with unittest.mock.patch.object(
+                self.panel._pid_delegate, '_attach_cause_completer'), \
+             unittest.mock.patch.object(
+                self.panel._pid_delegate, '_show_standard_cause_popup') as popup:
+            self.panel._pid_delegate._refresh_typed_cause_object(
+                lambda: editor, 1, row, QRect(0, 0, 100, 20))
+        popup.assert_called_once_with(
+            editor, row, unittest.mock.ANY, equipment_override=equipment)
+
+        item = self.panel._table.item(row, self.panel._C_ORS)
+        self.panel._table.blockSignals(True)
+        item.setText('PV-901 fails to close')
+        self.panel._table.blockSignals(False)
+        self.panel._on_cell_changed_inner(row, self.panel._C_ORS)
+        saved = self.db.get_cause(cause_id)
+        self.assertEqual(saved['equipment_id'], equipment_id)
+        self.assertEqual(saved['comp_type'], object_type)
+        self.assertEqual(saved['comp_tag'], 'PV-901')
+        self.assertEqual(saved['description'], 'fails to close')
+        other_equipment_id = self.db.add_equipment_item(
+            'PV-902', 'PV-902', 'PV', 0, object_type, '', 0)
+        self.assertFalse(self.panel._bind_recognized_cause_equipment(
+            cause_id, other_equipment_id))
+        self.assertEqual(self.db.get_cause(cause_id)['equipment_id'], equipment_id)
+        editor.deleteLater()
+
 
 class RecommendationPhysicalRowTests(RecommendationColumnTests):
     def test_each_recommendation_has_its_own_row_and_trailing_blank_row(self):

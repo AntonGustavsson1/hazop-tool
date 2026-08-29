@@ -2228,6 +2228,7 @@ class _PidDelegate(_ScenarioDelegate):
                 # docstring.
                 row = index.row()
                 cell_rect = QRect(option.rect)
+                self._watch_typed_cause_object(editor, index.row(), cell_rect)
                 QTimer.singleShot(0, lambda ed=editor, r=row, rect=cell_rect:
                                    self._show_standard_cause_popup(ed, r, rect))
             elif index.column() == self._panel._C_KON:
@@ -2362,7 +2363,8 @@ class _PidDelegate(_ScenarioDelegate):
         comp.setFilterMode(Qt.MatchFlag.MatchStartsWith)
         editor.setCompleter(comp)
 
-    def _show_standard_cause_popup(self, editor, row, cell_rect):
+    def _show_standard_cause_popup(self, editor, row, cell_rect,
+                                   equipment_override=None):
         """Auto-open StandardCauseSuggestPopup alongside the ORS editor
         (2026-08-25, see NOTES.md "Standardorsak-popup vid redigering
         av Orsak-cellen" — Anton: "När jag vill editera orsakstexten
@@ -2411,12 +2413,23 @@ class _PidDelegate(_ScenarioDelegate):
             return
         try:
             group_line = editor.property('group_line')
+            equipment = equipment_override or panel._recognized_pid_equipment(
+                editor.toPlainText())
+            current_cause = panel.db.get_cause(cause_id)
+            current_equipment_id = (current_cause.get('equipment_id')
+                                    if current_cause else None)
+            if (equipment and current_equipment_id not in (None, equipment.get('id'))):
+                # A free-text reference must not silently replace an existing
+                # cause-object link; that still uses the explicit tag popup.
+                equipment = None
             _std_dev_id, comp_type, dev_description, rows = \
                 panel._ors_standard_causes_for_row(
-                    row, group_line if isinstance(group_line, int) and group_line >= 0 else None)
+                    row, group_line if isinstance(group_line, int) and group_line >= 0 else None,
+                    equipment_override=equipment)
             top_level = panel.window()
             popup = StandardCauseSuggestPopup(
                 panel, row, cause_id, editor, comp_type, dev_description, rows,
+                equipment_id=equipment.get('id') if equipment else None,
                 parent=top_level)
             # Prefer ABOVE the cell (2026-08-26, see NOTES.md "Flytta
             # HAZOP-popups ovanför"), falling back to below only if there
@@ -2438,7 +2451,7 @@ class _PidDelegate(_ScenarioDelegate):
             logging.exception('_show_standard_cause_popup: failed to show '
                               'popup (row=%d)', row)
 
-    def _attach_cause_completer(self, editor, index):
+    def _attach_cause_completer(self, editor, index, equipment_override=None):
         """Suggest standard-cause descriptions while inline-editing an Orsak
         cell — the same library CauseObjectPopup draws from, so quick text
         edits get the same suggestions as the popup instead of a bare,
@@ -2450,7 +2463,8 @@ class _PidDelegate(_ScenarioDelegate):
         try:
             row = index.row()
             _std_dev_id, _comp_type, _dev_desc, rows = \
-                self._panel._ors_standard_causes_for_row(row)
+                self._panel._ors_standard_causes_for_row(
+                    row, equipment_override=equipment_override)
             descs = [c['description'] for c in rows]
             if not descs:
                 # Wider than _ors_standard_causes_for_row's own cascade
@@ -2469,6 +2483,49 @@ class _PidDelegate(_ScenarioDelegate):
                 editor.setCompleter(comp)
         except Exception:
             pass
+
+    def _watch_typed_cause_object(self, editor, row, cell_rect):
+        """Refresh ORS help when free text identifies a catalogue object."""
+        editor.setProperty('typed_cause_object_id', None)
+        editor.setProperty('typed_cause_object_serial', 0)
+
+        def queue_refresh():
+            try:
+                serial = int(editor.property('typed_cause_object_serial') or 0) + 1
+                editor.setProperty('typed_cause_object_serial', serial)
+            except RuntimeError:
+                return
+            editor_ref = weakref.ref(editor)
+            QTimer.singleShot(
+                0, lambda s=serial, ref=editor_ref, r=row, rect=QRect(cell_rect):
+                self._refresh_typed_cause_object(ref, s, r, rect))
+
+        editor.textChanged.connect(queue_refresh)
+
+    def _refresh_typed_cause_object(self, editor_ref, serial, row, cell_rect):
+        editor = editor_ref()
+        if editor is None or sip.isdeleted(editor):
+            return
+        try:
+            if serial != int(editor.property('typed_cause_object_serial') or 0):
+                return
+            equipment = self._panel._recognized_pid_equipment(editor.toPlainText())
+            equipment_id = equipment.get('id') if equipment else None
+            old_id = editor.property('typed_cause_object_id')
+            if old_id == equipment_id:
+                return
+            editor.setProperty('typed_cause_object_id', equipment_id)
+            index = self._panel._table.model().index(row, self._panel._C_ORS)
+            self._attach_cause_completer(editor, index, equipment)
+            top_level = self._panel.window()
+            for popup in top_level.findChildren(StandardCauseSuggestPopup):
+                if getattr(popup, '_editor', None) is editor:
+                    popup.close()
+            if equipment is not None:
+                self._show_standard_cause_popup(
+                    editor, row, cell_rect, equipment_override=equipment)
+        except RuntimeError:
+            return
 
     def setModelData(self, editor, model, index):
         clean = _PID_ICON_RE.sub('', editor.text().strip())
@@ -2999,7 +3056,7 @@ class StandardCauseSuggestPopup(QWidget):
         "QPushButton:hover{background:#E8E9E6;}")
 
     def __init__(self, panel, row, cause_id, editor, comp_type, dev_description,
-                 rows, parent=None):
+                 rows, equipment_id=None, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         # NoFocus on the popup itself and every child (set on each
@@ -3013,6 +3070,7 @@ class StandardCauseSuggestPopup(QWidget):
         self._row = row
         self._cause_id = cause_id
         self._editor = editor
+        self._equipment_id = equipment_id
 
         layout = QVBoxLayout(self)
         layout.setSpacing(3)
@@ -3106,6 +3164,9 @@ class StandardCauseSuggestPopup(QWidget):
         the fast "pick and you're done" path, not "just fill the field
         and keep editing"), same commitData/closeEditor emit pattern
         the Enter key already uses (eventFilter(), scenario_panel.py)."""
+        if self._equipment_id is not None:
+            self._panel._bind_recognized_cause_equipment(
+                self._cause_id, self._equipment_id)
         self._editor.setText(description)
         delegate = self._panel._pid_delegate
         delegate.commitData.emit(self._editor)
@@ -6642,7 +6703,8 @@ class ScenarioTablePanel(QWidget):
         prefix = tag_label if trivial else f"{tag_label}, "
         return fm.horizontalAdvance(prefix)
 
-    def _ors_standard_causes_for_row(self, row, group_line=None):
+    def _ors_standard_causes_for_row(self, row, group_line=None,
+                                     equipment_override=None):
         """(std_dev_id, comp_type, dev_description, rows) of standard
         causes applicable to this ORS row's deviation + object type
         (2026-08-25, see NOTES.md "Standardorsak-popup vid redigering av
@@ -6680,7 +6742,8 @@ class ScenarioTablePanel(QWidget):
             equipment_ids = self._group_equipment_ids(cause)
             if group_line < len(equipment_ids):
                 equipment_id = equipment_ids[group_line]
-        equipment = (self.db.get_equipment_by_id(equipment_id)
+        equipment = (equipment_override if group_line is None and equipment_override
+                     else self.db.get_equipment_by_id(equipment_id)
                      if equipment_id else None)
         if equipment:
             comp_type = equipment.get('equipment_type') or comp_type
@@ -7915,6 +7978,41 @@ class ScenarioTablePanel(QWidget):
                 found.append(tag)
         return found
 
+    def _recognized_pid_equipment(self, text):
+        """Return the first real catalogue object mentioned in *text*."""
+        text = str(text or '')
+        matches = []
+        for tag in self._matching_pid_tags(text):
+            position = text.casefold().find(tag.casefold())
+            equipment = self.db.get_equipment_by_tag(tag)
+            if position >= 0 and equipment:
+                matches.append((position, -len(tag), equipment))
+        selected = min(matches, key=lambda candidate: candidate[:2], default=None)
+        return selected[2] if selected else None
+
+    def _bind_recognized_cause_equipment(self, cause_id, equipment_id):
+        """Persist a recognised object only for an unlinked ordinary cause."""
+        cause = self.db.get_cause(cause_id)
+        equipment = self.db.get_equipment_by_id(equipment_id)
+        if not cause or not equipment:
+            return False
+        existing_id = cause.get('equipment_id')
+        if existing_id not in (None, equipment_id):
+            return False
+        self.db.update_cause(
+            cause_id, comp_type=equipment.get('equipment_type') or '',
+            comp_tag=equipment.get('tag') or '', equipment_id=equipment_id)
+        return True
+
+    def _strip_leading_recognized_tag(self, text, equipment):
+        """Avoid drawing a newly bound ORS tag twice after an inline save."""
+        tag = (equipment or {}).get('tag') or ''
+        match = re.match(r'\s*' + re.escape(tag) + r'(?=\s|[,;:]|$)',
+                         str(text or ''), re.IGNORECASE)
+        if not match:
+            return str(text or '').strip()
+        return str(text or '')[match.end():].lstrip(' ,:;-').strip()
+
     def _confirm_inline_identity_change(self, kind, id_, desc):
         """Guard a tag replacement embedded in a KON/SG description.
 
@@ -7996,6 +8094,19 @@ class ScenarioTablePanel(QWidget):
             desc = text if len(group_tags) >= 2 else text.split('\n')[0].strip()
             cause = self.db.get_cause(id_)
             if cause:
+                recognised_equipment = (
+                    self._recognized_pid_equipment(desc)
+                    if len(group_tags) < 2 else None)
+                bound_from_inline_tag = False
+                stripped_desc = (self._strip_leading_recognized_tag(
+                    desc, recognised_equipment) if recognised_equipment else desc)
+                if (recognised_equipment and stripped_desc != desc and
+                        cause.get('equipment_id') is None):
+                    bound_from_inline_tag = self._bind_recognized_cause_equipment(
+                        id_, recognised_equipment['id'])
+                    if bound_from_inline_tag:
+                        desc = stripped_desc
+                        cause = self.db.get_cause(id_)
                 # Check if the text is comp_tag (component tag) or description
                 old_comp_tag = cause.get('comp_tag', '') or ''
                 old_desc = cause.get('description', '') or ''
@@ -8015,6 +8126,8 @@ class ScenarioTablePanel(QWidget):
                     # QTableWidgetItem) — no full rebuild needed, see
                     # _update_row_text_only()'s docstring for why.
                     self._update_row_text_only('cause', id_, desc)
+                if bound_from_inline_tag:
+                    self._schedule_rebuild()
             self.item_edited.emit(CAUSE_T, id_)
 
         elif kind == 'consequence':

@@ -2,6 +2,17 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Igenkänd P&ID-tagg ger inline-kontext för Orsak (2026-08-29)
+
+När en komplett tagg från objektkatalogen skrivs eller väljs i en aktiv
+orsakseditor används objektets typ direkt för att uppdatera popupen med
+standardorsaker och textförslag. Användaren behöver alltså inte först stänga
+redigeraren eller öppna objektpopupen. Väljs en standardorsak binds det
+igenkända objektet till orsaken före beskrivningen sparas. Om en fristående
+orsak sparas med den igenkända taggen först i texten binds objektet och taggen
+visas därefter som det vanliga fasta prefixet, utan dubblerad text. En redan
+kopplad orsak byter däremot aldrig objekt automatiskt via fri text.
+
 ## Enhetlig orsakskontext och rekommendationsrad (2026-08-29)
 
 Standardorsaker slås nu upp genom en gemensam funktion för både
