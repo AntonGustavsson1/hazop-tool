@@ -7247,5 +7247,57 @@ class RecommendationPhysicalRowTests(RecommendationColumnTests):
             [first, second, None])
 
 
+class EmptyScenarioCellDoubleClickTests(unittest.TestCase):
+    """Empty Scenario/Worksheet cells must use their context popup while
+    keeping the corresponding free-text editor available in that popup."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_empty_doubleclick_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_empty_cause_cell_opens_object_and_freetext_popup(self):
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.set_show_empty_deviations(True)
+            panel.load_node(node_id)
+            row = next(r for r, meta in enumerate(panel._row_meta)
+                       if meta[0] == dev_id and meta[1] is None)
+            calls = []
+            panel._add_cause_via_plus_row = lambda did, global_pos=None: calls.append(
+                (did, global_pos))
+            panel._on_cell_double_clicked(panel._table.item(row, panel._C_ORS))
+            self.assertEqual(calls[0][0], dev_id)
+        finally:
+            panel.deleteLater()
+
+    def test_empty_consequence_cell_opens_chain_freetext_popup(self):
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, meta in enumerate(panel._row_meta)
+                       if meta[2] == cons_id)
+            calls = []
+            panel._open_chain_editor = lambda cid: calls.append(cid)
+            panel._on_cell_double_clicked(panel._table.item(row, panel._C_KON))
+            self.assertEqual(calls, [cons_id])
+        finally:
+            panel.deleteLater()
+
+
 if __name__ == "__main__":
     unittest.main()

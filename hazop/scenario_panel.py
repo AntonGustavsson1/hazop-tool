@@ -6063,6 +6063,22 @@ class ScenarioTablePanel(QWidget):
             return
         row = item.row()
         col = item.column()
+        # Empty cells need their creation/editing popup rather than a generic
+        # editor with no database identity.  The same ScenarioTablePanel is
+        # embedded by HAZOP Worksheet, so this keeps both views consistent.
+        if 0 <= row < len(self._row_meta):
+            dev_id, cause_id, cons_id, _sg_id = self._row_meta[row]
+            if col == self._C_ORS and cause_id is None and dev_id is not None:
+                gp = self._table.viewport().mapToGlobal(
+                    self._table.visualRect(self._table.model().index(row, col)).topLeft())
+                self._add_cause_via_plus_row(dev_id, global_pos=gp)
+                self._double_click_edit = None
+                return
+            if (col == self._C_KON and cons_id is not None and
+                    not (item.text() or '').strip()):
+                self._open_chain_editor(cons_id)
+                self._double_click_edit = None
+                return
         group_line = None
         # Double-click starts inline edit — consistent across ORS/KON/SG
         # (reported feedback: KON used to open the "Konsekvenskedja" wizard

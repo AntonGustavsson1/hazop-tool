@@ -3844,6 +3844,18 @@ ocksÃ¥ ger rÃ¤tt placering i Ã¤ldre projekt dÃ¤r flera orsaker har samma
 Verifierat med `tests.test_integration.AutoConsequenceOnCauseAddTests` (5 tester),
 `tests.test_worksheet` (15 tester) och py_compile. Ingen visuell GUI-verifiering Ã¤r gjord.
 
+## Tomma celler: dubbelklick Ã¶ppnar rÃ¤tt fritextpopup (2026-08-29)
+
+Dubbelklick pÃ¥ en tom Orsak-cell i HAZOP Scenario eller Worksheet anvÃ¤nder nu
+samma objekt-/standardorsakspopup som skapande via den tomma cellen, inklusive
+fritext. Dubbelklick pÃ¥ en tom Konsekvens-cell Ã¶ppnar konsekvenskedjepopupen,
+dÃ¤r fritext och ytterligare objekt kan anges. Ifyllda celler behÃ¥ller inline-
+redigering. Eftersom Worksheet anvÃ¤nder samma ScenarioTablePanel gÃ¤ller flÃ¶det
+likadant i bÃ¥da vyerna.
+
+Verifierat med tvÃ¥ nya integrationstester och `tests.test_smoke` (12 tester).
+Ingen visuell GUI-verifiering Ã¤r gjord.
+
 ## Worksheet: Enter och cross-view-synk (2026-08-28)
 
 Worksheetens inbäddade ScenarioTablePanel uppdaterar nu sig själv och väljer
