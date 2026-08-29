@@ -816,6 +816,24 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_st1_matrix_preset_loads_without_saving_immediately(self):
+        from hazop import HAZOPPreparationPanel
+        panel = HAZOPPreparationPanel(self.db)
+        try:
+            before = self.db.get_risk_matrix()
+            panel._apply_st1_preset()
+            self.assertEqual(panel._rows_spin.value(), 6)
+            self.assertEqual(panel._cols_spin.value(), 5)
+            self.assertTrue(panel._y_rev_chk.isChecked())
+            self.assertEqual(len(panel._cell_buttons), 6)
+            self.assertEqual(len(panel._cell_buttons[0][1]), 5)
+            self.assertEqual(panel._last_built_cfg['x_labels'][0][0], 'A')
+            self.assertEqual(panel._last_built_cfg['y_labels'][0][0], '0')
+            self.assertEqual(self.db.get_risk_matrix(), before,
+                             'choosing a preset must not save before Spara riskmatris')
+        finally:
+            panel.deleteLater()
+
     def test_axis_reverse_buttons_are_checkable_toolbuttons(self):
         """"Ersätt kryssrutorna 'Vänd X'/'Vänd Y' med klickbara pilar"
         (2026-08-17 user request) — QToolButton in checkable mode replaces

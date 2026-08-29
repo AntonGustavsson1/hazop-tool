@@ -33,6 +33,61 @@ from standard_causes_panel import StandardCausesSettingsPanel
 
 _PALETTE_MIME = 'application/x-hazop-palette-color'
 
+# ST1 Sverige AB risk matrix transcribed from
+# ej_programfiler/reference_material/St1/St1 SA 04 - Riskmatris#4_161189.pdf.
+# Grid data is stored low-to-high (severity 0..5, likelihood A..E); the
+# display is reversed vertically so the low-severity row appears at the top,
+# matching the source document.  The PDF uses qualitative likelihood classes,
+# so the numeric boundaries below are only the application's technical
+# fallback for converting a manually entered frequency.
+ST1_RISK_MATRIX_PRESET = {
+    'rows': 6,
+    'cols': 5,
+    'x_axis': 'frequency',
+    'x_reversed': False,
+    'y_reversed': True,
+    'x_labels': [
+        'A – Aldrig hört talas om inom industrin',
+        'B – Har inträffat inom industrin',
+        'C – Har inträffat flertalet gånger inom industrin',
+        'D – Har inträffat inom bolaget',
+        'E – Har inträffat flertalet gånger inom bolaget',
+    ],
+    'y_labels': [
+        '0 – Ingen skada eller hälsoeffekt',
+        '1 – Liten skada eller hälsoeffekt',
+        '2 – Begränsad skada eller hälsoeffekt',
+        '3 – Stor skada eller hälsoeffekt',
+        '4 – Bestående total invaliditet eller upp till 3 döda',
+        '5 – 4 eller fler döda',
+    ],
+    'cell_colors': [
+        ['#8DB1DF', '#8DB1DF', '#8DB1DF', '#8DB1DF', '#8DB1DF'],
+        ['#8DB1DF', '#8DB1DF', '#3769EE', '#3769EE', '#3769EE'],
+        ['#8DB1DF', '#3769EE', '#3769EE', '#FFF500', '#FFF500'],
+        ['#3769EE', '#3769EE', '#FFF500', '#FFF500', '#FF0000'],
+        ['#3769EE', '#FFF500', '#FFF500', '#FF0000', '#FF0000'],
+        ['#FFF500', '#FFF500', '#FF0000', '#FF0000', '#FF0000'],
+    ],
+    'cell_labels': [
+        ['Marginell risk', '', '', '', 'Ljusblå: lämnas utan åtgärd'],
+        ['', '', 'Mörkblå: lämnas efter bedömning', '', ''],
+        ['', 'Liten risk', '', 'Gul: kräver åtgärd', ''],
+        ['Teknisk handbok', '', 'Stor risk', '', 'Röd: kräver åtgärd'],
+        ['', 'Bedöm ALARP', '', 'Mycket stor risk', ''],
+        ['', '', 'Bedöm ALARP', '', ''],
+    ],
+    'cell_fg_colors': [
+        ['#000000', '#000000', '#000000', '#000000', '#000000'],
+        ['#000000', '#000000', '#FFFFFF', '#FFFFFF', '#FFFFFF'],
+        ['#000000', '#FFFFFF', '#FFFFFF', '#000000', '#000000'],
+        ['#FFFFFF', '#FFFFFF', '#000000', '#000000', '#000000'],
+        ['#FFFFFF', '#000000', '#000000', '#000000', '#000000'],
+        ['#000000', '#000000', '#000000', '#000000', '#000000'],
+    ],
+    'freq_boundaries': [1e-5, 1e-4, 1e-3, 1e-2],
+}
+
 
 class DraggableColorSwatch(QLabel):
     """Draggable color swatch in the palette — drag onto a matrix cell."""
@@ -488,9 +543,14 @@ class HAZOPPreparationPanel(QWidget):
         self._rows_spin.valueChanged.connect(self._apply_size)
         self._cols_spin.valueChanged.connect(self._apply_size)
 
-        # Frequency label presets
+        # Standard matrix/frequency presets
         preset_row = QHBoxLayout()
-        preset_row.addWidget(QLabel("Frekvens-mall:"))
+        preset_row.addWidget(QLabel("Standardmallar:"))
+        st1_btn = QPushButton("ST1 Sverige AB")
+        st1_btn.setToolTip(
+            "Läser in ST1:s 6×5-riskmatris med sannolikhet A–E.\n"
+            "Ändringen syns direkt men sparas först med 'Spara riskmatris'.")
+        st1_btn.clicked.connect(self._apply_st1_preset)
         norsok_btn = QPushButton("NORSOK Z-013  (AAA – E)")
         norsok_btn.setToolTip(
             "Fyll frekvensaxeln med NORSOK Z-013-etiketter:\n"
@@ -508,6 +568,7 @@ class HAZOPPreparationPanel(QWidget):
             ['F-1 – Otänkbar', 'F0 – Extremt sällan', 'F1 – Sällan',
              'F2 – Osannolik', 'F3 – Möjlig', 'F4 – Trolig', 'F5 – Frekvent'],
             [1e-5, 1e-4, 1e-3, 1e-2, 0.1, 1.0]))
+        preset_row.addWidget(st1_btn)
         preset_row.addWidget(norsok_btn)
         preset_row.addWidget(fscale_btn)
         preset_row.addStretch()
@@ -1827,6 +1888,30 @@ class HAZOPPreparationPanel(QWidget):
         _risk_matrix_cache.reload_from_db()
         QMessageBox.information(self, "Sparat", "Riskmatris sparad.")
         self.matrix_changed.emit()
+
+    def _apply_st1_preset(self):
+        """Load the ST1 Sverige AB matrix into the editable matrix UI.
+
+        This is deliberately a working copy only; the database is changed
+        only when the user presses ``Spara riskmatris``.
+        """
+        cfg = json.loads(json.dumps(ST1_RISK_MATRIX_PRESET))
+        senders = (self._rows_spin, self._cols_spin, self._axis_combo,
+                   self._x_rev_chk, self._y_rev_chk)
+        for widget in senders:
+            widget.blockSignals(True)
+        try:
+            self._rows_spin.setValue(cfg['rows'])
+            self._cols_spin.setValue(cfg['cols'])
+            self._axis_combo.setCurrentIndex(
+                max(0, self._axis_combo.findData(cfg['x_axis'])))
+            self._x_rev_chk.setChecked(cfg['x_reversed'])
+            self._y_rev_chk.setChecked(cfg['y_reversed'])
+        finally:
+            for widget in senders:
+                widget.blockSignals(False)
+        self._last_built_cfg = cfg
+        self._build_matrix_grid(cfg)
 
     def _apply_freq_preset(self, labels: list, bounds: list):
         """Populate frequency axis headers and boundary edits from a preset.

@@ -1,5 +1,14 @@
 # NOTES.md — Beslut och kontext
 
+## ST1-riskmatris som standardmall (2026-08-29)
+
+Referensen `St1 SA 04 - Riskmatris#4_161189.pdf` är införd som en
+redigerbar standardmall i HAZOP preparation under `Standardmallar → ST1
+Sverige AB`. Mallen har sex konsekvensnivåer (0–5), fem kvalitativa
+sannolikhetsnivåer (A–E), ST1:s färgzoner och korta risktexter. Valet
+ändrar arbetsvyn direkt men sparar inte databasen förrän användaren trycker
+`Spara riskmatris`.
+
 ## Enter skapar ny rekommendation i rekommendationsfliken (2026-08-29)
 
 När en rekommendationsrad är markerad skapar Enter nu en ny tom
