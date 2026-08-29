@@ -1,5 +1,12 @@
 # NOTES.md — Beslut och kontext
 
+## Standardorsakspopupens ram målas säkert (2026-08-29)
+
+StandardCauseSuggestPopup använder nu en namngiven stylesheet-selektor och
+`WA_StyledBackground`, så den svarta 2 px-ramen faktiskt målas även när
+applikationen har en övergripande Qt-stil. Fokus-, storleks- och
+placeringsbeteendet är oförändrat.
+
 ## Svart ram runt standardorsakspopup (2026-08-29)
 
 StandardCauseSuggestPopup använder nu en svart 2 px ram för tydlig kontrast

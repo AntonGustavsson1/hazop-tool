@@ -4156,6 +4156,8 @@ class StandardCauseSuggestPopupTests(unittest.TestCase):
         popup = self._popup()
         self.assertIsNotNone(popup)
         self.assertIn("border:2px solid #000000", popup.styleSheet())
+        self.assertEqual(popup.objectName(), "standardCauseSuggestPopup")
+        self.assertTrue(popup.testAttribute(Qt.WidgetAttribute.WA_StyledBackground))
 
     def test_popup_does_not_appear_for_kon_or_sg_columns(self):
         """Only the Orsak (ORS) cell triggers this popup — editing a

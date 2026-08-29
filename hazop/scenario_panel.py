@@ -3114,6 +3114,8 @@ class StandardCauseSuggestPopup(QWidget):
                  rows, equipment_id=None, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setObjectName("standardCauseSuggestPopup")
         # NoFocus on the popup itself and every child (set on each
         # widget built below) — belt-and-suspenders on top of this
         # already being a non-toplevel widget: it must never be able to
@@ -3122,8 +3124,9 @@ class StandardCauseSuggestPopup(QWidget):
         # Give the child popup a clear boundary against the table and the
         # application background. It remains a non-focusable child widget;
         # only the visual framing changes here.
-        self.setStyleSheet("StandardCauseSuggestPopup{background:#FFFFFF;"
-                           "border:2px solid #000000;border-radius:3px;}")
+        self.setStyleSheet("QWidget#standardCauseSuggestPopup{"
+                           "background:#FFFFFF;border:2px solid #000000;"
+                           "border-radius:3px;}")
         self._panel = panel
         self._row = row
         self._cause_id = cause_id
