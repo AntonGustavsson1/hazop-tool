@@ -4155,7 +4155,7 @@ class StandardCauseSuggestPopupTests(unittest.TestCase):
         self._start_edit(cause_id)
         popup = self._popup()
         self.assertIsNotNone(popup)
-        self.assertIn("border:2px solid #8D9299", popup.styleSheet())
+        self.assertIn("border:2px solid #000000", popup.styleSheet())
 
     def test_popup_does_not_appear_for_kon_or_sg_columns(self):
         """Only the Orsak (ORS) cell triggers this popup — editing a

@@ -1,5 +1,11 @@
 # NOTES.md — Beslut och kontext
 
+## Svart ram runt standardorsakspopup (2026-08-29)
+
+StandardCauseSuggestPopup använder nu en svart 2 px ram för tydlig kontrast
+mot tabellen och den vita bakgrunden. Storlek, placering och fokusfritt
+beteende är oförändrade.
+
 ## Tydligare ram runt standardorsakspopup (2026-08-29)
 
 StandardCauseSuggestPopup har fått en tydligare 2 px grå ram och svag
