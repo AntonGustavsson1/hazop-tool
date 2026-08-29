@@ -3893,6 +3893,16 @@ tag-popupen anvÃ¤nds fortfarande frÃ¥n den faktiska taggzonen nÃ¤r en tagg
 Verifierat med sex riktade Orsak/tagg-tester, tvÃ¥ tomcellstester, 16 Worksheet-
 tester och py_compile. Ingen visuell GUI-verifiering Ã¤r gjord.
 
+## Worksheet: placera objekt pÃ¥ P&ID och Ã¥tervÃ¤nd till samma cell (2026-08-29)
+
+Worksheet vidarebefordrar nu `Placera objekt pÃ¥ P&ID` via samma
+one-shot-placeringsflÃ¶de som HAZOP Scenario. Vid start vÃ¤xlar appen till
+P&ID-vyn. NÃ¤r objektet har placerats och kopplats till orsaken vÃ¤xlar den
+automatiskt tillbaka till Worksheet och fokuserar samma orsaksfÃ¤lt.
+
+Verifierat med placerings-/returtest, 16 Worksheet-tester och 12 smoke-tester
+samt py_compile. Ingen visuell GUI-verifiering Ã¤r gjord.
+
 ## Worksheet: Enter och cross-view-synk (2026-08-28)
 
 Worksheetens inbäddade ScenarioTablePanel uppdaterar nu sig själv och väljer

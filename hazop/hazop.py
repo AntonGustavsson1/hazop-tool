@@ -1664,6 +1664,11 @@ class MainWindow(QMainWindow):
             lambda cause_id, comp_type, comp_tag:
                 self.pid_panel.start_cause_equipment_placement(
                     cause_id, comp_tag, comp_type))
+        # Worksheet uses the same placement control, but must return to its
+        # own page and selected cause after the P&ID click is completed.
+        self._worksheet_place_return_cause_id = None
+        self.worksheet.place_cause_object_requested.connect(
+            self._on_worksheet_place_cause_object_requested)
         self.pid_panel.cause_equipment_bound.connect(
             self._on_cause_equipment_bound)
         self.scenario_panel.new_item_created.connect(
@@ -1935,6 +1940,22 @@ class MainWindow(QMainWindow):
         cur_type, cur_id = self.tree_panel._current()
         self.tree_panel.refresh(cur_type, cur_id)
         self.pid_panel.set_tree_context(self._cur_type, self._cur_id)
+        if self._worksheet_place_return_cause_id == cause_id:
+            # The placement handler has already written the equipment link.
+            # Re-enter Worksheet only now, after the DB update, then restore
+            # the exact cause cell instead of merely selecting the page.
+            self._worksheet_place_return_cause_id = None
+            self._switch_view(2)
+            self.worksheet._table_panel.select_item(CAUSE_T, cause_id)
+
+    def _on_worksheet_place_cause_object_requested(self, cause_id,
+                                                    comp_type, comp_tag):
+        """Start the shared P&ID placement flow from Worksheet and remember
+        where to return when the one-shot placement click is finished."""
+        self._worksheet_place_return_cause_id = int(cause_id)
+        self._switch_view(1)
+        self.pid_panel.start_cause_equipment_placement(
+            cause_id, comp_tag, comp_type)
 
     def _on_tree_visibility_changed(self, marker_type, visible):
         """Keep P&ID marker visibility and tree-context colours in sync."""

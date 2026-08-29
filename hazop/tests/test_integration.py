@@ -2669,6 +2669,32 @@ class EquipmentMarkerNavigateFiltersScenarioTests(unittest.TestCase):
 
             place.assert_called_once_with(17, 'V-101', 'Ventil')
 
+    def test_worksheet_place_switches_to_pid_and_returns_to_same_cause(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.nodes()[0]['id']
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            win.view_stack.setCurrentIndex(2)
+
+            with unittest.mock.patch.object(
+                    win.pid_panel, 'start_cause_equipment_placement') as place:
+                win.worksheet.place_cause_object_requested.emit(
+                    cause_id, 'Ventil', 'PV-101')
+
+            self.assertEqual(win.view_stack.currentIndex(), 1)
+            place.assert_called_once_with(cause_id, 'PV-101', 'Ventil')
+            self.assertEqual(win._worksheet_place_return_cause_id, cause_id)
+
+            equipment_id = win.db.add_equipment_item(
+                'PV-101', 'PV-101', 'PV', 0, 'Ventil', '', 0)
+            with unittest.mock.patch.object(
+                    win.worksheet._table_panel, 'select_item') as select:
+                win._on_cause_equipment_bound(cause_id, equipment_id)
+
+            self.assertEqual(win.view_stack.currentIndex(), 2)
+            self.assertIsNone(win._worksheet_place_return_cause_id)
+            select.assert_called_once_with(CAUSE_T, cause_id)
+
     def test_unlinked_marker_is_a_no_op(self):
         with _TempDbMainWindow() as win:
             marker_id = win.db.add_equipment_marker(None, "?", 0, 10.0, 10.0, "")
