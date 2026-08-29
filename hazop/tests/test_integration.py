@@ -3826,9 +3826,9 @@ class RecommendationColumnTests(unittest.TestCase):
         self.assertEqual(self.panel._COLS[-1], 'Rekommendation')
         self.assertEqual(self.panel._C_REK, len(self.panel._COLS) - 1)
 
-    def test_consequence_with_no_actions_shows_dash_placeholder(self):
+    def test_consequence_with_no_actions_shows_blank_trailing_entry_row(self):
         item, _ = self._rek_item()
-        self.assertEqual(item.text(), '—')
+        self.assertEqual(item.text(), '')
 
     def test_single_action_shows_its_description(self):
         rec_id = self.db.add_recommendation_to_consequence(self.cons_id, description='Ny åtgärd')
@@ -4043,6 +4043,18 @@ class RecommendationColumnTests(unittest.TestCase):
         recs = self.db.recommendations_for_consequence(self.cons_id)
         self.assertEqual([r['description'] for r in recs], ['Första', 'Andra'])
         self.assertEqual(self.db.get_recommendation(first)['description'], 'Första')
+
+    def test_enter_on_recommendation_opens_next_recommendation_not_safeguard(self):
+        """Table-level Enter must follow the visible REK row, not SG."""
+        _, row = self._rek_item()
+        with unittest.mock.patch.object(
+                self.panel, '_continue_recommendation_entry') as next_recommendation, \
+             unittest.mock.patch.object(
+                self.panel, '_quick_add_safeguard') as add_safeguard:
+            self.panel._ctrl_enter(row, self.panel._C_REK)
+
+        next_recommendation.assert_called_once_with(row, self.cons_id)
+        add_safeguard.assert_not_called()
 
     @unittest.skip("REK continuation now selects the next physical row")
     def test_continue_recommendation_entry_selects_same_cell_in_add_mode(self):
@@ -7304,6 +7316,72 @@ class PidPageRotationTests(unittest.TestCase):
             panel.deleteLater()
 
 
+class StandardCauseContextTests(unittest.TestCase):
+    """An object-linked cause must keep its standard-cause context.
+
+    The object can have reached the row through the tree, P&ID drop or the
+    object catalogue.  In all cases ``causes.equipment_id`` is the durable
+    identity; the table role is only paint metadata and may be stale until a
+    deferred refresh has completed.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix='hazop_standard_context_')
+        self.db = Database(path=os.path.join(self._tmpdir, 'test_project.db'))
+        from hazop import ScenarioTablePanel
+        self.panel = ScenarioTablePanel(self.db)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_object_link_overrides_stale_cell_type_for_standard_causes(self):
+        suffix = os.path.basename(self._tmpdir)
+        deviation_text = f'Test deviation {suffix}'
+        object_type = f'Test valve {suffix}'
+        cause_text = 'Standard cause from linked object'
+        node_id = self.db.add_node()
+        deviation_id = self.db.get_or_create_deviation(node_id, deviation_text)
+        standard_deviation_id = self.db.add_standard_deviation(deviation_text)
+        standard_object_id = self.db.add_standard_object(object_type)
+        self.db.add_standard_cause_with_object(
+            standard_deviation_id, standard_object_id, cause_text)
+        equipment_id = self.db.add_equipment_item(
+            'PV-901', 'PV-901', 'PV', 0, object_type, '', 0)
+        cause_id = self.db.add_cause(deviation_id)
+        self.db.update_cause(
+            cause_id, description='Manually written cause', comp_type='',
+            comp_tag='', equipment_id=equipment_id)
+
+        self.panel.load_node(node_id)
+        row = next(r for r, meta in enumerate(self.panel._row_meta)
+                   if meta[1] == cause_id)
+        # Deliberately simulate an outdated display role after a drag/drop.
+        self.panel._table.item(row, self.panel._C_ORS).setData(
+            Qt.ItemDataRole.UserRole + 2, ('Old display type', 'PV-OLD'))
+
+        resolved_deviation_id, resolved_type, _description, panel_rows = \
+            self.panel._ors_standard_causes_for_row(row)
+        from ui_helpers import standard_cause_options
+        helper_deviation_id, helper_object_id, popup_rows = \
+            standard_cause_options(self.db, deviation_text, object_type)
+
+        self.assertEqual(resolved_deviation_id, standard_deviation_id)
+        self.assertEqual(resolved_type, object_type)
+        self.assertEqual([r['description'] for r in panel_rows], [cause_text])
+        self.assertEqual(helper_deviation_id, standard_deviation_id)
+        self.assertEqual(helper_object_id, standard_object_id)
+        self.assertEqual([r['description'] for r in popup_rows], [cause_text])
+
+
 class RecommendationPhysicalRowTests(RecommendationColumnTests):
     def test_each_recommendation_has_its_own_row_and_trailing_blank_row(self):
         first = self.db.add_recommendation_to_consequence(
@@ -7315,7 +7393,7 @@ class RecommendationPhysicalRowTests(RecommendationColumnTests):
                 if meta[2] == self.cons_id]
         self.assertEqual(
             [self.panel._table.item(r, self.panel._C_REK).text() for r in rows],
-            [f'R-{first:03d}. Första', f'R-{second:03d}. Andra', '—'])
+            [f'R-{first:03d}. Första', f'R-{second:03d}. Andra', ''])
         self.assertEqual(
             [self.panel._row_recommendation_ids[r] for r in rows],
             [first, second, None])

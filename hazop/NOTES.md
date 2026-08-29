@@ -2,6 +2,24 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Enhetlig orsakskontext och rekommendationsrad (2026-08-29)
+
+Standardorsaker slås nu upp genom en gemensam funktion för både
+`CauseObjectPopup` (tom cell, träd och P&ID-vägar) och Scenario-tabellens
+inline-editor. Samma prioritering används överallt: exakt
+standardavvikelse+standardobjekt, därefter objekttyp inom avvikelsen och sist
+objekttyp i hela biblioteket. Scenario läser den aktuella kopplingen i
+`causes.equipment_id` och objektets faktiska typ före cellens visningsdata.
+Det gör att en manuellt skriven orsak med kopplat objekt får samma
+standardorsaker som en orsak skapad från trädet, objektkatalogen eller P&ID.
+Worksheet använder samma `ScenarioTablePanel` och ärver därför reglerna.
+
+Rekommendationer behåller sina egna kataloglänkar men följer nu ett tydligare
+radsätt som barriärer: en rekommendation per fysisk rad, en tom fortsättningsrad
+utan förifylld text, första klick markerar och andra klick redigerar. Enter på
+en REK-cell går till nästa rekommendationsrad och skapar inte längre av misstag
+en safeguard.
+
 ## Shift-kopiering synlig i trädet (2026-08-28)
 
 Efter Shift-drag av en eller flera poster uppdateras trädet nu med den senast

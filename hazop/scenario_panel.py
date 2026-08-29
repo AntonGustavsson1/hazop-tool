@@ -28,10 +28,10 @@ from PyQt6.QtGui import (
 
 from constants import CAUSE_T, CONS_T, SG_T, SG_TYPES, CONFIG
 from database import Database, DEFAULT_MATRIX, get_matrix, risk_info, parse_tag_refs
-from pid_viewer import _icon, _obj_type_matches, FREQ_LABELS, freq_to_idx, MODE_PICK_REF_TAG
+from pid_viewer import _icon, FREQ_LABELS, freq_to_idx, MODE_PICK_REF_TAG
 from ui_helpers import (
     freq_axis_label, cons_axis_label, _lookup_comp_type_for_tag,
-    _resolve_std_deviation_id, _draw_text_with_bold_tags,
+    _draw_text_with_bold_tags, standard_cause_options,
     total_freq_reduction, CHAIN_ITEMS, build_consequence_text, parse_chain_from_json,
 )
 
@@ -3814,6 +3814,12 @@ class ScenarioTablePanel(QWidget):
         # active; its text must create a sibling, never overwrite the sole
         # existing recommendation.
         self._recommendation_force_add_cons_id = None
+        # A physical recommendation row follows the same deliberate
+        # select-then-edit interaction as a safeguard row. The table has
+        # already moved its current index when cellClicked is emitted, so we
+        # retain the preceding REK click explicitly rather than treating a
+        # first click as an edit request.
+        self._last_recommendation_click = None
         self._text_undo_stack = []
         self._undoing_text = False
         # Tags explicitly disconnected by the user must remain ordinary prose
@@ -5973,6 +5979,8 @@ class ScenarioTablePanel(QWidget):
         return None
 
     def _on_cell_clicked(self, row, col):
+        if col != self._C_REK:
+            self._last_recommendation_click = None
         if col == self._C_ORS and row < len(self._row_meta):
             dev_id, cause_id = self._row_meta[row][0], self._row_meta[row][1]
             if cause_id is not None:
@@ -6012,6 +6020,13 @@ class ScenarioTablePanel(QWidget):
             cons_id = self._row_meta[row][2]
             if cons_id is not None:
                 self.item_selected.emit(CONS_T, cons_id)
+                click_target = (row, cons_id)
+                if self._last_recommendation_click == click_target:
+                    self._last_recommendation_click = None
+                    QTimer.singleShot(
+                        0, lambda r=row: self._try_start_edit(r, self._C_REK))
+                else:
+                    self._last_recommendation_click = click_target
             return
         if col != self._C_RFORE:
             return
@@ -6648,49 +6663,32 @@ class ScenarioTablePanel(QWidget):
         unrelated to the current row."""
         row_meta = getattr(self, '_row_meta', [])
         dev_id = row_meta[row][0] if row < len(row_meta) else None
+        cause_id = row_meta[row][1] if row < len(row_meta) else None
         item = self._table.item(row, self._C_ORS)
         obj_data = item.data(Qt.ItemDataRole.UserRole + 2) if item else None
-        comp_type = (obj_data or ('', ''))[0]
 
-        # A grouped cause has one object identity per visual line.  The
-        # ordinary single-object path already uses this value as the source
-        # for the standard-cause popup; select the corresponding equipment
-        # here so the secondary line does not accidentally reuse primary
-        # suggestions.
-        if group_line is not None and group_line >= 0 and item is not None:
-            meta = item.data(Qt.ItemDataRole.UserRole)
-            cause = self.db.get_cause(meta[1]) if meta else None
-            equipment_id = None
-            if cause:
-                equipment_ids = self._group_equipment_ids(cause)
-                if group_line < len(equipment_ids):
-                    equipment_id = equipment_ids[group_line]
-            equipment = (self.db.get_equipment_by_id(equipment_id)
-                         if equipment_id else None)
-            if equipment:
-                comp_type = equipment.get('equipment_type') or comp_type
+        # The database row is authoritative.  Cell roles are rendering
+        # metadata and can be stale for a moment after an object was dragged,
+        # selected from the catalogue or created through the tree.  Resolve
+        # the live object/type first; only keep the cell role as a legacy
+        # fallback for partially migrated projects.
+        cause = dict(self.db.get_cause(cause_id)) if cause_id else {}
+        comp_type = (cause.get('comp_type') or
+                     (obj_data or ('', ''))[0] or '')
+        equipment_id = cause.get('equipment_id')
+        if group_line is not None and group_line >= 0 and cause:
+            equipment_ids = self._group_equipment_ids(cause)
+            if group_line < len(equipment_ids):
+                equipment_id = equipment_ids[group_line]
+        equipment = (self.db.get_equipment_by_id(equipment_id)
+                     if equipment_id else None)
+        if equipment:
+            comp_type = equipment.get('equipment_type') or comp_type
 
-        std_dev_id, dev_description = None, None
-        if dev_id is not None:
-            dev = self.db.get_deviation(dev_id)
-            dev_description = dev['description'] if dev else None
-            if dev_description:
-                std_dev_id = _resolve_std_deviation_id(self.db, dev_description)
-
-        obj_id = None
-        if comp_type:
-            for o in self.db.standard_objects():
-                if _obj_type_matches(comp_type, o['name']):
-                    obj_id = o['id']
-                    break
-
-        rows = []
-        if std_dev_id is not None and obj_id is not None:
-            rows = self.db.standard_causes_for_object(std_dev_id, obj_id)
-        if not rows and comp_type:
-            rows = self.db.standard_causes_for_comp_type(comp_type, dev_description)
-        if not rows and comp_type:
-            rows = self.db.standard_causes_for_comp_type(comp_type)
+        dev = self.db.get_deviation(dev_id) if dev_id is not None else None
+        dev_description = dev['description'] if dev else None
+        std_dev_id, _obj_id, rows = standard_cause_options(
+            self.db, dev_description, comp_type)
         return std_dev_id, comp_type, dev_description, rows
 
     def _ors_freq_label(self, freq_val, base_freq_per_year):
@@ -7685,6 +7683,14 @@ class ScenarioTablePanel(QWidget):
         elif col in (self._C_KON, self._C_RFORE):
             if cause_id is not None:
                 self._quick_add_consequence(cause_id)
+        elif col == self._C_REK:
+            # Recommendation is visually a sibling list below the same
+            # consequence, just as safeguards are.  Its persistence differs
+            # (a link to the shared recommendation catalogue), so it needs
+            # its own continuation path: Enter must never create a safeguard
+            # merely because the active cell happened to be in REK.
+            if cons_id is not None:
+                self._continue_recommendation_entry(row, cons_id)
         else:
             if cons_id is not None:
                 self._quick_add_safeguard(cons_id)

@@ -34,6 +34,7 @@ from ui_helpers import (
     _lookup_comp_type_for_tag, _make_tag_completer,
     _maybe_save_as_standard_cause,
     _create_cause_from_pick,
+    standard_cause_options,
 )
 
 class _PickDeviationDialog(QDialog):
@@ -2443,16 +2444,11 @@ class CauseObjectPopup(QDialog):
         if self._freetext_radio in self._btn_group.buttons():
             self._btn_group.removeButton(self._freetext_radio)
 
-        # Query causes: prefer new hierarchy (deviation + object), fall back to comp_type
-        rows = []
-        if comp_type and self._db is not None:
-            dev_id, obj_id = self._resolve_dev_obj_ids(comp_type)
-            if dev_id is not None and obj_id is not None:
-                rows = self._db.standard_causes_for_object(dev_id, obj_id)
-            if not rows:
-                rows = self._db.standard_causes_for_comp_type(comp_type, self._dev_description)
-            if not rows:
-                rows = self._db.standard_causes_for_comp_type(comp_type)
+        # Shared with ScenarioTablePanel's inline editor.  A standard cause
+        # must not depend on whether the user arrived here from an empty cell,
+        # the tree, or a P&ID drop.
+        _std_dev_id, _obj_id, rows = standard_cause_options(
+            self._db, self._dev_description, comp_type) if self._db else (None, None, [])
 
         _rs = "font-size:10px;"
 

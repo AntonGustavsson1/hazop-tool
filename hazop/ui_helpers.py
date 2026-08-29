@@ -13,7 +13,7 @@ from PyQt6.QtCore import Qt, QPointF
 from PyQt6.QtGui import QFont, QFontMetrics, QTextLayout, QTextOption, QTextCharFormat
 
 from database import get_matrix, freq_to_f_level
-from pid_viewer import COMPONENT_TYPES, _equip_prefix_from_tag
+from pid_viewer import COMPONENT_TYPES, _equip_prefix_from_tag, _obj_type_matches
 
 
 def freq_axis_label(f_val: int) -> str:
@@ -182,6 +182,46 @@ def _resolve_std_deviation_id(db, deviation_description):
         "SELECT id FROM standard_deviations WHERE description=? AND active=1 COLLATE NOCASE LIMIT 1",
         (deviation_description,)).fetchone()
     return row[0] if row else None
+
+
+def standard_cause_options(db, deviation_description, comp_type):
+    """Return the standard-cause options for one deviation/type context.
+
+    Every route into an Orsak cell (tree, P&ID drop, object picker and
+    ordinary inline text) must get the same result.  Keep the lookup cascade
+    here rather than letting CauseObjectPopup and ScenarioTablePanel each
+    maintain subtly different copies:
+
+    1. exact standard deviation + standard object;
+    2. component type within the current deviation;
+    3. component type anywhere in the standard-cause library.
+
+    Returns ``(standard_deviation_id, standard_object_id, rows)``.  An empty
+    type deliberately returns no button-list rows; the caller may still offer
+    its own broader type-ahead fallback while the user is typing.
+    """
+    comp_type = (comp_type or '').strip()
+    std_dev_id = _resolve_std_deviation_id(db, deviation_description)
+    obj_id = None
+    if comp_type:
+        try:
+            for obj in db.standard_objects():
+                if _obj_type_matches(comp_type, obj['name']):
+                    obj_id = obj['id']
+                    break
+        except Exception:
+            obj_id = None
+
+    rows = []
+    if comp_type:
+        if std_dev_id is not None and obj_id is not None:
+            rows = db.standard_causes_for_object(std_dev_id, obj_id)
+        if not rows:
+            rows = db.standard_causes_for_comp_type(
+                comp_type, deviation_description)
+        if not rows:
+            rows = db.standard_causes_for_comp_type(comp_type)
+    return std_dev_id, obj_id, rows
 
 
 def _create_cause_from_pick(db, deviation_id, description, frequency):
