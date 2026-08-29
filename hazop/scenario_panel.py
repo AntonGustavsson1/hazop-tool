@@ -5977,6 +5977,18 @@ class ScenarioTablePanel(QWidget):
             dev_id, cause_id = self._row_meta[row][0], self._row_meta[row][1]
             if cause_id is not None:
                 self.item_selected.emit(CAUSE_T, cause_id)
+                # A manually entered cause should expose the same
+                # StandardCauseSuggestPopup as a newly created cause.  The
+                # rendered tag zone is consumed earlier by eventFilter and
+                # still opens the tag/object popup; only the ordinary cause
+                # text area starts inline editing here.  Group causes retain
+                # their row-specific editing rules and must not use a generic
+                # full-cell editor.
+                item = self._table.item(row, col)
+                group_tags = item.data(Qt.ItemDataRole.UserRole + 9) or [] \
+                    if item else []
+                if len(group_tags) < 2:
+                    self._try_start_edit(row, col)
             elif dev_id is not None:
                 # Wait briefly so a double-click can take the inline-edit
                 # path below. A single click still opens the object popup.

@@ -6525,6 +6525,12 @@ class OrsTagZoneOpensMinimalPopupTests(unittest.TestCase):
         edit.assert_called_once_with(
             self.panel._table.model().index(self.row, self.panel._C_ORS))
 
+    def test_clicking_manual_cause_text_starts_standard_cause_editing(self):
+        with unittest.mock.patch.object(self.panel, '_try_start_edit') as edit:
+            self.panel._on_cell_clicked(self.row, self.panel._C_ORS)
+
+        edit.assert_called_once_with(self.row, self.panel._C_ORS)
+
     def test_committing_the_tag_popup_calls_apply_cause_obj_with_empty_description(self):
         """The commit path must reuse _apply_cause_obj's existing "only
         tag/type changed" fast path (empty description, no frequency)

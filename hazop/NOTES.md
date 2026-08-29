@@ -3893,6 +3893,17 @@ tag-popupen anvÃ¤nds fortfarande frÃ¥n den faktiska taggzonen nÃ¤r en tagg
 Verifierat med sex riktade Orsak/tagg-tester, tvÃ¥ tomcellstester, 16 Worksheet-
 tester och py_compile. Ingen visuell GUI-verifiering Ã¤r gjord.
 
+## Manuellt skriven orsak visar standardorsaker vid klick (2026-08-29)
+
+Ett klick pÃ¥ textomrÃ¥det i en vanlig orsaksrad startar nu samma inline-
+redigering som anvÃ¤nds fÃ¶r nya orsaker. DÃ¤rmed visas standardorsakspopupen
+och dess fÃ¶rslag Ã¤ven nÃ¤r orsaken ursprungligen skrevs manuellt. Klick pÃ¥ en
+faktisk objekttagg behÃ¥ller sin separata tagg-/objektpopup och grupporsaker
+anvÃ¤nder fortsatt sina radvisa redigeringsregler.
+
+Verifierat med nio riktade integrationstester, 12 smoke-tester och py_compile.
+Ingen visuell GUI-verifiering Ã¤r gjord.
+
 ## Worksheet: placera objekt pÃ¥ P&ID och Ã¥tervÃ¤nd till samma cell (2026-08-29)
 
 Worksheet vidarebefordrar nu `Placera objekt pÃ¥ P&ID` via samma
