@@ -3918,6 +3918,9 @@ class ScenarioTablePanel(QWidget):
         # active; its text must create a sibling, never overwrite the sole
         # existing recommendation.
         self._recommendation_force_add_cons_id = None
+        # Keep the next empty recommendation row visible while it is being
+        # entered, instead of showing only a reused spanning cell.
+        self._recommendation_add_placeholder_cons_id = None
         # Set only while Enter is committing a REK editor. Recommendation
         # saves rebuild their physical rows, so restore the edited row's
         # selection after that rebuild rather than leaving focus nowhere.
@@ -4785,7 +4788,10 @@ class ScenarioTablePanel(QWidget):
                 # the same physical row grid. A trailing empty REK row used
                 # to add one unnecessary visual band to every consequence;
                 # Enter can instead reuse the visible REK cell in add mode.
-                n_rows = max(n_cats, n_sgs, n_recs, 1)
+                extra_recommendation_row = (
+                    1 if self._recommendation_add_placeholder_cons_id == cons_d['id']
+                    else 0)
+                n_rows = max(n_cats, n_sgs, n_recs + extra_recommendation_row, 1)
 
                 # Precompute exclusions per severity assessment
                 cat_excl_map = {}           # sev_id → set of excluded sg_ids
@@ -7890,7 +7896,11 @@ class ScenarioTablePanel(QWidget):
         self._ctrl_enter(row, self._enter_col)
 
     def _continue_recommendation_entry(self, row, cons_id):
-        """Open the next blank recommendation box after an Enter commit."""
+        """Show and open the next blank recommendation row after Enter."""
+        # Build the physical row before starting the editor so the new line
+        # is visible while the user types.
+        self._recommendation_add_placeholder_cons_id = cons_id
+        self._rebuild()
         row = next((r for r, meta in enumerate(self._row_meta)
                     if meta[2] == cons_id and
                     (r >= len(self._row_recommendation_ids) or
@@ -8304,6 +8314,10 @@ class ScenarioTablePanel(QWidget):
             rec_id = meta_extra[0] if meta_extra else None
             force_add = self._recommendation_force_add_cons_id == id_
             self._recommendation_force_add_cons_id = None
+            if force_add:
+                # The visible blank entry row is only an editing affordance;
+                # remove it once this Enter commit has produced the real row.
+                self._recommendation_add_placeholder_cons_id = None
             selected_rec_id = rec_id
             if rec_id is not None and force_add and desc:
                 selected_rec_id = self.db.add_recommendation_to_consequence(

@@ -4065,6 +4065,7 @@ det nya fältet efter Enter. Strukturändringar och redigeringar skickas också
 vidare till trädet, P&ID och huvudvyn så att alla vyer hålls synkroniserade.
 # Senaste uppföljning (2026-08-29)
 
+- Rekommendationens nästa Enter-rad materialiseras visuellt direkt under befintliga rekommendationer medan inline-redigering pågår. Den tillfälliga tomma raden tas bort när texten sparas och ersätts av den riktiga katalograden.
 - Tagg skriven i inline-orsak: när taggen matchar ett katalogobjekt utan objekttyp öppnas nu endast den kompakta tagg/typ-rutan. När typen finns används samma standardorsaksstöd som övriga objektkopplade orsaker.
 - Rekommendationens Delete i HAZOP Scenario/Worksheet frågar vid sista kopplingen om rekommendationen ska tas bort globalt eller endast från aktuell konsekvens. Global borttagning uppdaterar båda vyerna.
 - P&ID-objektfilter visar inte längre rader enbart på grund av avvikelsens utrustningskoppling; förekomst måste finnas i orsak, konsekvens, safeguard eller länkad rekommendation. Recommendation-celler markerar kända katalogtaggar fetstilt.
