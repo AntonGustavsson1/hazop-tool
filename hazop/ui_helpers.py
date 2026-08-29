@@ -189,8 +189,8 @@ def standard_cause_options(db, deviation_description, comp_type):
 
     Every route into an Orsak cell (tree, P&ID drop, object picker and
     ordinary inline text) must get the same result.  Keep the lookup cascade
-    here rather than letting CauseObjectPopup and ScenarioTablePanel each
-    maintain subtly different copies:
+    here rather than letting separate UI paths maintain subtly different
+    copies:
 
     1. exact standard deviation + standard object;
     2. component type within the current deviation;

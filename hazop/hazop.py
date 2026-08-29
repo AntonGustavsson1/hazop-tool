@@ -47,10 +47,7 @@ from ui_helpers import (
     find_tag_bold_ranges, _draw_text_with_bold_tags,
     total_freq_reduction, CHAIN_ITEMS, build_consequence_text, parse_chain_from_json,
 )
-from tree_panel import (
-    TreePanel, CauseObjectPopup, CauseTagPopup,
-    RRFPopup, FrequencyPickerPopup,
-)
+from tree_panel import TreePanel, CauseTagPopup, RRFPopup, FrequencyPickerPopup
 from scenario_panel import (
     ScenarioTablePanel, RiskMatrixPopup, ConsequenceStepPickerDialog,
     ReductionFactorsDialog, _ScenarioDelegate, _PidDelegate, _LopaWidget,
@@ -2518,6 +2515,16 @@ class MainWindow(QMainWindow):
         self._on_selected(CONS_T, cons_id)
         QTimer.singleShot(
             0, lambda cid=cons_id: self.scenario_panel.select_item(CONS_T, cid))
+
+    def _edit_cause_inline(self, cause_id: int):
+        """Reveal *cause_id* and start the shared ORS inline editor."""
+        if not self.db.get_cause(cause_id):
+            return
+        self._switch_view(1)
+        self.tree_panel.refresh(CAUSE_T, cause_id, emit_selection=False)
+        self._on_selected(CAUSE_T, cause_id)
+        QTimer.singleShot(
+            0, lambda cid=cause_id: self.scenario_panel.select_item(CAUSE_T, cid))
 
     def _on_edit_node_markup(self, node_id):
         """Entered explicitly only — tree right-click → 'Editera

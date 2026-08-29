@@ -2187,7 +2187,11 @@ def _draw_equip_icon(painter, rect, comp_type):
 
 
 class CauseObjectPopup(QDialog):
-    """Combined popup: set Tag-ID + equipment type, then pick a standard cause."""
+    """Inactive compatibility archive for the retired combined cause picker.
+
+    No active HAZOP path constructs this dialog. New and existing causes use
+    the shared inline editor plus its standard-cause helper instead.
+    """
     committed = pyqtSignal(str, str, str, object)  # (comp_type, comp_tag, description, freq|None)
 
     def __init__(self, comp_type: str, comp_tag: str, db,
@@ -2576,10 +2580,10 @@ class CauseTagPopup(QDialog):
     """Minimalistic popup for editing a tag + type — just those two
     fields, nothing else (2026-08-14, see NOTES.md: "klickar man på
     tagen justerar man tagen ... gör samtliga minimalistiska").
-    CauseObjectPopup (above) still has the full avvikelse-context +
-    standard-cause picker, unchanged, for its other two entry points
-    (the detail panel and quick-add) — this only replaces what a bare
-    tag click (scenario table) or a tag double-click (tree, see
+    This is the only active tag/type popup. The former full cause picker is
+    retired; standard-cause choices are available from the inline editor.
+    This popup replaces what a bare tag click (scenario table) or a
+    tag double-click (tree, see
     TreePanel._open_equipment_tag_popup) opens. Modelled on
     EquipmentTagPopup's compact style.
 

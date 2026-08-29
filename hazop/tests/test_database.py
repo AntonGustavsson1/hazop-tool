@@ -762,9 +762,17 @@ class CausesForEquipmentTests(unittest.TestCase):
             pass
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    def test_cause_under_equipment_owned_deviation_is_included(self):
+    def test_cause_under_equipment_owned_deviation_without_occurrence_is_excluded(self):
         dev_id = self.db.get_or_create_deviation(self.node_id, "Lågt flöde", equipment_id=self.eq_id)
         cause_id = self.db.add_cause(dev_id)
+        ids = [dict(c)['id'] for c in self.db.causes_for_equipment(self.eq_id)]
+        self.assertEqual(ids, [])
+
+    def test_cause_with_a_linked_recommendation_mentioning_equipment_is_included(self):
+        dev_id = self.db.deviations(self.node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        self.db.add_recommendation_to_consequence(cons_id, 'Kontrollera PV-101 före start')
         ids = [dict(c)['id'] for c in self.db.causes_for_equipment(self.eq_id)]
         self.assertEqual(ids, [cause_id])
 
@@ -811,10 +819,11 @@ class CausesForEquipmentTests(unittest.TestCase):
         rows = self.db.causes_for_equipment(self.eq_id)
         self.assertEqual(len(rows), 1)
 
-    def test_equipment_with_no_tag_still_matches_via_deviation_fk_only(self):
+    def test_equipment_with_no_tag_matches_direct_cause_link(self):
         eq_id2 = self.db.add_equipment_item("", "", "", 0, "", '', 0)
         dev_id = self.db.get_or_create_deviation(self.node_id, "Lågt flöde", equipment_id=eq_id2)
         cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(cause_id, equipment_id=eq_id2)
         ids = [dict(c)['id'] for c in self.db.causes_for_equipment(eq_id2)]
         self.assertEqual(ids, [cause_id])
 

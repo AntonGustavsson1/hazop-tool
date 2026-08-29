@@ -36,10 +36,7 @@ from ui_helpers import (
 )
 
 MAX_GROUP_OBJECTS = 20
-from tree_panel import (
-    CauseObjectPopup, CauseTagPopup, RRFPopup,
-    FrequencyPickerPopup,
-)
+from tree_panel import CauseTagPopup, RRFPopup, FrequencyPickerPopup
 
 
 class _BoldTagLineEdit(QLineEdit):
@@ -1870,7 +1867,7 @@ class _ScenarioDelegate(QStyledItemDelegate):
         rec_id = rec_ids[row] if row < len(rec_ids) else None
         force_add = getattr(
             self._panel, '_recommendation_force_add_cons_id', None) == cons_id
-        if rec_id is not None:
+        if rec_id is not None and not force_add:
             rec = next((a for a in acts if a['id'] == rec_id), None)
             editor.setText(dict(rec).get('description', '') if rec else '')
         elif len(acts) == 1 and not force_add:
@@ -2076,8 +2073,8 @@ class _ScenarioDelegate(QStyledItemDelegate):
                 fg = index.data(Qt.ItemDataRole.ForegroundRole)
                 tc = fg.color() if fg is not None else option.palette.text().color()
             painter.setPen(tc)
-            font = index.data(Qt.ItemDataRole.FontRole)
-            painter.setFont(font if font is not None else option.font)
+            font = index.data(Qt.ItemDataRole.FontRole) or option.font
+            painter.setFont(font)
             if editing:
                 rec_id = (panel._row_recommendation_ids[index.row()]
                           if index.row() < len(panel._row_recommendation_ids)
@@ -2090,9 +2087,10 @@ class _ScenarioDelegate(QStyledItemDelegate):
                                  Qt.AlignmentFlag.AlignTop, text)
             else:
                 text = index.data(Qt.ItemDataRole.DisplayRole) or ''
-                painter.drawText(r.adjusted(5, 2, -3, -2),
-                                 Qt.TextFlag.TextWordWrap | Qt.AlignmentFlag.AlignLeft |
-                                 Qt.AlignmentFlag.AlignTop, text)
+                tags = panel._matching_pid_tags(text)
+                _draw_text_with_bold_tags(
+                    painter, r.adjusted(5, 2, -3, -2), text, tags,
+                    font, tc, word_wrap=True)
             painter.restore()
             return
         if col not in (panel._C_RFORE, panel._C_SLUT):
@@ -2479,9 +2477,8 @@ class _PidDelegate(_ScenarioDelegate):
 
     def _attach_cause_completer(self, editor, index, equipment_override=None):
         """Suggest standard-cause descriptions while inline-editing an Orsak
-        cell — the same library CauseObjectPopup draws from, so quick text
-        edits get the same suggestions as the popup instead of a bare,
-        unassisted QLineEdit.
+        cell, so quick text edits get the same suggestions as every other
+        inline cause editor instead of a bare, unassisted QLineEdit.
         """
         db = getattr(self._panel, 'db', None)
         if db is None:
@@ -2548,10 +2545,39 @@ class _PidDelegate(_ScenarioDelegate):
                 if getattr(popup, '_editor', None) is editor:
                     popup.close()
             if equipment is not None:
-                self._show_standard_cause_popup(
-                    editor, row, cell_rect, equipment_override=equipment)
+                if not (equipment.get('equipment_type') or '').strip():
+                    self._show_typed_object_type_popup(editor, row, cell_rect,
+                                                        equipment)
+                else:
+                    self._show_standard_cause_popup(
+                        editor, row, cell_rect, equipment_override=equipment)
         except RuntimeError:
             return
+
+    def _show_typed_object_type_popup(self, editor, row, cell_rect, equipment):
+        """Ask only for the missing object type after a typed tag resolves."""
+        panel = self._panel
+        cause_id = panel._row_meta[row][1] if row < len(panel._row_meta) else None
+        if cause_id is None:
+            return
+        equipment_id = equipment.get('id')
+        if editor.property('typed_cause_type_popup_id') == equipment_id:
+            return
+        editor.setProperty('typed_cause_type_popup_id', equipment_id)
+        popup = CauseTagPopup(
+            panel.db, '', equipment.get('tag') or '', parent=panel,
+            cause_id=cause_id, equipment_id=equipment_id)
+        popup.committed.connect(
+            lambda ct, tg, r=row, cid=cause_id:
+                panel._apply_cause_obj(r, cid, ct, tg, '', None))
+        popup.adjustSize()
+        top_level = panel.window()
+        anchor = panel._table.viewport().mapToGlobal(cell_rect.topLeft())
+        pos = top_level.mapFromGlobal(anchor)
+        popup.move(max(top_level.rect().left(), pos.x()),
+                   max(top_level.rect().top(), pos.y() - popup.height() - 2))
+        popup.show()
+        popup.raise_()
 
     def setModelData(self, editor, model, index):
         clean = _PID_ICON_RE.sub('', editor.text().strip())
@@ -3887,11 +3913,15 @@ class ScenarioTablePanel(QWidget):
         self._empty_cause_click_timer.setSingleShot(True)
         self._empty_cause_click_timer.setInterval(250)
         self._empty_cause_click_timer.timeout.connect(
-            self._open_pending_empty_cause_popup)
+            self._open_pending_empty_cause_editor)
         # Set while the blank REK editor below saved recommendations is
         # active; its text must create a sibling, never overwrite the sole
         # existing recommendation.
         self._recommendation_force_add_cons_id = None
+        # Set only while Enter is committing a REK editor. Recommendation
+        # saves rebuild their physical rows, so restore the edited row's
+        # selection after that rebuild rather than leaving focus nowhere.
+        self._recommendation_selection_after_commit = None
         # A physical recommendation row follows the same deliberate
         # select-then-edit interaction as a safeguard row. The table has
         # already moved its current index when cellClicked is emitted, so we
@@ -5782,6 +5812,38 @@ class ScenarioTablePanel(QWidget):
         # consecutive Enter presses.
         self._schedule_rebuild()
 
+    def _restore_recommendation_selection(self):
+        """Keep the just-saved recommendation cell selected after Enter.
+
+        A recommendation save has to rebuild the physical row layout, unlike
+        an ordinary in-place text save. Restore by recommendation id (not an
+        old row number) so adding a sibling or wrapping its text cannot move
+        selection to another cell.
+        """
+        pending = self._recommendation_selection_after_commit
+        self._recommendation_selection_after_commit = None
+        if not pending:
+            return
+        cons_id = pending.get('cons_id')
+        rec_id = pending.get('rec_id')
+        candidates = [
+            row for row, meta in enumerate(self._row_meta)
+            if meta[2] == cons_id
+        ]
+        if not candidates:
+            return
+        row = next(
+            (r for r in candidates
+             if r < len(self._row_recommendation_ids) and
+             self._row_recommendation_ids[r] == rec_id),
+            candidates[0])
+        item = self._table.item(row, self._C_REK)
+        if item is None:
+            return
+        self._table.setCurrentCell(row, self._C_REK)
+        self._table.scrollToItem(item)
+        self._table.setFocus()
+
     def _edit_extra(self, cons_id):
         # This slot runs on the call stack of a _LopaWidget's _extra_btn
         # QPushButton.clicked signal — that button is a live cell widget
@@ -6111,11 +6173,10 @@ class ScenarioTablePanel(QWidget):
                 if len(group_tags) < 2:
                     self._try_start_edit(row, col)
             elif dev_id is not None:
-                # Wait briefly so a double-click can take the inline-edit
-                # path below. A single click still opens the object popup.
-                idx = self._table.model().index(row, col)
-                gp = self._table.viewport().mapToGlobal(self._table.visualRect(idx).topLeft())
-                self._empty_cause_click_target = (dev_id, gp)
+                # Wait briefly only so a double-click can cancel this
+                # single-click action. Both routes enter the normal inline
+                # editor; the former "Orsak på P&ID" dialog is retired.
+                self._empty_cause_click_target = dev_id
                 self._empty_cause_click_timer.start()
                 return
             return
@@ -6229,13 +6290,11 @@ class ScenarioTablePanel(QWidget):
         if 0 <= row < len(self._row_meta):
             dev_id, cause_id, cons_id, _sg_id = self._row_meta[row]
             if col == self._C_ORS and cause_id is None and dev_id is not None:
-                # Cancel the delayed single-click popup. Enter the same
-                # blank-cause path used by Enter, which rebuilds the row and
-                # starts inline free-text editing; the standard-cause helper
-                # popup is then shown by the delegate as usual.
+                # Cancel the delayed single-click editor. Both routes create
+                # a blank cause and continue in the ordinary ORS editor.
                 self._empty_cause_click_timer.stop()
                 self._empty_cause_click_target = None
-                self._quick_add_cause(dev_id, from_enter=True)
+                self._quick_add_cause(dev_id)
                 self._double_click_edit = None
                 return
         group_line = None
@@ -6757,8 +6816,8 @@ class ScenarioTablePanel(QWidget):
         (the existing typing-suggestion dropdown) and
         StandardCauseSuggestPopup (the new automatic picker) so the
         dev_id -> std_dev_id -> object_id resolution chain only lives in
-        one place. `rows` follows the same fallback cascade
-        CauseObjectPopup._rebuild_causes (tree_panel.py) already uses:
+        one place. `rows` follows the same fallback cascade used by the
+        previous cause picker:
         the richer deviation+object hierarchy first, then comp_type
         matched against this specific deviation's text, then comp_type
         with no deviation filter at all — `rows` is [] if nothing
@@ -6904,10 +6963,8 @@ class ScenarioTablePanel(QWidget):
 
     def _show_cause_obj_popup(self, row, cause_id, global_pos, group_line=None):
         """A plain click on the ORS tag zone opens just a tag+type
-        popup (2026-08-14, see NOTES.md) — the full avvikelse-context +
-        standard-cause CauseObjectPopup is still reachable, unchanged,
-        from the detail panel (_edit_cause_obj) and quick-add
-        (_quick_add_cause). CauseTagPopup has no OK button (2026-08-18)
+        popup (2026-08-14, see NOTES.md). CauseTagPopup has no OK button
+        (2026-08-18)
         — it commits live and dismisses itself on Escape/outside click,
         so it's shown non-modally instead of exec()'d."""
         item      = self._table.item(row, self._C_ORS)
@@ -7217,6 +7274,11 @@ class ScenarioTablePanel(QWidget):
         if old_equipment_id is not None:
             old_eq = self.db.get_equipment_by_id(old_equipment_id)
             old_tag = (old_eq.get('tag') or '').strip() if old_eq else ''
+            if (old_eq and comp_type and
+                    not (old_eq.get('equipment_type') or '').strip()):
+                self.db.update_equipment_item(
+                    old_equipment_id, old_tag, old_eq.get('prefix') or '',
+                    comp_type, old_eq.get('description') or '')
             if old_eq and new_tag and new_tag.casefold() != old_tag.casefold():
                 match = self.db.get_equipment_by_tag(new_tag)
                 decision = self._confirm_equipment_tag_change(
@@ -7377,11 +7439,11 @@ class ScenarioTablePanel(QWidget):
             self._schedule_rebuild()
 
     # ── Feature 4: clone scenario ─────────────────────────────────────────────
-    def _open_pending_empty_cause_popup(self):
-        target = self._empty_cause_click_target
+    def _open_pending_empty_cause_editor(self):
+        deviation_id = self._empty_cause_click_target
         self._empty_cause_click_target = None
-        if target is not None:
-            self._add_cause_via_plus_row(target[0], global_pos=target[1])
+        if deviation_id is not None:
+            self._quick_add_cause(deviation_id)
 
     def _clone_scenario(self, cause_id):
         cause = self.db.get_cause(cause_id)
@@ -7749,8 +7811,23 @@ class ScenarioTablePanel(QWidget):
                     cons_id = None
                     if row is not None and 0 <= row < len(self._row_meta):
                         cons_id = self._row_meta[row][2]
+                    if col == self._C_REK and cons_id is not None:
+                        rec_id = (self._row_recommendation_ids[row]
+                                  if row < len(self._row_recommendation_ids)
+                                  else None)
+                        self._recommendation_selection_after_commit = {
+                            'cons_id': cons_id,
+                            'rec_id': rec_id,
+                            'force_add': (
+                                self._recommendation_force_add_cons_id == cons_id),
+                        }
                     self._delegate.commitData.emit(obj)
                     self._delegate.closeEditor.emit(obj, QStyledItemDelegate.EndEditHint.NoHint)
+                    if col == self._C_REK and cons_id is not None:
+                        # _refresh_recommendation_cell has already queued the
+                        # rebuild during commitData. Queue this second so the
+                        # resulting static cell remains selected after Enter.
+                        QTimer.singleShot(0, self._restore_recommendation_selection)
                     if ctrl:
                         self._ctrl_enter(row, col)
                     return True  # always consume Enter in editor — prevents table-level handler
@@ -7784,8 +7861,7 @@ class ScenarioTablePanel(QWidget):
         dev_id, cause_id, cons_id, _sg_id = self._row_meta[row]
         if col in (self._C_ORS, self._C_NOD, self._C_DEV):
             if dev_id is not None:
-                self._quick_add_cause(
-                    dev_id, from_enter=True, after_cause_id=cause_id)
+                self._quick_add_cause(dev_id, after_cause_id=cause_id)
         elif col in (self._C_KON, self._C_RFORE):
             if cause_id is not None:
                 self._quick_add_consequence(cause_id)
@@ -7857,78 +7933,19 @@ class ScenarioTablePanel(QWidget):
         pos   = self._table.viewport().mapToGlobal(rect.bottomLeft())
         menu.exec(pos)
 
-    def _quick_add_cause(self, deviation_id, global_pos=None, from_enter=False,
-                         after_cause_id=None):
-        """Reported feedback (2026-08-12, see NOTES.md): a new/empty cause
-        in HAZOP scenario should open the same compact CauseObjectPopup
-        (Tag + Typ + Standardorsaker) already used everywhere a cause's
-        tag/type/description is edited, instead of the larger
-        StandardCausesPickerPopup this used to open (that dialog — the
-        tree's separate "Lägg till orsak på P&ID" — was removed entirely
-        2026-08-24, see NOTES.md; unrelated to this one). Reused by both
-        the "+ Ny orsak" affordance and clicking an empty ORS placeholder
-        cell (_on_cell_clicked), so both entry points behave identically."""
-        dev = self.db.get_deviation(deviation_id)
-        dev_desc = dev['description'] if dev else ''
+    def _quick_add_cause(self, deviation_id, after_cause_id=None):
+        """Create a blank cause and enter the shared inline editor.
 
-        # Enter creates a blank sibling directly. It must not open the old
-        # object/frequency dialog; the required DB likelihood is kept at zero
-        # only as an internal unset marker and is hidden in the Scenario cell.
-        if from_enter:
-            new_id = self.db.add_cause_after(deviation_id, after_cause_id)
-            self.db.update_cause(new_id, description='', comp_type='', comp_tag='',
-                                 likelihood=0, base_frequency=None)
-            # Enter on Orsak stays in the cause field. A consequence is a
-            # separate action and must not be created as a side effect here.
-            self.new_item_created.emit(CAUSE_T, new_id)
-            return
-
-        popup = CauseObjectPopup(
-            '', '', self.db, dev_description=dev_desc,
-            current_description='', deviation_id=deviation_id, parent=self)
-
-        def _on_committed(comp_type, comp_tag, description, frequency):
-            # A tag chosen from the popup's object completer is not merely
-            # text: when it resolves to a catalogue object it must carry the
-            # same durable identity as a P&ID-to-tree drop. Otherwise this
-            # creation route loses the equipment link, the deviation's object
-            # context, and therefore the standard-cause context on the first
-            # inline edit after creation.
-            selected_equipment = self.db.get_equipment_by_tag(
-                (comp_tag or '').strip()) if (comp_tag or '').strip() else None
-            if selected_equipment:
-                comp_tag = selected_equipment.get('tag') or comp_tag
-                comp_type = selected_equipment.get('equipment_type') or comp_type
-                self._adopt_deviation_equipment(
-                    deviation_id, selected_equipment['id'])
-            new_id = self.db.add_cause(deviation_id)
-            self.db.update_cause(new_id, comp_type=comp_type, comp_tag=comp_tag,
-                                  description=description or '',
-                                  base_frequency=frequency,
-                                  equipment_id=(selected_equipment['id']
-                                                if selected_equipment else None))
-            cons_id = self.db.add_consequence(new_id)
-            # Jump straight to the new consequence's KON cell (not the cause's
-            # own ORS cell) — the cause's description was already chosen in
-            # the popup above, so typing the consequence is the next natural
-            # step ("så fort jag lagt till en orsak", see NOTES.md).
-            self.new_item_created.emit(CONS_T, cons_id)
-
-        popup.committed.connect(_on_committed)
-        if global_pos is not None:
-            popup.adjustSize()
-            # Prefer ABOVE global_pos (2026-08-26, see NOTES.md "Flytta
-            # HAZOP-popups ovanför"), falling back to below only if
-            # there's no room above on screen.
-            _scr   = QApplication.screenAt(global_pos) or QApplication.primaryScreen()
-            screen = _scr.availableGeometry()
-            pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
-            x, y   = global_pos.x(), global_pos.y() - ph - 6
-            if y < screen.top(): y = global_pos.y() + 6
-            if x + pw > screen.right():  x = screen.right() - pw - 4
-            popup.move(max(screen.left() + 4, x),
-                       max(screen.top() + 4, min(y, screen.bottom() - ph)))
-        popup.exec()
+        An empty ORS cell, the in-cell plus affordance, the context menu and
+        Enter all use this one path. The retired combined ``CauseObjectPopup``
+        ("Orsak på P&ID") is not reachable here: users can type or select a
+        catalogue tag in the inline editor, which then enables the normal
+        standard-cause suggestions.
+        """
+        new_id = self.db.add_cause_after(deviation_id, after_cause_id)
+        self.db.update_cause(new_id, description='', comp_type='', comp_tag='',
+                             likelihood=0, base_frequency=None)
+        self.new_item_created.emit(CAUSE_T, new_id)
 
     def _quick_add_consequence(self, cause_id):
         """Reported feedback (2026-08-12): unlike a new cause, a new
@@ -7945,7 +7962,9 @@ class ScenarioTablePanel(QWidget):
         self.new_item_created.emit(SG_T, new_id)
 
     def _add_cause_via_plus_row(self, deviation_id, global_pos=None):
-        self._quick_add_cause(deviation_id, global_pos=global_pos)
+        # ``global_pos`` is retained for mouse-event callers. There is no
+        # dialog to position now that creation goes straight to inline edit.
+        self._quick_add_cause(deviation_id)
 
     def _add_consequence_via_plus_row(self, cause_id):
         self._quick_add_consequence(cause_id)
@@ -8285,8 +8304,10 @@ class ScenarioTablePanel(QWidget):
             rec_id = meta_extra[0] if meta_extra else None
             force_add = self._recommendation_force_add_cons_id == id_
             self._recommendation_force_add_cons_id = None
+            selected_rec_id = rec_id
             if rec_id is not None and force_add and desc:
-                self.db.add_recommendation_to_consequence(id_, description=desc)
+                selected_rec_id = self.db.add_recommendation_to_consequence(
+                    id_, description=desc)
                 desc = ''
             if rec_id is not None and desc:
                 rec = next((a for a in acts if a['id'] == rec_id), None)
@@ -8302,7 +8323,11 @@ class ScenarioTablePanel(QWidget):
                 _apply_shared_recommendation_description_update(
                     self.db, self, rec_id, id_, desc)
             elif desc:
-                self.db.add_recommendation_to_consequence(id_, description=desc)
+                selected_rec_id = self.db.add_recommendation_to_consequence(
+                    id_, description=desc)
+            pending_selection = self._recommendation_selection_after_commit
+            if pending_selection and pending_selection.get('cons_id') == id_:
+                pending_selection['rec_id'] = selected_rec_id
             self._refresh_recommendation_cell(id_)
             self.item_edited.emit(CONS_T, id_)
 
@@ -8398,13 +8423,34 @@ class ScenarioTablePanel(QWidget):
             label = f"{(rec or {}).get('display_number', rec_id):03d}"
             if rec and (rec.get('description') or '').strip():
                 label += f" – {(rec.get('description') or '').strip()[:70]}"
-            if QMessageBox.question(
+            link_count = self.db.recommendation_consequence_count(rec_id)
+            if link_count <= 1:
+                box = QMessageBox(self)
+                box.setWindowTitle("Ta bort rekommendation")
+                box.setText(f"{label} används inte längre efter denna borttagning.")
+                box.setInformativeText("Vill du ta bort rekommendationen globalt, eller bara från denna konsekvens?")
+                global_btn = box.addButton("Ta bort globalt", QMessageBox.ButtonRole.DestructiveRole)
+                unlink_btn = box.addButton("Bara från denna", QMessageBox.ButtonRole.AcceptRole)
+                cancel_btn = box.addButton("Avbryt", QMessageBox.ButtonRole.RejectRole)
+                box.setDefaultButton(unlink_btn)
+                box.exec()
+                clicked = box.clickedButton()
+                if clicked is cancel_btn:
+                    return
+                if clicked is global_btn:
+                    self.db.delete_recommendation(rec_id)
+                else:
+                    self.db.unlink_recommendation_from_consequence(rec_id, cons_id)
+            elif QMessageBox.question(
                     self, "Ta bort rekommendation",
                     f"Ta bort {label} från denna konsekvens?\n\n"
-                    "Rekommendationen ligger kvar i katalogen och kan återanvändas.",
+                    "Rekommendationen används fortfarande på andra ställen.",
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
                 self.db.unlink_recommendation_from_consequence(rec_id, cons_id)
+                self._refresh_recommendation_cell(cons_id)
+                self.structure_changed.emit()
+            if link_count <= 1:
                 self._refresh_recommendation_cell(cons_id)
                 self.structure_changed.emit()
             return

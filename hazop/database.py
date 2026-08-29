@@ -3808,20 +3808,20 @@ class Database:
         if not tag:
             rows = self.conn.execute(
                 "SELECT DISTINCT c.* FROM causes c "
-                "JOIN deviations d ON d.id=c.deviation_id "
-                "WHERE d.equipment_id=? ORDER BY c.id", (equipment_id,)).fetchall()
+                "WHERE c.equipment_id=? ORDER BY c.id", (equipment_id,)).fetchall()
         else:
             rows = self.conn.execute(
                 "SELECT DISTINCT c.* FROM causes c "
-                "JOIN deviations d ON d.id=c.deviation_id "
                 "LEFT JOIN consequences k ON k.cause_id=c.id "
                 "LEFT JOIN safeguards s ON s.consequence_id=k.id "
-                "WHERE d.equipment_id=? "
-                "   OR (c.comp_tag=? AND c.comp_type=?) "
+                "LEFT JOIN consequence_recommendations cr ON cr.consequence_id=k.id "
+                "LEFT JOIN recommendations r ON r.id=cr.recommendation_id "
+                "WHERE (c.equipment_id=? OR c.comp_tag=? ) "
                 "   OR (k.comp_tag=? AND k.comp_type=?) "
                 "   OR (s.comp_tag=? AND s.comp_type=?) "
+                "   OR (r.description LIKE '%' || ? || '%') "
                 "ORDER BY c.id",
-                (equipment_id, tag, comp_type, tag, comp_type, tag, comp_type)).fetchall()
+                (equipment_id, tag, tag, comp_type, tag, comp_type, tag)).fetchall()
         found = {row['id'] for row in rows}
         # A grouped cause can mention this object only in its later rows;
         # those rows are not represented by the legacy comp_tag columns.

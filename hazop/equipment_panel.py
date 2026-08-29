@@ -29,7 +29,6 @@ from pid_viewer import (
     ParallelTagScanWorker, resolve_ocr_scan_choice, upsert_identified_tags_from_scan,
 )
 from ui_helpers import _EQ_TYPE_ITEMS, _equipment_type_options, _make_tag_completer
-from tree_panel import CauseObjectPopup
 
 class ComponentEditorPanel(QWidget):
     """Settings panel for managing component types and failure modes."""

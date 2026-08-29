@@ -3400,39 +3400,23 @@ class AutoConsequenceOnCauseAddTests(unittest.TestCase):
             self.assertEqual(panel._row_meta[cur_row][2], cons_id)
             edit_spy.assert_called()
 
-    def test_quick_add_cause_emits_new_item_created_for_the_new_consequence(self):
-        """ScenarioTablePanel._quick_add_cause (Ctrl+Enter in the worksheet)
-        must emit new_item_created for the auto-created CONSEQUENCE, not
-        for the cause itself — the cause's description was already chosen
-        in the popup, so the next thing to fill in is the consequence.
-
-        Opens CauseObjectPopup, not StandardCausesPickerPopup (2026-08-12,
-        see NOTES.md) — mocking the wrong class here would leave the real
-        popup unmocked, blocking forever on exec() in a headless test run
-        (this is exactly what happened: an earlier version of this test
-        still mocked StandardCausesPickerPopup after the switch, hanging
-        the full suite)."""
-        from PyQt6.QtWidgets import QDialog
+    def test_quick_add_cause_emits_new_item_created_for_blank_cause(self):
+        """New causes go straight to the shared inline ORS editor."""
         with _TempDbMainWindow() as win:
             panel = win.scenario_panel
             node_id = win.db.add_node()
             dev_id = win.db.deviations(node_id)[0]['id']
             panel.load_node(node_id)
-
-            def _fake_exec(self):
-                self.committed.emit('', '', 'Ny orsak (test)', None)
-                return QDialog.DialogCode.Accepted
-
             captured = []
             panel.new_item_created.connect(lambda t, i: captured.append((t, i)))
 
-            with unittest.mock.patch.object(hazop.CauseObjectPopup, 'exec', new=_fake_exec):
-                panel._quick_add_cause(dev_id)
+            panel._quick_add_cause(dev_id)
 
             self.assertEqual(len(captured), 1)
-            type_, cons_id = captured[0]
-            self.assertEqual(type_, CONS_T)
-            self.assertIsNotNone(win.db.get_consequence(cons_id))
+            type_, cause_id = captured[0]
+            self.assertEqual(type_, CAUSE_T)
+            self.assertEqual(dict(win.db.get_cause(cause_id))['description'], '')
+            self.assertEqual(win.db.consequences(cause_id), [])
 
     def test_enter_on_cause_inserts_sibling_after_it_and_stays_in_cause(self):
         """Enter in the cause field creates a blank cause immediately after
@@ -3449,7 +3433,7 @@ class AutoConsequenceOnCauseAddTests(unittest.TestCase):
 
             captured = []
             panel.new_item_created.connect(lambda t, i: captured.append((t, i)))
-            panel._quick_add_cause(dev_id, from_enter=True, after_cause_id=second)
+            panel._quick_add_cause(dev_id, after_cause_id=second)
 
             self.assertEqual(captured[0][0], CAUSE_T)
             new_id = captured[0][1]
@@ -3482,13 +3466,7 @@ class AutoConsequenceOnCauseAddTests(unittest.TestCase):
 
 
 class PlusRowQuickAddTaggingTests(unittest.TestCase):
-    """The "+" quick-add rows (2026-08-12, see NOTES.md). Reported
-    feedback changed course mid-session on how these should behave:
-    a new consequence/safeguard must NEVER show a popup — straight to
-    inline editing, tagging stays a drag-and-drop-only affair — while a
-    new cause opens the same compact CauseObjectPopup ("Orsak på P&ID")
-    already used everywhere else a cause's tag/type/description is set,
-    replacing the earlier ObjectPickerPopup experiment entirely."""
+    """Every quick-add route creates a blank row for inline editing."""
 
     @classmethod
     def setUpClass(cls):
@@ -3652,65 +3630,20 @@ class PlusRowQuickAddTaggingTests(unittest.TestCase):
             new_id = captured[0][1]
             self.assertEqual(dict(win.db.get_safeguard(new_id))['description'], '')
 
-    def test_quick_add_cause_opens_cause_object_popup_and_creates_cause(self):
-        from PyQt6.QtWidgets import QDialog
+    def test_quick_add_cause_creates_blank_cause_without_popup(self):
         with _TempDbMainWindow() as win:
             panel = win.scenario_panel
             node_id = win.db.add_node()
             dev_id = win.db.deviations(node_id)[0]['id']
 
-            def _fake_exec(self):
-                self.committed.emit('Ventil', 'PV-101', 'Ventil stängd', 3)
-                return QDialog.DialogCode.Accepted
+            panel._quick_add_cause(dev_id)
 
-            with unittest.mock.patch.object(hazop.CauseObjectPopup, 'exec', new=_fake_exec):
-                panel._quick_add_cause(dev_id)
-
-            # NOTE: Database.causes(x) filters by node_id, not deviation_id
-            # (causes_for_deviation() is the deviation-scoped accessor) —
-            # this used to read causes(dev_id) and still pass, only because
-            # a totally fresh, node-less DB made node_id and dev_id both
-            # come out as 1 by coincidence. 2026-08-24: Database now
-            # auto-seeds one default node on a brand new project (see
-            # Database.__init__'s pre_existing_db check), which breaks
-            # that coincidence and exposed the mismatch.
             causes = win.db.causes_for_deviation(dev_id)
             self.assertEqual(len(causes), 1)
-            self.assertEqual(causes[0]['comp_tag'], 'PV-101')
-            self.assertEqual(causes[0]['comp_type'], 'Ventil')
-            self.assertEqual(causes[0]['description'], 'Ventil stängd')
-            self.assertEqual(win.db.consequences(causes[0]['id']),
-                              win.db.consequences(causes[0]['id']))  # sanity: no crash
-            self.assertEqual(len(win.db.consequences(causes[0]['id'])), 1)
-
-    def test_object_chosen_in_empty_cause_popup_matches_tree_drop_identity(self):
-        """A catalogue tag picked in an empty ORS popup must be a real object
-        link, not only copied text. This mirrors a P&ID marker dropped onto
-        the same deviation: the cause and (when unset) deviation point to the
-        catalogue row, and the generated consequence is ready for editing."""
-        from PyQt6.QtWidgets import QDialog
-        with _TempDbMainWindow() as win:
-            panel = win.scenario_panel
-            node_id = win.db.add_node()
-            dev_id = win.db.deviations(node_id)[0]['id']
-            equipment_id = win.db.add_equipment_item(
-                'P-101', 'P-101', 'P', 0, 'Pump', '', 0)
-
-            def _fake_exec(self):
-                # The popup may have initially inferred a different type;
-                # the selected catalogue object remains authoritative.
-                self.committed.emit('Övrigt', 'P-101', '', None)
-                return QDialog.DialogCode.Accepted
-
-            with unittest.mock.patch.object(hazop.CauseObjectPopup, 'exec', new=_fake_exec):
-                panel._quick_add_cause(dev_id)
-
-            cause = win.db.causes_for_deviation(dev_id)[0]
-            self.assertEqual(cause['equipment_id'], equipment_id)
-            self.assertEqual(cause['comp_tag'], 'P-101')
-            self.assertEqual(cause['comp_type'], 'Pump')
-            self.assertEqual(win.db.get_deviation(dev_id)['equipment_id'], equipment_id)
-            self.assertEqual(len(win.db.consequences(cause['id'])), 1)
+            self.assertEqual(causes[0]['comp_tag'], '')
+            self.assertEqual(causes[0]['comp_type'], '')
+            self.assertEqual(causes[0]['description'], '')
+            self.assertEqual(win.db.consequences(causes[0]['id']), [])
 
     def test_add_consequence_via_plus_row_creates_blank_row_no_popup(self):
         with _TempDbMainWindow() as win:
@@ -3727,31 +3660,19 @@ class PlusRowQuickAddTaggingTests(unittest.TestCase):
             self.assertEqual(len(win.db.consequences(cause_id)), before + 1)
             self.assertEqual(len(captured), 1)
 
-    def test_add_cause_via_plus_row_opens_cause_object_popup(self):
-        from PyQt6.QtWidgets import QDialog
+    def test_add_cause_via_plus_row_creates_blank_cause_without_popup(self):
         with _TempDbMainWindow() as win:
             panel = win.scenario_panel
             node_id = win.db.add_node()
             dev_id = win.db.deviations(node_id)[0]['id']
 
-            def _fake_exec(self):
-                self.committed.emit('', '', '', None)
-                return QDialog.DialogCode.Accepted
+            panel._add_cause_via_plus_row(dev_id)
 
-            with unittest.mock.patch.object(hazop.CauseObjectPopup, 'exec', new=_fake_exec):
-                panel._add_cause_via_plus_row(dev_id)
-
-            # See test_quick_add_cause_opens_cause_object_popup_and_creates_cause
-            # above for why this is causes_for_deviation(), not causes().
             self.assertEqual(len(win.db.causes_for_deviation(dev_id)), 1)
 
 
-class EmptyOrsCellClickOpensCausePopupTests(unittest.TestCase):
-    """Reported feedback (2026-08-12, see NOTES.md): clicking an empty
-    ORS placeholder cell (a deviation with no causes yet) used to start
-    inline text editing directly — now opens the same CauseObjectPopup
-    the "+ Ny orsak" row does, so creating a cause behaves identically
-    regardless of entry point."""
+class EmptyOrsCellClickStartsInlineCauseTests(unittest.TestCase):
+    """An empty ORS click creates a blank cause for the shared editor."""
 
     @classmethod
     def setUpClass(cls):
@@ -3768,7 +3689,7 @@ class EmptyOrsCellClickOpensCausePopupTests(unittest.TestCase):
             pass
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    def test_clicking_empty_ors_placeholder_opens_cause_popup(self):
+    def test_clicking_empty_ors_placeholder_creates_blank_inline_cause(self):
         from hazop import ScenarioTablePanel
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
@@ -3778,19 +3699,46 @@ class EmptyOrsCellClickOpensCausePopupTests(unittest.TestCase):
             row = next(r for r, m in enumerate(panel._row_meta)
                        if m[0] == dev_id and m[1] is None)
 
-            with unittest.mock.patch.object(panel, '_add_cause_via_plus_row') as mock_add:
+            with unittest.mock.patch.object(panel, '_quick_add_cause') as mock_add:
                 panel._on_cell_clicked(row, panel._C_ORS)
                 # The real UI waits briefly to distinguish a single click
                 # from a double-click; invoke the pending callback directly
                 # here so the test does not depend on wall-clock timing.
-                panel._open_pending_empty_cause_popup()
+                panel._open_pending_empty_cause_editor()
 
             mock_add.assert_called_once()
-            self.assertEqual(mock_add.call_args.args[0], dev_id)
+            self.assertEqual(mock_add.call_args.args, (dev_id,))
         finally:
             panel.deleteLater()
 
-    def test_clicking_a_real_ors_cell_still_selects_it_not_the_popup(self):
+    def test_worksheet_empty_ors_click_creates_cause_and_opens_inline_editor(self):
+        """The reported Worksheet route must not open the retired dialog."""
+        from worksheet import HAZOPWorksheet
+        from scenario_panel import _BoldTagTextEdit
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        worksheet = HAZOPWorksheet(self.db)
+        worksheet.resize(900, 500)
+        worksheet.show()
+        try:
+            worksheet.refresh()
+            panel = worksheet._table_panel
+            row = next(r for r, meta in enumerate(panel._row_meta)
+                       if meta[0] == dev_id and meta[1] is None)
+
+            panel._on_cell_clicked(row, panel._C_ORS)
+            panel._open_pending_empty_cause_editor()
+            QTest.qWait(20)
+
+            causes = self.db.causes_for_deviation(dev_id)
+            self.assertEqual(len(causes), 1)
+            editors = panel._table.viewport().findChildren(_BoldTagTextEdit)
+            self.assertTrue(any(e.property('editing_col') == panel._C_ORS
+                                for e in editors))
+        finally:
+            worksheet.deleteLater()
+
+    def test_clicking_a_real_ors_cell_still_selects_it_not_the_new_cause_path(self):
         """Sanity check: the new empty-placeholder branch must not
         accidentally hijack clicks on a real, already-defined cause."""
         from hazop import ScenarioTablePanel, CAUSE_T
@@ -3804,13 +3752,33 @@ class EmptyOrsCellClickOpensCausePopupTests(unittest.TestCase):
             captured = []
             panel.item_selected.connect(lambda t, i: captured.append((t, i)))
 
-            with unittest.mock.patch.object(panel, '_add_cause_via_plus_row') as mock_add:
+            with unittest.mock.patch.object(panel, '_quick_add_cause') as mock_add:
                 panel._on_cell_clicked(row, panel._C_ORS)
 
             mock_add.assert_not_called()
             self.assertEqual(captured, [(CAUSE_T, cause_id)])
         finally:
             panel.deleteLater()
+
+
+class RetiredCauseObjectPopupTests(unittest.TestCase):
+    """No active UI route may construct the retired combined cause dialog."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_properties_ribbon_routes_cause_edit_to_shared_inline_editor(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            win.props_ribbon.set_item(CAUSE_T, cause_id)
+
+            with unittest.mock.patch.object(win, '_edit_cause_inline') as edit:
+                win.props_ribbon._edit_cause_obj(None)
+
+            edit.assert_called_once_with(cause_id)
 
 
 class RecommendationColumnTests(unittest.TestCase):
@@ -4110,6 +4078,58 @@ class RecommendationColumnTests(unittest.TestCase):
                 next_recommendation.assert_called_once_with(row, self.cons_id)
         finally:
             editor.deleteLater()
+
+    def test_recommendation_enter_keeps_saved_cell_selected_then_starts_blank_add(self):
+        """Enter is save-and-stay; the next Enter starts a new blank REK."""
+        from scenario_panel import _BoldTagTextEdit
+        rec_id = self.db.add_recommendation_to_consequence(
+            self.cons_id, description='Före ändring')
+        self.panel.resize(900, 500)
+        self.panel.show()
+        self.panel.load_node(self.node_id)
+        row = next(r for r, rec in enumerate(self.panel._row_recommendation_ids)
+                   if rec == rec_id)
+        index = self.panel._table.model().index(row, self.panel._C_REK)
+        self.panel._table.setCurrentIndex(index)
+        self.panel._table.edit(index)
+        QTest.qWait(20)
+        editor = next(
+            e for e in self.panel._table.viewport().findChildren(_BoldTagTextEdit)
+            if e.property('editing_row') == row and
+            e.property('editing_col') == self.panel._C_REK)
+        editor.setText('Efter ändring')
+
+        QTest.keyClick(editor, Qt.Key.Key_Return)
+        QTest.qWait(40)
+
+        self.assertEqual(
+            self.db.get_recommendation(rec_id)['description'], 'Efter ändring')
+        row = next(r for r, rec in enumerate(self.panel._row_recommendation_ids)
+                   if rec == rec_id)
+        self.assertEqual(self.panel._table.currentRow(), row)
+        self.assertEqual(self.panel._table.currentColumn(), self.panel._C_REK)
+        self.assertFalse(self.panel._table.viewport().findChildren(_BoldTagTextEdit))
+
+        QTest.keyClick(self.panel._table, Qt.Key.Key_Return)
+        QTest.qWait(20)
+        add_editor = next(
+            e for e in self.panel._table.viewport().findChildren(_BoldTagTextEdit)
+            if e.property('editing_col') == self.panel._C_REK)
+        self.assertEqual(add_editor.toPlainText(), '')
+        self.assertEqual(
+            self.db.get_recommendation(rec_id)['description'], 'Efter ändring')
+
+    def test_recommendation_double_click_starts_inline_editor(self):
+        rec_id = self.db.add_recommendation_to_consequence(
+            self.cons_id, description='Dubbelklicka')
+        self.panel.load_node(self.node_id)
+        row = next(r for r, rec in enumerate(self.panel._row_recommendation_ids)
+                   if rec == rec_id)
+        item = self.panel._table.item(row, self.panel._C_REK)
+        with unittest.mock.patch.object(self.panel._table, 'edit') as edit:
+            self.panel._on_cell_double_clicked(item)
+        edit.assert_called_once_with(self.panel._table.model().index(
+            row, self.panel._C_REK))
 
     @unittest.skip("REK continuation now selects the next physical row")
     def test_continue_recommendation_entry_selects_same_cell_in_add_mode(self):
@@ -6540,11 +6560,8 @@ class OrsTagZoneOpensMinimalPopupTests(unittest.TestCase):
     minimalistiska" (2026-08-14) — a plain click on the ORS tag zone
     used to open the large combined CauseObjectPopup (tag+type+
     avvikelse-picker+standard-cause list). It now opens the much
-    smaller CauseTagPopup instead. CauseObjectPopup itself is
-    untouched and still used, unchanged, by the detail panel
-    (_edit_cause_obj) and quick-add (_quick_add_cause) — see
-    CauseTagLiveLinkTests, which still exercises _apply_cause_obj the
-    same way regardless of which popup calls it."""
+    smaller CauseTagPopup instead. The combined cause picker has no active
+    construction path; tag edits stay in this compact popup."""
 
     @classmethod
     def setUpClass(cls):
@@ -6569,17 +6586,15 @@ class OrsTagZoneOpensMinimalPopupTests(unittest.TestCase):
             pass
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    def test_tag_zone_click_opens_cause_tag_popup_not_cause_object_popup(self):
+    def test_tag_zone_click_opens_cause_tag_popup(self):
         """CauseTagPopup has no OK button (2026-08-18) — it's a
         self-dismissing Popup shown non-modally, not exec()'d."""
         from PyQt6.QtCore import QSize
         fake_popup = unittest.mock.Mock()
         fake_popup.sizeHint.return_value = QSize(200, 100)
-        with unittest.mock.patch('scenario_panel.CauseTagPopup', return_value=fake_popup) as MockPopup, \
-             unittest.mock.patch('scenario_panel.CauseObjectPopup') as MockBigPopup:
+        with unittest.mock.patch('scenario_panel.CauseTagPopup', return_value=fake_popup) as MockPopup:
             self.panel._show_cause_obj_popup(self.row, self.cause_id, QPoint(100, 100))
             MockPopup.assert_called_once()
-            MockBigPopup.assert_not_called()
             fake_popup.show.assert_called_once()
 
     def test_object_dropdown_starts_with_database_label(self):
@@ -7678,8 +7693,7 @@ class RecommendationCatalogSyncTests(unittest.TestCase):
 
 
 class EmptyScenarioCellDoubleClickTests(unittest.TestCase):
-    """Empty Scenario/Worksheet cells must use their context popup while
-    keeping the corresponding free-text editor available in that popup."""
+    """Empty Scenario/Worksheet cells enter the shared inline editor."""
 
     @classmethod
     def setUpClass(cls):
@@ -7703,10 +7717,9 @@ class EmptyScenarioCellDoubleClickTests(unittest.TestCase):
             row = next(r for r, meta in enumerate(panel._row_meta)
                        if meta[0] == dev_id and meta[1] is None)
             calls = []
-            panel._quick_add_cause = lambda did, from_enter=False: calls.append(
-                (did, from_enter))
+            panel._quick_add_cause = lambda did: calls.append(did)
             panel._on_cell_double_clicked(panel._table.item(row, panel._C_ORS))
-            self.assertEqual(calls, [(dev_id, True)])
+            self.assertEqual(calls, [dev_id])
         finally:
             panel.deleteLater()
 

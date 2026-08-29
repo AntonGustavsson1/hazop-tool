@@ -2,6 +2,28 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Orsak skapas direkt i inline-redigeraren (2026-08-29)
+
+Den tidigare kombinerade dialogen `CauseObjectPopup` (upplevd som "Orsak på
+P&ID") har tagits bort från alla aktiva vägar. Enkelklick på en tom Orsak-cell
+i både HAZOP Scenario och HAZOP Worksheet väntar endast kort för att skilja ut
+ett dubbelklick, skapar sedan en tom orsak och öppnar den vanliga
+inline-redigeraren. Samma direkta flöde används av plusknappen och snabbmenyn
+"Ny orsak". Egenskapsfältets "Redigera orsak" växlar i stället till HAZOP
+Scenario och öppnar samma inline-redigerare.
+
+Den gamla dialogklassen ligger kvar som en inaktiv kompatibilitetsarkivering,
+men sökningen bekräftar att ingen aktiv programväg längre konstruerar den.
+
+## Rekommendationer: Enter sparar och behåller markering (2026-08-29)
+
+Enter i en rekommendations inline-redigerare sparar nu texten, stänger editorn
+och återställer markeringen på samma rekommendation efter tabellens omritning.
+Ett nytt Enter när den cellen är markerad öppnar en tom tilläggsrad för en ny
+rekommendation i stället för att redigera eller skriva över den befintliga.
+Dubbelklick fortsätter alltid att öppna den vanliga inline-redigeraren för den
+valda rekommendationen.
+
 ## Standardorsak efter inline-objektval behåller taggen (2026-08-29)
 
 När en användare först väljer en igenkänd tagg i en tom eller fritextbaserad
@@ -4041,3 +4063,8 @@ samt py_compile. Ingen visuell GUI-verifiering Ã¤r gjord.
 Worksheetens inbäddade ScenarioTablePanel uppdaterar nu sig själv och väljer
 det nya fältet efter Enter. Strukturändringar och redigeringar skickas också
 vidare till trädet, P&ID och huvudvyn så att alla vyer hålls synkroniserade.
+# Senaste uppföljning (2026-08-29)
+
+- Tagg skriven i inline-orsak: när taggen matchar ett katalogobjekt utan objekttyp öppnas nu endast den kompakta tagg/typ-rutan. När typen finns används samma standardorsaksstöd som övriga objektkopplade orsaker.
+- Rekommendationens Delete i HAZOP Scenario/Worksheet frågar vid sista kopplingen om rekommendationen ska tas bort globalt eller endast från aktuell konsekvens. Global borttagning uppdaterar båda vyerna.
+- P&ID-objektfilter visar inte längre rader enbart på grund av avvikelsens utrustningskoppling; förekomst måste finnas i orsak, konsekvens, safeguard eller länkad rekommendation. Recommendation-celler markerar kända katalogtaggar fetstilt.

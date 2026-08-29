@@ -19,7 +19,7 @@ from constants import NODE_T, CAUSE_T, CONS_T, SG_T, DEV_T, MARKUP_COLORS, CONFI
 from database import Database, freq_to_f_level
 from pid_viewer import _icon, _mk_icon, _mk_pm, _EMOJI_ICON, _RED_MARKUP_SYMBOLS
 from ui_helpers import freq_axis_label
-from tree_panel import CauseObjectPopup, RRFPopup
+from tree_panel import RRFPopup
 from scenario_panel import ConsCategoryMatrixPopup
 
 
@@ -636,7 +636,7 @@ class PropertiesRibbon(QWidget):
         if T == 2:   # CAUSE_T
             return [
                 "ORSAK",
-                ("📝", "Redigera orsak (beskrivning, objekt, tag)", self._edit_cause_obj),
+                ("📝", "Redigera orsak",                         self._edit_cause_obj),
                 ("📊", "Ange frekvens / F-nivå",              self._edit_cause_freq),
                 ("💬", "Redigera kommentar",                  self._edit_cause_comment),
                 None,
@@ -813,34 +813,14 @@ class PropertiesRibbon(QWidget):
 
     # ── CAUSE actions ─────────────────────────────────────────────────────────
     def _edit_cause_obj(self, btn):
-        """Open the combined CauseObjectPopup for editing description,
-        comp_type and comp_tag together — replaces the old split of a
-        separate free-text description popup and a separate object/tag
-        popup, so cause editing is consistent with every other entry point.
+        """Open the shared ORS inline editor for this cause.
+
+        The old combined "Orsak på P&ID" dialog is retired.  Object tags,
+        free text and standard-cause suggestions are all handled in the same
+        editor used by HAZOP Scenario and HAZOP Worksheet.
         """
         if not self._id or not self._mw: return
-        c = dict(self.db.get_cause(self._id) or {})
-        dev = self.db.get_deviation(c.get('deviation_id')) if c.get('deviation_id') else None
-        popup = CauseObjectPopup(
-            c.get('comp_type',''), c.get('comp_tag',''),
-            self.db, dev_description=dev['description'] if dev else None,
-            current_description=c.get('description',''), parent=self)
-        popup.setWindowFlags(popup.windowFlags() | Qt.WindowType.FramelessWindowHint)
-        gp, scr = self._popup_near(btn)
-        popup.adjustSize()
-        pw, ph = popup.sizeHint().width(), popup.sizeHint().height()
-        x = gp.x() - pw - 6
-        y = gp.y()
-        if x < scr.left(): x = gp.x() + self._WIDTH + 6
-        if y + ph > scr.bottom(): y = scr.bottom() - ph
-        popup.move(max(scr.left(), x), max(scr.top(), y))
-        def _on_committed(ct, tag, desc, freq):
-            self.db.update_cause(self._id, comp_type=ct, comp_tag=tag)
-            if desc is not None: self.db.update_cause(self._id, description=desc)
-            if freq is not None: self.db.update_cause(self._id, base_frequency=freq)
-            self.item_changed.emit()
-        popup.committed.connect(_on_committed)
-        popup.exec()
+        self._mw._edit_cause_inline(self._id)
 
     def _edit_cause_freq(self, btn):
         if not self._id: return
