@@ -4388,6 +4388,31 @@ class Database:
         self.commit()
         return cur.lastrowid
 
+    def add_cause_after(self, deviation_id, after_cause_id=None):
+        """Create a cause immediately after a sibling in one deviation.
+
+        Kept separate from add_cause so existing add paths retain their
+        established behaviour. Older projects may have several siblings with
+        the default sort_order of zero, so normalise the sibling order first.
+        """
+        dev = self.get_deviation(deviation_id)
+        node_id = dev['node_id'] if dev else None
+        siblings = list(self.causes_for_deviation(deviation_id))
+        ordered_ids = [row['id'] for row in siblings]
+        insert_at = (ordered_ids.index(after_cause_id) + 1
+                     if after_cause_id in ordered_ids else len(ordered_ids))
+        for order, sibling_id in enumerate(ordered_ids):
+            self.conn.execute(
+                "UPDATE causes SET sort_order=? WHERE id=?",
+                (order + (1 if order >= insert_at else 0), sibling_id))
+        cur = self.conn.execute(
+            "INSERT INTO causes "
+            "(node_id,deviation_id,description,likelihood,sort_order) "
+            "VALUES (?,?,'Ny orsak',1,?)",
+            (node_id, deviation_id, insert_at))
+        self.commit()
+        return cur.lastrowid
+
     def add_consequence(self, cause_id):
         # Empty, not the literal 'Ny konsekvens' (2026-08-12, see NOTES.md)
         # — a freshly created row shows a plain "—" until actually defined

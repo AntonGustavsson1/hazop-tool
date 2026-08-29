@@ -3831,6 +3831,19 @@ kolumnflyttningslogik Ã¤r bevarad.
 Verifierat med `tests.test_recommendations_panel` (13 tester), `tests.test_smoke`
 (12 tester) och `py_compile`. Ingen visuell GUI-verifiering Ã¤r gjord.
 
+## Worksheet: Enter pÃ¥ orsak skapar syskon (2026-08-29)
+
+Enter pÃ¥ ett befintligt orsaksfÃ¤lt i Worksheet/Scenario skapar nu en tom orsak
+direkt efter den valda orsaken inom samma avvikelse. Den nya raden skapar inte
+automatiskt nÃ¥gon konsekvens och signalerar CAUSE_T, sÃ¥ redigeringen stannar i
+orsaksfÃ¤ltet i stÃ¤llet fÃ¶r att hoppa till Konsekvens. Befintliga popup-/trÃ¤dflÃ¶den
+fÃ¶r att skapa orsak behÃ¥ller sitt tidigare beteende.
+
+SÃ¤rskild databasmetod normaliserar syskonens sort_order fÃ¶re insÃ¤ttning, vilket
+ocksÃ¥ ger rÃ¤tt placering i Ã¤ldre projekt dÃ¤r flera orsaker har samma standardordning.
+Verifierat med `tests.test_integration.AutoConsequenceOnCauseAddTests` (5 tester),
+`tests.test_worksheet` (15 tester) och py_compile. Ingen visuell GUI-verifiering Ã¤r gjord.
+
 ## Worksheet: Enter och cross-view-synk (2026-08-28)
 
 Worksheetens inbäddade ScenarioTablePanel uppdaterar nu sig själv och väljer

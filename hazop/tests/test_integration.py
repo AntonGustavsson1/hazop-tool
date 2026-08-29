@@ -3407,6 +3407,30 @@ class AutoConsequenceOnCauseAddTests(unittest.TestCase):
             self.assertEqual(type_, CONS_T)
             self.assertIsNotNone(win.db.get_consequence(cons_id))
 
+    def test_enter_on_cause_inserts_sibling_after_it_and_stays_in_cause(self):
+        """Enter in the cause field creates a blank cause immediately after
+        the selected sibling, without an automatic consequence or focus jump.
+        """
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            first = win.db.add_cause(dev_id)
+            second = win.db.add_cause(dev_id)
+            third = win.db.add_cause(dev_id)
+            panel.load_node(node_id)
+
+            captured = []
+            panel.new_item_created.connect(lambda t, i: captured.append((t, i)))
+            panel._quick_add_cause(dev_id, from_enter=True, after_cause_id=second)
+
+            self.assertEqual(captured[0][0], CAUSE_T)
+            new_id = captured[0][1]
+            self.assertEqual(
+                [row['id'] for row in win.db.causes_for_deviation(dev_id)],
+                [first, second, new_id, third])
+            self.assertEqual(win.db.consequences(new_id), [])
+
     def test_tree_add_cause_via_deviation_also_creates_empty_consequence(self):
         """TreePanel._add_cause_for_deviation is the other
         _create_cause_from_pick caller (tree's "+ Orsak" button,

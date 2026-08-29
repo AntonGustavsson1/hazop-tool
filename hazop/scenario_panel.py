@@ -7624,7 +7624,8 @@ class ScenarioTablePanel(QWidget):
         dev_id, cause_id, cons_id, _sg_id = self._row_meta[row]
         if col in (self._C_ORS, self._C_NOD, self._C_DEV):
             if dev_id is not None:
-                self._quick_add_cause(dev_id, from_enter=True)
+                self._quick_add_cause(
+                    dev_id, from_enter=True, after_cause_id=cause_id)
         elif col in (self._C_KON, self._C_RFORE):
             if cause_id is not None:
                 self._quick_add_consequence(cause_id)
@@ -7681,7 +7682,8 @@ class ScenarioTablePanel(QWidget):
         pos   = self._table.viewport().mapToGlobal(rect.bottomLeft())
         menu.exec(pos)
 
-    def _quick_add_cause(self, deviation_id, global_pos=None, from_enter=False):
+    def _quick_add_cause(self, deviation_id, global_pos=None, from_enter=False,
+                         after_cause_id=None):
         """Reported feedback (2026-08-12, see NOTES.md): a new/empty cause
         in HAZOP scenario should open the same compact CauseObjectPopup
         (Tag + Typ + Standardorsaker) already used everywhere a cause's
@@ -7698,11 +7700,12 @@ class ScenarioTablePanel(QWidget):
         # object/frequency dialog; the required DB likelihood is kept at zero
         # only as an internal unset marker and is hidden in the Scenario cell.
         if from_enter:
-            new_id = self.db.add_cause(deviation_id)
+            new_id = self.db.add_cause_after(deviation_id, after_cause_id)
             self.db.update_cause(new_id, description='', comp_type='', comp_tag='',
                                  likelihood=0, base_frequency=None)
-            cons_id = self.db.add_consequence(new_id)
-            self.new_item_created.emit(CONS_T, cons_id)
+            # Enter on Orsak stays in the cause field. A consequence is a
+            # separate action and must not be created as a side effect here.
+            self.new_item_created.emit(CAUSE_T, new_id)
             return
 
         popup = CauseObjectPopup(
