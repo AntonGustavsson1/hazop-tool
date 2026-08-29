@@ -1,5 +1,12 @@
 # NOTES.md — Beslut och kontext
 
+## RRF-popup utan Gäller ej för (2026-08-29)
+
+Den utökade RRF-popupen innehåller nu endast RRF-värde och barriärtyp.
+De tidigare kontrollerna för `Gäller ej för` per kategori och orsak är
+borttagna från denna popup. RRF-värdena visas i en kompakt lista med samma
+vita bakgrund och 1 px mörkgrå ram som övriga nya popupfönster.
+
 ## Riskmatrispopup i samma minimalistiska stil (2026-08-29)
 
 RiskMatrixPopup använder nu vit bakgrund och 1 px mörkgrå ram, och den

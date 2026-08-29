@@ -2740,6 +2740,32 @@ class RiskMatrixPopupDismissalTests(unittest.TestCase):
     # relies on), not new code written here.
 
 
+class SgRRFPopupTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_popup_is_compact_and_has_no_galler_ej_for_controls(self):
+        from scenario_panel import SgRRFCategoryPopup
+        from PyQt6.QtWidgets import QListWidget, QLabel
+
+        popup = SgRRFCategoryPopup(
+            db=unittest.mock.Mock(), sg_id=1, current_rrf=10,
+            current_sg_type='Övrigt',
+            sev_cat_list=[(1, 'Kategori')],
+            cause_list=[(2, 'Orsak', False)])
+        try:
+            self.assertEqual(len(popup.findChildren(QListWidget)), 1)
+            self.assertFalse(any(
+                'Gäller ej för' in w.text() or 'Gäller för' in w.text()
+                for w in popup.findChildren(QLabel)))
+            self.assertIn('border:1px solid #4B5563', popup.styleSheet())
+            self.assertTrue(popup.testAttribute(Qt.WidgetAttribute.WA_StyledBackground))
+        finally:
+            popup.close()
+            popup.deleteLater()
+
+
 class RiskMatrixCategorySectionTests(unittest.TestCase):
     """"Ta bort kategori-/C-värdesvalet från konsekvensfältet i HAZOP
     Scenario... Flytta detta till riskmatrisen. Där ska användaren kunna

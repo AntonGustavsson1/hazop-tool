@@ -3438,7 +3438,12 @@ class RecommendationAssistPopup(QWidget):
 
 
 class SgRRFCategoryPopup(QDialog):
-    """Popup: change a safeguard's RRF, type, per-category and per-cause exclusions."""
+    """Compact popup for changing a safeguard's RRF and type.
+
+    The former per-category/per-cause ``Gäller ej för`` controls are
+    intentionally not part of this popup anymore.  The constructor keeps
+    those arguments for call-site compatibility, but they are ignored.
+    """
 
     def __init__(self, db, sg_id, current_rrf, current_sg_type,
                  sev_cat_list, cause_list=None, parent=None):
@@ -3447,27 +3452,28 @@ class SgRRFCategoryPopup(QDialog):
         self._sg_id          = sg_id
         self._current_rrf    = current_rrf
         self._current_type   = current_sg_type or 'Övrigt'
-        self._sev_cat_list   = sev_cat_list    # [(sev_id, cat_name), ...]
-        self._cause_list     = cause_list or [] # [(cause_id, desc, is_chain), ...]
-        self._cat_checks:   dict[int, QCheckBox] = {}
-        self._cause_checks: dict[int, QCheckBox] = {}
         self.setWindowTitle("Barriär — RRF & tillämpning")
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setObjectName("sgRrfPopup")
+        self.setStyleSheet(
+            "QWidget#sgRrfPopup{background:#FFFFFF;"
+            "border:1px solid #4B5563;border-radius:3px;}"
+            "QListWidget{border:none;background:#FFFFFF;font-size:10px;}"
+            "QListWidget::item{padding:3px 6px;color:#17191C;}"
+            "QListWidget::item:hover{background:#F5F5F3;}"
+            "QListWidget::item:selected{background:#E8E9E6;color:#17191C;}")
         self._build()
 
     def _build(self):
-        excl_by_sev   = {sev_id: self._sg_id in self.db.get_severity_excluded_sgs(sev_id)
-                         for sev_id, _ in self._sev_cat_list}
-        excl_cause_ids = self.db.get_safeguard_excluded_causes(self._sg_id)
-
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(10, 8, 10, 8)
-        outer.setSpacing(5)
+        outer.setContentsMargins(8, 6, 8, 6)
+        outer.setSpacing(4)
 
-        title = QLabel("RRF & tillämpning")
-        tf = QFont(); tf.setBold(True); tf.setPointSize(9)
-        title.setFont(tf)
+        title = QLabel("RRF")
+        title.setStyleSheet("border:none;color:#17191C;font-size:10px;"
+                            "font-weight:bold;")
         outer.addWidget(title)
 
         # Type selector
@@ -3478,25 +3484,29 @@ class SgRRFCategoryPopup(QDialog):
         idx = self._type_combo.findText(self._current_type)
         if idx >= 0:
             self._type_combo.setCurrentIndex(idx)
-        self._type_combo.setStyleSheet("font-size:10px;")
+        self._type_combo.setStyleSheet("border:1px solid #CFD1CE;"
+                                      "font-size:10px;")
         type_row.addWidget(self._type_combo)
         outer.addLayout(type_row)
 
-        # RRF preset buttons + custom spinbox
-        rrf_lbl = QLabel("RRF:")
-        rrf_lbl.setStyleSheet("font-size:9px; color:#666;")
-        outer.addWidget(rrf_lbl)
-        presets = QHBoxLayout()
+        # RRF preset list + custom spinbox
+        presets = QListWidget()
+        presets.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        presets.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        presets.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        presets.setMinimumWidth(150)
+        presets.setMaximumHeight(120)
+        self._preset_items = {}
         for v in (1, 10, 100, 1000, 10000):
-            btn = QPushButton(str(v))
-            btn.setFixedWidth(52)
-            btn.setStyleSheet(
-                "QPushButton{background:#2F5FD0;color:white;border:none;"
-                "border-radius:0px;padding:2px 8px;font-weight:bold;font-size:9px;}"
-                "QPushButton:hover{background:#3D6BD8;}")
-            btn.clicked.connect(lambda _, v=v: self._spin.setValue(v))
-            presets.addWidget(btn)
-        outer.addLayout(presets)
+            item = QListWidgetItem(str(v))
+            item.setData(Qt.ItemDataRole.UserRole, v)
+            presets.addItem(item)
+            self._preset_items[v] = item
+            if v == self._current_rrf:
+                item.setSelected(True)
+        presets.itemClicked.connect(
+            lambda item: self._spin.setValue(item.data(Qt.ItemDataRole.UserRole)))
+        outer.addWidget(presets)
         spin_row = QHBoxLayout()
         spin_row.addWidget(QLabel("Eget:"))
         self._spin = QSpinBox()
@@ -3506,69 +3516,20 @@ class SgRRFCategoryPopup(QDialog):
         spin_row.addWidget(self._spin)
         outer.addLayout(spin_row)
 
-        if self._sev_cat_list:
-            sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
-            sep.setStyleSheet("color:#E2E3E1;"); outer.addWidget(sep)
-            lbl = QLabel("Gäller för kategori:")
-            lbl.setStyleSheet("font-size:9px; color:#666;")
-            outer.addWidget(lbl)
-            for sev_id, cat_name in self._sev_cat_list:
-                cb = QCheckBox(f"{cat_name}")
-                cb.setStyleSheet("font-size:10px;")
-                cb.setChecked(not excl_by_sev.get(sev_id, False))
-                self._cat_checks[sev_id] = cb
-                outer.addWidget(cb)
-
-        if self._cause_list:
-            sep3 = QFrame(); sep3.setFrameShape(QFrame.Shape.HLine)
-            sep3.setStyleSheet("color:#E2E3E1;"); outer.addWidget(sep3)
-            lbl2 = QLabel("Gäller för orsak:")
-            lbl2.setStyleSheet("font-size:9px; color:#666;")
-            outer.addWidget(lbl2)
-            for cause_id, desc, is_chain in self._cause_list:
-                prefix = "⛓ " if is_chain else "⚙ "
-                label  = f"{prefix}{desc[:40]}"
-                cb = QCheckBox(label)
-                cb.setStyleSheet("font-size:10px;")
-                cb.setChecked(cause_id not in excl_cause_ids)
-                self._cause_checks[cause_id] = cb
-                outer.addWidget(cb)
-
-        sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
-        sep2.setStyleSheet("color:#E2E3E1;"); outer.addWidget(sep2)
-
-        btn_row = QHBoxLayout()
         ok = QPushButton("OK")
         ok.setDefault(True)
         ok.setStyleSheet(
-            "QPushButton{font-size:10px;padding:2px 12px;"
+            "QPushButton{border:none;font-size:10px;padding:3px 12px;"
             "background:#2F5FD0;color:white;border-radius:0px;}"
             "QPushButton:hover{background:#3D6BD8;}")
         ok.clicked.connect(self._ok)
-        cancel = QPushButton("Avbryt")
-        cancel.setStyleSheet("font-size:10px; padding:2px 8px;")
-        cancel.clicked.connect(self.reject)
-        btn_row.addStretch(); btn_row.addWidget(cancel); btn_row.addWidget(ok)
-        outer.addLayout(btn_row)
+        outer.addWidget(ok, alignment=Qt.AlignmentFlag.AlignRight)
 
     def _ok(self):
         new_rrf  = self._spin.value()
         new_type = self._type_combo.currentText()
         if new_rrf != self._current_rrf or new_type != self._current_type:
             self.db.update_safeguard(self._sg_id, rrf=new_rrf, sg_type=new_type)
-
-        # Save category exclusions
-        for sev_id, cb in self._cat_checks.items():
-            excl_set = self.db.get_severity_excluded_sgs(sev_id)
-            if cb.isChecked():
-                excl_set.discard(self._sg_id)
-            else:
-                excl_set.add(self._sg_id)
-            self.db.set_severity_excluded_sgs(sev_id, excl_set)
-
-        # Save cause exclusions
-        excl_cause_ids = {cid for cid, cb in self._cause_checks.items() if not cb.isChecked()}
-        self.db.set_safeguard_excluded_causes(self._sg_id, excl_cause_ids)
 
         self.accept()
 
