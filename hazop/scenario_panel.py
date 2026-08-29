@@ -4994,8 +4994,13 @@ class ScenarioTablePanel(QWidget):
                     cons_id is not None):
                 rec_id = (self._row_recommendation_ids[r]
                           if r < len(self._row_recommendation_ids) else None)
+                # Keep the active blank editor row as a single physical
+                # cell. If the consequence has extra safeguard/category
+                # rows, spanning all blank REK continuations makes Qt use
+                # the span anchor for the editor and can place it above the
+                # existing recommendation.
                 return ('recommendation', rec_id) if rec_id is not None \
-                    else ('recommendation_placeholder', cons_id)
+                    else ('recommendation_placeholder', cons_id, r)
             return (cons_id if rec_counts.get(cons_id, 0) <= 1 else None)
 
         _span_col(self._C_REK, _rek_key)

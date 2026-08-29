@@ -3057,6 +3057,8 @@ class RecommendationInlineAddRowTests(unittest.TestCase):
         cause_id = self.db.add_cause(dev_id)
         cons_id = self.db.add_consequence(cause_id)
         rec_id = self.db.add_recommendation_to_consequence(cons_id, 'Befintlig')
+        for _ in range(3):
+            self.db.add_safeguard(cons_id)
         panel = ScenarioTablePanel(self.db)
         try:
             panel.load_node(node_id)
@@ -3064,11 +3066,13 @@ class RecommendationInlineAddRowTests(unittest.TestCase):
             panel._rebuild()
             rows = [r for r, meta in enumerate(panel._row_meta)
                     if meta[2] == cons_id]
-            self.assertEqual(len(rows), 2)
+            self.assertEqual(len(rows), 3)
             self.assertEqual(panel._row_recommendation_ids[rows[0]], rec_id)
             self.assertIsNone(panel._row_recommendation_ids[rows[1]])
+            self.assertIsNone(panel._row_recommendation_ids[rows[2]])
             self.assertEqual(panel._table.rowSpan(rows[0], panel._C_REK), 1)
             self.assertEqual(panel._table.rowSpan(rows[1], panel._C_REK), 1)
+            self.assertEqual(panel._table.rowSpan(rows[2], panel._C_REK), 1)
         finally:
             panel.deleteLater()
 

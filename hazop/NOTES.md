@@ -1,5 +1,12 @@
 # NOTES.md — Beslut och kontext
 
+## Rekommendationseditorn ankras på rätt rad (2026-08-29)
+
+Den tillfälliga tomma raden vid ny rekommendation spänns inte längre ihop
+med efterföljande tomma REK-rader. Därmed använder Qt inte ett senare
+span-ankare för editorn, utan editorn öppnas på den egna raden direkt under
+den befintliga rekommendationen.
+
 ## Ny rekommendation får egen redigeringsrad (2026-08-29)
 
 När en ny rekommendation påbörjas under en befintlig rekommendation skapas
