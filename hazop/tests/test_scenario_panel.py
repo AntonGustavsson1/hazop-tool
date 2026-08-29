@@ -4095,9 +4095,15 @@ class StandardCauseSuggestPopupTests(unittest.TestCase):
         self.node_id = self.db.add_node()
         self.dev_id = self.db.deviations(self.node_id)[0]['id']
         self.dev_description = self.db.get_deviation(self.dev_id)['description']
-        self.std_dev_id = self.db.conn.execute(
-            "INSERT INTO standard_deviations (description) VALUES (?)",
-            (self.dev_description,)).lastrowid
+        existing_std_dev = self.db.conn.execute(
+            "SELECT id FROM standard_deviations WHERE description=?",
+            (self.dev_description,)).fetchone()
+        if existing_std_dev:
+            self.std_dev_id = existing_std_dev['id']
+        else:
+            self.std_dev_id = self.db.conn.execute(
+                "INSERT INTO standard_deviations (description) VALUES (?)",
+                (self.dev_description,)).lastrowid
         self.db.commit()
         self.obj_id = self.db.add_standard_object("Xyzzyobjekt")
 
@@ -4142,6 +4148,14 @@ class StandardCauseSuggestPopupTests(unittest.TestCase):
         popup = self._popup()
         self.assertIsNotNone(popup, "popup must appear as soon as ORS editing starts")
         self.assertTrue(popup.isVisible())
+
+    def test_popup_has_a_clear_outer_frame(self):
+        self.db.add_standard_cause_with_object(self.std_dev_id, self.obj_id, "Felar stängd")
+        cause_id = self._make_cause()
+        self._start_edit(cause_id)
+        popup = self._popup()
+        self.assertIsNotNone(popup)
+        self.assertIn("border:2px solid #8D9299", popup.styleSheet())
 
     def test_popup_does_not_appear_for_kon_or_sg_columns(self):
         """Only the Orsak (ORS) cell triggers this popup — editing a

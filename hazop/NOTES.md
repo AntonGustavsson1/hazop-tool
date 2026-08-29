@@ -1,5 +1,11 @@
 # NOTES.md — Beslut och kontext
 
+## Tydligare ram runt standardorsakspopup (2026-08-29)
+
+StandardCauseSuggestPopup har fått en tydligare 2 px grå ram och svag
+avrundning så att den skiljer sig från tabellen och bakgrunden. Popupens
+fokusfria barnwidget-beteende och placering är oförändrade.
+
 ## Trädet behåller öppen gren efter borttagning (2026-08-29)
 
 TreePanel.refresh() återställer nu närmaste kvarvarande förälder som aktuell

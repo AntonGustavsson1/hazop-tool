@@ -3119,8 +3119,11 @@ class StandardCauseSuggestPopup(QWidget):
         # already being a non-toplevel widget: it must never be able to
         # actively grab keyboard focus via a mouse click either.
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        # Give the child popup a clear boundary against the table and the
+        # application background. It remains a non-focusable child widget;
+        # only the visual framing changes here.
         self.setStyleSheet("StandardCauseSuggestPopup{background:#FFFFFF;"
-                           "border:1px solid #E2E3E1;}")
+                           "border:2px solid #8D9299;border-radius:3px;}")
         self._panel = panel
         self._row = row
         self._cause_id = cause_id
