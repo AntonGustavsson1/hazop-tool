@@ -787,6 +787,30 @@ class TreeAutoExpandCappedAtObjectLevelTests(unittest.TestCase):
         self.assertTrue(cons_item.isExpanded(),
             "manual expansion must remain available")
 
+    def test_deleting_selected_child_keeps_surviving_branch_open(self):
+        """Deleting the selected child must not make refresh() collapse the
+        whole tree when the auto-collapse settings are enabled."""
+        node_id, dev_id, cause_id = self._chain()
+        self.panel.refresh()
+        node_item = _find_tree_item(self.panel.tree, NODE_T, node_id)
+        dev_item = _find_tree_item(self.panel.tree, DEV_T, dev_id)
+        node_item.setExpanded(True)
+        dev_item.setExpanded(True)
+        self.panel.tree.setCurrentItem(_find_tree_item(
+            self.panel.tree, CAUSE_T, cause_id))
+        self.panel._auto_collapse_nodes_chk.setChecked(True)
+        self.panel._auto_collapse_deviations_chk.setChecked(True)
+
+        self.db.delete_cause(cause_id)
+        self.panel.refresh()
+
+        node_after = _find_tree_item(self.panel.tree, NODE_T, node_id)
+        dev_after = _find_tree_item(self.panel.tree, DEV_T, dev_id)
+        self.assertTrue(node_after.isExpanded(),
+            "the surviving node branch must remain open after deletion")
+        self.assertTrue(dev_after.isExpanded(),
+            "the surviving deviation branch must remain open after deletion")
+
 
 class TreeInternalReparentDragDropTests(unittest.TestCase):
     """"implementera även drag and drop I hazop trädet mellan olika nivåer.

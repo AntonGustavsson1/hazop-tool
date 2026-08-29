@@ -1,5 +1,12 @@
 # NOTES.md — Beslut och kontext
 
+## Trädet behåller öppen gren efter borttagning (2026-08-29)
+
+TreePanel.refresh() återställer nu närmaste kvarvarande förälder som aktuell
+om den tidigare markerade raden har tagits bort. Det hindrar auto-collapse
+från att tolka situationen som att ingen gren är aktiv och fälla ihop hela
+trädet till studienivån.
+
 ## Rekommendationseditorn ankras på rätt rad (2026-08-29)
 
 Den tillfälliga tomma raden vid ny rekommendation spänns inte längre ihop

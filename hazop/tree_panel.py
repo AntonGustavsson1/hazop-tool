@@ -448,6 +448,15 @@ class TreePanel(QWidget):
         # target of its own. See the restore block after the tree is
         # rebuilt for why.
         prev_type, prev_id = self._current()
+        previous_ancestors = []
+        current_item = self.tree.currentItem()
+        if current_item is not None:
+            parent = current_item.parent()
+            while parent is not None:
+                previous_ancestors.append((
+                    parent.data(0, Qt.ItemDataRole.UserRole + 1),
+                    parent.data(0, Qt.ItemDataRole.UserRole)))
+                parent = parent.parent()
         expanded = set()
         it = QTreeWidgetItemIterator(self.tree)
         while it.value():
@@ -721,14 +730,26 @@ class TreePanel(QWidget):
                 # blockSignals — no _reveal/scroll, no selection signal;
                 # this is bookkeeping for auto-collapse, not real
                 # navigation).
-                it = QTreeWidgetItemIterator(self.tree)
-                while it.value():
-                    item = it.value()
-                    if (item.data(0, Qt.ItemDataRole.UserRole + 1) == prev_type and
-                            item.data(0, Qt.ItemDataRole.UserRole) == prev_id):
-                        self.tree.setCurrentItem(item)
+                # Prefer the old item when it still exists. If it was the
+                # item just deleted, fall back to its nearest surviving
+                # ancestor. This is important when auto-collapse is enabled:
+                # without an active node/deviation, _apply_auto_collapse()
+                # quite correctly sees no active branch and folds the whole
+                # tree to the study root.
+                restore_keys = [(prev_type, prev_id)] + previous_ancestors
+                for restore_type, restore_id in restore_keys:
+                    it = QTreeWidgetItemIterator(self.tree)
+                    found_item = None
+                    while it.value():
+                        item = it.value()
+                        if (item.data(0, Qt.ItemDataRole.UserRole + 1) == restore_type and
+                                item.data(0, Qt.ItemDataRole.UserRole) == restore_id):
+                            found_item = item
+                            break
+                        it += 1
+                    if found_item is not None:
+                        self.tree.setCurrentItem(found_item)
                         break
-                    it += 1
 
             if target and not emit_selection:
                 # Update the tree's visual highlight while signals are still
