@@ -4791,7 +4791,10 @@ class ScenarioTablePanel(QWidget):
                 extra_recommendation_row = (
                     1 if self._recommendation_add_placeholder_cons_id == cons_d['id']
                     else 0)
-                n_rows = max(n_cats, n_sgs, n_recs + extra_recommendation_row, 1)
+                # Category assessments belong inside the risk block; they
+                # must not create empty safeguard rows.  The risk columns
+                # span the complete consequence block below.
+                n_rows = max(n_sgs, n_recs + extra_recommendation_row, n_cats, 1)
 
                 # Precompute exclusions per severity assessment
                 cat_excl_map = {}           # sev_id → set of excluded sg_ids
@@ -4834,7 +4837,14 @@ class ScenarioTablePanel(QWidget):
                              cons_d.get('id'), n_rows, n_cats, n_sgs)
                 first_row_for_cons = self._table.rowCount()
                 for i in range(n_rows):
-                    sg_i    = sgs[i] if i < n_sgs else None
+                    # Keep safeguards in contiguous independent blocks when
+                    # categories/recommendations make the shared grid taller.
+                    # This extends the last safeguard's span instead of
+                    # inventing a blank safeguard row.
+                    sg_i = None
+                    if n_sgs:
+                        sg_index = min(n_sgs - 1, (i * n_sgs) // n_rows)
+                        sg_i = sgs[sg_index]
                     rec_i   = (acts_by_cons.get(cons_d['id'], [])[i]
                                if i < n_recs else None)
                     cr_i    = cat_rows[i] if i < n_cats else None
@@ -4951,14 +4961,6 @@ class ScenarioTablePanel(QWidget):
         _span_col(self._C_ORS, lambda r: _meta(r, 1))
         logging.info('_apply_spans: J4 — ORS column spanned')
 
-        # Consequence-level columns: group by (cons_id, cat_id) so each
-        # category assessment forms its own span group
-        def _cat_key(r):
-            cons_id  = _meta(r, 2)
-            cat_info = self._row_cat_info[r] if r < len(self._row_cat_info) else None
-            cat_id   = cat_info[0] if cat_info else None
-            return (cons_id, cat_id)
-
         # KON and LOPA always span by consequence. REK spans too while it
         # has zero or one entry; two or more entries keep their own rows.
         for col in (self._C_KON, self._C_LOPA):
@@ -4974,11 +4976,15 @@ class ScenarioTablePanel(QWidget):
             lambda r: (_meta(r, 2) if rec_counts.get(_meta(r, 2), 0) <= 1 else None))
         logging.info('_apply_spans: J5 — KON/LOPA/REK columns spanned')
 
-        # RFORE, SLUT: span by (cons_id, cat_id)
-        # → non-category rows all merge; per-category rows each stay separate
+        # RFORE and SLUT are consequence-level risk matrices.  Category
+        # assessments are edited through the consequence popup and must not
+        # shorten the visible risk-matrix block.
         for col in (self._C_RFORE, self._C_SLUT):
-            _span_col(col, _cat_key)
-        logging.info('_apply_spans: J6 — RFORE/SLUT columns spanned, done')
+            _span_col(col, lambda r: _meta(r, 2))
+        # Safeguards have their own independent row blocks.  Repeated ids
+        # are intentional when the shared grid is taller than the list.
+        _span_col(self._C_SG, lambda r: _meta(r, 3))
+        logging.info('_apply_spans: J6 — RFORE/SLUT/SG columns spanned, done')
 
     def _compute_row_height(self, row, fm=None):
         """The height `row` needs across EVERY column that can affect it —

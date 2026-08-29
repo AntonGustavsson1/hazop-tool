@@ -2964,6 +2964,73 @@ class KonCellCategoryBadgeMovedToRiskMatrixTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_categories_do_not_create_independent_safeguard_rows(self):
+        """Risk categories and safeguards use separate visual spans.
+
+        Two category assessments must not leave a fake empty safeguard row,
+        and the risk columns must remain as tall as the complete consequence
+        block when several safeguards are present.
+        """
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(cause_id, likelihood=3)
+        cons_id = self.db.add_consequence(cause_id)
+        cats = self.db.consequence_categories()
+        self.assertGreaterEqual(len(cats), 1)
+        self.db.set_consequence_severity(cons_id, cats[0]['id'], 3)
+        if len(cats) == 1:
+            second_cat = self.db.add_category('Testkategori')
+            cats = self.db.consequence_categories()
+            self.db.set_consequence_severity(cons_id, second_cat, 4)
+        else:
+            self.db.set_consequence_severity(cons_id, cats[1]['id'], 4)
+        sg_ids = [self.db.add_safeguard(cons_id) for _ in range(3)]
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            rows = [r for r, meta in enumerate(panel._row_meta)
+                    if meta[2] == cons_id]
+            self.assertEqual(len(rows), 3)
+            self.assertEqual(panel._table.rowSpan(rows[0], panel._C_RFORE), 3)
+            self.assertEqual(panel._table.rowSpan(rows[0], panel._C_SLUT), 3)
+            self.assertEqual(
+                [panel._row_meta[r][3] for r in rows], sg_ids)
+            self.assertEqual(
+                [panel._table.rowSpan(r, panel._C_SG) for r in rows], [1, 1, 1])
+        finally:
+            panel.deleteLater()
+
+    def test_one_safeguard_spans_category_rows_without_blank_safeguard(self):
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(cause_id, likelihood=3)
+        cons_id = self.db.add_consequence(cause_id)
+        first_cat = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(cons_id, first_cat['id'], 3)
+        sg_id = self.db.add_safeguard(cons_id)
+        cats = self.db.consequence_categories()
+        if len(cats) == 1:
+            cat_id = self.db.add_category('Testkategori')
+        else:
+            cat_id = cats[1]['id']
+        self.db.set_consequence_severity(cons_id, cat_id, 4)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            rows = [r for r, meta in enumerate(panel._row_meta)
+                    if meta[2] == cons_id]
+            self.assertEqual(len(rows), 2)
+            self.assertEqual([panel._row_meta[r][3] for r in rows], [sg_id, sg_id])
+            self.assertEqual(panel._table.rowSpan(rows[0], panel._C_SG), 2)
+            self.assertEqual(panel._table.rowSpan(rows[0], panel._C_RFORE), 2)
+        finally:
+            panel.deleteLater()
+
 
 class TooltipContrastTests(unittest.TestCase):
     """Tooltip appearance is application-global, never copied into local QSS."""

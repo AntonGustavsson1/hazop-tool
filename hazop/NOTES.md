@@ -2,6 +2,13 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Riskmatris: kategorier frikopplade frÃ¥n safeguards (2026-08-29)
+
+Konsekvenskategorier skapar inte lÃ¤ngre tomma safeguard-rader. Riskkolumnerna
+RFORE/SLUT spÃ¤nner hela konsekvensblocket medan safeguards fÃ¥r egna
+sammanhÃ¤ngande span-block. DÃ¤rmed krymper inte riskmatrisens synliga hÃ¶jd nÃ¤r
+flera safeguards lÃ¤ggs till.
+
 ## Orsak skapas direkt i inline-redigeraren (2026-08-29)
 
 Den tidigare kombinerade dialogen `CauseObjectPopup` (upplevd som "Orsak på
