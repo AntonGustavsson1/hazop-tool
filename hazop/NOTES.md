@@ -1,5 +1,12 @@
 # NOTES.md — Beslut och kontext
 
+## Riskmatrispopup i samma minimalistiska stil (2026-08-29)
+
+RiskMatrixPopup använder nu vit bakgrund och 1 px mörkgrå ram, och den
+separata Avbryt-knappen är borttagen. Popupens automatiska stängning vid
+val eller klick utanför är oförändrad. RRF-popupen är en separat funktion
+och har därför inte ändrats i detta steg.
+
 ## Frekvenspopup i samma minimalistiska stil (2026-08-29)
 
 Frekvenspopupen använder nu samma vita bakgrund och 1 px mörkgrå ram som

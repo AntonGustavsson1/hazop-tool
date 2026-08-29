@@ -450,6 +450,11 @@ class RiskMatrixPopup(QDialog):
         # every outcome already flows through the selection_made signal.
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setObjectName("riskMatrixPopup")
+        self.setStyleSheet(
+            "QWidget#riskMatrixPopup{background:#FFFFFF;"
+            "border:1px solid #4B5563;border-radius:3px;}")
 
         cfg       = get_matrix()
         n_cons    = cfg.get('rows', 5)
@@ -606,10 +611,6 @@ class RiskMatrixPopup(QDialog):
             outer.addLayout(grid)
             if self._category_mode:
                 self._build_category_section(outer)
-
-        cancel_btn = QPushButton("Avbryt")
-        cancel_btn.clicked.connect(self.reject)
-        outer.addWidget(cancel_btn)
 
         self.adjustSize()
 

@@ -2695,7 +2695,7 @@ class RiskMatrixPopupHoverStyleTests(unittest.TestCase):
 
 
 class RiskMatrixPopupDismissalTests(unittest.TestCase):
-    """"Riskmatrisens popup ska stängas både med Avbryt och när användaren
+    """"Riskmatrisens popup ska stängas när användaren
     klickar utanför popupen" (2026-08-26). Switched from an application-
     modal QDialog shown via exec() to Qt.WindowType.Popup shown via
     show() -- the same window type QMenu/QComboBox use for their own
@@ -2715,16 +2715,16 @@ class RiskMatrixPopupDismissalTests(unittest.TestCase):
         finally:
             popup.deleteLater()
 
-    def test_cancel_button_closes_the_popup(self):
+    def test_has_no_cancel_button_and_uses_compact_popup_frame(self):
         from hazop import RiskMatrixPopup
         from PyQt6.QtWidgets import QPushButton
         popup = RiskMatrixPopup(current_freq=2, current_cons=3)
         try:
-            popup.show()
-            self.assertTrue(popup.isVisible())
-            cancel_btn = next(b for b in popup.findChildren(QPushButton) if b.text() == 'Avbryt')
-            cancel_btn.click()
-            self.assertFalse(popup.isVisible())
+            self.assertFalse(any(b.text() == 'Avbryt'
+                                 for b in popup.findChildren(QPushButton)))
+            self.assertIn("border:1px solid #4B5563", popup.styleSheet())
+            self.assertEqual(popup.objectName(), "riskMatrixPopup")
+            self.assertTrue(popup.testAttribute(Qt.WidgetAttribute.WA_StyledBackground))
         finally:
             popup.deleteLater()
 
