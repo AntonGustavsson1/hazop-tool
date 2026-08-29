@@ -1,5 +1,13 @@
 # NOTES.md — Beslut och kontext
 
+## Riskmatrisens kategorier delar konsekvensblocket (2026-08-29)
+
+När en konsekvens har flera kategorier fördelas de över det fysiska
+radutrymmet. Två kategorier ger därför två separata riskmatrisceller i både
+RFORE och SLUT. Om konsekvensen samtidigt har flera safeguards delar
+kategorierna på den totala höjden utan att skapa falska safeguard-rader;
+konsekvens- och safeguard-kolumnerna behåller sina egna span-regler.
+
 ## Objekttagg visas på varje orsaksrad (2026-08-29)
 
 Objekttaggen i orsaksfältet döljs inte längre på en rad bara för att samma

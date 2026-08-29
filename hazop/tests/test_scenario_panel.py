@@ -2994,8 +2994,10 @@ class KonCellCategoryBadgeMovedToRiskMatrixTests(unittest.TestCase):
             rows = [r for r, meta in enumerate(panel._row_meta)
                     if meta[2] == cons_id]
             self.assertEqual(len(rows), 3)
-            self.assertEqual(panel._table.rowSpan(rows[0], panel._C_RFORE), 3)
-            self.assertEqual(panel._table.rowSpan(rows[0], panel._C_SLUT), 3)
+            self.assertEqual(panel._table.rowSpan(rows[0], panel._C_RFORE), 1)
+            self.assertEqual(panel._table.rowSpan(rows[1], panel._C_RFORE), 2)
+            self.assertEqual(panel._table.rowSpan(rows[0], panel._C_SLUT), 1)
+            self.assertEqual(panel._table.rowSpan(rows[1], panel._C_SLUT), 2)
             self.assertEqual(
                 [panel._row_meta[r][3] for r in rows], sg_ids)
             self.assertEqual(
@@ -3027,7 +3029,8 @@ class KonCellCategoryBadgeMovedToRiskMatrixTests(unittest.TestCase):
             self.assertEqual(len(rows), 2)
             self.assertEqual([panel._row_meta[r][3] for r in rows], [sg_id, sg_id])
             self.assertEqual(panel._table.rowSpan(rows[0], panel._C_SG), 2)
-            self.assertEqual(panel._table.rowSpan(rows[0], panel._C_RFORE), 2)
+            self.assertEqual(panel._table.rowSpan(rows[0], panel._C_RFORE), 1)
+            self.assertEqual(panel._table.rowSpan(rows[1], panel._C_RFORE), 1)
         finally:
             panel.deleteLater()
 

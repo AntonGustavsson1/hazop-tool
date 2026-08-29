@@ -4852,7 +4852,15 @@ class ScenarioTablePanel(QWidget):
                         sg_i = sgs[sg_index]
                     rec_i   = (acts_by_cons.get(cons_d['id'], [])[i]
                                if i < n_recs else None)
-                    cr_i    = cat_rows[i] if i < n_cats else None
+                    # Categories and safeguards use the same physical row
+                    # grid, but remain independent. Spread the category
+                    # assessments across that grid so two categories become
+                    # two visible risk rows even when one category spans more
+                    # than one safeguard row.
+                    cat_i = (min(n_cats - 1,
+                                 (i * n_cats + n_rows - 1) // n_rows)
+                             if n_cats else None)
+                    cr_i    = cat_rows[cat_i] if cat_i is not None else None
                     cat_info_i = ((cr_i['category_id'], cr_i['id'],
                                    cr_i['name'], cr_i['severity'])
                                   if cr_i else None)
@@ -4981,11 +4989,21 @@ class ScenarioTablePanel(QWidget):
             lambda r: (_meta(r, 2) if rec_counts.get(_meta(r, 2), 0) <= 1 else None))
         logging.info('_apply_spans: J5 — KON/LOPA/REK columns spanned')
 
-        # RFORE and SLUT are consequence-level risk matrices.  Category
-        # assessments are edited through the consequence popup and must not
-        # shorten the visible risk-matrix block.
+        # RFORE and SLUT follow the category rows. With two category
+        # assessments the risk block therefore visibly splits into two
+        # cells; if the consequence also needs more safeguard rows, each
+        # category occupies its share of that same total height.
+        def _risk_key(r):
+            cons_id = _meta(r, 2)
+            cat_info = (self._row_cat_info[r]
+                        if r < len(self._row_cat_info) else None)
+            if cons_id is None:
+                return None
+            if cat_info is None:
+                return ('consequence', cons_id)
+            return ('category', cons_id, cat_info[1])
         for col in (self._C_RFORE, self._C_SLUT):
-            _span_col(col, lambda r: _meta(r, 2))
+            _span_col(col, _risk_key)
         # Safeguards have their own independent row blocks.  Repeated ids
         # are intentional when the shared grid is taller than the list.
         _span_col(self._C_SG, lambda r: _meta(r, 3))
