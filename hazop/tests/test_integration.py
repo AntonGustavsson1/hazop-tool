@@ -3682,6 +3682,35 @@ class PlusRowQuickAddTaggingTests(unittest.TestCase):
                               win.db.consequences(causes[0]['id']))  # sanity: no crash
             self.assertEqual(len(win.db.consequences(causes[0]['id'])), 1)
 
+    def test_object_chosen_in_empty_cause_popup_matches_tree_drop_identity(self):
+        """A catalogue tag picked in an empty ORS popup must be a real object
+        link, not only copied text. This mirrors a P&ID marker dropped onto
+        the same deviation: the cause and (when unset) deviation point to the
+        catalogue row, and the generated consequence is ready for editing."""
+        from PyQt6.QtWidgets import QDialog
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            equipment_id = win.db.add_equipment_item(
+                'P-101', 'P-101', 'P', 0, 'Pump', '', 0)
+
+            def _fake_exec(self):
+                # The popup may have initially inferred a different type;
+                # the selected catalogue object remains authoritative.
+                self.committed.emit('Övrigt', 'P-101', '', None)
+                return QDialog.DialogCode.Accepted
+
+            with unittest.mock.patch.object(hazop.CauseObjectPopup, 'exec', new=_fake_exec):
+                panel._quick_add_cause(dev_id)
+
+            cause = win.db.causes_for_deviation(dev_id)[0]
+            self.assertEqual(cause['equipment_id'], equipment_id)
+            self.assertEqual(cause['comp_tag'], 'P-101')
+            self.assertEqual(cause['comp_type'], 'Pump')
+            self.assertEqual(win.db.get_deviation(dev_id)['equipment_id'], equipment_id)
+            self.assertEqual(len(win.db.consequences(cause['id'])), 1)
+
     def test_add_consequence_via_plus_row_creates_blank_row_no_popup(self):
         with _TempDbMainWindow() as win:
             panel = win.scenario_panel
@@ -7439,6 +7468,8 @@ class StandardCauseContextTests(unittest.TestCase):
         self.assertEqual(saved['comp_type'], object_type)
         self.assertEqual(saved['comp_tag'], 'PV-901')
         self.assertEqual(saved['description'], 'fails to close')
+        self.assertEqual(self.db.get_deviation(deviation_id)['equipment_id'],
+                         equipment_id)
         other_equipment_id = self.db.add_equipment_item(
             'PV-902', 'PV-902', 'PV', 0, object_type, '', 0)
         self.assertFalse(self.panel._bind_recognized_cause_equipment(

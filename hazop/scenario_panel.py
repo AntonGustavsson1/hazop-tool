@@ -7178,6 +7178,8 @@ class ScenarioTablePanel(QWidget):
         # Do all DB writes first — learning is handled inside update_cause
         self.db.update_cause(cause_id, comp_type=comp_type, comp_tag=comp_tag,
                               equipment_id=equipment_id)
+        if equipment_id is not None:
+            self._adopt_deviation_equipment(cause.get('deviation_id'), equipment_id)
         if description:
             kwargs = {'description': description}
             if frequency is not None:
@@ -7802,10 +7804,25 @@ class ScenarioTablePanel(QWidget):
             current_description='', deviation_id=deviation_id, parent=self)
 
         def _on_committed(comp_type, comp_tag, description, frequency):
+            # A tag chosen from the popup's object completer is not merely
+            # text: when it resolves to a catalogue object it must carry the
+            # same durable identity as a P&ID-to-tree drop. Otherwise this
+            # creation route loses the equipment link, the deviation's object
+            # context, and therefore the standard-cause context on the first
+            # inline edit after creation.
+            selected_equipment = self.db.get_equipment_by_tag(
+                (comp_tag or '').strip()) if (comp_tag or '').strip() else None
+            if selected_equipment:
+                comp_tag = selected_equipment.get('tag') or comp_tag
+                comp_type = selected_equipment.get('equipment_type') or comp_type
+                self._adopt_deviation_equipment(
+                    deviation_id, selected_equipment['id'])
             new_id = self.db.add_cause(deviation_id)
             self.db.update_cause(new_id, comp_type=comp_type, comp_tag=comp_tag,
                                   description=description or '',
-                                  base_frequency=frequency)
+                                  base_frequency=frequency,
+                                  equipment_id=(selected_equipment['id']
+                                                if selected_equipment else None))
             cons_id = self.db.add_consequence(new_id)
             # Jump straight to the new consequence's KON cell (not the cause's
             # own ORS cell) — the cause's description was already chosen in
@@ -7954,6 +7971,14 @@ class ScenarioTablePanel(QWidget):
         selected = min(matches, key=lambda candidate: candidate[:2], default=None)
         return selected[2] if selected else None
 
+    def _adopt_deviation_equipment(self, deviation_id, equipment_id):
+        """Give an unbound deviation the first selected cause object's context."""
+        if deviation_id is None or equipment_id is None:
+            return
+        deviation = self.db.get_deviation(deviation_id)
+        if deviation and deviation.get('equipment_id') is None:
+            self.db.set_deviation_equipment(deviation_id, equipment_id)
+
     def _bind_recognized_cause_equipment(self, cause_id, equipment_id):
         """Persist a recognised object only for an unlinked ordinary cause."""
         cause = self.db.get_cause(cause_id)
@@ -7966,6 +7991,7 @@ class ScenarioTablePanel(QWidget):
         self.db.update_cause(
             cause_id, comp_type=equipment.get('equipment_type') or '',
             comp_tag=equipment.get('tag') or '', equipment_id=equipment_id)
+        self._adopt_deviation_equipment(cause.get('deviation_id'), equipment_id)
         return True
 
     def _strip_leading_recognized_tag(self, text, equipment):

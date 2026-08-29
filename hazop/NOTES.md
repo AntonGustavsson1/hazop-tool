@@ -2,6 +2,18 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Objektval i tom orsakscell matchar P&ID-dragning (2026-08-29)
+
+När en användare väljer en katalogtagg i popupen för en tom ORS-cell slås
+taggen upp innan orsaken sparas. En träff sparar nu objektets kanoniska tagg,
+typ och `causes.equipment_id`; om avvikelsen saknar objekt får den samtidigt
+samma `deviations.equipment_id`. Samma regel används när en igenkänd tagg
+binds i inline-redigeraren eller väljs från objektfältet på en befintlig
+orsak. Ett redan valt avvikelseobjekt skrivs aldrig över av en senare orsak.
+
+Det gör att popupval, fritext med igenkänd tagg och P&ID-dragning ger samma
+objektkontext och samma standardorsaker.
+
 ## Konsekvenskedjans femkolumnspopup avvecklad (2026-08-29)
 
 Den tidigare dialogen `Konsekvenskedja — Del 1–5` är borttagen från alla
