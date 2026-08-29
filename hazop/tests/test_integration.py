@@ -7522,6 +7522,63 @@ class StandardCauseContextTests(unittest.TestCase):
         self.assertEqual(self.db.get_cause(cause_id)['equipment_id'], equipment_id)
         editor.deleteLater()
 
+    def test_selecting_standard_cause_after_tag_completion_keeps_tag_prefix(self):
+        """The object suggestion and standard-cause picker form one edit.
+
+        Selecting ``TAG-123`` must bind that object and selecting its
+        standard cause must save only the cause description.  The rebuilt
+        cell must consequently paint ``TAG-123, <standard cause>`` rather
+        than losing the object identity while the description is refreshed.
+        """
+        suffix = os.path.basename(self._tmpdir)
+        deviation_text = f'Tag completion deviation {suffix}'
+        object_type = f'Tag completion object {suffix}'
+        tag = 'TAG-123'
+        cause_text = 'Felar stängd'
+        node_id = self.db.add_node()
+        deviation_id = self.db.get_or_create_deviation(node_id, deviation_text)
+        standard_deviation_id = self.db.add_standard_deviation(deviation_text)
+        standard_object_id = self.db.add_standard_object(object_type)
+        self.db.add_standard_cause_with_object(
+            standard_deviation_id, standard_object_id, cause_text)
+        equipment_id = self.db.add_equipment_item(
+            tag, tag, 'TAG', 0, object_type, '', 0)
+        cause_id = self.db.add_cause(deviation_id)
+
+        self.panel.resize(900, 500)
+        self.panel.show()
+        self.panel.load_node(node_id)
+        row = next(r for r, meta in enumerate(self.panel._row_meta)
+                   if meta[1] == cause_id)
+        index = self.panel._table.model().index(row, self.panel._C_ORS)
+        self.panel._table.setCurrentIndex(index)
+        self.panel._table.edit(index)
+        QTest.qWait(20)
+
+        from scenario_panel import _BoldTagTextEdit, StandardCauseSuggestPopup
+        editors = self.panel._table.viewport().findChildren(_BoldTagTextEdit)
+        editor = next(e for e in editors if e.property('editing_row') == row)
+        editor.setText(tag)
+        editor.setProperty('typed_cause_object_serial', 1)
+        self.panel._pid_delegate._refresh_typed_cause_object(
+            lambda: editor, 1, row, self.panel._table.visualRect(index))
+        popups = self.panel.window().findChildren(StandardCauseSuggestPopup)
+        popup = next(p for p in popups
+                     if p._editor is editor and p._equipment_id == equipment_id)
+
+        popup._pick(cause_text)
+        QTest.qWait(40)
+
+        saved = dict(self.db.get_cause(cause_id))
+        self.assertEqual(saved['equipment_id'], equipment_id)
+        self.assertEqual(saved['comp_tag'], tag)
+        self.assertEqual(saved['description'], cause_text)
+        row = next(r for r, meta in enumerate(self.panel._row_meta)
+                   if meta[1] == cause_id)
+        item = self.panel._table.item(row, self.panel._C_ORS)
+        rendered = self.panel._ors_combined_text(item, item.text())
+        self.assertIn(f'{tag}, {cause_text}', rendered)
+
 
 class RecommendationPhysicalRowTests(RecommendationColumnTests):
     def test_each_recommendation_has_its_own_row_without_a_trailing_blank_row(self):

@@ -2,6 +2,18 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Standardorsak efter inline-objektval behåller taggen (2026-08-29)
+
+När en användare först väljer en igenkänd tagg i en tom eller fritextbaserad
+orsakscell och därefter väljer en standardorsak, binds objektet först till
+orsaken och beskrivningen sparas sedan som enbart standardorsakstexten.
+Efter sparningen görs nu en uppskjuten omritning när objektbindningen faktiskt
+ändrades. Detta uppdaterar cellens objektmetadata och gör att den alltid visas
+som `TAG-123, Felar stängd` (med eventuellt befintligt ordningsnummer), i stället
+för att bara visa standardorsaken tills nästa manuella uppdatering.
+
+Regressionstest: `StandardCauseContextTests.test_selecting_standard_cause_after_tag_completion_keeps_tag_prefix`.
+
 ## Kompakt R-numrering efter borttagning (2026-08-29)
 
 Rekommendationernas interna `id` är nu uttryckligen skilt från det synliga

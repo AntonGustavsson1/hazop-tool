@@ -3191,8 +3191,9 @@ class StandardCauseSuggestPopup(QWidget):
         the fast "pick and you're done" path, not "just fill the field
         and keep editing"), same commitData/closeEditor emit pattern
         the Enter key already uses (eventFilter(), scenario_panel.py)."""
+        equipment_bound = False
         if self._equipment_id is not None:
-            self._panel._bind_recognized_cause_equipment(
+            equipment_bound = self._panel._bind_recognized_cause_equipment(
                 self._cause_id, self._equipment_id)
         self._editor.setText(description)
         delegate = self._panel._pid_delegate
@@ -3200,6 +3201,14 @@ class StandardCauseSuggestPopup(QWidget):
         delegate.closeEditor.emit(
             self._editor, QStyledItemDelegate.EndEditHint.NoHint)
         self.close()
+        # Binding a tag changes the cell's identity metadata (the bold
+        # ``TAG-123, `` prefix), not only its description.  The regular
+        # description fast path deliberately leaves that metadata alone, so
+        # refresh once the editor has committed its selected text.  Deferring
+        # this until after commitData guarantees the rebuilt cell contains
+        # both parts: ``TAG-123, Felar stängd``.
+        if equipment_bound:
+            QTimer.singleShot(0, self._panel._schedule_rebuild)
 
     def _edit_frequency(self):
         """Commit any not-yet-confirmed description text FIRST — clicking
