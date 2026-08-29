@@ -5676,16 +5676,16 @@ class ScenarioTablePanel(QWidget):
         return QPoint(max(scr.left(), x), max(scr.top(), y))
 
     def _open_chain_editor(self, cons_id: int, label_widget=None):
-        """Open the consequence step picker dialog; refresh the cell on accept."""
-        dev, comp, cause_tx = self._get_cons_context(cons_id)
-        dlg = ConsequenceStepPickerDialog(
-            self.db, cons_id,
-            deviation=dev, comp_type=comp, cause_text=cause_tx,
-            parent=self)
-        dlg.move(self._pos_near_cons_row(cons_id, dlg.sizeHint()))
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            # Rebuild risk cells (description changed)
-            self._schedule_rebuild()
+        """Compatibility entry point for the retired five-column dialog.
+
+        A few older callers still ask to "open the consequence editor" by
+        this name.  They must now get the ordinary KON inline editor, never a
+        separate consequence-chain workflow.
+        """
+        for row, meta in enumerate(self._row_meta):
+            if meta[2] == cons_id:
+                self._try_start_edit(row, self._C_KON)
+                return
 
     def _refresh_recommendation_cell(self, cons_id):
         """Fast in-place patch of every row's REK cell for cons_id,
@@ -6158,11 +6158,9 @@ class ScenarioTablePanel(QWidget):
                 self._double_click_edit = None
                 return
         group_line = None
-        # Double-click starts inline edit — consistent across ORS/KON/SG
-        # (reported feedback: KON used to open the "Konsekvenskedja" wizard
-        # instead, which felt out of place and inconsistent with ORS/SG's
-        # plain edit-in-place). The chain wizard remains reachable via the
-        # right-click context menu (_open_chain_editor, unchanged there).
+        # Double-click starts inline edit — consistent across ORS/KON/SG.
+        # The former five-column consequence-chain dialog has no active UI
+        # path; a consequence is edited exactly like the adjacent text cells.
         if col in (self._C_ORS, self._C_KON, self._C_SG, self._C_REK):
             if col == self._C_ORS and row < len(self._row_meta):
                 cause_id = self._row_meta[row][1]
@@ -8235,9 +8233,8 @@ class ScenarioTablePanel(QWidget):
     def _try_start_edit(self, row, col):
         # _C_KON added 2026-08-07 (see NOTES.md "Klicka direkt på
         # konsekvens") — the commit path (_on_cell_changed_inner's
-        # 'consequence' branch) already existed and worked; only the
-        # trigger was missing. Double-click still opens the step-by-step
-        # chain wizard (_open_chain_editor) for anyone who wants that.
+        # 'consequence' branch) already existed and worked; only the trigger
+        # was missing. All consequence editing now uses this inline route.
         # _C_REK added 2026-08-26 (see NOTES.md "Redigera
         # rekommendationer direkt i HAZOP Scenario").
         if row < 0 or col not in (self._C_ORS, self._C_SG, self._C_KON, self._C_REK):
@@ -8730,8 +8727,8 @@ class ScenarioTablePanel(QWidget):
             k = self.db.get_consequence(cons_id)
             k_desc = dict(k).get('description', '?')[:40] if k else '?'
             menu.addSection(_icon('warning'), f"Konsekvens: {k_desc}")
-            a_chain = menu.addAction(_icon('clipboard'), "Redigera konsekvenskedja (Del1–Del5)…")
-            a_chain.triggered.connect(lambda: self._open_chain_editor(cons_id))
+            menu.addAction(_icon('edit'), "Redigera",
+                           lambda: self._try_start_edit(row, self._C_KON))
             a_dup = menu.addAction(_icon('document'), "Duplicera konsekvens (med barriärer)")
             a_dup.triggered.connect(
                 lambda: self._duplicate_consequence(cons_id, cause_id))

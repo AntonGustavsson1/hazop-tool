@@ -7516,6 +7516,24 @@ class EmptyScenarioCellDoubleClickTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_legacy_consequence_chain_entry_uses_inline_editor(self):
+        """No caller may reopen the retired five-column consequence popup."""
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, meta in enumerate(panel._row_meta)
+                       if meta[2] == cons_id)
+            with unittest.mock.patch.object(panel, '_try_start_edit') as inline_edit:
+                panel._open_chain_editor(cons_id)
+            inline_edit.assert_called_once_with(row, panel._C_KON)
+        finally:
+            panel.deleteLater()
+
 
 if __name__ == "__main__":
     unittest.main()

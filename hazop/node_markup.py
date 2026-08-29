@@ -645,7 +645,7 @@ class PropertiesRibbon(QWidget):
         if T == 3:   # CONS_T
             return [
                 "KONS.",
-                ("📋", "Redigera konsekvenskedja (Del1–Del5)", self._edit_cons_chain),
+                ("📝", "Redigera konsekvens",                 self._edit_cons_inline),
                 ("📊", "Sätt allvarlighet per kategori",      self._edit_cons_sev),
                 None,
                 ("📍", "Visa konsekvens på P&ID",            self._zoom_to_cons),
@@ -899,9 +899,10 @@ class PropertiesRibbon(QWidget):
                                     m['pid_page'], m['x'], m['y']))
 
     # ── CONSEQUENCE actions ───────────────────────────────────────────────────
-    def _edit_cons_chain(self, btn):
+    def _edit_cons_inline(self, btn):
+        """Open the shared consequence inline editor, not a separate wizard."""
         if not self._id or not self._mw: return
-        self._mw._open_consequence_step_picker(self._id)
+        self._mw._edit_consequence_inline(self._id)
 
     def _edit_cons_sev(self, btn):
         if not self._id or not self._mw: return

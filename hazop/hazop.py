@@ -1780,7 +1780,6 @@ class MainWindow(QMainWindow):
             # and schedule zoom_to_node() twice.
             lambda nid: (self.tree_panel.refresh(NODE_T, nid, emit_selection=False),
                          self._on_selected(NODE_T, nid)))
-        self.pid_panel.ref_tag_picked.connect(self._on_ref_tag_picked)
         def _on_cause_template_created(cid):
             # emit_selection=False + explicit load_node (2026-08-07
             # follow-up — same "kan inte lägga till konsekvens" bug class
@@ -2502,73 +2501,15 @@ class MainWindow(QMainWindow):
             # in the tree already does.
             self.scenario_panel.load_cause(last_cause_id)
 
-    def _open_consequence_step_picker(self, cons_id: int):
-        """Open ConsequenceStepPickerDialog after a new consequence is created on P&ID."""
-        logging.info('_open_consequence_step_picker: cons_id=%s', cons_id)
-        try:
-            cons = self.db.get_consequence(cons_id)
-            if not cons:
-                logging.warning('_open_consequence_step_picker: consequence %s not found in DB', cons_id)
-                return
-            cause = self.db.get_cause(cons['cause_id'])
-            dev_desc = comp = cause_tx = ''
-            if cause:
-                cause_d = dict(cause)
-                comp    = cause_d.get('comp_type', '') or ''
-                cause_tx = cause_d.get('description', '') or ''
-                dev_id  = cause_d.get('deviation_id')
-                if dev_id:
-                    dev = self.db.get_deviation(dev_id)
-                    if dev:
-                        dev_desc = dev['description'] or ''
-
-            initial_tag = ''
-            # If the consequence tag is known, look up the object type via
-            # smart recognition so the dialog can pre-select the right category.
-            if initial_tag and not comp:
-                comp = _lookup_comp_type_for_tag(initial_tag, self.db)
-            logging.info('_open_consequence_step_picker: creating dialog (dev=%r comp=%r tag=%r)', dev_desc, comp, initial_tag)
-
-            dlg = ConsequenceStepPickerDialog(
-                self.db, cons_id,
-                deviation=dev_desc, comp_type=comp, cause_text=cause_tx,
-                initial_ref_tag=initial_tag,
-                parent=self)
-            # Open next to the HAZOP scenario table's row for this consequence
-            # (falls back to the current cursor position if the row isn't
-            # visible in the table's current node/deviation/cause scope)
-            # instead of the OS's default centered placement.
-            dlg.move(self.scenario_panel.position_near_row(cons_id, dlg.sizeHint()))
-            self._active_step_picker = dlg
-            logging.info('_open_consequence_step_picker: calling dlg.exec()')
-            result = dlg.exec()
-            logging.info('_open_consequence_step_picker: dlg.exec() returned %s', result)
-            if result == QDialog.DialogCode.Accepted:
-                self._active_step_picker = None
-                logging.info('_open_consequence_step_picker: accepted — calling scenario_panel.rebuild()')
-                try:
-                    self.scenario_panel.rebuild()
-                    logging.info('_open_consequence_step_picker: _rebuild() done')
-                except Exception:
-                    logging.exception('_open_consequence_step_picker: CRASH in _rebuild()')
-            else:
-                logging.info('_open_consequence_step_picker: cancelled/rejected')
-                self._active_step_picker = None
-        except Exception:
-            logging.exception('_open_consequence_step_picker: CRASH')
-
-    def _on_ref_tag_picked(self, tag: str):
-        """Called when user clicks P&ID in MODE_PICK_REF_TAG — fill the waiting column."""
-        dlg = getattr(self, '_active_step_picker', None)
-        if dlg is None or not dlg.isVisible():
+    def _edit_consequence_inline(self, cons_id: int):
+        """Reveal *cons_id* and start the standard KON inline editor."""
+        if not self.db.get_consequence(cons_id):
             return
-        col_idx = getattr(dlg, '_waiting_col_idx', None)
-        if col_idx is not None and 0 <= col_idx < len(dlg._cols):
-            dlg._cols[col_idx]['ref_edit'].setText(tag)
-        dlg._waiting_col_idx = None
-        dlg.show()
-        dlg.raise_()
-        dlg.activateWindow()
+        self._switch_view(1)
+        self.tree_panel.refresh(CONS_T, cons_id, emit_selection=False)
+        self._on_selected(CONS_T, cons_id)
+        QTimer.singleShot(
+            0, lambda cid=cons_id: self.scenario_panel.select_item(CONS_T, cid))
 
     def _on_edit_node_markup(self, node_id):
         """Entered explicitly only — tree right-click → 'Editera

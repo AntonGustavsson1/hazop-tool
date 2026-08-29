@@ -2,6 +2,18 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Konsekvenskedjans femkolumnspopup avvecklad (2026-08-29)
+
+Den tidigare dialogen `Konsekvenskedja — Del 1–5` är borttagen från alla
+aktiva användarvägar. Högerklick på Konsekvens visar nu `Redigera`, som öppnar
+KON-cellens vanliga inline-redigerare. Samma gäller konsekvensknappen i
+egenskapsfältet: den växlar till aktuell konsekvens i HAZOP Scenario och
+startar inline-redigering i stället för en separat dialog. Den äldre
+kompatibilitetsmetoden pekar också på inline-redigering, så inga kvarvarande
+anrop kan öppna femkolumnsvyn. Klasskoden ligger tillfälligt inaktiv eftersom
+separata befintliga regressionstester fortfarande använder den direkt; den har
+ingen aktiv UI-koppling.
+
 ## Enhetlig dubbelklicksredigering och rekommendationsväljare (2026-08-29)
 
 Dubbelklick i Orsak, Konsekvens och Barriär betyder nu alltid att den
