@@ -328,6 +328,83 @@ def find_tag_bold_ranges(text: str, tags: list) -> list:
     return merged
 
 
+def find_bold_tag_at_position(text, tags, rect, point, base_font,
+                              word_wrap=True):
+    """Return the bold tag occurrence hit at *point*, if any.
+
+    The HAZOP table deliberately paints P&ID tags in bold inside otherwise
+    ordinary free text.  A cell-level click test is too broad: it would turn
+    normal editing into object editing.  This helper rebuilds the same
+    ``QTextLayout`` used by :func:`_draw_text_with_bold_tags` and accepts a
+    click only inside the actual bold glyph run.  The result contains the
+    displayed tag and its character range in *text*, which lets callers
+    replace the precise occurrence even when a tag appears more than once.
+    """
+    text = str(text or '')
+    if not text or not tags or not rect.contains(point):
+        return None
+    ranges = find_tag_bold_ranges(text, tags)
+    if not ranges:
+        return None
+
+    # A transient delegate can theoretically be called with no explicit
+    # FontRole.  Painting itself has the same safe fallback below.
+    font = QFont(base_font) if base_font is not None else QFont()
+    layout = QTextLayout(text, font)
+    option = QTextOption()
+    option.setWrapMode(QTextOption.WrapMode.WordWrap if word_wrap
+                       else QTextOption.WrapMode.NoWrap)
+    layout.setTextOption(option)
+
+    bold_font = QFont(font)
+    bold_font.setBold(True)
+    bold_fmt = QTextCharFormat()
+    bold_fmt.setFont(bold_font)
+    formats = []
+    for start, end in ranges:
+        fmt_range = QTextLayout.FormatRange()
+        fmt_range.start = start
+        fmt_range.length = end - start
+        fmt_range.format = bold_fmt
+        formats.append(fmt_range)
+    layout.setFormats(formats)
+
+    layout.beginLayout()
+    y = 0.0
+    lines = []
+    while True:
+        line = layout.createLine()
+        if not line.isValid():
+            break
+        line.setLineWidth(rect.width())
+        line.setPosition(QPointF(0, y))
+        lines.append(line)
+        y += line.height()
+        if not word_wrap:
+            break
+    layout.endLayout()
+
+    x = point.x() - rect.left()
+    y = point.y() - rect.top()
+    for line in lines:
+        line_top = line.position().y()
+        if not (line_top <= y < line_top + line.height()):
+            continue
+        line_start = line.textStart()
+        line_end = line_start + line.textLength()
+        for start, end in ranges:
+            start_in_line = max(start, line_start)
+            end_in_line = min(end, line_end)
+            if start_in_line >= end_in_line:
+                continue
+            # PyQt6 returns ``(x, cursor_position)`` from cursorToX().
+            left = line.cursorToX(start_in_line)[0]
+            right = line.cursorToX(end_in_line)[0]
+            if min(left, right) <= x <= max(left, right):
+                return {'tag': text[start:end], 'start': start, 'end': end}
+    return None
+
+
 def _draw_text_with_bold_tags(painter, rect, text, tags, base_font, color, word_wrap):
     """Draw `text` inside `rect`, rendering any whole-word occurrence of a
     member of `tags` in bold (2026-08-09, see NOTES.md "fetmarkera
@@ -337,6 +414,11 @@ def _draw_text_with_bold_tags(painter, rect, text, tags, base_font, color, word_
     cheap as the original code for every row that was never drag-tagged.
     `word_wrap=True` mirrors the KON column's multi-line wrapping;
     `word_wrap=False` mirrors the SG column's single-line elided text."""
+    # ``QTableWidgetItem`` is allowed to return no FontRole.  A recent real
+    # crash came from forwarding that ``None`` to QPainter.setFont() for an
+    # empty recommendation cell.  The active painter still has the table's
+    # font; a default QFont is the safe equivalent for this helper.
+    base_font = QFont(base_font) if base_font is not None else QFont()
     flags = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
     if word_wrap:
         flags |= Qt.TextFlag.TextWordWrap

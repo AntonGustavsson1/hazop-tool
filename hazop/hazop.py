@@ -1701,6 +1701,13 @@ class MainWindow(QMainWindow):
             lambda _type, _id: (self.tree_panel.refresh(),
                                 self.scenario_panel.refresh(),
                                 self.pid_panel.reload_overlays()))
+        # A renamed catalogue object is global state, not a local cell edit.
+        # Both table instances therefore refresh the other view, while P&ID
+        # and tree receive the same immediate overlay/label update regardless
+        # of which view the user happened to use for the popup.
+        self.worksheet.equipment_renamed.connect(self.pid_panel.reload_overlays)
+        self.worksheet.equipment_renamed.connect(self.tree_panel.refresh)
+        self.worksheet.equipment_renamed.connect(self.scenario_panel.refresh)
 
         self.tree_panel.equipment_dropped_on_deviation.connect(
             self._on_equipment_dropped_on_deviation)
@@ -1841,6 +1848,7 @@ class MainWindow(QMainWindow):
         # pick this up on its next unrelated rebuild), not just P&ID.
         self.scenario_panel.equipment_renamed.connect(self.pid_panel.reload_overlays)
         self.scenario_panel.equipment_renamed.connect(self.tree_panel.refresh)
+        self.scenario_panel.equipment_renamed.connect(self.worksheet.refresh)
         self.pid_panel.equipment_deviation_created.connect(self._on_equipment_deviation_created)
         self.pid_panel.pid_analysis_done.connect(self._on_pid_analysis_done)
         self.admin_panel._pid_mgmt.sheets_changed.connect(self._on_sheets_changed)

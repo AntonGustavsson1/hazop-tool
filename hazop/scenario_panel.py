@@ -33,10 +33,142 @@ from ui_helpers import (
     freq_axis_label, cons_axis_label, _lookup_comp_type_for_tag,
     _draw_text_with_bold_tags, standard_cause_options,
     total_freq_reduction, CHAIN_ITEMS, build_consequence_text, parse_chain_from_json,
+    find_bold_tag_at_position,
 )
 
 MAX_GROUP_OBJECTS = 20
 from tree_panel import CauseTagPopup, RRFPopup, FrequencyPickerPopup
+
+
+class _ObjectTagActionPopup(QDialog):
+    """Compact, explicit actions for a bold object tag in a HAZOP cell.
+
+    A bold tag is an object reference, not ordinary prose.  Keeping the two
+    possible actions separate prevents the old ambiguity where typing a tag
+    could either rename the current P&ID object or silently connect another
+    one with the same name.
+    """
+    object_selected = pyqtSignal(object)  # equipment_catalog row as dict
+    rename_requested = pyqtSignal(str)
+
+    def __init__(self, db, equipment, parent=None):
+        super().__init__(parent)
+        self._db = db
+        self._equipment = dict(equipment or {})
+        self.setWindowTitle('Redigera objekt')
+        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setObjectName('objectTagActionPopup')
+        self.setMinimumWidth(240)
+        self.setStyleSheet(
+            'QWidget#objectTagActionPopup{background:#FFFFFF;'
+            'border:1px solid #4B5563;border-radius:3px;}'
+            'QLabel{border:none;color:#17191C;}'
+            'QComboBox,QLineEdit{border:1px solid #B8BDC4;border-radius:2px;'
+            'padding:2px 5px;background:#FFFFFF;color:#17191C;}'
+            'QPushButton{border:1px solid #8D9299;border-radius:2px;'
+            'padding:3px 7px;background:#F5F5F3;color:#17191C;}'
+            'QPushButton:hover{background:#E8E9E6;}')
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 7, 8, 8)
+        layout.setSpacing(5)
+
+        heading = QLabel('Objekt')
+        heading.setStyleSheet('font-size:10px;font-weight:bold;')
+        layout.addWidget(heading)
+        tag = str(self._equipment.get('tag') or 'Objekt')
+        type_ = str(self._equipment.get('equipment_type') or 'Okänd typ')
+        current = QLabel(tag)
+        current.setStyleSheet('font-size:11px;font-weight:bold;')
+        layout.addWidget(current)
+        detail = QLabel(type_)
+        detail.setStyleSheet('font-size:9px;color:#6B7280;')
+        layout.addWidget(detail)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(4)
+        self._choose_btn = QPushButton('Byt objekt')
+        self._rename_btn = QPushButton('Byt namn')
+        actions.addWidget(self._choose_btn)
+        actions.addWidget(self._rename_btn)
+        layout.addLayout(actions)
+
+        self._object_combo = QComboBox()
+        self._object_combo.addItem('Välj objekt från objektdatabas …', None)
+        try:
+            for candidate in db.equipment_items():
+                candidate = dict(candidate)
+                candidate_tag = str(candidate.get('tag') or '').strip()
+                if not candidate_tag:
+                    continue
+                label = candidate_tag
+                if candidate.get('equipment_type'):
+                    label += f"  ·  {candidate['equipment_type']}"
+                self._object_combo.addItem(label, candidate)
+        except Exception:
+            pass
+        self._object_combo.hide()
+        layout.addWidget(self._object_combo)
+
+        self._rename_row = QWidget()
+        rename_layout = QHBoxLayout(self._rename_row)
+        rename_layout.setContentsMargins(0, 0, 0, 0)
+        rename_layout.setSpacing(4)
+        self._rename_edit = QLineEdit(tag)
+        self._rename_edit.setPlaceholderText('Ny tagg')
+        self._rename_save = QPushButton('Spara namn')
+        rename_layout.addWidget(self._rename_edit, 1)
+        rename_layout.addWidget(self._rename_save)
+        self._rename_row.hide()
+        layout.addWidget(self._rename_row)
+
+        hint = QLabel('Namnbyte uppdaterar objektet på P&ID och i HAZOP.')
+        hint.setWordWrap(True)
+        hint.setStyleSheet('font-size:9px;color:#6B7280;')
+        self._rename_hint = hint
+        hint.hide()
+        layout.addWidget(hint)
+
+        self._choose_btn.clicked.connect(self._show_object_picker)
+        self._rename_btn.clicked.connect(self._show_rename_editor)
+        self._object_combo.activated.connect(self._select_object)
+        self._rename_save.clicked.connect(self._request_rename)
+        self._rename_edit.returnPressed.connect(self._request_rename)
+
+    def _show_object_picker(self):
+        self._object_combo.setVisible(not self._object_combo.isVisible())
+        if self._object_combo.isVisible():
+            self._rename_row.hide()
+            self._rename_hint.hide()
+            self._object_combo.setFocus()
+        self.adjustSize()
+
+    def _show_rename_editor(self):
+        self._rename_row.setVisible(not self._rename_row.isVisible())
+        if self._rename_row.isVisible():
+            self._object_combo.hide()
+            self._rename_hint.show()
+            self._rename_edit.setFocus()
+            self._rename_edit.selectAll()
+        else:
+            self._rename_hint.hide()
+        self.adjustSize()
+
+    def _select_object(self, index):
+        equipment = self._object_combo.itemData(index)
+        if not equipment:
+            return
+        self.object_selected.emit(dict(equipment))
+        self.close()
+
+    def _request_rename(self):
+        tag = self._rename_edit.text().strip().upper()
+        if not tag:
+            return
+        self.rename_requested.emit(tag)
+        self.close()
 
 
 class _BoldTagLineEdit(QLineEdit):
@@ -3826,7 +3958,7 @@ class ScenarioTablePanel(QWidget):
     new_item_created           = pyqtSignal(int, int)   # (type_, id_) — after quick-add via Enter menu
     item_edited                = pyqtSignal(int, int)   # (type_, id_) — cell edit committed → sync right panel
     structure_changed          = pyqtSignal()           # item moved/deleted/duplicated → refresh tree
-    equipment_renamed          = pyqtSignal()           # an ORS tag edit renamed the linked equipment_catalog row
+    equipment_renamed          = pyqtSignal()           # a shared object-tag popup renamed a catalogue object
     bind_cause_to_pid_requested = pyqtSignal(int)      # choose an existing P&ID object
     bind_secondary_cause_to_pid_requested = pyqtSignal(int)  # group affected object
     place_cause_object_requested = pyqtSignal(int, str, str)  # cause_id, type, tag
@@ -7015,12 +7147,301 @@ class ScenarioTablePanel(QWidget):
         "single source of truth" claimed."""
         return QFontMetrics(base_font).height() + 4
 
+    @staticmethod
+    def _replace_tag_occurrence(text, old_tag, new_tag, offset=None):
+        """Replace one whole-tag occurrence, preferring the clicked offset."""
+        text = str(text or '')
+        old_tag = str(old_tag or '').strip()
+        new_tag = str(new_tag or '').strip()
+        if not old_tag or not new_tag:
+            return text
+        matches = list(re.finditer(
+            r'(?<![A-Za-z0-9])' + re.escape(old_tag) + r'(?![A-Za-z0-9])',
+            text, re.IGNORECASE))
+        if not matches:
+            return text
+        if offset is None:
+            match = matches[0]
+        else:
+            match = min(matches, key=lambda candidate:
+                        abs(candidate.start() - max(0, int(offset))))
+        return text[:match.start()] + new_tag + text[match.end():]
+
+    def _text_tag_click_context(self, row, col, point):
+        """Resolve a click in bold free text to one precise object reference.
+
+        ORS's primary/group identities have their own explicit geometry and
+        are handled by ``_show_cause_obj_popup``.  KON, SG and REK render
+        object tags inside free text, so they share this layout-driven path.
+        """
+        if row < 0 or row >= len(self._row_meta):
+            return None
+        item = self._table.item(row, col)
+        if item is None:
+            return None
+        index = self._table.model().index(row, col)
+        cell_rect = self._table.visualRect(index)
+        display = ''
+        rect = QRect(cell_rect)
+        kind = None
+        id_ = None
+        prefix_len = 0
+        cons_id = self._row_meta[row][2]
+
+        if col == self._C_ORS:
+            # The primary tag itself is handled earlier by the precise ORS
+            # prefix zone.  This path covers an additional catalogue object
+            # mentioned in the cause free text, without turning the cause's
+            # primary equipment link into that secondary reference.
+            group_tags = item.data(Qt.ItemDataRole.UserRole + 9) or []
+            if len(group_tags) >= 2:
+                return None
+            kind, id_ = 'cause_text', self._row_meta[row][1]
+            if id_ is None:
+                return None
+            description = item.text() or ''
+            display = self._ors_combined_text(item, description)
+            description_start = display.casefold().find(description.casefold())
+            if description_start < 0:
+                return None
+            prefix_len = description_start
+            rect = cell_rect.adjusted(2, 2, -2 - _RRF_W, -2)
+        elif col == self._C_KON:
+            kind, id_ = 'consequence', cons_id
+            if id_ is None:
+                return None
+            number = item.data(Qt.ItemDataRole.UserRole + 10)
+            if number:
+                prefix = f'{number}.  '
+                prefix_len = len(prefix)
+                display = prefix + (item.text() or '')
+            else:
+                display = item.text() or ''
+            rect = cell_rect.adjusted(2, 2, -2, -2)
+        elif col == self._C_SG:
+            kind, id_ = 'safeguard', self._row_meta[row][3]
+            if id_ is None:
+                return None
+            number = item.data(Qt.ItemDataRole.UserRole + 10)
+            if number:
+                prefix = f'{number}.  '
+                prefix_len = len(prefix)
+                display = prefix + (item.text() or '')
+            else:
+                display = item.text() or ''
+            rect = QRect(cell_rect.left(), cell_rect.top(),
+                         max(1, cell_rect.width() - _RRF_W), cell_rect.height())
+            rect = rect.adjusted(2, 1, -2, -1)
+        elif col == self._C_REK:
+            rec_id = (self._row_recommendation_ids[row]
+                      if row < len(self._row_recommendation_ids) else None)
+            if not cons_id or not rec_id:
+                return None
+            rec = self.db.get_recommendation(rec_id)
+            if not rec:
+                return None
+            kind, id_ = 'recommendation', rec_id
+            display = item.text() or ''
+            description = str(rec.get('description') or '')
+            description_start = display.casefold().find(description.casefold())
+            if description_start < 0:
+                return None
+            prefix_len = description_start
+            rect = cell_rect.adjusted(5, 2, -3, -2)
+        else:
+            return None
+
+        tags = self._matching_pid_tags(display)
+        hit = find_bold_tag_at_position(display, tags, rect, point,
+                                        self._table.font(), word_wrap=True)
+        if not hit:
+            return None
+        equipment = self.db.get_equipment_by_tag(hit['tag'])
+        if not equipment:
+            return None
+        return {
+            'kind': kind,
+            'id': id_,
+            'row': row,
+            'cons_id': cons_id,
+            'tag': hit['tag'],
+            'text_offset': max(0, hit['start'] - prefix_len),
+            'equipment': equipment,
+        }
+
+    def _show_object_tag_popup(self, context, global_pos):
+        """Show the shared object action popup for one resolved reference."""
+        equipment = context.get('equipment')
+        if not equipment:
+            return False
+        popup = _ObjectTagActionPopup(self.db, equipment, parent=self)
+        popup.object_selected.connect(
+            lambda selected, ctx=context: self._replace_object_reference(ctx, selected))
+        popup.rename_requested.connect(
+            lambda new_tag, eid=equipment.get('id'):
+                self._rename_object_from_popup(eid, new_tag))
+        popup.adjustSize()
+        screen = (QApplication.screenAt(global_pos) or
+                  QApplication.primaryScreen()).availableGeometry()
+        width, height = popup.sizeHint().width(), popup.sizeHint().height()
+        x, y = global_pos.x(), global_pos.y() - height - 6
+        if y < screen.top():
+            y = global_pos.y() + 6
+        x = max(screen.left() + 4, min(x, screen.right() - width - 4))
+        y = max(screen.top() + 4, min(y, screen.bottom() - height - 4))
+        popup.move(x, y)
+        popup.show()
+        popup.raise_()
+        return True
+
+    def _replace_object_reference(self, context, equipment):
+        """Apply an explicit ``Byt objekt`` choice without renaming anything."""
+        equipment = dict(equipment or {})
+        if not equipment.get('id') or not equipment.get('tag'):
+            return
+        kind = context.get('kind')
+        old_tag = context.get('tag') or ''
+        if kind == 'cause':
+            cause_id = context.get('id')
+            group_line = context.get('group_line')
+            if group_line is not None:
+                self._connect_group_cause_object(cause_id, group_line, equipment)
+                return
+            cause = self.db.get_cause(cause_id)
+            if not cause:
+                return
+            self.db.update_cause(
+                cause_id, comp_type=equipment.get('equipment_type') or '',
+                comp_tag=equipment.get('tag') or '', equipment_id=equipment['id'])
+            self._adopt_deviation_equipment(cause.get('deviation_id'), equipment['id'])
+            self.item_edited.emit(CAUSE_T, cause_id)
+            self._schedule_rebuild()
+            return
+
+        id_ = context.get('id')
+        offset = context.get('text_offset')
+        if kind == 'cause_text':
+            row = self.db.get_cause(id_)
+            if not row:
+                return
+            description = self._replace_tag_occurrence(
+                row.get('description') or '', old_tag, equipment['tag'], offset)
+            self.db.update_cause(id_, description=description)
+            self.item_edited.emit(CAUSE_T, id_)
+        elif kind == 'consequence':
+            row = self.db.get_consequence(id_)
+            if not row:
+                return
+            row = dict(row)
+            description = self._replace_tag_occurrence(
+                row.get('description') or '', old_tag, equipment['tag'], offset)
+            refs = self._matching_pid_tags(description)
+            active = refs[-1] if refs else ''
+            active_equipment = self.db.get_equipment_by_tag(active) if active else None
+            self.db.update_consequence(
+                id_, description, row.get('severity'), row.get('category') or '',
+                row.get('consequence_chain') or '', comp_tag=active,
+                comp_type=(active_equipment or {}).get('equipment_type') or '',
+                tagged_refs=','.join(refs))
+            self.item_edited.emit(CONS_T, id_)
+        elif kind == 'safeguard':
+            row = self.db.get_safeguard(id_)
+            if not row:
+                return
+            row = dict(row)
+            description = self._replace_tag_occurrence(
+                row.get('description') or '', old_tag, equipment['tag'], offset)
+            refs = self._matching_pid_tags(description)
+            active = refs[-1] if refs else ''
+            active_equipment = self.db.get_equipment_by_tag(active) if active else None
+            self.db.update_safeguard(id_, description=description,
+                                     tagged_refs=','.join(refs))
+            self.db.set_safeguard_tag(
+                id_, active,
+                (active_equipment or {}).get('equipment_type') or '')
+            self.item_edited.emit(SG_T, id_)
+        elif kind == 'recommendation':
+            row = self.db.get_recommendation(id_)
+            if not row:
+                return
+            description = self._replace_tag_occurrence(
+                row.get('description') or '', old_tag, equipment['tag'], offset)
+            self.db.update_recommendation(id_, description=description)
+            self.item_edited.emit(CONS_T, context.get('cons_id'))
+        else:
+            return
+        # A tag swap can change row wrapping, number references and the
+        # P&ID-context counters.  Rebuild once rather than patching several
+        # partially-overlapping row roles in place.
+        self._schedule_rebuild()
+
+    def _connect_group_cause_object(self, cause_id, group_line, equipment):
+        """Replace one group member while preserving all other group rows."""
+        cause = self.db.get_cause(cause_id)
+        if not cause:
+            return
+        cause = dict(cause)
+        equipment_ids = self._group_equipment_ids(cause)
+        if group_line < 0 or group_line >= len(equipment_ids):
+            return
+        old_equipment = self.db.get_equipment_by_id(equipment_ids[group_line])
+        old_tag = (old_equipment or {}).get('tag') or ''
+        equipment_ids[group_line] = equipment['id']
+        tags = []
+        for equipment_id in equipment_ids:
+            member = self.db.get_equipment_by_id(equipment_id) if equipment_id else None
+            tags.append((member or {}).get('tag') or 'Objekt')
+        lines = (cause.get('description') or '').splitlines()
+        if group_line < len(lines):
+            lines[group_line] = self._replace_tag_occurrence(
+                lines[group_line], old_tag, equipment['tag'], 0)
+        operator = self._group_operator_from_cause(cause)
+        primary = self.db.get_equipment_by_id(equipment_ids[0]) if equipment_ids else None
+        self.db.update_cause(
+            cause_id,
+            comp_type=(primary or {}).get('equipment_type') or cause.get('comp_type') or '',
+            comp_tag=f' {operator} '.join(tags),
+            equipment_id=equipment_ids[0] if equipment_ids else None,
+            secondary_equipment_id=(equipment_ids[1] if len(equipment_ids) > 1 else None),
+            group_equipment_ids=equipment_ids,
+            description='\n'.join(lines))
+        self.item_edited.emit(CAUSE_T, cause_id)
+        self._schedule_rebuild()
+
+    @staticmethod
+    def _group_operator_from_cause(cause):
+        match = re.search(r'\s(&|OR|<>|->|\+)\s',
+                          str((cause or {}).get('comp_tag') or ''), re.IGNORECASE)
+        if not match or match.group(1) == '+':
+            return '&'
+        return 'OR' if match.group(1).casefold() in ('<>', 'or') else match.group(1)
+
+    def _rename_object_from_popup(self, equipment_id, new_tag):
+        equipment = self.db.get_equipment_by_id(equipment_id)
+        if not equipment:
+            return
+        old_tag = (equipment.get('tag') or '').strip()
+        if old_tag.casefold() == str(new_tag or '').strip().casefold():
+            return
+        answer = QMessageBox.question(
+            self, 'Bekräfta namnbyte',
+            f'Byt namn på objektet från {old_tag} till {new_tag}?\n\n'
+            'Det uppdaterar P&ID-markören och aktuella HAZOP-referenser.',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.db.rename_equipment_and_references(equipment_id, new_tag)
+        except ValueError as error:
+            QMessageBox.warning(self, 'Kan inte byta namn', str(error))
+            return
+        self.equipment_renamed.emit()
+        self.structure_changed.emit()
+        self._schedule_rebuild()
+
     def _show_cause_obj_popup(self, row, cause_id, global_pos, group_line=None):
-        """A plain click on the ORS tag zone opens just a tag+type
-        popup (2026-08-14, see NOTES.md). CauseTagPopup has no OK button
-        (2026-08-18)
-        — it commits live and dismisses itself on Escape/outside click,
-        so it's shown non-modally instead of exec()'d."""
+        """Open the shared object popup for the clicked primary/group tag."""
         item      = self._table.item(row, self._C_ORS)
         group_tags = item.data(Qt.ItemDataRole.UserRole + 9) or [] if item else []
         group_operator = self._group_operator(item) if len(group_tags) >= 2 else None
@@ -7038,6 +7459,23 @@ class ScenarioTablePanel(QWidget):
             comp_tag = equipment.get('tag', '') if equipment else group_tags[group_line]
         else:
             comp_type, comp_tag = obj_data if obj_data else ('', '')
+            cause = self.db.get_cause(cause_id)
+            equipment_id = cause.get('equipment_id') if cause else None
+            equipment = self.db.get_equipment_by_id(equipment_id) if equipment_id else None
+            if equipment is None and comp_tag:
+                equipment = self.db.get_equipment_by_tag(comp_tag)
+
+        # The common case is a real catalogue object.  Use the same two
+        # explicit actions as KON/SG/REK so a plain tag click is never
+        # ambiguous between connecting a different object and renaming this
+        # one.  Keep the legacy compact type picker for an old/unlinked cause
+        # tag: it is still the only path that can define such a loose tag.
+        if equipment:
+            return self._show_object_tag_popup({
+                'kind': 'cause', 'id': cause_id, 'row': row,
+                'group_line': group_line, 'tag': equipment.get('tag') or comp_tag,
+                'equipment': equipment,
+            }, global_pos)
 
         popup = CauseTagPopup(
             self.db, comp_type, comp_tag, parent=self, cause_id=cause_id,
@@ -7850,6 +8288,18 @@ class ScenarioTablePanel(QWidget):
                         gp = self._table.viewport().mapToGlobal(pos)
                         self._show_rrf_popup_at(row, sg_id, gp)
                         return True
+
+            # Bold P&ID references embedded in KON, SG and REK free text
+            # have a much narrower hit target than the whole cell.  This
+            # deliberately runs after the RRF badge (and the ORS-specific
+            # frequency/comment/tag zones above), so it cannot steal any of
+            # the established actions from their visible controls.
+            if row >= 0 and col in (self._C_ORS, self._C_KON, self._C_SG, self._C_REK):
+                context = self._text_tag_click_context(row, col, pos)
+                if context:
+                    self._show_object_tag_popup(
+                        context, self._table.viewport().mapToGlobal(pos))
+                    return True
 
         # Delegate inline editor (regular cell in edit mode)
         if (isinstance(obj, (_BoldTagTextEdit, QLineEdit)) and

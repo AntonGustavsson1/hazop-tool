@@ -2286,6 +2286,84 @@ class Database:
             (tag, prefix, eq_type, desc, id_))
         self.commit()
 
+    def rename_equipment_and_references(self, equipment_id, new_tag):
+        """Rename one catalogue object and every visible HAZOP reference.
+
+        Object identity is the stable ``equipment_catalog.id``.  The tag is
+        also rendered inside free text in causes, consequences, safeguards
+        and recommendations, so changing the catalogue row alone leaves old,
+        no-longer-bold text behind.  This is the one explicit *global rename*
+        operation used by the HAZOP object popup: it updates marker labels and
+        whole-token HAZOP references in one SQLite transaction.
+
+        It intentionally does not touch standard-cause templates.  Those are
+        reusable library text, not occurrences in the active HAZOP study.
+        """
+        equipment = self.get_equipment_by_id(equipment_id)
+        if not equipment:
+            raise ValueError('Objektet finns inte längre i objektdatabasen.')
+        old_tag = str(equipment.get('tag') or '').strip()
+        new_tag = str(new_tag or '').strip().upper()
+        if not new_tag:
+            raise ValueError('Ange en tagg innan objektet byter namn.')
+        if not old_tag or old_tag.casefold() == new_tag.casefold():
+            return {'old_tag': old_tag, 'new_tag': new_tag, 'changed': 0}
+
+        duplicate = self.conn.execute(
+            "SELECT id FROM equipment_catalog WHERE UPPER(tag)=UPPER(?) AND id<>? LIMIT 1",
+            (new_tag, equipment_id)).fetchone()
+        if duplicate:
+            raise ValueError(f'Taggen {new_tag} används redan av ett annat objekt.')
+
+        pattern = re.compile(r'(?<![A-Za-z0-9])' + re.escape(old_tag) +
+                             r'(?![A-Za-z0-9])', re.IGNORECASE)
+
+        def replace_token(value):
+            return pattern.sub(new_tag, str(value or ''))
+
+        def replace_refs(value):
+            return ','.join(
+                new_tag if str(ref).strip().casefold() == old_tag.casefold()
+                else str(ref).strip()
+                for ref in parse_tag_refs(value or ''))
+
+        changes = 0
+        try:
+            self.conn.execute('BEGIN')
+            self.conn.execute("UPDATE equipment_catalog SET tag=? WHERE id=?",
+                              (new_tag, equipment_id))
+            self.conn.execute("UPDATE equipment_markers SET tag=? WHERE equipment_id=?",
+                              (new_tag, equipment_id))
+
+            for table, columns in (
+                ('causes', ('description', 'comp_tag')),
+                ('consequences', ('description', 'comp_tag', 'tagged_refs')),
+                ('safeguards', ('description', 'comp_tag', 'tagged_refs')),
+                ('recommendations', ('description',)),
+            ):
+                rows = self.conn.execute(
+                    f"SELECT id, {', '.join(columns)} FROM {table}").fetchall()
+                for row in rows:
+                    updates = {}
+                    for column in columns:
+                        old_value = row[column] or ''
+                        new_value = (replace_refs(old_value)
+                                     if column == 'tagged_refs'
+                                     else replace_token(old_value))
+                        if new_value != old_value:
+                            updates[column] = new_value
+                    if updates:
+                        assignments = ', '.join(f'{column}=?' for column in updates)
+                        self.conn.execute(
+                            f"UPDATE {table} SET {assignments} WHERE id=?",
+                            (*updates.values(), row['id']))
+                        changes += 1
+            self.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return {'old_tag': old_tag, 'new_tag': new_tag, 'changed': changes}
+
     def replace_equipment_tag_text(self, source, target):
         """Replace text in defined equipment tags and their marker labels.
 

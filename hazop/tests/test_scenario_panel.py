@@ -4412,5 +4412,163 @@ class InlineIdentityEditTests(unittest.TestCase):
         self.assertGreater(editor.cursorPosition(), 0)
 
 
+class CellObjectReferenceEditTests(unittest.TestCase):
+    """Bold object clicks use one explicit path for every scenario column."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='hazop_cell_object_edit_')
+        self.db = Database(path=os.path.join(self.tmpdir, 'project.db'))
+        from scenario_panel import ScenarioTablePanel
+        self.panel = ScenarioTablePanel(self.db)
+        self.node_id = self.db.add_node()
+        self.dev_id = self.db.deviations(self.node_id)[0]['id']
+        self.cause_id = self.db.add_cause(self.dev_id)
+        self.cons_id = self.db.add_consequence(self.cause_id)
+        self.sg_id = self.db.add_safeguard(self.cons_id)
+        self.old_id = self.db.add_equipment_item(
+            'PV-101', 'PV-101', 'PV', 1, 'Ventil', '', 0)
+        self.new_id = self.db.add_equipment_item(
+            'PV-102', 'PV-102', 'PV', 1, 'Ventil', '', 0)
+        self.new_equipment = self.db.get_equipment_by_id(self.new_id)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        self.db.conn.close()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_object_switch_replaces_clicked_text_reference_in_all_three_columns(self):
+        self.db.update_consequence(
+            self.cons_id, 'PV-101 stoppar flödet', 3,
+            comp_tag='PV-101', comp_type='Ventil', tagged_refs='PV-101')
+        self.db.update_safeguard(self.sg_id, description='PV-101 trippar',
+                                 tagged_refs='PV-101')
+        self.db.set_safeguard_tag(self.sg_id, 'PV-101', 'Ventil')
+        rec_id = self.db.add_recommendation_to_consequence(
+            self.cons_id, description='Verifiera PV-101 före start.')
+
+        self.panel._replace_object_reference({
+            'kind': 'consequence', 'id': self.cons_id, 'tag': 'PV-101',
+            'text_offset': 0}, self.new_equipment)
+        self.panel._replace_object_reference({
+            'kind': 'safeguard', 'id': self.sg_id, 'tag': 'PV-101',
+            'text_offset': 0}, self.new_equipment)
+        self.panel._replace_object_reference({
+            'kind': 'recommendation', 'id': rec_id, 'cons_id': self.cons_id,
+            'tag': 'PV-101', 'text_offset': 10}, self.new_equipment)
+
+        self.assertIn('PV-102', self.db.get_consequence(self.cons_id)['description'])
+        self.assertIn('PV-102', self.db.get_safeguard(self.sg_id)['description'])
+        self.assertIn('PV-102', self.db.get_recommendation(rec_id)['description'])
+        self.assertEqual(self.db.get_equipment_by_id(self.old_id)['tag'], 'PV-101',
+                         'Byt objekt must not rename the object that was clicked')
+
+    def test_group_object_switch_updates_only_the_clicked_group_member(self):
+        fi_id = self.db.add_equipment_item('FI-1', 'FI-1', 'FI', 1,
+                                           'Flödesgivare', '', 0)
+        fv_id = self.db.add_equipment_item('FV-1', 'FV-1', 'FV', 1,
+                                           'Reglerventil', '', 0)
+        new_fv_id = self.db.add_equipment_item('FV-2', 'FV-2', 'FV', 1,
+                                               'Reglerventil', '', 0)
+        self.db.update_cause(
+            self.cause_id, description='FI-1 felar lågt\nFV-1 öppnar fullt',
+            comp_type='Flödesgivare', comp_tag='FI-1 OR FV-1',
+            equipment_id=fi_id, secondary_equipment_id=fv_id,
+            group_equipment_ids=[fi_id, fv_id])
+
+        self.panel._replace_object_reference({
+            'kind': 'cause', 'id': self.cause_id, 'group_line': 1,
+            'tag': 'FV-1'}, self.db.get_equipment_by_id(new_fv_id))
+
+        cause = self.db.get_cause(self.cause_id)
+        self.assertEqual(self.panel._group_equipment_ids(cause), [fi_id, new_fv_id])
+        self.assertIn('FI-1 felar lågt', cause['description'])
+        self.assertIn('FV-2 öppnar fullt', cause['description'])
+
+    def test_popup_has_separate_change_object_and_rename_actions(self):
+        from scenario_panel import _ObjectTagActionPopup
+        popup = _ObjectTagActionPopup(self.db, self.db.get_equipment_by_id(self.old_id),
+                                      parent=self.panel)
+        try:
+            labels = [button.text() for button in popup.findChildren(QPushButton)]
+            self.assertIn('Byt objekt', labels)
+            self.assertIn('Byt namn', labels)
+        finally:
+            popup.deleteLater()
+
+    def test_same_hit_testing_resolves_bold_tags_in_kon_sg_and_rek(self):
+        from PyQt6.QtCore import QPointF
+        from PyQt6.QtGui import QFontMetrics, QTextLayout, QTextOption
+        self.db.update_consequence(
+            self.cons_id, 'PV-101 orsakar stopp', 3,
+            comp_tag='PV-101', comp_type='Ventil', tagged_refs='PV-101')
+        self.db.update_safeguard(self.sg_id, description='PV-101 larmar',
+                                 tagged_refs='PV-101')
+        self.db.set_safeguard_tag(self.sg_id, 'PV-101', 'Ventil')
+        self.db.add_recommendation_to_consequence(
+            self.cons_id, description='Kontrollera PV-101 före start.')
+        self.panel.load_node(self.node_id)
+        self.panel.resize(1300, 500)
+        self.panel.show()
+        self.app.processEvents()
+        row = next(row for row, meta in enumerate(self.panel._row_meta)
+                   if meta[2] == self.cons_id and meta[3] == self.sg_id)
+        fm = QFontMetrics(self.panel._table.font())
+
+        for col, expected_kind in (
+                (self.panel._C_KON, 'consequence'),
+                (self.panel._C_SG, 'safeguard'),
+                (self.panel._C_REK, 'recommendation')):
+            item = self.panel._table.item(row, col)
+            rect = self.panel._table.visualRect(
+                self.panel._table.model().index(row, col))
+            display = item.text()
+            if col in (self.panel._C_KON, self.panel._C_SG):
+                number = item.data(Qt.ItemDataRole.UserRole + 10)
+                if number:
+                    display = f'{number}.  {display}'
+            tag_start = display.find('PV-101')
+            self.assertGreaterEqual(tag_start, 0)
+            if col == self.panel._C_REK:
+                # The recommendation is deliberately narrow and wraps. Pick
+                # the visible line that actually contains the tag rather
+                # than assuming it remains on the first line.
+                text_rect = rect.adjusted(5, 2, -3, -2)
+                layout = QTextLayout(display, self.panel._table.font())
+                option = QTextOption()
+                option.setWrapMode(QTextOption.WrapMode.WordWrap)
+                layout.setTextOption(option)
+                layout.beginLayout()
+                y = 0.0
+                target_line = None
+                while True:
+                    line = layout.createLine()
+                    if not line.isValid():
+                        break
+                    line.setLineWidth(text_rect.width())
+                    line.setPosition(QPointF(0, y))
+                    y += line.height()
+                    if line.textStart() <= tag_start < line.textStart() + line.textLength():
+                        target_line = line
+                        break
+                layout.endLayout()
+                self.assertIsNotNone(target_line)
+                point = QPoint(
+                    round(text_rect.left() + target_line.cursorToX(tag_start + 3)[0]),
+                    round(text_rect.top() + target_line.position().y() +
+                          target_line.height() / 2))
+            else:
+                point = QPoint(rect.left() + 2 +
+                               fm.horizontalAdvance(display[:tag_start] + 'PV-') + 1,
+                               rect.top() + 3 + max(3, fm.height() // 2))
+            context = self.panel._text_tag_click_context(row, col, point)
+            self.assertIsNotNone(context, f'{expected_kind} tag should have a click target')
+            self.assertEqual(context['kind'], expected_kind)
+            self.assertEqual(context['tag'], 'PV-101')
+
+
 if __name__ == "__main__":
     unittest.main()

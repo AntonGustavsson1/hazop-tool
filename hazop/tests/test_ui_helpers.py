@@ -215,5 +215,36 @@ class NaturalSortKeyTests(unittest.TestCase):
         self.assertEqual(_natural_sort_key(None), [''])
 
 
+class BoldTagClickHitTests(unittest.TestCase):
+    """A bold object must only steal a click inside its own glyph run."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_returns_the_exact_clicked_tag_and_character_offset(self):
+        from PyQt6.QtCore import QPoint, QRect
+        from PyQt6.QtGui import QFont, QFontMetrics
+        from ui_helpers import find_bold_tag_at_position
+
+        font = QFont()
+        rect = QRect(0, 0, 260, QFontMetrics(font).height() + 8)
+        hit = find_bold_tag_at_position(
+            'PV-101 öppnar och FV-102 stänger', ['PV-101', 'FV-102'], rect,
+            QPoint(QFontMetrics(font).horizontalAdvance('PV-') + 2, 5), font)
+
+        self.assertEqual(hit, {'tag': 'PV-101', 'start': 0, 'end': 6})
+
+    def test_blank_text_area_is_not_treated_as_an_object_click(self):
+        from PyQt6.QtCore import QPoint, QRect
+        from PyQt6.QtGui import QFont, QFontMetrics
+        from ui_helpers import find_bold_tag_at_position
+
+        font = QFont()
+        rect = QRect(0, 0, 300, QFontMetrics(font).height() + 8)
+        self.assertIsNone(find_bold_tag_at_position(
+            'PV-101 öppnar', ['PV-101'], rect, QPoint(250, 5), font))
+
+
 if __name__ == "__main__":
     unittest.main()

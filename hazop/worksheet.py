@@ -19,6 +19,7 @@ class HAZOPWorksheet(QWidget):
 
     structure_changed = pyqtSignal()
     item_edited = pyqtSignal(int, int)
+    equipment_renamed = pyqtSignal()
     place_cause_object_requested = pyqtSignal(int, str, str)
 
     def __init__(self, db: Database):
@@ -75,6 +76,10 @@ class HAZOPWorksheet(QWidget):
         self._table_panel.new_item_created.connect(self._on_new_item_created)
         self._table_panel.structure_changed.connect(self.structure_changed)
         self._table_panel.item_edited.connect(self.item_edited)
+        # The embedded table owns its own object-tag popup.  Relay a global
+        # rename so MainWindow can refresh the other table instance, tree and
+        # P&ID overlay exactly as it does for the main Scenario table.
+        self._table_panel.equipment_renamed.connect(self.equipment_renamed)
         self._table_panel.place_cause_object_requested.connect(
             self.place_cause_object_requested)
         layout.addWidget(self._table_panel, 1)

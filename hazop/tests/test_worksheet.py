@@ -141,6 +141,20 @@ class HAZOPWorksheetTests(unittest.TestCase):
         finally:
             ws.deleteLater()
 
+    def test_embedded_object_rename_is_relayed_to_main_window(self):
+        """Worksheet has a separate ScenarioTablePanel, so its shared
+        object popup must expose a rename to MainWindow too."""
+        from hazop import HAZOPWorksheet
+
+        ws = HAZOPWorksheet(self.db)
+        emitted = []
+        try:
+            ws.equipment_renamed.connect(lambda: emitted.append(True))
+            ws._table_panel.equipment_renamed.emit()
+            self.assertEqual(emitted, [True])
+        finally:
+            ws.deleteLater()
+
     def test_equipment_column_stays_hidden_even_in_all_nodes_mode(self):
         """"i worksheet behöver inte objekt kolumnen synas" (2026-08-13)
         — Utrustning normally reappears in "Visa samtliga noder" mode

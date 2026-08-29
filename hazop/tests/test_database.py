@@ -1613,5 +1613,58 @@ class EquipmentLinkTypesInScopeTests(unittest.TestCase):
             f"{large_count}) — the batched traversal may have regressed to N+1")
 
 
+class EquipmentRenameReferenceTests(unittest.TestCase):
+    """Global tag rename updates the active study, not just the catalog row."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='hazop_rename_refs_')
+        self.db = Database(path=os.path.join(self.tmpdir, 'project.db'))
+        self.node_id = self.db.add_node()
+        self.dev_id = self.db.deviations(self.node_id)[0]['id']
+        self.cause_id = self.db.add_cause(self.dev_id)
+        self.cons_id = self.db.add_consequence(self.cause_id)
+        self.sg_id = self.db.add_safeguard(self.cons_id)
+        self.eq_id = self.db.add_equipment_item('PV-101', 'PV-101', 'PV', 1,
+                                                'Ventil', '', 0)
+        self.db.add_equipment_marker(self.eq_id, 'PV-101', 1, 12, 15, 'Ventil')
+
+    def tearDown(self):
+        self.db.conn.close()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_rename_updates_marker_and_visible_hazop_references_atomically(self):
+        self.db.update_cause(self.cause_id, description='PV-101 felar stängd',
+                             comp_type='Ventil', comp_tag='PV-101',
+                             equipment_id=self.eq_id)
+        self.db.update_consequence(
+            self.cons_id, 'PV-101 ger stopp; PV-1010 berörs inte', 3,
+            comp_tag='PV-101', comp_type='Ventil', tagged_refs='PV-101')
+        self.db.update_safeguard(self.sg_id, description='PV-101 trippar',
+                                 tagged_refs='PV-101')
+        self.db.set_safeguard_tag(self.sg_id, 'PV-101', 'Ventil')
+        rec_id = self.db.add_recommendation_to_consequence(
+            self.cons_id, description='Kontrollera PV-101 före drift.')
+
+        result = self.db.rename_equipment_and_references(self.eq_id, 'PV-201')
+
+        self.assertEqual(result['old_tag'], 'PV-101')
+        self.assertEqual(self.db.get_equipment_by_id(self.eq_id)['tag'], 'PV-201')
+        marker = self.db.equipment_markers_for_page(1)[0]
+        self.assertEqual(marker['tag'], 'PV-201')
+        self.assertIn('PV-201', self.db.get_cause(self.cause_id)['description'])
+        consequence = self.db.get_consequence(self.cons_id)
+        self.assertIn('PV-201', consequence['description'])
+        self.assertIn('PV-1010', consequence['description'])
+        self.assertEqual(consequence['tagged_refs'], 'PV-201')
+        self.assertIn('PV-201', self.db.get_safeguard(self.sg_id)['description'])
+        self.assertIn('PV-201', self.db.get_recommendation(rec_id)['description'])
+
+    def test_rename_rejects_a_duplicate_catalogue_tag(self):
+        self.db.add_equipment_item('PV-202', 'PV-202', 'PV', 1, 'Ventil', '', 0)
+        with self.assertRaisesRegex(ValueError, 'används redan'):
+            self.db.rename_equipment_and_references(self.eq_id, 'PV-202')
+        self.assertEqual(self.db.get_equipment_by_id(self.eq_id)['tag'], 'PV-101')
+
+
 if __name__ == "__main__":
     unittest.main()

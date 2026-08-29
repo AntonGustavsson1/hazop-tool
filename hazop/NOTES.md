@@ -1,5 +1,17 @@
 # NOTES.md — Beslut och kontext
 
+## Gemensam redigering av fetmarkerade objekttaggar (2026-08-29)
+
+En fetmarkerad objekttagg i Orsak, Konsekvens, Barriär eller Rekommendation
+öppnar nu samma kompakta objektpopup i både HAZOP Scenario och Worksheet.
+Popupen har två tydliga vägar: `Byt objekt` kopplar endast den klickade
+förekomsten till ett annat katalogobjekt, medan `Byt namn` döper om det
+befintliga katalogobjektet efter bekräftelse. Namnbytet uppdaterar atomärt
+objektdatabas, P&ID-markör och aktiva HAZOP-referenser med hela taggar, utan
+att t.ex. `PV-101` ändrar `PV-1010`. För grupper ändras bara den klickade
+primär-/sekundär-/tertiärraden. Namnbyte från någon vy uppdaterar även den
+andra tabellinstansen, P&ID och träd direkt.
+
 ## Tomt åtgärdsdatum i rekommendationer (2026-08-29)
 
 En rekommendation utan `due_date` visas nu blank på rekommendationssidan.

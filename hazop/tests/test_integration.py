@@ -6676,12 +6676,11 @@ class OrsTagZoneOpensMinimalPopupTests(unittest.TestCase):
                    if m[1] == cause_id)
         fake_popup = unittest.mock.Mock()
         fake_popup.sizeHint.return_value = QSize(200, 100)
-        with unittest.mock.patch('scenario_panel.CauseTagPopup',
+        with unittest.mock.patch('scenario_panel._ObjectTagActionPopup',
                                  return_value=fake_popup) as popup_cls:
             self.panel._show_cause_obj_popup(
                 row, cause_id, QPoint(100, 100), group_line=1)
-        self.assertIs(popup_cls.call_args.kwargs['equipment_id'], secondary_id)
-        self.assertEqual(popup_cls.call_args.kwargs['group_operator'], '&')
+        self.assertEqual(popup_cls.call_args.args[1]['id'], secondary_id)
 
 
 class OrsFrequencyZoneClickTests(unittest.TestCase):
