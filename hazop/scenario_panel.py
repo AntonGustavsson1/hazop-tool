@@ -3212,16 +3212,19 @@ class RecommendationAssistPopup(QWidget):
     why a genuinely separate top-level window breaks the active cell
     editor's focus).
 
-    Lists every recommendation already in the study catalog as a
-    checkbox row -- checked/unchecked reflects whether it's linked to
-    THIS consequence, and toggling commits the link/unlink immediately
-    (this is what used to be the whole RecommendationEditorDialog's
-    table). A "✎" button per row opens _RecommendationDetailDialog
-    (hazop.py, unchanged) for the fuller responsible/due-date/status
-    fields. Deliberately does NOT touch the inline editor's own text —
-    that field is for typing a NEW recommendation (see
-    _ScenarioDelegate._prepare_recommendation_editor's docstring for the
-    0/1/N-linked rule), independent from reusing an EXISTING one here."""
+    Shows only reusable, not-yet-linked catalogue rows as compact numbered
+    choice buttons. The active REK cell already renders its linked
+    recommendation, so repeating that text in this popup made the UI look
+    like it contained duplicates. The editor text acts as the search field:
+    it matches both the visible R-number and any part of the description.
+    Choosing a result links it once and closes the editor without creating a
+    second recommendation."""
+
+    _RESULT_STYLE = (
+        "QPushButton{text-align:left; font-size:10px; padding:4px 6px;"
+        "border:none; background:transparent; border-radius:0px;}"
+        "QPushButton:hover{background:#F5F5F3;}"
+        "QPushButton:pressed{background:#E6ECFA;}")
 
     def __init__(self, panel, cons_id, editor, parent=None):
         super().__init__(parent)
@@ -3232,27 +3235,32 @@ class RecommendationAssistPopup(QWidget):
         self._panel = panel
         self._cons_id = cons_id
         self._editor = editor
-        self._updating = False
         self._filter_text = str(
             editor.toPlainText() if hasattr(editor, 'toPlainText')
             else editor.text() or '').strip()
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(3)
+        layout.setSpacing(4)
         layout.setContentsMargins(8, 6, 8, 6)
 
-        header = QLabel("Tidigare rekommendationer — kryssa för att länka/avlänka:")
-        header.setStyleSheet("color:#777; font-size:9px;")
-        header.setWordWrap(True)
-        header.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        layout.addWidget(header)
+        title = QLabel("Återanvänd rekommendation")
+        title_font = QFont(); title_font.setBold(True); title_font.setPointSize(9)
+        title.setFont(title_font)
+        title.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        layout.addWidget(title)
+
+        hint = QLabel("Skriv för att söka på R-nummer eller text. Klicka för att använda.")
+        hint.setStyleSheet("color:#666; font-size:9px;")
+        hint.setWordWrap(True)
+        hint.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        layout.addWidget(hint)
 
         self._list_layout = QVBoxLayout()
         self._list_layout.setSpacing(1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        scroll.setMaximumHeight(180)
+        scroll.setMaximumHeight(150)
         scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         inner = QWidget()
         inner.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -3260,7 +3268,7 @@ class RecommendationAssistPopup(QWidget):
         scroll.setWidget(inner)
         layout.addWidget(scroll)
 
-        self.setMinimumWidth(260)
+        self.setMinimumWidth(250)
         self.setMaximumWidth(360)
         self._refresh_list()
         self.adjustSize()
@@ -3279,8 +3287,14 @@ class RecommendationAssistPopup(QWidget):
     def _refresh_list(self):
         while self._list_layout.count():
             child = self._list_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
+            widget = child.widget()
+            if widget:
+                # Detach first so stale result buttons are no longer children
+                # of this popup during Qt's deferred deletion turn. Besides
+                # avoiding a growing hidden-widget tree, this prevents a
+                # filtered list from briefly exposing yesterday's results.
+                widget.setParent(None)
+                widget.deleteLater()
         linked = {r['id'] for r in self._panel.db.recommendations_for_consequence(self._cons_id)}
         recs = self._panel.db.all_recommendations()
         if not recs:
@@ -3290,45 +3304,34 @@ class RecommendationAssistPopup(QWidget):
             self._list_layout.addWidget(empty)
             return
         needle = self._filter_text.casefold().strip()
-        visible_recs = [rec for rec in recs
-                        if not needle or needle in (rec['description'] or '').casefold()]
+        matching_recs = [rec for rec in recs if (
+            not needle or needle in
+            f"R-{rec['id']:03d}. {rec['description'] or ''}".casefold())]
+        visible_recs = [rec for rec in matching_recs if rec['id'] not in linked]
         if not visible_recs:
-            empty = QLabel("Inga rekommendationer matchar texten.")
+            empty_text = ("Alla matchande rekommendationer är redan länkade."
+                          if matching_recs
+                          else "Inga numrerade rekommendationer matchar sökningen.")
+            empty = QLabel(empty_text)
             empty.setStyleSheet("font-size:9px; color:#8D9299;")
             empty.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             self._list_layout.addWidget(empty)
             return
         for rec in visible_recs:
-            row = QHBoxLayout()
-            row.setSpacing(4)
-            cb = QCheckBox(f"R-{rec['id']:03d}. {rec['description'] or 'Ny rekommendation'}")
-            cb.setStyleSheet("font-size:10px;")
-            cb.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            cb.setChecked(rec['id'] in linked)
-            cb.toggled.connect(partial(self._on_toggled, rec['id']))
-            row.addWidget(cb, 1)
-            edit_btn = QPushButton("✎")
-            edit_btn.setFixedWidth(24)
-            edit_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            edit_btn.clicked.connect(partial(self._edit_recommendation, rec['id']))
-            row.addWidget(edit_btn)
-            delete_btn = QPushButton("Ta bort")
-            delete_btn.setFixedHeight(CONFIG['H_BTN_SMALL'])
-            delete_btn.setToolTip("Ta bort rekommendationen ur hela studien")
-            delete_btn.setStyleSheet(
-                "QPushButton{color:#8B1E1E; background:#FDECEC; border:1px solid #E8B8B8;"
-                "border-radius:3px; padding:1px 5px; font-size:9px;}"
-                "QPushButton:hover{background:#F8D8D8;}")
-            delete_btn.clicked.connect(partial(self._delete_recommendation, rec['id']))
-            row.addWidget(delete_btn)
-            self._list_layout.addLayout(row)
+            button = QPushButton(
+                f"R-{rec['id']:03d}. {rec['description'] or 'Ny rekommendation'}")
+            button.setStyleSheet(self._RESULT_STYLE)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setToolTip("Klicka för att länka denna rekommendation")
+            button.clicked.connect(partial(self._select_recommendation, rec['id']))
+            self._list_layout.addWidget(button)
 
     def _on_editor_text_changed(self):
         """Reduce the existing recommendation list as the user types.
 
         Recommendation text is searched with ``contains`` so a word in the
-        middle of a longer recommendation is enough to find it. The R-number
-        is deliberately excluded from the search text.
+        middle of a longer recommendation is enough to find it. The formatted
+        R-number is included too, so ``R-012`` is an equally direct lookup.
         """
         if self._editor is None:
             return
@@ -3340,48 +3343,16 @@ class RecommendationAssistPopup(QWidget):
         self._filter_text = new_filter
         self._refresh_list()
 
-    def _on_toggled(self, rec_id, checked):
-        if self._updating:
-            return
-        if checked:
-            self._panel.db.link_recommendation_to_consequence(rec_id, self._cons_id)
-        else:
-            self._panel.db.unlink_recommendation_from_consequence(rec_id, self._cons_id)
+    def _select_recommendation(self, rec_id):
+        """Use one numbered catalogue row and discard the search text."""
+        self._panel.db.link_recommendation_to_consequence(rec_id, self._cons_id)
+        # The inline field is a search/new-text field. Clearing it before
+        # closing avoids committing that same search as a duplicate new row.
+        if hasattr(self._editor, 'setText'):
+            self._editor.setText('')
         self._panel._refresh_recommendation_cell(self._cons_id)
-
-    def _delete_recommendation(self, rec_id):
-        rec = self._panel.db.get_recommendation(rec_id)
-        if not rec:
-            return
-        description = (rec.get('description') or '').strip() or 'Ny rekommendation'
-        linked_count = self._panel.db.recommendation_consequence_count(rec_id)
-        scope = (f"\n\nDen används på {linked_count} konsekvens(er) och tas bort där också."
-                 if linked_count else '')
-        answer = QMessageBox.question(
-            self, "Ta bort rekommendation",
-            f"Vill du ta bort R-{rec_id:03d}:\n{description[:120]}?{scope}",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No)
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        self._panel.db.delete_recommendation(rec_id)
-        self._panel._refresh_recommendation_cell(self._cons_id)
-        self._refresh_list()
-
-    def _edit_recommendation(self, rec_id):
-        """Commit any not-yet-confirmed typed text FIRST — opening a
-        real modal dialog here would otherwise steal focus from the
-        still-active cell editor the same way a top-level popup would
-        (see this class's own docstring), and _RecommendationDetailDialog
-        genuinely needs to be a real modal QDialog (it can show its own
-        blocking "shared recommendation" prompt)."""
-        from hazop import _RecommendationDetailDialog
-        self._panel._delegate.commitData.emit(self._editor)
         self._panel._delegate.closeEditor.emit(
             self._editor, QStyledItemDelegate.EndEditHint.NoHint)
-        dlg = _RecommendationDetailDialog(self._panel.db, rec_id, self._cons_id, self._panel)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._panel._refresh_recommendation_cell(self._cons_id)
         self.close()
 
 
@@ -3844,11 +3815,11 @@ class ScenarioTablePanel(QWidget):
         self._force_utr_column_hidden = False  # if True, Utrustning column stays hidden regardless of _all_nodes (set by hide_equipment_column)
         self._hide_unplaced_tag = False
         self._merge_node_labels = False
-        # Hosts can opt out of the empty-consequence chain popup.  The main
-        # Scenario view keeps the popup, while Worksheet edits the cell
-        # directly so both its populated and empty consequence cells behave
-        # alike.
-        self._empty_consequence_chain_popup_enabled = True
+        # Kept as a compatibility attribute for hosts that used to opt out of
+        # the empty-consequence chain popup. Double-click now always means
+        # inline edit, in Scenario as well as Worksheet; the chain editor is
+        # available only from the explicit context-menu action.
+        self._empty_consequence_chain_popup_enabled = False
         self._row_meta = []   # list of (dev_id, cause_id, cons_id, sg_id) per visible row
         self._row_recommendation_ids = []
         # row index -> {col: ('cause', dev_id) | ('consequence', cause_id) |
@@ -4212,13 +4183,13 @@ class ScenarioTablePanel(QWidget):
         self._merge_node_labels = True
 
     def set_empty_consequence_chain_popup_enabled(self, enabled):
-        """Control the popup used for an empty consequence on double-click.
+        """Compatibility no-op for the retired double-click chain popup.
 
-        HAZOP Worksheet uses the same direct inline-edit behavior as the
-        regular Scenario view for this interaction.  The explicit context
-        menu action for editing a consequence chain is intentionally kept.
+        A double-click is deliberately consistent for all text fields: it
+        opens the inline editor. The chain editor remains an explicit
+        right-click action, never a hidden alternate double-click path.
         """
-        self._empty_consequence_chain_popup_enabled = bool(enabled)
+        self._empty_consequence_chain_popup_enabled = False
 
     # Columns that stretch to fill remaining space in fill mode
     _STRETCH_COLS = None  # set after class constants are known
@@ -6170,9 +6141,10 @@ class ScenarioTablePanel(QWidget):
             return
         row = item.row()
         col = item.column()
-        # Empty cause cells still use their creation path.  Empty consequence
-        # cells may use the chain popup in the main Scenario view; Worksheet
-        # disables that opt-in so this falls through to ordinary inline edit.
+        # An empty cause has no backing row yet, so create that row first and
+        # then enter its inline editor. Empty consequences already have a
+        # backing row and fall through to exactly the same inline-edit path as
+        # populated consequences and safeguards.
         if 0 <= row < len(self._row_meta):
             dev_id, cause_id, cons_id, _sg_id = self._row_meta[row]
             if col == self._C_ORS and cause_id is None and dev_id is not None:
@@ -6183,12 +6155,6 @@ class ScenarioTablePanel(QWidget):
                 self._empty_cause_click_timer.stop()
                 self._empty_cause_click_target = None
                 self._quick_add_cause(dev_id, from_enter=True)
-                self._double_click_edit = None
-                return
-            if (self._empty_consequence_chain_popup_enabled and
-                    col == self._C_KON and cons_id is not None and
-                    not (item.text() or '').strip()):
-                self._open_chain_editor(cons_id)
                 self._double_click_edit = None
                 return
         group_line = None

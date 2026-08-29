@@ -2,6 +2,23 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Enhetlig dubbelklicksredigering och rekommendationsväljare (2026-08-29)
+
+Dubbelklick i Orsak, Konsekvens och Barriär betyder nu alltid att den
+relevanta inline-redigeraren öppnas, både i HAZOP Scenario och Worksheet.
+En tom orsak eller barriär får först sin nödvändiga tomma datarad och fokus
+flyttas sedan till dess inline-redigerare. En tom konsekvens har redan en
+datarad och öppnas därför direkt i samma editor; konsekvenskedjan nås endast
+via det uttryckliga högerklicksalternativet. Grupporsaker behåller sin
+befintliga radstyrda primär-/sekundärredigering.
+
+Rekommendationspopupen är samtidigt omgjord till en kompakt
+återanvändningsväljare. Den visar bara numrerade rekommendationer som ännu
+inte är länkade till den aktuella konsekvensen, så den redan synliga
+rekommendationen inte visas dubbelt. Den löpande sökningen matchar både
+`R-nummer` och valfri del av rekommendationstexten. Ett klick länkar träffen,
+rensar söktexten och stänger editorn utan att skapa en ny rekommendation.
+
 ## Igenkänd P&ID-tagg ger inline-kontext för Orsak (2026-08-29)
 
 När en komplett tagg från objektkatalogen skrivs eller väljs i en aktiv

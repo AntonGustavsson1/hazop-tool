@@ -67,7 +67,7 @@ from hazop import (  # noqa: E402
 )
 from PyQt6.QtWidgets import (  # noqa: E402
     QApplication, QGraphicsPixmapItem, QTreeWidgetItemIterator, QCheckBox,
-    QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit,
+    QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit, QLabel,
     QStyleOptionViewItem,
 )
 from PyQt6.QtGui import QPixmap, QFocusEvent, QKeyEvent  # noqa: E402
@@ -4107,11 +4107,10 @@ class RecommendationAssistPopupTests(unittest.TestCase):
     rekommendationer direkt i HAZOP Scenario") — replaces the old modal
     RecommendationEditorDialog's checkbox table as the "extra
     information ... i en liten popup ovanför" shown alongside the REK
-    cell's own inline text editor. One checkbox row per catalog
-    recommendation; checked reflects whether it's linked to THIS
-    consequence, and toggling commits the link/unlink immediately (no
-    OK button needed — same "persists itself" pattern the old dialog
-    already used)."""
+    cell's own inline text editor. It now mirrors the compact action-list
+    pattern used in the safeguard popup: each unlinked catalog row is one
+    numbered choice button, while rows already shown in the REK cell are not
+    repeated in the popup."""
 
     @classmethod
     def setUpClass(cls):
@@ -4142,18 +4141,17 @@ class RecommendationAssistPopupTests(unittest.TestCase):
         editor = QLineEdit()   # stand-in for the real REK cell editor
         return RecommendationAssistPopup(self.panel, cons_id or self.cons_id, editor)
 
-    def _checkbox_for(self, popup, rec_id):
-        from PyQt6.QtWidgets import QCheckBox
-        for cb in popup.findChildren(QCheckBox):
-            if cb.text().startswith(f"R-{rec_id:03d}."):
-                return cb
+    def _button_for(self, popup, rec_id):
+        for button in popup.findChildren(QPushButton):
+            if button.text().startswith(f"R-{rec_id:03d}."):
+                return button
         return None
 
     def test_empty_catalog_shows_a_placeholder_not_an_empty_list(self):
         popup = self._popup()
         try:
-            from PyQt6.QtWidgets import QCheckBox, QLabel
-            self.assertEqual(len(popup.findChildren(QCheckBox)), 0)
+            from PyQt6.QtWidgets import QLabel
+            self.assertEqual(len(popup.findChildren(QPushButton)), 0)
             labels = [w.text() for w in popup.findChildren(QLabel)]
             self.assertTrue(any('Inga rekommendationer' in t for t in labels))
         finally:
@@ -4186,41 +4184,33 @@ class RecommendationAssistPopupTests(unittest.TestCase):
         try:
             editor.setText('shutdown')
             self.app.processEvents()
-            labels = []
-            for i in range(popup._list_layout.count()):
-                row = popup._list_layout.itemAt(i)
-                if row.layout() and row.layout().itemAt(0).widget():
-                    labels.append(row.layout().itemAt(0).widget().text())
+            labels = [button.text() for button in popup.findChildren(QPushButton)]
             self.assertEqual(labels, [f'R-{first_id:03d}. Verify shutdown function'])
             self.assertNotIn(f'R-{second_id:03d}. Inspect pressure relief valve', labels)
         finally:
             popup.deleteLater()
             editor.deleteLater()
 
-    def test_checking_an_existing_recommendation_links_it_without_duplicating(self):
+    def test_choosing_an_existing_recommendation_links_it_without_duplicating(self):
         rec_id = self.db.add_recommendation(description='Reusable text')
         popup = self._popup()
         try:
-            cb = self._checkbox_for(popup, rec_id)
-            self.assertIsNotNone(cb)
-            self.assertFalse(cb.isChecked())
-            cb.setChecked(True)
+            button = self._button_for(popup, rec_id)
+            self.assertIsNotNone(button)
+            button.click()
             linked = {r['id'] for r in self.db.recommendations_for_consequence(self.cons_id)}
             self.assertEqual(linked, {rec_id})
             self.assertEqual(len(self.db.all_recommendations()), 1)
         finally:
             popup.deleteLater()
 
-    def test_unchecking_unlinks_but_keeps_the_catalog_row(self):
+    def test_linked_recommendation_is_not_repeated_in_popup(self):
         rec_id = self.db.add_recommendation_to_consequence(self.cons_id, description='Keep me')
         popup = self._popup()
         try:
-            cb = self._checkbox_for(popup, rec_id)
-            self.assertTrue(cb.isChecked())
-            cb.setChecked(False)
-            self.assertEqual(self.db.recommendations_for_consequence(self.cons_id), [])
-            self.assertIsNotNone(self.db.get_recommendation(rec_id),
-                "unlinking must not delete the catalog row")
+            self.assertIsNone(self._button_for(popup, rec_id))
+            labels = [label.text() for label in popup.findChildren(QLabel)]
+            self.assertTrue(any('redan länkade' in label for label in labels))
         finally:
             popup.deleteLater()
 
@@ -4228,22 +4218,41 @@ class RecommendationAssistPopupTests(unittest.TestCase):
         rec_id = self.db.add_recommendation(description='Shared candidate')
         popup = self._popup(self.cons_id)
         try:
-            self._checkbox_for(popup, rec_id).setChecked(True)
+            self._button_for(popup, rec_id).click()
             self.assertEqual(self.db.recommendations_for_consequence(self.cons2), [])
         finally:
             popup.deleteLater()
 
-    def test_checking_a_box_refreshes_the_cells_rek_summary_live(self):
+    def test_choosing_a_result_refreshes_the_cells_rek_summary_live(self):
         rec_id = self.db.add_recommendation(description='Live refresh check')
         self.panel.load_node(self.node_id)
         row = next(r for r, m in enumerate(self.panel._row_meta) if m[2] == self.cons_id)
         popup = self._popup()
         try:
-            self._checkbox_for(popup, rec_id).setChecked(True)
+            self._button_for(popup, rec_id).click()
+            # Recommendation refresh is intentionally queued until the cell
+            # editor has closed, avoiding a rebuild while Qt is still inside
+            # the clicked handler.
+            self.app.processEvents()
             item = self.panel._table.item(row, self.panel._C_REK)
             self.assertEqual(item.text(), f"R-{rec_id:03d}. Live refresh check")
         finally:
             popup.deleteLater()
+
+    def test_typed_recommendation_number_filters_catalog(self):
+        first_id = self.db.add_recommendation(description='First action')
+        self.db.add_recommendation(description='Second action')
+        from scenario_panel import RecommendationAssistPopup
+        editor = QLineEdit()
+        popup = RecommendationAssistPopup(self.panel, self.cons_id, editor)
+        try:
+            editor.setText(f'R-{first_id:03d}')
+            self.app.processEvents()
+            labels = [button.text() for button in popup.findChildren(QPushButton)]
+            self.assertEqual(labels, [f'R-{first_id:03d}. First action'])
+        finally:
+            popup.deleteLater()
+            editor.deleteLater()
 
 
 class RecommendationEditConflictTests(unittest.TestCase):
@@ -7488,7 +7497,7 @@ class EmptyScenarioCellDoubleClickTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_empty_consequence_cell_opens_chain_freetext_popup(self):
+    def test_empty_consequence_cell_starts_inline_edit_not_chain_popup(self):
         from hazop import ScenarioTablePanel
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
@@ -7499,10 +7508,11 @@ class EmptyScenarioCellDoubleClickTests(unittest.TestCase):
             panel.load_node(node_id)
             row = next(r for r, meta in enumerate(panel._row_meta)
                        if meta[2] == cons_id)
-            calls = []
-            panel._open_chain_editor = lambda cid: calls.append(cid)
-            panel._on_cell_double_clicked(panel._table.item(row, panel._C_KON))
-            self.assertEqual(calls, [cons_id])
+            with unittest.mock.patch.object(panel, '_open_chain_editor') as chain_editor, \
+                 unittest.mock.patch.object(panel._table, 'edit') as inline_edit:
+                panel._on_cell_double_clicked(panel._table.item(row, panel._C_KON))
+            chain_editor.assert_not_called()
+            inline_edit.assert_called_once()
         finally:
             panel.deleteLater()
 
