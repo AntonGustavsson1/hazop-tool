@@ -137,6 +137,8 @@ class RecommendationsPanel(QWidget):
     _COL_REF = 3
     _COL_STATUS = 4
 
+    recommendations_changed = pyqtSignal()
+
     def __init__(self, db: Database):
         super().__init__()
         self.db = db
@@ -238,12 +240,13 @@ class RecommendationsPanel(QWidget):
         answer = QMessageBox.question(
             self, "Ta bort rekommendation", question,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No)
+            QMessageBox.StandardButton.Yes)
         if answer != QMessageBox.StandardButton.Yes:
             return
         for rec_id in rec_ids:
             self.db.delete_recommendation(rec_id)
         self.load()
+        self.recommendations_changed.emit()
 
     def _on_item_changed(self, item):
         rec_id = item.data(Qt.ItemDataRole.UserRole)

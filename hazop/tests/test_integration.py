@@ -72,6 +72,7 @@ from PyQt6.QtWidgets import (  # noqa: E402
 )
 from PyQt6.QtGui import QPixmap, QFocusEvent, QKeyEvent  # noqa: E402
 from PyQt6.QtCore import Qt, QPoint, QDate, QEvent, QThread, pyqtSignal  # noqa: E402
+from PyQt6.QtTest import QTest  # noqa: E402
 from equipment_detection import COMPONENT_TYPES  # noqa: E402
 
 
@@ -4283,6 +4284,25 @@ class RecommendationAssistPopupTests(unittest.TestCase):
             popup.deleteLater()
             editor.deleteLater()
 
+    def test_typing_keeps_recommendation_editor_open_while_filtering(self):
+        from scenario_panel import _BoldTagTextEdit, RecommendationAssistPopup
+        self.panel.show()
+        editor = _BoldTagTextEdit(self.panel)
+        editor.setGeometry(0, 0, 240, 30)
+        editor.show()
+        popup = RecommendationAssistPopup(self.panel, self.cons_id, editor,
+                                          parent=self.panel)
+        try:
+            editor.setFocus()
+            QTest.keyClick(editor, Qt.Key.Key_A)
+            self.app.processEvents()
+            self.assertTrue(editor.isVisible())
+            self.assertTrue(editor.hasFocus())
+            self.assertEqual(editor.toPlainText(), 'a')
+        finally:
+            popup.deleteLater()
+            editor.deleteLater()
+
 
 class RecommendationEditConflictTests(unittest.TestCase):
     """The second prompt's rule: editing a recommendation used by more
@@ -7479,7 +7499,7 @@ class StandardCauseContextTests(unittest.TestCase):
 
 
 class RecommendationPhysicalRowTests(RecommendationColumnTests):
-    def test_each_recommendation_has_its_own_row_and_trailing_blank_row(self):
+    def test_each_recommendation_has_its_own_row_without_a_trailing_blank_row(self):
         first = self.db.add_recommendation_to_consequence(
             self.cons_id, description='Första')
         second = self.db.add_recommendation_to_consequence(
@@ -7489,10 +7509,71 @@ class RecommendationPhysicalRowTests(RecommendationColumnTests):
                 if meta[2] == self.cons_id]
         self.assertEqual(
             [self.panel._table.item(r, self.panel._C_REK).text() for r in rows],
-            [f'R-{first:03d}. Första', f'R-{second:03d}. Andra', ''])
+            [f'R-{first:03d}. Första', f'R-{second:03d}. Andra'])
         self.assertEqual(
             [self.panel._row_recommendation_ids[r] for r in rows],
-            [first, second, None])
+            [first, second])
+
+    def test_risk_and_single_recommendation_cover_all_safeguard_rows(self):
+        for _ in range(3):
+            self.db.add_safeguard(self.cons_id)
+        rec_id = self.db.add_recommendation_to_consequence(
+            self.cons_id, description='En gemensam rekommendation')
+        self.panel.load_node(self.node_id)
+        rows = [r for r, meta in enumerate(self.panel._row_meta)
+                if meta[2] == self.cons_id]
+        self.assertEqual(len(rows), 3)
+        anchor = rows[0]
+        for col in (self.panel._C_KON, self.panel._C_RFORE,
+                    self.panel._C_SLUT, self.panel._C_REK):
+            self.assertEqual(self.panel._table.rowSpan(anchor, col), len(rows))
+        self.assertEqual(self.panel._table.item(anchor, self.panel._C_REK).text(),
+                         f'R-{rec_id:03d}. En gemensam rekommendation')
+        heights = [self.panel._table.rowHeight(r) for r in rows]
+        self.assertLessEqual(max(heights) - min(heights), 2)
+
+    def test_empty_recommendation_cell_covers_all_safeguard_rows(self):
+        for _ in range(2):
+            self.db.add_safeguard(self.cons_id)
+        self.panel.load_node(self.node_id)
+        rows = [r for r, meta in enumerate(self.panel._row_meta)
+                if meta[2] == self.cons_id]
+        self.assertEqual(self.panel._table.rowSpan(rows[0], self.panel._C_REK),
+                         len(rows))
+        self.assertEqual(self.panel._table.item(rows[0], self.panel._C_REK).text(), '')
+
+
+class RecommendationCatalogSyncTests(unittest.TestCase):
+    def test_catalog_delete_refreshes_scenario_and_worksheet(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            cons_id = win.db.add_consequence(cause_id)
+            rec_id = win.db.add_recommendation_to_consequence(
+                cons_id, description='Ta bort från båda vyerna')
+            win.scenario_panel.load_node(node_id)
+            win.worksheet.refresh()
+            win.recommendations_panel.load()
+            row = next(
+                r for r in range(win.recommendations_panel._table.rowCount())
+                if win.recommendations_panel._table.item(
+                    r, win.recommendations_panel._COL_REC).data(Qt.ItemDataRole.UserRole) == rec_id)
+            win.recommendations_panel._table.selectRow(row)
+
+            with unittest.mock.patch(
+                    'recommendations_panel.QMessageBox.question',
+                    return_value=QMessageBox.StandardButton.Yes):
+                win.recommendations_panel._delete_selected()
+            QApplication.processEvents()
+
+            self.assertIsNone(win.db.get_recommendation(rec_id))
+            for panel in (win.scenario_panel, win.worksheet._table_panel):
+                items = [panel._table.item(r, panel._C_REK).text()
+                         for r, meta in enumerate(panel._row_meta)
+                         if meta[2] == cons_id]
+                self.assertTrue(items)
+                self.assertTrue(all(f'R-{rec_id:03d}.' not in text for text in items))
 
 
 class EmptyScenarioCellDoubleClickTests(unittest.TestCase):

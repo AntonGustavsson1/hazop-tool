@@ -2,6 +2,25 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Gemensam konsekvenshöjd för risk, barriärer och rekommendationer (2026-08-29)
+
+Risk före, risk efter och konsekvens spänner nu över hela konsekvensblocket
+när flera barriärer finns. Barriärerna delar därför samma vertikala utrymme,
+med en liten läsbarhetsmarginal på första raden som följer Qt:s
+minimiradhöjd. Regeln ligger i `ScenarioTablePanel` och gäller därmed både
+HAZOP Scenario och HAZOP Worksheet.
+
+Den extra tomma rekommendationsraden är borttagen. En tom eller ensam
+rekommendation täcker hela REK-cellen över blocket; två eller fler
+rekommendationer visas som egna rader. Enter återanvänder den synliga
+REK-cellen i tilläggsläge och skapar nästa rad först efter sparning. Filtrering
+i rekommendationspopupen är uppskjuten till efter tangenttryckningen, så den
+kan inte stänga inline-editorn medan användaren skriver.
+
+När en rekommendation tas bort från den globala rekommendationslistan skickas
+nu en uppdateringssignal till både HAZOP Scenario och Worksheet. Bekräftelsen
+har dessutom `Ja` som förvalt Enter-val.
+
 ## Objektval i tom orsakscell matchar P&ID-dragning (2026-08-29)
 
 När en användare väljer en katalogtagg i popupen för en tom ORS-cell slås

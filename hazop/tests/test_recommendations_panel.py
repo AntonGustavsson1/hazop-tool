@@ -103,6 +103,24 @@ class RecommendationsPanelConstructionTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_catalog_delete_defaults_to_yes_and_emits_refresh_signal(self):
+        rec_id = self.db.add_recommendation(description="Ta bort mig")
+        panel = RecommendationsPanel(self.db)
+        changed = []
+        panel.recommendations_changed.connect(lambda: changed.append(True))
+        try:
+            panel.load()
+            panel._table.selectRow(0)
+            with unittest.mock.patch(
+                    'recommendations_panel.QMessageBox.question',
+                    return_value=QMessageBox.StandardButton.Yes) as question:
+                panel._delete_selected()
+            self.assertEqual(question.call_args.args[4], QMessageBox.StandardButton.Yes)
+            self.assertIsNone(self.db.get_recommendation(rec_id))
+            self.assertEqual(changed, [True])
+        finally:
+            panel.deleteLater()
+
 
 class RecommendationsPanelReferenceTests(unittest.TestCase):
     """Numbering/reference logic — one recommendation catalog row per

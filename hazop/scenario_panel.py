@@ -3238,6 +3238,7 @@ class RecommendationAssistPopup(QWidget):
         self._filter_text = str(
             editor.toPlainText() if hasattr(editor, 'toPlainText')
             else editor.text() or '').strip()
+        self._filter_refresh_token = 0
 
         layout = QVBoxLayout(self)
         layout.setSpacing(4)
@@ -3341,7 +3342,15 @@ class RecommendationAssistPopup(QWidget):
         if new_filter == self._filter_text:
             return
         self._filter_text = new_filter
-        self._refresh_list()
+        # Rebuilding a popup's button layout while QTextEdit is in the
+        # middle of processing a key can make the table delegate lose its
+        # editor on some Qt styles. Queue the visual filtering until that key
+        # event has completed; the editor keeps focus and the list still
+        # updates before the next normal UI turn.
+        self._filter_refresh_token += 1
+        token = self._filter_refresh_token
+        QTimer.singleShot(0, lambda: (
+            self._refresh_list() if token == self._filter_refresh_token else None))
 
     def _select_recommendation(self, rec_id):
         """Use one numbered catalogue row and discard the search text."""
@@ -4705,10 +4714,11 @@ class ScenarioTablePanel(QWidget):
                 n_cats = len(cat_rows)
                 n_sgs  = len(sgs)
                 n_recs = len(acts_by_cons.get(cons_d['id'], []))
-                # Recommendations occupy physical rows just like safeguards.
-                # Keep one trailing blank row so Enter can immediately create
-                # the next recommendation without reusing the previous cell.
-                n_rows = max(n_cats, n_sgs, n_recs + 1, 1)
+                # Safeguards, recommendations and category assessments share
+                # the same physical row grid. A trailing empty REK row used
+                # to add one unnecessary visual band to every consequence;
+                # Enter can instead reuse the visible REK cell in add mode.
+                n_rows = max(n_cats, n_sgs, n_recs, 1)
 
                 # Precompute exclusions per severity assessment
                 cat_excl_map = {}           # sev_id → set of excluded sg_ids
@@ -4876,11 +4886,19 @@ class ScenarioTablePanel(QWidget):
             cat_id   = cat_info[0] if cat_info else None
             return (cons_id, cat_id)
 
-        # KON and LOPA span by consequence. Recommendations are physical
-        # rows of their own, like safeguards, so REK is intentionally not
-        # included here.
+        # KON and LOPA always span by consequence. REK spans too while it
+        # has zero or one entry; two or more entries keep their own rows.
         for col in (self._C_KON, self._C_LOPA):
             _span_col(col, lambda r: _meta(r, 2))
+
+        rec_counts = {}
+        for r in range(n):
+            cons_id = _meta(r, 2)
+            if cons_id is not None and self._row_recommendation_ids[r] is not None:
+                rec_counts[cons_id] = rec_counts.get(cons_id, 0) + 1
+        _span_col(
+            self._C_REK,
+            lambda r: (_meta(r, 2) if rec_counts.get(_meta(r, 2), 0) <= 1 else None))
         logging.info('_apply_spans: J5 — KON/LOPA/REK columns spanned')
 
         # RFORE, SLUT: span by (cons_id, cat_id)
@@ -7741,7 +7759,14 @@ class ScenarioTablePanel(QWidget):
         row = next((r for r, meta in enumerate(self._row_meta)
                     if meta[2] == cons_id and
                     (r >= len(self._row_recommendation_ids) or
-                     self._row_recommendation_ids[r] is None)), -1)
+                     self._row_recommendation_ids[r] is None) and
+                    self._table.rowSpan(r, self._C_REK) == 1), -1)
+        if row < 0:
+            # A zero/one-recommendation REK cell spans the whole consequence
+            # block. Reuse its anchor in add mode; rebuild then materialises
+            # the next physical recommendation row.
+            row = next((r for r, meta in enumerate(self._row_meta)
+                        if meta[2] == cons_id), -1)
         if row < 0:
             return
         self._recommendation_force_add_cons_id = cons_id

@@ -1544,6 +1544,8 @@ class MainWindow(QMainWindow):
         # addWidget() call order, and this page is index 3 (right after
         # Worksheet, before Equipment), per the nav-rail renumbering above.
         self.recommendations_panel = RecommendationsPanel(self.db)
+        self.recommendations_panel.recommendations_changed.connect(
+            self._refresh_recommendation_views)
         self.view_stack.addWidget(self.recommendations_panel)
 
         # ── Page 4: Equipment ─────────────────────────────────────────────────
@@ -1866,6 +1868,11 @@ class MainWindow(QMainWindow):
         # of what was passed in.
         if hzp_path:
             self._load_hzp(hzp_path)
+
+    def _refresh_recommendation_views(self):
+        """Reflect catalog deletion in both live HAZOP table instances."""
+        self.scenario_panel.schedule_rebuild()
+        self.worksheet.refresh()
 
     def _switch_view(self, page):
         prev = self.view_stack.currentIndex()
