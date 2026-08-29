@@ -3724,6 +3724,10 @@ class EmptyOrsCellClickOpensCausePopupTests(unittest.TestCase):
 
             with unittest.mock.patch.object(panel, '_add_cause_via_plus_row') as mock_add:
                 panel._on_cell_clicked(row, panel._C_ORS)
+                # The real UI waits briefly to distinguish a single click
+                # from a double-click; invoke the pending callback directly
+                # here so the test does not depend on wall-clock timing.
+                panel._open_pending_empty_cause_popup()
 
             mock_add.assert_called_once()
             self.assertEqual(mock_add.call_args.args[0], dev_id)
@@ -6457,6 +6461,14 @@ class OrsTagZoneOpensMinimalPopupTests(unittest.TestCase):
             MockBigPopup.assert_not_called()
             fake_popup.show.assert_called_once()
 
+    def test_object_dropdown_starts_with_database_label(self):
+        from scenario_panel import CauseTagPopup
+        popup = CauseTagPopup(self.db, parent=self.panel)
+        try:
+            self.assertEqual(popup._object_cb.itemText(0), 'Objektdatabas')
+        finally:
+            popup.deleteLater()
+
     def test_committing_the_tag_popup_calls_apply_cause_obj_with_empty_description(self):
         """The commit path must reuse _apply_cause_obj's existing "only
         tag/type changed" fast path (empty description, no frequency)
@@ -7262,7 +7274,7 @@ class EmptyScenarioCellDoubleClickTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    def test_empty_cause_cell_opens_object_and_freetext_popup(self):
+    def test_empty_cause_double_click_starts_inline_edit_path(self):
         from hazop import ScenarioTablePanel
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
@@ -7273,10 +7285,10 @@ class EmptyScenarioCellDoubleClickTests(unittest.TestCase):
             row = next(r for r, meta in enumerate(panel._row_meta)
                        if meta[0] == dev_id and meta[1] is None)
             calls = []
-            panel._add_cause_via_plus_row = lambda did, global_pos=None: calls.append(
-                (did, global_pos))
+            panel._quick_add_cause = lambda did, from_enter=False: calls.append(
+                (did, from_enter))
             panel._on_cell_double_clicked(panel._table.item(row, panel._C_ORS))
-            self.assertEqual(calls[0][0], dev_id)
+            self.assertEqual(calls, [(dev_id, True)])
         finally:
             panel.deleteLater()
 

@@ -3844,6 +3844,20 @@ ocksÃ¥ ger rÃ¤tt placering i Ã¤ldre projekt dÃ¤r flera orsaker har samma
 Verifierat med `tests.test_integration.AutoConsequenceOnCauseAddTests` (5 tester),
 `tests.test_worksheet` (15 tester) och py_compile. Ingen visuell GUI-verifiering Ã¤r gjord.
 
+## Tom Orsak-cell: dubbelklick redigerar inline (2026-08-29)
+
+Enkelklick pÃ¥ en tom Orsak-cell behÃ¥ller objektpopupen, men den visas efter en
+kort fÃ¶rdrÃ¶jning sÃ¥ att ett dubbelklick kan sÃ¤rskiljas. Dubbelklick avbryter
+popupvÃ¤gen, skapar orsaken via den befintliga tomma Enter-vÃ¤gen och startar
+inline-redigering med standardorsakshjÃ¤lpen. Objektpopupen anvÃ¤nds dÃ¤rmed inte
+ensam nÃ¤r anvÃ¤ndaren uttryckligen dubbelklickar fÃ¶r att skriva fritext.
+
+I CauseTagPopup heter fÃ¶rsta rullistealternativet nu `Objektdatabas` i stÃ¤llet
+fÃ¶r `Nytt objekt`; ingen funktionell objektkoppling Ã¤r Ã¤ndrad.
+
+Verifierat med sex riktade integrationstester och `py_compile`. Ingen visuell
+GUI-verifiering Ã¤r gjord.
+
 ## Tomma celler: dubbelklick Ã¶ppnar rÃ¤tt fritextpopup (2026-08-29)
 
 Dubbelklick pÃ¥ en tom Orsak-cell i HAZOP Scenario eller Worksheet anvÃ¤nder nu

@@ -3799,6 +3799,12 @@ class ScenarioTablePanel(QWidget):
         self._enter_col = -1
         self._last_enter_committed = False
         self._double_click_edit = None  # (row, col, viewport position)
+        self._empty_cause_click_target = None
+        self._empty_cause_click_timer = QTimer(self)
+        self._empty_cause_click_timer.setSingleShot(True)
+        self._empty_cause_click_timer.setInterval(250)
+        self._empty_cause_click_timer.timeout.connect(
+            self._open_pending_empty_cause_popup)
         # Set while the blank REK editor below saved recommendations is
         # active; its text must create a sibling, never overwrite the sole
         # existing recommendation.
@@ -5958,13 +5964,12 @@ class ScenarioTablePanel(QWidget):
             if cause_id is not None:
                 self.item_selected.emit(CAUSE_T, cause_id)
             elif dev_id is not None:
-                # Empty placeholder ORS cell (2026-08-12, see NOTES.md) —
-                # open the same CauseObjectPopup as "+ Ny orsak" instead of
-                # starting inline text edit, so creating a cause behaves
-                # identically regardless of entry point.
+                # Wait briefly so a double-click can take the inline-edit
+                # path below. A single click still opens the object popup.
                 idx = self._table.model().index(row, col)
                 gp = self._table.viewport().mapToGlobal(self._table.visualRect(idx).topLeft())
-                self._add_cause_via_plus_row(dev_id, global_pos=gp)
+                self._empty_cause_click_target = (dev_id, gp)
+                self._empty_cause_click_timer.start()
                 return
             return
         if col == self._C_KON and row < len(self._row_meta):
@@ -6069,9 +6074,13 @@ class ScenarioTablePanel(QWidget):
         if 0 <= row < len(self._row_meta):
             dev_id, cause_id, cons_id, _sg_id = self._row_meta[row]
             if col == self._C_ORS and cause_id is None and dev_id is not None:
-                gp = self._table.viewport().mapToGlobal(
-                    self._table.visualRect(self._table.model().index(row, col)).topLeft())
-                self._add_cause_via_plus_row(dev_id, global_pos=gp)
+                # Cancel the delayed single-click popup. Enter the same
+                # blank-cause path used by Enter, which rebuilds the row and
+                # starts inline free-text editing; the standard-cause helper
+                # popup is then shown by the delegate as usual.
+                self._empty_cause_click_timer.stop()
+                self._empty_cause_click_target = None
+                self._quick_add_cause(dev_id, from_enter=True)
                 self._double_click_edit = None
                 return
             if (col == self._C_KON and cons_id is not None and
@@ -7235,6 +7244,12 @@ class ScenarioTablePanel(QWidget):
             self._schedule_rebuild()
 
     # ── Feature 4: clone scenario ─────────────────────────────────────────────
+    def _open_pending_empty_cause_popup(self):
+        target = self._empty_cause_click_target
+        self._empty_cause_click_target = None
+        if target is not None:
+            self._add_cause_via_plus_row(target[0], global_pos=target[1])
+
     def _clone_scenario(self, cause_id):
         cause = self.db.get_cause(cause_id)
         if not cause: return

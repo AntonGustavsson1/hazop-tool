@@ -2616,7 +2616,7 @@ class CauseTagPopup(QDialog):
         self._object_cb = QComboBox()
         self._object_cb.setFixedHeight(CONFIG['H_BTN_SMALL'])
         self._object_cb.setStyleSheet(_small)
-        self._object_cb.addItem("Nytt objekt…", None)
+        self._object_cb.addItem("Objektdatabas", None)
         try:
             for equipment in db.equipment_items():
                 equipment = dict(equipment)
