@@ -67,6 +67,7 @@ from hazop import (  # noqa: E402
 from PyQt6.QtWidgets import (  # noqa: E402
     QApplication, QGraphicsPixmapItem, QTreeWidgetItemIterator, QTreeWidgetItem,
     QCheckBox, QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit,
+    QListWidget,
 )
 from PyQt6.QtGui import QPixmap, QFocusEvent, QColor  # noqa: E402
 from PyQt6.QtCore import Qt, QPoint, QDate, QEvent, QThread, pyqtSignal  # noqa: E402
@@ -1445,6 +1446,29 @@ class TreePanelRefreshQueryBatchingTests(unittest.TestCase):
         self.assertLess(large_tree_count, small_tree_count + 15,
             f"refresh() SELECT count grew with tree size ({small_tree_count} "
             f"-> {large_tree_count}) — the N+1 query pattern may have regressed")
+
+
+class FrequencyPickerPopupTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_frequency_levels_are_shown_in_a_compact_list_with_frame(self):
+        from tree_panel import FrequencyPickerPopup
+
+        popup = FrequencyPickerPopup(current_f_level=1)
+        try:
+            lists = popup.findChildren(QListWidget)
+            self.assertEqual(len(lists), 1)
+            self.assertGreater(lists[0].count(), 1)
+            selected = lists[0].selectedItems()
+            self.assertEqual(len(selected), 1)
+            self.assertEqual(selected[0].data(Qt.ItemDataRole.UserRole), 1)
+            self.assertIn("border:1px solid #4B5563", popup.styleSheet())
+            self.assertTrue(popup.testAttribute(Qt.WidgetAttribute.WA_StyledBackground))
+        finally:
+            popup.close()
+            popup.deleteLater()
 
 
 if __name__ == "__main__":

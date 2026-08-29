@@ -2826,8 +2826,8 @@ class FrequencyPickerPopup(QDialog):
     F-level preset (labelled with the live-configured axis text) or an
     exact numeric events/year value.
 
-    Mirrors RRFPopup's "preset buttons + custom spinbox" layout and
-    ConsCategoryMatrixPopup's frameless small-popup styling.
+    Uses the same compact, lightly framed presentation as the standard-cause
+    helper popup, with the F-level presets shown as one simple list.
     """
 
     # (f_level_int_or_None, numeric_freq_or_None) — exactly one is non-None.
@@ -2838,34 +2838,54 @@ class FrequencyPickerPopup(QDialog):
         self.setWindowTitle("Ändra frekvens")
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setObjectName("frequencyPickerPopup")
+        self.setStyleSheet(
+            "QWidget#frequencyPickerPopup{background:#FFFFFF;"
+            "border:1px solid #4B5563;border-radius:3px;}"
+            "QListWidget{border:none;background:#FFFFFF;font-size:10px;}"
+            "QListWidget::item{padding:3px 6px;color:#17191C;}"
+            "QListWidget::item:hover{background:#F5F5F3;}"
+            "QListWidget::item:selected{background:#E8E9E6;color:#17191C;}")
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(6)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(4)
 
-        layout.addWidget(QLabel("<b>Frekvens</b>"))
+        header = QLabel("Frekvens")
+        header.setStyleSheet("border:none;color:#17191C;font-size:10px;"
+                             "font-weight:bold;")
+        layout.addWidget(header)
 
         cfg  = get_matrix()
         cols = cfg.get('cols', 7)
         # Valid F-level range is -1 .. (cols - 2): column 0 is F=-1.
         f_levels = list(range(-1, cols - 1))
 
-        # ── Preset buttons (wrapped grid, matrix-configured labels) ──────────
-        presets = QGridLayout()
-        presets.setSpacing(4)
-        self._preset_btns = {}
-        per_row = 4
-        for i, f in enumerate(f_levels):
-            btn = QPushButton(freq_axis_label_full(f))
-            btn.setToolTip(freq_axis_label_full(f))
-            btn.setStyleSheet(self._bstyle(f == current_f_level))
-            btn.clicked.connect(partial(self._pick_preset, f))
-            self._preset_btns[f] = btn
-            presets.addWidget(btn, i // per_row, i % per_row)
-        layout.addLayout(presets)
+        # ── Preset list (matrix-configured labels) ──────────────────────────
+        presets = QListWidget()
+        presets.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        presets.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        presets.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        presets.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        presets.setMinimumWidth(200)
+        presets.setMaximumHeight(150)
+        self._preset_items = {}
+        for f in f_levels:
+            item = QListWidgetItem(freq_axis_label_full(f))
+            item.setData(Qt.ItemDataRole.UserRole, f)
+            item.setToolTip(freq_axis_label_full(f))
+            presets.addItem(item)
+            self._preset_items[f] = item
+            if f == current_f_level:
+                item.setSelected(True)
+        presets.itemClicked.connect(
+            lambda item: self._pick_preset(item.data(Qt.ItemDataRole.UserRole)))
+        layout.addWidget(presets)
 
         # ── Custom numeric value (events/year) ───────────────────────────────
         custom_row = QHBoxLayout()
+        custom_row.setSpacing(4)
         custom_row.addWidget(QLabel("Eget (händelser/år):"))
         self._spin = QDoubleSpinBox()
         self._spin.setDecimals(6)
@@ -2882,7 +2902,7 @@ class FrequencyPickerPopup(QDialog):
 
         # ── Live F-level preview for the numeric field ───────────────────────
         self._preview_lbl = QLabel()
-        self._preview_lbl.setStyleSheet("color:#555; font-size:10px;")
+        self._preview_lbl.setStyleSheet("border:none;color:#555;font-size:9px;")
         layout.addWidget(self._preview_lbl)
         if current_numeric_freq is not None:
             self._update_preview_label(float(current_numeric_freq))
@@ -2890,16 +2910,6 @@ class FrequencyPickerPopup(QDialog):
             self._update_preview_label(self._spin.value())
 
         self.adjustSize()
-
-    @staticmethod
-    def _bstyle(selected: bool) -> str:
-        if selected:
-            return ("QPushButton{background:#2F5FD0;color:white;border:none;"
-                    "border-radius:4px;padding:5px;font-weight:bold;font-size:10px;}"
-                    "QPushButton:hover{background:#3D6BD8;}")
-        return ("QPushButton{background:#F5F5F3;color:#17191C;border:1px solid #CFD1CE;"
-                "border-radius:4px;padding:5px;font-size:10px;}"
-                "QPushButton:hover{background:#E8E9E6;border:1px solid #B3B7B2;}")
 
     def _update_preview_label(self, val):
         f_lvl = freq_to_f_level(val) if val else -1

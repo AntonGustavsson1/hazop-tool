@@ -1,5 +1,12 @@
 # NOTES.md — Beslut och kontext
 
+## Frekvenspopup i samma minimalistiska stil (2026-08-29)
+
+Frekvenspopupen använder nu samma vita bakgrund och 1 px mörkgrå ram som
+standardorsakspopupen. F-nivåerna visas vertikalt i en kompakt lista i
+stället för ett rutnät med knappar. Egen numerisk frekvens och befintlig
+val-/sparlogik är oförändrade.
+
 ## Standardorsakspopupens ram målas säkert (2026-08-29)
 
 StandardCauseSuggestPopup använder nu en namngiven stylesheet-selektor och
