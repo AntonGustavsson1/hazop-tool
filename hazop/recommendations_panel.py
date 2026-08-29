@@ -341,16 +341,33 @@ class RecommendationsPanel(QWidget):
                 due = QDateEdit(self._table)
                 due.setCalendarPopup(True)
                 due.setDisplayFormat('yyyy-MM-dd')
+                # Keep an unset due date genuinely blank.  Using today's
+                # date as a fallback made merely loading the page populate
+                # and sometimes persist a date the user never entered.
+                blank_date = QDate(1900, 1, 1)
+                due.setMinimumDate(blank_date)
+                # Qt falls back to formatting the minimum date when this is
+                # an empty string; a single blank forces the special-value
+                # path while remaining visually empty.
+                due.setSpecialValueText(' ')
                 due.setProperty('recommendation_id', rec_id)
                 parsed = QDate.fromString(rec['due_date'] or '', 'yyyy-MM-dd')
                 if parsed.isValid():
                     due.setDate(parsed)
                 else:
-                    due.setSpecialValueText('')
-                    due.setDate(QDate.currentDate())
+                    due.setDate(blank_date)
+                    due.lineEdit().clear()
+
+                def save_due_date(date, rid=rec_id, empty=blank_date, widget=due):
+                    if date == empty:
+                        widget.lineEdit().clear()
+                        value = ''
+                    else:
+                        value = date.toString('yyyy-MM-dd')
+                    self.db.update_recommendation(rid, due_date=value)
+
                 due.dateChanged.connect(
-                    lambda date, rid=rec_id: self.db.update_recommendation(
-                        rid, due_date=date.toString('yyyy-MM-dd')))
+                    save_due_date)
                 self._table.setCellWidget(row, self._COL_DUE, due)
                 combo = QComboBox(self._table)
                 combo.setEditable(True)

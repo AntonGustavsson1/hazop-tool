@@ -1,5 +1,12 @@
 # NOTES.md — Beslut och kontext
 
+## Tomt åtgärdsdatum i rekommendationer (2026-08-29)
+
+En rekommendation utan `due_date` visas nu blank på rekommendationssidan.
+Panelen använder inte längre dagens datum som utfyllnad vid laddning. Ett
+datum sparas först när användaren väljer ett, och datumfältets minvärde kan
+användas för att återställa fältet till tomt.
+
 ## Rekommendationsnummer i egen kolumn (2026-08-29)
 
 På rekommendationssidan är löpnumret nu en separat, ej redigerbar `Nr`-

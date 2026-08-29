@@ -19,7 +19,7 @@ from pathlib import Path
 # ── Headless Qt setup — MUST happen before importing PyQt6 or hazop ────────
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import Qt, QEvent
+from PyQt6.QtCore import Qt, QDate, QEvent
 from PyQt6.QtGui import QKeyEvent
 from PyQt6.QtWidgets import QHeaderView, QMessageBox
 
@@ -83,6 +83,23 @@ class RecommendationsPanelConstructionTests(unittest.TestCase):
             for col in range(panel._table.columnCount()):
                 self.assertEqual(header.sectionResizeMode(col),
                                  QHeaderView.ResizeMode.Interactive)
+        finally:
+            panel.deleteLater()
+
+    def test_empty_due_date_stays_blank_until_user_sets_one(self):
+        rec_id = self.db.add_recommendation(description="Utan datum")
+        panel = RecommendationsPanel(self.db)
+        try:
+            panel.load()
+            due = panel._table.cellWidget(0, panel._COL_DUE)
+            self.assertEqual(due.lineEdit().text().strip(), '')
+            self.assertEqual(self.db.get_recommendation(rec_id)['due_date'], '')
+
+            due.setDate(QDate(2026, 9, 15))
+            self.assertEqual(self.db.get_recommendation(rec_id)['due_date'], '2026-09-15')
+
+            due.setDate(due.minimumDate())
+            self.assertEqual(self.db.get_recommendation(rec_id)['due_date'], '')
         finally:
             panel.deleteLater()
 
