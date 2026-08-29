@@ -3870,6 +3870,19 @@ likadant i bÃ¥da vyerna.
 Verifierat med tvÃ¥ nya integrationstester och `tests.test_smoke` (12 tester).
 Ingen visuell GUI-verifiering Ã¤r gjord.
 
+## Worksheet: tom konsekvens redigeras inline (2026-08-29)
+
+En tom konsekvens i HAZOP Worksheet Ã¶ppnar inte lÃ¤ngre konsekvenskedjepopupen
+vid dubbelklick. Den redigeras direkt i cellen, pÃ¥ samma sÃ¤tt som en ifylld
+konsekvens. Den vanliga Scenario-vyn behÃ¥ller kedjepopupen fÃ¶r tomma
+konsekvenser, och den explicita hÃ¶gerklicksvÃ¤gen till kedjeredigeraren Ã¤r
+ofÃ¶rÃ¤ndrad.
+
+Verifierat med `tests.test_worksheet` (16 tester),
+`tests.test_integration.EmptyScenarioCellDoubleClickTests` (2 tester),
+`tests.test_smoke` (12 tester) och py_compile. Ingen visuell GUI-verifiering
+Ã¤r gjord.
+
 ## Worksheet: Enter och cross-view-synk (2026-08-28)
 
 Worksheetens inbäddade ScenarioTablePanel uppdaterar nu sig själv och väljer

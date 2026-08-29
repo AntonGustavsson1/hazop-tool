@@ -3783,6 +3783,11 @@ class ScenarioTablePanel(QWidget):
         self._force_utr_column_hidden = False  # if True, Utrustning column stays hidden regardless of _all_nodes (set by hide_equipment_column)
         self._hide_unplaced_tag = False
         self._merge_node_labels = False
+        # Hosts can opt out of the empty-consequence chain popup.  The main
+        # Scenario view keeps the popup, while Worksheet edits the cell
+        # directly so both its populated and empty consequence cells behave
+        # alike.
+        self._empty_consequence_chain_popup_enabled = True
         self._row_meta = []   # list of (dev_id, cause_id, cons_id, sg_id) per visible row
         self._row_recommendation_ids = []
         # row index -> {col: ('cause', dev_id) | ('consequence', cause_id) |
@@ -4138,6 +4143,15 @@ class ScenarioTablePanel(QWidget):
     def merge_node_labels(self):
         """Merge adjacent rows with the same displayed node name."""
         self._merge_node_labels = True
+
+    def set_empty_consequence_chain_popup_enabled(self, enabled):
+        """Control the popup used for an empty consequence on double-click.
+
+        HAZOP Worksheet uses the same direct inline-edit behavior as the
+        regular Scenario view for this interaction.  The explicit context
+        menu action for editing a consequence chain is intentionally kept.
+        """
+        self._empty_consequence_chain_popup_enabled = bool(enabled)
 
     # Columns that stretch to fill remaining space in fill mode
     _STRETCH_COLS = None  # set after class constants are known
@@ -6068,9 +6082,9 @@ class ScenarioTablePanel(QWidget):
             return
         row = item.row()
         col = item.column()
-        # Empty cells need their creation/editing popup rather than a generic
-        # editor with no database identity.  The same ScenarioTablePanel is
-        # embedded by HAZOP Worksheet, so this keeps both views consistent.
+        # Empty cause cells still use their creation path.  Empty consequence
+        # cells may use the chain popup in the main Scenario view; Worksheet
+        # disables that opt-in so this falls through to ordinary inline edit.
         if 0 <= row < len(self._row_meta):
             dev_id, cause_id, cons_id, _sg_id = self._row_meta[row]
             if col == self._C_ORS and cause_id is None and dev_id is not None:
@@ -6083,7 +6097,8 @@ class ScenarioTablePanel(QWidget):
                 self._quick_add_cause(dev_id, from_enter=True)
                 self._double_click_edit = None
                 return
-            if (col == self._C_KON and cons_id is not None and
+            if (self._empty_consequence_chain_popup_enabled and
+                    col == self._C_KON and cons_id is not None and
                     not (item.text() or '').strip()):
                 self._open_chain_editor(cons_id)
                 self._double_click_edit = None

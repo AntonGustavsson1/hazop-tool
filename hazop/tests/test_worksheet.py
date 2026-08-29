@@ -160,6 +160,36 @@ class HAZOPWorksheetTests(unittest.TestCase):
         finally:
             ws.deleteLater()
 
+    def test_empty_consequence_double_click_edits_inline_not_chain_popup(self):
+        """Worksheet keeps consequence editing in the table, even when blank."""
+        from hazop import HAZOPWorksheet, ScenarioTablePanel
+
+        ids = self._make_full_chain(node_name="Nod A")
+        ws = HAZOPWorksheet(self.db)
+        try:
+            ws.refresh()
+            panel = ws._table_panel
+            consequence_row = next(
+                row for row, meta in enumerate(panel._row_meta)
+                if meta[2] == ids['cons_id'])
+            item = panel._table.item(consequence_row, ScenarioTablePanel._C_KON)
+            self.assertIsNotNone(item)
+            self.assertFalse(panel._empty_consequence_chain_popup_enabled)
+
+            with (
+                unittest.mock.patch.object(panel, "_open_chain_editor") as popup,
+                unittest.mock.patch.object(panel._table, "edit",
+                                           return_value=True) as edit,
+            ):
+                panel._on_cell_double_clicked(item)
+
+            popup.assert_not_called()
+            edit.assert_called_once_with(
+                panel._table.model().index(
+                    consequence_row, ScenarioTablePanel._C_KON))
+        finally:
+            ws.deleteLater()
+
     def test_refresh_after_creating_nodes_populates_and_loads(self):
         from hazop import HAZOPWorksheet
 

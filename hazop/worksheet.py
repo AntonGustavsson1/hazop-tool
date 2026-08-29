@@ -64,6 +64,9 @@ class HAZOPWorksheet(QWidget):
         self._table_panel.hide_equipment_column()
         self._table_panel.hide_unplaced_tag()
         self._table_panel.merge_node_labels()
+        # Worksheet consequences are edited directly in the cell, including
+        # empty ones.  Do not open the consequence-chain popup on double-click.
+        self._table_panel.set_empty_consequence_chain_popup_enabled(False)
         # The embedded panel has the same Enter/drop signals as HAZOP
         # Scenario, but it is a separate instance and therefore needs its
         # own handoff. Without this, Enter creates the DB row but the visible
