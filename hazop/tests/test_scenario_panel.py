@@ -3035,6 +3035,44 @@ class KonCellCategoryBadgeMovedToRiskMatrixTests(unittest.TestCase):
             panel.deleteLater()
 
 
+class RecommendationInlineAddRowTests(unittest.TestCase):
+    """The temporary blank recommendation row must not be covered by the
+    existing recommendation's consequence-level span."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_rek_add_row_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_new_recommendation_editor_gets_own_physical_row(self):
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        rec_id = self.db.add_recommendation_to_consequence(cons_id, 'Befintlig')
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            panel._recommendation_add_placeholder_cons_id = cons_id
+            panel._rebuild()
+            rows = [r for r, meta in enumerate(panel._row_meta)
+                    if meta[2] == cons_id]
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(panel._row_recommendation_ids[rows[0]], rec_id)
+            self.assertIsNone(panel._row_recommendation_ids[rows[1]])
+            self.assertEqual(panel._table.rowSpan(rows[0], panel._C_REK), 1)
+            self.assertEqual(panel._table.rowSpan(rows[1], panel._C_REK), 1)
+        finally:
+            panel.deleteLater()
+
+
 class TooltipContrastTests(unittest.TestCase):
     """Tooltip appearance is application-global, never copied into local QSS."""
 

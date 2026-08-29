@@ -4976,6 +4976,10 @@ class ScenarioTablePanel(QWidget):
 
         # KON and LOPA always span by consequence. REK spans too while it
         # has zero or one entry; two or more entries keep their own rows.
+        # During sequential recommendation entry an extra physical row is
+        # deliberately materialised. That blank editor row must remain a
+        # separate REK cell even when there is only one saved recommendation;
+        # otherwise the existing cell's span paints over the editor row.
         for col in (self._C_KON, self._C_LOPA):
             _span_col(col, lambda r: _meta(r, 2))
 
@@ -4984,9 +4988,17 @@ class ScenarioTablePanel(QWidget):
             cons_id = _meta(r, 2)
             if cons_id is not None and self._row_recommendation_ids[r] is not None:
                 rec_counts[cons_id] = rec_counts.get(cons_id, 0) + 1
-        _span_col(
-            self._C_REK,
-            lambda r: (_meta(r, 2) if rec_counts.get(_meta(r, 2), 0) <= 1 else None))
+        def _rek_key(r):
+            cons_id = _meta(r, 2)
+            if (cons_id == self._recommendation_add_placeholder_cons_id and
+                    cons_id is not None):
+                rec_id = (self._row_recommendation_ids[r]
+                          if r < len(self._row_recommendation_ids) else None)
+                return ('recommendation', rec_id) if rec_id is not None \
+                    else ('recommendation_placeholder', cons_id)
+            return (cons_id if rec_counts.get(cons_id, 0) <= 1 else None)
+
+        _span_col(self._C_REK, _rek_key)
         logging.info('_apply_spans: J5 — KON/LOPA/REK columns spanned')
 
         # RFORE and SLUT follow the category rows. With two category

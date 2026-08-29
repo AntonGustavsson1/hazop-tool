@@ -1,5 +1,11 @@
 # NOTES.md — Beslut och kontext
 
+## Ny rekommendation får egen redigeringsrad (2026-08-29)
+
+När en ny rekommendation påbörjas under en befintlig rekommendation skapas
+den extra fysiska raden som en separat REK-cell. Den befintliga rekommendationens
+span täcker därför inte längre den tomma raden medan användaren skriver.
+
 ## P&ID-räknare visar antal HAZOP-rader (2026-08-29)
 
 Gummibandets tre räknare följer nu tabellrader i stället för att blanda
