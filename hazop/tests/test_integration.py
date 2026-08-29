@@ -6469,6 +6469,36 @@ class OrsTagZoneOpensMinimalPopupTests(unittest.TestCase):
         finally:
             popup.deleteLater()
 
+    def test_selecting_object_database_item_commits_object_immediately(self):
+        from scenario_panel import CauseTagPopup
+        equipment_id = self.db.add_equipment_item(
+            'PV-101', 'PV-101', 'PV', 0, 'Ventil', '', 0)
+        popup = CauseTagPopup(self.db, parent=self.panel)
+        committed = []
+        popup.committed.connect(lambda comp_type, tag:
+                                committed.append((comp_type, tag)))
+        try:
+            index = next(i for i in range(1, popup._object_cb.count())
+                         if popup._object_cb.itemData(i).get('id') == equipment_id)
+            popup._object_cb.setCurrentIndex(index)
+            self.assertEqual(committed, [('Ventil', 'PV-101')])
+        finally:
+            popup.deleteLater()
+
+    def test_empty_object_cause_double_click_starts_inline_text_edit(self):
+        from scenario_panel import CauseTagPopup
+        # The cause created in setUp has no object/tag yet.  Double-clicking
+        # its blank ORS cell must leave the tag popup path and enter the
+        # normal text editor instead.
+        with unittest.mock.patch.object(self.panel, '_show_cause_obj_popup') as popup, \
+             unittest.mock.patch.object(self.panel._table, 'edit', return_value=True) as edit:
+            item = self.panel._table.item(self.row, self.panel._C_ORS)
+            self.panel._on_cell_double_clicked(item)
+
+        popup.assert_not_called()
+        edit.assert_called_once_with(
+            self.panel._table.model().index(self.row, self.panel._C_ORS))
+
     def test_committing_the_tag_popup_calls_apply_cause_obj_with_empty_description(self):
         """The commit path must reuse _apply_cause_obj's existing "only
         tag/type changed" fast path (empty description, no frequency)

@@ -2703,6 +2703,10 @@ class CauseTagPopup(QDialog):
             type_index = self._type_cb.findText(wanted_type)
             if type_index >= 0:
                 self._type_cb.setCurrentIndex(type_index)
+            # Selecting an existing catalogue object is itself the user's
+            # action: persist the link immediately instead of only copying
+            # tag/type into the fields and waiting for a second action.
+            self._commit()
         self._object_cb.currentIndexChanged.connect(_select_object)
 
         # Once the cause is linked to a defined P&ID object, placement is

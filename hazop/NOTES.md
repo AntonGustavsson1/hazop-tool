@@ -3883,6 +3883,16 @@ Verifierat med `tests.test_worksheet` (16 tester),
 `tests.test_smoke` (12 tester) och py_compile. Ingen visuell GUI-verifiering
 Ã¤r gjord.
 
+## Objektdatabas: val sparas direkt och tom objektcell kan redigeras (2026-08-29)
+
+Ett klick pÃ¥ ett befintligt objekt i `Objektdatabas` i CauseTagPopup sparar nu
+direkt objektkopplingen via den befintliga commit-signalen. Ett befintligt men
+objektlÃ¶st orsaksfÃ¤lt fÃ¥r samtidigt vanlig inline-redigering vid dubbelklick;
+tag-popupen anvÃ¤nds fortfarande frÃ¥n den faktiska taggzonen nÃ¤r en tagg finns.
+
+Verifierat med sex riktade Orsak/tagg-tester, tvÃ¥ tomcellstester, 16 Worksheet-
+tester och py_compile. Ingen visuell GUI-verifiering Ã¤r gjord.
+
 ## Worksheet: Enter och cross-view-synk (2026-08-28)
 
 Worksheetens inbäddade ScenarioTablePanel uppdaterar nu sig själv och väljer

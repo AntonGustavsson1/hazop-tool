@@ -6180,12 +6180,10 @@ class ScenarioTablePanel(QWidget):
                 # object bound yet" and re-routed into the tag/object
                 # picker popup, so the inline free-text editor below could
                 # never be reached for a grouped cause at all.
-                if (cause_id is not None and len(group_tags) < 2 and
-                        not (obj_data[1] or '').strip()):
-                    gp = self._table.viewport().mapToGlobal(
-                        self._table.visualRect(self._table.model().index(row, col)).topLeft())
-                    self._show_cause_obj_popup(row, cause_id, gp)
-                    return
+                # A real cause with no object tag is still an ordinary blank
+                # text field.  Keep double-click available for direct inline
+                # editing; the tag popup is opened only from the rendered tag
+                # zone (when a tag exists).
                 if cause_id is not None and len(group_tags) >= 2 and group_line is None:
                     # No visual group row was hit.  Do not let this event
                     # fall through to the generic full-cell editor.
