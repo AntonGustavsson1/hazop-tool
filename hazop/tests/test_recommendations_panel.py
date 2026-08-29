@@ -121,6 +121,49 @@ class RecommendationsPanelConstructionTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_catalog_delete_compacts_visible_numbers_but_keeps_links_stable(self):
+        """Deleting R-002 makes the following entry R-002 without changing
+        its internal id or its consequence link."""
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+
+        first_id = self.db.add_recommendation(description="Först")
+        removed_id = self.db.add_recommendation(description="Tas bort")
+        following_id = self.db.add_recommendation(description="Följer med")
+        self.db.link_recommendation_to_consequence(first_id, cons_id)
+        self.db.link_recommendation_to_consequence(following_id, cons_id)
+
+        panel = RecommendationsPanel(self.db)
+        try:
+            panel.load()
+            panel._table.selectRow(1)
+            with unittest.mock.patch(
+                    'recommendations_panel.QMessageBox.question',
+                    return_value=QMessageBox.StandardButton.Yes):
+                panel._delete_selected()
+
+            remaining = self.db.all_recommendations()
+            self.assertEqual([rec['id'] for rec in remaining], [first_id, following_id])
+            self.assertEqual([rec['display_number'] for rec in remaining], [1, 2])
+            linked = self.db.recommendations_for_consequence(cons_id)
+            self.assertEqual([rec['id'] for rec in linked], [first_id, following_id])
+            self.assertEqual([rec['display_number'] for rec in linked], [1, 2])
+
+            new_id = self.db.add_recommendation(description="Ny sist")
+            self.assertGreater(new_id, following_id)
+            self.assertEqual(self.db.get_recommendation(new_id)['display_number'], 3)
+            panel.load()
+            self.assertEqual(panel._table.item(0, panel._COL_REC).text(),
+                             "R-001. Först")
+            self.assertEqual(panel._table.item(1, panel._COL_REC).text(),
+                             "R-002. Följer med")
+            self.assertEqual(panel._table.item(2, panel._COL_REC).text(),
+                             "R-003. Ny sist")
+        finally:
+            panel.deleteLater()
+
 
 class RecommendationsPanelReferenceTests(unittest.TestCase):
     """Numbering/reference logic — one recommendation catalog row per

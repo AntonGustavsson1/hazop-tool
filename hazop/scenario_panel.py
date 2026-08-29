@@ -1902,8 +1902,13 @@ class _ScenarioDelegate(QStyledItemDelegate):
             if not rec_id and item is not None:
                 meta = item.data(Qt.ItemDataRole.UserRole) or ()
                 rec_id = meta[2] if len(meta) > 2 else None
+            # ``id`` is the stable foreign-key value.  The compact R-number
+            # shown to the user can change when an earlier recommendation is
+            # removed, so use the dedicated display sequence here too.
+            rec = panel.db.get_recommendation(rec_id) if rec_id else None
+            rec_number = (rec or {}).get('display_number', rec_id)
             number_width = QFontMetrics(option.font).horizontalAdvance(
-                f"R-{int(rec_id):03d}.  ") if rec_id else 0
+                f"R-{int(rec_number):03d}.  ") if rec_number else 0
             rect = QRect(option.rect)
             left = rect.left() + 5 + number_width
             editor.setGeometry(QRect(left, rect.top() + 2,
@@ -3307,7 +3312,7 @@ class RecommendationAssistPopup(QWidget):
         needle = self._filter_text.casefold().strip()
         matching_recs = [rec for rec in recs if (
             not needle or needle in
-            f"R-{rec['id']:03d}. {rec['description'] or ''}".casefold())]
+            f"R-{rec['display_number']:03d}. {rec['description'] or ''}".casefold())]
         visible_recs = [rec for rec in matching_recs if rec['id'] not in linked]
         if not visible_recs:
             empty_text = ("Alla matchande rekommendationer är redan länkade."
@@ -3320,7 +3325,7 @@ class RecommendationAssistPopup(QWidget):
             return
         for rec in visible_recs:
             button = QPushButton(
-                f"R-{rec['id']:03d}. {rec['description'] or 'Ny rekommendation'}")
+                f"R-{rec['display_number']:03d}. {rec['description'] or 'Ny rekommendation'}")
             button.setStyleSheet(self._RESULT_STYLE)
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.setToolTip("Klicka för att länka denna rekommendation")
@@ -5614,7 +5619,7 @@ class ScenarioTablePanel(QWidget):
         rec_description = ''
         if recommendation is not None:
             rec_description = (recommendation['description'] or '').strip()
-        rek_text = (f"R-{recommendation['id']:03d}. "
+        rek_text = (f"R-{recommendation['display_number']:03d}. "
                     f"{rec_description or 'Ny rekommendation'}"
                     if recommendation else '')
         rek_item = QTableWidgetItem(rek_text or '')
@@ -5644,7 +5649,7 @@ class ScenarioTablePanel(QWidget):
         if not acts:
             return ''
         return '\n'.join(
-            f"R-{a['id']:03d}. {(a['description'] or '').strip() or 'Ny rekommendation'}"
+            f"R-{a['display_number']:03d}. {(a['description'] or '').strip() or 'Ny rekommendation'}"
             for a in acts)
 
     def _get_cons_context(self, cons_id: int):
@@ -8336,7 +8341,7 @@ class ScenarioTablePanel(QWidget):
             if not rec_id or not cons_id:
                 return
             rec = self.db.get_recommendation(rec_id)
-            label = f"R-{rec_id:03d}"
+            label = f"R-{(rec or {}).get('display_number', rec_id):03d}"
             if rec and (rec.get('description') or '').strip():
                 label += f" – {(rec.get('description') or '').strip()[:70]}"
             if QMessageBox.question(

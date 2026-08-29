@@ -144,11 +144,11 @@ CREATE TABLE IF NOT EXISTS reduction_factors (
 -- no reuse) with a shared catalog + many-to-many link, so the same
 -- recommendation text can be linked to several consequences instead of
 -- being duplicated (see NOTES.md "Rekommendationshantering — delad
--- katalog med återanvändning"). recommendations.id doubles as the
--- user-visible, never-reused running number ("R-XXX") since SQLite
--- AUTOINCREMENT already guarantees that.
+-- katalog med återanvändning"). `id` is the stable internal key; the
+-- user-visible R-number is a separate compact display sequence.
 CREATE TABLE IF NOT EXISTS recommendations (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    display_number  INTEGER NOT NULL DEFAULT 0,
     description     TEXT NOT NULL DEFAULT '',
     responsible     TEXT DEFAULT '',
     due_date        TEXT DEFAULT '',
@@ -960,6 +960,7 @@ class Database:
         self._migrate_tables_and_seed()
         self._drop_legacy_consequence_likelihood_column()
         self._migrate_actions_to_recommendations()
+        self._normalize_recommendation_display_numbers()
         self._clean_existing_recommendation_markup()
         # analysis_sessions is part of the base schema but some project files
         # are created from an older schema snapshot.  Ensure the new metadata
@@ -1002,6 +1003,26 @@ class Database:
         if changed:
             self.conn.executemany(
                 "UPDATE recommendations SET description=? WHERE id=?", changed)
+            self.commit()
+
+    def _normalize_recommendation_display_numbers(self):
+        """Backfill and compact the user-visible R-number sequence.
+
+        Recommendation ids remain stable foreign-key targets.  The separate
+        display number can safely close gaps left by deletion without changing
+        a shared recommendation's consequence links.
+        """
+        try:
+            rows = self.conn.execute(
+                "SELECT id, display_number FROM recommendations "
+                "ORDER BY CASE WHEN display_number > 0 THEN display_number ELSE id END, id").fetchall()
+        except sqlite3.OperationalError:
+            return
+        updates = [(number, row['id']) for number, row in enumerate(rows, start=1)
+                   if row['display_number'] != number]
+        if updates:
+            self.conn.executemany(
+                "UPDATE recommendations SET display_number=? WHERE id=?", updates)
             self.commit()
 
     def _migrate_actions_to_recommendations(self):
@@ -1096,6 +1117,7 @@ class Database:
             "ALTER TABLE causes ADD COLUMN comp_tag  TEXT DEFAULT ''",
             "ALTER TABLE causes ADD COLUMN linked_consequence_id INTEGER DEFAULT NULL",
             "ALTER TABLE safeguards ADD COLUMN sg_type TEXT DEFAULT 'Övrigt'",
+            "ALTER TABLE recommendations ADD COLUMN display_number INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE node_markups ADD COLUMN font_size INTEGER DEFAULT 12",
             "ALTER TABLE cause_markers ADD COLUMN rect_w REAL DEFAULT NULL",
             "ALTER TABLE cause_markers ADD COLUMN rect_h REAL DEFAULT NULL",
@@ -3511,7 +3533,7 @@ class Database:
         return self.conn.execute(
             "SELECT r.* FROM recommendations r "
             "JOIN consequence_recommendations cr ON cr.recommendation_id = r.id "
-            "WHERE cr.consequence_id=? ORDER BY r.id", (consequence_id,)).fetchall()
+            "WHERE cr.consequence_id=? ORDER BY r.display_number, r.id", (consequence_id,)).fetchall()
 
     def recommendations_for_consequences(self, consequence_ids):
         """Bulk version of recommendations_for_consequence() — same
@@ -3534,7 +3556,7 @@ class Database:
                 f"FROM consequence_recommendations cr "
                 f"JOIN recommendations r ON r.id = cr.recommendation_id "
                 f"WHERE cr.consequence_id IN ({placeholders}) "
-                f"ORDER BY cr.consequence_id, r.id", chunk).fetchall()
+                f"ORDER BY cr.consequence_id, r.display_number, r.id", chunk).fetchall()
             for row in rows:
                 result[row['_cons_id']].append(row)
         return result
@@ -3542,7 +3564,8 @@ class Database:
     def all_recommendations(self):
         """The whole study-wide recommendation catalog, for the
         RecommendationEditorDialog's reuse/search list."""
-        return self.conn.execute("SELECT * FROM recommendations ORDER BY id").fetchall()
+        return self.conn.execute(
+            "SELECT * FROM recommendations ORDER BY display_number, id").fetchall()
 
     def consequences_for_recommendation(self, recommendation_id):
         """Every consequence_id a recommendation currently links to, via
@@ -3576,9 +3599,7 @@ class Database:
             (recommendation_id,)).fetchone()[0]
 
     def add_recommendation(self, description='', responsible='', due_date='', status='Öppen'):
-        """Create a new, unlinked catalog row. Its id doubles as the
-        never-reused running number shown as 'R-XXX' everywhere the
-        recommendation is used."""
+        """Create a new, unlinked catalog row with the next R-number."""
         cleaned = self._clean_recommendation_text(description)
         if cleaned:
             key = ' '.join(cleaned.split()).casefold()
@@ -3586,9 +3607,12 @@ class Database:
                 existing = self._clean_recommendation_text(row['description'] or '')
                 if existing and ' '.join(existing.split()).casefold() == key:
                     return row['id']
+        next_display = self.conn.execute(
+            "SELECT COALESCE(MAX(display_number), 0) + 1 FROM recommendations").fetchone()[0]
         cur = self.conn.execute(
-            "INSERT INTO recommendations (description,responsible,due_date,status) "
-            "VALUES (?,?,?,?)", (cleaned, responsible, due_date, status))
+            "INSERT INTO recommendations "
+            "(display_number,description,responsible,due_date,status) VALUES (?,?,?,?,?)",
+            (next_display, cleaned, responsible, due_date, status))
         self.commit()
         return cur.lastrowid
 
@@ -3628,7 +3652,14 @@ class Database:
         Not called by the picker UI itself — unchecking a recommendation
         only unlinks it (see unlink_recommendation_from_consequence) so
         reusable text isn't lost — kept for completeness/tests."""
+        row = self.conn.execute(
+            "SELECT display_number FROM recommendations WHERE id=?", (id_,)).fetchone()
+        if row is None:
+            return
         self.conn.execute("DELETE FROM recommendations WHERE id=?", (id_,))
+        self.conn.execute(
+            "UPDATE recommendations SET display_number=display_number-1 "
+            "WHERE display_number>?", (row['display_number'],))
         self.commit()
 
     def link_recommendation_to_consequence(self, recommendation_id, consequence_id):

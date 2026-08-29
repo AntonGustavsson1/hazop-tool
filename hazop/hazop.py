@@ -715,7 +715,8 @@ class _RecommendationDetailDialog(QDialog):
         self.recommendation_id = recommendation_id
         self.consequence_id = consequence_id
         rec = db.get_recommendation(recommendation_id) or {}
-        self.setWindowTitle(f"Redigera R-{recommendation_id:03d}")
+        self.setWindowTitle(
+            f"Redigera R-{rec.get('display_number', recommendation_id):03d}")
         self.setMinimumWidth(380)
 
         layout = QVBoxLayout(self)
@@ -871,7 +872,7 @@ def export_recommendations_excel(db: Database, filepath: str):
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Rekommendationer"
-        headers = ["ID", "Rekommendation", "Ansvarig", "Ska vara åtgärdat",
+        headers = ["Rek. nr", "Rekommendation", "Ansvarig", "Ska vara åtgärdat",
                    "Status", "Antal kopplingar"]
         ws.append(headers)
         for cell in ws[1]:
@@ -880,7 +881,7 @@ def export_recommendations_excel(db: Database, filepath: str):
             cell.fill = openpyxl.styles.PatternFill(
                 "solid", fgColor="1F4E79")
         for rec in db.all_recommendations():
-            ws.append([rec['id'], rec['description'] or '', rec['responsible'] or '',
+            ws.append([f"R-{rec['display_number']:03d}", rec['description'] or '', rec['responsible'] or '',
                        rec['due_date'] or '', rec['status'] or '',
                        db.recommendation_consequence_count(rec['id'])])
         widths = [10, 60, 24, 18, 14, 16]

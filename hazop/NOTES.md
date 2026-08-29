@@ -2,6 +2,15 @@
 
 > Denna fil uppdateras automatiskt av Claude Code efter varje session.
 
+## Kompakt R-numrering efter borttagning (2026-08-29)
+
+Rekommendationernas interna `id` är nu uttryckligen skilt från det synliga
+R-numret. Det interna id:t ligger kvar som stabil nyckel i alla
+konsekvenskopplingar, medan `display_number` är den kompakta sekvens som visas
+som `R-001`, `R-002` osv. När en rekommendation tas bort minskar alla senare
+R-nummer med ett i samma databasändring. Befintliga projekt får kolumnen vid
+migrering och numreras om utan att några länkar ändras.
+
 ## Gemensam konsekvenshöjd för risk, barriärer och rekommendationer (2026-08-29)
 
 Risk före, risk efter och konsekvens spänner nu över hela konsekvensblocket
@@ -2001,8 +2010,9 @@ samma rekommendation.
 
 **Datamodell:** `actions`-tabellen (en rad per konsekvens, ingen
 återanvändning) ersattes av en delad katalog `recommendations`
-(`id, description, responsible, due_date, status` — `id` är själv det
-unika, aldrig återanvända löpnumret, visat som `R-XXX` överallt) plus
+(`id, display_number, description, responsible, due_date, status` — `id` är
+den stabila interna nyckeln medan `display_number` visas som kompakt
+`R-XXX`) plus
 en äkta many-to-many-länktabell `consequence_recommendations`. En
 engångsmigrering (`Database._migrate_actions_to_recommendations()`)
 kopierar en eventuell gammal `actions`-tabells rader in i katalogen +
@@ -2042,7 +2052,7 @@ Vid `count <= 1` sparas direkt utan att fråga.
 
 **Numrering i REK-cellen** (`ScenarioTablePanel._recommendation_summary`)
 bytte från lokal `enumerate(acts, 1)` (nollställd per cell, "1. 2. 3...")
-till rekommendationens egna globala `id`, formaterat `R-XXX` — detta
+till rekommendationens egna globala `display_number`, formaterat `R-XXX` — detta
 är kärnan i att samma återanvända rekommendation visar SAMMA nummer
 oavsett vilken konsekvens man tittar på, inte bara en kosmetisk ändring.
 
