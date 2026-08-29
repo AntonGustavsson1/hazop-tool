@@ -1,5 +1,12 @@
 # NOTES.md — Beslut och kontext
 
+## Rekommendationsnummer i egen kolumn (2026-08-29)
+
+På rekommendationssidan är löpnumret nu en separat, ej redigerbar `Nr`-
+kolumn. Textfältet `Rekommendation` innehåller endast beskrivningen. Sortering,
+redigering, Enter-skapande och borttagning använder fortsatt databasens
+stabila `display_number` och interna id.
+
 ## ST1-riskmatris som standardmall (2026-08-29)
 
 Referensen `St1 SA 04 - Riskmatris#4_161189.pdf` är införd som en

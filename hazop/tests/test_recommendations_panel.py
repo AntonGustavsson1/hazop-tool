@@ -67,7 +67,7 @@ class RecommendationsPanelConstructionTests(unittest.TestCase):
             except Exception as e:
                 self.fail(f"RecommendationsPanel.refresh() on an empty DB raised: {e!r}")
             self.assertEqual(panel._table.rowCount(), 0)
-            self.assertEqual(panel._table.columnCount(), 5)
+            self.assertEqual(panel._table.columnCount(), 6)
             self.assertEqual(
                 panel._table.horizontalHeaderItem(panel._COL_RESPONSIBLE).text(),
                 "Ansvarig")
@@ -122,7 +122,9 @@ class RecommendationsPanelConstructionTests(unittest.TestCase):
             self.assertEqual(panel._table.currentRow(), 2)
             self.assertEqual(
                 panel._table.item(2, panel._COL_REC).text(),
-                "003. Ny rekommendation")
+                "Ny rekommendation")
+            self.assertEqual(
+                panel._table.item(2, panel._COL_NUMBER).text(), "003")
         finally:
             panel.deleteLater()
 
@@ -178,12 +180,12 @@ class RecommendationsPanelConstructionTests(unittest.TestCase):
             self.assertGreater(new_id, following_id)
             self.assertEqual(self.db.get_recommendation(new_id)['display_number'], 3)
             panel.load()
-            self.assertEqual(panel._table.item(0, panel._COL_REC).text(),
-                             "001. Först")
-            self.assertEqual(panel._table.item(1, panel._COL_REC).text(),
-                             "002. Följer med")
-            self.assertEqual(panel._table.item(2, panel._COL_REC).text(),
-                             "003. Ny sist")
+            self.assertEqual(panel._table.item(0, panel._COL_NUMBER).text(), "001")
+            self.assertEqual(panel._table.item(0, panel._COL_REC).text(), "Först")
+            self.assertEqual(panel._table.item(1, panel._COL_NUMBER).text(), "002")
+            self.assertEqual(panel._table.item(1, panel._COL_REC).text(), "Följer med")
+            self.assertEqual(panel._table.item(2, panel._COL_NUMBER).text(), "003")
+            self.assertEqual(panel._table.item(2, panel._COL_REC).text(), "Ny sist")
         finally:
             panel.deleteLater()
 
@@ -197,8 +199,9 @@ class RecommendationsPanelConstructionTests(unittest.TestCase):
         panel = RecommendationsPanel(self.db)
         try:
             panel.load()
+            self.assertEqual(panel._table.item(0, panel._COL_NUMBER).text(), "1000")
             self.assertEqual(panel._table.item(0, panel._COL_REC).text(),
-                             "1000. Fyrsiffrigt nummer")
+                             "Fyrsiffrigt nummer")
         finally:
             panel.deleteLater()
 
@@ -230,12 +233,12 @@ class RecommendationsPanelReferenceTests(unittest.TestCase):
     def _row_for(self, panel, rec_id):
         """Find the table row whose column-1 label starts with this
         recommendation's three-digit prefix, and return (label, ref_text)."""
-        prefix = f"{rec_id:03d}."
         for row in range(panel._table.rowCount()):
-            label = panel._table.item(row, panel._COL_REC).text()
-            if label.startswith(prefix):
+            number = panel._table.item(row, panel._COL_NUMBER).text()
+            if panel._table.item(row, panel._COL_REC).data(Qt.ItemDataRole.UserRole) == rec_id:
+                label = f"{number}. {panel._table.item(row, panel._COL_REC).text()}"
                 return label, panel._table.item(row, panel._COL_REF).text()
-        self.fail(f"no row found for recommendation {rec_id} (prefix {prefix!r})")
+        self.fail(f"no row found for recommendation {rec_id}")
 
     def test_specific_position_produces_exact_hierarchical_reference(self):
         """Deliberately NOT the trivial 1.1.1.1.1 case -- build a 2nd node,
@@ -304,7 +307,7 @@ class RecommendationsPanelReferenceTests(unittest.TestCase):
             panel.load()
             rows_with_prefix = [
                 r for r in range(panel._table.rowCount())
-                if panel._table.item(r, panel._COL_REC).text().startswith(f"{rec_id:03d}.")
+                if panel._table.item(r, panel._COL_REC).data(Qt.ItemDataRole.UserRole) == rec_id
             ]
             self.assertEqual(len(rows_with_prefix), 1,
                 "a reused recommendation must appear on exactly one row, not once per link")
@@ -323,9 +326,13 @@ class RecommendationsPanelReferenceTests(unittest.TestCase):
             panel.load()
             self.assertEqual(panel._table.rowCount(), 2)
             self.assertEqual(
-                panel._table.item(0, panel._COL_REC).text(), f"{rec_a:03d}. Först")
+                panel._table.item(0, panel._COL_NUMBER).text(), f"{rec_a:03d}")
             self.assertEqual(
-                panel._table.item(1, panel._COL_REC).text(), f"{rec_b:03d}. Sedan")
+                panel._table.item(0, panel._COL_REC).text(), "Först")
+            self.assertEqual(
+                panel._table.item(1, panel._COL_NUMBER).text(), f"{rec_b:03d}")
+            self.assertEqual(
+                panel._table.item(1, panel._COL_REC).text(), "Sedan")
         finally:
             panel.deleteLater()
 
@@ -340,9 +347,9 @@ class RecommendationsPanelReferenceTests(unittest.TestCase):
             panel.load()
             responsible_by_id = {}
             for row in range(panel._table.rowCount()):
-                label = panel._table.item(row, panel._COL_REC).text()
+                label = panel._table.item(row, panel._COL_NUMBER).text()
                 responsible = panel._table.item(row, panel._COL_RESPONSIBLE).text()
-                responsible_by_id[label.split('.', 1)[0]] = responsible
+                responsible_by_id[label] = responsible
 
             self.assertEqual(responsible_by_id[f"{assigned:03d}"], "Anna Andersson")
             self.assertEqual(responsible_by_id[f"{unassigned:03d}"], "—")

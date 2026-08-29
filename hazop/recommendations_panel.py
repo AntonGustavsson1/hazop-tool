@@ -6,10 +6,9 @@ per catalog ENTRY, not per consequence link, so a recommendation reused
 across several causes (consequence_recommendations is many-to-many, see
 database.py) appears once, not duplicated.
 
-Column 1 mirrors the "XXX. description" convention already used for the
-REK column in scenario_panel.py (_recommendation_summary/the picker popup).
-Column 2 shows the responsible person stored on the recommendation.
-Column 3 shows the hierarchical studie.nod.avvikelse.orsak.konsekvens
+Column 1 shows the catalog's display number and column 2 contains only the
+recommendation text. Column 3 shows the responsible person stored on the
+recommendation. Column 4 shows the hierarchical studie.nod.avvikelse.orsak.konsekvens
 reference(s) this recommendation currently resolves to (see
 _build_position_maps()'s docstring below for exactly how each level is
 numbered, and the deliberate simplification vs. the HAZOP tree's own
@@ -125,9 +124,9 @@ class _RecommendationsTable(QTableWidget):
 
 class RecommendationsPanel(QWidget):
     """Simple three-column, read-only QTableWidget: every recommendation in
-    the catalog (column 1, "XXX. <description>"), its responsible person
-    (column 2), and every hierarchical reference it currently resolves to
-    (column 3, comma-
+    the catalog (separate number and description columns), its responsible
+    person, and every hierarchical reference it currently resolves to
+    (comma-
     separated when linked to several consequences, "—" when linked to
     none — an orphaned but still-reusable catalog entry; this app
     deliberately never deletes a recommendation just because its last
@@ -136,11 +135,12 @@ class RecommendationsPanel(QWidget):
     No editing here — recommendations are still created/edited from their
     existing entry points in HAZOP Scenario (the REK column), unchanged."""
 
-    _COL_REC = 0
-    _COL_RESPONSIBLE = 1
-    _COL_DUE = 2
-    _COL_REF = 3
-    _COL_STATUS = 4
+    _COL_NUMBER = 0
+    _COL_REC = 1
+    _COL_RESPONSIBLE = 2
+    _COL_DUE = 3
+    _COL_REF = 4
+    _COL_STATUS = 5
 
     recommendations_changed = pyqtSignal()
 
@@ -170,9 +170,9 @@ class RecommendationsPanel(QWidget):
         filters.addWidget(self._count_label)
         layout.addLayout(filters)
 
-        self._table = _RecommendationsTable(0, 5)
+        self._table = _RecommendationsTable(0, 6)
         self._table.setHorizontalHeaderLabels(
-            ["Rekommendation", "Ansvarig", "Ska vara åtgärdat",
+            ["Nr", "Rekommendation", "Ansvarig", "Ska vara åtgärdat",
              "Referens (studie.nod.avvikelse.orsak.konsekvens)", "Status"])
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked |
@@ -192,12 +192,13 @@ class RecommendationsPanel(QWidget):
         # All columns are manually resizable/reorderable. ResizeToContents
         # made Ansvarig especially hard to widen and made the list feel
         # fixed, despite the other HAZOP tables being user-adjustable.
-        for col in range(4):
+        for col in range(self._table.columnCount()):
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
         header.setSectionsMovable(True)
         header.setStretchLastSection(False)
         header.setMinimumSectionSize(80)
-        self._table.setColumnWidth(self._COL_REC, 360)
+        self._table.setColumnWidth(self._COL_NUMBER, 65)
+        self._table.setColumnWidth(self._COL_REC, 320)
         self._table.setColumnWidth(self._COL_RESPONSIBLE, 240)
         self._table.setColumnWidth(self._COL_DUE, 150)
         self._table.setColumnWidth(self._COL_REF, 360)
@@ -212,7 +213,7 @@ class RecommendationsPanel(QWidget):
         # db.all_recommendations() order). Set an explicit ascending
         # indicator on column 0 up front so the default view matches
         # catalog display-number order; clicking either header still re-sorts freely.
-        header.setSortIndicator(self._COL_REC, Qt.SortOrder.AscendingOrder)
+        header.setSortIndicator(self._COL_NUMBER, Qt.SortOrder.AscendingOrder)
         self._table.itemChanged.connect(self._on_item_changed)
         layout.addWidget(self._table)
 
@@ -308,7 +309,7 @@ class RecommendationsPanel(QWidget):
             for row, rec in enumerate(recs):
                 rec_id = rec['id']
                 desc = rec['description'] or 'Ny rekommendation'
-                label = f"{rec['display_number']:03d}. {desc}"
+                number = f"{rec['display_number']:03d}"
                 responsible = rec['responsible'] or _PLACEHOLDER
                 due_date = rec['due_date'] or _PLACEHOLDER
 
@@ -318,7 +319,8 @@ class RecommendationsPanel(QWidget):
                 ) if ref is not None]
                 ref_text = ", ".join(refs) if refs else _PLACEHOLDER
 
-                for col, value in ((self._COL_REC, label),
+                for col, value in ((self._COL_NUMBER, number),
+                                   (self._COL_REC, desc),
                                    (self._COL_RESPONSIBLE, responsible),
                                    (self._COL_DUE, due_date),
                                    (self._COL_REF, ref_text),
@@ -327,6 +329,10 @@ class RecommendationsPanel(QWidget):
                     cell.setData(Qt.ItemDataRole.UserRole, rec_id)
                     cell.setTextAlignment(Qt.AlignmentFlag.AlignLeft |
                                           Qt.AlignmentFlag.AlignTop)
+                    if col == self._COL_NUMBER:
+                        cell.setTextAlignment(Qt.AlignmentFlag.AlignCenter |
+                                              Qt.AlignmentFlag.AlignTop)
+                        cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     # The visible number is managed by the catalog; only
                     # the description after it can be edited in this view.
                     if col == self._COL_REF:
