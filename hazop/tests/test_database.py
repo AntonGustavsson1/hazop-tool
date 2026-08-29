@@ -683,8 +683,11 @@ class GetOrCreateDeviationEquipmentTests(unittest.TestCase):
 
     def test_equipment_deviation_count(self):
         self.assertEqual(self.db.equipment_deviation_count(self.eq_id), 0)
-        self.db.get_or_create_deviation(self.node_id, "Lågt flöde", equipment_id=self.eq_id)
-        self.db.get_or_create_deviation(self.node_id, "Högt flöde", equipment_id=self.eq_id)
+        dev_id = self.db.get_or_create_deviation(self.node_id, "Lågt flöde", equipment_id=self.eq_id)
+        cause_1 = self.db.add_cause(dev_id)
+        cause_2 = self.db.add_cause(dev_id)
+        self.db.update_cause(cause_1, comp_type="Ventil", comp_tag="V-101")
+        self.db.update_cause(cause_2, comp_type="Ventil", comp_tag="V-101")
         self.assertEqual(self.db.equipment_deviation_count(self.eq_id), 2)
 
 
@@ -720,9 +723,9 @@ class EquipmentConsequenceSafeguardCountTests(unittest.TestCase):
         self.db.set_consequence_tag(c1, "V-101", "Ventil")
         self.db.set_consequence_tag(c2, "V-101", "Ventil")
         self.assertEqual(self.db.equipment_consequence_count("V-101", "Ventil"), 2)
-        # A different tag or type must not be counted.
+        # A different tag must not be counted; stored type is metadata.
         self.assertEqual(self.db.equipment_consequence_count("V-102", "Ventil"), 0)
-        self.assertEqual(self.db.equipment_consequence_count("V-101", "Pump"), 0)
+        self.assertEqual(self.db.equipment_consequence_count("V-101", "Pump"), 2)
 
     def test_safeguard_count_matches_by_tag_and_type(self):
         cons_id = self.db.add_consequence(self.cause_id)

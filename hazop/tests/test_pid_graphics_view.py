@@ -649,7 +649,7 @@ class EquipmentMarkerThreeBadgesTests(unittest.TestCase):
         poly = next(item for item in view._type_items['equipment']
                     if isinstance(item, QGraphicsPolygonItem))
         tip = poly.toolTip()
-        self.assertIn("2 avvikelse", tip)
+        self.assertIn("2 orsaker", tip)
         self.assertIn("1 konsekvens", tip)
         self.assertIn("3 safeguard", tip)
 

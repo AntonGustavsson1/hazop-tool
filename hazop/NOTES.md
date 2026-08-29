@@ -1,5 +1,13 @@
 # NOTES.md — Beslut och kontext
 
+## P&ID-räknare visar antal HAZOP-rader (2026-08-29)
+
+Gummibandets tre räknare följer nu tabellrader i stället för att blanda
+rad- och avvikelsenivåer. Den övre räknaren räknar varje orsaksrad där
+objekttaggen visas, även flera orsaker under samma avvikelse. Motsvarande
+räknare räknar varje konsekvensrad respektive safeguardrad. Den övre
+verktygstipsetiketten använder därför "orsak" i stället för "avvikelse".
+
 ## Riskmatrisens kategorier delar konsekvensblocket (2026-08-29)
 
 När en konsekvens har flera kategorier fördelas de över det fysiska

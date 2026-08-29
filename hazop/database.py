@@ -2374,31 +2374,22 @@ class Database:
         self.commit()
 
     def equipment_deviation_count(self, equipment_id):
+        """Count cause rows that visibly reference this equipment.
+
+        The method name is retained for compatibility with older callers,
+        but the rubber-band counter represents cause rows, not distinct
+        deviations. Several causes under one deviation are counted
+        separately.
+        """
         equipment = self.get_equipment_by_id(equipment_id)
         if not equipment:
             return 0
         tag = (equipment.get('tag') or '').strip()
-        count = 0
-        for deviation in self.conn.execute("SELECT * FROM deviations").fetchall():
-            found = False
-            for cause in self.causes_for_deviation(deviation['id']):
-                cause = dict(cause)
-                if self._equipment_tag_matches_cause(cause, tag):
-                    found = True
-                    break
-                for consequence in self.consequences(cause['id']):
-                    if self._equipment_tag_matches_row(dict(consequence), tag):
-                        found = True
-                        break
-                    if any(self._equipment_tag_matches_row(dict(sg), tag)
-                           for sg in self.safeguards(consequence['id'])):
-                        found = True
-                        break
-                if found:
-                    break
-            if found:
-                count += 1
-        return count
+        if not tag:
+            return 0
+        return sum(
+            1 for row in self.conn.execute("SELECT * FROM causes").fetchall()
+            if self._equipment_tag_matches_cause(dict(row), tag))
 
     @staticmethod
     def _equipment_tag_matches_row(row, tag):
@@ -2451,8 +2442,7 @@ class Database:
         return sum(
             1 for row in self.conn.execute("SELECT * FROM consequences").fetchall()
             if self._equipment_tag_matches_row(dict(row), comp_tag)
-            and (not row['comp_tag'] or not comp_type or
-                 row['comp_type'] == comp_type))
+        )
 
     def equipment_safeguard_count(self, comp_tag, comp_type=''):
         """How many safeguards reference this equipment's tag — the
@@ -2464,8 +2454,7 @@ class Database:
         return sum(
             1 for row in self.conn.execute("SELECT * FROM safeguards").fetchall()
             if self._equipment_tag_matches_row(dict(row), comp_tag)
-            and (not row['comp_tag'] or not comp_type or
-                 row['comp_type'] == comp_type))
+        )
 
     def set_deviation_equipment(self, deviation_id, equipment_id):
         """Tie an EXISTING deviation to a specific equipment item — used

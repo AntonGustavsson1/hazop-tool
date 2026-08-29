@@ -2036,7 +2036,7 @@ class PIDGraphicsView(QGraphicsView):
         pct = int(round(confidence * 100))
         tip = f"{tag + ': ' if tag else ''}{comp_type}\nAutodetekterad ({pct}% konfidens)"
         if has_deviations:
-            tip += f"\n{deviation_count} avvikelse{'r' if deviation_count != 1 else ''} registrerad{'e' if deviation_count != 1 else ''}"
+            tip += f"\n{deviation_count} orsak{'er' if deviation_count != 1 else ''} registrerad{'e' if deviation_count != 1 else ''}"
         if consequence_count > 0:
             tip += f"\n{consequence_count} konsekvens{'er' if consequence_count != 1 else ''}"
         if safeguard_count > 0:
