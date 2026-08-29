@@ -716,7 +716,7 @@ class _RecommendationDetailDialog(QDialog):
         self.consequence_id = consequence_id
         rec = db.get_recommendation(recommendation_id) or {}
         self.setWindowTitle(
-            f"Redigera R-{rec.get('display_number', recommendation_id):03d}")
+            f"Redigera rekommendation {rec.get('display_number', recommendation_id):03d}")
         self.setMinimumWidth(380)
 
         layout = QVBoxLayout(self)
@@ -881,7 +881,7 @@ def export_recommendations_excel(db: Database, filepath: str):
             cell.fill = openpyxl.styles.PatternFill(
                 "solid", fgColor="1F4E79")
         for rec in db.all_recommendations():
-            ws.append([f"R-{rec['display_number']:03d}", rec['description'] or '', rec['responsible'] or '',
+            ws.append([f"{rec['display_number']:03d}", rec['description'] or '', rec['responsible'] or '',
                        rec['due_date'] or '', rec['status'] or '',
                        db.recommendation_consequence_count(rec['id'])])
         widths = [10, 60, 24, 18, 14, 16]
@@ -3477,9 +3477,9 @@ class MainWindow(QMainWindow):
                 pass
         # AUTOINCREMENT keeps its high-water mark in sqlite_sequence even
         # after all rows are deleted.  A new project must start its own
-        # recommendation numbering at R-001; otherwise a OneDrive/lock
+        # recommendation numbering at 001; otherwise a OneDrive/lock
         # fallback that reuses the same database file would continue the old
-        # project's R-XXX sequence.
+        # project's display-number sequence.
         try:
             self.db.conn.execute(
                 "DELETE FROM sqlite_sequence WHERE name='recommendations'")

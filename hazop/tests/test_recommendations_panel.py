@@ -122,7 +122,7 @@ class RecommendationsPanelConstructionTests(unittest.TestCase):
             panel.deleteLater()
 
     def test_catalog_delete_compacts_visible_numbers_but_keeps_links_stable(self):
-        """Deleting R-002 makes the following entry R-002 without changing
+        """Deleting 002 makes the following entry 002 without changing
         its internal id or its consequence link."""
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
@@ -156,11 +156,26 @@ class RecommendationsPanelConstructionTests(unittest.TestCase):
             self.assertEqual(self.db.get_recommendation(new_id)['display_number'], 3)
             panel.load()
             self.assertEqual(panel._table.item(0, panel._COL_REC).text(),
-                             "R-001. Först")
+                             "001. Först")
             self.assertEqual(panel._table.item(1, panel._COL_REC).text(),
-                             "R-002. Följer med")
+                             "002. Följer med")
             self.assertEqual(panel._table.item(2, panel._COL_REC).text(),
-                             "R-003. Ny sist")
+                             "003. Ny sist")
+        finally:
+            panel.deleteLater()
+
+    def test_four_digit_display_number_is_not_truncated(self):
+        """The three-digit format is a minimum width: 1000 remains 1000."""
+        rec_id = self.db.add_recommendation(description="Fyrsiffrigt nummer")
+        self.db.conn.execute(
+            "UPDATE recommendations SET display_number=1000 WHERE id=?", (rec_id,))
+        self.db.commit()
+
+        panel = RecommendationsPanel(self.db)
+        try:
+            panel.load()
+            self.assertEqual(panel._table.item(0, panel._COL_REC).text(),
+                             "1000. Fyrsiffrigt nummer")
         finally:
             panel.deleteLater()
 
@@ -191,8 +206,8 @@ class RecommendationsPanelReferenceTests(unittest.TestCase):
 
     def _row_for(self, panel, rec_id):
         """Find the table row whose column-1 label starts with this
-        recommendation's R-XXX prefix, and return (label, ref_text)."""
-        prefix = f"R-{rec_id:03d}."
+        recommendation's three-digit prefix, and return (label, ref_text)."""
+        prefix = f"{rec_id:03d}."
         for row in range(panel._table.rowCount()):
             label = panel._table.item(row, panel._COL_REC).text()
             if label.startswith(prefix):
@@ -225,7 +240,7 @@ class RecommendationsPanelReferenceTests(unittest.TestCase):
         try:
             panel.load()
             label, ref_text = self._row_for(panel, rec_id)
-            self.assertEqual(label, f"R-{rec_id:03d}. Testrekommendation")
+            self.assertEqual(label, f"{rec_id:03d}. Testrekommendation")
             self.assertEqual(ref_text, "1.2.3.2.2")
         finally:
             panel.deleteLater()
@@ -241,7 +256,7 @@ class RecommendationsPanelReferenceTests(unittest.TestCase):
         try:
             panel.load()
             label, ref_text = self._row_for(panel, rec_id)
-            self.assertEqual(label, f"R-{rec_id:03d}. Ingen koppling")
+            self.assertEqual(label, f"{rec_id:03d}. Ingen koppling")
             self.assertEqual(ref_text, "—")
         finally:
             panel.deleteLater()
@@ -266,7 +281,7 @@ class RecommendationsPanelReferenceTests(unittest.TestCase):
             panel.load()
             rows_with_prefix = [
                 r for r in range(panel._table.rowCount())
-                if panel._table.item(r, panel._COL_REC).text().startswith(f"R-{rec_id:03d}.")
+                if panel._table.item(r, panel._COL_REC).text().startswith(f"{rec_id:03d}.")
             ]
             self.assertEqual(len(rows_with_prefix), 1,
                 "a reused recommendation must appear on exactly one row, not once per link")
@@ -285,9 +300,9 @@ class RecommendationsPanelReferenceTests(unittest.TestCase):
             panel.load()
             self.assertEqual(panel._table.rowCount(), 2)
             self.assertEqual(
-                panel._table.item(0, panel._COL_REC).text(), f"R-{rec_a:03d}. Först")
+                panel._table.item(0, panel._COL_REC).text(), f"{rec_a:03d}. Först")
             self.assertEqual(
-                panel._table.item(1, panel._COL_REC).text(), f"R-{rec_b:03d}. Sedan")
+                panel._table.item(1, panel._COL_REC).text(), f"{rec_b:03d}. Sedan")
         finally:
             panel.deleteLater()
 
@@ -306,8 +321,8 @@ class RecommendationsPanelReferenceTests(unittest.TestCase):
                 responsible = panel._table.item(row, panel._COL_RESPONSIBLE).text()
                 responsible_by_id[label.split('.', 1)[0]] = responsible
 
-            self.assertEqual(responsible_by_id[f"R-{assigned:03d}"], "Anna Andersson")
-            self.assertEqual(responsible_by_id[f"R-{unassigned:03d}"], "—")
+            self.assertEqual(responsible_by_id[f"{assigned:03d}"], "Anna Andersson")
+            self.assertEqual(responsible_by_id[f"{unassigned:03d}"], "—")
         finally:
             panel.deleteLater()
 
@@ -337,7 +352,7 @@ class RecommendationsPanelReferenceTests(unittest.TestCase):
             status = panel._table.cellWidget(0, panel._COL_STATUS)
             status.setCurrentText("Pågår")
             item = panel._table.item(0, panel._COL_REC)
-            item.setText(f"R-{rec_id:03d}. Ny text")
+            item.setText(f"{rec_id:03d}. Ny text")
             saved = db.get_recommendation(rec_id)
             self.assertEqual(saved['status'], "Pågår")
             self.assertEqual(saved['description'], "Ny text")

@@ -1643,7 +1643,7 @@ class WipeProjectTablesTests(unittest.TestCase):
 
             new_id = win.db.add_recommendation("Nytt projekt")
             self.assertEqual(new_id, 1,
-                "new projects must display their first recommendation as R-001")
+                "new projects must display their first recommendation as 001")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -3822,7 +3822,7 @@ class RecommendationColumnTests(unittest.TestCase):
     owned by one consequence; it's linked from a study-wide catalog via
     consequence_recommendations, so the same text can be reused across
     consequences without duplication, and each cell shows the
-    recommendation's own global, never-reused id as "R-XXX"."""
+    recommendation's own global display number as "XXX"."""
 
     @classmethod
     def setUpClass(cls):
@@ -3863,7 +3863,7 @@ class RecommendationColumnTests(unittest.TestCase):
     def test_single_action_shows_its_description(self):
         rec_id = self.db.add_recommendation_to_consequence(self.cons_id, description='Ny åtgärd')
         item, _ = self._rek_item()
-        self.assertEqual(item.text(), f'R-{rec_id:03d}. Ny åtgärd')
+        self.assertEqual(item.text(), f'{rec_id:03d}. Ny åtgärd')
 
     @unittest.skip("REK recommendations are now separate physical rows")
     def test_multiple_actions_are_all_listed_numbered_by_addition_order(self):
@@ -3875,7 +3875,7 @@ class RecommendationColumnTests(unittest.TestCase):
         id2 = self.db.add_recommendation_to_consequence(self.cons_id, description='Klar sak',
                                                          status='Klar')
         item, _ = self._rek_item()
-        self.assertEqual(item.text(), f'R-{id1:03d}. Ny åtgärd\nR-{id2:03d}. Klar sak')
+        self.assertEqual(item.text(), f'{id1:03d}. Ny åtgärd\n{id2:03d}. Klar sak')
 
     @unittest.skip("REK recommendations are now separate physical rows")
     def test_row_grows_to_fit_several_recommendations(self):
@@ -3938,7 +3938,7 @@ class RecommendationColumnTests(unittest.TestCase):
         recs = self.db.all_recommendations()
         self.assertEqual(len(recs), 1)
         self.assertEqual(recs[0]['description'], "Ny rekommendation")
-        self.assertEqual(item.text(), f"R-{recs[0]['id']:03d}. Ny rekommendation")
+        self.assertEqual(item.text(), f"{recs[0]['id']:03d}. Ny rekommendation")
 
     def test_committing_unchanged_text_on_the_sole_linked_recommendation_is_a_noop(self):
         """Re-committing without editing (click in, click out) must not
@@ -3947,7 +3947,7 @@ class RecommendationColumnTests(unittest.TestCase):
         item, row = self._rek_item()
         # Matches what the real inline editor actually seeds itself with
         # for the "exactly one linked" case -- the recommendation's OWN
-        # bare description, not the cell's "R-XXX. ..." display summary
+        # bare description, not the cell's "XXX. ..." display summary
         # (see _prepare_recommendation_editor's docstring).
         self.panel._table.blockSignals(True)
         item.setText("Befintlig")
@@ -3999,7 +3999,7 @@ class RecommendationColumnTests(unittest.TestCase):
         QApplication.processEvents()
         refreshed_item, _ = self._rek_item()
         self.assertEqual(refreshed_item.text(),
-                         f'R-{rec_id:03d}. se till att stoppa pump x vid y')
+                         f'{rec_id:03d}. se till att stoppa pump x vid y')
 
     def test_enter_accepts_selected_pid_tag_and_keeps_editor_open(self):
         """Enter accepts the visible tag suggestion instead of committing."""
@@ -4114,7 +4114,7 @@ class RecommendationColumnTests(unittest.TestCase):
 
     def test_reusing_a_recommendation_on_a_second_consequence_shows_same_number(self):
         """The core of the 2026-08-25 rework: linking the SAME catalog
-        row to a second consequence must show the identical R-XXX label
+        row to a second consequence must show the identical displayed label
         there too, not a fresh local "1." — proving reuse doesn't
         duplicate the underlying recommendation."""
         rec_id = self.db.add_recommendation_to_consequence(self.cons_id, description='Delad')
@@ -4125,7 +4125,7 @@ class RecommendationColumnTests(unittest.TestCase):
         self.panel.load_node(self.node_id)
         row1 = next(r for r, m in enumerate(self.panel._row_meta) if m[2] == self.cons_id)
         row2 = next(r for r, m in enumerate(self.panel._row_meta) if m[2] == cons2)
-        expected = f'R-{rec_id:03d}. Delad'
+        expected = f'{rec_id:03d}. Delad'
         self.assertEqual(self.panel._table.item(row1, self.panel._C_REK).text(), expected)
         self.assertEqual(self.panel._table.item(row2, self.panel._C_REK).text(), expected)
         self.assertEqual(len(self.db.all_recommendations()), 1,
@@ -4173,7 +4173,7 @@ class RecommendationAssistPopupTests(unittest.TestCase):
 
     def _button_for(self, popup, rec_id):
         for button in popup.findChildren(QPushButton):
-            if button.text().startswith(f"R-{rec_id:03d}."):
+            if button.text().startswith(f"{rec_id:03d}."):
                 return button
         return None
 
@@ -4215,8 +4215,8 @@ class RecommendationAssistPopupTests(unittest.TestCase):
             editor.setText('shutdown')
             self.app.processEvents()
             labels = [button.text() for button in popup.findChildren(QPushButton)]
-            self.assertEqual(labels, [f'R-{first_id:03d}. Verify shutdown function'])
-            self.assertNotIn(f'R-{second_id:03d}. Inspect pressure relief valve', labels)
+            self.assertEqual(labels, [f'{first_id:03d}. Verify shutdown function'])
+            self.assertNotIn(f'{second_id:03d}. Inspect pressure relief valve', labels)
         finally:
             popup.deleteLater()
             editor.deleteLater()
@@ -4265,7 +4265,7 @@ class RecommendationAssistPopupTests(unittest.TestCase):
             # the clicked handler.
             self.app.processEvents()
             item = self.panel._table.item(row, self.panel._C_REK)
-            self.assertEqual(item.text(), f"R-{rec_id:03d}. Live refresh check")
+            self.assertEqual(item.text(), f"{rec_id:03d}. Live refresh check")
         finally:
             popup.deleteLater()
 
@@ -4276,10 +4276,10 @@ class RecommendationAssistPopupTests(unittest.TestCase):
         editor = QLineEdit()
         popup = RecommendationAssistPopup(self.panel, self.cons_id, editor)
         try:
-            editor.setText(f'R-{first_id:03d}')
+            editor.setText(f'{first_id:03d}')
             self.app.processEvents()
             labels = [button.text() for button in popup.findChildren(QPushButton)]
-            self.assertEqual(labels, [f'R-{first_id:03d}. First action'])
+            self.assertEqual(labels, [f'{first_id:03d}. First action'])
         finally:
             popup.deleteLater()
             editor.deleteLater()
@@ -7509,7 +7509,7 @@ class RecommendationPhysicalRowTests(RecommendationColumnTests):
                 if meta[2] == self.cons_id]
         self.assertEqual(
             [self.panel._table.item(r, self.panel._C_REK).text() for r in rows],
-            [f'R-{first:03d}. Första', f'R-{second:03d}. Andra'])
+            [f'{first:03d}. Första', f'{second:03d}. Andra'])
         self.assertEqual(
             [self.panel._row_recommendation_ids[r] for r in rows],
             [first, second])
@@ -7528,7 +7528,7 @@ class RecommendationPhysicalRowTests(RecommendationColumnTests):
                     self.panel._C_SLUT, self.panel._C_REK):
             self.assertEqual(self.panel._table.rowSpan(anchor, col), len(rows))
         self.assertEqual(self.panel._table.item(anchor, self.panel._C_REK).text(),
-                         f'R-{rec_id:03d}. En gemensam rekommendation')
+                         f'{rec_id:03d}. En gemensam rekommendation')
         heights = [self.panel._table.rowHeight(r) for r in rows]
         self.assertLessEqual(max(heights) - min(heights), 2)
 
@@ -7573,7 +7573,7 @@ class RecommendationCatalogSyncTests(unittest.TestCase):
                          for r, meta in enumerate(panel._row_meta)
                          if meta[2] == cons_id]
                 self.assertTrue(items)
-                self.assertTrue(all(f'R-{rec_id:03d}.' not in text for text in items))
+                self.assertTrue(all(f'{rec_id:03d}.' not in text for text in items))
 
 
 class EmptyScenarioCellDoubleClickTests(unittest.TestCase):

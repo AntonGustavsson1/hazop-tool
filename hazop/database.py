@@ -145,7 +145,7 @@ CREATE TABLE IF NOT EXISTS reduction_factors (
 -- recommendation text can be linked to several consequences instead of
 -- being duplicated (see NOTES.md "Rekommendationshantering — delad
 -- katalog med återanvändning"). `id` is the stable internal key; the
--- user-visible R-number is a separate compact display sequence.
+-- user-visible recommendation number is a separate compact display sequence.
 CREATE TABLE IF NOT EXISTS recommendations (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     display_number  INTEGER NOT NULL DEFAULT 0,
@@ -1006,7 +1006,7 @@ class Database:
             self.commit()
 
     def _normalize_recommendation_display_numbers(self):
-        """Backfill and compact the user-visible R-number sequence.
+        """Backfill and compact the user-visible recommendation-number sequence.
 
         Recommendation ids remain stable foreign-key targets.  The separate
         display number can safely close gaps left by deletion without changing
@@ -3599,7 +3599,7 @@ class Database:
             (recommendation_id,)).fetchone()[0]
 
     def add_recommendation(self, description='', responsible='', due_date='', status='Öppen'):
-        """Create a new, unlinked catalog row with the next R-number."""
+        """Create a new, unlinked catalog row with the next display number."""
         cleaned = self._clean_recommendation_text(description)
         if cleaned:
             key = ' '.join(cleaned.split()).casefold()

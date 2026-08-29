@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Rekommendationer page — new top-level nav page added 2026-08-26 (see
 NOTES.md), inserted right after Worksheet. Read-only overview of the whole
-recommendation catalog (Database.all_recommendations(), R-number order): one row
+recommendation catalog (Database.all_recommendations(), display-number order): one row
 per catalog ENTRY, not per consequence link, so a recommendation reused
 across several causes (consequence_recommendations is many-to-many, see
 database.py) appears once, not duplicated.
 
-Column 1 mirrors the "R-XXX. description" convention already used for the
+Column 1 mirrors the "XXX. description" convention already used for the
 REK column in scenario_panel.py (_recommendation_summary/the picker popup).
 Column 2 shows the responsible person stored on the recommendation.
 Column 3 shows the hierarchical studie.nod.avvikelse.orsak.konsekvens
@@ -120,7 +120,7 @@ class _RecommendationsTable(QTableWidget):
 
 class RecommendationsPanel(QWidget):
     """Simple three-column, read-only QTableWidget: every recommendation in
-    the catalog (column 1, "R-XXX. <description>"), its responsible person
+    the catalog (column 1, "XXX. <description>"), its responsible person
     (column 2), and every hierarchical reference it currently resolves to
     (column 3, comma-
     separated when linked to several consequences, "—" when linked to
@@ -201,11 +201,11 @@ class RecommendationsPanel(QWidget):
         # "column 0, DESCENDING" sort indicator even though nothing ever
         # called setSortIndicator/sortItems — re-enabling setSortingEnabled
         # after a bulk-populate (see load()'s was_sorting dance) silently
-        # applies THAT indicator, reversing the catalog R-number order the
+        # applies THAT indicator, reversing the catalog display-number order the
         # request asked for ("Lista alla rekommendationer i kolumn 1", in
         # db.all_recommendations() order). Set an explicit ascending
         # indicator on column 0 up front so the default view matches
-        # catalog R-number order; clicking either header still re-sorts freely.
+        # catalog display-number order; clicking either header still re-sorts freely.
         header.setSortIndicator(self._COL_REC, Qt.SortOrder.AscendingOrder)
         self._table.itemChanged.connect(self._on_item_changed)
         layout.addWidget(self._table)
@@ -234,7 +234,7 @@ class RecommendationsPanel(QWidget):
         if len(rec_ids) == 1:
             rec = self.db.get_recommendation(rec_ids[0]) or {}
             number = rec.get('display_number', rec_ids[0])
-            label = f"R-{number:03d}. {(rec.get('description') or '').strip()}"
+            label = f"{number:03d}. {(rec.get('description') or '').strip()}"
             question = f"Ta bort rekommendationen {label or rec_ids[0]}?"
         else:
             question = f"Ta bort {len(rec_ids)} markerade rekommendationer?"
@@ -255,7 +255,10 @@ class RecommendationsPanel(QWidget):
             return
         value = item.text().strip()
         if item.column() == self._COL_REC:
-            description = re.sub(r'^R-\d+\.\s*', '', value)
+            # The compact number is display metadata, regardless of whether
+            # the user is editing a legacy "R-001." or current "001." row.
+            description = re.sub(r'^(?:R-)?\d+\.\s*', '', value,
+                                 flags=re.IGNORECASE)
             self.db.update_recommendation(int(rec_id), description=description)
         elif item.column() == self._COL_RESPONSIBLE:
             self.db.update_recommendation(int(rec_id), responsible=value)
@@ -282,7 +285,7 @@ class RecommendationsPanel(QWidget):
             for row, rec in enumerate(recs):
                 rec_id = rec['id']
                 desc = rec['description'] or 'Ny rekommendation'
-                label = f"R-{rec['display_number']:03d}. {desc}"
+                label = f"{rec['display_number']:03d}. {desc}"
                 responsible = rec['responsible'] or _PLACEHOLDER
                 due_date = rec['due_date'] or _PLACEHOLDER
 
@@ -301,7 +304,7 @@ class RecommendationsPanel(QWidget):
                     cell.setData(Qt.ItemDataRole.UserRole, rec_id)
                     cell.setTextAlignment(Qt.AlignmentFlag.AlignLeft |
                                           Qt.AlignmentFlag.AlignTop)
-                    # The visible R-number is managed by the catalog; only
+                    # The visible number is managed by the catalog; only
                     # the description after it can be edited in this view.
                     if col == self._COL_REF:
                         cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)

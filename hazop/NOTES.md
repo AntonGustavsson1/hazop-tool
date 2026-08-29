@@ -5,11 +5,16 @@
 ## Kompakt R-numrering efter borttagning (2026-08-29)
 
 Rekommendationernas interna `id` är nu uttryckligen skilt från det synliga
-R-numret. Det interna id:t ligger kvar som stabil nyckel i alla
+rekommendationsnumret. Det interna id:t ligger kvar som stabil nyckel i alla
 konsekvenskopplingar, medan `display_number` är den kompakta sekvens som visas
-som `R-001`, `R-002` osv. När en rekommendation tas bort minskar alla senare
-R-nummer med ett i samma databasändring. Befintliga projekt får kolumnen vid
+som `001`, `002` osv. När en rekommendation tas bort minskar alla senare
+rekommendationsnummer med ett i samma databasändring. Befintliga projekt får kolumnen vid
 migrering och numreras om utan att några länkar ändras.
+
+Prefixet `R-` visas inte längre någonstans i rekommendationsgränssnittet;
+det kompakta numret används ensamt i celler, listor, popupen och exporten.
+Tretalssiffrorna är en minsta bredd, inte en gräns: efter `999.` visas
+`1000.`, `1001.` osv utan avkortning.
 
 ## Gemensam konsekvenshöjd för risk, barriärer och rekommendationer (2026-08-29)
 

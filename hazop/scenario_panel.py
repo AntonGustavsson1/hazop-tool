@@ -1807,7 +1807,7 @@ class _ScenarioDelegate(QStyledItemDelegate):
             # setEditorData() unconditionally right after createEditor()
             # returns, and its default QLineEdit implementation would
             # otherwise clobber that seed text with the cell's own raw
-            # multi-line "R-XXX. ..." summary (confirmed empirically:
+            # multi-line "XXX. ..." summary (confirmed empirically:
             # createEditor()'s own editor.setText() calls are silently
             # overwritten a moment later without this override). Skip
             # the default entirely for this column.
@@ -1834,7 +1834,8 @@ class _ScenarioDelegate(QStyledItemDelegate):
         if index.column() == self._panel._C_REK:
             # The running number is presentation-only and must never be
             # stored as part of the recommendation description.
-            clean = re.sub(r'^R-\d+\.\s*', '', clean, flags=re.IGNORECASE)
+            clean = re.sub(r'^(?:R-)?\d+\.\s*', '', clean,
+                           flags=re.IGNORECASE)
         model.setData(index, clean, Qt.ItemDataRole.EditRole)
 
     def _prepare_recommendation_editor(self, editor, index, option):
@@ -1902,13 +1903,13 @@ class _ScenarioDelegate(QStyledItemDelegate):
             if not rec_id and item is not None:
                 meta = item.data(Qt.ItemDataRole.UserRole) or ()
                 rec_id = meta[2] if len(meta) > 2 else None
-            # ``id`` is the stable foreign-key value.  The compact R-number
+            # ``id`` is the stable foreign-key value.  The compact display
             # shown to the user can change when an earlier recommendation is
             # removed, so use the dedicated display sequence here too.
             rec = panel.db.get_recommendation(rec_id) if rec_id else None
             rec_number = (rec or {}).get('display_number', rec_id)
             number_width = QFontMetrics(option.font).horizontalAdvance(
-                f"R-{int(rec_number):03d}.  ") if rec_number else 0
+                f"{int(rec_number):03d}.  ") if rec_number else 0
             rect = QRect(option.rect)
             left = rect.left() + 5 + number_width
             editor.setGeometry(QRect(left, rect.top() + 2,
@@ -2194,7 +2195,7 @@ class _PidDelegate(_ScenarioDelegate):
                 clean = ''
             # _ScenarioDelegate.createEditor() has already seeded REK with
             # the description only. Do not replace it with the painted
-            # "R-xxx. description" cell text.
+            # "XXX. description" cell text.
             if index.column() != self._panel._C_REK:
                 editor.setText(clean)
             editor.deselect()
@@ -2569,7 +2570,8 @@ class _PidDelegate(_ScenarioDelegate):
             # Be defensive for editors created by an older delegate path:
             # the running number is presentation-only and must never be
             # stored as part of the recommendation description.
-            clean = re.sub(r'^R-\d+\.\s*', '', clean, flags=re.IGNORECASE)
+            clean = re.sub(r'^(?:R-)?\d+\.\s*', '', clean,
+                           flags=re.IGNORECASE)
         model.setData(index, clean, Qt.ItemDataRole.EditRole)
 
     def _active_group_edit_line(self, index, rect):
@@ -3221,7 +3223,8 @@ class RecommendationAssistPopup(QWidget):
     choice buttons. The active REK cell already renders its linked
     recommendation, so repeating that text in this popup made the UI look
     like it contained duplicates. The editor text acts as the search field:
-    it matches both the visible R-number and any part of the description.
+    it matches both the visible recommendation number and any part of the
+    description.
     Choosing a result links it once and closes the editor without creating a
     second recommendation."""
 
@@ -3255,7 +3258,7 @@ class RecommendationAssistPopup(QWidget):
         title.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         layout.addWidget(title)
 
-        hint = QLabel("Skriv för att söka på R-nummer eller text. Klicka för att använda.")
+        hint = QLabel("Skriv för att söka på nummer eller text. Klicka för att använda.")
         hint.setStyleSheet("color:#666; font-size:9px;")
         hint.setWordWrap(True)
         hint.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -3312,7 +3315,7 @@ class RecommendationAssistPopup(QWidget):
         needle = self._filter_text.casefold().strip()
         matching_recs = [rec for rec in recs if (
             not needle or needle in
-            f"R-{rec['display_number']:03d}. {rec['description'] or ''}".casefold())]
+            f"{rec['display_number']:03d}. {rec['description'] or ''}".casefold())]
         visible_recs = [rec for rec in matching_recs if rec['id'] not in linked]
         if not visible_recs:
             empty_text = ("Alla matchande rekommendationer är redan länkade."
@@ -3325,7 +3328,7 @@ class RecommendationAssistPopup(QWidget):
             return
         for rec in visible_recs:
             button = QPushButton(
-                f"R-{rec['display_number']:03d}. {rec['description'] or 'Ny rekommendation'}")
+                f"{rec['display_number']:03d}. {rec['description'] or 'Ny rekommendation'}")
             button.setStyleSheet(self._RESULT_STYLE)
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.setToolTip("Klicka för att länka denna rekommendation")
@@ -3337,7 +3340,7 @@ class RecommendationAssistPopup(QWidget):
 
         Recommendation text is searched with ``contains`` so a word in the
         middle of a longer recommendation is enough to find it. The formatted
-        R-number is included too, so ``R-012`` is an equally direct lookup.
+        The number is included too, so ``012`` is an equally direct lookup.
         """
         if self._editor is None:
             return
@@ -5619,7 +5622,7 @@ class ScenarioTablePanel(QWidget):
         rec_description = ''
         if recommendation is not None:
             rec_description = (recommendation['description'] or '').strip()
-        rek_text = (f"R-{recommendation['display_number']:03d}. "
+        rek_text = (f"{recommendation['display_number']:03d}. "
                     f"{rec_description or 'Ny rekommendation'}"
                     if recommendation else '')
         rek_item = QTableWidgetItem(rek_text or '')
@@ -5639,9 +5642,9 @@ class ScenarioTablePanel(QWidget):
         (2026-08-13, see NOTES.md: "samtliga tillagda rekomendationer
         ... nummereras efter tilläggsordning") — "—" placeholder when
         empty (same convention as KON/SG), otherwise EVERY recommendation
-        listed on its own line. Numbered by the recommendation's own,
-        globally unique, never-reused catalog id (2026-08-25 rework) —
-        NOT by position in this list — so the SAME "R-XXX" number is
+        listed on its own line. Numbered by the recommendation's own compact
+        catalog display number (2026-08-25 rework) —
+        NOT by position in this list — so the SAME displayed number is
         shown everywhere a reused recommendation appears, letting Anton
         recognize "this is the same one" across different consequences.
         The column joins wrap_cols so multi-line content gets the row
@@ -5649,7 +5652,7 @@ class ScenarioTablePanel(QWidget):
         if not acts:
             return ''
         return '\n'.join(
-            f"R-{a['display_number']:03d}. {(a['description'] or '').strip() or 'Ny rekommendation'}"
+            f"{a['display_number']:03d}. {(a['description'] or '').strip() or 'Ny rekommendation'}"
             for a in acts)
 
     def _get_cons_context(self, cons_id: int):
@@ -8341,7 +8344,7 @@ class ScenarioTablePanel(QWidget):
             if not rec_id or not cons_id:
                 return
             rec = self.db.get_recommendation(rec_id)
-            label = f"R-{(rec or {}).get('display_number', rec_id):03d}"
+            label = f"{(rec or {}).get('display_number', rec_id):03d}"
             if rec and (rec.get('description') or '').strip():
                 label += f" – {(rec.get('description') or '').strip()[:70]}"
             if QMessageBox.question(
