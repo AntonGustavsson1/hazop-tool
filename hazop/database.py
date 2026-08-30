@@ -140,6 +140,15 @@ CREATE TABLE IF NOT EXISTS reduction_factors (
     active          INTEGER NOT NULL DEFAULT 1
 );
 
+-- An enabler can be active for a consequence but intentionally not apply to
+-- one of its assessed consequence categories.  This mirrors the existing
+-- safeguard/category exclusion model without mixing the two object types.
+CREATE TABLE IF NOT EXISTS reduction_factor_severity_exclusions (
+    severity_id          INTEGER NOT NULL,
+    reduction_factor_id  INTEGER NOT NULL,
+    PRIMARY KEY (severity_id, reduction_factor_id)
+);
+
 -- 2026-08-25: replaces the old actions table (one row per consequence,
 -- no reuse) with a shared catalog + many-to-many link, so the same
 -- recommendation text can be linked to several consequences instead of
@@ -985,9 +994,64 @@ class Database:
             "id INTEGER PRIMARY KEY AUTOINCREMENT,"
             "description TEXT NOT NULL UNIQUE, rrf INTEGER NOT NULL DEFAULT 10,"
             "active INTEGER NOT NULL DEFAULT 1)")
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS reduction_factor_severity_exclusions ("
+            "severity_id INTEGER NOT NULL, reduction_factor_id INTEGER NOT NULL,"
+            "PRIMARY KEY (severity_id, reduction_factor_id))")
+        self._seed_standard_enablers()
+        self._migrate_legacy_consequence_factors_to_enablers()
         self.commit()
         logging.info("Database: migration complete")
         self._validate_schema()
+
+    def _seed_standard_enablers(self):
+        """Keep the common event-tree enablers available in every project."""
+        for description, rrf in (("Antändning", 10), ("Eskalering", 10)):
+            self.conn.execute(
+                "INSERT OR IGNORE INTO reduction_factor_catalog(description,rrf,active) "
+                "VALUES (?,?,1)", (description, rrf))
+
+    def _migrate_legacy_consequence_factors_to_enablers(self):
+        """Move old FA/ignition checkboxes into the unified enabler list.
+
+        Older projects stored a percentage in the consequence row, whereas
+        the unified list stores the inverse RRF.  Converting ``10 %`` to
+        ``RRF 10`` (and ``1 %`` to ``RRF 100``) preserves the existing number
+        of frequency-reduction steps exactly.  The legacy switches are then
+        cleared so they can never be counted a second time.
+        """
+        try:
+            rows = self.conn.execute(
+                "SELECT id,fa_active,fa_rrf,ignition_active,ignition_rrf "
+                "FROM consequences WHERE fa_active=1 OR ignition_active=1").fetchall()
+        except sqlite3.OperationalError:
+            return
+        for row in rows:
+            for active_key, probability_key, description in (
+                    ('fa_active', 'fa_rrf', 'Eskalering'),
+                    ('ignition_active', 'ignition_rrf', 'Antändning')):
+                if not row[active_key]:
+                    continue
+                try:
+                    probability = float(row[probability_key] or 10)
+                except (TypeError, ValueError):
+                    probability = 10.0
+                rrf = max(1.0, 100.0 / max(0.001, min(99.9, probability)))
+                existing = self.conn.execute(
+                    "SELECT id FROM reduction_factors WHERE consequence_id=? "
+                    "AND lower(description)=lower(?) ORDER BY id LIMIT 1",
+                    (row['id'], description)).fetchone()
+                if existing:
+                    self.conn.execute(
+                        "UPDATE reduction_factors SET rrf=?,active=1 WHERE id=?",
+                        (rrf, existing['id']))
+                else:
+                    self.conn.execute(
+                        "INSERT INTO reduction_factors(consequence_id,description,rrf,active) "
+                        "VALUES (?,?,?,1)", (row['id'], description, rrf))
+            self.conn.execute(
+                "UPDATE consequences SET fa_active=0,ignition_active=0 WHERE id=?",
+                (row['id'],))
 
     def _clean_existing_recommendation_markup(self):
         """One-time-safe cleanup for imported HTML document fragments."""
@@ -2917,6 +2981,42 @@ class Database:
             self.conn.execute(
                 "INSERT OR IGNORE INTO consequence_severity_exclusions "
                 "(severity_id, safeguard_id) VALUES (?,?)", (severity_id, sg_id))
+        self.commit()
+
+    def get_severity_excluded_reduction_factors(self, severity_id):
+        """Return enabler ids that do not apply to one category assessment."""
+        rows = self.conn.execute(
+            "SELECT reduction_factor_id FROM reduction_factor_severity_exclusions "
+            "WHERE severity_id=?", (severity_id,)).fetchall()
+        return {row[0] for row in rows}
+
+    def get_severity_excluded_reduction_factors_for_severities(self, severity_ids):
+        """Bulk category exclusions for enablers, mirroring safeguard lookup."""
+        severity_ids = list(severity_ids)
+        result = {sid: set() for sid in severity_ids}
+        if not severity_ids:
+            return result
+        chunk_size = 500
+        for start in range(0, len(severity_ids), chunk_size):
+            chunk = severity_ids[start:start + chunk_size]
+            placeholders = ','.join('?' * len(chunk))
+            rows = self.conn.execute(
+                "SELECT severity_id,reduction_factor_id "
+                "FROM reduction_factor_severity_exclusions "
+                f"WHERE severity_id IN ({placeholders})", chunk).fetchall()
+            for row in rows:
+                result[row[0]].add(row[1])
+        return result
+
+    def set_severity_excluded_reduction_factors(self, severity_id, excluded_factor_ids):
+        self.conn.execute(
+            "DELETE FROM reduction_factor_severity_exclusions WHERE severity_id=?",
+            (severity_id,))
+        for factor_id in excluded_factor_ids:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO reduction_factor_severity_exclusions "
+                "(severity_id,reduction_factor_id) VALUES (?,?)",
+                (severity_id, factor_id))
         self.commit()
 
     def get_safeguard_excluded_causes(self, sg_id):
@@ -5437,6 +5537,10 @@ class Database:
         # Clean up severity/exclusion data for all consequences under this cause
         # (no FK cascade exists for these tables).
         self.conn.execute(
+            "DELETE FROM reduction_factor_severity_exclusions WHERE reduction_factor_id IN ("
+            "  SELECT id FROM reduction_factors WHERE consequence_id IN "
+            "  (SELECT id FROM consequences WHERE cause_id=?))", (id_,))
+        self.conn.execute(
             "DELETE FROM consequence_severity_exclusions "
             "WHERE severity_id IN ("
             "  SELECT cs.id FROM consequence_severities cs "
@@ -5464,6 +5568,9 @@ class Database:
 
     def delete_consequence(self, id_):
         # Clean up orphaned severity data (no FK cascade exists for these tables)
+        self.conn.execute(
+            "DELETE FROM reduction_factor_severity_exclusions WHERE reduction_factor_id IN ("
+            "SELECT id FROM reduction_factors WHERE consequence_id=?)", (id_,))
         self.conn.execute(
             "DELETE FROM consequence_severity_exclusions "
             "WHERE severity_id IN (SELECT id FROM consequence_severities WHERE consequence_id=?)",
@@ -5566,6 +5673,9 @@ class Database:
         self.commit()
 
     def delete_reduction_factor(self, id_):
+        self.conn.execute(
+            "DELETE FROM reduction_factor_severity_exclusions WHERE reduction_factor_id=?",
+            (id_,))
         self.conn.execute("DELETE FROM reduction_factors WHERE id=?", (id_,))
         self.commit()
 

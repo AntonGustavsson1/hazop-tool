@@ -1842,6 +1842,7 @@ class ReductionFactorsDialog(QDialog):
         self.db = db
         self.consequence_id = consequence_id
         self._syncing = False
+        self._category_checks = {}
         self.setWindowTitle("Övriga enablers")
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -1876,6 +1877,8 @@ class ReductionFactorsDialog(QDialog):
         self._tbl.setShowGrid(False)
         self._tbl.setMaximumHeight(156)
         self._tbl.cellChanged.connect(self._on_cell)
+        self._tbl.currentCellChanged.connect(
+            lambda row, _col, _old_row, _old_col: self._refresh_category_checks(row))
         layout.addWidget(self._tbl)
 
         add_btn = QPushButton("+ Egen enabler")
@@ -1883,6 +1886,17 @@ class ReductionFactorsDialog(QDialog):
         add_btn.setFixedHeight(22)
         add_btn.clicked.connect(self._add)
         layout.addWidget(add_btn)
+
+        self._category_section = QFrame()
+        self._category_section.setObjectName('enablerCategorySection')
+        self._category_section.setStyleSheet(
+            'QFrame#enablerCategorySection{border-top:1px solid #E2E3E1;}'
+            'QCheckBox{border:none;font-size:9px;color:#17191C;}')
+        self._category_layout = QVBoxLayout(self._category_section)
+        self._category_layout.setContentsMargins(0, 4, 0, 0)
+        self._category_layout.setSpacing(1)
+        self._category_section.hide()
+        layout.addWidget(self._category_section)
         self._refresh()
 
     @staticmethod
@@ -1906,12 +1920,17 @@ class ReductionFactorsDialog(QDialog):
         return 100.0 / cls._number(presence, minimum=0.0001, maximum=100.0)
 
     def _refresh(self):
+        selected_description = ''
+        current_row = self._tbl.currentRow()
+        if current_row >= 0 and self._tbl.item(current_row, 1):
+            selected_description = self._tbl.item(current_row, 1).text().strip().casefold()
         self._syncing = True
         self._tbl.blockSignals(True)
         self._tbl.setRowCount(0)
         active = {
             str(rf['description']).strip().casefold(): dict(rf)
             for rf in self.db.reduction_factors(self.consequence_id)
+            if rf['active']
         }
         factors = [dict(factor) for factor in self.db.reduction_factor_catalog()]
         known = {str(factor['description']).strip().casefold() for factor in factors}
@@ -1936,6 +1955,14 @@ class ReductionFactorsDialog(QDialog):
         self._tbl.blockSignals(False)
         self._syncing = False
         self._tbl.setFixedHeight(min(156, 23 + max(1, self._tbl.rowCount()) * 22))
+        selected_row = next(
+            (row for row in range(self._tbl.rowCount())
+             if self._tbl.item(row, 1) and
+             self._tbl.item(row, 1).text().strip().casefold() == selected_description),
+            0 if self._tbl.rowCount() else -1)
+        if selected_row >= 0:
+            self._tbl.setCurrentCell(selected_row, 1)
+        self._refresh_category_checks(selected_row)
 
     def _add(self):
         self.db.add_reduction_factor(self.consequence_id, 'Ny enabler', 10)
@@ -1974,6 +2001,48 @@ class ReductionFactorsDialog(QDialog):
         self._tbl.item(row, 3).setText(
             f'{self._format_number(self._presence_for_rrf(rrf))} %')
         self._syncing = False
+
+    def _clear_category_checks(self):
+        self._category_checks = {}
+        while self._category_layout.count():
+            child = self._category_layout.takeAt(0)
+            widget = child.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _refresh_category_checks(self, row):
+        """Show safeguard-like category applicability for the selected enabler."""
+        self._clear_category_checks()
+        desc_item = self._tbl.item(row, 1) if row >= 0 else None
+        factor_id = desc_item.data(Qt.ItemDataRole.UserRole) if desc_item else None
+        categories = [dict(row) for row in
+                      self.db.get_consequence_severities(self.consequence_id)]
+        if not factor_id or not categories:
+            self._category_section.hide()
+            return
+        excluded_by_severity = (
+            self.db.get_severity_excluded_reduction_factors_for_severities(
+                [category['id'] for category in categories]))
+        label = QLabel('Gäller för konsekvenskategori:')
+        label.setStyleSheet('border:none;color:#5B616B;font-size:9px;')
+        self._category_layout.addWidget(label)
+        for category in categories:
+            check = QCheckBox(str(category['name']))
+            check.setChecked(factor_id not in excluded_by_severity.get(category['id'], set()))
+            check.toggled.connect(
+                lambda checked, sid=category['id'], fid=factor_id:
+                self._set_category_applicability(fid, sid, checked))
+            self._category_checks[category['id']] = check
+            self._category_layout.addWidget(check)
+        self._category_section.show()
+
+    def _set_category_applicability(self, factor_id, severity_id, applies):
+        excluded = self.db.get_severity_excluded_reduction_factors(severity_id)
+        if applies:
+            excluded.discard(factor_id)
+        else:
+            excluded.add(factor_id)
+        self.db.set_severity_excluded_reduction_factors(severity_id, excluded)
 
 
 class _ScenarioDelegate(QStyledItemDelegate):
@@ -3953,109 +4022,38 @@ class ConsCategoryMatrixPopup(QDialog):
 
 
 class _LopaWidget(QWidget):
-    """Compact stacked FA / Antändning / Övriga cell widget for ScenarioTablePanel."""
+    """One compact RRF-like button summarising a consequence's enablers."""
 
-    changed = pyqtSignal(int)   # emits cons_id after any save
-
-    def __init__(self, db: 'Database', cons_id: int,
-                 fa_active: bool, fa_rrf,
-                 ign_active: bool, ign_rrf,
-                 n_extra: int, parent=None):
+    def __init__(self, cons_id: int, n_active: int, total_rrf, parent=None):
         super().__init__(parent)
-        self.db       = db
         self.cons_id  = cons_id
-        self._saving  = False
-
-        _ROW_H = 16   # fixed height per mini-row — keeps widget compact
-
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(2, 0, 2, 0)
+        lay.setContentsMargins(2, 1, 2, 1)
         lay.setSpacing(0)
-
-        _cb_ss  = "font-size:8pt;"
-        _ed_ss  = "font-size:8pt; padding:0px 1px;"
-        _btn_ss = "font-size:7pt; text-align:left; padding:0px 2px; border:none;"
-
-        def _pct_edit(val):
-            e = QLineEdit(str(val))
-            e.setMaximumWidth(36); e.setMinimumWidth(28)
-            e.setFixedHeight(_ROW_H)
-            e.setAlignment(Qt.AlignmentFlag.AlignRight)
-            e.setStyleSheet(_ed_ss)
-            return e
-
-        def _cb(label, checked, tip):
-            c = QCheckBox(label)
-            c.setChecked(checked)
-            c.setToolTip(tip)
-            c.setFixedHeight(_ROW_H)
-            c.setStyleSheet(_cb_ss)
-            return c
-
-        # FA row
-        fa_row = QHBoxLayout()
-        fa_row.setContentsMargins(0, 0, 0, 0); fa_row.setSpacing(2)
-        self._fa_cb   = _cb("FA", bool(fa_active), "Närvaro/FA-sannolikhet\n10%=−1 steg")
-        self._fa_edit = _pct_edit(fa_rrf)
-        self._fa_edit.setToolTip("Sannolikhet i % (t.ex. 10 eller 1)")
-        fa_pct = QLabel("%"); fa_pct.setFixedWidth(10); fa_pct.setStyleSheet(_cb_ss)
-        fa_row.addWidget(self._fa_cb); fa_row.addStretch()
-        fa_row.addWidget(self._fa_edit); fa_row.addWidget(fa_pct)
-        lay.addLayout(fa_row)
-
-        # Antändning row
-        ign_row = QHBoxLayout()
-        ign_row.setContentsMargins(0, 0, 0, 0); ign_row.setSpacing(2)
-        self._ign_cb   = _cb("Ant.", bool(ign_active), "Antändningssannolikhet\n10%=−1 steg")
-        self._ign_edit = _pct_edit(ign_rrf)
-        self._ign_edit.setToolTip("Sannolikhet i % (t.ex. 10 eller 1)")
-        ign_pct = QLabel("%"); ign_pct.setFixedWidth(10); ign_pct.setStyleSheet(_cb_ss)
-        ign_row.addWidget(self._ign_cb); ign_row.addStretch()
-        ign_row.addWidget(self._ign_edit); ign_row.addWidget(ign_pct)
-        lay.addLayout(ign_row)
-
-        # Övriga faktorer button
-        self._extra_btn = QPushButton(
-            f"+{n_extra} övr." if n_extra else "+ övriga")
-        self._extra_btn.setFlat(True)
-        self._extra_btn.setFixedHeight(_ROW_H)
-        self._extra_btn.setStyleSheet(_btn_ss)
+        self._extra_btn = QPushButton()
+        self._extra_btn.setObjectName('enablerSummaryButton')
+        self._extra_btn.setFixedHeight(22)
+        self._extra_btn.setToolTip('Klicka för att välja enablers och deras RRF.')
+        self._extra_btn.setStyleSheet(
+            'QPushButton#enablerSummaryButton{background:#F5F5F3;color:#17191C;'
+            'border:none;font-size:9px;font-weight:bold;padding:2px 4px;}'
+            'QPushButton#enablerSummaryButton:hover{background:#E8E9E6;}')
         lay.addWidget(self._extra_btn)
+        self.setFixedHeight(24)
+        self.update_summary(n_active, total_rrf)
 
-        self.setFixedHeight(_ROW_H * 3 + 2)
-
-        self._fa_cb.toggled.connect(self._save)
-        self._fa_edit.editingFinished.connect(self._save)
-        self._ign_cb.toggled.connect(self._save)
-        self._ign_edit.editingFinished.connect(self._save)
-
-    def update_extra_count(self, n: int):
-        self._extra_btn.setText(f"+ {n} övr." if n else "+ övriga")
-
-    def _parse_pct(self, edit: 'QLineEdit') -> float:
+    @staticmethod
+    def _format_rrf(value):
         try:
-            v = float(edit.text().replace('%', '').strip() or '10')
-            return max(0.001, min(99.9, v))
-        except ValueError:
-            return 10.0
+            return f'{float(value):.6g}'
+        except (TypeError, ValueError):
+            return '1'
 
-    def _save(self):
-        if self._saving:
-            return
-        self._saving = True
-        try:
-            self.db.update_consequence_factors(
-                self.cons_id,
-                self._fa_cb.isChecked(),  self._parse_pct(self._fa_edit),
-                self._ign_cb.isChecked(), self._parse_pct(self._ign_edit))
-            self.changed.emit(self.cons_id)
-        finally:
-            self._saving = False
-
-
+    def update_summary(self, n_active: int, total_rrf):
+        self._extra_btn.setText(f'{int(n_active)} ({self._format_rrf(total_rrf)})')
 
 class ScenarioTablePanel(QWidget):
-    """Extended scenario table with FA, Antändning, Övriga faktorer and Slutkonsekvens."""
+    """Extended scenario table with unified enablers and final consequence."""
 
     item_selected              = pyqtSignal(int, int)   # (type_, id_) — cell clicked → open right panel
     new_item_created           = pyqtSignal(int, int)   # (type_, id_) — after quick-add via Enter menu
@@ -4678,6 +4676,9 @@ class ScenarioTablePanel(QWidget):
         return cause_d.get('comp_type') or '', cause_d.get('comp_tag') or ''
 
     def _node_number(self, node_id):
+        cached = getattr(self, '_display_cache', {}).get('node_numbers', {})
+        if node_id in cached:
+            return cached[node_id]
         for i, node in enumerate(self.db.nodes(), 1):
             if node['id'] == node_id:
                 return i
@@ -4686,6 +4687,9 @@ class ScenarioTablePanel(QWidget):
     def _deviation_number(self, node_id, deviation_id):
         if not node_id or not deviation_id:
             return None
+        cached = getattr(self, '_display_cache', {}).get('deviation_numbers', {})
+        if deviation_id in cached:
+            return cached[deviation_id]
         # The tree displays deviations with the same guide-word text as one
         # row.  An object assigned through the left-click deviation checklist
         # may create a same-text, equipment-specific sibling; it must share
@@ -4710,6 +4714,10 @@ class ScenarioTablePanel(QWidget):
     def _child_number(self, kind, parent_id, item_id):
         if not parent_id or not item_id:
             return None
+        cached = getattr(self, '_display_cache', {}).get('child_numbers', {})
+        cached_number = cached.get(kind, {}).get(item_id)
+        if cached_number is not None:
+            return cached_number
         if kind == 'cause':
             rows = self.db.causes_for_deviation(parent_id)
         elif kind == 'consequence':
@@ -4786,6 +4794,9 @@ class ScenarioTablePanel(QWidget):
                      'cause_id=%s cons_id=%s)',
                      self._all_nodes, self._node_id, self._deviation_id,
                      self.cause_id, self._cons_id)
+        # Clear a previous rebuild's lookup data before any placeholder
+        # branch can paint a different scope.
+        self._display_cache = {}
         # Build list of (cause_dict, deviation_dict) to display
         causes_to_show = []
         if self._all_nodes:
@@ -4893,6 +4904,28 @@ class ScenarioTablePanel(QWidget):
         # (same row shape/order) — only the data SOURCE changed, none of
         # the row-building logic below.
         nodes_by_id = {n['id']: dict(n) for n in self.db.nodes()}
+        # The visible numeric prefixes are requested for every rendered
+        # cell.  Keep their source data alongside the existing row-data
+        # prefetches so displaying a large study never turns those labels
+        # into a new N+1 query path.
+        all_devs_by_node = self.db.deviations_for_nodes(nodes_by_id)
+        all_dev_ids = [d['id'] for devs in all_devs_by_node.values() for d in devs]
+        all_causes_by_dev = self.db.causes_for_deviations(all_dev_ids)
+        node_numbers = {node_id: i for i, node_id in
+                        enumerate(nodes_by_id, 1)}
+        deviation_numbers = {}
+        for node_id, deviations in all_devs_by_node.items():
+            numbers_by_description = {}
+            for deviation in deviations:
+                description = deviation['description']
+                if description not in numbers_by_description:
+                    numbers_by_description[description] = len(numbers_by_description) + 1
+                deviation_numbers[deviation['id']] = numbers_by_description[description]
+        cause_numbers = {
+            cause['id']: i + 1
+            for causes in all_causes_by_dev.values()
+            for i, cause in enumerate(causes)
+        }
         _real_cause_ids = [cd['id'] for cd, _ in causes_to_show if cd is not None]
         cons_by_cause = self.db.consequences_for_causes(_real_cause_ids)
         _all_cons_ids = [dict(c)['id'] for conss in cons_by_cause.values() for c in conss]
@@ -4902,6 +4935,8 @@ class ScenarioTablePanel(QWidget):
             self.db.get_final_consequence_severities_for_consequences(_all_cons_ids)
         _all_severity_ids = [dict(r)['id'] for rows in cat_rows_by_cons.values() for r in rows]
         excl_sgs_by_severity = self.db.get_severity_excluded_sgs_for_severities(_all_severity_ids)
+        excl_enablers_by_severity = \
+            self.db.get_severity_excluded_reduction_factors_for_severities(_all_severity_ids)
         _all_sg_ids = [dict(s)['id'] for sgs in sgs_by_cons.values() for s in sgs]
         excl_causes_by_sg = self.db.get_safeguard_excluded_causes_for_safeguards(_all_sg_ids)
         # _add_row() used to re-fetch reduction_factors(cons_d['id']) once
@@ -4914,6 +4949,28 @@ class ScenarioTablePanel(QWidget):
         # get_safeguard_excluded_causes(sg['id']) once per row even
         # though excl_causes_by_sg (above) already has it precomputed.
         acts_by_cons = self.db.recommendations_for_consequences(_all_cons_ids)
+        self._display_cache = {
+            'node_numbers': node_numbers,
+            'deviation_numbers': deviation_numbers,
+            'child_numbers': {
+                'cause': cause_numbers,
+                'consequence': {
+                    consequence['id']: i + 1
+                    for consequences in cons_by_cause.values()
+                    for i, consequence in enumerate(consequences)
+                },
+                'safeguard': {
+                    safeguard['id']: i + 1
+                    for safeguards in sgs_by_cons.values()
+                    for i, safeguard in enumerate(safeguards)
+                },
+            },
+            'causes': {
+                cause['id']: dict(cause)
+                for causes in all_causes_by_dev.values()
+                for cause in causes
+            },
+        }
 
         # Tracks the previous REAL cause's (comp_type, comp_tag) so the ORS
         # tag banner can be hidden on a run of consecutive deviations that
@@ -5002,8 +5059,11 @@ class ScenarioTablePanel(QWidget):
 
                 # Precompute exclusions per severity assessment
                 cat_excl_map = {}           # sev_id → set of excluded sg_ids
+                cat_enabler_excl_map = {}   # sev_id → set of excluded enabler ids
                 for _cr in cat_rows:
                     cat_excl_map[_cr['id']] = excl_sgs_by_severity.get(_cr['id'], set())
+                    cat_enabler_excl_map[_cr['id']] = \
+                        excl_enablers_by_severity.get(_cr['id'], set())
 
                 # Which safeguards are excluded from at least one category?
                 any_excl_map = {}           # sg_id → list of category names
@@ -5071,6 +5131,8 @@ class ScenarioTablePanel(QWidget):
                             cr_i['category_id'], cr_i['severity'])
                         if cr_i else cons_d.get('severity') or 1)
                     excl_for_cat  = cat_excl_map.get(cr_i['id'], set()) if cr_i else set()
+                    excl_enablers_for_cat = (
+                        cat_enabler_excl_map.get(cr_i['id'], set()) if cr_i else set())
                     excl_cat_names = any_excl_map.get(sg_i['id'], []) if sg_i else []
                     logging.info('_build_rows: H2 — _add_row cons_id=%s row_i=%d/%d '
                                  '(will create _LopaWidget)',
@@ -5091,7 +5153,8 @@ class ScenarioTablePanel(QWidget):
                                   rfs=rfs_by_cons.get(cons_d['id'], []),
                                   acts=acts_by_cons.get(cons_d['id'], []),
                                   recommendation=rec_i,
-                                  excl_causes_by_sg=excl_causes_by_sg)
+                                  excl_causes_by_sg=excl_causes_by_sg,
+                                  excl_enablers_for_cat=excl_enablers_for_cat)
                     logging.info('_build_rows: H3 — _add_row cons_id=%s row_i=%d done',
                                  cons_d.get('id'), i)
             if self._table.rowCount() == first_row_for_cause:
@@ -5206,7 +5269,7 @@ class ScenarioTablePanel(QWidget):
 
     def _compute_row_height(self, row, fm=None):
         """The height `row` needs across EVERY column that can affect it —
-        ORS/KON wrapped text, the fixed-height _LopaWidget in the FA/Ant.
+        ORS/KON wrapped text, the fixed-height enabler summary button in the
         column, SG's one-line minimum, and the ORS readability floor —
         folded into a single per-row function so a caller updating just
         ONE column's text can never accidentally shrink the row below what
@@ -5219,7 +5282,7 @@ class ScenarioTablePanel(QWidget):
         cleared back to empty text) needed, discarding whatever a long ORS
         cause description or the LOPA widget's own fixed height required —
         the row shrank to one line, clipping the cause text and squashing
-        the FA/Ant. widget below its own setFixedHeight(). This function is
+        the enabler summary button below its own setFixedHeight(). This function is
         now the single source of truth for "how tall must this row be",
         used by both the full _resize_rows_manual() rebuild pass AND
         _update_row_text_only()'s single-row fast path, so the two can
@@ -5606,7 +5669,7 @@ class ScenarioTablePanel(QWidget):
                  cause_excl_sgs=None, sev_cat_list=None, all_cat_infos=None,
                  cause_popup_list=None, n_cats=0, repeats_previous_tag=False,
                  cause_status=None, rfs=None, acts=None, recommendation=None,
-                 excl_causes_by_sg=None):
+                 excl_causes_by_sg=None, excl_enablers_for_cat=None):
         """One row in the scenario table.
 
         sg            – the safeguard for this row (None = no safeguard on this row).
@@ -5644,6 +5707,8 @@ class ScenarioTablePanel(QWidget):
             sev_cat_list = []
         if cause_popup_list is None:
             cause_popup_list = []
+        if excl_enablers_for_cat is None:
+            excl_enablers_for_cat = set()
 
         r      = self._table.rowCount()
         self._table.insertRow(r)
@@ -5674,13 +5739,11 @@ class ScenarioTablePanel(QWidget):
         if rfs is None:
             rfs = self.db.reduction_factors(cid)
         rfs        = [dict(rf) for rf in rfs]
-        fa_active  = bool(cons_d.get('fa_active', 0))
-        fa_rrf     = cons_d.get('fa_rrf', 10) or 10
-        ign_active = bool(cons_d.get('ignition_active', 0))
-        ign_rrf    = cons_d.get('ignition_rrf', 10) or 10
+        category_rfs = ([rf for rf in rfs if rf.get('id') not in excl_enablers_for_cat]
+                         if cat_info else rfs)
 
         final_f, total_rrf, total_steps = total_freq_reduction(
-            freq, sg_rrf, fa_active, fa_rrf, ign_active, ign_rrf, rfs)
+            freq, sg_rrf, False, 10, False, 10, category_rfs)
 
         final_sev = final_severity if final_severity is not None else sev
         level_b, bg_b, fg_b = risk_info(freq, sev)
@@ -5875,12 +5938,16 @@ class ScenarioTablePanel(QWidget):
             sg_item.setToolTip(tip)
         self._table.setItem(r, self._C_SG, sg_item)
 
-        # ── Col LOPA: FA / Antändning / Övriga (merged LOPA column) ──────────
-        n_active = sum(1 for rf in rfs if rf.get('active'))
-        lopa_w = _LopaWidget(self.db, cid,
-                             fa_active, fa_rrf, ign_active, ign_rrf, n_active)
+        # ── Col Enablers: one compact active-count / aggregate-RRF button ───
+        active_rfs = [rf for rf in rfs if rf.get('active')]
+        enabler_rrf = 1.0
+        for factor in active_rfs:
+            try:
+                enabler_rrf *= max(1.0, float(factor.get('rrf') or 1))
+            except (TypeError, ValueError):
+                continue
+        lopa_w = _LopaWidget(cid, len(active_rfs), enabler_rrf)
         lopa_w._extra_btn.clicked.connect(partial(self._edit_extra, cid))
-        lopa_w.changed.connect(self._update_lopa_risk)
         self._table.setCellWidget(r, self._C_LOPA, lopa_w)
 
         # ── Col SLUT: Slutkonsekvens ──────────────────────────────────────────
@@ -6148,7 +6215,7 @@ class ScenarioTablePanel(QWidget):
         self._ctx_bar.show()
 
     def _update_lopa_risk(self, cons_id: int):
-        """Targeted update of the SLUT cell when FA/IGN/Övriga changes.
+        """Targeted update of the SLUT cell when an enabler changes.
 
         Avoids a full _rebuild() — only recalculates risk values for the
         rows belonging to *cons_id* and patches those cells in-place.
@@ -6168,10 +6235,6 @@ class ScenarioTablePanel(QWidget):
         cause_d = dict(cause)
         freq    = self.db.cause_frequency_level(cause_d)
         rfs     = [dict(rf) for rf in self.db.reduction_factors(cons_id)]
-        fa_active  = bool(cons_d.get('fa_active', 0))
-        fa_rrf     = cons_d.get('fa_rrf', 10) or 10
-        ign_active = bool(cons_d.get('ignition_active', 0))
-        ign_rrf    = cons_d.get('ignition_rrf', 10) or 10
         all_sgs = [dict(s) for s in self.db.safeguards(cons_id)]
         final_severities = {
             r['category_id']: r['severity']
@@ -6200,15 +6263,20 @@ class ScenarioTablePanel(QWidget):
                     sg_rrf = 1
                     for s in active_sgs:
                         sg_rrf *= (s.get('rrf') or 1)
+                    excluded_enablers = \
+                        self.db.get_severity_excluded_reduction_factors(sev_id)
+                    effective_rfs = [rf for rf in rfs
+                                     if rf.get('id') not in excluded_enablers]
                 else:
                     sev = cons_d.get('severity') or 1
                     sg_rrf = 1
                     for s in all_sgs:
                         if s['id'] not in cause_excl:
                             sg_rrf *= (s.get('rrf') or 1)
+                    effective_rfs = rfs
 
                 final_f, total_rrf, total_steps = total_freq_reduction(
-                    freq, sg_rrf, fa_active, fa_rrf, ign_active, ign_rrf, rfs)
+                    freq, sg_rrf, False, 10, False, 10, effective_rfs)
                 final_sev = (final_severities.get(cat_id, sev)
                              if cat_info else sev)
                 level_s, bg_s, fg_s = risk_info(final_f, final_sev)
@@ -6292,7 +6360,7 @@ class ScenarioTablePanel(QWidget):
                     # not just what this one column now needs — otherwise
                     # clearing e.g. a consequence's text back to empty would
                     # shrink the row below what a long cause description (or
-                    # the FA/Ant. column's fixed-height widget) in the SAME
+                    # the enabler summary button's fixed-height widget) in the SAME
                     # row still requires (2026-08-11, see NOTES.md).
                     self._table.setRowHeight(row, self._compute_row_height(row))
         finally:
@@ -6790,7 +6858,10 @@ class ScenarioTablePanel(QWidget):
         """
         meta = item.data(Qt.ItemDataRole.UserRole) if item else None
         try:
-            cause = self.db.get_cause(meta[1]) if meta else None
+            cause_id = meta[1] if meta else None
+            cause = getattr(self, '_display_cache', {}).get('causes', {}).get(cause_id)
+            if cause is None and cause_id is not None:
+                cause = self.db.get_cause(cause_id)
             group_ids = self.db.group_equipment_ids_for_cause(cause)
         except Exception:
             # A queued Qt repaint can arrive just after a temporary project

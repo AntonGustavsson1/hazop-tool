@@ -474,7 +474,7 @@ class MarkerNavigateCrashTests(unittest.TestCase):
 
             # Give the consequence some LOPA data so _update_lopa_risk() has
             # real work to do if it were allowed to run.
-            win.db.update_consequence_factors(ids['cons_id'], True, 10, False, 10)
+            win.db.add_reduction_factor(ids['cons_id'], 'Antändning', 10)
 
             panel._rebuilding = True
             try:
@@ -490,50 +490,19 @@ class MarkerNavigateCrashTests(unittest.TestCase):
 
             block_signals_spy.assert_not_called()
 
-    def test_lopa_widget_editing_finished_during_rebuild_does_not_reenter(self):
-        """End-to-end version of the reentrancy scenario: build a real
-        _LopaWidget bound to a live cons_id, simulate _rebuild() being
-        mid-teardown (`_rebuilding = True`), then fire the widget's `changed`
-        signal (as its QLineEdit's editingFinished -> _save would during a
-        focus-out) and confirm it reaches _update_lopa_risk() but the guard
-        makes it a no-op rather than touching the table's signal-blocking
-        state.
-        """
+    def test_lopa_widget_is_one_summary_button_without_inline_controls(self):
+        """Enablers are configured in the popup, not in cell checkboxes."""
         from hazop import _LopaWidget
+        from PyQt6.QtWidgets import QCheckBox, QLineEdit, QPushButton
 
         with _TempDbMainWindow() as win:
-            panel = win.scenario_panel
             ids = self._make_full_chain(win.db)
-            win.db.update_consequence_factors(ids['cons_id'], True, 10, False, 10)
-
-            lopa = _LopaWidget(win.db, ids['cons_id'],
-                                True, 10.0, False, 10.0, 0)
-            lopa.changed.connect(panel._update_lopa_risk)
+            lopa = _LopaWidget(ids['cons_id'], 2, 100)
             try:
-                # Give the FA edit field focus, as the real bug scenario
-                # requires (a focused QLineEdit inside a cell widget being
-                # destroyed by setRowCount(0) mid-rebuild).
-                lopa._fa_edit.setFocus()
-
-                panel._rebuilding = True
-                try:
-                    update_spy = unittest.mock.Mock(wraps=panel._update_lopa_risk)
-                    panel._update_lopa_risk = update_spy
-                    lopa.changed.connect(update_spy)
-
-                    # Simulate the focus-out -> editingFinished -> _save ->
-                    # changed.emit() chain directly (this is exactly what
-                    # QLineEdit does internally on focus-out).
-                    lopa._fa_edit.editingFinished.emit()
-
-                    self.assertTrue(
-                        update_spy.called,
-                        "the widget's changed signal should still reach "
-                        "_update_lopa_risk (that part of the wiring is "
-                        "unchanged) — the guard inside it is what must stop "
-                        "the reentrant work, not the signal connection")
-                finally:
-                    panel._rebuilding = False
+                self.assertEqual(lopa._extra_btn.text(), '2 (100)')
+                self.assertEqual(len(lopa.findChildren(QPushButton)), 1)
+                self.assertEqual(lopa.findChildren(QCheckBox), [])
+                self.assertEqual(lopa.findChildren(QLineEdit), [])
             finally:
                 lopa.deleteLater()
 
@@ -546,7 +515,7 @@ class MarkerNavigateCrashTests(unittest.TestCase):
         with _TempDbMainWindow() as win:
             panel = win.scenario_panel
             ids = self._make_full_chain(win.db)
-            win.db.update_consequence_factors(ids['cons_id'], True, 10, False, 10)
+            win.db.add_reduction_factor(ids['cons_id'], 'Antändning', 10)
 
             # Stub the heavy loaders so _rebuild() (invoked transitively via
             # load_cause below) stays inside the safe/tested code path,

@@ -4764,9 +4764,9 @@ class ReductionFactorsDialogTests(unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.mkdtemp(prefix='hazop_enabler_test_')
         self.db = Database(path=os.path.join(self._tmpdir, 'test_project.db'))
-        node_id = self.db.add_node()
-        cause_id = self.db.add_cause(self.db.deviations(node_id)[0]['id'])
-        self.cons_id = self.db.add_consequence(cause_id)
+        self.node_id = self.db.add_node()
+        self.cause_id = self.db.add_cause(self.db.deviations(self.node_id)[0]['id'])
+        self.cons_id = self.db.add_consequence(self.cause_id)
 
     def tearDown(self):
         try:
@@ -4780,17 +4780,17 @@ class ReductionFactorsDialogTests(unittest.TestCase):
         self.db.add_reduction_factor(self.cons_id, 'Ventil tillgänglig', 100)
         dialog = ReductionFactorsDialog(self.db, self.cons_id)
         try:
-            self.assertEqual(dialog._tbl.item(0, 3).text(), '1 %')
-
-            dialog._tbl.item(0, 3).setText('10 %')
-            self.assertEqual(self.db.reduction_factors(self.cons_id)[0]['rrf'], 10)
-            self.assertEqual(dialog._tbl.item(0, 2).text(), '10')
-
-            dialog._tbl.item(0, 2).setText('100')
-            self.assertEqual(dialog._tbl.item(0, 3).text(), '1 %')
-
             row = next(i for i in range(dialog._tbl.rowCount())
                        if dialog._tbl.item(i, 1).text() == 'Ventil tillgänglig')
+            self.assertEqual(dialog._tbl.item(row, 3).text(), '1 %')
+
+            dialog._tbl.item(row, 3).setText('10 %')
+            self.assertEqual(self.db.reduction_factors(self.cons_id)[0]['rrf'], 10)
+            self.assertEqual(dialog._tbl.item(row, 2).text(), '10')
+
+            dialog._tbl.item(row, 2).setText('100')
+            self.assertEqual(dialog._tbl.item(row, 3).text(), '1 %')
+
             toggle = dialog._tbl.item(row, 0)
             self.assertEqual(toggle.checkState(), Qt.CheckState.Checked)
             toggle.setCheckState(Qt.CheckState.Unchecked)
@@ -4814,6 +4814,89 @@ class ReductionFactorsDialogTests(unittest.TestCase):
                              [label.text() for label in dialog.findChildren(QLabel)])
         finally:
             dialog.deleteLater()
+
+    def test_standard_enablers_are_available_and_legacy_values_are_migrated(self):
+        catalog = {row['description']: row['rrf']
+                   for row in self.db.reduction_factor_catalog()}
+        self.assertEqual(catalog.get('Antändning'), 10)
+        self.assertEqual(catalog.get('Eskalering'), 10)
+
+        from hazop import ReductionFactorsDialog
+        dialog = ReductionFactorsDialog(self.db, self.cons_id)
+        try:
+            rows = {dialog._tbl.item(row, 1).text(): row
+                    for row in range(dialog._tbl.rowCount())}
+            self.assertEqual(dialog._tbl.item(rows['Antändning'], 0).checkState(),
+                             Qt.CheckState.Unchecked)
+            self.assertEqual(dialog._tbl.item(rows['Eskalering'], 0).checkState(),
+                             Qt.CheckState.Unchecked)
+        finally:
+            dialog.deleteLater()
+
+        # Legacy values were percentages; 10 % and 1 % correspond to RRF 10
+        # and RRF 100 in the unified enabler model.
+        self.db.conn.execute(
+            'UPDATE consequences SET fa_active=1,fa_rrf=10,'
+            'ignition_active=1,ignition_rrf=1 WHERE id=?', (self.cons_id,))
+        self.db.commit()
+        self.db._migrate_legacy_consequence_factors_to_enablers()
+
+        factors = {row['description']: row for row in self.db.reduction_factors(self.cons_id)}
+        self.assertEqual(factors['Eskalering']['rrf'], 10)
+        self.assertEqual(factors['Antändning']['rrf'], 100)
+        legacy = self.db.get_consequence(self.cons_id)
+        self.assertFalse(legacy['fa_active'])
+        self.assertFalse(legacy['ignition_active'])
+
+    def test_selected_enabler_can_be_excluded_from_one_category(self):
+        from hazop import ReductionFactorsDialog
+
+        category_id = self.db.add_category('Människa')
+        self.db.set_consequence_severity(self.cons_id, category_id, 3)
+        factor_id = self.db.add_reduction_factor(self.cons_id, 'Antändning', 10)
+        severity_id = self.db.get_consequence_severities(self.cons_id)[0]['id']
+        dialog = ReductionFactorsDialog(self.db, self.cons_id)
+        try:
+            row = next(i for i in range(dialog._tbl.rowCount())
+                       if dialog._tbl.item(i, 1).text() == 'Antändning')
+            dialog._tbl.setCurrentCell(row, 1)
+            check = dialog._category_checks[severity_id]
+            self.assertTrue(check.isChecked())
+            check.setChecked(False)
+            self.assertEqual(
+                self.db.get_severity_excluded_reduction_factors(severity_id), {factor_id})
+            check.setChecked(True)
+            self.assertEqual(self.db.get_severity_excluded_reduction_factors(severity_id), set())
+        finally:
+            dialog.deleteLater()
+
+    def test_summary_button_counts_and_category_exclusions_change_final_frequency(self):
+        from hazop import ScenarioTablePanel
+
+        category_id = self.db.add_category('Människa')
+        self.db.set_consequence_severity(self.cons_id, category_id, 3)
+        self.db.update_cause(self.cause_id, likelihood=4)
+        ignition_id = self.db.add_reduction_factor(self.cons_id, 'Antändning', 10)
+        self.db.add_reduction_factor(self.cons_id, 'Eskalering', 10)
+        severity_id = self.db.get_consequence_severities(self.cons_id)[0]['id']
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(self.node_id)
+            row = next(row for row, meta in enumerate(panel._row_meta)
+                       if meta[2] == self.cons_id)
+            self.assertEqual(panel._table.cellWidget(row, panel._C_LOPA)._extra_btn.text(),
+                             '2 (100)')
+            self.assertEqual(panel._table.item(row, panel._C_SLUT)
+                             .data(Qt.ItemDataRole.UserRole)[-2], 2)
+
+            self.db.set_severity_excluded_reduction_factors(severity_id, {ignition_id})
+            panel.load_node(self.node_id)
+            row = next(row for row, meta in enumerate(panel._row_meta)
+                       if meta[2] == self.cons_id)
+            self.assertEqual(panel._table.item(row, panel._C_SLUT)
+                             .data(Qt.ItemDataRole.UserRole)[-2], 3)
+        finally:
+            panel.deleteLater()
 
     def test_extra_rrf_100_gives_two_frequency_steps(self):
         from ui_helpers import total_freq_reduction

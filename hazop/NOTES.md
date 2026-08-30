@@ -4317,3 +4317,22 @@ RRF-popup-regressionstest, Frekvens-popup-test, `tests.test_smoke` och
 Rubriken `Övriga enablers` inne i enabler-popupen är borttagen så att listan
 ligger direkt under popupens kant. Verifierat med ett särskilt regressionstest
 för frånvaron av rubriken, enabler-tester, `tests.test_smoke` och `py_compile`.
+
+## Enablers i gemensam popup (2026-08-30)
+
+Antändning och Eskalering är nu standardenablers i samma kompakta popup som
+övriga enablers. De gamla kryssrutorna i HAZOP Scenario och HAZOP Worksheet är
+borttagna. Cellen visar i stället en RRF-lik knapp med antal aktiva enablers
+och deras multiplikativa RRF, exempelvis `2 (100)`.
+
+En vald enabler kan precis som en safeguard avmarkeras per
+konsekvenskategori via `Gäller för konsekvenskategori`. Beräkningen för
+respektive kategori utelämnar då just den enablern. Äldre projekt migreras
+säkert: tidigare FA- och antändningsval blir Eskalering respektive Antändning
+med bevarad reduktion och de gamla flaggorna nollställs för att undvika
+dubbelräkning.
+
+Verifierat med riktade popup-/migrerings-/kategoriundantagstester, den
+befintliga query-batching-regressionen, integrationsfall för cellknappen,
+`tests.test_smoke` och `py_compile`. Ingen manuell visuell GUI-verifiering är
+gjord.
