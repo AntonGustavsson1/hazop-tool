@@ -3576,9 +3576,10 @@ class RecommendationAssistPopup(QWidget):
 class SgRRFCategoryPopup(QDialog):
     """Compact popup for changing a safeguard's RRF and type.
 
-    The former per-category/per-cause ``Gäller ej för`` controls are
-    intentionally not part of this popup anymore.  The constructor keeps
-    those arguments for call-site compatibility, but they are ignored.
+    ``Gäller för konsekvenskategori`` remains here because it is part of
+    the safeguard's risk applicability.  The former per-cause selection is
+    intentionally absent: a safeguard is no longer configured differently
+    for individual causes from this popup.
     """
 
     def __init__(self, db, sg_id, current_rrf, current_sg_type,
@@ -3588,6 +3589,8 @@ class SgRRFCategoryPopup(QDialog):
         self._sg_id          = sg_id
         self._current_rrf    = current_rrf
         self._current_type   = current_sg_type or 'Övrigt'
+        self._sev_cat_list   = list(sev_cat_list or [])  # [(severity_id, category_name), ...]
+        self._cat_checks: dict[int, QCheckBox] = {}
         self.setWindowTitle("Barriär — RRF & tillämpning")
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
@@ -3652,6 +3655,29 @@ class SgRRFCategoryPopup(QDialog):
         spin_row.addWidget(self._spin)
         outer.addLayout(spin_row)
 
+        # Keep category applicability separate from the retired per-cause
+        # selection.  Each category assessment owns its own exclusion set,
+        # so changing a checkbox must preserve exclusions for other
+        # safeguards in that same category.
+        if self._sev_cat_list:
+            sep = QFrame()
+            sep.setFrameShape(QFrame.Shape.HLine)
+            sep.setStyleSheet("color:#E2E3E1;")
+            outer.addWidget(sep)
+            applies_label = QLabel("Gäller för konsekvenskategori:")
+            applies_label.setStyleSheet("border:none;color:#5B616B;font-size:9px;")
+            outer.addWidget(applies_label)
+            for severity_id, category_name in self._sev_cat_list:
+                try:
+                    excluded = self.db.get_severity_excluded_sgs(severity_id) or set()
+                except Exception:
+                    excluded = set()
+                check = QCheckBox(str(category_name))
+                check.setStyleSheet("border:none;font-size:10px;color:#17191C;")
+                check.setChecked(self._sg_id not in excluded)
+                self._cat_checks[severity_id] = check
+                outer.addWidget(check)
+
         ok = QPushButton("OK")
         ok.setDefault(True)
         ok.setStyleSheet(
@@ -3666,6 +3692,17 @@ class SgRRFCategoryPopup(QDialog):
         new_type = self._type_combo.currentText()
         if new_rrf != self._current_rrf or new_type != self._current_type:
             self.db.update_safeguard(self._sg_id, rrf=new_rrf, sg_type=new_type)
+
+        # Persist only this safeguard's membership in each category.  Do
+        # not touch safeguard_cause_exclusions: the per-cause feature was
+        # intentionally removed and old stored values remain undisturbed.
+        for severity_id, check in self._cat_checks.items():
+            excluded = set(self.db.get_severity_excluded_sgs(severity_id) or ())
+            if check.isChecked():
+                excluded.discard(self._sg_id)
+            else:
+                excluded.add(self._sg_id)
+            self.db.set_severity_excluded_sgs(severity_id, excluded)
 
         self.accept()
 
@@ -6610,16 +6647,17 @@ class ScenarioTablePanel(QWidget):
         current_rrf     = int(sg_d.get('rrf', 1))
         current_sg_type = sg_d.get('sg_type', 'Övrigt') or 'Övrigt'
 
-        # Use extended popup when consequence has category assessments
+        # Use the extended popup only for consequence-category applicability.
+        # Per-cause selection was deliberately retired, so it must not make
+        # this alternative popup appear on its own.
         item          = self._table.item(row, self._C_SG)
         cat_pop_data  = item.data(Qt.ItemDataRole.UserRole + 3) if item else None
-        cause_pop_list = item.data(Qt.ItemDataRole.UserRole + 4) if item else None
 
-        if cat_pop_data or cause_pop_list:
+        if cat_pop_data:
             _cons_id, sev_cat_list = cat_pop_data if cat_pop_data else (None, [])
             popup = SgRRFCategoryPopup(
                 self.db, sg_id, current_rrf, current_sg_type,
-                sev_cat_list, cause_pop_list or [], self)
+                sev_cat_list, parent=self)
         else:
             popup = RRFPopup(current_rrf, current_sg_type, self)
             popup.rrf_selected.connect(

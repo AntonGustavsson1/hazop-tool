@@ -2745,22 +2745,53 @@ class SgRRFPopupTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = _ensure_qapp()
 
-    def test_popup_is_compact_and_has_no_galler_ej_for_controls(self):
+    def test_popup_keeps_category_controls_but_not_per_cause_controls(self):
         from scenario_panel import SgRRFCategoryPopup
-        from PyQt6.QtWidgets import QListWidget, QLabel
+        from PyQt6.QtWidgets import QCheckBox, QListWidget, QLabel
 
+        db = unittest.mock.Mock()
+        db.get_severity_excluded_sgs.side_effect = lambda severity_id: (
+            {1} if severity_id == 1 else set())
         popup = SgRRFCategoryPopup(
-            db=unittest.mock.Mock(), sg_id=1, current_rrf=10,
+            db=db, sg_id=1, current_rrf=10,
             current_sg_type='Övrigt',
-            sev_cat_list=[(1, 'Kategori')],
+            sev_cat_list=[(1, 'Människa'), (2, 'Miljö')],
             cause_list=[(2, 'Orsak', False)])
         try:
             self.assertEqual(len(popup.findChildren(QListWidget)), 1)
-            self.assertFalse(any(
-                'Gäller ej för' in w.text() or 'Gäller för' in w.text()
-                for w in popup.findChildren(QLabel)))
+            labels = [w.text() for w in popup.findChildren(QLabel)]
+            self.assertIn('Gäller för konsekvenskategori:', labels)
+            self.assertNotIn('Gäller för orsak:', labels)
+            checks = {check.text(): check for check in popup.findChildren(QCheckBox)}
+            self.assertEqual(set(checks), {'Människa', 'Miljö'})
+            self.assertFalse(checks['Människa'].isChecked())
+            self.assertTrue(checks['Miljö'].isChecked())
             self.assertIn('border:1px solid #4B5563', popup.styleSheet())
             self.assertTrue(popup.testAttribute(Qt.WidgetAttribute.WA_StyledBackground))
+        finally:
+            popup.close()
+            popup.deleteLater()
+
+    def test_category_changes_preserve_other_exclusions_and_never_touch_causes(self):
+        from scenario_panel import SgRRFCategoryPopup
+
+        db = unittest.mock.Mock()
+        # SG 9 currently applies to Människa, but not to Miljö. Other
+        # safeguards' exclusions must remain intact when this popup saves.
+        db.get_severity_excluded_sgs.side_effect = lambda severity_id: (
+            {8} if severity_id == 1 else {9, 10})
+        popup = SgRRFCategoryPopup(
+            db=db, sg_id=9, current_rrf=10, current_sg_type='Övrigt',
+            sev_cat_list=[(1, 'Människa'), (2, 'Miljö')])
+        try:
+            popup._cat_checks[1].setChecked(False)
+            popup._cat_checks[2].setChecked(True)
+            popup._ok()
+            self.assertEqual(
+                db.set_severity_excluded_sgs.call_args_list,
+                [unittest.mock.call(1, {8, 9}),
+                 unittest.mock.call(2, {10})])
+            db.set_safeguard_excluded_causes.assert_not_called()
         finally:
             popup.close()
             popup.deleteLater()

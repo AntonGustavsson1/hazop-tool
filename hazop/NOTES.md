@@ -49,12 +49,15 @@ beräkna radbrytning och höjer den egna tabellraden när texten blir längre.
 Det sker utan rebuild, så markering, caret och befintliga rekommendationsrader
 behålls under redigering.
 
-## RRF-popup utan Gäller ej för (2026-08-29)
+## RRF-popup: kategori gäller för, orsak borttagen (2026-08-30)
 
-Den utökade RRF-popupen innehåller nu endast RRF-värde och barriärtyp.
-De tidigare kontrollerna för `Gäller ej för` per kategori och orsak är
-borttagna från denna popup. RRF-värdena visas i en kompakt lista med samma
-vita bakgrund och 1 px mörkgrå ram som övriga nya popupfönster.
+RRF-popupen behåller `Gäller för konsekvenskategori` som kryssrutor för de
+konsekvenskategorier som finns på den aktuella konsekvensen. Avmarkering
+exkluderar bara den aktuella barriären från just den kategorin och bevarar
+andra barriärers urval. Den tidigare separata listan `Gäller för orsak` är
+fortsatt borttagen och inga orsaksexkluderingar skrivs från popupen.
+RRF-värdena visas i en kompakt lista med samma vita bakgrund och 1 px mörkgrå
+ram som övriga nya popupfönster.
 
 ## Riskmatrispopup i samma minimalistiska stil (2026-08-29)
 
