@@ -4848,6 +4848,38 @@ class ReductionFactorsDialogTests(unittest.TestCase):
         self.assertFalse(legacy['fa_active'])
         self.assertFalse(legacy['ignition_active'])
 
+    def test_presence_header_is_percent_and_custom_enabler_can_be_removed(self):
+        from hazop import ReductionFactorsDialog
+
+        self.db.add_reduction_factor(self.cons_id, 'Tillfällig enabler', 10)
+        other_cause = self.db.add_cause(self.db.deviations(self.node_id)[0]['id'])
+        other_cons_id = self.db.add_consequence(other_cause)
+        self.db.add_reduction_factor(other_cons_id, 'Tillfällig enabler', 10)
+        dialog = ReductionFactorsDialog(self.db, self.cons_id)
+        try:
+            self.assertEqual(dialog._tbl.horizontalHeaderItem(3).text(), '%')
+            custom_row = next(
+                row for row in range(dialog._tbl.rowCount())
+                if dialog._tbl.item(row, 1).text() == 'Tillfällig enabler')
+            dialog._tbl.setCurrentCell(custom_row, 1)
+            self.assertTrue(dialog._remove_btn.isEnabled())
+            dialog._remove_selected()
+            self.assertEqual(self.db.reduction_factors(self.cons_id), [])
+            self.assertEqual(
+                [factor['description'] for factor in self.db.reduction_factors(other_cons_id)],
+                ['Tillfällig enabler'])
+            self.assertNotIn(
+                'Tillfällig enabler',
+                [row['description'] for row in self.db.reduction_factor_catalog()])
+
+            standard_row = next(
+                row for row in range(dialog._tbl.rowCount())
+                if dialog._tbl.item(row, 1).text() == 'Antändning')
+            dialog._tbl.setCurrentCell(standard_row, 1)
+            self.assertFalse(dialog._remove_btn.isEnabled())
+        finally:
+            dialog.deleteLater()
+
     def test_selected_enabler_can_be_excluded_from_one_category(self):
         from hazop import ReductionFactorsDialog
 

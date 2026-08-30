@@ -5662,6 +5662,21 @@ class Database:
             "SELECT * FROM reduction_factor_catalog WHERE active=1 "
             "ORDER BY description COLLATE NOCASE").fetchall()
 
+    def retire_reduction_factor_catalog_entry(self, description):
+        """Hide one user-defined enabler from future popup lists.
+
+        Existing uses in other consequences are deliberately retained. A
+        later explicit add with the same description reactivates the catalog
+        row through ``remember_reduction_factor``.
+        """
+        description = str(description or '').strip()
+        if not description:
+            return
+        self.conn.execute(
+            "UPDATE reduction_factor_catalog SET active=0 "
+            "WHERE lower(description)=lower(?)", (description,))
+        self.commit()
+
     def remember_reduction_factor(self, description, rrf=10):
         description = str(description or '').strip()
         if not description:

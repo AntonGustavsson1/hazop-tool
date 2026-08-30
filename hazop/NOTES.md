@@ -4336,3 +4336,10 @@ Verifierat med riktade popup-/migrerings-/kategoriundantagstester, den
 befintliga query-batching-regressionen, integrationsfall för cellknappen,
 `tests.test_smoke` och `py_compile`. Ingen manuell visuell GUI-verifiering är
 gjord.
+
+## Enabler-popup: procent och borttagning (2026-08-30)
+
+Närvaro-kolumnen heter nu endast `%`. Knappen `− Ta bort vald` tar bort en
+egen enabler från aktuell konsekvens och döljer den från framtida enablerlistor.
+Redan använda kopior i andra konsekvenser lämnas intakta. Antändning och
+Eskalering är standardenablers och kan därför inte tas bort från listan.

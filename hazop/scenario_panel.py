@@ -1837,6 +1837,8 @@ class ConsequenceStepPickerDialog(QDialog):
 class ReductionFactorsDialog(QDialog):
     """Compact editor for consequence-specific enablers/reduction factors."""
 
+    _STANDARD_ENABLERS = frozenset({'antändning', 'eskalering'})
+
     def __init__(self, db, consequence_id, parent=None):
         super().__init__(parent)
         self.db = db
@@ -1860,13 +1862,17 @@ class ReductionFactorsDialog(QDialog):
             'QCheckBox::indicator{width:13px;height:13px;}'
             'QPushButton#addEnabler{border:0;background:#F5F5F3;color:#17191C;'
             'text-align:left;padding:3px 6px;font-size:9px;}'
-            'QPushButton#addEnabler:hover{background:#E8E9E6;}')
+            'QPushButton#addEnabler:hover{background:#E8E9E6;}'
+            'QPushButton#removeEnabler{border:0;background:#F5F5F3;color:#17191C;'
+            'text-align:left;padding:3px 6px;font-size:9px;}'
+            'QPushButton#removeEnabler:hover:enabled{background:#E8E9E6;}'
+            'QPushButton#removeEnabler:disabled{color:#9CA3AF;}')
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(7, 6, 7, 7)
         layout.setSpacing(3)
         self._tbl = QTableWidget(0, 4)
-        self._tbl.setHorizontalHeaderLabels(['', 'Enabler', 'RRF', 'Närvaro'])
+        self._tbl.setHorizontalHeaderLabels(['', 'Enabler', 'RRF', '%'])
         self._tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         self._tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         self._tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
@@ -1877,15 +1883,23 @@ class ReductionFactorsDialog(QDialog):
         self._tbl.setShowGrid(False)
         self._tbl.setMaximumHeight(156)
         self._tbl.cellChanged.connect(self._on_cell)
-        self._tbl.currentCellChanged.connect(
-            lambda row, _col, _old_row, _old_col: self._refresh_category_checks(row))
+        self._tbl.currentCellChanged.connect(self._on_selection_changed)
         layout.addWidget(self._tbl)
 
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setSpacing(3)
         add_btn = QPushButton("+ Egen enabler")
         add_btn.setObjectName('addEnabler')
         add_btn.setFixedHeight(22)
         add_btn.clicked.connect(self._add)
-        layout.addWidget(add_btn)
+        action_row.addWidget(add_btn)
+        self._remove_btn = QPushButton("− Ta bort vald")
+        self._remove_btn.setObjectName('removeEnabler')
+        self._remove_btn.setFixedHeight(22)
+        self._remove_btn.clicked.connect(self._remove_selected)
+        action_row.addWidget(self._remove_btn)
+        layout.addLayout(action_row)
 
         self._category_section = QFrame()
         self._category_section.setObjectName('enablerCategorySection')
@@ -1962,10 +1976,38 @@ class ReductionFactorsDialog(QDialog):
             0 if self._tbl.rowCount() else -1)
         if selected_row >= 0:
             self._tbl.setCurrentCell(selected_row, 1)
-        self._refresh_category_checks(selected_row)
+        self._on_selection_changed(selected_row)
 
     def _add(self):
         self.db.add_reduction_factor(self.consequence_id, 'Ny enabler', 10)
+        self._refresh()
+
+    @classmethod
+    def _is_standard_enabler(cls, description):
+        return str(description or '').strip().casefold() in cls._STANDARD_ENABLERS
+
+    def _on_selection_changed(self, row, *_):
+        self._refresh_category_checks(row)
+        description_item = self._tbl.item(row, 1) if row >= 0 else None
+        description = description_item.text() if description_item else ''
+        removable = bool(description.strip()) and not self._is_standard_enabler(description)
+        self._remove_btn.setEnabled(removable)
+        self._remove_btn.setToolTip(
+            'Ta bort den egna enablern ur listan'
+            if removable else 'Antändning och Eskalering är standardenablers')
+
+    def _remove_selected(self):
+        row = self._tbl.currentRow()
+        description_item = self._tbl.item(row, 1) if row >= 0 else None
+        description = description_item.text().strip() if description_item else ''
+        if not description or self._is_standard_enabler(description):
+            return
+        for factor in self.db.reduction_factors(self.consequence_id):
+            if str(factor['description']).strip().casefold() == description.casefold():
+                self.db.delete_reduction_factor(factor['id'])
+        # Retire instead of hard-deleting the catalogue entry: another
+        # consequence may still use it, but it disappears from future picks.
+        self.db.retire_reduction_factor_catalog_entry(description)
         self._refresh()
 
     def _on_cell(self, row, col):
