@@ -4494,3 +4494,7 @@ oförändrade.
 
 Verifierat med 8 enabler-tester, 2 säkra dialog-/rebuild-tester, 12
 smoke-tester och `py_compile`. Ingen manuell visuell GUI-verifiering är gjord.
+# Senaste fix 2026-08-30
+
+Avbockning i P&ID-checklistan tar bara bort utrustningens koppling till
+avvikelsen. Nodavvikelsen och dess HAZOP-data ligger kvar.

@@ -421,7 +421,17 @@ class _DeviationChecklist(QWidget):
             checkbox.setChecked(False)
             checkbox.blockSignals(False)
             return
-        dev_id = self.db.get_or_create_deviation(node_id, description, equipment_id=self._equipment_id)
+        existing = self.db.conn.execute(
+            "SELECT id, equipment_id FROM deviations WHERE node_id=? "
+            "AND description=? COLLATE NOCASE ORDER BY id LIMIT 1",
+            (node_id, description)).fetchone()
+        if existing:
+            dev_id = int(existing['id'])
+            if existing['equipment_id'] != self._equipment_id:
+                self.db.set_deviation_equipment(dev_id, self._equipment_id)
+        else:
+            dev_id = self.db.get_or_create_deviation(
+                node_id, description, equipment_id=self._equipment_id)
         self.deviation_added.emit(dev_id, self._equipment_id)
         # Auto-create the top-suggested cause right away, same as before —
         # just without a dropdown here to change it; that's a scenario-
@@ -451,11 +461,17 @@ class _DeviationChecklist(QWidget):
         undone, matching how destructive this action actually is."""
         eq = self.db.get_equipment_by_id(self._equipment_id)
         node_id = eq.get('node_id') if eq else None
-        dev_id = (self.db.get_or_create_deviation(node_id, description, equipment_id=self._equipment_id)
-                  if node_id is not None else None)
+        row = self.db.conn.execute(
+            "SELECT id FROM deviations WHERE node_id=? AND description=? "
+            "COLLATE NOCASE ORDER BY id LIMIT 1",
+            (node_id, description)).fetchone() if node_id is not None else None
+        dev_id = int(row['id']) if row else None
         if dev_id is None:
             return
 
+        # No confirmation is needed: no HAZOP row is deleted by an
+        # equipment-level uncheck.
+        """DEAD_CONFIRMATION_BLOCK
         causes = self.db.causes_for_deviation(dev_id)
         n_causes = len(causes)
         if n_causes:
@@ -484,7 +500,10 @@ class _DeviationChecklist(QWidget):
                 checkbox.blockSignals(False)
                 return
 
-        self.db.delete_deviation(dev_id)
+        """
+        # Unchecking only removes this equipment's link.  The deviation is
+        # owned by the node and must remain visible with its HAZOP data.
+        self.db.set_deviation_equipment(dev_id, None)
         self.deviation_removed.emit(dev_id, self._equipment_id)
 
 
