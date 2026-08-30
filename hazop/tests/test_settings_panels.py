@@ -841,6 +841,20 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
                 panel._edit_cell_text(button)
             self.assertEqual(button.label(), 'Ny risktext')
 
+            with unittest.mock.patch.object(
+                    QInputDialog, 'getText', return_value=('', True)):
+                panel._edit_cell_text(button)
+            self.assertEqual(button.label(), '')
+
+            source = panel._cell_buttons[0][1][1]
+            target = panel._cell_buttons[0][1][2]
+            source.set_cell('#123456', 'Kopierad text', '#ffffff')
+            target.set_cell('#abcdef', 'Gammal text', '#000000')
+            target._apply_matrix_cell_payload(source._matrix_cell_payload())
+            self.assertEqual(target.color(), '#123456')
+            self.assertEqual(target.label(), 'Kopierad text')
+            self.assertEqual(target.fg_color(), '#ffffff')
+
             # Exercise the QAction emitted by a real left-click menu choice,
             # then save and verify the Scenario popup reads that text.
             menu = panel._cell_edit_menu(button)

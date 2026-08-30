@@ -7,7 +7,7 @@ from pathlib import Path
 from functools import partial
 
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QColorDialog, QComboBox, QDateEdit,
+    QApplication, QAbstractItemView, QCheckBox, QColorDialog, QComboBox, QDateEdit,
     QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout,
     QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton,
@@ -32,6 +32,7 @@ from standard_causes_panel import StandardCausesSettingsPanel
 
 
 _PALETTE_MIME = 'application/x-hazop-palette-color'
+_MATRIX_CELL_MIME = 'application/x-hazop-matrix-cell'
 
 # ST1 Sverige AB risk matrix transcribed from
 # ej_programfiler/reference_material/St1/St1 SA 04 - Riskmatris#4_161189.pdf.
@@ -154,6 +155,9 @@ class MatrixCellButton(QPushButton):
         self.setFixedHeight(40)
         self.setMinimumWidth(30)
         self.setAcceptDrops(True)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self._drag_start = None
+        self._drag_in_progress = False
         self._apply_style()
 
     def _apply_style(self):
@@ -180,9 +184,57 @@ class MatrixCellButton(QPushButton):
     def label(self):    return self._label
     def fg_color(self): return self._fg_color
 
+    def _matrix_cell_payload(self):
+        """The complete visual value copied between matrix cells."""
+        return {'color': self._color, 'label': self._label,
+                'fg_color': self._fg_color}
+
+    def _apply_matrix_cell_payload(self, payload):
+        """Copy another risk cell's visual value, including a blank label."""
+        self.set_cell(str(payload.get('color') or self._color),
+                      str(payload.get('label') or ''),
+                      str(payload.get('fg_color') or self._fg_color))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start = event.position().toPoint()
+            self._drag_in_progress = False
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if (self._drag_start is not None and
+                event.buttons() & Qt.MouseButton.LeftButton and
+                (event.position().toPoint() - self._drag_start).manhattanLength()
+                >= QApplication.startDragDistance()):
+            self._drag_in_progress = True
+            drag = QDrag(self)
+            mime = QMimeData()
+            mime.setData(_MATRIX_CELL_MIME,
+                         json.dumps(self._matrix_cell_payload()).encode())
+            drag.setMimeData(mime)
+            drag.setPixmap(self.grab())
+            drag.setHotSpot(event.position().toPoint())
+            drag.exec(Qt.DropAction.CopyAction)
+            self._drag_start = None
+            self.setDown(False)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._drag_in_progress:
+            self._drag_in_progress = False
+            self._drag_start = None
+            self.setDown(False)
+            event.accept()
+            return
+        self._drag_start = None
+        super().mouseReleaseEvent(event)
+
     # ── Drag-and-drop ─────────────────────────────────────────────────────────
     def dragEnterEvent(self, event):
-        if event.mimeData().hasFormat(_PALETTE_MIME):
+        if (event.mimeData().hasFormat(_PALETTE_MIME) or
+                event.mimeData().hasFormat(_MATRIX_CELL_MIME)):
             self.setStyleSheet(
                 f"background:{self._color}; color:white; font-weight:bold;"
                 f"border:3px dashed #000;")
@@ -198,6 +250,11 @@ class MatrixCellButton(QPushButton):
             data = json.loads(
                 event.mimeData().data(_PALETTE_MIME).data().decode())
             self.set_cell(data['color'], data['name'], data.get('fg_color', '#ffffff'))
+            event.acceptProposedAction()
+        elif event.mimeData().hasFormat(_MATRIX_CELL_MIME):
+            data = json.loads(
+                event.mimeData().data(_MATRIX_CELL_MIME).data().decode())
+            self._apply_matrix_cell_payload(data)
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -1832,7 +1889,9 @@ class HAZOPPreparationPanel(QWidget):
             self, "Celltext",
             "Risknivå-etikett (t.ex. Låg, Medium, Hög, Kritisk):",
             text=btn.label())
-        if ok and label.strip():
+        if ok:
+            # A blank label is meaningful: it deliberately leaves this risk
+            # cell without text instead of silently restoring its old label.
             btn.set_cell(btn.color(), label.strip(), btn.fg_color())
             btn.update()
             self._matrix_grid.activate()

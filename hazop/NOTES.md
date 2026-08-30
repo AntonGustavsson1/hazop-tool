@@ -1,5 +1,18 @@
 # NOTES.md — Beslut och kontext
 
+## Tomma riskcelltexter och drag mellan riskceller (2026-08-30)
+
+`Ändra text…` godtar nu en bekräftad tom text och lämnar då riskrutan blank.
+En riskmatrisruta kan dessutom dras till en annan ruta för att kopiera färg,
+text och textfärg; befintlig dragning från färgpaletten finns kvar.
+
+Senaste kraschen `crash_20260830_210557_NameError.json` visade att
+`MatrixCellButton.mouseMoveEvent()` saknade import av `QApplication` för
+dragtröskeln. Importen är tillagd.
+
+Verifierat med 24 riskmatris-/popup-tester, `tests.test_smoke` (12 tester)
+och `py_compile`. Ingen manuell visuell GUI-verifiering är gjord.
+
 ## Riskcellens textmeny använder Qt:s klicksignal (2026-08-30)
 
 Riskcellens `Ändra text…` är nu direkt kopplad till menyåtgärdens
