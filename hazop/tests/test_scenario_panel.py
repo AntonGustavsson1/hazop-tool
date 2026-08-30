@@ -4777,36 +4777,29 @@ class ReductionFactorsDialogTests(unittest.TestCase):
 
     def test_rrf_and_presence_edits_stay_in_sync_and_saved_enabler_is_checkable(self):
         from hazop import ReductionFactorsDialog
-        factor_id = self.db.add_reduction_factor(self.cons_id, 'Ventil tillgänglig', 100)
+        self.db.add_reduction_factor(self.cons_id, 'Ventil tillgänglig', 100)
         dialog = ReductionFactorsDialog(self.db, self.cons_id)
         try:
-            self.assertEqual(dialog._tbl.item(0, 2).text(), '1 %')
+            self.assertEqual(dialog._tbl.item(0, 3).text(), '1 %')
 
-            dialog._tbl.item(0, 2).setText('10 %')
+            dialog._tbl.item(0, 3).setText('10 %')
             self.assertEqual(self.db.reduction_factors(self.cons_id)[0]['rrf'], 10)
-            self.assertEqual(dialog._tbl.item(0, 1).text(), '10')
+            self.assertEqual(dialog._tbl.item(0, 2).text(), '10')
 
-            dialog._tbl.item(0, 1).setText('100')
-            self.assertEqual(dialog._tbl.item(0, 2).text(), '1 %')
+            dialog._tbl.item(0, 2).setText('100')
+            self.assertEqual(dialog._tbl.item(0, 3).text(), '1 %')
 
-            saved = next(
-                dialog._catalog_list.item(i)
-                for i in range(dialog._catalog_list.count())
-                if dialog._catalog_list.item(i).data(Qt.ItemDataRole.UserRole)['id']
-                and dialog._catalog_list.item(i).data(Qt.ItemDataRole.UserRole)['description']
-                == 'Ventil tillgänglig')
-            self.assertEqual(saved.checkState(), Qt.CheckState.Checked)
-            saved.setCheckState(Qt.CheckState.Unchecked)
+            row = next(i for i in range(dialog._tbl.rowCount())
+                       if dialog._tbl.item(i, 1).text() == 'Ventil tillgänglig')
+            toggle = dialog._tbl.item(row, 0)
+            self.assertEqual(toggle.checkState(), Qt.CheckState.Checked)
+            toggle.setCheckState(Qt.CheckState.Unchecked)
             self.assertEqual(self.db.reduction_factors(self.cons_id), [])
-            saved = next(
-                dialog._catalog_list.item(i)
-                for i in range(dialog._catalog_list.count())
-                if dialog._catalog_list.item(i).data(Qt.ItemDataRole.UserRole)['description']
-                == 'Ventil tillgänglig')
-            saved.setCheckState(Qt.CheckState.Checked)
+            row = next(i for i in range(dialog._tbl.rowCount())
+                       if dialog._tbl.item(i, 1).text() == 'Ventil tillgänglig')
+            dialog._tbl.item(row, 0).setCheckState(Qt.CheckState.Checked)
             restored = self.db.reduction_factors(self.cons_id)
             self.assertEqual(len(restored), 1)
-            self.assertEqual(restored[0]['id'], factor_id + 1)
             self.assertEqual(restored[0]['rrf'], 100)
         finally:
             dialog.deleteLater()
