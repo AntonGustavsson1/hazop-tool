@@ -7054,8 +7054,60 @@ class ScenarioTablePanel(QWidget):
         row order and geometry) and publish the same cause-edited signal as
         the normal inline editor.
         """
+        # A complete rebuild is still needed for spans and final row geometry,
+        # but it is intentionally deferred.  Keep the currently visible cell
+        # in sync first: otherwise a just-moved secondary row is painted from
+        # the new database order while its hit-testing/editor geometry still
+        # uses the old ``group_tags`` role until the next event-loop turn.
+        self._refresh_group_cause_cell_now(cause_id)
         self._schedule_rebuild()
         self.item_edited.emit(CAUSE_T, cause_id)
+
+    def _refresh_group_cause_cell_now(self, cause_id):
+        """Patch visible grouped-cause cells before the deferred rebuild.
+
+        Group row moves, object replacement and operator changes all persist
+        immediately.  The table rebuild follows on the next event-loop turn,
+        so the item text and the per-line tag metadata must be refreshed here
+        as well.  This keeps the secondary line clickable/editable in the
+        short interval before that rebuild runs.
+        """
+        if getattr(self, '_rebuilding', False):
+            return
+        cause = self.db.get_cause(cause_id)
+        if not cause:
+            return
+        group_ids = self._group_equipment_ids(cause)
+        if len(group_ids) < 2:
+            return
+        group_tags = []
+        for equipment_id in group_ids:
+            equipment = self.db.get_equipment_by_id(equipment_id)
+            if equipment and equipment.get('tag'):
+                group_tags.append(equipment['tag'])
+        if len(group_tags) < 2:
+            legacy = (cause.get('comp_tag') or '').strip()
+            group_tags = [part.strip() for part in re.split(
+                r'\s+(?:&|OR|<>|->|\+)\s+', legacy, flags=re.IGNORECASE)
+                if part.strip()]
+        description = '\n'.join(
+            self.db.group_cause_description_lines(cause, group_ids))
+
+        self._table.blockSignals(True)
+        try:
+            for row, meta in enumerate(self._row_meta):
+                if len(meta) < 2 or meta[1] != cause_id:
+                    continue
+                item = self._table.item(row, self._C_ORS)
+                if item is None:
+                    continue
+                item.setText(description)
+                item.setData(Qt.ItemDataRole.UserRole + 2,
+                             self._cause_tag_display(cause))
+                item.setData(Qt.ItemDataRole.UserRole + 9, group_tags)
+        finally:
+            self._table.blockSignals(False)
+        self._table.viewport().update()
 
     def _set_group_operator(self, cause_id, operator):
         cause = self.db.get_cause(cause_id)
@@ -8531,8 +8583,19 @@ class ScenarioTablePanel(QWidget):
                             'force_add': (
                                 self._recommendation_force_add_cons_id == cons_id),
                         }
-                    self._delegate.commitData.emit(obj)
-                    self._delegate.closeEditor.emit(obj, QStyledItemDelegate.EndEditHint.NoHint)
+                    # ORS/KON/SG have their own PID-aware delegate.  In
+                    # particular, its grouped-cause path merges an edited
+                    # secondary line back into the complete description.
+                    # Sending Enter through the generic delegate replaced the
+                    # whole group with that one line, so the saved cause could
+                    # disappear until a later rebuild.
+                    active_delegate = (
+                        self._pid_delegate
+                        if col in (self._C_ORS, self._C_KON, self._C_SG)
+                        else self._delegate)
+                    active_delegate.commitData.emit(obj)
+                    active_delegate.closeEditor.emit(
+                        obj, QStyledItemDelegate.EndEditHint.NoHint)
                     if col == self._C_REK and cons_id is not None:
                         # _refresh_recommendation_cell has already queued the
                         # rebuild during commitData. Queue this second so the

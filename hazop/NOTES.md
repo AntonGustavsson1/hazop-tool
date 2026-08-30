@@ -1,5 +1,21 @@
 # NOTES.md — Beslut och kontext
 
+## Enter och platsbyte i grupporsaker (2026-08-30)
+
+Enter i en redigerad Orsak-, Konsekvens- eller Safeguard-cell skickas nu
+genom cellens faktiska P&ID-delegat. För grupporsaker betyder det att en
+redigerad sekundärhändelse fogas tillbaka till sin egen rad i stället för
+att ersätta hela gruppbeskrivningen. Den tillagda orsaken är därmed synlig
+direkt när Enter trycks.
+
+Vid flytt mellan primär och sekundär uppdateras den synliga cellens text och
+radvisa taggmetadata omedelbart, innan den avsiktligt uppskjutna fulla
+omritningen. Det gör den nya sekundärhändelsen direkt klick- och redigerbar,
+utan ett kort mellanläge med den gamla radordningen.
+
+Verifierat med 11 riktade objekt-/grupporsakstester, `tests.test_smoke`
+(12 tester) och `py_compile`. Ingen manuell visuell GUI-verifiering är gjord.
+
 ## Stabilare grupporsaker och stängningskryss i mini-popupar (2026-08-30)
 
 Grupporsaker normaliseras nu radvis även om äldre data innehåller flera

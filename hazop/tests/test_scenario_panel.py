@@ -4599,6 +4599,71 @@ class CellObjectReferenceEditTests(unittest.TestCase):
         ])
         self.assertEqual(changed, [(CAUSE_T, self.cause_id)])
 
+    def test_group_move_updates_visible_secondary_metadata_immediately(self):
+        """A swapped secondary row must be editable before its queued rebuild."""
+        fi_id = self.db.add_equipment_item('FI-1', 'FI-1', 'FI', 1,
+                                           'Flow transmitter', '', 0)
+        fv_id = self.db.add_equipment_item('FV-1', 'FV-1', 'FV', 1,
+                                           'Control valve', '', 0)
+        self.db.update_cause(
+            self.cause_id, description='FI-1 fails low\nFV-1 opens fully',
+            comp_type='Flow transmitter', comp_tag='FI-1 OR FV-1',
+            equipment_id=fi_id, secondary_equipment_id=fv_id,
+            group_equipment_ids=[fi_id, fv_id])
+        self.panel.load_node(self.node_id)
+        row = next(row for row, meta in enumerate(self.panel._row_meta)
+                   if meta[1] == self.cause_id)
+
+        self.panel._move_group_row(self.cause_id, 0, 1)
+
+        item = self.panel._table.item(row, self.panel._C_ORS)
+        self.assertEqual(item.text().splitlines(), [
+            'FV-1 opens fully', 'FI-1 fails low'])
+        self.assertEqual(item.data(Qt.ItemDataRole.UserRole + 9),
+                         ['FV-1', 'FI-1'])
+        # Let the deliberately queued full rebuild finish before this test's
+        # temporary database is closed.
+        self.app.processEvents()
+
+    def test_enter_in_group_secondary_editor_keeps_both_visible_lines(self):
+        """Enter must commit through PIDDelegate, not replace the whole group."""
+        from PyQt6.QtGui import QKeyEvent
+        from scenario_panel import _BoldTagTextEdit
+
+        fi_id = self.db.add_equipment_item('FI-1', 'FI-1', 'FI', 1,
+                                           'Flow transmitter', '', 0)
+        fv_id = self.db.add_equipment_item('FV-1', 'FV-1', 'FV', 1,
+                                           'Control valve', '', 0)
+        self.db.update_cause(
+            self.cause_id, description='FI-1 fails low\nFV-1 opens fully',
+            comp_type='Flow transmitter', comp_tag='FI-1 OR FV-1',
+            equipment_id=fi_id, secondary_equipment_id=fv_id,
+            group_equipment_ids=[fi_id, fv_id])
+        self.panel.load_node(self.node_id)
+        row = next(row for row, meta in enumerate(self.panel._row_meta)
+                   if meta[1] == self.cause_id)
+        index = self.panel._table.model().index(row, self.panel._C_ORS)
+        self.panel._group_edit_line = (row, 1)
+        try:
+            self.panel._table.edit(index)
+            self.app.processEvents()
+            editor = self.panel._table.findChild(_BoldTagTextEdit)
+            self.assertIsNotNone(editor)
+            self.assertEqual(editor.property('group_line'), 1)
+            editor.setText('does not open fully')
+            enter = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return,
+                              Qt.KeyboardModifier.NoModifier)
+            self.assertTrue(self.panel.eventFilter(editor, enter))
+            self.app.processEvents()
+        finally:
+            self.panel._group_edit_line = None
+
+        cause = self.db.get_cause(self.cause_id)
+        self.assertEqual(cause['description'].splitlines(), [
+            'FI-1 fails low', 'FV-1 does not open fully'])
+        item = self.panel._table.item(row, self.panel._C_ORS)
+        self.assertIn('FV-1 does not open fully', item.text())
+
     def test_compact_three_object_group_repairs_before_secondary_swap(self):
         """A legacy one-line group must not strand later member editors."""
         fi_id = self.db.add_equipment_item('FI-1', 'FI-1', 'FI', 1,
