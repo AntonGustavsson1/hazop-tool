@@ -1835,100 +1835,170 @@ class ConsequenceStepPickerDialog(QDialog):
 
 
 class ReductionFactorsDialog(QDialog):
-    """Edit the list of extra reduction factors for a consequence."""
+    """Compact editor for consequence-specific enablers/reduction factors."""
 
     def __init__(self, db, consequence_id, parent=None):
         super().__init__(parent)
         self.db = db
         self.consequence_id = consequence_id
-        self.setWindowTitle("Övriga reduktionsfaktorer")
-        self.setMinimumWidth(480)
+        self._syncing = False
+        self.setWindowTitle("Övriga enablers")
+        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setObjectName('reductionFactorsPopup')
+        self.setMinimumWidth(560)
+        self.setStyleSheet(
+            'QWidget#reductionFactorsPopup{background:#FFFFFF;'
+            'border:1px solid #4B5563;border-radius:3px;}'
+            'QTableWidget,QListWidget{border:1px solid #CFD1CE;background:#FFFFFF;}'
+            'QHeaderView::section{background:#F5F5F3;border:0;border-bottom:1px solid #CFD1CE;'
+            'padding:3px 5px;color:#17191C;font-weight:bold;}'
+            'QTableWidget::item{padding:2px 4px;color:#17191C;}'
+            'QListWidget::item{padding:3px 5px;color:#17191C;}'
+            'QPushButton{border:1px solid #8D9299;border-radius:2px;padding:3px 7px;'
+            'background:#F5F5F3;color:#17191C;}'
+            'QPushButton:hover{background:#E8E9E6;}')
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Lägg till faktorer som reducerar slutkonsekvensfrekvensen:"))
+        layout.setContentsMargins(8, 7, 8, 8)
+        layout.setSpacing(5)
+        title = QLabel('Övriga enablers')
+        title.setStyleSheet('border:none;font-size:10px;font-weight:bold;color:#17191C;')
+        layout.addWidget(title)
+        hint = QLabel('RRF och närvaro beskriver samma reduktion: RRF 100 = 1 % närvaro.')
+        hint.setWordWrap(True)
+        hint.setStyleSheet('border:none;font-size:9px;color:#5F6670;')
+        layout.addWidget(hint)
 
-        self._tbl = QTableWidget(0, 3)
-        self._tbl.setHorizontalHeaderLabels(['Beskrivning', 'RRF', ''])
+        self._tbl = QTableWidget(0, 4)
+        self._tbl.setHorizontalHeaderLabels(['Beskrivning', 'RRF', 'Närvaro', ''])
         self._tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self._tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         self._tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        self._tbl.setColumnWidth(1, 80); self._tbl.setColumnWidth(2, 64)
+        self._tbl.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        self._tbl.setColumnWidth(1, 76); self._tbl.setColumnWidth(2, 86)
+        self._tbl.setColumnWidth(3, 64)
         self._tbl.verticalHeader().setVisible(False)
         self._tbl.cellChanged.connect(self._on_cell)
         layout.addWidget(self._tbl)
 
-        add_btn = QPushButton("+ Lägg till faktor")
+        add_btn = QPushButton("+ Lägg till egen enabler")
         add_btn.clicked.connect(self._add)
         layout.addWidget(add_btn)
-        catalog_row = QHBoxLayout()
-        self._catalog_combo = QComboBox()
-        self._populate_catalog()
-        catalog_row.addWidget(self._catalog_combo, 1)
-        use_btn = QPushButton("Lägg till vald")
-        use_btn.clicked.connect(self._add_catalog_factor)
-        catalog_row.addWidget(use_btn)
-        layout.addLayout(catalog_row)
+
+        catalog_title = QLabel('Sparade enablers')
+        catalog_title.setStyleSheet('border:none;font-size:10px;font-weight:bold;color:#17191C;')
+        layout.addWidget(catalog_title)
+        self._catalog_list = QListWidget()
+        self._catalog_list.setMaximumHeight(132)
+        self._catalog_list.itemChanged.connect(self._catalog_item_changed)
+        layout.addWidget(self._catalog_list)
         layout.addWidget(QDialogButtonBox(QDialogButtonBox.StandardButton.Close,
                                           accepted=self.accept, rejected=self.accept))
         self._refresh()
 
+    @staticmethod
+    def _number(value, default=10.0, minimum=0.0001, maximum=1_000_000.0):
+        try:
+            number = float(str(value).replace(',', '.').replace('%', '').strip())
+        except (TypeError, ValueError):
+            number = default
+        return max(minimum, min(maximum, number))
+
+    @staticmethod
+    def _format_number(value):
+        return f'{float(value):.6g}'
+
+    @classmethod
+    def _presence_for_rrf(cls, rrf):
+        return min(100.0, 100.0 / cls._number(rrf, minimum=1.0))
+
+    @classmethod
+    def _rrf_for_presence(cls, presence):
+        return 100.0 / cls._number(presence, minimum=0.0001, maximum=100.0)
+
     def _refresh(self):
-        # Re-read the shared catalog whenever the dialog refreshes.  A factor
-        # edited/created in one consequence can otherwise remain absent from
-        # the selector until that dialog is reconstructed.
-        self._populate_catalog()
-        try: self._tbl.cellChanged.disconnect()
-        except RuntimeError as e: logging.warning(f"Table cellChanged signal not connected: {e}")
+        self._syncing = True
+        self._tbl.blockSignals(True)
         self._tbl.setRowCount(0)
         for rf in self.db.reduction_factors(self.consequence_id):
             r = self._tbl.rowCount(); self._tbl.insertRow(r)
             desc = QTableWidgetItem(rf['description'])
             desc.setData(Qt.ItemDataRole.UserRole, rf['id'])
             self._tbl.setItem(r, 0, desc)
-            self._tbl.setItem(r, 1, QTableWidgetItem(str(rf['rrf'])))
+            rrf = self._number(rf['rrf'], minimum=1.0)
+            self._tbl.setItem(r, 1, QTableWidgetItem(self._format_number(rrf)))
+            self._tbl.setItem(r, 2, QTableWidgetItem(
+                f'{self._format_number(self._presence_for_rrf(rrf))} %'))
             del_btn = QPushButton("Ta bort")
             del_btn.clicked.connect(lambda _, rid=rf['id']: (
                 self.db.delete_reduction_factor(rid), self._refresh()))
-            self._tbl.setCellWidget(r, 2, del_btn)
+            self._tbl.setCellWidget(r, 3, del_btn)
             self._tbl.setRowHeight(r, 26)
-        self._tbl.cellChanged.connect(self._on_cell)
+        self._tbl.blockSignals(False)
+        self._syncing = False
+        self._populate_catalog()
 
     def _populate_catalog(self):
-        current = self._catalog_combo.currentData() if hasattr(self, '_catalog_combo') else None
-        self._catalog_combo.blockSignals(True)
-        self._catalog_combo.clear()
-        self._catalog_combo.addItem("Välj sparad faktor…", None)
-        selected = -1
+        selected = {
+            str(rf['description']).strip().casefold()
+            for rf in self.db.reduction_factors(self.consequence_id)
+        }
+        self._catalog_list.blockSignals(True)
+        self._catalog_list.clear()
         for factor in self.db.reduction_factor_catalog():
             data = dict(factor)
-            self._catalog_combo.addItem(
-                f"{data['description']} (RRF {data['rrf']})", data)
-            if current and data.get('id') == current.get('id'):
-                selected = self._catalog_combo.count() - 1
-        if selected >= 0:
-            self._catalog_combo.setCurrentIndex(selected)
-        self._catalog_combo.blockSignals(False)
+            rrf = self._number(data['rrf'], minimum=1.0)
+            item = QListWidgetItem(
+                f"{data['description']}  —  RRF {self._format_number(rrf)} "
+                f"/ närvaro {self._format_number(self._presence_for_rrf(rrf))} %")
+            item.setData(Qt.ItemDataRole.UserRole, data)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(
+                Qt.CheckState.Checked if str(data['description']).strip().casefold() in selected
+                else Qt.CheckState.Unchecked)
+            self._catalog_list.addItem(item)
+        self._catalog_list.blockSignals(False)
 
     def _add(self):
-        new_id = self.db.add_reduction_factor(self.consequence_id, 'Ny faktor', 10)
+        self.db.add_reduction_factor(self.consequence_id, 'Ny enabler', 10)
         self._refresh()
 
-    def _add_catalog_factor(self):
-        factor = self._catalog_combo.currentData()
-        if not factor:
+    def _catalog_item_changed(self, item):
+        if self._syncing:
             return
-        self.db.add_reduction_factor(
-            self.consequence_id, factor.get('description', ''), factor.get('rrf', 10))
+        factor = item.data(Qt.ItemDataRole.UserRole) or {}
+        description = str(factor.get('description') or '').strip()
+        if not description:
+            return
+        existing = [rf for rf in self.db.reduction_factors(self.consequence_id)
+                    if str(rf['description']).strip().casefold() == description.casefold()]
+        if item.checkState() == Qt.CheckState.Checked and not existing:
+            self.db.add_reduction_factor(self.consequence_id, description, factor.get('rrf', 10))
+        elif item.checkState() == Qt.CheckState.Unchecked:
+            for rf in existing:
+                self.db.delete_reduction_factor(rf['id'])
         self._refresh()
 
     def _on_cell(self, row, col):
+        if self._syncing:
+            return
         item = self._tbl.item(row, 0)
-        if not item: return
+        if not item or col == 3:
+            return
         rf_id = item.data(Qt.ItemDataRole.UserRole)
         desc = self._tbl.item(row, 0).text() if self._tbl.item(row, 0) else ''
-        try: rrf = int(self._tbl.item(row, 1).text()) if self._tbl.item(row, 1) else 10
-        except ValueError: rrf = 10
+        if col == 2:
+            presence = self._number(self._tbl.item(row, 2).text(), maximum=100.0)
+            rrf = self._rrf_for_presence(presence)
+        else:
+            rrf = self._number(self._tbl.item(row, 1).text(), minimum=1.0)
         self.db.update_reduction_factor(rf_id, desc, rrf, 1)
+        self._syncing = True
+        self._tbl.item(row, 1).setText(self._format_number(rrf))
+        self._tbl.item(row, 2).setText(
+            f'{self._format_number(self._presence_for_rrf(rrf))} %')
+        self._syncing = False
         self._populate_catalog()
 
 

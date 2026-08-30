@@ -5562,7 +5562,7 @@ class Database:
         self.conn.execute(
             "INSERT INTO reduction_factor_catalog(description,rrf,active) VALUES (?,?,1) "
             "ON CONFLICT(description) DO UPDATE SET rrf=excluded.rrf, active=1",
-            (description, int(rrf)))
+            (description, float(rrf)))
         self.commit()
 
     def delete_reduction_factor(self, id_):

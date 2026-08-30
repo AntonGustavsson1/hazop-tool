@@ -1,5 +1,21 @@
 # NOTES.md — Beslut och kontext
 
+## Enablers: kryssbar katalog och RRF/närvaro (2026-08-30)
+
+`Övriga` i Enablers öppnar nu en kompakt popup i samma vita, 1 px mörkgrå
+stil som övriga HAZOP-popupfönster. Egna tidigare använda enablers visas i
+en kryssbar lista; ikryssning lägger till dem på aktuell konsekvens och
+avmarkering tar bort just den kopplingen.
+
+Varje aktiv enabler visar både `RRF` och `Närvaro`. Fälten är ömsesidigt
+redigerbara: exempelvis blir RRF 100 till 1 % närvaro och 10 % närvaro till
+RRF 10. Beräkningen använder nu RRF-värdet konsekvent, så RRF 100 ger två
+hela frekvenssteg.
+
+Verifierat med nya riktade dialog-/beräkningsprov,
+`EditExtraDeferredRebuildTests`, `tests.test_smoke` och `py_compile`.
+Ingen manuell visuell GUI-verifiering är gjord.
+
 ## Plusknappar i Orsak, Konsekvens och Safeguard borttagna (2026-08-30)
 
 De små plusknapparna nere till höger i Orsak-, Konsekvens- och

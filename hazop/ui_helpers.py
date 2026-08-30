@@ -507,6 +507,17 @@ def prob_to_reduction(prob_pct) -> int:
     return int(math.floor(-math.log10(p / 100.0)))
 
 
+def rrf_to_reduction(rrf) -> int:
+    """Return conservative whole frequency steps for a reduction factor."""
+    try:
+        factor = float(rrf)
+    except (TypeError, ValueError):
+        return 0
+    if factor <= 1:
+        return 0
+    return int(math.floor(math.log10(factor)))
+
+
 def total_freq_reduction(base_f_level: int, safeguard_rrf: int,
                          fa_active: bool, fa_prob,
                          ignition_active: bool, ignition_prob,
@@ -514,14 +525,14 @@ def total_freq_reduction(base_f_level: int, safeguard_rrf: int,
     """Return (final_f_level, total_equivalent_rrf, total_steps).
 
     fa_prob / ignition_prob: probability in % (10.0 = 10% = −1 step).
-    extra_rfactors: iterable of dicts with 'rrf' (also treated as %) and 'active'.
+    extra_rfactors: iterable of dicts with an RRF value and 'active'.
     """
     # Safeguards reduce by RRF steps
     sg_steps    = int(math.log10(max(1, safeguard_rrf))) if safeguard_rrf > 1 else 0
     fa_steps    = prob_to_reduction(fa_prob)    if fa_active    else 0
     ign_steps   = prob_to_reduction(ignition_prob) if ignition_active else 0
     extra_steps = sum(
-        prob_to_reduction(rf.get('rrf', 10))
+        rrf_to_reduction(rf.get('rrf', 10))
         for rf in extra_rfactors
         if rf.get('active')
     )

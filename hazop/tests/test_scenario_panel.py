@@ -4754,6 +4754,69 @@ class CellObjectReferenceEditTests(unittest.TestCase):
             self.assertEqual(context['kind'], expected_kind)
             self.assertEqual(context['tag'], 'PV-101')
 
+class ReductionFactorsDialogTests(unittest.TestCase):
+    """RRF and presence are reciprocal enabler inputs, not two values."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix='hazop_enabler_test_')
+        self.db = Database(path=os.path.join(self._tmpdir, 'test_project.db'))
+        node_id = self.db.add_node()
+        cause_id = self.db.add_cause(self.db.deviations(node_id)[0]['id'])
+        self.cons_id = self.db.add_consequence(cause_id)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_rrf_and_presence_edits_stay_in_sync_and_saved_enabler_is_checkable(self):
+        from hazop import ReductionFactorsDialog
+        factor_id = self.db.add_reduction_factor(self.cons_id, 'Ventil tillgänglig', 100)
+        dialog = ReductionFactorsDialog(self.db, self.cons_id)
+        try:
+            self.assertEqual(dialog._tbl.item(0, 2).text(), '1 %')
+
+            dialog._tbl.item(0, 2).setText('10 %')
+            self.assertEqual(self.db.reduction_factors(self.cons_id)[0]['rrf'], 10)
+            self.assertEqual(dialog._tbl.item(0, 1).text(), '10')
+
+            dialog._tbl.item(0, 1).setText('100')
+            self.assertEqual(dialog._tbl.item(0, 2).text(), '1 %')
+
+            saved = next(
+                dialog._catalog_list.item(i)
+                for i in range(dialog._catalog_list.count())
+                if dialog._catalog_list.item(i).data(Qt.ItemDataRole.UserRole)['id']
+                and dialog._catalog_list.item(i).data(Qt.ItemDataRole.UserRole)['description']
+                == 'Ventil tillgänglig')
+            self.assertEqual(saved.checkState(), Qt.CheckState.Checked)
+            saved.setCheckState(Qt.CheckState.Unchecked)
+            self.assertEqual(self.db.reduction_factors(self.cons_id), [])
+            saved = next(
+                dialog._catalog_list.item(i)
+                for i in range(dialog._catalog_list.count())
+                if dialog._catalog_list.item(i).data(Qt.ItemDataRole.UserRole)['description']
+                == 'Ventil tillgänglig')
+            saved.setCheckState(Qt.CheckState.Checked)
+            restored = self.db.reduction_factors(self.cons_id)
+            self.assertEqual(len(restored), 1)
+            self.assertEqual(restored[0]['id'], factor_id + 1)
+            self.assertEqual(restored[0]['rrf'], 100)
+        finally:
+            dialog.deleteLater()
+
+    def test_extra_rrf_100_gives_two_frequency_steps(self):
+        from ui_helpers import total_freq_reduction
+        final_f, total_rrf, steps = total_freq_reduction(
+            4, 1, False, 10, False, 10, [{'rrf': 100, 'active': 1}])
+        self.assertEqual((final_f, total_rrf, steps), (2, 100, 2))
+
 
 if __name__ == "__main__":
     unittest.main()
